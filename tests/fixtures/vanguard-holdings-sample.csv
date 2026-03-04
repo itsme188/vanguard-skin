@@ -1,0 +1,5 @@
+symbol,name,type,price,quantity,value
+VMFXX,Vanguard Federal Money Market Fund,Settlement Fund,1.00,5000.00,5000.00
+VTSAX,Vanguard Total Stock Market Index Fund,Mutual Fund,60.00,500.000,30000.00
+VBTLX,Vanguard Total Bond Market Index Fund,Mutual Fund,10.20,1000.000,10200.00
+VTI,Vanguard Total Stock Market ETF,ETF,270.00,50.000,13500.00

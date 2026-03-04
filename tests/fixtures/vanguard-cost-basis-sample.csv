@@ -1,0 +1,5 @@
+symbol,name,type,account,cost_basis_method,quantity,cost_per_share,total_cost,market_value,short_term_gain_loss,long_term_gain_loss,total_gain_loss,percent_gain_loss
+VTSAX,Vanguard Total Stock Market Index Fund Admiral,Mutual Fund,Brokerage,MinTax,500.000,,25000.00,30000.00,200.00,4800.00,5000.00,20.00%
+VBTLX,Vanguard Total Bond Market Index Fund Admiral,Mutual Fund,Brokerage,MinTax,1000.000,,10500.00,10200.00,-50.00,-250.00,-300.00,-2.86%
+VTI,Vanguard Total Stock Market ETF,ETF,Brokerage,MinTax,50.000,,11000.00,13500.00,100.00,2400.00,2500.00,22.73%
+VTSAX,Vanguard Total Stock Market Index Fund Admiral,Mutual Fund,Roth IRA,MinTax,200.000,,10000.00,12000.00,0.00,2000.00,2000.00,20.00%
