@@ -1,26 +1,72 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  /* Surfaces — layered elevation system */
+  --color-canvas: #080B12;
+  --color-panel: #0E1118;
+  --color-raised: #151A24;
+  --color-muted: #1B2230;
+
+  /* Borders */
+  --color-edge: #1E2534;
+  --color-edge-strong: #2A3244;
+
+  /* Text hierarchy */
+  --color-ink: #E2E6F0;
+  --color-ink-dim: #8891A6;
+  --color-ink-faint: #4E5668;
+
+  /* Brand accent — warm gold */
+  --color-gold: #C9A44E;
+  --color-gold-glow: #C9A44E18;
+
+  /* Status colors */
+  --color-up: #34D399;
+  --color-up-tint: #34D39918;
+  --color-down: #F87171;
+  --color-down-tint: #F8717118;
+  --color-blue: #60A5FA;
+  --color-blue-tint: #60A5FA18;
+
+  /* Fonts */
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
+  --font-serif: var(--font-instrument-serif);
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  /* Compat with default Tailwind */
+  --color-background: #080B12;
+  --color-foreground: #E2E6F0;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+}
+
+/* Tabular numbers for financial data */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+/* Refined scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-edge-strong);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-ink-faint);
 }
