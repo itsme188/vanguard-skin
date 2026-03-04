@@ -40,6 +40,7 @@ tests/
   fixtures/real/        # Real PDFs/CSVs (gitignored, local only)
 docs/plans/             # Design doc and implementation plan
 data/                   # SQLite DB + imported files (gitignored)
+scripts/                # One-time utility scripts (e.g. generate-pdf-fixture.ts)
 ```
 
 ## Data Flow
@@ -83,6 +84,9 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - All tests use in-memory SQLite (`:memory:`) for isolation
 - Test fixtures in `tests/fixtures/` (anonymized)
 - Real data fixtures in `tests/fixtures/real/` (gitignored)
+- PDF parser tests use mock Claude API response JSON (`tests/fixtures/vanguard-pdf-claude-response.json`)
+- To regenerate PDF fixture: `ANTHROPIC_API_KEY=sk-... npx tsx scripts/generate-pdf-fixture.ts <path-to-pdf>`
+- Verify build compiles: `npx next build` (catches issues tests don't)
 
 ## Reference
 
