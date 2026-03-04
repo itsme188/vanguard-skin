@@ -1,0 +1,4 @@
+account,symbol,name,type,quantity,price,cost_basis,balance
+ibkr,AAPL,APPLE INC,Stock,100,195.50,19000.00,19550.00
+ibkr,GOOG,ALPHABET INC-CL C,Stock,200,140.00,27200.00,28000.00
+ibkr,SPY,SPDR S&P 500 ETF TRUST,ETF,100,601.82,58600.00,60182.00

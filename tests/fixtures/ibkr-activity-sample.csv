@@ -1,0 +1,42 @@
+Statement,Header,Field Name,Field Value
+Statement,Data,BrokerName,Interactive Brokers LLC
+Statement,Data,Title,Activity Statement
+Statement,Data,Period,"January 1, 2025 - January 31, 2025"
+Net Asset Value,Header,Asset Class,Prior Total,Current Long,Current Short,Current Total,Change
+Net Asset Value,Data,Cash ,5000,8000,0,8000,3000
+Net Asset Value,Data,Stock,50000,55000,0,55000,5000
+Net Asset Value,Data,Total,55000,63000,0,63000,8000
+Net Asset Value,Header,Time Weighted Rate of Return
+Net Asset Value,Data,14.545454545%
+Change in Combined NAV,Header,Field Name,Field Value
+Change in NAV,Data,Starting Value,55000
+Change in NAV,Data,Mark-to-Market,6200
+Change in NAV,Data,Dividends,150
+Change in NAV,Data,Change in Dividend Accruals,-150
+Change in NAV,Data,Interest,50
+Change in NAV,Data,Change in Interest Accruals,20
+Change in NAV,Data,Other Fees,-30
+Change in NAV,Data,Commissions,-15.5
+Change in NAV,Data,Deposits/Withdrawals,1775.5
+Change in NAV,Data,Ending Value,63000
+Mark-to-Market Performance Summary,Header,Asset Category,Symbol,Prior Quantity,Current Quantity,Prior Price,Current Price,Mark-to-Market P/L Position,Mark-to-Market P/L Transaction,Mark-to-Market P/L Commissions,Mark-to-Market P/L Other,Mark-to-Market P/L Total,Code
+Mark-to-Market Performance Summary,Data,Stocks,AAPL,100,100,190.00,195.50,550,0,0,0,550,
+Mark-to-Market Performance Summary,Data,Stocks,MSFT,50,0,375.00,--,600,200,-5.5,0,794.5,
+Mark-to-Market Performance Summary,Data,Stocks,GOOG,0,200,--,140.00,0,800,-5,0,795,
+Mark-to-Market Performance Summary,Data,Total,,,,,,1150,1000,-10.5,0,2139.5,
+Trades,Header,DataDiscriminator,Asset Category,Currency,Account,Symbol,Date/Time,Quantity,T. Price,C. Price,Proceeds,Comm/Fee,Basis,Realized P/L,MTM P/L,Code
+Trades,Data,Order,Stocks,USD,U99999999,MSFT,"2025-01-10, 10:30:00",-50,387.00,375.00,19350,-2.75,-18750,597.25,600,C
+Trades,SubTotal,,Stocks,USD,MSFT,,,-50,,,19350,-2.75,-18750,597.25,600,
+Trades,Data,Order,Stocks,USD,U99999999,GOOG,"2025-01-15, 14:00:00",200,136.00,140.00,-27200,-5,27205,0,800,O
+Trades,SubTotal,,Stocks,USD,GOOG,,,200,,,-27200,-5,27205,0,800,
+Trades,Data,Total,,,,,,,,,,-7850,-7.75,8455,597.25,1400,
+Dividends,Header,Currency,Account,Date,Description,Amount
+Dividends,Data,USD,U99999999,2025-01-31,AAPL(US0378331005) Cash Dividend USD 0.25 per Share (Ordinary Dividend),25
+Dividends,Data,USD,U99999999,2025-01-31,SPY(US78462F1030) Cash Dividend USD 1.25 per Share (Ordinary Dividend),125
+Dividends,Data,Total,,,,150
+Interest,Header,Currency,Account,Date,Description,Amount
+Interest,Data,USD,U99999999,2025-01-06,USD Credit Interest for Dec-2024,50
+Interest,Data,Total,,,,50
+Fees,Header,Subtitle,Currency,Account,Date,Description,Amount
+Fees,Data,Other Fees,USD,U99999999,2025-01-03,Market Data Subscription for Jan 2025,-30
+Fees,Data,Total,,,,,-30
