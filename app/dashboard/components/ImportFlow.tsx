@@ -147,7 +147,7 @@ export function ImportFlow() {
         }}
         onClick={() => state.status === "idle" && fileInputRef.current?.click()}
         className={`
-          relative rounded-xl border-2 border-dashed p-12 text-center transition-all cursor-pointer
+          relative rounded-xl border-2 border-dashed p-6 sm:p-12 text-center transition-all cursor-pointer
           ${
             isDragOver
               ? "border-gold bg-gold-glow scale-[1.005]"
@@ -208,7 +208,7 @@ export function ImportFlow() {
   // Preview — show parsed results
   if (state.status === "preview") {
     return (
-      <div className="rounded-xl border border-edge bg-panel p-6 space-y-4">
+      <div className="rounded-xl border border-edge bg-panel p-5 space-y-4">
         <div className="flex items-center justify-between">
           <h3 className="text-lg font-medium text-ink">Import Preview</h3>
           <button
@@ -303,7 +303,7 @@ export function ImportFlow() {
   // Importing — spinner
   if (state.status === "importing") {
     return (
-      <div className="rounded-xl border border-edge bg-panel p-12 text-center">
+      <div className="rounded-xl border border-edge bg-panel p-6 sm:p-12 text-center">
         <div className="w-10 h-10 border-2 border-gold border-t-transparent rounded-full animate-spin mx-auto" />
         <p className="text-ink-dim mt-3">Importing data...</p>
       </div>
@@ -313,7 +313,7 @@ export function ImportFlow() {
   // Done — success
   if (state.status === "done") {
     return (
-      <div className="rounded-xl border border-edge bg-panel p-6 space-y-4">
+      <div className="rounded-xl border border-edge bg-panel p-5 space-y-4">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-full bg-up-tint flex items-center justify-center">
             <svg className="w-4 h-4 text-up" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
