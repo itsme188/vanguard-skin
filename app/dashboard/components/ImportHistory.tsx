@@ -13,15 +13,18 @@ const SOURCE_LABELS: Record<string, string> = {
   "vanguard-pdf": "Vanguard Statement",
 };
 
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr);
-  return d.toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  const mon = MONTHS[d.getMonth()];
+  const day = d.getDate();
+  const year = d.getFullYear();
+  const h = d.getHours();
+  const m = d.getMinutes().toString().padStart(2, "0");
+  const ampm = h >= 12 ? "PM" : "AM";
+  const h12 = h % 12 || 12;
+  return `${mon} ${day}, ${year}, ${h12}:${m} ${ampm}`;
 }
 
 export function ImportHistory({ batches }: { batches: ImportBatch[] }) {
