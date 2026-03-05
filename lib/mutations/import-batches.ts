@@ -28,7 +28,12 @@ export function completeImportBatch(
 
 export function deleteImportBatch(db: Database.Database, batchId: number): void {
   db.transaction(() => {
-    // Delete in dependency order (children first)
+    // Clear derived data first (tax lots reference transactions via FK)
+    // These are fully recomputed by computeTaxLots() and computeDailyValuations()
+    db.prepare("DELETE FROM tax_lot_sales").run();
+    db.prepare("DELETE FROM tax_lots").run();
+    db.prepare("DELETE FROM daily_valuations").run();
+    // Delete source data in dependency order (children first)
     db.prepare("DELETE FROM raw_imports WHERE import_batch_id = ?").run(batchId);
     db.prepare("DELETE FROM prices WHERE import_batch_id = ?").run(batchId);
     db.prepare("DELETE FROM holdings WHERE import_batch_id = ?").run(batchId);
