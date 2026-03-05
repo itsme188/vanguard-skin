@@ -13,10 +13,14 @@ import type {
 export interface ClaudePdfHolding {
   symbol: string;
   name: string;
-  category: string; // "Sweep program" | "Mutual funds" | "ETFs" | "Stocks" | "Bonds"
+  category: string; // "Sweep program" | "Mutual funds" | "ETFs" | "Stocks" | "Bonds" | "Options"
   quantity: number;
   price: number | null;
   value: number;
+  underlying_symbol?: string;
+  strike_price?: number;
+  expiration_date?: string;
+  option_type?: "CALL" | "PUT";
 }
 
 export interface ClaudePdfTransaction {
@@ -29,6 +33,10 @@ export interface ClaudePdfTransaction {
   price: number | null;
   commissions: number | null;
   amount: number;
+  underlying_symbol?: string;
+  strike_price?: number;
+  expiration_date?: string;
+  option_type?: "CALL" | "PUT";
 }
 
 export interface ClaudePdfResponse {
@@ -65,12 +73,16 @@ Return ONLY valid JSON matching this exact schema (no markdown, no explanation):
   },
   "holdings": [
     {
-      "symbol": "<ticker>",
+      "symbol": "<ticker or OCC option symbol>",
       "name": "<full security name>",
-      "category": "Sweep program" | "Mutual funds" | "ETFs" | "Stocks" | "Bonds",
+      "category": "Sweep program" | "Mutual funds" | "ETFs" | "Stocks" | "Bonds" | "Options",
       "quantity": <number>,
       "price": <number or null>,
-      "value": <number> (balance as of statement date)
+      "value": <number> (balance as of statement date),
+      "underlying_symbol": "<ticker of the underlying stock, only for options>",
+      "strike_price": <number, only for options>,
+      "expiration_date": "YYYY-MM-DD" (only for options),
+      "option_type": "CALL" or "PUT" (only for options)
     }
   ],
   "transactions": [
@@ -83,7 +95,11 @@ Return ONLY valid JSON matching this exact schema (no markdown, no explanation):
       "quantity": <number or null>,
       "price": <number or null>,
       "commissions": <number or null>,
-      "amount": <number> (positive for inflows, negative for outflows)
+      "amount": <number> (positive for inflows, negative for outflows),
+      "underlying_symbol": "<ticker, only for option transactions>",
+      "strike_price": <number, only for option transactions>,
+      "expiration_date": "YYYY-MM-DD" (only for option transactions),
+      "option_type": "CALL" or "PUT" (only for option transactions)
     }
   ]
 }
@@ -92,11 +108,12 @@ Rules:
 - Convert all dates from MM/DD to YYYY-MM-DD using the statement year
 - For holdings, use the "Balance on [statement date]" column as the value
 - For mutual funds that appear twice (e.g. CASH and non-CASH share classes), include both as separate entries
-- For options, use the underlying symbol (e.g. "APP" for CALL APPLOVIN CORP)
+- For OPTIONS: set category to "Options", extract underlying_symbol (e.g. "APP" for CALL APPLOVIN CORP), strike_price, expiration_date (YYYY-MM-DD), and option_type ("CALL" or "PUT"). Use an OCC-style symbol like "APP   250221C00135000" (underlying padded to 6 chars + YYMMDD + C/P + strike*1000 padded to 8 digits). Quantity is in contracts (not shares).
 - Combine the sweep program balance as cash_balance
 - For transaction amounts: dividends are positive, purchases are negative, sales are positive
 - Skip sweep out/sweep in transactions (these are just cash movements to/from money market)
 - Include all transaction types: Dividend, Reinvestment, Buy, Sell, Buy to open, Sell to close, Transfer (in), Transfer (out), Expired, Exercised, Interest charge, Foreign Tax Withheld
+- For option transactions, also include underlying_symbol, strike_price, expiration_date, and option_type
 - If a field is not applicable or not shown, use null`;
 
 // ── Claude API call ─────────────────────────────────────────────────
@@ -178,24 +195,24 @@ function normalizeDate(date: string, statementYear: string): string {
 
 function mapTransactionType(vanguardType: string): string {
   const typeMap: Record<string, string> = {
-    "Dividend": "dividend",
-    "Reinvestment": "reinvestment",
-    "Buy": "buy",
-    "Buy to open": "buy",
-    "Sell": "sell",
-    "Sell to close": "sell",
-    "Transfer (in)": "transfer_in",
-    "Transfer (out)": "transfer_out",
-    "Expired": "expired",
-    "EXPIRED": "expired",
-    "Exercised": "exercised",
-    "EXERCISED": "exercised",
-    "Interest charge": "interest",
-    "Foreign Tax Withheld": "tax_withheld",
-    "Sweep out": "sweep",
-    "Sweep in": "sweep",
+    "Dividend": "DIVIDEND",
+    "Reinvestment": "REINVESTMENT",
+    "Buy": "BUY",
+    "Buy to open": "BUY_TO_OPEN",
+    "Sell": "SELL",
+    "Sell to close": "SELL_TO_CLOSE",
+    "Transfer (in)": "TRANSFER_IN",
+    "Transfer (out)": "TRANSFER_OUT",
+    "Expired": "EXPIRED",
+    "EXPIRED": "EXPIRED",
+    "Exercised": "EXERCISED",
+    "EXERCISED": "EXERCISED",
+    "Interest charge": "INTEREST",
+    "Foreign Tax Withheld": "TAX_WITHHELD",
+    "Sweep out": "SWEEP",
+    "Sweep in": "SWEEP",
   };
-  return typeMap[vanguardType] ?? vanguardType.toLowerCase().replace(/\s+/g, "_");
+  return typeMap[vanguardType] ?? vanguardType.toUpperCase().replace(/\s+/g, "_");
 }
 
 export function parseClaudePdfResponse(
@@ -227,11 +244,32 @@ export function parseClaudePdfResponse(
       sourceKey: `vanguard-pdf:holding:${accountName}:${h.symbol}:${statementDate}`,
     });
 
-    securitiesMap.set(h.symbol, {
+    const isOption = h.category === "Options" || h.option_type != null;
+    const securityType = isOption
+      ? "option"
+      : h.category === "Bonds"
+        ? "bond"
+        : h.category === "ETFs"
+          ? "etf"
+          : h.category === "Mutual funds"
+            ? "mutual_fund"
+            : "stock";
+
+    const sec: ParsedSecurity = {
       symbol: h.symbol,
       name: h.name,
-      securityType: h.category === "Bonds" ? "bond" : h.category === "ETFs" ? "etf" : h.category === "Mutual funds" ? "mutual_fund" : "stock",
-    });
+      securityType,
+    };
+
+    if (isOption) {
+      sec.underlyingSymbol = h.underlying_symbol;
+      sec.strikePrice = h.strike_price;
+      sec.expirationDate = h.expiration_date;
+      sec.optionType = h.option_type;
+      sec.multiplier = 100;
+    }
+
+    securitiesMap.set(h.symbol, sec);
 
     if (h.price != null && h.price > 0) {
       prices.push({
@@ -248,7 +286,7 @@ export function parseClaudePdfResponse(
     const txnType = mapTransactionType(t.transaction_type);
 
     // Skip sweep transactions
-    if (txnType === "sweep") continue;
+    if (txnType === "SWEEP") continue;
 
     const tradeDate = normalizeDate(t.trade_date, statementYear);
     const settlementDate = normalizeDate(t.settlement_date, statementYear);
@@ -267,12 +305,24 @@ export function parseClaudePdfResponse(
       sourceKey: `vanguard-pdf:txn:${accountName}:${tradeDate}:${t.symbol ?? "cash"}:${txnType}:${t.amount}`,
     });
 
-    // Register securities from transactions too
+    // Register securities from transactions too (including option metadata)
     if (t.symbol && !securitiesMap.has(t.symbol)) {
-      securitiesMap.set(t.symbol, {
+      const isOptionTxn = t.option_type != null;
+      const sec: ParsedSecurity = {
         symbol: t.symbol,
         name: t.name,
-      });
+      };
+
+      if (isOptionTxn) {
+        sec.securityType = "option";
+        sec.underlyingSymbol = t.underlying_symbol;
+        sec.strikePrice = t.strike_price;
+        sec.expirationDate = t.expiration_date;
+        sec.optionType = t.option_type;
+        sec.multiplier = 100;
+      }
+
+      securitiesMap.set(t.symbol, sec);
     }
   }
 

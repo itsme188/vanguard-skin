@@ -17,6 +17,27 @@ function formatQuantity(value: number): string {
   });
 }
 
+function formatOptionDescription(holding: HoldingWithSecurity): string {
+  if (holding.security_type !== "option") return "";
+  const underlying = holding.underlying_symbol ?? "";
+  const strike = holding.strike_price != null ? `$${holding.strike_price}` : "";
+  const type = holding.option_type ?? "";
+  const expiry = holding.expiration_date
+    ? new Date(holding.expiration_date + "T00:00:00").toLocaleDateString("en-US", {
+        month: "numeric",
+        day: "numeric",
+        year: "2-digit",
+      })
+    : "";
+  return [underlying, strike, type, expiry].filter(Boolean).join(" ");
+}
+
+function quantityLabel(holding: HoldingWithSecurity): string {
+  if (holding.security_type === "option") return "contracts";
+  if (holding.security_type === "bond") return "face value";
+  return "shares";
+}
+
 export function HoldingsTable({
   holdings,
 }: {
@@ -63,13 +84,21 @@ export function HoldingsTable({
                 className="border-b border-edge last:border-0 hover:bg-panel/50 transition-colors"
               >
                 <td className="px-4 py-3 font-mono font-medium text-ink">
-                  {holding.symbol}
+                  <span>{holding.security_type === "option" && holding.underlying_symbol ? holding.underlying_symbol : holding.symbol}</span>
+                  {holding.security_type === "option" && (
+                    <span className="ml-1.5 text-xs text-ink-faint font-normal">
+                      {formatOptionDescription(holding)}
+                    </span>
+                  )}
                 </td>
                 <td className="px-4 py-3 text-ink-dim truncate max-w-[200px]">
                   {holding.security_name ?? "\u2014"}
                 </td>
                 <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
                   {formatQuantity(holding.quantity)}
+                  <span className="ml-1 text-xs text-ink-faint font-normal">
+                    {quantityLabel(holding)}
+                  </span>
                 </td>
                 <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
                   {formatCurrency(holding.cost_basis)}

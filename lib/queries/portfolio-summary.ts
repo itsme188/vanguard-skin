@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { bondAdjustedMarketValueSQL } from "@/lib/valuation";
+import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { formatUSD, formatNumber } from "@/lib/format";
 
 interface AccountValue {
@@ -57,7 +57,7 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
               s.security_type, h.quantity, h.as_of_date,
               lp.close_price AS latest_price,
               CASE WHEN lp.close_price IS NOT NULL
-                THEN ${bondAdjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type")}
+                THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier")}
                 ELSE NULL
               END AS market_value
        FROM holdings h
@@ -129,7 +129,7 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
   if (topHoldings.length > 0) {
     lines.push("\n### Top Holdings");
     for (const h of topHoldings) {
-      const unit = h.security_type === "bond" ? "face value" : "shares";
+      const unit = h.security_type === "bond" ? "face value" : h.security_type === "option" ? "contracts" : "shares";
       const value = h.market_value != null ? ` — market value ${formatUSD(h.market_value)}` : "";
       const price = h.latest_price != null ? ` @ $${h.latest_price}` : " (no price data)";
       lines.push(

@@ -6,6 +6,11 @@ export interface HoldingWithSecurity extends Holding {
   security_name: string | null;
   security_type: string | null;
   account_name: string;
+  underlying_symbol: string | null;
+  strike_price: number | null;
+  expiration_date: string | null;
+  option_type: "CALL" | "PUT" | null;
+  multiplier: number;
 }
 
 export function getHoldingsByAccount(
@@ -14,7 +19,9 @@ export function getHoldingsByAccount(
   asOfDate?: string
 ): HoldingWithSecurity[] {
   let sql = `
-    SELECT h.*, s.symbol, s.name as security_name, s.security_type, a.name as account_name
+    SELECT h.*, s.symbol, s.name as security_name, s.security_type, a.name as account_name,
+           s.underlying_symbol, s.strike_price, s.expiration_date, s.option_type,
+           COALESCE(s.multiplier, 1) as multiplier
     FROM holdings h
     JOIN securities s ON s.id = h.security_id
     JOIN accounts a ON a.id = h.account_id
