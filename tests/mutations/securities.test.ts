@@ -70,4 +70,60 @@ describe("upsertSecurity", () => {
     expect(row.security_type).toBe("stock");
     expect(row.asset_class).toBe("US Equity");
   });
+
+  it("inserts option security with full metadata via params object", () => {
+    const id = upsertSecurity(db, {
+      symbol: "AAPL  250321C00150000",
+      name: "AAPL 21MAR25 150.0 C",
+      securityType: "option",
+      underlyingSymbol: "AAPL",
+      strikePrice: 150,
+      expirationDate: "2025-03-21",
+      optionType: "CALL",
+      multiplier: 100,
+    });
+    expect(id).toBeGreaterThan(0);
+
+    const row = db
+      .prepare("SELECT * FROM securities WHERE id = ?")
+      .get(id) as any;
+    expect(row.security_type).toBe("option");
+    expect(row.underlying_symbol).toBe("AAPL");
+    expect(row.strike_price).toBe(150);
+    expect(row.expiration_date).toBe("2025-03-21");
+    expect(row.option_type).toBe("CALL");
+    expect(row.multiplier).toBe(100);
+  });
+
+  it("preserves option metadata on re-insert with null", () => {
+    upsertSecurity(db, {
+      symbol: "AAPL  250321C00150000",
+      securityType: "option",
+      underlyingSymbol: "AAPL",
+      strikePrice: 150,
+      expirationDate: "2025-03-21",
+      optionType: "CALL",
+      multiplier: 100,
+    });
+
+    // Re-insert with just the symbol — option metadata should be preserved
+    upsertSecurity(db, "AAPL  250321C00150000");
+
+    const row = db
+      .prepare("SELECT * FROM securities WHERE symbol = 'AAPL  250321C00150000'")
+      .get() as any;
+    expect(row.underlying_symbol).toBe("AAPL");
+    expect(row.strike_price).toBe(150);
+    expect(row.option_type).toBe("CALL");
+    expect(row.multiplier).toBe(100);
+  });
+
+  it("stores null multiplier for non-option securities (queries use COALESCE)", () => {
+    const id = upsertSecurity(db, "VTI", "Vanguard Total Market", "etf");
+    const row = db
+      .prepare("SELECT * FROM securities WHERE id = ?")
+      .get(id) as any;
+    // multiplier is NULL in DB; all queries use COALESCE(s.multiplier, 1)
+    expect(row.multiplier).toBeNull();
+  });
 });

@@ -28,6 +28,11 @@ export interface ParsedSecurity {
   name?: string;
   securityType?: string;
   assetClass?: string;
+  underlyingSymbol?: string;
+  strikePrice?: number;
+  expirationDate?: string;
+  optionType?: "CALL" | "PUT";
+  multiplier?: number;
 }
 
 export interface ParsedHolding {
