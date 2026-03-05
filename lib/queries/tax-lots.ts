@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { bondAdjustedMarketValueSQL } from "@/lib/valuation";
+import { adjustedMarketValueSQL } from "@/lib/valuation";
 
 export interface TaxLotWithSecurity {
   id: number;
@@ -56,10 +56,11 @@ export function getOpenTaxLots(db: Database.Database): TaxLotWithSecurity[] {
         tl.cost_basis, tl.is_from_opening_snapshot,
         p.close_price AS current_price,
         CASE WHEN p.close_price IS NOT NULL
-          THEN ${bondAdjustedMarketValueSQL("tl.quantity_remaining", "p.close_price", "s.security_type")}
+          THEN ${adjustedMarketValueSQL("tl.quantity_remaining", "p.close_price", "s.security_type", "s.multiplier")}
           ELSE NULL END AS current_value,
         CASE WHEN p.close_price IS NOT NULL
-          THEN ${bondAdjustedMarketValueSQL("tl.quantity_remaining", "p.close_price", "s.security_type")} - (tl.quantity_remaining * tl.acquisition_price)
+          THEN ${adjustedMarketValueSQL("tl.quantity_remaining", "p.close_price", "s.security_type", "s.multiplier")}
+               - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier")}
           ELSE NULL END AS unrealized_gain
       FROM tax_lots tl
       JOIN accounts a ON a.id = tl.account_id
@@ -99,7 +100,8 @@ export function getTaxLotSummary(db: Database.Database): TaxLotSummary {
         COUNT(*) AS totalOpenLots,
         COALESCE(SUM(
           CASE WHEN p.close_price IS NOT NULL
-            THEN ${bondAdjustedMarketValueSQL("tl.quantity_remaining", "p.close_price", "s.security_type")} - (tl.quantity_remaining * tl.acquisition_price)
+            THEN ${adjustedMarketValueSQL("tl.quantity_remaining", "p.close_price", "s.security_type", "s.multiplier")}
+                 - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier")}
             ELSE 0 END
         ), 0) AS totalUnrealizedGain
       FROM tax_lots tl

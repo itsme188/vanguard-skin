@@ -10,6 +10,11 @@ export interface Security {
   security_type: string | null;
   asset_class: string | null;
   source_key: string | null;
+  underlying_symbol: string | null;
+  strike_price: number | null;
+  expiration_date: string | null;
+  option_type: "CALL" | "PUT" | null;
+  multiplier: number;
 }
 
 export interface Transaction {

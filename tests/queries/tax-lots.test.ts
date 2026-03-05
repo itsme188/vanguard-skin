@@ -114,7 +114,7 @@ describe("tax-lots queries", () => {
       expect(lots[0].unrealized_gain).toBeNull();
     });
 
-    it("applies bond adjustment for bond securities", () => {
+    it("applies bond adjustment for bond securities (both sides)", () => {
       const bond = seedSecurity(db, "TBILL", "bond");
       seedBuy(db, ACCOUNT_ID, bond, "2025-01-15", 10000, 98);
       seedPrice(db, bond, "2025-02-28", 99);
@@ -122,19 +122,32 @@ describe("tax-lots queries", () => {
 
       const lots = getOpenTaxLots(db);
       expect(lots).toHaveLength(1);
-      // Bond current_value: 10000 * 99 / 100 = 9900
+      // Bond current_value: 10000 * 99 / 100 = $9,900
       expect(lots[0].current_value).toBe(9900);
-      // Unrealized: 9900 - (10000 * 98) = 9900 - 980000
-      // Wait — acquisition_price for bonds is stored as transaction price, not par-adjusted
-      // The tax lot has acquisition_price = 98, quantity = 10000
-      // unrealized = bond_adjusted(10000, 99) - (10000 * 98) = 9900 - 980000? That can't be right.
-      // Actually, looking at the SQL: unrealized = bond_adjusted_market_value - (qty * acq_price)
-      // bond_adjusted_market_value = 10000 * 99 / 100 = 9900
-      // qty * acq_price = 10000 * 98 = 980000
-      // This seems wrong — the acquisition price should also be par-adjusted for bonds
-      // But this is how the system currently works (acquisition_price comes from transaction price_per_share)
-      // For now, just test the current behavior
-      expect(lots[0].current_value).toBe(9900);
+      // Both current value and cost basis are now par-adjusted:
+      // unrealized = (10000 * 99 / 100) - (10000 * 98 / 100) = 9900 - 9800 = $100
+      expect(lots[0].unrealized_gain).toBe(100);
+    });
+
+    it("applies multiplier for option securities", () => {
+      // Create an option security with multiplier 100
+      db.prepare(
+        `INSERT INTO securities (symbol, name, security_type, multiplier, underlying_symbol, strike_price, expiration_date, option_type)
+         VALUES (?, ?, 'option', 100, 'AAPL', 150, '2025-03-21', 'CALL')`
+      ).run("AAPL  250321C00150000", "AAPL 150 Call");
+      const secId = (db.prepare("SELECT id FROM securities WHERE symbol = ?").get("AAPL  250321C00150000") as any).id;
+
+      seedBuy(db, ACCOUNT_ID, secId, "2025-01-15", 5, 3.5);
+      seedPrice(db, secId, "2025-02-28", 5.0);
+      computeTaxLots(db);
+
+      const lots = getOpenTaxLots(db);
+      expect(lots).toHaveLength(1);
+      // current_value: 5 * 5.0 * 100 = $2,500
+      expect(lots[0].current_value).toBe(2500);
+      // cost: 5 * 3.5 * 100 = $1,750
+      // unrealized: 2500 - 1750 = $750
+      expect(lots[0].unrealized_gain).toBe(750);
     });
   });
 
