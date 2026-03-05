@@ -1,5 +1,4 @@
 import type Database from "better-sqlite3";
-import type { Account, MonthlySnapshot } from "@/lib/types";
 
 export interface AccountSummary {
   id: number;
@@ -12,44 +11,59 @@ export interface AccountSummary {
   twr: number | null;
 }
 
+interface AccountSummaryRow {
+  id: number;
+  name: string;
+  latestValue: number | null;
+  latestDate: string | null;
+  twr: number | null;
+  previousValue: number | null;
+}
+
 export function getAccountSummaries(db: Database.Database): AccountSummary[] {
-  const accounts = db
-    .prepare("SELECT id, name FROM accounts ORDER BY id")
-    .all() as Account[];
-
-  return accounts.map((account) => {
-    const latest = db
-      .prepare(
-        "SELECT * FROM monthly_snapshots WHERE account_id = ? ORDER BY month_end_date DESC LIMIT 1"
+  const rows = db
+    .prepare(
+      `WITH ranked AS (
+        SELECT
+          ms.account_id,
+          ms.month_end_date,
+          ms.total_value,
+          ms.twr,
+          ROW_NUMBER() OVER (PARTITION BY ms.account_id ORDER BY ms.month_end_date DESC) AS rn
+        FROM monthly_snapshots ms
       )
-      .get(account.id) as MonthlySnapshot | undefined;
+      SELECT
+        a.id, a.name,
+        curr.total_value AS latestValue,
+        curr.month_end_date AS latestDate,
+        curr.twr,
+        prev.total_value AS previousValue
+      FROM accounts a
+      LEFT JOIN ranked curr ON curr.account_id = a.id AND curr.rn = 1
+      LEFT JOIN ranked prev ON prev.account_id = a.id AND prev.rn = 2
+      ORDER BY a.id`
+    )
+    .all() as AccountSummaryRow[];
 
-    const previous = db
-      .prepare(
-        "SELECT * FROM monthly_snapshots WHERE account_id = ? ORDER BY month_end_date DESC LIMIT 1 OFFSET 1"
-      )
-      .get(account.id) as MonthlySnapshot | undefined;
-
-    const latestValue = latest?.total_value ?? null;
-    const previousValue = previous?.total_value ?? null;
+  return rows.map((row) => {
     const monthlyChange =
-      latestValue !== null && previousValue !== null
-        ? latestValue - previousValue
+      row.latestValue !== null && row.previousValue !== null
+        ? row.latestValue - row.previousValue
         : null;
     const monthlyChangePercent =
-      monthlyChange !== null && previousValue !== null && previousValue !== 0
-        ? (monthlyChange / previousValue) * 100
+      monthlyChange !== null && row.previousValue !== null && row.previousValue !== 0
+        ? (monthlyChange / row.previousValue) * 100
         : null;
 
     return {
-      id: account.id,
-      name: account.name,
-      latestValue,
-      previousValue,
-      latestDate: latest?.month_end_date ?? null,
+      id: row.id,
+      name: row.name,
+      latestValue: row.latestValue,
+      previousValue: row.previousValue,
+      latestDate: row.latestDate,
       monthlyChange,
       monthlyChangePercent,
-      twr: latest?.twr ?? null,
+      twr: row.twr ?? null,
     };
   });
 }

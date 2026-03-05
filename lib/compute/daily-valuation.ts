@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { marketValue } from "@/lib/valuation";
 
 interface DailyValuationResult {
   datesComputed: number;
@@ -12,6 +13,7 @@ interface PriceDateRow {
 interface HoldingRow {
   security_id: number;
   quantity: number;
+  security_type: string | null;
   as_of_date: string;
 }
 
@@ -50,8 +52,9 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
         // Get holdings as of this date (most recent snapshot on or before this date)
         const holdings = db
           .prepare(
-            `SELECT h.security_id, h.quantity, h.as_of_date
+            `SELECT h.security_id, h.quantity, s.security_type, h.as_of_date
              FROM holdings h
+             JOIN securities s ON s.id = h.security_id
              WHERE h.account_id = ?
                AND h.as_of_date = (
                  SELECT MAX(h2.as_of_date)
@@ -78,7 +81,7 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
             .get(holding.security_id, date) as PriceRow | undefined;
 
           if (price) {
-            holdingsValue += holding.quantity * price.close_price;
+            holdingsValue += marketValue(holding.quantity, price.close_price, holding.security_type);
             hasAnyPrice = true;
           }
         }
