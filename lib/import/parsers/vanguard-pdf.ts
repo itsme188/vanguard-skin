@@ -108,7 +108,8 @@ export async function callClaudeForPdfExtraction(
 
   const base64Pdf = pdfBuffer.toString("base64");
 
-  const message = await client.messages.create({
+  // Use streaming to avoid 10-minute timeout on large PDFs
+  const stream = client.messages.stream({
     model: "claude-sonnet-4-20250514",
     max_tokens: 16000,
     messages: [
@@ -131,6 +132,8 @@ export async function callClaudeForPdfExtraction(
       },
     ],
   });
+
+  const message = await stream.finalMessage();
 
   // Extract JSON from the response
   const textBlock = message.content.find((block) => block.type === "text");

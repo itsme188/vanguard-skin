@@ -10,7 +10,8 @@ export function detectSourceType(content: string, filename: string): SourceType 
   const firstLine = lines[0] ?? "";
 
   // IBKR activity: starts with "Statement,Header,Field Name,Field Value"
-  if (firstLine.startsWith("Statement,Header,Field Name,Field Value")) {
+  // Some newer IBKR exports have an account ID line before the header
+  if (lines.some((l) => l.startsWith("Statement,Header,Field Name,Field Value"))) {
     return "ibkr-activity";
   }
 

@@ -3,10 +3,10 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { computeDailyValuations } from "@/lib/compute/daily-valuation";
 
-function seedSecurity(db: Database.Database, symbol: string): number {
+function seedSecurity(db: Database.Database, symbol: string, securityType?: string): number {
   const result = db
-    .prepare("INSERT INTO securities (symbol, name) VALUES (?, ?)")
-    .run(symbol, symbol + " Corp");
+    .prepare("INSERT INTO securities (symbol, name, security_type) VALUES (?, ?, ?)")
+    .run(symbol, symbol + " Corp", securityType ?? null);
   return result.lastInsertRowid as number;
 }
 
@@ -161,6 +161,41 @@ describe("daily valuation computation", () => {
     expect(vals).toHaveLength(2);
     // Feb uses Jan holdings (10 shares) with Feb price
     expect(vals[1].holdings_value).toBe(1600);
+  });
+
+  it("correctly values bonds at par-adjusted price", () => {
+    const bond = seedSecurity(db, "TBILL", "bond");
+    // 10000 face value, price 98.5 (% of par)
+    seedHolding(db, ACCOUNT_ID, bond, 10000, "2025-01-31");
+    seedPrice(db, bond, "2025-01-31", 98.5);
+
+    computeDailyValuations(db);
+
+    const vals = db
+      .prepare("SELECT * FROM daily_valuations WHERE account_id = ?")
+      .all(ACCOUNT_ID) as any[];
+    expect(vals).toHaveLength(1);
+    // Bond: 10000 * 98.5 / 100 = 9850
+    expect(vals[0].holdings_value).toBe(9850);
+  });
+
+  it("handles mixed bond and equity holdings", () => {
+    const stock = seedSecurity(db, "AAPL");
+    const bond = seedSecurity(db, "TBILL", "bond");
+
+    seedHolding(db, ACCOUNT_ID, stock, 10, "2025-01-31");
+    seedHolding(db, ACCOUNT_ID, bond, 10000, "2025-01-31");
+    seedPrice(db, stock, "2025-01-31", 150);
+    seedPrice(db, bond, "2025-01-31", 98.5);
+
+    computeDailyValuations(db);
+
+    const vals = db
+      .prepare("SELECT * FROM daily_valuations WHERE account_id = ?")
+      .all(ACCOUNT_ID) as any[];
+    expect(vals).toHaveLength(1);
+    // Stock: 10 * 150 = 1500, Bond: 10000 * 98.5 / 100 = 9850
+    expect(vals[0].holdings_value).toBe(11350);
   });
 
   it("returns summary statistics", () => {
