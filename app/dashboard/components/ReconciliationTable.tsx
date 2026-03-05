@@ -34,6 +34,7 @@ export function ReconciliationTable({
     notes: "",
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -61,12 +62,25 @@ export function ReconciliationTable({
   }
 
   async function handleDelete(id: number) {
-    await fetch(`/api/reconciliation?id=${id}`, { method: "DELETE" });
-    router.refresh();
+    if (!confirm("Remove this checkpoint?")) return;
+    try {
+      const res = await fetch(`/api/reconciliation?id=${id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Failed to delete checkpoint");
+      setError(null);
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete");
+    }
   }
 
   return (
     <div className="space-y-4">
+      {error && (
+        <div className="rounded-lg bg-down-tint border border-down/30 px-4 py-2 text-sm text-down flex items-center justify-between">
+          <span>{error}</span>
+          <button onClick={() => setError(null)} className="text-down hover:text-ink transition-colors ml-2">&times;</button>
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-medium text-ink-dim">Checkpoints</h3>
         <button
