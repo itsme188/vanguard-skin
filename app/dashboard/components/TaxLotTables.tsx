@@ -102,7 +102,13 @@ export function OpenLotsTable({ lots }: { lots: TaxLotWithSecurity[] }) {
 
 export function ClosedSalesTable({ sales }: { sales: TaxLotSaleWithDetails[] }) {
   if (sales.length === 0) {
-    return null;
+    return (
+      <div className="rounded-xl border border-dashed border-edge bg-panel/50 p-8 text-center">
+        <p className="text-ink-faint text-sm">
+          No closed sales yet. Sales will appear here when you sell positions.
+        </p>
+      </div>
+    );
   }
 
   return (
