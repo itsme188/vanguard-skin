@@ -30,8 +30,13 @@ export function ImportHistory({ batches }: { batches: ImportBatch[] }) {
 
   if (batches.length === 0) {
     return (
-      <div className="text-center py-8">
-        <p className="text-ink-faint text-sm">No imports yet</p>
+      <div>
+        <h3 className="text-sm font-medium text-ink-dim mb-3">Import History</h3>
+        <div className="rounded-xl border border-dashed border-edge bg-panel/50 p-8 text-center">
+          <p className="text-ink-faint text-sm">
+            No imports yet. Drop files above to get started.
+          </p>
+        </div>
       </div>
     );
   }
