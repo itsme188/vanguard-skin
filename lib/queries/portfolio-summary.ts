@@ -1,4 +1,6 @@
 import type Database from "better-sqlite3";
+import { bondAdjustedMarketValueSQL } from "@/lib/valuation";
+import { formatUSD, formatNumber } from "@/lib/format";
 
 interface AccountValue {
   name: string;
@@ -43,20 +45,25 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
   // Top holdings with market values
   const topHoldings = db
     .prepare(
-      `SELECT a.name AS account_name, s.symbol, s.name AS security_name,
+      `WITH latest_prices AS (
+        SELECT p.security_id, p.close_price
+        FROM prices p
+        INNER JOIN (
+          SELECT security_id, MAX(date) AS max_date
+          FROM prices GROUP BY security_id
+        ) lp ON p.security_id = lp.security_id AND p.date = lp.max_date
+      )
+      SELECT a.name AS account_name, s.symbol, s.name AS security_name,
               s.security_type, h.quantity, h.as_of_date,
-              (SELECT p.close_price FROM prices p WHERE p.security_id = h.security_id ORDER BY p.date DESC LIMIT 1) AS latest_price,
-              CASE WHEN s.security_type = 'bond'
-                THEN h.quantity * COALESCE(
-                  (SELECT p.close_price FROM prices p WHERE p.security_id = h.security_id ORDER BY p.date DESC LIMIT 1),
-                  0) / 100.0
-                ELSE h.quantity * COALESCE(
-                  (SELECT p.close_price FROM prices p WHERE p.security_id = h.security_id ORDER BY p.date DESC LIMIT 1),
-                  0)
+              lp.close_price AS latest_price,
+              CASE WHEN lp.close_price IS NOT NULL
+                THEN ${bondAdjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type")}
+                ELSE NULL
               END AS market_value
        FROM holdings h
        JOIN accounts a ON a.id = h.account_id
        JOIN securities s ON s.id = h.security_id
+       LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
        WHERE h.as_of_date = (
          SELECT MAX(h2.as_of_date) FROM holdings h2
          WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id
@@ -107,7 +114,7 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
   lines.push("### Account Values");
   for (const av of accountValues) {
     if (av.latest_value !== null) {
-      lines.push(`- ${av.name}: $${av.latest_value.toLocaleString()} (as of ${av.latest_date})`);
+      lines.push(`- ${av.name}: ${formatUSD(av.latest_value)} (as of ${av.latest_date})`);
     } else {
       lines.push(`- ${av.name}: No data yet`);
     }
@@ -115,7 +122,7 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
 
   const totalValue = accountValues.reduce((sum, a) => sum + (a.latest_value ?? 0), 0);
   if (totalValue > 0) {
-    lines.push(`- **Total Portfolio**: $${totalValue.toLocaleString()}`);
+    lines.push(`- **Total Portfolio**: ${formatUSD(totalValue)}`);
   }
 
   // Holdings
@@ -123,10 +130,10 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
     lines.push("\n### Top Holdings");
     for (const h of topHoldings) {
       const unit = h.security_type === "bond" ? "face value" : "shares";
-      const value = h.market_value ? ` — market value $${h.market_value.toLocaleString()}` : "";
-      const price = h.latest_price ? ` @ $${h.latest_price}` : "";
+      const value = h.market_value != null ? ` — market value ${formatUSD(h.market_value)}` : "";
+      const price = h.latest_price != null ? ` @ $${h.latest_price}` : " (no price data)";
       lines.push(
-        `- ${h.symbol} (${h.account_name}): ${h.quantity.toLocaleString()} ${unit}${price}${value}${h.security_name ? ` — ${h.security_name}` : ""}`
+        `- ${h.symbol} (${h.account_name}): ${formatNumber(h.quantity)} ${unit}${price}${value}${h.security_name ? ` — ${h.security_name}` : ""}`
       );
     }
   }
@@ -134,8 +141,8 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
   // Tax summary
   if (taxSummary.open_lots > 0 || realizedGains.total !== 0) {
     lines.push("\n### Tax Lot Summary");
-    lines.push(`- Open lots: ${taxSummary.open_lots} (cost basis: $${taxSummary.total_cost_basis.toLocaleString()})`);
-    lines.push(`- Realized gains: $${realizedGains.total.toLocaleString()} (LT: $${realizedGains.long_term.toLocaleString()}, ST: $${realizedGains.short_term.toLocaleString()})`);
+    lines.push(`- Open lots: ${taxSummary.open_lots} (cost basis: ${formatUSD(taxSummary.total_cost_basis)})`);
+    lines.push(`- Realized gains: ${formatUSD(realizedGains.total)} (LT: ${formatUSD(realizedGains.long_term)}, ST: ${formatUSD(realizedGains.short_term)})`);
   }
 
   // Recent transactions
@@ -143,9 +150,53 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
     lines.push("\n### Recent Transactions");
     for (const t of recentTxns) {
       const sym = t.symbol ?? "CASH";
-      const amt = t.amount !== null ? ` $${Math.abs(t.amount).toLocaleString()}` : "";
+      const amt = t.amount !== null ? ` ${formatUSD(Math.abs(t.amount))}` : "";
       const qty = t.quantity !== null ? ` ${t.quantity} shares` : "";
       lines.push(`- ${t.trade_date} | ${t.account_name} | ${t.type} ${sym}${qty}${amt}`);
+    }
+  }
+
+  // Data quality warnings
+  const warnings: string[] = [];
+
+  const holdingsWithoutPrices = topHoldings.filter((h) => h.latest_price == null);
+  if (holdingsWithoutPrices.length > 0) {
+    const syms = holdingsWithoutPrices.map((h) => h.symbol).join(", ");
+    warnings.push(
+      `${holdingsWithoutPrices.length} holding(s) have no price data and are excluded from market values: ${syms}`
+    );
+  }
+
+  const latestPriceDate = db
+    .prepare("SELECT MAX(date) AS max_date FROM prices")
+    .get() as { max_date: string | null };
+  if (latestPriceDate?.max_date) {
+    const priceAge = Math.floor(
+      (Date.now() - new Date(latestPriceDate.max_date + "T00:00:00Z").getTime()) /
+        (1000 * 60 * 60 * 24)
+    );
+    if (priceAge > 45) {
+      warnings.push(`Price data may be stale — most recent price is from ${latestPriceDate.max_date} (${priceAge} days ago)`);
+    }
+  }
+
+  const latestSnapshotDate = db
+    .prepare("SELECT MAX(month_end_date) AS max_date FROM monthly_snapshots")
+    .get() as { max_date: string | null };
+  if (latestSnapshotDate?.max_date) {
+    const snapAge = Math.floor(
+      (Date.now() - new Date(latestSnapshotDate.max_date + "T00:00:00Z").getTime()) /
+        (1000 * 60 * 60 * 24)
+    );
+    if (snapAge > 45) {
+      warnings.push(`Account values may be stale — most recent snapshot is from ${latestSnapshotDate.max_date} (${snapAge} days ago)`);
+    }
+  }
+
+  if (warnings.length > 0) {
+    lines.push("\n### Data Quality Notes");
+    for (const w of warnings) {
+      lines.push(`- ${w}`);
     }
   }
 
