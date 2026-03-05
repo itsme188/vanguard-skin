@@ -57,7 +57,7 @@ describe("vanguard PDF parser", () => {
     });
 
     it("parses dividend transactions", () => {
-      const dividends = result.transactions.filter((t) => t.type === "dividend");
+      const dividends = result.transactions.filter((t) => t.type === "DIVIDEND");
       expect(dividends.length).toBe(3);
 
       const vnqDiv = dividends.find((t) => t.symbol === "VNQ");
@@ -67,7 +67,7 @@ describe("vanguard PDF parser", () => {
     });
 
     it("parses buy transactions", () => {
-      const buys = result.transactions.filter((t) => t.type === "buy");
+      const buys = result.transactions.filter((t) => t.type === "BUY");
       expect(buys.length).toBe(2);
 
       const pltrBuy = buys.find((t) => t.symbol === "PLTR");
@@ -80,14 +80,14 @@ describe("vanguard PDF parser", () => {
 
     it("parses reinvestment transactions", () => {
       const reinvestments = result.transactions.filter(
-        (t) => t.type === "reinvestment"
+        (t) => t.type === "REINVESTMENT"
       );
       expect(reinvestments.length).toBe(3);
     });
 
     it("parses foreign tax withheld", () => {
       const taxWithheld = result.transactions.filter(
-        (t) => t.type === "tax_withheld"
+        (t) => t.type === "TAX_WITHHELD"
       );
       expect(taxWithheld.length).toBe(1);
       expect(taxWithheld[0].amount).toBe(-2.81);
@@ -113,7 +113,7 @@ describe("vanguard PDF parser", () => {
 
     it("generates deterministic source keys for transactions", () => {
       const pltrBuy = result.transactions.find(
-        (t) => t.symbol === "PLTR" && t.type === "buy"
+        (t) => t.symbol === "PLTR" && t.type === "BUY"
       );
       expect(pltrBuy!.sourceKey).toBe(
         "vanguard-pdf:txn:Vanguard Roth IRA:2025-01-14:PLTR:buy:-712.5"

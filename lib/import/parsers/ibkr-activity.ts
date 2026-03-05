@@ -77,6 +77,52 @@ function parseDatetime(dt: string): string {
   return match ? match[1] : dt;
 }
 
+/**
+ * Parse an IBKR option symbol/description into its components.
+ * IBKR formats: "AAPL 21MAR25 150.0 C" or "SPY 17JAN25 580 P"
+ * Also handles longer descriptions like "APPLOVIN CORP 21MAR25 135.0 C"
+ */
+export function parseIBKROptionSymbol(description: string): {
+  underlying: string;
+  strike: number;
+  expiry: string;
+  optionType: "CALL" | "PUT";
+  occSymbol: string;
+} | null {
+  // Match pattern: <underlying> <DDMMMYY> <strike> <C|P>
+  const match = description.match(
+    /^(.+?)\s+(\d{2})([A-Z]{3})(\d{2})\s+([\d.]+)\s+([CP])\s*$/
+  );
+  if (!match) return null;
+
+  const [, rawUnderlying, day, monthStr, year, strikeStr, cpFlag] = match;
+
+  // The underlying might be a full name like "APPLOVIN CORP" — take just the first word
+  // unless the symbol column has the real ticker. We'll use the full string for now
+  // and let the caller override with the actual symbol column.
+  const underlying = rawUnderlying.trim();
+
+  const monthMap: Record<string, string> = {
+    JAN: "01", FEB: "02", MAR: "03", APR: "04", MAY: "05", JUN: "06",
+    JUL: "07", AUG: "08", SEP: "09", OCT: "10", NOV: "11", DEC: "12",
+  };
+  const month = monthMap[monthStr];
+  if (!month) return null;
+
+  const fullYear = `20${year}`;
+  const expiry = `${fullYear}-${month}-${day}`;
+  const strike = parseFloat(strikeStr);
+  const optionType = cpFlag === "C" ? "CALL" as const : "PUT" as const;
+
+  // Build OCC-style symbol: AAPL  250321C00150000
+  const paddedUnderlying = underlying.slice(0, 6).padEnd(6, " ");
+  const occDate = `${year}${month}${day}`;
+  const occStrike = Math.round(strike * 1000).toString().padStart(8, "0");
+  const occSymbol = `${paddedUnderlying}${occDate}${cpFlag}${occStrike}`;
+
+  return { underlying, strike, expiry, optionType, occSymbol };
+}
+
 export function parseIbkrActivity(
   content: string,
   filename: string
@@ -167,22 +213,52 @@ export function parseIbkrActivity(
       if (isNaN(quantity) || !symbol) continue;
 
       const isBuy = quantity > 0;
-      transactions.push({
-        accountName: "IBKR",
-        tradeDate,
-        type: isBuy ? "BUY" : "SELL",
-        symbol,
-        quantity: Math.abs(quantity),
-        amount: proceeds,
-        pricePerShare: tradePrice,
-        fees: Math.abs(commFee),
-        sourceKey: `ibkr:trade:${tradeDate}:${symbol}:${quantity}:${proceeds}`,
-      });
 
-      securitiesMap.set(symbol, {
-        symbol,
-        securityType: assetCategory === "Stocks" ? "Stock" : assetCategory,
-      });
+      if (assetCategory === "Options") {
+        // Parse option symbol to extract metadata
+        const optionInfo = parseIBKROptionSymbol(symbol);
+        const effectiveSymbol = optionInfo?.occSymbol ?? symbol;
+
+        transactions.push({
+          accountName: "IBKR",
+          tradeDate,
+          type: isBuy ? "BUY_TO_OPEN" : "SELL_TO_CLOSE",
+          symbol: effectiveSymbol,
+          quantity: Math.abs(quantity),
+          amount: proceeds,
+          pricePerShare: tradePrice,
+          fees: Math.abs(commFee),
+          sourceKey: `ibkr:trade:${tradeDate}:${effectiveSymbol}:${quantity}:${proceeds}`,
+        });
+
+        securitiesMap.set(effectiveSymbol, {
+          symbol: effectiveSymbol,
+          name: symbol,
+          securityType: "option",
+          underlyingSymbol: optionInfo?.underlying,
+          strikePrice: optionInfo?.strike,
+          expirationDate: optionInfo?.expiry,
+          optionType: optionInfo?.optionType,
+          multiplier: 100,
+        });
+      } else {
+        transactions.push({
+          accountName: "IBKR",
+          tradeDate,
+          type: isBuy ? "BUY" : "SELL",
+          symbol,
+          quantity: Math.abs(quantity),
+          amount: proceeds,
+          pricePerShare: tradePrice,
+          fees: Math.abs(commFee),
+          sourceKey: `ibkr:trade:${tradeDate}:${symbol}:${quantity}:${proceeds}`,
+        });
+
+        securitiesMap.set(symbol, {
+          symbol,
+          securityType: assetCategory === "Stocks" ? "Stock" : assetCategory,
+        });
+      }
     }
   }
 

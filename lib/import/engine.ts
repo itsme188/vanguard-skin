@@ -95,13 +95,17 @@ export function commitImport(
           .get(sec.symbol) as { c: number }
       ).c;
 
-      const secId = upsertSecurity(
-        db,
-        sec.symbol,
-        sec.name,
-        sec.securityType,
-        sec.assetClass
-      );
+      const secId = upsertSecurity(db, {
+        symbol: sec.symbol,
+        name: sec.name,
+        securityType: sec.securityType,
+        assetClass: sec.assetClass,
+        underlyingSymbol: sec.underlyingSymbol,
+        strikePrice: sec.strikePrice,
+        expirationDate: sec.expirationDate,
+        optionType: sec.optionType,
+        multiplier: sec.multiplier,
+      });
       securityIdMap.set(sec.symbol, secId);
 
       if (existingCount === 0) newSecurities++;
@@ -144,12 +148,13 @@ export function commitImport(
     for (const txn of parsed.transactions) {
       const accountId = getAccountId(txn.accountName);
       const securityId = txn.symbol ? getSecurityId(txn.symbol) : null;
+      const txnTypeLower = txn.type.toLowerCase();
       const isExternal =
         txn.isExternalFlow ||
-        txn.type === "transfer_in" ||
-        txn.type === "transfer_out" ||
-        txn.type === "deposit" ||
-        txn.type === "withdrawal"
+        txnTypeLower === "transfer_in" ||
+        txnTypeLower === "transfer_out" ||
+        txnTypeLower === "deposit" ||
+        txnTypeLower === "withdrawal"
           ? 1
           : 0;
 

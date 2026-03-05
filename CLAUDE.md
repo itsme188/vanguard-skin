@@ -62,6 +62,11 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - Monthly snapshots always use last-day-of-month dates
 - Every imported record gets a deterministic `source_key` — re-import is a no-op
 - Every import creates an `import_batches` record with undo capability
+- Transaction types are UPPERCASE: BUY, SELL, DIVIDEND, REINVESTMENT, TAX_WITHHELD, BUY_TO_OPEN, SELL_TO_CLOSE, etc.
+- `computeTaxLots` matches on uppercase BUY/SELL — parsers must output uppercase
+- Market values use `adjustedMarketValueSQL()` from `lib/valuation.ts` — handles bonds (÷100) and options (×multiplier)
+- Always use `COALESCE(s.multiplier, 1)` in queries — SQLite DEFAULT is bypassed by explicit INSERT NULL
+- Bond unrealized gain: apply par-adjustment to BOTH current value AND cost basis
 
 ## API Pattern
 
@@ -77,6 +82,10 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - NEVER nest worktrees inside the repo
 - Commit and push at every milestone
 - Commit before doing build/rebuild cycles
+
+## Shell Gotchas
+
+- `gh pr create --body` with backticks causes shell errors — use `--body-file /tmp/file.md` instead
 
 ## Testing
 
