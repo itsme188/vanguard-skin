@@ -10,7 +10,10 @@ interface TopHolding {
   account_name: string;
   symbol: string;
   security_name: string | null;
+  security_type: string | null;
   quantity: number;
+  latest_price: number | null;
+  market_value: number | null;
   as_of_date: string;
 }
 
@@ -37,11 +40,20 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
     )
     .all() as AccountValue[];
 
-  // Top holdings
+  // Top holdings with market values
   const topHoldings = db
     .prepare(
       `SELECT a.name AS account_name, s.symbol, s.name AS security_name,
-              h.quantity, h.as_of_date
+              s.security_type, h.quantity, h.as_of_date,
+              (SELECT p.close_price FROM prices p WHERE p.security_id = h.security_id ORDER BY p.date DESC LIMIT 1) AS latest_price,
+              CASE WHEN s.security_type = 'bond'
+                THEN h.quantity * COALESCE(
+                  (SELECT p.close_price FROM prices p WHERE p.security_id = h.security_id ORDER BY p.date DESC LIMIT 1),
+                  0) / 100.0
+                ELSE h.quantity * COALESCE(
+                  (SELECT p.close_price FROM prices p WHERE p.security_id = h.security_id ORDER BY p.date DESC LIMIT 1),
+                  0)
+              END AS market_value
        FROM holdings h
        JOIN accounts a ON a.id = h.account_id
        JOIN securities s ON s.id = h.security_id
@@ -49,11 +61,8 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
          SELECT MAX(h2.as_of_date) FROM holdings h2
          WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id
        )
-       ORDER BY h.quantity * COALESCE(
-         (SELECT p.close_price FROM prices p WHERE p.security_id = h.security_id ORDER BY p.date DESC LIMIT 1),
-         0
-       ) DESC
-       LIMIT 15`
+       ORDER BY market_value DESC
+       LIMIT 25`
     )
     .all() as TopHolding[];
 
@@ -113,8 +122,11 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
   if (topHoldings.length > 0) {
     lines.push("\n### Top Holdings");
     for (const h of topHoldings) {
+      const unit = h.security_type === "bond" ? "face value" : "shares";
+      const value = h.market_value ? ` — market value $${h.market_value.toLocaleString()}` : "";
+      const price = h.latest_price ? ` @ $${h.latest_price}` : "";
       lines.push(
-        `- ${h.symbol} (${h.account_name}): ${h.quantity} shares${h.security_name ? ` — ${h.security_name}` : ""}`
+        `- ${h.symbol} (${h.account_name}): ${h.quantity.toLocaleString()} ${unit}${price}${value}${h.security_name ? ` — ${h.security_name}` : ""}`
       );
     }
   }
