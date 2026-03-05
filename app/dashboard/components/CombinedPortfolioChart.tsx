@@ -45,7 +45,7 @@ export function CombinedPortfolioChart({
       <h3 className="text-sm font-medium text-ink-dim mb-4">
         Portfolio Over Time
       </h3>
-      <div className="h-[320px]">
+      <div className="h-[240px] sm:h-[280px] md:h-[320px]">
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart
             data={data}

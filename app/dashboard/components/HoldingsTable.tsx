@@ -35,7 +35,7 @@ export function HoldingsTable({
   return (
     <div>
       <h3 className="text-sm font-medium text-ink-dim mb-3">Holdings</h3>
-      <div className="rounded-xl border border-edge overflow-hidden">
+      <div className="rounded-xl border border-edge overflow-hidden overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-edge bg-panel">
