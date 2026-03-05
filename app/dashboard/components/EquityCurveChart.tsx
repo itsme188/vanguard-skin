@@ -55,7 +55,7 @@ export function EquityCurveChart({
   return (
     <div className="rounded-xl border border-edge bg-panel p-5">
       <h3 className="text-sm font-medium text-ink-dim mb-4">Equity Curve</h3>
-      <div className="h-[280px]">
+      <div className="h-[220px] sm:h-[250px] md:h-[280px]">
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart
             data={data}

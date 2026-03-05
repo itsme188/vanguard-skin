@@ -54,7 +54,7 @@ export function ImportHistory({ batches }: { batches: ImportBatch[] }) {
   return (
     <div>
       <h3 className="text-sm font-medium text-ink-dim mb-3">Import History</h3>
-      <div className="rounded-xl border border-edge overflow-hidden">
+      <div className="rounded-xl border border-edge overflow-hidden overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-edge bg-panel">
@@ -97,25 +97,12 @@ export function ImportHistory({ batches }: { batches: ImportBatch[] }) {
                   <button
                     onClick={() => handleUndo(batch.id)}
                     disabled={undoingId === batch.id}
-                    className="text-ink-faint hover:text-down transition-colors disabled:opacity-50"
-                    title="Undo import"
+                    className="text-xs text-ink-faint hover:text-down transition-colors disabled:opacity-50"
                   >
                     {undoingId === batch.id ? (
                       <div className="w-4 h-4 border-2 border-ink-faint border-t-transparent rounded-full animate-spin" />
                     ) : (
-                      <svg
-                        className="w-4 h-4"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                        strokeWidth={2}
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3"
-                        />
-                      </svg>
+                      "Undo"
                     )}
                   </button>
                 </td>

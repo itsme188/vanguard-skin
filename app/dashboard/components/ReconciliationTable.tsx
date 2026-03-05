@@ -165,7 +165,7 @@ export function ReconciliationTable({
       )}
 
       {checkpoints.length > 0 ? (
-        <div className="rounded-xl border border-edge overflow-hidden">
+        <div className="rounded-xl border border-edge overflow-hidden overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-edge bg-panel">
