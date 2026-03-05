@@ -138,11 +138,19 @@ export async function callClaudeForPdfExtraction(
     throw new Error("No text response from Claude API");
   }
 
+  // Strip markdown code fences if Claude wrapped the JSON
+  let jsonText = textBlock.text.trim();
+  if (jsonText.startsWith("```")) {
+    jsonText = jsonText
+      .replace(/^```(?:json)?\s*\n?/, "")
+      .replace(/\n?```\s*$/, "");
+  }
+
   try {
-    return JSON.parse(textBlock.text) as ClaudePdfResponse;
+    return JSON.parse(jsonText) as ClaudePdfResponse;
   } catch {
     throw new Error(
-      `Failed to parse Claude response as JSON: ${textBlock.text.slice(0, 200)}`
+      `Failed to parse Claude response as JSON: ${jsonText.slice(0, 200)}`
     );
   }
 }
