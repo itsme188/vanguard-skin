@@ -42,10 +42,20 @@ export function EquityCurveChart({
 
   const color = ACCOUNT_COLORS[accountName] ?? "#C9A44E";
 
+  if (data.length === 0) {
+    return (
+      <div className="rounded-xl border border-dashed border-edge bg-panel/50 p-8 text-center">
+        <p className="text-ink-faint text-sm">
+          No snapshot data for this account yet. Import monthly statements to see the equity curve.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="rounded-xl border border-edge bg-panel p-5">
       <h3 className="text-sm font-medium text-ink-dim mb-4">Equity Curve</h3>
-      <div className="h-[280px]">
+      <div className="h-[220px] sm:h-[250px] md:h-[280px]">
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart
             data={data}
