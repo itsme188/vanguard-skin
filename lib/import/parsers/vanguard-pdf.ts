@@ -302,7 +302,7 @@ export function parseClaudePdfResponse(
       amount: t.amount,
       pricePerShare: t.price ?? undefined,
       fees: t.commissions ?? undefined,
-      sourceKey: `vanguard-pdf:txn:${accountName}:${tradeDate}:${t.symbol ?? "cash"}:${txnType}:${t.amount}`,
+      sourceKey: `vanguard-pdf:txn:${accountName}:${tradeDate}:${t.symbol ?? "cash"}:${txnType.toLowerCase()}:${t.amount}`,
     });
 
     // Register securities from transactions too (including option metadata)

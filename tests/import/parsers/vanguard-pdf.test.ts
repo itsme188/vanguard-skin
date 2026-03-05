@@ -116,7 +116,7 @@ describe("vanguard PDF parser", () => {
         (t) => t.symbol === "PLTR" && t.type === "BUY"
       );
       expect(pltrBuy!.sourceKey).toBe(
-        "vanguard-pdf:txn:Vanguard Roth IRA:2025-01-14:PLTR:BUY:-712.5"
+        "vanguard-pdf:txn:Vanguard Roth IRA:2025-01-14:PLTR:buy:-712.5"
       );
     });
 
