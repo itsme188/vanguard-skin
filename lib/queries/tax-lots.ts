@@ -87,13 +87,7 @@ export function getClosedTaxLotSales(
   db: Database.Database,
   year?: number
 ): TaxLotSaleWithDetails[] {
-  const yearFilter = year
-    ? `WHERE tls.sale_date >= '${year}-01-01' AND tls.sale_date <= '${year}-12-31'`
-    : "";
-
-  return db
-    .prepare(
-      `SELECT
+  const baseSql = `SELECT
         tls.id, a.name AS account_name, tl.account_id,
         s.symbol, s.name AS security_name,
         tl.acquisition_date, tls.sale_date,
@@ -104,10 +98,15 @@ export function getClosedTaxLotSales(
       FROM tax_lot_sales tls
       JOIN tax_lots tl ON tl.id = tls.tax_lot_id
       JOIN accounts a ON a.id = tl.account_id
-      JOIN securities s ON s.id = tl.security_id
-      ${yearFilter}
-      ORDER BY tls.sale_date DESC, s.symbol`
-    )
+      JOIN securities s ON s.id = tl.security_id`;
+
+  if (year) {
+    return db
+      .prepare(`${baseSql} WHERE tls.sale_date >= ? AND tls.sale_date <= ? ORDER BY tls.sale_date DESC, s.symbol`)
+      .all(`${year}-01-01`, `${year}-12-31`) as TaxLotSaleWithDetails[];
+  }
+  return db
+    .prepare(`${baseSql} ORDER BY tls.sale_date DESC, s.symbol`)
     .all() as TaxLotSaleWithDetails[];
 }
 
@@ -133,21 +132,17 @@ export function getTaxLotSummary(
     )
     .get() as { totalOpenLots: number; totalUnrealizedGain: number };
 
-  const yearFilter = year
-    ? `WHERE sale_date >= '${year}-01-01' AND sale_date <= '${year}-12-31'`
-    : "";
-
-  const closedSales = db
-    .prepare(
-      `SELECT
+  const closedSalesSql = `SELECT
         COUNT(*) AS totalClosedSales,
         COALESCE(SUM(realized_gain_loss), 0) AS totalRealizedGain,
         COALESCE(SUM(CASE WHEN is_long_term = 1 THEN realized_gain_loss ELSE 0 END), 0) AS longTermGain,
         COALESCE(SUM(CASE WHEN is_long_term = 0 THEN realized_gain_loss ELSE 0 END), 0) AS shortTermGain
-      FROM tax_lot_sales
-      ${yearFilter}`
-    )
-    .get() as {
+      FROM tax_lot_sales`;
+
+  const closedSales = (year
+    ? db.prepare(`${closedSalesSql} WHERE sale_date >= ? AND sale_date <= ?`).get(`${year}-01-01`, `${year}-12-31`)
+    : db.prepare(closedSalesSql).get()
+  ) as {
       totalClosedSales: number;
       totalRealizedGain: number;
       longTermGain: number;
@@ -180,11 +175,11 @@ export function getTaxLotSummaryByAccount(
       FROM tax_lot_sales tls
       JOIN tax_lots tl ON tl.id = tls.tax_lot_id
       JOIN accounts a ON a.id = tl.account_id
-      WHERE tls.sale_date >= '${year}-01-01' AND tls.sale_date <= '${year}-12-31'
+      WHERE tls.sale_date >= ? AND tls.sale_date <= ?
       GROUP BY tl.account_id
       ORDER BY a.name`
     )
-    .all() as AccountTaxSummary[];
+    .all(`${year}-01-01`, `${year}-12-31`) as AccountTaxSummary[];
 }
 
 export function getTaxLotAccountNames(db: Database.Database): string[] {
