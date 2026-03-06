@@ -10,11 +10,12 @@ function formatCurrency(value: number | null): string {
 }
 
 function formatQuantity(value: number): string {
-  if (Number.isInteger(value)) return value.toLocaleString();
-  return value.toLocaleString(undefined, {
+  if (Number.isInteger(value))
+    return new Intl.NumberFormat("en-US").format(value);
+  return new Intl.NumberFormat("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 4,
-  });
+  }).format(value);
 }
 
 function GainCell({ value }: { value: number | null }) {
