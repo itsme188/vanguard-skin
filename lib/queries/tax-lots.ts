@@ -22,6 +22,7 @@ export interface TaxLotWithSecurity {
 export interface TaxLotSaleWithDetails {
   id: number;
   account_name: string;
+  account_id: number;
   symbol: string;
   security_name: string | null;
   acquisition_date: string;
@@ -40,6 +41,15 @@ export interface TaxLotSummary {
   totalOpenLots: number;
   totalClosedSales: number;
   totalUnrealizedGain: number;
+  totalRealizedGain: number;
+  longTermGain: number;
+  shortTermGain: number;
+}
+
+export interface AccountTaxSummary {
+  account_id: number;
+  account_name: string;
+  totalClosedSales: number;
   totalRealizedGain: number;
   longTermGain: number;
   shortTermGain: number;
@@ -73,11 +83,18 @@ export function getOpenTaxLots(db: Database.Database): TaxLotWithSecurity[] {
     .all() as TaxLotWithSecurity[];
 }
 
-export function getClosedTaxLotSales(db: Database.Database): TaxLotSaleWithDetails[] {
+export function getClosedTaxLotSales(
+  db: Database.Database,
+  year?: number
+): TaxLotSaleWithDetails[] {
+  const yearFilter = year
+    ? `WHERE tls.sale_date >= '${year}-01-01' AND tls.sale_date <= '${year}-12-31'`
+    : "";
+
   return db
     .prepare(
       `SELECT
-        tls.id, a.name AS account_name,
+        tls.id, a.name AS account_name, tl.account_id,
         s.symbol, s.name AS security_name,
         tl.acquisition_date, tls.sale_date,
         tls.quantity_sold, tl.acquisition_price,
@@ -88,12 +105,16 @@ export function getClosedTaxLotSales(db: Database.Database): TaxLotSaleWithDetai
       JOIN tax_lots tl ON tl.id = tls.tax_lot_id
       JOIN accounts a ON a.id = tl.account_id
       JOIN securities s ON s.id = tl.security_id
+      ${yearFilter}
       ORDER BY tls.sale_date DESC, s.symbol`
     )
     .all() as TaxLotSaleWithDetails[];
 }
 
-export function getTaxLotSummary(db: Database.Database): TaxLotSummary {
+export function getTaxLotSummary(
+  db: Database.Database,
+  year?: number
+): TaxLotSummary {
   const openLots = db
     .prepare(
       `SELECT
@@ -112,6 +133,10 @@ export function getTaxLotSummary(db: Database.Database): TaxLotSummary {
     )
     .get() as { totalOpenLots: number; totalUnrealizedGain: number };
 
+  const yearFilter = year
+    ? `WHERE sale_date >= '${year}-01-01' AND sale_date <= '${year}-12-31'`
+    : "";
+
   const closedSales = db
     .prepare(
       `SELECT
@@ -119,7 +144,8 @@ export function getTaxLotSummary(db: Database.Database): TaxLotSummary {
         COALESCE(SUM(realized_gain_loss), 0) AS totalRealizedGain,
         COALESCE(SUM(CASE WHEN is_long_term = 1 THEN realized_gain_loss ELSE 0 END), 0) AS longTermGain,
         COALESCE(SUM(CASE WHEN is_long_term = 0 THEN realized_gain_loss ELSE 0 END), 0) AS shortTermGain
-      FROM tax_lot_sales`
+      FROM tax_lot_sales
+      ${yearFilter}`
     )
     .get() as {
       totalClosedSales: number;
@@ -136,4 +162,50 @@ export function getTaxLotSummary(db: Database.Database): TaxLotSummary {
     longTermGain: closedSales.longTermGain,
     shortTermGain: closedSales.shortTermGain,
   };
+}
+
+export function getTaxLotSummaryByAccount(
+  db: Database.Database,
+  year: number
+): AccountTaxSummary[] {
+  return db
+    .prepare(
+      `SELECT
+        tl.account_id,
+        a.name AS account_name,
+        COUNT(*) AS totalClosedSales,
+        COALESCE(SUM(tls.realized_gain_loss), 0) AS totalRealizedGain,
+        COALESCE(SUM(CASE WHEN tls.is_long_term = 1 THEN tls.realized_gain_loss ELSE 0 END), 0) AS longTermGain,
+        COALESCE(SUM(CASE WHEN tls.is_long_term = 0 THEN tls.realized_gain_loss ELSE 0 END), 0) AS shortTermGain
+      FROM tax_lot_sales tls
+      JOIN tax_lots tl ON tl.id = tls.tax_lot_id
+      JOIN accounts a ON a.id = tl.account_id
+      WHERE tls.sale_date >= '${year}-01-01' AND tls.sale_date <= '${year}-12-31'
+      GROUP BY tl.account_id
+      ORDER BY a.name`
+    )
+    .all() as AccountTaxSummary[];
+}
+
+export function getTaxLotAccountNames(db: Database.Database): string[] {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT a.name
+      FROM accounts a
+      JOIN tax_lots tl ON tl.account_id = a.id
+      ORDER BY a.name`
+    )
+    .all() as { name: string }[];
+  return rows.map((r) => r.name);
+}
+
+export function getAvailableSaleYears(db: Database.Database): number[] {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT CAST(strftime('%Y', sale_date) AS INTEGER) AS year
+      FROM tax_lot_sales
+      ORDER BY year DESC`
+    )
+    .all() as { year: number }[];
+  return rows.map((r) => r.year);
 }

@@ -32,31 +32,31 @@ function GainCell({ value }: { value: number | null }) {
   );
 }
 
-export function OpenLotsTable({ lots }: { lots: TaxLotWithSecurity[] }) {
+export function OpenLotsTable({
+  lots,
+  showAccount = true,
+}: {
+  lots: TaxLotWithSecurity[];
+  showAccount?: boolean;
+}) {
   if (lots.length === 0) {
-    return (
-      <div className="rounded-xl border border-dashed border-edge bg-panel/50 p-8 text-center">
-        <p className="text-ink-faint text-sm">
-          No open tax lots. Import transactions and run the compute engine to see tax lots.
-        </p>
-      </div>
-    );
+    return null;
   }
 
   return (
     <div>
-      <h3 className="text-sm font-medium text-ink-dim mb-3">
+      <h4 className="text-xs font-medium text-ink-faint mb-2">
         Open Lots
-        <span className="ml-2 text-xs text-ink-faint font-normal">
-          ({lots.length})
-        </span>
-      </h3>
+        <span className="ml-1.5 text-ink-faint/60">({lots.length})</span>
+      </h4>
       <div className="rounded-xl border border-edge overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-edge bg-panel">
-                <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">Account</th>
+                {showAccount && (
+                  <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">Account</th>
+                )}
                 <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">Symbol</th>
                 <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">Acquired</th>
                 <th className="text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Qty</th>
@@ -72,7 +72,9 @@ export function OpenLotsTable({ lots }: { lots: TaxLotWithSecurity[] }) {
                   key={lot.id}
                   className="border-b border-edge last:border-0 hover:bg-panel/50 transition-colors"
                 >
-                  <td className="px-4 py-3 text-ink-dim text-xs">{lot.account_name}</td>
+                  {showAccount && (
+                    <td className="px-4 py-3 text-ink-dim text-xs">{lot.account_name}</td>
+                  )}
                   <td className="px-4 py-3 font-mono font-medium text-ink">{lot.symbol}</td>
                   <td className="px-4 py-3 text-ink-faint font-mono text-xs">{lot.acquisition_date}</td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
@@ -100,31 +102,31 @@ export function OpenLotsTable({ lots }: { lots: TaxLotWithSecurity[] }) {
   );
 }
 
-export function ClosedSalesTable({ sales }: { sales: TaxLotSaleWithDetails[] }) {
+export function ClosedSalesTable({
+  sales,
+  showAccount = true,
+}: {
+  sales: TaxLotSaleWithDetails[];
+  showAccount?: boolean;
+}) {
   if (sales.length === 0) {
-    return (
-      <div className="rounded-xl border border-dashed border-edge bg-panel/50 p-8 text-center">
-        <p className="text-ink-faint text-sm">
-          No closed sales yet. Sales will appear here when you sell positions.
-        </p>
-      </div>
-    );
+    return null;
   }
 
   return (
     <div>
-      <h3 className="text-sm font-medium text-ink-dim mb-3">
+      <h4 className="text-xs font-medium text-ink-faint mb-2">
         Closed Sales
-        <span className="ml-2 text-xs text-ink-faint font-normal">
-          ({sales.length})
-        </span>
-      </h3>
+        <span className="ml-1.5 text-ink-faint/60">({sales.length})</span>
+      </h4>
       <div className="rounded-xl border border-edge overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-edge bg-panel">
-                <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">Account</th>
+                {showAccount && (
+                  <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">Account</th>
+                )}
                 <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">Symbol</th>
                 <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">Sold</th>
                 <th className="text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Qty</th>
@@ -141,7 +143,9 @@ export function ClosedSalesTable({ sales }: { sales: TaxLotSaleWithDetails[] }) 
                   key={sale.id}
                   className="border-b border-edge last:border-0 hover:bg-panel/50 transition-colors"
                 >
-                  <td className="px-4 py-3 text-ink-dim text-xs">{sale.account_name}</td>
+                  {showAccount && (
+                    <td className="px-4 py-3 text-ink-dim text-xs">{sale.account_name}</td>
+                  )}
                   <td className="px-4 py-3 font-mono font-medium text-ink">{sale.symbol}</td>
                   <td className="px-4 py-3 text-ink-faint font-mono text-xs">{sale.sale_date}</td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
