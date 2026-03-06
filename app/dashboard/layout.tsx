@@ -1,4 +1,5 @@
 import { TabNav } from "./components/TabNav";
+import { TwsStatus } from "./components/TwsStatus";
 
 export default function DashboardLayout({
   children,
@@ -13,7 +14,10 @@ export default function DashboardLayout({
           <h1 className="font-serif text-xl text-gold tracking-tight">
             Vanguard Skin
           </h1>
-          <span className="text-[11px] text-ink-faint font-mono">v2.0</span>
+          <div className="flex items-center gap-4">
+            <TwsStatus />
+            <span className="text-[11px] text-ink-faint font-mono">v2.0</span>
+          </div>
         </div>
         <TabNav />
       </header>

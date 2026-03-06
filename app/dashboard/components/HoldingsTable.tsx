@@ -10,11 +10,12 @@ function formatCurrency(value: number | null): string {
 }
 
 function formatQuantity(value: number): string {
-  if (Number.isInteger(value)) return value.toLocaleString();
-  return value.toLocaleString(undefined, {
+  if (Number.isInteger(value))
+    return new Intl.NumberFormat("en-US").format(value);
+  return new Intl.NumberFormat("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 4,
-  });
+  }).format(value);
 }
 
 function formatOptionDescription(holding: HoldingWithSecurity): string {
@@ -23,11 +24,10 @@ function formatOptionDescription(holding: HoldingWithSecurity): string {
   const strike = holding.strike_price != null ? `$${holding.strike_price}` : "";
   const type = holding.option_type ?? "";
   const expiry = holding.expiration_date
-    ? new Date(holding.expiration_date + "T00:00:00").toLocaleDateString("en-US", {
-        month: "numeric",
-        day: "numeric",
-        year: "2-digit",
-      })
+    ? (() => {
+        const [y, m, d] = holding.expiration_date.split("-");
+        return `${Number(m)}/${Number(d)}/${y.slice(-2)}`;
+      })()
     : "";
   return [underlying, strike, type, expiry].filter(Boolean).join(" ");
 }
