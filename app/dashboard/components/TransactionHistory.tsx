@@ -85,9 +85,9 @@ export function TransactionHistory({
                 </td>
                 <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
                   {txn.quantity !== null
-                    ? txn.quantity.toLocaleString(undefined, {
+                    ? new Intl.NumberFormat("en-US", {
                         maximumFractionDigits: 4,
-                      })
+                      }).format(txn.quantity)
                     : "\u2014"}
                 </td>
                 <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">

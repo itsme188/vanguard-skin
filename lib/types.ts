@@ -15,6 +15,10 @@ export interface Security {
   expiration_date: string | null;
   option_type: "CALL" | "PUT" | null;
   multiplier: number;
+  sector: string | null;
+  industry: string | null;
+  exchange: string | null;
+  ib_con_id: number | null;
 }
 
 export interface Transaction {
