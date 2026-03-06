@@ -37,12 +37,15 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
     db.prepare("DELETE FROM tax_lot_sales").run();
     db.prepare("DELETE FROM tax_lots").run();
 
-    // Get all BUY transactions ordered by date
+    // Get all BUY-like transactions ordered by date
+    // Includes: BUY, buy, reinvestment (dividend reinvested as shares)
     const buys = db
       .prepare(
         `SELECT id, account_id, security_id, trade_date, type, quantity, price_per_share, amount, fees
          FROM transactions
-         WHERE type = 'BUY' AND security_id IS NOT NULL
+         WHERE LOWER(type) IN ('buy', 'reinvestment', 'buy_to_open')
+           AND security_id IS NOT NULL
+           AND price_per_share IS NOT NULL AND quantity IS NOT NULL
          ORDER BY trade_date, id`
       )
       .all() as TransactionRow[];
@@ -71,12 +74,15 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
       lotsCreated++;
     }
 
-    // Get all SELL transactions ordered by date
+    // Get all SELL-like transactions ordered by date
+    // Includes: SELL, sell, sell_to_close, redemption, buy_to_cover (closing short), expired
     const sells = db
       .prepare(
         `SELECT id, account_id, security_id, trade_date, type, quantity, price_per_share, amount, fees
          FROM transactions
-         WHERE type = 'SELL' AND security_id IS NOT NULL
+         WHERE LOWER(type) IN ('sell', 'sell_to_close', 'redemption', 'buy_to_cover', 'expired')
+           AND security_id IS NOT NULL
+           AND price_per_share IS NOT NULL AND quantity IS NOT NULL
          ORDER BY trade_date, id`
       )
       .all() as TransactionRow[];
