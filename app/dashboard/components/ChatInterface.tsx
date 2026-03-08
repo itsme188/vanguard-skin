@@ -21,7 +21,7 @@ const SUGGESTIONS = [
   "Give me a full portfolio health check",
   "Analyze my sector concentration",
   "Find tax-loss harvesting opportunities",
-  "What's my dividend income by quarter?",
+  "Which factor am I most exposed to right now?",
 ];
 
 export function ChatInterface() {
