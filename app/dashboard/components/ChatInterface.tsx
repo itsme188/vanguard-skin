@@ -7,17 +7,35 @@ interface Message {
   content: string;
 }
 
+const TOOL_LABELS: Record<string, string> = {
+  query_holdings: "Querying holdings",
+  query_price_history: "Fetching price history",
+  query_allocation: "Computing allocation",
+  query_tax_lots: "Analyzing tax lots",
+  query_transactions: "Searching transactions",
+  query_performance: "Loading performance data",
+  query_income_summary: "Summarizing income",
+};
+
+const SUGGESTIONS = [
+  "Give me a full portfolio health check",
+  "Analyze my sector concentration",
+  "Find tax-loss harvesting opportunities",
+  "What's my dividend income by quarter?",
+];
+
 export function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [toolStatus, setToolStatus] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, toolStatus]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -26,6 +44,7 @@ export function ChatInterface() {
     const userMessage = input.trim();
     setInput("");
     setError(null);
+    setToolStatus(null);
 
     const newMessages: Message[] = [
       ...messages,
@@ -80,7 +99,14 @@ export function ChatInterface() {
               setError(parsed.error);
               break;
             }
+            if (parsed.status === "analyzing" && parsed.tool) {
+              // Show tool activity indicator
+              const label = TOOL_LABELS[parsed.tool] ?? `Running ${parsed.tool}`;
+              setToolStatus(label);
+            }
             if (parsed.text) {
+              // Clear tool status when text starts flowing
+              setToolStatus(null);
               assistantContent += parsed.text;
               setMessages((prev) => {
                 const updated = [...prev];
@@ -100,6 +126,7 @@ export function ChatInterface() {
       setError("Failed to connect to chat API");
     } finally {
       setIsStreaming(false);
+      setToolStatus(null);
       inputRef.current?.focus();
     }
   }
@@ -118,19 +145,14 @@ export function ChatInterface() {
         {messages.length === 0 && (
           <div className="flex items-center justify-center h-full">
             <div className="text-center max-w-md">
-              <div className="text-3xl text-ink-faint mb-4 font-serif italic">Q&A</div>
-              <h3 className="text-ink font-medium mb-2">Portfolio Chat</h3>
+              <div className="text-3xl text-ink-faint mb-4 font-serif italic">Analyst</div>
+              <h3 className="text-ink font-medium mb-2">Portfolio Analyst</h3>
               <p className="text-ink-dim text-sm mb-6">
-                Ask questions about your portfolio — account values, holdings,
-                transactions, performance, tax lots, and more.
+                Ask about your portfolio — concentration risk, tax optimization,
+                performance attribution, income analysis, and more.
               </p>
               <div className="flex flex-wrap justify-center gap-2">
-                {[
-                  "What's my total portfolio value?",
-                  "Which account has the best performance?",
-                  "What are my largest holdings?",
-                  "Summarize my recent transactions",
-                ].map((suggestion) => (
+                {SUGGESTIONS.map((suggestion) => (
                   <button
                     key={suggestion}
                     onClick={() => {
@@ -172,6 +194,16 @@ export function ChatInterface() {
           </div>
         ))}
 
+        {/* Tool status indicator */}
+        {toolStatus && (
+          <div className="flex justify-start">
+            <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-panel/50 border border-edge/50 text-xs text-ink-dim">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-gold animate-pulse" />
+              {toolStatus}
+            </div>
+          </div>
+        )}
+
         {error && (
           <div className="flex justify-start">
             <div className="max-w-[80%] rounded-xl px-4 py-3 text-sm bg-down-tint border border-down/20 text-down">
@@ -191,7 +223,7 @@ export function ChatInterface() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask about your portfolio..."
+            placeholder="Ask your portfolio analyst..."
             rows={1}
             className="flex-1 rounded-xl bg-raised border border-edge px-4 py-3 text-sm text-ink placeholder:text-ink-faint resize-none focus:outline-none focus:border-gold transition-colors"
           />
@@ -204,7 +236,7 @@ export function ChatInterface() {
           </button>
         </form>
         <p className="text-[11px] text-ink-faint mt-2 text-center">
-          Powered by Claude. Analyzes your portfolio data — does not provide investment advice.
+          Powered by Claude. Analyzes portfolio data — does not provide investment advice.
         </p>
       </div>
     </div>
