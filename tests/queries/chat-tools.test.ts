@@ -1,0 +1,611 @@
+import { describe, it, expect, beforeEach } from "vitest";
+import Database from "better-sqlite3";
+import { runMigrations } from "@/lib/db/migrate";
+import {
+  getHoldingsForChat,
+  getPriceHistory,
+  getAllocationBreakdown,
+  getTaxLotsForChat,
+  getTransactionsForChat,
+  getPerformanceForChat,
+  getIncomeSummaryForChat,
+} from "@/lib/queries/chat-tools";
+import { executeTool } from "@/lib/chat/tools";
+import { buildSystemPrompt } from "@/lib/chat/system-prompt";
+
+// ─── Seed helpers ─────────────────────────────────────────────────
+
+function seedSecurity(
+  db: Database.Database,
+  symbol: string,
+  opts?: {
+    name?: string;
+    security_type?: string;
+    asset_class?: string;
+    sector?: string;
+    multiplier?: number;
+  }
+): number {
+  const result = db
+    .prepare(
+      `INSERT INTO securities (symbol, name, security_type, asset_class, multiplier)
+       VALUES (?, ?, ?, ?, ?)`
+    )
+    .run(
+      symbol,
+      opts?.name ?? `${symbol} Corp`,
+      opts?.security_type ?? "stock",
+      opts?.asset_class ?? "equity",
+      opts?.multiplier ?? 1
+    );
+  const id = result.lastInsertRowid as number;
+  // Set sector if provided (requires migration 005)
+  if (opts?.sector) {
+    db.prepare("UPDATE securities SET sector = ? WHERE id = ?").run(opts.sector, id);
+  }
+  return id;
+}
+
+function seedHolding(
+  db: Database.Database,
+  accountId: number,
+  securityId: number,
+  quantity: number,
+  asOfDate: string,
+  costBasis?: number
+): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(accountId, securityId, quantity, costBasis ?? null, asOfDate, `hold-${accountId}-${securityId}-${asOfDate}`);
+}
+
+function seedPrice(db: Database.Database, securityId: number, date: string, price: number): void {
+  db.prepare(
+    "INSERT OR REPLACE INTO prices (security_id, date, close_price) VALUES (?, ?, ?)"
+  ).run(securityId, date, price);
+}
+
+function seedTransaction(
+  db: Database.Database,
+  accountId: number,
+  securityId: number | null,
+  opts: {
+    trade_date: string;
+    type: string;
+    quantity?: number;
+    amount?: number;
+    price_per_share?: number;
+    fees?: number;
+  }
+): void {
+  db.prepare(
+    `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, amount, price_per_share, fees, source_key)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    accountId,
+    securityId,
+    opts.trade_date,
+    opts.type,
+    opts.quantity ?? null,
+    opts.amount ?? null,
+    opts.price_per_share ?? null,
+    opts.fees ?? 0,
+    `txn-${accountId}-${opts.trade_date}-${opts.type}-${Math.random().toString(36).slice(2, 8)}`
+  );
+}
+
+function seedTaxLot(
+  db: Database.Database,
+  accountId: number,
+  securityId: number,
+  opts: {
+    acquisition_date: string;
+    acquisition_price: number;
+    quantity_acquired: number;
+    quantity_remaining: number;
+    cost_basis: number;
+  }
+): number {
+  const result = db
+    .prepare(
+      `INSERT INTO tax_lots (account_id, security_id, acquisition_date, acquisition_price, quantity_acquired, quantity_remaining, cost_basis)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      accountId,
+      securityId,
+      opts.acquisition_date,
+      opts.acquisition_price,
+      opts.quantity_acquired,
+      opts.quantity_remaining,
+      opts.cost_basis
+    );
+  return result.lastInsertRowid as number;
+}
+
+function seedTaxLotSale(
+  db: Database.Database,
+  taxLotId: number,
+  opts: {
+    sale_date: string;
+    sale_price: number;
+    quantity_sold: number;
+    proceeds: number;
+    cost_basis_allocated: number;
+    realized_gain_loss: number;
+    is_long_term: boolean;
+    holding_period_days: number;
+  }
+): void {
+  // Need a transaction for the foreign key
+  const txnId = db
+    .prepare(
+      `INSERT INTO transactions (account_id, trade_date, type, source_key)
+       VALUES (1, ?, 'SELL', ?)`
+    )
+    .run(opts.sale_date, `sale-txn-${Math.random().toString(36).slice(2, 8)}`)
+    .lastInsertRowid as number;
+
+  db.prepare(
+    `INSERT INTO tax_lot_sales (tax_lot_id, sale_transaction_id, sale_date, sale_price, quantity_sold, proceeds, cost_basis_allocated, realized_gain_loss, is_long_term, holding_period_days)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    taxLotId,
+    txnId,
+    opts.sale_date,
+    opts.sale_price,
+    opts.quantity_sold,
+    opts.proceeds,
+    opts.cost_basis_allocated,
+    opts.realized_gain_loss,
+    opts.is_long_term ? 1 : 0,
+    opts.holding_period_days
+  );
+}
+
+function seedSnapshot(
+  db: Database.Database,
+  accountId: number,
+  monthEnd: string,
+  totalValue: number,
+  opts?: { dividends?: number; interest?: number; fees?: number }
+): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO monthly_snapshots (account_id, month_end_date, total_value, dividends, interest, fees)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(accountId, monthEnd, totalValue, opts?.dividends ?? null, opts?.interest ?? null, opts?.fees ?? null);
+}
+
+// ─── Tests ────────────────────────────────────────────────────────
+
+describe("getHoldingsForChat", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  it("returns all holdings with market values", () => {
+    const aapl = seedSecurity(db, "AAPL", { sector: "Technology" });
+    const voo = seedSecurity(db, "VOO", { security_type: "etf", asset_class: "equity" });
+    seedHolding(db, 1, aapl, 50, "2025-01-31", 7500);
+    seedHolding(db, 1, voo, 20, "2025-01-31", 8000);
+    seedPrice(db, aapl, "2025-01-31", 200);
+    seedPrice(db, voo, "2025-01-31", 450);
+
+    const holdings = getHoldingsForChat(db);
+    expect(holdings).toHaveLength(2);
+    // VOO should be first (higher market value: 20*450=9000 vs 50*200=10000)
+    expect(holdings[0].symbol).toBe("AAPL");
+    expect(holdings[0].market_value).toBe(10000);
+    expect(holdings[0].unrealized_gain).toBe(2500); // 10000 - 7500
+    expect(holdings[0].sector).toBe("Technology");
+    expect(holdings[0].position_weight_pct).toBeCloseTo(52.6, 0);
+  });
+
+  it("filters by account name", () => {
+    const aapl = seedSecurity(db, "AAPL");
+    seedHolding(db, 1, aapl, 50, "2025-01-31");
+    seedHolding(db, 2, aapl, 30, "2025-01-31");
+    seedPrice(db, aapl, "2025-01-31", 200);
+
+    const vanguard = getHoldingsForChat(db, { account_name: "Vanguard Taxable" });
+    expect(vanguard).toHaveLength(1);
+    expect(vanguard[0].quantity).toBe(50);
+
+    const roth = getHoldingsForChat(db, { account_name: "Vanguard Roth IRA" });
+    expect(roth).toHaveLength(1);
+    expect(roth[0].quantity).toBe(30);
+  });
+
+  it("filters by symbol", () => {
+    const aapl = seedSecurity(db, "AAPL");
+    const msft = seedSecurity(db, "MSFT");
+    seedHolding(db, 1, aapl, 50, "2025-01-31");
+    seedHolding(db, 1, msft, 30, "2025-01-31");
+    seedPrice(db, aapl, "2025-01-31", 200);
+    seedPrice(db, msft, "2025-01-31", 400);
+
+    const result = getHoldingsForChat(db, { symbol: "AAPL" });
+    expect(result).toHaveLength(1);
+    expect(result[0].symbol).toBe("AAPL");
+  });
+
+  it("handles bonds with price/100 adjustment", () => {
+    const bond = seedSecurity(db, "TBOND", { security_type: "bond", asset_class: "fixed_income" });
+    seedHolding(db, 1, bond, 10000, "2025-01-31", 9800);
+    seedPrice(db, bond, "2025-01-31", 98.5);
+
+    const result = getHoldingsForChat(db, { symbol: "TBOND" });
+    expect(result).toHaveLength(1);
+    // Bond: 10000 * 98.5 / 100 = 9850
+    expect(result[0].market_value).toBeCloseTo(9850, 1);
+  });
+
+  it("returns empty array on no holdings", () => {
+    const result = getHoldingsForChat(db);
+    expect(result).toEqual([]);
+  });
+
+  it("respects limit", () => {
+    for (let i = 0; i < 5; i++) {
+      const sec = seedSecurity(db, `SYM${i}`);
+      seedHolding(db, 1, sec, 10, "2025-01-31");
+      seedPrice(db, sec, "2025-01-31", 100 + i);
+    }
+    const result = getHoldingsForChat(db, { limit: 3 });
+    expect(result).toHaveLength(3);
+  });
+});
+
+describe("getPriceHistory", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  it("returns price history in ascending order", () => {
+    const sec = seedSecurity(db, "AAPL");
+    seedPrice(db, sec, "2025-01-01", 190);
+    seedPrice(db, sec, "2025-01-15", 195);
+    seedPrice(db, sec, "2025-01-31", 200);
+
+    const prices = getPriceHistory(db, "AAPL");
+    expect(prices).toHaveLength(3);
+    expect(prices[0].date).toBe("2025-01-01");
+    expect(prices[2].date).toBe("2025-01-31");
+    expect(prices[2].close_price).toBe(200);
+  });
+
+  it("filters by date range", () => {
+    const sec = seedSecurity(db, "AAPL");
+    seedPrice(db, sec, "2025-01-01", 190);
+    seedPrice(db, sec, "2025-01-15", 195);
+    seedPrice(db, sec, "2025-01-31", 200);
+
+    const prices = getPriceHistory(db, "AAPL", "2025-01-10", "2025-01-20");
+    expect(prices).toHaveLength(1);
+    expect(prices[0].date).toBe("2025-01-15");
+  });
+
+  it("returns empty for unknown symbol", () => {
+    const prices = getPriceHistory(db, "UNKNOWN");
+    expect(prices).toEqual([]);
+  });
+});
+
+describe("getAllocationBreakdown", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  it("groups by asset class", () => {
+    const stock = seedSecurity(db, "AAPL", { asset_class: "equity" });
+    const bond = seedSecurity(db, "BND", { security_type: "bond", asset_class: "fixed_income" });
+    seedHolding(db, 1, stock, 100, "2025-01-31");
+    seedHolding(db, 1, bond, 10000, "2025-01-31");
+    seedPrice(db, stock, "2025-01-31", 200);
+    seedPrice(db, bond, "2025-01-31", 100);
+
+    const alloc = getAllocationBreakdown(db, "asset_class");
+    expect(alloc.length).toBeGreaterThanOrEqual(2);
+
+    const equity = alloc.find((a) => a.group_name === "equity");
+    const fixedIncome = alloc.find((a) => a.group_name === "fixed_income");
+    expect(equity).toBeDefined();
+    expect(fixedIncome).toBeDefined();
+    // Stock: 100*200=20000, Bond: 10000*100/100=10000
+    expect(equity!.total_market_value).toBe(20000);
+    expect(fixedIncome!.total_market_value).toBe(10000);
+    expect(equity!.percentage).toBeCloseTo(66.7, 0);
+  });
+
+  it("groups by account", () => {
+    const sec = seedSecurity(db, "VTI");
+    seedHolding(db, 1, sec, 100, "2025-01-31");
+    seedHolding(db, 2, sec, 50, "2025-01-31");
+    seedPrice(db, sec, "2025-01-31", 200);
+
+    const alloc = getAllocationBreakdown(db, "account");
+    expect(alloc).toHaveLength(2);
+    expect(alloc[0].group_name).toBe("Vanguard Taxable");
+    expect(alloc[0].total_market_value).toBe(20000);
+    expect(alloc[1].group_name).toBe("Vanguard Roth IRA");
+    expect(alloc[1].total_market_value).toBe(10000);
+  });
+
+  it("uses 'Unknown' for missing sector data", () => {
+    const sec = seedSecurity(db, "VTI"); // No sector set
+    seedHolding(db, 1, sec, 100, "2025-01-31");
+    seedPrice(db, sec, "2025-01-31", 200);
+
+    const alloc = getAllocationBreakdown(db, "sector");
+    expect(alloc).toHaveLength(1);
+    expect(alloc[0].group_name).toBe("Unknown");
+  });
+});
+
+describe("getTaxLotsForChat", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  it("returns open tax lots sorted by unrealized gain (losses first)", () => {
+    const aapl = seedSecurity(db, "AAPL");
+    const msft = seedSecurity(db, "MSFT");
+    seedPrice(db, aapl, "2025-01-31", 180); // loss
+    seedPrice(db, msft, "2025-01-31", 450); // gain
+
+    seedTaxLot(db, 1, aapl, {
+      acquisition_date: "2024-06-01",
+      acquisition_price: 200,
+      quantity_acquired: 10,
+      quantity_remaining: 10,
+      cost_basis: 2000,
+    });
+    seedTaxLot(db, 1, msft, {
+      acquisition_date: "2024-06-01",
+      acquisition_price: 400,
+      quantity_acquired: 5,
+      quantity_remaining: 5,
+      cost_basis: 2000,
+    });
+
+    const lots = getTaxLotsForChat(db);
+    expect(lots).toHaveLength(2);
+    // AAPL should be first (loss: 10*180 - 10*200 = -200)
+    expect(lots[0].symbol).toBe("AAPL");
+    expect(lots[0].unrealized_gain).toBe(-200);
+    expect(lots[0].is_long_term).toBe(true); // >365 days
+  });
+
+  it("returns closed tax lot sales", () => {
+    const sec = seedSecurity(db, "VTI");
+    const lotId = seedTaxLot(db, 1, sec, {
+      acquisition_date: "2024-01-01",
+      acquisition_price: 200,
+      quantity_acquired: 10,
+      quantity_remaining: 0,
+      cost_basis: 2000,
+    });
+    seedTaxLotSale(db, lotId, {
+      sale_date: "2025-06-01",
+      sale_price: 250,
+      quantity_sold: 10,
+      proceeds: 2500,
+      cost_basis_allocated: 2000,
+      realized_gain_loss: 500,
+      is_long_term: true,
+      holding_period_days: 517,
+    });
+
+    const closed = getTaxLotsForChat(db, { status: "closed" });
+    expect(closed).toHaveLength(1);
+    expect(closed[0].realized_gain_loss).toBe(500);
+    expect(closed[0].is_long_term).toBe(true);
+  });
+
+  it("filters by symbol", () => {
+    const aapl = seedSecurity(db, "AAPL");
+    const msft = seedSecurity(db, "MSFT");
+    seedPrice(db, aapl, "2025-01-31", 200);
+    seedPrice(db, msft, "2025-01-31", 400);
+
+    seedTaxLot(db, 1, aapl, {
+      acquisition_date: "2025-01-01",
+      acquisition_price: 190,
+      quantity_acquired: 10,
+      quantity_remaining: 10,
+      cost_basis: 1900,
+    });
+    seedTaxLot(db, 1, msft, {
+      acquisition_date: "2025-01-01",
+      acquisition_price: 380,
+      quantity_acquired: 5,
+      quantity_remaining: 5,
+      cost_basis: 1900,
+    });
+
+    const result = getTaxLotsForChat(db, { symbol: "AAPL" });
+    expect(result).toHaveLength(1);
+    expect(result[0].symbol).toBe("AAPL");
+  });
+});
+
+describe("getTransactionsForChat", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  it("returns recent transactions in descending order", () => {
+    const sec = seedSecurity(db, "AAPL");
+    seedTransaction(db, 1, sec, { trade_date: "2025-01-10", type: "BUY", quantity: 10, amount: -2000 });
+    seedTransaction(db, 1, sec, { trade_date: "2025-01-20", type: "SELL", quantity: 5, amount: 1200 });
+
+    const txns = getTransactionsForChat(db);
+    expect(txns).toHaveLength(2);
+    expect(txns[0].trade_date).toBe("2025-01-20"); // most recent first
+    expect(txns[0].type).toBe("SELL");
+  });
+
+  it("filters by type", () => {
+    const sec = seedSecurity(db, "VTI");
+    seedTransaction(db, 1, sec, { trade_date: "2025-01-10", type: "BUY", amount: -5000 });
+    seedTransaction(db, 1, sec, { trade_date: "2025-01-15", type: "DIVIDEND", amount: 50 });
+    seedTransaction(db, 1, sec, { trade_date: "2025-01-20", type: "DIVIDEND", amount: 60 });
+
+    const dividends = getTransactionsForChat(db, { type: "DIVIDEND" });
+    expect(dividends).toHaveLength(2);
+    expect(dividends.every((t) => t.type === "DIVIDEND")).toBe(true);
+  });
+
+  it("filters by date range", () => {
+    const sec = seedSecurity(db, "AAPL");
+    seedTransaction(db, 1, sec, { trade_date: "2025-01-01", type: "BUY", amount: -1000 });
+    seedTransaction(db, 1, sec, { trade_date: "2025-02-15", type: "BUY", amount: -2000 });
+    seedTransaction(db, 1, sec, { trade_date: "2025-03-01", type: "BUY", amount: -3000 });
+
+    const result = getTransactionsForChat(db, { start_date: "2025-02-01", end_date: "2025-02-28" });
+    expect(result).toHaveLength(1);
+    expect(result[0].trade_date).toBe("2025-02-15");
+  });
+});
+
+describe("getPerformanceForChat", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  it("returns monthly snapshots with month-over-month change", () => {
+    seedSnapshot(db, 1, "2025-01-31", 100000, { dividends: 200, interest: 50 });
+    seedSnapshot(db, 1, "2025-02-28", 105000, { dividends: 210, interest: 55 });
+
+    const perf = getPerformanceForChat(db);
+    expect(perf).toHaveLength(2);
+    expect(perf[0].total_value).toBe(100000);
+    expect(perf[0].monthly_change).toBeNull(); // first month has no prior
+    expect(perf[1].total_value).toBe(105000);
+    expect(perf[1].monthly_change).toBe(5000);
+    expect(perf[1].dividends).toBe(210);
+  });
+
+  it("filters by account name", () => {
+    seedSnapshot(db, 1, "2025-01-31", 100000);
+    seedSnapshot(db, 2, "2025-01-31", 50000);
+
+    const result = getPerformanceForChat(db, { account_name: "Vanguard Roth IRA" });
+    expect(result).toHaveLength(1);
+    expect(result[0].account_name).toBe("Vanguard Roth IRA");
+    expect(result[0].total_value).toBe(50000);
+  });
+});
+
+describe("getIncomeSummaryForChat", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  it("aggregates dividend income by symbol", () => {
+    const aapl = seedSecurity(db, "AAPL");
+    const voo = seedSecurity(db, "VOO");
+    seedTransaction(db, 1, aapl, { trade_date: "2025-06-15", type: "DIVIDEND", amount: 100 });
+    seedTransaction(db, 1, aapl, { trade_date: "2025-09-15", type: "DIVIDEND", amount: 110 });
+    seedTransaction(db, 1, voo, { trade_date: "2025-06-15", type: "DIVIDEND", amount: 200 });
+
+    const income = getIncomeSummaryForChat(db, { period: "all_time", group_by: "symbol" });
+    expect(income.length).toBeGreaterThanOrEqual(2);
+
+    const aaplIncome = income.find((i) => i.group_name === "AAPL");
+    expect(aaplIncome).toBeDefined();
+    expect(aaplIncome!.total_dividends).toBe(210);
+
+    const vooIncome = income.find((i) => i.group_name === "VOO");
+    expect(vooIncome).toBeDefined();
+    expect(vooIncome!.total_dividends).toBe(200);
+  });
+
+  it("aggregates by month", () => {
+    const sec = seedSecurity(db, "VTI");
+    seedTransaction(db, 1, sec, { trade_date: "2025-06-15", type: "DIVIDEND", amount: 100 });
+    seedTransaction(db, 1, sec, { trade_date: "2025-06-20", type: "INTEREST", amount: 50 });
+    seedTransaction(db, 1, sec, { trade_date: "2025-07-15", type: "DIVIDEND", amount: 110 });
+
+    const income = getIncomeSummaryForChat(db, { period: "all_time", group_by: "month" });
+    const june = income.find((i) => i.group_name === "2025-06");
+    const july = income.find((i) => i.group_name === "2025-07");
+    expect(june).toBeDefined();
+    expect(june!.total_dividends).toBe(100);
+    expect(june!.total_interest).toBe(50);
+    expect(july).toBeDefined();
+    expect(july!.total_dividends).toBe(110);
+  });
+});
+
+describe("executeTool dispatcher", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  it("dispatches to correct query function", () => {
+    const sec = seedSecurity(db, "AAPL");
+    seedHolding(db, 1, sec, 50, "2025-01-31");
+    seedPrice(db, sec, "2025-01-31", 200);
+
+    const result = executeTool(db, "query_holdings", { symbol: "AAPL" });
+    expect(Array.isArray(result)).toBe(true);
+    expect((result as Array<{ symbol: string }>)[0].symbol).toBe("AAPL");
+  });
+
+  it("returns error for unknown tool", () => {
+    const result = executeTool(db, "nonexistent_tool", {});
+    expect(result).toEqual({ error: "Unknown tool: nonexistent_tool" });
+  });
+
+  it("handles tool execution errors gracefully", () => {
+    // Close the database to force an error
+    db.close();
+    const result = executeTool(db, "query_holdings", {});
+    expect(result).toHaveProperty("error");
+  });
+});
+
+describe("buildSystemPrompt", () => {
+  it("includes current date and portfolio context", () => {
+    const prompt = buildSystemPrompt("## Test Context\nSome data here", "2025-01-31");
+    expect(prompt).toContain("2025-01-31");
+    expect(prompt).toContain("## Test Context");
+    expect(prompt).toContain("portfolio analyst");
+    expect(prompt).toContain("Tax-loss harvesting");
+    expect(prompt).toContain("Concentration risk");
+  });
+});
