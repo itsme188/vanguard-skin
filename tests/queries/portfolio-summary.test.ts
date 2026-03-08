@@ -92,17 +92,18 @@ describe("getPortfolioSummaryForChat", () => {
     const summary = getPortfolioSummaryForChat(db);
     expect(summary).toContain("VTI");
     expect(summary).toContain("100");
-    expect(summary).toContain("@ $250");
-    expect(summary).toContain("Vanguard Total Market");
+    // New format: MV:$25,000 instead of "@ $250"
+    expect(summary).toContain("MV:$25,000");
   });
 
-  it("shows 'no price data' for holdings without prices", () => {
+  it("shows holdings without prices (no MV)", () => {
     const sec = seedSecurity(db, "MYSTERY");
     seedHolding(db, ACCOUNT_ID, sec, 50, "2025-01-31");
 
     const summary = getPortfolioSummaryForChat(db);
     expect(summary).toContain("MYSTERY");
-    expect(summary).toContain("(no price data)");
+    // Unpriced holdings just show quantity, no MV
+    expect(summary).toContain("50 shares");
   });
 
   it("returns null market_value for holdings without prices (not $0)", () => {
@@ -117,9 +118,9 @@ describe("getPortfolioSummaryForChat", () => {
     const summary = getPortfolioSummaryForChat(db);
     // Should NOT contain "$0" for the unpriced holding
     // The PRICED holding should show $1,000 market value
-    expect(summary).toContain("market value $1,000");
-    // NOPRICE should show "no price data", not "market value $0"
-    expect(summary).not.toContain("market value $0");
+    expect(summary).toContain("MV:$1,000");
+    // NOPRICE should not have any market value shown
+    expect(summary).not.toContain("MV:$0");
   });
 
   it("includes data quality warning when holdings lack prices", () => {
@@ -139,7 +140,7 @@ describe("getPortfolioSummaryForChat", () => {
 
     const summary = getPortfolioSummaryForChat(db);
     expect(summary).toContain("TBILL");
-    expect(summary).toContain("face value");
+    expect(summary).toContain("face"); // "face" unit label for bonds
     // Bond: 10000 * 98.5 / 100 = 9,850
     expect(summary).toContain("$9,850");
   });
@@ -156,7 +157,7 @@ describe("getPortfolioSummaryForChat", () => {
     expect(summary).toContain("$5,000");
   });
 
-  it("includes tax lot summary when lots exist", () => {
+  it("includes tax summary when lots exist", () => {
     const sec = seedSecurity(db, "VTI");
     db.prepare(
       `INSERT INTO tax_lots (account_id, security_id, acquisition_date, acquisition_price, quantity_acquired, quantity_remaining, cost_basis)
@@ -164,7 +165,7 @@ describe("getPortfolioSummaryForChat", () => {
     ).run(ACCOUNT_ID, sec, "2025-01-01", 200, 10, 10, 2000);
 
     const summary = getPortfolioSummaryForChat(db);
-    expect(summary).toContain("Tax Lot Summary");
+    expect(summary).toContain("Tax Summary");
     expect(summary).toContain("Open lots: 1");
     expect(summary).toContain("cost basis: $2,000");
   });
