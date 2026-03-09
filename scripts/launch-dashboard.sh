@@ -64,21 +64,28 @@ cmd_start() {
 
     cd "$PROJECT_DIR"
 
-    # Start Next.js dev server in background
-    PORT=$PORT $NPM run dev > "$LOG_FILE" 2>&1 &
+    # Start Next.js dev server, fully detached from this script's FDs
+    PORT=$PORT $NPM run dev </dev/null >"$LOG_FILE" 2>&1 &
     local server_pid=$!
     echo "$server_pid" > "$PID_FILE"
+    disown "$server_pid" 2>/dev/null || true
 
-    # Wait for it to be ready
-    if wait_for_server; then
-        echo "STARTED"
+    echo "STARTING"
+    exit 0
+}
+
+cmd_ready() {
+    # Quick one-shot readiness check (non-blocking)
+    if ! is_running; then
+        echo "NOT_RUNNING"
+        exit 1
+    fi
+    if curl -s -o /dev/null -w "%{http_code}" "http://localhost:${PORT}" 2>/dev/null | grep -qE "200|301|302|304|307|308"; then
+        echo "READY"
         exit 0
     else
-        # Server failed to start -- clean up
-        kill "$server_pid" 2>/dev/null || true
-        rm -f "$PID_FILE"
-        echo "FAILED"
-        exit 3
+        echo "NOT_READY"
+        exit 2
     fi
 }
 
@@ -136,9 +143,10 @@ case "${1:-}" in
     start)  cmd_start ;;
     stop)   cmd_stop ;;
     status) cmd_status ;;
+    ready)  cmd_ready ;;
     url)    cmd_url ;;
     *)
-        echo "Usage: $0 {start|stop|status|url}" >&2
+        echo "Usage: $0 {start|stop|status|ready|url}" >&2
         exit 1
         ;;
 esac
