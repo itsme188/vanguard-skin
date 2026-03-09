@@ -3,6 +3,7 @@ import { getAllAccounts } from "@/lib/queries/accounts";
 import { getHoldingsByAccount } from "@/lib/queries/holdings";
 import { getTransactionsByAccount } from "@/lib/queries/transactions";
 import { getSnapshotsByAccount } from "@/lib/queries/monthly-snapshots";
+import { getDailyValuationsByAccount } from "@/lib/queries/daily-valuations";
 import { AccountDetail } from "../components/AccountDetail";
 
 export default async function AccountsPage(props: {
@@ -30,6 +31,7 @@ export default async function AccountsPage(props: {
     limit: 50,
   });
   const snapshots = getSnapshotsByAccount(db, selectedAccount.id);
+  const dailyValuations = getDailyValuationsByAccount(db, selectedAccount.id);
 
   return (
     <AccountDetail
@@ -38,6 +40,7 @@ export default async function AccountsPage(props: {
       holdings={holdings}
       transactions={transactions}
       snapshots={snapshots}
+      dailyValuations={dailyValuations}
     />
   );
 }
