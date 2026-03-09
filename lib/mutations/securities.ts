@@ -10,6 +10,7 @@ export interface UpsertSecurityParams {
   expirationDate?: string;
   optionType?: "CALL" | "PUT";
   multiplier?: number;
+  maturityDate?: string;
 }
 
 export function upsertSecurity(
@@ -37,8 +38,8 @@ export function upsertSecurity(
 
   db.prepare(
     `INSERT INTO securities (symbol, name, security_type, asset_class,
-       underlying_symbol, strike_price, expiration_date, option_type, multiplier)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       underlying_symbol, strike_price, expiration_date, option_type, multiplier, maturity_date)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(symbol) DO UPDATE SET
        name = COALESCE(excluded.name, securities.name),
        security_type = COALESCE(excluded.security_type, securities.security_type),
@@ -47,7 +48,8 @@ export function upsertSecurity(
        strike_price = COALESCE(excluded.strike_price, securities.strike_price),
        expiration_date = COALESCE(excluded.expiration_date, securities.expiration_date),
        option_type = COALESCE(excluded.option_type, securities.option_type),
-       multiplier = COALESCE(excluded.multiplier, securities.multiplier)`
+       multiplier = COALESCE(excluded.multiplier, securities.multiplier),
+       maturity_date = COALESCE(excluded.maturity_date, securities.maturity_date)`
   ).run(
     p.symbol,
     p.name ?? null,
@@ -57,7 +59,8 @@ export function upsertSecurity(
     p.strikePrice ?? null,
     p.expirationDate ?? null,
     p.optionType ?? null,
-    p.multiplier ?? null
+    p.multiplier ?? null,
+    p.maturityDate ?? null
   );
 
   const row = db

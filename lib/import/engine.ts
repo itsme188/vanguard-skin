@@ -105,6 +105,7 @@ export function commitImport(
         expirationDate: sec.expirationDate,
         optionType: sec.optionType,
         multiplier: sec.multiplier,
+        maturityDate: sec.maturityDate,
       });
       securityIdMap.set(sec.symbol, secId);
 
