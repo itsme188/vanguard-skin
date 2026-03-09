@@ -66,6 +66,18 @@ export function annotateToolResult(
     );
   }
 
+  if (toolName === "query_fred") {
+    warnings.push(
+      "FRED data is sourced from the Federal Reserve Bank of St. Louis. Some series have publication lags (e.g., GDP is quarterly with ~1 month delay)."
+    );
+  }
+
+  if (toolName === "query_company_fundamentals") {
+    warnings.push(
+      "Financial data is from SEC EDGAR XBRL filings. There may be a lag between the fiscal period end and the filing date. ETFs and mutual funds have limited fundamental data."
+    );
+  }
+
   return {
     quality_warnings: warnings,
     data_freshness: freshness,

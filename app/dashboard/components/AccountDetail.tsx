@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import type { Account, MonthlySnapshot } from "@/lib/types";
 import type { HoldingWithSecurity } from "@/lib/queries/holdings";
 import type { TransactionWithSecurity } from "@/lib/queries/transactions";
+import type { DailyValuation } from "@/lib/queries/daily-valuations";
 import { HoldingsTable } from "./HoldingsTable";
 import { TransactionHistory } from "./TransactionHistory";
 import { EquityCurveChart } from "./EquityCurveChart";
@@ -20,6 +21,7 @@ interface AccountDetailProps {
   holdings: HoldingWithSecurity[];
   transactions: TransactionWithSecurity[];
   snapshots: MonthlySnapshot[];
+  dailyValuations?: DailyValuation[];
 }
 
 export function AccountDetail({
@@ -28,6 +30,7 @@ export function AccountDetail({
   holdings,
   transactions,
   snapshots,
+  dailyValuations,
 }: AccountDetailProps) {
   const router = useRouter();
 
@@ -58,9 +61,10 @@ export function AccountDetail({
       </div>
 
       {/* Equity curve */}
-      {snapshots.length > 0 && (
+      {(snapshots.length > 0 || (dailyValuations && dailyValuations.length > 0)) && (
         <EquityCurveChart
           snapshots={snapshots}
+          dailyValuations={dailyValuations}
           accountName={selectedAccount.name}
         />
       )}

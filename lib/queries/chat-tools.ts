@@ -465,8 +465,8 @@ export function getTaxLotsForChat(
         THEN ${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier")}
              - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier")}
         ELSE NULL END AS unrealized_gain,
-      CAST(julianday('${today}') - julianday(tl.acquisition_date) AS INTEGER) AS days_held,
-      CASE WHEN julianday('${today}') - julianday(tl.acquisition_date) > 365 THEN 1 ELSE 0 END AS is_long_term,
+      CAST(julianday(?) - julianday(tl.acquisition_date) AS INTEGER) AS days_held,
+      CASE WHEN julianday(?) - julianday(tl.acquisition_date) > 365 THEN 1 ELSE 0 END AS is_long_term,
       date(tl.acquisition_date, '+366 days') AS long_term_date
     FROM tax_lots tl
     JOIN accounts a ON a.id = tl.account_id
@@ -476,8 +476,9 @@ export function getTaxLotsForChat(
     ORDER BY ${sortMap[sort_by] ?? "unrealized_gain ASC"}
     LIMIT ?`;
 
-  params.push(limit);
-  const rows = db.prepare(openSql).all(...params) as Array<Record<string, unknown>>;
+  // today params go first (julianday(?) in SELECT), then WHERE params, then LIMIT
+  const allParams = [today, today, ...params, limit];
+  const rows = db.prepare(openSql).all(...allParams) as Array<Record<string, unknown>>;
 
   return rows.map((r) => ({
     ...r,

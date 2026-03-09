@@ -117,8 +117,8 @@ export async function POST(request: NextRequest) {
 
             // Execute each tool and build tool_result messages
             const toolResults: Anthropic.ToolResultBlockParam[] =
-              toolUseBlocks.map((toolBlock) => {
-                const result = executeTool(
+              await Promise.all(toolUseBlocks.map(async (toolBlock) => {
+                const result = await executeTool(
                   db,
                   toolBlock.name,
                   toolBlock.input as Record<string, unknown>
@@ -128,7 +128,7 @@ export async function POST(request: NextRequest) {
                   tool_use_id: toolBlock.id,
                   content: JSON.stringify(result),
                 };
-              });
+              }));
 
             // Append the tool results as a user message
             conversationMessages.push({
