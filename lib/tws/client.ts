@@ -6,7 +6,7 @@ let ibApi: IBApiNext | null = null;
 let connectionState: TwsConnectionState = "disconnected";
 let connectedAt: string | null = null;
 let lastError: string | null = null;
-let currentConfig: TwsConfig = { host: "127.0.0.1", port: 7497, clientId: 0 };
+let currentConfig: TwsConfig = { host: "127.0.0.1", port: 7496, clientId: 1 };
 
 export function getTwsStatus(): TwsStatus {
   return {
