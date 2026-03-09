@@ -18,6 +18,9 @@ PID_FILE="/tmp/vanguard-dashboard.pid"
 LOG_FILE="/tmp/vanguard-dashboard.log"
 NPM="/opt/homebrew/bin/npm"
 
+# Ensure node is on PATH (AppleScript's do shell script has minimal PATH)
+export PATH="/opt/homebrew/bin:$PATH"
+
 # === Helper Functions ===
 
 is_running() {
