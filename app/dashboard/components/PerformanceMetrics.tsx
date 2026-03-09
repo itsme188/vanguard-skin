@@ -7,6 +7,7 @@ export interface TwrPeriod {
   label: string;
   totalReturn: number | null;
   annualizedReturn: number | null;
+  xirr?: number | null;
 }
 
 function formatCurrency(value: number): string {
@@ -110,6 +111,21 @@ export function PerformanceMetrics({
                   ({formatReturn(activePeriod.annualizedReturn)} ann.)
                 </span>
               )}
+            </div>
+          )}
+
+          {activePeriod && activePeriod.xirr != null && (
+            <div className="flex items-center gap-3 border-l border-edge pl-3">
+              <span className="text-[11px] text-ink-faint uppercase tracking-widest">
+                XIRR
+              </span>
+              <span
+                className={`text-lg font-mono tabular-nums font-semibold ${
+                  activePeriod.xirr >= 0 ? "text-up" : "text-down"
+                }`}
+              >
+                {formatReturn(activePeriod.xirr)}
+              </span>
             </div>
           )}
         </div>

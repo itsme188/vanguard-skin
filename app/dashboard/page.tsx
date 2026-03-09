@@ -5,13 +5,14 @@ import {
   getPortfolioTotals,
 } from "@/lib/queries/dashboard";
 import { computeTwr } from "@/lib/compute/twr";
+import { computeXirr } from "@/lib/compute/xirr";
 import { PerformanceMetrics } from "./components/PerformanceMetrics";
 import type { TwrPeriod } from "./components/PerformanceMetrics";
 import { AccountSummaryCards } from "./components/AccountSummaryCards";
 import { CombinedPortfolioChart } from "./components/CombinedPortfolioChart";
 import Link from "next/link";
 
-function computeTwrPeriods(): { periods: TwrPeriod[]; perAccount: Map<number, { totalReturn: number; annualizedReturn: number | null }> } {
+function computePerformancePeriods(): { periods: TwrPeriod[]; perAccount: Map<number, { totalReturn: number; annualizedReturn: number | null }> } {
   const today = new Date().toISOString().slice(0, 10);
   const year = today.slice(0, 4);
   const ytdStart = `${year}-01-01`;
@@ -23,21 +24,29 @@ function computeTwrPeriods(): { periods: TwrPeriod[]; perAccount: Map<number, { 
   const oneYear = computeTwr(db, { startDate: oneYearAgo, endDate: today });
   const inception = computeTwr(db, {});
 
+  // Compute XIRR for each period
+  const ytdXirr = computeXirr(db, { startDate: ytdStart, endDate: today });
+  const oneYearXirr = computeXirr(db, { startDate: oneYearAgo, endDate: today });
+  const inceptionXirr = computeXirr(db, {});
+
   const periods: TwrPeriod[] = [
     {
       label: "YTD",
       totalReturn: ytd?.totalReturn ?? null,
       annualizedReturn: ytd?.annualizedReturn ?? null,
+      xirr: ytdXirr?.xirr ?? null,
     },
     {
       label: "1Y",
       totalReturn: oneYear?.totalReturn ?? null,
       annualizedReturn: oneYear?.annualizedReturn ?? null,
+      xirr: oneYearXirr?.xirr ?? null,
     },
     {
       label: "All",
       totalReturn: inception?.totalReturn ?? null,
       annualizedReturn: inception?.annualizedReturn ?? null,
+      xirr: inceptionXirr?.xirr ?? null,
     },
   ];
 
@@ -59,7 +68,7 @@ export default function OverviewPage() {
   const accounts = getAccountSummaries(db);
   const chartData = getPortfolioChartData(db);
   const totals = getPortfolioTotals(db);
-  const { periods: twrPeriods, perAccount: twrByAccount } = computeTwrPeriods();
+  const { periods: twrPeriods, perAccount: twrByAccount } = computePerformancePeriods();
 
   const hasData = totals.snapshotCount > 0;
 

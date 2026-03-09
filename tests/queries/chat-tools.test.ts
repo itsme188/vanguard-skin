@@ -702,12 +702,12 @@ describe("executeTool dispatcher", () => {
     runMigrations(db);
   });
 
-  it("dispatches to correct query function and wraps with annotations", () => {
+  it("dispatches to correct query function and wraps with annotations", async () => {
     const sec = seedSecurity(db, "AAPL");
     seedHolding(db, 1, sec, 50, "2025-01-31");
     seedPrice(db, sec, "2025-01-31", 200);
 
-    const result = executeTool(db, "query_holdings", { symbol: "AAPL" }) as {
+    const result = await executeTool(db, "query_holdings", { symbol: "AAPL" }) as {
       data: Array<{ symbol: string }>;
       quality_warnings: string[];
       data_freshness: { latest_price_date: string | null };
@@ -720,14 +720,14 @@ describe("executeTool dispatcher", () => {
     expect(Array.isArray(result.quality_warnings)).toBe(true);
   });
 
-  it("resolves account names case-insensitively", () => {
+  it("resolves account names case-insensitively", async () => {
     const sec = seedSecurity(db, "AAPL");
     seedHolding(db, 1, sec, 50, "2025-01-31", 7500);
     seedHolding(db, 2, sec, 30, "2025-01-31", 4500);
     seedPrice(db, sec, "2025-01-31", 200);
 
     // "roth" should match "Vanguard Roth IRA" (account 2)
-    const result = executeTool(db, "query_holdings", { account_name: "roth" }) as {
+    const result = await executeTool(db, "query_holdings", { account_name: "roth" }) as {
       data: Array<{ account_name: string; quantity: number }>;
     };
     expect(result.data).toHaveLength(1);
@@ -735,24 +735,24 @@ describe("executeTool dispatcher", () => {
     expect(result.data[0].quantity).toBe(30);
   });
 
-  it("returns error for unknown tool", () => {
-    const result = executeTool(db, "nonexistent_tool", {});
+  it("returns error for unknown tool", async () => {
+    const result = await executeTool(db, "nonexistent_tool", {});
     expect(result).toEqual({ error: "Unknown tool: nonexistent_tool" });
   });
 
-  it("handles tool execution errors gracefully", () => {
+  it("handles tool execution errors gracefully", async () => {
     // Close the database to force an error
     db.close();
-    const result = executeTool(db, "query_holdings", {});
+    const result = await executeTool(db, "query_holdings", {});
     expect(result).toHaveProperty("error");
   });
 
-  it("passes account_name to income summary", () => {
+  it("passes account_name to income summary", async () => {
     const sec = seedSecurity(db, "VTI");
     seedTransaction(db, 1, sec, { trade_date: "2025-06-15", type: "DIVIDEND", amount: 100 });
     seedTransaction(db, 2, sec, { trade_date: "2025-06-15", type: "DIVIDEND", amount: 200 });
 
-    const result = executeTool(db, "query_income_summary", {
+    const result = await executeTool(db, "query_income_summary", {
       period: "all_time",
       account_name: "Vanguard Taxable",
     }) as { data: Array<{ total_dividends: number }> };

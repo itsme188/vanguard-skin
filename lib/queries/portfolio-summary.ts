@@ -296,7 +296,7 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
         (${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier")}
          - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier")}) AS unrealized_loss,
         tl.cost_basis,
-        CAST(julianday('${today}') - julianday(tl.acquisition_date) AS INTEGER) AS days_held
+        CAST(julianday(?) - julianday(tl.acquisition_date) AS INTEGER) AS days_held
       FROM tax_lots tl
       JOIN accounts a ON a.id = tl.account_id
       JOIN securities s ON s.id = tl.security_id
@@ -308,7 +308,7 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
       ORDER BY unrealized_loss ASC
       LIMIT 5`
     )
-    .all() as HarvestCandidate[];
+    .all(today) as HarvestCandidate[];
 
   if (harvestCandidates.length > 0) {
     lines.push("\n### Tax-Loss Harvesting Candidates");
@@ -333,7 +333,7 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
         a.name AS account_name,
         tl.acquisition_date,
         date(tl.acquisition_date, '+366 days') AS long_term_date,
-        CAST(julianday(date(tl.acquisition_date, '+366 days')) - julianday('${today}') AS INTEGER) AS days_remaining,
+        CAST(julianday(date(tl.acquisition_date, '+366 days')) - julianday(?) AS INTEGER) AS days_remaining,
         CASE WHEN lp.close_price IS NOT NULL
           THEN ${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier")}
                - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier")}
@@ -343,12 +343,12 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
       JOIN securities s ON s.id = tl.security_id
       LEFT JOIN latest_prices lp ON lp.security_id = tl.security_id
       WHERE tl.quantity_remaining > 0
-        AND julianday(date(tl.acquisition_date, '+366 days')) > julianday('${today}')
-        AND julianday(date(tl.acquisition_date, '+366 days')) - julianday('${today}') <= 60
+        AND julianday(date(tl.acquisition_date, '+366 days')) > julianday(?)
+        AND julianday(date(tl.acquisition_date, '+366 days')) - julianday(?) <= 60
       ORDER BY days_remaining ASC
       LIMIT 10`
     )
-    .all() as ApproachingLongTerm[];
+    .all(today, today, today) as ApproachingLongTerm[];
 
   if (approachingLT.length > 0) {
     lines.push("\n### Lots Approaching Long-Term Status (within 60 days)");
@@ -370,9 +370,9 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
         COALESCE(SUM(interest), 0) AS total_interest,
         COALESCE(SUM(COALESCE(fees, 0) + COALESCE(commissions, 0)), 0) AS total_fees
       FROM monthly_snapshots
-      WHERE month_end_date >= date('${today}', '-12 months')`
+      WHERE month_end_date >= date(?, '-12 months')`
     )
-    .get() as { total_dividends: number; total_interest: number; total_fees: number };
+    .get(today) as { total_dividends: number; total_interest: number; total_fees: number };
 
   if (incomeSummary.total_dividends > 0 || incomeSummary.total_interest > 0) {
     lines.push("\n### Income (Trailing 12 Months)");
