@@ -110,8 +110,10 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
         LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
         WHERE h.as_of_date = (
           SELECT MAX(h2.as_of_date) FROM holdings h2
-          WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id
+          WHERE h2.account_id = h.account_id
         )
+        AND h.quantity > 0
+        AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
       )
       SELECT a.name AS account_name, s.symbol, s.name AS security_name,
               s.security_type, s.asset_class, s.sector,
@@ -135,8 +137,10 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
        LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
        WHERE h.as_of_date = (
          SELECT MAX(h2.as_of_date) FROM holdings h2
-         WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id
+         WHERE h2.account_id = h.account_id
        )
+       AND h.quantity > 0
+       AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
        ORDER BY market_value DESC`
     )
     .all() as EnrichedHolding[];
@@ -178,8 +182,10 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
         WHERE lp.close_price IS NOT NULL
           AND h.as_of_date = (
             SELECT MAX(h2.as_of_date) FROM holdings h2
-            WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id
+            WHERE h2.account_id = h.account_id
           )
+          AND h.quantity > 0
+          AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
       )
       SELECT group_name, SUM(mv) AS total_market_value,
              SUM(mv) * 100.0 / NULLIF(SUM(SUM(mv)) OVER (), 0) AS percentage,
@@ -218,8 +224,10 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
         WHERE lp.close_price IS NOT NULL
           AND h.as_of_date = (
             SELECT MAX(h2.as_of_date) FROM holdings h2
-            WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id
+            WHERE h2.account_id = h.account_id
           )
+          AND h.quantity > 0
+          AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
       )
       SELECT group_name, SUM(mv) AS total_market_value,
              SUM(mv) * 100.0 / NULLIF(SUM(SUM(mv)) OVER (), 0) AS percentage,

@@ -1,0 +1,116 @@
+/**
+ * Data quality annotation layer for chat tool results.
+ *
+ * Every tool result gets wrapped with quality annotations (freshness, completeness,
+ * warnings) before Claude sees it. This ensures the chat model can incorporate
+ * data quality caveats naturally into responses.
+ */
+import type Database from "better-sqlite3";
+import type { HoldingResult, DataFreshness } from "@/lib/queries/chat-tools";
+import { getDataFreshness } from "@/lib/queries/chat-tools";
+
+export interface QualityAnnotation {
+  quality_warnings: string[];
+  data_freshness: DataFreshness;
+}
+
+/**
+ * Annotate a tool result with data quality warnings and freshness info.
+ * Called by executeTool() after each query function returns.
+ */
+export function annotateToolResult(
+  db: Database.Database,
+  toolName: string,
+  rawResult: unknown
+): QualityAnnotation {
+  const warnings: string[] = [];
+  const freshness = getDataFreshness(db);
+
+  // ─── Price staleness (applies to most tools) ────────────────────
+  if (
+    freshness.price_age_days !== null &&
+    freshness.price_age_days > 7 &&
+    ["query_holdings", "query_allocation", "query_tax_lots"].includes(toolName)
+  ) {
+    warnings.push(
+      `Price data is ${freshness.price_age_days} days old (latest: ${freshness.latest_price_date}). Market values may not reflect current prices.`
+    );
+  }
+
+  // ─── Tool-specific annotations ──────────────────────────────────
+  if (toolName === "query_holdings" && Array.isArray(rawResult)) {
+    annotateHoldings(rawResult as HoldingResult[], warnings);
+  }
+
+  if (toolName === "query_allocation") {
+    warnings.push(
+      "Positions without price data use cost basis for allocation. Cash balances are not included."
+    );
+  }
+
+  if (toolName === "query_tax_lots") {
+    warnings.push(
+      "Tax lots use FIFO (First-In, First-Out) matching. Your broker may use a different method (e.g., specific identification)."
+    );
+  }
+
+  if (toolName === "query_performance") {
+    warnings.push(
+      "Monthly change includes deposits/withdrawals. Use investment_change for actual portfolio performance excluding cash flows."
+    );
+  }
+
+  if (toolName === "query_income_summary") {
+    warnings.push(
+      "REINVESTMENT transactions are counted as dividend income. Return of capital (if any) is not distinguished."
+    );
+  }
+
+  return {
+    quality_warnings: warnings,
+    data_freshness: freshness,
+  };
+}
+
+function annotateHoldings(holdings: HoldingResult[], warnings: string[]): void {
+  // Missing prices
+  const noPrice = holdings.filter((h) => h.latest_price == null);
+  if (noPrice.length > 0) {
+    const symbols = noPrice.map((h) => h.symbol).join(", ");
+    warnings.push(
+      `${noPrice.length} position(s) have no price data: ${symbols}`
+    );
+  }
+
+  // Missing cost basis
+  const noCost = holdings.filter(
+    (h) => h.cost_basis == null && h.market_value != null
+  );
+  if (noCost.length > 0) {
+    const symbols = noCost.map((h) => h.symbol).join(", ");
+    warnings.push(
+      `${noCost.length} position(s) have no cost basis (unrealized gain unavailable): ${symbols}`
+    );
+  }
+
+  // Approaching maturity
+  const maturing = holdings.filter((h) => h.maturity_note != null);
+  if (maturing.length > 0) {
+    const notes = maturing
+      .map((h) => `${h.symbol}: ${h.maturity_note}`)
+      .join("; ");
+    warnings.push(`Bond(s) approaching maturity: ${notes}`);
+  }
+
+  // Options with multiplier=1 (likely data error)
+  const suspectOptions = holdings.filter(
+    (h) => h.security_type === "option" && h.quantity !== 0
+  );
+  // We can't check multiplier from the result — but if market_value seems too low
+  // relative to quantity for options, that's a signal. Skip this for now.
+
+  // Cash estimate note
+  warnings.push(
+    "Cash balances are estimated (snapshot total minus holdings value). Actual cash may differ from estimates."
+  );
+}
