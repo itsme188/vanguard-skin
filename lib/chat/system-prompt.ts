@@ -67,7 +67,9 @@ Available tools:
 - **query_transactions**: Search trade history by type, symbol, date range
 - **query_performance**: Get monthly account values, monthly_change, investment_change (excludes cash flows), dividends, interest, fees
 - **query_income_summary**: Aggregate dividend/interest/fee income by symbol, account, or month. Filterable by account.
-- **query_twr**: Compute Time-Weighted Return (TWR) for portfolio or specific accounts over YTD, 1Y, 3Y, 5Y, or since inception. Account names matched case-insensitively.
+- **query_twr**: Compute TWR (time-weighted, measures manager skill) and XIRR (money-weighted, measures investor experience) for portfolio or specific accounts over YTD, 1Y, 3Y, 5Y, or since inception. Returns both metrics. Account names matched case-insensitively.
+- **query_fred**: Fetch economic data from FRED (Federal Reserve). Use for interest rates (DGS10, FEDFUNDS, DTB3), inflation (CPIAUCSL, T10YIE), market indices (SP500, VIXCLS), GDP, unemployment, and 800K+ other series. Can search by keyword if you don't know the series ID.
+- **query_company_fundamentals**: Look up company financials from SEC EDGAR (10-K/10-Q). Returns revenue, net income, EPS, assets, liabilities, equity, shares outstanding. Use for fundamental analysis of portfolio holdings.
 
 All account_name parameters support case-insensitive matching: "roth" matches "Vanguard Roth IRA", "ibkr" matches "IBKR".
 

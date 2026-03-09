@@ -10,7 +10,10 @@ import {
   getIncomeSummaryForChat,
 } from "@/lib/queries/chat-tools";
 import { computeTwr } from "@/lib/compute/twr";
+import { computeXirr } from "@/lib/compute/xirr";
 import { annotateToolResult } from "@/lib/chat/validate";
+import { getSeriesData, searchSeries, getLatestValue, FRED_SERIES } from "@/lib/apis/fred";
+import { getCompanyFinancials, getCompanyInfo, getRecentFilings } from "@/lib/apis/edgar";
 
 // ─── Tool Definitions ─────────────────────────────────────────────
 
@@ -220,7 +223,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   {
     name: "query_twr",
     description:
-      "Compute Time-Weighted Return (TWR) for the portfolio or individual accounts over a specified period. Uses chain-linked Modified Dietz method. Returns cumulative return, annualized return, and per-account breakdown. Account names are matched case-insensitively (e.g., 'roth' matches 'Vanguard Roth IRA'). Use when asked about portfolio performance, returns, how the portfolio has done, YTD/annual returns, investment performance comparison between accounts, or whether the portfolio is beating expectations.",
+      "Compute Time-Weighted Return (TWR) and XIRR for the portfolio or individual accounts over a specified period. TWR uses chain-linked Modified Dietz (measures portfolio manager skill). XIRR uses Newton-Raphson (measures investor's actual experience, accounting for timing of deposits/withdrawals). Returns both metrics, cumulative return, annualized return, and per-account breakdown. Account names are matched case-insensitively (e.g., 'roth' matches 'Vanguard Roth IRA'). Use when asked about portfolio performance, returns, how the portfolio has done, YTD/annual returns, investment performance comparison between accounts, or whether the portfolio is beating expectations.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -236,6 +239,61 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
             "Optional: restrict to a single account name. Omit for portfolio-wide TWR.",
         },
       },
+    },
+  },
+  {
+    name: "query_fred",
+    description:
+      "Query Federal Reserve Economic Data (FRED) for macroeconomic indicators, interest rates, inflation, GDP, unemployment, market indices, and more. Use when the user asks about the economic environment, interest rates, inflation trends, market conditions, risk-free rates, or any macro data point. Can fetch specific series by ID or search for series by keyword. Well-known series: FEDFUNDS (fed funds rate), DGS10 (10Y Treasury), SP500, CPIAUCSL (CPI), UNRATE (unemployment), GDP, VIXCLS (VIX), T10YIE (breakeven inflation), DTB3 (3-month T-bill).",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        series_id: {
+          type: "string",
+          description:
+            "FRED series ID (e.g., 'DGS10' for 10Y Treasury, 'FEDFUNDS' for fed funds rate, 'SP500', 'CPIAUCSL' for CPI). If unsure of the ID, use search_query instead.",
+        },
+        search_query: {
+          type: "string",
+          description:
+            "Search FRED for series by keyword (e.g., 'corporate bond spread', 'housing starts'). Use when you don't know the exact series ID.",
+        },
+        start_date: {
+          type: "string",
+          description: "Start date for observations (YYYY-MM-DD). Defaults to 1 year ago.",
+        },
+        end_date: {
+          type: "string",
+          description: "End date for observations (YYYY-MM-DD). Defaults to today.",
+        },
+        limit: {
+          type: "integer",
+          description: "Maximum number of observations to return. Defaults to 30.",
+        },
+      },
+    },
+  },
+  {
+    name: "query_company_fundamentals",
+    description:
+      "Look up company fundamentals from SEC EDGAR filings (10-K/10-Q). Returns financial data including revenue, net income, EPS, total assets, liabilities, stockholders' equity, shares outstanding, and operating income. Use when the user asks about a company's financials, valuation metrics, earnings, revenue trends, or fundamental analysis of a holding. Also returns basic company info (SIC code, state of incorporation, fiscal year end).",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        ticker: {
+          type: "string",
+          description: "Stock ticker symbol (e.g., 'AAPL', 'MSFT', 'VOO'). ETFs and mutual funds may have limited data.",
+        },
+        include_filings: {
+          type: "boolean",
+          description: "Also return recent SEC filings list (10-K, 10-Q dates). Defaults to false.",
+        },
+        annual_only: {
+          type: "boolean",
+          description: "Only return annual (10-K) data, excluding quarterly. Defaults to false.",
+        },
+      },
+      required: ["ticker"],
     },
   },
 ];
@@ -297,11 +355,11 @@ function resolveAccountId(
  * Returns the query result wrapped with data quality annotations.
  * On error, returns { error: "..." } instead of throwing.
  */
-export function executeTool(
+export async function executeTool(
   db: Database.Database,
   toolName: string,
   input: Record<string, unknown>
-): unknown {
+): Promise<unknown> {
   try {
     // Resolve account names case-insensitively for all tools that accept one
     const accountName = resolveAccountName(db, input.account_name as string | undefined);
@@ -401,7 +459,55 @@ export function executeTool(
 
         const accountId = resolveAccountId(db, input.account_name as string | undefined);
 
-        rawResult = computeTwr(db, { startDate, endDate: today, accountId });
+        const twrResult = computeTwr(db, { startDate, endDate: today, accountId });
+        const xirrResult = computeXirr(db, { startDate, endDate: today, accountId });
+
+        rawResult = {
+          twr: twrResult,
+          xirr: xirrResult,
+        };
+        break;
+      }
+
+      case "query_fred": {
+        // This is async — return a promise
+        const seriesId = input.series_id as string | undefined;
+        const searchQuery = input.search_query as string | undefined;
+        const defaultStart = new Date(Date.now() - 365 * 24 * 3600 * 1000)
+          .toISOString()
+          .slice(0, 10);
+
+        if (seriesId) {
+          rawResult = await getSeriesData(seriesId, {
+            startDate: (input.start_date as string) || defaultStart,
+            endDate: (input.end_date as string) || undefined,
+            limit: (input.limit as number) || 30,
+            sort: "desc",
+          });
+        } else if (searchQuery) {
+          rawResult = await searchSeries(searchQuery, { limit: (input.limit as number) || 10 });
+        } else {
+          return { error: "Provide either series_id or search_query" };
+        }
+        break;
+      }
+
+      case "query_company_fundamentals": {
+        const ticker = input.ticker as string;
+        const includeFilings = input.include_filings as boolean | undefined;
+        const annualOnly = input.annual_only as boolean | undefined;
+
+        const financials = await getCompanyFinancials(ticker, {
+          annualOnly: annualOnly || false,
+          limit: 8,
+        });
+
+        if (includeFilings) {
+          const filings = await getRecentFilings(ticker, { limit: 5 });
+          rawResult = { ...financials, recentFilings: filings };
+        } else {
+          rawResult = financials;
+        }
         break;
       }
 
@@ -432,4 +538,6 @@ export const TOOL_LABELS: Record<string, string> = {
   query_performance: "Loading performance data...",
   query_income_summary: "Summarizing income...",
   query_twr: "Computing time-weighted return...",
+  query_fred: "Fetching economic data...",
+  query_company_fundamentals: "Looking up company financials...",
 };
