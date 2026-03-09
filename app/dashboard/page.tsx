@@ -4,15 +4,62 @@ import {
   getPortfolioChartData,
   getPortfolioTotals,
 } from "@/lib/queries/dashboard";
+import { computeTwr } from "@/lib/compute/twr";
 import { PerformanceMetrics } from "./components/PerformanceMetrics";
+import type { TwrPeriod } from "./components/PerformanceMetrics";
 import { AccountSummaryCards } from "./components/AccountSummaryCards";
 import { CombinedPortfolioChart } from "./components/CombinedPortfolioChart";
 import Link from "next/link";
+
+function computeTwrPeriods(): { periods: TwrPeriod[]; perAccount: Map<number, { totalReturn: number; annualizedReturn: number | null }> } {
+  const today = new Date().toISOString().slice(0, 10);
+  const year = today.slice(0, 4);
+  const ytdStart = `${year}-01-01`;
+  const oneYearAgo = new Date(Date.now() - 365 * 24 * 3600 * 1000)
+    .toISOString()
+    .slice(0, 10);
+
+  const ytd = computeTwr(db, { startDate: ytdStart, endDate: today });
+  const oneYear = computeTwr(db, { startDate: oneYearAgo, endDate: today });
+  const inception = computeTwr(db, {});
+
+  const periods: TwrPeriod[] = [
+    {
+      label: "YTD",
+      totalReturn: ytd?.totalReturn ?? null,
+      annualizedReturn: ytd?.annualizedReturn ?? null,
+    },
+    {
+      label: "1Y",
+      totalReturn: oneYear?.totalReturn ?? null,
+      annualizedReturn: oneYear?.annualizedReturn ?? null,
+    },
+    {
+      label: "All",
+      totalReturn: inception?.totalReturn ?? null,
+      annualizedReturn: inception?.annualizedReturn ?? null,
+    },
+  ];
+
+  // Build per-account TWR lookup from the "All" computation
+  const perAccount = new Map<number, { totalReturn: number; annualizedReturn: number | null }>();
+  if (inception) {
+    for (const acct of inception.perAccount) {
+      perAccount.set(acct.accountId, {
+        totalReturn: acct.totalReturn,
+        annualizedReturn: acct.annualizedReturn,
+      });
+    }
+  }
+
+  return { periods, perAccount };
+}
 
 export default function OverviewPage() {
   const accounts = getAccountSummaries(db);
   const chartData = getPortfolioChartData(db);
   const totals = getPortfolioTotals(db);
+  const { periods: twrPeriods, perAccount: twrByAccount } = computeTwrPeriods();
 
   const hasData = totals.snapshotCount > 0;
 
@@ -20,8 +67,8 @@ export default function OverviewPage() {
     <div className="space-y-6">
       {hasData ? (
         <>
-          <PerformanceMetrics totals={totals} />
-          <AccountSummaryCards accounts={accounts} />
+          <PerformanceMetrics totals={totals} twrPeriods={twrPeriods} />
+          <AccountSummaryCards accounts={accounts} twrByAccount={twrByAccount} />
           {chartData.length > 0 && (
             <CombinedPortfolioChart data={chartData} accounts={accounts} />
           )}

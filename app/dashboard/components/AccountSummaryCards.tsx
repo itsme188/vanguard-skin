@@ -25,8 +25,10 @@ const ACCOUNT_DOTS: Record<string, string> = {
 
 export function AccountSummaryCards({
   accounts,
+  twrByAccount,
 }: {
   accounts: AccountSummary[];
+  twrByAccount?: Map<number, { totalReturn: number; annualizedReturn: number | null }>;
 }) {
   if (accounts.every((a) => a.latestValue === null)) {
     return null;
@@ -79,6 +81,23 @@ export function AccountSummaryCards({
                 }`}
               >
                 {formatPercent(account.monthlyChangePercent)}
+              </span>
+            </div>
+          )}
+
+          {twrByAccount?.get(account.id) && (
+            <div className="mt-1.5 flex items-center gap-1.5 text-xs text-ink-faint">
+              <span>TWR</span>
+              <span
+                className={`font-mono tabular-nums ${
+                  twrByAccount.get(account.id)!.totalReturn >= 0
+                    ? "text-up"
+                    : "text-down"
+                }`}
+              >
+                {formatPercent(
+                  twrByAccount.get(account.id)!.totalReturn * 100
+                )}
               </span>
             </div>
           )}

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import { MarkdownMessage } from "./MarkdownMessage";
 
 interface Message {
   role: "user" | "assistant";
@@ -15,6 +16,7 @@ const TOOL_LABELS: Record<string, string> = {
   query_transactions: "Searching transactions",
   query_performance: "Loading performance data",
   query_income_summary: "Summarizing income",
+  query_twr: "Computing time-weighted return",
 };
 
 const SUGGESTIONS = [
@@ -182,11 +184,11 @@ export function ChatInterface() {
               }`}
             >
               {msg.role === "assistant" ? (
-                <div className="whitespace-pre-wrap">
-                  {msg.content || (
-                    <span className="text-ink-faint animate-pulse">Thinking...</span>
-                  )}
-                </div>
+                msg.content ? (
+                  <MarkdownMessage content={msg.content} />
+                ) : (
+                  <span className="text-ink-faint animate-pulse">Thinking...</span>
+                )
               ) : (
                 <div className="whitespace-pre-wrap">{msg.content}</div>
               )}

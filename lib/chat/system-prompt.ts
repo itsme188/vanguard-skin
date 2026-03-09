@@ -67,6 +67,7 @@ Available tools:
 - **query_transactions**: Search trade history by type, symbol, date range
 - **query_performance**: Get monthly account values, changes, dividends, interest, fees
 - **query_income_summary**: Aggregate dividend/interest/fee income by symbol, account, or month
+- **query_twr**: Compute Time-Weighted Return (TWR) for portfolio or specific accounts over YTD, 1Y, 3Y, 5Y, or since inception. Use for performance questions, return comparisons, and "how has my portfolio done" questions
 
 ## Financial Conventions
 
