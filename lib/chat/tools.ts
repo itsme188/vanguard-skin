@@ -9,6 +9,7 @@ import {
   getPerformanceForChat,
   getIncomeSummaryForChat,
 } from "@/lib/queries/chat-tools";
+import { computeTwr } from "@/lib/compute/twr";
 
 // ─── Tool Definitions ─────────────────────────────────────────────
 
@@ -211,6 +212,27 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
       },
     },
   },
+  {
+    name: "query_twr",
+    description:
+      "Compute Time-Weighted Return (TWR) for the portfolio or individual accounts over a specified period. Uses chain-linked Modified Dietz method. Returns cumulative return, annualized return, and per-account breakdown. Use when asked about portfolio performance, returns, how the portfolio has done, YTD/annual returns, investment performance comparison between accounts, or whether the portfolio is beating expectations.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        period: {
+          type: "string",
+          enum: ["ytd", "1y", "3y", "5y", "inception"],
+          description:
+            "Time period for TWR computation. Defaults to 'ytd'.",
+        },
+        account_name: {
+          type: "string",
+          description:
+            "Optional: restrict to a single account name. Omit for portfolio-wide TWR.",
+        },
+      },
+    },
+  },
 ];
 
 // ─── Tool Dispatcher ──────────────────────────────────────────────
@@ -285,6 +307,41 @@ export function executeTool(
           group_by: input.group_by as "symbol" | "account" | "month" | "type" | undefined,
         });
 
+      case "query_twr": {
+        const today = new Date().toISOString().slice(0, 10);
+        const period = (input.period as string) || "ytd";
+        let startDate: string | undefined;
+
+        switch (period) {
+          case "ytd":
+            startDate = `${today.slice(0, 4)}-01-01`;
+            break;
+          case "1y":
+            startDate = new Date(Date.now() - 365 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+            break;
+          case "3y":
+            startDate = new Date(Date.now() - 3 * 365 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+            break;
+          case "5y":
+            startDate = new Date(Date.now() - 5 * 365 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+            break;
+          case "inception":
+          default:
+            startDate = undefined;
+            break;
+        }
+
+        let accountId: number | undefined;
+        if (input.account_name) {
+          const row = db
+            .prepare("SELECT id FROM accounts WHERE name = ?")
+            .get(input.account_name as string) as { id: number } | undefined;
+          accountId = row?.id;
+        }
+
+        return computeTwr(db, { startDate, endDate: today, accountId });
+      }
+
       default:
         return { error: `Unknown tool: ${toolName}` };
     }
@@ -304,4 +361,5 @@ export const TOOL_LABELS: Record<string, string> = {
   query_transactions: "Searching transactions...",
   query_performance: "Loading performance data...",
   query_income_summary: "Summarizing income...",
+  query_twr: "Computing time-weighted return...",
 };
