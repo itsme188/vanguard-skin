@@ -33,6 +33,7 @@ export interface ParsedSecurity {
   expirationDate?: string;
   optionType?: "CALL" | "PUT";
   multiplier?: number;
+  maturityDate?: string;
 }
 
 export interface ParsedHolding {

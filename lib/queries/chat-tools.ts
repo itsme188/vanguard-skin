@@ -39,6 +39,7 @@ export interface PerformanceFilters {
 export interface IncomeSummaryFilters {
   period?: "ytd" | "trailing_12m" | "last_year" | "all_time";
   group_by?: "symbol" | "account" | "month" | "type";
+  account_name?: string;
 }
 
 // ─── Result types ─────────────────────────────────────────────────
@@ -57,6 +58,8 @@ export interface HoldingResult {
   unrealized_gain: number | null;
   unrealized_gain_pct: number | null;
   position_weight_pct: number | null;
+  maturity_date: string | null;
+  maturity_note: string | null;
 }
 
 export interface PriceHistoryResult {
@@ -111,6 +114,8 @@ export interface PerformanceResult {
   account_name: string;
   total_value: number;
   monthly_change: number | null;
+  deposits_withdrawals: number | null;
+  investment_change: number | null;
   dividends: number | null;
   interest: number | null;
   fees: number | null;
@@ -156,8 +161,10 @@ export function getHoldingsForChat(
       LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
       WHERE h.as_of_date = (
         SELECT MAX(h2.as_of_date) FROM holdings h2
-        WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id
-      )`
+        WHERE h2.account_id = h.account_id
+      )
+      AND h.quantity > 0
+      AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))`
     )
     .get() as { total: number };
 
@@ -167,8 +174,10 @@ export function getHoldingsForChat(
   const conditions: string[] = [
     `h.as_of_date = (
       SELECT MAX(h2.as_of_date) FROM holdings h2
-      WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id
+      WHERE h2.account_id = h.account_id
     )`,
+    "h.quantity > 0",
+    "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))",
   ];
   const params: (string | number)[] = [];
 
@@ -224,7 +233,12 @@ export function getHoldingsForChat(
         ELSE NULL END AS unrealized_gain_pct,
       CASE WHEN lp.close_price IS NOT NULL
         THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier")} * 100.0 / ${totalPortfolioValue}
-        ELSE NULL END AS position_weight_pct
+        ELSE NULL END AS position_weight_pct,
+      s.maturity_date,
+      CASE WHEN s.maturity_date IS NOT NULL
+        AND julianday(s.maturity_date) - julianday('now') BETWEEN 0 AND 90
+        THEN 'Matures in ' || CAST(julianday(s.maturity_date) - julianday('now') AS INTEGER) || ' days'
+        ELSE NULL END AS maturity_note
     FROM holdings h
     JOIN accounts a ON a.id = h.account_id
     JOIN securities s ON s.id = h.security_id
@@ -250,10 +264,11 @@ export function getPriceHistory(
   const conditions: string[] = ["s.symbol = ?"];
   const params: (string | number)[] = [symbol];
 
-  if (startDate) {
-    conditions.push("p.date >= ?");
-    params.push(startDate);
-  }
+  // Default to last 90 days if no start date specified
+  const effectiveStart = startDate ?? new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+  conditions.push("p.date >= ?");
+  params.push(effectiveStart);
+
   if (endDate) {
     conditions.push("p.date <= ?");
     params.push(endDate);
@@ -290,9 +305,10 @@ export function getAllocationBreakdown(
   const conditions: string[] = [
     `h.as_of_date = (
       SELECT MAX(h2.as_of_date) FROM holdings h2
-      WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id
+      WHERE h2.account_id = h.account_id
     )`,
-    "lp.close_price IS NOT NULL",
+    "h.quantity > 0",
+    "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))",
   ];
   const params: (string | number)[] = [];
 
@@ -312,7 +328,13 @@ export function getAllocationBreakdown(
       allocation AS (
         SELECT
           ${groupExpr} AS group_name,
-          ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier")} AS mv,
+          CASE
+            WHEN lp.close_price IS NOT NULL
+              THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier")}
+            WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
+              THEN h.cost_basis
+            ELSE 0
+          END AS mv,
           1 AS cnt
         FROM holdings h
         JOIN accounts a ON a.id = h.account_id
@@ -556,6 +578,10 @@ export function getPerformanceForChat(
         ms.total_value - LAG(ms.total_value) OVER (
           PARTITION BY ms.account_id ORDER BY ms.month_end_date
         ) AS monthly_change,
+        ms.deposits_withdrawals,
+        (ms.total_value - LAG(ms.total_value) OVER (
+          PARTITION BY ms.account_id ORDER BY ms.month_end_date
+        )) - COALESCE(ms.deposits_withdrawals, 0) AS investment_change,
         ms.dividends,
         ms.interest,
         ms.fees,
@@ -575,7 +601,7 @@ export function getIncomeSummaryForChat(
   db: Database.Database,
   filters: IncomeSummaryFilters = {}
 ): IncomeResult[] {
-  const { period = "trailing_12m", group_by = "symbol" } = filters;
+  const { period = "trailing_12m", group_by = "symbol", account_name } = filters;
 
   // Compute date range from period
   const today = new Date();
@@ -611,6 +637,18 @@ export function getIncomeSummaryForChat(
 
   const expr = groupExpr[group_by] ?? "COALESCE(s.symbol, 'CASH')";
 
+  const incomeConditions = [
+    "t.trade_date >= ?",
+    "t.trade_date <= ?",
+    "UPPER(t.type) IN ('DIVIDEND', 'REINVESTMENT', 'INTEREST', 'FEE', 'COMMISSION')",
+  ];
+  const incomeParams: (string | number)[] = [startDate, endDate];
+
+  if (account_name) {
+    incomeConditions.push("a.name = ?");
+    incomeParams.push(account_name);
+  }
+
   return db
     .prepare(
       `SELECT
@@ -623,10 +661,94 @@ export function getIncomeSummaryForChat(
       FROM transactions t
       JOIN accounts a ON a.id = t.account_id
       LEFT JOIN securities s ON s.id = t.security_id
-      WHERE t.trade_date >= ? AND t.trade_date <= ?
-        AND UPPER(t.type) IN ('DIVIDEND', 'REINVESTMENT', 'INTEREST', 'FEE', 'COMMISSION')
+      WHERE ${incomeConditions.join(" AND ")}
       GROUP BY ${expr}
       ORDER BY net_income DESC`
     )
-    .all(startDate, endDate) as IncomeResult[];
+    .all(...incomeParams) as IncomeResult[];
+}
+
+// ─── Cash estimation ──────────────────────────────────────────────
+
+export interface CashEstimate {
+  account_name: string;
+  snapshot_total: number | null;
+  snapshot_date: string | null;
+  holdings_total: number;
+  estimated_cash: number;
+}
+
+/**
+ * Estimate cash balances per account by subtracting holdings market value
+ * from the latest monthly snapshot total. This is an approximation since
+ * prices may have changed since the snapshot date.
+ */
+export function getCashEstimates(db: Database.Database): CashEstimate[] {
+  return db
+    .prepare(
+      `WITH latest_prices AS (
+        SELECT p.security_id, p.close_price
+        FROM prices p
+        INNER JOIN (SELECT security_id, MAX(date) AS max_date FROM prices GROUP BY security_id) lp
+        ON p.security_id = lp.security_id AND p.date = lp.max_date
+      )
+      SELECT
+        a.name AS account_name,
+        ms.total_value AS snapshot_total,
+        ms.month_end_date AS snapshot_date,
+        COALESCE(SUM(
+          CASE WHEN lp.close_price IS NOT NULL AND h.quantity > 0
+            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier")}
+            ELSE 0 END
+        ), 0) AS holdings_total,
+        COALESCE(ms.total_value, 0) - COALESCE(SUM(
+          CASE WHEN lp.close_price IS NOT NULL AND h.quantity > 0
+            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier")}
+            ELSE 0 END
+        ), 0) AS estimated_cash
+      FROM accounts a
+      LEFT JOIN monthly_snapshots ms ON ms.account_id = a.id
+        AND ms.month_end_date = (SELECT MAX(ms2.month_end_date) FROM monthly_snapshots ms2 WHERE ms2.account_id = a.id)
+      LEFT JOIN holdings h ON h.account_id = a.id
+        AND h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = a.id)
+      LEFT JOIN securities s ON s.id = h.security_id
+      LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
+      WHERE ms.total_value IS NOT NULL
+      GROUP BY a.id
+      ORDER BY a.name`
+    )
+    .all() as CashEstimate[];
+}
+
+// ─── Data freshness helpers ───────────────────────────────────────
+
+export interface DataFreshness {
+  latest_price_date: string | null;
+  price_age_days: number | null;
+  latest_holdings_date: string | null;
+  holdings_age_days: number | null;
+}
+
+export function getDataFreshness(db: Database.Database): DataFreshness {
+  const priceRow = db
+    .prepare("SELECT MAX(date) AS latest FROM prices")
+    .get() as { latest: string | null };
+  const holdingsRow = db
+    .prepare("SELECT MAX(as_of_date) AS latest FROM holdings")
+    .get() as { latest: string | null };
+
+  const now = Date.now();
+  const priceAge = priceRow.latest
+    ? Math.floor((now - new Date(priceRow.latest + "T00:00:00Z").getTime()) / 86400000)
+    : null;
+  const holdingsAge = holdingsRow.latest
+    ? Math.floor((now - new Date(holdingsRow.latest + "T00:00:00Z").getTime()) / 86400000)
+    : null;
+
+  return {
+    latest_price_date: priceRow.latest,
+    price_age_days: priceAge,
+    latest_holdings_date: holdingsRow.latest,
+    holdings_age_days: holdingsAge,
+  };
 }

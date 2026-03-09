@@ -10,6 +10,7 @@ import {
   getIncomeSummaryForChat,
 } from "@/lib/queries/chat-tools";
 import { computeTwr } from "@/lib/compute/twr";
+import { annotateToolResult } from "@/lib/chat/validate";
 
 // ─── Tool Definitions ─────────────────────────────────────────────
 
@@ -17,7 +18,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   {
     name: "query_holdings",
     description:
-      "Query current holdings with optional filters. Returns detailed position data including cost basis, market value, unrealized gain/loss, position weight, sector, and asset class. Use when the user asks about specific positions, accounts, asset classes, sectors, or portfolio composition.",
+      "Query current holdings with optional filters. Returns detailed position data including cost basis, market value, unrealized gain/loss, position weight, sector, asset class, and maturity info for bonds. Automatically excludes matured bonds and zero-quantity positions. Use when the user asks about specific positions, accounts, asset classes, sectors, or portfolio composition.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -98,7 +99,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   {
     name: "query_tax_lots",
     description:
-      "Query tax lot details for open or closed positions. Returns acquisition date, cost basis, current value, unrealized/realized gain/loss, holding period, long-term/short-term status, and projected long-term date. Use for tax-loss harvesting analysis, capital gains questions, wash sale evaluation, lot-level drill-down, or identifying lots approaching the 1-year long-term threshold.",
+      "Query tax lot details for open or closed positions. Returns acquisition date, cost basis, current value, unrealized/realized gain/loss, holding period, long-term/short-term status, and projected long-term date. Uses FIFO (First-In, First-Out) lot matching — the user's broker may use a different method. Use for tax-loss harvesting analysis, capital gains questions, wash sale evaluation, lot-level drill-down, or identifying lots approaching the 1-year long-term threshold.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -173,7 +174,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   {
     name: "query_performance",
     description:
-      "Get account performance over time from monthly snapshots. Returns monthly total values, month-over-month changes, dividends, interest, fees, and time-weighted return (TWR) where available. Use for performance trend questions, income analysis over time, fee tracking, or comparing account growth.",
+      "Get account performance over time from monthly snapshots. Returns monthly total values, month-over-month changes, investment_change (excluding deposits/withdrawals), dividends, interest, fees, and time-weighted return (TWR) where available. Use investment_change instead of monthly_change for actual portfolio performance. Use for performance trend questions, income analysis over time, fee tracking, or comparing account growth.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -195,7 +196,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   {
     name: "query_income_summary",
     description:
-      "Summarize investment income (dividends, interest) and fees over a period. Returns per-symbol or per-account breakdowns. Use for income analysis, yield calculations, fee drag assessment, dividend tracking by quarter/month, or identifying which securities generate the most income.",
+      "Summarize investment income (dividends, interest) and fees over a period. Returns per-symbol or per-account breakdowns. REINVESTMENT transactions are counted as dividend income. Use for income analysis, yield calculations, fee drag assessment, dividend tracking by quarter/month, or identifying which securities generate the most income.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -209,13 +210,17 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
           enum: ["symbol", "account", "month", "type"],
           description: "How to group the results. Defaults to 'symbol'.",
         },
+        account_name: {
+          type: "string",
+          description: "Filter by account name. Omit for all accounts.",
+        },
       },
     },
   },
   {
     name: "query_twr",
     description:
-      "Compute Time-Weighted Return (TWR) for the portfolio or individual accounts over a specified period. Uses chain-linked Modified Dietz method. Returns cumulative return, annualized return, and per-account breakdown. Use when asked about portfolio performance, returns, how the portfolio has done, YTD/annual returns, investment performance comparison between accounts, or whether the portfolio is beating expectations.",
+      "Compute Time-Weighted Return (TWR) for the portfolio or individual accounts over a specified period. Uses chain-linked Modified Dietz method. Returns cumulative return, annualized return, and per-account breakdown. Account names are matched case-insensitively (e.g., 'roth' matches 'Vanguard Roth IRA'). Use when asked about portfolio performance, returns, how the portfolio has done, YTD/annual returns, investment performance comparison between accounts, or whether the portfolio is beating expectations.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -235,11 +240,61 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   },
 ];
 
+// ─── Account Name Resolution ─────────────────────────────────────
+
+/**
+ * Resolve a user-provided account name to the exact DB account name
+ * using case-insensitive substring matching.
+ * "roth" → "Vanguard Roth IRA", "ibkr" → "IBKR", etc.
+ * Returns the original string if no match found (let downstream handle it).
+ */
+function resolveAccountName(
+  db: Database.Database,
+  input: string | undefined
+): string | undefined {
+  if (!input) return undefined;
+
+  // Try exact match first
+  const exact = db
+    .prepare("SELECT name FROM accounts WHERE name = ?")
+    .get(input) as { name: string } | undefined;
+  if (exact) return exact.name;
+
+  // Fall back to case-insensitive substring match
+  const fuzzy = db
+    .prepare("SELECT name FROM accounts WHERE LOWER(name) LIKE '%' || LOWER(?) || '%'")
+    .get(input) as { name: string } | undefined;
+  return fuzzy?.name ?? input;
+}
+
+/**
+ * Resolve a user-provided account name to the DB account ID
+ * using case-insensitive substring matching.
+ */
+function resolveAccountId(
+  db: Database.Database,
+  input: string | undefined
+): number | undefined {
+  if (!input) return undefined;
+
+  // Try exact match first
+  const exact = db
+    .prepare("SELECT id FROM accounts WHERE name = ?")
+    .get(input) as { id: number } | undefined;
+  if (exact) return exact.id;
+
+  // Fall back to case-insensitive substring match
+  const fuzzy = db
+    .prepare("SELECT id FROM accounts WHERE LOWER(name) LIKE '%' || LOWER(?) || '%'")
+    .get(input) as { id: number } | undefined;
+  return fuzzy?.id;
+}
+
 // ─── Tool Dispatcher ──────────────────────────────────────────────
 
 /**
  * Execute a chat tool by name with the given input parameters.
- * Returns the query result as a JSON-serializable object.
+ * Returns the query result wrapped with data quality annotations.
  * On error, returns { error: "..." } instead of throwing.
  */
 export function executeTool(
@@ -248,64 +303,77 @@ export function executeTool(
   input: Record<string, unknown>
 ): unknown {
   try {
+    // Resolve account names case-insensitively for all tools that accept one
+    const accountName = resolveAccountName(db, input.account_name as string | undefined);
+
+    let rawResult: unknown;
+
     switch (toolName) {
       case "query_holdings":
-        return getHoldingsForChat(db, {
-          account_name: input.account_name as string | undefined,
+        rawResult = getHoldingsForChat(db, {
+          account_name: accountName,
           symbol: input.symbol as string | undefined,
           security_type: input.security_type as string | undefined,
           sector: input.sector as string | undefined,
           sort_by: input.sort_by as "market_value" | "unrealized_gain" | "position_weight" | "symbol" | undefined,
           limit: input.limit as number | undefined,
         });
+        break;
 
       case "query_price_history":
-        return getPriceHistory(
+        rawResult = getPriceHistory(
           db,
           input.symbol as string,
           input.start_date as string | undefined,
           input.end_date as string | undefined
         );
+        break;
 
       case "query_allocation":
-        return getAllocationBreakdown(
+        rawResult = getAllocationBreakdown(
           db,
           input.group_by as "asset_class" | "security_type" | "sector" | "account" | "symbol",
-          input.account_name as string | undefined
+          accountName
         );
+        break;
 
       case "query_tax_lots":
-        return getTaxLotsForChat(db, {
+        rawResult = getTaxLotsForChat(db, {
           status: input.status as "open" | "closed" | "all" | undefined,
           symbol: input.symbol as string | undefined,
-          account_name: input.account_name as string | undefined,
+          account_name: accountName,
           year: input.year as number | undefined,
           sort_by: input.sort_by as "unrealized_gain" | "acquisition_date" | "holding_period_days" | "cost_basis" | undefined,
           limit: input.limit as number | undefined,
         });
+        break;
 
       case "query_transactions":
-        return getTransactionsForChat(db, {
-          account_name: input.account_name as string | undefined,
+        rawResult = getTransactionsForChat(db, {
+          account_name: accountName,
           symbol: input.symbol as string | undefined,
           type: input.type as string | undefined,
           start_date: input.start_date as string | undefined,
           end_date: input.end_date as string | undefined,
           limit: input.limit as number | undefined,
         });
+        break;
 
       case "query_performance":
-        return getPerformanceForChat(db, {
-          account_name: input.account_name as string | undefined,
+        rawResult = getPerformanceForChat(db, {
+          account_name: accountName,
           start_date: input.start_date as string | undefined,
           end_date: input.end_date as string | undefined,
         });
+        break;
 
       case "query_income_summary":
-        return getIncomeSummaryForChat(db, {
+        rawResult = getIncomeSummaryForChat(db, {
           period: input.period as "ytd" | "trailing_12m" | "last_year" | "all_time" | undefined,
           group_by: input.group_by as "symbol" | "account" | "month" | "type" | undefined,
+          account_name: accountName,
         });
+        break;
 
       case "query_twr": {
         const today = new Date().toISOString().slice(0, 10);
@@ -331,20 +399,22 @@ export function executeTool(
             break;
         }
 
-        let accountId: number | undefined;
-        if (input.account_name) {
-          const row = db
-            .prepare("SELECT id FROM accounts WHERE name = ?")
-            .get(input.account_name as string) as { id: number } | undefined;
-          accountId = row?.id;
-        }
+        const accountId = resolveAccountId(db, input.account_name as string | undefined);
 
-        return computeTwr(db, { startDate, endDate: today, accountId });
+        rawResult = computeTwr(db, { startDate, endDate: today, accountId });
+        break;
       }
 
       default:
         return { error: `Unknown tool: ${toolName}` };
     }
+
+    // Wrap result with data quality annotations
+    const annotations = annotateToolResult(db, toolName, rawResult);
+    return {
+      data: rawResult,
+      ...annotations,
+    };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Tool execution failed";
     return { error: message };

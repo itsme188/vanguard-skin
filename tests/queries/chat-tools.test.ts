@@ -276,7 +276,8 @@ describe("getPriceHistory", () => {
     seedPrice(db, sec, "2025-01-15", 195);
     seedPrice(db, sec, "2025-01-31", 200);
 
-    const prices = getPriceHistory(db, "AAPL");
+    // Pass explicit start_date since default is 90 days ago
+    const prices = getPriceHistory(db, "AAPL", "2025-01-01");
     expect(prices).toHaveLength(3);
     expect(prices[0].date).toBe("2025-01-01");
     expect(prices[2].date).toBe("2025-01-31");
@@ -567,6 +568,131 @@ describe("getIncomeSummaryForChat", () => {
   });
 });
 
+describe("maturity-aware holdings", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  it("excludes matured bonds from holdings", () => {
+    const stock = seedSecurity(db, "AAPL");
+    const maturedBond = seedSecurity(db, "TBILL1", {
+      name: "T-Bill (due 10/23/25)",
+      security_type: "bond",
+    });
+    // Set maturity_date directly (migration backfill would do this for real data)
+    db.prepare("UPDATE securities SET maturity_date = ? WHERE id = ?").run("2025-10-23", maturedBond);
+
+    seedHolding(db, 1, stock, 50, "2025-01-31", 7500);
+    seedHolding(db, 1, maturedBond, 10000, "2025-01-31", 9800);
+    seedPrice(db, stock, "2025-01-31", 200);
+    seedPrice(db, maturedBond, "2025-01-31", 99);
+
+    const holdings = getHoldingsForChat(db);
+    // Only AAPL should be returned — TBILL1 matured on 2025-10-23 which is in the past
+    expect(holdings).toHaveLength(1);
+    expect(holdings[0].symbol).toBe("AAPL");
+  });
+
+  it("includes non-matured bonds", () => {
+    const futureBond = seedSecurity(db, "TNOTE1", {
+      name: "T-Note 4.375% (due 05/15/34)",
+      security_type: "bond",
+    });
+    db.prepare("UPDATE securities SET maturity_date = ? WHERE id = ?").run("2034-05-15", futureBond);
+
+    seedHolding(db, 1, futureBond, 10000, "2025-01-31", 9800);
+    seedPrice(db, futureBond, "2025-01-31", 98.5);
+
+    const holdings = getHoldingsForChat(db);
+    expect(holdings).toHaveLength(1);
+    expect(holdings[0].symbol).toBe("TNOTE1");
+    expect(holdings[0].maturity_date).toBe("2034-05-15");
+  });
+
+  it("excludes zero-quantity positions", () => {
+    const stock = seedSecurity(db, "AAPL");
+    const sold = seedSecurity(db, "MSFT");
+
+    seedHolding(db, 1, stock, 50, "2025-01-31", 7500);
+    seedHolding(db, 1, sold, 0, "2025-01-31", 0);
+    seedPrice(db, stock, "2025-01-31", 200);
+    seedPrice(db, sold, "2025-01-31", 400);
+
+    const holdings = getHoldingsForChat(db);
+    expect(holdings).toHaveLength(1);
+    expect(holdings[0].symbol).toBe("AAPL");
+  });
+
+  it("uses per-account MAX date (not per-security)", () => {
+    const stock = seedSecurity(db, "AAPL");
+
+    // Old holding from January
+    seedHolding(db, 1, stock, 100, "2025-01-31", 15000);
+    // New holding from February (different quantity)
+    seedHolding(db, 1, stock, 50, "2025-02-28", 7500);
+    seedPrice(db, stock, "2025-02-28", 200);
+
+    const holdings = getHoldingsForChat(db);
+    // Should use Feb (latest for account 1), showing quantity 50
+    expect(holdings).toHaveLength(1);
+    expect(holdings[0].quantity).toBe(50);
+  });
+
+  it("excludes positions absent from latest statement", () => {
+    const aapl = seedSecurity(db, "AAPL");
+    const msft = seedSecurity(db, "MSFT");
+
+    // January: both held
+    seedHolding(db, 1, aapl, 50, "2025-01-31", 7500);
+    seedHolding(db, 1, msft, 30, "2025-01-31", 9000);
+    // February: only AAPL held (MSFT was sold)
+    seedHolding(db, 1, aapl, 50, "2025-02-28", 7500);
+    seedPrice(db, aapl, "2025-02-28", 200);
+    seedPrice(db, msft, "2025-02-28", 400);
+
+    const holdings = getHoldingsForChat(db);
+    // Per-account MAX = 2025-02-28. Only AAPL has a holding on that date.
+    expect(holdings).toHaveLength(1);
+    expect(holdings[0].symbol).toBe("AAPL");
+  });
+});
+
+describe("allocation with unpriced holdings", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  it("falls back to cost basis for positions without prices", () => {
+    const priced = seedSecurity(db, "AAPL", { asset_class: "equity" });
+    const unpriced = seedSecurity(db, "PRIVATE", { asset_class: "alternative" });
+
+    seedHolding(db, 1, priced, 100, "2025-01-31", 15000);
+    seedHolding(db, 1, unpriced, 50, "2025-01-31", 10000);
+    seedPrice(db, priced, "2025-01-31", 200); // market value = 20000
+    // No price for PRIVATE — should use cost_basis = 10000
+
+    const alloc = getAllocationBreakdown(db, "asset_class");
+    const equity = alloc.find((a) => a.group_name === "equity");
+    const alt = alloc.find((a) => a.group_name === "alternative");
+
+    expect(equity).toBeDefined();
+    expect(alt).toBeDefined();
+    // Total = 20000 + 10000 = 30000
+    expect(equity!.total_market_value).toBe(20000);
+    expect(alt!.total_market_value).toBe(10000);
+    expect(equity!.percentage).toBeCloseTo(66.7, 0);
+    expect(alt!.percentage).toBeCloseTo(33.3, 0);
+  });
+});
+
 describe("executeTool dispatcher", () => {
   let db: Database.Database;
 
@@ -576,14 +702,37 @@ describe("executeTool dispatcher", () => {
     runMigrations(db);
   });
 
-  it("dispatches to correct query function", () => {
+  it("dispatches to correct query function and wraps with annotations", () => {
     const sec = seedSecurity(db, "AAPL");
     seedHolding(db, 1, sec, 50, "2025-01-31");
     seedPrice(db, sec, "2025-01-31", 200);
 
-    const result = executeTool(db, "query_holdings", { symbol: "AAPL" });
-    expect(Array.isArray(result)).toBe(true);
-    expect((result as Array<{ symbol: string }>)[0].symbol).toBe("AAPL");
+    const result = executeTool(db, "query_holdings", { symbol: "AAPL" }) as {
+      data: Array<{ symbol: string }>;
+      quality_warnings: string[];
+      data_freshness: { latest_price_date: string | null };
+    };
+    expect(result).toHaveProperty("data");
+    expect(result).toHaveProperty("quality_warnings");
+    expect(result).toHaveProperty("data_freshness");
+    expect(Array.isArray(result.data)).toBe(true);
+    expect(result.data[0].symbol).toBe("AAPL");
+    expect(Array.isArray(result.quality_warnings)).toBe(true);
+  });
+
+  it("resolves account names case-insensitively", () => {
+    const sec = seedSecurity(db, "AAPL");
+    seedHolding(db, 1, sec, 50, "2025-01-31", 7500);
+    seedHolding(db, 2, sec, 30, "2025-01-31", 4500);
+    seedPrice(db, sec, "2025-01-31", 200);
+
+    // "roth" should match "Vanguard Roth IRA" (account 2)
+    const result = executeTool(db, "query_holdings", { account_name: "roth" }) as {
+      data: Array<{ account_name: string; quantity: number }>;
+    };
+    expect(result.data).toHaveLength(1);
+    expect(result.data[0].account_name).toBe("Vanguard Roth IRA");
+    expect(result.data[0].quantity).toBe(30);
   });
 
   it("returns error for unknown tool", () => {
@@ -597,6 +746,19 @@ describe("executeTool dispatcher", () => {
     const result = executeTool(db, "query_holdings", {});
     expect(result).toHaveProperty("error");
   });
+
+  it("passes account_name to income summary", () => {
+    const sec = seedSecurity(db, "VTI");
+    seedTransaction(db, 1, sec, { trade_date: "2025-06-15", type: "DIVIDEND", amount: 100 });
+    seedTransaction(db, 2, sec, { trade_date: "2025-06-15", type: "DIVIDEND", amount: 200 });
+
+    const result = executeTool(db, "query_income_summary", {
+      period: "all_time",
+      account_name: "Vanguard Taxable",
+    }) as { data: Array<{ total_dividends: number }> };
+    expect(result.data).toHaveLength(1);
+    expect(result.data[0].total_dividends).toBe(100);
+  });
 });
 
 describe("buildSystemPrompt", () => {
@@ -607,5 +769,37 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("portfolio analyst");
     expect(prompt).toContain("Tax-loss harvesting");
     expect(prompt).toContain("Concentration risk");
+  });
+
+  it("includes fixed income intelligence sections", () => {
+    const prompt = buildSystemPrompt("", "2025-01-31");
+    expect(prompt).toContain("Fixed Income Intelligence");
+    expect(prompt).toContain("Bond Maturity");
+    expect(prompt).toContain("matured positions");
+  });
+
+  it("includes data quality awareness", () => {
+    const prompt = buildSystemPrompt("", "2025-01-31");
+    expect(prompt).toContain("Data Quality Awareness");
+    expect(prompt).toContain("quality_warnings");
+    expect(prompt).toContain("estimated cash");
+  });
+
+  it("includes position lifecycle", () => {
+    const prompt = buildSystemPrompt("", "2025-01-31");
+    expect(prompt).toContain("Position Lifecycle");
+    expect(prompt).toContain("maturity");
+    expect(prompt).toContain("expiration");
+  });
+
+  it("includes wash sale awareness", () => {
+    const prompt = buildSystemPrompt("", "2025-01-31");
+    expect(prompt).toContain("Wash Sale");
+    expect(prompt).toContain("30 days");
+  });
+
+  it("mentions case-insensitive account matching", () => {
+    const prompt = buildSystemPrompt("", "2025-01-31");
+    expect(prompt).toContain("case-insensitive");
   });
 });

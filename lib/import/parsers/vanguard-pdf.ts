@@ -7,6 +7,7 @@ import type {
   ParsedPrice,
   ParsedSnapshot,
 } from "../types";
+import { extractMaturityDate } from "@/lib/bonds";
 
 // ── Claude API response schema ──────────────────────────────────────
 
@@ -267,6 +268,10 @@ export function parseClaudePdfResponse(
       sec.expirationDate = h.expiration_date;
       sec.optionType = h.option_type;
       sec.multiplier = 100;
+    }
+
+    if (securityType === "bond") {
+      sec.maturityDate = extractMaturityDate(h.name) ?? undefined;
     }
 
     securitiesMap.set(h.symbol, sec);
