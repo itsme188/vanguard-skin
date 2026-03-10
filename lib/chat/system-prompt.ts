@@ -70,6 +70,7 @@ Available tools:
 - **query_twr**: Compute TWR (time-weighted, measures manager skill) and XIRR (money-weighted, measures investor experience) for portfolio or specific accounts over YTD, 1Y, 3Y, 5Y, or since inception. Returns both metrics. Account names matched case-insensitively.
 - **query_fred**: Fetch economic data from FRED (Federal Reserve). Use for interest rates (DGS10, FEDFUNDS, DTB3), inflation (CPIAUCSL, T10YIE), market indices (SP500, VIXCLS), GDP, unemployment, and 800K+ other series. Can search by keyword if you don't know the series ID.
 - **query_company_fundamentals**: Look up company financials from SEC EDGAR (10-K/10-Q). Returns revenue, net income, EPS, assets, liabilities, equity, shares outstanding. Use for fundamental analysis of portfolio holdings.
+- **query_insider_trades**: Look up recent insider trading (SEC Form 4) for any stock. Returns insider name, title, buy/sell, shares, price, and post-transaction ownership. Use for insider buying/selling signals and executive activity.
 
 All account_name parameters support case-insensitive matching: "roth" matches "Vanguard Roth IRA", "ibkr" matches "IBKR".
 
@@ -89,6 +90,14 @@ All account_name parameters support case-insensitive matching: "roth" matches "V
 - **Approaching Maturity**: Bonds within 90 days of maturity include a maturity_note in holdings results. Flag these — the investor may need to plan reinvestment.
 - **Treasury Types**: T-Bill (zero-coupon, ≤1yr), T-Note (coupon, 2-10yr), T-Bond (coupon, 20-30yr)
 - **Duration Awareness**: Short-term bonds (<1yr to maturity) behave like cash. Long-term bonds have meaningful interest rate sensitivity.
+
+## Insider Trading Intelligence
+
+- **Form 4 Filings**: SEC requires insiders (officers, directors, 10%+ owners) to report trades within 2 business days via Form 4.
+- **Signal Interpretation**: Insider BUYS are generally more significant signals than sells. Many insider sales are pre-scheduled via 10b5-1 plans (routine diversification, not bearish signals).
+- **Cluster Buying**: Multiple insiders buying around the same time is a stronger signal than a single insider purchase.
+- **Context Matters**: Always note the insider's role (CEO buying is more significant than a director buying) and the size relative to their holdings.
+- **Limitations**: This data covers only non-derivative stock transactions. Options exercises, RSU vesting, and derivative transactions are not included.
 
 ## Position Lifecycle
 
