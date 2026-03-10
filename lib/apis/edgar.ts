@@ -13,7 +13,7 @@
 const EDGAR_BASE_URL = "https://data.sec.gov";
 const EFTS_BASE_URL = "https://efts.sec.gov/LATEST";
 
-const USER_AGENT = "VanguardSkin/2.0 (personal portfolio dashboard)";
+const USER_AGENT = `VanguardSkin/2.0 ${process.env.EDGAR_CONTACT_EMAIL || "user@example.com"}`;
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -58,6 +58,26 @@ export interface CompanyFinancials {
   operatingIncome?: FinancialFact[];
 }
 
+export interface InsiderTransaction {
+  securityTitle: string; // e.g., "Common Stock"
+  transactionDate: string; // YYYY-MM-DD
+  shares: number;
+  pricePerShare: number | null; // null if not reported
+  acquiredOrDisposed: "A" | "D"; // A = acquired/bought, D = disposed/sold
+  sharesOwnedAfter: number | null;
+}
+
+export interface InsiderFiling {
+  filingDate: string; // YYYY-MM-DD (when form was filed with SEC)
+  accessionNumber: string;
+  ownerName: string; // e.g., "Cook Timothy D"
+  ownerTitle: string; // e.g., "Chief Executive Officer"
+  isDirector: boolean;
+  isOfficer: boolean;
+  isTenPercentOwner: boolean;
+  transactions: InsiderTransaction[];
+}
+
 // ─── API Client ─────────────────────────────────────────────────
 
 async function edgarFetch(url: string): Promise<unknown> {
@@ -74,6 +94,154 @@ async function edgarFetch(url: string): Promise<unknown> {
     throw new Error(`SEC EDGAR API error: ${response.status} ${response.statusText}`);
   }
   return response.json();
+}
+
+async function edgarFetchText(url: string): Promise<string> {
+  const response = await fetch(url, {
+    headers: {
+      "User-Agent": USER_AGENT,
+      Accept: "application/xml, text/xml, */*",
+    },
+  });
+  if (!response.ok) {
+    if (response.status === 404) {
+      throw new Error(`Filing document not found`);
+    }
+    throw new Error(`SEC EDGAR error: ${response.status} ${response.statusText}`);
+  }
+  return response.text();
+}
+
+// ─── Form 4 XML Parsing Helpers ─────────────────────────────────
+
+/**
+ * Extract text content from a simple XML tag (first occurrence).
+ * @internal Exported for testing.
+ */
+export function xmlText(xml: string, tagName: string): string | null {
+  const match = xml.match(new RegExp(`<${tagName}>([^<]*)</${tagName}>`));
+  return match ? match[1].trim() : null;
+}
+
+/**
+ * Extract all occurrences of a tag block (including nested content).
+ * @internal Exported for testing.
+ */
+export function xmlBlocks(xml: string, tagName: string): string[] {
+  const blocks: string[] = [];
+  const regex = new RegExp(`<${tagName}[^>]*>[\\s\\S]*?</${tagName}>`, "g");
+  let match;
+  while ((match = regex.exec(xml)) !== null) {
+    blocks.push(match[0]);
+  }
+  return blocks;
+}
+
+/**
+ * Navigate nested Form 4 XML and extract the <value> content.
+ * Form 4 XML nests values: <parent><value>X</value></parent>
+ * Supports multi-level: extractNestedValue(block, "transactionAmounts", "transactionShares")
+ * @internal Exported for testing.
+ */
+export function extractNestedValue(block: string, ...tags: string[]): string | null {
+  let current = block;
+  for (const tag of tags) {
+    const match = current.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`));
+    if (!match) return null;
+    current = match[1];
+  }
+  // Look for a <value> sub-element; if found, use it; otherwise use raw text
+  const valueMatch = current.match(/<value>([^<]*)<\/value>/);
+  return valueMatch ? valueMatch[1].trim() : current.trim() || null;
+}
+
+function parseOptionalFloat(s: string | null): number | null {
+  if (!s) return null;
+  const n = parseFloat(s);
+  return isNaN(n) ? null : n;
+}
+
+/**
+ * Parse a single Form 4 XML document into an InsiderFiling.
+ * Returns null if the XML is malformed or has no reporting owner.
+ * @internal Exported for testing.
+ */
+export function parseForm4Xml(
+  xml: string,
+  filingDate: string,
+  accessionNumber: string
+): InsiderFiling | null {
+  // Extract reporting owner info
+  const ownerBlock = xmlBlocks(xml, "reportingOwner")[0];
+  if (!ownerBlock) return null;
+
+  const ownerName = xmlText(ownerBlock, "rptOwnerName");
+  if (!ownerName) return null;
+
+  // Relationship flags — check for both "1" and "true"
+  const isDirectorRaw = xmlText(ownerBlock, "isDirector");
+  const isOfficerRaw = xmlText(ownerBlock, "isOfficer");
+  const isTenPctRaw = xmlText(ownerBlock, "isTenPercentOwner");
+
+  const isDirector = isDirectorRaw === "1" || isDirectorRaw === "true";
+  const isOfficer = isOfficerRaw === "1" || isOfficerRaw === "true";
+  const isTenPercentOwner = isTenPctRaw === "1" || isTenPctRaw === "true";
+
+  const ownerTitle = xmlText(ownerBlock, "officerTitle") || "";
+
+  // Extract non-derivative transactions (stock buys/sells)
+  const transactions: InsiderTransaction[] = [];
+  const txnBlocks = xmlBlocks(xml, "nonDerivativeTransaction");
+
+  for (const txnBlock of txnBlocks) {
+    const securityTitle =
+      extractNestedValue(txnBlock, "securityTitle") || "Common Stock";
+    const transactionDate =
+      extractNestedValue(txnBlock, "transactionDate") || filingDate;
+    const sharesStr = extractNestedValue(
+      txnBlock,
+      "transactionAmounts",
+      "transactionShares"
+    );
+    const priceStr = extractNestedValue(
+      txnBlock,
+      "transactionAmounts",
+      "transactionPricePerShare"
+    );
+    const codeStr = extractNestedValue(
+      txnBlock,
+      "transactionAmounts",
+      "transactionAcquiredDisposedCode"
+    );
+    const sharesAfterStr = extractNestedValue(
+      txnBlock,
+      "postTransactionAmounts",
+      "sharesOwnedFollowingTransaction"
+    );
+
+    const shares = parseFloat(sharesStr || "0");
+    if (shares === 0) continue; // skip zero-share entries
+
+    transactions.push({
+      securityTitle,
+      transactionDate,
+      shares,
+      pricePerShare: parseOptionalFloat(priceStr),
+      acquiredOrDisposed: (codeStr === "D" ? "D" : "A") as "A" | "D",
+      sharesOwnedAfter: parseOptionalFloat(sharesAfterStr),
+    });
+  }
+
+  return {
+    filingDate,
+    accessionNumber,
+    ownerName,
+    ownerTitle,
+    isDirector,
+    isOfficer,
+    isTenPercentOwner,
+    transactions,
+  };
 }
 
 // ─── CIK Lookup ─────────────────────────────────────────────────
@@ -308,6 +476,94 @@ function extractFacts(
 
   return [];
 }
+
+// ─── Insider Trading (Form 4) ───────────────────────────────────
+
+/**
+ * Get recent insider transactions (Form 4 filings) for a company.
+ * Fetches Form 4 filings from SEC EDGAR and parses the XML documents
+ * to extract insider buy/sell transaction details.
+ *
+ * Only includes non-derivative (stock) transactions — options/warrants
+ * in the derivative table are excluded.
+ */
+export async function getInsiderTransactions(
+  ticker: string,
+  options?: {
+    limit?: number; // max filings to fetch (default 10, max 20)
+    transactionType?: "buy" | "sell" | "all"; // filter direction
+  }
+): Promise<InsiderFiling[]> {
+  const limit = Math.min(options?.limit || 10, 20);
+  const txnFilter = options?.transactionType || "all";
+
+  // Step 1: Get recent Form 4 filings via the submissions endpoint
+  const filings = await getRecentFilings(ticker, {
+    formType: "4",
+    limit: limit + 5, // fetch extra in case some fail to parse
+  });
+
+  if (filings.length === 0) {
+    return [];
+  }
+
+  // Step 2: Fetch and parse each filing's XML document
+  const cik = await getCik(ticker);
+  const cikNum = parseInt(cik); // URL uses un-padded CIK
+  const results: InsiderFiling[] = [];
+
+  for (const filing of filings) {
+    if (results.length >= limit) break;
+
+    try {
+      // Accession number: "0001193125-26-001234" → "000119312526001234" in URLs
+      const accessionNoDashes = filing.accessionNumber.replace(/-/g, "");
+      let docName = filing.primaryDocument;
+
+      // The submissions API often returns XSLT-rendered paths like
+      // "xslF345X05/primarydocument.xml" — strip the directory prefix
+      // to get the raw XML at the filing root
+      if (docName.includes("/")) {
+        docName = docName.split("/").pop()!;
+      }
+
+      // If primary doc isn't XML, try the standard Form 4 naming convention
+      if (!docName.endsWith(".xml")) {
+        docName = `${accessionNoDashes}.xml`;
+      }
+
+      const docUrl = `https://www.sec.gov/Archives/edgar/data/${cikNum}/${accessionNoDashes}/${docName}`;
+      const xml = await edgarFetchText(docUrl);
+
+      // Quick check: does this look like Form 4 XML?
+      if (!xml.includes("ownershipDocument") && !xml.includes("reportingOwner")) {
+        continue;
+      }
+
+      const parsed = parseForm4Xml(xml, filing.filingDate, filing.accessionNumber);
+
+      if (parsed && parsed.transactions.length > 0) {
+        // Apply transaction type filter
+        if (txnFilter !== "all") {
+          const filterCode = txnFilter === "buy" ? "A" : "D";
+          parsed.transactions = parsed.transactions.filter(
+            (t) => t.acquiredOrDisposed === filterCode
+          );
+        }
+        if (parsed.transactions.length > 0) {
+          results.push(parsed);
+        }
+      }
+    } catch {
+      // Skip individual filing parse errors (malformed docs, 404s, etc.)
+      continue;
+    }
+  }
+
+  return results;
+}
+
+// ─── Company Search ─────────────────────────────────────────────
 
 /**
  * Full-text search for companies by name or ticker.

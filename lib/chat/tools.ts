@@ -13,7 +13,7 @@ import { computeTwr } from "@/lib/compute/twr";
 import { computeXirr } from "@/lib/compute/xirr";
 import { annotateToolResult } from "@/lib/chat/validate";
 import { getSeriesData, searchSeries, getLatestValue, FRED_SERIES } from "@/lib/apis/fred";
-import { getCompanyFinancials, getCompanyInfo, getRecentFilings } from "@/lib/apis/edgar";
+import { getCompanyFinancials, getCompanyInfo, getRecentFilings, getInsiderTransactions } from "@/lib/apis/edgar";
 
 // ─── Tool Definitions ─────────────────────────────────────────────
 
@@ -296,6 +296,33 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
       required: ["ticker"],
     },
   },
+  {
+    name: "query_insider_trades",
+    description:
+      "Look up recent insider trading activity (SEC Form 4 filings) for any publicly traded company. Returns who (name, title, relationship to company), what (buy/sell, number of shares, price per share), when (transaction and filing dates), and post-transaction ownership. Use when the user asks about insider buying/selling, executive stock purchases, insider activity, or Form 4 filings. Only covers non-derivative stock transactions — options exercises, RSU vesting, and warrants are excluded. Data comes from SEC EDGAR in real-time.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        ticker: {
+          type: "string",
+          description:
+            "Stock ticker symbol (e.g., 'AAPL', 'MSFT', 'TSLA')",
+        },
+        transaction_type: {
+          type: "string",
+          enum: ["buy", "sell", "all"],
+          description:
+            "Filter by transaction direction: 'buy' (insider purchases only), 'sell' (insider sales only), or 'all' (default). Insider buys are generally more significant as a signal.",
+        },
+        limit: {
+          type: "integer",
+          description:
+            "Maximum number of Form 4 filings to fetch (default: 10, max: 20). Each filing may contain multiple transactions from one insider.",
+        },
+      },
+      required: ["ticker"],
+    },
+  },
 ];
 
 // ─── Account Name Resolution ─────────────────────────────────────
@@ -511,6 +538,16 @@ export async function executeTool(
         break;
       }
 
+      case "query_insider_trades": {
+        const ticker = input.ticker as string;
+        rawResult = await getInsiderTransactions(ticker, {
+          limit: (input.limit as number) || 10,
+          transactionType:
+            (input.transaction_type as "buy" | "sell" | "all") || "all",
+        });
+        break;
+      }
+
       default:
         return { error: `Unknown tool: ${toolName}` };
     }
@@ -540,4 +577,5 @@ export const TOOL_LABELS: Record<string, string> = {
   query_twr: "Computing time-weighted return...",
   query_fred: "Fetching economic data...",
   query_company_fundamentals: "Looking up company financials...",
+  query_insider_trades: "Fetching insider trading data...",
 };
