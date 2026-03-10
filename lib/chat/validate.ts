@@ -78,6 +78,12 @@ export function annotateToolResult(
     );
   }
 
+  if (toolName === "query_insider_trades") {
+    warnings.push(
+      "Insider trading data is from SEC Form 4 filings (real-time from EDGAR). Only non-derivative stock transactions are shown — options exercises, RSU vesting, and warrants are excluded. Many insider sales are pre-scheduled via 10b5-1 plans and are not necessarily bearish signals. Insiders must file Form 4 within 2 business days of the transaction."
+    );
+  }
+
   return {
     quality_warnings: warnings,
     data_freshness: freshness,
