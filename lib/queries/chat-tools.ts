@@ -290,15 +290,20 @@ export function getPriceHistory(
  */
 export function getAllocationBreakdown(
   db: Database.Database,
-  groupBy: "asset_class" | "security_type" | "sector" | "account" | "symbol",
+  groupBy: "asset_class" | "security_type" | "sector" | "account" | "symbol"
+    | "fund_category" | "geography" | "market_cap_category" | "style",
   accountName?: string
 ): AllocationResult[] {
   const groupColumn: Record<string, string> = {
     asset_class: "COALESCE(s.asset_class, 'Unknown')",
     security_type: "COALESCE(s.security_type, 'Unknown')",
-    sector: "COALESCE(s.sector, 'Unknown')",
+    sector: "COALESCE(s.sector, s.fund_category, 'Unknown')",
     account: "a.name",
     symbol: "s.symbol",
+    fund_category: "COALESCE(s.fund_category, 'Unclassified')",
+    geography: "COALESCE(s.geography, 'Unknown')",
+    market_cap_category: "COALESCE(s.market_cap_category, 'Unknown')",
+    style: "COALESCE(s.style, 'Unknown')",
   };
 
   const groupExpr = groupColumn[groupBy];

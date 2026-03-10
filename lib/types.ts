@@ -117,3 +117,19 @@ export interface TaxLotSale {
   sale_date: string;
   created_at: string;
 }
+
+export type NoteType = "journal" | "earnings" | "trade_thesis";
+export type NoteSentiment = "bullish" | "bearish" | "neutral" | "cautious" | "confident";
+
+export interface Note {
+  id: number;
+  note_type: NoteType;
+  content: string;
+  security_id: number | null;
+  transaction_id: number | null;
+  event_date: string;
+  tags: string | null;
+  sentiment: NoteSentiment | null;
+  created_at: string;
+  updated_at: string;
+}

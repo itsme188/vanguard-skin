@@ -9,6 +9,9 @@ import {
   getPerformanceForChat,
   getIncomeSummaryForChat,
 } from "@/lib/queries/chat-tools";
+import { getNotesFiltered, getSecurityIdBySymbol } from "@/lib/queries/notes";
+import { createNote } from "@/lib/mutations/notes";
+import type { NoteType, NoteSentiment } from "@/lib/types";
 import { computeTwr } from "@/lib/compute/twr";
 import { computeXirr } from "@/lib/compute/xirr";
 import { annotateToolResult } from "@/lib/chat/validate";
@@ -88,8 +91,12 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
       properties: {
         group_by: {
           type: "string",
-          enum: ["asset_class", "security_type", "sector", "account", "symbol"],
-          description: "Dimension to group by",
+          enum: [
+            "asset_class", "security_type", "sector", "account", "symbol",
+            "fund_category", "geography", "market_cap_category", "style",
+          ],
+          description:
+            "Dimension to group by. 'fund_category' groups by investment category (e.g., 'US Large Cap Equity', 'International Equity'). 'geography' groups by region. 'market_cap_category' by cap size. 'style' by value/blend/growth.",
         },
         account_name: {
           type: "string",
@@ -323,6 +330,84 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
       required: ["ticker"],
     },
   },
+  {
+    name: "query_notes",
+    description:
+      "Search the user's investment journal and notes. Returns notes matching the criteria with linked security and transaction context. Three types: 'journal' (general market thoughts), 'earnings' (per-security earnings call notes), 'trade_thesis' (rationale for buy/sell decisions). Use when the user asks about their past thoughts, trade rationale, earnings notes, journal entries, or investment thesis for any security.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        note_type: {
+          type: "string",
+          enum: ["journal", "earnings", "trade_thesis"],
+          description:
+            "Filter by note type. Omit for all types.",
+        },
+        symbol: {
+          type: "string",
+          description:
+            "Filter by security symbol (e.g., 'AAPL', 'GOOG'). Omit for all securities.",
+        },
+        search: {
+          type: "string",
+          description: "Search note content for a keyword or phrase.",
+        },
+        start_date: {
+          type: "string",
+          description: "Start date filter (YYYY-MM-DD)",
+        },
+        end_date: {
+          type: "string",
+          description: "End date filter (YYYY-MM-DD)",
+        },
+        limit: {
+          type: "integer",
+          description: "Maximum results. Defaults to 20.",
+        },
+      },
+    },
+  },
+  {
+    name: "create_note",
+    description:
+      "Save a note to the user's investment journal. IMPORTANT: Always confirm the content and type with the user before saving. Use when the user explicitly asks to save, record, or remember a thought, thesis, or observation. Do NOT create notes without explicit user approval.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        note_type: {
+          type: "string",
+          enum: ["journal", "earnings", "trade_thesis"],
+          description: "Type of note to create.",
+        },
+        content: {
+          type: "string",
+          description: "The note content to save.",
+        },
+        symbol: {
+          type: "string",
+          description:
+            "Security symbol to link this note to (e.g., 'GOOG' for an earnings note). Optional for journal entries.",
+        },
+        event_date: {
+          type: "string",
+          description:
+            "Date for the note (YYYY-MM-DD). Defaults to today.",
+        },
+        sentiment: {
+          type: "string",
+          enum: ["bullish", "bearish", "neutral", "cautious", "confident"],
+          description: "Optional sentiment tag.",
+        },
+        tags: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Optional tags (e.g., ['earnings', 'guidance', 'beat'])",
+        },
+      },
+      required: ["note_type", "content"],
+    },
+  },
 ];
 
 // ─── Account Name Resolution ─────────────────────────────────────
@@ -417,7 +502,8 @@ export async function executeTool(
       case "query_allocation":
         rawResult = getAllocationBreakdown(
           db,
-          input.group_by as "asset_class" | "security_type" | "sector" | "account" | "symbol",
+          input.group_by as "asset_class" | "security_type" | "sector" | "account" | "symbol"
+            | "fund_category" | "geography" | "market_cap_category" | "style",
           accountName
         );
         break;
@@ -548,6 +634,41 @@ export async function executeTool(
         break;
       }
 
+      case "query_notes": {
+        let securityId: number | undefined;
+        if (input.symbol) {
+          const id = getSecurityIdBySymbol(db, input.symbol as string);
+          if (id) securityId = id;
+        }
+        rawResult = getNotesFiltered(db, {
+          note_type: input.note_type as NoteType | undefined,
+          security_id: securityId,
+          search: input.search as string | undefined,
+          start_date: input.start_date as string | undefined,
+          end_date: input.end_date as string | undefined,
+          limit: (input.limit as number) || 20,
+        });
+        break;
+      }
+
+      case "create_note": {
+        const today = new Date().toISOString().slice(0, 10);
+        let securityId: number | null = null;
+        if (input.symbol) {
+          securityId = getSecurityIdBySymbol(db, input.symbol as string);
+        }
+        const note = createNote(db, {
+          note_type: input.note_type as NoteType,
+          content: input.content as string,
+          security_id: securityId,
+          event_date: (input.event_date as string) || today,
+          sentiment: (input.sentiment as NoteSentiment) || null,
+          tags: (input.tags as string[]) || null,
+        });
+        rawResult = { saved: true, note };
+        break;
+      }
+
       default:
         return { error: `Unknown tool: ${toolName}` };
     }
@@ -578,4 +699,6 @@ export const TOOL_LABELS: Record<string, string> = {
   query_fred: "Fetching economic data...",
   query_company_fundamentals: "Looking up company financials...",
   query_insider_trades: "Fetching insider trading data...",
+  query_notes: "Searching notes...",
+  create_note: "Saving note...",
 };

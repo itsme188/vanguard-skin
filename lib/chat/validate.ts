@@ -84,6 +84,16 @@ export function annotateToolResult(
     );
   }
 
+  if (toolName === "query_notes") {
+    if (Array.isArray(rawResult) && rawResult.length === 0) {
+      warnings.push("No notes found matching the search criteria.");
+    }
+  }
+
+  if (toolName === "create_note") {
+    warnings.push("Note saved to the investment journal.");
+  }
+
   return {
     quality_warnings: warnings,
     data_freshness: freshness,
