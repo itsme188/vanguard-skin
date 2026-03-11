@@ -6,6 +6,7 @@ import type {
   AllocationEntry,
   ConcentrationMetrics,
   ClassificationCoverage,
+  AnalysisDataCoverage,
   AllocationDimension,
 } from "@/lib/queries/analysis";
 import {
@@ -31,6 +32,12 @@ const DIMENSION_ORDER: AllocationDimension[] = [
   "sector", "asset_class", "account",
 ];
 
+const SCOPE_OPTIONS = [
+  { label: "Vanguard", value: "vanguard" },
+  { label: "IBKR", value: "ibkr" },
+  { label: "All", value: "all" },
+];
+
 const CHART_COLORS = [
   "#C9A44E", // gold
   "#60A5FA", // blue-400
@@ -49,6 +56,9 @@ const CHART_COLORS = [
   "#94A3B8", // slate-400
 ];
 
+const OTHER_COLOR = "#64748B";
+const MAX_SLICES = 8;
+
 function formatMoney(value: number): string {
   if (Math.abs(value) >= 1_000_000) {
     return `$${(value / 1_000_000).toFixed(1)}M`;
@@ -59,13 +69,35 @@ function formatMoney(value: number): string {
   return `$${value.toFixed(0)}`;
 }
 
+function bucketAllocation(allocation: AllocationEntry[]): AllocationEntry[] {
+  if (allocation.length <= MAX_SLICES) return allocation;
+  const top = allocation.slice(0, MAX_SLICES - 1);
+  const rest = allocation.slice(MAX_SLICES - 1);
+  return [
+    ...top,
+    {
+      group_name: `Other (${rest.length})`,
+      total_market_value: rest.reduce((s, r) => s + r.total_market_value, 0),
+      percentage: rest.reduce((s, r) => s + r.percentage, 0),
+      position_count: rest.reduce((s, r) => s + r.position_count, 0),
+    },
+  ];
+}
+
+function getSliceColor(index: number, groupName: string): string {
+  if (groupName.startsWith("Other (")) return OTHER_COLOR;
+  return CHART_COLORS[index % CHART_COLORS.length];
+}
+
 // ─── Props ───────────────────────────────────────────────────────
 
 interface AnalysisViewProps {
   allocation: AllocationEntry[];
   concentration: ConcentrationMetrics;
   coverage: ClassificationCoverage;
+  dataCoverage: AnalysisDataCoverage;
   currentDimension: AllocationDimension;
+  currentScope: string;
 }
 
 // ─── Component ───────────────────────────────────────────────────
@@ -74,49 +106,99 @@ export function AnalysisView({
   allocation,
   concentration,
   coverage,
+  dataCoverage,
   currentDimension,
+  currentScope,
 }: AnalysisViewProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [showCoverage, setShowCoverage] = useState(false);
   const [classifyLoading, setClassifyLoading] = useState(false);
+  const [classifyResult, setClassifyResult] = useState<string | null>(null);
 
-  function switchDimension(dim: AllocationDimension) {
+  function navigate(updates: Record<string, string>) {
     const params = new URLSearchParams(searchParams.toString());
-    params.set("dimension", dim);
+    for (const [key, value] of Object.entries(updates)) {
+      if (value) params.set(key, value);
+      else params.delete(key);
+    }
     router.push(`/dashboard/analysis?${params.toString()}`);
   }
 
   async function runAutoClassify() {
     setClassifyLoading(true);
+    setClassifyResult(null);
     try {
       const res = await fetch("/api/compute/classify", { method: "POST" });
       const data = await res.json();
       if (data.success) {
+        setClassifyResult(
+          data.classified > 0
+            ? `Classified ${data.classified} securities (${data.skipped} already done)`
+            : `All ${data.skipped} securities already classified`
+        );
         router.refresh();
+      } else {
+        setClassifyResult(`Error: ${data.error}`);
       }
+    } catch {
+      setClassifyResult("Failed to connect");
     } finally {
       setClassifyLoading(false);
+      setTimeout(() => setClassifyResult(null), 3000);
     }
   }
 
+  const chartData = bucketAllocation(allocation);
+  const totalValue = allocation.reduce((s, r) => s + r.total_market_value, 0);
+
   return (
     <div className="space-y-6">
-      {/* Dimension pills */}
-      <div className="flex flex-wrap gap-1.5">
-        {DIMENSION_ORDER.map((dim) => (
-          <button
-            key={dim}
-            onClick={() => switchDimension(dim)}
-            className={`px-3 py-1.5 text-sm rounded-full border transition-colors ${
-              dim === currentDimension
-                ? "bg-gold/10 border-gold text-gold"
-                : "bg-panel border-edge text-ink-faint hover:text-ink-dim hover:border-edge-strong"
-            }`}
-          >
-            {DIMENSION_LABELS[dim]}
-          </button>
-        ))}
+      {/* Data coverage warning */}
+      {dataCoverage.coveragePct < 90 && (
+        <div className="bg-gold/5 border border-gold/20 rounded-lg px-4 py-3 text-sm text-gold">
+          Analysis covers {formatMoney(dataCoverage.holdingsTotal)} of{" "}
+          {formatMoney(dataCoverage.snapshotTotal)} ({dataCoverage.coveragePct}% of portfolio).
+          {dataCoverage.missingAccounts.length > 0 && (
+            <> {dataCoverage.missingAccounts.join(", ")} missing holdings data.</>
+          )}
+          {" "}Import holdings files or re-import statements for complete analysis.
+        </div>
+      )}
+
+      {/* Account scope + dimension pills */}
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+        <div className="flex items-center gap-1.5">
+          {SCOPE_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => navigate({ scope: opt.value })}
+              className={`px-3 py-1.5 text-sm rounded-lg font-medium transition-colors whitespace-nowrap ${
+                opt.value === currentScope
+                  ? "bg-gold/15 text-gold"
+                  : "text-ink-faint hover:text-ink hover:bg-panel"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        <div className="h-5 w-px bg-edge hidden sm:block" />
+        <div className="flex flex-wrap gap-1.5">
+          {DIMENSION_ORDER.map((dim) => (
+            <button
+              key={dim}
+              onClick={() => navigate({ dimension: dim })}
+              className={`px-3 py-1.5 text-sm rounded-full border transition-colors ${
+                dim === currentDimension
+                  ? "bg-gold/10 border-gold text-gold"
+                  : "bg-panel border-edge text-ink-faint hover:text-ink-dim hover:border-edge-strong"
+              }`}
+            >
+              {DIMENSION_LABELS[dim]}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Main content: chart + table side by side */}
@@ -126,26 +208,21 @@ export function AnalysisView({
           <h3 className="text-sm font-medium text-ink mb-4">
             Allocation by {DIMENSION_LABELS[currentDimension]}
           </h3>
-          {allocation.length > 0 ? (
-            <ResponsiveContainer width="100%" height={320}>
+          {chartData.length > 0 ? (
+            <ResponsiveContainer width="100%" height={360}>
               <PieChart>
                 <Pie
-                  data={allocation}
+                  data={chartData}
                   dataKey="total_market_value"
                   nameKey="group_name"
                   cx="50%"
                   cy="50%"
-                  innerRadius={60}
-                  outerRadius={120}
+                  innerRadius={80}
+                  outerRadius={140}
                   paddingAngle={1}
-                  label={({ name, percent }) => {
-                    const p = Number(percent);
-                    return p > 0.03 ? `${String(name)} ${(p * 100).toFixed(0)}%` : "";
-                  }}
-                  labelLine={false}
                 >
-                  {allocation.map((_, i) => (
-                    <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+                  {chartData.map((entry, i) => (
+                    <Cell key={i} fill={getSliceColor(i, entry.group_name)} />
                   ))}
                 </Pie>
                 <Tooltip
@@ -157,19 +234,42 @@ export function AnalysisView({
                     color: "#E5E7EB",
                   }}
                 />
+                {/* Center total label */}
+                <text
+                  x="50%"
+                  y="47%"
+                  textAnchor="middle"
+                  dominantBaseline="central"
+                  fill="#8891A6"
+                  fontSize={12}
+                >
+                  Total
+                </text>
+                <text
+                  x="50%"
+                  y="55%"
+                  textAnchor="middle"
+                  dominantBaseline="central"
+                  fill="#E2E6F0"
+                  fontSize={18}
+                  fontWeight={600}
+                  fontFamily="var(--font-geist-mono), monospace"
+                >
+                  {formatMoney(totalValue)}
+                </text>
               </PieChart>
             </ResponsiveContainer>
           ) : (
-            <div className="h-[320px] flex items-center justify-center text-ink-faint text-sm">
+            <div className="h-[360px] flex items-center justify-center text-ink-faint text-sm">
               No allocation data available. Run classification first.
             </div>
           )}
         </div>
 
-        {/* Breakdown Table */}
+        {/* Breakdown Table — shows ALL rows (not bucketed) */}
         <div className="bg-panel border border-edge rounded-lg p-4">
           <h3 className="text-sm font-medium text-ink mb-4">Breakdown</h3>
-          <div className="overflow-x-auto">
+          <div className="overflow-y-auto max-h-[380px]">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-edge text-ink-faint">
@@ -185,7 +285,10 @@ export function AnalysisView({
                     <td className="py-2 pr-4 flex items-center gap-2">
                       <span
                         className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                        style={{ backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }}
+                        style={{ backgroundColor: i < MAX_SLICES - 1 || allocation.length <= MAX_SLICES
+                          ? CHART_COLORS[i % CHART_COLORS.length]
+                          : OTHER_COLOR
+                        }}
                       />
                       <span className="text-ink">{row.group_name}</span>
                     </td>
@@ -287,7 +390,18 @@ export function AnalysisView({
       <div className="bg-panel border border-edge rounded-lg p-4">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-medium text-ink">Classification</h3>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
+            {classifyResult && (
+              <span
+                className={`text-xs font-mono ${
+                  classifyResult.startsWith("Error") || classifyResult === "Failed to connect"
+                    ? "text-down"
+                    : "text-up"
+                }`}
+              >
+                {classifyResult}
+              </span>
+            )}
             <button
               onClick={runAutoClassify}
               disabled={classifyLoading}

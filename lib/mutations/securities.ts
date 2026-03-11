@@ -36,6 +36,30 @@ export function upsertSecurity(
       ? { symbol: symbolOrParams, name, securityType, assetClass }
       : symbolOrParams;
 
+  // Safety check: don't let option metadata clobber an existing stock security
+  // (or vice versa) on the same symbol. This prevents the "INTC stock becomes
+  // INTC option" bug when Claude returns bare tickers for options.
+  const existing = db
+    .prepare("SELECT id, security_type FROM securities WHERE symbol = ?")
+    .get(p.symbol) as { id: number; security_type: string | null } | undefined;
+
+  if (existing && p.securityType && existing.security_type) {
+    const existingIsOption = existing.security_type === "option";
+    const incomingIsOption = p.securityType === "option";
+
+    if (existingIsOption !== incomingIsOption) {
+      // Type conflict: don't merge, just return the existing ID.
+      // The parser should have used an OCC symbol for options — if we get
+      // here, something upstream didn't convert properly.
+      console.warn(
+        `[upsertSecurity] Type conflict for symbol "${p.symbol}": ` +
+        `existing=${existing.security_type}, incoming=${p.securityType}. ` +
+        `Skipping update to prevent data corruption.`
+      );
+      return existing.id;
+    }
+  }
+
   db.prepare(
     `INSERT INTO securities (symbol, name, security_type, asset_class,
        underlying_symbol, strike_price, expiration_date, option_type, multiplier, maturity_date)

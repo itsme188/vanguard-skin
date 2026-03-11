@@ -83,4 +83,52 @@ describe("IBKR activity parser", () => {
     const result = parseIbkrActivity(fixture, "IBKR 2025-01 activity.csv");
     expect(result.errors).toHaveLength(0);
   });
+
+  it("parses Open Positions into holdings array", () => {
+    const result = parseIbkrActivity(fixture, "IBKR 2025-01 activity.csv");
+    expect(result.holdings.length).toBeGreaterThanOrEqual(3);
+
+    const aapl = result.holdings.find((h) => h.symbol === "AAPL");
+    expect(aapl).toBeTruthy();
+    expect(aapl!.accountName).toBe("IBKR");
+    expect(aapl!.quantity).toBe(100);
+    expect(aapl!.costBasis).toBe(19000);
+    expect(aapl!.asOfDate).toBe("2025-01-31");
+    expect(aapl!.sourceKey).toBe("ibkr:pos:2025-01-31:AAPL");
+
+    const goog = result.holdings.find((h) => h.symbol === "GOOG");
+    expect(goog).toBeTruthy();
+    expect(goog!.quantity).toBe(200);
+    expect(goog!.costBasis).toBe(27200);
+  });
+
+  it("parses Open Positions options with OCC symbol", () => {
+    const result = parseIbkrActivity(fixture, "IBKR 2025-01 activity.csv");
+    // SPY 12FEB25 610 P → OCC symbol
+    const spyPut = result.holdings.find((h) => h.symbol.includes("SPY"));
+    expect(spyPut).toBeTruthy();
+    expect(spyPut!.quantity).toBe(5);
+    expect(spyPut!.costBasis).toBeCloseTo(2783.43, 1);
+
+    // Should also register as option security
+    const optSec = result.securities.find((s) => s.symbol === spyPut!.symbol);
+    expect(optSec).toBeTruthy();
+    expect(optSec!.securityType).toBe("option");
+    expect(optSec!.multiplier).toBe(100);
+  });
+
+  it("extracts prices from Open Positions", () => {
+    const result = parseIbkrActivity(fixture, "IBKR 2025-01 activity.csv");
+    expect(result.prices.length).toBeGreaterThanOrEqual(3);
+
+    const aaplPrice = result.prices.find((p) => p.symbol === "AAPL");
+    expect(aaplPrice).toBeTruthy();
+    expect(aaplPrice!.closePrice).toBe(195.5);
+    expect(aaplPrice!.date).toBe("2025-01-31");
+    expect(aaplPrice!.source).toBe("ibkr-activity");
+
+    const googPrice = result.prices.find((p) => p.symbol === "GOOG");
+    expect(googPrice).toBeTruthy();
+    expect(googPrice!.closePrice).toBe(140);
+  });
 });
