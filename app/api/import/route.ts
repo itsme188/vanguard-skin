@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { parseImport, commitImport, undoImport } from "@/lib/import/engine";
+import { classifySecurities } from "@/lib/compute/classify-securities";
 
 /**
  * POST /api/import?mode=preview  — parse only, return preview JSON
@@ -95,6 +96,15 @@ export async function POST(request: NextRequest) {
         errors: parsed.errors,
         warnings: parsed.warnings,
       });
+    }
+
+    // Auto-classify any new securities after commit
+    if (mode === "commit") {
+      try {
+        classifySecurities(db);
+      } catch {
+        // Classification failure shouldn't block import
+      }
     }
 
     return NextResponse.json({

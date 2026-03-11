@@ -6,9 +6,11 @@ import Link from "next/link";
 const tabs = [
   { name: "Overview", href: "/dashboard" },
   { name: "Accounts", href: "/dashboard/accounts" },
-  { name: "Import", href: "/dashboard/import" },
   { name: "Tax Lots", href: "/dashboard/tax-lots" },
+  { name: "Analysis", href: "/dashboard/analysis" },
+  { name: "Import", href: "/dashboard/import" },
   { name: "Reconciliation", href: "/dashboard/reconciliation" },
+  { name: "Notes", href: "/dashboard/notes" },
   { name: "Chat", href: "/dashboard/chat" },
 ];
 
