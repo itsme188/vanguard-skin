@@ -144,9 +144,9 @@ export function parseIbkrActivity(
   let interest = 0;
   let fees = 0;
   let commissions = 0;
-  let depositsWithdrawals = 0;
+  let depositsWithdrawals: number | undefined = undefined;
   let endingValue = 0;
-  let twr = 0;
+  let twr: number | undefined = undefined;
 
   for (const row of rows) {
     if (row.section === "Change in NAV" && row.discriminator === "Data") {
@@ -174,6 +174,7 @@ export function parseIbkrActivity(
           commissions = value;
           break;
         case "Deposits/Withdrawals":
+        case "Deposits & Withdrawals":
           depositsWithdrawals = value;
           break;
         case "Ending Value":
@@ -188,7 +189,7 @@ export function parseIbkrActivity(
       row.discriminator === "Data" &&
       row.fields.length === 1
     ) {
-      const pctMatch = row.fields[0].match(/([\d.]+)%/);
+      const pctMatch = row.fields[0].match(/(-?[\d.]+)%/);
       if (pctMatch) {
         twr = parseFloat(pctMatch[1]);
       }
@@ -344,6 +345,34 @@ export function parseIbkrActivity(
         amount,
         notes: description,
         sourceKey: `ibkr:fee:${date}:${amount}:${description}`,
+      });
+    }
+  }
+
+  // Parse Deposits & Withdrawals as external flow transactions
+  for (const row of rows) {
+    if (
+      (row.section === "Deposits & Withdrawals" ||
+        row.section === "Deposits/Withdrawals") &&
+      row.discriminator === "Data" &&
+      row.fields[0] !== "Total"
+    ) {
+      // fields: Currency, Account, Settle Date, Description, Amount
+      const currency = row.fields[0];
+      const date = row.fields[2];
+      const description = row.fields[3];
+      const amount = parseFloat(row.fields[4]);
+
+      if (isNaN(amount) || currency === "Total") continue;
+
+      transactions.push({
+        accountName: "IBKR",
+        tradeDate: date,
+        type: amount >= 0 ? "DEPOSIT" : "WITHDRAWAL",
+        amount,
+        isExternalFlow: true,
+        notes: description,
+        sourceKey: `ibkr:dw:${date}:${amount}:${description}`,
       });
     }
   }
