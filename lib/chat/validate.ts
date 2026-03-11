@@ -94,6 +94,29 @@ export function annotateToolResult(
     warnings.push("Note saved to the investment journal.");
   }
 
+  if (toolName === "query_earnings_transcript") {
+    const result = rawResult as Record<string, unknown> | null;
+    if (result && !result.error) {
+      const source = result.source as string;
+      if (source === "edgar_8k") {
+        warnings.push(
+          "This is an SEC EDGAR 8-K earnings press release, not a full earnings call transcript. It contains financial results and may include guidance, but lacks the Q&A discussion from the actual conference call."
+        );
+      } else if (source === "motley_fool") {
+        warnings.push(
+          "Transcript sourced from Motley Fool (scraped). Content is typically accurate but formatting may vary."
+        );
+      } else if (source === "api_ninjas") {
+        warnings.push(
+          "Transcript from API Ninjas with AI-generated analysis (summary, guidance, sentiment)."
+        );
+      }
+      if (!result.has_full_transcript) {
+        warnings.push("Only a summary is available — full transcript text was not retrieved.");
+      }
+    }
+  }
+
   return {
     quality_warnings: warnings,
     data_freshness: freshness,

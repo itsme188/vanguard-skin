@@ -82,6 +82,7 @@ Available tools:
 - **query_insider_trades**: Look up recent insider trading (SEC Form 4) for any stock. Returns insider name, title, buy/sell, shares, price, and post-transaction ownership. Use for insider buying/selling signals and executive activity.
 - **query_notes**: Search the user's investment journal and notes by type, security, keyword, or date range. Three types: journal (market thoughts), earnings (per-security earnings call notes), trade_thesis (buy/sell rationale). Use when the user asks about past thoughts, trade rationale, or what they wrote about a security.
 - **create_note**: Save a new note to the investment journal. ALWAYS confirm the content, type, and linked security with the user before saving. Do NOT create notes without explicit user approval.
+- **query_earnings_transcript**: Fetch earnings call transcript or press release for any publicly traded company. Returns summary, guidance, risk factors, sentiment, and key excerpts. Checks local cache first, then fetches from Motley Fool or SEC EDGAR 8-K. PROACTIVELY use when discussing any company's earnings, quarterly results, forward guidance, management commentary, or business outlook. Cross-references with the user's own earnings notes.
 
 All account_name parameters support case-insensitive matching: "roth" matches "Vanguard Roth IRA", "ibkr" matches "IBKR".
 
@@ -125,6 +126,17 @@ All account_name parameters support case-insensitive matching: "roth" matches "V
 - If results contain no data, clearly state this. Check if the position may have been sold, matured, or expired.
 - Monthly change figures include deposits/withdrawals. Use investment_change for actual portfolio performance.
 - Positions without price data use cost basis for allocation. Unpriced positions are noted in warnings.
+
+## Earnings Intelligence
+
+When discussing any company's performance, outlook, or fundamentals:
+- PROACTIVELY call query_earnings_transcript to get the latest earnings data
+- The tool checks local cache first (instant) then fetches externally if needed
+- Weave transcript insights into your analysis: "According to the Q3 2025 earnings call..."
+- Cross-reference with the user's own earnings notes (included in tool response)
+- Note the data source: EDGAR 8-K (press release only), Motley Fool (full transcript), or API Ninjas (AI-analyzed)
+- If no transcript is available, mention it and analyze available EDGAR financials instead
+- For portfolio holdings, combine earnings transcript data with holdings data for richer analysis
 
 ## Wash Sale Awareness
 

@@ -17,6 +17,7 @@ import { computeXirr } from "@/lib/compute/xirr";
 import { annotateToolResult } from "@/lib/chat/validate";
 import { getSeriesData, searchSeries, getLatestValue, FRED_SERIES } from "@/lib/apis/fred";
 import { getCompanyFinancials, getCompanyInfo, getRecentFilings, getInsiderTransactions } from "@/lib/apis/edgar";
+import { getTranscriptForChat } from "@/lib/transcripts/fetch";
 
 // ─── Tool Definitions ─────────────────────────────────────────────
 
@@ -408,6 +409,31 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
       required: ["note_type", "content"],
     },
   },
+  {
+    name: "query_earnings_transcript",
+    description:
+      "Fetch an earnings call transcript or press release for a company. Returns summary, guidance, risk factors, sentiment, and key excerpts. Checks local cache first, then fetches from Motley Fool or SEC EDGAR 8-K filings. Use PROACTIVELY when discussing any company's earnings, quarterly results, forward guidance, management commentary, or business outlook. Also useful for comparing performance across quarters or validating financial trends.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        ticker: {
+          type: "string",
+          description: "Stock ticker symbol (e.g., 'AAPL', 'MSFT', 'GOOG')",
+        },
+        year: {
+          type: "integer",
+          description:
+            "Earnings year (e.g., 2025). Omit for most recent available quarter.",
+        },
+        quarter: {
+          type: "integer",
+          description:
+            "Quarter (1-4). Omit for most recent available quarter.",
+        },
+      },
+      required: ["ticker"],
+    },
+  },
 ];
 
 // ─── Account Name Resolution ─────────────────────────────────────
@@ -669,6 +695,38 @@ export async function executeTool(
         break;
       }
 
+      case "query_earnings_transcript": {
+        const ticker = input.ticker as string;
+        const transcriptData = await getTranscriptForChat(
+          db,
+          ticker,
+          input.year as number | undefined,
+          input.quarter as number | undefined
+        );
+
+        if (!transcriptData) {
+          rawResult = {
+            error: `No earnings transcript found for ${ticker}. The company may not have reported recently, or external sources may be temporarily unavailable.`,
+          };
+        } else {
+          // Also fetch user's earnings notes for this security
+          const secId = getSecurityIdBySymbol(db, ticker);
+          let userNotes: unknown[] = [];
+          if (secId) {
+            userNotes = getNotesFiltered(db, {
+              note_type: "earnings",
+              security_id: secId,
+              limit: 5,
+            });
+          }
+          rawResult = {
+            ...transcriptData,
+            user_notes: userNotes,
+          };
+        }
+        break;
+      }
+
       default:
         return { error: `Unknown tool: ${toolName}` };
     }
@@ -701,4 +759,5 @@ export const TOOL_LABELS: Record<string, string> = {
   query_insider_trades: "Fetching insider trading data...",
   query_notes: "Searching notes...",
   create_note: "Saving note...",
+  query_earnings_transcript: "Fetching earnings transcript...",
 };

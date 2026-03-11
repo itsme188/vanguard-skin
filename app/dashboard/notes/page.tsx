@@ -1,5 +1,6 @@
 import { db } from "@/lib/db";
 import { getNotesFiltered, getEarningsTimeline } from "@/lib/queries/notes";
+import { getTranscriptsSummary } from "@/lib/queries/transcripts";
 import type { NoteType } from "@/lib/types";
 import { NotesView } from "../components/NotesView";
 
@@ -23,6 +24,9 @@ export default async function NotesPage({ searchParams }: PageProps) {
   });
 
   const earningsTimeline = getEarningsTimeline(db);
+  const transcriptSummaries = noteType === "earnings" || !noteType
+    ? getTranscriptsSummary(db, { limit: 50 })
+    : [];
 
   // Get list of securities for the picker
   const securities = db
@@ -47,6 +51,7 @@ export default async function NotesPage({ searchParams }: PageProps) {
       <NotesView
         initialNotes={notes}
         earningsTimeline={earningsTimeline}
+        transcriptSummaries={transcriptSummaries}
         securities={securities}
         currentType={noteType ?? null}
         currentSearch={params.search ?? null}

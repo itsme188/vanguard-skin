@@ -3,13 +3,16 @@
 import { useState, useRef, useEffect, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { NoteWithContext, EarningsTimelineEntry } from "@/lib/queries/notes";
+import type { TranscriptSummaryEntry } from "@/lib/queries/transcripts";
 import type { NoteType, NoteSentiment } from "@/lib/types";
+import { TranscriptCard } from "./TranscriptCard";
 
 // ─── Props ───────────────────────────────────────────────────────
 
 interface NotesViewProps {
   initialNotes: NoteWithContext[];
   earningsTimeline: EarningsTimelineEntry[];
+  transcriptSummaries: TranscriptSummaryEntry[];
   securities: { id: number; symbol: string; name: string | null }[];
   currentType: NoteType | null;
   currentSearch: string | null;
@@ -51,6 +54,7 @@ const TYPE_BORDER: Record<string, string> = {
 export function NotesView({
   initialNotes,
   earningsTimeline,
+  transcriptSummaries,
   securities,
   currentType,
   currentSearch,
@@ -319,6 +323,7 @@ export function NotesView({
       {showEarningsView ? (
         <EarningsView
           timeline={earningsTimeline}
+          transcriptSummaries={transcriptSummaries}
           editingId={editingId}
           editContent={editContent}
           onStartEdit={(id, content) => {
@@ -415,6 +420,7 @@ function NotesList({
 
 function EarningsView({
   timeline,
+  transcriptSummaries,
   editingId,
   editContent,
   onStartEdit,
@@ -423,6 +429,7 @@ function EarningsView({
   onDelete,
 }: {
   timeline: EarningsTimelineEntry[];
+  transcriptSummaries: TranscriptSummaryEntry[];
   editingId: number | null;
   editContent: string;
   onStartEdit: (id: number, content: string) => void;
@@ -430,7 +437,20 @@ function EarningsView({
   onSaveEdit: (id: number) => void;
   onDelete: (id: number) => void;
 }) {
-  if (timeline.length === 0) {
+  // Group transcripts by ticker for interleaving with notes
+  const transcriptsByTicker = new Map<string, TranscriptSummaryEntry[]>();
+  for (const t of transcriptSummaries) {
+    if (!transcriptsByTicker.has(t.ticker)) transcriptsByTicker.set(t.ticker, []);
+    transcriptsByTicker.get(t.ticker)!.push(t);
+  }
+
+  // Collect all tickers that have transcripts but no notes timeline entry
+  const timelineTickers = new Set(timeline.map((e) => e.symbol));
+  const extraTranscriptTickers = [...transcriptsByTicker.keys()].filter(
+    (ticker) => !timelineTickers.has(ticker)
+  );
+
+  if (timeline.length === 0 && transcriptSummaries.length === 0) {
     return (
       <div className="bg-panel border border-edge rounded-xl p-8 text-center">
         <p className="text-ink-faint text-sm">
@@ -443,38 +463,78 @@ function EarningsView({
 
   return (
     <div className="space-y-8">
-      {timeline.map((entry) => (
-        <div key={entry.security_id}>
-          <div className="flex items-baseline gap-2 mb-3">
-            <span className="font-mono font-semibold text-ink text-sm">
-              {entry.symbol}
-            </span>
-            {entry.security_name && (
-              <span className="text-ink-faint text-xs truncate">
-                {entry.security_name}
+      {/* Securities with user notes (+ their transcripts interleaved) */}
+      {timeline.map((entry) => {
+        const tickerTranscripts = transcriptsByTicker.get(entry.symbol) ?? [];
+        return (
+          <div key={entry.security_id}>
+            <div className="flex items-baseline gap-2 mb-3">
+              <span className="font-mono font-semibold text-ink text-sm">
+                {entry.symbol}
               </span>
-            )}
-            <span className="text-ink-faint text-xs">
-              ({entry.notes.length} note{entry.notes.length !== 1 ? "s" : ""})
-            </span>
+              {entry.security_name && (
+                <span className="text-ink-faint text-xs truncate">
+                  {entry.security_name}
+                </span>
+              )}
+              <span className="text-ink-faint text-xs">
+                ({entry.notes.length} note{entry.notes.length !== 1 ? "s" : ""}
+                {tickerTranscripts.length > 0 &&
+                  `, ${tickerTranscripts.length} transcript${tickerTranscripts.length !== 1 ? "s" : ""}`}
+                )
+              </span>
+            </div>
+            <div className="space-y-2 pl-3 border-l-2 border-blue/30">
+              {/* Transcript cards first (most recent quarter at top) */}
+              {tickerTranscripts.map((t) => (
+                <TranscriptCard
+                  key={`transcript-${t.ticker}-${t.year}-${t.quarter}`}
+                  transcript={t}
+                />
+              ))}
+              {/* Then user notes */}
+              {entry.notes.map((note) => (
+                <NoteCard
+                  key={note.id}
+                  note={note}
+                  isEditing={editingId === note.id}
+                  editContent={editContent}
+                  onStartEdit={onStartEdit}
+                  onCancelEdit={onCancelEdit}
+                  onSaveEdit={onSaveEdit}
+                  onDelete={onDelete}
+                  compact
+                />
+              ))}
+            </div>
           </div>
-          <div className="space-y-2 pl-3 border-l-2 border-blue/30">
-            {entry.notes.map((note) => (
-              <NoteCard
-                key={note.id}
-                note={note}
-                isEditing={editingId === note.id}
-                editContent={editContent}
-                onStartEdit={onStartEdit}
-                onCancelEdit={onCancelEdit}
-                onSaveEdit={onSaveEdit}
-                onDelete={onDelete}
-                compact
-              />
-            ))}
+        );
+      })}
+
+      {/* Securities with transcripts only (no user notes) */}
+      {extraTranscriptTickers.map((ticker) => {
+        const transcripts = transcriptsByTicker.get(ticker)!;
+        return (
+          <div key={`transcript-only-${ticker}`}>
+            <div className="flex items-baseline gap-2 mb-3">
+              <span className="font-mono font-semibold text-ink text-sm">
+                {ticker}
+              </span>
+              <span className="text-ink-faint text-xs">
+                ({transcripts.length} transcript{transcripts.length !== 1 ? "s" : ""})
+              </span>
+            </div>
+            <div className="space-y-2 pl-3 border-l-2 border-[#818CF8]/30">
+              {transcripts.map((t) => (
+                <TranscriptCard
+                  key={`transcript-${t.ticker}-${t.year}-${t.quarter}`}
+                  transcript={t}
+                />
+              ))}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
