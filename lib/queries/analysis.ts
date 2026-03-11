@@ -52,6 +52,14 @@ export interface ClassificationCoverage {
   }>;
 }
 
+export interface AnalysisDataCoverage {
+  holdingsTotal: number;
+  snapshotTotal: number;
+  coveragePct: number;
+  missingAccounts: string[];
+  holdingsDate: string | null;
+}
+
 // ─── Latest holdings CTE (reused across queries) ────────────────
 
 const LATEST_HOLDINGS_CTE = `
@@ -82,7 +90,7 @@ const LATEST_HOLDINGS_CTE = `
 export function getAllocationByDimension(
   db: Database.Database,
   dimension: AllocationDimension,
-  accountId?: number
+  accountIds?: number[]
 ): AllocationEntry[] {
   const groupColumn: Record<AllocationDimension, string> = {
     fund_category: "COALESCE(s.fund_category, 'Unclassified')",
@@ -103,9 +111,9 @@ export function getAllocationByDimension(
   ];
   const params: (string | number)[] = [];
 
-  if (accountId) {
-    conditions.push("h.account_id = ?");
-    params.push(accountId);
+  if (accountIds && accountIds.length > 0) {
+    conditions.push(`h.account_id IN (${accountIds.map(() => "?").join(",")})`);
+    params.push(...accountIds);
   }
 
   return db
@@ -149,16 +157,16 @@ export function getAllocationByDimension(
  */
 export function getConcentrationMetrics(
   db: Database.Database,
-  accountId?: number
+  accountIds?: number[]
 ): ConcentrationMetrics {
   const conditions = [
     "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))",
   ];
   const params: (string | number)[] = [];
 
-  if (accountId) {
-    conditions.push("h.account_id = ?");
-    params.push(accountId);
+  if (accountIds && accountIds.length > 0) {
+    conditions.push(`h.account_id IN (${accountIds.map(() => "?").join(",")})`);
+    params.push(...accountIds);
   }
 
   // Get all positions with market value
@@ -286,5 +294,84 @@ export function getClassificationCoverage(
     coverage_pct: total > 0 ? Math.round((classified / total) * 1000) / 10 : 0,
     by_source: bySource,
     unclassified_securities: unclassifiedSecurities,
+  };
+}
+
+/**
+ * Compare holdings-derived market value against snapshot totals
+ * to show how complete the analysis data is.
+ */
+export function getAnalysisDataCoverage(
+  db: Database.Database,
+  accountIds?: number[]
+): AnalysisDataCoverage {
+  const accountFilter =
+    accountIds && accountIds.length > 0
+      ? `AND h.account_id IN (${accountIds.map(() => "?").join(",")})`
+      : "";
+  const accountFilterSnap =
+    accountIds && accountIds.length > 0
+      ? `AND ms.account_id IN (${accountIds.map(() => "?").join(",")})`
+      : "";
+  const accountParams = accountIds ?? [];
+
+  // Holdings-derived total
+  const holdingsRow = db
+    .prepare(
+      `WITH ${LATEST_HOLDINGS_CTE}
+      SELECT
+        COALESCE(SUM(
+          CASE
+            WHEN lp.close_price IS NOT NULL
+              THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier")}
+            WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
+              THEN h.cost_basis
+            ELSE 0
+          END
+        ), 0) AS total,
+        MAX(h.as_of_date) AS latest_date
+      FROM latest_holdings h
+      JOIN securities s ON s.id = h.security_id
+      LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
+      WHERE (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
+        ${accountFilter}`
+    )
+    .get(...accountParams) as { total: number; latest_date: string | null };
+
+  // Snapshot-derived total (latest per account)
+  const snapshotRow = db
+    .prepare(
+      `SELECT COALESCE(SUM(ms.total_value), 0) AS total
+       FROM monthly_snapshots ms
+       WHERE ms.month_end_date = (
+         SELECT MAX(ms2.month_end_date) FROM monthly_snapshots ms2
+         WHERE ms2.account_id = ms.account_id
+       )
+       ${accountFilterSnap}`
+    )
+    .get(...accountParams) as { total: number };
+
+  // Accounts with snapshots but no holdings
+  const missingAccounts = db
+    .prepare(
+      `SELECT a.name FROM accounts a
+       WHERE EXISTS (SELECT 1 FROM monthly_snapshots ms WHERE ms.account_id = a.id)
+         AND NOT EXISTS (SELECT 1 FROM holdings h WHERE h.account_id = a.id AND h.quantity > 0)
+         ${accountIds && accountIds.length > 0 ? `AND a.id IN (${accountIds.map(() => "?").join(",")})` : ""}`
+    )
+    .all(...accountParams) as Array<{ name: string }>;
+
+  const holdingsTotal = holdingsRow.total;
+  const snapshotTotal = snapshotRow.total;
+
+  return {
+    holdingsTotal,
+    snapshotTotal,
+    coveragePct:
+      snapshotTotal > 0
+        ? Math.round((holdingsTotal / snapshotTotal) * 1000) / 10
+        : 100,
+    missingAccounts: missingAccounts.map((a) => a.name),
+    holdingsDate: holdingsRow.latest_date,
   };
 }
