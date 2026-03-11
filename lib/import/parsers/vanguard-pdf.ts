@@ -9,6 +9,61 @@ import type {
 } from "../types";
 import { extractMaturityDate } from "@/lib/bonds";
 
+// ── OCC symbol utilities ────────────────────────────────────────────
+
+/**
+ * Build an OCC-format option symbol from component parts.
+ * Format: AAPL  250321C00150000
+ *   - Underlying padded to 6 chars
+ *   - YYMMDD expiration
+ *   - C or P
+ *   - Strike × 1000, padded to 8 digits
+ */
+function buildOCCSymbol(
+  underlying: string,
+  expirationDate: string,  // YYYY-MM-DD
+  optionType: "CALL" | "PUT",
+  strike: number
+): string {
+  const paddedUnderlying = underlying.slice(0, 6).padEnd(6, " ");
+  const [year, month, day] = expirationDate.split("-");
+  const occDate = `${year.slice(2)}${month}${day}`;
+  const cpFlag = optionType === "CALL" ? "C" : "P";
+  const occStrike = Math.round(strike * 1000).toString().padStart(8, "0");
+  return `${paddedUnderlying}${occDate}${cpFlag}${occStrike}`;
+}
+
+/**
+ * Check whether a symbol is already in OCC format (has spaces + date digits).
+ */
+function isOCCFormat(symbol: string): boolean {
+  // OCC symbols are 21 chars: 6-char underlying (may have spaces) + 6-digit date + C/P + 8-digit strike
+  return /^.{6}\d{6}[CP]\d{8}$/.test(symbol);
+}
+
+/**
+ * If an option has a bare ticker as symbol but full metadata available,
+ * convert it to OCC format. Returns the corrected symbol.
+ */
+function ensureOCCSymbol(
+  symbol: string,
+  underlyingSymbol: string | undefined,
+  expirationDate: string | undefined,
+  optionType: "CALL" | "PUT" | undefined,
+  strikePrice: number | undefined
+): string {
+  // Already OCC format — leave it alone
+  if (isOCCFormat(symbol)) return symbol;
+
+  // Have enough metadata to build OCC
+  if (underlyingSymbol && expirationDate && optionType && strikePrice != null) {
+    return buildOCCSymbol(underlyingSymbol, expirationDate, optionType, strikePrice);
+  }
+
+  // Not OCC and not enough metadata — return as-is (will log a warning)
+  return symbol;
+}
+
 // ── Claude API response schema ──────────────────────────────────────
 
 export interface ClaudePdfHolding {
@@ -105,6 +160,13 @@ Return ONLY valid JSON matching this exact schema (no markdown, no explanation):
   ]
 }
 
+CRITICAL — COMPLETENESS:
+- You MUST extract EVERY SINGLE holding from the statement. Do not skip or truncate.
+- The statement may have holdings across multiple pages and multiple sections (Sweep program, Mutual funds, ETFs & ETNs, Stocks, Bonds & CDs, Options).
+- Scan ALL pages of the PDF. Holdings typically appear in the "Holdings details" or "Your holdings" section.
+- After extraction, verify: the sum of all holdings values should approximately equal total_value. If it doesn't, you likely missed some holdings — go back and extract them.
+- A typical brokerage statement has 50-120+ holdings. If you extracted fewer than 40 holdings from a brokerage account, you likely missed a section.
+
 Rules:
 - Convert all dates from MM/DD to YYYY-MM-DD using the statement year
 - For holdings, use the "Balance on [statement date]" column as the value
@@ -129,7 +191,7 @@ export async function callClaudeForPdfExtraction(
   // Use streaming to avoid 10-minute timeout on large PDFs
   const stream = client.messages.stream({
     model: "claude-sonnet-4-20250514",
-    max_tokens: 16000,
+    max_tokens: 64000,
     messages: [
       {
         role: "user",
@@ -152,6 +214,14 @@ export async function callClaudeForPdfExtraction(
   });
 
   const message = await stream.finalMessage();
+
+  // Check for output truncation
+  if (message.stop_reason === "max_tokens") {
+    throw new Error(
+      `Claude API response was truncated (hit max_tokens limit of 64000). ` +
+      `The PDF may be too large for a single extraction call.`
+    );
+  }
 
   // Extract JSON from the response
   const textBlock = message.content.find((block) => block.type === "text");
@@ -235,16 +305,6 @@ export function parseClaudePdfResponse(
   for (const h of response.holdings) {
     if (!h.symbol) continue;
 
-    holdings.push({
-      accountName,
-      symbol: h.symbol,
-      securityName: h.name,
-      quantity: h.quantity,
-      marketValue: h.value,
-      asOfDate: statementDate,
-      sourceKey: `vanguard-pdf:holding:${accountName}:${h.symbol}:${statementDate}`,
-    });
-
     const isOption = h.category === "Options" || h.option_type != null;
     const securityType = isOption
       ? "option"
@@ -256,8 +316,33 @@ export function parseClaudePdfResponse(
             ? "mutual_fund"
             : "stock";
 
+    // For options, ensure we use OCC-format symbol (not bare ticker)
+    // This prevents collisions where "INTC" stock and "INTC" option share the same symbol
+    let effectiveSymbol = h.symbol;
+    if (isOption) {
+      const corrected = ensureOCCSymbol(
+        h.symbol, h.underlying_symbol, h.expiration_date, h.option_type, h.strike_price
+      );
+      if (corrected !== h.symbol) {
+        warnings.push(
+          `Option ${h.name}: converted bare ticker "${h.symbol}" to OCC symbol "${corrected}"`
+        );
+      }
+      effectiveSymbol = corrected;
+    }
+
+    holdings.push({
+      accountName,
+      symbol: effectiveSymbol,
+      securityName: h.name,
+      quantity: h.quantity,
+      marketValue: h.value,
+      asOfDate: statementDate,
+      sourceKey: `vanguard-pdf:holding:${accountName}:${effectiveSymbol}:${statementDate}`,
+    });
+
     const sec: ParsedSecurity = {
-      symbol: h.symbol,
+      symbol: effectiveSymbol,
       name: h.name,
       securityType,
     };
@@ -274,11 +359,11 @@ export function parseClaudePdfResponse(
       sec.maturityDate = extractMaturityDate(h.name) ?? undefined;
     }
 
-    securitiesMap.set(h.symbol, sec);
+    securitiesMap.set(effectiveSymbol, sec);
 
     if (h.price != null && h.price > 0) {
       prices.push({
-        symbol: h.symbol,
+        symbol: effectiveSymbol,
         date: statementDate,
         closePrice: h.price,
         source: "vanguard-pdf",
@@ -296,25 +381,39 @@ export function parseClaudePdfResponse(
     const tradeDate = normalizeDate(t.trade_date, statementYear);
     const settlementDate = normalizeDate(t.settlement_date, statementYear);
 
+    // For option transactions, ensure OCC-format symbol
+    const isOptionTxn = t.option_type != null;
+    let txnSymbol = t.symbol ?? undefined;
+    if (isOptionTxn && txnSymbol) {
+      const corrected = ensureOCCSymbol(
+        txnSymbol, t.underlying_symbol, t.expiration_date, t.option_type, t.strike_price
+      );
+      if (corrected !== txnSymbol) {
+        warnings.push(
+          `Option txn ${t.name}: converted bare ticker "${txnSymbol}" to OCC symbol "${corrected}"`
+        );
+      }
+      txnSymbol = corrected;
+    }
+
     transactions.push({
       accountName,
       tradeDate,
       settlementDate,
       type: txnType,
-      symbol: t.symbol ?? undefined,
+      symbol: txnSymbol,
       securityName: t.name,
       quantity: t.quantity ?? undefined,
       amount: t.amount,
       pricePerShare: t.price ?? undefined,
       fees: t.commissions ?? undefined,
-      sourceKey: `vanguard-pdf:txn:${accountName}:${tradeDate}:${t.symbol ?? "cash"}:${txnType.toLowerCase()}:${t.amount}`,
+      sourceKey: `vanguard-pdf:txn:${accountName}:${tradeDate}:${txnSymbol ?? "cash"}:${txnType.toLowerCase()}:${t.amount}`,
     });
 
     // Register securities from transactions too (including option metadata)
-    if (t.symbol && !securitiesMap.has(t.symbol)) {
-      const isOptionTxn = t.option_type != null;
+    if (txnSymbol && !securitiesMap.has(txnSymbol)) {
       const sec: ParsedSecurity = {
-        symbol: t.symbol,
+        symbol: txnSymbol,
         name: t.name,
       };
 
@@ -327,7 +426,7 @@ export function parseClaudePdfResponse(
         sec.multiplier = 100;
       }
 
-      securitiesMap.set(t.symbol, sec);
+      securitiesMap.set(txnSymbol, sec);
     }
   }
 
@@ -343,6 +442,21 @@ export function parseClaudePdfResponse(
     },
   ];
 
+  // Completeness validation: compare extracted holdings total vs statement total
+  const extractedTotal = response.holdings.reduce((sum, h) => sum + (h.value || 0), 0);
+  const statementTotal = response.total_value;
+  if (statementTotal > 0) {
+    const coveragePct = (extractedTotal / statementTotal) * 100;
+    if (coveragePct < 80) {
+      warnings.push(
+        `Incomplete extraction: holdings sum to $${extractedTotal.toLocaleString()} ` +
+        `(${coveragePct.toFixed(0)}% of statement total $${statementTotal.toLocaleString()}). ` +
+        `${holdings.length} holdings extracted — some may be missing. ` +
+        `Consider undoing this import and re-importing the PDF.`
+      );
+    }
+  }
+
   return {
     sourceType: "vanguard-pdf",
     sourceName: filename,
@@ -356,6 +470,89 @@ export function parseClaudePdfResponse(
   };
 }
 
+// ── Holdings-only retry prompt ───────────────────────────────────────
+
+const HOLDINGS_ONLY_PROMPT = `You are extracting ONLY the holdings from a Vanguard monthly brokerage statement PDF.
+
+A previous extraction attempt missed many holdings. You MUST extract ALL of them this time.
+
+Return ONLY valid JSON matching this exact schema (no markdown, no explanation):
+
+{
+  "holdings": [
+    {
+      "symbol": "<ticker or OCC option symbol>",
+      "name": "<full security name>",
+      "category": "Sweep program" | "Mutual funds" | "ETFs" | "Stocks" | "Bonds" | "Options",
+      "quantity": <number>,
+      "price": <number or null>,
+      "value": <number> (balance as of statement date),
+      "underlying_symbol": "<ticker of the underlying stock, only for options>",
+      "strike_price": <number, only for options>,
+      "expiration_date": "YYYY-MM-DD" (only for options),
+      "option_type": "CALL" or "PUT" (only for options)
+    }
+  ]
+}
+
+CRITICAL:
+- IGNORE the transaction activity pages entirely. Only extract from the holdings/balance sections.
+- The holdings section may span MANY pages. Read EVERY page.
+- Sections include: Sweep program, Mutual funds, ETFs & ETNs, Stocks, Bonds & CDs, Options.
+- For OPTIONS: use OCC-style symbol (underlying padded to 6 chars + YYMMDD + C/P + strike*1000 padded to 8 digits).
+- The account has 50-120+ holdings. If you have fewer than that, you missed some pages.`;
+
+async function callClaudeForHoldingsOnly(
+  pdfBuffer: Buffer
+): Promise<{ holdings: ClaudePdfHolding[] }> {
+  const client = new Anthropic();
+  const base64Pdf = pdfBuffer.toString("base64");
+
+  const stream = client.messages.stream({
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 64000,
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "document",
+            source: {
+              type: "base64",
+              media_type: "application/pdf",
+              data: base64Pdf,
+            },
+          },
+          {
+            type: "text",
+            text: HOLDINGS_ONLY_PROMPT,
+          },
+        ],
+      },
+    ],
+  });
+
+  const message = await stream.finalMessage();
+
+  if (message.stop_reason === "max_tokens") {
+    throw new Error("Holdings-only extraction was truncated (hit max_tokens).");
+  }
+
+  const textBlock = message.content.find((block) => block.type === "text");
+  if (!textBlock || textBlock.type !== "text") {
+    throw new Error("No text response from Claude API (holdings retry)");
+  }
+
+  let jsonText = textBlock.text.trim();
+  if (jsonText.startsWith("```")) {
+    jsonText = jsonText
+      .replace(/^```(?:json)?\s*\n?/, "")
+      .replace(/\n?```\s*$/, "");
+  }
+
+  return JSON.parse(jsonText) as { holdings: ClaudePdfHolding[] };
+}
+
 // ── Full parse entry point (used by import engine) ──────────────────
 
 export async function parseVanguardPdf(
@@ -363,5 +560,39 @@ export async function parseVanguardPdf(
   filename: string
 ): Promise<ParsedImportResult> {
   const response = await callClaudeForPdfExtraction(pdfBuffer);
+
+  // Check if holdings extraction was complete
+  if (response.total_value > 0) {
+    const holdingsTotal = response.holdings.reduce(
+      (sum, h) => sum + (h.value || 0),
+      0
+    );
+    const coveragePct = (holdingsTotal / response.total_value) * 100;
+
+    if (coveragePct < 80) {
+      // Holdings extraction was incomplete — make a focused second call
+      console.log(
+        `[vanguard-pdf] Incomplete holdings: ${response.holdings.length} holdings = ` +
+        `$${holdingsTotal.toLocaleString()} (${coveragePct.toFixed(0)}% of ` +
+        `$${response.total_value.toLocaleString()}). Retrying with holdings-only extraction...`
+      );
+
+      const retry = await callClaudeForHoldingsOnly(pdfBuffer);
+
+      if (retry.holdings.length > response.holdings.length) {
+        console.log(
+          `[vanguard-pdf] Retry extracted ${retry.holdings.length} holdings ` +
+          `(was ${response.holdings.length}). Using retry results.`
+        );
+        response.holdings = retry.holdings;
+      } else {
+        console.log(
+          `[vanguard-pdf] Retry got ${retry.holdings.length} holdings ` +
+          `(same or fewer than ${response.holdings.length}). Keeping original.`
+        );
+      }
+    }
+  }
+
   return parseClaudePdfResponse(response, filename);
 }

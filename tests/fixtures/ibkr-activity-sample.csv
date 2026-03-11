@@ -40,3 +40,10 @@ Interest,Data,Total,,,,50
 Fees,Header,Subtitle,Currency,Account,Date,Description,Amount
 Fees,Data,Other Fees,USD,U99999999,2025-01-03,Market Data Subscription for Jan 2025,-30
 Fees,Data,Total,,,,,-30
+Open Positions,Header,DataDiscriminator,Asset Category,Currency,Symbol,Quantity,Mult,Cost Price,Cost Basis,Close Price,Value,Unrealized P/L,Code
+Open Positions,Data,Summary,Stocks,USD,AAPL,100,1,190.00,19000.00,195.50,19550.00,550.00,
+Open Positions,Data,Summary,Stocks,USD,GOOG,200,1,136.00,27200.00,140.00,28000.00,800.00,
+Open Positions,Total,,Stocks,USD,,,,,46200.00,,47550.00,1350.00,
+Open Positions,Header,DataDiscriminator,Asset Category,Currency,Symbol,Quantity,Mult,Cost Price,Cost Basis,Close Price,Value,Unrealized P/L,Code
+Open Positions,Data,Summary,Equity and Index Options,USD,SPY 12FEB25 610 P,5,100,5.57,2783.43,10.17,5087.15,2303.72,
+Open Positions,Total,,Equity and Index Options,USD,,,,,2783.43,,5087.15,2303.72,

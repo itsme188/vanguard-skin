@@ -3,6 +3,8 @@ import type {
   ParsedTransaction,
   ParsedSecurity,
   ParsedSnapshot,
+  ParsedHolding,
+  ParsedPrice,
 } from "../types";
 
 interface CsvRow {
@@ -346,6 +348,71 @@ export function parseIbkrActivity(
     }
   }
 
+  // Parse Open Positions → holdings + prices
+  const holdings: ParsedHolding[] = [];
+  const prices: ParsedPrice[] = [];
+
+  for (const row of rows) {
+    if (
+      row.section === "Open Positions" &&
+      row.discriminator === "Data" &&
+      row.fields[0] === "Summary"
+    ) {
+      // fields: DataDiscriminator, Asset Category, Currency, Symbol, Quantity, Mult, Cost Price, Cost Basis, Close Price, Value, Unrealized P/L, Code
+      const assetCategory = row.fields[1];
+      const symbol = row.fields[3];
+      const quantity = parseFloat(row.fields[4]);
+      const multiplier = parseInt(row.fields[5]) || 1;
+      const costBasis = parseFloat(row.fields[7]);
+      const closePrice = parseFloat(row.fields[8]);
+
+      if (!symbol || isNaN(quantity)) continue;
+
+      const isOption = assetCategory.includes("Options");
+      let effectiveSymbol = symbol;
+
+      if (isOption) {
+        const optionInfo = parseIBKROptionSymbol(symbol);
+        effectiveSymbol = optionInfo?.occSymbol ?? symbol;
+
+        securitiesMap.set(effectiveSymbol, {
+          symbol: effectiveSymbol,
+          name: symbol,
+          securityType: "option",
+          underlyingSymbol: optionInfo?.underlying,
+          strikePrice: optionInfo?.strike,
+          expirationDate: optionInfo?.expiry,
+          optionType: optionInfo?.optionType,
+          multiplier,
+        });
+      } else {
+        securitiesMap.set(symbol, {
+          symbol,
+          securityType: assetCategory === "Stocks" ? "Stock" : assetCategory,
+        });
+      }
+
+      holdings.push({
+        accountName: "IBKR",
+        symbol: effectiveSymbol,
+        securityName: isOption ? symbol : undefined,
+        quantity,
+        costBasis: isNaN(costBasis) ? undefined : costBasis,
+        asOfDate: periodEnd,
+        sourceKey: `ibkr:pos:${periodEnd}:${effectiveSymbol}`,
+      });
+
+      if (!isNaN(closePrice) && closePrice > 0) {
+        prices.push({
+          symbol: effectiveSymbol,
+          date: periodEnd,
+          closePrice,
+          source: "ibkr-activity",
+        });
+      }
+    }
+  }
+
   // Build snapshot
   const snapshots: ParsedSnapshot[] = [];
   if (endingValue !== 0 && periodEnd) {
@@ -370,8 +437,8 @@ export function parseIbkrActivity(
     sourceName: filename,
     transactions,
     securities: Array.from(securitiesMap.values()),
-    holdings: [],
-    prices: [],
+    holdings,
+    prices,
     snapshots,
     errors,
     warnings,
