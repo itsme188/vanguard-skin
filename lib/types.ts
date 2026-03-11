@@ -117,3 +117,43 @@ export interface TaxLotSale {
   sale_date: string;
   created_at: string;
 }
+
+export type TranscriptSource = "edgar_8k" | "motley_fool" | "api_ninjas";
+
+export interface EarningsTranscript {
+  id: number;
+  security_id: number | null;
+  ticker: string;
+  year: number;
+  quarter: number;
+  call_date: string | null;
+  source: TranscriptSource;
+  transcript: string | null;
+  summary: string | null;
+  guidance: string | null;
+  risk_factors: string | null;
+  sentiment_score: number | null;
+  sentiment_label: string | null;
+  participants: string | null; // JSON array
+  accession_number: string | null;
+  filing_url: string | null;
+  source_key: string;
+  fetched_at: string;
+  created_at: string;
+}
+
+export type NoteType = "journal" | "earnings" | "trade_thesis";
+export type NoteSentiment = "bullish" | "bearish" | "neutral" | "cautious" | "confident";
+
+export interface Note {
+  id: number;
+  note_type: NoteType;
+  content: string;
+  security_id: number | null;
+  transaction_id: number | null;
+  event_date: string;
+  tags: string | null;
+  sentiment: NoteSentiment | null;
+  created_at: string;
+  updated_at: string;
+}

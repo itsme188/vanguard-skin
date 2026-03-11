@@ -563,6 +563,127 @@ export async function getInsiderTransactions(
   return results;
 }
 
+// ─── Earnings 8-K Press Releases ────────────────────────────────
+
+export interface Earnings8KFiling {
+  accessionNumber: string;
+  filingDate: string; // YYYY-MM-DD
+  pressReleaseText: string; // Extracted press release content
+  filingUrl: string; // Direct URL to filing on SEC website
+}
+
+/**
+ * Strip HTML tags and decode common entities from EDGAR filing documents.
+ */
+function stripHtmlTags(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n\n")
+    .replace(/<\/tr>/gi, "\n")
+    .replace(/<\/td>/gi, "\t")
+    .replace(/<\/th>/gi, "\t")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/**
+ * Get recent 8-K earnings press releases (Item 2.02) for a company.
+ *
+ * Item 2.02 ("Results of Operations and Financial Condition") is the standard
+ * item for quarterly earnings announcements. The actual press release is
+ * typically attached as Exhibit 99.1.
+ */
+export async function getEarnings8KFilings(
+  ticker: string,
+  options?: {
+    limit?: number;
+  }
+): Promise<Earnings8KFiling[]> {
+  const limit = Math.min(options?.limit || 4, 10);
+
+  // Get recent 8-K filings
+  const filings = await getRecentFilings(ticker, {
+    formType: "8-K",
+    limit: limit * 3, // fetch extra to filter for Item 2.02
+  });
+
+  if (filings.length === 0) return [];
+
+  const cik = await getCik(ticker);
+  const cikNum = parseInt(cik);
+  const results: Earnings8KFiling[] = [];
+
+  for (const filing of filings) {
+    if (results.length >= limit) break;
+
+    try {
+      const accessionNoDashes = filing.accessionNumber.replace(/-/g, "");
+      const docUrl = `https://www.sec.gov/Archives/edgar/data/${cikNum}/${accessionNoDashes}/${filing.primaryDocument}`;
+
+      const docText = await edgarFetchText(docUrl);
+
+      // Check if this 8-K contains Item 2.02 (Results of Operations)
+      const isEarnings =
+        docText.includes("2.02") ||
+        docText.includes("Item\u00a02.02") ||
+        docText.includes("Results of Operations");
+
+      if (!isEarnings) continue;
+
+      // Try to get Exhibit 99.1 (the actual press release) from the filing index
+      const indexUrl = `https://www.sec.gov/Archives/edgar/data/${cikNum}/${accessionNoDashes}/`;
+      let pressRelease = "";
+
+      try {
+        const indexHtml = await edgarFetchText(indexUrl);
+
+        // Look for exhibit 99 links (99.1, 99.01, ex99, etc.)
+        const exMatch = indexHtml.match(
+          /href="([^"]*(?:ex99|exhibit99|ex-99|press)[^"]*\.htm[l]?)"/i
+        );
+
+        if (exMatch) {
+          const exUrl = exMatch[1].startsWith("http")
+            ? exMatch[1]
+            : `${indexUrl}${exMatch[1]}`;
+          const exHtml = await edgarFetchText(exUrl);
+          pressRelease = stripHtmlTags(exHtml);
+        }
+      } catch {
+        // If we can't get the exhibit, use the main 8-K document
+      }
+
+      // If no exhibit found, extract from the main document
+      if (!pressRelease) {
+        pressRelease = stripHtmlTags(docText);
+      }
+
+      // Truncate very long press releases (keep first ~5000 chars)
+      if (pressRelease.length > 5000) {
+        pressRelease = pressRelease.slice(0, 5000) + "\n\n[Truncated — full text available on SEC EDGAR]";
+      }
+
+      results.push({
+        accessionNumber: filing.accessionNumber,
+        filingDate: filing.filingDate,
+        pressReleaseText: pressRelease,
+        filingUrl: `https://www.sec.gov/Archives/edgar/data/${cikNum}/${accessionNoDashes}/${filing.primaryDocument}`,
+      });
+    } catch {
+      continue;
+    }
+  }
+
+  return results;
+}
+
 // ─── Company Search ─────────────────────────────────────────────
 
 /**
