@@ -137,6 +137,139 @@ describe("vanguard PDF parser", () => {
     });
   });
 
+  describe("OCC symbol enforcement for options", () => {
+    it("converts bare ticker to OCC format when option metadata is present", () => {
+      const optionFixture: ClaudePdfResponse = {
+        ...fixture,
+        holdings: [
+          {
+            symbol: "INTC", // bare ticker — should be converted
+            name: "PUT INTEL CORP $45 EXP 03/20/26",
+            category: "Options",
+            quantity: 5,
+            price: 2.5,
+            value: 1250,
+            underlying_symbol: "INTC",
+            strike_price: 45,
+            expiration_date: "2026-03-20",
+            option_type: "PUT",
+          },
+          {
+            symbol: "INTC",
+            name: "Intel Corp",
+            category: "Stocks",
+            quantity: 275,
+            price: 45.61,
+            value: 12542.75,
+          },
+        ],
+        transactions: [],
+      };
+
+      const result = parseClaudePdfResponse(optionFixture, "test.pdf");
+
+      // Option should get OCC symbol
+      const optionHolding = result.holdings.find(h => h.quantity === 5);
+      expect(optionHolding!.symbol).toBe("INTC  260320P00045000");
+
+      // Stock should keep bare ticker
+      const stockHolding = result.holdings.find(h => h.quantity === 275);
+      expect(stockHolding!.symbol).toBe("INTC");
+
+      // Securities should be separate
+      const optionSec = result.securities.find(s => s.securityType === "option");
+      expect(optionSec!.symbol).toBe("INTC  260320P00045000");
+      expect(optionSec!.multiplier).toBe(100);
+
+      const stockSec = result.securities.find(s => s.securityType === "stock");
+      expect(stockSec!.symbol).toBe("INTC");
+      expect(stockSec!.multiplier).toBeUndefined();
+    });
+
+    it("leaves already-OCC symbols unchanged", () => {
+      const optionFixture: ClaudePdfResponse = {
+        ...fixture,
+        holdings: [
+          {
+            symbol: "INTC  260320P00045000", // already OCC
+            name: "PUT INTEL CORP $45 EXP 03/20/26",
+            category: "Options",
+            quantity: 5,
+            price: 2.5,
+            value: 1250,
+            underlying_symbol: "INTC",
+            strike_price: 45,
+            expiration_date: "2026-03-20",
+            option_type: "PUT",
+          },
+        ],
+        transactions: [],
+      };
+
+      const result = parseClaudePdfResponse(optionFixture, "test.pdf");
+      expect(result.holdings[0].symbol).toBe("INTC  260320P00045000");
+      // Should not generate a warning for already-correct symbols
+      expect(result.warnings.filter(w => w.includes("converted bare ticker"))).toHaveLength(0);
+    });
+
+    it("converts bare ticker in option transactions too", () => {
+      const txnFixture: ClaudePdfResponse = {
+        ...fixture,
+        holdings: [],
+        transactions: [
+          {
+            settlement_date: "2026-01-23",
+            trade_date: "2026-01-23",
+            symbol: "INTC",
+            name: "PUT INTEL CORP $45 EXP 03/20/26",
+            transaction_type: "Buy to open",
+            quantity: 3,
+            price: 8.6,
+            commissions: 0,
+            amount: -2583,
+            underlying_symbol: "INTC",
+            strike_price: 45,
+            expiration_date: "2026-03-20",
+            option_type: "PUT",
+          },
+        ],
+      };
+
+      const result = parseClaudePdfResponse(txnFixture, "test.pdf");
+      expect(result.transactions[0].symbol).toBe("INTC  260320P00045000");
+
+      const sec = result.securities.find(s => s.securityType === "option");
+      expect(sec!.symbol).toBe("INTC  260320P00045000");
+    });
+
+    it("emits warning when converting bare ticker to OCC", () => {
+      const optionFixture: ClaudePdfResponse = {
+        ...fixture,
+        holdings: [
+          {
+            symbol: "INTC",
+            name: "PUT INTEL CORP $45 EXP 03/20/26",
+            category: "Options",
+            quantity: 5,
+            price: 2.5,
+            value: 1250,
+            underlying_symbol: "INTC",
+            strike_price: 45,
+            expiration_date: "2026-03-20",
+            option_type: "PUT",
+          },
+        ],
+        transactions: [],
+      };
+
+      const result = parseClaudePdfResponse(optionFixture, "test.pdf");
+      const conversionWarnings = result.warnings.filter(w => w.includes("converted bare ticker"));
+      expect(conversionWarnings.length).toBeGreaterThan(0);
+      expect(conversionWarnings[0]).toContain("INTC");
+      expect(conversionWarnings[0]).toContain("INTC  260320P00045000");
+    });
+  });
+
   describe("date normalization", () => {
     it("handles MM/DD format dates", () => {
       const shortDateFixture: ClaudePdfResponse = {

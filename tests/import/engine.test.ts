@@ -311,7 +311,7 @@ describe("import engine", () => {
           c: number;
         }
       ).c;
-      expect(holdings).toBe(vgResult.newHoldings);
+      expect(holdings).toBe(ibkrResult.newHoldings + vgResult.newHoldings);
 
       // Monthly snapshots from both IBKR activity and monthly values
       const snaps = (

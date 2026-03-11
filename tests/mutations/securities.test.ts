@@ -126,4 +126,57 @@ describe("upsertSecurity", () => {
     // multiplier is NULL in DB; all queries use COALESCE(s.multiplier, 1)
     expect(row.multiplier).toBeNull();
   });
+
+  it("prevents option metadata from clobbering stock security (type conflict guard)", () => {
+    // First: create INTC as a stock
+    const stockId = upsertSecurity(db, "INTC", "Intel Corp", "stock");
+    expect(stockId).toBeGreaterThan(0);
+
+    // Simulate what happened: an option import tries to overwrite with bare ticker
+    const resultId = upsertSecurity(db, {
+      symbol: "INTC",
+      name: "PUT INTEL CORP $45 EXP 03/20/26",
+      securityType: "option",
+      underlyingSymbol: "INTC",
+      strikePrice: 45,
+      expirationDate: "2026-03-20",
+      optionType: "PUT",
+      multiplier: 100,
+    });
+
+    // Should return the SAME id (existing stock)
+    expect(resultId).toBe(stockId);
+
+    // Security should STILL be a stock — option metadata was rejected
+    const row = db
+      .prepare("SELECT * FROM securities WHERE id = ?")
+      .get(stockId) as any;
+    expect(row.security_type).toBe("stock");
+    expect(row.multiplier).toBeNull();
+    expect(row.option_type).toBeNull();
+    expect(row.name).toBe("Intel Corp"); // Name preserved
+  });
+
+  it("prevents stock from clobbering an option security (reverse direction)", () => {
+    // Create option first
+    const optionId = upsertSecurity(db, {
+      symbol: "INTC  260320P00045000",
+      name: "PUT INTEL CORP $45 EXP 03/20/26",
+      securityType: "option",
+      multiplier: 100,
+      optionType: "PUT",
+    });
+
+    // Try to overwrite with stock type
+    const resultId = upsertSecurity(db, "INTC  260320P00045000", "Intel Corp", "stock");
+
+    expect(resultId).toBe(optionId);
+
+    // Should still be option
+    const row = db
+      .prepare("SELECT * FROM securities WHERE id = ?")
+      .get(optionId) as any;
+    expect(row.security_type).toBe("option");
+    expect(row.multiplier).toBe(100);
+  });
 });

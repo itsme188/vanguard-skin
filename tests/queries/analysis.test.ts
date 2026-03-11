@@ -154,7 +154,7 @@ describe("getAllocationByDimension", () => {
     seedPrice(db, secId, 250);
 
     const allAlloc = getAllocationByDimension(db, "fund_category");
-    const acct1Alloc = getAllocationByDimension(db, "fund_category", acct1);
+    const acct1Alloc = getAllocationByDimension(db, "fund_category", [acct1]);
 
     // Account-filtered should have less total value
     const allTotal = allAlloc.reduce((s, a) => s + a.total_market_value, 0);
