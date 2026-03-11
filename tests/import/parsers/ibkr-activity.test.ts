@@ -27,7 +27,65 @@ describe("IBKR activity parser", () => {
     expect(snap.interest).toBe(50);
     expect(snap.fees).toBe(-30);
     expect(snap.commissions).toBe(-15.5);
+    expect(snap.depositsWithdrawals).toBe(1775.5);
     expect(snap.twr).toBeCloseTo(14.545454545);
+  });
+
+  it("parses 'Deposits & Withdrawals' field name (ampersand variant)", () => {
+    // Real IBKR CSVs use "Deposits & Withdrawals" not "Deposits/Withdrawals"
+    const modified = fixture.replace(
+      "Deposits/Withdrawals,1775.5",
+      "Deposits & Withdrawals,-100000"
+    );
+    const result = parseIbkrActivity(modified, "test.csv");
+    expect(result.snapshots[0].depositsWithdrawals).toBe(-100000);
+  });
+
+  it("parses negative TWR correctly", () => {
+    // IBKR reports negative TWR as "-6.43%" — the minus sign must be captured
+    const negTwr = fixture.replace("14.545454545%", "-6.426701465%");
+    const result = parseIbkrActivity(negTwr, "test.csv");
+    expect(result.snapshots[0].twr).toBeCloseTo(-6.426701465);
+  });
+
+  it("sets twr to undefined when NAV section has no TWR row", () => {
+    // Remove the TWR lines from the fixture
+    const noTwr = fixture
+      .split("\n")
+      .filter(
+        (line) =>
+          !line.startsWith("Net Asset Value,Header,Time Weighted") &&
+          !line.match(/^Net Asset Value,Data,[\d.]+%/)
+      )
+      .join("\n");
+    const result = parseIbkrActivity(noTwr, "test.csv");
+    expect(result.snapshots[0].twr).toBeUndefined();
+  });
+
+  it("sets depositsWithdrawals to undefined when not present in CSV", () => {
+    // Remove the Deposits/Withdrawals line from the fixture
+    const noDW = fixture
+      .split("\n")
+      .filter((line) => !line.includes("Deposits/Withdrawals"))
+      .join("\n");
+    const result = parseIbkrActivity(noDW, "test.csv");
+    expect(result.snapshots[0].depositsWithdrawals).toBeUndefined();
+  });
+
+  it("extracts deposits/withdrawals as external flow transactions", () => {
+    const result = parseIbkrActivity(fixture, "IBKR 2025-01 activity.csv");
+    const deposits = result.transactions.filter((t) => t.type === "DEPOSIT");
+    const withdrawals = result.transactions.filter((t) => t.type === "WITHDRAWAL");
+
+    expect(deposits).toHaveLength(1);
+    expect(deposits[0].amount).toBe(5000);
+    expect(deposits[0].tradeDate).toBe("2025-01-15");
+    expect(deposits[0].isExternalFlow).toBe(true);
+
+    expect(withdrawals).toHaveLength(1);
+    expect(withdrawals[0].amount).toBe(-3224.5);
+    expect(withdrawals[0].tradeDate).toBe("2025-01-20");
+    expect(withdrawals[0].isExternalFlow).toBe(true);
   });
 
   it("extracts trades as transactions", () => {

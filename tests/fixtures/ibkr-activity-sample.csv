@@ -40,6 +40,10 @@ Interest,Data,Total,,,,50
 Fees,Header,Subtitle,Currency,Account,Date,Description,Amount
 Fees,Data,Other Fees,USD,U99999999,2025-01-03,Market Data Subscription for Jan 2025,-30
 Fees,Data,Total,,,,,-30
+Deposits & Withdrawals,Header,Currency,Account,Settle Date,Description,Amount
+Deposits & Withdrawals,Data,USD,U99999999,2025-01-15,Electronic Fund Transfer,5000
+Deposits & Withdrawals,Data,USD,U99999999,2025-01-20,Disbursement Initiated by User,-3224.5
+Deposits & Withdrawals,Data,Total,,,,-1775.5
 Open Positions,Header,DataDiscriminator,Asset Category,Currency,Symbol,Quantity,Mult,Cost Price,Cost Basis,Close Price,Value,Unrealized P/L,Code
 Open Positions,Data,Summary,Stocks,USD,AAPL,100,1,190.00,19000.00,195.50,19550.00,550.00,
 Open Positions,Data,Summary,Stocks,USD,GOOG,200,1,136.00,27200.00,140.00,28000.00,800.00,
