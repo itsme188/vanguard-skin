@@ -294,6 +294,7 @@ export function AnalysisView({
                     borderRadius: "8px",
                     color: "#E5E7EB",
                   }}
+                  itemStyle={{ color: "#E5E7EB" }}
                 />
                 <text
                   x="50%"
@@ -481,6 +482,7 @@ export function AnalysisView({
                         borderRadius: "8px",
                         color: "#E5E7EB",
                       }}
+                      itemStyle={{ color: "#E5E7EB" }}
                     />
                     <Bar dataKey="weight_pct" fill="#C9A44E" radius={[0, 4, 4, 0]} />
                   </BarChart>
