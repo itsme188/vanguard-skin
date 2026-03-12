@@ -54,9 +54,11 @@ export async function POST(request: NextRequest) {
             iteration++;
 
             const stream = client.messages.stream({
-              model: "claude-sonnet-4-20250514",
-              max_tokens: 4096,
+              model: "claude-opus-4-6",
+              max_tokens: 16000,
               temperature: 0.3,
+              thinking: { type: "adaptive" },
+              cache_control: { type: "ephemeral" },
               system: systemPrompt,
               tools: CHAT_TOOLS,
               messages: conversationMessages,
@@ -64,19 +66,25 @@ export async function POST(request: NextRequest) {
 
             // Stream text deltas to client in real-time
             for await (const event of stream) {
-              if (
-                event.type === "content_block_start" &&
-                event.content_block.type === "tool_use"
-              ) {
-                // Signal to client that a tool is being called
-                controller.enqueue(
-                  encoder.encode(
-                    `data: ${JSON.stringify({
-                      status: "analyzing",
-                      tool: event.content_block.name,
-                    })}\n\n`
-                  )
-                );
+              if (event.type === "content_block_start") {
+                if (event.content_block.type === "tool_use") {
+                  // Signal to client that a tool is being called
+                  controller.enqueue(
+                    encoder.encode(
+                      `data: ${JSON.stringify({
+                        status: "analyzing",
+                        tool: event.content_block.name,
+                      })}\n\n`
+                    )
+                  );
+                } else if (event.content_block.type === "thinking") {
+                  // Signal that Claude is thinking (don't stream thinking content)
+                  controller.enqueue(
+                    encoder.encode(
+                      `data: ${JSON.stringify({ status: "thinking" })}\n\n`
+                    )
+                  );
+                }
               }
 
               if (
@@ -89,6 +97,7 @@ export async function POST(request: NextRequest) {
                   )
                 );
               }
+              // thinking_delta events are intentionally not streamed to the client
             }
 
             // Get the final message to check stop reason and extract tool calls
