@@ -253,7 +253,7 @@ export function AnalysisView({
               className={`px-3 py-1.5 text-sm rounded-full border transition-colors ${
                 dim === currentDimension
                   ? "bg-gold/10 border-gold text-gold"
-                  : "bg-panel border-edge text-ink-faint hover:text-ink-dim hover:border-edge-strong"
+                  : "bg-panel border-edge text-ink-dim hover:text-ink hover:border-edge-strong"
               }`}
             >
               {getDimensionLabel(dim)}

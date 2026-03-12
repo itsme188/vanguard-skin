@@ -55,6 +55,20 @@ export const LEVEL_COLORS: Record<string, string> = {
   Unknown: "#334155",      // slate-700
 };
 
+/** Numeric ranking for sort ordering (higher = more exposure) */
+export const FACTOR_SORT_RANK: Record<string, number> = {
+  "Very High": 5,
+  "High": 4,
+  "International": 4,  // same tier as High for int'l exposure
+  "Moderate": 3,
+  "Growth": 3,          // neutral tier for growth_vs_value
+  "Value": 2,
+  "Low": 2,
+  "Yes": 5,             // crypto binary = Very High equivalent
+  "No": 1,
+  "Unknown": 0,
+};
+
 /** Get display color for a factor value */
 export function getFactorColor(value: string | null): string {
   if (!value || value === "Unknown") return LEVEL_COLORS.Unknown;

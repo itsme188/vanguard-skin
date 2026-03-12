@@ -312,7 +312,9 @@ describe("getFactorHeatmap", () => {
     const all = getFactorHeatmap(db);
     const acct1Only = getFactorHeatmap(db, [acct1]);
 
-    expect(all).toHaveLength(2); // one row per account holding
+    // Same symbol across accounts is aggregated into one row
+    expect(all).toHaveLength(1);
+    expect(all[0].market_value).toBe(30000); // 100×200 + 50×200
     expect(acct1Only).toHaveLength(1);
     expect(acct1Only[0].market_value).toBe(20000);
   });
