@@ -142,6 +142,21 @@ export interface EarningsTranscript {
   created_at: string;
 }
 
+export interface SecurityFactor {
+  security_id: number;
+  interest_rate_sensitive: string | null;
+  growth_vs_value: string | null;
+  cyclical: string | null;
+  international_exposure: string | null;
+  geopolitical_onshoring: string | null;
+  tariff_exposure: string | null;
+  ai_exposure: string | null;
+  crypto_adjacent: string | null;
+  regulatory_risk: string | null;
+  factor_source: string | null;
+  updated_at: string | null;
+}
+
 export type NoteType = "journal" | "earnings" | "trade_thesis";
 export type NoteSentiment = "bullish" | "bearish" | "neutral" | "cautious" | "confident";
 

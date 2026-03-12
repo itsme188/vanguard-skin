@@ -5,6 +5,7 @@ export type SourceType =
   | "vanguard-cost-basis"
   | "vanguard-holdings"
   | "vanguard-pdf"
+  | "factor-csv"
   | "unknown";
 
 export interface ParsedTransaction {
@@ -71,6 +72,21 @@ export interface ParsedSnapshot {
   investmentGain?: number;
 }
 
+export interface ParsedFactor {
+  symbol: string;
+  sector?: string;
+  industry?: string;
+  interest_rate_sensitive?: string;
+  growth_vs_value?: string;
+  cyclical?: string;
+  international_exposure?: string;
+  geopolitical_onshoring?: string;
+  tariff_exposure?: string;
+  ai_exposure?: string;
+  crypto_adjacent?: string;
+  regulatory_risk?: string;
+}
+
 export interface ParsedImportResult {
   sourceType: SourceType;
   sourceName: string;
@@ -79,6 +95,7 @@ export interface ParsedImportResult {
   holdings: ParsedHolding[];
   prices: ParsedPrice[];
   snapshots: ParsedSnapshot[];
+  factors?: ParsedFactor[];
   errors: string[];
   warnings: string[];
 }

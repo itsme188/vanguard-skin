@@ -8,14 +8,18 @@ import type {
   ClassificationCoverage,
   AnalysisDataCoverage,
   AllocationDimension,
+  FactorHeatmapRow,
+  FactorCoverage,
 } from "@/lib/queries/analysis";
+import { FACTOR_LABELS, type FactorColumn, FACTOR_COLUMNS } from "@/lib/factors";
+import { FactorHeatmap } from "./FactorHeatmap";
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis,
 } from "recharts";
 
 // ─── Constants ───────────────────────────────────────────────────
 
-const DIMENSION_LABELS: Record<AllocationDimension, string> = {
+const CLASSIFICATION_LABELS: Record<string, string> = {
   fund_category: "Category",
   geography: "Geography",
   market_cap_category: "Market Cap",
@@ -27,10 +31,16 @@ const DIMENSION_LABELS: Record<AllocationDimension, string> = {
   symbol: "Symbol",
 };
 
-const DIMENSION_ORDER: AllocationDimension[] = [
+const CLASSIFICATION_ORDER: AllocationDimension[] = [
   "fund_category", "geography", "market_cap_category", "style",
   "sector", "asset_class", "account",
 ];
+
+const FACTOR_ORDER: FactorColumn[] = [...FACTOR_COLUMNS];
+
+function getDimensionLabel(dim: AllocationDimension): string {
+  return CLASSIFICATION_LABELS[dim] ?? FACTOR_LABELS[dim as FactorColumn] ?? dim;
+}
 
 const SCOPE_OPTIONS = [
   { label: "Vanguard", value: "vanguard" },
@@ -39,33 +49,17 @@ const SCOPE_OPTIONS = [
 ];
 
 const CHART_COLORS = [
-  "#C9A44E", // gold
-  "#60A5FA", // blue-400
-  "#34D399", // emerald-400
-  "#F87171", // rose-400
-  "#A78BFA", // violet-400
-  "#FBBF24", // amber-400
-  "#2DD4BF", // teal-400
-  "#FB923C", // orange-400
-  "#818CF8", // indigo-400
-  "#E879F9", // fuchsia-400
-  "#4ADE80", // green-400
-  "#F472B6", // pink-400
-  "#38BDF8", // sky-400
-  "#FACC15", // yellow-400
-  "#94A3B8", // slate-400
+  "#C9A44E", "#60A5FA", "#34D399", "#F87171", "#A78BFA",
+  "#FBBF24", "#2DD4BF", "#FB923C", "#818CF8", "#E879F9",
+  "#4ADE80", "#F472B6", "#38BDF8", "#FACC15", "#94A3B8",
 ];
 
 const OTHER_COLOR = "#64748B";
 const MAX_SLICES = 8;
 
 function formatMoney(value: number): string {
-  if (Math.abs(value) >= 1_000_000) {
-    return `$${(value / 1_000_000).toFixed(1)}M`;
-  }
-  if (Math.abs(value) >= 1_000) {
-    return `$${(value / 1_000).toFixed(0)}K`;
-  }
+  if (Math.abs(value) >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`;
+  if (Math.abs(value) >= 1_000) return `$${(value / 1_000).toFixed(0)}K`;
   return `$${value.toFixed(0)}`;
 }
 
@@ -91,6 +85,8 @@ function getSliceColor(index: number, groupName: string): string {
 
 // ─── Props ───────────────────────────────────────────────────────
 
+export type AnalysisMode = "classification" | "factors";
+
 interface AnalysisViewProps {
   allocation: AllocationEntry[];
   concentration: ConcentrationMetrics;
@@ -98,6 +94,9 @@ interface AnalysisViewProps {
   dataCoverage: AnalysisDataCoverage;
   currentDimension: AllocationDimension;
   currentScope: string;
+  currentMode: AnalysisMode;
+  factorHeatmap?: FactorHeatmapRow[];
+  factorCoverage?: FactorCoverage;
 }
 
 // ─── Component ───────────────────────────────────────────────────
@@ -109,12 +108,17 @@ export function AnalysisView({
   dataCoverage,
   currentDimension,
   currentScope,
+  currentMode,
+  factorHeatmap,
+  factorCoverage,
 }: AnalysisViewProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [showCoverage, setShowCoverage] = useState(false);
   const [classifyLoading, setClassifyLoading] = useState(false);
   const [classifyResult, setClassifyResult] = useState<string | null>(null);
+  const [factorClassifyLoading, setFactorClassifyLoading] = useState(false);
+  const [factorClassifyResult, setFactorClassifyResult] = useState<string | null>(null);
 
   function navigate(updates: Record<string, string>) {
     const params = new URLSearchParams(searchParams.toString());
@@ -145,12 +149,39 @@ export function AnalysisView({
       setClassifyResult("Failed to connect");
     } finally {
       setClassifyLoading(false);
-      setTimeout(() => setClassifyResult(null), 3000);
+      setTimeout(() => setClassifyResult(null), 5000);
+    }
+  }
+
+  async function runFactorAutoClassify() {
+    setFactorClassifyLoading(true);
+    setFactorClassifyResult(null);
+    try {
+      const res = await fetch("/api/compute/classify-factors", { method: "POST" });
+      const data = await res.json();
+      if (data.success) {
+        setFactorClassifyResult(
+          `Classified ${data.classified} securities` +
+            (data.skipped > 0 ? ` (${data.skipped} skipped)` : "") +
+            (data.errors?.length > 0 ? ` · ${data.errors.length} errors` : "")
+        );
+        router.refresh();
+      } else {
+        setFactorClassifyResult(`Error: ${data.error}`);
+      }
+    } catch {
+      setFactorClassifyResult("Failed to connect");
+    } finally {
+      setFactorClassifyLoading(false);
+      setTimeout(() => setFactorClassifyResult(null), 8000);
     }
   }
 
   const chartData = bucketAllocation(allocation);
   const totalValue = allocation.reduce((s, r) => s + r.total_market_value, 0);
+
+  const isFactorMode = currentMode === "factors";
+  const dimensionPills = isFactorMode ? FACTOR_ORDER : CLASSIFICATION_ORDER;
 
   return (
     <div className="space-y-6">
@@ -166,26 +197,56 @@ export function AnalysisView({
         </div>
       )}
 
-      {/* Account scope + dimension pills */}
-      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-        <div className="flex items-center gap-1.5">
-          {SCOPE_OPTIONS.map((opt) => (
+      {/* Mode toggle + Account scope */}
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center gap-3">
+          {/* Mode toggle */}
+          <div className="flex items-center bg-canvas rounded-lg p-0.5 border border-edge">
             <button
-              key={opt.value}
-              onClick={() => navigate({ scope: opt.value })}
-              className={`px-3 py-1.5 text-sm rounded-lg font-medium transition-colors whitespace-nowrap ${
-                opt.value === currentScope
-                  ? "bg-gold/15 text-gold"
-                  : "text-ink-faint hover:text-ink hover:bg-panel"
+              onClick={() => navigate({ mode: "classification", dimension: "fund_category" })}
+              className={`px-3 py-1.5 text-sm rounded-md font-medium transition-colors ${
+                !isFactorMode
+                  ? "bg-panel text-ink shadow-sm"
+                  : "text-ink-faint hover:text-ink"
               }`}
             >
-              {opt.label}
+              Classification
             </button>
-          ))}
+            <button
+              onClick={() => navigate({ mode: "factors", dimension: "tariff_exposure" })}
+              className={`px-3 py-1.5 text-sm rounded-md font-medium transition-colors ${
+                isFactorMode
+                  ? "bg-panel text-ink shadow-sm"
+                  : "text-ink-faint hover:text-ink"
+              }`}
+            >
+              Factor Exposure
+            </button>
+          </div>
+
+          <div className="h-5 w-px bg-edge" />
+
+          {/* Account scope pills */}
+          <div className="flex items-center gap-1.5">
+            {SCOPE_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                onClick={() => navigate({ scope: opt.value })}
+                className={`px-3 py-1.5 text-sm rounded-lg font-medium transition-colors whitespace-nowrap ${
+                  opt.value === currentScope
+                    ? "bg-gold/15 text-gold"
+                    : "text-ink-faint hover:text-ink hover:bg-panel"
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
         </div>
-        <div className="h-5 w-px bg-edge hidden sm:block" />
+
+        {/* Dimension pills */}
         <div className="flex flex-wrap gap-1.5">
-          {DIMENSION_ORDER.map((dim) => (
+          {dimensionPills.map((dim) => (
             <button
               key={dim}
               onClick={() => navigate({ dimension: dim })}
@@ -195,7 +256,7 @@ export function AnalysisView({
                   : "bg-panel border-edge text-ink-faint hover:text-ink-dim hover:border-edge-strong"
               }`}
             >
-              {DIMENSION_LABELS[dim]}
+              {getDimensionLabel(dim)}
             </button>
           ))}
         </div>
@@ -206,7 +267,7 @@ export function AnalysisView({
         {/* Pie Chart */}
         <div className="bg-panel border border-edge rounded-lg p-4">
           <h3 className="text-sm font-medium text-ink mb-4">
-            Allocation by {DIMENSION_LABELS[currentDimension]}
+            Allocation by {getDimensionLabel(currentDimension)}
           </h3>
           {chartData.length > 0 ? (
             <ResponsiveContainer width="100%" height={360}>
@@ -234,7 +295,6 @@ export function AnalysisView({
                     color: "#E5E7EB",
                   }}
                 />
-                {/* Center total label */}
                 <text
                   x="50%"
                   y="47%"
@@ -261,19 +321,20 @@ export function AnalysisView({
             </ResponsiveContainer>
           ) : (
             <div className="h-[360px] flex items-center justify-center text-ink-faint text-sm">
-              No allocation data available. Run classification first.
+              No allocation data available.{" "}
+              {isFactorMode ? "Import a factor CSV or run auto-classify." : "Run classification first."}
             </div>
           )}
         </div>
 
-        {/* Breakdown Table — shows ALL rows (not bucketed) */}
+        {/* Breakdown Table */}
         <div className="bg-panel border border-edge rounded-lg p-4">
           <h3 className="text-sm font-medium text-ink mb-4">Breakdown</h3>
           <div className="overflow-y-auto max-h-[380px]">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-edge text-ink-faint">
-                  <th className="text-left py-2 pr-4">{DIMENSION_LABELS[currentDimension]}</th>
+                  <th className="text-left py-2 pr-4">{getDimensionLabel(currentDimension)}</th>
                   <th className="text-right py-2 pr-4">Value</th>
                   <th className="text-right py-2 pr-4">%</th>
                   <th className="text-right py-2">Positions</th>
@@ -309,153 +370,204 @@ export function AnalysisView({
         </div>
       </div>
 
-      {/* Concentration Metrics */}
-      <div className="bg-panel border border-edge rounded-lg p-4">
-        <h3 className="text-sm font-medium text-ink mb-4">Concentration Metrics</h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-          <MetricCard
-            label="Herfindahl Index (HHI)"
-            value={concentration.hhi.toFixed(4)}
-            description={
-              concentration.hhi > 0.25
-                ? "Highly concentrated"
-                : concentration.hhi > 0.15
-                ? "Moderately concentrated"
-                : concentration.hhi > 0.06
-                ? "Moderately diversified"
-                : "Well diversified"
-            }
-            color={
-              concentration.hhi > 0.25
-                ? "text-down"
-                : concentration.hhi > 0.15
-                ? "text-gold"
-                : "text-up"
-            }
-          />
-          <MetricCard
-            label="Effective Positions"
-            value={concentration.effective_positions.toFixed(1)}
-            description="1/HHI — equivalent equal-weighted positions"
-            color="text-blue"
-          />
-          <MetricCard
-            label="Classification Coverage"
-            value={`${coverage.coverage_pct}%`}
-            description={`${coverage.classified} of ${coverage.total} securities classified`}
-            color={coverage.coverage_pct > 90 ? "text-up" : coverage.coverage_pct > 70 ? "text-gold" : "text-down"}
-          />
-        </div>
+      {/* Factor-specific: heatmap + coverage */}
+      {isFactorMode && (
+        <>
+          {factorHeatmap && <FactorHeatmap rows={factorHeatmap} />}
 
-        {/* Top positions bar chart */}
-        {concentration.top_positions.length > 0 && (
-          <div>
-            <h4 className="text-xs font-medium text-ink-faint uppercase mb-2">Top 10 Positions</h4>
-            <ResponsiveContainer width="100%" height={200}>
-              <BarChart
-                data={concentration.top_positions}
-                layout="vertical"
-                margin={{ left: 60, right: 20 }}
-              >
-                <XAxis type="number" tickFormatter={(v: number) => `${v.toFixed(0)}%`} tick={{ fill: "#94A3B8", fontSize: 11 }} />
-                <YAxis type="category" dataKey="symbol" tick={{ fill: "#E5E7EB", fontSize: 11 }} width={55} />
-                <Tooltip
-                  formatter={(value) => [`${Number(value).toFixed(1)}%`, "Weight"]}
-                  contentStyle={{
-                    backgroundColor: "#0F1219",
-                    border: "1px solid #1E2533",
-                    borderRadius: "8px",
-                    color: "#E5E7EB",
-                  }}
-                />
-                <Bar dataKey="weight_pct" fill="#C9A44E" radius={[0, 4, 4, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        )}
-
-        {/* Concentration warnings */}
-        {concentration.warnings.length > 0 && (
-          <div className="mt-4 space-y-1">
-            {concentration.warnings.slice(0, 8).map((w, i) => (
-              <p key={i} className="text-xs text-gold">
-                {w}
-              </p>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Classification Coverage Detail (collapsible) */}
-      <div className="bg-panel border border-edge rounded-lg p-4">
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-medium text-ink">Classification</h3>
-          <div className="flex items-center gap-2">
-            {classifyResult && (
-              <span
-                className={`text-xs font-mono ${
-                  classifyResult.startsWith("Error") || classifyResult === "Failed to connect"
-                    ? "text-down"
-                    : "text-up"
-                }`}
-              >
-                {classifyResult}
-              </span>
-            )}
-            <button
-              onClick={runAutoClassify}
-              disabled={classifyLoading}
-              className="px-3 py-1 text-xs bg-gold/10 text-gold border border-gold/30 rounded hover:bg-gold/20 transition-colors disabled:opacity-50"
-            >
-              {classifyLoading ? "Classifying..." : "Auto-Classify"}
-            </button>
-            <button
-              onClick={() => setShowCoverage(!showCoverage)}
-              className="px-3 py-1 text-xs bg-panel text-ink-faint border border-edge rounded hover:text-ink-dim transition-colors"
-            >
-              {showCoverage ? "Hide Details" : "Show Details"}
-            </button>
-          </div>
-        </div>
-
-        {/* Coverage by source */}
-        <div className="flex gap-4 mt-3">
-          {coverage.by_source.map((s) => (
-            <span key={s.source} className="text-xs text-ink-faint">
-              <span className="text-ink-dim font-mono">{s.count}</span>{" "}
-              {s.source}
-            </span>
-          ))}
-        </div>
-
-        {showCoverage && coverage.unclassified_securities.length > 0 && (
-          <div className="mt-4">
-            <h4 className="text-xs font-medium text-ink-faint uppercase mb-2">
-              Unclassified Securities ({coverage.unclassified_securities.length})
-            </h4>
-            <div className="max-h-60 overflow-y-auto">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b border-edge text-ink-faint">
-                    <th className="text-left py-1 pr-2">Symbol</th>
-                    <th className="text-left py-1 pr-2">Name</th>
-                    <th className="text-left py-1">Type</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {coverage.unclassified_securities.map((s) => (
-                    <tr key={s.id} className="border-b border-edge/30">
-                      <td className="py-1 pr-2 font-mono text-ink">{s.symbol}</td>
-                      <td className="py-1 pr-2 text-ink-faint truncate max-w-xs">{s.name ?? "—"}</td>
-                      <td className="py-1 text-ink-faint">{s.security_type ?? "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          {/* Factor Coverage + Auto-Classify */}
+          <div className="bg-panel border border-edge rounded-lg p-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-medium text-ink">
+                Factor Coverage
+                {factorCoverage && (
+                  <span className="text-ink-faint font-normal ml-2">
+                    {factorCoverage.withFactors} of {factorCoverage.totalHoldings} holdings ({factorCoverage.coveragePct}%)
+                  </span>
+                )}
+              </h3>
+              <div className="flex items-center gap-2">
+                {factorClassifyResult && (
+                  <span
+                    className={`text-xs font-mono ${
+                      factorClassifyResult.startsWith("Error") || factorClassifyResult === "Failed to connect"
+                        ? "text-down"
+                        : "text-up"
+                    }`}
+                  >
+                    {factorClassifyResult}
+                  </span>
+                )}
+                <button
+                  onClick={runFactorAutoClassify}
+                  disabled={factorClassifyLoading}
+                  className="px-3 py-1 text-xs bg-gold/10 text-gold border border-gold/30 rounded hover:bg-gold/20 transition-colors disabled:opacity-50"
+                >
+                  {factorClassifyLoading ? "Classifying..." : "Auto-Classify Factors"}
+                </button>
+              </div>
             </div>
+            {factorCoverage && factorCoverage.bySource.length > 0 && (
+              <div className="flex gap-4 mt-3">
+                {factorCoverage.bySource.map((s) => (
+                  <span key={s.source} className="text-xs text-ink-faint">
+                    <span className="text-ink-dim font-mono">{s.count}</span>{" "}
+                    {s.source}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        </>
+      )}
+
+      {/* Classification-specific: concentration + coverage */}
+      {!isFactorMode && (
+        <>
+          {/* Concentration Metrics */}
+          <div className="bg-panel border border-edge rounded-lg p-4">
+            <h3 className="text-sm font-medium text-ink mb-4">Concentration Metrics</h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+              <MetricCard
+                label="Herfindahl Index (HHI)"
+                value={concentration.hhi.toFixed(4)}
+                description={
+                  concentration.hhi > 0.25
+                    ? "Highly concentrated"
+                    : concentration.hhi > 0.15
+                    ? "Moderately concentrated"
+                    : concentration.hhi > 0.06
+                    ? "Moderately diversified"
+                    : "Well diversified"
+                }
+                color={
+                  concentration.hhi > 0.25
+                    ? "text-down"
+                    : concentration.hhi > 0.15
+                    ? "text-gold"
+                    : "text-up"
+                }
+              />
+              <MetricCard
+                label="Effective Positions"
+                value={concentration.effective_positions.toFixed(1)}
+                description="1/HHI — equivalent equal-weighted positions"
+                color="text-blue"
+              />
+              <MetricCard
+                label="Classification Coverage"
+                value={`${coverage.coverage_pct}%`}
+                description={`${coverage.classified} of ${coverage.total} securities classified`}
+                color={coverage.coverage_pct > 90 ? "text-up" : coverage.coverage_pct > 70 ? "text-gold" : "text-down"}
+              />
+            </div>
+
+            {concentration.top_positions.length > 0 && (
+              <div>
+                <h4 className="text-xs font-medium text-ink-faint uppercase mb-2">Top 10 Positions</h4>
+                <ResponsiveContainer width="100%" height={200}>
+                  <BarChart
+                    data={concentration.top_positions}
+                    layout="vertical"
+                    margin={{ left: 60, right: 20 }}
+                  >
+                    <XAxis type="number" tickFormatter={(v: number) => `${v.toFixed(0)}%`} tick={{ fill: "#94A3B8", fontSize: 11 }} />
+                    <YAxis type="category" dataKey="symbol" tick={{ fill: "#E5E7EB", fontSize: 11 }} width={55} />
+                    <Tooltip
+                      formatter={(value) => [`${Number(value).toFixed(1)}%`, "Weight"]}
+                      contentStyle={{
+                        backgroundColor: "#0F1219",
+                        border: "1px solid #1E2533",
+                        borderRadius: "8px",
+                        color: "#E5E7EB",
+                      }}
+                    />
+                    <Bar dataKey="weight_pct" fill="#C9A44E" radius={[0, 4, 4, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+
+            {concentration.warnings.length > 0 && (
+              <div className="mt-4 space-y-1">
+                {concentration.warnings.slice(0, 8).map((w, i) => (
+                  <p key={i} className="text-xs text-gold">{w}</p>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Classification Coverage Detail */}
+          <div className="bg-panel border border-edge rounded-lg p-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-medium text-ink">Classification</h3>
+              <div className="flex items-center gap-2">
+                {classifyResult && (
+                  <span
+                    className={`text-xs font-mono ${
+                      classifyResult.startsWith("Error") || classifyResult === "Failed to connect"
+                        ? "text-down"
+                        : "text-up"
+                    }`}
+                  >
+                    {classifyResult}
+                  </span>
+                )}
+                <button
+                  onClick={runAutoClassify}
+                  disabled={classifyLoading}
+                  className="px-3 py-1 text-xs bg-gold/10 text-gold border border-gold/30 rounded hover:bg-gold/20 transition-colors disabled:opacity-50"
+                >
+                  {classifyLoading ? "Classifying..." : "Auto-Classify"}
+                </button>
+                <button
+                  onClick={() => setShowCoverage(!showCoverage)}
+                  className="px-3 py-1 text-xs bg-panel text-ink-faint border border-edge rounded hover:text-ink-dim transition-colors"
+                >
+                  {showCoverage ? "Hide Details" : "Show Details"}
+                </button>
+              </div>
+            </div>
+
+            <div className="flex gap-4 mt-3">
+              {coverage.by_source.map((s) => (
+                <span key={s.source} className="text-xs text-ink-faint">
+                  <span className="text-ink-dim font-mono">{s.count}</span>{" "}
+                  {s.source}
+                </span>
+              ))}
+            </div>
+
+            {showCoverage && coverage.unclassified_securities.length > 0 && (
+              <div className="mt-4">
+                <h4 className="text-xs font-medium text-ink-faint uppercase mb-2">
+                  Unclassified Securities ({coverage.unclassified_securities.length})
+                </h4>
+                <div className="max-h-60 overflow-y-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-edge text-ink-faint">
+                        <th className="text-left py-1 pr-2">Symbol</th>
+                        <th className="text-left py-1 pr-2">Name</th>
+                        <th className="text-left py-1">Type</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {coverage.unclassified_securities.map((s) => (
+                        <tr key={s.id} className="border-b border-edge/30">
+                          <td className="py-1 pr-2 font-mono text-ink">{s.symbol}</td>
+                          <td className="py-1 pr-2 text-ink-faint truncate max-w-xs">{s.name ?? "—"}</td>
+                          <td className="py-1 text-ink-faint">{s.security_type ?? "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }

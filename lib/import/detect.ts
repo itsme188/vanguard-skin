@@ -35,5 +35,14 @@ export function detectSourceType(content: string, filename: string): SourceType 
     return "monthly-values";
   }
 
+  // Factor CSV: header contains factor column names
+  if (
+    firstLine.includes("interest_rate_sensitive") ||
+    firstLine.includes("tariff_exposure") ||
+    firstLine.includes("ai_exposure")
+  ) {
+    return "factor-csv";
+  }
+
   return "unknown";
 }
