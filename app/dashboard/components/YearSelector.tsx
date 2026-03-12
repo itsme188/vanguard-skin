@@ -33,7 +33,7 @@ function FilterPills({
           className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap ${
             opt.value === currentValue
               ? "bg-gold-glow text-gold"
-              : "text-ink-faint hover:text-ink hover:bg-panel"
+              : "text-ink-dim hover:text-ink hover:bg-panel"
           }`}
         >
           {opt.label}

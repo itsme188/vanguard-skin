@@ -441,6 +441,8 @@ export function getFactorHeatmap(
     params.push(...accountIds);
   }
 
+  // Aggregate by symbol — same security across accounts has identical factors,
+  // so we SUM market values and deduplicate to avoid duplicate React keys.
   const rows = db
     .prepare(
       `WITH ${LATEST_HOLDINGS_CTE}
@@ -449,13 +451,13 @@ export function getFactorHeatmap(
         s.name,
         s.security_type,
         s.underlying_symbol,
-        CASE
+        SUM(CASE
           WHEN lp.close_price IS NOT NULL
             THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier")}
           WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
             THEN h.cost_basis
           ELSE 0
-        END AS market_value,
+        END) AS market_value,
         COALESCE(sf.interest_rate_sensitive, sf_u.interest_rate_sensitive) AS interest_rate_sensitive,
         COALESCE(sf.growth_vs_value, sf_u.growth_vs_value) AS growth_vs_value,
         COALESCE(sf.cyclical, sf_u.cyclical) AS cyclical,
@@ -473,6 +475,7 @@ export function getFactorHeatmap(
       LEFT JOIN securities s_u ON s_u.symbol = s.underlying_symbol
       LEFT JOIN security_factors sf_u ON sf_u.security_id = s_u.id
       WHERE ${conditions.join(" AND ")}
+      GROUP BY s.symbol
       ORDER BY market_value DESC`
     )
     .all(...params) as Array<{

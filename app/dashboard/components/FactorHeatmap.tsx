@@ -1,13 +1,27 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { FactorHeatmapRow } from "@/lib/queries/analysis";
-import { FACTOR_COLUMNS, FACTOR_LABELS, getFactorColor, type FactorColumn } from "@/lib/factors";
+import {
+  FACTOR_COLUMNS,
+  FACTOR_LABELS,
+  FACTOR_SORT_RANK,
+  getFactorColor,
+  type FactorColumn,
+} from "@/lib/factors";
 
 function formatMoney(value: number): string {
   if (Math.abs(value) >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`;
   if (Math.abs(value) >= 1_000) return `$${(value / 1_000).toFixed(0)}K`;
   return `$${value.toFixed(0)}`;
+}
+
+type SortColumn = FactorColumn | "weight";
+
+/** Get numeric rank for a factor value (higher = more exposure). Null → -1 (always last). */
+function getFactorRank(value: string | null): number {
+  if (value === null || value === undefined) return -1;
+  return FACTOR_SORT_RANK[value] ?? 0;
 }
 
 interface FactorHeatmapProps {
@@ -16,6 +30,8 @@ interface FactorHeatmapProps {
 
 export function FactorHeatmap({ rows }: FactorHeatmapProps) {
   const [hoveredCell, setHoveredCell] = useState<{ row: number; col: number } | null>(null);
+  const [sortColumn, setSortColumn] = useState<SortColumn | null>(null);
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
 
   if (rows.length === 0) {
     return (
@@ -33,6 +49,56 @@ export function FactorHeatmap({ rows }: FactorHeatmapProps) {
   const positionsWithoutFactors = rows.filter(
     (r) => !FACTOR_COLUMNS.some((col) => r[col] !== null)
   );
+
+  function handleSort(col: SortColumn) {
+    if (sortColumn === col) {
+      // Same column: toggle direction, then clear on third click
+      if (sortDirection === "desc") {
+        setSortDirection("asc");
+      } else {
+        // Was asc, now clear sort (back to default weight order)
+        setSortColumn(null);
+        setSortDirection("desc");
+      }
+    } else {
+      // New column: set to descending
+      setSortColumn(col);
+      setSortDirection("desc");
+    }
+  }
+
+  // Sort positions based on current sort state
+  const sortedPositions = useMemo(() => {
+    if (sortColumn === null) return positionsWithFactors;
+
+    return [...positionsWithFactors].sort((a, b) => {
+      let cmp: number;
+
+      if (sortColumn === "weight") {
+        cmp = a.weight_pct - b.weight_pct;
+      } else {
+        const rankA = getFactorRank(a[sortColumn]);
+        const rankB = getFactorRank(b[sortColumn]);
+        // Null values (-1) always sort to bottom regardless of direction
+        if (rankA === -1 && rankB === -1) return 0;
+        if (rankA === -1) return 1;
+        if (rankB === -1) return -1;
+        cmp = rankA - rankB;
+      }
+
+      return sortDirection === "desc" ? -cmp : cmp;
+    });
+  }, [positionsWithFactors, sortColumn, sortDirection]);
+
+  /** Render sort indicator arrow for a column header */
+  function sortIndicator(col: SortColumn) {
+    if (sortColumn !== col) return null;
+    return (
+      <span className="ml-0.5 text-gold">
+        {sortDirection === "desc" ? "▼" : "▲"}
+      </span>
+    );
+  }
 
   return (
     <div className="bg-panel border border-edge rounded-lg p-4">
@@ -53,22 +119,26 @@ export function FactorHeatmap({ rows }: FactorHeatmapProps) {
               <th className="text-left py-2 pr-2 font-medium text-ink-faint sticky left-0 bg-panel z-10 min-w-[120px]">
                 Position
               </th>
-              <th className="text-right py-2 px-2 font-medium text-ink-faint min-w-[60px]">
-                Weight
+              <th
+                className="text-right py-2 px-2 font-medium text-ink-faint min-w-[60px] cursor-pointer hover:text-ink-dim select-none"
+                onClick={() => handleSort("weight")}
+              >
+                Weight{sortIndicator("weight")}
               </th>
               {FACTOR_COLUMNS.map((col) => (
                 <th
                   key={col}
-                  className="text-center py-2 px-1 font-medium text-ink-faint min-w-[72px]"
-                  title={col}
+                  className="text-center py-2 px-1 font-medium text-ink-faint min-w-[72px] cursor-pointer hover:text-ink-dim select-none"
+                  title={`Sort by ${FACTOR_LABELS[col]}`}
+                  onClick={() => handleSort(col)}
                 >
-                  {FACTOR_LABELS[col]}
+                  {FACTOR_LABELS[col]}{sortIndicator(col)}
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {positionsWithFactors.map((row, rowIdx) => (
+            {sortedPositions.map((row, rowIdx) => (
               <tr key={row.symbol} className="border-b border-edge/30 hover:bg-raised/30">
                 <td className="py-1.5 pr-2 sticky left-0 bg-panel z-10">
                   <div className="flex items-center gap-1.5">
