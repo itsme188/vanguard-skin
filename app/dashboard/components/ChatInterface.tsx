@@ -101,7 +101,9 @@ export function ChatInterface() {
               setError(parsed.error);
               break;
             }
-            if (parsed.status === "analyzing" && parsed.tool) {
+            if (parsed.status === "thinking") {
+              setToolStatus("Thinking…");
+            } else if (parsed.status === "analyzing" && parsed.tool) {
               // Show tool activity indicator
               const label = TOOL_LABELS[parsed.tool] ?? `Running ${parsed.tool}`;
               setToolStatus(label);

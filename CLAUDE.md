@@ -101,7 +101,7 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 
 ## Known Bugs (from 2026-03-11 feature audit)
 
-- **IBKR YTD TWR = 0%** — `lib/import/parsers/ibkr-activity.ts` initializes `twr = 0` (not null). The TWR engine (`lib/compute/twr.ts` line 199) treats `0.0` as valid IBKR-provided data via `snap.twr !== null`. Fix: change default to `twr = null` so engine falls back to Modified Dietz.
+- ~~**IBKR YTD TWR = 0%**~~ — **FIXED** (`7748f64`). Four bugs: (a) `twr = 0` default → `undefined`, (b) `"Deposits & Withdrawals"` field name variant, (c) negative TWR regex now `/(-?[\d.]+)%/`, (d) added external flow transaction parsing from D&W section.
 - **Bond cost basis display 100x too high** — `TaxLotTables.tsx` line 88 computes `quantity × acquisition_price` without ÷100 par adjustment for bonds. The unrealized gain column IS correct (computed server-side via `adjustedMarketValueSQL()`). Fix: check `security_type` and divide by 100 for bonds.
 - **Tax lot summary cards ignore account filter** — `getTaxLotSummary()` in `lib/queries/tax-lots.ts` has no `account_id` parameter. The lot table filters correctly but the 4 summary cards (Unrealized, Realized, Long-Term, Short-Term) always show all-accounts aggregate.
 - **Tax lots not auto-computed after import** — Tax Lots tab shows "No tax lots computed" until user clicks Recompute. Consider auto-triggering after import commit.
