@@ -121,6 +121,7 @@ Record architectural and implementation decisions here so future sessions don't 
 - **OCC format for option symbols** — Bare tickers like "INTC" collide with the underlying stock in the securities table UNIQUE constraint. Always use full OCC format (e.g., `INTC  260320P00045000`). This was a painful bug — do not revert.
 - **Bond par adjustment in two places** — Both market value AND cost basis need ÷100 for bonds. This has been fixed wrong multiple times. The canonical logic is in `adjustedMarketValueSQL()` in `lib/valuation.ts`.
 - **Deterministic source_key for idempotent imports** — Every record gets a hash-based key so re-importing the same file is a no-op. Do not change the hashing logic without understanding the dedup implications.
+- **Thematic factor exposure — separate table, query-time inheritance** — `security_factors` is a standalone table (not bolted onto `securities`) because factors are opinionated macro assessments, not security identity. Options inherit factors at query time via `LEFT JOIN securities u ON u.symbol = s.underlying_symbol` + `COALESCE(sf.col, sf_u.col)` — no duplicate storage. Constants/labels/colors shared from `lib/factors.ts`. Auto-classify uses Sonnet 4 with training examples from the CSV.
 
 ## Bug Priority (work in this order)
 
