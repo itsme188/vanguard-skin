@@ -288,13 +288,19 @@ export function getPriceHistory(
 /**
  * Compute portfolio allocation breakdown by a grouping dimension.
  */
+// Factor columns that require security_factors JOIN
+const FACTOR_DIM_SET = new Set([
+  "interest_rate_sensitive", "growth_vs_value", "cyclical",
+  "international_exposure", "geopolitical_onshoring", "tariff_exposure",
+  "ai_exposure", "crypto_adjacent", "regulatory_risk",
+]);
+
 export function getAllocationBreakdown(
   db: Database.Database,
-  groupBy: "asset_class" | "security_type" | "sector" | "account" | "symbol"
-    | "fund_category" | "geography" | "market_cap_category" | "style",
+  groupBy: string,
   accountName?: string
 ): AllocationResult[] {
-  const groupColumn: Record<string, string> = {
+  const standardColumns: Record<string, string> = {
     asset_class: "COALESCE(s.asset_class, 'Unknown')",
     security_type: "COALESCE(s.security_type, 'Unknown')",
     sector: "COALESCE(s.sector, s.fund_category, 'Unknown')",
@@ -306,7 +312,17 @@ export function getAllocationBreakdown(
     style: "COALESCE(s.style, 'Unknown')",
   };
 
-  const groupExpr = groupColumn[groupBy];
+  const isFactorDim = FACTOR_DIM_SET.has(groupBy);
+  const groupExpr = isFactorDim
+    ? `COALESCE(sf.${groupBy}, sf_u.${groupBy}, 'Unknown')`
+    : standardColumns[groupBy] ?? "COALESCE(s.security_type, 'Unknown')";
+
+  const factorJoins = isFactorDim
+    ? `LEFT JOIN security_factors sf ON sf.security_id = s.id
+       LEFT JOIN securities s_u ON s_u.symbol = s.underlying_symbol
+       LEFT JOIN security_factors sf_u ON sf_u.security_id = s_u.id`
+    : "";
+
   const conditions: string[] = [
     `h.as_of_date = (
       SELECT MAX(h2.as_of_date) FROM holdings h2
@@ -345,6 +361,7 @@ export function getAllocationBreakdown(
         JOIN accounts a ON a.id = h.account_id
         JOIN securities s ON s.id = h.security_id
         LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
+        ${factorJoins}
         WHERE ${conditions.join(" AND ")}
       )
       SELECT

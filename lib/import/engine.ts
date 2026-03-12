@@ -8,7 +8,9 @@ import { parseMonthlyValues } from "./parsers/monthly-values";
 import { parseVanguardCostBasis } from "./parsers/vanguard-cost-basis";
 import { parseVanguardHoldings } from "./parsers/vanguard-holdings";
 import { parseVanguardPdf } from "./parsers/vanguard-pdf";
+import { parseFactorCsv } from "./parsers/factor-csv";
 import { upsertSecurity } from "@/lib/mutations/securities";
+import { FACTOR_COLUMNS } from "@/lib/factors";
 import {
   createImportBatch,
   completeImportBatch,
@@ -43,6 +45,8 @@ export async function parseImport(
         throw new Error("PDF files must be provided as Buffer");
       }
       return parseVanguardPdf(content, filename);
+    case "factor-csv":
+      return parseFactorCsv(textContent, filename);
     default:
       return {
         sourceType: "unknown",
@@ -68,7 +72,9 @@ export interface CommitResult {
   newPrices: number;
   newSnapshots: number;
   newSecurities: number;
+  newFactors: number;
   skippedDuplicates: number;
+  unmatchedFactors?: string[];
 }
 
 export function commitImport(
@@ -271,19 +277,92 @@ export function commitImport(
       }
     }
 
-    // 7. Store raw content
+    // 7. Insert/update factor exposures (from factor-csv)
+    let newFactors = 0;
+    const unmatchedFactors: string[] = [];
+
+    if (parsed.factors && parsed.factors.length > 0) {
+      const upsertFactor = db.prepare(`
+        INSERT INTO security_factors
+          (security_id, interest_rate_sensitive, growth_vs_value, cyclical,
+           international_exposure, geopolitical_onshoring, tariff_exposure,
+           ai_exposure, crypto_adjacent, regulatory_risk,
+           factor_source, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(security_id) DO UPDATE SET
+          interest_rate_sensitive = excluded.interest_rate_sensitive,
+          growth_vs_value = excluded.growth_vs_value,
+          cyclical = excluded.cyclical,
+          international_exposure = excluded.international_exposure,
+          geopolitical_onshoring = excluded.geopolitical_onshoring,
+          tariff_exposure = excluded.tariff_exposure,
+          ai_exposure = excluded.ai_exposure,
+          crypto_adjacent = excluded.crypto_adjacent,
+          regulatory_risk = excluded.regulatory_risk,
+          factor_source = excluded.factor_source,
+          updated_at = excluded.updated_at
+      `);
+
+      const updateSectorIndustry = db.prepare(`
+        UPDATE securities SET sector = ?, industry = ? WHERE id = ?
+      `);
+
+      for (const f of parsed.factors) {
+        // Resolve symbol to security_id
+        const sec = db
+          .prepare("SELECT id FROM securities WHERE symbol = ?")
+          .get(f.symbol) as { id: number } | undefined;
+
+        if (!sec) {
+          unmatchedFactors.push(f.symbol);
+          continue;
+        }
+
+        upsertFactor.run(
+          sec.id,
+          f.interest_rate_sensitive ?? null,
+          f.growth_vs_value ?? null,
+          f.cyclical ?? null,
+          f.international_exposure ?? null,
+          f.geopolitical_onshoring ?? null,
+          f.tariff_exposure ?? null,
+          f.ai_exposure ?? null,
+          f.crypto_adjacent ?? null,
+          f.regulatory_risk ?? null,
+          "csv_import"
+        );
+        newFactors++;
+
+        // Override sector/industry from CSV
+        if (f.sector || f.industry) {
+          const current = db
+            .prepare("SELECT sector, industry FROM securities WHERE id = ?")
+            .get(sec.id) as { sector: string | null; industry: string | null };
+
+          updateSectorIndustry.run(
+            f.sector ?? current.sector,
+            f.industry ?? current.industry,
+            sec.id
+          );
+        }
+      }
+    }
+
+    // 8. Store raw content
     db.prepare(
       "INSERT INTO raw_imports (import_batch_id, raw_data) VALUES (?, ?)"
     ).run(batch.id, JSON.stringify(parsed));
 
-    // 8. Complete the batch
+    // 9. Complete the batch
     const recordCount =
-      newTransactions + newHoldings + newPrices + newSnapshots;
+      newTransactions + newHoldings + newPrices + newSnapshots + newFactors;
     const summary = [
       newTransactions > 0 ? `${newTransactions} transactions` : null,
       newHoldings > 0 ? `${newHoldings} holdings` : null,
       newPrices > 0 ? `${newPrices} prices` : null,
       newSnapshots > 0 ? `${newSnapshots} snapshots` : null,
+      newFactors > 0 ? `${newFactors} factor classifications` : null,
+      unmatchedFactors.length > 0 ? `${unmatchedFactors.length} unmatched symbols` : null,
       skippedDuplicates > 0 ? `${skippedDuplicates} duplicates skipped` : null,
     ]
       .filter(Boolean)
@@ -299,7 +378,9 @@ export function commitImport(
       newPrices,
       newSnapshots,
       newSecurities,
+      newFactors,
       skippedDuplicates,
+      unmatchedFactors: unmatchedFactors.length > 0 ? unmatchedFactors : undefined,
     };
   })();
 

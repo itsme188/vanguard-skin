@@ -1,10 +1,11 @@
 /**
  * Analysis queries for factor analysis, allocation breakdown, and concentration metrics.
- * Supports the new classification columns from migration 008.
+ * Supports classification columns (migration 008) and thematic factors (migration 010).
  */
 
 import type Database from "better-sqlite3";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
+import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -17,7 +18,8 @@ export type AllocationDimension =
   | "asset_class"
   | "security_type"
   | "account"
-  | "symbol";
+  | "symbol"
+  | FactorColumn;
 
 export interface AllocationEntry {
   group_name: string;
@@ -87,12 +89,18 @@ const LATEST_HOLDINGS_CTE = `
  * Supports new classification columns (fund_category, geography, etc.)
  * plus existing dimensions (sector, asset_class, account, symbol).
  */
+/** Check if a dimension is a factor column (needs security_factors JOIN) */
+function isFactorDimension(dim: AllocationDimension): dim is FactorColumn {
+  return (FACTOR_COLUMNS as readonly string[]).includes(dim);
+}
+
 export function getAllocationByDimension(
   db: Database.Database,
   dimension: AllocationDimension,
   accountIds?: number[]
 ): AllocationEntry[] {
-  const groupColumn: Record<AllocationDimension, string> = {
+  // Standard classification columns on the securities table
+  const standardColumns: Partial<Record<AllocationDimension, string>> = {
     fund_category: "COALESCE(s.fund_category, 'Unclassified')",
     geography: "COALESCE(s.geography, 'Unknown')",
     market_cap_category: "COALESCE(s.market_cap_category, 'Unknown')",
@@ -104,7 +112,17 @@ export function getAllocationByDimension(
     symbol: "s.symbol",
   };
 
-  const groupExpr = groupColumn[dimension];
+  // For factor dimensions, use COALESCE(direct factor, underlying's factor, 'Unknown')
+  const needsFactorJoin = isFactorDimension(dimension);
+  const groupExpr = needsFactorJoin
+    ? `COALESCE(sf.${dimension}, sf_u.${dimension}, 'Unknown')`
+    : standardColumns[dimension]!;
+
+  const factorJoins = needsFactorJoin
+    ? `LEFT JOIN security_factors sf ON sf.security_id = s.id
+       LEFT JOIN securities s_u ON s_u.symbol = s.underlying_symbol
+       LEFT JOIN security_factors sf_u ON sf_u.security_id = s_u.id`
+    : "";
 
   const conditions = [
     "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))",
@@ -134,6 +152,7 @@ export function getAllocationByDimension(
         JOIN accounts a ON a.id = h.account_id
         JOIN securities s ON s.id = h.security_id
         LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
+        ${factorJoins}
         WHERE ${conditions.join(" AND ")}
       )
       SELECT
@@ -373,5 +392,164 @@ export function getAnalysisDataCoverage(
         : 100,
     missingAccounts: missingAccounts.map((a) => a.name),
     holdingsDate: holdingsRow.latest_date,
+  };
+}
+
+// ─── Factor heatmap + coverage ──────────────────────────────────
+
+export interface FactorHeatmapRow {
+  symbol: string;
+  name: string | null;
+  security_type: string | null;
+  market_value: number;
+  weight_pct: number;
+  is_option: boolean;
+  interest_rate_sensitive: string | null;
+  growth_vs_value: string | null;
+  cyclical: string | null;
+  international_exposure: string | null;
+  geopolitical_onshoring: string | null;
+  tariff_exposure: string | null;
+  ai_exposure: string | null;
+  crypto_adjacent: string | null;
+  regulatory_risk: string | null;
+  factor_source: string | null;
+}
+
+export interface FactorCoverage {
+  totalHoldings: number;
+  withFactors: number;
+  coveragePct: number;
+  bySource: Array<{ source: string; count: number }>;
+}
+
+/**
+ * Get all positions with their factor values for the heatmap grid.
+ * Options inherit factors from their underlying security.
+ */
+export function getFactorHeatmap(
+  db: Database.Database,
+  accountIds?: number[]
+): FactorHeatmapRow[] {
+  const conditions = [
+    "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))",
+  ];
+  const params: (string | number)[] = [];
+
+  if (accountIds && accountIds.length > 0) {
+    conditions.push(`h.account_id IN (${accountIds.map(() => "?").join(",")})`);
+    params.push(...accountIds);
+  }
+
+  const rows = db
+    .prepare(
+      `WITH ${LATEST_HOLDINGS_CTE}
+      SELECT
+        s.symbol,
+        s.name,
+        s.security_type,
+        s.underlying_symbol,
+        CASE
+          WHEN lp.close_price IS NOT NULL
+            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier")}
+          WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
+            THEN h.cost_basis
+          ELSE 0
+        END AS market_value,
+        COALESCE(sf.interest_rate_sensitive, sf_u.interest_rate_sensitive) AS interest_rate_sensitive,
+        COALESCE(sf.growth_vs_value, sf_u.growth_vs_value) AS growth_vs_value,
+        COALESCE(sf.cyclical, sf_u.cyclical) AS cyclical,
+        COALESCE(sf.international_exposure, sf_u.international_exposure) AS international_exposure,
+        COALESCE(sf.geopolitical_onshoring, sf_u.geopolitical_onshoring) AS geopolitical_onshoring,
+        COALESCE(sf.tariff_exposure, sf_u.tariff_exposure) AS tariff_exposure,
+        COALESCE(sf.ai_exposure, sf_u.ai_exposure) AS ai_exposure,
+        COALESCE(sf.crypto_adjacent, sf_u.crypto_adjacent) AS crypto_adjacent,
+        COALESCE(sf.regulatory_risk, sf_u.regulatory_risk) AS regulatory_risk,
+        COALESCE(sf.factor_source, sf_u.factor_source) AS factor_source
+      FROM latest_holdings h
+      JOIN securities s ON s.id = h.security_id
+      LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
+      LEFT JOIN security_factors sf ON sf.security_id = s.id
+      LEFT JOIN securities s_u ON s_u.symbol = s.underlying_symbol
+      LEFT JOIN security_factors sf_u ON sf_u.security_id = s_u.id
+      WHERE ${conditions.join(" AND ")}
+      ORDER BY market_value DESC`
+    )
+    .all(...params) as Array<{
+      symbol: string;
+      name: string | null;
+      security_type: string | null;
+      underlying_symbol: string | null;
+      market_value: number;
+      interest_rate_sensitive: string | null;
+      growth_vs_value: string | null;
+      cyclical: string | null;
+      international_exposure: string | null;
+      geopolitical_onshoring: string | null;
+      tariff_exposure: string | null;
+      ai_exposure: string | null;
+      crypto_adjacent: string | null;
+      regulatory_risk: string | null;
+      factor_source: string | null;
+    }>;
+
+  const totalValue = rows.reduce((sum, r) => sum + r.market_value, 0);
+
+  return rows.map((r) => ({
+    symbol: r.symbol,
+    name: r.name,
+    security_type: r.security_type,
+    market_value: r.market_value,
+    weight_pct: totalValue > 0 ? (r.market_value / totalValue) * 100 : 0,
+    is_option: r.underlying_symbol !== null,
+    interest_rate_sensitive: r.interest_rate_sensitive,
+    growth_vs_value: r.growth_vs_value,
+    cyclical: r.cyclical,
+    international_exposure: r.international_exposure,
+    geopolitical_onshoring: r.geopolitical_onshoring,
+    tariff_exposure: r.tariff_exposure,
+    ai_exposure: r.ai_exposure,
+    crypto_adjacent: r.crypto_adjacent,
+    regulatory_risk: r.regulatory_risk,
+    factor_source: r.factor_source,
+  }));
+}
+
+/**
+ * Factor coverage: how many current holdings have factor data.
+ */
+export function getFactorCoverage(
+  db: Database.Database
+): FactorCoverage {
+  const row = db
+    .prepare(
+      `WITH ${LATEST_HOLDINGS_CTE}
+      SELECT
+        COUNT(DISTINCT s.id) AS total,
+        COUNT(DISTINCT CASE WHEN sf.security_id IS NOT NULL OR sf_u.security_id IS NOT NULL THEN s.id END) AS with_factors
+      FROM latest_holdings h
+      JOIN securities s ON s.id = h.security_id
+      LEFT JOIN security_factors sf ON sf.security_id = s.id
+      LEFT JOIN securities s_u ON s_u.symbol = s.underlying_symbol
+      LEFT JOIN security_factors sf_u ON sf_u.security_id = s_u.id
+      WHERE (s.maturity_date IS NULL OR s.maturity_date >= date('now'))`
+    )
+    .get() as { total: number; with_factors: number };
+
+  const bySource = db
+    .prepare(
+      `SELECT COALESCE(factor_source, 'none') AS source, COUNT(*) AS count
+       FROM security_factors
+       GROUP BY factor_source
+       ORDER BY count DESC`
+    )
+    .all() as Array<{ source: string; count: number }>;
+
+  return {
+    totalHoldings: row.total,
+    withFactors: row.with_factors,
+    coveragePct:
+      row.total > 0 ? Math.round((row.with_factors / row.total) * 1000) / 10 : 0,
+    bySource,
   };
 }

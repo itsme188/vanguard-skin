@@ -1,0 +1,62 @@
+/**
+ * Factor exposure constants, display labels, and color mappings.
+ * Shared between queries, UI, chat tools, and import.
+ */
+
+export const FACTOR_COLUMNS = [
+  "interest_rate_sensitive",
+  "growth_vs_value",
+  "cyclical",
+  "international_exposure",
+  "geopolitical_onshoring",
+  "tariff_exposure",
+  "ai_exposure",
+  "crypto_adjacent",
+  "regulatory_risk",
+] as const;
+
+export type FactorColumn = (typeof FACTOR_COLUMNS)[number];
+
+export const FACTOR_LABELS: Record<FactorColumn, string> = {
+  interest_rate_sensitive: "Rate Sensitivity",
+  growth_vs_value: "Growth vs Value",
+  cyclical: "Cyclicality",
+  international_exposure: "Int'l Exposure",
+  geopolitical_onshoring: "Onshoring",
+  tariff_exposure: "Tariff Exposure",
+  ai_exposure: "AI Exposure",
+  crypto_adjacent: "Crypto",
+  regulatory_risk: "Regulatory Risk",
+};
+
+/** Standard factor levels ordered from least to most exposure */
+export const STANDARD_LEVELS = ["No", "Low", "Moderate", "High", "Very High"] as const;
+
+/** Map factor level → heatmap color (Tailwind-friendly hex) */
+export const LEVEL_COLORS: Record<string, string> = {
+  // Standard scale
+  No: "#64748B",           // slate-500 (gray/neutral)
+  Low: "#34D399",          // emerald-400
+  Moderate: "#FBBF24",     // amber-400
+  High: "#FB923C",         // orange-400
+  "Very High": "#F87171",  // rose-400
+
+  // Growth vs Value
+  Growth: "#60A5FA",       // blue-400
+  Value: "#C9A44E",        // gold
+
+  // Crypto binary
+  Yes: "#F87171",          // rose-400
+
+  // International
+  International: "#A78BFA", // violet-400
+
+  // Fallback
+  Unknown: "#334155",      // slate-700
+};
+
+/** Get display color for a factor value */
+export function getFactorColor(value: string | null): string {
+  if (!value || value === "Unknown") return LEVEL_COLORS.Unknown;
+  return LEVEL_COLORS[value] ?? LEVEL_COLORS.Unknown;
+}

@@ -95,9 +95,12 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
           enum: [
             "asset_class", "security_type", "sector", "account", "symbol",
             "fund_category", "geography", "market_cap_category", "style",
+            "interest_rate_sensitive", "growth_vs_value", "cyclical",
+            "international_exposure", "geopolitical_onshoring", "tariff_exposure",
+            "ai_exposure", "crypto_adjacent", "regulatory_risk",
           ],
           description:
-            "Dimension to group by. 'fund_category' groups by investment category (e.g., 'US Large Cap Equity', 'International Equity'). 'geography' groups by region. 'market_cap_category' by cap size. 'style' by value/blend/growth.",
+            "Dimension to group by. Standard: 'fund_category' (investment category), 'geography' (region), 'market_cap_category' (cap size), 'style' (value/growth). Thematic factors: 'tariff_exposure', 'ai_exposure', 'interest_rate_sensitive', 'cyclical', 'geopolitical_onshoring', 'international_exposure', 'crypto_adjacent', 'regulatory_risk', 'growth_vs_value'. Factor dimensions show Low/Moderate/High/Very High breakdown weighted by market value.",
         },
         account_name: {
           type: "string",
@@ -528,8 +531,7 @@ export async function executeTool(
       case "query_allocation":
         rawResult = getAllocationBreakdown(
           db,
-          input.group_by as "asset_class" | "security_type" | "sector" | "account" | "symbol"
-            | "fund_category" | "geography" | "market_cap_category" | "style",
+          input.group_by as string,
           accountName
         );
         break;
