@@ -56,7 +56,6 @@ export async function POST(request: NextRequest) {
             const stream = client.messages.stream({
               model: "claude-opus-4-6",
               max_tokens: 16000,
-              temperature: 0.3,
               thinking: { type: "adaptive" },
               cache_control: { type: "ephemeral" },
               system: systemPrompt,
