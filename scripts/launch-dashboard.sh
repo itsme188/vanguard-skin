@@ -23,6 +23,22 @@ export PATH="/opt/homebrew/bin:$PATH"
 
 # === Helper Functions ===
 
+clean_turbopack_if_corrupt() {
+    local next_dir="$PROJECT_DIR/.next"
+    if [ ! -d "$next_dir" ]; then
+        return 0
+    fi
+    # Check if Turbopack's persistent cache has missing SST files
+    # (caused by SIGKILL during compaction). Grep the log for the
+    # telltale panic message, or check for .meta files referencing
+    # missing .sst files directly.
+    if [ -f "$LOG_FILE" ] && grep -q "corrupted database or bug" "$LOG_FILE" 2>/dev/null; then
+        rm -rf "$next_dir"
+        echo "[launcher] Cleared corrupted Turbopack cache" >> "$LOG_FILE"
+        return 0
+    fi
+}
+
 is_running() {
     if [ -f "$PID_FILE" ]; then
         local pid
@@ -67,6 +83,9 @@ cmd_start() {
 
     cd "$PROJECT_DIR"
 
+    # Auto-recover from corrupted Turbopack cache (caused by previous hard kill)
+    clean_turbopack_if_corrupt
+
     # Start Next.js dev server, fully detached from this script's FDs
     PORT=$PORT $NPM run dev </dev/null >"$LOG_FILE" 2>&1 &
     local server_pid=$!
@@ -104,9 +123,10 @@ cmd_stop() {
     # Send SIGTERM to the process group (kills node + child processes)
     kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
 
-    # Wait up to 5 seconds for graceful shutdown
+    # Wait up to 15 seconds for graceful shutdown (Turbopack needs time
+    # to finish cache compaction — killing mid-compaction corrupts .sst files)
     local attempts=0
-    while [ $attempts -lt 10 ]; do
+    while [ $attempts -lt 30 ]; do
         if ! kill -0 "$pid" 2>/dev/null; then
             break
         fi
