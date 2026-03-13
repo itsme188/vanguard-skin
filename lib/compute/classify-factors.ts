@@ -161,12 +161,12 @@ export async function classifyFactors(
       const response = await client.messages.create({
         model: "claude-sonnet-4-20250514",
         max_tokens: 8000,
-        thinking: { type: "enabled", budget_tokens: 4000 },
+        temperature: 0.2,
         system: SYSTEM_PROMPT,
         messages: [{ role: "user", content: prompt }],
       });
 
-      // Extract text from response (skip thinking blocks)
+      // Extract text from response
       let jsonText = "";
       for (const block of response.content) {
         if (block.type === "text") {
