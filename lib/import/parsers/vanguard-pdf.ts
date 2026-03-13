@@ -190,8 +190,9 @@ export async function callClaudeForPdfExtraction(
 
   // Use streaming to avoid 10-minute timeout on large PDFs
   const stream = client.messages.stream({
-    model: "claude-sonnet-4-20250514",
+    model: "claude-opus-4-6",
     max_tokens: 64000,
+    temperature: 0,
     messages: [
       {
         role: "user",
@@ -509,8 +510,9 @@ async function callClaudeForHoldingsOnly(
   const base64Pdf = pdfBuffer.toString("base64");
 
   const stream = client.messages.stream({
-    model: "claude-sonnet-4-20250514",
+    model: "claude-opus-4-6",
     max_tokens: 64000,
+    temperature: 0,
     messages: [
       {
         role: "user",
