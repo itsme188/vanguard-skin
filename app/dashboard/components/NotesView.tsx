@@ -63,8 +63,11 @@ export function NotesView({
   const searchParams = useSearchParams();
   const [isPending, startTransition] = useTransition();
 
-  // Form state
-  const [formType, setFormType] = useState<NoteType>("journal");
+  // Form state — sync with active filter tab
+  const [formType, setFormType] = useState<NoteType>(currentType ?? "journal");
+  useEffect(() => {
+    if (currentType) setFormType(currentType);
+  }, [currentType]);
   const [formContent, setFormContent] = useState("");
   const [formSymbol, setFormSymbol] = useState("");
   const [formDate, setFormDate] = useState(
