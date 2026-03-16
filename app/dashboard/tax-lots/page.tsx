@@ -75,15 +75,15 @@ export default async function TaxLotsPage(props: {
 
       {hasData ? (
         <>
-          {selectedAccount && activeSummary ? (
+          {selectedAccount ? (
             <TaxLotSummaryCards
               summary={{
                 totalOpenLots: openLots.length,
-                totalClosedSales: activeSummary.totalClosedSales,
+                totalClosedSales: activeSummary?.totalClosedSales ?? closedSales.length,
                 totalUnrealizedGain: openLots.reduce((sum, l) => sum + (l.unrealized_gain ?? 0), 0),
-                totalRealizedGain: activeSummary.totalRealizedGain,
-                longTermGain: activeSummary.longTermGain,
-                shortTermGain: activeSummary.shortTermGain,
+                totalRealizedGain: activeSummary?.totalRealizedGain ?? closedSales.reduce((sum, s) => sum + s.realized_gain_loss, 0),
+                longTermGain: activeSummary?.longTermGain ?? closedSales.filter(s => s.is_long_term).reduce((sum, s) => sum + s.realized_gain_loss, 0),
+                shortTermGain: activeSummary?.shortTermGain ?? closedSales.filter(s => !s.is_long_term).reduce((sum, s) => sum + s.realized_gain_loss, 0),
               }}
               year={selectedYear}
             />
