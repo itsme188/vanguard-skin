@@ -13,6 +13,7 @@ export interface TaxLotWithSecurity {
   quantity_acquired: number;
   quantity_remaining: number;
   cost_basis: number;
+  adjusted_cost_basis: number;
   current_price: number | null;
   current_value: number | null;
   unrealized_gain: number | null;
@@ -64,6 +65,7 @@ export function getOpenTaxLots(db: Database.Database): TaxLotWithSecurity[] {
         tl.acquisition_date, tl.acquisition_price,
         tl.quantity_acquired, tl.quantity_remaining,
         tl.cost_basis, tl.is_from_opening_snapshot,
+        ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier")} AS adjusted_cost_basis,
         p.close_price AS current_price,
         CASE WHEN p.close_price IS NOT NULL
           THEN ${adjustedMarketValueSQL("tl.quantity_remaining", "p.close_price", "s.security_type", "s.multiplier")}

@@ -85,7 +85,7 @@ export function OpenLotsTable({
                     {formatCurrency(lot.acquisition_price)}
                   </td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
-                    {formatCurrency(lot.quantity_remaining * lot.acquisition_price)}
+                    {formatCurrency(lot.adjusted_cost_basis)}
                   </td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
                     {formatCurrency(lot.current_value)}
