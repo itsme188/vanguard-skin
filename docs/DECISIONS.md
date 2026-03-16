@@ -1,0 +1,60 @@
+# Architectural Decisions
+
+Record of WHY architectural choices were made. Consult before making structural changes.
+Add new entries at the bottom.
+
+---
+
+- **PDF parsing via Claude API, not OCR** — Vanguard PDFs are image-heavy. The Anthropic SDK sends PDF pages to Claude for structured extraction. More accurate than tesseract/pdftotext and worth the API cost (~$0.50-0.80 per statement with Opus 4.6).
+
+- **SQLite over Postgres** — Local-first, single-user app. No need for a database server. WAL mode handles concurrent reads during imports.
+
+- **OCC format for option symbols** — Bare tickers like "INTC" collide with the underlying stock in `securities` UNIQUE(symbol) constraint. Always use full OCC format (e.g., `INTC  260320P00045000`). Three-layer fix: (1) `ensureOCCSymbol()` in parser auto-converts, (2) `upsertSecurity()` type conflict guard, (3) `buildOCCSymbol()` utility. Pattern: underlying padded to 6 chars + YYMMDD + C/P + strike*1000 padded to 8 digits. This was a painful bug — do not revert.
+
+- **Bond par adjustment in two places** — Both market value AND cost basis need /100 for bonds. Fixed wrong multiple times. Canonical logic is in `adjustedMarketValueSQL()` in `lib/valuation.ts`.
+
+- **Deterministic source_key for idempotent imports** — Every record gets a hash-based key so re-importing the same file is a no-op. Do not change the hashing logic without understanding the dedup implications.
+
+- **Thematic factor exposure — separate table, query-time inheritance** — `security_factors` is standalone (not bolted onto `securities`) because factors are opinionated macro assessments, not security identity. Options inherit factors at query time via `LEFT JOIN securities u ON u.symbol = s.underlying_symbol` + `COALESCE(sf.col, sf_u.col)`. Constants/labels/colors shared from `lib/factors.ts`. Auto-classify uses Sonnet 4 with training examples.
+
+- **Sampling strategy per API call** — (1) Chat: Opus 4.6 + adaptive thinking (temperature locked at 1.0, `effort: high`); (2) PDF extraction: Opus 4.6 + temperature 0 (determinism for structured JSON); (3) Factor classification: Sonnet 4 + temperature 0.2 (categorization with training examples). When thinking is enabled, the API requires temperature=1.0.
+
+- **TWS singleton on globalThis** — Module-level `let` variables reset on Turbopack HMR reload, orphaning TCP sockets. `lib/tws/client.ts` stores all TWS state on `globalThis.__tws_*` properties.
+
+- **Single dev server rule** — NEVER run two `next dev` processes against the same project directory. Turbopack's persistent cache is single-writer; concurrent writes corrupt SST files. `.claude/launch.json` is pinned to port 3099 (same as launcher) so only one server runs.
+
+- **Transaction type casing** — All parsers output UPPERCASE (BUY, SELL, DIVIDEND, BUY_TO_OPEN, SELL_TO_CLOSE, etc.). Tax lot compute engine uses `LOWER(type) IN (...)` for case-insensitive matching across sources.
+
+- **Streaming for PDF API** — `client.messages.stream()` + `stream.finalMessage()` avoids 10-min timeout on large PDFs.
+
+- **`serverExternalPackages`** — better-sqlite3 excluded from Next.js bundling (native addon).
+
+- **`import.meta.url` in migrate.ts** — Not `__dirname`, for ESM compat with Vitest.
+
+- **Date formatting in SSR** — Never use `toLocaleString()`/`toLocaleDateString()` in Next.js server components (hydration mismatch); use manual formatting.
+
+- **IBKR CSV format change (2026)** — Newer exports prepend account ID line before `Statement,Header,...` row. Parser handles both formats.
+
+- **PDF document input** — Only supported on Sonnet/Opus, NOT Haiku (returns 404). Can't cheaply downgrade PDF parsing.
+
+- **Vanguard PDF holdings retry** — `parseVanguardPdf()` checks if first extraction covers < 80% of `total_value`; if so, makes a second focused `callClaudeForHoldingsOnly()` call ignoring transaction pages.
+
+- **Claude API code fences** — Always strip ` ```json ``` ` wrappers from Claude API responses before JSON.parse.
+
+- **Tax lot compute null safety** — VMFXX money market reinvestments have null `price_per_share`/`quantity`. Compute engine filters with `AND price_per_share IS NOT NULL AND quantity IS NOT NULL`.
+
+- **Agentic chat architecture** — Hybrid static context (~2,500 tokens) + 14 dynamic DB tools. Agentic loop: stream -> detect `stop_reason: "tool_use"` -> execute server-side -> append full `finalMessage.content` (including thinking blocks) -> re-stream. Max 8 iterations. Prompt caching reduces cost across loop iterations.
+
+- **Earnings transcript pipeline** — Layered sources: EDGAR 8-K (free, always-on) -> Motley Fool scraping (free, on-demand) -> API Ninjas (optional paid). Seeking Alpha blocks server-side fetches (Cloudflare 403). API Ninjas earnings endpoint is Premium-only ($39+/mo).
+
+- **Desktop launcher** — `scripts/launch-dashboard.sh` (lifecycle manager) + `scripts/VanguardDashboard.applescript` (stay-open app). Port 3099. AppleScript's `do shell script` has minimal PATH — must `export PATH="/opt/homebrew/bin:$PATH"`. Stay-open applet uses idle polling (not blocking `on run`) to avoid beach ball.
+
+- **IBKR option parsing** — Descriptions like "AAPL 21MAR25 150.0 C" -> OCC symbols "AAPL  250321C00150000". Helper: `parseIBKROptionSymbol()`.
+
+- **Tax lot filtering** — Year picker (pill buttons) + account picker. Uses URL searchParams for server-side filtering. Generic `FilterPills` component in `YearSelector.tsx`.
+
+- **Options support** — `adjustedMarketValueSQL()` handles bonds (/100) AND options (*multiplier) in one function. Queries use `COALESCE(s.multiplier, 1)` since explicit INSERT NULL bypasses schema DEFAULT.
+
+- **Chat markdown rendering** — `react-markdown` + `remark-gfm` in `MarkdownMessage.tsx`. Custom component map styled with Tailwind v4 tokens. Only applied to assistant messages.
+
+- **TWR compute engine** — Chain-linked Modified Dietz method. Uses IBKR-provided `monthly_snapshots.twr` when non-null (stored as percentage, divide by 100). Cash flow day-weighting: `W_i = days_remaining / days_in_month`. Annualization threshold: 30 days minimum.
