@@ -43,6 +43,15 @@ export class RateLimiter {
     return this.timestamps.length;
   }
 
+  /** Estimated seconds until a slot opens. Returns 0 if immediately available. */
+  get estimatedWaitSeconds(): number {
+    const now = Date.now();
+    this.timestamps = this.timestamps.filter((t) => now - t < this.windowMs);
+    if (this.timestamps.length < this.maxRequests) return 0;
+    const oldest = this.timestamps[0];
+    return Math.ceil((this.windowMs - (now - oldest)) / 1000);
+  }
+
   /** Reset the rate limiter (useful for testing). */
   reset(): void {
     this.timestamps = [];

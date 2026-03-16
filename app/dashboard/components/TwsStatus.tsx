@@ -55,6 +55,16 @@ export function TwsStatus() {
   );
 }
 
+interface PriceProgress {
+  current: number;
+  total: number;
+  symbol: string;
+  status: string;
+  waitingSeconds?: number;
+  completed: number;
+  errors: number;
+}
+
 function TwsPanel({
   status,
   onClose,
@@ -69,6 +79,9 @@ function TwsPanel({
   const [clientId, setClientId] = useState(String(status.clientId));
   const [loading, setLoading] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
+  const [priceProgress, setPriceProgress] = useState<PriceProgress | null>(
+    null,
+  );
 
   async function handleConnect() {
     setLoading("connect");
@@ -121,25 +134,87 @@ function TwsPanel({
   async function handleFetchPrices() {
     setLoading("prices");
     setResult(null);
+    setPriceProgress(null);
+    let completed = 0;
+    let errors = 0;
+
     try {
       const res = await fetch("/api/tws/prices", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       });
-      const json = await res.json();
-      if (json.success) {
-        const d = json.data;
-        setResult(
-          `Fetched prices for ${d.securities} securities: ${d.totalPricesInserted} prices inserted, ${d.errors} errors`,
-        );
-      } else {
-        setResult(`Error: ${json.error}`);
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({ error: "Failed" }));
+        setResult(`Error: ${data.error || "Failed"}`);
+        setLoading(null);
+        return;
+      }
+
+      const reader = res.body?.getReader();
+      if (!reader) {
+        setResult("Error: No response stream");
+        setLoading(null);
+        return;
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        // Keep the last (possibly incomplete) line in the buffer
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const data = line.slice(6);
+          if (data === "[DONE]") break;
+
+          try {
+            const parsed = JSON.parse(data);
+
+            if (parsed.progress) {
+              const p = parsed.progress;
+              if (p.status === "done") completed++;
+              if (p.status === "error") errors++;
+              setPriceProgress({
+                current: p.current,
+                total: p.total,
+                symbol: p.symbol,
+                status: p.status,
+                waitingSeconds: p.waitingSeconds,
+                completed,
+                errors,
+              });
+            }
+
+            if (parsed.complete) {
+              const d = parsed.data;
+              setResult(
+                `Fetched prices for ${d.securities} securities: ${d.totalPricesInserted} prices inserted` +
+                  (d.errors > 0 ? `, ${d.errors} errors` : ""),
+              );
+            }
+
+            if (parsed.error) {
+              setResult(`Error: ${parsed.error}`);
+            }
+          } catch {
+            /* skip malformed lines */
+          }
+        }
       }
     } catch (err) {
       setResult(`Error: ${err instanceof Error ? err.message : "Failed"}`);
     } finally {
       setLoading(null);
+      setPriceProgress(null);
     }
   }
 
@@ -169,6 +244,14 @@ function TwsPanel({
   }
 
   const isConnected = status.state === "connected";
+
+  // Button label for Fetch Prices
+  const priceButtonLabel =
+    loading === "prices"
+      ? priceProgress
+        ? `${priceProgress.completed + priceProgress.errors} / ${priceProgress.total}`
+        : "Starting..."
+      : "Fetch Prices";
 
   return (
     <>
@@ -261,7 +344,7 @@ function TwsPanel({
                 disabled={loading !== null}
                 className="flex-1 px-3 py-1.5 text-xs font-medium rounded-lg bg-blue/20 text-blue hover:bg-blue/30 disabled:opacity-50 transition-colors"
               >
-                {loading === "prices" ? "Fetching..." : "Fetch Prices"}
+                {priceButtonLabel}
               </button>
               <button
                 onClick={handleEnrich}
@@ -271,6 +354,29 @@ function TwsPanel({
                 {loading === "enrich" ? "Enriching..." : "Enrich Securities"}
               </button>
             </div>
+
+            {/* Price fetch progress */}
+            {priceProgress && (
+              <div className="space-y-1.5">
+                {/* Progress bar */}
+                <div className="w-full h-1 rounded-full bg-raised overflow-hidden">
+                  <div
+                    className="h-full bg-blue rounded-full transition-all duration-300"
+                    style={{
+                      width: `${((priceProgress.completed + priceProgress.errors) / priceProgress.total) * 100}%`,
+                    }}
+                  />
+                </div>
+                {/* Status text */}
+                <p className="text-[10px] text-ink-dim font-mono">
+                  {priceProgress.status === "rate_limited"
+                    ? `Rate limited — resuming in ~${Math.ceil((priceProgress.waitingSeconds ?? 0) / 60)} min`
+                    : priceProgress.status === "fetching"
+                      ? `Fetching ${priceProgress.symbol}...`
+                      : `${priceProgress.completed} done${priceProgress.errors > 0 ? `, ${priceProgress.errors} errors` : ""} / ${priceProgress.total} total`}
+                </p>
+              </div>
+            )}
           </div>
         )}
 
