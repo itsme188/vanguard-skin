@@ -23,7 +23,7 @@ interface AccountSummaryRow {
 export function getAccountSummaries(db: Database.Database): AccountSummary[] {
   const rows = db
     .prepare(
-      `WITH ranked AS (
+      `WITH ranked_monthly AS (
         SELECT
           ms.account_id,
           ms.month_end_date,
@@ -31,16 +31,27 @@ export function getAccountSummaries(db: Database.Database): AccountSummary[] {
           ms.twr,
           ROW_NUMBER() OVER (PARTITION BY ms.account_id ORDER BY ms.month_end_date DESC) AS rn
         FROM monthly_snapshots ms
+      ),
+      latest_daily AS (
+        SELECT
+          dv.account_id,
+          dv.valuation_date,
+          dv.total_value,
+          ROW_NUMBER() OVER (PARTITION BY dv.account_id ORDER BY dv.valuation_date DESC) AS rn
+        FROM daily_valuations dv
       )
       SELECT
         a.id, a.name,
-        curr.total_value AS latestValue,
-        curr.month_end_date AS latestDate,
+        CASE WHEN d.valuation_date > COALESCE(curr.month_end_date, '')
+          THEN d.total_value ELSE curr.total_value END AS latestValue,
+        CASE WHEN d.valuation_date > COALESCE(curr.month_end_date, '')
+          THEN d.valuation_date ELSE curr.month_end_date END AS latestDate,
         curr.twr,
         prev.total_value AS previousValue
       FROM accounts a
-      LEFT JOIN ranked curr ON curr.account_id = a.id AND curr.rn = 1
-      LEFT JOIN ranked prev ON prev.account_id = a.id AND prev.rn = 2
+      LEFT JOIN ranked_monthly curr ON curr.account_id = a.id AND curr.rn = 1
+      LEFT JOIN ranked_monthly prev ON prev.account_id = a.id AND prev.rn = 2
+      LEFT JOIN latest_daily d ON d.account_id = a.id AND d.rn = 1
       ORDER BY a.id`
     )
     .all() as AccountSummaryRow[];

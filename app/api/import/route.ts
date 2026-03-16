@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { parseImport, commitImport, undoImport } from "@/lib/import/engine";
 import { classifySecurities } from "@/lib/compute/classify-securities";
+import { computeTaxLots } from "@/lib/compute/tax-lots";
 
 /**
  * POST /api/import?mode=preview  — parse only, return preview JSON
@@ -101,12 +102,17 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Auto-classify any new securities after commit
+    // Auto-classify and compute tax lots after commit
     if (mode === "commit") {
       try {
         classifySecurities(db);
       } catch {
         // Classification failure shouldn't block import
+      }
+      try {
+        computeTaxLots(db);
+      } catch {
+        // Tax lot computation failure shouldn't block import
       }
     }
 
