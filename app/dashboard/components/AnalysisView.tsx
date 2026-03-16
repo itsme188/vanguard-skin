@@ -283,7 +283,7 @@ export function AnalysisView({
                   paddingAngle={1}
                 >
                   {chartData.map((entry, i) => (
-                    <Cell key={i} fill={getSliceColor(i, entry.group_name)} />
+                    <Cell key={entry.group_name || `cell-${i}`} fill={getSliceColor(i, entry.group_name)} />
                   ))}
                 </Pie>
                 <Tooltip
@@ -475,7 +475,7 @@ export function AnalysisView({
                     <XAxis type="number" tickFormatter={(v: number) => `${v.toFixed(0)}%`} tick={{ fill: "#94A3B8", fontSize: 11 }} />
                     <YAxis type="category" dataKey="symbol" tick={{ fill: "#E5E7EB", fontSize: 11 }} width={55} />
                     <Tooltip
-                      formatter={(value) => [`${Number(value).toFixed(1)}%`, "Weight"]}
+                      formatter={(value: number | string | undefined) => [`${Number(value).toFixed(1)}%`, "Weight"]}
                       contentStyle={{
                         backgroundColor: "#0F1219",
                         border: "1px solid #1E2533",
