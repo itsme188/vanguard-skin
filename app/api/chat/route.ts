@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { getPortfolioSummaryForChat } from "@/lib/queries/portfolio-summary";
 import { CHAT_TOOLS, executeTool } from "@/lib/chat/tools";
 import { buildSystemPrompt } from "@/lib/chat/system-prompt";
+import { getAnthropicApiKey } from "@/lib/env";
 
 const MAX_TOOL_ITERATIONS = 8;
 
@@ -18,7 +19,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = getAnthropicApiKey();
     if (!apiKey) {
       return new Response(
         JSON.stringify({
@@ -49,9 +50,20 @@ export async function POST(request: NextRequest) {
       async start(controller) {
         try {
           let iteration = 0;
+          let hadTextInPreviousIteration = false;
 
           while (iteration < MAX_TOOL_ITERATIONS) {
             iteration++;
+
+            // Separate text from prior tool-use iteration with a paragraph break
+            if (hadTextInPreviousIteration) {
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({ text: "\n\n" })}\n\n`
+                )
+              );
+              hadTextInPreviousIteration = false;
+            }
 
             const stream = client.messages.stream({
               model: "claude-opus-4-6",
@@ -90,6 +102,7 @@ export async function POST(request: NextRequest) {
                 event.type === "content_block_delta" &&
                 event.delta.type === "text_delta"
               ) {
+                hadTextInPreviousIteration = true;
                 controller.enqueue(
                   encoder.encode(
                     `data: ${JSON.stringify({ text: event.delta.text })}\n\n`

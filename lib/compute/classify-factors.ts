@@ -66,7 +66,8 @@ const SKIP_TYPES = new Set([
 export async function classifyFactors(
   db: Database.Database
 ): Promise<FactorClassifyResult> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const { getAnthropicApiKey } = await import("@/lib/env");
+  const apiKey = getAnthropicApiKey();
   if (!apiKey) {
     return { classified: 0, skipped: 0, errors: ["ANTHROPIC_API_KEY not set"] };
   }

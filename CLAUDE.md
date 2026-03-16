@@ -52,6 +52,7 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 3. UI shows preview with counts and sample records
 4. User clicks Import → `/api/import?mode=commit` writes to DB
 5. Every import creates an `import_batches` record for undo
+6. Post-commit: auto-classifies securities + auto-computes tax lots (silent, non-blocking)
 
 ## Conventions
 
@@ -69,6 +70,7 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - Bond unrealized gain: apply par-adjustment to BOTH current value AND cost basis
 - Option symbols MUST use OCC format (e.g., `INTC  260320P00045000`), never bare tickers — `ensureOCCSymbol()` in vanguard-pdf.ts auto-converts. Bare tickers cause stock/option collisions in `upsertSecurity()` UNIQUE(symbol) constraint.
 - `upsertSecurity()` has a type conflict guard — refuses to merge stock↔option on same symbol to prevent data corruption
+- Dashboard "as of" dates: `getAccountSummaries()` prefers `daily_valuations` over `monthly_snapshots` when more recent
 
 ## Dev Server Gotchas
 
