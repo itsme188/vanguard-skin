@@ -105,7 +105,7 @@ export function CombinedPortfolioChart({
               }}
               labelFormatter={(label) => formatDate(String(label))}
               formatter={(value, name) => [
-                `$${Number(value).toLocaleString()}`,
+                `$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
                 String(name),
               ]}
             />

@@ -114,17 +114,19 @@ export function PerformanceMetrics({
             </div>
           )}
 
-          {activePeriod && activePeriod.xirr != null && (
+          {activePeriod && 'xirr' in activePeriod && (
             <div className="flex items-center gap-3 border-l border-edge pl-3">
               <span className="text-[11px] text-ink-faint uppercase tracking-widest">
                 XIRR
               </span>
               <span
                 className={`text-lg font-mono tabular-nums font-semibold ${
-                  activePeriod.xirr >= 0 ? "text-up" : "text-down"
+                  activePeriod.xirr == null
+                    ? "text-ink-faint"
+                    : activePeriod.xirr >= 0 ? "text-up" : "text-down"
                 }`}
               >
-                {formatReturn(activePeriod.xirr)}
+                {activePeriod.xirr == null ? "\u2014" : formatReturn(activePeriod.xirr)}
               </span>
             </div>
           )}

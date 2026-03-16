@@ -229,7 +229,7 @@ export function EquityCurveChart({
                 labelFormatter={(label) => dateFormatter(String(label))}
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 formatter={(value: any, name: any) => [
-                  `$${Number(value).toLocaleString()}`,
+                  `$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
                   String(name) === "total"
                     ? "Total Value"
                     : String(name) === "holdings"
@@ -321,7 +321,7 @@ export function EquityCurveChart({
                 labelFormatter={(label) => dateFormatter(String(label))}
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 formatter={(value: any) => [
-                  `$${Number(value).toLocaleString()}`,
+                  `$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
                   "Value",
                 ]}
               />
