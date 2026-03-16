@@ -1,17 +1,8 @@
 import type Database from "better-sqlite3";
-import { SecType, BarSizeSetting } from "@stoqey/ib";
+import { BarSizeSetting, SecType } from "@stoqey/ib";
 import { getIbApi } from "./client";
 import { RateLimiter } from "./rate-limiter";
-import type { PriceFetchResult } from "./types";
-
-const rateLimiter = new RateLimiter();
-
-interface SecurityRow {
-  id: number;
-  symbol: string;
-  security_type: string | null;
-  ib_con_id: number | null;
-}
+import type { PriceFetchResult, PriceFetchProgress } from "./types";
 
 function mapSecurityType(dbType: string | null): SecType {
   switch (dbType) {
@@ -29,6 +20,21 @@ function mapSecurityType(dbType: string | null): SecType {
   }
 }
 
+const rateLimiter = new RateLimiter();
+
+/** Milliseconds to wait between consecutive TWS requests to avoid IB pacing violations. */
+const PACING_DELAY_MS = 500;
+
+/** Per-request timeout — prevents a hung TWS call from blocking the entire batch. */
+const REQUEST_TIMEOUT_MS = 30_000;
+
+interface SecurityRow {
+  id: number;
+  symbol: string;
+  security_type: string | null;
+  ib_con_id: number | null;
+}
+
 /** Convert "20250131" → "2025-01-31" */
 function formatBarDate(raw: string): string {
   if (raw.length === 8 && !raw.includes("-")) {
@@ -43,6 +49,9 @@ function formatBarDate(raw: string): string {
  *
  * Uses INSERT OR REPLACE so TWS prices (authoritative daily close)
  * overwrite any statement-sourced prices for the same date.
+ *
+ * Default query requires ib_con_id (set via Enrich Securities) and
+ * excludes mutual funds and options. Pass securityIds to override.
  */
 export async function fetchHistoricalPrices(
   db: Database.Database,
@@ -50,6 +59,7 @@ export async function fetchHistoricalPrices(
     securityIds?: number[];
     durationStr?: string; // e.g. "1 Y", "6 M", "30 D"
     endDate?: string; // YYYYMMDD format, default = now
+    onProgress?: (progress: PriceFetchProgress) => void;
   },
 ): Promise<PriceFetchResult[]> {
   const api = getIbApi();
@@ -67,44 +77,76 @@ export async function fetchHistoricalPrices(
       )
       .all(...options.securityIds) as SecurityRow[];
   } else {
+    // Require ib_con_id — enrichment is the prerequisite for price fetching.
+    // Excludes mutual funds (no TWS trade data) and options (need special handling).
     securities = db
       .prepare(
         `SELECT id, symbol, security_type, ib_con_id FROM securities
-         WHERE security_type IN ('stock', 'etf', 'bond', 'mutual_fund') OR security_type IS NULL`,
+         WHERE ib_con_id IS NOT NULL
+           AND (security_type IS NULL OR security_type NOT IN ('mutual_fund', 'option'))`,
       )
       .all() as SecurityRow[];
   }
 
   const results: PriceFetchResult[] = [];
   const durationStr = options?.durationStr ?? "1 Y";
+  const onProgress = options?.onProgress;
 
   const upsertPrice = db.prepare(`
     INSERT OR REPLACE INTO prices (security_id, date, close_price, source)
     VALUES (?, ?, ?, 'tws')
   `);
 
-  for (const sec of securities) {
+  for (let i = 0; i < securities.length; i++) {
+    const sec = securities[i];
+
     try {
+      // Report rate-limit wait if we'd block
+      const waitEstimate = rateLimiter.estimatedWaitSeconds;
+      if (waitEstimate > 0) {
+        onProgress?.({
+          current: i + 1,
+          total: securities.length,
+          symbol: sec.symbol,
+          status: "rate_limited",
+          waitingSeconds: waitEstimate,
+        });
+      }
+
       await rateLimiter.waitForSlot();
 
-      const contract = sec.ib_con_id
-        ? { conId: sec.ib_con_id }
-        : {
-            symbol: sec.symbol,
-            secType: mapSecurityType(sec.security_type),
-            exchange: "SMART",
-            currency: "USD",
-          };
+      // Report active fetch
+      onProgress?.({
+        current: i + 1,
+        total: securities.length,
+        symbol: sec.symbol,
+        status: "fetching",
+      });
 
-      const bars = await api.getHistoricalData(
-        contract,
-        options?.endDate ?? "", // empty = current time
-        durationStr,
-        BarSizeSetting.DAYS_ONE,
-        "TRADES", // WhatToShow
-        1, // useRTH = regular trading hours only
-        1, // formatDate = YYYYMMDD strings
-      );
+      // IB API requires secType even when conId is provided
+      const secType = mapSecurityType(sec.security_type);
+      const contract = sec.ib_con_id
+        ? { conId: sec.ib_con_id, secType, exchange: "SMART", currency: "USD" }
+        : { symbol: sec.symbol, secType, exchange: "SMART", currency: "USD" };
+
+      // Race against timeout to prevent indefinite hangs
+      const bars = await Promise.race([
+        api.getHistoricalData(
+          contract,
+          options?.endDate ?? "", // empty = current time
+          durationStr,
+          BarSizeSetting.DAYS_ONE,
+          "TRADES", // WhatToShow
+          1, // useRTH = regular trading hours only
+          1, // formatDate = YYYYMMDD strings
+        ),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error(`Timeout after ${REQUEST_TIMEOUT_MS / 1000}s`)),
+            REQUEST_TIMEOUT_MS,
+          ),
+        ),
+      ]);
 
       let inserted = 0;
       let skipped = 0;
@@ -122,7 +164,7 @@ export async function fetchHistoricalPrices(
         }
       })();
 
-      results.push({
+      const fetchResult: PriceFetchResult = {
         symbol: sec.symbol,
         securityId: sec.id,
         barsInserted: inserted,
@@ -134,16 +176,40 @@ export async function fetchHistoricalPrices(
                 to: formatBarDate(bars[bars.length - 1].time!),
               }
             : null,
+      };
+      results.push(fetchResult);
+
+      onProgress?.({
+        current: i + 1,
+        total: securities.length,
+        symbol: sec.symbol,
+        status: "done",
+        result: fetchResult,
       });
     } catch (err) {
-      results.push({
+      const errMsg = err instanceof Error ? err.message : "Unknown error";
+      const fetchResult: PriceFetchResult = {
         symbol: sec.symbol,
         securityId: sec.id,
         barsInserted: 0,
         barsSkipped: 0,
         dateRange: null,
-        error: err instanceof Error ? err.message : "Unknown error",
+        error: errMsg,
+      };
+      results.push(fetchResult);
+
+      onProgress?.({
+        current: i + 1,
+        total: securities.length,
+        symbol: sec.symbol,
+        status: "error",
+        result: fetchResult,
       });
+    }
+
+    // Pacing delay between requests to avoid IB error 162 (pacing violation)
+    if (i < securities.length - 1) {
+      await new Promise((resolve) => setTimeout(resolve, PACING_DELAY_MS));
     }
   }
 
