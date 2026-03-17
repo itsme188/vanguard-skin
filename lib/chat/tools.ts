@@ -447,7 +447,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
  * "roth" → "Vanguard Roth IRA", "ibkr" → "IBKR", etc.
  * Returns the original string if no match found (let downstream handle it).
  */
-function resolveAccountName(
+export function resolveAccountName(
   db: Database.Database,
   input: string | undefined
 ): string | undefined {
