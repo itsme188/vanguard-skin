@@ -170,3 +170,49 @@ describe("getPortfolioSummaryForChat", () => {
     expect(summary).toContain("cost basis: $2,000");
   });
 });
+
+describe("account-filtered summary", () => {
+  let db: Database.Database;
+  const VANGUARD_TAXABLE_ID = 1;
+  const ROTH_IRA_ID = 2;
+  const IBKR_ID = 3;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+
+    // Seed holdings in two different accounts
+    const vti = seedSecurity(db, "VTI", "Vanguard Total Market");
+    const aapl = seedSecurity(db, "AAPL", "Apple Inc");
+    seedHolding(db, VANGUARD_TAXABLE_ID, vti, 100, "2025-01-31");
+    seedHolding(db, IBKR_ID, aapl, 50, "2025-01-31");
+    seedPrice(db, vti, "2025-01-31", 250);
+    seedPrice(db, aapl, "2025-01-31", 200);
+    seedSnapshot(db, VANGUARD_TAXABLE_ID, "2025-01-31", 25000);
+    seedSnapshot(db, IBKR_ID, "2025-01-31", 10000);
+  });
+
+  it("filters to single account when accountName provided", () => {
+    const summary = getPortfolioSummaryForChat(db, "IBKR");
+    expect(summary).toContain("AAPL");
+    expect(summary).not.toContain("VTI");
+    // Should only show IBKR account value
+    expect(summary).toContain("IBKR");
+    expect(summary).not.toContain("Vanguard Taxable");
+  });
+
+  it("shows all accounts when no accountName provided", () => {
+    const summary = getPortfolioSummaryForChat(db);
+    expect(summary).toContain("VTI");
+    expect(summary).toContain("AAPL");
+    expect(summary).toContain("IBKR");
+    expect(summary).toContain("Vanguard Taxable");
+  });
+
+  it("computes position weights relative to filtered account total", () => {
+    // AAPL is 100% of IBKR, not 100*200/(100*250+50*200) = 28.6% of portfolio
+    const summary = getPortfolioSummaryForChat(db, "IBKR");
+    expect(summary).toContain("100.0%");
+  });
+});

@@ -56,12 +56,26 @@ interface ApproachingLongTerm {
   unrealized_gain: number | null;
 }
 
-export function getPortfolioSummaryForChat(db: Database.Database): string {
+export function getPortfolioSummaryForChat(db: Database.Database, accountName?: string): string {
   const today = new Date().toISOString().slice(0, 10);
   const lines: string[] = [];
   lines.push("## Portfolio Summary\n");
 
+  // ─── Resolve accountName to accountId ──────────────────────────
+  let accountId: number | undefined;
+  if (accountName) {
+    const row = db.prepare("SELECT id FROM accounts WHERE name = ?").get(accountName) as { id: number } | undefined;
+    accountId = row?.id;
+  }
+
+  const holdingsFilter = accountId != null ? `AND h.account_id = ${accountId}` : "";
+  const taxLotsFilter = accountId != null ? `AND tl.account_id = ${accountId}` : "";
+  const txnFilter = accountId != null ? `AND t.account_id = ${accountId}` : "";
+
   // ─── Account Values ────────────────────────────────────────────
+  const accountFilter = accountName ? `WHERE a.name = ?` : `WHERE 1=1`;
+  const accountParams = accountName ? [accountName] : [];
+
   const accountValues = db
     .prepare(
       `SELECT a.name, ms.total_value AS latest_value, ms.month_end_date AS latest_date
@@ -70,9 +84,10 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
          AND ms.month_end_date = (
            SELECT MAX(ms2.month_end_date) FROM monthly_snapshots ms2 WHERE ms2.account_id = a.id
          )
+       ${accountFilter}
        ORDER BY a.id`
     )
-    .all() as AccountValue[];
+    .all(...accountParams) as AccountValue[];
 
   lines.push("### Account Values");
   for (const av of accountValues) {
@@ -114,6 +129,7 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
         )
         AND h.quantity > 0
         AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
+        ${holdingsFilter}
       )
       SELECT a.name AS account_name, s.symbol, s.name AS security_name,
               s.security_type, s.asset_class, s.sector,
@@ -141,6 +157,7 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
        )
        AND h.quantity > 0
        AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
+       ${holdingsFilter}
        ORDER BY market_value DESC`
     )
     .all() as EnrichedHolding[];
@@ -186,6 +203,7 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
           )
           AND h.quantity > 0
           AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
+          ${holdingsFilter}
       )
       SELECT group_name, SUM(mv) AS total_market_value,
              SUM(mv) * 100.0 / NULLIF(SUM(SUM(mv)) OVER (), 0) AS percentage,
@@ -228,6 +246,7 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
           )
           AND h.quantity > 0
           AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
+          ${holdingsFilter}
       )
       SELECT group_name, SUM(mv) AS total_market_value,
              SUM(mv) * 100.0 / NULLIF(SUM(SUM(mv)) OVER (), 0) AS percentage,
@@ -256,22 +275,26 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
   }
 
   // ─── Tax Summary + Harvesting Candidates ───────────────────────
+  const taxLotsAccountFilter = accountId != null ? `AND tax_lots.account_id = ${accountId}` : "";
   const taxSummary = db
     .prepare(
       `SELECT
         COUNT(*) AS open_lots,
         COALESCE(SUM(quantity_remaining * acquisition_price), 0) AS total_cost_basis
-       FROM tax_lots WHERE quantity_remaining > 0`
+       FROM tax_lots WHERE quantity_remaining > 0 ${taxLotsAccountFilter}`
     )
     .get() as { open_lots: number; total_cost_basis: number };
 
+  const realizedGainsJoin = accountId != null
+    ? `JOIN tax_lots ON tax_lots.id = tax_lot_sales.tax_lot_id WHERE tax_lots.account_id = ${accountId}`
+    : "";
   const realizedGains = db
     .prepare(
       `SELECT
         COALESCE(SUM(realized_gain_loss), 0) AS total,
         COALESCE(SUM(CASE WHEN is_long_term = 1 THEN realized_gain_loss ELSE 0 END), 0) AS long_term,
         COALESCE(SUM(CASE WHEN is_long_term = 0 THEN realized_gain_loss ELSE 0 END), 0) AS short_term
-       FROM tax_lot_sales`
+       FROM tax_lot_sales ${realizedGainsJoin}`
     )
     .get() as { total: number; long_term: number; short_term: number };
 
@@ -305,6 +328,7 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
         AND lp.close_price IS NOT NULL
         AND (${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier")}
              - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier")}) < -100
+        ${taxLotsFilter}
       ORDER BY unrealized_loss ASC
       LIMIT 5`
     )
@@ -345,6 +369,7 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
       WHERE tl.quantity_remaining > 0
         AND julianday(date(tl.acquisition_date, '+366 days')) > julianday(?)
         AND julianday(date(tl.acquisition_date, '+366 days')) - julianday(?) <= 60
+        ${taxLotsFilter}
       ORDER BY days_remaining ASC
       LIMIT 10`
     )
@@ -370,7 +395,8 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
         COALESCE(SUM(interest), 0) AS total_interest,
         COALESCE(SUM(COALESCE(fees, 0) + COALESCE(commissions, 0)), 0) AS total_fees
       FROM monthly_snapshots
-      WHERE month_end_date >= date(?, '-12 months')`
+      WHERE month_end_date >= date(?, '-12 months')
+      ${accountId != null ? `AND monthly_snapshots.account_id = ${accountId}` : ""}`
     )
     .get(today) as { total_dividends: number; total_interest: number; total_fees: number };
 
@@ -393,6 +419,7 @@ export function getPortfolioSummaryForChat(db: Database.Database): string {
        FROM transactions t
        JOIN accounts a ON a.id = t.account_id
        LEFT JOIN securities s ON s.id = t.security_id
+       WHERE 1=1 ${txnFilter}
        ORDER BY t.trade_date DESC
        LIMIT 20`
     )
