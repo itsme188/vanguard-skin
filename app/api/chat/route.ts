@@ -2,21 +2,34 @@ import { NextRequest } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { db } from "@/lib/db";
 import { getPortfolioSummaryForChat } from "@/lib/queries/portfolio-summary";
-import { CHAT_TOOLS, executeTool } from "@/lib/chat/tools";
+import { CHAT_TOOLS, executeTool, resolveAccountName } from "@/lib/chat/tools";
 import { buildSystemPrompt } from "@/lib/chat/system-prompt";
 import { getAnthropicApiKey } from "@/lib/env";
+import { VALID_SCOPES, type ChatScope, SCOPE_LABELS } from "@/lib/types";
 
 const MAX_TOOL_ITERATIONS = 8;
 
 export async function POST(request: NextRequest) {
   try {
-    const { messages } = await request.json();
+    const { messages, scope: rawScope } = await request.json();
 
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       return new Response(
         JSON.stringify({ error: "Messages array is required" }),
         { status: 400, headers: { "Content-Type": "application/json" } }
       );
+    }
+
+    // Validate scope — missing defaults to "all", invalid returns 400
+    let scope: ChatScope = "all";
+    if (rawScope !== undefined && rawScope !== null) {
+      if (!VALID_SCOPES.includes(rawScope)) {
+        return new Response(
+          JSON.stringify({ error: `Invalid scope: ${rawScope}. Valid: ${VALID_SCOPES.join(", ")}` }),
+          { status: 400, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      scope = rawScope;
     }
 
     const apiKey = getAnthropicApiKey();
@@ -29,10 +42,20 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Build rich portfolio context and system prompt
-    const portfolioContext = getPortfolioSummaryForChat(db);
+    // Build portfolio context filtered to scope
+    let portfolioContext = "";
+    if (scope !== "macro") {
+      const scopeToAccountHint: Record<string, string> = {
+        ibkr: "IBKR",
+        "vanguard-taxable": "Vanguard Taxable",
+        "vanguard-roth-ira": "Vanguard Roth IRA",
+      };
+      const accountHint = scopeToAccountHint[scope];
+      const accountName = accountHint ? resolveAccountName(db, accountHint) : undefined;
+      portfolioContext = getPortfolioSummaryForChat(db, accountName);
+    }
     const currentDate = new Date().toISOString().slice(0, 10);
-    const systemPrompt = buildSystemPrompt(portfolioContext, currentDate);
+    const systemPrompt = buildSystemPrompt(portfolioContext, currentDate, scope);
 
     const client = new Anthropic({ apiKey });
 
