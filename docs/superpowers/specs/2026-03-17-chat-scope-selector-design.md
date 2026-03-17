@@ -30,8 +30,8 @@ type ChatScope = "all" | "ibkr" | "vanguard-taxable" | "vanguard-roth-ira" | "ma
 
 - Scope is selectable only on the empty state (before the first message is sent).
 - Once the user sends a message, the scope locks for the rest of that conversation.
-- The locked scope appears as a gold pill badge in the tab bar row, right-aligned (next to the "Chat" tab label).
-- Starting a new conversation (clearing chat) resets scope selection.
+- The locked scope appears as a gold pill badge at the top of the chat message area (inside `ChatInterface`, not in the layout's `TabNav`). See "Scope Badge" below for details.
+- Starting a new conversation resets scope selection. Since chat state is `useState`-based, navigating away from the Chat tab and back naturally resets it. A "New Conversation" button is added to the message area header when a conversation is active.
 
 ## UI Components
 
@@ -48,9 +48,13 @@ type ChatScope = "all" | "ibkr" | "vanguard-taxable" | "vanguard-roth-ira" | "ma
 
 ### 2. Scope Badge (Active Conversation)
 
-**Location:** Tab bar row, right-aligned (same row as Overview | Accounts | Tax Lots | ... | Chat tabs).
+**Location:** Top of the chat message area inside `ChatInterface`, as a sticky header row. This avoids cross-component state sharing with the layout's `TabNav` — all scope state stays within the chat component.
 
-**Style:** Small gold pill — `padding: 4px 12px`, `border-radius: 12px`, `font-size: 11px`, `background: rgba(201,164,78,0.15)`, `border: 1px solid rgba(201,164,78,0.3)`, `color: #c9a44e`.
+**Layout:** A flex row with the scope badge left-aligned and a "New Conversation" button right-aligned.
+
+**Badge style:** Small gold pill — `padding: 4px 12px`, `border-radius: 12px`, `font-size: 11px`, `background: rgba(201,164,78,0.15)`, `border: 1px solid rgba(201,164,78,0.3)`, `color: #c9a44e`.
+
+**New Conversation button:** Ghost button, `font-size: 12px`, `color: #64748b`, hover `#94a3b8`. Clicking it resets `messages` to `[]` and `scope` to `"all"`, returning to the empty state.
 
 **Shows:** The selected scope label (e.g., "All Accounts", "IBKR", "Macro").
 
@@ -93,14 +97,14 @@ const response = await fetch('/api/chat', {
 
 ### API Route Changes (`app/api/chat/route.ts`)
 
-1. Extract `scope` from request body (default: `"all"`).
-2. Map scope to account name filter:
+1. Extract `scope` from request body (default: `"all"`). Validate against the `ChatScope` union — return 400 for invalid values.
+2. Map scope to account name filter using `resolveAccountName()` from `tools.ts` for fuzzy matching (handles case differences, abbreviations):
    - `"all"` → no filter (current behavior)
-   - `"ibkr"` → `"IBKR"`
-   - `"vanguard-taxable"` → `"Vanguard Taxable"`
-   - `"vanguard-roth-ira"` → `"Vanguard Roth IRA"`
+   - `"ibkr"` → resolved via `resolveAccountName(db, "IBKR")`
+   - `"vanguard-taxable"` → resolved via `resolveAccountName(db, "Vanguard Taxable")`
+   - `"vanguard-roth-ira"` → resolved via `resolveAccountName(db, "Vanguard Roth IRA")`
    - `"macro"` → skip portfolio context entirely
-3. Pass filter to `getPortfolioSummaryForChat(db, accountName?)`.
+3. Pass resolved account name to `getPortfolioSummaryForChat(db, accountName?)`.
 4. Pass scope to `buildSystemPrompt(portfolioContext, currentDate, scope)`.
 
 ### Portfolio Summary Changes (`lib/queries/portfolio-summary.ts`)
@@ -113,7 +117,13 @@ export function getPortfolioSummaryForChat(
 ): string
 ```
 
-When `accountName` is provided, add `WHERE account_name = ?` to all SQL queries that currently aggregate across accounts. When omitted, behavior is unchanged (all accounts).
+**Filtering strategy:** When `accountName` is provided:
+1. Resolve to `account_id` first: `SELECT id FROM accounts WHERE name = ?`.
+2. For queries joining tables with `account_id` columns (transactions, tax_lots, monthly_snapshots, daily_valuations), filter with `WHERE t.account_id = ?`.
+3. For queries joining the `accounts` table directly, filter with `WHERE a.name = ?`.
+4. The `portfolio_total` CTE used for position weight percentages must be recomputed against only the filtered account's total market value — not the cross-portfolio total. Otherwise a position that's 30% of an account would display as 8%.
+
+When `accountName` is omitted, behavior is unchanged (all accounts).
 
 When scope is `"macro"`, this function is not called — the system prompt gets no portfolio context.
 
@@ -140,13 +150,13 @@ export function buildSystemPrompt(
 
 All 14 existing tools remain available in every scope. For Macro mode, portfolio tools are accessible (the user can explicitly request portfolio data) but Claude won't use them proactively because the system prompt instructs it not to.
 
-For portfolio scopes, tools that support `account_name` filtering will have it pre-filled by the system prompt guidance — Claude will pass the scoped account name when calling tools.
+For portfolio scopes, tools that support `account_name` filtering will have it pre-filled by the system prompt guidance — Claude will pass the scoped account name when calling tools. This is prompt-level enforcement only; we accept the small risk of Claude occasionally omitting the filter, since the system prompt data is already scoped (defense in depth). Server-side tool parameter override could be added later if needed but is not required for v1.
 
 ## Files That Change
 
 | File | Change |
 |------|--------|
-| `app/dashboard/components/ChatInterface.tsx` | Add scope state, chip bar, dynamic prompts/subtitle, badge, pass scope in POST body |
+| `app/dashboard/components/ChatInterface.tsx` | Add scope state, chip bar, dynamic prompts/subtitle, scope badge header with "New Conversation" button, pass scope in POST body |
 | `app/api/chat/route.ts` | Extract scope, map to account filter, pass to context builder and prompt builder |
 | `lib/queries/portfolio-summary.ts` | Add optional `accountName` param, add WHERE clauses |
 | `lib/chat/system-prompt.ts` | Add scope param, scope preamble, macro persona variant, first-response instruction |
@@ -157,8 +167,9 @@ For portfolio scopes, tools that support `account_name` filtering will have it p
 1. **Scope locks at conversation start** — prevents confusing mid-conversation context switches where earlier responses used different data.
 2. **Real data isolation, not post-hoc filtering** — the system prompt only contains data for the selected scope, so Claude can't accidentally reference out-of-scope holdings.
 3. **Macro keeps tools available** — allows the user to explicitly pull in portfolio data when needed, but Claude doesn't do it proactively.
-4. **Badge in tab bar** — persistent but unobtrusive; doesn't consume message area space.
+4. **Badge inside ChatInterface** — keeps all scope state within the chat component, avoiding cross-component state sharing with the layout's TabNav. Includes a "New Conversation" button for easy scope reset.
 5. **No multi-account selection** — keeps UX simple. "All Accounts" covers the multi-account case.
+6. **Prompt-level tool scoping** — system prompt instructs Claude to pass the scoped account name when calling tools, rather than server-side parameter override. Acceptable risk since the system prompt data is already scoped.
 
 ## Out of Scope
 
