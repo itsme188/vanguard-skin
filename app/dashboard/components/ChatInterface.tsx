@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { MarkdownMessage } from "./MarkdownMessage";
+import type { ChatScope } from "@/lib/types";
 
 interface Message {
   role: "user" | "assistant";
@@ -19,11 +20,35 @@ const TOOL_LABELS: Record<string, string> = {
   query_twr: "Computing time-weighted return",
 };
 
-const SUGGESTIONS = [
+// Scope configuration — labels, prompts, and personas
+const SCOPE_OPTIONS: { value: ChatScope; label: string }[] = [
+  { value: "all", label: "All Accounts" },
+  { value: "ibkr", label: "IBKR" },
+  { value: "vanguard-taxable", label: "Vanguard Taxable" },
+  { value: "vanguard-roth-ira", label: "Vanguard Roth IRA" },
+  { value: "macro", label: "Macro" },
+];
+
+const SCOPE_SUBTITLES: Record<ChatScope, string> = {
+  all: "Ask about your portfolio — concentration risk, tax optimization, performance attribution, income analysis, and more.",
+  ibkr: "Analyzing your IBKR trading account.",
+  "vanguard-taxable": "Analyzing your Vanguard taxable account.",
+  "vanguard-roth-ira": "Analyzing your Vanguard Roth IRA.",
+  macro: "Market & macro analysis — no portfolio data by default.",
+};
+
+const PORTFOLIO_SUGGESTIONS = [
   "Give me a full portfolio health check",
   "Analyze my sector concentration",
   "Find tax-loss harvesting opportunities",
   "Which factor am I most exposed to right now?",
+];
+
+const MACRO_SUGGESTIONS = [
+  "What's moving markets today?",
+  "Compare sector performance YTD",
+  "Summarize the current yield curve",
+  "What are the biggest macro risks right now?",
 ];
 
 export function ChatInterface() {
@@ -34,6 +59,11 @@ export function ChatInterface() {
   const [toolStatus, setToolStatus] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  const [scope, setScope] = useState<ChatScope>("all");
+  const isLocked = messages.length > 0;
+  const suggestions = scope === "macro" ? MACRO_SUGGESTIONS : PORTFOLIO_SUGGESTIONS;
+  const scopeLabel = SCOPE_OPTIONS.find((s) => s.value === scope)?.label ?? "All Accounts";
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -59,7 +89,7 @@ export function ChatInterface() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: newMessages }),
+        body: JSON.stringify({ messages: newMessages, scope }),
       });
 
       if (!res.ok) {
@@ -142,21 +172,76 @@ export function ChatInterface() {
     }
   }
 
+  function handleNewConversation() {
+    setMessages([]);
+    setScope("all");
+    setInput("");
+    setError(null);
+    setToolStatus(null);
+  }
+
   return (
     <div className="flex flex-col h-[calc(100vh-12rem)]">
       {/* Messages area */}
       <div className="flex-1 overflow-y-auto space-y-4 pb-4">
+        {/* Scope badge header (shown when conversation is active) */}
+        {isLocked && (
+          <div className="flex items-center justify-between pb-3 mb-3 border-b border-edge">
+            <span
+              className="px-3 py-1 rounded-full text-[11px] border"
+              style={{
+                background: "rgba(201,164,78,0.15)",
+                borderColor: "rgba(201,164,78,0.3)",
+                color: "#c9a44e",
+              }}
+            >
+              {scopeLabel}
+            </span>
+            <button
+              onClick={handleNewConversation}
+              className="text-xs text-ink-faint hover:text-ink-dim transition-colors"
+            >
+              New Conversation
+            </button>
+          </div>
+        )}
+
         {messages.length === 0 && (
           <div className="flex items-center justify-center h-full">
             <div className="text-center max-w-md">
               <div className="text-3xl text-ink-faint mb-4 font-serif italic">Analyst</div>
-              <h3 className="text-ink font-medium mb-2">Portfolio Analyst</h3>
+              <h3 className="text-ink font-medium mb-2">
+                {scope === "macro" ? "Market Analyst" : "Portfolio Analyst"}
+              </h3>
               <p className="text-ink-dim text-sm mb-6">
-                Ask about your portfolio — concentration risk, tax optimization,
-                performance attribution, income analysis, and more.
+                {SCOPE_SUBTITLES[scope]}
               </p>
+
+              {/* Scope chip bar */}
+              <div className="flex flex-wrap justify-center gap-2 mb-6">
+                {SCOPE_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.value}
+                    onClick={() => setScope(opt.value)}
+                    className={`px-4 py-1.5 rounded-full text-xs border transition-all ${
+                      scope === opt.value
+                        ? "border-gold text-gold"
+                        : "border-edge text-ink-dim hover:text-ink hover:border-edge-strong"
+                    }`}
+                    style={
+                      scope === opt.value
+                        ? { background: "rgba(201,164,78,0.2)", borderColor: "#c9a44e", color: "#c9a44e" }
+                        : undefined
+                    }
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Dynamic prompt suggestions */}
               <div className="flex flex-wrap justify-center gap-2">
-                {SUGGESTIONS.map((suggestion) => (
+                {suggestions.map((suggestion) => (
                   <button
                     key={suggestion}
                     onClick={() => {
@@ -227,7 +312,7 @@ export function ChatInterface() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask your portfolio analyst..."
+            placeholder={scope === "macro" ? "Ask about markets and macro..." : "Ask your portfolio analyst..."}
             rows={1}
             className="flex-1 rounded-xl bg-raised border border-edge px-4 py-3 text-sm text-ink placeholder:text-ink-faint resize-none focus:outline-none focus:border-gold transition-colors"
           />
