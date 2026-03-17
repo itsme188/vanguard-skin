@@ -172,3 +172,15 @@ export interface Note {
   created_at: string;
   updated_at: string;
 }
+
+export type ChatScope = "all" | "ibkr" | "vanguard-taxable" | "vanguard-roth-ira" | "macro";
+
+export const SCOPE_LABELS: Record<ChatScope, string> = {
+  all: "All Accounts",
+  ibkr: "IBKR",
+  "vanguard-taxable": "Vanguard Taxable",
+  "vanguard-roth-ira": "Vanguard Roth IRA",
+  macro: "Macro",
+};
+
+export const VALID_SCOPES: ChatScope[] = ["all", "ibkr", "vanguard-taxable", "vanguard-roth-ira", "macro"];
