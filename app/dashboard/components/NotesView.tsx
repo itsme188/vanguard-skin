@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import type { NoteWithContext, EarningsTimelineEntry } from "@/lib/queries/notes";
 import type { TranscriptSummaryEntry } from "@/lib/queries/transcripts";
 import type { NoteType, NoteSentiment } from "@/lib/types";
-import { TranscriptCard } from "./TranscriptCard";
+import { TranscriptCard, FetchTranscriptButton } from "./TranscriptCard";
 
 // ─── Props ───────────────────────────────────────────────────────
 
@@ -327,6 +327,7 @@ export function NotesView({
         <EarningsView
           timeline={earningsTimeline}
           transcriptSummaries={transcriptSummaries}
+          securities={securities}
           editingId={editingId}
           editContent={editContent}
           onStartEdit={(id, content) => {
@@ -336,6 +337,7 @@ export function NotesView({
           onCancelEdit={() => setEditingId(null)}
           onSaveEdit={handleUpdate}
           onDelete={handleDelete}
+          onRefresh={() => startTransition(() => router.refresh())}
         />
       ) : (
         <NotesList
@@ -424,21 +426,25 @@ function NotesList({
 function EarningsView({
   timeline,
   transcriptSummaries,
+  securities,
   editingId,
   editContent,
   onStartEdit,
   onCancelEdit,
   onSaveEdit,
   onDelete,
+  onRefresh,
 }: {
   timeline: EarningsTimelineEntry[];
   transcriptSummaries: TranscriptSummaryEntry[];
+  securities: { id: number; symbol: string; name: string | null }[];
   editingId: number | null;
   editContent: string;
   onStartEdit: (id: number, content: string) => void;
   onCancelEdit: () => void;
   onSaveEdit: (id: number) => void;
   onDelete: (id: number) => void;
+  onRefresh: () => void;
 }) {
   // Group transcripts by ticker for interleaving with notes
   const transcriptsByTicker = new Map<string, TranscriptSummaryEntry[]>();
@@ -453,13 +459,27 @@ function EarningsView({
     (ticker) => !timelineTickers.has(ticker)
   );
 
+  // Tickers that already have cached transcripts
+  const tickersWithTranscripts = new Set(transcriptSummaries.map((t) => t.ticker));
+
+  // Portfolio tickers that don't have transcripts yet (exclude common non-stock symbols)
+  const fetchableTickers = securities
+    .map((s) => s.symbol)
+    .filter((sym) => !tickersWithTranscripts.has(sym))
+    .filter((sym) => !sym.includes(" ") && sym.length <= 5); // basic filter for stock-like symbols
+
   if (timeline.length === 0 && transcriptSummaries.length === 0) {
     return (
-      <div className="bg-panel border border-edge rounded-xl p-8 text-center">
-        <p className="text-ink-faint text-sm">
-          No earnings notes yet. Add notes during earnings calls to track your
-          thoughts quarter over quarter.
-        </p>
+      <div className="space-y-6">
+        <div className="bg-panel border border-edge rounded-xl p-8 text-center">
+          <p className="text-ink-faint text-sm">
+            No earnings notes yet. Add notes during earnings calls to track your
+            thoughts quarter over quarter.
+          </p>
+        </div>
+        {fetchableTickers.length > 0 && (
+          <FetchTickersSection tickers={fetchableTickers} onRefresh={onRefresh} />
+        )}
       </div>
     );
   }
@@ -538,6 +558,38 @@ function EarningsView({
           </div>
         );
       })}
+
+      {/* Fetch transcripts for portfolio tickers without cached data */}
+      {fetchableTickers.length > 0 && (
+        <FetchTickersSection tickers={fetchableTickers} onRefresh={onRefresh} />
+      )}
+    </div>
+  );
+}
+
+// ─── Fetch Tickers Section ────────────────────────────────────────
+
+function FetchTickersSection({
+  tickers,
+  onRefresh,
+}: {
+  tickers: string[];
+  onRefresh: () => void;
+}) {
+  return (
+    <div className="bg-panel border border-edge rounded-xl p-4">
+      <h4 className="text-xs font-medium text-ink-faint uppercase tracking-wider mb-3">
+        Fetch Earnings Transcripts
+      </h4>
+      <div className="flex flex-wrap gap-2">
+        {tickers.map((ticker) => (
+          <FetchTranscriptButton
+            key={ticker}
+            ticker={ticker}
+            onFetched={onRefresh}
+          />
+        ))}
+      </div>
     </div>
   );
 }

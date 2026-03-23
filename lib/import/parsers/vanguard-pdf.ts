@@ -448,7 +448,7 @@ export function parseClaudePdfResponse(
   const statementTotal = response.total_value;
   if (statementTotal > 0) {
     const coveragePct = (extractedTotal / statementTotal) * 100;
-    if (coveragePct < 80) {
+    if (coveragePct < 95) {
       warnings.push(
         `Incomplete extraction: holdings sum to $${extractedTotal.toLocaleString()} ` +
         `(${coveragePct.toFixed(0)}% of statement total $${statementTotal.toLocaleString()}). ` +
@@ -571,7 +571,7 @@ export async function parseVanguardPdf(
     );
     const coveragePct = (holdingsTotal / response.total_value) * 100;
 
-    if (coveragePct < 80) {
+    if (coveragePct < 95) {
       // Holdings extraction was incomplete — make a focused second call
       console.log(
         `[vanguard-pdf] Incomplete holdings: ${response.holdings.length} holdings = ` +
