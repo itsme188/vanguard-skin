@@ -1,234 +1,184 @@
 # Vanguard Skin — Project TODO
 
-> Last updated: 2026-03-06
+> Last updated: 2026-03-23
 
 ## Status Overview
 
-v2 core rebuild is complete (16 tasks, 6 PRs merged, 160+ tests). This document tracks
-everything still needed: features carried forward from v1, improvements over v1, and
-net-new capabilities.
+v2 core rebuild is complete. 16 merged PRs, 81 commits, 378 tests (377 passing, 1 failing).
+Post-v2 work has added IBKR TWS integration, TWR/XIRR engines, agentic chat with 14 tools,
+thematic factor analysis, notes/journaling, and a chat scope selector. This document tracks
+remaining work.
 
 ---
 
-## 1. Uncommitted Work (This Session)
+## Completed Since v2 Launch
 
-- [x] Tax lot year filtering (calendar year cutoff for short-term gains)
-- [x] Per-account tax lot breakdown with account picker pills
-- [x] Case-insensitive transaction type matching in compute engine (Vanguard + IBKR)
-- [x] Null safety for money market reinvestments (VMFXX)
+Everything below was built between 2026-03-06 and 2026-03-23.
 
-**Status:** Working, needs commit + PR.
+### IBKR TWS API — Phase 1 (PR #8)
+- [x] TWS API client library (`lib/tws/client.ts`) — singleton on `globalThis`, `@stoqey/ib`
+- [x] Historical price fetcher (`lib/tws/historical.ts`) — backfill + incremental
+- [x] Contract resolution (`lib/tws/contracts.ts`) — symbol → IBKR contract
+- [x] Rate limiter (`lib/tws/rate-limiter.ts`) — respects IBKR throttling
+- [x] API routes: `/api/tws/connect`, `/api/tws/disconnect`, `/api/tws/status`, `/api/tws/prices`, `/api/tws/enrich`
+- [x] UI: `TwsStatus.tsx` connection indicator with streaming progress during price fetch
+- [x] Fallback: graceful degradation when TWS is not running
+
+### Performance Metrics — TWR & XIRR (PRs #10, #13)
+- [x] `lib/compute/twr.ts` — Chain-linked Modified Dietz method, annualized
+- [x] `lib/compute/xirr.ts` — Newton-Raphson extended IRR
+- [x] `PerformanceMetrics.tsx` rebuilt with TWR periods, XIRR display
+- [x] Per-account and combined computation
+
+### Agentic Chat (PRs #9, #10, #12, recent commits)
+- [x] Hybrid architecture: static context (~2,500 tokens) + 14 dynamic DB tools
+- [x] Agentic loop: stream → detect tool_use → execute server-side → re-stream (max 8 iterations)
+- [x] Upgraded to Opus 4.6 with adaptive thinking and prompt caching
+- [x] Markdown rendering (`react-markdown` + `remark-gfm`)
+- [x] Chat scope selector — account filtering with chip bar, badge, dynamic system prompt
+- [x] Data quality pass — bond maturity, annotations, account matching
+
+### External Data APIs (PRs #13, #14)
+- [x] FRED API (`lib/apis/fred.ts`) — 800K+ economic data series as chat tool
+- [x] SEC EDGAR API (`lib/apis/edgar.ts`) — company financials, filings, insider trades
+- [x] SEC Form 4 insider trading tool — recent trades by ticker
+- [x] Earnings transcript pipeline — EDGAR 8-K → Motley Fool → API Ninjas (layered sources)
+
+### Thematic Factor Exposure (analysis tab)
+- [x] `security_factors` table with query-time inheritance for options
+- [x] `lib/factors.ts` — constants, labels, colors
+- [x] Auto-classify with Sonnet 4 + training examples
+- [x] `FactorHeatmap.tsx` + `AnalysisView.tsx` in Analysis tab
+- [x] Security classification UI
+
+### Notes & Journaling (PR #15)
+- [x] Notes tab with create/edit/delete
+- [x] `NotesView.tsx` component
+
+### Desktop Launcher (PR #11)
+- [x] `scripts/launch-dashboard.sh` lifecycle manager
+- [x] `scripts/VanguardDashboard.applescript` stay-open applet (port 3099)
+- [x] Non-blocking idle polling, PATH export for node discovery
+
+### Tech Debt Closed
+- [x] SQL injection — parameterized queries across portfolio-summary.ts and other files
+- [x] `toLocaleDateString()` SSR hydration — confirmed safe (all in `"use client"` components)
+- [x] OCC symbol enforcement — `ensureOCCSymbol()` + type conflict guard in `upsertSecurity()`
+- [x] Bond cost basis 100x display — uses `adjusted_cost_basis` from SQL
+- [x] Tax lots not auto-computed after import — `computeTaxLots(db)` in import route
+- [x] Tax lot summary ignoring account filter — fallback calculations from filtered data
+- [x] Stale "as of" dates — `getAccountSummaries()` prefers daily_valuations over monthly_snapshots
+- [x] Recharts tooltip warnings — suppressed with proper props
+- [x] API key env shadowing + chat streaming text concatenation
+- [x] Turbopack cache corruption recovery
 
 ---
 
-## 2. v1 Features to Rebuild (Better)
+## Remaining Work
 
-These features existed in v1 and need to be rebuilt in v2. The goal is not to replicate
-them — it's to improve on them using v2's architecture.
+### Phase 1: Data Gaps
 
-### 2A. Performance Metrics — TWR & XIRR
+#### 1A. Daily Equity Curves
+**Status:** `EquityCurveChart.tsx` still uses monthly snapshots. `daily_valuations` table exists
+but isn't wired to the chart.
 
-**v1 had:** `lib/compute/twr.ts`, `lib/compute/xirr.ts`, `/api/performance` route,
-`PerformanceMetrics.tsx` with 4 cards (YTD, Since Inception, TWR, XIRR).
-
-**v2 currently has:** Simplified `PerformanceMetrics.tsx` showing only total portfolio
-value + month-over-month change. No TWR or XIRR computation.
-
-**What to build:**
-- [ ] `lib/compute/twr.ts` — Time-Weighted Return (chain-linked sub-period returns,
-  split at external cash flows). Annualized via `(1+TWR)^(365/days) - 1`.
-- [ ] `lib/compute/xirr.ts` — Extended IRR via Newton-Raphson. Initial investment
-  negative, external flows inverted, final value positive.
-- [ ] Performance computation per account and combined
-- [ ] Period selectors: YTD, 1Y, 3Y, 5Y, Since Inception, custom range
-- [ ] Enhanced `PerformanceMetrics.tsx` with TWR, XIRR, simple return, and period comparison
-- [ ] Consider: compute on-demand vs. pre-computed (v1 was on-demand API call)
-
-**Improvement over v1:** v1 only had account-level metrics. v2 should also compute
-portfolio-wide TWR/XIRR across all accounts, and support arbitrary date range selection.
-
-### 2B. Equity Curve — Daily Resolution
-
-**v1 had:** `EquityCurveChart.tsx` with three lines (Total Value, Holdings Value, Cash
-Balance) from `daily_valuations` table. Per-account, 400px, with compute button.
-
-**v2 currently has:** `EquityCurveChart.tsx` using monthly snapshots (one data point per
-month). Single area chart per account, no cash/holdings split.
-
-**What to build:**
 - [ ] Daily-resolution equity curves using `daily_valuations` table
-- [ ] Split: Total Value, Holdings Value, Cash Balance (three lines like v1)
+- [ ] Split: Total Value, Holdings Value, Cash Balance (three lines)
 - [ ] Date range selector (1M, 3M, 6M, YTD, 1Y, All)
 - [ ] Multi-account overlay option on combined chart
 - [ ] Hover crosshair showing exact date + values
 
-**Improvement over v1:** v1 was per-account only. v2 should support combined view with
-account toggles and more flexible date ranges.
+#### 1B. TWS Live/Streaming Prices
+**Status:** Historical price fetch works but takes ~40 min due to IBKR rate limits (one request
+per symbol, sequential). No real-time streaming.
 
-### 2C. Factor Analysis & Portfolio Composition
+- [ ] Stream live quotes for current holdings (real-time market data)
+- [ ] Auto-refresh daily valuations after price update
+- [ ] Faster bulk fetch strategy (parallel where IBKR allows)
 
-**v1 had (incomplete, lost with worktree):**
-- `FactorAnalysis.tsx` — UI component
-- `lib/compute/factor-analysis.ts` — factor exposure computation
-- `lib/compute/risk-decomposition.ts` — risk decomposition engine
-- `lib/compute/scenario-modeling.ts` — scenario modeling ("what-if")
-- `lib/compute/holdings-analysis.ts` — holdings breakdown
-- `lib/import/security-enrichment.ts` — sector/asset class metadata
-- API routes: `/api/factor-analysis`, `/api/factor-analysis/scenario`,
-  `/api/factor-analysis/risk`, `/api/holdings-breakdown`, `/api/securities/enrich`
-- Test files for scenario modeling and risk decomposition
+#### 1C. Performance Metrics — Period Selectors
+**Status:** TWR/XIRR engines work. UI shows periods but lacks user-selectable date ranges.
 
-Source code was never recovered — only file names and descriptions survived.
+- [ ] Period selectors: YTD, 1Y, 3Y, 5Y, Since Inception, custom range
+- [ ] Portfolio-wide combined TWR/XIRR across all accounts
 
-**What to build:**
-- [ ] Security enrichment: sector, asset class, geography, market cap, duration (bonds)
-  - Source: IBKR TWS API (see §3A) or static mapping + manual overrides
-- [ ] Holdings breakdown: pie/treemap by sector, asset class, geography, account
-- [ ] Factor exposure analysis:
-  - Market beta (vs S&P 500, total market)
-  - Size factor (large/mid/small cap tilt)
-  - Value/growth factor
-  - Sector concentration
-  - Duration/credit exposure (fixed income)
-  - Options Greeks (delta, gamma, theta, vega) if positions exist
-- [ ] Risk decomposition:
-  - Contribution to portfolio volatility by position
-  - Correlation matrix between positions
-  - Concentration risk metrics (Herfindahl index)
-  - Max drawdown analysis
-- [ ] Scenario modeling:
-  - Market crash scenarios (-10%, -20%, -40%)
-  - Interest rate shock (+100bp, +200bp)
-  - Sector rotation scenarios
-  - Custom "what-if" with user-defined assumptions
-- [ ] New dashboard tab or section for Factor Analysis
+### Phase 2: Analytics
 
-**Improvement over v1:** v1 never finished this. v2 should ship a complete, working
-implementation. Use IBKR TWS API for live factor data where possible.
-
-### 2D. Benchmark Comparison
-
-**v1 had (incomplete, lost with worktree):**
-- `BenchmarkSettings.tsx` — benchmark configuration UI
-
-Source code was never recovered.
-
-**What to build:**
+#### 2A. Benchmark Comparison
 - [ ] Benchmark selection: S&P 500, Total Market, 60/40, custom blend
-- [ ] Fetch benchmark daily returns (via IBKR TWS API historical data)
+- [ ] Fetch benchmark daily returns via IBKR TWS API historical data
 - [ ] Overlay benchmark on equity curve chart
 - [ ] Relative performance: alpha, tracking error, information ratio
 - [ ] Period comparison table: portfolio vs. benchmark by period
 
-**Improvement over v1:** v1 only started a settings UI. v2 should ship the full
-comparison with automated benchmark data fetch via TWS API.
+#### 2B. Quantitative Factor Analysis
+**Status:** Thematic factor exposure is done (macro themes like AI, energy, rates). This is
+about quantitative factor decomposition — different from the thematic system.
 
-### 2E. Confidence Scoring (Statement Pipeline)
+- [ ] Market beta (vs S&P 500, total market)
+- [ ] Size factor (large/mid/small cap tilt)
+- [ ] Value/growth factor
+- [ ] Duration/credit exposure (fixed income)
+- [ ] Options Greeks (delta, gamma, theta, vega) if positions exist
 
-**v1 had:** 3-stage pipeline (parse → validate → reconcile) with confidence scores on
-every extracted value from PDFs.
+#### 2C. Risk Decomposition
+- [ ] Contribution to portfolio volatility by position
+- [ ] Correlation matrix between positions
+- [ ] Concentration risk metrics (Herfindahl index)
+- [ ] Max drawdown analysis
 
-**v2 currently has:** Simpler pipeline (detect → parse → preview → commit) using Claude
-API for PDF parsing. No confidence scores.
+#### 2D. Scenario Modeling
+- [ ] Market crash scenarios (-10%, -20%, -40%)
+- [ ] Interest rate shock (+100bp, +200bp)
+- [ ] Sector rotation scenarios
+- [ ] Custom "what-if" with user-defined assumptions
 
-**What to build:**
-- [ ] Consider: is confidence scoring still needed with Claude API parsing?
-  - Claude API is far more reliable than OCR (puppeteer + tesseract)
-  - May still be useful for flagging anomalies in extracted data
-- [ ] If yes: add confidence metadata to preview response, show warnings in import UI
+### Phase 3: Advanced Features
 
-**Decision needed:** This may not be worth rebuilding. Claude API parsing is
-significantly more accurate than v1's OCR pipeline. Flag for review.
+#### 3A. Options Analytics (Phase 2)
+**Status:** Phase 1 done (schema, parsers, valuation, display). 16 tests passing.
+Pending real option data import to verify end-to-end.
 
----
-
-## 3. New Features (Not in v1)
-
-### 3A. IBKR TWS API Integration — Live & Historical Data
-
-**Priority: HIGH — this is the price data engine for everything not in statements.**
-
-The Interactive Brokers Trader Workstation (TWS) API provides:
-- Real-time streaming quotes
-- Historical daily/weekly/monthly bars (OHLCV)
-- Option chains with Greeks
-- Contract details (security metadata)
-- Account summary and positions
-
-**What to build:**
-- [ ] TWS API client library (`lib/ibkr/tws-client.ts`)
-  - Connection management (TWS must be running locally on port 7496/7497)
-  - Request/response handling with IBKR's event-driven protocol
-  - Rate limiting and throttling (IBKR has strict limits)
-- [ ] Historical price fetcher (`lib/ibkr/historical-prices.ts`)
-  - Fetch daily OHLCV for any security
-  - Backfill `prices` table with historical data
-  - Incremental updates (only fetch missing dates)
-- [ ] Real-time price updater (`lib/ibkr/live-quotes.ts`)
-  - Stream live quotes for current holdings
-  - Update `prices` table with latest close
-  - Refresh daily valuations on demand
-- [ ] Option chain fetcher (`lib/ibkr/option-chains.ts`)
-  - Fetch option chains by underlying + expiry
-  - Greeks (delta, gamma, theta, vega, implied vol)
-  - Update options positions with current market data
-- [ ] Contract details enrichment (`lib/ibkr/contract-details.ts`)
-  - Look up sector, industry, asset class for any security
-  - Populate security enrichment data (feeds into Factor Analysis)
-- [ ] API routes:
-  - `POST /api/ibkr/connect` — establish TWS connection
-  - `POST /api/ibkr/fetch-prices` — backfill historical prices
-  - `GET /api/ibkr/status` — connection status
-  - `POST /api/ibkr/refresh` — refresh current prices for all holdings
-- [ ] UI: connection status indicator, manual refresh button, auto-refresh toggle
-- [ ] Fallback: graceful degradation when TWS is not running
-
-**Architecture notes:**
-- TWS API is a socket-based protocol (not REST). Need `ib-tws-api` or similar npm package.
-- TWS must be running on the local machine — this is a desktop-only feature.
-- Consider: WebSocket bridge from Next.js API route to TWS socket.
-- Rate limits: max 60 historical data requests per 10 minutes.
-- This replaces manual CSV price imports as the primary price data source.
-
-### 3B. Options Analytics (Phase 2)
-
-**v2 currently has (PR #6):** Options Phase 1 — schema, parsers, valuation, display.
-Needs real option data to verify.
-
-**What to build:**
 - [ ] Verify Phase 1 with real IBKR option data
 - [ ] Options P&L tracking: open/closed positions, realized/unrealized by strategy
 - [ ] Options Greeks dashboard: portfolio-level delta, gamma, theta, vega
 - [ ] Strategy detection: covered calls, spreads, straddles, etc.
 - [ ] Options-specific tax lot handling (assignment, exercise, expiration)
 - [ ] Expiration calendar view
+- [ ] Option chain fetcher via TWS API (chains by underlying + expiry)
 
-### 3C. Tax Report Export
-
-**What to build:**
+#### 3B. Tax Report Export
 - [ ] IRS Form 8949 data export (CSV or PDF)
 - [ ] Short-term vs. long-term gain/loss summary by year
 - [ ] Wash sale detection and adjustment
 - [ ] Cost basis reconciliation report (compare computed vs. broker-reported)
 - [ ] Export for TurboTax or tax preparer
 
-### 3D. Desktop Packaging
+#### 3C. IBKR Calendar Integration
+- [ ] Economic events calendar (FRED data, Fed meetings, CPI releases)
+- [ ] Earnings calendar for held securities
+- [ ] Weekly automated briefing (scheduled Claude summary)
 
-**v1 had:** Electron 40, standalone Next.js build on port 3847. Was being worked on when
-the project was lost.
+### Phase 4: Polish
 
-**What to build:**
+#### 4A. Desktop Packaging
+**Status:** AppleScript launcher works for dev mode. Full packaging would be a standalone app.
+
 - [ ] Decide: Electron vs. Tauri (Tauri is lighter, Rust-based)
-- [ ] Standalone build configuration
+- [ ] Standalone build configuration (production Next.js, not dev server)
 - [ ] Auto-launch TWS connection on startup
 - [ ] System tray with portfolio summary
 - [ ] Auto-update mechanism
 
 **Deferred until:** Web app is feature-complete with TWS integration.
 
+#### 4B. Testing
+- [ ] E2E browser tests (~15 hours estimated, deferred to dedicated session)
+- [ ] Fix failing test: `tests/tws/historical.test.ts` — `ib_con_id` contract lookup
+
 ---
 
-## 4. Feature Comparison: v1 vs. v2
+## Feature Comparison: v1 vs. v2
 
 | Feature | v1 Status | v2 Status | Priority |
 |---------|-----------|-----------|----------|
@@ -239,52 +189,62 @@ the project was lost.
 | Per-account equity curves | Working (daily) | Working (monthly only) | Medium |
 | Tax lot tracking (FIFO) | Working | Working + year/account filter | Done |
 | Reconciliation | Working | Working | Done |
-| Portfolio Chat (Claude Q&A) | Incomplete | Working | Done |
-| TWR / XIRR performance | Working | Not built | High |
-| Factor analysis | Incomplete | Not built | **High** |
+| Portfolio Chat (Claude Q&A) | Incomplete | **Agentic, 14 tools, Opus 4.6** | Done |
+| TWR / XIRR performance | Working | **Working** | Done |
+| Thematic factor analysis | None | **Working (auto-classify + heatmap)** | Done |
+| Quantitative factor analysis | Incomplete | Not built | High |
 | Benchmark comparison | Incomplete | Not built | High |
-| Security enrichment | Incomplete | Not built | High |
+| Security enrichment | Incomplete | **Partial (TWS enrich route)** | Medium |
 | Risk decomposition | Incomplete | Not built | Medium |
 | Scenario modeling | Incomplete | Not built | Medium |
-| Confidence scoring | Working | Not needed? | Low |
-| Options support | None | Phase 1 done | Medium |
-| IBKR TWS API | None | Not built | **High** |
-| Tax report export | None | Not built | Medium |
-| Desktop packaging | In progress | Not built | Low |
+| Confidence scoring | Working | Dropped (Claude API is accurate enough) | — |
+| Options support | None | Phase 1 done (16 tests) | Medium |
+| IBKR TWS API | None | **Phase 1 done (historical + contracts)** | Done |
 | Live/streaming prices | None | Not built | **High** |
+| Tax report export | None | Not built | Medium |
+| Desktop packaging | In progress | AppleScript launcher (dev mode) | Low |
+| Notes/journaling | None | **Working** | Done |
+| External data (FRED/EDGAR) | None | **Working (chat tools)** | Done |
+| Insider trading (SEC Form 4) | None | **Working (chat tool)** | Done |
+| Earnings transcripts | None | **Working (multi-source)** | Done |
+| Chat scope selector | None | **Working (account filtering)** | Done |
 
 ---
 
-## 5. Suggested Build Order
+## Suggested Build Order (Updated)
 
-### Phase 1: Data Foundation
-1. IBKR TWS API client + historical price fetcher
-2. Security enrichment via contract details
-3. Daily equity curve upgrade (use price data)
+### Next Up: Data Gaps
+1. Daily equity curve upgrade (wire `daily_valuations` to chart)
+2. Performance period selectors (YTD, 1Y, etc.)
+3. Faster TWS price fetch / streaming prices
 
-### Phase 2: Analytics
-4. TWR & XIRR performance metrics
-5. Benchmark comparison (requires historical benchmark prices from TWS)
-6. Factor analysis — holdings breakdown + factor exposure
-7. Risk decomposition
+### Then: Analytics
+4. Benchmark comparison (requires historical benchmark prices from TWS)
+5. Quantitative factor analysis (beta, size, value/growth)
+6. Risk decomposition
+7. Scenario modeling
 
-### Phase 3: Advanced
-8. Scenario modeling
-9. Options Phase 2 (Greeks, strategies, P&L)
-10. Tax report export (8949, wash sales)
+### Then: Advanced
+8. Options Phase 2 (verify with real data first, then Greeks + strategies)
+9. Tax report export (8949, wash sales)
+10. IBKR calendar integration + weekly briefings
 
-### Phase 4: Polish
+### Finally: Polish
 11. Desktop packaging (Electron or Tauri)
-12. Auto-refresh and real-time updates
+12. E2E browser tests
 
 ---
 
-## 6. Technical Debt & Improvements
+## Known Bugs
 
-- [ ] SQL injection risk: some queries use string interpolation for year parameter
-  (e.g., `WHERE sale_date >= '${year}-01-01'`). Should use parameterized queries.
-- [ ] `PerformanceMetrics.tsx` is a thin shell — needs full rebuild (§2A)
-- [ ] `EquityCurveChart.tsx` only uses monthly snapshots — needs daily resolution (§2B)
-- [ ] Options Phase 1 is unverified with real data
-- [ ] No automated E2E tests (only unit + integration)
-- [ ] `toLocaleDateString()` SSR hydration risk in some components
+1. Vanguard Taxable at 87% coverage — Retry threshold raised to 95% but 87% slipped through before the fix
+2. Holdings cost basis column all "–" in Accounts tab — Data gap, not a code bug (tooltip explains)
+3. Earnings transcript timeline empty — Fetch UI wired to EarningsView but may need data
+4. `tests/tws/historical.test.ts` — 1 failing test (`ib_con_id` contract lookup)
+
+## Known Gaps (Not Bugs)
+
+- No benchmark comparison
+- Wash sale warnings in chat system prompt but no auto-detection
+- `next build` fails in worktrees with existing `data/vanguard.db`
+- TWS price fetch takes ~40 min due to IBKR rate limits
