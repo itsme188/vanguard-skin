@@ -101,7 +101,11 @@ export function HoldingsTable({
                   </span>
                 </td>
                 <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
-                  {formatCurrency(holding.cost_basis)}
+                  {holding.cost_basis != null ? (
+                    formatCurrency(holding.cost_basis)
+                  ) : (
+                    <span title="Import a Vanguard cost basis CSV to populate" className="cursor-help">—</span>
+                  )}
                 </td>
                 <td className="px-4 py-3 text-ink-faint font-mono text-xs">
                   {holding.as_of_date}

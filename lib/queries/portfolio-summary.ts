@@ -68,9 +68,12 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
     accountId = row?.id;
   }
 
-  const holdingsFilter = accountId != null ? `AND h.account_id = ${accountId}` : "";
-  const taxLotsFilter = accountId != null ? `AND tl.account_id = ${accountId}` : "";
-  const txnFilter = accountId != null ? `AND t.account_id = ${accountId}` : "";
+  const holdingsFilter = accountId != null ? `AND h.account_id = ?` : "";
+  const holdingsParams = accountId != null ? [accountId] : [];
+  const taxLotsFilter = accountId != null ? `AND tl.account_id = ?` : "";
+  const taxLotsParams = accountId != null ? [accountId] : [];
+  const txnFilter = accountId != null ? `AND t.account_id = ?` : "";
+  const txnParams = accountId != null ? [accountId] : [];
 
   // ─── Account Values ────────────────────────────────────────────
   const accountFilter = accountName ? `WHERE a.name = ?` : `WHERE 1=1`;
@@ -160,7 +163,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
        ${holdingsFilter}
        ORDER BY market_value DESC`
     )
-    .all() as EnrichedHolding[];
+    .all(...holdingsParams, ...holdingsParams) as EnrichedHolding[];
 
   if (holdings.length > 0) {
     lines.push("\n### All Holdings");
@@ -212,7 +215,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
       GROUP BY group_name
       ORDER BY total_market_value DESC`
     )
-    .all() as AllocationRow[];
+    .all(...holdingsParams) as AllocationRow[];
 
   if (assetAllocation.length > 0) {
     lines.push("\n### Asset Allocation");
@@ -255,7 +258,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
       GROUP BY group_name
       ORDER BY total_market_value DESC`
     )
-    .all() as AllocationRow[];
+    .all(...holdingsParams) as AllocationRow[];
 
   const hasSectorData = sectorAllocation.some((s) => s.group_name !== "Unknown");
   if (hasSectorData) {
@@ -275,7 +278,8 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
   }
 
   // ─── Tax Summary + Harvesting Candidates ───────────────────────
-  const taxLotsAccountFilter = accountId != null ? `AND tax_lots.account_id = ${accountId}` : "";
+  const taxLotsAccountFilter = accountId != null ? `AND tax_lots.account_id = ?` : "";
+  const taxLotsAccountParams = accountId != null ? [accountId] : [];
   const taxSummary = db
     .prepare(
       `SELECT
@@ -283,11 +287,12 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         COALESCE(SUM(quantity_remaining * acquisition_price), 0) AS total_cost_basis
        FROM tax_lots WHERE quantity_remaining > 0 ${taxLotsAccountFilter}`
     )
-    .get() as { open_lots: number; total_cost_basis: number };
+    .get(...taxLotsAccountParams) as { open_lots: number; total_cost_basis: number };
 
   const realizedGainsJoin = accountId != null
-    ? `JOIN tax_lots ON tax_lots.id = tax_lot_sales.tax_lot_id WHERE tax_lots.account_id = ${accountId}`
+    ? `JOIN tax_lots ON tax_lots.id = tax_lot_sales.tax_lot_id WHERE tax_lots.account_id = ?`
     : "";
+  const realizedGainsParams = accountId != null ? [accountId] : [];
   const realizedGains = db
     .prepare(
       `SELECT
@@ -296,7 +301,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         COALESCE(SUM(CASE WHEN is_long_term = 0 THEN realized_gain_loss ELSE 0 END), 0) AS short_term
        FROM tax_lot_sales ${realizedGainsJoin}`
     )
-    .get() as { total: number; long_term: number; short_term: number };
+    .get(...realizedGainsParams) as { total: number; long_term: number; short_term: number };
 
   if (taxSummary.open_lots > 0 || realizedGains.total !== 0) {
     lines.push("\n### Tax Summary");
@@ -332,7 +337,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
       ORDER BY unrealized_loss ASC
       LIMIT 5`
     )
-    .all(today) as HarvestCandidate[];
+    .all(today, ...taxLotsParams) as HarvestCandidate[];
 
   if (harvestCandidates.length > 0) {
     lines.push("\n### Tax-Loss Harvesting Candidates");
@@ -373,7 +378,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
       ORDER BY days_remaining ASC
       LIMIT 10`
     )
-    .all(today, today, today) as ApproachingLongTerm[];
+    .all(today, today, today, ...taxLotsParams) as ApproachingLongTerm[];
 
   if (approachingLT.length > 0) {
     lines.push("\n### Lots Approaching Long-Term Status (within 60 days)");
@@ -396,9 +401,9 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         COALESCE(SUM(COALESCE(fees, 0) + COALESCE(commissions, 0)), 0) AS total_fees
       FROM monthly_snapshots
       WHERE month_end_date >= date(?, '-12 months')
-      ${accountId != null ? `AND monthly_snapshots.account_id = ${accountId}` : ""}`
+      ${accountId != null ? `AND monthly_snapshots.account_id = ?` : ""}`
     )
-    .get(today) as { total_dividends: number; total_interest: number; total_fees: number };
+    .get(today, ...holdingsParams) as { total_dividends: number; total_interest: number; total_fees: number };
 
   if (incomeSummary.total_dividends > 0 || incomeSummary.total_interest > 0) {
     lines.push("\n### Income (Trailing 12 Months)");
@@ -423,7 +428,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
        ORDER BY t.trade_date DESC
        LIMIT 20`
     )
-    .all() as RecentTransaction[];
+    .all(...txnParams) as RecentTransaction[];
 
   if (recentTxns.length > 0) {
     lines.push("\n### Recent Transactions");
