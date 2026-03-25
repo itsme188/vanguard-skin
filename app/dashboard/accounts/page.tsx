@@ -10,7 +10,13 @@ export default async function AccountsPage(props: {
   searchParams: Promise<{ id?: string }>;
 }) {
   const searchParams = await props.searchParams;
-  const accounts = getAllAccounts(db);
+
+  let accounts;
+  try {
+    accounts = getAllAccounts(db);
+  } catch {
+    throw new Error("Failed to load accounts. The database may be unavailable.");
+  }
 
   if (accounts.length === 0) {
     return (
@@ -26,12 +32,17 @@ export default async function AccountsPage(props: {
   const selectedAccount =
     accounts.find((a) => a.id === selectedId) ?? accounts[0];
 
-  const holdings = getHoldingsByAccount(db, selectedAccount.id);
-  const transactions = getTransactionsByAccount(db, selectedAccount.id, {
-    limit: 50,
-  });
-  const snapshots = getSnapshotsByAccount(db, selectedAccount.id);
-  const dailyValuations = getDailyValuationsByAccount(db, selectedAccount.id);
+  let holdings, transactions, snapshots, dailyValuations;
+  try {
+    holdings = getHoldingsByAccount(db, selectedAccount.id);
+    transactions = getTransactionsByAccount(db, selectedAccount.id, {
+      limit: 50,
+    });
+    snapshots = getSnapshotsByAccount(db, selectedAccount.id);
+    dailyValuations = getDailyValuationsByAccount(db, selectedAccount.id);
+  } catch {
+    throw new Error(`Failed to load data for ${selectedAccount.name}. The database may be unavailable.`);
+  }
 
   return (
     <AccountDetail

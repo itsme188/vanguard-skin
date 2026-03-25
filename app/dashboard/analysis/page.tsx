@@ -74,16 +74,20 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
       ? (params.scope as AccountScope)
       : "vanguard";
 
-  const accountIds = resolveAccountIds(scope);
+  let accountIds, allocation, concentration, coverage, dataCoverage, factorHeatmap, factorCoverage;
+  try {
+    accountIds = resolveAccountIds(scope);
+    allocation = getAllocationByDimension(db, dimension, accountIds);
+    concentration = getConcentrationMetrics(db, accountIds);
+    coverage = getClassificationCoverage(db);
+    dataCoverage = getAnalysisDataCoverage(db, accountIds);
 
-  const allocation = getAllocationByDimension(db, dimension, accountIds);
-  const concentration = getConcentrationMetrics(db, accountIds);
-  const coverage = getClassificationCoverage(db);
-  const dataCoverage = getAnalysisDataCoverage(db, accountIds);
-
-  // Factor-specific data (only when in factor mode)
-  const factorHeatmap = mode === "factors" ? getFactorHeatmap(db, accountIds) : undefined;
-  const factorCoverage = mode === "factors" ? getFactorCoverage(db) : undefined;
+    // Factor-specific data (only when in factor mode)
+    factorHeatmap = mode === "factors" ? getFactorHeatmap(db, accountIds) : undefined;
+    factorCoverage = mode === "factors" ? getFactorCoverage(db) : undefined;
+  } catch {
+    throw new Error("Failed to load analysis data. The database may be unavailable.");
+  }
 
   return (
     <div className="space-y-6">

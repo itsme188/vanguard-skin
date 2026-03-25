@@ -65,10 +65,15 @@ function computePerformancePeriods(): { periods: TwrPeriod[]; perAccount: Map<nu
 }
 
 export default function OverviewPage() {
-  const accounts = getAccountSummaries(db);
-  const chartData = getPortfolioChartData(db);
-  const totals = getPortfolioTotals(db);
-  const { periods: twrPeriods, perAccount: twrByAccount } = computePerformancePeriods();
+  let accounts, chartData, totals, twrPeriods: TwrPeriod[], twrByAccount: Map<number, { totalReturn: number; annualizedReturn: number | null }>;
+  try {
+    accounts = getAccountSummaries(db);
+    chartData = getPortfolioChartData(db);
+    totals = getPortfolioTotals(db);
+    ({ periods: twrPeriods, perAccount: twrByAccount } = computePerformancePeriods());
+  } catch {
+    throw new Error("Failed to load overview data. The database may be unavailable.");
+  }
 
   const hasData = totals.snapshotCount > 0;
 

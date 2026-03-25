@@ -4,8 +4,13 @@ import { getAllAccounts } from "@/lib/queries/accounts";
 import { ReconciliationTable } from "../components/ReconciliationTable";
 
 export default function ReconciliationPage() {
-  const checkpoints = getReconciliationCheckpoints(db);
-  const accounts = getAllAccounts(db);
+  let checkpoints, accounts;
+  try {
+    checkpoints = getReconciliationCheckpoints(db);
+    accounts = getAllAccounts(db);
+  } catch {
+    throw new Error("Failed to load reconciliation data. The database may be unavailable.");
+  }
 
   return (
     <div className="space-y-6">

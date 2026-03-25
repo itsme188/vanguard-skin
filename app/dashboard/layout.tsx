@@ -1,5 +1,6 @@
 import { TabNav } from "./components/TabNav";
 import { TwsStatus } from "./components/TwsStatus";
+import { ToastProvider } from "./components/Toast";
 
 export default function DashboardLayout({
   children,
@@ -7,23 +8,31 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   return (
-    <div className="min-h-screen bg-canvas">
-      {/* Header */}
-      <header className="border-b border-edge sticky top-0 z-50 bg-canvas/80 backdrop-blur-xl">
-        <div className="max-w-[1400px] mx-auto px-6 flex items-center justify-between h-14">
-          <h1 className="font-serif text-xl text-gold tracking-tight">
-            Vanguard Skin
-          </h1>
-          <div className="flex items-center gap-4">
-            <TwsStatus />
-            <span className="text-[11px] text-ink-faint font-mono">v2.0</span>
-          </div>
-        </div>
-        <TabNav />
-      </header>
+    <ToastProvider>
+      <div className="min-h-screen bg-canvas">
+        <a href="#main-content" className="skip-link">
+          Skip to main content
+        </a>
 
-      {/* Content */}
-      <main className="max-w-[1400px] mx-auto px-6 py-6">{children}</main>
-    </div>
+        {/* Header */}
+        <header className="border-b border-edge sticky top-0 z-50 bg-canvas/80 backdrop-blur-xl">
+          <div className="max-w-[1400px] mx-auto px-6 flex items-center justify-between h-14">
+            <h1 className="font-serif text-xl text-gold tracking-tight">
+              Vanguard Skin
+            </h1>
+            <div className="flex items-center gap-4">
+              <TwsStatus />
+              <span className="text-[11px] text-ink-faint font-mono">v2.0</span>
+            </div>
+          </div>
+          <TabNav />
+        </header>
+
+        {/* Content */}
+        <main id="main-content" className="max-w-[1400px] mx-auto px-6 py-6">
+          {children}
+        </main>
+      </div>
+    </ToastProvider>
   );
 }

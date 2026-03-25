@@ -16,28 +16,33 @@ export default async function NotesPage({ searchParams }: PageProps) {
   const params = await searchParams;
   const noteType = (params.type as NoteType) || undefined;
 
-  const notes = getNotesFiltered(db, {
-    note_type: noteType,
-    search: params.search || undefined,
-    security_id: params.security_id ? parseInt(params.security_id, 10) : undefined,
-    limit: 100,
-  });
+  let notes, earningsTimeline, transcriptSummaries, securities;
+  try {
+    notes = getNotesFiltered(db, {
+      note_type: noteType,
+      search: params.search || undefined,
+      security_id: params.security_id ? parseInt(params.security_id, 10) : undefined,
+      limit: 100,
+    });
 
-  const earningsTimeline = getEarningsTimeline(db);
-  const transcriptSummaries = noteType === "earnings" || !noteType
-    ? getTranscriptsSummary(db, { limit: 50 })
-    : [];
+    earningsTimeline = getEarningsTimeline(db);
+    transcriptSummaries = noteType === "earnings" || !noteType
+      ? getTranscriptsSummary(db, { limit: 50 })
+      : [];
 
-  // Get list of securities for the picker
-  const securities = db
-    .prepare(
-      `SELECT DISTINCT s.id, s.symbol, s.name
-       FROM securities s
-       WHERE s.symbol IS NOT NULL AND s.symbol != ''
-         AND s.security_type IN ('stock', 'etf', 'mutual_fund')
-       ORDER BY s.symbol`
-    )
-    .all() as { id: number; symbol: string; name: string | null }[];
+    // Get list of securities for the picker
+    securities = db
+      .prepare(
+        `SELECT DISTINCT s.id, s.symbol, s.name
+         FROM securities s
+         WHERE s.symbol IS NOT NULL AND s.symbol != ''
+           AND s.security_type IN ('stock', 'etf', 'mutual_fund')
+         ORDER BY s.symbol`
+      )
+      .all() as { id: number; symbol: string; name: string | null }[];
+  } catch {
+    throw new Error("Failed to load notes data. The database may be unavailable.");
+  }
 
   return (
     <div className="space-y-6">

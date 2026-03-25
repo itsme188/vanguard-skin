@@ -4,7 +4,12 @@ import { ImportFlow } from "../components/ImportFlow";
 import { ImportHistory } from "../components/ImportHistory";
 
 export default function ImportPage() {
-  const batches = getAllImportBatches(db);
+  let batches;
+  try {
+    batches = getAllImportBatches(db);
+  } catch {
+    throw new Error("Failed to load import history. The database may be unavailable.");
+  }
 
   return (
     <div className="space-y-8">

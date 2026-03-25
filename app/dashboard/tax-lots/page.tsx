@@ -17,8 +17,14 @@ export default async function TaxLotsPage(props: {
 }) {
   const searchParams = await props.searchParams;
 
-  const availableYears = getAvailableSaleYears(db);
-  const accountNames = getTaxLotAccountNames(db);
+  let availableYears, accountNames, summary, accountSummaries, allOpenLots, allClosedSales;
+  try {
+    availableYears = getAvailableSaleYears(db);
+    accountNames = getTaxLotAccountNames(db);
+  } catch {
+    throw new Error("Failed to load tax lot data. The database may be unavailable.");
+  }
+
   const currentCalendarYear = new Date().getFullYear();
 
   const selectedYear = searchParams.year
@@ -29,10 +35,14 @@ export default async function TaxLotsPage(props: {
 
   const selectedAccount = searchParams.account ?? "";
 
-  const summary = getTaxLotSummary(db, selectedYear);
-  const accountSummaries = getTaxLotSummaryByAccount(db, selectedYear);
-  const allOpenLots = getOpenTaxLots(db);
-  const allClosedSales = getClosedTaxLotSales(db, selectedYear);
+  try {
+    summary = getTaxLotSummary(db, selectedYear);
+    accountSummaries = getTaxLotSummaryByAccount(db, selectedYear);
+    allOpenLots = getOpenTaxLots(db);
+    allClosedSales = getClosedTaxLotSales(db, selectedYear);
+  } catch {
+    throw new Error("Failed to load tax lot data. The database may be unavailable.");
+  }
 
   // Filter by account if selected
   const openLots = selectedAccount
