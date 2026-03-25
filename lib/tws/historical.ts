@@ -59,6 +59,7 @@ export async function fetchHistoricalPrices(
     securityIds?: number[];
     durationStr?: string; // e.g. "1 Y", "6 M", "30 D"
     endDate?: string; // YYYYMMDD format, default = now
+    incremental?: boolean; // only fetch dates newer than what's already in DB
     onProgress?: (progress: PriceFetchProgress) => void;
   },
 ): Promise<PriceFetchResult[]> {
@@ -89,7 +90,8 @@ export async function fetchHistoricalPrices(
   }
 
   const results: PriceFetchResult[] = [];
-  const durationStr = options?.durationStr ?? "1 Y";
+  const defaultDuration = options?.durationStr ?? "1 Y";
+  const incremental = options?.incremental ?? false;
   const onProgress = options?.onProgress;
 
   const upsertPrice = db.prepare(`
@@ -97,10 +99,45 @@ export async function fetchHistoricalPrices(
     VALUES (?, ?, ?, 'tws')
   `);
 
+  const latestPriceStmt = db.prepare(
+    `SELECT MAX(date) as latest FROM prices WHERE security_id = ? AND source = 'tws'`,
+  );
+
   for (let i = 0; i < securities.length; i++) {
     const sec = securities[i];
 
     try {
+      // Incremental: compute gap duration per security
+      let durationStr = defaultDuration;
+      if (incremental && !options?.durationStr) {
+        const row = latestPriceStmt.get(sec.id) as { latest: string | null } | undefined;
+        if (row?.latest) {
+          const latestDate = new Date(row.latest + "T00:00:00");
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+          const gapDays = Math.ceil((today.getTime() - latestDate.getTime()) / 86_400_000);
+          if (gapDays <= 0) {
+            // Already have today's price — skip
+            onProgress?.({
+              current: i + 1,
+              total: securities.length,
+              symbol: sec.symbol,
+              status: "skipped",
+            });
+            results.push({
+              symbol: sec.symbol,
+              securityId: sec.id,
+              barsInserted: 0,
+              barsSkipped: 0,
+              dateRange: null,
+            });
+            continue;
+          }
+          // Cap at 365 days, use "N D" format for short gaps
+          durationStr = gapDays >= 365 ? "1 Y" : `${gapDays} D`;
+        }
+      }
+
       // Report rate-limit wait if we'd block
       const waitEstimate = rateLimiter.estimatedWaitSeconds;
       if (waitEstimate > 0) {
