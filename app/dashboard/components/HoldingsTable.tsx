@@ -1,4 +1,5 @@
 import type { HoldingWithSecurity } from "@/lib/queries/holdings";
+import { ScrollFade } from "./ScrollFade";
 
 function formatCurrency(value: number | null): string {
   if (value === null) return "\u2014";
@@ -56,7 +57,8 @@ export function HoldingsTable({
   return (
     <div>
       <h3 className="text-sm font-medium text-ink-dim mb-3">Holdings</h3>
-      <div className="rounded-xl border border-edge overflow-hidden overflow-x-auto">
+      <div className="rounded-xl border border-edge overflow-hidden">
+        <ScrollFade>
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-edge bg-panel">
@@ -114,6 +116,7 @@ export function HoldingsTable({
             ))}
           </tbody>
         </table>
+        </ScrollFade>
       </div>
     </div>
   );

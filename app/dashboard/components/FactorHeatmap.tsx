@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { FactorHeatmapRow } from "@/lib/queries/analysis";
+import { ScrollFade } from "./ScrollFade";
 import {
   FACTOR_COLUMNS,
   FACTOR_LABELS,
@@ -112,8 +113,8 @@ export function FactorHeatmap({ rows }: FactorHeatmapProps) {
         </span>
       </h3>
 
-      <div className="overflow-x-auto">
-        <table className="w-full text-xs">
+      <ScrollFade>
+        <table className="w-full text-xs" aria-label="Factor exposure heatmap">
           <thead>
             <tr className="border-b border-edge">
               <th className="text-left py-2 pr-2 font-medium text-ink-faint sticky left-0 bg-panel z-10 min-w-[120px]">
@@ -197,7 +198,7 @@ export function FactorHeatmap({ rows }: FactorHeatmapProps) {
             ))}
           </tbody>
         </table>
-      </div>
+      </ScrollFade>
 
       {/* Legend */}
       <div className="mt-3 flex flex-wrap gap-2 text-[10px]">

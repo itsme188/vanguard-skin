@@ -1,4 +1,5 @@
 import type { TaxLotWithSecurity, TaxLotSaleWithDetails } from "@/lib/queries/tax-lots";
+import { ScrollFade } from "./ScrollFade";
 
 function formatCurrency(value: number | null): string {
   if (value === null) return "\u2014";
@@ -51,7 +52,7 @@ export function OpenLotsTable({
         <span className="ml-1.5 text-ink-faint/60">({lots.length})</span>
       </h4>
       <div className="rounded-xl border border-edge overflow-hidden">
-        <div className="overflow-x-auto">
+        <ScrollFade>
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-edge bg-panel">
@@ -97,7 +98,7 @@ export function OpenLotsTable({
               ))}
             </tbody>
           </table>
-        </div>
+        </ScrollFade>
       </div>
     </div>
   );
@@ -121,7 +122,7 @@ export function ClosedSalesTable({
         <span className="ml-1.5 text-ink-faint/60">({sales.length})</span>
       </h4>
       <div className="rounded-xl border border-edge overflow-hidden">
-        <div className="overflow-x-auto">
+        <ScrollFade>
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-edge bg-panel">
@@ -179,7 +180,7 @@ export function ClosedSalesTable({
               ))}
             </tbody>
           </table>
-        </div>
+        </ScrollFade>
       </div>
     </div>
   );
