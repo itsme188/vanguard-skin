@@ -52,6 +52,17 @@ export function annotateToolResult(
     warnings.push(
       "Tax lots use FIFO (First-In, First-Out) matching. Your broker may use a different method (e.g., specific identification)."
     );
+    // Warn about closed lots in the results
+    if (Array.isArray(rawResult)) {
+      const closedCount = (rawResult as Array<Record<string, unknown>>).filter(
+        (lot) => lot.sale_date != null
+      ).length;
+      if (closedCount > 0) {
+        warnings.push(
+          `${closedCount} lot(s) in these results are CLOSED (already sold). Closed lots represent past positions — they are NOT current holdings and cannot be harvested for tax losses.`
+        );
+      }
+    }
   }
 
   if (toolName === "query_performance") {
@@ -63,6 +74,12 @@ export function annotateToolResult(
   if (toolName === "query_income_summary") {
     warnings.push(
       "REINVESTMENT transactions are counted as dividend income. Return of capital (if any) is not distinguished."
+    );
+  }
+
+  if (toolName === "query_transactions") {
+    warnings.push(
+      "IMPORTANT: Transaction history shows past activity only. A BUY transaction does NOT mean the position is currently held — always verify current positions with query_holdings before claiming ownership."
     );
   }
 

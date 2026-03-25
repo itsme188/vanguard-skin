@@ -138,6 +138,34 @@ describe("annotateToolResult", () => {
     expect(annotation.quality_warnings.some((w) => w.includes("REINVESTMENT"))).toBe(true);
   });
 
+  it("adds ownership warning for transactions tool", () => {
+    const annotation = annotateToolResult(db, "query_transactions", []);
+    expect(
+      annotation.quality_warnings.some((w) => w.includes("does NOT mean the position is currently held"))
+    ).toBe(true);
+  });
+
+  it("warns about closed lots in tax lot results", () => {
+    const mixedLots = [
+      { symbol: "AAPL", sale_date: null, quantity_remaining: 10 },
+      { symbol: "GPRO", sale_date: "2025-02-06", quantity_remaining: 0 },
+    ];
+    const annotation = annotateToolResult(db, "query_tax_lots", mixedLots);
+    expect(
+      annotation.quality_warnings.some((w) => w.includes("1 lot(s)") && w.includes("CLOSED"))
+    ).toBe(true);
+  });
+
+  it("does not warn about closed lots when all lots are open", () => {
+    const openLots = [
+      { symbol: "AAPL", sale_date: null, quantity_remaining: 10 },
+    ];
+    const annotation = annotateToolResult(db, "query_tax_lots", openLots);
+    expect(
+      annotation.quality_warnings.some((w) => w.includes("CLOSED"))
+    ).toBe(false);
+  });
+
   it("price staleness only applies to relevant tools", () => {
     const sec = seedSecurity(db, "AAPL");
     const oldDate = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);

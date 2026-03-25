@@ -42,6 +42,17 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("market");
   });
 
+  it("includes ground truth rules section", () => {
+    const prompt = buildSystemPrompt(fakeContext, today, "all");
+    expect(prompt).toContain("Ground Truth Rules");
+    expect(prompt).toContain("NEVER claim a security is currently held");
+  });
+
+  it("ground truth rules not present in macro mode", () => {
+    const prompt = buildSystemPrompt("", today, "macro");
+    expect(prompt).not.toContain("Ground Truth Rules");
+  });
+
   // Backwards compat: if scope is omitted (undefined), treat as "all"
   it("defaults to 'all' when scope is undefined", () => {
     const prompt = buildSystemPrompt(fakeContext, today, undefined as any);
