@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "sqlite": {
+      "command": "npx",
+      "args": ["-y", "@anthropic-ai/mcp-server-sqlite", "/Users/Yitzi/code/vanguard-skin/data/vanguard.db"]
+    }
+  }
+}

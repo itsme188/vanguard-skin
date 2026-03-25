@@ -41,6 +41,10 @@ yarn-error.log*
 /data/
 tests/fixtures/real/
 
+# claude code (local state)
+.claude/worktrees/
+.superpowers/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
