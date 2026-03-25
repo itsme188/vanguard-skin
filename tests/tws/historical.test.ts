@@ -193,9 +193,9 @@ describe("fetchHistoricalPrices", () => {
 
     await fetchHistoricalPrices(db, { securityIds: [secId] });
 
-    // Should use conId instead of symbol lookup
+    // Should use conId with required IB fields (secType, exchange, currency)
     expect(mockApi.getHistoricalData).toHaveBeenCalledWith(
-      { conId: 265598 },
+      { conId: 265598, secType: "STK", exchange: "SMART", currency: "USD" },
       expect.anything(),
       expect.anything(),
       expect.anything(),
@@ -203,5 +203,133 @@ describe("fetchHistoricalPrices", () => {
       expect.anything(),
       expect.anything(),
     );
+  });
+
+  describe("incremental mode", () => {
+    it("uses shorter duration when recent prices exist", async () => {
+      const secId = seedSecurity(db, "AAPL", "stock");
+
+      // Seed a price from 5 days ago
+      const fiveDaysAgo = new Date();
+      fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
+      const dateStr = fiveDaysAgo.toISOString().slice(0, 10);
+      db.prepare(
+        "INSERT INTO prices (security_id, date, close_price, source) VALUES (?, ?, ?, 'tws')",
+      ).run(secId, dateStr, 180.0);
+
+      const mockApi = {
+        getHistoricalData: vi.fn().mockResolvedValue([]),
+      };
+      mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+
+      await fetchHistoricalPrices(db, {
+        securityIds: [secId],
+        incremental: true,
+      });
+
+      // Should request ~5 days, not 1 year
+      const durationArg = mockApi.getHistoricalData.mock.calls[0][2];
+      expect(durationArg).toMatch(/^\d+ D$/);
+      const days = parseInt(durationArg.split(" ")[0]);
+      expect(days).toBeGreaterThanOrEqual(4);
+      expect(days).toBeLessThanOrEqual(6);
+    });
+
+    it("skips security when price exists for today", async () => {
+      const secId = seedSecurity(db, "MSFT", "stock");
+
+      // Seed today's price
+      const today = new Date().toISOString().slice(0, 10);
+      db.prepare(
+        "INSERT INTO prices (security_id, date, close_price, source) VALUES (?, ?, ?, 'tws')",
+      ).run(secId, today, 400.0);
+
+      const mockApi = {
+        getHistoricalData: vi.fn().mockResolvedValue([]),
+      };
+      mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+
+      const progressEvents: Array<{ status: string }> = [];
+      const results = await fetchHistoricalPrices(db, {
+        securityIds: [secId],
+        incremental: true,
+        onProgress: (p) => progressEvents.push({ status: p.status }),
+      });
+
+      // Should not call getHistoricalData at all
+      expect(mockApi.getHistoricalData).not.toHaveBeenCalled();
+      expect(results[0].barsInserted).toBe(0);
+      expect(progressEvents.some((e) => e.status === "skipped")).toBe(true);
+    });
+
+    it("uses full duration when no existing prices", async () => {
+      const secId = seedSecurity(db, "NEW", "stock");
+
+      const mockApi = {
+        getHistoricalData: vi.fn().mockResolvedValue([]),
+      };
+      mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+
+      await fetchHistoricalPrices(db, {
+        securityIds: [secId],
+        incremental: true,
+      });
+
+      // Should use default "1 Y" since no existing prices
+      const durationArg = mockApi.getHistoricalData.mock.calls[0][2];
+      expect(durationArg).toBe("1 Y");
+    });
+
+    it("caps gap at 1 year for very old prices", async () => {
+      const secId = seedSecurity(db, "OLD", "stock");
+
+      // Seed a price from 2 years ago
+      const twoYearsAgo = new Date();
+      twoYearsAgo.setFullYear(twoYearsAgo.getFullYear() - 2);
+      const dateStr = twoYearsAgo.toISOString().slice(0, 10);
+      db.prepare(
+        "INSERT INTO prices (security_id, date, close_price, source) VALUES (?, ?, ?, 'tws')",
+      ).run(secId, dateStr, 50.0);
+
+      const mockApi = {
+        getHistoricalData: vi.fn().mockResolvedValue([]),
+      };
+      mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+
+      await fetchHistoricalPrices(db, {
+        securityIds: [secId],
+        incremental: true,
+      });
+
+      // Should cap at "1 Y"
+      const durationArg = mockApi.getHistoricalData.mock.calls[0][2];
+      expect(durationArg).toBe("1 Y");
+    });
+
+    it("ignores incremental when explicit durationStr is provided", async () => {
+      const secId = seedSecurity(db, "FORCED", "stock");
+
+      // Seed recent price
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      db.prepare(
+        "INSERT INTO prices (security_id, date, close_price, source) VALUES (?, ?, ?, 'tws')",
+      ).run(secId, yesterday.toISOString().slice(0, 10), 100.0);
+
+      const mockApi = {
+        getHistoricalData: vi.fn().mockResolvedValue([]),
+      };
+      mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+
+      await fetchHistoricalPrices(db, {
+        securityIds: [secId],
+        incremental: true,
+        durationStr: "6 M", // Explicit override
+      });
+
+      // Should use the explicit duration, not compute from gap
+      const durationArg = mockApi.getHistoricalData.mock.calls[0][2];
+      expect(durationArg).toBe("6 M");
+    });
   });
 });
