@@ -55,6 +55,8 @@ export function TwsStatus() {
   );
 }
 
+type FetchMode = "snapshot" | "historical";
+
 interface PriceProgress {
   current: number;
   total: number;
@@ -63,6 +65,7 @@ interface PriceProgress {
   waitingSeconds?: number;
   completed: number;
   errors: number;
+  mode: FetchMode;
 }
 
 function TwsPanel({
@@ -131,8 +134,8 @@ function TwsPanel({
     }
   }
 
-  async function handleFetchPrices() {
-    setLoading("prices");
+  async function handleFetchPrices(mode: FetchMode) {
+    setLoading(mode === "snapshot" ? "snapshot" : "historical");
     setResult(null);
     setPriceProgress(null);
     let completed = 0;
@@ -142,7 +145,7 @@ function TwsPanel({
       const res = await fetch("/api/tws/prices", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ mode }),
       });
 
       if (!res.ok) {
@@ -168,7 +171,6 @@ function TwsPanel({
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
-        // Keep the last (possibly incomplete) line in the buffer
         buffer = lines.pop() ?? "";
 
         for (const line of lines) {
@@ -181,7 +183,7 @@ function TwsPanel({
 
             if (parsed.progress) {
               const p = parsed.progress;
-              if (p.status === "done") completed++;
+              if (p.status === "done" || p.status === "skipped") completed++;
               if (p.status === "error") errors++;
               setPriceProgress({
                 current: p.current,
@@ -191,15 +193,23 @@ function TwsPanel({
                 waitingSeconds: p.waitingSeconds,
                 completed,
                 errors,
+                mode,
               });
             }
 
             if (parsed.complete) {
               const d = parsed.data;
-              setResult(
-                `Fetched prices for ${d.securities} securities: ${d.totalPricesInserted} prices inserted` +
-                  (d.errors > 0 ? `, ${d.errors} errors` : ""),
-              );
+              if (d.mode === "snapshot") {
+                const parts = [`Updated ${d.pricesUpdated} of ${d.securities} prices`];
+                if (d.errors > 0) parts.push(`${d.errors} errors`);
+                if (d.valuationsRecomputed) parts.push("valuations recomputed");
+                setResult(parts.join(" · "));
+              } else {
+                const parts = [`${d.totalPricesInserted} prices inserted for ${d.securities} securities`];
+                if (d.errors > 0) parts.push(`${d.errors} errors`);
+                if (d.valuationsRecomputed) parts.push("valuations recomputed");
+                setResult(parts.join(" · "));
+              }
             }
 
             if (parsed.error) {
@@ -244,14 +254,22 @@ function TwsPanel({
   }
 
   const isConnected = status.state === "connected";
+  const isFetching = loading === "snapshot" || loading === "historical";
 
-  // Button label for Fetch Prices
-  const priceButtonLabel =
-    loading === "prices"
+  // Button labels
+  const snapshotLabel =
+    loading === "snapshot"
       ? priceProgress
         ? `${priceProgress.completed + priceProgress.errors} / ${priceProgress.total}`
         : "Starting..."
-      : "Fetch Prices";
+      : "Quick Refresh";
+
+  const historicalLabel =
+    loading === "historical"
+      ? priceProgress
+        ? `${priceProgress.completed + priceProgress.errors} / ${priceProgress.total}`
+        : "Starting..."
+      : "Full History";
 
   return (
     <>
@@ -336,16 +354,36 @@ function TwsPanel({
         {isConnected && (
           <div className="space-y-2 pt-2 border-t border-edge">
             <p className="text-[10px] text-ink-faint uppercase tracking-wider">
-              Data Actions
+              Prices
             </p>
             <div className="flex gap-2">
               <button
-                onClick={handleFetchPrices}
+                onClick={() => handleFetchPrices("snapshot")}
                 disabled={loading !== null}
                 className="flex-1 px-3 py-1.5 text-xs font-medium rounded-lg bg-blue/20 text-blue hover:bg-blue/30 disabled:opacity-50 transition-colors"
+                title="Get current prices via market data snapshots (~2 min)"
               >
-                {priceButtonLabel}
+                {snapshotLabel}
               </button>
+              <button
+                onClick={() => handleFetchPrices("historical")}
+                disabled={loading !== null}
+                className="flex-1 px-3 py-1.5 text-xs font-medium rounded-lg bg-ink-faint/10 text-ink-dim hover:bg-ink-faint/20 disabled:opacity-50 transition-colors"
+                title="Fetch daily bar history (incremental, for charts)"
+              >
+                {historicalLabel}
+              </button>
+            </div>
+            {!isFetching && (
+              <p className="text-[9px] text-ink-faint">
+                Quick Refresh: ~2 min · Full History: incremental
+              </p>
+            )}
+
+            <p className="text-[10px] text-ink-faint uppercase tracking-wider pt-1">
+              Other
+            </p>
+            <div className="flex gap-2">
               <button
                 onClick={handleEnrich}
                 disabled={loading !== null}
@@ -372,8 +410,10 @@ function TwsPanel({
                   {priceProgress.status === "rate_limited"
                     ? `Rate limited — resuming in ~${Math.ceil((priceProgress.waitingSeconds ?? 0) / 60)} min`
                     : priceProgress.status === "fetching"
-                      ? `Fetching ${priceProgress.symbol}...`
-                      : `${priceProgress.completed} done${priceProgress.errors > 0 ? `, ${priceProgress.errors} errors` : ""} / ${priceProgress.total} total`}
+                      ? `${priceProgress.mode === "snapshot" ? "Snapshot" : "Fetching"} ${priceProgress.symbol}...`
+                      : priceProgress.status === "skipped"
+                        ? `${priceProgress.symbol} up to date — ${priceProgress.completed} done / ${priceProgress.total} total`
+                        : `${priceProgress.completed} done${priceProgress.errors > 0 ? `, ${priceProgress.errors} errors` : ""} / ${priceProgress.total} total`}
                 </p>
               </div>
             )}
