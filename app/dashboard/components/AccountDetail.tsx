@@ -37,14 +37,16 @@ export function AccountDetail({
   return (
     <div className="space-y-6">
       {/* Account selector */}
-      <div className="flex gap-2">
+      <div className="flex gap-2" role="tablist" aria-label="Account selector">
         {accounts.map((account) => (
           <button
             key={account.id}
+            role="tab"
+            aria-selected={account.id === selectedAccount.id}
             onClick={() =>
               router.push(`/dashboard/accounts?id=${account.id}`)
             }
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors focus-ring ${
               account.id === selectedAccount.id
                 ? "bg-raised border border-edge-strong text-ink"
                 : "text-ink-faint hover:bg-raised hover:text-ink-dim"

@@ -10,7 +10,7 @@ import { PerformanceMetrics } from "./components/PerformanceMetrics";
 import type { TwrPeriod } from "./components/PerformanceMetrics";
 import { AccountSummaryCards } from "./components/AccountSummaryCards";
 import { CombinedPortfolioChart } from "./components/CombinedPortfolioChart";
-import Link from "next/link";
+import { EmptyState } from "./components/EmptyState";
 
 function computePerformancePeriods(): { periods: TwrPeriod[]; perAccount: Map<number, { totalReturn: number; annualizedReturn: number | null }> } {
   const today = new Date().toISOString().slice(0, 10);
@@ -88,22 +88,12 @@ export default function OverviewPage() {
           )}
         </>
       ) : (
-        <div className="rounded-xl border border-dashed border-edge bg-panel/50 p-12 text-center">
-          <div className="text-ink-faint text-4xl mb-4">$</div>
-          <h2 className="text-lg font-medium text-ink mb-2">
-            No portfolio data yet
-          </h2>
-          <p className="text-ink-dim text-sm mb-6 max-w-md mx-auto">
-            Import your Vanguard statements or IBKR activity files to see your
-            portfolio overview, account balances, and performance charts.
-          </p>
-          <Link
-            href="/dashboard/import"
-            className="inline-flex px-5 py-2.5 rounded-lg bg-gold text-canvas font-medium text-sm hover:brightness-110 transition-all"
-          >
-            Import Files
-          </Link>
-        </div>
+        <EmptyState
+          icon={<span className="text-2xl">$</span>}
+          title="No portfolio data yet"
+          description="Import your Vanguard statements or IBKR activity files to see your portfolio overview, account balances, and performance charts."
+          action={{ label: "Import Files", href: "/dashboard/import" }}
+        />
       )}
     </div>
   );

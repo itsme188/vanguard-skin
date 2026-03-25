@@ -40,6 +40,19 @@ export function CombinedPortfolioChart({
 }) {
   const accountNames = accounts.map((a) => a.name);
 
+  if (data.length < 2) {
+    return (
+      <div className="rounded-xl border border-edge bg-panel p-5">
+        <h3 className="text-sm font-medium text-ink-dim mb-4">
+          Portfolio Over Time
+        </h3>
+        <div className="h-[240px] flex items-center justify-center text-ink-faint text-sm">
+          Not enough data points for a chart. Import more monthly statements.
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="rounded-xl border border-edge bg-panel p-5">
       <h3 className="text-sm font-medium text-ink-dim mb-4">

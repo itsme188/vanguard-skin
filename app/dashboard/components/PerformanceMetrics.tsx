@@ -78,12 +78,13 @@ export function PerformanceMetrics({
 
       {twrPeriods.length > 0 && (
         <div className="flex items-center gap-4">
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5" role="group" aria-label="Performance period">
             {twrPeriods.map((period, i) => (
               <button
                 key={period.label}
                 onClick={() => setSelectedPeriod(i)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                aria-pressed={i === selectedPeriod}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors focus-ring ${
                   i === selectedPeriod
                     ? "bg-gold-glow text-gold"
                     : "text-ink-faint hover:text-ink hover:bg-panel"

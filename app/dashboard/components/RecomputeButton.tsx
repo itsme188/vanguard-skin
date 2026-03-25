@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { useToast } from "./Toast";
 
 export function RecomputeButton({
   endpoint,
@@ -11,49 +12,35 @@ export function RecomputeButton({
   label: string;
 }) {
   const router = useRouter();
+  const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
 
   async function handleClick() {
     setIsLoading(true);
-    setResult(null);
     try {
       const res = await fetch(endpoint, { method: "POST" });
       const data = await res.json();
       if (data.success) {
-        setResult("Done");
+        toast(`${label} complete`, "success");
         router.refresh();
       } else {
-        setResult(`Error: ${data.error}`);
+        toast(`${label} failed: ${data.error}`, "error");
       }
     } catch {
-      setResult("Failed to connect");
+      toast("Failed to connect to server", "error");
     } finally {
       setIsLoading(false);
-      setTimeout(() => setResult(null), 3000);
     }
   }
 
   return (
-    <div className="flex items-center gap-3">
-      {result && (
-        <span
-          className={`text-xs font-mono ${
-            result.startsWith("Error") || result === "Failed to connect"
-              ? "text-down"
-              : "text-up"
-          }`}
-        >
-          {result}
-        </span>
-      )}
-      <button
-        onClick={handleClick}
-        disabled={isLoading}
-        className="px-4 py-2 rounded-lg bg-raised border border-edge text-sm font-medium text-ink-dim hover:text-ink hover:border-edge-strong transition-all disabled:opacity-50"
-      >
-        {isLoading ? "Computing..." : label}
-      </button>
-    </div>
+    <button
+      onClick={handleClick}
+      disabled={isLoading}
+      title={isLoading ? "Computing..." : undefined}
+      className="px-4 py-2 rounded-lg bg-raised border border-edge text-sm font-medium text-ink-dim hover:text-ink hover:border-edge-strong transition-all disabled:opacity-50 disabled:cursor-not-allowed focus-ring"
+    >
+      {isLoading ? "Computing..." : label}
+    </button>
   );
 }

@@ -183,23 +183,28 @@ export function ChatInterface() {
   return (
     <div className="flex flex-col h-[calc(100vh-12rem)]">
       {/* Messages area */}
-      <div className="flex-1 overflow-y-auto space-y-4 pb-4">
+      <div className="flex-1 overflow-y-auto space-y-4 pb-4" aria-live="polite" aria-label="Chat messages">
         {/* Scope badge header (shown when conversation is active) */}
         {isLocked && (
           <div className="flex items-center justify-between pb-3 mb-3 border-b border-edge">
-            <span
-              className="px-3 py-1 rounded-full text-[11px] border"
-              style={{
-                background: "rgba(201,164,78,0.15)",
-                borderColor: "rgba(201,164,78,0.3)",
-                color: "#c9a44e",
-              }}
-            >
-              {scopeLabel}
-            </span>
+            <div className="flex items-center gap-2">
+              <span
+                className="px-3 py-1 rounded-full text-[11px] border"
+                style={{
+                  background: "rgba(201,164,78,0.15)",
+                  borderColor: "rgba(201,164,78,0.3)",
+                  color: "#c9a44e",
+                }}
+              >
+                {scopeLabel}
+              </span>
+              <span className="text-[10px] text-ink-faint">
+                Start a new conversation to change scope
+              </span>
+            </div>
             <button
               onClick={handleNewConversation}
-              className="text-xs text-ink-faint hover:text-ink-dim transition-colors"
+              className="text-xs text-ink-faint hover:text-ink-dim transition-colors focus-ring"
             >
               New Conversation
             </button>
@@ -218,12 +223,13 @@ export function ChatInterface() {
               </p>
 
               {/* Scope chip bar */}
-              <div className="flex flex-wrap justify-center gap-2 mb-6">
+              <div className="flex flex-wrap justify-center gap-2 mb-6" role="group" aria-label="Analysis scope">
                 {SCOPE_OPTIONS.map((opt) => (
                   <button
                     key={opt.value}
                     onClick={() => setScope(opt.value)}
-                    className={`px-4 py-1.5 rounded-full text-xs border transition-all ${
+                    aria-pressed={scope === opt.value}
+                    className={`px-4 py-1.5 rounded-full text-xs border transition-all focus-ring ${
                       scope === opt.value
                         ? "border-gold text-gold"
                         : "border-edge text-ink-dim hover:text-ink hover:border-edge-strong"
@@ -248,7 +254,7 @@ export function ChatInterface() {
                       setInput(suggestion);
                       inputRef.current?.focus();
                     }}
-                    className="px-3 py-1.5 rounded-lg border border-edge text-xs text-ink-dim hover:text-ink hover:border-edge-strong transition-all"
+                    className="px-3 py-1.5 rounded-lg border border-edge text-xs text-ink-dim hover:text-ink hover:border-edge-strong transition-all focus-ring"
                   >
                     {suggestion}
                   </button>
@@ -313,13 +319,16 @@ export function ChatInterface() {
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={scope === "macro" ? "Ask about markets and macro..." : "Ask your portfolio analyst..."}
+            aria-label="Chat message"
             rows={1}
-            className="flex-1 rounded-xl bg-raised border border-edge px-4 py-3 text-sm text-ink placeholder:text-ink-faint resize-none focus:outline-none focus:border-gold transition-colors"
+            className="flex-1 rounded-xl bg-raised border border-edge px-4 py-3 text-sm text-ink placeholder:text-ink-faint resize-none transition-colors"
           />
           <button
             type="submit"
             disabled={isStreaming || !input.trim()}
-            className="px-5 py-3 rounded-xl bg-gold text-canvas font-medium text-sm hover:brightness-110 transition-all disabled:opacity-40 disabled:hover:brightness-100"
+            aria-label={isStreaming ? "Streaming response" : "Send message"}
+            title={!input.trim() ? "Type a message first" : undefined}
+            className="px-5 py-3 rounded-xl bg-gold text-canvas font-medium text-sm hover:brightness-110 transition-all disabled:opacity-40 disabled:hover:brightness-100 disabled:cursor-not-allowed focus-ring"
           >
             {isStreaming ? "..." : "Send"}
           </button>

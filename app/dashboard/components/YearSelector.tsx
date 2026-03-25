@@ -6,10 +6,12 @@ function FilterPills({
   paramName,
   options,
   currentValue,
+  ariaLabel,
 }: {
   paramName: string;
   options: { label: string; value: string }[];
   currentValue: string;
+  ariaLabel?: string;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -25,12 +27,13 @@ function FilterPills({
   }
 
   return (
-    <div className="flex items-center gap-1.5">
+    <div className="flex items-center gap-1.5" role="group" aria-label={ariaLabel ?? paramName}>
       {options.map((opt) => (
         <button
           key={opt.value}
           onClick={() => handleChange(opt.value)}
-          className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap ${
+          aria-pressed={opt.value === currentValue}
+          className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap focus-ring ${
             opt.value === currentValue
               ? "bg-gold-glow text-gold"
               : "text-ink-dim hover:text-ink hover:bg-panel"
@@ -55,6 +58,7 @@ export function YearSelector({
       paramName="year"
       options={years.map((y) => ({ label: String(y), value: String(y) }))}
       currentValue={String(currentYear)}
+      ariaLabel="Tax year"
     />
   );
 }
@@ -76,6 +80,7 @@ export function AccountSelector({
       paramName="account"
       options={options}
       currentValue={currentAccount}
+      ariaLabel="Account filter"
     />
   );
 }

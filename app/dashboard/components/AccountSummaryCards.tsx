@@ -40,7 +40,8 @@ export function AccountSummaryCards({
         <Link
           key={account.id}
           href={`/dashboard/accounts?id=${account.id}`}
-          className="group rounded-xl border border-edge bg-panel p-5 hover:border-edge-strong hover:bg-raised/50 transition-all"
+          aria-label={`${account.name} — ${account.latestValue !== null ? formatCurrency(account.latestValue) : "no data"}`}
+          className="group rounded-xl border border-edge bg-panel p-5 hover:border-edge-strong hover:bg-raised/50 transition-all focus-ring"
         >
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">

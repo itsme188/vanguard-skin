@@ -6,6 +6,9 @@ import type { NoteWithContext, EarningsTimelineEntry } from "@/lib/queries/notes
 import type { TranscriptSummaryEntry } from "@/lib/queries/transcripts";
 import type { NoteType, NoteSentiment } from "@/lib/types";
 import { TranscriptCard, FetchTranscriptButton } from "./TranscriptCard";
+import { useToast } from "./Toast";
+import { ConfirmDialog } from "./ConfirmDialog";
+import { EmptyState } from "./EmptyState";
 
 // ─── Props ───────────────────────────────────────────────────────
 
@@ -62,6 +65,7 @@ export function NotesView({
   const router = useRouter();
   const searchParams = useSearchParams();
   const [isPending, startTransition] = useTransition();
+  const { toast } = useToast();
 
   // Form state — sync with active filter tab
   const [formType, setFormType] = useState<NoteType>(currentType ?? "journal");
@@ -162,11 +166,12 @@ export function NotesView({
       if (!data.success) throw new Error(data.error);
 
       setEditingId(null);
+      toast("Note updated", "success");
       startTransition(() => {
         router.refresh();
       });
-    } catch {
-      // Keep editing state on error
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Failed to update note", "error");
     }
   }
 
@@ -178,11 +183,12 @@ export function NotesView({
       const data = await res.json();
       if (!data.success) throw new Error(data.error);
 
+      toast("Note deleted", "success");
       startTransition(() => {
         router.refresh();
       });
-    } catch {
-      // Silently fail on delete error
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Failed to delete note", "error");
     }
   }
 
@@ -193,12 +199,13 @@ export function NotesView({
   return (
     <div className="space-y-6">
       {/* ─── Type filter pills ───────────────────────────────────── */}
-      <div className="flex items-center gap-1.5">
+      <div className="flex items-center gap-1.5" role="group" aria-label="Note type filter">
         {TYPE_OPTIONS.map((opt) => (
           <button
             key={opt.value}
             onClick={() => setFilter("type", opt.value)}
-            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap ${
+            aria-pressed={(opt.value || null) === currentType}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap focus-ring ${
               (opt.value || null) === currentType
                 ? "bg-gold-glow text-gold"
                 : "text-ink-faint hover:text-ink hover:bg-panel"
@@ -249,10 +256,11 @@ export function NotesView({
               <button
                 key={s.value}
                 type="button"
+                aria-pressed={formSentiment === s.value}
                 onClick={() =>
                   setFormSentiment(formSentiment === s.value ? "" : s.value)
                 }
-                className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
+                className={`px-2 py-1 rounded text-xs font-medium transition-colors focus-ring ${
                   formSentiment === s.value
                     ? SENTIMENT_STYLES[s.value]
                     : "text-ink-faint hover:text-ink-dim"
@@ -280,13 +288,17 @@ export function NotesView({
         />
 
         <div className="flex items-center justify-between">
-          <input
-            type="text"
-            value={formTags}
-            onChange={(e) => setFormTags(e.target.value)}
-            placeholder="Tags (comma-separated)"
-            className="bg-raised border border-edge rounded-lg px-3 py-1.5 text-sm text-ink placeholder:text-ink-faint w-60 focus:outline-none focus:border-gold"
-          />
+          <div className="flex flex-col">
+            <input
+              type="text"
+              value={formTags}
+              onChange={(e) => setFormTags(e.target.value)}
+              placeholder="Tags (comma-separated)"
+              aria-describedby="tags-hint"
+              className="bg-raised border border-edge rounded-lg px-3 py-1.5 text-sm text-ink placeholder:text-ink-faint w-60"
+            />
+            <span id="tags-hint" className="text-[10px] text-ink-faint mt-0.5">e.g. tech, earnings, Q4</span>
+          </div>
 
           <div className="flex items-center gap-3">
             {saveError && (
@@ -309,12 +321,13 @@ export function NotesView({
           type="text"
           defaultValue={currentSearch ?? ""}
           placeholder="Search notes..."
+          aria-label="Search notes"
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               setFilter("search", (e.target as HTMLInputElement).value);
             }
           }}
-          className="w-full bg-panel border border-edge rounded-lg px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:outline-none focus:border-gold"
+          className="w-full bg-panel border border-edge rounded-lg px-3 py-2 text-sm text-ink placeholder:text-ink-faint"
         />
       </div>
 
@@ -378,11 +391,11 @@ function NotesList({
 }) {
   if (notes.length === 0) {
     return (
-      <div className="bg-panel border border-edge rounded-xl p-8 text-center">
-        <p className="text-ink-faint text-sm">
-          No notes yet. Start writing to build your investment journal.
-        </p>
-      </div>
+      <EmptyState
+        icon={<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}><path d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" /></svg>}
+        title="No notes yet"
+        description="Start writing to build your investment journal."
+      />
     );
   }
 
@@ -616,15 +629,32 @@ function NoteCard({
   compact?: boolean;
 }) {
   const [showActions, setShowActions] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const borderClass = TYPE_BORDER[note.note_type] ?? "border-l-edge";
   const tags: string[] = note.tags ? JSON.parse(note.tags) : [];
 
   return (
     <div
-      className={`bg-panel border border-edge rounded-xl ${borderClass} border-l-2 ${compact ? "p-3" : "p-4"} group`}
+      className={`bg-panel border rounded-xl border-l-2 ${compact ? "p-3" : "p-4"} group ${
+        isEditing
+          ? "border-gold/40 border-l-gold bg-gold/[0.02]"
+          : `border-edge ${borderClass}`
+      }`}
       onMouseEnter={() => setShowActions(true)}
       onMouseLeave={() => setShowActions(false)}
     >
+      <ConfirmDialog
+        open={showDeleteConfirm}
+        title="Delete note"
+        message="Are you sure you want to delete this note? This cannot be undone."
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={() => {
+          setShowDeleteConfirm(false);
+          onDelete(note.id);
+        }}
+        onCancel={() => setShowDeleteConfirm(false)}
+      />
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
           {/* Header: type badge + symbol + date */}
@@ -711,8 +741,8 @@ function NoteCard({
           <div className="flex gap-1 shrink-0">
             <button
               onClick={() => onStartEdit(note.id, note.content)}
-              className="p-1 text-ink-faint hover:text-ink rounded transition-colors"
-              title="Edit"
+              className="p-1 text-ink-faint hover:text-ink rounded transition-colors focus-ring"
+              aria-label="Edit note"
             >
               <svg
                 className="w-3.5 h-3.5"
@@ -726,11 +756,9 @@ function NoteCard({
               </svg>
             </button>
             <button
-              onClick={() => {
-                if (confirm("Delete this note?")) onDelete(note.id);
-              }}
-              className="p-1 text-ink-faint hover:text-down rounded transition-colors"
-              title="Delete"
+              onClick={() => setShowDeleteConfirm(true)}
+              className="p-1 text-ink-faint hover:text-down rounded transition-colors focus-ring"
+              aria-label="Delete note"
             >
               <svg
                 className="w-3.5 h-3.5"

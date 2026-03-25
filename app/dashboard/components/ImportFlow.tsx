@@ -145,9 +145,18 @@ export function ImportFlow() {
           e.preventDefault();
           setIsDragOver(false);
         }}
+        role="button"
+        aria-label="File upload drop zone"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if ((e.key === "Enter" || e.key === " ") && state.status === "idle") {
+            e.preventDefault();
+            fileInputRef.current?.click();
+          }
+        }}
         onClick={() => state.status === "idle" && fileInputRef.current?.click()}
         className={`
-          relative rounded-xl border-2 border-dashed p-6 sm:p-12 text-center transition-all cursor-pointer
+          relative rounded-xl border-2 border-dashed p-6 sm:p-12 text-center transition-all cursor-pointer focus-ring
           ${
             isDragOver
               ? "border-gold bg-gold-glow scale-[1.005]"
@@ -169,7 +178,7 @@ export function ImportFlow() {
         />
 
         {state.status === "parsing" ? (
-          <div className="flex flex-col items-center gap-3">
+          <div className="flex flex-col items-center gap-3" aria-live="polite">
             <div className="w-10 h-10 border-2 border-gold border-t-transparent rounded-full animate-spin" />
             <p className="text-ink-dim">Parsing files...</p>
           </div>
@@ -285,13 +294,13 @@ export function ImportFlow() {
         <div className="flex gap-3 pt-2">
           <button
             onClick={handleImport}
-            className="px-5 py-2.5 rounded-lg bg-gold text-canvas font-medium text-sm hover:brightness-110 transition-all"
+            className="px-5 py-2.5 rounded-lg bg-gold text-canvas font-medium text-sm hover:brightness-110 transition-all focus-ring"
           >
             Import {files.length} file{files.length !== 1 ? "s" : ""}
           </button>
           <button
             onClick={reset}
-            className="px-5 py-2.5 rounded-lg border border-edge text-ink-dim text-sm hover:bg-raised transition-colors"
+            className="px-5 py-2.5 rounded-lg border border-edge text-ink-dim text-sm hover:bg-raised transition-colors focus-ring"
           >
             Cancel
           </button>
@@ -369,12 +378,15 @@ export function ImportFlow() {
         </svg>
         <h3 className="text-lg font-medium text-ink">Import Failed</h3>
       </div>
-      <p className="text-sm text-ink-dim mb-4">
+      <p className="text-sm text-ink-dim mb-2">
         {(state as { status: "error"; message: string }).message}
+      </p>
+      <p className="text-xs text-ink-faint mb-4">
+        Supported formats: Vanguard PDFs, IBKR activity/holdings CSVs, Vanguard cost basis/holdings CSVs, Monthly Values CSVs
       </p>
       <button
         onClick={reset}
-        className="px-5 py-2.5 rounded-lg border border-edge text-ink-dim text-sm hover:bg-raised transition-colors"
+        className="px-5 py-2.5 rounded-lg border border-edge text-ink-dim text-sm hover:bg-raised transition-colors focus-ring"
       >
         Try Again
       </button>

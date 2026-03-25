@@ -11,6 +11,7 @@ import { TaxLotSummaryCards, AccountSummaryCards } from "../components/TaxLotSum
 import { OpenLotsTable, ClosedSalesTable } from "../components/TaxLotTables";
 import { RecomputeButton } from "../components/RecomputeButton";
 import { YearSelector, AccountSelector } from "../components/YearSelector";
+import { EmptyState } from "../components/EmptyState";
 
 export default async function TaxLotsPage(props: {
   searchParams: Promise<{ year?: string; account?: string }>;
@@ -110,16 +111,12 @@ export default async function TaxLotsPage(props: {
           <ClosedSalesTable sales={closedSales} showAccount={!selectedAccount} />
         </>
       ) : (
-        <div className="rounded-xl border border-dashed border-edge bg-panel/50 p-12 text-center">
-          <div className="text-ink-faint text-3xl mb-3 font-mono">FIFO</div>
-          <h3 className="text-lg font-medium text-ink mb-2">
-            No tax lots computed
-          </h3>
-          <p className="text-ink-dim text-sm max-w-md mx-auto mb-6">
-            Import your transaction data, then click &ldquo;Recompute&rdquo; to generate
-            tax lots using FIFO cost basis matching.
-          </p>
-        </div>
+        <EmptyState
+          icon={<span className="text-xl font-mono">FIFO</span>}
+          title="No tax lots computed"
+          description="Import your transaction data, then click &ldquo;Recompute&rdquo; to generate tax lots using FIFO cost basis matching."
+          action={{ label: "Import Files", href: "/dashboard/import" }}
+        />
       )}
     </div>
   );

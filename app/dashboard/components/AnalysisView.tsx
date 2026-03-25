@@ -2,6 +2,7 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
+import { useToast } from "./Toast";
 import type {
   AllocationEntry,
   ConcentrationMetrics,
@@ -114,11 +115,10 @@ export function AnalysisView({
 }: AnalysisViewProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { toast } = useToast();
   const [showCoverage, setShowCoverage] = useState(false);
   const [classifyLoading, setClassifyLoading] = useState(false);
-  const [classifyResult, setClassifyResult] = useState<string | null>(null);
   const [factorClassifyLoading, setFactorClassifyLoading] = useState(false);
-  const [factorClassifyResult, setFactorClassifyResult] = useState<string | null>(null);
 
   function navigate(updates: Record<string, string>) {
     const params = new URLSearchParams(searchParams.toString());
@@ -131,49 +131,47 @@ export function AnalysisView({
 
   async function runAutoClassify() {
     setClassifyLoading(true);
-    setClassifyResult(null);
     try {
       const res = await fetch("/api/compute/classify", { method: "POST" });
       const data = await res.json();
       if (data.success) {
-        setClassifyResult(
+        toast(
           data.classified > 0
             ? `Classified ${data.classified} securities (${data.skipped} already done)`
-            : `All ${data.skipped} securities already classified`
+            : `All ${data.skipped} securities already classified`,
+          "success"
         );
         router.refresh();
       } else {
-        setClassifyResult(`Error: ${data.error}`);
+        toast(`Classification failed: ${data.error}`, "error");
       }
     } catch {
-      setClassifyResult("Failed to connect");
+      toast("Failed to connect to server", "error");
     } finally {
       setClassifyLoading(false);
-      setTimeout(() => setClassifyResult(null), 5000);
     }
   }
 
   async function runFactorAutoClassify() {
     setFactorClassifyLoading(true);
-    setFactorClassifyResult(null);
     try {
       const res = await fetch("/api/compute/classify-factors", { method: "POST" });
       const data = await res.json();
       if (data.success) {
-        setFactorClassifyResult(
+        toast(
           `Classified ${data.classified} securities` +
             (data.skipped > 0 ? ` (${data.skipped} skipped)` : "") +
-            (data.errors?.length > 0 ? ` · ${data.errors.length} errors` : "")
+            (data.errors?.length > 0 ? ` · ${data.errors.length} errors` : ""),
+          "success"
         );
         router.refresh();
       } else {
-        setFactorClassifyResult(`Error: ${data.error}`);
+        toast(`Factor classification failed: ${data.error}`, "error");
       }
     } catch {
-      setFactorClassifyResult("Failed to connect");
+      toast("Failed to connect to server", "error");
     } finally {
       setFactorClassifyLoading(false);
-      setTimeout(() => setFactorClassifyResult(null), 8000);
     }
   }
 
@@ -187,7 +185,7 @@ export function AnalysisView({
     <div className="space-y-6">
       {/* Data coverage warning */}
       {dataCoverage.coveragePct < 90 && (
-        <div className="bg-gold/5 border border-gold/20 rounded-lg px-4 py-3 text-sm text-gold">
+        <div role="alert" className="bg-gold/5 border border-gold/20 rounded-lg px-4 py-3 text-sm text-gold">
           Analysis covers {formatMoney(dataCoverage.holdingsTotal)} of{" "}
           {formatMoney(dataCoverage.snapshotTotal)} ({dataCoverage.coveragePct}% of portfolio).
           {dataCoverage.missingAccounts.length > 0 && (
@@ -201,10 +199,11 @@ export function AnalysisView({
       <div className="flex flex-col gap-3">
         <div className="flex items-center gap-3">
           {/* Mode toggle */}
-          <div className="flex items-center bg-canvas rounded-lg p-0.5 border border-edge">
+          <div className="flex items-center bg-canvas rounded-lg p-0.5 border border-edge" role="group" aria-label="Analysis mode">
             <button
               onClick={() => navigate({ mode: "classification", dimension: "fund_category" })}
-              className={`px-3 py-1.5 text-sm rounded-md font-medium transition-colors ${
+              aria-pressed={!isFactorMode}
+              className={`px-3 py-1.5 text-sm rounded-md font-medium transition-colors focus-ring ${
                 !isFactorMode
                   ? "bg-panel text-ink shadow-sm"
                   : "text-ink-faint hover:text-ink"
@@ -214,7 +213,8 @@ export function AnalysisView({
             </button>
             <button
               onClick={() => navigate({ mode: "factors", dimension: "tariff_exposure" })}
-              className={`px-3 py-1.5 text-sm rounded-md font-medium transition-colors ${
+              aria-pressed={isFactorMode}
+              className={`px-3 py-1.5 text-sm rounded-md font-medium transition-colors focus-ring ${
                 isFactorMode
                   ? "bg-panel text-ink shadow-sm"
                   : "text-ink-faint hover:text-ink"
@@ -227,12 +227,13 @@ export function AnalysisView({
           <div className="h-5 w-px bg-edge" />
 
           {/* Account scope pills */}
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5" role="group" aria-label="Account scope">
             {SCOPE_OPTIONS.map((opt) => (
               <button
                 key={opt.value}
                 onClick={() => navigate({ scope: opt.value })}
-                className={`px-3 py-1.5 text-sm rounded-lg font-medium transition-colors whitespace-nowrap ${
+                aria-pressed={opt.value === currentScope}
+                className={`px-3 py-1.5 text-sm rounded-lg font-medium transition-colors whitespace-nowrap focus-ring ${
                   opt.value === currentScope
                     ? "bg-gold/15 text-gold"
                     : "text-ink-faint hover:text-ink hover:bg-panel"
@@ -245,12 +246,13 @@ export function AnalysisView({
         </div>
 
         {/* Dimension pills */}
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap gap-1.5" role="group" aria-label="Analysis dimension">
           {dimensionPills.map((dim) => (
             <button
               key={dim}
               onClick={() => navigate({ dimension: dim })}
-              className={`px-3 py-1.5 text-sm rounded-full border transition-colors ${
+              aria-pressed={dim === currentDimension}
+              className={`px-3 py-1.5 text-sm rounded-full border transition-colors focus-ring ${
                 dim === currentDimension
                   ? "bg-gold/10 border-gold text-gold"
                   : "bg-panel border-edge text-ink-dim hover:text-ink hover:border-edge-strong"
@@ -387,26 +389,13 @@ export function AnalysisView({
                   </span>
                 )}
               </h3>
-              <div className="flex items-center gap-2">
-                {factorClassifyResult && (
-                  <span
-                    className={`text-xs font-mono ${
-                      factorClassifyResult.startsWith("Error") || factorClassifyResult === "Failed to connect"
-                        ? "text-down"
-                        : "text-up"
-                    }`}
-                  >
-                    {factorClassifyResult}
-                  </span>
-                )}
-                <button
-                  onClick={runFactorAutoClassify}
-                  disabled={factorClassifyLoading}
-                  className="px-3 py-1 text-xs bg-gold/10 text-gold border border-gold/30 rounded hover:bg-gold/20 transition-colors disabled:opacity-50"
-                >
-                  {factorClassifyLoading ? "Classifying..." : "Auto-Classify Factors"}
-                </button>
-              </div>
+              <button
+                onClick={runFactorAutoClassify}
+                disabled={factorClassifyLoading}
+                className="px-3 py-1 text-xs bg-gold/10 text-gold border border-gold/30 rounded hover:bg-gold/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-ring"
+              >
+                {factorClassifyLoading ? "Classifying..." : "Auto-Classify Factors"}
+              </button>
             </div>
             {factorCoverage && factorCoverage.bySource.length > 0 && (
               <div className="flex gap-4 mt-3">
@@ -504,21 +493,10 @@ export function AnalysisView({
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-medium text-ink">Classification</h3>
               <div className="flex items-center gap-2">
-                {classifyResult && (
-                  <span
-                    className={`text-xs font-mono ${
-                      classifyResult.startsWith("Error") || classifyResult === "Failed to connect"
-                        ? "text-down"
-                        : "text-up"
-                    }`}
-                  >
-                    {classifyResult}
-                  </span>
-                )}
                 <button
                   onClick={runAutoClassify}
                   disabled={classifyLoading}
-                  className="px-3 py-1 text-xs bg-gold/10 text-gold border border-gold/30 rounded hover:bg-gold/20 transition-colors disabled:opacity-50"
+                  className="px-3 py-1 text-xs bg-gold/10 text-gold border border-gold/30 rounded hover:bg-gold/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-ring"
                 >
                   {classifyLoading ? "Classifying..." : "Auto-Classify"}
                 </button>
