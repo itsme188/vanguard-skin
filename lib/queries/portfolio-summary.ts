@@ -166,7 +166,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
     .all(...holdingsParams, ...holdingsParams) as EnrichedHolding[];
 
   if (holdings.length > 0) {
-    lines.push("\n### All Holdings");
+    lines.push("\n### Current Holdings (verified positions with quantity > 0)");
     for (const h of holdings) {
       const unit = h.security_type === "bond" ? "face" : h.security_type === "option" ? "contracts" : "shares";
       const value = h.market_value != null ? ` MV:${formatUSD(h.market_value)}` : "";
@@ -340,7 +340,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
     .all(today, ...taxLotsParams) as HarvestCandidate[];
 
   if (harvestCandidates.length > 0) {
-    lines.push("\n### Tax-Loss Harvesting Candidates");
+    lines.push("\n### Tax-Loss Harvesting Candidates (from CURRENT open tax lots only)");
     for (const c of harvestCandidates) {
       lines.push(
         `- ${c.symbol} (${c.account_name}): ${formatUSD(c.unrealized_loss)} unrealized loss, held ${c.days_held} days`
@@ -431,7 +431,8 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
     .all(...txnParams) as RecentTransaction[];
 
   if (recentTxns.length > 0) {
-    lines.push("\n### Recent Transactions");
+    lines.push("\n### Recent Transactions (historical activity — NOT current positions)");
+    lines.push("These transactions show what has happened. A security listed here may have been bought AND subsequently sold.");
     for (const t of recentTxns) {
       const sym = t.symbol ?? "CASH";
       const amt = t.amount !== null ? ` ${formatUSD(Math.abs(t.amount))}` : "";
