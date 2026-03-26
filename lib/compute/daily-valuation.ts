@@ -26,6 +26,12 @@ interface PriceRow {
   close_price: number;
 }
 
+interface CashAnchor {
+  month_end_date: string;
+  snapshot_total: number;
+  holdings_value: number | null;
+}
+
 export function computeDailyValuations(db: Database.Database): DailyValuationResult {
   return db.transaction(() => {
     // Clear existing valuations
@@ -114,6 +120,60 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
 
         datesComputed++;
         accountsProcessed.add(account.account_id);
+      }
+    }
+
+    // Phase 2: Infer cash balances from monthly snapshot anchors.
+    // At each snapshot date: cash = snapshot_total − computed_holdings_value.
+    // Carry this cash forward until the next snapshot arrives.
+    const getCashAnchors = db.prepare(
+      `SELECT ms.month_end_date, ms.total_value AS snapshot_total, dv.holdings_value
+       FROM monthly_snapshots ms
+       LEFT JOIN daily_valuations dv
+         ON dv.account_id = ms.account_id AND dv.valuation_date = ms.month_end_date
+       WHERE ms.account_id = ?
+       ORDER BY ms.month_end_date`
+    );
+
+    const updateCashRange = db.prepare(
+      `UPDATE daily_valuations
+       SET cash_balance = ?, total_value = holdings_value + ?
+       WHERE account_id = ?
+         AND valuation_date >= ?
+         AND valuation_date < ?`
+    );
+
+    const updateCashFromDate = db.prepare(
+      `UPDATE daily_valuations
+       SET cash_balance = ?, total_value = holdings_value + ?
+       WHERE account_id = ?
+         AND valuation_date >= ?`
+    );
+
+    for (const account of accounts) {
+      const anchors = getCashAnchors.all(account.account_id) as CashAnchor[];
+
+      for (let i = 0; i < anchors.length; i++) {
+        const anchor = anchors[i];
+        if (anchor.holdings_value === null) continue;
+
+        const cashResidual = anchor.snapshot_total - anchor.holdings_value;
+
+        if (i < anchors.length - 1) {
+          // Apply from this snapshot up to (but not including) the next
+          updateCashRange.run(
+            cashResidual, cashResidual,
+            account.account_id,
+            anchor.month_end_date, anchors[i + 1].month_end_date
+          );
+        } else {
+          // Last snapshot — carry forward indefinitely
+          updateCashFromDate.run(
+            cashResidual, cashResidual,
+            account.account_id,
+            anchor.month_end_date
+          );
+        }
       }
     }
 

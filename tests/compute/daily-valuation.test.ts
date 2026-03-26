@@ -43,6 +43,18 @@ function seedCashTransaction(
   ).run(accountId, date, type, amount, `cash-${accountId}-${date}-${Math.random()}`);
 }
 
+function seedSnapshot(
+  db: Database.Database,
+  accountId: number,
+  date: string,
+  totalValue: number
+): void {
+  db.prepare(
+    `INSERT INTO monthly_snapshots (account_id, month_end_date, total_value)
+     VALUES (?, ?, ?)`
+  ).run(accountId, date, totalValue);
+}
+
 describe("daily valuation computation", () => {
   let db: Database.Database;
   const ACCOUNT_ID = 1; // Vanguard Taxable
@@ -331,6 +343,176 @@ describe("daily valuation computation", () => {
     // Ghost fix: GOOG should NOT appear even though it has a price
     expect(febVal.holdings_count).toBe(1);
     expect(febVal.total_value).toBe(1600);
+  });
+
+  // ─── Cash inference from monthly snapshots ─────────────────────
+
+  it("infers cash from monthly snapshot anchor", () => {
+    const sec = seedSecurity(db, "AAPL");
+    seedHolding(db, ACCOUNT_ID, sec, 10, "2025-01-31");
+    seedPrice(db, sec, "2025-01-31", 150);
+    // Snapshot says account is worth $2000, but holdings = $1500 → $500 cash
+    seedSnapshot(db, ACCOUNT_ID, "2025-01-31", 2000);
+
+    computeDailyValuations(db);
+
+    const val = db
+      .prepare("SELECT * FROM daily_valuations WHERE account_id = ? AND valuation_date = '2025-01-31'")
+      .get(ACCOUNT_ID) as any;
+
+    expect(val.holdings_value).toBe(1500);
+    expect(val.cash_balance).toBe(500);
+    expect(val.total_value).toBe(2000);
+  });
+
+  it("carries cash forward between snapshots", () => {
+    const sec = seedSecurity(db, "AAPL");
+    seedHolding(db, ACCOUNT_ID, sec, 10, "2025-01-31");
+    seedPrice(db, sec, "2025-01-31", 150);
+    seedPrice(db, sec, "2025-02-15", 160);
+    seedPrice(db, sec, "2025-02-28", 170);
+
+    // Jan snapshot: total=$2000, holdings=$1500 → cash=$500
+    seedSnapshot(db, ACCOUNT_ID, "2025-01-31", 2000);
+    // Feb snapshot: total=$2200, holdings=$1700 → cash=$500
+    seedSnapshot(db, ACCOUNT_ID, "2025-02-28", 2200);
+
+    computeDailyValuations(db);
+
+    const vals = db
+      .prepare(
+        "SELECT valuation_date, holdings_value, cash_balance, total_value FROM daily_valuations WHERE account_id = ? ORDER BY valuation_date"
+      )
+      .all(ACCOUNT_ID) as any[];
+
+    // Jan 31: cash from Jan snapshot ($500)
+    expect(vals[0].cash_balance).toBe(500);
+    expect(vals[0].total_value).toBe(2000);
+
+    // Feb 15: between Jan and Feb snapshots → uses Jan cash ($500)
+    expect(vals[1].cash_balance).toBe(500);
+    expect(vals[1].total_value).toBe(1600 + 500); // holdings + cash
+
+    // Feb 28: new snapshot → cash recalculated ($500)
+    expect(vals[2].cash_balance).toBe(500);
+    expect(vals[2].total_value).toBe(2200);
+  });
+
+  it("carries last snapshot cash forward indefinitely", () => {
+    const sec = seedSecurity(db, "AAPL");
+    seedHolding(db, ACCOUNT_ID, sec, 10, "2025-01-31");
+    seedPrice(db, sec, "2025-01-31", 150);
+    seedPrice(db, sec, "2025-03-15", 180);
+
+    // Only Jan snapshot — cash carries forward to March
+    seedSnapshot(db, ACCOUNT_ID, "2025-01-31", 2000);
+
+    computeDailyValuations(db);
+
+    const marVal = db
+      .prepare("SELECT * FROM daily_valuations WHERE account_id = ? AND valuation_date = '2025-03-15'")
+      .get(ACCOUNT_ID) as any;
+
+    expect(marVal.holdings_value).toBe(1800); // 10 * 180
+    expect(marVal.cash_balance).toBe(500);    // carried from Jan
+    expect(marVal.total_value).toBe(2300);    // 1800 + 500
+  });
+
+  it("leaves cash at zero when no monthly snapshots exist", () => {
+    const sec = seedSecurity(db, "AAPL");
+    seedHolding(db, ACCOUNT_ID, sec, 10, "2025-01-31");
+    seedPrice(db, sec, "2025-01-31", 150);
+    // No snapshot seeded
+
+    computeDailyValuations(db);
+
+    const val = db
+      .prepare("SELECT * FROM daily_valuations WHERE account_id = ?")
+      .get(ACCOUNT_ID) as any;
+
+    expect(val.cash_balance).toBe(0);
+    expect(val.total_value).toBe(1500);
+  });
+
+  it("dates before first snapshot have no cash inference", () => {
+    const sec = seedSecurity(db, "AAPL");
+    // Holdings from Jan 1 so daily valuations exist on Jan 15
+    seedHolding(db, ACCOUNT_ID, sec, 10, "2025-01-01");
+    seedPrice(db, sec, "2025-01-15", 145);
+    seedPrice(db, sec, "2025-01-31", 150);
+
+    // Snapshot only on Jan 31
+    seedSnapshot(db, ACCOUNT_ID, "2025-01-31", 2000);
+
+    computeDailyValuations(db);
+
+    const earlyVal = db
+      .prepare("SELECT * FROM daily_valuations WHERE account_id = ? AND valuation_date = '2025-01-15'")
+      .get(ACCOUNT_ID) as any;
+    const snapshotVal = db
+      .prepare("SELECT * FROM daily_valuations WHERE account_id = ? AND valuation_date = '2025-01-31'")
+      .get(ACCOUNT_ID) as any;
+
+    // Before snapshot: no cash
+    expect(earlyVal.cash_balance).toBe(0);
+    expect(earlyVal.total_value).toBe(1450);
+
+    // At snapshot: cash inferred
+    expect(snapshotVal.cash_balance).toBe(500);
+    expect(snapshotVal.total_value).toBe(2000);
+  });
+
+  it("handles large cash residual (long-short portfolio)", () => {
+    // Simulates IBKR: short positions reduce holdings_value, large cash from proceeds
+    const longPos = seedSecurity(db, "SPY");
+    const shortPos = seedSecurity(db, "QQQ");
+
+    seedHolding(db, ACCOUNT_ID, longPos, 100, "2025-01-31");
+    seedHolding(db, ACCOUNT_ID, shortPos, -50, "2025-01-31"); // short
+    seedPrice(db, longPos, "2025-01-31", 500);
+    seedPrice(db, shortPos, "2025-01-31", 400);
+
+    // Holdings = 100*500 + (-50*400) = 50000 - 20000 = 30000
+    // Account worth $100K → $70K in cash
+    seedSnapshot(db, ACCOUNT_ID, "2025-01-31", 100000);
+
+    computeDailyValuations(db);
+
+    const val = db
+      .prepare("SELECT * FROM daily_valuations WHERE account_id = ? AND valuation_date = '2025-01-31'")
+      .get(ACCOUNT_ID) as any;
+
+    expect(val.holdings_value).toBe(30000);
+    expect(val.cash_balance).toBe(70000);
+    expect(val.total_value).toBe(100000);
+  });
+
+  it("handles different cash levels per account", () => {
+    const sec = seedSecurity(db, "AAPL");
+    const ROTH = 2;
+
+    seedHolding(db, ACCOUNT_ID, sec, 10, "2025-01-31");
+    seedHolding(db, ROTH, sec, 5, "2025-01-31");
+    seedPrice(db, sec, "2025-01-31", 150);
+
+    // Taxable: $2000 total, $1500 holdings → $500 cash
+    seedSnapshot(db, ACCOUNT_ID, "2025-01-31", 2000);
+    // Roth: $750 total, $750 holdings → $0 cash
+    seedSnapshot(db, ROTH, "2025-01-31", 750);
+
+    computeDailyValuations(db);
+
+    const taxVal = db
+      .prepare("SELECT * FROM daily_valuations WHERE account_id = ? AND valuation_date = '2025-01-31'")
+      .get(ACCOUNT_ID) as any;
+    const rothVal = db
+      .prepare("SELECT * FROM daily_valuations WHERE account_id = ? AND valuation_date = '2025-01-31'")
+      .get(ROTH) as any;
+
+    expect(taxVal.cash_balance).toBe(500);
+    expect(taxVal.total_value).toBe(2000);
+    expect(rothVal.cash_balance).toBe(0);
+    expect(rothVal.total_value).toBe(750);
   });
 
   it("mixed daily and monthly-only securities produce stable valuations", () => {
