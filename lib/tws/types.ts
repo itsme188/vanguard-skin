@@ -60,3 +60,22 @@ export interface EnrichResult {
   conId?: number;
   error?: string;
 }
+
+/** Progress updates during portfolio sync. */
+export interface PositionSyncProgress {
+  phase: "positions" | "account_summary" | "committing" | "recomputing";
+  message: string;
+  current?: number;
+  total?: number;
+}
+
+/** Final result of a portfolio sync. */
+export interface PositionSyncResult {
+  positionsSynced: number;
+  securitiesCreated: number;
+  securitiesUpdated: number;
+  netLiquidation: number | null;
+  cashBalance: number | null;
+  snapshotInserted: boolean;
+  valuationsRecomputed: boolean;
+}

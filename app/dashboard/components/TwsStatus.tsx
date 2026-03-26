@@ -85,6 +85,7 @@ function TwsPanel({
   const [priceProgress, setPriceProgress] = useState<PriceProgress | null>(
     null,
   );
+  const [syncStatus, setSyncStatus] = useState<string | null>(null);
 
   async function handleConnect() {
     setLoading("connect");
@@ -253,8 +254,84 @@ function TwsPanel({
     }
   }
 
+  async function handleSyncPortfolio() {
+    setLoading("sync");
+    setResult(null);
+    setSyncStatus("Connecting...");
+
+    try {
+      const res = await fetch("/api/tws/positions", { method: "POST" });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({ error: "Failed" }));
+        setResult(`Error: ${data.error || "Failed"}`);
+        setLoading(null);
+        setSyncStatus(null);
+        return;
+      }
+
+      const reader = res.body?.getReader();
+      if (!reader) {
+        setResult("Error: No response stream");
+        setLoading(null);
+        setSyncStatus(null);
+        return;
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const data = line.slice(6);
+          if (data === "[DONE]") break;
+
+          try {
+            const parsed = JSON.parse(data);
+
+            if (parsed.progress) {
+              const p = parsed.progress;
+              setSyncStatus(p.message);
+            }
+
+            if (parsed.complete) {
+              const d = parsed.data;
+              const parts = [`Synced ${d.positionsSynced} positions`];
+              if (d.netLiquidation != null) {
+                parts.push(`NLV $${Math.round(d.netLiquidation).toLocaleString()}`);
+              }
+              if (d.cashBalance != null) {
+                parts.push(`Cash $${Math.round(d.cashBalance).toLocaleString()}`);
+              }
+              setResult(parts.join(" · "));
+            }
+
+            if (parsed.error) {
+              setResult(`Error: ${parsed.error}`);
+            }
+          } catch {
+            /* skip malformed lines */
+          }
+        }
+      }
+    } catch (err) {
+      setResult(`Error: ${err instanceof Error ? err.message : "Failed"}`);
+    } finally {
+      setLoading(null);
+      setSyncStatus(null);
+    }
+  }
+
   const isConnected = status.state === "connected";
-  const isFetching = loading === "snapshot" || loading === "historical";
+  const isFetching = loading === "snapshot" || loading === "historical" || loading === "sync";
 
   // Button labels
   const snapshotLabel =
@@ -379,6 +456,18 @@ function TwsPanel({
                 Quick Refresh: ~2 min · Full History: incremental
               </p>
             )}
+
+            <p className="text-[10px] text-ink-faint uppercase tracking-wider pt-1">
+              Portfolio
+            </p>
+            <button
+              onClick={handleSyncPortfolio}
+              disabled={loading !== null}
+              className="w-full px-3 py-1.5 text-xs font-medium rounded-lg bg-up/20 text-up hover:bg-up/30 disabled:opacity-50 transition-colors"
+              title="Fetch live positions and account value from TWS"
+            >
+              {loading === "sync" ? (syncStatus ?? "Syncing...") : "Sync Portfolio"}
+            </button>
 
             <p className="text-[10px] text-ink-faint uppercase tracking-wider pt-1">
               Other
