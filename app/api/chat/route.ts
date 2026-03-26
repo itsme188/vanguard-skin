@@ -1,22 +1,27 @@
 import { NextRequest } from "next/server";
-import Anthropic from "@anthropic-ai/sdk";
+import {
+  streamText,
+  tool,
+  jsonSchema,
+  convertToModelMessages,
+  stepCountIs,
+} from "ai";
+import { createAnthropic } from "@ai-sdk/anthropic";
 import { db } from "@/lib/db";
 import { getPortfolioSummaryForChat } from "@/lib/queries/portfolio-summary";
 import { CHAT_TOOLS, executeTool, resolveAccountName } from "@/lib/chat/tools";
 import { buildSystemPrompt } from "@/lib/chat/system-prompt";
 import { getAnthropicApiKey } from "@/lib/env";
-import { VALID_SCOPES, type ChatScope, SCOPE_LABELS } from "@/lib/types";
-
-const MAX_TOOL_ITERATIONS = 8;
+import { VALID_SCOPES, type ChatScope } from "@/lib/types";
 
 export async function POST(request: NextRequest) {
   try {
     const { messages, scope: rawScope } = await request.json();
 
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
-      return new Response(
-        JSON.stringify({ error: "Messages array is required" }),
-        { status: 400, headers: { "Content-Type": "application/json" } }
+      return Response.json(
+        { error: "Messages array is required" },
+        { status: 400 }
       );
     }
 
@@ -24,9 +29,11 @@ export async function POST(request: NextRequest) {
     let scope: ChatScope = "all";
     if (rawScope !== undefined && rawScope !== null) {
       if (!VALID_SCOPES.includes(rawScope)) {
-        return new Response(
-          JSON.stringify({ error: `Invalid scope: ${rawScope}. Valid: ${VALID_SCOPES.join(", ")}` }),
-          { status: 400, headers: { "Content-Type": "application/json" } }
+        return Response.json(
+          {
+            error: `Invalid scope: ${rawScope}. Valid: ${VALID_SCOPES.join(", ")}`,
+          },
+          { status: 400 }
         );
       }
       scope = rawScope;
@@ -34,11 +41,12 @@ export async function POST(request: NextRequest) {
 
     const apiKey = getAnthropicApiKey();
     if (!apiKey) {
-      return new Response(
-        JSON.stringify({
-          error: "ANTHROPIC_API_KEY not configured. Add it to .env.local to enable chat.",
-        }),
-        { status: 500, headers: { "Content-Type": "application/json" } }
+      return Response.json(
+        {
+          error:
+            "ANTHROPIC_API_KEY not configured. Add it to .env.local to enable chat.",
+        },
+        { status: 500 }
       );
     }
 
@@ -51,165 +59,61 @@ export async function POST(request: NextRequest) {
         "vanguard-roth-ira": "Vanguard Roth IRA",
       };
       const accountHint = scopeToAccountHint[scope];
-      const accountName = accountHint ? resolveAccountName(db, accountHint) : undefined;
+      const accountName = accountHint
+        ? resolveAccountName(db, accountHint)
+        : undefined;
       portfolioContext = getPortfolioSummaryForChat(db, accountName);
     }
     const currentDate = new Date().toISOString().slice(0, 10);
     const systemPrompt = buildSystemPrompt(portfolioContext, currentDate, scope);
 
-    const client = new Anthropic({ apiKey });
+    // Create Anthropic provider with explicit API key
+    const anthropic = createAnthropic({ apiKey });
 
-    // Prepare conversation messages (user messages from client)
-    const conversationMessages: Anthropic.MessageParam[] = messages.map(
-      (m: { role: string; content: string }) => ({
-        role: m.role as "user" | "assistant",
-        content: m.content,
-      })
-    );
+    // Convert existing Anthropic tool definitions to AI SDK tool format.
+    // Each tool wraps the existing executeTool() dispatcher, preserving all
+    // tool logic and data quality annotations without any rewrite.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const aiTools: Record<string, any> = {};
+    for (const t of CHAT_TOOLS) {
+      const name = t.name;
+      aiTools[name] = tool({
+        description: t.description,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        inputSchema: jsonSchema<Record<string, unknown>>(t.input_schema as any),
+        execute: async (input) => executeTool(db, name, input),
+      });
+    }
 
-    // Stream the response with agentic tool-use loop
-    const encoder = new TextEncoder();
-    const readable = new ReadableStream({
-      async start(controller) {
-        try {
-          let iteration = 0;
-          let hadTextInPreviousIteration = false;
-
-          while (iteration < MAX_TOOL_ITERATIONS) {
-            iteration++;
-
-            // Separate text from prior tool-use iteration with a paragraph break
-            if (hadTextInPreviousIteration) {
-              controller.enqueue(
-                encoder.encode(
-                  `data: ${JSON.stringify({ text: "\n\n" })}\n\n`
-                )
-              );
-              hadTextInPreviousIteration = false;
-            }
-
-            const stream = client.messages.stream({
-              model: "claude-opus-4-6",
-              max_tokens: 16000,
-              thinking: { type: "adaptive" },
-              cache_control: { type: "ephemeral" },
-              system: systemPrompt,
-              tools: CHAT_TOOLS,
-              messages: conversationMessages,
-            });
-
-            // Stream text deltas to client in real-time
-            for await (const event of stream) {
-              if (event.type === "content_block_start") {
-                if (event.content_block.type === "tool_use") {
-                  // Signal to client that a tool is being called
-                  controller.enqueue(
-                    encoder.encode(
-                      `data: ${JSON.stringify({
-                        status: "analyzing",
-                        tool: event.content_block.name,
-                      })}\n\n`
-                    )
-                  );
-                } else if (event.content_block.type === "thinking") {
-                  // Signal that Claude is thinking (don't stream thinking content)
-                  controller.enqueue(
-                    encoder.encode(
-                      `data: ${JSON.stringify({ status: "thinking" })}\n\n`
-                    )
-                  );
-                }
-              }
-
-              if (
-                event.type === "content_block_delta" &&
-                event.delta.type === "text_delta"
-              ) {
-                hadTextInPreviousIteration = true;
-                controller.enqueue(
-                  encoder.encode(
-                    `data: ${JSON.stringify({ text: event.delta.text })}\n\n`
-                  )
-                );
-              }
-              // thinking_delta events are intentionally not streamed to the client
-            }
-
-            // Get the final message to check stop reason and extract tool calls
-            const finalMessage = await stream.finalMessage();
-
-            if (finalMessage.stop_reason !== "tool_use") {
-              // Done — no more tools to call
-              break;
-            }
-
-            // Extract tool_use blocks and execute them server-side
-            const toolUseBlocks = finalMessage.content.filter(
-              (block): block is Anthropic.ToolUseBlock =>
-                block.type === "tool_use"
-            );
-
-            if (toolUseBlocks.length === 0) {
-              break;
-            }
-
-            // Append the assistant's full response (including tool_use blocks)
-            conversationMessages.push({
-              role: "assistant",
-              content: finalMessage.content,
-            });
-
-            // Execute each tool and build tool_result messages
-            const toolResults: Anthropic.ToolResultBlockParam[] =
-              await Promise.all(toolUseBlocks.map(async (toolBlock) => {
-                const result = await executeTool(
-                  db,
-                  toolBlock.name,
-                  toolBlock.input as Record<string, unknown>
-                );
-                return {
-                  type: "tool_result" as const,
-                  tool_use_id: toolBlock.id,
-                  content: JSON.stringify(result),
-                };
-              }));
-
-            // Append the tool results as a user message
-            conversationMessages.push({
-              role: "user",
-              content: toolResults,
-            });
-          }
-
-          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-          controller.close();
-        } catch (error) {
-          const msg =
-            error instanceof Error ? error.message : "Stream error";
-          controller.enqueue(
-            encoder.encode(
-              `data: ${JSON.stringify({ error: msg })}\n\n`
-            )
-          );
-          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-          controller.close();
-        }
+    // Stream with automatic agentic tool loop (up to 8 model calls)
+    const result = streamText({
+      model: anthropic("claude-opus-4-6"),
+      maxOutputTokens: 16000,
+      system: {
+        role: "system",
+        content: systemPrompt,
+        providerOptions: {
+          anthropic: { cacheControl: { type: "ephemeral" } },
+        },
+      },
+      tools: aiTools,
+      messages: await convertToModelMessages(messages),
+      stopWhen: stepCountIs(8),
+      providerOptions: {
+        anthropic: {
+          thinking: { type: "adaptive" },
+        },
       },
     });
 
-    return new Response(readable, {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-      },
+    return result.toUIMessageStreamResponse({
+      sendReasoning: true,
+      onError: (error) =>
+        error instanceof Error ? error.message : "Stream error",
     });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Unknown error";
-    return new Response(JSON.stringify({ error: message }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
+    return Response.json({ error: message }, { status: 500 });
   }
 }

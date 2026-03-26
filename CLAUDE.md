@@ -10,6 +10,7 @@ Local-first portfolio dashboard for tracking Vanguard + IBKR investments.
 - **Charts:** Recharts
 - **CSV parsing:** papaparse
 - **PDF parsing:** Claude API (@anthropic-ai/sdk)
+- **Chat:** AI SDK v6 (`ai`, `@ai-sdk/react`, `@ai-sdk/anthropic`)
 - **Testing:** Vitest
 
 ## Architecture
@@ -82,7 +83,7 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - `POST /api/import?mode=commit` — parse and commit to database
 - `POST /api/compute/valuations` — recompute daily valuations
 - `POST /api/compute/tax-lots` — recompute tax lots (FIFO)
-- `POST /api/chat` — streaming Claude Q&A with portfolio context (Opus 4.6, adaptive thinking, prompt caching)
+- `POST /api/chat` — AI SDK v6 `streamText` with `@ai-sdk/anthropic` provider (Opus 4.6, adaptive thinking, ephemeral cache control, `stopWhen: stepCountIs(8)`). Client uses `useChat` from `@ai-sdk/react`.
 
 ## Safety Rules
 
@@ -122,4 +123,4 @@ These areas are working correctly and should not be refactored or "improved" unl
 - The import pipeline (Detect → Parse → Preview → Confirm → Commit)
 - The Claude API PDF parsing integration
 - The migration system
-- The chat endpoint streaming implementation
+- The chat AI SDK integration (route.ts uses streamText, ChatInterface.tsx uses useChat)

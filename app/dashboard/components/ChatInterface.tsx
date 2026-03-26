@@ -1,14 +1,13 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import { useChat } from "@ai-sdk/react";
+import { DefaultChatTransport } from "ai";
+import type { UIMessage } from "ai";
 import { MarkdownMessage } from "./MarkdownMessage";
 import type { ChatScope } from "@/lib/types";
 
-interface Message {
-  role: "user" | "assistant";
-  content: string;
-}
-
+// Friendly labels for tool call indicators
 const TOOL_LABELS: Record<string, string> = {
   query_holdings: "Querying holdings",
   query_price_history: "Fetching price history",
@@ -18,9 +17,15 @@ const TOOL_LABELS: Record<string, string> = {
   query_performance: "Loading performance data",
   query_income_summary: "Summarizing income",
   query_twr: "Computing time-weighted return",
+  query_fred: "Fetching economic data",
+  query_company_fundamentals: "Looking up company financials",
+  query_insider_trades: "Fetching insider trading data",
+  query_notes: "Searching notes",
+  create_note: "Saving note",
+  query_earnings_transcript: "Fetching earnings transcript",
 };
 
-// Scope configuration — labels, prompts, and personas
+// Scope configuration
 const SCOPE_OPTIONS: { value: ChatScope; label: string }[] = [
   { value: "all", label: "All Accounts" },
   { value: "ibkr", label: "IBKR" },
@@ -51,118 +56,155 @@ const MACRO_SUGGESTIONS = [
   "What are the biggest macro risks right now?",
 ];
 
-export function ChatInterface() {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState("");
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [toolStatus, setToolStatus] = useState<string | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+// ─── Sub-components ──────────────────────────────────────────────
 
+function ThinkingIndicator() {
+  return (
+    <div className="flex items-center gap-2 text-xs text-ink-dim my-1">
+      <span className="inline-block w-1.5 h-1.5 rounded-full bg-gold animate-pulse" />
+      Thinking…
+    </div>
+  );
+}
+
+function ToolIndicator({ name, state }: { name: string; state: string }) {
+  // Hide completed tools — they served their purpose
+  if (state === "output-available") return null;
+
+  const label = TOOL_LABELS[name] ?? `Using ${name}`;
+  const isError = state === "output-error";
+
+  return (
+    <div className="flex items-center gap-2 text-xs text-ink-dim my-1">
+      {isError ? (
+        <span className="text-down">Tool error</span>
+      ) : (
+        <>
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-gold animate-pulse" />
+          {label}
+        </>
+      )}
+    </div>
+  );
+}
+
+function CopyButton({ message }: { message: UIMessage }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(() => {
+    const text = message.parts
+      .filter((p): p is Extract<typeof p, { type: "text" }> => p.type === "text")
+      .map((p) => p.text)
+      .join("\n\n");
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }, [message]);
+
+  return (
+    <button
+      onClick={handleCopy}
+      className="mt-2 text-[10px] text-ink-faint hover:text-ink-dim transition-colors focus-ring"
+      aria-label="Copy message"
+    >
+      {copied ? "Copied!" : "Copy"}
+    </button>
+  );
+}
+
+// ─── Message rendering ───────────────────────────────────────────
+
+function renderAssistantParts(parts: UIMessage["parts"]) {
+  if (parts.length === 0) {
+    return <span className="text-ink-faint animate-pulse">Thinking...</span>;
+  }
+
+  return parts.map((part, i) => {
+    if (part.type === "text") {
+      return part.text ? (
+        <MarkdownMessage key={i} content={part.text} />
+      ) : null;
+    }
+
+    if (part.type === "reasoning") {
+      // Show indicator only while actively reasoning — hide completed
+      return (part as { state?: string }).state === "streaming" ? (
+        <ThinkingIndicator key={i} />
+      ) : null;
+    }
+
+    if (part.type === "step-start") {
+      return null;
+    }
+
+    // Tool parts: type is 'tool-${toolName}'
+    if (part.type.startsWith("tool-")) {
+      const toolName = part.type.slice(5);
+      const state = (part as { state: string }).state;
+      return <ToolIndicator key={i} name={toolName} state={state} />;
+    }
+
+    return null;
+  });
+}
+
+function renderUserParts(parts: UIMessage["parts"]) {
+  return (
+    <div className="whitespace-pre-wrap">
+      {parts
+        .filter((p): p is Extract<typeof p, { type: "text" }> => p.type === "text")
+        .map((p) => p.text)
+        .join("")}
+    </div>
+  );
+}
+
+// ─── Main component ──────────────────────────────────────────────
+
+export function ChatInterface() {
   const [scope, setScope] = useState<ChatScope>("all");
+  const [inputText, setInputText] = useState("");
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Recreate transport when scope changes (scope is locked after first message)
+  const transport = useMemo(
+    () =>
+      new DefaultChatTransport({
+        api: "/api/chat",
+        body: { scope },
+      }),
+    [scope]
+  );
+
+  const {
+    messages,
+    status,
+    error,
+    sendMessage,
+    regenerate,
+    setMessages,
+    stop,
+  } = useChat({ transport });
+
+  const isStreaming = status === "streaming" || status === "submitted";
   const isLocked = messages.length > 0;
   const suggestions = scope === "macro" ? MACRO_SUGGESTIONS : PORTFOLIO_SUGGESTIONS;
-  const scopeLabel = SCOPE_OPTIONS.find((s) => s.value === scope)?.label ?? "All Accounts";
+  const scopeLabel =
+    SCOPE_OPTIONS.find((s) => s.value === scope)?.label ?? "All Accounts";
 
+  // Auto-scroll on new content
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, toolStatus]);
+  }, [messages]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!input.trim() || isStreaming) return;
+    if (!inputText.trim() || isStreaming) return;
 
-    const userMessage = input.trim();
-    setInput("");
-    setError(null);
-    setToolStatus(null);
-
-    const newMessages: Message[] = [
-      ...messages,
-      { role: "user", content: userMessage },
-    ];
-    setMessages(newMessages);
-    setIsStreaming(true);
-
-    try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: newMessages, scope }),
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        setError(data.error || "Failed to get response");
-        setIsStreaming(false);
-        return;
-      }
-
-      const reader = res.body?.getReader();
-      if (!reader) {
-        setError("No response stream");
-        setIsStreaming(false);
-        return;
-      }
-
-      const decoder = new TextDecoder();
-      let assistantContent = "";
-
-      // Add empty assistant message that we'll stream into
-      setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split("\n");
-
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const data = line.slice(6);
-
-          if (data === "[DONE]") break;
-
-          try {
-            const parsed = JSON.parse(data);
-            if (parsed.error) {
-              setError(parsed.error);
-              break;
-            }
-            if (parsed.status === "thinking") {
-              setToolStatus("Thinking…");
-            } else if (parsed.status === "analyzing" && parsed.tool) {
-              // Show tool activity indicator
-              const label = TOOL_LABELS[parsed.tool] ?? `Running ${parsed.tool}`;
-              setToolStatus(label);
-            }
-            if (parsed.text) {
-              // Clear tool status when text starts flowing
-              setToolStatus(null);
-              assistantContent += parsed.text;
-              setMessages((prev) => {
-                const updated = [...prev];
-                updated[updated.length - 1] = {
-                  role: "assistant",
-                  content: assistantContent,
-                };
-                return updated;
-              });
-            }
-          } catch {
-            // Skip malformed JSON lines
-          }
-        }
-      }
-    } catch {
-      setError("Failed to connect to chat API");
-    } finally {
-      setIsStreaming(false);
-      setToolStatus(null);
-      inputRef.current?.focus();
-    }
+    const text = inputText.trim();
+    setInputText("");
+    await sendMessage({ text });
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -173,17 +215,20 @@ export function ChatInterface() {
   }
 
   function handleNewConversation() {
+    if (isStreaming) stop();
     setMessages([]);
     setScope("all");
-    setInput("");
-    setError(null);
-    setToolStatus(null);
+    setInputText("");
   }
 
   return (
     <div className="flex flex-col h-[calc(100vh-12rem)]">
       {/* Messages area */}
-      <div className="flex-1 overflow-y-auto space-y-4 pb-4" aria-live="polite" aria-label="Chat messages">
+      <div
+        className="flex-1 overflow-y-auto space-y-4 pb-4"
+        aria-live="polite"
+        aria-label="Chat messages"
+      >
         {/* Scope badge header (shown when conversation is active) */}
         {isLocked && (
           <div className="flex items-center justify-between pb-3 mb-3 border-b border-edge">
@@ -211,10 +256,13 @@ export function ChatInterface() {
           </div>
         )}
 
+        {/* Empty state */}
         {messages.length === 0 && (
           <div className="flex items-center justify-center h-full">
             <div className="text-center max-w-md">
-              <div className="text-3xl text-ink-faint mb-4 font-serif italic">Analyst</div>
+              <div className="text-3xl text-ink-faint mb-4 font-serif italic">
+                Analyst
+              </div>
               <h3 className="text-ink font-medium mb-2">
                 {scope === "macro" ? "Market Analyst" : "Portfolio Analyst"}
               </h3>
@@ -223,7 +271,11 @@ export function ChatInterface() {
               </p>
 
               {/* Scope chip bar */}
-              <div className="flex flex-wrap justify-center gap-2 mb-6" role="group" aria-label="Analysis scope">
+              <div
+                className="flex flex-wrap justify-center gap-2 mb-6"
+                role="group"
+                aria-label="Analysis scope"
+              >
                 {SCOPE_OPTIONS.map((opt) => (
                   <button
                     key={opt.value}
@@ -236,7 +288,11 @@ export function ChatInterface() {
                     }`}
                     style={
                       scope === opt.value
-                        ? { background: "rgba(201,164,78,0.2)", borderColor: "#c9a44e", color: "#c9a44e" }
+                        ? {
+                            background: "rgba(201,164,78,0.2)",
+                            borderColor: "#c9a44e",
+                            color: "#c9a44e",
+                          }
                         : undefined
                     }
                   >
@@ -251,7 +307,7 @@ export function ChatInterface() {
                   <button
                     key={suggestion}
                     onClick={() => {
-                      setInput(suggestion);
+                      setInputText(suggestion);
                       inputRef.current?.focus();
                     }}
                     className="px-3 py-1.5 rounded-lg border border-edge text-xs text-ink-dim hover:text-ink hover:border-edge-strong transition-all focus-ring"
@@ -264,9 +320,10 @@ export function ChatInterface() {
           </div>
         )}
 
-        {messages.map((msg, i) => (
+        {/* Message list */}
+        {messages.map((msg) => (
           <div
-            key={i}
+            key={msg.id}
             className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
           >
             <div
@@ -276,34 +333,39 @@ export function ChatInterface() {
                   : "bg-panel border border-edge text-ink"
               }`}
             >
-              {msg.role === "assistant" ? (
-                msg.content ? (
-                  <MarkdownMessage content={msg.content} />
-                ) : (
-                  <span className="text-ink-faint animate-pulse">Thinking...</span>
-                )
+              {msg.role === "user" ? (
+                renderUserParts(msg.parts)
               ) : (
-                <div className="whitespace-pre-wrap">{msg.content}</div>
+                <>
+                  {renderAssistantParts(msg.parts)}
+                  {/* Copy button — only show if there's actual text content */}
+                  {msg.parts.some(
+                    (p) => p.type === "text" && (p as { text: string }).text
+                  ) && <CopyButton message={msg} />}
+                </>
               )}
             </div>
           </div>
         ))}
 
-        {/* Tool status indicator */}
-        {toolStatus && (
+        {/* Error display */}
+        {error && (
           <div className="flex justify-start">
-            <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-panel/50 border border-edge/50 text-xs text-ink-dim">
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-gold animate-pulse" />
-              {toolStatus}
+            <div className="max-w-[80%] rounded-xl px-4 py-3 text-sm bg-down-tint border border-down/20 text-down">
+              {error.message}
             </div>
           </div>
         )}
 
-        {error && (
+        {/* Retry button on error */}
+        {status === "error" && messages.length > 0 && (
           <div className="flex justify-start">
-            <div className="max-w-[80%] rounded-xl px-4 py-3 text-sm bg-down-tint border border-down/20 text-down">
-              {error}
-            </div>
+            <button
+              onClick={() => regenerate()}
+              className="px-3 py-1.5 text-xs text-ink-dim border border-edge rounded-lg hover:text-ink hover:border-edge-strong transition-all focus-ring"
+            >
+              Retry
+            </button>
           </div>
         )}
 
@@ -315,26 +377,31 @@ export function ChatInterface() {
         <form onSubmit={handleSubmit} className="flex gap-3">
           <textarea
             ref={inputRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
+            value={inputText}
+            onChange={(e) => setInputText(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={scope === "macro" ? "Ask about markets and macro..." : "Ask your portfolio analyst..."}
+            placeholder={
+              scope === "macro"
+                ? "Ask about markets and macro..."
+                : "Ask your portfolio analyst..."
+            }
             aria-label="Chat message"
             rows={1}
             className="flex-1 rounded-xl bg-raised border border-edge px-4 py-3 text-sm text-ink placeholder:text-ink-faint resize-none transition-colors"
           />
           <button
             type="submit"
-            disabled={isStreaming || !input.trim()}
+            disabled={isStreaming || !inputText.trim()}
             aria-label={isStreaming ? "Streaming response" : "Send message"}
-            title={!input.trim() ? "Type a message first" : undefined}
+            title={!inputText.trim() ? "Type a message first" : undefined}
             className="px-5 py-3 rounded-xl bg-gold text-canvas font-medium text-sm hover:brightness-110 transition-all disabled:opacity-40 disabled:hover:brightness-100 disabled:cursor-not-allowed focus-ring"
           >
             {isStreaming ? "..." : "Send"}
           </button>
         </form>
         <p className="text-[11px] text-ink-faint mt-2 text-center">
-          Powered by Claude. Analyzes portfolio data — does not provide investment advice.
+          Powered by Claude. Analyzes portfolio data — does not provide
+          investment advice.
         </p>
       </div>
     </div>
