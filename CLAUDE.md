@@ -7,7 +7,7 @@ Local-first portfolio dashboard for tracking Vanguard + IBKR investments.
 - **Framework:** Next.js 16, React 19, TypeScript 5
 - **Database:** SQLite via better-sqlite3 (WAL mode, foreign keys ON)
 - **Styling:** Tailwind CSS 4
-- **Charts:** Recharts
+- **Charts:** Recharts (portfolio-level), LightweightCharts v5 (per-security candlestick)
 - **CSV parsing:** papaparse
 - **PDF parsing:** Claude API (@anthropic-ai/sdk)
 - **Chat:** AI SDK v6 (`ai`, `@ai-sdk/react`, `@ai-sdk/anthropic`)
@@ -18,7 +18,7 @@ Local-first portfolio dashboard for tracking Vanguard + IBKR investments.
 - **App Router** — Server components for data loading, client components for interactivity
 - **SQLite** — Single `data/vanguard.db` file, WAL mode, foreign keys enforced
 - **Migrations** — Numbered `.sql` files in `lib/db/migrations/`, tracked in `schema_migrations` table
-- **Tab-based UI** — Overview | Accounts | Tax Lots | Analysis | Import | Reconciliation | Notes | Chat
+- **Tab-based UI** — Overview | Accounts | Tax Lots | Analysis | Charts | Import | Reconciliation | Notes | Chat
 
 ## Directory Structure
 
@@ -35,6 +35,7 @@ lib/
   import/               # Import pipeline (detect, parse, commit)
     parsers/            # Per-format parsers
   compute/              # Computation engines (valuations, tax lots)
+  chart/                # Technical indicators (SMA, EMA) — client-side
   types.ts              # Shared TypeScript types
 tests/
   fixtures/             # Test data (anonymized samples)
@@ -88,6 +89,7 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - `POST /api/compute/tax-lots` — recompute tax lots (FIFO)
 - `POST /api/chat` — AI SDK v6 `streamText` with `@ai-sdk/anthropic` provider (Opus 4.6, adaptive thinking, ephemeral cache control, `stopWhen: stepCountIs(8)`). Client uses `useChat` from `@ai-sdk/react`.
 - `POST /api/tws/positions` — SSE streaming: sync live IBKR positions + account summary from TWS
+- `POST /api/tws/chart` — OHLCV bars for per-security charting. Supports daily (cached in `ohlcv_bars`) and intraday 1m/5m (live from TWS, not cached). Returns transactions for BUY/SELL markers.
 
 ## Safety Rules
 
