@@ -471,24 +471,88 @@ export function parseClaudePdfResponse(
   };
 }
 
-// ── Holdings-only retry prompt ───────────────────────────────────────
+// ── Focused holdings extraction (no transactions) ───────────────────
 
-const HOLDINGS_ONLY_PROMPT = `You are extracting ONLY the holdings from a Vanguard monthly brokerage statement PDF.
+const FOCUSED_HOLDINGS_PROMPT = `You are extracting structured data from a Vanguard monthly brokerage statement PDF.
 
-A previous extraction attempt missed many holdings. You MUST extract ALL of them this time.
+IMPORTANT: Extract the account summary and ALL holdings. Do NOT extract transactions — set "transactions" to an empty array.
 
 Return ONLY valid JSON matching this exact schema (no markdown, no explanation):
 
 {
+  "account_type": "Individual brokerage account" or "Roth IRA brokerage account",
+  "account_number_masked": "XXXX####",
+  "statement_date": "YYYY-MM-DD",
+  "total_value": <number>,
+  "prior_value": <number or null>,
+  "cash_balance": <number>,
+  "income_summary": { "dividends": <number>, "interest": <number> },
   "holdings": [
     {
-      "symbol": "<ticker or OCC option symbol>",
+      "symbol": "<ticker, CUSIP for bonds, or OCC option symbol>",
       "name": "<full security name>",
       "category": "Sweep program" | "Mutual funds" | "ETFs" | "Stocks" | "Bonds" | "Options",
       "quantity": <number>,
       "price": <number or null>,
       "value": <number> (balance as of statement date),
-      "underlying_symbol": "<ticker of the underlying stock, only for options>",
+      "underlying_symbol": "<ticker, only for options>",
+      "strike_price": <number, only for options>,
+      "expiration_date": "YYYY-MM-DD" (only for options),
+      "option_type": "CALL" or "PUT" (only for options)
+    }
+  ],
+  "transactions": []
+}
+
+CRITICAL — COMPLETENESS (READ THIS CAREFULLY):
+- The holdings section spans 8-15 PAGES. You MUST read EVERY page until you reach "Transaction activity".
+- The statement has these sections IN THIS ORDER. Extract from ALL of them:
+  1. **Sweep program** — money market fund (e.g. VANGUARD FEDERAL MONEY MARKET FUND)
+  2. **Mutual funds** — symbols like VEMBX, VEXPX, VHGEX, VIPSX, VMBSX, VSMAX, VVIAX. Some appear twice (CASH and non-CASH share classes) — include BOTH.
+  3. **ETFs** — symbols like VTI, VGT, VDC, VEU, VHT, VNQ, SPY, QQQ, ACWV, EIS, IDEV, INDA, BBH, XLV
+  4. **Stocks and options** — This is the LONGEST section (5-10 pages!). It contains stocks (AAPL, AMZN, GOOG, META, MSFT, etc.) MIXED with options (CALL/PUT entries with strike prices). Do NOT stop partway through. Keep reading until you see "Bonds" or "Long market value" / "Short market value" totals.
+  5. **Bonds** — Treasury Bills and Notes identified by CUSIP (e.g. 912797QG5, 91282CFV8). Use the CUSIP as the symbol.
+- After the last section there are subtotals: "Long market value", "Short market value", then a final total that should match total_value.
+- A typical brokerage statement has **80-120+ holdings**. If you extracted fewer than 60, you definitely missed pages — go back and check.
+- After extraction, VERIFY: sum of all holdings values ≈ total_value. If the sum is off by more than 5%, you missed holdings.
+
+Rules:
+- Convert all dates from MM/DD to YYYY-MM-DD using the statement year
+- Use the "Balance on [statement date]" column (the rightmost balance column) as the value
+- For mutual funds appearing twice (CASH and non-CASH share classes), include both as separate entries with the same symbol
+- For OPTIONS: set category to "Options". Extract underlying_symbol, strike_price, expiration_date, option_type. Use OCC-style symbol: underlying padded to 6 chars + YYMMDD + C/P + strike×1000 padded to 8 digits. Example: "APP   250221C00135000". Quantity is in contracts.
+- For BONDS: use the CUSIP as the symbol. Set category to "Bonds". The price is a percentage of par.
+- Securities with no price (showing "-") are unpriced — set price to null but still include them with value 0.
+- For short positions (negative quantity like TSLA -25), include them with negative quantity.
+- Set cash_balance to the sweep program balance
+- If a field is not applicable or not shown, use null`;
+
+function buildRetryPrompt(totalValue: number, foundSum: number, foundCount: number, foundCategories: string[]): string {
+  const missing = totalValue - foundSum;
+  const coveragePct = ((foundSum / totalValue) * 100).toFixed(0);
+  const allCategories = ["Sweep program", "Mutual funds", "ETFs", "Stocks", "Options", "Bonds"];
+  const missingCategories = allCategories.filter(c => !foundCategories.includes(c));
+
+  return `You are extracting holdings from a Vanguard monthly brokerage statement PDF.
+
+A PREVIOUS ATTEMPT ONLY FOUND ${foundCount} holdings totaling $${foundSum.toLocaleString()} (${coveragePct}% of the account total $${totalValue.toLocaleString()}).
+That means approximately $${missing.toLocaleString()} in holdings value is MISSING.
+${missingCategories.length > 0 ? `\nSections that appear to be MISSING or INCOMPLETE: ${missingCategories.join(", ")}` : ""}
+${foundCategories.length > 0 ? `Sections that were found: ${foundCategories.join(", ")}` : ""}
+
+You MUST do better. Read EVERY page of the holdings section carefully.
+
+Return ONLY valid JSON (no markdown):
+{
+  "holdings": [
+    {
+      "symbol": "<ticker, CUSIP for bonds, or OCC option symbol>",
+      "name": "<full security name>",
+      "category": "Sweep program" | "Mutual funds" | "ETFs" | "Stocks" | "Bonds" | "Options",
+      "quantity": <number>,
+      "price": <number or null>,
+      "value": <number>,
+      "underlying_symbol": "<ticker, only for options>",
       "strike_price": <number, only for options>,
       "expiration_date": "YYYY-MM-DD" (only for options),
       "option_type": "CALL" or "PUT" (only for options)
@@ -497,15 +561,19 @@ Return ONLY valid JSON matching this exact schema (no markdown, no explanation):
 }
 
 CRITICAL:
-- IGNORE the transaction activity pages entirely. Only extract from the holdings/balance sections.
-- The holdings section may span MANY pages. Read EVERY page.
-- Sections include: Sweep program, Mutual funds, ETFs & ETNs, Stocks, Bonds & CDs, Options.
-- For OPTIONS: use OCC-style symbol (underlying padded to 6 chars + YYMMDD + C/P + strike*1000 padded to 8 digits).
-- The account has 50-120+ holdings. If you have fewer than that, you missed some pages.`;
+- IGNORE transaction pages. Only extract from "Balances and holdings" section.
+- The holdings span 8-15 pages across sections: Sweep program → Mutual funds → ETFs → Stocks and options → Bonds.
+- "Stocks and options" is the LONGEST section (5-10 pages). Read ALL of it.
+- For BONDS: use CUSIP as symbol (e.g. 912797QG5). Category = "Bonds".
+- For OPTIONS: use OCC symbol format (underlying padded to 6 + YYMMDD + C/P + strike×1000 padded to 8).
+- Include BOTH share classes for mutual funds (CASH and non-CASH).
+- Include short positions with negative quantity.
+- Target: 80-120+ holdings totaling ~$${totalValue.toLocaleString()}.
+- VERIFY your sum matches the account total before responding.`;
+}
 
-async function callClaudeForHoldingsOnly(
-  pdfBuffer: Buffer
-): Promise<{ holdings: ClaudePdfHolding[] }> {
+/** Generic Claude API call with a given prompt against a PDF. */
+async function callClaudeWithPdf<T>(pdfBuffer: Buffer, prompt: string): Promise<T> {
   const client = new Anthropic();
   const base64Pdf = pdfBuffer.toString("base64");
 
@@ -525,10 +593,7 @@ async function callClaudeForHoldingsOnly(
               data: base64Pdf,
             },
           },
-          {
-            type: "text",
-            text: HOLDINGS_ONLY_PROMPT,
-          },
+          { type: "text", text: prompt },
         ],
       },
     ],
@@ -537,12 +602,12 @@ async function callClaudeForHoldingsOnly(
   const message = await stream.finalMessage();
 
   if (message.stop_reason === "max_tokens") {
-    throw new Error("Holdings-only extraction was truncated (hit max_tokens).");
+    throw new Error("Claude API response was truncated (hit max_tokens limit).");
   }
 
   const textBlock = message.content.find((block) => block.type === "text");
   if (!textBlock || textBlock.type !== "text") {
-    throw new Error("No text response from Claude API (holdings retry)");
+    throw new Error("No text response from Claude API");
   }
 
   let jsonText = textBlock.text.trim();
@@ -552,7 +617,67 @@ async function callClaudeForHoldingsOnly(
       .replace(/\n?```\s*$/, "");
   }
 
-  return JSON.parse(jsonText) as { holdings: ClaudePdfHolding[] };
+  return JSON.parse(jsonText) as T;
+}
+
+/**
+ * Extract holdings from a PDF with multi-attempt validation.
+ * Returns a ClaudePdfResponse with holdings populated and transactions empty.
+ * Retries up to 2 times if coverage < 95%.
+ */
+export async function extractHoldingsFromPdf(
+  pdfBuffer: Buffer
+): Promise<ClaudePdfResponse> {
+  // Attempt 1: Focused holdings extraction (no transactions)
+  const response = await callClaudeWithPdf<ClaudePdfResponse>(pdfBuffer, FOCUSED_HOLDINGS_PROMPT);
+  response.transactions = []; // Ensure empty
+
+  let holdingsSum = response.holdings.reduce((s, h) => s + (h.value || 0), 0);
+  let coverage = response.total_value > 0 ? holdingsSum / response.total_value : 1;
+
+  console.log(
+    `[holdings] Attempt 1: ${response.holdings.length} holdings, ` +
+    `$${holdingsSum.toLocaleString()} / $${response.total_value.toLocaleString()} ` +
+    `(${(coverage * 100).toFixed(0)}% coverage)`
+  );
+
+  if (coverage >= 0.95) return response;
+
+  // Attempt 2: Retry with context about what was missed
+  const foundCategories = Array.from(new Set(response.holdings.map(h => h.category)));
+  const retryPrompt = buildRetryPrompt(response.total_value, holdingsSum, response.holdings.length, foundCategories);
+  const retry1 = await callClaudeWithPdf<{ holdings: ClaudePdfHolding[] }>(pdfBuffer, retryPrompt);
+  const retry1Sum = retry1.holdings.reduce((s, h) => s + (h.value || 0), 0);
+
+  console.log(
+    `[holdings] Attempt 2: ${retry1.holdings.length} holdings, ` +
+    `$${retry1Sum.toLocaleString()} (was ${response.holdings.length} / $${holdingsSum.toLocaleString()})`
+  );
+
+  if (retry1Sum > holdingsSum) {
+    response.holdings = retry1.holdings;
+    holdingsSum = retry1Sum;
+    coverage = holdingsSum / response.total_value;
+  }
+
+  if (coverage >= 0.95) return response;
+
+  // Attempt 3: One more retry with updated context
+  const foundCategories2 = Array.from(new Set(response.holdings.map(h => h.category)));
+  const retryPrompt2 = buildRetryPrompt(response.total_value, holdingsSum, response.holdings.length, foundCategories2);
+  const retry2 = await callClaudeWithPdf<{ holdings: ClaudePdfHolding[] }>(pdfBuffer, retryPrompt2);
+  const retry2Sum = retry2.holdings.reduce((s, h) => s + (h.value || 0), 0);
+
+  console.log(
+    `[holdings] Attempt 3: ${retry2.holdings.length} holdings, ` +
+    `$${retry2Sum.toLocaleString()} (was ${response.holdings.length} / $${holdingsSum.toLocaleString()})`
+  );
+
+  if (retry2Sum > holdingsSum) {
+    response.holdings = retry2.holdings;
+  }
+
+  return response;
 }
 
 // ── Full parse entry point (used by import engine) ──────────────────
@@ -561,39 +686,17 @@ export async function parseVanguardPdf(
   pdfBuffer: Buffer,
   filename: string
 ): Promise<ParsedImportResult> {
-  const response = await callClaudeForPdfExtraction(pdfBuffer);
+  // Step 1: Extract holdings with multi-attempt validation (no transactions)
+  const response = await extractHoldingsFromPdf(pdfBuffer);
 
-  // Check if holdings extraction was complete
-  if (response.total_value > 0) {
-    const holdingsTotal = response.holdings.reduce(
-      (sum, h) => sum + (h.value || 0),
-      0
-    );
-    const coveragePct = (holdingsTotal / response.total_value) * 100;
-
-    if (coveragePct < 95) {
-      // Holdings extraction was incomplete — make a focused second call
-      console.log(
-        `[vanguard-pdf] Incomplete holdings: ${response.holdings.length} holdings = ` +
-        `$${holdingsTotal.toLocaleString()} (${coveragePct.toFixed(0)}% of ` +
-        `$${response.total_value.toLocaleString()}). Retrying with holdings-only extraction...`
-      );
-
-      const retry = await callClaudeForHoldingsOnly(pdfBuffer);
-
-      if (retry.holdings.length > response.holdings.length) {
-        console.log(
-          `[vanguard-pdf] Retry extracted ${retry.holdings.length} holdings ` +
-          `(was ${response.holdings.length}). Using retry results.`
-        );
-        response.holdings = retry.holdings;
-      } else {
-        console.log(
-          `[vanguard-pdf] Retry got ${retry.holdings.length} holdings ` +
-          `(same or fewer than ${response.holdings.length}). Keeping original.`
-        );
-      }
-    }
+  // Step 2: Extract transactions in a separate call
+  console.log(`[vanguard-pdf] Extracting transactions separately...`);
+  try {
+    const txnResponse = await callClaudeForPdfExtraction(pdfBuffer);
+    response.transactions = txnResponse.transactions;
+  } catch (err) {
+    console.error(`[vanguard-pdf] Transaction extraction failed: ${err}. Continuing with holdings only.`);
+    response.transactions = [];
   }
 
   return parseClaudePdfResponse(response, filename);
