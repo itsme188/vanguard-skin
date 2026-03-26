@@ -9,6 +9,7 @@ const tabs = [
   { name: "Accounts", href: "/dashboard/accounts" },
   { name: "Tax Lots", href: "/dashboard/tax-lots" },
   { name: "Analysis", href: "/dashboard/analysis" },
+  { name: "Charts", href: "/dashboard/charts" },
   { name: "Import", href: "/dashboard/import" },
   { name: "Reconciliation", href: "/dashboard/reconciliation" },
   { name: "Notes", href: "/dashboard/notes" },
