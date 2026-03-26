@@ -61,7 +61,7 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - All DB mutation functions live in `lib/mutations/` — writes
 - Every DB function takes a `db: Database.Database` parameter (dependency injection for testing with `:memory:` DBs)
 - All dates use `YYYY-MM-DD` format
-- Monthly snapshots always use last-day-of-month dates
+- Monthly snapshots use last-day-of-month dates (or today's date for TWS live snapshots with `source='tws'`)
 - Every imported record gets a deterministic `source_key` — re-import is a no-op
 - Every import creates an `import_batches` record with undo capability
 - Transaction types are UPPERCASE: BUY, SELL, DIVIDEND, REINVESTMENT, TAX_WITHHELD, BUY_TO_OPEN, SELL_TO_CLOSE, etc.
@@ -73,6 +73,8 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - PDF holdings extraction uses focused extraction (holdings-only, no transactions) with multi-attempt retry — asking Claude to extract both in one call causes attention dilution on 28-page PDFs, missing 50-70% of holdings. See `extractHoldingsFromPdf()` in `vanguard-pdf.ts`.
 - `upsertSecurity()` has a type conflict guard — refuses to merge stock↔option on same symbol to prevent data corruption
 - Dashboard "as of" dates: `getAccountSummaries()` prefers `daily_valuations` over `monthly_snapshots` when more recent
+- Daily valuations infer cash from monthly snapshot anchors: `cash = snapshot_total - holdings_value`. Cash carries forward between snapshots.
+- TWS portfolio sync filters to personal account U13643679 (managed advisor U24339206 excluded). `getPositions()` does NOT include `marketPrice` — use Quick Refresh for prices after sync.
 
 ## Dev Server Gotchas
 
@@ -85,6 +87,7 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - `POST /api/compute/valuations` — recompute daily valuations
 - `POST /api/compute/tax-lots` — recompute tax lots (FIFO)
 - `POST /api/chat` — AI SDK v6 `streamText` with `@ai-sdk/anthropic` provider (Opus 4.6, adaptive thinking, ephemeral cache control, `stopWhen: stepCountIs(8)`). Client uses `useChat` from `@ai-sdk/react`.
+- `POST /api/tws/positions` — SSE streaming: sync live IBKR positions + account summary from TWS
 
 ## Safety Rules
 
