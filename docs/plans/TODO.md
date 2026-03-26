@@ -88,13 +88,17 @@ but isn't wired to the chart.
 - [ ] Multi-account overlay option on combined chart
 - [ ] Hover crosshair showing exact date + values
 
-#### 1B. TWS Live/Streaming Prices
-**Status:** Historical price fetch works but takes ~40 min due to IBKR rate limits (one request
-per symbol, sequential). No real-time streaming.
+#### 1B. TWS Live Portfolio Sync + Streaming Prices
+**Status:** Portfolio sync done — fetches live positions + NLV + cash from TWS in ~2s.
+Filtered to personal account (U13643679), excluding managed advisor account.
+Price fetch still uses historical/snapshot modes (~2-40 min).
 
+- [x] Sync Portfolio button: fetches positions, NLV, cash balance from TWS
+- [x] Account filtering (personal vs. managed advisor)
+- [x] Auto-recompute daily valuations after sync
 - [ ] Stream live quotes for current holdings (real-time market data)
-- [ ] Auto-refresh daily valuations after price update
 - [ ] Faster bulk fetch strategy (parallel where IBKR allows)
+- [ ] Use `getAccountUpdates()` for live prices alongside positions (replaces separate price fetch)
 
 #### 1C. Performance Metrics — Period Selectors
 **Status:** TWR/XIRR engines work. UI shows periods but lacks user-selectable date ranges.
