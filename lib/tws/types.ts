@@ -38,6 +38,16 @@ export interface PriceFetchProgress {
   waitingSeconds?: number; // estimated seconds until rate limit clears
 }
 
+/** A single OHLCV bar for candlestick charting. */
+export interface OhlcvBar {
+  date: string; // YYYY-MM-DD (daily) or YYYY-MM-DD HH:MM (intraday)
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number | null;
+}
+
 /** Discriminator for the prices API route. */
 export type PriceFetchMode = "snapshot" | "historical";
 

@@ -1,5 +1,6 @@
 import type { HoldingWithSecurity } from "@/lib/queries/holdings";
 import { ScrollFade } from "./ScrollFade";
+import { SymbolLink } from "./SymbolLink";
 
 function formatCurrency(value: number | null): string {
   if (value === null) return "\u2014";
@@ -86,11 +87,18 @@ export function HoldingsTable({
                 className="border-b border-edge last:border-0 hover:bg-panel/50 transition-colors"
               >
                 <td className="px-4 py-3 font-mono font-medium text-ink">
-                  <span>{holding.security_type === "option" && holding.underlying_symbol ? holding.underlying_symbol : holding.symbol}</span>
-                  {holding.security_type === "option" && (
-                    <span className="ml-1.5 text-xs text-ink-faint font-normal">
-                      {formatOptionDescription(holding)}
-                    </span>
+                  {holding.security_type === "option" ? (
+                    <>
+                      <span>{holding.underlying_symbol ?? holding.symbol}</span>
+                      <span className="ml-1.5 text-xs text-ink-faint font-normal">
+                        {formatOptionDescription(holding)}
+                      </span>
+                    </>
+                  ) : (
+                    <SymbolLink
+                      securityId={holding.security_id}
+                      symbol={holding.symbol}
+                    />
                   )}
                 </td>
                 <td className="px-4 py-3 text-ink-dim truncate max-w-[200px]">
