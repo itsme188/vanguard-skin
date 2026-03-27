@@ -58,3 +58,9 @@ Add new entries at the bottom.
 - **Chat markdown rendering** — `react-markdown` + `remark-gfm` in `MarkdownMessage.tsx`. Custom component map styled with Tailwind v4 tokens. Only applied to assistant messages.
 
 - **TWR compute engine** — Chain-linked Modified Dietz method. Uses IBKR-provided `monthly_snapshots.twr` when non-null (stored as percentage, divide by 100). Cash flow day-weighting: `W_i = days_remaining / days_in_month`. Annualization threshold: 30 days minimum.
+
+- **Calendar: FRED dates, not Claude dates** — Macro event dates come from FRED `releases/dates` API (authoritative — sourced from BLS, Census, Fed, ISM). Claude only provides enrichment (descriptions, consensus estimates, impact ratings). This was changed mid-build after Claude hallucinated NFP on a Saturday. Government shutdowns can shift release dates, so static JSON calendars go stale — FRED fetches live. 19 tracked FRED release IDs in `TRACKED_RELEASES` constant.
+
+- **Calendar: WSH via raw IBApi** — IBApiNext has no WSH wrappers. Access via `(ibApiNext as any).api`. WSH JSON format is undocumented — `raw_json` column preserves responses for parser iteration. Dividends/ex-dividends filtered out (user preference — too noisy).
+
+- **Calendar: Sonnet for enrichment, not Opus** — Macro event enrichment uses Sonnet 4.6 (structured JSON extraction, not deep reasoning). Briefing generation also uses Sonnet (analysis is substantive but doesn't need Opus-level reasoning). Saves ~5x cost vs. Opus per calendar sync.
