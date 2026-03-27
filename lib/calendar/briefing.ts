@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import type { CalendarEvent } from "@/lib/types";
 import { getEventsByWeek } from "@/lib/queries/calendar";
 import { saveBriefing } from "@/lib/mutations/calendar";
+import { fetchVitalKnowledge } from "@/lib/vital-knowledge";
 
 const BRIEFING_MODEL = "claude-sonnet-4-6";
 
@@ -53,7 +54,20 @@ export async function generateWeeklyBriefing(
     .map((e, i) => formatEventForPrompt(e, i + 1))
     .join("\n\n");
 
-  options?.onProgress?.("Generating briefing via Claude...", 1, 2);
+  // Fetch Vital Knowledge market commentary (graceful — returns "" on failure)
+  let marketContext = "";
+  const gmailAddress = process.env.GMAIL_ADDRESS;
+  const gmailAppPassword = process.env.GMAIL_APP_PASSWORD;
+  if (gmailAddress && gmailAppPassword) {
+    options?.onProgress?.("Fetching Vital Knowledge market context...", 1, 3);
+    marketContext = await fetchVitalKnowledge(gmailAddress, gmailAppPassword, 7);
+  }
+
+  options?.onProgress?.("Generating briefing via Claude...", marketContext ? 2 : 1, marketContext ? 3 : 2);
+
+  const marketContextSection = marketContext
+    ? `\n## Market Context (Vital Knowledge Newsletter Digests)\nUse this market commentary to add depth to your analysis. Reference specific market narratives where they connect to the week's events.\n\n${marketContext}\n`
+    : "";
 
   const prompt = `You are a financial research analyst preparing a weekly market briefing for a portfolio manager. Generate a comprehensive briefing for the week of ${formatWeekTitle(weekOf)}.
 
@@ -62,7 +76,7 @@ ${holdingsList}
 
 ## Events This Week
 ${eventSummary}
-
+${marketContextSection}
 ## Instructions
 
 Write a well-structured markdown briefing document that covers:
@@ -104,7 +118,7 @@ Format as clean markdown with headers (##), bold for key figures, and bullet poi
     model: BRIEFING_MODEL,
   });
 
-  options?.onProgress?.("Briefing complete", 2, 2);
+  options?.onProgress?.("Briefing complete", marketContext ? 3 : 2, marketContext ? 3 : 2);
 
   return { content, eventCount: events.length };
 }

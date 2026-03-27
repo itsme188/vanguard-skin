@@ -4,6 +4,7 @@ import {
   getPortfolioChartData,
   getPortfolioTotals,
 } from "@/lib/queries/dashboard";
+import { getDailyValuationsPivoted } from "@/lib/queries/daily-valuations";
 import { computeTwr } from "@/lib/compute/twr";
 import { computeXirr } from "@/lib/compute/xirr";
 import { PerformanceMetrics } from "./components/PerformanceMetrics";
@@ -20,14 +21,24 @@ function computePerformancePeriods(): { periods: TwrPeriod[]; perAccount: Map<nu
   const oneYearAgo = new Date(Date.now() - 365 * 24 * 3600 * 1000)
     .toISOString()
     .slice(0, 10);
+  const threeYearsAgo = new Date(Date.now() - 3 * 365.25 * 24 * 3600 * 1000)
+    .toISOString()
+    .slice(0, 10);
+  const fiveYearsAgo = new Date(Date.now() - 5 * 365.25 * 24 * 3600 * 1000)
+    .toISOString()
+    .slice(0, 10);
 
   const ytd = computeTwr(db, { startDate: ytdStart, endDate: today });
   const oneYear = computeTwr(db, { startDate: oneYearAgo, endDate: today });
+  const threeYear = computeTwr(db, { startDate: threeYearsAgo, endDate: today });
+  const fiveYear = computeTwr(db, { startDate: fiveYearsAgo, endDate: today });
   const inception = computeTwr(db, {});
 
   // Compute XIRR for each period
   const ytdXirr = computeXirr(db, { startDate: ytdStart, endDate: today });
   const oneYearXirr = computeXirr(db, { startDate: oneYearAgo, endDate: today });
+  const threeYearXirr = computeXirr(db, { startDate: threeYearsAgo, endDate: today });
+  const fiveYearXirr = computeXirr(db, { startDate: fiveYearsAgo, endDate: today });
   const inceptionXirr = computeXirr(db, {});
 
   const periods: TwrPeriod[] = [
@@ -42,6 +53,18 @@ function computePerformancePeriods(): { periods: TwrPeriod[]; perAccount: Map<nu
       totalReturn: oneYear?.totalReturn ?? null,
       annualizedReturn: oneYear?.annualizedReturn ?? null,
       xirr: oneYearXirr?.xirr ?? null,
+    },
+    {
+      label: "3Y",
+      totalReturn: threeYear?.totalReturn ?? null,
+      annualizedReturn: threeYear?.annualizedReturn ?? null,
+      xirr: threeYearXirr?.xirr ?? null,
+    },
+    {
+      label: "5Y",
+      totalReturn: fiveYear?.totalReturn ?? null,
+      annualizedReturn: fiveYear?.annualizedReturn ?? null,
+      xirr: fiveYearXirr?.xirr ?? null,
     },
     {
       label: "All",
@@ -66,10 +89,11 @@ function computePerformancePeriods(): { periods: TwrPeriod[]; perAccount: Map<nu
 }
 
 export default function OverviewPage() {
-  let accounts, chartData, totals, twrPeriods: TwrPeriod[], twrByAccount: Map<number, { totalReturn: number; annualizedReturn: number | null }>;
+  let accounts, chartData, dailyChartData, totals, twrPeriods: TwrPeriod[], twrByAccount: Map<number, { totalReturn: number; annualizedReturn: number | null }>;
   try {
     accounts = getAccountSummaries(db);
     chartData = getPortfolioChartData(db);
+    dailyChartData = getDailyValuationsPivoted(db);
     totals = getPortfolioTotals(db);
     ({ periods: twrPeriods, perAccount: twrByAccount } = computePerformancePeriods());
   } catch {
@@ -86,7 +110,7 @@ export default function OverviewPage() {
           <AccountSummaryCards accounts={accounts} twrByAccount={twrByAccount} />
           <UpcomingEventsCard />
           {chartData.length > 0 && (
-            <CombinedPortfolioChart data={chartData} accounts={accounts} />
+            <CombinedPortfolioChart data={chartData} dailyData={dailyChartData} accounts={accounts} />
           )}
         </>
       ) : (

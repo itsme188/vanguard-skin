@@ -81,6 +81,37 @@ export function getDailyValuationsCombined(
 }
 
 /**
+ * Get daily valuations pivoted by account name — same shape as getPortfolioChartData().
+ * Returns { date, "Vanguard Taxable": X, "IBKR": Y, ... } for use in CombinedPortfolioChart.
+ */
+export function getDailyValuationsPivoted(
+  db: Database.Database
+): { date: string; [accountName: string]: string | number }[] {
+  const rows = db
+    .prepare(
+      `SELECT dv.valuation_date, a.name AS account_name, dv.total_value
+       FROM daily_valuations dv
+       JOIN accounts a ON a.id = dv.account_id
+       ORDER BY dv.valuation_date`
+    )
+    .all() as {
+    valuation_date: string;
+    account_name: string;
+    total_value: number;
+  }[];
+
+  const byDate = new Map<string, { date: string; [key: string]: string | number }>();
+  for (const row of rows) {
+    if (!byDate.has(row.valuation_date)) {
+      byDate.set(row.valuation_date, { date: row.valuation_date });
+    }
+    byDate.get(row.valuation_date)![row.account_name] = row.total_value;
+  }
+
+  return Array.from(byDate.values());
+}
+
+/**
  * Check if daily valuations exist (at all).
  */
 export function hasDailyValuations(db: Database.Database): boolean {
