@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import type { TwsStatus as TwsStatusType } from "@/lib/tws/types";
+import { useStreamingQuotes } from "@/lib/hooks/useStreamingQuotes";
 
 const STATE_CONFIG = {
   disconnected: { color: "bg-ink-faint", label: "TWS Disconnected" },
@@ -13,6 +14,7 @@ const STATE_CONFIG = {
 export function TwsStatus() {
   const [status, setStatus] = useState<TwsStatusType | null>(null);
   const [showPanel, setShowPanel] = useState(false);
+  const streaming = useStreamingQuotes(false);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -33,6 +35,7 @@ export function TwsStatus() {
   if (!status) return null;
 
   const config = STATE_CONFIG[status.state];
+  const quoteCount = streaming.quotes.size;
 
   return (
     <div className="relative">
@@ -42,6 +45,12 @@ export function TwsStatus() {
       >
         <span className={`w-1.5 h-1.5 rounded-full ${config.color}`} />
         {config.label}
+        {streaming.isStreaming && (
+          <span className="flex items-center gap-1 text-blue">
+            <span className="w-1 h-1 rounded-full bg-blue animate-pulse" />
+            {quoteCount > 0 ? `${quoteCount} live` : "streaming"}
+          </span>
+        )}
       </button>
 
       {showPanel && (
@@ -49,6 +58,7 @@ export function TwsStatus() {
           status={status}
           onClose={() => setShowPanel(false)}
           onStatusChange={(s) => setStatus(s)}
+          streaming={streaming}
         />
       )}
     </div>
@@ -72,10 +82,12 @@ function TwsPanel({
   status,
   onClose,
   onStatusChange,
+  streaming,
 }: {
   status: TwsStatusType;
   onClose: () => void;
   onStatusChange: (s: TwsStatusType) => void;
+  streaming: ReturnType<typeof useStreamingQuotes>;
 }) {
   const [host, setHost] = useState(status.host);
   const [port, setPort] = useState(String(status.port));
@@ -454,6 +466,45 @@ function TwsPanel({
             {!isFetching && (
               <p className="text-[9px] text-ink-faint">
                 Quick Refresh: ~2 min · Full History: incremental
+              </p>
+            )}
+
+            {/* Streaming controls */}
+            <div className="flex gap-2 pt-1">
+              {!streaming.isStreaming ? (
+                <button
+                  onClick={streaming.start}
+                  disabled={loading !== null}
+                  className="flex-1 px-3 py-1.5 text-xs font-medium rounded-lg bg-blue/20 text-blue hover:bg-blue/30 disabled:opacity-50 transition-colors"
+                  title="Stream live delayed quotes for all holdings"
+                >
+                  Stream Live
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={streaming.stop}
+                    className="flex-1 px-3 py-1.5 text-xs font-medium rounded-lg bg-down/20 text-down hover:bg-down/30 transition-colors"
+                  >
+                    Stop Stream
+                  </button>
+                  <button
+                    onClick={async () => {
+                      const saved = await streaming.saveSnapshot();
+                      setResult(`Saved ${saved} prices to database`);
+                    }}
+                    className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gold/20 text-gold hover:bg-gold/30 transition-colors"
+                    title="Save current streaming prices to database"
+                  >
+                    Save
+                  </button>
+                </>
+              )}
+            </div>
+            {streaming.isStreaming && streaming.quotes.size > 0 && (
+              <p className="text-[9px] text-ink-faint">
+                <span className="w-1 h-1 rounded-full bg-blue inline-block animate-pulse mr-1" />
+                Streaming {streaming.quotes.size} quotes (delayed)
               </p>
             )}
 

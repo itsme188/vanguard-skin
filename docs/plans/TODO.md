@@ -4,10 +4,12 @@
 
 ## Status Overview
 
-v2 core rebuild is complete. 18 merged PRs, 476 tests (all passing).
+v2 core rebuild is complete. 18 merged PRs, 492 tests (all passing).
 Post-v2 work has added IBKR TWS integration, TWR/XIRR engines, agentic chat with 14 tools,
 thematic factor analysis, notes/journaling, chat scope selector, per-security candlestick charting,
-and IBKR calendar integration with weekly AI briefings. This document tracks remaining work.
+IBKR calendar integration with weekly AI briefings, benchmark comparison with percent-change charts,
+risk decomposition (drawdown, volatility, Sharpe, Herfindahl), streaming live quotes via TWS,
+and custom date range performance analysis. This document tracks remaining work.
 
 ---
 
@@ -77,6 +79,28 @@ Everything below was built between 2026-03-06 and 2026-03-27.
 - [x] Overview tab Upcoming Events card
 - [x] 13 database migrations, `calendar_events` + `calendar_briefings` tables
 
+### Custom Date Range & Benchmark Comparison (2026-03-27)
+- [x] Custom date range picker for TWR/XIRR (client-side fetch via API)
+- [x] XIRR API route (`/api/compute/xirr`)
+- [x] Benchmark price table (`benchmark_prices`, migration 014)
+- [x] Benchmark fetch from TWS (`lib/tws/benchmark.ts`) — SPY/QQQ/DIA/VTI
+- [x] Benchmark analytics: alpha, tracking error, information ratio, correlation
+- [x] Percent-change chart mode ($ / % toggle) on Overview combined chart
+- [x] Benchmark overlay as dashed line with stats bar
+
+### Risk Decomposition (2026-03-27)
+- [x] `lib/compute/risk.ts` — max drawdown, volatility, Sharpe, Herfindahl
+- [x] Risk API route (`/api/compute/risk`)
+- [x] Risk metrics card in Analysis tab with concentration bar chart
+- [x] 9 risk tests + 7 benchmark tests (all passing)
+
+### Streaming Live Quotes (2026-03-27)
+- [x] `lib/tws/streaming.ts` — TWS market data subscriptions via Observable
+- [x] SSE streaming API (`/api/tws/stream`) with client management
+- [x] `useStreamingQuotes` hook with auto-reconnect
+- [x] Stream Live / Stop / Save buttons in TWS panel
+- [x] Pulsing indicator in TWS status bar
+
 ### Tech Debt Closed
 - [x] SQL injection — parameterized queries across portfolio-summary.ts and other files
 - [x] `toLocaleDateString()` SSR hydration — confirmed safe (all in `"use client"` components)
@@ -95,41 +119,39 @@ Everything below was built between 2026-03-06 and 2026-03-27.
 
 ### Phase 1: Data Gaps
 
-#### 1A. Daily Equity Curves
-**Status:** Per-account `EquityCurveChart` (Accounts tab) now has daily data, split toggle,
-date range selector, and crosshair. Overview `CombinedPortfolioChart` still uses monthly only.
+#### 1A. Daily Equity Curves ✓
+**Status:** Complete — both per-account and Overview charts have daily data with date range pills.
 
 - [x] Daily-resolution equity curves using `daily_valuations` table (per-account)
 - [x] Split: Total Value, Holdings Value, Cash Balance (three lines)
 - [x] Date range selector (1M, 3M, 6M, YTD, 1Y, All)
-- [ ] Daily data on Overview combined chart (stacked area with date range pills)
+- [x] Daily data on Overview combined chart (stacked area with date range pills)
 - [x] Hover crosshair showing exact date + values
 
 #### 1B. TWS Live Portfolio Sync + Streaming Prices
-**Status:** Portfolio sync done — fetches live positions + NLV + cash from TWS in ~2s.
-Filtered to personal account (U13643679), excluding managed advisor account.
-Price fetch still uses historical/snapshot modes (~2-40 min).
+**Status:** Portfolio sync done + streaming live quotes implemented.
+Uses delayed/frozen quotes (no exchange subscription needed). SSE-based with auto-reconnect.
 
 - [x] Sync Portfolio button: fetches positions, NLV, cash balance from TWS
 - [x] Account filtering (personal vs. managed advisor)
 - [x] Auto-recompute daily valuations after sync
-- [ ] Stream live quotes for current holdings (real-time market data)
+- [x] Stream live quotes for current holdings (delayed market data via TWS)
 - [ ] Faster bulk fetch strategy (parallel where IBKR allows)
 - [ ] Use `getAccountUpdates()` for live prices alongside positions (replaces separate price fetch)
 
-#### 1C. Performance Metrics — Period Selectors
-**Status:** TWR/XIRR engines work. UI shows periods but lacks user-selectable date ranges.
+#### 1C. Performance Metrics — Period Selectors ✓
+**Status:** Complete — YTD/1Y/3Y/5Y/All preset + custom date range picker with client-side fetch.
 
-- [ ] Period selectors: YTD, 1Y, 3Y, 5Y, Since Inception, custom range
-- [ ] Portfolio-wide combined TWR/XIRR across all accounts
+- [x] Period selectors: YTD, 1Y, 3Y, 5Y, Since Inception (All), custom date range
+- [x] Portfolio-wide combined TWR/XIRR across all accounts
 
 ### Phase 2: Analytics
 
-#### 2A. Benchmark Comparison
-- [ ] Benchmark selection: S&P 500, Total Market, 60/40, custom blend
-- [ ] Fetch benchmark daily returns via IBKR TWS API historical data
-- [ ] Overlay benchmark on equity curve chart
-- [ ] Relative performance: alpha, tracking error, information ratio
+#### 2A. Benchmark Comparison ✓
+- [x] Benchmark selection: S&P 500, Nasdaq 100, Dow Jones, Total Market (SPY/QQQ/DIA/VTI)
+- [x] Fetch benchmark daily returns via IBKR TWS API historical data
+- [x] Overlay benchmark on equity curve chart (percent-change mode)
+- [x] Relative performance: alpha, tracking error, information ratio, correlation
 - [ ] Period comparison table: portfolio vs. benchmark by period
 
 #### 2B. Quantitative Factor Analysis
@@ -142,11 +164,13 @@ about quantitative factor decomposition — different from the thematic system.
 - [ ] Duration/credit exposure (fixed income)
 - [ ] Options Greeks (delta, gamma, theta, vega) if positions exist
 
-#### 2C. Risk Decomposition
+#### 2C. Risk Decomposition (Partial ✓)
 - [ ] Contribution to portfolio volatility by position
 - [ ] Correlation matrix between positions
-- [ ] Concentration risk metrics (Herfindahl index)
-- [ ] Max drawdown analysis
+- [x] Concentration risk metrics (Herfindahl index, top-5 concentration)
+- [x] Max drawdown analysis (max + current, with dates)
+- [x] Portfolio volatility (annualized) and Sharpe ratio
+- [x] Risk metrics UI card in Analysis tab
 
 #### 2D. Scenario Modeling
 - [ ] Market crash scenarios (-10%, -20%, -40%)
@@ -179,9 +203,9 @@ Pending real option data import to verify end-to-end.
 - [x] Economic events calendar (FRED data, Fed meetings, CPI releases)
 - [x] Earnings calendar for held securities (WSH via TWS API)
 - [x] Weekly automated briefing (Claude Sonnet summary)
-- [ ] FOMC meeting date filtering (hardcoded schedule)
-- [ ] Vital Knowledge market commentary integration
-- [ ] Automated Sunday email briefing (nodemailer + launchd)
+- [x] FOMC meeting date filtering (hardcoded 2026 schedule from federalreserve.gov)
+- [x] Vital Knowledge market commentary integration (IMAP-based)
+- [x] Automated Sunday email briefing (nodemailer + launchd)
 
 ### Phase 4: Polish
 
@@ -236,27 +260,29 @@ Pending real option data import to verify end-to-end.
 
 ## Suggested Build Order (Updated)
 
-### Next Up: Data Gaps + Calendar Polish
-1. Daily equity curves on Overview combined chart (date range pills + daily data)
-2. Performance period selectors (3Y, 5Y)
-3. FOMC meeting dates in calendar
-4. Vital Knowledge market commentary in briefings
-5. Automated Sunday email briefing (nodemailer + launchd)
+### ~~Data Gaps + Calendar Polish~~ — DONE (2026-03-27)
+~~1-5. Daily charts, performance periods, FOMC, VK, email~~ ✓
 
-### Then: Streaming + Analytics
-6. Faster TWS price fetch / streaming prices
-7. Benchmark comparison (requires historical benchmark prices from TWS)
+### ~~Streaming + Analytics~~ — MOSTLY DONE (2026-03-27)
+~~6. Streaming live quotes~~ ✓
+~~7. Benchmark comparison~~ ✓
+~~9. Risk decomposition~~ ✓ (portfolio-level; position-level deferred)
 8. Quantitative factor analysis (beta, size, value/growth)
-9. Risk decomposition
 10. Scenario modeling
 
+### Next Up
+1. Quantitative factor analysis (market beta, size, value/growth)
+2. Position-level risk (volatility contribution, correlation matrix)
+3. Scenario modeling (crash, rate shock, custom what-ifs)
+4. Period comparison table (portfolio vs benchmark by period)
+
 ### Then: Advanced
-11. Options Phase 2 (verify with real data first, then Greeks + strategies)
-12. Tax report export (8949, wash sales)
+5. Options Phase 2 (verify with real data first, then Greeks + strategies)
+6. Tax report export (8949, wash sales)
 
 ### Finally: Polish
-13. Desktop packaging (Electron or Tauri)
-14. E2E browser tests
+7. Desktop packaging (Electron or Tauri)
+8. E2E browser tests
 
 ---
 

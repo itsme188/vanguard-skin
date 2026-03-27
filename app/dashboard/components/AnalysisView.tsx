@@ -14,6 +14,7 @@ import type {
 } from "@/lib/queries/analysis";
 import { FACTOR_LABELS, type FactorColumn, FACTOR_COLUMNS } from "@/lib/factors";
 import { FactorHeatmap } from "./FactorHeatmap";
+import { RiskMetrics } from "./RiskMetrics";
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis,
 } from "recharts";
@@ -548,6 +549,9 @@ export function AnalysisView({
           </div>
         </>
       )}
+
+      {/* ── Risk Decomposition ── */}
+      <RiskMetrics />
     </div>
   );
 }
