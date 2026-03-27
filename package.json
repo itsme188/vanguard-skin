@@ -1,12 +1,30 @@
 {
   "name": "vanguard-skin",
-  "version": "0.1.0",
+  "version": "2.0.0",
+  "description": "Local-first portfolio dashboard for tracking Vanguard and IBKR investments",
+  "author": "itsme188",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/itsme188/vanguard-skin.git"
+  },
+  "keywords": [
+    "portfolio",
+    "dashboard",
+    "vanguard",
+    "ibkr",
+    "interactive-brokers",
+    "nextjs",
+    "sqlite",
+    "local-first"
+  ],
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "seed:demo": "tsx scripts/seed-demo.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.64",
