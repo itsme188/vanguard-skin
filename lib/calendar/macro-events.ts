@@ -49,6 +49,30 @@ for (const r of TRACKED_RELEASES) {
   RELEASE_MAP.set(r.releaseId, r);
 }
 
+// ── FOMC Meeting Dates ──────────────────────────────────────────
+//
+// Published annually by the Federal Reserve. These are the conclusion
+// dates (statement release day, 2:00 PM ET). Meetings with SEP include
+// Summary of Economic Projections and the "dot plot."
+//
+// Source: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+
+interface FomcMeeting {
+  date: string;       // conclusion date (YYYY-MM-DD)
+  hasSEP: boolean;    // Summary of Economic Projections
+}
+
+const FOMC_MEETINGS_2026: FomcMeeting[] = [
+  { date: "2026-01-28", hasSEP: false },
+  { date: "2026-03-18", hasSEP: true },
+  { date: "2026-04-29", hasSEP: false },
+  { date: "2026-06-17", hasSEP: true },
+  { date: "2026-07-29", hasSEP: false },
+  { date: "2026-09-16", hasSEP: true },
+  { date: "2026-10-28", hasSEP: false },
+  { date: "2026-12-09", hasSEP: true },
+];
+
 // ── FRED API ─────────────────────────────────────────────────────
 
 interface FredReleaseDate {
@@ -199,12 +223,7 @@ export async function fetchMacroEvents(
   // Step 1: Get authoritative dates from FRED
   const fredEvents = await fetchFredReleaseDates(startDate, endDate);
 
-  if (fredEvents.length === 0) {
-    console.warn("[fetchMacroEvents] No FRED releases found for date range");
-    return [];
-  }
-
-  // Step 2: Enrich with Claude (descriptions, estimates, timing)
+  // Step 2: Enrich FRED events with Claude (descriptions, estimates, timing)
   const enrichmentInput = fredEvents.map((e) => ({
     date: e.date,
     shortName: e.config.shortName,
@@ -214,7 +233,7 @@ export async function fetchMacroEvents(
   const enriched = await enrichEventsWithClaude(enrichmentInput);
 
   // Step 3: Combine FRED dates + Claude enrichment into CalendarEventInput[]
-  return fredEvents.map((e) => {
+  const events: CalendarEventInput[] = fredEvents.map((e) => {
     const key = `${e.date}:${e.config.shortName}`;
     const extra = enriched.get(key);
 
@@ -222,7 +241,7 @@ export async function fetchMacroEvents(
     const sourceKey = `fred:${e.config.releaseId}:${e.date}`;
 
     return {
-      source: "claude_macro" as const, // source in DB stays "claude_macro" for consistency
+      source: "claude_macro" as const,
       event_type: e.config.eventType,
       event_date: e.date, // FROM FRED — authoritative
       event_time: extra?.event_time ?? null,
@@ -237,6 +256,38 @@ export async function fetchMacroEvents(
       week_of: weekOf,
     };
   });
+
+  // Step 4: Add FOMC meeting dates (hardcoded, from federalreserve.gov)
+  for (const meeting of FOMC_MEETINGS_2026) {
+    if (meeting.date >= startDate && meeting.date <= endDate) {
+      const title = meeting.hasSEP
+        ? "FOMC Rate Decision + Projections"
+        : "FOMC Rate Decision";
+      const description = meeting.hasSEP
+        ? "Federal Open Market Committee announces interest rate decision, releases Summary of Economic Projections (dot plot), and holds press conference at 2:30 PM ET."
+        : "Federal Open Market Committee announces interest rate decision and holds press conference at 2:30 PM ET.";
+
+      events.push({
+        source: "claude_macro" as const,
+        event_type: "fomc",
+        event_date: meeting.date,
+        event_time: "14:00",
+        title,
+        description,
+        expected_impact: "high",
+        consensus_estimate: null,
+        previous_value: null,
+        source_key: `fomc:${meeting.date}`,
+        week_of: weekOf,
+      });
+    }
+  }
+
+  if (events.length === 0) {
+    console.warn("[fetchMacroEvents] No macro events found for date range");
+  }
+
+  return events;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────

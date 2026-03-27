@@ -1,19 +1,19 @@
 # Vanguard Skin — Project TODO
 
-> Last updated: 2026-03-23
+> Last updated: 2026-03-27
 
 ## Status Overview
 
-v2 core rebuild is complete. 16 merged PRs, 81 commits, 378 tests (377 passing, 1 failing).
+v2 core rebuild is complete. 18 merged PRs, 476 tests (all passing).
 Post-v2 work has added IBKR TWS integration, TWR/XIRR engines, agentic chat with 14 tools,
-thematic factor analysis, notes/journaling, and a chat scope selector. This document tracks
-remaining work.
+thematic factor analysis, notes/journaling, chat scope selector, per-security candlestick charting,
+and IBKR calendar integration with weekly AI briefings. This document tracks remaining work.
 
 ---
 
 ## Completed Since v2 Launch
 
-Everything below was built between 2026-03-06 and 2026-03-23.
+Everything below was built between 2026-03-06 and 2026-03-27.
 
 ### IBKR TWS API — Phase 1 (PR #8)
 - [x] TWS API client library (`lib/tws/client.ts`) — singleton on `globalThis`, `@stoqey/ib`
@@ -60,6 +60,23 @@ Everything below was built between 2026-03-06 and 2026-03-23.
 - [x] `scripts/VanguardDashboard.applescript` stay-open applet (port 3099)
 - [x] Non-blocking idle polling, PATH export for node discovery
 
+### Per-Security Candlestick Charts (recent commits)
+- [x] LightweightCharts v5 integration (`SecurityChart.tsx`)
+- [x] OHLCV bars table with TWS historical data fetch
+- [x] Technical indicators: EMA 9/21, SMA 50/200
+- [x] Daily bars cached in SQLite, intraday (1m/5m) live from TWS
+- [x] Transaction markers (BUY/SELL) on chart
+- [x] Duration selector (1M–2Y–All) + timeframe selector (Daily/5m/1m)
+
+### IBKR Calendar Integration (recent commits)
+- [x] WSH company events (earnings, analyst meetings) via TWS API
+- [x] FRED macro events (authoritative dates from BLS, Census, Fed, ISM)
+- [x] Claude enrichment (descriptions, consensus estimates, impact ratings)
+- [x] Calendar tab with week grid + agenda/briefing side-by-side layout
+- [x] Weekly briefing generation via Claude Sonnet
+- [x] Overview tab Upcoming Events card
+- [x] 13 database migrations, `calendar_events` + `calendar_briefings` tables
+
 ### Tech Debt Closed
 - [x] SQL injection — parameterized queries across portfolio-summary.ts and other files
 - [x] `toLocaleDateString()` SSR hydration — confirmed safe (all in `"use client"` components)
@@ -79,14 +96,14 @@ Everything below was built between 2026-03-06 and 2026-03-23.
 ### Phase 1: Data Gaps
 
 #### 1A. Daily Equity Curves
-**Status:** `EquityCurveChart.tsx` still uses monthly snapshots. `daily_valuations` table exists
-but isn't wired to the chart.
+**Status:** Per-account `EquityCurveChart` (Accounts tab) now has daily data, split toggle,
+date range selector, and crosshair. Overview `CombinedPortfolioChart` still uses monthly only.
 
-- [ ] Daily-resolution equity curves using `daily_valuations` table
-- [ ] Split: Total Value, Holdings Value, Cash Balance (three lines)
-- [ ] Date range selector (1M, 3M, 6M, YTD, 1Y, All)
-- [ ] Multi-account overlay option on combined chart
-- [ ] Hover crosshair showing exact date + values
+- [x] Daily-resolution equity curves using `daily_valuations` table (per-account)
+- [x] Split: Total Value, Holdings Value, Cash Balance (three lines)
+- [x] Date range selector (1M, 3M, 6M, YTD, 1Y, All)
+- [ ] Daily data on Overview combined chart (stacked area with date range pills)
+- [x] Hover crosshair showing exact date + values
 
 #### 1B. TWS Live Portfolio Sync + Streaming Prices
 **Status:** Portfolio sync done — fetches live positions + NLV + cash from TWS in ~2s.
@@ -158,10 +175,13 @@ Pending real option data import to verify end-to-end.
 - [ ] Cost basis reconciliation report (compare computed vs. broker-reported)
 - [ ] Export for TurboTax or tax preparer
 
-#### 3C. IBKR Calendar Integration
-- [ ] Economic events calendar (FRED data, Fed meetings, CPI releases)
-- [ ] Earnings calendar for held securities
-- [ ] Weekly automated briefing (scheduled Claude summary)
+#### 3C. IBKR Calendar Integration ✓
+- [x] Economic events calendar (FRED data, Fed meetings, CPI releases)
+- [x] Earnings calendar for held securities (WSH via TWS API)
+- [x] Weekly automated briefing (Claude Sonnet summary)
+- [ ] FOMC meeting date filtering (hardcoded schedule)
+- [ ] Vital Knowledge market commentary integration
+- [ ] Automated Sunday email briefing (nodemailer + launchd)
 
 ### Phase 4: Polish
 
@@ -178,7 +198,6 @@ Pending real option data import to verify end-to-end.
 
 #### 4B. Testing
 - [ ] E2E browser tests (~15 hours estimated, deferred to dedicated session)
-- [ ] Fix failing test: `tests/tws/historical.test.ts` — `ib_con_id` contract lookup
 
 ---
 
@@ -190,7 +209,7 @@ Pending real option data import to verify end-to-end.
 | PDF import (Vanguard) | Working (OCR) | Working (Claude API) | Done |
 | Monthly snapshots | Working | Working | Done |
 | Combined portfolio chart | Working | Working (new theme) | Done |
-| Per-account equity curves | Working (daily) | Working (monthly only) | Medium |
+| Per-account equity curves | Working (daily) | **Working (daily + split + date ranges)** | Done |
 | Tax lot tracking (FIFO) | Working | Working + year/account filter | Done |
 | Reconciliation | Working | Working | Done |
 | Portfolio Chat (Claude Q&A) | Incomplete | **Agentic, 14 tools, Opus 4.6** | Done |
@@ -217,25 +236,27 @@ Pending real option data import to verify end-to-end.
 
 ## Suggested Build Order (Updated)
 
-### Next Up: Data Gaps
-1. Daily equity curve upgrade (wire `daily_valuations` to chart)
-2. Performance period selectors (YTD, 1Y, etc.)
-3. Faster TWS price fetch / streaming prices
+### Next Up: Data Gaps + Calendar Polish
+1. Daily equity curves on Overview combined chart (date range pills + daily data)
+2. Performance period selectors (3Y, 5Y)
+3. FOMC meeting dates in calendar
+4. Vital Knowledge market commentary in briefings
+5. Automated Sunday email briefing (nodemailer + launchd)
 
-### Then: Analytics
-4. Benchmark comparison (requires historical benchmark prices from TWS)
-5. Quantitative factor analysis (beta, size, value/growth)
-6. Risk decomposition
-7. Scenario modeling
+### Then: Streaming + Analytics
+6. Faster TWS price fetch / streaming prices
+7. Benchmark comparison (requires historical benchmark prices from TWS)
+8. Quantitative factor analysis (beta, size, value/growth)
+9. Risk decomposition
+10. Scenario modeling
 
 ### Then: Advanced
-8. Options Phase 2 (verify with real data first, then Greeks + strategies)
-9. Tax report export (8949, wash sales)
-10. IBKR calendar integration + weekly briefings
+11. Options Phase 2 (verify with real data first, then Greeks + strategies)
+12. Tax report export (8949, wash sales)
 
 ### Finally: Polish
-11. Desktop packaging (Electron or Tauri)
-12. E2E browser tests
+13. Desktop packaging (Electron or Tauri)
+14. E2E browser tests
 
 ---
 
@@ -244,7 +265,7 @@ Pending real option data import to verify end-to-end.
 1. Vanguard Taxable at 87% coverage — Retry threshold raised to 95% but 87% slipped through before the fix
 2. Holdings cost basis column all "–" in Accounts tab — Data gap, not a code bug (tooltip explains)
 3. Earnings transcript timeline empty — Fetch UI wired to EarningsView but may need data
-4. `tests/tws/historical.test.ts` — 1 failing test (`ib_con_id` contract lookup)
+4. ~~`tests/tws/historical.test.ts` — 1 failing test~~ — Fixed (all 476 tests passing)
 
 ## Known Gaps (Not Bugs)
 
