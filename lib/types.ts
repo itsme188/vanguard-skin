@@ -184,3 +184,58 @@ export const SCOPE_LABELS: Record<ChatScope, string> = {
 };
 
 export const VALID_SCOPES: ChatScope[] = ["all", "ibkr", "vanguard-taxable", "vanguard-roth-ira", "macro"];
+
+// ── Calendar Events ──────────────────────────────────────────
+
+export type CalendarEventSource = "wsh" | "claude_macro" | "manual";
+
+export type CalendarEventType =
+  // Company events (from WSH)
+  | "earnings"
+  | "analyst_meeting"
+  | "conference"
+  | "split"
+  // Macro events (from Claude)
+  | "fomc"
+  | "cpi"
+  | "jobs"
+  | "gdp"
+  | "pmi"
+  | "retail_sales"
+  | "housing"
+  | "other_macro"
+  // Catch-all
+  | "other";
+
+export type EventImpact = "high" | "medium" | "low";
+
+export interface CalendarEvent {
+  id: number;
+  source: CalendarEventSource;
+  event_type: CalendarEventType;
+  event_date: string;
+  event_time: string | null;
+  title: string;
+  description: string | null;
+  security_id: number | null;
+  symbol: string | null;
+  ib_con_id: number | null;
+  expected_impact: EventImpact | null;
+  consensus_estimate: string | null;
+  previous_value: string | null;
+  raw_json: string | null;
+  source_key: string;
+  week_of: string | null;
+  fetched_at: string;
+  created_at: string;
+}
+
+export interface CalendarBriefing {
+  id: number;
+  week_of: string;
+  title: string;
+  content: string;
+  event_count: number;
+  model: string | null;
+  generated_at: string;
+}
