@@ -45,6 +45,13 @@ tests/fixtures/real/
 .claude/worktrees/
 .superpowers/
 
+# local machine configs (contain absolute paths)
+.mcp.json
+scripts/launch-dashboard.sh
+scripts/VanguardDashboard.applescript
+scripts/reimport-holdings.ts
+scripts/capture-screenshots.mjs
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

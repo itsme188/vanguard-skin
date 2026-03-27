@@ -75,7 +75,7 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - `upsertSecurity()` has a type conflict guard — refuses to merge stock↔option on same symbol to prevent data corruption
 - Dashboard "as of" dates: `getAccountSummaries()` prefers `daily_valuations` over `monthly_snapshots` when more recent
 - Daily valuations infer cash from monthly snapshot anchors: `cash = snapshot_total - holdings_value`. Cash carries forward between snapshots.
-- TWS portfolio sync filters to personal account U13643679 (managed advisor U24339206 excluded). `getPositions()` does NOT include `marketPrice` — use Quick Refresh for prices after sync.
+- TWS portfolio sync filters to the personal account set via `IBKR_ACCOUNT_CODE` env var (managed advisor account excluded). `getPositions()` does NOT include `marketPrice` — use Quick Refresh for prices after sync.
 
 ## Dev Server Gotchas
 

@@ -61,8 +61,9 @@ export function buildSymbol(contract: Contract): string {
 const FETCH_TIMEOUT_MS = 15_000;
 
 /** IBKR account code for the personal (non-advisor) account.
- *  getPositions() returns ALL linked accounts — we filter to just this one. */
-export const IBKR_PERSONAL_ACCOUNT = "U13643679";
+ *  getPositions() returns ALL linked accounts — we filter to just this one.
+ *  Set IBKR_ACCOUNT_CODE in .env.local to your personal account ID. */
+export const IBKR_PERSONAL_ACCOUNT = process.env.IBKR_ACCOUNT_CODE || "UXXXXXXXX";
 
 async function fetchPositionsFromTws(
   api: IBApiNext,
