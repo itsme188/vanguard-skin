@@ -18,7 +18,7 @@ Local-first portfolio dashboard for tracking Vanguard + IBKR investments.
 - **App Router** — Server components for data loading, client components for interactivity
 - **SQLite** — Single `data/vanguard.db` file, WAL mode, foreign keys enforced
 - **Migrations** — Numbered `.sql` files in `lib/db/migrations/`, tracked in `schema_migrations` table
-- **Tab-based UI** — Overview | Accounts | Tax Lots | Analysis | Charts | Import | Reconciliation | Notes | Chat
+- **Tab-based UI** — Overview | Accounts | Tax Lots | Analysis | Charts | Calendar | Import | Reconciliation | Notes | Chat
 
 ## Directory Structure
 
@@ -90,6 +90,19 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - `POST /api/chat` — AI SDK v6 `streamText` with `@ai-sdk/anthropic` provider (Opus 4.6, adaptive thinking, ephemeral cache control, `stopWhen: stepCountIs(8)`). Client uses `useChat` from `@ai-sdk/react`.
 - `POST /api/tws/positions` — SSE streaming: sync live IBKR positions + account summary from TWS
 - `POST /api/tws/chart` — OHLCV bars for per-security charting. Supports daily (cached in `ohlcv_bars`) and intraday 1m/5m (live from TWS, not cached). Returns transactions for BUY/SELL markers.
+- `POST /api/calendar/sync` — SSE streaming: pulls WSH company events (earnings, analyst meetings) from TWS + macro events (FOMC, CPI, jobs) from Claude API. Stores in `calendar_events` table.
+- `GET /api/calendar/events?start=&end=&weekOf=` — read calendar events from DB
+- `POST /api/calendar/briefing` — SSE streaming: generates weekly research briefing via Claude for all events in a given week. Stores in `calendar_briefings` table.
+
+## Calendar
+
+- WSH (Wall Street Horizon) provides company events via `reqWshEventData()` on raw `IBApi` — IBApiNext has NO WSH wrapper, so we access `(ibApiNext as any).api`
+- WSH JSON format is undocumented — `raw_json` column stores the full response for debugging/iteration
+- Macro events sourced from Claude API (Sonnet for structured extraction, not Opus)
+- Dividends/ex-dividends are filtered OUT of the calendar (user preference — too noisy)
+- `lib/tws/wsh.ts` — WSH fetch with Promise wrapper, `lib/calendar/parse-wsh.ts` — defensive parser
+- `lib/calendar/macro-events.ts` — Claude-sourced macro events, `lib/calendar/briefing.ts` — weekly briefing generation
+- Weekly briefings stored in `calendar_briefings` table, one per week (UNIQUE on `week_of`)
 
 ## Safety Rules
 
