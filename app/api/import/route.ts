@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { parseImport, commitImport, undoImport } from "@/lib/import/engine";
 import { classifySecurities } from "@/lib/compute/classify-securities";
 import { computeTaxLots } from "@/lib/compute/tax-lots";
+import { computeDailyValuations } from "@/lib/compute/daily-valuation";
 
 /**
  * POST /api/import?mode=preview  — parse only, return preview JSON
@@ -113,6 +114,11 @@ export async function POST(request: NextRequest) {
         computeTaxLots(db);
       } catch {
         // Tax lot computation failure shouldn't block import
+      }
+      try {
+        computeDailyValuations(db);
+      } catch {
+        // Valuation recompute failure shouldn't block import
       }
     }
 
