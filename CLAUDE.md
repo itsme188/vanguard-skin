@@ -92,17 +92,23 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - `POST /api/tws/chart` — OHLCV bars for per-security charting. Supports daily (cached in `ohlcv_bars`) and intraday 1m/5m (live from TWS, not cached). Returns transactions for BUY/SELL markers.
 - `POST /api/calendar/sync` — SSE streaming: pulls WSH company events (earnings, analyst meetings) from TWS + macro events (FOMC, CPI, jobs) from Claude API. Stores in `calendar_events` table.
 - `GET /api/calendar/events?start=&end=&weekOf=` — read calendar events from DB
-- `POST /api/calendar/briefing` — SSE streaming: generates weekly research briefing via Claude for all events in a given week. Stores in `calendar_briefings` table.
+- `POST /api/calendar/briefing` — SSE streaming: generates weekly research briefing via Claude for all events in a given week. Includes Vital Knowledge market context if Gmail env vars set. Stores in `calendar_briefings` table.
+- `POST /api/calendar/email` — generates briefing (if needed), converts markdown→styled HTML, sends via Gmail. Body: `{ weekOf?, to? }`. Requires `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `BRIEFING_EMAIL_TO` env vars.
 
 ## Calendar
 
 - WSH (Wall Street Horizon) provides company events via `reqWshEventData()` on raw `IBApi` — IBApiNext has NO WSH wrapper, so we access `(ibApiNext as any).api`
 - WSH JSON format is undocumented — `raw_json` column stores the full response for debugging/iteration
-- Macro events sourced from Claude API (Sonnet for structured extraction, not Opus)
+- Macro event dates from FRED `releases/dates` API (authoritative); FOMC dates hardcoded from federalreserve.gov
+- Claude Sonnet used for enrichment only (descriptions, consensus estimates, impact ratings — never dates)
 - Dividends/ex-dividends are filtered OUT of the calendar (user preference — too noisy)
 - `lib/tws/wsh.ts` — WSH fetch with Promise wrapper, `lib/calendar/parse-wsh.ts` — defensive parser
-- `lib/calendar/macro-events.ts` — Claude-sourced macro events, `lib/calendar/briefing.ts` — weekly briefing generation
+- `lib/calendar/macro-events.ts` — FRED dates + FOMC schedule + Claude enrichment
+- `lib/calendar/briefing.ts` — weekly briefing generation (includes VK market context if available)
+- `lib/vital-knowledge.ts` — IMAP-based Vital Knowledge newsletter fetching (ported from Stock Contest)
+- `lib/email.ts` — nodemailer Gmail sending utility; `lib/calendar/briefing-html.ts` — markdown→HTML for email
 - Weekly briefings stored in `calendar_briefings` table, one per week (UNIQUE on `week_of`)
+- Sunday email automation: launchd plist at `~/Library/LaunchAgents/com.vanguard-skin.weekly-email.plist`
 
 ## Safety Rules
 

@@ -64,3 +64,11 @@ Add new entries at the bottom.
 - **Calendar: WSH via raw IBApi** — IBApiNext has no WSH wrappers. Access via `(ibApiNext as any).api`. WSH JSON format is undocumented — `raw_json` column preserves responses for parser iteration. Dividends/ex-dividends filtered out (user preference — too noisy).
 
 - **Calendar: Sonnet for enrichment, not Opus** — Macro event enrichment uses Sonnet 4.6 (structured JSON extraction, not deep reasoning). Briefing generation also uses Sonnet (analysis is substantive but doesn't need Opus-level reasoning). Saves ~5x cost vs. Opus per calendar sync.
+
+- **FOMC dates: hardcoded, not API** — The Fed publishes the FOMC schedule a year in advance (8 meetings). FRED doesn't have a clean single release_id for FOMC meetings — it publishes multiple releases (statement, minutes, projections) around each meeting. Hardcoded approach is 20 lines, zero API calls, zero failure modes. Update once a year. Source: federalreserve.gov/monetarypolicy/fomccalendars.htm.
+
+- **Vital Knowledge via IMAP, not API** — VK newsletters arrive via email. `imapflow` connects to Gmail IMAP, searches for `updates@vitalknowledge.net`, strips HTML, truncates to 8K chars total. Ported from Stock Contest (identical code). Integrated into briefing prompt — if VK context exists, Claude gets market commentary alongside event data. Graceful degradation: returns "" on any failure.
+
+- **Email briefing: inline styles, not CSS** — Email clients (Gmail, Outlook, Apple Mail) strip `<style>` blocks and ignore CSS classes. All styling in `briefing-html.ts` uses inline `style=""` attributes. Midnight Portfolio theme colors translate directly to hex values. Simple markdown-to-HTML converter handles the subset Claude produces (##, **, -, paragraphs) without adding a dependency like `marked`.
+
+- **Overview chart: daily overrides monthly on merge** — `CombinedPortfolioChart` merges monthly snapshots with daily valuations by date key. Daily data overwrites monthly on the same date (more granular/recent). Monthly fills gaps for older dates. Simpler than `EquityCurveChart`'s shape-preserving normalization because the stacked-area chart uses absolute values per account, not proportional adjustment.
