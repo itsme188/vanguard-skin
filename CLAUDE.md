@@ -54,7 +54,7 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 3. UI shows preview with counts and sample records
 4. User clicks Import → `/api/import?mode=commit` writes to DB
 5. Every import creates an `import_batches` record for undo
-6. Post-commit: auto-classifies securities + auto-computes tax lots (silent, non-blocking)
+6. Post-commit: auto-classifies securities + auto-computes tax lots + recomputes daily valuations (silent, non-blocking)
 
 ## Conventions
 
@@ -94,6 +94,23 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - `GET /api/calendar/events?start=&end=&weekOf=` — read calendar events from DB
 - `POST /api/calendar/briefing` — SSE streaming: generates weekly research briefing via Claude for all events in a given week. Includes Vital Knowledge market context if Gmail env vars set. Stores in `calendar_briefings` table.
 - `POST /api/calendar/email` — generates briefing (if needed), converts markdown→styled HTML, sends via Gmail. Body: `{ weekOf?, to? }`. Requires `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `BRIEFING_EMAIL_TO` env vars.
+- `GET /api/compute/xirr?startDate=&endDate=&accountId=` — compute XIRR for arbitrary date ranges
+- `GET /api/compute/risk?startDate=&endDate=&accountId=` — portfolio risk metrics (drawdown, volatility, Sharpe, Herfindahl)
+- `POST /api/benchmark/sync` — SSE streaming: fetch benchmark prices from TWS (falls back to cached ohlcv_bars/prices on timeout)
+- `GET /api/benchmark/prices?mode=prices|chart|stats|available&symbol=SPY` — benchmark data and analytics
+- `GET /api/tws/stream` — SSE: streaming live quotes for current holdings
+- `POST /api/tws/stream` — control streaming: `{ action: "stop" | "snapshot" }`
+
+## Benchmark & Risk
+
+- Benchmark prices stored in `benchmark_prices` table (migration 014), separate from portfolio `prices`
+- Benchmark sync requires TWS connection; falls back to `ohlcv_bars` then `prices` table for cached data
+- TWS `getHistoricalData` requires `conId` in contract for reliability — symbol-only contracts time out
+- `lib/tws/benchmark.ts` auto-resolves conId via `getContractDetails` for unknown benchmark symbols
+- Risk metrics computed from `daily_valuations` — no external data needed
+- Sharpe ratio uses 4.5% risk-free rate (configurable via `riskFreeRate` option)
+- Recharts `formatter` on Tooltip needs untyped params: `(value) => [formatFn(Number(value)), label]`
+- Recharts `minTickGap={40}` on XAxis prevents duplicate labels with dense daily data
 
 ## Calendar
 
