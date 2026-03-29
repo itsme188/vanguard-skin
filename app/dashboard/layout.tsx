@@ -1,6 +1,7 @@
 import { TabNav } from "./components/TabNav";
 import { TwsStatus } from "./components/TwsStatus";
 import { ToastProvider } from "./components/Toast";
+import { DataFreshness } from "./components/DataFreshness";
 
 export default function DashboardLayout({
   children,
@@ -21,6 +22,7 @@ export default function DashboardLayout({
               Vanguard Skin
             </h1>
             <div className="flex items-center gap-4">
+              <DataFreshness />
               <TwsStatus />
               <span className="text-[11px] text-ink-faint font-mono">v2.0</span>
             </div>
