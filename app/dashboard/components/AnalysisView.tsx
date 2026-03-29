@@ -17,6 +17,7 @@ import { FactorHeatmap } from "./FactorHeatmap";
 import { RiskMetrics } from "./RiskMetrics";
 import { PositionRiskCard } from "./PositionRisk";
 import { FactorAnalysisCard } from "./FactorAnalysis";
+import { ScenarioModelingCard } from "./ScenarioModeling";
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis,
 } from "recharts";
@@ -554,6 +555,9 @@ export function AnalysisView({
 
       {/* ── Quantitative Factor Analysis ── */}
       <FactorAnalysisCard />
+
+      {/* ── Scenario Modeling ── */}
+      <ScenarioModelingCard />
 
       {/* ── Risk Decomposition ── */}
       <RiskMetrics />
