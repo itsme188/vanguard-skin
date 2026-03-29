@@ -270,19 +270,27 @@ Pending real option data import to verify end-to-end.
 8. Quantitative factor analysis (beta, size, value/growth)
 10. Scenario modeling
 
+### ~~UX Overhaul~~ — DONE (2026-03-29)
+~~Security Detail page, tab reorganization (10→8), chat drawer, Holdings tab,
+Research tab, reconciliation merge, universal SymbolLinks, DataFreshness,
+Watchlist feature~~ ✓
+
 ### Next Up
-1. Quantitative factor analysis (market beta, size, value/growth)
-2. Position-level risk (volatility contribution, correlation matrix)
-3. Scenario modeling (crash, rate shock, custom what-ifs)
+1. Income tracking (dividends/interest by period, monthly/quarterly/yearly)
+2. Global search (Cmd+K command palette across securities, notes, transactions)
+3. Morning briefing widget on Overview ("Today" view)
 4. Period comparison table (portfolio vs benchmark by period)
+5. Quantitative factor analysis (market beta, size, value/growth)
+6. Position-level risk (volatility contribution, correlation matrix)
 
 ### Then: Advanced
-5. Options Phase 2 (verify with real data first, then Greeks + strategies)
-6. Tax report export (8949, wash sales)
+7. Scenario modeling (crash, rate shock, custom what-ifs)
+8. Options Phase 2 (verify with real data first, then Greeks + strategies)
+9. Tax report export (8949, wash sales)
 
 ### Finally: Polish
-7. Desktop packaging (Electron or Tauri)
-8. E2E browser tests
+10. Desktop packaging (Electron or Tauri)
+11. E2E browser tests
 
 ---
 
@@ -295,7 +303,8 @@ Pending real option data import to verify end-to-end.
 
 ## Known Gaps (Not Bugs)
 
-- No benchmark comparison
+- ~~No benchmark comparison~~ — Implemented (commit efccfa5)
 - Wash sale warnings in chat system prompt but no auto-detection
-- `next build` fails in worktrees with existing `data/vanguard.db`
+- `next build` data collection fails with existing `data/vanguard.db` (TypeScript compilation succeeds)
 - TWS price fetch takes ~40 min due to IBKR rate limits
+- Stale SHM/WAL files can cause SQLite corruption — remove `.db-shm` and `.db-wal` to fix

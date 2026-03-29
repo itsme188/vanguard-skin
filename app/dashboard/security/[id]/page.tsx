@@ -1,8 +1,10 @@
 import { db } from "@/lib/db";
 import { getSecurityDetail } from "@/lib/queries/security-detail";
+import { isOnWatchlist, getWatchlistItem } from "@/lib/queries/watchlist";
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { SecurityChart } from "../../components/SecurityChart";
+import { WatchlistButton } from "../../components/WatchlistButton";
 import {
   FACTOR_COLUMNS,
   FACTOR_LABELS,
@@ -63,6 +65,8 @@ export default async function SecurityDetailPage(props: {
   if (!detail) notFound();
 
   const { security, price, positions, openTaxLots, closedSales, recentTransactions, notes, upcomingEvents, factors, transcripts } = detail;
+  const watched = isOnWatchlist(db, securityId);
+  const watchlistItem = watched ? getWatchlistItem(db, securityId) : null;
 
   const typeLabel = [
     security.security_type?.replace(/_/g, " "),
@@ -122,7 +126,7 @@ export default async function SecurityDetailPage(props: {
       </div>
 
       {/* Action buttons */}
-      <div className="flex gap-2">
+      <div className="flex items-center gap-2">
         <Link
           href={`/dashboard/charts?id=${securityId}`}
           className="px-3 py-1.5 text-xs font-medium rounded-lg border border-edge text-ink-dim hover:text-ink hover:border-ink-faint transition-colors"
@@ -135,7 +139,40 @@ export default async function SecurityDetailPage(props: {
         >
           + Create Note
         </Link>
+        <WatchlistButton
+          securityId={securityId}
+          initialWatched={watched}
+          priceTargetLow={watchlistItem?.price_target_low ?? null}
+          priceTargetHigh={watchlistItem?.price_target_high ?? null}
+        />
       </div>
+
+      {/* Watchlist price targets */}
+      {watched && watchlistItem && (watchlistItem.price_target_low || watchlistItem.price_target_high) && (
+        <div className="flex items-center gap-4 text-xs">
+          {watchlistItem.price_target_low && (
+            <span className="text-ink-faint">
+              Target Low:{" "}
+              <span className="font-mono text-down">
+                {formatPrecise(watchlistItem.price_target_low)}
+              </span>
+            </span>
+          )}
+          {watchlistItem.price_target_high && (
+            <span className="text-ink-faint">
+              Target High:{" "}
+              <span className="font-mono text-up">
+                {formatPrecise(watchlistItem.price_target_high)}
+              </span>
+            </span>
+          )}
+          {watchlistItem.thesis && (
+            <span className="text-ink-faint truncate max-w-xs" title={watchlistItem.thesis}>
+              Thesis: {watchlistItem.thesis}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Chart */}
       <section className="rounded-xl border border-edge bg-panel overflow-hidden">

@@ -18,7 +18,10 @@ Local-first portfolio dashboard for tracking Vanguard + IBKR investments.
 - **App Router** — Server components for data loading, client components for interactivity
 - **SQLite** — Single `data/vanguard.db` file, WAL mode, foreign keys enforced
 - **Migrations** — Numbered `.sql` files in `lib/db/migrations/`, tracked in `schema_migrations` table
-- **Tab-based UI** — Overview | Accounts | Tax Lots | Analysis | Charts | Calendar | Import | Reconciliation | Notes | Chat
+- **Tab-based UI** — Overview | Accounts | Holdings | Analysis | Charts | Calendar | Research | Import
+- **Chat drawer** — Slide-out right panel (Cmd+J), accessible from any tab, persists conversation
+- **Security Detail** — `/dashboard/security/[id]` hub page per security (chart, positions, lots, notes, events, factors)
+- **Watchlist** — Track securities not yet owned, with price targets and thesis
 
 ## Directory Structure
 
@@ -100,6 +103,27 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - `GET /api/benchmark/prices?mode=prices|chart|stats|available&symbol=SPY` — benchmark data and analytics
 - `GET /api/tws/stream` — SSE: streaming live quotes for current holdings
 - `POST /api/tws/stream` — control streaming: `{ action: "stop" | "snapshot" }`
+- `GET /api/watchlist` — list active watchlist items
+- `POST /api/watchlist` — add security to watchlist (by securityId or symbol)
+- `PATCH /api/watchlist` — update price targets/thesis
+- `DELETE /api/watchlist?id=` — remove from watchlist (soft delete)
+
+## Security Detail Page
+
+- Route: `/dashboard/security/[id]` — hub page for a single security
+- Shows: chart (SecurityChart), positions (cross-account), tax lots (open + closed), transactions, notes, events, factor exposure, transcripts
+- Every symbol in the app links here via `SymbolLink` component
+- Watchlist button toggles add/remove with star icon
+- `lib/queries/security-detail.ts` — consolidated queries calling existing sub-queries
+
+## Tab Structure
+
+- 8 tabs: Overview, Accounts, Holdings, Analysis, Charts, Calendar, Research, Import
+- **Chat** is a slide-out drawer (ChatDrawer.tsx) in the layout, toggled via header button or Cmd+J
+- **Reconciliation** merged into Accounts tab as collapsible section
+- **Notes** renamed to **Research** (redirect from /dashboard/notes)
+- **Holdings** tab shows cross-account positions with P&L and allocation %
+- Old routes (/dashboard/notes, /dashboard/reconciliation, /dashboard/chat) redirect to new locations
 
 ## Benchmark & Risk
 
