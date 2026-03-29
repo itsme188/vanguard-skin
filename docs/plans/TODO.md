@@ -173,8 +173,9 @@ about quantitative factor decomposition — different from the thematic system.
 - [x] Risk metrics UI card in Analysis tab
 
 #### 2D. Scenario Modeling
-- [ ] Market crash scenarios (-10%, -20%, -40%)
-- [ ] Interest rate shock (+100bp, +200bp)
+- [x] Market crash scenarios (-10%, -20%, -40%)
+- [x] Interest rate shock (+100bp, +200bp)
+- [x] Bull rally scenario (+15%)
 - [ ] Sector rotation scenarios
 - [ ] Custom "what-if" with user-defined assumptions
 
@@ -243,7 +244,7 @@ Pending real option data import to verify end-to-end.
 | Benchmark comparison | Incomplete | **Working (SPY overlay + period table)** | Done |
 | Security enrichment | Incomplete | **Partial (TWS enrich route)** | Medium |
 | Risk decomposition | Incomplete | **Working (drawdown, vol, Sharpe, Herfindahl)** | Done |
-| Scenario modeling | Incomplete | Not built | Medium |
+| Scenario modeling | Incomplete | **Working (6 presets + position detail)** | Done |
 | Confidence scoring | Working | Dropped (Claude API is accurate enough) | — |
 | Options support | None | Phase 1 done (16 tests) | Medium |
 | IBKR TWS API | None | **Phase 1 done (historical + contracts)** | Done |
@@ -286,7 +287,7 @@ Watchlist feature~~ ✓
 ~~2. Position-level risk~~ ✓ (per-position vol, risk contribution, correlation matrix)
 
 ### Then: Advanced
-7. Scenario modeling (crash, rate shock, custom what-ifs)
+~~7. Scenario modeling~~ ✓ (6 presets: correction, bear, crash, rate +100/+200bp, bull rally)
 8. Options Phase 2 (verify with real data first, then Greeks + strategies)
 9. Tax report export (8949, wash sales)
 
