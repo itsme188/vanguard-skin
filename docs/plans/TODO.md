@@ -158,9 +158,9 @@ Uses delayed/frozen quotes (no exchange subscription needed). SSE-based with aut
 **Status:** Thematic factor exposure is done (macro themes like AI, energy, rates). This is
 about quantitative factor decomposition — different from the thematic system.
 
-- [ ] Market beta (vs S&P 500, total market)
-- [ ] Size factor (large/mid/small cap tilt)
-- [ ] Value/growth factor
+- [x] Market beta (vs S&P 500, total market) — regression-based: beta, alpha, R², tracking error
+- [x] Size factor (large/mid/small cap tilt) — portfolio-weighted from classification
+- [x] Value/growth factor — portfolio-weighted from classification
 - [ ] Duration/credit exposure (fixed income)
 - [ ] Options Greeks (delta, gamma, theta, vega) if positions exist
 
@@ -239,7 +239,7 @@ Pending real option data import to verify end-to-end.
 | Portfolio Chat (Claude Q&A) | Incomplete | **Agentic, 14 tools, Opus 4.6** | Done |
 | TWR / XIRR performance | Working | **Working** | Done |
 | Thematic factor analysis | None | **Working (auto-classify + heatmap)** | Done |
-| Quantitative factor analysis | Incomplete | Not built | High |
+| Quantitative factor analysis | Incomplete | **Working (beta, tilts, regression)** | Done |
 | Benchmark comparison | Incomplete | **Working (SPY overlay + period table)** | Done |
 | Security enrichment | Incomplete | **Partial (TWS enrich route)** | Medium |
 | Risk decomposition | Incomplete | **Working (drawdown, vol, Sharpe, Herfindahl)** | Done |
@@ -282,7 +282,7 @@ Watchlist feature~~ ✓
 ~~4. Period comparison table~~ ✓ (portfolio vs SPY: YTD/1Y/3Y/5Y/All with alpha)
 
 ### Next Up
-1. Quantitative factor analysis (market beta, size, value/growth)
+~~1. Quantitative factor analysis~~ ✓ (market beta regression, size/style/sector/geography tilts)
 ~~2. Position-level risk~~ ✓ (per-position vol, risk contribution, correlation matrix)
 
 ### Then: Advanced
