@@ -3,6 +3,7 @@ import { TwsStatus } from "./components/TwsStatus";
 import { ToastProvider } from "./components/Toast";
 import { DataFreshness } from "./components/DataFreshness";
 import { ChatDrawer } from "./components/ChatDrawer";
+import { CommandPalette, SearchButton } from "./components/CommandPalette";
 
 export default function DashboardLayout({
   children,
@@ -24,6 +25,7 @@ export default function DashboardLayout({
             </h1>
             <div className="flex items-center gap-4">
               <DataFreshness />
+              <SearchButton />
               <ChatDrawer />
               <TwsStatus />
               <span className="text-[11px] text-ink-faint font-mono">v2.0</span>
@@ -36,6 +38,9 @@ export default function DashboardLayout({
         <main id="main-content" className="max-w-[1400px] mx-auto px-6 py-6">
           {children}
         </main>
+
+        {/* Global command palette (Cmd+K) */}
+        <CommandPalette />
       </div>
     </ToastProvider>
   );
