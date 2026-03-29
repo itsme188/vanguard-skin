@@ -100,6 +100,7 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - `GET /api/compute/xirr?startDate=&endDate=&accountId=` — compute XIRR for arbitrary date ranges
 - `GET /api/compute/risk?startDate=&endDate=&accountId=` — portfolio risk metrics (drawdown, volatility, Sharpe, Herfindahl)
 - `GET /api/compute/position-risk?accountId=&topN=10` — per-position volatility, risk contribution, correlation matrix
+- `GET /api/compute/factors?accountId=&benchmark=SPY` — market beta regression + portfolio tilts (size, style, sector, geography)
 - `GET /api/search?q=` — global search across securities, notes, transactions
 - `POST /api/benchmark/sync` — SSE streaming: fetch benchmark prices from TWS (falls back to cached ohlcv_bars/prices on timeout)
 - `GET /api/benchmark/prices?mode=prices|chart|stats|available&symbol=SPY` — benchmark data and analytics
