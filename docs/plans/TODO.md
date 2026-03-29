@@ -152,7 +152,7 @@ Uses delayed/frozen quotes (no exchange subscription needed). SSE-based with aut
 - [x] Fetch benchmark daily returns via IBKR TWS API historical data
 - [x] Overlay benchmark on equity curve chart (percent-change mode)
 - [x] Relative performance: alpha, tracking error, information ratio, correlation
-- [ ] Period comparison table: portfolio vs. benchmark by period
+- [x] Period comparison table: portfolio vs. benchmark by period (YTD/1Y/3Y/5Y/All with alpha)
 
 #### 2B. Quantitative Factor Analysis
 **Status:** Thematic factor exposure is done (macro themes like AI, energy, rates). This is
@@ -165,8 +165,8 @@ about quantitative factor decomposition — different from the thematic system.
 - [ ] Options Greeks (delta, gamma, theta, vega) if positions exist
 
 #### 2C. Risk Decomposition (Partial ✓)
-- [ ] Contribution to portfolio volatility by position
-- [ ] Correlation matrix between positions
+- [x] Contribution to portfolio volatility by position
+- [x] Correlation matrix between positions
 - [x] Concentration risk metrics (Herfindahl index, top-5 concentration)
 - [x] Max drawdown analysis (max + current, with dates)
 - [x] Portfolio volatility (annualized) and Sharpe ratio
@@ -240,14 +240,14 @@ Pending real option data import to verify end-to-end.
 | TWR / XIRR performance | Working | **Working** | Done |
 | Thematic factor analysis | None | **Working (auto-classify + heatmap)** | Done |
 | Quantitative factor analysis | Incomplete | Not built | High |
-| Benchmark comparison | Incomplete | Not built | High |
+| Benchmark comparison | Incomplete | **Working (SPY overlay + period table)** | Done |
 | Security enrichment | Incomplete | **Partial (TWS enrich route)** | Medium |
-| Risk decomposition | Incomplete | Not built | Medium |
+| Risk decomposition | Incomplete | **Working (drawdown, vol, Sharpe, Herfindahl)** | Done |
 | Scenario modeling | Incomplete | Not built | Medium |
 | Confidence scoring | Working | Dropped (Claude API is accurate enough) | — |
 | Options support | None | Phase 1 done (16 tests) | Medium |
 | IBKR TWS API | None | **Phase 1 done (historical + contracts)** | Done |
-| Live/streaming prices | None | Not built | **High** |
+| Live/streaming prices | None | **Working (SSE + TWS delayed quotes)** | Done |
 | Tax report export | None | Not built | Medium |
 | Desktop packaging | In progress | AppleScript launcher (dev mode) | Low |
 | Notes/journaling | None | **Working** | Done |
@@ -275,13 +275,15 @@ Pending real option data import to verify end-to-end.
 Research tab, reconciliation merge, universal SymbolLinks, DataFreshness,
 Watchlist feature~~ ✓
 
+### UX & Analytics Polish — DONE (2026-03-29)
+~~1. Income tracking~~ ✓ (IncomeCard on Overview)
+~~2. Global search (Cmd+K)~~ ✓ (CommandPalette — securities, notes, transactions)
+~~3. Morning briefing widget~~ ✓ (MorningBriefing — today's events, market status, weekly brief)
+~~4. Period comparison table~~ ✓ (portfolio vs SPY: YTD/1Y/3Y/5Y/All with alpha)
+
 ### Next Up
-1. Income tracking (dividends/interest by period, monthly/quarterly/yearly)
-2. Global search (Cmd+K command palette across securities, notes, transactions)
-3. Morning briefing widget on Overview ("Today" view)
-4. Period comparison table (portfolio vs benchmark by period)
-5. Quantitative factor analysis (market beta, size, value/growth)
-6. Position-level risk (volatility contribution, correlation matrix)
+1. Quantitative factor analysis (market beta, size, value/growth)
+~~2. Position-level risk~~ ✓ (per-position vol, risk contribution, correlation matrix)
 
 ### Then: Advanced
 7. Scenario modeling (crash, rate shock, custom what-ifs)

@@ -15,6 +15,7 @@ import { EmptyState } from "./components/EmptyState";
 import { UpcomingEventsCard } from "./components/UpcomingEventsCard";
 import { IncomeCard } from "./components/IncomeCard";
 import { PeriodComparisonTable } from "./components/PeriodComparisonTable";
+import { MorningBriefing } from "./components/MorningBriefing";
 
 function computePerformancePeriods(): { periods: TwrPeriod[]; perAccount: Map<number, { totalReturn: number; annualizedReturn: number | null }> } {
   const today = new Date().toISOString().slice(0, 10);
@@ -109,6 +110,7 @@ export default function OverviewPage() {
       {hasData ? (
         <>
           <PerformanceMetrics totals={totals} twrPeriods={twrPeriods} />
+          <MorningBriefing />
           <AccountSummaryCards accounts={accounts} twrByAccount={twrByAccount} />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <UpcomingEventsCard />

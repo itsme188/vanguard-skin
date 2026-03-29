@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
-import { computeRiskMetrics } from "@/lib/compute/risk";
+import { computeRiskMetrics, computePositionRisk } from "@/lib/compute/risk";
 
 function createTestDb(): Database.Database {
   const db = new Database(":memory:");
@@ -246,5 +246,106 @@ describe("computeRiskMetrics", () => {
     expect(acct2.dataPoints).toBe(50);
     // Combined values are higher
     expect(all.volatility).not.toEqual(acct1.volatility);
+  });
+});
+
+describe("computePositionRisk", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+  });
+
+  it("returns empty result with no holdings", () => {
+    const result = computePositionRisk(db);
+    expect(result.positions).toHaveLength(0);
+    expect(result.correlations).toHaveLength(0);
+    expect(result.portfolioVol).toBeNull();
+  });
+
+  it("computes per-position volatility from price data", () => {
+    // Set up 2 securities with 60 days of recent price data
+    const today = new Date();
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test')");
+    db.exec("INSERT INTO securities (id, symbol, name) VALUES (1, 'AAPL', 'Apple')");
+    db.exec("INSERT INTO securities (id, symbol, name) VALUES (2, 'MSFT', 'Microsoft')");
+    const asOf = today.toISOString().slice(0, 10);
+    db.exec(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 1, '${asOf}', 100)`);
+    db.exec(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 2, '${asOf}', 50)`);
+
+    // Generate 60 daily prices ending today (volatile AAPL, stable MSFT)
+    for (let i = 0; i < 60; i++) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - 59 + i);
+      const date = d.toISOString().slice(0, 10);
+      const aaplPrice = 150 + Math.sin(i * 0.3) * 10 + i * 0.1;
+      const msftPrice = 400 + Math.sin(i * 0.1) * 2 + i * 0.05;
+      db.prepare("INSERT OR IGNORE INTO prices (security_id, date, close_price) VALUES (?, ?, ?)").run(1, date, aaplPrice);
+      db.prepare("INSERT OR IGNORE INTO prices (security_id, date, close_price) VALUES (?, ?, ?)").run(2, date, msftPrice);
+    }
+
+    const result = computePositionRisk(db);
+    expect(result.positions).toHaveLength(2);
+
+    const aapl = result.positions.find(p => p.symbol === "AAPL");
+    const msft = result.positions.find(p => p.symbol === "MSFT");
+    expect(aapl).toBeDefined();
+    expect(msft).toBeDefined();
+    expect(aapl!.annualizedVol).not.toBeNull();
+    expect(msft!.annualizedVol).not.toBeNull();
+    // AAPL should be more volatile than MSFT
+    expect(aapl!.annualizedVol!).toBeGreaterThan(msft!.annualizedVol!);
+  });
+
+  it("computes pairwise correlations", () => {
+    const today = new Date();
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test')");
+    db.exec("INSERT INTO securities (id, symbol, name) VALUES (1, 'AAA', 'A')");
+    db.exec("INSERT INTO securities (id, symbol, name) VALUES (2, 'BBB', 'B')");
+    db.exec("INSERT INTO securities (id, symbol, name) VALUES (3, 'CCC', 'C')");
+    const asOf = today.toISOString().slice(0, 10);
+    db.exec(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 1, '${asOf}', 100)`);
+    db.exec(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 2, '${asOf}', 100)`);
+    db.exec(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 3, '${asOf}', 100)`);
+
+    // AAA and BBB move together (high correlation), CCC moves opposite (negative)
+    for (let i = 0; i < 60; i++) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - 59 + i);
+      const date = d.toISOString().slice(0, 10);
+      const move = Math.sin(i * 0.4);
+      db.prepare("INSERT OR IGNORE INTO prices (security_id, date, close_price) VALUES (?, ?, ?)").run(1, date, 100 + move * 5 + i * 0.1);
+      db.prepare("INSERT OR IGNORE INTO prices (security_id, date, close_price) VALUES (?, ?, ?)").run(2, date, 100 + move * 4 + i * 0.1); // similar
+      db.prepare("INSERT OR IGNORE INTO prices (security_id, date, close_price) VALUES (?, ?, ?)").run(3, date, 100 - move * 3 + i * 0.1); // opposite
+    }
+
+    const result = computePositionRisk(db);
+    expect(result.correlations.length).toBeGreaterThanOrEqual(3); // 3 pairs
+
+    const abCorr = result.correlations.find(
+      c => (c.symbolA === "AAA" && c.symbolB === "BBB") || (c.symbolA === "BBB" && c.symbolB === "AAA")
+    );
+    const acCorr = result.correlations.find(
+      c => (c.symbolA === "AAA" && c.symbolB === "CCC") || (c.symbolA === "CCC" && c.symbolB === "AAA")
+    );
+
+    expect(abCorr).toBeDefined();
+    expect(acCorr).toBeDefined();
+    // AAA and BBB should be highly positively correlated
+    expect(abCorr!.correlation).toBeGreaterThan(0.7);
+    // AAA and CCC should be negatively correlated
+    expect(acCorr!.correlation).toBeLessThan(-0.5);
+  });
+
+  it("handles insufficient price data gracefully", () => {
+    seedHoldings(db, [
+      { symbol: "AAPL", quantity: 100, price: 150 },
+    ]);
+    // Only 1 price point — not enough for returns
+
+    const result = computePositionRisk(db);
+    expect(result.positions).toHaveLength(1);
+    expect(result.positions[0].annualizedVol).toBeNull();
+    expect(result.positions[0].dataPoints).toBeLessThan(20);
   });
 });
