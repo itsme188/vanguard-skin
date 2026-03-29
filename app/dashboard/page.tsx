@@ -14,6 +14,7 @@ import { CombinedPortfolioChart } from "./components/CombinedPortfolioChart";
 import { EmptyState } from "./components/EmptyState";
 import { UpcomingEventsCard } from "./components/UpcomingEventsCard";
 import { IncomeCard } from "./components/IncomeCard";
+import { PeriodComparisonTable } from "./components/PeriodComparisonTable";
 
 function computePerformancePeriods(): { periods: TwrPeriod[]; perAccount: Map<number, { totalReturn: number; annualizedReturn: number | null }> } {
   const today = new Date().toISOString().slice(0, 10);
@@ -113,6 +114,7 @@ export default function OverviewPage() {
             <UpcomingEventsCard />
             <IncomeCard />
           </div>
+          <PeriodComparisonTable />
           {chartData.length > 0 && (
             <CombinedPortfolioChart data={chartData} dailyData={dailyChartData} accounts={accounts} />
           )}
