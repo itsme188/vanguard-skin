@@ -130,7 +130,7 @@ export default async function SecurityDetailPage(props: {
           Full Chart
         </Link>
         <Link
-          href={`/dashboard/notes?security=${securityId}`}
+          href={`/dashboard/research?security=${securityId}`}
           className="px-3 py-1.5 text-xs font-medium rounded-lg border border-edge text-ink-dim hover:text-ink hover:border-ink-faint transition-colors"
         >
           + Create Note
@@ -464,7 +464,7 @@ export default async function SecurityDetailPage(props: {
               Notes & Theses ({notes.length})
             </h2>
             <Link
-              href={`/dashboard/notes?security=${securityId}`}
+              href={`/dashboard/research?security=${securityId}`}
               className="text-xs text-gold hover:underline"
             >
               View All
