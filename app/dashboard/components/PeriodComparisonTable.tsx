@@ -10,16 +10,24 @@ interface PeriodRow {
 
 function computeBenchmarkReturn(
   symbol: string,
-  startDate: string,
+  startDate: string | undefined,
   endDate: string
 ): number | null {
-  const startRow = db
-    .prepare(
-      `SELECT close_price FROM benchmark_prices
-       WHERE symbol = ? AND date >= ?
-       ORDER BY date ASC LIMIT 1`
-    )
-    .get(symbol, startDate) as { close_price: number } | undefined;
+  const startRow = startDate
+    ? (db
+        .prepare(
+          `SELECT close_price FROM benchmark_prices
+           WHERE symbol = ? AND date >= ?
+           ORDER BY date ASC LIMIT 1`
+        )
+        .get(symbol, startDate) as { close_price: number } | undefined)
+    : (db
+        .prepare(
+          `SELECT close_price FROM benchmark_prices
+           WHERE symbol = ?
+           ORDER BY date ASC LIMIT 1`
+        )
+        .get(symbol) as { close_price: number } | undefined);
 
   const endRow = db
     .prepare(
@@ -48,7 +56,7 @@ export function PeriodComparisonTable() {
   const today = new Date().toISOString().slice(0, 10);
   const year = today.slice(0, 4);
 
-  const periods: { label: string; startDate: string }[] = [
+  const periods: { label: string; startDate: string | undefined }[] = [
     { label: "YTD", startDate: `${year}-01-01` },
     {
       label: "1Y",
@@ -68,6 +76,7 @@ export function PeriodComparisonTable() {
         .toISOString()
         .slice(0, 10),
     },
+    { label: "All", startDate: undefined },
   ];
 
   let rows: PeriodRow[];
@@ -82,7 +91,7 @@ export function PeriodComparisonTable() {
     if (hasBenchmark.cnt === 0) return null;
 
     rows = periods.map(({ label, startDate }) => {
-      const twr = computeTwr(db, { startDate, endDate: today });
+      const twr = computeTwr(db, { startDate: startDate ?? undefined, endDate: today });
       const portfolioReturn = twr?.totalReturn ?? null;
       const benchmarkReturn = computeBenchmarkReturn("SPY", startDate, today);
       const alpha =
