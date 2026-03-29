@@ -1,4 +1,5 @@
 import type { TransactionWithSecurity } from "@/lib/queries/transactions";
+import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
 
 const TYPE_STYLES: Record<string, string> = {
   BUY: "bg-up-tint text-up",
@@ -81,7 +82,11 @@ export function TransactionHistory({
                   </span>
                 </td>
                 <td className="px-4 py-3 font-mono text-ink">
-                  {txn.symbol ?? "\u2014"}
+                  {txn.security_id != null && txn.symbol ? (
+                    <SymbolLink securityId={txn.security_id} symbol={txn.symbol} />
+                  ) : (
+                    txn.symbol ?? "\u2014"
+                  )}
                 </td>
                 <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
                   {txn.quantity !== null

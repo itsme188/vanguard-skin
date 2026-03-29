@@ -384,7 +384,8 @@ function main() {
     }
   }
 
-  let holdingCount = 0;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let holdingCount: any = 0;
   db.transaction(() => {
     for (const date of monthEnds) {
       // Taxable: sold 30 GOOGL in Dec, 20 AAPL in Feb

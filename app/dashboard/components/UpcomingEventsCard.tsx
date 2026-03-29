@@ -1,6 +1,7 @@
 import { db } from "@/lib/db";
 import { getUpcomingEvents } from "@/lib/queries/calendar";
 import Link from "next/link";
+import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
 
 // ── Event type icons (duplicated from EventCard for server component) ──
 
@@ -96,11 +97,17 @@ export function UpcomingEventsCard() {
                   <span className="text-xs font-mono text-ink-faint">
                     {formatCompactDate(event.event_date)}
                   </span>
-                  {event.symbol && (
+                  {event.symbol && event.security_id != null ? (
+                    <SymbolLink
+                      securityId={event.security_id}
+                      symbol={event.symbol}
+                      className="text-xs font-mono font-medium text-gold"
+                    />
+                  ) : event.symbol ? (
                     <span className="text-xs font-mono font-medium text-gold">
                       {event.symbol}
                     </span>
-                  )}
+                  ) : null}
                   {event.expected_impact && (
                     <span
                       className={`text-[10px] font-medium ${IMPACT_COLORS[event.expected_impact] ?? "text-ink-faint"}`}

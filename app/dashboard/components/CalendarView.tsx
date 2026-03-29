@@ -3,6 +3,7 @@
 import { useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import type { CalendarEvent, CalendarBriefing, EventImpact } from "@/lib/types";
+import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
 
 // ── Event type styling ───────────────────────────────────────────
 
@@ -225,11 +226,17 @@ export function CalendarView({
                               {icon} {event.title}
                             </span>
                             <div className="flex items-center gap-1.5 flex-shrink-0">
-                              {event.symbol && (
+                              {event.symbol && event.security_id != null ? (
+                                <SymbolLink
+                                  securityId={event.security_id}
+                                  symbol={event.symbol}
+                                  className="text-xs font-mono font-semibold text-gold"
+                                />
+                              ) : event.symbol ? (
                                 <span className="text-xs font-mono font-semibold text-gold">
                                   {event.symbol}
                                 </span>
-                              )}
+                              ) : null}
                               {event.expected_impact && (
                                 <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${IMPACT_STYLES[event.expected_impact]}`}>
                                   {event.expected_impact.toUpperCase()}

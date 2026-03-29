@@ -1,4 +1,5 @@
 import type { TaxLotWithSecurity, TaxLotSaleWithDetails } from "@/lib/queries/tax-lots";
+import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
 import { ScrollFade } from "./ScrollFade";
 
 function formatCurrency(value: number | null): string {
@@ -77,7 +78,9 @@ export function OpenLotsTable({
                   {showAccount && (
                     <td className="px-4 py-3 text-ink-dim text-xs">{lot.account_name}</td>
                   )}
-                  <td className="px-4 py-3 font-mono font-medium text-ink">{lot.symbol}</td>
+                  <td className="px-4 py-3 font-mono font-medium text-ink">
+                    <SymbolLink securityId={lot.security_id} symbol={lot.symbol} />
+                  </td>
                   <td className="px-4 py-3 text-ink-faint font-mono text-xs">{lot.acquisition_date}</td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
                     {formatQuantity(lot.quantity_remaining)}
@@ -148,7 +151,9 @@ export function ClosedSalesTable({
                   {showAccount && (
                     <td className="px-4 py-3 text-ink-dim text-xs">{sale.account_name}</td>
                   )}
-                  <td className="px-4 py-3 font-mono font-medium text-ink">{sale.symbol}</td>
+                  <td className="px-4 py-3 font-mono font-medium text-ink">
+                    <SymbolLink securityId={sale.security_id} symbol={sale.symbol} />
+                  </td>
                   <td className="px-4 py-3 text-ink-faint font-mono text-xs">{sale.sale_date}</td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
                     {formatQuantity(sale.quantity_sold)}

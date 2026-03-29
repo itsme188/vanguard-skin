@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 /**
- * Clickable symbol that navigates to the Charts tab.
+ * Clickable symbol that navigates to the Security Detail page.
  * Server-component friendly — no client state needed.
  */
 export function SymbolLink({
@@ -15,9 +15,9 @@ export function SymbolLink({
 }) {
   return (
     <Link
-      href={`/dashboard/charts?id=${securityId}`}
+      href={`/dashboard/security/${securityId}`}
       className={`hover:text-gold hover:underline underline-offset-2 transition-colors ${className ?? ""}`}
-      title={`View ${symbol} chart`}
+      title={`View ${symbol} details`}
     >
       {symbol}
     </Link>

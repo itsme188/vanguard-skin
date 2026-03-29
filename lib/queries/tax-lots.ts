@@ -24,6 +24,7 @@ export interface TaxLotSaleWithDetails {
   id: number;
   account_name: string;
   account_id: number;
+  security_id: number;
   symbol: string;
   security_name: string | null;
   acquisition_date: string;
@@ -90,7 +91,7 @@ export function getClosedTaxLotSales(
   year?: number
 ): TaxLotSaleWithDetails[] {
   const baseSql = `SELECT
-        tls.id, a.name AS account_name, tl.account_id,
+        tls.id, a.name AS account_name, tl.account_id, tl.security_id,
         s.symbol, s.name AS security_name,
         tl.acquisition_date, tls.sale_date,
         tls.quantity_sold, tl.acquisition_price,
