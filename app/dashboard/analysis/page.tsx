@@ -10,6 +10,7 @@ import {
 } from "@/lib/queries/analysis";
 import { FACTOR_COLUMNS } from "@/lib/factors";
 import { AnalysisView, type AnalysisMode } from "../components/AnalysisView";
+import Link from "next/link";
 
 interface PageProps {
   searchParams: Promise<{
@@ -91,13 +92,21 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-lg font-medium text-ink">Analysis</h2>
-        <p className="text-sm text-ink-faint mt-0.5">
-          {mode === "factors"
-            ? "Thematic factor exposure analysis across your portfolio"
-            : "Portfolio factor analysis, allocation breakdown, and concentration metrics"}
-        </p>
+      <div className="flex items-start justify-between">
+        <div>
+          <h2 className="text-lg font-medium text-ink">Analysis</h2>
+          <p className="text-sm text-ink-faint mt-0.5">
+            {mode === "factors"
+              ? "Thematic factor exposure analysis across your portfolio"
+              : "Portfolio factor analysis, allocation breakdown, and concentration metrics"}
+          </p>
+        </div>
+        <Link
+          href="/dashboard/tax-lots"
+          className="px-3 py-1.5 text-xs font-medium rounded-lg border border-edge text-ink-dim hover:text-ink hover:border-ink-faint transition-colors"
+        >
+          Tax Lots
+        </Link>
       </div>
 
       <AnalysisView

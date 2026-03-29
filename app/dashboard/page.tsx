@@ -13,6 +13,7 @@ import { AccountSummaryCards } from "./components/AccountSummaryCards";
 import { CombinedPortfolioChart } from "./components/CombinedPortfolioChart";
 import { EmptyState } from "./components/EmptyState";
 import { UpcomingEventsCard } from "./components/UpcomingEventsCard";
+import { IncomeCard } from "./components/IncomeCard";
 
 function computePerformancePeriods(): { periods: TwrPeriod[]; perAccount: Map<number, { totalReturn: number; annualizedReturn: number | null }> } {
   const today = new Date().toISOString().slice(0, 10);
@@ -108,7 +109,10 @@ export default function OverviewPage() {
         <>
           <PerformanceMetrics totals={totals} twrPeriods={twrPeriods} />
           <AccountSummaryCards accounts={accounts} twrByAccount={twrByAccount} />
-          <UpcomingEventsCard />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <UpcomingEventsCard />
+            <IncomeCard />
+          </div>
           {chartData.length > 0 && (
             <CombinedPortfolioChart data={chartData} dailyData={dailyChartData} accounts={accounts} />
           )}
