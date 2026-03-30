@@ -19,6 +19,9 @@ import { PositionRiskCard } from "./PositionRisk";
 import { FactorAnalysisCard } from "./FactorAnalysis";
 import { ScenarioModelingCard } from "./ScenarioModeling";
 import { FixedIncomeCard } from "./FixedIncomeCard";
+import { OptionsGreeksCard } from "./OptionsGreeksCard";
+import { OptionsStrategies } from "./OptionsStrategies";
+import { ExpirationCalendar } from "./ExpirationCalendar";
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis,
 } from "recharts";
@@ -560,6 +563,11 @@ export function AnalysisView({
 
       {/* ── Scenario Modeling ── */}
       <ScenarioModelingCard />
+
+      {/* ── Options Greeks & Strategies ── */}
+      <OptionsGreeksCard />
+      <OptionsStrategies />
+      <ExpirationCalendar />
 
       {/* ── Fixed Income Exposure ── */}
       <FixedIncomeCard />

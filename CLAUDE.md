@@ -102,7 +102,9 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - `GET /api/compute/risk?startDate=&endDate=&accountId=` — portfolio risk metrics (drawdown, volatility, Sharpe, Herfindahl)
 - `GET /api/compute/position-risk?accountId=&topN=10` — per-position volatility, risk contribution, correlation matrix
 - `GET /api/compute/factors?accountId=&benchmark=SPY` — market beta regression + portfolio tilts (size, style, sector, geography)
-- `GET /api/compute/scenarios?accountId=&scenario=` — scenario modeling (6 presets: correction, bear, crash, rate shocks, rally)
+- `GET /api/compute/scenarios?accountId=&scenario=` — scenario modeling (9 presets: crash, rate shocks, rally, sector rotation)
+- `POST /api/compute/scenarios` — custom what-if scenario. Body: `{ marketMove, rateMove?, sectorMoves?, name? }`
+- `GET /api/compute/fixed-income` — bond exposure: weighted avg duration, credit quality breakdown, bond positions
 - `GET /api/tax-report?year=&format=json|csv` — Form 8949 tax report with wash sale detection (CSV download for tax filing)
 - `GET /api/search?q=` — global search across securities, notes, transactions
 - `POST /api/benchmark/sync` — SSE streaming: fetch benchmark prices from TWS (falls back to cached ohlcv_bars/prices on timeout)

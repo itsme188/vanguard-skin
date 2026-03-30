@@ -174,6 +174,59 @@ export default async function SecurityDetailPage(props: {
         </div>
       )}
 
+      {/* Option Details (only for option securities) */}
+      {security.security_type === "option" && security.underlying_symbol && (
+        <section className="rounded-xl border border-edge bg-panel p-5">
+          <div className="flex items-center gap-4 flex-wrap">
+            <div>
+              <span className="text-xs text-ink-faint uppercase">Underlying</span>
+              <p className="font-mono text-ink font-medium">
+                <Link
+                  href={`/dashboard/security/${(() => {
+                    const underlying = db
+                      .prepare("SELECT id FROM securities WHERE symbol = ? AND security_type != 'option' LIMIT 1")
+                      .get(security.underlying_symbol!) as { id: number } | undefined;
+                    return underlying?.id ?? securityId;
+                  })()}`}
+                  className="text-gold hover:underline"
+                >
+                  {security.underlying_symbol}
+                </Link>
+              </p>
+            </div>
+            <div>
+              <span className="text-xs text-ink-faint uppercase">Type</span>
+              <p className={`font-mono font-medium ${security.option_type === "CALL" ? "text-up" : "text-down"}`}>
+                {security.option_type}
+              </p>
+            </div>
+            {security.strike_price && (
+              <div>
+                <span className="text-xs text-ink-faint uppercase">Strike</span>
+                <p className="font-mono text-ink font-medium">
+                  {formatPrecise(security.strike_price)}
+                </p>
+              </div>
+            )}
+            {security.expiration_date && (
+              <div>
+                <span className="text-xs text-ink-faint uppercase">Expiration</span>
+                <p className="font-mono text-ink font-medium">
+                  {security.expiration_date}
+                  <span className="text-xs text-ink-faint ml-1">
+                    ({Math.max(0, Math.floor((new Date(security.expiration_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24)))}d)
+                  </span>
+                </p>
+              </div>
+            )}
+            <div>
+              <span className="text-xs text-ink-faint uppercase">Multiplier</span>
+              <p className="font-mono text-ink font-medium">{security.multiplier}x</p>
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* Chart */}
       <section className="rounded-xl border border-edge bg-panel overflow-hidden">
         <div className="h-[400px]">
@@ -664,6 +717,76 @@ export default async function SecurityDetailPage(props: {
           </div>
         </section>
       )}
+
+      {/* Related Options (for stock securities that have option positions) */}
+      {security.security_type !== "option" && (() => {
+        const relatedOptions = db
+          .prepare(
+            `SELECT s.id, s.symbol, s.option_type, s.strike_price, s.expiration_date,
+                    h.quantity, COALESCE(s.multiplier, 1) AS multiplier
+             FROM holdings h
+             JOIN securities s ON s.id = h.security_id
+             WHERE s.underlying_symbol = ?
+               AND s.security_type = 'option'
+               AND h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2)
+             ORDER BY s.expiration_date, s.strike_price`
+          )
+          .all(security.symbol) as Array<{
+          id: number;
+          symbol: string;
+          option_type: string;
+          strike_price: number;
+          expiration_date: string;
+          quantity: number;
+          multiplier: number;
+        }>;
+
+        if (relatedOptions.length === 0) return null;
+        return (
+          <section className="rounded-xl border border-edge bg-panel overflow-hidden">
+            <div className="px-5 py-3 border-b border-edge">
+              <h2 className="text-sm font-semibold text-ink">
+                Related Options ({relatedOptions.length})
+              </h2>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-edge text-ink-faint text-xs">
+                    <th className="text-left px-5 py-2 font-medium">Type</th>
+                    <th className="text-right px-5 py-2 font-medium">Strike</th>
+                    <th className="text-left px-5 py-2 font-medium">Expiration</th>
+                    <th className="text-right px-5 py-2 font-medium">Qty</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {relatedOptions.map((o) => (
+                    <tr key={o.id} className="border-b border-edge/50 last:border-0">
+                      <td className="px-5 py-2.5">
+                        <Link
+                          href={`/dashboard/security/${o.id}`}
+                          className="text-gold hover:underline font-medium"
+                        >
+                          {o.option_type}
+                        </Link>
+                      </td>
+                      <td className="px-5 py-2.5 text-right font-mono text-ink">
+                        {formatPrecise(o.strike_price)}
+                      </td>
+                      <td className="px-5 py-2.5 font-mono text-ink-dim text-xs">
+                        {o.expiration_date}
+                      </td>
+                      <td className={`px-5 py-2.5 text-right font-mono ${o.quantity < 0 ? "text-down" : "text-ink"}`}>
+                        {o.quantity > 0 ? `+${o.quantity}` : o.quantity}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        );
+      })()}
 
       {/* Factor Exposure */}
       {factors && (

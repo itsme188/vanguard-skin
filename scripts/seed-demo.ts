@@ -130,6 +130,30 @@ const SECURITIES: DemoSecurity[] = [
     underlyingSymbol: "AAPL", strikePrice: 250, expirationDate: "2026-06-19",
     optionType: "CALL", multiplier: 100,
   },
+  // Put option
+  {
+    symbol: "TSLA  260619P00200000", name: "TSLA Jun 2026 $200 Put",
+    securityType: "option", assetClass: "equity",
+    basePrice: 8.50, volatility: 0.05, drift: -0.002,
+    underlyingSymbol: "TSLA", strikePrice: 200, expirationDate: "2026-06-19",
+    optionType: "PUT", multiplier: 100,
+  },
+  // Short call for covered call (MSFT)
+  {
+    symbol: "MSFT  260619C00450000", name: "MSFT Jun 2026 $450 Call",
+    securityType: "option", assetClass: "equity",
+    basePrice: 6.00, volatility: 0.035, drift: -0.001,
+    underlyingSymbol: "MSFT", strikePrice: 450, expirationDate: "2026-06-19",
+    optionType: "CALL", multiplier: 100,
+  },
+  // Closed option (expired worthless)
+  {
+    symbol: "NVDA  260221C00180000", name: "NVDA Feb 2026 $180 Call",
+    securityType: "option", assetClass: "equity",
+    basePrice: 4.00, volatility: 0.06, drift: -0.003,
+    underlyingSymbol: "NVDA", strikePrice: 180, expirationDate: "2026-02-21",
+    optionType: "CALL", multiplier: 100,
+  },
   // Bond (US Treasury 10-Year Note)
   {
     symbol: "912828ZQ7", name: "US Treasury Note 2.875% 2032",
@@ -168,7 +192,11 @@ const IBKR_HOLDINGS: AccountAllocation = {
   JPM: { qty: 60, costBasis: 12600 },
   JNJ: { qty: 80, costBasis: 12000 },
   TSLA: { qty: 40, costBasis: 9200 },
+  MSFT: { qty: 100, costBasis: 40000 }, // stock for covered call pair
   "AAPL  260619C00250000": { qty: 5, costBasis: 5500 },
+  "TSLA  260619P00200000": { qty: 3, costBasis: 2550 }, // long put
+  "MSFT  260619C00450000": { qty: -1, costBasis: 0 }, // short call (covered)
+  "NVDA  260221C00180000": { qty: 0, costBasis: 0 }, // bought Nov, expired Feb
   "912828ZQ7": { qty: 50, costBasis: 47250 },
 };
 
@@ -313,6 +341,13 @@ function main() {
     txCount++;
   }
 
+  function insertOptionTx(accountId: number, symbol: string, type: string, qty: number, price: number, date: string) {
+    const secId = securityIdMap.get(symbol)!;
+    const amount = type.startsWith("SELL") ? r2(qty * price * 100) : -r2(qty * price * 100);
+    txStmt.run(accountId, secId, date, type, qty, amount, price, 1.30, `demo-opt-${accountId}-${symbol}-${type}-${date}`, batchId);
+    txCount++;
+  }
+
   db.transaction(() => {
     // Initial buys (early October 2025)
     for (const [symbol, h] of Object.entries(TAXABLE_HOLDINGS)) {
@@ -322,6 +357,10 @@ function main() {
       insertBuy(rothId, symbol, h.qty, h.costBasis, "2025-10-01");
     }
     for (const [symbol, h] of Object.entries(IBKR_HOLDINGS)) {
+      // Skip options — they get proper BUY_TO_OPEN/SELL_TO_OPEN below
+      const sec = SECURITIES.find((s) => s.symbol === symbol);
+      if (sec?.securityType === "option") continue;
+      if (h.qty <= 0) continue; // skip zero/negative qty
       insertBuy(ibkrId, symbol, h.qty, h.costBasis, "2025-10-01");
     }
 
@@ -344,6 +383,23 @@ function main() {
     insertDividend(rothId, "VTI", 305.00, "2026-03-21");
     insertDividend(ibkrId, "JPM", 80.00, "2026-03-21");
     insertDividend(ibkrId, "JNJ", 78.40, "2026-03-21");
+
+    // Option transactions
+    // Buy AAPL calls (already in IBKR holdings as initial buy)
+    insertOptionTx(ibkrId, "AAPL  260619C00250000", "BUY_TO_OPEN", 5, 11.00, "2025-10-01");
+
+    // Buy TSLA puts
+    insertOptionTx(ibkrId, "TSLA  260619P00200000", "BUY_TO_OPEN", 3, 8.50, "2025-11-15");
+
+    // Sell MSFT covered call (SELL_TO_OPEN)
+    insertOptionTx(ibkrId, "MSFT  260619C00450000", "SELL_TO_OPEN", 1, 6.00, "2025-12-01");
+
+    // Buy NVDA call (then it expires worthless in Feb)
+    insertOptionTx(ibkrId, "NVDA  260221C00180000", "BUY_TO_OPEN", 2, 4.00, "2025-11-01");
+    insertOptionTx(ibkrId, "NVDA  260221C00180000", "EXPIRED", 2, 0, "2026-02-21");
+
+    // Close 2 AAPL calls for profit (SELL_TO_CLOSE)
+    insertOptionTx(ibkrId, "AAPL  260619C00250000", "SELL_TO_CLOSE", 2, 15.80, "2026-02-10");
   })();
   console.log(`Transactions: ${txCount} records inserted.`);
 
@@ -374,9 +430,9 @@ function main() {
     for (const [symbol, h] of Object.entries(holdings)) {
       const adjQty = adjustments[symbol] ?? 0;
       const qty = h.qty + adjQty;
-      if (qty <= 0) continue;
+      if (qty === 0) continue; // skip zero-quantity positions
       const secId = securityIdMap.get(symbol)!;
-      const adjCostBasis = r2(h.costBasis * (qty / h.qty));
+      const adjCostBasis = h.qty !== 0 ? r2(h.costBasis * (qty / h.qty)) : 0;
       holdingStmt.run(
         accountId, secId, qty, adjCostBasis, asOfDate,
         `demo-hold-${accountId}-${symbol}-${asOfDate}`, batchId
@@ -397,9 +453,13 @@ function main() {
       // Roth: no sells
       insertHoldings(rothId, ROTH_HOLDINGS, date);
 
-      // IBKR: sold 10 TSLA in Jan
+      // IBKR: sold 10 TSLA in Jan, closed 2 AAPL calls in Feb, NVDA call expired in Feb
       const ibkrAdj: Record<string, number> = {};
       if (date >= "2026-01-10") ibkrAdj["TSLA"] = -10;
+      if (date >= "2026-02-10") ibkrAdj["AAPL  260619C00250000"] = -2;
+      // NVDA call: bought Nov 1, expired Feb 21
+      if (date >= "2025-11-01" && date < "2026-02-21") ibkrAdj["NVDA  260221C00180000"] = 2; // add 2 contracts
+      // After expiry, qty goes back to base (0) — no adjustment needed
       insertHoldings(ibkrId, IBKR_HOLDINGS, date, ibkrAdj);
     }
     holdingCount = db.prepare("SELECT COUNT(*) as c FROM holdings").get() as { c: number };
