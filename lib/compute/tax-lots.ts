@@ -25,6 +25,31 @@ interface OpenLot {
   quantity_remaining: number;
 }
 
+interface OptionExerciseRow {
+  id: number;
+  account_id: number;
+  security_id: number;
+  trade_date: string;
+  type: string;
+  quantity: number;
+  price_per_share: number;
+  underlying_symbol: string;
+  option_type: string;
+  multiplier: number;
+}
+
+/** Premium adjustment to apply to a stock transaction's effective price. */
+interface PremiumAdjustment {
+  /** Per-share premium to add to (buy) or subtract from (sell) the stock price. */
+  premiumPerShare: number;
+  /**
+   * 'increase_cost' — add to stock cost basis (long call exercise, short put assignment)
+   * 'increase_proceeds' — add to stock sale proceeds (short call assignment)
+   * 'decrease_proceeds' — subtract from stock sale proceeds (long put exercise)
+   */
+  adjustmentType: "increase_cost" | "increase_proceeds" | "decrease_proceeds";
+}
+
 function daysBetween(dateA: string, dateB: string): number {
   const a = new Date(dateA + "T00:00:00Z");
   const b = new Date(dateB + "T00:00:00Z");
@@ -37,20 +62,22 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
     db.prepare("DELETE FROM tax_lot_sales").run();
     db.prepare("DELETE FROM tax_lots").run();
 
-    // Get all BUY-like transactions ordered by date
-    // Includes: BUY, buy, reinvestment (dividend reinvested as shares)
+    // ── Pre-processing: Compute premium adjustments for exercise/assignment ──
+    const premiumAdjustments = computePremiumAdjustments(db);
+
+    // ── Create tax lots from BUY-like transactions ──
+    // Includes: BUY, REINVESTMENT, BUY_TO_OPEN (long option), SELL_TO_OPEN (short option)
     const buys = db
       .prepare(
         `SELECT id, account_id, security_id, trade_date, type, quantity, price_per_share, amount, fees
          FROM transactions
-         WHERE LOWER(type) IN ('buy', 'reinvestment', 'buy_to_open')
+         WHERE LOWER(type) IN ('buy', 'reinvestment', 'buy_to_open', 'sell_to_open')
            AND security_id IS NOT NULL
            AND price_per_share IS NOT NULL AND quantity IS NOT NULL
          ORDER BY trade_date, id`
       )
       .all() as TransactionRow[];
 
-    // Create tax lots from buys
     const insertLot = db.prepare(
       `INSERT INTO tax_lots
        (account_id, security_id, acquisition_transaction_id, acquisition_date,
@@ -60,27 +87,36 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
 
     let lotsCreated = 0;
     for (const buy of buys) {
-      const costBasis = buy.quantity * buy.price_per_share;
+      // Apply premium adjustment if this stock buy is linked to an option exercise
+      let effectivePrice = buy.price_per_share;
+      const adj = premiumAdjustments.get(buy.id);
+      if (adj && adj.adjustmentType === "increase_cost") {
+        effectivePrice += adj.premiumPerShare;
+      }
+
+      const costBasis = buy.quantity * effectivePrice;
       insertLot.run(
         buy.account_id,
         buy.security_id,
         buy.id,
         buy.trade_date,
-        buy.price_per_share,
+        effectivePrice,
         buy.quantity,
-        buy.quantity, // initially, all shares remain
+        buy.quantity,
         costBasis
       );
       lotsCreated++;
     }
 
-    // Get all SELL-like transactions ordered by date
-    // Includes: SELL, sell, sell_to_close, redemption, buy_to_cover (closing short), expired
+    // ── Process SELL-like transactions ──
+    // Includes: SELL, SELL_TO_CLOSE, REDEMPTION, BUY_TO_COVER, EXPIRED,
+    //           EXERCISED, ASSIGNED, BUY_TO_CLOSE
     const sells = db
       .prepare(
         `SELECT id, account_id, security_id, trade_date, type, quantity, price_per_share, amount, fees
          FROM transactions
-         WHERE LOWER(type) IN ('sell', 'sell_to_close', 'redemption', 'buy_to_cover', 'expired')
+         WHERE LOWER(type) IN ('sell', 'sell_to_close', 'redemption', 'buy_to_cover',
+                                'expired', 'exercised', 'assigned', 'buy_to_close')
            AND security_id IS NOT NULL
            AND price_per_share IS NOT NULL AND quantity IS NOT NULL
          ORDER BY trade_date, id`
@@ -104,6 +140,27 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
     for (const sell of sells) {
       let remainingToSell = sell.quantity;
 
+      // For EXERCISED/ASSIGNED, the option closes at $0 (premium rolls into stock)
+      const lowerType = sell.type.toLowerCase();
+      const isExerciseOrAssignment =
+        lowerType === "exercised" || lowerType === "assigned";
+      let effectiveSalePrice = sell.price_per_share;
+
+      if (isExerciseOrAssignment) {
+        // Option lot closes at $0 — no gain/loss on the option itself
+        effectiveSalePrice = 0;
+      }
+
+      // Apply premium adjustment for stock sales linked to put exercise / call assignment
+      const adj = premiumAdjustments.get(sell.id);
+      if (adj) {
+        if (adj.adjustmentType === "increase_proceeds") {
+          effectiveSalePrice += adj.premiumPerShare;
+        } else if (adj.adjustmentType === "decrease_proceeds") {
+          effectiveSalePrice -= adj.premiumPerShare;
+        }
+      }
+
       // Get open lots for this account+security, FIFO order
       const openLots = db
         .prepare(
@@ -119,7 +176,7 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
 
         const quantitySold = Math.min(remainingToSell, lot.quantity_remaining);
         const costBasisAllocated = quantitySold * lot.acquisition_price;
-        const proceeds = quantitySold * sell.price_per_share;
+        const proceeds = quantitySold * effectiveSalePrice;
         const realizedGainLoss = proceeds - costBasisAllocated;
         const holdingDays = daysBetween(lot.acquisition_date, sell.trade_date);
         const isLongTerm = holdingDays > 365 ? 1 : 0;
@@ -128,7 +185,7 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
           lot.id,
           sell.id,
           quantitySold,
-          sell.price_per_share,
+          effectiveSalePrice,
           proceeds,
           costBasisAllocated,
           realizedGainLoss,
@@ -137,7 +194,6 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
           sell.trade_date
         );
 
-        // Update remaining quantity on the lot
         const newRemaining = lot.quantity_remaining - quantitySold;
         updateLotRemaining.run(newRemaining, lot.id);
 
@@ -150,4 +206,105 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
 
     return { lotsCreated, salesProcessed, totalRealizedGain };
   })();
+}
+
+/**
+ * Pre-processing: find EXERCISED/ASSIGNED option transactions and compute
+ * premium adjustments for the linked stock transactions.
+ *
+ * IRS rules:
+ * - Long call exercised → stock cost basis += option premium per share
+ * - Long put exercised → stock sale proceeds -= option premium per share
+ * - Short call assigned → stock sale proceeds += option premium per share
+ * - Short put assigned → stock cost basis -= option premium per share
+ */
+function computePremiumAdjustments(
+  db: Database.Database
+): Map<number, PremiumAdjustment> {
+  const adjustments = new Map<number, PremiumAdjustment>();
+
+  // Find all EXERCISED/ASSIGNED transactions on option securities
+  const exerciseRows = db
+    .prepare(
+      `SELECT t.id, t.account_id, t.security_id, t.trade_date, t.type,
+              t.quantity, t.price_per_share,
+              s.underlying_symbol, s.option_type,
+              COALESCE(s.multiplier, 1) AS multiplier
+       FROM transactions t
+       JOIN securities s ON s.id = t.security_id
+       WHERE LOWER(t.type) IN ('exercised', 'assigned')
+         AND s.security_type = 'option'
+         AND s.underlying_symbol IS NOT NULL
+         AND s.option_type IS NOT NULL`
+    )
+    .all() as OptionExerciseRow[];
+
+  for (const ex of exerciseRows) {
+    const isLong = ex.type.toLowerCase() === "exercised";
+    const isCall = ex.option_type.toUpperCase() === "CALL";
+    const premiumPerShare = ex.price_per_share; // already per-share for the underlying
+
+    // Determine what stock transaction to look for and how to adjust
+    // Long call exercise → stock BUY → increase cost basis
+    // Long put exercise → stock SELL → decrease proceeds
+    // Short call assigned → stock SELL → increase proceeds
+    // Short put assigned → stock BUY → decrease cost basis (reduce cost)
+    let stockType: string;
+    let adjustmentType: PremiumAdjustment["adjustmentType"];
+
+    if (isLong && isCall) {
+      stockType = "buy";
+      adjustmentType = "increase_cost";
+    } else if (isLong && !isCall) {
+      stockType = "sell";
+      adjustmentType = "decrease_proceeds";
+    } else if (!isLong && isCall) {
+      stockType = "sell";
+      adjustmentType = "increase_proceeds";
+    } else {
+      // Short put assigned → forced buy
+      stockType = "buy";
+      // Premium RECEIVED reduces cost basis — we subtract
+      adjustmentType = "increase_cost"; // but with negative premium (see below)
+    }
+
+    // Find the linked stock transaction: same account, same underlying, same date (±1 day)
+    const underlying = db
+      .prepare(
+        "SELECT id FROM securities WHERE symbol = ? AND security_type != 'option' LIMIT 1"
+      )
+      .get(ex.underlying_symbol) as { id: number } | undefined;
+
+    if (!underlying) continue;
+
+    const stockTx = db
+      .prepare(
+        `SELECT id FROM transactions
+         WHERE account_id = ? AND security_id = ?
+           AND LOWER(type) = ?
+           AND ABS(julianday(trade_date) - julianday(?)) <= 1
+         ORDER BY ABS(julianday(trade_date) - julianday(?))
+         LIMIT 1`
+      )
+      .get(
+        ex.account_id,
+        underlying.id,
+        stockType,
+        ex.trade_date,
+        ex.trade_date
+      ) as { id: number } | undefined;
+
+    if (!stockTx) continue;
+
+    // For short put assignment, premium received REDUCES cost, so negate
+    const effectivePremium =
+      !isLong && !isCall ? -premiumPerShare : premiumPerShare;
+
+    adjustments.set(stockTx.id, {
+      premiumPerShare: effectivePremium,
+      adjustmentType,
+    });
+  }
+
+  return adjustments;
 }

@@ -51,6 +51,36 @@ export function ScenarioModelingCard() {
     { sector: string; move: number }[]
   >([]);
 
+  // useCallback must be declared before any early returns (React hooks rules)
+  const handleComputeCustom = useCallback(async () => {
+    setCustomLoading(true);
+    try {
+      const sectorMoves: Record<string, number> = {};
+      for (const o of customSectorOverrides) {
+        if (o.sector && o.move !== 0) sectorMoves[o.sector] = o.move / 100;
+      }
+
+      const res = await fetch("/api/compute/scenarios", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          marketMove: customMarketMove / 100,
+          rateMove: customRateMove || undefined,
+          sectorMoves: Object.keys(sectorMoves).length > 0 ? sectorMoves : undefined,
+        }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setCustomResult(json.data);
+        setExpanded("custom");
+      }
+    } catch {
+      // Silently fail
+    } finally {
+      setCustomLoading(false);
+    }
+  }, [customMarketMove, customRateMove, customSectorOverrides]);
+
   useEffect(() => {
     fetch("/api/compute/scenarios")
       .then((r) => r.json())
@@ -81,35 +111,6 @@ export function ScenarioModelingCard() {
       </div>
     );
   }
-
-  const handleComputeCustom = useCallback(async () => {
-    setCustomLoading(true);
-    try {
-      const sectorMoves: Record<string, number> = {};
-      for (const o of customSectorOverrides) {
-        if (o.sector && o.move !== 0) sectorMoves[o.sector] = o.move / 100;
-      }
-
-      const res = await fetch("/api/compute/scenarios", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          marketMove: customMarketMove / 100,
-          rateMove: customRateMove || undefined,
-          sectorMoves: Object.keys(sectorMoves).length > 0 ? sectorMoves : undefined,
-        }),
-      });
-      const json = await res.json();
-      if (json.success) {
-        setCustomResult(json.data);
-        setExpanded("custom");
-      }
-    } catch {
-      // Silently fail
-    } finally {
-      setCustomLoading(false);
-    }
-  }, [customMarketMove, customRateMove, customSectorOverrides]);
 
   const currentValue = scenarios[0].currentPortfolioValue;
 

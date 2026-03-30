@@ -19,6 +19,9 @@ import { getSeriesData, searchSeries, getLatestValue, FRED_SERIES } from "@/lib/
 import { getCompanyFinancials, getCompanyInfo, getRecentFilings, getInsiderTransactions } from "@/lib/apis/edgar";
 import { getTranscriptForChat } from "@/lib/transcripts/fetch";
 import { getTradeReviews, getTradeReviewByPeriod, getTradeRoundtrips } from "@/lib/queries/trade-reviews";
+import { computePortfolioGreeks } from "@/lib/compute/options-greeks";
+import { getOptionPositions } from "@/lib/queries/options";
+import { detectStrategies, type PositionLeg } from "@/lib/compute/options-strategy";
 
 // ─── Tool Definitions ─────────────────────────────────────────────
 
@@ -467,6 +470,26 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
       },
     },
   },
+  {
+    name: "query_options_greeks",
+    description:
+      "Query portfolio-level and per-position options Greeks (delta, gamma, theta, vega) with implied volatility. Also returns detected option strategies (covered calls, spreads, straddles, iron condors). Use when the user asks about options risk exposure, Greeks, time decay, volatility sensitivity, or option strategies.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        account_name: {
+          type: "string",
+          description:
+            "Account name to query (e.g., 'IBKR'). Omit for all accounts.",
+        },
+        underlying: {
+          type: "string",
+          description:
+            "Filter by underlying symbol (e.g., 'AAPL'). Omit for all option positions.",
+        },
+      },
+    },
+  },
 ];
 
 // ─── Account Name Resolution ─────────────────────────────────────
@@ -818,6 +841,107 @@ export async function executeTool(
         break;
       }
 
+      case "query_options_greeks": {
+        const accountName = resolveAccountName(db, input.account_name as string | undefined);
+        const account = accountName
+          ? (db
+              .prepare("SELECT id FROM accounts WHERE name = ?")
+              .get(accountName) as { id: number } | undefined)
+          : undefined;
+        const accountId = account?.id;
+
+        // Compute Greeks
+        const greeks = computePortfolioGreeks(db, { accountId });
+
+        // Filter by underlying if specified
+        let positions = greeks.positions;
+        if (input.underlying) {
+          const und = (input.underlying as string).toUpperCase();
+          positions = positions.filter((p) => p.underlying === und);
+        }
+
+        // Detect strategies from option positions + stock holdings
+        const optionPositions = getOptionPositions(db, accountId);
+        const stockHoldings = db
+          .prepare(
+            `SELECT s.symbol, h.quantity, s.security_type,
+                    (SELECT p.close FROM prices p WHERE p.security_id = s.id
+                     ORDER BY p.price_date DESC LIMIT 1) AS current_price
+             FROM holdings h
+             JOIN securities s ON s.id = h.security_id
+             WHERE s.security_type IN ('stock', 'etf')
+               AND h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2)
+               ${accountId ? "AND h.account_id = ?" : ""}`
+          )
+          .all(...(accountId ? [accountId] : [])) as Array<{
+          symbol: string;
+          quantity: number;
+          security_type: string;
+          current_price: number | null;
+        }>;
+
+        const positionLegs: PositionLeg[] = [
+          ...stockHoldings.map((s) => ({
+            symbol: s.symbol,
+            underlying: s.symbol,
+            securityType: "stock" as const,
+            quantity: s.quantity,
+            multiplier: 1,
+            currentPrice: s.current_price,
+          })),
+          ...optionPositions.map((o) => ({
+            symbol: o.symbol,
+            underlying: o.underlying,
+            securityType: "option" as const,
+            optionType: o.optionType,
+            strike: o.strike,
+            expiration: o.expiration,
+            quantity: o.quantity,
+            multiplier: o.multiplier,
+            currentPrice: o.currentPrice,
+          })),
+        ];
+
+        const strategies = detectStrategies(positionLegs);
+
+        rawResult = {
+          portfolio: {
+            totalDelta: greeks.totalDelta,
+            totalGamma: greeks.totalGamma,
+            totalTheta: greeks.totalTheta,
+            totalVega: greeks.totalVega,
+          },
+          positions: positions.map((p) => ({
+            symbol: p.symbol,
+            underlying: p.underlying,
+            type: p.optionType,
+            strike: p.strike,
+            expiration: p.expiration,
+            quantity: p.quantity,
+            underlyingPrice: p.underlyingPrice,
+            daysToExpiry: p.daysToExpiry,
+            delta: p.greeks?.delta,
+            gamma: p.greeks?.gamma,
+            theta: p.greeks?.theta,
+            vega: p.greeks?.vega,
+            iv: p.greeks?.iv != null ? `${(p.greeks.iv * 100).toFixed(1)}%` : null,
+          })),
+          strategies: strategies.map((s) => ({
+            type: s.type,
+            name: s.name,
+            underlying: s.underlying,
+            expiration: s.expiration,
+            maxProfit: s.maxProfit,
+            maxLoss: s.maxLoss,
+            breakevens: s.breakevens,
+            description: s.description,
+          })),
+          positionCount: positions.length,
+          strategyCount: strategies.length,
+        };
+        break;
+      }
+
       default:
         return { error: `Unknown tool: ${toolName}` };
     }
@@ -852,4 +976,5 @@ export const TOOL_LABELS: Record<string, string> = {
   create_note: "Saving note...",
   query_earnings_transcript: "Fetching earnings transcript...",
   query_trade_reviews: "Looking up trade reviews...",
+  query_options_greeks: "Computing options Greeks...",
 };
