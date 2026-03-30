@@ -18,6 +18,7 @@ import { annotateToolResult } from "@/lib/chat/validate";
 import { getSeriesData, searchSeries, getLatestValue, FRED_SERIES } from "@/lib/apis/fred";
 import { getCompanyFinancials, getCompanyInfo, getRecentFilings, getInsiderTransactions } from "@/lib/apis/edgar";
 import { getTranscriptForChat } from "@/lib/transcripts/fetch";
+import { getTradeReviews, getTradeReviewByPeriod, getTradeRoundtrips } from "@/lib/queries/trade-reviews";
 
 // ─── Tool Definitions ─────────────────────────────────────────────
 
@@ -437,6 +438,35 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
       required: ["ticker"],
     },
   },
+  {
+    name: "query_trade_reviews",
+    description:
+      "Query the user's monthly AI trade reviews and trading feedback. Returns review summaries, per-trade grades (A-F), identified behavioral patterns, strengths, weaknesses, and cumulative pattern analysis. Use when the user asks about their trading performance, patterns, improvement areas, trade grades, or wants to recall feedback from past months. Can return a list of reviews or a single detailed review with per-trade analysis.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        account_name: {
+          type: "string",
+          description:
+            "Account name to query (e.g., 'IBKR'). Defaults to IBKR if omitted.",
+        },
+        year: {
+          type: "integer",
+          description: "Filter by year. Omit to get all reviews.",
+        },
+        period_start: {
+          type: "string",
+          description:
+            "Specific month (YYYY-MM-01). Returns detailed review with per-trade grades. Omit for list view.",
+        },
+        include_grades: {
+          type: "boolean",
+          description:
+            "Include per-trade grade details in detail mode. Defaults to false.",
+        },
+      },
+    },
+  },
 ];
 
 // ─── Account Name Resolution ─────────────────────────────────────
@@ -729,6 +759,65 @@ export async function executeTool(
         break;
       }
 
+      case "query_trade_reviews": {
+        const accountName = resolveAccountName(
+          db,
+          (input.account_name as string) || "IBKR"
+        );
+        const account = db
+          .prepare("SELECT id FROM accounts WHERE name = ?")
+          .get(accountName) as { id: number } | undefined;
+
+        if (!account) {
+          rawResult = { error: `Account "${input.account_name ?? "IBKR"}" not found` };
+          break;
+        }
+
+        if (input.period_start) {
+          // Detail mode — single review with optional grades
+          const review = getTradeReviewByPeriod(
+            db,
+            account.id,
+            input.period_start as string
+          );
+          if (!review) {
+            rawResult = {
+              error: `No trade review found for ${input.period_start}. Generate one first via Research > Trade Reviews.`,
+            };
+            break;
+          }
+          const roundtrips = input.include_grades
+            ? getTradeRoundtrips(db, review.id)
+            : [];
+          rawResult = { review, roundtrips };
+        } else {
+          // List mode
+          const reviews = getTradeReviews(
+            db,
+            account.id,
+            input.year as number | undefined
+          );
+          rawResult = {
+            reviews: reviews.map((r) => ({
+              period: r.period_start,
+              trades: r.total_trades,
+              winRate: `${(r.win_rate * 100).toFixed(0)}%`,
+              pnl: r.total_realized_pnl,
+              profitFactor: r.profit_factor,
+              avgHoldingDays: r.avg_holding_days,
+              bestTrade: r.best_trade_symbol
+                ? `${r.best_trade_symbol} ($${r.best_trade_pnl?.toFixed(0)})`
+                : null,
+              worstTrade: r.worst_trade_symbol
+                ? `${r.worst_trade_symbol} ($${r.worst_trade_pnl?.toFixed(0)})`
+                : null,
+            })),
+            totalReviews: reviews.length,
+          };
+        }
+        break;
+      }
+
       default:
         return { error: `Unknown tool: ${toolName}` };
     }
@@ -762,4 +851,5 @@ export const TOOL_LABELS: Record<string, string> = {
   query_notes: "Searching notes...",
   create_note: "Saving note...",
   query_earnings_transcript: "Fetching earnings transcript...",
+  query_trade_reviews: "Looking up trade reviews...",
 };

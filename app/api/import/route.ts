@@ -4,6 +4,7 @@ import { parseImport, commitImport, undoImport } from "@/lib/import/engine";
 import { classifySecurities } from "@/lib/compute/classify-securities";
 import { computeTaxLots } from "@/lib/compute/tax-lots";
 import { computeDailyValuations } from "@/lib/compute/daily-valuation";
+import { detectNewTradeReviewPeriods } from "@/lib/compute/trade-roundtrips";
 
 /**
  * POST /api/import?mode=preview  — parse only, return preview JSON
@@ -122,11 +123,22 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Detect months with new trades that don't have reviews yet
+    let newTradePeriods: { periodStart: string; periodEnd: string; tradeCount: number }[] = [];
+    if (mode === "commit") {
+      try {
+        newTradePeriods = detectNewTradeReviewPeriods(db);
+      } catch {
+        // Trade review detection failure shouldn't block import
+      }
+    }
+
     return NextResponse.json({
       success: true,
       mode,
       fileCount: files.length,
       results,
+      newTradePeriods,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
