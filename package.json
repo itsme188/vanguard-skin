@@ -19,12 +19,18 @@
     "local-first"
   ],
   "private": true,
+  "main": "dist-electron/main.js",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "seed:demo": "tsx scripts/seed-demo.ts"
+    "seed:demo": "tsx scripts/seed-demo.ts",
+    "electron:compile": "tsc -p electron/tsconfig.json",
+    "electron:copy-static": "cp -r .next/static .next/standalone/.next/static && cp -r public .next/standalone/public",
+    "electron:dev": "npm run electron:compile && npm run electron:copy-static && electron .",
+    "electron:build": "npm run build && npm run electron:compile && npm run electron:copy-static",
+    "electron:pack": "npm run electron:build && electron-builder --mac"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.64",
@@ -53,6 +59,8 @@
     "@types/papaparse": "^5.5.2",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "electron": "^41.1.0",
+    "electron-builder": "^26.8.1",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
     "tailwindcss": "^4",
