@@ -64,7 +64,7 @@ export default async function SecurityDetailPage(props: {
 
   if (!detail) notFound();
 
-  const { security, price, positions, openTaxLots, closedSales, recentTransactions, notes, upcomingEvents, factors, transcripts } = detail;
+  const { security, price, positions, openTaxLots, closedSales, recentTransactions, notes, upcomingEvents, factors, transcripts, tradeGrades } = detail;
   const watched = isOnWatchlist(db, securityId);
   const watchlistItem = watched ? getWatchlistItem(db, securityId) : null;
 
@@ -424,6 +424,97 @@ export default async function SecurityDetailPage(props: {
               </tbody>
             </table>
           </div>
+        </section>
+      )}
+
+      {/* Trade Grades (from AI reviews) */}
+      {tradeGrades.length > 0 && (
+        <section className="rounded-xl border border-edge bg-panel overflow-hidden">
+          <div className="px-5 py-3 border-b border-edge flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-ink">
+              AI Trade Grades ({tradeGrades.length})
+            </h2>
+            <Link
+              href="/dashboard/research?view=reviews"
+              className="text-xs text-gold hover:brightness-125 transition-colors"
+            >
+              View All Reviews →
+            </Link>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-edge text-ink-faint text-xs">
+                  <th className="text-center px-5 py-2 font-medium">Grade</th>
+                  <th className="text-left px-5 py-2 font-medium">Entry</th>
+                  <th className="text-left px-5 py-2 font-medium">Exit</th>
+                  <th className="text-right px-5 py-2 font-medium">Days</th>
+                  <th className="text-right px-5 py-2 font-medium">P&L</th>
+                  <th className="text-right px-5 py-2 font-medium">Return</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tradeGrades.map((tg, i) => {
+                  const gradeStyle: Record<string, string> = {
+                    A: "bg-up/20 text-up border-up/30",
+                    B: "bg-up/10 text-up/80 border-up/20",
+                    C: "bg-gold/15 text-gold border-gold/25",
+                    D: "bg-down/10 text-down/80 border-down/20",
+                    F: "bg-down/20 text-down border-down/30",
+                  };
+                  return (
+                    <tr key={i} className="border-b border-edge/50 last:border-0">
+                      <td className="px-5 py-2.5 text-center">
+                        {tg.grade ? (
+                          <span className={`inline-flex items-center justify-center w-7 h-7 rounded-md border text-xs font-bold ${gradeStyle[tg.grade] ?? "bg-muted text-ink-dim border-edge"}`}>
+                            {tg.grade}
+                          </span>
+                        ) : (
+                          <span className="text-ink-faint">—</span>
+                        )}
+                      </td>
+                      <td className="px-5 py-2.5 font-mono text-xs text-ink-dim">
+                        {tg.entry_date}
+                      </td>
+                      <td className="px-5 py-2.5 font-mono text-xs text-ink-dim">
+                        {tg.exit_date}
+                      </td>
+                      <td className="px-5 py-2.5 text-right font-mono text-ink-dim">
+                        {tg.holding_days}
+                      </td>
+                      <td className={`px-5 py-2.5 text-right font-mono ${gainClass(tg.realized_pnl)}`}>
+                        {formatCurrency(tg.realized_pnl)}
+                      </td>
+                      <td className={`px-5 py-2.5 text-right font-mono ${gainClass(tg.return_pct)}`}>
+                        {tg.return_pct >= 0 ? "+" : ""}{tg.return_pct.toFixed(1)}%
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {/* AI Assessment detail for graded trades */}
+          {tradeGrades.some(tg => tg.entry_thesis) && (
+            <div className="border-t border-edge px-5 py-3 space-y-2">
+              {tradeGrades.filter(tg => tg.entry_thesis || tg.exit_assessment).map((tg, i) => (
+                <div key={i} className="text-xs space-y-0.5">
+                  <div className="flex items-center gap-2">
+                    {tg.grade && (
+                      <span className={`inline-flex items-center justify-center w-5 h-5 rounded text-[10px] font-bold ${
+                        { A: "bg-up/20 text-up", B: "bg-up/10 text-up/80", C: "bg-gold/15 text-gold", D: "bg-down/10 text-down/80", F: "bg-down/20 text-down" }[tg.grade] ?? "bg-muted text-ink-dim"
+                      }`}>
+                        {tg.grade}
+                      </span>
+                    )}
+                    <span className="text-ink-faint">{tg.entry_date} → {tg.exit_date}</span>
+                  </div>
+                  {tg.entry_thesis && <p className="text-ink-dim"><span className="text-ink-faint">Entry:</span> {tg.entry_thesis}</p>}
+                  {tg.exit_assessment && <p className="text-ink-dim"><span className="text-ink-faint">Exit:</span> {tg.exit_assessment}</p>}
+                </div>
+              ))}
+            </div>
+          )}
         </section>
       )}
 
