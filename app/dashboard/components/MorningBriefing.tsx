@@ -77,7 +77,7 @@ export function MorningBriefing() {
   const market = getMarketSession();
 
   // Today's events
-  let todayEvents;
+  let todayEvents: ReturnType<typeof getUpcomingEvents>;
   try {
     todayEvents = getUpcomingEvents(db, {
       startDate: today,

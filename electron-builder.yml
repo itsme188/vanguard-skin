@@ -1,0 +1,54 @@
+appId: com.vanguard-skin.app
+productName: Vanguard Dashboard
+copyright: Copyright 2026
+
+directories:
+  output: dist
+  buildResources: build
+
+files:
+  - dist-electron/**/*
+  - public/**/*
+
+extraResources:
+  # Next.js standalone build
+  - from: .next/standalone
+    to: standalone
+    filter:
+      - "**/*"
+  # Static assets
+  - from: .next/static
+    to: standalone/.next/static
+    filter:
+      - "**/*"
+  # Public assets
+  - from: public
+    to: standalone/public
+    filter:
+      - "**/*"
+  # Migration SQL files (needed for DB initialization)
+  - from: lib/db/migrations
+    to: standalone/lib/db/migrations
+    filter:
+      - "*.sql"
+
+mac:
+  category: public.app-category.finance
+  target:
+    - target: dmg
+      arch:
+        - arm64
+  darkModeSupport: true
+
+dmg:
+  title: Vanguard Dashboard
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+
+# No code signing for now — distribute via direct download
+# Brother can use: xattr -cr "/Applications/Vanguard Dashboard.app"
