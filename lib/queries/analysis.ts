@@ -17,6 +17,7 @@ export type AllocationDimension =
   | "sector"
   | "asset_class"
   | "security_type"
+  | "credit_rating"
   | "account"
   | "symbol"
   | FactorColumn;
@@ -108,6 +109,7 @@ export function getAllocationByDimension(
     sector: "COALESCE(s.sector, s.fund_category, 'Unknown')",
     asset_class: "COALESCE(s.asset_class, s.security_type, 'Unknown')",
     security_type: "COALESCE(s.security_type, 'Unknown')",
+    credit_rating: "COALESCE(s.credit_rating, 'Unrated')",
     account: "a.name",
     symbol: "s.symbol",
   };
