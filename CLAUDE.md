@@ -105,7 +105,11 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - `GET /api/compute/scenarios?accountId=&scenario=` — scenario modeling (9 presets: crash, rate shocks, rally, sector rotation)
 - `POST /api/compute/scenarios` — custom what-if scenario. Body: `{ marketMove, rateMove?, sectorMoves?, name? }`
 - `GET /api/compute/fixed-income` — bond exposure: weighted avg duration, credit quality breakdown, bond positions
-- `GET /api/tax-report?year=&format=json|csv` — Form 8949 tax report with wash sale detection (CSV download for tax filing)
+- `GET /api/compute/options-greeks?accountId=` — portfolio + per-position Greeks (delta, gamma, theta, vega, IV)
+- `GET /api/compute/options-strategies?accountId=` — detected option strategies (covered calls, spreads, etc.)
+- `GET /api/compute/reconciliation?accountId=` — cost basis reconciliation: broker-reported vs computed
+- `GET /api/tws/option-chain?symbol=` — option chain expirations + strikes from TWS
+- `GET /api/tax-report?year=&format=json|csv|txf` — Form 8949 tax report with wash sale detection (CSV for filing, TXF for TurboTax)
 - `GET /api/search?q=` — global search across securities, notes, transactions
 - `POST /api/benchmark/sync` — SSE streaming: fetch benchmark prices from TWS (falls back to cached ohlcv_bars/prices on timeout)
 - `GET /api/benchmark/prices?mode=prices|chart|stats|available&symbol=SPY` — benchmark data and analytics

@@ -22,8 +22,15 @@ function mapSecurityType(dbType: string | null): SecType {
 
 const rateLimiter = new RateLimiter();
 
-/** Milliseconds to wait between consecutive TWS requests to avoid IB pacing violations. */
-const PACING_DELAY_MS = 500;
+/** Milliseconds to wait between consecutive TWS request batches to avoid IB pacing violations. */
+const PACING_DELAY_MS = 600;
+
+/**
+ * Max concurrent historical data requests per batch.
+ * IB enforces ~6 concurrent historical data requests; we stay conservative at 3.
+ * Combined with PACING_DELAY_MS between batches, this is ~3x faster than serial.
+ */
+const HISTORICAL_BATCH_SIZE = 3;
 
 /** Per-request timeout — prevents a hung TWS call from blocking the entire batch. */
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -103,149 +110,143 @@ export async function fetchHistoricalPrices(
     `SELECT MAX(date) as latest FROM prices WHERE security_id = ? AND source = 'tws'`,
   );
 
-  for (let i = 0; i < securities.length; i++) {
-    const sec = securities[i];
-
-    try {
-      // Incremental: compute gap duration per security
-      let durationStr = defaultDuration;
-      if (incremental && !options?.durationStr) {
-        const row = latestPriceStmt.get(sec.id) as { latest: string | null } | undefined;
-        if (row?.latest) {
-          const latestDate = new Date(row.latest + "T00:00:00");
-          const today = new Date();
-          today.setHours(0, 0, 0, 0);
-          const gapDays = Math.ceil((today.getTime() - latestDate.getTime()) / 86_400_000);
-          if (gapDays <= 0) {
-            // Already have today's price — skip
-            onProgress?.({
-              current: i + 1,
-              total: securities.length,
-              symbol: sec.symbol,
-              status: "skipped",
-            });
-            results.push({
-              symbol: sec.symbol,
-              securityId: sec.id,
-              barsInserted: 0,
-              barsSkipped: 0,
-              dateRange: null,
-            });
-            continue;
-          }
-          // Cap at 365 days, use "N D" format for short gaps
-          durationStr = gapDays >= 365 ? "1 Y" : `${gapDays} D`;
+  // ── Helper: fetch one security ────────────────────────────────
+  async function fetchOne(sec: SecurityRow, globalIdx: number): Promise<PriceFetchResult> {
+    // Incremental: compute gap duration per security
+    let durationStr = defaultDuration;
+    if (incremental && !options?.durationStr) {
+      const row = latestPriceStmt.get(sec.id) as { latest: string | null } | undefined;
+      if (row?.latest) {
+        const latestDate = new Date(row.latest + "T00:00:00");
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const gapDays = Math.ceil((today.getTime() - latestDate.getTime()) / 86_400_000);
+        if (gapDays <= 0) {
+          onProgress?.({
+            current: globalIdx + 1,
+            total: securities.length,
+            symbol: sec.symbol,
+            status: "skipped",
+          });
+          return { symbol: sec.symbol, securityId: sec.id, barsInserted: 0, barsSkipped: 0, dateRange: null };
         }
+        durationStr = gapDays >= 365 ? "1 Y" : `${gapDays} D`;
       }
+    }
 
-      // Report rate-limit wait if we'd block
-      const waitEstimate = rateLimiter.estimatedWaitSeconds;
-      if (waitEstimate > 0) {
-        onProgress?.({
-          current: i + 1,
-          total: securities.length,
-          symbol: sec.symbol,
-          status: "rate_limited",
-          waitingSeconds: waitEstimate,
-        });
-      }
+    await rateLimiter.waitForSlot();
 
-      await rateLimiter.waitForSlot();
+    onProgress?.({
+      current: globalIdx + 1,
+      total: securities.length,
+      symbol: sec.symbol,
+      status: "fetching",
+    });
 
-      // Report active fetch
-      onProgress?.({
-        current: i + 1,
-        total: securities.length,
-        symbol: sec.symbol,
-        status: "fetching",
-      });
+    const secType = mapSecurityType(sec.security_type);
+    const contract = sec.ib_con_id
+      ? { conId: sec.ib_con_id, secType, exchange: "SMART", currency: "USD" }
+      : { symbol: sec.symbol, secType, exchange: "SMART", currency: "USD" };
 
-      // IB API requires secType even when conId is provided
-      const secType = mapSecurityType(sec.security_type);
-      const contract = sec.ib_con_id
-        ? { conId: sec.ib_con_id, secType, exchange: "SMART", currency: "USD" }
-        : { symbol: sec.symbol, secType, exchange: "SMART", currency: "USD" };
-
-      // Race against timeout to prevent indefinite hangs
-      const bars = await Promise.race([
-        api.getHistoricalData(
-          contract,
-          options?.endDate ?? "", // empty = current time
-          durationStr,
-          BarSizeSetting.DAYS_ONE,
-          "TRADES", // WhatToShow
-          1, // useRTH = regular trading hours only
-          1, // formatDate = YYYYMMDD strings
+    const bars = await Promise.race([
+      api!.getHistoricalData(
+        contract,
+        options?.endDate ?? "",
+        durationStr,
+        BarSizeSetting.DAYS_ONE,
+        "TRADES",
+        1,
+        1,
+      ),
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`Timeout after ${REQUEST_TIMEOUT_MS / 1000}s`)),
+          REQUEST_TIMEOUT_MS,
         ),
-        new Promise<never>((_, reject) =>
-          setTimeout(
-            () => reject(new Error(`Timeout after ${REQUEST_TIMEOUT_MS / 1000}s`)),
-            REQUEST_TIMEOUT_MS,
-          ),
-        ),
-      ]);
+      ),
+    ]);
 
-      let inserted = 0;
-      let skipped = 0;
+    let inserted = 0;
+    let skipped = 0;
 
-      db.transaction(() => {
-        for (const bar of bars) {
-          if (!bar.time || bar.close == null) {
-            skipped++;
-            continue;
-          }
-          const date = formatBarDate(bar.time);
-          const result = upsertPrice.run(sec.id, date, bar.close);
-          if (result.changes > 0) inserted++;
-          else skipped++;
+    db.transaction(() => {
+      for (const bar of bars) {
+        if (!bar.time || bar.close == null) {
+          skipped++;
+          continue;
         }
-      })();
+        const date = formatBarDate(bar.time);
+        const result = upsertPrice.run(sec.id, date, bar.close);
+        if (result.changes > 0) inserted++;
+        else skipped++;
+      }
+    })();
 
-      const fetchResult: PriceFetchResult = {
-        symbol: sec.symbol,
-        securityId: sec.id,
-        barsInserted: inserted,
-        barsSkipped: skipped,
-        dateRange:
-          bars.length > 0 && bars[0].time && bars[bars.length - 1].time
-            ? {
-                from: formatBarDate(bars[0].time),
-                to: formatBarDate(bars[bars.length - 1].time!),
-              }
-            : null,
-      };
-      results.push(fetchResult);
+    const fetchResult: PriceFetchResult = {
+      symbol: sec.symbol,
+      securityId: sec.id,
+      barsInserted: inserted,
+      barsSkipped: skipped,
+      dateRange:
+        bars.length > 0 && bars[0].time && bars[bars.length - 1].time
+          ? { from: formatBarDate(bars[0].time), to: formatBarDate(bars[bars.length - 1].time!) }
+          : null,
+    };
 
+    onProgress?.({
+      current: globalIdx + 1,
+      total: securities.length,
+      symbol: sec.symbol,
+      status: "done",
+      result: fetchResult,
+    });
+
+    return fetchResult;
+  }
+
+  // ── Process in parallel batches (3x faster than serial) ──────
+  for (let batchStart = 0; batchStart < securities.length; batchStart += HISTORICAL_BATCH_SIZE) {
+    const batch = securities.slice(batchStart, batchStart + HISTORICAL_BATCH_SIZE);
+
+    // Report rate-limit wait before batch
+    const waitEstimate = rateLimiter.estimatedWaitSeconds;
+    if (waitEstimate > 0) {
       onProgress?.({
-        current: i + 1,
+        current: batchStart + 1,
         total: securities.length,
-        symbol: sec.symbol,
-        status: "done",
-        result: fetchResult,
-      });
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : "Unknown error";
-      const fetchResult: PriceFetchResult = {
-        symbol: sec.symbol,
-        securityId: sec.id,
-        barsInserted: 0,
-        barsSkipped: 0,
-        dateRange: null,
-        error: errMsg,
-      };
-      results.push(fetchResult);
-
-      onProgress?.({
-        current: i + 1,
-        total: securities.length,
-        symbol: sec.symbol,
-        status: "error",
-        result: fetchResult,
+        symbol: batch.map((s) => s.symbol).join(", "),
+        status: "rate_limited",
+        waitingSeconds: waitEstimate,
       });
     }
 
-    // Pacing delay between requests to avoid IB error 162 (pacing violation)
-    if (i < securities.length - 1) {
+    const batchPromises = batch.map((sec, batchIdx) =>
+      fetchOne(sec, batchStart + batchIdx).catch((err): PriceFetchResult => {
+        const errMsg = err instanceof Error ? err.message : "Unknown error";
+        const fetchResult: PriceFetchResult = {
+          symbol: sec.symbol,
+          securityId: sec.id,
+          barsInserted: 0,
+          barsSkipped: 0,
+          dateRange: null,
+          error: errMsg,
+        };
+        onProgress?.({
+          current: batchStart + batchIdx + 1,
+          total: securities.length,
+          symbol: sec.symbol,
+          status: "error",
+          result: fetchResult,
+        });
+        return fetchResult;
+      })
+    );
+
+    const batchResults = await Promise.all(batchPromises);
+    results.push(...batchResults);
+
+    // Pacing delay between batches
+    if (batchStart + HISTORICAL_BATCH_SIZE < securities.length) {
       await new Promise((resolve) => setTimeout(resolve, PACING_DELAY_MS));
     }
   }
