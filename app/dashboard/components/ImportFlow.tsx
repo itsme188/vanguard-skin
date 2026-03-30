@@ -41,7 +41,7 @@ type ImportState =
   | { status: "parsing" }
   | { status: "preview"; results: PreviewResult[] }
   | { status: "importing" }
-  | { status: "done"; results: CommitResult[] }
+  | { status: "done"; results: CommitResult[]; newTradePeriods?: { periodStart: string; periodEnd: string; tradeCount: number }[] }
   | { status: "error"; message: string };
 
 export function ImportFlow() {
@@ -102,7 +102,7 @@ export function ImportFlow() {
         return;
       }
 
-      setState({ status: "done", results: data.results });
+      setState({ status: "done", results: data.results, newTradePeriods: data.newTradePeriods });
       router.refresh();
     } catch (err) {
       setState({
@@ -358,6 +358,20 @@ export function ImportFlow() {
             </div>
           ))}
         </div>
+
+        {/* Trade review prompt */}
+        {state.newTradePeriods && state.newTradePeriods.length > 0 && (
+          <a
+            href={`/dashboard/research?view=reviews`}
+            className="block rounded-lg border border-gold/20 bg-gold/5 px-4 py-3 text-sm text-ink-dim hover:bg-gold/10 transition-colors"
+          >
+            <span className="text-gold font-medium">Trade reviews available</span>
+            {" — "}
+            {state.newTradePeriods.length} month{state.newTradePeriods.length > 1 ? "s" : ""} with{" "}
+            {state.newTradePeriods.reduce((s, p) => s + p.tradeCount, 0)} unreviewed trades.
+            <span className="text-gold ml-1">View →</span>
+          </a>
+        )}
 
         <button
           onClick={reset}

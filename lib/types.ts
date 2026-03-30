@@ -239,3 +239,61 @@ export interface CalendarBriefing {
   model: string | null;
   generated_at: string;
 }
+
+// ── Trade Reviews ──────────────────────────────────────────
+
+export interface TradeReview {
+  id: number;
+  account_id: number;
+  period_start: string;
+  period_end: string;
+  import_batch_id: number | null;
+  total_trades: number;
+  winning_trades: number;
+  losing_trades: number;
+  win_rate: number;
+  total_realized_pnl: number;
+  avg_holding_days: number | null;
+  best_trade_pnl: number | null;
+  best_trade_symbol: string | null;
+  worst_trade_pnl: number | null;
+  worst_trade_symbol: string | null;
+  avg_win: number | null;
+  avg_loss: number | null;
+  profit_factor: number | null;
+  review_markdown: string;
+  trade_grades: string | null;
+  patterns_identified: string | null;
+  strengths: string | null;
+  weaknesses: string | null;
+  cumulative_patterns: string | null;
+  model: string | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  generated_at: string;
+  created_at: string;
+}
+
+export interface TradeRoundtrip {
+  id: number;
+  review_id: number;
+  account_id: number;
+  security_id: number;
+  symbol: string;
+  entry_date: string;
+  entry_price: number;
+  entry_quantity: number;
+  entry_cost: number;
+  exit_date: string;
+  exit_price: number;
+  exit_quantity: number;
+  exit_proceeds: number;
+  holding_days: number;
+  realized_pnl: number;
+  return_pct: number;
+  grade: string | null;
+  entry_thesis: string | null;
+  exit_assessment: string | null;
+  what_went_well: string | null;
+  what_went_wrong: string | null;
+}
