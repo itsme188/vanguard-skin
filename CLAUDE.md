@@ -20,8 +20,9 @@ Local-first portfolio dashboard for tracking Vanguard + IBKR investments.
 - **Migrations** — Numbered `.sql` files in `lib/db/migrations/`, tracked in `schema_migrations` table
 - **Tab-based UI** — Overview | Accounts | Holdings | Analysis | Charts | Calendar | Research | Import
 - **Chat drawer** — Slide-out right panel (Cmd+J), accessible from any tab, persists conversation
-- **Security Detail** — `/dashboard/security/[id]` hub page per security (chart, positions, lots, notes, events, factors)
+- **Security Detail** — `/dashboard/security/[id]` hub page per security (chart, positions, lots, notes, events, factors, trade grades)
 - **Watchlist** — Track securities not yet owned, with price targets and thesis
+- **Trade Reviews** — Monthly AI trade analysis in Research tab (Notes | Trade Reviews toggle). Migration 016.
 
 ## Directory Structure
 
@@ -112,6 +113,10 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - `POST /api/watchlist` — add security to watchlist (by securityId or symbol)
 - `PATCH /api/watchlist` — update price targets/thesis
 - `DELETE /api/watchlist?id=` — remove from watchlist (soft delete)
+- `POST /api/trade-review` — SSE streaming: generate monthly AI trade review via Claude Opus (tool_use for structured output). Body: `{ accountId, periodStart, periodEnd }`
+- `GET /api/trade-review?accountId=&year=` — list trade reviews for account
+- `GET /api/trade-review?id=` — single review with roundtrips
+- `GET /api/trade-review?periods=true&accountId=` — available review periods
 
 ## Security Detail Page
 

@@ -1,10 +1,10 @@
 # Vanguard Skin — Project TODO
 
-> Last updated: 2026-03-27
+> Last updated: 2026-03-30
 
 ## Status Overview
 
-v2 core rebuild is complete. 18 merged PRs, 492 tests (all passing).
+v2 core rebuild is complete. 18 merged PRs, 529 tests (all passing).
 Post-v2 work has added IBKR TWS integration, TWR/XIRR engines, agentic chat with 14 tools,
 thematic factor analysis, notes/journaling, chat scope selector, per-security candlestick charting,
 IBKR calendar integration with weekly AI briefings, benchmark comparison with percent-change charts,
@@ -237,7 +237,7 @@ Pending real option data import to verify end-to-end.
 | Per-account equity curves | Working (daily) | **Working (daily + split + date ranges)** | Done |
 | Tax lot tracking (FIFO) | Working | Working + year/account filter | Done |
 | Reconciliation | Working | Working | Done |
-| Portfolio Chat (Claude Q&A) | Incomplete | **Agentic, 14 tools, Opus 4.6** | Done |
+| Portfolio Chat (Claude Q&A) | Incomplete | **Agentic, 15 tools, Opus 4.6** | Done |
 | TWR / XIRR performance | Working | **Working** | Done |
 | Thematic factor analysis | None | **Working (auto-classify + heatmap)** | Done |
 | Quantitative factor analysis | Incomplete | **Working (beta, tilts, regression)** | Done |
@@ -256,6 +256,7 @@ Pending real option data import to verify end-to-end.
 | Insider trading (SEC Form 4) | None | **Working (chat tool)** | Done |
 | Earnings transcripts | None | **Working (multi-source)** | Done |
 | Chat scope selector | None | **Working (account filtering)** | Done |
+| Trade review system | None | **Working (AI grades, cumulative patterns)** | Done |
 
 ---
 
@@ -291,9 +292,15 @@ Watchlist feature~~ ✓
 8. Options Phase 2 (verify with real data first, then Greeks + strategies)
 ~~9. Tax report export~~ ✓ (Form 8949 CSV, wash sale detection, short/long-term summary)
 
+### Trade Review System — DONE (2026-03-30)
+~~10. Monthly AI trade analysis~~ ✓ (Claude Opus structured output, per-trade grades A-F, cumulative patterns)
+~~11. Research tab Trade Reviews view~~ ✓ (generator, review cards, grade table, patterns panel)
+~~12. Import hook + chat tool~~ ✓ (detects unreviewed months, query_trade_reviews 15th tool)
+~~13. Security Detail grades~~ ✓ (AI grade badges on per-security hub page)
+
 ### Finally: Polish
-10. Desktop packaging (Electron or Tauri)
-11. E2E browser tests
+14. Desktop packaging (Electron or Tauri)
+15. E2E browser tests
 
 ---
 
