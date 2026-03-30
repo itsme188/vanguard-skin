@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { generateTaxReport, generateForm8949CSV } from "@/lib/compute/tax-report";
+import { generateTaxReport, generateForm8949CSV, generateTXF } from "@/lib/compute/tax-report";
 
 export async function GET(request: NextRequest) {
   try {
@@ -25,6 +25,16 @@ export async function GET(request: NextRequest) {
         headers: {
           "Content-Type": "text/csv",
           "Content-Disposition": `attachment; filename="form-8949-${year}.csv"`,
+        },
+      });
+    }
+
+    if (format === "txf") {
+      const txf = generateTXF(report);
+      return new NextResponse(txf, {
+        headers: {
+          "Content-Type": "application/x-tax-exchange",
+          "Content-Disposition": `attachment; filename="tax-report-${year}.txf"`,
         },
       });
     }

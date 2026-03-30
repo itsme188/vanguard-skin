@@ -136,7 +136,7 @@ Uses delayed/frozen quotes (no exchange subscription needed). SSE-based with aut
 - [x] Account filtering (personal vs. managed advisor)
 - [x] Auto-recompute daily valuations after sync
 - [x] Stream live quotes for current holdings (delayed market data via TWS)
-- [ ] Faster bulk fetch strategy (parallel where IBKR allows)
+- [x] Faster bulk fetch strategy (parallel batches of 3 — ~3x faster than serial)
 - [ ] Use `getAccountUpdates()` for live prices alongside positions (replaces separate price fetch)
 
 #### 1C. Performance Metrics — Period Selectors ✓
@@ -161,10 +161,10 @@ about quantitative factor decomposition — different from the thematic system.
 - [x] Market beta (vs S&P 500, total market) — regression-based: beta, alpha, R², tracking error
 - [x] Size factor (large/mid/small cap tilt) — portfolio-weighted from classification
 - [x] Value/growth factor — portfolio-weighted from classification
-- [ ] Duration/credit exposure (fixed income)
-- [ ] Options Greeks (delta, gamma, theta, vega) if positions exist
+- [x] Duration/credit exposure (fixed income) — FixedIncomeCard, commit 6616d8b
+- [x] Options Greeks (delta, gamma, theta, vega) if positions exist — commit 660604a
 
-#### 2C. Risk Decomposition (Partial ✓)
+#### 2C. Risk Decomposition ✓
 - [x] Contribution to portfolio volatility by position
 - [x] Correlation matrix between positions
 - [x] Concentration risk metrics (Herfindahl index, top-5 concentration)
@@ -172,33 +172,34 @@ about quantitative factor decomposition — different from the thematic system.
 - [x] Portfolio volatility (annualized) and Sharpe ratio
 - [x] Risk metrics UI card in Analysis tab
 
-#### 2D. Scenario Modeling
+#### 2D. Scenario Modeling ✓
 - [x] Market crash scenarios (-10%, -20%, -40%)
 - [x] Interest rate shock (+100bp, +200bp)
 - [x] Bull rally scenario (+15%)
-- [ ] Sector rotation scenarios
-- [ ] Custom "what-if" with user-defined assumptions
+- [x] Sector rotation scenarios — 3 presets (tech selloff, defensive rotation, energy spike), commit 6616d8b
+- [x] Custom "what-if" with user-defined assumptions — POST /api/compute/scenarios, commit 6616d8b
 
 ### Phase 3: Advanced Features
 
-#### 3A. Options Analytics (Phase 2)
-**Status:** Phase 1 done (schema, parsers, valuation, display). 16 tests passing.
-Pending real option data import to verify end-to-end.
+#### 3A. Options Analytics (Phase 2) ✓
+**Status:** Complete. 49 new tests (582 total). Greeks, strategies, IRS tax lots, UI, chat tool, TWS chain fetcher.
 
-- [ ] Verify Phase 1 with real IBKR option data
-- [ ] Options P&L tracking: open/closed positions, realized/unrealized by strategy
-- [ ] Options Greeks dashboard: portfolio-level delta, gamma, theta, vega
-- [ ] Strategy detection: covered calls, spreads, straddles, etc.
-- [ ] Options-specific tax lot handling (assignment, exercise, expiration)
-- [ ] Expiration calendar view
-- [ ] Option chain fetcher via TWS API (chains by underlying + expiry)
+- [x] Options Greeks dashboard: portfolio-level delta, gamma, theta, vega (Black-Scholes + IV solver)
+- [x] Strategy detection: covered calls, protective puts, vertical spreads, straddles, strangles, iron condors
+- [x] Options-specific tax lot handling: full IRS exercise/assignment/expiration with premium cost basis adjustment
+- [x] Options P&L tracking: open/closed positions, realized/unrealized
+- [x] Expiration calendar view (countdown badges, 90-day window)
+- [x] Option chain fetcher via TWS API (getSecDefOptParams)
+- [x] Chat tool: query_options_greeks (16th tool)
+- [x] Security Detail: option info card + related options for stocks
+- [ ] Verify end-to-end with real IBKR option data (user has 1 position, needs more for full coverage)
 
 #### 3B. Tax Report Export
 - [x] IRS Form 8949 data export (CSV)
 - [x] Short-term vs. long-term gain/loss summary by year
 - [x] Wash sale detection and adjustment (30-day rule)
-- [ ] Cost basis reconciliation report (compare computed vs. broker-reported)
-- [ ] Export for TurboTax or tax preparer
+- [x] Cost basis reconciliation report (compare computed vs. broker-reported) — commit 660604a+
+- [x] Export for TurboTax (TXF format) — `format=txf` on tax-report endpoint
 
 #### 3C. IBKR Calendar Integration ✓
 - [x] Economic events calendar (FRED data, Fed meetings, CPI releases)
@@ -289,7 +290,7 @@ Watchlist feature~~ ✓
 
 ### Then: Advanced
 ~~7. Scenario modeling~~ ✓ (6 presets: correction, bear, crash, rate +100/+200bp, bull rally)
-8. Options Phase 2 (verify with real data first, then Greeks + strategies)
+~~8. Options Phase 2~~ ✓ (Greeks, strategies, IRS tax lots, UI, chat tool)
 ~~9. Tax report export~~ ✓ (Form 8949 CSV, wash sale detection, short/long-term summary)
 
 ### Trade Review System — DONE (2026-03-30)

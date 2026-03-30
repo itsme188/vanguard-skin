@@ -253,3 +253,53 @@ export function generateForm8949CSV(report: TaxReportResult): string {
 
   return lines.join("\n");
 }
+
+// ─── TXF Export (TurboTax Tax Exchange Format) ──────────────────
+
+/**
+ * Generate TXF file for TurboTax import.
+ *
+ * TXF format: line-based records with type codes.
+ * Code 321 = Short-term sale (Form 8949 Part I)
+ * Code 323 = Long-term sale (Form 8949 Part II)
+ *
+ * Each record: header line (V + version), type line (TD + code),
+ * then data lines (D + date, N + description, $ + amount, etc.)
+ */
+export function generateTXF(report: TaxReportResult): string {
+  const lines: string[] = [];
+
+  // TXF header
+  lines.push("V042"); // TXF version 042
+  lines.push(`AVanguard Skin Portfolio Dashboard`);
+  lines.push(`D${toMMDDYYYY(`${report.year}-12-31`)}`);
+  lines.push("^"); // end of header
+
+  function emitSale(row: Form8949Row, typeCode: number) {
+    lines.push(`TD`);
+    lines.push(`N${typeCode}`);
+    lines.push(`C1`); // copy 1
+    lines.push(`L1`); // line 1
+    lines.push(`P${row.description}`);
+    lines.push(`D${row.dateAcquired}`);
+    lines.push(`D${row.dateSold}`);
+    lines.push(`$${row.costBasis.toFixed(2)}`);
+    lines.push(`$${row.proceeds.toFixed(2)}`);
+    if (row.adjustmentCode === "W") {
+      lines.push(`$${row.adjustmentAmount.toFixed(2)}`);
+    }
+    lines.push("^"); // end of record
+  }
+
+  // Short-term sales (code 321)
+  for (const row of report.shortTermRows) {
+    emitSale(row, 321);
+  }
+
+  // Long-term sales (code 323)
+  for (const row of report.longTermRows) {
+    emitSale(row, 323);
+  }
+
+  return lines.join("\n");
+}
