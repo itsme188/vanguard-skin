@@ -18,6 +18,7 @@ import type {
   TaxLotSaleWithDetails,
 } from "@/lib/queries/tax-lots";
 import type { TransactionWithSecurity } from "@/lib/queries/transactions";
+import type { TradeRoundtrip } from "@/lib/types";
 import { getSecurityById } from "@/lib/queries/securities";
 import { getUpcomingEvents } from "@/lib/queries/calendar";
 import { getTranscriptsForSecurity } from "@/lib/queries/transcripts";
@@ -59,6 +60,19 @@ export interface SecurityDetailData {
   upcomingEvents: CalendarEvent[];
   factors: SecurityFactor | null;
   transcripts: EarningsTranscript[];
+  tradeGrades: TradeGradeEntry[];
+}
+
+export interface TradeGradeEntry {
+  grade: string | null;
+  entry_date: string;
+  exit_date: string;
+  realized_pnl: number;
+  return_pct: number;
+  holding_days: number;
+  entry_thesis: string | null;
+  exit_assessment: string | null;
+  review_period: string;
 }
 
 // ─── Individual queries ────────────────────────────────────────
@@ -268,6 +282,30 @@ export function getFactorsForSecurity(
   return row;
 }
 
+/**
+ * Get AI trade grades for a specific security from trade_roundtrips.
+ * Returns most recent grades (up to 10) with the review period they came from.
+ */
+export function getTradeGradesBySecurity(
+  db: Database.Database,
+  securityId: number
+): TradeGradeEntry[] {
+  return db
+    .prepare(
+      `SELECT
+        tr.grade, tr.entry_date, tr.exit_date,
+        tr.realized_pnl, tr.return_pct, tr.holding_days,
+        tr.entry_thesis, tr.exit_assessment,
+        rv.period_start AS review_period
+      FROM trade_roundtrips tr
+      JOIN trade_reviews rv ON rv.id = tr.review_id
+      WHERE tr.security_id = ?
+      ORDER BY tr.exit_date DESC
+      LIMIT 10`
+    )
+    .all(securityId) as TradeGradeEntry[];
+}
+
 // ─── Aggregator ────────────────────────────────────────────────
 
 /**
@@ -289,6 +327,7 @@ export function getSecurityDetail(
   const notes = getNotesForSecurity(db, securityId);
   const factors = getFactorsForSecurity(db, securityId);
   const transcripts = getTranscriptsForSecurity(db, securityId);
+  const tradeGrades = getTradeGradesBySecurity(db, securityId);
 
   // Upcoming events: filter to future events for this security
   const today = new Date().toISOString().slice(0, 10);
@@ -320,5 +359,6 @@ export function getSecurityDetail(
     upcomingEvents,
     factors,
     transcripts,
+    tradeGrades,
   };
 }
