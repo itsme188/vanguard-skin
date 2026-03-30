@@ -12,6 +12,7 @@ import { OpenLotsTable, ClosedSalesTable } from "../components/TaxLotTables";
 import { RecomputeButton } from "../components/RecomputeButton";
 import { YearSelector, AccountSelector } from "../components/YearSelector";
 import { EmptyState } from "../components/EmptyState";
+import { TaxReportCard } from "../components/TaxReportCard";
 
 export default async function TaxLotsPage(props: {
   searchParams: Promise<{ year?: string; account?: string }>;
@@ -107,6 +108,7 @@ export default async function TaxLotsPage(props: {
             </>
           )}
 
+          <TaxReportCard year={selectedYear} />
           <OpenLotsTable lots={openLots} showAccount={!selectedAccount} />
           <ClosedSalesTable sales={closedSales} showAccount={!selectedAccount} />
         </>

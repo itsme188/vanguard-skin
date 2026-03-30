@@ -194,9 +194,9 @@ Pending real option data import to verify end-to-end.
 - [ ] Option chain fetcher via TWS API (chains by underlying + expiry)
 
 #### 3B. Tax Report Export
-- [ ] IRS Form 8949 data export (CSV or PDF)
-- [ ] Short-term vs. long-term gain/loss summary by year
-- [ ] Wash sale detection and adjustment
+- [x] IRS Form 8949 data export (CSV)
+- [x] Short-term vs. long-term gain/loss summary by year
+- [x] Wash sale detection and adjustment (30-day rule)
 - [ ] Cost basis reconciliation report (compare computed vs. broker-reported)
 - [ ] Export for TurboTax or tax preparer
 
@@ -249,7 +249,7 @@ Pending real option data import to verify end-to-end.
 | Options support | None | Phase 1 done (16 tests) | Medium |
 | IBKR TWS API | None | **Phase 1 done (historical + contracts)** | Done |
 | Live/streaming prices | None | **Working (SSE + TWS delayed quotes)** | Done |
-| Tax report export | None | Not built | Medium |
+| Tax report export | None | **Working (8949 CSV + wash sales)** | Done |
 | Desktop packaging | In progress | AppleScript launcher (dev mode) | Low |
 | Notes/journaling | None | **Working** | Done |
 | External data (FRED/EDGAR) | None | **Working (chat tools)** | Done |
@@ -289,7 +289,7 @@ Watchlist feature~~ ✓
 ### Then: Advanced
 ~~7. Scenario modeling~~ ✓ (6 presets: correction, bear, crash, rate +100/+200bp, bull rally)
 8. Options Phase 2 (verify with real data first, then Greeks + strategies)
-9. Tax report export (8949, wash sales)
+~~9. Tax report export~~ ✓ (Form 8949 CSV, wash sale detection, short/long-term summary)
 
 ### Finally: Polish
 10. Desktop packaging (Electron or Tauri)
