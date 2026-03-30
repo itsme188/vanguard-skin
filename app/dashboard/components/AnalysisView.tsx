@@ -18,6 +18,7 @@ import { RiskMetrics } from "./RiskMetrics";
 import { PositionRiskCard } from "./PositionRisk";
 import { FactorAnalysisCard } from "./FactorAnalysis";
 import { ScenarioModelingCard } from "./ScenarioModeling";
+import { FixedIncomeCard } from "./FixedIncomeCard";
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis,
 } from "recharts";
@@ -29,6 +30,7 @@ const CLASSIFICATION_LABELS: Record<string, string> = {
   geography: "Geography",
   market_cap_category: "Market Cap",
   style: "Style",
+  credit_rating: "Credit Rating",
   sector: "Sector",
   asset_class: "Asset Class",
   security_type: "Type",
@@ -38,7 +40,7 @@ const CLASSIFICATION_LABELS: Record<string, string> = {
 
 const CLASSIFICATION_ORDER: AllocationDimension[] = [
   "fund_category", "geography", "market_cap_category", "style",
-  "sector", "asset_class", "account",
+  "sector", "asset_class", "credit_rating", "account",
 ];
 
 const FACTOR_ORDER: FactorColumn[] = [...FACTOR_COLUMNS];
@@ -558,6 +560,9 @@ export function AnalysisView({
 
       {/* ── Scenario Modeling ── */}
       <ScenarioModelingCard />
+
+      {/* ── Fixed Income Exposure ── */}
+      <FixedIncomeCard />
 
       {/* ── Risk Decomposition ── */}
       <RiskMetrics />

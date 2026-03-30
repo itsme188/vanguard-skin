@@ -10,6 +10,7 @@ export interface ScenarioDefinition {
   category: "crash" | "rate" | "sector" | "custom";
   marketMove: number; // e.g., -0.10 for -10%
   rateMove?: number; // basis points, e.g., 100 for +1%
+  sectorMoves?: Record<string, number>; // sector name → move (e.g., { "Technology": -0.25 })
 }
 
 export interface PositionImpact {
@@ -83,6 +84,44 @@ export const PRESET_SCENARIOS: ScenarioDefinition[] = [
     category: "crash",
     marketMove: 0.15,
   },
+  // ── Sector rotation scenarios ──
+  {
+    id: "tech_selloff",
+    name: "Tech Selloff",
+    description: "Tech -25%, Comms -20% — AI bubble bursts, defensives hold",
+    category: "sector",
+    marketMove: -0.03,
+    sectorMoves: {
+      Technology: -0.25,
+      "Communication Services": -0.20,
+    },
+  },
+  {
+    id: "defensive_rotation",
+    name: "Defensive Rotation",
+    description: "Flight to safety — utilities/staples up, growth down",
+    category: "sector",
+    marketMove: -0.05,
+    sectorMoves: {
+      Utilities: 0.10,
+      "Consumer Staples": 0.08,
+      Healthcare: 0.05,
+      Technology: -0.15,
+      "Consumer Discretionary": -0.12,
+    },
+  },
+  {
+    id: "energy_spike",
+    name: "Energy Spike",
+    description: "Oil shock — energy surges, transport/utilities hit",
+    category: "sector",
+    marketMove: -0.05,
+    sectorMoves: {
+      Energy: 0.20,
+      Utilities: -0.08,
+      Industrials: -0.10,
+    },
+  },
 ];
 
 // ─── Computation ────────────────────────────────────────────────
@@ -130,6 +169,8 @@ export function computeScenario(
          s.sector,
          s.style,
          s.market_cap_category,
+         s.duration_years,
+         s.credit_rating,
          CASE
            WHEN s.security_type = 'bond'
              THEN lh.total_qty * COALESCE(lp.close_price, 0) / 100.0
@@ -149,6 +190,8 @@ export function computeScenario(
     sector: string | null;
     style: string | null;
     market_cap_category: string | null;
+    duration_years: number | null;
+    credit_rating: string | null;
     market_value: number;
   }[];
 
@@ -166,10 +209,14 @@ export function computeScenario(
         pos.security_type,
         pos.style,
         scenario.rateMove,
-        scenario.marketMove
+        scenario.marketMove,
+        pos.duration_years
       );
+    } else if (scenario.sectorMoves && pos.sector && pos.sector in scenario.sectorMoves) {
+      // Sector rotation: use sector-specific move × beta
+      changePercent = scenario.sectorMoves[pos.sector] * beta;
     } else {
-      // Market scenario: scale by beta
+      // Market scenario (default): scale by beta
       changePercent = scenario.marketMove * beta;
     }
 
@@ -263,13 +310,15 @@ function estimateRateImpact(
   securityType: string,
   style: string | null,
   rateBps: number,
-  marketMove: number
+  marketMove: number,
+  durationYears?: number | null
 ): number {
   const rateChange = rateBps / 100; // convert bps to %
 
-  // Bonds: rough duration-based estimate (assume ~5yr average duration)
+  // Bonds: duration-based estimate (use actual duration if available, else assume 5yr)
   if (securityType === "bond") {
-    return -5 * rateChange / 100; // duration × rate change
+    const duration = durationYears ?? 5;
+    return -duration * rateChange / 100;
   }
 
   // Money market benefits slightly from higher rates

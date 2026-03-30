@@ -1,0 +1,210 @@
+"use client";
+
+import { useState, useEffect } from "react";
+
+interface BondHolding {
+  symbol: string;
+  name: string | null;
+  marketValue: number;
+  durationYears: number | null;
+  creditRating: string | null;
+  couponRate: number | null;
+  maturityDate: string | null;
+}
+
+interface FixedIncomeData {
+  bonds: BondHolding[];
+  totalBondValue: number;
+  portfolioValue: number;
+  bondAllocationPct: number;
+  weightedAvgDuration: number | null;
+  creditBreakdown: { rating: string; weight: number }[];
+}
+
+/**
+ * Fixed Income Exposure card — shows bond allocation, weighted average duration,
+ * credit quality breakdown, and individual bond positions.
+ * Only renders if portfolio has bond positions.
+ */
+export function FixedIncomeCard() {
+  const [data, setData] = useState<FixedIncomeData | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch("/api/compute/fixed-income")
+      .then((r) => r.json())
+      .then((json) => {
+        if (json.success && json.data.bonds.length > 0) setData(json.data);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) return null; // Don't show loading state — card is optional
+  if (!data) return null; // No bonds in portfolio
+
+  return (
+    <div className="bg-raised border border-edge rounded-2xl p-6 space-y-4">
+      <h3 className="text-sm font-medium text-ink">Fixed Income Exposure</h3>
+
+      {/* Summary metrics */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <MetricCell
+          label="Bond Allocation"
+          value={`${data.bondAllocationPct.toFixed(1)}%`}
+          subtext={`$${(data.totalBondValue / 1000).toFixed(0)}K of $${(data.portfolioValue / 1000).toFixed(0)}K`}
+        />
+        <MetricCell
+          label="Weighted Avg Duration"
+          value={
+            data.weightedAvgDuration != null
+              ? `${data.weightedAvgDuration.toFixed(1)} yr`
+              : "N/A"
+          }
+          subtext={
+            data.weightedAvgDuration != null
+              ? durationRiskLabel(data.weightedAvgDuration)
+              : "No duration data"
+          }
+        />
+        <MetricCell
+          label="Positions"
+          value={String(data.bonds.length)}
+          subtext="bond holdings"
+        />
+        <MetricCell
+          label="Rate Sensitivity"
+          value={
+            data.weightedAvgDuration != null
+              ? `${(data.weightedAvgDuration * data.bondAllocationPct / 100).toFixed(2)} yr`
+              : "N/A"
+          }
+          subtext="portfolio duration contribution"
+        />
+      </div>
+
+      {/* Credit quality breakdown */}
+      {data.creditBreakdown.length > 0 && (
+        <div>
+          <h4 className="text-[10px] text-ink-faint uppercase tracking-wider mb-2">
+            Credit Quality
+          </h4>
+          <div className="flex gap-1 h-3 rounded-full overflow-hidden">
+            {data.creditBreakdown.map((bucket) => (
+              <div
+                key={bucket.rating}
+                className="h-full transition-all"
+                style={{
+                  width: `${bucket.weight * 100}%`,
+                  backgroundColor: creditColor(bucket.rating),
+                }}
+                title={`${bucket.rating}: ${(bucket.weight * 100).toFixed(0)}%`}
+              />
+            ))}
+          </div>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2">
+            {data.creditBreakdown.map((bucket) => (
+              <div key={bucket.rating} className="flex items-center gap-1.5 text-xs">
+                <span
+                  className="w-2 h-2 rounded-full"
+                  style={{ backgroundColor: creditColor(bucket.rating) }}
+                />
+                <span className="text-ink-dim">
+                  {bucket.rating}: <span className="font-mono text-ink">{(bucket.weight * 100).toFixed(0)}%</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Bond positions table */}
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-edge text-ink-faint">
+              <th className="text-left py-1.5 pr-3 font-medium">Symbol</th>
+              <th className="text-right py-1.5 pr-3 font-medium">Value</th>
+              <th className="text-right py-1.5 pr-3 font-medium">Duration</th>
+              <th className="text-center py-1.5 pr-3 font-medium">Rating</th>
+              <th className="text-right py-1.5 font-medium">Maturity</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.bonds.map((bond) => (
+              <tr key={bond.symbol} className="border-b border-edge/50 last:border-0">
+                <td className="py-1.5 pr-3">
+                  <span className="font-mono font-medium text-ink">{bond.symbol}</span>
+                  {bond.name && (
+                    <span className="text-ink-faint ml-1.5">{bond.name}</span>
+                  )}
+                </td>
+                <td className="py-1.5 pr-3 text-right font-mono text-ink tabular-nums">
+                  ${(bond.marketValue / 1000).toFixed(0)}K
+                </td>
+                <td className="py-1.5 pr-3 text-right font-mono text-ink-dim tabular-nums">
+                  {bond.durationYears != null ? `${bond.durationYears.toFixed(1)} yr` : "—"}
+                </td>
+                <td className="py-1.5 pr-3 text-center">
+                  {bond.creditRating ? (
+                    <span
+                      className="text-[10px] font-medium px-1.5 py-0.5 rounded-full"
+                      style={{
+                        backgroundColor: creditColor(bond.creditRating) + "20",
+                        color: creditColor(bond.creditRating),
+                      }}
+                    >
+                      {bond.creditRating}
+                    </span>
+                  ) : (
+                    <span className="text-ink-faint">—</span>
+                  )}
+                </td>
+                <td className="py-1.5 text-right font-mono text-ink-faint tabular-nums">
+                  {bond.maturityDate ?? "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function MetricCell({
+  label,
+  value,
+  subtext,
+}: {
+  label: string;
+  value: string;
+  subtext: string;
+}) {
+  return (
+    <div>
+      <div className="text-[10px] text-ink-faint uppercase tracking-wider mb-0.5">
+        {label}
+      </div>
+      <div className="text-sm font-mono font-medium text-ink tabular-nums">
+        {value}
+      </div>
+      <div className="text-[10px] text-ink-faint">{subtext}</div>
+    </div>
+  );
+}
+
+function durationRiskLabel(duration: number): string {
+  if (duration < 2) return "Low rate risk";
+  if (duration < 5) return "Moderate rate risk";
+  if (duration < 10) return "High rate risk";
+  return "Very high rate risk";
+}
+
+function creditColor(rating: string): string {
+  if (rating.startsWith("AAA")) return "#34D399"; // emerald
+  if (rating.startsWith("AA")) return "#60A5FA";  // blue
+  if (rating.startsWith("A")) return "#C9A44E";   // gold
+  if (rating.startsWith("BBB")) return "#FB923C"; // orange
+  return "#F87171"; // rose (below investment grade)
+}
