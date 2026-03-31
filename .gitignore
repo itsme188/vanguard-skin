@@ -18,9 +18,10 @@
 /.next/
 /out/
 
-# production (keep build/icon.icns for Electron app icon)
+# production (keep build/icon.icns and entitlements for Electron)
 /build/*
 !/build/icon.icns
+!/build/entitlements.mac.plist
 
 # electron
 /dist-electron
