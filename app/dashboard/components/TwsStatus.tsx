@@ -317,6 +317,9 @@ function TwsPanel({
             if (parsed.complete) {
               const d = parsed.data;
               const parts = [`Synced ${d.positionsSynced} positions`];
+              if (d.pricesSaved > 0) {
+                parts.push(`${d.pricesSaved} prices`);
+              }
               if (d.netLiquidation != null) {
                 parts.push(`NLV $${Math.round(d.netLiquidation).toLocaleString()}`);
               }

@@ -5,6 +5,7 @@
  */
 
 import { Tray, Menu, nativeImage, type BrowserWindow } from "electron";
+import { autoUpdater } from "electron-updater";
 import path from "node:path";
 
 let tray: Tray | null = null;
@@ -72,6 +73,14 @@ function buildContextMenu(
         mainWindow.show();
         mainWindow.focus();
       }
+    },
+  });
+  items.push({
+    label: "Check for Updates...",
+    click: () => {
+      autoUpdater.checkForUpdatesAndNotify().catch((err) => {
+        console.log("[tray] Update check failed:", err.message);
+      });
     },
   });
   items.push({ type: "separator" });

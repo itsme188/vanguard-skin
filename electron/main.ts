@@ -7,6 +7,7 @@
  */
 
 import { app, BrowserWindow, shell, ipcMain, dialog } from "electron";
+import { autoUpdater } from "electron-updater";
 import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
@@ -251,6 +252,60 @@ async function autoConnectTws(): Promise<void> {
   }
 }
 
+// ─── Auto-Update ────────────────────────────────────────────────
+
+function setupAutoUpdater(): void {
+  // Don't check for updates in dev mode
+  if (IS_DEV) return;
+
+  autoUpdater.logger = console;
+  autoUpdater.autoDownload = false; // Ask user before downloading
+
+  autoUpdater.on("update-available", (info) => {
+    dialog
+      .showMessageBox({
+        type: "info",
+        title: "Update Available",
+        message: `Version ${info.version} is available.`,
+        detail: "Would you like to download it now?",
+        buttons: ["Download", "Later"],
+        defaultId: 0,
+      })
+      .then(({ response }) => {
+        if (response === 0) {
+          autoUpdater.downloadUpdate();
+          // Notify renderer
+          mainWindow?.webContents.send("update-downloading");
+        }
+      });
+  });
+
+  autoUpdater.on("update-downloaded", () => {
+    dialog
+      .showMessageBox({
+        type: "info",
+        title: "Update Ready",
+        message: "Update downloaded. Restart now to install?",
+        buttons: ["Restart Now", "Later"],
+        defaultId: 0,
+      })
+      .then(({ response }) => {
+        if (response === 0) {
+          autoUpdater.quitAndInstall();
+        }
+      });
+  });
+
+  autoUpdater.on("error", (err) => {
+    console.error("[auto-update] Error:", err.message);
+  });
+
+  // Check for updates silently
+  autoUpdater.checkForUpdates().catch((err) => {
+    console.log("[auto-update] Check failed:", err.message);
+  });
+}
+
 // ─── App Lifecycle ──────────────────────────────────────────────
 
 app.setName(APP_NAME);
@@ -265,6 +320,9 @@ app.whenReady().then(async () => {
 
     // Non-blocking TWS auto-connect after server warmup
     setTimeout(() => autoConnectTws(), 3_000);
+
+    // Check for updates (non-blocking, only in packaged app)
+    setupAutoUpdater();
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     dialog.showErrorBox(

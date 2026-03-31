@@ -73,7 +73,7 @@ export interface EnrichResult {
 
 /** Progress updates during portfolio sync. */
 export interface PositionSyncProgress {
-  phase: "positions" | "account_summary" | "committing" | "recomputing";
+  phase: "positions" | "committing" | "prices" | "account_summary" | "recomputing";
   message: string;
   current?: number;
   total?: number;
@@ -84,6 +84,7 @@ export interface PositionSyncResult {
   positionsSynced: number;
   securitiesCreated: number;
   securitiesUpdated: number;
+  pricesSaved: number;
   netLiquidation: number | null;
   cashBalance: number | null;
   snapshotInserted: boolean;
