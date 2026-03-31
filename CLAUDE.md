@@ -116,6 +116,7 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - `GET /api/benchmark/prices?mode=prices|chart|stats|available&symbol=SPY` — benchmark data and analytics
 - `GET /api/tws/stream` — SSE: streaming live quotes for current holdings
 - `POST /api/tws/stream` — control streaming: `{ action: "stop" | "snapshot" }`
+- `GET /api/summary` — lightweight portfolio summary (total value, data freshness, TWS state) for Electron tray
 - `GET /api/watchlist` — list active watchlist items
 - `POST /api/watchlist` — add security to watchlist (by securityId or symbol)
 - `PATCH /api/watchlist` — update price targets/thesis
@@ -167,6 +168,17 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - `lib/email.ts` — nodemailer Gmail sending utility; `lib/calendar/briefing-html.ts` — markdown→HTML for email
 - Weekly briefings stored in `calendar_briefings` table, one per week (UNIQUE on `week_of`)
 - Sunday email automation: launchd plist at `~/Library/LaunchAgents/com.vanguard-skin.weekly-email.plist`
+
+## Electron Build
+
+- **DMG build**: `npm run electron:pack` (chains: `next build` → `tsc` → copy static → deref symlinks → `electron-builder --mac`)
+- **`npmRebuild: false`** in `electron-builder.yml` — prevents electron-builder from trying to recompile better-sqlite3 for Electron's V8 (it fails and deletes the working `.node` binary). If it ever runs without this flag, rebuild with `npx node-gyp rebuild --directory=node_modules/better-sqlite3`
+- **Symlink dereferencing**: `scripts/deref-standalone-symlinks.js` replaces symlinks in `.next/standalone/.next/node_modules/` with real copies (electron-builder breaks on symlinks post-copy)
+- **Explicit `node_modules`** in `extraResources` — electron-builder silently excludes `node_modules` directories even from `extraResources`; the standalone server needs them
+- **App icon**: `build/icon.icns` (tracked in git despite `/build/*` in gitignore via `!/build/icon.icns`)
+- **Tray icons**: `public/tray-iconTemplate.png` + `@2x.png` — macOS template images (black on transparent, auto-adapt to dark/light)
+- **Settings**: `autoConnectTws` (default: true) and `firstRunComplete` (default: false) in AppSettings
+- **WelcomeOverlay ↔ SettingsModal**: communicate via custom DOM event `open-settings` (siblings in server component layout, can't share state via props)
 
 ## Safety Rules
 

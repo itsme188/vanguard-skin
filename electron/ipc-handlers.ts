@@ -3,6 +3,7 @@
  */
 
 import { app, ipcMain, shell } from "electron";
+import { autoUpdater } from "electron-updater";
 import path from "node:path";
 import { getSettings, saveSettings, getSanitizedSettings } from "./settings-store";
 
@@ -49,5 +50,23 @@ export function setupIpcHandlers(): void {
   ipcMain.handle("complete-first-run", () => {
     saveSettings({ firstRunComplete: true });
     return { success: true };
+  });
+
+  // Auto-update
+  ipcMain.handle("check-for-updates", async () => {
+    if (!app.isPackaged) return { available: false, reason: "dev-mode" };
+    try {
+      const result = await autoUpdater.checkForUpdates();
+      return {
+        available: !!result?.updateInfo,
+        version: result?.updateInfo?.version,
+      };
+    } catch (err) {
+      return { available: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("install-update", () => {
+    autoUpdater.quitAndInstall();
   });
 }

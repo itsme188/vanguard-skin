@@ -60,5 +60,9 @@ dmg:
       type: link
       path: /Applications
 
-# No code signing for now — distribute via direct download
-# Brother can use: xattr -cr "/Applications/Vanguard Dashboard.app"
+# Auto-update via GitHub Releases (no code signing required)
+# On first launch after update, user may need: xattr -cr "/Applications/Vanguard Dashboard.app"
+publish:
+  provider: github
+  owner: itsme188
+  repo: vanguard-skin

@@ -22,6 +22,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
   isFirstRun: () => ipcRenderer.invoke("is-first-run"),
   completeFirstRun: () => ipcRenderer.invoke("complete-first-run"),
 
+  // Auto-update
+  checkForUpdates: () => ipcRenderer.invoke("check-for-updates"),
+  installUpdate: () => ipcRenderer.invoke("install-update"),
+  onUpdateDownloading: (callback: () => void) =>
+    ipcRenderer.on("update-downloading", callback),
+
   // Platform detection
   isElectron: true,
   platform: process.platform,

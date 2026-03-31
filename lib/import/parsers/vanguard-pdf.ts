@@ -621,9 +621,32 @@ async function callClaudeWithPdf<T>(pdfBuffer: Buffer, prompt: string): Promise<
 }
 
 /**
+ * Merge holdings from multiple extraction attempts into a deduplicated union.
+ * Different Claude API calls often extract different subsets of holdings from
+ * the same PDF. Merging by symbol yields better coverage than any single attempt.
+ * For duplicate symbols, keeps the entry with the higher reported value.
+ */
+function mergeHoldings(
+  ...attempts: ClaudePdfHolding[][]
+): ClaudePdfHolding[] {
+  const merged = new Map<string, ClaudePdfHolding>();
+  for (const holdings of attempts) {
+    for (const h of holdings) {
+      const key = h.symbol;
+      const existing = merged.get(key);
+      if (!existing || (h.value || 0) > (existing.value || 0)) {
+        merged.set(key, h);
+      }
+    }
+  }
+  return Array.from(merged.values());
+}
+
+/**
  * Extract holdings from a PDF with multi-attempt validation.
  * Returns a ClaudePdfResponse with holdings populated and transactions empty.
- * Retries up to 2 times if coverage < 95%.
+ * Retries up to 2 times if coverage < 95%, merging unique holdings across
+ * all attempts for maximum coverage.
  */
 export async function extractHoldingsFromPdf(
   pdfBuffer: Buffer
@@ -632,6 +655,7 @@ export async function extractHoldingsFromPdf(
   const response = await callClaudeWithPdf<ClaudePdfResponse>(pdfBuffer, FOCUSED_HOLDINGS_PROMPT);
   response.transactions = []; // Ensure empty
 
+  const attempt1Holdings = [...response.holdings];
   let holdingsSum = response.holdings.reduce((s, h) => s + (h.value || 0), 0);
   let coverage = response.total_value > 0 ? holdingsSum / response.total_value : 1;
 
@@ -650,33 +674,45 @@ export async function extractHoldingsFromPdf(
   const retry1Sum = retry1.holdings.reduce((s, h) => s + (h.value || 0), 0);
 
   console.log(
-    `[holdings] Attempt 2: ${retry1.holdings.length} holdings, ` +
-    `$${retry1Sum.toLocaleString()} (was ${response.holdings.length} / $${holdingsSum.toLocaleString()})`
+    `[holdings] Attempt 2: ${retry1.holdings.length} holdings, $${retry1Sum.toLocaleString()}`
   );
 
-  if (retry1Sum > holdingsSum) {
-    response.holdings = retry1.holdings;
-    holdingsSum = retry1Sum;
-    coverage = holdingsSum / response.total_value;
+  // Merge attempts 1+2 for better coverage
+  const merged12 = mergeHoldings(attempt1Holdings, retry1.holdings);
+  const merged12Sum = merged12.reduce((s, h) => s + (h.value || 0), 0);
+  coverage = response.total_value > 0 ? merged12Sum / response.total_value : 1;
+
+  console.log(
+    `[holdings] Merged (1+2): ${merged12.length} holdings, ` +
+    `$${merged12Sum.toLocaleString()} (${(coverage * 100).toFixed(0)}% coverage)`
+  );
+
+  if (coverage >= 0.95) {
+    response.holdings = merged12;
+    return response;
   }
 
-  if (coverage >= 0.95) return response;
-
   // Attempt 3: One more retry with updated context
-  const foundCategories2 = Array.from(new Set(response.holdings.map(h => h.category)));
-  const retryPrompt2 = buildRetryPrompt(response.total_value, holdingsSum, response.holdings.length, foundCategories2);
+  const mergedCategories = Array.from(new Set(merged12.map(h => h.category)));
+  const retryPrompt2 = buildRetryPrompt(response.total_value, merged12Sum, merged12.length, mergedCategories);
   const retry2 = await callClaudeWithPdf<{ holdings: ClaudePdfHolding[] }>(pdfBuffer, retryPrompt2);
   const retry2Sum = retry2.holdings.reduce((s, h) => s + (h.value || 0), 0);
 
   console.log(
-    `[holdings] Attempt 3: ${retry2.holdings.length} holdings, ` +
-    `$${retry2Sum.toLocaleString()} (was ${response.holdings.length} / $${holdingsSum.toLocaleString()})`
+    `[holdings] Attempt 3: ${retry2.holdings.length} holdings, $${retry2Sum.toLocaleString()}`
   );
 
-  if (retry2Sum > holdingsSum) {
-    response.holdings = retry2.holdings;
-  }
+  // Merge all three attempts
+  const mergedAll = mergeHoldings(attempt1Holdings, retry1.holdings, retry2.holdings);
+  const mergedAllSum = mergedAll.reduce((s, h) => s + (h.value || 0), 0);
+  const finalCoverage = response.total_value > 0 ? mergedAllSum / response.total_value : 1;
 
+  console.log(
+    `[holdings] Merged (1+2+3): ${mergedAll.length} holdings, ` +
+    `$${mergedAllSum.toLocaleString()} (${(finalCoverage * 100).toFixed(0)}% coverage)`
+  );
+
+  response.holdings = mergedAll;
   return response;
 }
 

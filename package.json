@@ -40,6 +40,7 @@
     "@types/nodemailer": "^7.0.11",
     "ai": "^6.0.138",
     "better-sqlite3": "^12.6.2",
+    "electron-updater": "^6.8.3",
     "imapflow": "^1.2.18",
     "lightweight-charts": "^5.1.0",
     "lucide-react": "^0.577.0",

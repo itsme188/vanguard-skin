@@ -139,7 +139,7 @@ Uses delayed/frozen quotes (no exchange subscription needed). SSE-based with aut
 - [x] Auto-recompute daily valuations after sync
 - [x] Stream live quotes for current holdings (delayed market data via TWS)
 - [x] Faster bulk fetch strategy (parallel batches of 3 — ~3x faster than serial)
-- [ ] Use `getAccountUpdates()` for live prices alongside positions (replaces separate price fetch)
+- [x] Use `getAccountUpdates()` for live prices alongside positions (replaces separate price fetch)
 
 #### 1C. Performance Metrics — Period Selectors ✓
 **Status:** Complete — YTD/1Y/3Y/5Y/All preset + custom date range picker with client-side fetch.
@@ -224,7 +224,7 @@ about quantitative factor decomposition — different from the thematic system.
 - [x] First-run onboarding overlay — guides API key setup + data import
 - [x] App icon (.icns) + macOS template tray icons
 - [x] DMG build tested — `npm run electron:pack` produces working .dmg
-- [ ] Auto-update mechanism (deferred — manual GitHub Releases download for now)
+- [x] Auto-update mechanism — electron-updater + GitHub Releases (check on startup, tray menu item)
 - [ ] Code signing (deferred — `xattr -cr` workaround for local distribution)
 
 #### 4B. Testing
@@ -312,9 +312,9 @@ Watchlist feature~~ ✓
 
 ## Known Bugs
 
-1. Vanguard Taxable at 87% coverage — Retry threshold raised to 95% but 87% slipped through before the fix
+1. ~~Vanguard Taxable at 87% coverage~~ — Fixed: merge holdings across all 3 extraction attempts (union by symbol)
 2. Holdings cost basis column all "–" in Accounts tab — Data gap, not a code bug (tooltip explains)
-3. Earnings transcript timeline empty — Fetch UI wired to EarningsView but may need data
+3. ~~Earnings transcript timeline empty~~ — Not a bug: data gap (no transcripts fetched yet; code is functional)
 4. ~~`tests/tws/historical.test.ts` — 1 failing test~~ — Fixed (all 590 tests passing)
 
 ## Known Gaps (Not Bugs)

@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import type { IBApiNext, Contract } from "@stoqey/ib";
 import { SecType, OptionType } from "@stoqey/ib";
 import type { Position } from "@stoqey/ib/dist/api-next";
-import type { AccountSummaries } from "@stoqey/ib/dist/api-next";
+import type { AccountUpdate } from "@stoqey/ib/dist/api-next/account/account-update";
 import { getIbApi } from "./client";
 import { upsertSecurity } from "../mutations/securities";
 import { computeDailyValuations } from "../compute/daily-valuation";
@@ -65,76 +65,115 @@ const FETCH_TIMEOUT_MS = 15_000;
  *  Set IBKR_ACCOUNT_CODE in .env.local to your personal account ID. */
 export const IBKR_PERSONAL_ACCOUNT = process.env.IBKR_ACCOUNT_CODE || "UXXXXXXXX";
 
-async function fetchPositionsFromTws(
+/** Result from the combined getAccountUpdates() subscription. */
+interface AccountData {
+  positions: Position[];
+  netLiquidation: number | null;
+  cashBalance: number | null;
+}
+
+/**
+ * Fetch positions + account values + market prices in a single TWS subscription.
+ * getAccountUpdates() returns Position objects WITH marketPrice/marketValue
+ * populated, unlike getPositions() which omits them. It also returns account
+ * summary values (NLV, cash), eliminating the need for a separate
+ * getAccountSummary() call.
+ *
+ * Uses a debounce pattern: TWS fires individual updatePortfolio and
+ * updateAccountValue events, then signals completion via accountDownloadEnd.
+ * We wait 1s after the last emission to capture the complete snapshot.
+ */
+async function fetchAccountDataFromTws(
   api: IBApiNext,
   accountFilter?: string,
-): Promise<Position[]> {
-  return new Promise<Position[]>((resolve, reject) => {
-    const timeout = setTimeout(() => {
+): Promise<AccountData> {
+  return new Promise<AccountData>((resolve, reject) => {
+    let latestUpdate: AccountUpdate | null = null;
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    let resolved = false;
+
+    const finish = () => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(overallTimeout);
+      if (debounceTimer) clearTimeout(debounceTimer);
       sub.unsubscribe();
-      // Timeout with empty is OK — account might genuinely have no positions
-      resolve([]);
+      resolve(extractAccountData(latestUpdate, accountFilter));
+    };
+
+    const overallTimeout = setTimeout(() => {
+      if (resolved) return;
+      resolved = true;
+      if (debounceTimer) clearTimeout(debounceTimer);
+      sub.unsubscribe();
+      // Timeout with partial data is OK — return what we have
+      resolve(extractAccountData(latestUpdate, accountFilter));
     }, FETCH_TIMEOUT_MS);
 
-    const sub = api.getPositions().subscribe({
+    const sub = api.getAccountUpdates(accountFilter).subscribe({
       next: (update) => {
-        // update.all is ReadonlyMap<AccountId, Position[]>
-        // First emission after positionEnd has the complete snapshot
-        const allPositions: Position[] = [];
-        for (const [acctId, positions] of update.all) {
-          if (accountFilter && acctId !== accountFilter) continue;
-          allPositions.push(...positions);
+        latestUpdate = update.all;
+
+        // Detect accountDownloadEnd: TWS emits { all } with no added/changed/removed
+        // after the initial snapshot is fully delivered. This is the fastest resolution path.
+        if (!update.added && !update.changed && !update.removed) {
+          finish();
+          return;
         }
-        clearTimeout(timeout);
-        sub.unsubscribe();
-        resolve(allPositions);
+
+        // Fallback debounce for incremental updates: wait 1s after last emission.
+        // This covers edge cases where accountDownloadEnd might not fire.
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(finish, 1_000);
       },
       error: (err) => {
-        clearTimeout(timeout);
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(overallTimeout);
+        if (debounceTimer) clearTimeout(debounceTimer);
         reject(err instanceof Error ? err : new Error(String(err)));
       },
     });
   });
 }
 
-async function fetchAccountSummaryFromTws(
-  api: IBApiNext,
+/** Extract positions and account values from an AccountUpdate snapshot. */
+function extractAccountData(
+  update: AccountUpdate | null,
   accountFilter?: string,
-): Promise<{ netLiquidation: number; cashBalance: number }> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      sub.unsubscribe();
-      reject(new Error("getAccountSummary timeout (15s)"));
-    }, FETCH_TIMEOUT_MS);
+): AccountData {
+  if (!update) {
+    return { positions: [], netLiquidation: null, cashBalance: null };
+  }
 
-    const sub = api.getAccountSummary("All", "NetLiquidation,TotalCashValue").subscribe({
-      next: (update) => {
-        // update.all is ReadonlyMap<AccountId, ReadonlyMap<TagName, ReadonlyMap<Currency, Value>>>
-        for (const [acctId, tags] of update.all) {
-          if (accountFilter && acctId !== accountFilter) continue;
+  // Extract positions (with marketPrice populated)
+  const positions: Position[] = [];
+  if (update.portfolio) {
+    for (const [acctId, acctPositions] of update.portfolio) {
+      if (accountFilter && acctId !== accountFilter) continue;
+      positions.push(...acctPositions);
+    }
+  }
 
-          const nlvValues = tags.get("NetLiquidation");
-          const cashValues = tags.get("TotalCashValue");
-          // Try USD first, then BASE (for accounts with non-USD base)
-          const nlv = nlvValues?.get("USD")?.value ?? nlvValues?.get("BASE")?.value;
-          const cash = cashValues?.get("USD")?.value ?? cashValues?.get("BASE")?.value;
-          if (nlv != null) {
-            clearTimeout(timeout);
-            sub.unsubscribe();
-            resolve({
-              netLiquidation: parseFloat(nlv),
-              cashBalance: cash != null ? parseFloat(cash) : 0,
-            });
-            return;
-          }
-        }
-      },
-      error: (err) => {
-        clearTimeout(timeout);
-        reject(err instanceof Error ? err : new Error(String(err)));
-      },
-    });
-  });
+  // Extract account summary values
+  let netLiquidation: number | null = null;
+  let cashBalance: number | null = null;
+  if (update.value) {
+    for (const [acctId, tags] of update.value) {
+      if (accountFilter && acctId !== accountFilter) continue;
+      const nlvValues = tags.get("NetLiquidation");
+      const cashValues = tags.get("TotalCashValue");
+      // Try USD first, then BASE (for accounts with non-USD base)
+      const nlv = nlvValues?.get("USD")?.value ?? nlvValues?.get("BASE")?.value;
+      const cash = cashValues?.get("USD")?.value ?? cashValues?.get("BASE")?.value;
+      if (nlv != null) {
+        netLiquidation = parseFloat(nlv);
+        cashBalance = cash != null ? parseFloat(cash) : 0;
+      }
+    }
+  }
+
+  return { positions, netLiquidation, cashBalance };
 }
 
 // ── Main sync function ───────────────────────────────────────────
@@ -166,11 +205,12 @@ export async function syncPortfolio(
 
   const accountCode = options?.ibkrAccountCode ?? IBKR_PERSONAL_ACCOUNT;
 
-  // Phase 1: Fetch positions (filtered to personal account only)
-  onProgress?.({ phase: "positions", message: "Fetching positions from TWS..." });
-  const positions = await fetchPositionsFromTws(api, accountCode);
+  // Phase 1: Fetch positions + account values + market prices in one call
+  onProgress?.({ phase: "positions", message: "Fetching portfolio from TWS..." });
+  const accountData = await fetchAccountDataFromTws(api, accountCode);
+  const { positions } = accountData;
 
-  // Phase 2: Commit to database
+  // Phase 2: Commit positions to database
   onProgress?.({
     phase: "committing",
     message: `Processing ${positions.length} positions...`,
@@ -180,6 +220,7 @@ export async function syncPortfolio(
   let securitiesCreated = 0;
   let securitiesUpdated = 0;
   let positionsSynced = 0;
+  let pricesSaved = 0;
 
   const upsertHolding = db.prepare(
     `INSERT OR REPLACE INTO holdings
@@ -191,12 +232,17 @@ export async function syncPortfolio(
     `UPDATE securities SET ib_con_id = ? WHERE id = ? AND ib_con_id IS NULL`
   );
 
-  // Note: getPositions() does NOT include marketPrice — that's only
-  // available from getAccountUpdates(). Use "Quick Refresh" for prices.
+  const upsertPrice = db.prepare(
+    `INSERT OR REPLACE INTO prices (security_id, date, close_price, source)
+     VALUES (?, ?, ?, 'tws')`
+  );
 
   const existingSecurityIds = new Set(
     (db.prepare("SELECT id FROM securities").all() as { id: number }[]).map(r => r.id)
   );
+
+  // Map securityId → marketPrice for saving prices after position commit
+  const priceMap = new Map<number, number>();
 
   db.transaction(() => {
     for (let i = 0; i < positions.length; i++) {
@@ -243,6 +289,11 @@ export async function syncPortfolio(
       const sourceKey = `tws-${accountId}-${securityId}-${today}`;
       upsertHolding.run(accountId, securityId, pos.pos, costBasis, today, sourceKey);
 
+      // Collect market prices from getAccountUpdates() (not available from getPositions)
+      if (pos.marketPrice != null && pos.marketPrice > 0) {
+        priceMap.set(securityId, pos.marketPrice);
+      }
+
       positionsSynced++;
 
       onProgress?.({
@@ -254,28 +305,38 @@ export async function syncPortfolio(
     }
   })();
 
-  // Phase 3: Fetch account summary
-  onProgress?.({ phase: "account_summary", message: "Fetching account summary..." });
+  // Phase 2.5: Save market prices (included in getAccountUpdates response)
+  if (priceMap.size > 0) {
+    onProgress?.({ phase: "prices", message: `Saving ${priceMap.size} market prices...` });
 
-  let netLiquidation: number | null = null;
-  let cashBalance: number | null = null;
+    db.transaction(() => {
+      for (const [securityId, price] of priceMap) {
+        upsertPrice.run(securityId, today, price);
+        pricesSaved++;
+      }
+    })();
+
+    console.log(`[syncPortfolio] Saved ${pricesSaved} market prices from getAccountUpdates()`);
+  }
+
+  // Phase 3: Save account summary (already fetched via getAccountUpdates)
+  const { netLiquidation, cashBalance } = accountData;
   let snapshotInserted = false;
 
-  try {
-    const summary = await fetchAccountSummaryFromTws(api, accountCode);
-    netLiquidation = summary.netLiquidation;
-    cashBalance = summary.cashBalance;
+  if (netLiquidation != null) {
+    onProgress?.({ phase: "account_summary", message: "Saving account summary..." });
 
-    // Insert as a monthly_snapshots anchor — the cash inference in
-    // computeDailyValuations will pick this up automatically.
-    db.prepare(
-      `INSERT OR REPLACE INTO monthly_snapshots (account_id, month_end_date, total_value, source)
-       VALUES (?, ?, ?, 'tws')`
-    ).run(accountId, today, netLiquidation);
-    snapshotInserted = true;
-  } catch (err) {
-    // Non-critical — positions are still saved even if summary fails
-    console.warn("[syncPortfolio] Account summary failed:", err);
+    try {
+      // Insert as a monthly_snapshots anchor — the cash inference in
+      // computeDailyValuations will pick this up automatically.
+      db.prepare(
+        `INSERT OR REPLACE INTO monthly_snapshots (account_id, month_end_date, total_value, source)
+         VALUES (?, ?, ?, 'tws')`
+      ).run(accountId, today, netLiquidation);
+      snapshotInserted = true;
+    } catch (err) {
+      console.warn("[syncPortfolio] Snapshot insert failed:", err);
+    }
   }
 
   // Phase 4: Recompute daily valuations
@@ -293,6 +354,7 @@ export async function syncPortfolio(
     positionsSynced,
     securitiesCreated,
     securitiesUpdated,
+    pricesSaved,
     netLiquidation,
     cashBalance,
     snapshotInserted,
