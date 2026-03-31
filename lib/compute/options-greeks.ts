@@ -347,11 +347,11 @@ export function computePortfolioGreeks(
         h.quantity,
         (SELECT p.close_price FROM prices p
          WHERE p.security_id = s.id
-         ORDER BY p.price_date DESC LIMIT 1) AS option_price,
+         ORDER BY p.date DESC LIMIT 1) AS option_price,
         (SELECT p.close_price FROM prices p
          JOIN securities su ON su.id = p.security_id
          WHERE su.symbol = s.underlying_symbol
-         ORDER BY p.price_date DESC LIMIT 1) AS underlying_price
+         ORDER BY p.date DESC LIMIT 1) AS underlying_price
        FROM holdings h
        JOIN securities s ON s.id = h.security_id
        WHERE s.security_type = 'option'

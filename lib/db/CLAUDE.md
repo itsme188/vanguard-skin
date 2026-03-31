@@ -17,3 +17,4 @@ Rules specific to SQLite database access. See root CLAUDE.md for project-wide co
 - Bond maturity filter: `quantity > 0 AND (maturity_date IS NULL OR maturity_date >= date('now'))`
 - Always use `COALESCE(s.multiplier, 1)` — SQLite DEFAULT is bypassed by explicit INSERT NULL
 - Market values: use `adjustedMarketValueSQL()` from `lib/valuation.ts` — handles bonds (/100) and options (*multiplier)
+- **Column naming trap**: `prices` table uses `date` and `close_price`. `ohlcv_bars` table uses `bar_date` and `close`. Never use `price_date` or bare `close` on `prices` — this mismatch has caused bugs twice (commits f080a2d, next fix).
