@@ -49,13 +49,12 @@ mac:
       arch:
         - arm64
   darkModeSupport: true
-  identity: "Developer ID Application: Isaac Safier (8D2724Y4G2)"
+  identity: "Isaac Safier (8D2724Y4G2)"
   hardenedRuntime: true
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
-  notarize:
-    teamId: "8D2724Y4G2"
+  notarize: true
 
 dmg:
   title: Vanguard Dashboard

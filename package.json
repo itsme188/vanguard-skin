@@ -29,7 +29,7 @@
     "electron:compile": "tsc -p electron/tsconfig.json",
     "electron:copy-static": "cp -r .next/static .next/standalone/.next/static && cp -r public .next/standalone/public && node scripts/deref-standalone-symlinks.js",
     "electron:dev": "npm run electron:compile && npm run electron:copy-static && electron .",
-    "electron:build": "npm run build && npm run electron:compile && npm run electron:copy-static",
+    "electron:build": "rm -rf dist && npm run build && npm run electron:compile && npm run electron:copy-static",
     "electron:pack": "npm run electron:build && electron-builder --mac"
   },
   "dependencies": {
