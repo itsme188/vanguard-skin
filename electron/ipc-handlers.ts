@@ -40,4 +40,14 @@ export function setupIpcHandlers(): void {
     app.relaunch();
     app.exit(0);
   });
+
+  ipcMain.handle("is-first-run", () => {
+    const settings = getSettings();
+    return !settings.firstRunComplete;
+  });
+
+  ipcMain.handle("complete-first-run", () => {
+    saveSettings({ firstRunComplete: true });
+    return { success: true };
+  });
 }

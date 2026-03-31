@@ -211,16 +211,19 @@ about quantitative factor decomposition — different from the thematic system.
 
 ### Phase 4: Polish
 
-#### 4A. Desktop Packaging
-**Status:** AppleScript launcher works for dev mode. Full packaging would be a standalone app.
+#### 4A. Desktop Packaging ✓
+**Status:** Electron v41 packaging complete. DMG builds, 218MB, arm64.
 
-- [ ] Decide: Electron vs. Tauri (Tauri is lighter, Rust-based)
-- [ ] Standalone build configuration (production Next.js, not dev server)
-- [ ] Auto-launch TWS connection on startup
-- [ ] System tray with portfolio summary
-- [ ] Auto-update mechanism
-
-**Deferred until:** Web app is feature-complete with TWS integration.
+- [x] Decided: Electron (better-sqlite3 native module via system Node.js child process)
+- [x] Standalone build configuration — `next build` + `output: "standalone"` + electron-builder
+- [x] Settings UI modal — API keys, TWS config, email, EDGAR (gear icon in header)
+- [x] System tray with portfolio summary — periodic tooltip + context menu updates
+- [x] Auto-connect TWS on startup — non-blocking, configurable toggle
+- [x] First-run onboarding overlay — guides API key setup + data import
+- [x] App icon (.icns) + macOS template tray icons
+- [x] DMG build tested — `npm run electron:pack` produces working .dmg
+- [ ] Auto-update mechanism (deferred — manual GitHub Releases download for now)
+- [ ] Code signing (deferred — `xattr -cr` workaround for local distribution)
 
 #### 4B. Testing
 - [ ] E2E browser tests (~15 hours estimated, deferred to dedicated session)

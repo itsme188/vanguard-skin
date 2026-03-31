@@ -212,6 +212,45 @@ function createWindow(): void {
   });
 }
 
+// ─── TWS Auto-Connect ───────────────────────────────────────────
+
+async function autoConnectTws(): Promise<void> {
+  const settings = getSettings();
+  if (settings.autoConnectTws === false) {
+    console.log("[auto-connect] Disabled in settings");
+    return;
+  }
+
+  try {
+    // Check if already connected
+    const statusRes = await fetch(`http://localhost:${PORT}/api/tws/status`);
+    const statusData = await statusRes.json();
+    if (statusData?.data?.state === "connected") {
+      console.log("[auto-connect] TWS already connected");
+      return;
+    }
+
+    // Attempt connection
+    const res = await fetch(`http://localhost:${PORT}/api/tws/connect`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        host: settings.twsHost || "127.0.0.1",
+        port: settings.twsPort || 7496,
+        clientId: 1,
+      }),
+    });
+    const data = await res.json();
+    if (data.success) {
+      console.log("[auto-connect] TWS connected successfully");
+    } else {
+      console.log("[auto-connect] TWS not available:", data.error || "unknown");
+    }
+  } catch {
+    console.log("[auto-connect] TWS connection attempt failed (TWS may not be running)");
+  }
+}
+
 // ─── App Lifecycle ──────────────────────────────────────────────
 
 app.setName(APP_NAME);
@@ -223,6 +262,9 @@ app.whenReady().then(async () => {
     await startServer();
     createWindow();
     createTray(mainWindow);
+
+    // Non-blocking TWS auto-connect after server warmup
+    setTimeout(() => autoConnectTws(), 3_000);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     dialog.showErrorBox(

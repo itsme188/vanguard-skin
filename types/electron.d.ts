@@ -20,6 +20,10 @@ interface ElectronAPI {
   // App lifecycle
   restartApp: () => Promise<void>;
 
+  // First-run onboarding
+  isFirstRun: () => Promise<boolean>;
+  completeFirstRun: () => Promise<{ success: boolean }>;
+
   // Platform detection
   isElectron: true;
   platform: NodeJS.Platform;
