@@ -201,11 +201,6 @@ function createWindow(): void {
 
   mainWindow.loadURL(`http://localhost:${PORT}/dashboard`);
 
-  // Scale content to fit Electron window (Next.js assumes full browser viewport)
-  mainWindow.webContents.on("did-finish-load", () => {
-    mainWindow?.webContents.setZoomFactor(0.85);
-  });
-
   // Open external links in the default browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);

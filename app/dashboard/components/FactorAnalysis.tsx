@@ -104,7 +104,7 @@ export function FactorAnalysisCard() {
               color={reg.alpha >= 0 ? "up" : "down"}
             />
             <MetricCell
-              label="R\u00B2"
+              label="R²"
               value={`${(reg.rSquared * 100).toFixed(1)}%`}
               hint={
                 reg.rSquared > 0.8

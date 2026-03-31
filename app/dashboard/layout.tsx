@@ -4,6 +4,8 @@ import { ToastProvider } from "./components/Toast";
 import { DataFreshness } from "./components/DataFreshness";
 import { ChatDrawer } from "./components/ChatDrawer";
 import { CommandPalette, SearchButton } from "./components/CommandPalette";
+import { SettingsModal } from "./components/SettingsModal";
+import { AppVersion } from "./components/AppVersion";
 
 export default function DashboardLayout({
   children,
@@ -28,7 +30,8 @@ export default function DashboardLayout({
               <SearchButton />
               <ChatDrawer />
               <TwsStatus />
-              <span className="text-[11px] text-ink-faint font-mono">v2.0</span>
+              <SettingsModal />
+              <AppVersion />
             </div>
           </div>
           <TabNav />

@@ -865,7 +865,7 @@ export async function executeTool(
         const stockHoldings = db
           .prepare(
             `SELECT s.symbol, h.quantity, s.security_type,
-                    (SELECT p.close FROM prices p WHERE p.security_id = s.id
+                    (SELECT p.close_price FROM prices p WHERE p.security_id = s.id
                      ORDER BY p.price_date DESC LIMIT 1) AS current_price
              FROM holdings h
              JOIN securities s ON s.id = h.security_id
