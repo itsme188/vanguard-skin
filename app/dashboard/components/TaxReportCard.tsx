@@ -29,6 +29,7 @@ export function TaxReportCard({ year }: { year: number }) {
   const [report, setReport] = useState<TaxReportSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(false);
+  const [downloadingTxf, setDownloadingTxf] = useState(false);
 
   useEffect(() => {
     fetch(`/api/tax-report?year=${year}`)
@@ -40,21 +41,22 @@ export function TaxReportCard({ year }: { year: number }) {
       .finally(() => setLoading(false));
   }, [year]);
 
-  async function handleDownload() {
-    setDownloading(true);
+  async function handleDownload(format: "csv" | "txf") {
+    const setter = format === "csv" ? setDownloading : setDownloadingTxf;
+    setter(true);
     try {
-      const res = await fetch(`/api/tax-report?year=${year}&format=csv`);
+      const res = await fetch(`/api/tax-report?year=${year}&format=${format}`);
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `form-8949-${year}.csv`;
+      a.download = `form-8949-${year}.${format}`;
       a.click();
       URL.revokeObjectURL(url);
     } catch {
       // silently fail
     } finally {
-      setDownloading(false);
+      setter(false);
     }
   }
 
@@ -83,13 +85,22 @@ export function TaxReportCard({ year }: { year: number }) {
             Tax Report — {year}
           </h3>
         </div>
-        <button
-          onClick={handleDownload}
-          disabled={downloading}
-          className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gold/10 text-gold hover:bg-gold/20 border border-gold/20 transition-colors disabled:opacity-50"
-        >
-          {downloading ? "Generating..." : "Download Form 8949 CSV"}
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => handleDownload("csv")}
+            disabled={downloading}
+            className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gold/10 text-gold hover:bg-gold/20 border border-gold/20 transition-colors disabled:opacity-50"
+          >
+            {downloading ? "Generating..." : "CSV"}
+          </button>
+          <button
+            onClick={() => handleDownload("txf")}
+            disabled={downloadingTxf}
+            className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gold/10 text-gold hover:bg-gold/20 border border-gold/20 transition-colors disabled:opacity-50"
+          >
+            {downloadingTxf ? "Generating..." : "TXF (TurboTax)"}
+          </button>
+        </div>
       </div>
 
       <div className="p-5 space-y-4">

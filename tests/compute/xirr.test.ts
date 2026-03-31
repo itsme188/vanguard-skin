@@ -36,6 +36,19 @@ function seedExternalFlow(
   );
 }
 
+function seedDailyValuation(
+  db: Database.Database,
+  accountId: number,
+  date: string,
+  totalValue: number
+): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO daily_valuations
+       (account_id, valuation_date, cash_balance, holdings_value, total_value)
+     VALUES (?, ?, 0, ?, ?)`
+  ).run(accountId, date, totalValue, totalValue);
+}
+
 describe("XIRR computation", () => {
   let db: Database.Database;
   const ACCT_1 = 1; // Vanguard Taxable (seeded by migration)
@@ -187,6 +200,48 @@ describe("XIRR computation", () => {
     expect(result).not.toBeNull();
     // H2 return: $105k → $112k ≈ 6.7%
     expect(result!.perAccount[0].xirr).toBeGreaterThan(0);
+  });
+
+  it("falls back to daily_valuations for custom date ranges between snapshots", () => {
+    // Monthly snapshots only at month boundaries
+    seedSnapshot(db, ACCT_1, "2025-01-31", 100000);
+    seedSnapshot(db, ACCT_1, "2025-03-31", 108000);
+
+    // Daily valuations fill the gaps
+    seedDailyValuation(db, ACCT_1, "2025-02-14", 103000);
+    seedDailyValuation(db, ACCT_1, "2025-02-28", 105000);
+    seedDailyValuation(db, ACCT_1, "2025-03-14", 106500);
+
+    // Custom range: Feb 15 - Mar 14 (between monthly snapshots)
+    const result = computeXirr(db, {
+      startDate: "2025-02-15",
+      endDate: "2025-03-14",
+    });
+
+    expect(result).not.toBeNull();
+    // Start value from daily: $103k (Feb 14), end value from daily: $106.5k (Mar 14)
+    expect(result!.perAccount).toHaveLength(1);
+    expect(result!.perAccount[0].currentValue).toBe(106500);
+    expect(result!.perAccount[0].xirr).toBeGreaterThan(0);
+  });
+
+  it("prefers monthly snapshots over daily valuations when both exist", () => {
+    // Monthly snapshot available
+    seedSnapshot(db, ACCT_1, "2024-12-31", 100000);
+    seedSnapshot(db, ACCT_1, "2025-12-31", 110000);
+
+    // Daily valuation also exists with different value
+    seedDailyValuation(db, ACCT_1, "2024-12-30", 99000);
+    seedDailyValuation(db, ACCT_1, "2025-12-30", 109000);
+
+    const result = computeXirr(db, {
+      startDate: "2025-01-01",
+      endDate: "2025-12-31",
+    });
+
+    expect(result).not.toBeNull();
+    // Should use monthly snapshot values, not daily
+    expect(result!.currentValue).toBe(110000);
   });
 
   it("returns reasonable XIRR for known scenario", () => {

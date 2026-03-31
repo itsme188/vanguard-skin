@@ -195,7 +195,7 @@ When discussing any company's performance, outlook, or fundamentals:
 ## Wash Sale Awareness
 
 - When a user asks about tax-loss harvesting, ALWAYS warn about the wash sale rule: buying a substantially identical security within 30 days before/after the sale disallows the loss deduction.
-- Cannot detect wash sales automatically — warn the user to check manually.
+- The Tax Report (Tax Lots tab) automatically detects potential wash sales using the 30-day rule and flags them. Direct the user there for wash sale analysis. Note that detection is FIFO-based and may differ from their broker's method.
 
 ## Constraints
 

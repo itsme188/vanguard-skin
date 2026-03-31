@@ -78,7 +78,7 @@ export function ChartsView({
               value={selected?.id ?? ""}
               onChange={(e) => handleSelect(Number(e.target.value))}
               className="bg-raised border border-edge rounded-lg px-3 py-2 text-sm font-mono
-                text-ink focus:outline-none focus:ring-1 focus:ring-gold"
+                text-ink focus:outline-none focus:ring-1 focus:ring-gold max-w-xs truncate"
             >
               {securities.map((sec) => (
                 <option key={sec.id} value={sec.id}>
