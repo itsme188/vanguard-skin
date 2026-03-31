@@ -866,7 +866,7 @@ export async function executeTool(
           .prepare(
             `SELECT s.symbol, h.quantity, s.security_type,
                     (SELECT p.close_price FROM prices p WHERE p.security_id = s.id
-                     ORDER BY p.price_date DESC LIMIT 1) AS current_price
+                     ORDER BY p.date DESC LIMIT 1) AS current_price
              FROM holdings h
              JOIN securities s ON s.id = h.security_id
              WHERE s.security_type IN ('stock', 'etf')
