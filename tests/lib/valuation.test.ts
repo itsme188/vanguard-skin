@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
   marketValue,
-  bondAdjustedMarketValueSQL,
   adjustedMarketValueSQL,
 } from "@/lib/valuation";
 
@@ -50,19 +49,6 @@ describe("marketValue", () => {
     expect(marketValue(0, 98.5, "bond")).toBe(0);
     expect(marketValue(10000, 0, "bond")).toBe(0);
     expect(marketValue(0, 3.5, "option", 100)).toBe(0);
-  });
-});
-
-describe("bondAdjustedMarketValueSQL (deprecated)", () => {
-  it("generates correct SQL CASE expression", () => {
-    const sql = bondAdjustedMarketValueSQL(
-      "h.quantity",
-      "p.close_price",
-      "s.security_type"
-    );
-    expect(sql).toContain("WHEN s.security_type = 'bond'");
-    expect(sql).toContain("h.quantity * p.close_price / 100.0");
-    expect(sql).toContain("h.quantity * p.close_price");
   });
 });
 

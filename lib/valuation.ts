@@ -41,14 +41,3 @@ export function adjustedMarketValueSQL(
     ELSE ${quantityExpr} * ${priceExpr} * COALESCE(${multiplierExpr}, 1)
   END`;
 }
-
-/**
- * @deprecated Use adjustedMarketValueSQL instead.
- */
-export function bondAdjustedMarketValueSQL(
-  quantityExpr: string,
-  priceExpr: string,
-  securityTypeExpr: string
-): string {
-  return adjustedMarketValueSQL(quantityExpr, priceExpr, securityTypeExpr);
-}
