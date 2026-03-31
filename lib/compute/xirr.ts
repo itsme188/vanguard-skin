@@ -192,6 +192,19 @@ function bisectionFallback(
 
 // ─── Helpers ────────────────────────────────────────────────────
 
+/** Pick whichever row has the more recent date (handles mixed monthly/daily sources) */
+function pickMostRecent<T extends Record<string, unknown>>(
+  a: T | undefined,
+  b: T | undefined
+): T | undefined {
+  if (!a) return b;
+  if (!b) return a;
+  // Compare by whichever date field exists (month_end_date or value_date)
+  const dateA = (a as Record<string, string>).month_end_date ?? (a as Record<string, string>).value_date;
+  const dateB = (b as Record<string, string>).month_end_date ?? (b as Record<string, string>).value_date;
+  return dateA >= dateB ? a : b;
+}
+
 function daysBetween(dateA: string, dateB: string): number {
   const a = new Date(dateA + "T00:00:00Z");
   const b = new Date(dateB + "T00:00:00Z");
@@ -246,11 +259,21 @@ export function computeXirr(
   );
 
   const latestValueStmt = db.prepare(
-    `SELECT total_value
+    `SELECT total_value, month_end_date AS value_date
      FROM monthly_snapshots
      WHERE account_id = ?
        AND month_end_date <= ?
      ORDER BY month_end_date DESC
+     LIMIT 1`
+  );
+
+  // Daily valuations for finer-grained custom date ranges
+  const latestDailyValueStmt = db.prepare(
+    `SELECT total_value, valuation_date AS value_date
+     FROM daily_valuations
+     WHERE account_id = ?
+       AND valuation_date <= ?
+     ORDER BY valuation_date DESC
      LIMIT 1`
   );
 
@@ -264,6 +287,15 @@ export function computeXirr(
      LIMIT 1`
   );
 
+  const startDailyValueStmt = db.prepare(
+    `SELECT total_value, valuation_date AS month_end_date
+     FROM daily_valuations
+     WHERE account_id = ?
+       AND valuation_date < ?
+     ORDER BY valuation_date DESC
+     LIMIT 1`
+  );
+
   // ─── Per-account XIRR ────────────────────────────────────────
 
   const perAccount: XirrResult[] = [];
@@ -272,9 +304,12 @@ export function computeXirr(
     const cashFlows: CashFlow[] = [];
 
     // Starting value as a negative cash flow (initial investment)
-    const startRow = startValueStmt.get(account.id, effectiveStart) as
-      | { total_value: number; month_end_date: string }
-      | undefined;
+    // Pick whichever source (monthly or daily) has the most recent date
+    const monthlyStart = startValueStmt.get(account.id, effectiveStart) as
+      | { total_value: number; month_end_date: string } | undefined;
+    const dailyStart = startDailyValueStmt.get(account.id, effectiveStart) as
+      | { total_value: number; month_end_date: string } | undefined;
+    const startRow = pickMostRecent(monthlyStart, dailyStart);
 
     if (startRow && startRow.total_value > 0) {
       // Existing portfolio value at start = negative (as if we bought in)
@@ -310,9 +345,12 @@ export function computeXirr(
     }
 
     // Ending portfolio value as positive cash flow (as if we sell everything)
-    const endRow = latestValueStmt.get(account.id, effectiveEnd) as
-      | { total_value: number }
-      | undefined;
+    // Pick whichever source has the most recent date
+    const monthlyEnd = latestValueStmt.get(account.id, effectiveEnd) as
+      | { total_value: number; value_date: string } | undefined;
+    const dailyEnd = latestDailyValueStmt.get(account.id, effectiveEnd) as
+      | { total_value: number; value_date: string } | undefined;
+    const endRow = pickMostRecent(monthlyEnd, dailyEnd);
 
     const currentValue = endRow?.total_value ?? 0;
 
@@ -355,8 +393,11 @@ export function computeXirr(
 
   const portfolioCashFlows: CashFlow[] = [];
 
-  // Aggregated starting value
-  const aggStartRow = db
+  // Aggregated starting value — try monthly snapshots, fall back to daily valuations
+  let aggStartValue: number | null = null;
+  let aggStartDateStr: string | null = null;
+
+  const monthlyAggStart = db
     .prepare(
       `SELECT SUM(total_value) AS total_value
        FROM monthly_snapshots
@@ -368,7 +409,7 @@ export function computeXirr(
     )
     .get(effectiveStart) as { total_value: number | null } | undefined;
 
-  const aggStartDate = db
+  const monthlyAggStartDate = db
     .prepare(
       `SELECT MAX(month_end_date) AS d
        FROM monthly_snapshots
@@ -376,10 +417,33 @@ export function computeXirr(
     )
     .get(effectiveStart) as { d: string | null } | undefined;
 
-  if (aggStartRow?.total_value && aggStartRow.total_value > 0 && aggStartDate?.d) {
+  if (monthlyAggStart?.total_value && monthlyAggStart.total_value > 0 && monthlyAggStartDate?.d) {
+    aggStartValue = monthlyAggStart.total_value;
+    aggStartDateStr = monthlyAggStartDate.d;
+  } else {
+    // Fallback to daily valuations
+    const dailyAggStart = db
+      .prepare(
+        `SELECT SUM(total_value) AS total_value, valuation_date AS d
+         FROM daily_valuations
+         WHERE valuation_date = (
+           SELECT MAX(valuation_date)
+           FROM daily_valuations
+           WHERE valuation_date < ?
+         )`
+      )
+      .get(effectiveStart) as { total_value: number | null; d: string | null } | undefined;
+
+    if (dailyAggStart?.total_value && dailyAggStart.total_value > 0 && dailyAggStart.d) {
+      aggStartValue = dailyAggStart.total_value;
+      aggStartDateStr = dailyAggStart.d;
+    }
+  }
+
+  if (aggStartValue && aggStartValue > 0 && aggStartDateStr) {
     portfolioCashFlows.push({
-      date: aggStartDate.d,
-      amount: -aggStartRow.total_value,
+      date: aggStartDateStr,
+      amount: -aggStartValue,
     });
   }
 
@@ -411,7 +475,9 @@ export function computeXirr(
     }
   }
 
-  // Ending total portfolio value
+  // Ending total portfolio value — try monthly snapshots, fall back to daily valuations
+  let currentValue = 0;
+
   const aggEndRow = db
     .prepare(
       `SELECT SUM(total_value) AS total_value
@@ -424,7 +490,23 @@ export function computeXirr(
     )
     .get(effectiveEnd) as { total_value: number | null } | undefined;
 
-  const currentValue = aggEndRow?.total_value ?? 0;
+  if (aggEndRow?.total_value && aggEndRow.total_value > 0) {
+    currentValue = aggEndRow.total_value;
+  } else {
+    const dailyAggEnd = db
+      .prepare(
+        `SELECT SUM(total_value) AS total_value
+         FROM daily_valuations
+         WHERE valuation_date = (
+           SELECT MAX(valuation_date)
+           FROM daily_valuations
+           WHERE valuation_date <= ?
+         )`
+      )
+      .get(effectiveEnd) as { total_value: number | null } | undefined;
+
+    currentValue = dailyAggEnd?.total_value ?? 0;
+  }
 
   if (currentValue > 0) {
     portfolioCashFlows.push({
