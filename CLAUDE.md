@@ -12,6 +12,7 @@ Local-first portfolio dashboard for tracking Vanguard + IBKR investments.
 - **PDF parsing:** Claude API (@anthropic-ai/sdk)
 - **Chat:** AI SDK v6 (`ai`, `@ai-sdk/react`, `@ai-sdk/anthropic`)
 - **Testing:** Vitest
+- **Desktop:** Electron (standalone Next.js + system Node.js for native modules)
 
 ## Architecture
 

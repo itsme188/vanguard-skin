@@ -99,10 +99,10 @@ export function getOptionPositions(
         h.cost_basis,
         h.account_id,
         a.name AS account_name,
-        (SELECT p.close FROM prices p
+        (SELECT p.close_price FROM prices p
          WHERE p.security_id = s.id
          ORDER BY p.price_date DESC LIMIT 1) AS current_price,
-        (SELECT p.close FROM prices p
+        (SELECT p.close_price FROM prices p
          JOIN securities su ON su.id = p.security_id
          WHERE su.symbol = s.underlying_symbol
          ORDER BY p.price_date DESC LIMIT 1) AS underlying_price

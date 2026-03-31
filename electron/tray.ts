@@ -16,8 +16,9 @@ export function createTray(mainWindow: BrowserWindow | null): void {
   try {
     icon = nativeImage.createFromPath(iconPath);
     if (icon.isEmpty()) throw new Error("Empty icon");
-    // Resize for menu bar
+    // Resize for menu bar and mark as template for macOS dark/light adaptation
     icon = icon.resize({ width: 18, height: 18 });
+    icon.setTemplateImage(true);
   } catch {
     // Fallback: create a simple colored square
     icon = nativeImage.createEmpty();

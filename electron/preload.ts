@@ -15,6 +15,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   saveSettings: (settings: Record<string, unknown>) =>
     ipcRenderer.invoke("save-settings", settings),
 
+  // App lifecycle
+  restartApp: () => ipcRenderer.invoke("restart-app"),
+
   // Platform detection
   isElectron: true,
   platform: process.platform,

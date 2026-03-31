@@ -35,4 +35,9 @@ export function setupIpcHandlers(): void {
     saveSettings(settings);
     return { success: true };
   });
+
+  ipcMain.handle("restart-app", () => {
+    app.relaunch();
+    app.exit(0);
+  });
 }
