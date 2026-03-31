@@ -13,17 +13,21 @@ interface AppSettings {
   ibkrAccountCode?: string;
   twsHost?: string;
   twsPort?: number;
+  autoConnectTws?: boolean;
   gmailAddress?: string;
   gmailAppPassword?: string;
   briefingEmailTo?: string;
   fredApiKey?: string;
   edgarContactEmail?: string;
   apiNinjasKey?: string;
+  firstRunComplete?: boolean;
 }
 
 const DEFAULTS: AppSettings = {
   twsHost: "127.0.0.1",
   twsPort: 7496,
+  autoConnectTws: true,
+  firstRunComplete: false,
 };
 
 function getSettingsPath(): string {
@@ -74,5 +78,7 @@ export function getSanitizedSettings(): Record<string, string | number | boolean
     edgarContactEmail: s.edgarContactEmail ?? "",
     apiNinjasKey: s.apiNinjasKey ? "***" + s.apiNinjasKey.slice(-4) : "",
     hasAnthropicKey: !!s.anthropicApiKey,
+    autoConnectTws: s.autoConnectTws ?? true,
+    firstRunComplete: s.firstRunComplete ?? false,
   };
 }

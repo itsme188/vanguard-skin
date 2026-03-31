@@ -6,6 +6,7 @@ import { ChatDrawer } from "./components/ChatDrawer";
 import { CommandPalette, SearchButton } from "./components/CommandPalette";
 import { SettingsModal } from "./components/SettingsModal";
 import { AppVersion } from "./components/AppVersion";
+import { WelcomeOverlay } from "./components/WelcomeOverlay";
 
 export default function DashboardLayout({
   children,
@@ -44,6 +45,9 @@ export default function DashboardLayout({
 
         {/* Global command palette (Cmd+K) */}
         <CommandPalette />
+
+        {/* Electron first-run onboarding */}
+        <WelcomeOverlay />
       </div>
     </ToastProvider>
   );

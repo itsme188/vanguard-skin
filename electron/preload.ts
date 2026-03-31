@@ -18,6 +18,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // App lifecycle
   restartApp: () => ipcRenderer.invoke("restart-app"),
 
+  // First-run onboarding
+  isFirstRun: () => ipcRenderer.invoke("is-first-run"),
+  completeFirstRun: () => ipcRenderer.invoke("complete-first-run"),
+
   // Platform detection
   isElectron: true,
   platform: process.platform,

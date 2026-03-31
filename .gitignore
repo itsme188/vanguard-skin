@@ -17,8 +17,9 @@
 /.next/
 /out/
 
-# production
-/build
+# production (keep build/icon.icns for Electron app icon)
+/build/*
+!/build/icon.icns
 
 # electron
 /dist-electron

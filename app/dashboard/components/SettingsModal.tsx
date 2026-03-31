@@ -19,6 +19,7 @@ const SECTIONS = [
       { key: "ibkrAccountCode", label: "Account Code", sensitive: false },
       { key: "twsHost", label: "Host", sensitive: false },
       { key: "twsPort", label: "Port", sensitive: false },
+      { key: "autoConnectTws", label: "Auto-connect on startup", sensitive: false, type: "toggle" as const },
     ],
   },
   {
@@ -63,6 +64,15 @@ export function SettingsModal() {
     }
   }, [open, api, loadSettings]);
 
+  // Allow other components to open the modal via a custom event
+  useEffect(() => {
+    function handleOpenEvent() {
+      setOpen(true);
+    }
+    window.addEventListener("open-settings", handleOpenEvent);
+    return () => window.removeEventListener("open-settings", handleOpenEvent);
+  }, []);
+
   // Not in Electron — render nothing
   if (!isElectron) return null;
 
@@ -88,7 +98,13 @@ export function SettingsModal() {
     // Only send fields the user actually changed
     const updates: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(dirty)) {
-      updates[key] = key === "twsPort" ? Number(val) : val;
+      if (key === "twsPort") {
+        updates[key] = Number(val);
+      } else if (key === "autoConnectTws" || key === "firstRunComplete") {
+        updates[key] = val === "true";
+      } else {
+        updates[key] = val;
+      }
     }
 
     try {
@@ -162,6 +178,26 @@ export function SettingsModal() {
                       const displayVal = getDisplayValue(field.key, field.sensitive);
                       const isFieldDirty = field.key in dirty;
                       const isVisible = showSensitive[field.key];
+
+                      // Toggle fields (boolean settings)
+                      if ("type" in field && field.type === "toggle") {
+                        const checked = field.key in dirty
+                          ? dirty[field.key] === "true"
+                          : !!values[field.key];
+                        return (
+                          <label key={field.key} className="flex items-center gap-2 cursor-pointer py-0.5">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) => handleFieldChange(field.key, String(e.target.checked))}
+                              className="accent-gold w-3.5 h-3.5"
+                            />
+                            <span className={`text-[11px] ${isFieldDirty ? "text-gold" : "text-ink-dim"}`}>
+                              {field.label}
+                            </span>
+                          </label>
+                        );
+                      }
 
                       return (
                         <div key={field.key}>
