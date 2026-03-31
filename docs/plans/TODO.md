@@ -4,12 +4,14 @@
 
 ## Status Overview
 
-v2 core rebuild is complete. 18 merged PRs, 529 tests (all passing).
-Post-v2 work has added IBKR TWS integration, TWR/XIRR engines, agentic chat with 14 tools,
-thematic factor analysis, notes/journaling, chat scope selector, per-security candlestick charting,
-IBKR calendar integration with weekly AI briefings, benchmark comparison with percent-change charts,
-risk decomposition (drawdown, volatility, Sharpe, Herfindahl), streaming live quotes via TWS,
-and custom date range performance analysis. This document tracks remaining work.
+v2 core rebuild is complete. 18 merged PRs, 590 tests (all passing).
+Post-v2 work has added IBKR TWS integration, TWR/XIRR engines, agentic chat with 16 tools,
+thematic + quantitative factor analysis, notes/journaling, chat scope selector, per-security
+candlestick charting, IBKR calendar integration with weekly AI briefings, benchmark comparison,
+risk decomposition, streaming live quotes, options phase 2 (Greeks, strategies, IRS tax lots),
+cost basis reconciliation, TurboTax TXF export, scenario modeling, trade review system (AI grades),
+and Electron desktop packaging (DMG build with settings UI, tray, auto-connect, onboarding).
+This document tracks remaining work.
 
 ---
 
@@ -77,7 +79,7 @@ Everything below was built between 2026-03-06 and 2026-03-27.
 - [x] Calendar tab with week grid + agenda/briefing side-by-side layout
 - [x] Weekly briefing generation via Claude Sonnet
 - [x] Overview tab Upcoming Events card
-- [x] 13 database migrations, `calendar_events` + `calendar_briefings` tables
+- [x] 17 database migrations, `calendar_events` + `calendar_briefings` tables
 
 ### Custom Date Range & Benchmark Comparison (2026-03-27)
 - [x] Custom date range picker for TWR/XIRR (client-side fetch via API)
@@ -241,20 +243,20 @@ about quantitative factor decomposition — different from the thematic system.
 | Per-account equity curves | Working (daily) | **Working (daily + split + date ranges)** | Done |
 | Tax lot tracking (FIFO) | Working | Working + year/account filter | Done |
 | Reconciliation | Working | Working | Done |
-| Portfolio Chat (Claude Q&A) | Incomplete | **Agentic, 15 tools, Opus 4.6** | Done |
+| Portfolio Chat (Claude Q&A) | Incomplete | **Agentic, 16 tools, Opus 4.6** | Done |
 | TWR / XIRR performance | Working | **Working** | Done |
 | Thematic factor analysis | None | **Working (auto-classify + heatmap)** | Done |
 | Quantitative factor analysis | Incomplete | **Working (beta, tilts, regression)** | Done |
 | Benchmark comparison | Incomplete | **Working (SPY overlay + period table)** | Done |
-| Security enrichment | Incomplete | **Partial (TWS enrich route)** | Medium |
+| Security enrichment | Incomplete | **Working (TWS enrich + OHLCV bars)** | Done |
 | Risk decomposition | Incomplete | **Working (drawdown, vol, Sharpe, Herfindahl)** | Done |
 | Scenario modeling | Incomplete | **Working (6 presets + position detail)** | Done |
 | Confidence scoring | Working | Dropped (Claude API is accurate enough) | — |
-| Options support | None | Phase 1 done (16 tests) | Medium |
+| Options support | None | **Complete (49 tests, Greeks, strategies, IRS tax lots)** | Done |
 | IBKR TWS API | None | **Phase 1 done (historical + contracts)** | Done |
 | Live/streaming prices | None | **Working (SSE + TWS delayed quotes)** | Done |
 | Tax report export | None | **Working (8949 CSV + wash sales)** | Done |
-| Desktop packaging | In progress | AppleScript launcher (dev mode) | Low |
+| Desktop packaging | In progress | **Electron DMG (218MB, arm64, settings, tray, onboarding)** | Done |
 | Notes/journaling | None | **Working** | Done |
 | External data (FRED/EDGAR) | None | **Working (chat tools)** | Done |
 | Insider trading (SEC Form 4) | None | **Working (chat tool)** | Done |
@@ -302,9 +304,9 @@ Watchlist feature~~ ✓
 ~~12. Import hook + chat tool~~ ✓ (detects unreviewed months, query_trade_reviews 15th tool)
 ~~13. Security Detail grades~~ ✓ (AI grade badges on per-security hub page)
 
-### Finally: Polish
-14. Desktop packaging (Electron or Tauri)
-15. E2E browser tests
+### Finally: Polish — DONE (2026-03-30)
+~~14. Desktop packaging~~ ✓ (Electron DMG, 218MB, arm64, settings UI, tray, auto-connect, onboarding)
+15. E2E browser tests (~15 hours estimated, deferred)
 
 ---
 
@@ -313,12 +315,12 @@ Watchlist feature~~ ✓
 1. Vanguard Taxable at 87% coverage — Retry threshold raised to 95% but 87% slipped through before the fix
 2. Holdings cost basis column all "–" in Accounts tab — Data gap, not a code bug (tooltip explains)
 3. Earnings transcript timeline empty — Fetch UI wired to EarningsView but may need data
-4. ~~`tests/tws/historical.test.ts` — 1 failing test~~ — Fixed (all 476 tests passing)
+4. ~~`tests/tws/historical.test.ts` — 1 failing test~~ — Fixed (all 590 tests passing)
 
 ## Known Gaps (Not Bugs)
 
 - ~~No benchmark comparison~~ — Implemented (commit efccfa5)
-- Wash sale warnings in chat system prompt but no auto-detection
+- ~~Wash sale warnings in chat system prompt but no auto-detection~~ — Actually implemented in `tax-report.ts` (30-day rule); chat prompt corrected
 - `next build` data collection fails with existing `data/vanguard.db` (TypeScript compilation succeeds)
 - TWS price fetch takes ~40 min due to IBKR rate limits
-- Stale SHM/WAL files can cause SQLite corruption — remove `.db-shm` and `.db-wal` to fix
+- ~~Stale SHM/WAL files can cause SQLite corruption~~ — Mitigated: `wal_checkpoint(TRUNCATE)` on startup
