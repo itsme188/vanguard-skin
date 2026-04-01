@@ -13,13 +13,14 @@ interface SecurityRow {
 }
 
 function mapSecurityType(dbType: string | null): SecType {
-  switch (dbType) {
+  switch (dbType?.toLowerCase()) {
     case "stock":
     case "etf":
       return SecType.STK;
     case "bond":
       return SecType.BOND;
     case "mutual_fund":
+    case "mutual fund":
       return SecType.FUND;
     case "option":
       return SecType.OPT;
@@ -50,10 +51,21 @@ export async function enrichSecurities(
       )
       .all(...securityIds) as SecurityRow[];
   } else {
-    // Only fetch securities not yet enriched
+    // Only enrich held securities that TWS can resolve by ticker.
+    // Excluded (need special handling in the future):
+    //   - CUSIP-prefixed: bonds/SPACs without tickers → look up by CUSIP + SecType.BOND
+    //   - Vanguard-format options ("ARKK 270115 P 100.00") → convert to OCC format
+    //   - OCC options with spaces → trim and use SecType.OPT
+    //   - Cash positions (AUD, etc.) → use SecType.CASH
     securities = db
       .prepare(
-        `SELECT id, symbol, security_type FROM securities WHERE ib_con_id IS NULL`,
+        `SELECT DISTINCT s.id, s.symbol, s.security_type
+         FROM securities s
+         JOIN holdings h ON h.security_id = s.id
+         WHERE s.ib_con_id IS NULL
+           AND s.symbol NOT LIKE 'CUSIP:%'
+           AND LOWER(s.security_type) NOT IN ('cash', 'option', 'money_market', 'money market')
+           AND s.symbol NOT LIKE '% %'`,
       )
       .all() as SecurityRow[];
   }

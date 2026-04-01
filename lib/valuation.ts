@@ -17,7 +17,7 @@ export function marketValue(
   securityType: string | null,
   multiplier: number = 1
 ): number {
-  if (securityType === "bond") {
+  if (securityType?.toLowerCase() === "bond") {
     return (quantity * price) / 100;
   }
   return quantity * price * multiplier;
@@ -36,7 +36,7 @@ export function adjustedMarketValueSQL(
   securityTypeExpr: string,
   multiplierExpr: string = "1"
 ): string {
-  return `CASE WHEN ${securityTypeExpr} = 'bond'
+  return `CASE WHEN LOWER(${securityTypeExpr}) = 'bond'
     THEN ${quantityExpr} * ${priceExpr} / 100.0
     ELSE ${quantityExpr} * ${priceExpr} * COALESCE(${multiplierExpr}, 1)
   END`;

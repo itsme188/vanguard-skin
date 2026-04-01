@@ -20,8 +20,18 @@ export function detectSourceType(content: string, filename: string): SourceType 
     return "ibkr-holdings";
   }
 
-  // Vanguard cost basis: header contains "cost_basis_method"
+  // Vanguard direct-export: combined holdings + transactions CSV
+  // Header: "Account Number,Investment Name,Symbol,Shares,Share Price,Total Value"
+  if (firstLine.startsWith("Account Number,Investment Name,Symbol,Shares,Share Price,Total Value")) {
+    return "vanguard-export";
+  }
+
+  // Vanguard cost basis: old format has "cost_basis_method" in header;
+  // new direct-export format has "Account,Symbol/CUSIP,Description,Position type" (may have preamble lines)
   if (firstLine.includes("cost_basis_method")) {
+    return "vanguard-cost-basis";
+  }
+  if (lines.some((l) => l.startsWith("Account,Symbol/CUSIP,Description,Position type"))) {
     return "vanguard-cost-basis";
   }
 

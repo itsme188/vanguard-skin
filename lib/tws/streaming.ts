@@ -49,12 +49,15 @@ function getState(): StreamingState {
 // ─── Tick extraction ────────────────────────────────────────────
 
 function mapSecurityType(dbType: string | null): SecType {
-  switch (dbType) {
+  switch (dbType?.toLowerCase()) {
     case "stock":
     case "etf":
       return SecType.STK;
     case "bond":
       return SecType.BOND;
+    case "mutual_fund":
+    case "mutual fund":
+      return SecType.FUND;
     case "option":
       return SecType.OPT;
     default:

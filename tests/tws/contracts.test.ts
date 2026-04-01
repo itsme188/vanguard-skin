@@ -105,14 +105,24 @@ describe("enrichSecurities", () => {
     expect(results[0].enriched).toBe(false);
   });
 
-  it("only fetches securities without ib_con_id when no IDs specified", async () => {
-    // Security with ib_con_id already set
+  it("only fetches held securities without ib_con_id when no IDs specified", async () => {
+    // Security with ib_con_id already set (held)
     db.prepare(
       "INSERT INTO securities (symbol, name, security_type, ib_con_id) VALUES (?, ?, ?, ?)",
     ).run("AAPL", "Apple", "stock", 265598);
+    const aaplId = db.prepare("SELECT id FROM securities WHERE symbol = 'AAPL'").get() as { id: number };
 
-    // Security without ib_con_id
-    seedSecurity(db, "MSFT", "stock");
+    // Security without ib_con_id (held)
+    const msftId = seedSecurity(db, "MSFT", "stock");
+
+    // Security without ib_con_id (NOT held — should be skipped)
+    seedSecurity(db, "GOOG", "stock");
+
+    // Create an account and holdings for AAPL and MSFT only
+    db.prepare("INSERT INTO accounts (name) VALUES ('Test')").run();
+    const acctId = (db.prepare("SELECT id FROM accounts WHERE name = 'Test'").get() as { id: number }).id;
+    db.prepare("INSERT INTO holdings (account_id, security_id, quantity, as_of_date) VALUES (?, ?, ?, ?)").run(acctId, aaplId.id, 100, "2026-04-01");
+    db.prepare("INSERT INTO holdings (account_id, security_id, quantity, as_of_date) VALUES (?, ?, ?, ?)").run(acctId, msftId, 50, "2026-04-01");
 
     const mockApi = {
       getContractDetails: vi.fn().mockResolvedValue([

@@ -6,6 +6,7 @@ import { parseIbkrActivity } from "./parsers/ibkr-activity";
 import { parseIbkrHoldings } from "./parsers/ibkr-holdings";
 import { parseMonthlyValues } from "./parsers/monthly-values";
 import { parseVanguardCostBasis } from "./parsers/vanguard-cost-basis";
+import { parseVanguardExport } from "./parsers/vanguard-export";
 import { parseVanguardHoldings } from "./parsers/vanguard-holdings";
 import { parseVanguardPdf } from "./parsers/vanguard-pdf";
 import { parseFactorCsv } from "./parsers/factor-csv";
@@ -38,6 +39,8 @@ export async function parseImport(
       return parseMonthlyValues(textContent, filename);
     case "vanguard-cost-basis":
       return parseVanguardCostBasis(textContent, filename);
+    case "vanguard-export":
+      return parseVanguardExport(textContent, filename);
     case "vanguard-holdings":
       return parseVanguardHoldings(textContent, filename);
     case "vanguard-pdf":

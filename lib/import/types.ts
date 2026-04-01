@@ -3,6 +3,7 @@ export type SourceType =
   | "ibkr-holdings"
   | "monthly-values"
   | "vanguard-cost-basis"
+  | "vanguard-export"
   | "vanguard-holdings"
   | "vanguard-pdf"
   | "factor-csv"
