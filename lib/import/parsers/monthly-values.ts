@@ -13,7 +13,12 @@ const ACCOUNT_COLUMN_MAP: Record<string, string> = {
   ibkr: "IBKR",
   vanguard_taxable: "Vanguard Taxable",
   vanguard_roth: "Vanguard Roth IRA",
+  brokerage: "Vanguard Taxable",
+  roth_ira: "Vanguard Roth IRA",
 };
+
+// Columns to skip (not actual accounts)
+const SKIP_COLUMNS = new Set(["combined", "total"]);
 
 export function parseMonthlyValues(
   content: string,
@@ -37,6 +42,7 @@ export function parseMonthlyValues(
     if (!row.date) continue;
 
     for (const col of accountColumns) {
+      if (SKIP_COLUMNS.has(col)) continue;
       const value = parseFloat(row[col]);
       if (isNaN(value)) continue;
 

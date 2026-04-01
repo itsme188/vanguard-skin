@@ -21,6 +21,12 @@ describe("marketValue", () => {
     expect(marketValue(5000, 101.25, "bond")).toBe(5062.5);
   });
 
+  it("handles bond type case-insensitively", () => {
+    expect(marketValue(10000, 98.5, "Bond")).toBe(9850);
+    expect(marketValue(10000, 98.5, "BOND")).toBe(9850);
+    expect(marketValue(10000, 98.5, "bond")).toBe(9850);
+  });
+
   it("calculates option market value with multiplier", () => {
     // 5 contracts at $3.50 with multiplier 100 = $1,750
     expect(marketValue(5, 3.5, "option", 100)).toBe(1750);
@@ -60,7 +66,7 @@ describe("adjustedMarketValueSQL", () => {
       "s.security_type",
       "s.multiplier"
     );
-    expect(sql).toContain("WHEN s.security_type = 'bond'");
+    expect(sql).toContain("WHEN LOWER(s.security_type) = 'bond'");
     expect(sql).toContain("h.quantity * p.close_price / 100.0");
     expect(sql).toContain("COALESCE(s.multiplier, 1)");
   });
