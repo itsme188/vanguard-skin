@@ -73,7 +73,10 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - Transaction types are UPPERCASE: BUY, SELL, DIVIDEND, REINVESTMENT, TAX_WITHHELD, BUY_TO_OPEN, SELL_TO_CLOSE, etc.
 - `computeTaxLots` matches on uppercase BUY/SELL — parsers must output uppercase
 - Market values use `adjustedMarketValueSQL()` from `lib/valuation.ts` — handles bonds (÷100) and options (×multiplier). Uses `LOWER()` for case-insensitive type matching.
-- **Security type casing**: DB stores capitalized types (`Bond`, `Stock`, `ETF`, `Option`, `Mutual Fund`). Always use case-insensitive comparisons (`.toLowerCase()` in TS, `LOWER()` in SQL). There are 5 copies of `mapSecurityType` in `lib/tws/` — all must stay in sync.
+- **Security type casing**: DB stores capitalized types (`Bond`, `Stock`, `ETF`, `Option`, `Mutual Fund`). Always use case-insensitive comparisons (`.toLowerCase()` in TS, `LOWER()` in SQL). `mapSecurityType()` is centralized in `lib/tws/security-type-map.ts` — import from there, never duplicate.
+- **Import validation**: `lib/import/validate.ts` runs before commit — validates dates, quantities, prices, transaction types. Bad rows excluded with warnings.
+- **Price source priority**: Higher-priority sources overwrite lower: tws(1) > ibkr(2) > vanguard(3) > manual(4). See conditional upsert in `engine.ts`.
+- **Data Health**: `/dashboard/data-health` — coverage, freshness, gaps, reconciliation. `DataFreshness` header links there.
 - Always use `COALESCE(s.multiplier, 1)` in queries — SQLite DEFAULT is bypassed by explicit INSERT NULL
 - Bond unrealized gain: apply par-adjustment to BOTH current value AND cost basis
 - Option symbols MUST use OCC format (e.g., `INTC  260320P00045000`), never bare tickers — `ensureOCCSymbol()` in vanguard-pdf.ts auto-converts. Bare tickers cause stock/option collisions in `upsertSecurity()` UNIQUE(symbol) constraint.
