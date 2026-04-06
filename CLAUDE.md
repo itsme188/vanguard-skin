@@ -141,6 +141,7 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - `DELETE /api/research/sources` — delete newsletter source. Body: `{ id }`
 - `POST /api/research/discover` — scan Gmail for newsletter senders (90-day window, 1+ emails)
 - `GET /api/gmail/status` — check Gmail OAuth connection
+- `POST /api/digest/email` — sync feeds + compile daily digest + send email. Body: `{ to? }`. Skips if no articles in last 24h.
 
 ## Security Detail Page
 
@@ -184,7 +185,9 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - `lib/vital-knowledge.ts` — IMAP-based Vital Knowledge newsletter fetching (ported from Stock Contest)
 - `lib/email.ts` — nodemailer Gmail sending utility; `lib/calendar/briefing-html.ts` — markdown→HTML for email
 - Weekly briefings stored in `calendar_briefings` table, one per week (UNIQUE on `week_of`)
-- Sunday email automation: launchd plist at `~/Library/LaunchAgents/com.vanguard-skin.weekly-email.plist`
+- Automated emails via launchd plists in `~/Library/LaunchAgents/`:
+  - `com.vanguard-skin.weekly-email.plist` — Sunday 5 PM, week-ahead calendar briefing
+  - `com.vanguard-skin.daily-digest.plist` — Weekdays 9 AM, research feed digest
 
 ## Electron Build
 
