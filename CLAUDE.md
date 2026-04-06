@@ -90,6 +90,8 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 ## Dev Server Gotchas
 
 - After changing any server-side code (SQL queries, API routes, server components), restart the dev server before testing. Next.js dev server caches server-side code aggressively — page refreshes alone won't pick up changes. Stale server code can also make errors appear on the wrong page.
+- **Turbopack lock file**: If dev server crashes or terminal closes without Ctrl+C, a stale lock file prevents restart ("Unable to acquire lock"). Fix: `rm -rf .next` then `npm run dev`.
+- **TWS stale connection after restart**: The old TCP socket to TWS lingers after dev server restart. New server gets `getCurrentTime timeout (5s)` because TWS is still holding the old client ID 1 session. Fix: in TWS, toggle Edit → Global Config → API → "Enable ActiveX and Socket Clients" off then on to drop stale connections.
 
 ## API Pattern
 
@@ -130,12 +132,14 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - `GET /api/trade-review?accountId=&year=` — list trade reviews for account
 - `GET /api/trade-review?id=` — single review with roundtrips
 - `GET /api/trade-review?periods=true&accountId=` — available review periods
-- `POST /api/research/sync` — SSE streaming: fetch Gmail newsletters + AI-process with Claude Sonnet
-- `GET /api/research/articles?sourceId=&securityId=&startDate=&endDate=&search=&limit=` — query research articles
+- `POST /api/research/sync` — SSE streaming: fetch Gmail newsletters + AI-process with Claude Sonnet + backfill HTML for old articles
+- `GET /api/research/articles?sourceId=&securityId=&startDate=&endDate=&search=&limit=` — query research articles (includes symbolMap)
+- `GET /api/research/articles/[id]` — single article with raw_text + raw_html for expanded view
 - `GET /api/research/sources` — list newsletter sources with article counts
 - `POST /api/research/sources` — create newsletter source
-- `PATCH /api/research/sources` — update newsletter source (sender_email, is_active, etc.)
-- `POST /api/research/discover` — scan Gmail for newsletter senders
+- `PATCH /api/research/sources` — update newsletter source (sender_email, is_active, processing_prompt, etc.)
+- `DELETE /api/research/sources` — delete newsletter source. Body: `{ id }`
+- `POST /api/research/discover` — scan Gmail for newsletter senders (90-day window, 1+ emails)
 - `GET /api/gmail/status` — check Gmail OAuth connection
 
 ## Security Detail Page
