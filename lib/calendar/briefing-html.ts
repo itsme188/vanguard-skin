@@ -83,6 +83,14 @@ function convertMarkdown(md: string): string {
       continue;
     }
 
+    // Blockquote
+    if (line.startsWith("> ")) {
+      if (inList) { output.push("</ul>"); inList = false; }
+      const text = inlineFormat(line.slice(2));
+      output.push(`<p style="margin:8px 0; padding:8px 12px; border-left:3px solid ${COLORS.gold}; color:${COLORS.dimText}; font-size:13px; line-height:1.5;">${text}</p>`);
+      continue;
+    }
+
     // Bullet list items (-, *, or numbered)
     const bulletMatch = line.match(/^(\s*)[-*]\s+(.+)/);
     const numberedMatch = line.match(/^(\s*)\d+\.\s+(.+)/);
