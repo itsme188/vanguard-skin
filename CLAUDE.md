@@ -11,6 +11,7 @@ Local-first portfolio dashboard for tracking Vanguard + IBKR investments.
 - **CSV parsing:** papaparse
 - **PDF parsing:** Claude API (@anthropic-ai/sdk)
 - **Chat:** AI SDK v6 (`ai`, `@ai-sdk/react`, `@ai-sdk/anthropic`)
+- **Gmail:** googleapis (OAuth 2.0 for newsletter ingestion)
 - **Testing:** Vitest
 - **Desktop:** Electron (standalone Next.js + system Node.js for native modules)
 
@@ -129,6 +130,13 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - `GET /api/trade-review?accountId=&year=` — list trade reviews for account
 - `GET /api/trade-review?id=` — single review with roundtrips
 - `GET /api/trade-review?periods=true&accountId=` — available review periods
+- `POST /api/research/sync` — SSE streaming: fetch Gmail newsletters + AI-process with Claude Sonnet
+- `GET /api/research/articles?sourceId=&securityId=&startDate=&endDate=&search=&limit=` — query research articles
+- `GET /api/research/sources` — list newsletter sources with article counts
+- `POST /api/research/sources` — create newsletter source
+- `PATCH /api/research/sources` — update newsletter source (sender_email, is_active, etc.)
+- `POST /api/research/discover` — scan Gmail for newsletter senders
+- `GET /api/gmail/status` — check Gmail OAuth connection
 
 ## Security Detail Page
 
@@ -144,6 +152,7 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - **Chat** is a slide-out drawer (ChatDrawer.tsx) in the layout, toggled via header button or Cmd+J
 - **Reconciliation** merged into Accounts tab as collapsible section
 - **Notes** renamed to **Research** (redirect from /dashboard/notes)
+- **Research** tab has 3 views: Notes | Trade Reviews | Feeds (newsletter articles from Gmail)
 - **Holdings** tab shows cross-account positions with P&L and allocation %
 - Old routes (/dashboard/notes, /dashboard/reconciliation, /dashboard/chat) redirect to new locations
 
