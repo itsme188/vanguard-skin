@@ -101,16 +101,81 @@ export function sanitizeNewsletterHtml(html: string): string {
     return isSelfClosing ? `<${tag}${attrStr} />` : `<${tag}${attrStr}>`;
   });
 
-  // 5. Remove common newsletter footer patterns
-  result = result.replace(
-    /(?:<[^>]*>)*\s*(?:unsubscribe|manage\s+(?:your\s+)?(?:preferences|subscription)|view\s+(?:this\s+)?(?:email\s+)?in\s+(?:your\s+)?browser|sent\s+(?:to|by)\s+\S+@\S+)[\s\S]{0,500}$/i,
-    ""
-  );
+  // 5. Trim email footer boilerplate
+  result = trimEmailFooter(result);
 
   // 6. Clean up whitespace
   result = result.replace(/\n{3,}/g, "\n\n").trim();
 
   return result;
+}
+
+/**
+ * Trim email footer boilerplate from newsletter HTML (or plain text).
+ * Finds the earliest footer marker in the second half of the content
+ * and removes everything from that point onward.
+ * Safe to call multiple times (idempotent).
+ */
+export function trimEmailFooter(html: string): string {
+  if (!html) return html;
+
+  const markers = [
+    /(?:©|&copy;)\s*\d{4}/,                                        // © 2024 or &copy; 2024
+    /all\s+rights\s+reserved/i,                                     // All Rights Reserved
+    /you are receiving this\s/i,                                     // You are receiving this email/message
+    /this (?:email|message) was sent/i,                              // This email was sent to
+    /to\s+unsubscribe/i,                                             // To unsubscribe
+    /update your (?:notification|email|subscription)/i,              // Update your notification settings
+    /manage your (?:preferences|subscription)/i,                     // Manage your preferences
+    /if you no longer wish/i,                                        // If you no longer wish to receive
+    /got questions,?\s*feedback/i,                                   // Got questions, feedback
+    /forward this (?:email|message)/i,                               // Forward this email
+    /email\s+preferences/i,                                          // Email preferences
+    /powered\s+by\s+\w/i,                                           // Powered by Mailchimp/etc.
+    /\d{2,5}\s+\w[\w\s]*(?:street|st|ave|avenue|blvd|road|rd),/i,   // Physical addresses
+    /view\s+(?:this\s+)?(?:email\s+)?in\s+(?:your\s+)?browser/i,    // View in browser
+    /sent\s+(?:to|by)\s+\S+@\S+/i,                                  // Sent to/by email
+  ];
+
+  // Skip the first 20% to avoid false positives in article body.
+  // Newsletter HTML is mostly layout markup (tables, divs) — actual content
+  // is typically just 20-30% of the total HTML, so the footer markers
+  // often appear as early as 25-40%.
+  const searchFrom = Math.floor(html.length * 0.2);
+  const tail = html.slice(searchFrom);
+  let cutAt = html.length;
+
+  for (const re of markers) {
+    const idx = tail.search(re);
+    if (idx >= 0) {
+      const absIdx = searchFrom + idx;
+      if (absIdx < cutAt) cutAt = absIdx;
+    }
+  }
+
+  if (cutAt >= html.length) return html;
+
+  let result = html.slice(0, cutAt);
+
+  // If we cut inside a partial HTML tag (< with no closing >), remove it
+  const lastGt = result.lastIndexOf(">");
+  const lastLt = result.lastIndexOf("<");
+  if (lastLt > lastGt) {
+    result = result.slice(0, lastLt);
+  }
+
+  // Strip trailing layout/structural tags and whitespace — these are
+  // the table/div wrappers that surrounded the now-removed footer.
+  // The regex matches any opening or closing block-level tag, HRs, BRs,
+  // and whitespace at the end of the string. Inline content tags like
+  // <a>, <strong>, <em> are NOT in this list, so they act as a natural
+  // stop — preserving the last piece of real content (e.g. "READ ONLINE</a>").
+  result = result.replace(
+    /(?:\s|<\/?(?:br|hr|p|div|span|table|tbody|thead|tfoot|tr|td|th|caption)(?:\s[^>]*)?\s*\/?>)+$/gi,
+    ""
+  );
+
+  return result.trim();
 }
 
 function escapeAttr(value: string): string {

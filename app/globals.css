@@ -98,6 +98,7 @@ html {
   font-size: 15px;
   line-height: 1.8;
   color: var(--color-ink-dim);
+  max-width: 72ch;
   overflow-wrap: break-word;
   word-break: break-word;
 }
