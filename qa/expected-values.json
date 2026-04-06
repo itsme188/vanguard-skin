@@ -1,0 +1,25 @@
+{
+  "overview": {
+    "portfolioValue": "FILL_IN",
+    "portfolioValueTolerance": 0.02,
+    "accountCount": "FILL_IN",
+    "twrYtd": "FILL_IN",
+    "twrYtdTolerance": 0.5
+  },
+  "holdings": {
+    "positionCount": "FILL_IN",
+    "totalValue": "FILL_IN",
+    "totalValueTolerance": 0.02
+  },
+  "accounts": [
+    { "name": "FILL_IN", "value": "FILL_IN", "valueTolerance": 0.02 }
+  ],
+  "analysis": {
+    "hasRiskMetrics": true,
+    "hasFactorAnalysis": true,
+    "hasScenarioModeling": true
+  },
+  "dataFreshness": {
+    "minHealthPct": "FILL_IN"
+  }
+}
