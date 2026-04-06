@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { MarketDataType, SecType, IBApiTickType } from "@stoqey/ib";
 import type { Subscription } from "rxjs";
 import { getIbApi } from "./client";
+import { mapSecurityType } from "./security-type-map";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -47,23 +48,6 @@ function getState(): StreamingState {
 }
 
 // ─── Tick extraction ────────────────────────────────────────────
-
-function mapSecurityType(dbType: string | null): SecType {
-  switch (dbType?.toLowerCase()) {
-    case "stock":
-    case "etf":
-      return SecType.STK;
-    case "bond":
-      return SecType.BOND;
-    case "mutual_fund":
-    case "mutual fund":
-      return SecType.FUND;
-    case "option":
-      return SecType.OPT;
-    default:
-      return SecType.STK;
-  }
-}
 
 function extractTickValue(
   ticks: ReadonlyMap<number, { value?: number }>,

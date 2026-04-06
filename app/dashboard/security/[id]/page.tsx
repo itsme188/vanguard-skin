@@ -3,6 +3,7 @@ import { getSecurityDetail } from "@/lib/queries/security-detail";
 import { isOnWatchlist, getWatchlistItem } from "@/lib/queries/watchlist";
 import { notFound } from "next/navigation";
 import Link from "next/link";
+import { CorporateActionsSection } from "../../components/CorporateActionsSection";
 import { SecurityChart } from "../../components/SecurityChart";
 import { WatchlistButton } from "../../components/WatchlistButton";
 import {
@@ -787,6 +788,9 @@ export default async function SecurityDetailPage(props: {
           </section>
         );
       })()}
+
+      {/* Corporate Actions */}
+      <CorporateActionsSection securityId={security.id} symbol={security.symbol} />
 
       {/* Factor Exposure */}
       {factors && (

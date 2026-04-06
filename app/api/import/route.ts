@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { parseImport, commitImport, undoImport } from "@/lib/import/engine";
+import { validateParsedResult } from "@/lib/import/validate";
+import { getSnapshotReconciliation } from "@/lib/queries/data-health";
 import { classifySecurities } from "@/lib/compute/classify-securities";
 import { computeTaxLots } from "@/lib/compute/tax-lots";
 import { computeDailyValuations } from "@/lib/compute/daily-valuation";
@@ -60,22 +62,24 @@ export async function POST(request: NextRequest) {
         continue;
       }
 
-      // Preview mode — return parsed summary
+      // Preview mode — run validation and return summary with any issues
       if (mode === "preview") {
+        const { skippedRows, validatedResult } = validateParsedResult(parsed);
         results.push({
           filename: file.name,
           success: true,
           sourceType: parsed.sourceType,
           preview: {
-            transactionCount: parsed.transactions.length,
-            securityCount: parsed.securities.length,
-            holdingCount: parsed.holdings.length,
-            priceCount: parsed.prices.length,
-            snapshotCount: parsed.snapshots.length,
-            factorCount: parsed.factors?.length ?? 0,
+            transactionCount: validatedResult.transactions.length,
+            securityCount: validatedResult.securities.length,
+            holdingCount: validatedResult.holdings.length,
+            priceCount: validatedResult.prices.length,
+            snapshotCount: validatedResult.snapshots.length,
+            factorCount: validatedResult.factors?.length ?? 0,
           },
+          skippedRows: skippedRows.length > 0 ? skippedRows : undefined,
           errors: parsed.errors,
-          warnings: parsed.warnings,
+          warnings: validatedResult.warnings,
         });
         continue;
       }
@@ -133,12 +137,30 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Check for reconciliation flags after commit
+    let reconciliationFlags: { accountName: string; snapshotDate: string; diffPct: number }[] = [];
+    if (mode === "commit") {
+      try {
+        const recon = getSnapshotReconciliation(db);
+        reconciliationFlags = recon
+          .filter((r) => r.diffPct !== null && Math.abs(r.diffPct) > 2)
+          .map((r) => ({
+            accountName: r.accountName,
+            snapshotDate: r.snapshotDate,
+            diffPct: r.diffPct!,
+          }));
+      } catch {
+        // Reconciliation check failure shouldn't block import
+      }
+    }
+
     return NextResponse.json({
       success: true,
       mode,
       fileCount: files.length,
       results,
       newTradePeriods,
+      reconciliationFlags: reconciliationFlags.length > 0 ? reconciliationFlags : undefined,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";

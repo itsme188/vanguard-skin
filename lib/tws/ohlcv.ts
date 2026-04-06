@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { BarSizeSetting, SecType } from "@stoqey/ib";
 import { getIbApi } from "./client";
 import { RateLimiter } from "./rate-limiter";
+import { mapSecurityType } from "./security-type-map";
 import { getLatestOhlcvDate } from "@/lib/queries/ohlcv";
 import { upsertOhlcvBars } from "@/lib/mutations/ohlcv";
 import type { OhlcvBar } from "./types";
@@ -15,23 +16,6 @@ const rateLimiter = g.__tws_ohlcv_rateLimiter;
 
 const PACING_DELAY_MS = 500;
 const REQUEST_TIMEOUT_MS = 30_000;
-
-function mapSecurityType(dbType: string | null): SecType {
-  switch (dbType?.toLowerCase()) {
-    case "stock":
-    case "etf":
-      return SecType.STK;
-    case "bond":
-      return SecType.BOND;
-    case "mutual_fund":
-    case "mutual fund":
-      return SecType.FUND;
-    case "option":
-      return SecType.OPT;
-    default:
-      return SecType.STK;
-  }
-}
 
 /** Convert "20250131" → "2025-01-31" */
 function formatBarDate(raw: string): string {

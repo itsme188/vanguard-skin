@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import type { ParsedImportResult } from "./types";
 import type { ImportBatch } from "@/lib/types";
 import { detectSourceType } from "./detect";
+import { validateParsedResult } from "./validate";
 import { parseIbkrActivity } from "./parsers/ibkr-activity";
 import { parseIbkrHoldings } from "./parsers/ibkr-holdings";
 import { parseMonthlyValues } from "./parsers/monthly-values";
@@ -84,6 +85,17 @@ export function commitImport(
   db: Database.Database,
   parsed: ParsedImportResult
 ): CommitResult {
+  // Validate before writing — removes rows with invalid dates/quantities/prices
+  const { validatedResult, skippedRows } = validateParsedResult(parsed);
+  if (skippedRows.length > 0) {
+    console.warn(
+      `Import validation: ${skippedRows.length} row(s) excluded:`,
+      skippedRows.map((r) => `${r.category}[${r.index}]: ${r.reason}`),
+    );
+  }
+  // Use the validated (cleaned) result for all DB writes
+  parsed = validatedResult;
+
   let newTransactions = 0;
   let newHoldings = 0;
   let newPrices = 0;
@@ -219,10 +231,33 @@ export function commitImport(
       }
     }
 
-    // 5. Insert prices (skip duplicates via UNIQUE(security_id, date))
+    // 5. Insert prices with source priority (higher-priority sources overwrite lower)
+    //    Priority: tws (1) > ibkr statement (2) > vanguard statement (3) > other (4)
+    //    On conflict: overwrite only if incoming source has equal or higher priority.
     const insertPrice = db.prepare(`
-      INSERT OR IGNORE INTO prices (security_id, date, close_price, source, import_batch_id)
+      INSERT INTO prices (security_id, date, close_price, source, import_batch_id)
       VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(security_id, date) DO UPDATE SET
+        close_price = excluded.close_price,
+        source = excluded.source,
+        import_batch_id = excluded.import_batch_id
+      WHERE CASE excluded.source
+        WHEN 'tws' THEN 1
+        WHEN 'ibkr-activity' THEN 2
+        WHEN 'ibkr-holdings' THEN 2
+        WHEN 'vanguard-pdf' THEN 3
+        WHEN 'vanguard-export' THEN 3
+        WHEN 'vanguard-holdings' THEN 3
+        ELSE 4
+      END <= CASE prices.source
+        WHEN 'tws' THEN 1
+        WHEN 'ibkr-activity' THEN 2
+        WHEN 'ibkr-holdings' THEN 2
+        WHEN 'vanguard-pdf' THEN 3
+        WHEN 'vanguard-export' THEN 3
+        WHEN 'vanguard-holdings' THEN 3
+        ELSE 4
+      END
     `);
 
     for (const p of parsed.prices) {
