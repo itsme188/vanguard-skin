@@ -3,6 +3,13 @@
 import { useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 
+interface SkippedRow {
+  category: string;
+  index: number;
+  reason: string;
+  symbol?: string;
+}
+
 interface PreviewResult {
   filename: string;
   success: boolean;
@@ -15,6 +22,7 @@ interface PreviewResult {
     priceCount: number;
     snapshotCount: number;
   };
+  skippedRows?: SkippedRow[];
   errors?: string[];
   warnings?: string[];
 }
@@ -41,7 +49,7 @@ type ImportState =
   | { status: "parsing" }
   | { status: "preview"; results: PreviewResult[] }
   | { status: "importing" }
-  | { status: "done"; results: CommitResult[]; newTradePeriods?: { periodStart: string; periodEnd: string; tradeCount: number }[] }
+  | { status: "done"; results: CommitResult[]; newTradePeriods?: { periodStart: string; periodEnd: string; tradeCount: number }[]; reconciliationFlags?: { accountName: string; snapshotDate: string; diffPct: number }[] }
   | { status: "error"; message: string };
 
 export function ImportFlow() {
@@ -102,7 +110,7 @@ export function ImportFlow() {
         return;
       }
 
-      setState({ status: "done", results: data.results, newTradePeriods: data.newTradePeriods });
+      setState({ status: "done", results: data.results, newTradePeriods: data.newTradePeriods, reconciliationFlags: data.reconciliationFlags });
       router.refresh();
     } catch (err) {
       setState({
@@ -248,6 +256,16 @@ export function ImportFlow() {
                     {result.sourceType}
                   </span>
                 )}
+                {(result.skippedRows?.length ?? 0) > 0 && (
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-gold/15 text-gold font-medium">
+                    {result.skippedRows!.length} skipped
+                  </span>
+                )}
+                {(result.warnings?.length ?? 0) > 0 && !(result.skippedRows?.length) && (
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-gold/10 text-gold/80 font-medium">
+                    {result.warnings!.length} warning{result.warnings!.length !== 1 ? "s" : ""}
+                  </span>
+                )}
               </div>
 
               {result.success && result.preview ? (
@@ -278,14 +296,43 @@ export function ImportFlow() {
                 </div>
               )}
 
+              {/* Skipped rows detail */}
+              {result.skippedRows && result.skippedRows.length > 0 && (
+                <details className="mt-3 rounded-lg border border-gold/20 bg-gold/5">
+                  <summary className="px-3 py-2 text-xs font-medium text-gold cursor-pointer hover:bg-gold/10 transition-colors">
+                    {result.skippedRows.length} row{result.skippedRows.length !== 1 ? "s" : ""} will be excluded (invalid data)
+                  </summary>
+                  <div className="px-3 pb-2 space-y-1">
+                    {result.skippedRows.slice(0, 20).map((row, j) => (
+                      <p key={j} className="text-xs text-ink-dim font-mono">
+                        <span className="text-gold/70">{row.category}[{row.index}]</span>
+                        {row.symbol && <span className="text-ink-faint"> {row.symbol}</span>}
+                        {" — "}{row.reason}
+                      </p>
+                    ))}
+                    {result.skippedRows.length > 20 && (
+                      <p className="text-xs text-ink-faint">
+                        ...and {result.skippedRows.length - 20} more
+                      </p>
+                    )}
+                  </div>
+                </details>
+              )}
+
+              {/* Warnings */}
               {result.warnings && result.warnings.length > 0 && (
-                <div className="mt-2 space-y-0.5">
-                  {result.warnings.map((w, j) => (
-                    <p key={j} className="text-xs text-gold">
-                      {w}
-                    </p>
-                  ))}
-                </div>
+                <details className="mt-2">
+                  <summary className="text-xs text-gold cursor-pointer hover:text-gold/80">
+                    {result.warnings.length} warning{result.warnings.length !== 1 ? "s" : ""}
+                  </summary>
+                  <div className="mt-1 space-y-0.5">
+                    {result.warnings.map((w, j) => (
+                      <p key={j} className="text-xs text-gold/80">
+                        {w}
+                      </p>
+                    ))}
+                  </div>
+                </details>
               )}
             </div>
           ))}
@@ -370,6 +417,19 @@ export function ImportFlow() {
             {state.newTradePeriods.length} month{state.newTradePeriods.length > 1 ? "s" : ""} with{" "}
             {state.newTradePeriods.reduce((s, p) => s + p.tradeCount, 0)} unreviewed trades.
             <span className="text-gold ml-1">View →</span>
+          </a>
+        )}
+
+        {/* Reconciliation flags */}
+        {state.reconciliationFlags && state.reconciliationFlags.length > 0 && (
+          <a
+            href="/dashboard/data-health"
+            className="block rounded-lg border border-down/20 bg-down/5 px-4 py-3 text-sm text-ink-dim hover:bg-down/10 transition-colors"
+          >
+            <span className="text-down font-medium">Reconciliation flags</span>
+            {" — "}
+            {state.reconciliationFlags.length} snapshot{state.reconciliationFlags.length !== 1 ? "s" : ""} differ &gt;2% from computed values.
+            <span className="text-down ml-1">View Data Health →</span>
           </a>
         )}
 

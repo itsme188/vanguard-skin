@@ -47,7 +47,7 @@ tests/
   fixtures/real/        # Real PDFs/CSVs (gitignored, local only)
 docs/plans/             # Design doc and implementation plan
 data/                   # SQLite DB + imported files (gitignored)
-scripts/                # One-time utility scripts (e.g. generate-pdf-fixture.ts)
+scripts/                # Utility scripts (import-real-data.ts, seed-demo.ts, etc.)
 ```
 
 ## Data Flow
@@ -72,7 +72,8 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - Every import creates an `import_batches` record with undo capability
 - Transaction types are UPPERCASE: BUY, SELL, DIVIDEND, REINVESTMENT, TAX_WITHHELD, BUY_TO_OPEN, SELL_TO_CLOSE, etc.
 - `computeTaxLots` matches on uppercase BUY/SELL — parsers must output uppercase
-- Market values use `adjustedMarketValueSQL()` from `lib/valuation.ts` — handles bonds (÷100) and options (×multiplier)
+- Market values use `adjustedMarketValueSQL()` from `lib/valuation.ts` — handles bonds (÷100) and options (×multiplier). Uses `LOWER()` for case-insensitive type matching.
+- **Security type casing**: DB stores capitalized types (`Bond`, `Stock`, `ETF`, `Option`, `Mutual Fund`). Always use case-insensitive comparisons (`.toLowerCase()` in TS, `LOWER()` in SQL). There are 5 copies of `mapSecurityType` in `lib/tws/` — all must stay in sync.
 - Always use `COALESCE(s.multiplier, 1)` in queries — SQLite DEFAULT is bypassed by explicit INSERT NULL
 - Bond unrealized gain: apply par-adjustment to BOTH current value AND cost basis
 - Option symbols MUST use OCC format (e.g., `INTC  260320P00045000`), never bare tickers — `ensureOCCSymbol()` in vanguard-pdf.ts auto-converts. Bare tickers cause stock/option collisions in `upsertSecurity()` UNIQUE(symbol) constraint.

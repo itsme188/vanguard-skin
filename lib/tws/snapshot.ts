@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { MarketDataType, SecType, IBApiTickType } from "@stoqey/ib";
 import { getIbApi } from "./client";
+import { mapSecurityType } from "./security-type-map";
 import type { PriceFetchProgress, SnapshotPriceResult } from "./types";
 
 /**
@@ -20,23 +21,6 @@ const BATCH_SIZE = 10;
 
 /** Per-snapshot timeout (11s collection + 4s margin). */
 const SNAPSHOT_TIMEOUT_MS = 15_000;
-
-function mapSecurityType(dbType: string | null): SecType {
-  switch (dbType?.toLowerCase()) {
-    case "stock":
-    case "etf":
-      return SecType.STK;
-    case "bond":
-      return SecType.BOND;
-    case "mutual_fund":
-    case "mutual fund":
-      return SecType.FUND;
-    case "option":
-      return SecType.OPT;
-    default:
-      return SecType.STK;
-  }
-}
 
 interface SecurityRow {
   id: number;

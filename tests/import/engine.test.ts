@@ -269,6 +269,124 @@ describe("import engine", () => {
     });
   });
 
+  describe("price source priority", () => {
+    it("higher-priority source overwrites lower-priority price", () => {
+      // First insert a vanguard price
+      const secId = db.prepare(
+        "INSERT INTO securities (symbol, name) VALUES ('TEST', 'Test Inc') RETURNING id",
+      ).get() as { id: number };
+
+      const batch1 = db.prepare(
+        "INSERT INTO import_batches (source_type, filename, status, record_count) VALUES ('vanguard-holdings', 'test.csv', 'completed', 1) RETURNING id",
+      ).get() as { id: number };
+
+      db.prepare(
+        "INSERT INTO prices (security_id, date, close_price, source, import_batch_id) VALUES (?, '2025-03-15', 100.0, 'vanguard-holdings', ?)",
+      ).run(secId.id, batch1.id);
+
+      // Now import via engine with ibkr-activity source (higher priority)
+      const parsed: import("@/lib/import/types").ParsedImportResult = {
+        sourceType: "ibkr-activity",
+        sourceName: "test-priority.csv",
+        transactions: [],
+        securities: [{ symbol: "TEST", name: "Test Inc" }],
+        holdings: [],
+        prices: [
+          { symbol: "TEST", date: "2025-03-15", closePrice: 105.0, source: "ibkr-activity" },
+        ],
+        snapshots: [],
+        errors: [],
+        warnings: [],
+      };
+
+      const result = commitImport(db, parsed);
+      expect(result.newPrices).toBe(1);
+
+      const price = db.prepare(
+        "SELECT close_price, source FROM prices WHERE security_id = ? AND date = '2025-03-15'",
+      ).get(secId.id) as { close_price: number; source: string };
+
+      expect(price.close_price).toBe(105.0);  // ibkr overwrote vanguard
+      expect(price.source).toBe("ibkr-activity");
+    });
+
+    it("lower-priority source does NOT overwrite higher-priority price", () => {
+      // First insert a TWS price (highest priority)
+      const secId = db.prepare(
+        "INSERT INTO securities (symbol, name) VALUES ('TEST2', 'Test2 Inc') RETURNING id",
+      ).get() as { id: number };
+
+      db.prepare(
+        "INSERT INTO prices (security_id, date, close_price, source) VALUES (?, '2025-03-15', 110.0, 'tws')",
+      ).run(secId.id);
+
+      // Now try to import a vanguard price (lower priority)
+      const parsed: import("@/lib/import/types").ParsedImportResult = {
+        sourceType: "vanguard-holdings",
+        sourceName: "test-priority.csv",
+        transactions: [],
+        securities: [{ symbol: "TEST2", name: "Test2 Inc" }],
+        holdings: [],
+        prices: [
+          { symbol: "TEST2", date: "2025-03-15", closePrice: 100.0, source: "vanguard-holdings" },
+        ],
+        snapshots: [],
+        errors: [],
+        warnings: [],
+      };
+
+      const result = commitImport(db, parsed);
+      // The price should be "skipped" because TWS has higher priority
+      expect(result.newPrices).toBe(0);
+
+      const price = db.prepare(
+        "SELECT close_price, source FROM prices WHERE security_id = ? AND date = '2025-03-15'",
+      ).get(secId.id) as { close_price: number; source: string };
+
+      expect(price.close_price).toBe(110.0);  // TWS price unchanged
+      expect(price.source).toBe("tws");
+    });
+
+    it("same-source re-import updates price (idempotent)", () => {
+      // Insert a vanguard price
+      const secId = db.prepare(
+        "INSERT INTO securities (symbol, name) VALUES ('TEST3', 'Test3 Inc') RETURNING id",
+      ).get() as { id: number };
+
+      const batch1 = db.prepare(
+        "INSERT INTO import_batches (source_type, filename, status, record_count) VALUES ('vanguard-holdings', 'test.csv', 'completed', 1) RETURNING id",
+      ).get() as { id: number };
+
+      db.prepare(
+        "INSERT INTO prices (security_id, date, close_price, source, import_batch_id) VALUES (?, '2025-03-15', 100.0, 'vanguard-holdings', ?)",
+      ).run(secId.id, batch1.id);
+
+      // Re-import with same source but different price
+      const parsed: import("@/lib/import/types").ParsedImportResult = {
+        sourceType: "vanguard-holdings",
+        sourceName: "test-reissue.csv",
+        transactions: [],
+        securities: [{ symbol: "TEST3", name: "Test3 Inc" }],
+        holdings: [],
+        prices: [
+          { symbol: "TEST3", date: "2025-03-15", closePrice: 102.0, source: "vanguard-holdings" },
+        ],
+        snapshots: [],
+        errors: [],
+        warnings: [],
+      };
+
+      const result = commitImport(db, parsed);
+      expect(result.newPrices).toBe(1); // should overwrite same-source
+
+      const price = db.prepare(
+        "SELECT close_price FROM prices WHERE security_id = ? AND date = '2025-03-15'",
+      ).get(secId.id) as { close_price: number };
+
+      expect(price.close_price).toBe(102.0);
+    });
+  });
+
   describe("multi-format import", () => {
     it("imports multiple file types into the same database", async () => {
       // Import IBKR activity (transactions + snapshot)

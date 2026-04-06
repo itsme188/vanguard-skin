@@ -1,25 +1,14 @@
 import type Database from "better-sqlite3";
-import { BarSizeSetting, SecType } from "@stoqey/ib";
+import { BarSizeSetting, SecType, type WhatToShow } from "@stoqey/ib";
+import {
+  mapSecurityType,
+  PRICE_FETCH_EXCLUDED_TYPES,
+  getWhatToShow,
+  getWhatToShowFallback,
+} from "./security-type-map";
 import { getIbApi } from "./client";
 import { RateLimiter } from "./rate-limiter";
 import type { PriceFetchResult, PriceFetchProgress } from "./types";
-
-function mapSecurityType(dbType: string | null): SecType {
-  switch (dbType?.toLowerCase()) {
-    case "stock":
-    case "etf":
-      return SecType.STK;
-    case "bond":
-      return SecType.BOND;
-    case "mutual_fund":
-    case "mutual fund":
-      return SecType.FUND;
-    case "option":
-      return SecType.OPT;
-    default:
-      return SecType.STK;
-  }
-}
 
 const rateLimiter = new RateLimiter();
 
@@ -92,9 +81,9 @@ export async function fetchHistoricalPrices(
       .prepare(
         `SELECT id, symbol, security_type, ib_con_id FROM securities
          WHERE ib_con_id IS NOT NULL
-           AND (security_type IS NULL OR security_type NOT IN ('mutual_fund', 'option'))`,
+           AND (security_type IS NULL OR LOWER(security_type) NOT IN (${PRICE_FETCH_EXCLUDED_TYPES.map(() => "?").join(", ")}))`,
       )
-      .all() as SecurityRow[];
+      .all(...PRICE_FETCH_EXCLUDED_TYPES) as SecurityRow[];
   }
 
   const results: PriceFetchResult[] = [];
@@ -149,23 +138,37 @@ export async function fetchHistoricalPrices(
       ? { conId: sec.ib_con_id, secType, exchange: "SMART", currency: "USD" }
       : { symbol: sec.symbol, secType, exchange: "SMART", currency: "USD" };
 
-    const bars = await Promise.race([
-      api!.getHistoricalData(
-        contract,
-        options?.endDate ?? "",
-        durationStr,
-        BarSizeSetting.DAYS_ONE,
-        "TRADES",
-        1,
-        1,
-      ),
-      new Promise<never>((_, reject) =>
-        setTimeout(
-          () => reject(new Error(`Timeout after ${REQUEST_TIMEOUT_MS / 1000}s`)),
-          REQUEST_TIMEOUT_MS,
+    // Choose whatToShow based on security type (bonds: BID_ASK, funds: MIDPOINT, stocks: TRADES)
+    const whatToShow = getWhatToShow(sec.security_type);
+    const fallbackWhatToShow = getWhatToShowFallback(sec.security_type);
+
+    async function fetchBars(wts: WhatToShow) {
+      return Promise.race([
+        api!.getHistoricalData(
+          contract,
+          options?.endDate ?? "",
+          durationStr,
+          BarSizeSetting.DAYS_ONE,
+          wts,
+          1,
+          1,
         ),
-      ),
-    ]);
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error(`Timeout after ${REQUEST_TIMEOUT_MS / 1000}s`)),
+            REQUEST_TIMEOUT_MS,
+          ),
+        ),
+      ]);
+    }
+
+    let bars = await fetchBars(whatToShow);
+
+    // If primary whatToShow returned no bars, try the fallback
+    if (bars.length === 0 && fallbackWhatToShow) {
+      await rateLimiter.waitForSlot();
+      bars = await fetchBars(fallbackWhatToShow);
+    }
 
     let inserted = 0;
     let skipped = 0;
