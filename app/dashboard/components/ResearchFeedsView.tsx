@@ -3,6 +3,7 @@
 import { useState, useCallback } from "react";
 import Link from "next/link";
 import type { ResearchArticle, ResearchSource } from "@/lib/queries/research";
+import { trimEmailFooter } from "@/lib/gmail/sanitize";
 import { ManageSourcesModal } from "./ManageSourcesModal";
 
 interface Props {
@@ -222,8 +223,8 @@ export function ResearchFeedsView({ initialArticles, sources, initialSymbolMap }
       const res = await fetch(`/api/research/articles/${articleId}`);
       const data = await res.json();
       if (data.success) {
-        setExpandedText(data.data.raw_text || null);
-        setExpandedHtml(data.data.raw_html || null);
+        setExpandedText(data.data.raw_text ? trimEmailFooter(data.data.raw_text) : null);
+        setExpandedHtml(data.data.raw_html ? trimEmailFooter(data.data.raw_html) : null);
       }
     } catch { /* ignore */ } finally {
       setLoadingExpand(false);
