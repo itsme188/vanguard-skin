@@ -4,6 +4,7 @@ import type { CalendarEvent } from "@/lib/types";
 import { getEventsByWeek } from "@/lib/queries/calendar";
 import { saveBriefing } from "@/lib/mutations/calendar";
 import { fetchVitalKnowledge } from "@/lib/vital-knowledge";
+import { getRecentArticles } from "@/lib/queries/research";
 
 const BRIEFING_MODEL = "claude-sonnet-4-6";
 
@@ -54,13 +55,28 @@ export async function generateWeeklyBriefing(
     .map((e, i) => formatEventForPrompt(e, i + 1))
     .join("\n\n");
 
-  // Fetch Vital Knowledge market commentary (graceful — returns "" on failure)
+  // Fetch market context from research feeds (preferred) or IMAP Vital Knowledge (fallback)
   let marketContext = "";
-  const gmailAddress = process.env.GMAIL_ADDRESS;
-  const gmailAppPassword = process.env.GMAIL_APP_PASSWORD;
-  if (gmailAddress && gmailAppPassword) {
-    options?.onProgress?.("Fetching Vital Knowledge market context...", 1, 3);
-    marketContext = await fetchVitalKnowledge(gmailAddress, gmailAppPassword, 7);
+  try {
+    const recentArticles = getRecentArticles(db, { processedOnly: true, limit: 10 });
+    if (recentArticles.length > 0) {
+      options?.onProgress?.("Loading research feed context...", 1, 3);
+      marketContext = recentArticles
+        .map((a) => `[${a.received_at.slice(0, 10)}] ${a.source_name}: ${a.subject}\n${a.summary || ""}`)
+        .join("\n\n---\n\n");
+    }
+  } catch {
+    // Table may not exist yet (pre-migration 019)
+  }
+
+  // Fallback to IMAP if no research articles available
+  if (!marketContext) {
+    const gmailAddress = process.env.GMAIL_ADDRESS;
+    const gmailAppPassword = process.env.GMAIL_APP_PASSWORD;
+    if (gmailAddress && gmailAppPassword) {
+      options?.onProgress?.("Fetching Vital Knowledge market context...", 1, 3);
+      marketContext = await fetchVitalKnowledge(gmailAddress, gmailAppPassword, 7);
+    }
   }
 
   options?.onProgress?.("Generating briefing via Claude...", marketContext ? 2 : 1, marketContext ? 3 : 2);

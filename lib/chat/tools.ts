@@ -490,6 +490,36 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
       },
     },
   },
+  {
+    name: "query_research_feeds",
+    description:
+      "Search the user's ingested financial newsletter articles from Gmail. Returns AI-processed summaries, sentiment, mentioned tickers, and portfolio relevance. Sources include Vital Knowledge, TMT Breakouts, Stratechery, The Diff, Alliant Capital, and other subscribed newsletters. Use when the user asks about recent market research, newsletter insights, what analysts are saying, sentiment on a particular stock or theme, or what their research feeds have covered recently.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        symbol: {
+          type: "string",
+          description:
+            "Filter by ticker symbol mentioned in articles (e.g., 'AAPL'). Omit for all articles.",
+        },
+        source: {
+          type: "string",
+          description:
+            "Filter by newsletter source name (e.g., 'Vital Knowledge', 'Stratechery'). Omit for all sources.",
+        },
+        days_back: {
+          type: "number",
+          description:
+            "How many days back to search. Default 7. Use 1 for today's articles, 30 for monthly overview.",
+        },
+        search: {
+          type: "string",
+          description:
+            "Free-text search across article subjects, summaries, and content. Use for topic-based queries.",
+        },
+      },
+    },
+  },
 ];
 
 // ─── Account Name Resolution ─────────────────────────────────────
@@ -942,6 +972,66 @@ export async function executeTool(
         break;
       }
 
+      case "query_research_feeds": {
+        let researchArticles: import("@/lib/queries/research").ResearchArticle[] = [];
+        try {
+          const { getRecentArticles } = await import("@/lib/queries/research");
+          const daysBack = (input.days_back as number) || 7;
+          const startDate = new Date();
+          startDate.setDate(startDate.getDate() - daysBack);
+
+          // If filtering by symbol, find the security_id
+          let securityId: number | undefined;
+          if (input.symbol) {
+            const sec = db
+              .prepare("SELECT id FROM securities WHERE symbol = ? LIMIT 1")
+              .get(String(input.symbol).toUpperCase()) as
+              | { id: number }
+              | undefined;
+            securityId = sec?.id;
+          }
+
+          // If filtering by source name, find the source_id
+          let sourceId: number | undefined;
+          if (input.source) {
+            const src = db
+              .prepare(
+                "SELECT id FROM research_sources WHERE LOWER(name) LIKE '%' || LOWER(?) || '%' LIMIT 1"
+              )
+              .get(String(input.source)) as { id: number } | undefined;
+            sourceId = src?.id;
+          }
+
+          researchArticles = getRecentArticles(db, {
+            sourceId,
+            securityId,
+            startDate: startDate.toISOString().slice(0, 10),
+            search: input.search ? String(input.search) : undefined,
+            processedOnly: true,
+            limit: 15,
+          });
+        } catch {
+          // Table may not exist yet
+        }
+
+        rawResult = {
+          articles: researchArticles.map((a) => ({
+            source: a.source_name,
+            date: a.received_at.slice(0, 10),
+            subject: a.subject,
+            summary: a.summary,
+            sentiment: a.sentiment,
+            themes: a.key_themes ? JSON.parse(a.key_themes) : [],
+            tickers: a.mentioned_symbols
+              ? JSON.parse(a.mentioned_symbols)
+              : [],
+            portfolio_relevance: a.portfolio_relevance,
+          })),
+          count: researchArticles.length,
+        };
+        break;
+      }
+
       default:
         return { error: `Unknown tool: ${toolName}` };
     }
@@ -977,4 +1067,5 @@ export const TOOL_LABELS: Record<string, string> = {
   query_earnings_transcript: "Fetching earnings transcript...",
   query_trade_reviews: "Looking up trade reviews...",
   query_options_greeks: "Computing options Greeks...",
+  query_research_feeds: "Searching research feeds...",
 };
