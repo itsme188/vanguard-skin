@@ -77,9 +77,9 @@ export function getRecentArticles(
     params.push(options.endDate + " 23:59:59");
   }
   if (options?.search) {
-    conditions.push("(a.subject LIKE ? OR a.summary LIKE ? OR a.raw_text LIKE ?)");
+    conditions.push("(a.subject LIKE ? OR a.summary LIKE ? OR a.raw_text LIKE ? OR a.mentioned_symbols LIKE ?)");
     const term = `%${options.search}%`;
-    params.push(term, term, term);
+    params.push(term, term, term, term);
   }
   if (options?.processedOnly) {
     conditions.push("a.processed_at IS NOT NULL");
@@ -101,6 +101,32 @@ export function getRecentArticles(
        LIMIT ?`
     )
     .all(...params, limit) as ResearchArticle[];
+}
+
+/**
+ * Build a symbol→securityId map for all securities mentioned in the given articles.
+ * One query for the whole batch — avoids N+1 per-article lookups.
+ */
+export function getSymbolSecurityMap(
+  db: Database.Database,
+  articleIds: number[]
+): Record<string, number> {
+  if (articleIds.length === 0) return {};
+  const placeholders = articleIds.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT s.symbol, s.id
+       FROM research_article_securities ras
+       JOIN securities s ON ras.security_id = s.id
+       WHERE ras.article_id IN (${placeholders})`
+    )
+    .all(...articleIds) as { symbol: string; id: number }[];
+
+  const map: Record<string, number> = {};
+  for (const r of rows) {
+    map[r.symbol] = r.id;
+  }
+  return map;
 }
 
 export function getArticlesForSecurity(

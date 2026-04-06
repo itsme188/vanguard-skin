@@ -20,7 +20,7 @@ export async function discoverNewsletterSenders(
   // Gmail search for newsletter-like emails (have unsubscribe header or link)
   const response = await gmail.users.messages.list({
     userId: "me",
-    q: "has:unsubscribe newer_than:30d",
+    q: "has:unsubscribe newer_than:90d",
     maxResults,
   });
 
@@ -90,8 +90,8 @@ export async function discoverNewsletterSenders(
   // Sort by frequency (most frequent = likely newsletters)
   const results: DiscoveredSender[] = [];
   for (const [email, data] of senderMap) {
-    // Only include senders with 2+ emails (likely recurring)
-    if (data.count >= 2) {
+    // Include all senders found with unsubscribe headers
+    if (data.count >= 1) {
       let formattedDate: string;
       try {
         formattedDate = new Date(data.latestDate).toISOString().slice(0, 10);

@@ -1,6 +1,7 @@
 import type { gmail_v1 } from "googleapis";
 import type Database from "better-sqlite3";
 import { stripHtml } from "../vital-knowledge";
+import { sanitizeNewsletterHtml } from "./sanitize";
 
 /**
  * Fetch new newsletter articles from Gmail for all active research sources.
@@ -29,8 +30,8 @@ export async function fetchNewArticles(
 
   const insertArticle = db.prepare(`
     INSERT OR IGNORE INTO research_articles
-      (source_id, gmail_message_id, gmail_thread_id, received_at, subject, sender, raw_text)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+      (source_id, gmail_message_id, gmail_thread_id, received_at, subject, sender, raw_text, raw_html)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   let totalFetched = 0;
@@ -53,7 +54,8 @@ export async function fetchNewArticles(
           detail.receivedAt,
           detail.subject,
           detail.sender,
-          detail.body
+          detail.body,
+          detail.html
         );
 
         if (result.changes > 0) sourceFetched++;
@@ -72,6 +74,52 @@ export async function fetchNewArticles(
   }
 
   return { fetched: totalFetched, sources: sourcesProcessed };
+}
+
+/**
+ * Backfill raw_html for existing articles that have gmail_message_id but no raw_html.
+ * Re-fetches the HTML from Gmail and updates the row.
+ */
+export async function backfillArticleHtml(
+  db: Database.Database,
+  gmail: gmail_v1.Gmail
+): Promise<{ updated: number; failed: number }> {
+  const articles = db
+    .prepare(
+      `SELECT id, gmail_message_id FROM research_articles
+       WHERE gmail_message_id IS NOT NULL AND raw_html IS NULL
+       ORDER BY received_at DESC`
+    )
+    .all() as { id: number; gmail_message_id: string }[];
+
+  if (articles.length === 0) return { updated: 0, failed: 0 };
+
+  const updateHtml = db.prepare(
+    `UPDATE research_articles SET raw_html = ? WHERE id = ?`
+  );
+
+  let updated = 0;
+  let failed = 0;
+
+  for (const article of articles) {
+    try {
+      const msg = await gmail.users.messages.get({
+        userId: "me",
+        id: article.gmail_message_id,
+        format: "full",
+      });
+
+      const { html } = extractBody(msg.data.payload);
+      if (html) {
+        updateHtml.run(sanitizeNewsletterHtml(html).slice(0, 200_000), article.id);
+        updated++;
+      }
+    } catch {
+      failed++;
+    }
+  }
+
+  return { updated, failed };
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -115,6 +163,7 @@ interface MessageDetail {
   subject: string;
   sender: string;
   body: string;
+  html: string | null;
 }
 
 async function getMessageDetail(
@@ -144,9 +193,9 @@ async function getMessageDetail(
     receivedAt = new Date().toISOString().replace("T", " ").slice(0, 19);
   }
 
-  // Extract body — prefer text/plain, fall back to text/html (stripped)
-  const body = extractBody(msg.data.payload);
-  if (!body || body.trim().length < 50) return null; // skip empty/tiny messages
+  // Extract body text and original HTML (if available)
+  const { text, html } = extractBody(msg.data.payload);
+  if (!text || text.trim().length < 50) return null; // skip empty/tiny messages
 
   return {
     messageId: msg.data.id || messageId,
@@ -154,40 +203,45 @@ async function getMessageDetail(
     receivedAt,
     subject,
     sender,
-    body: body.slice(0, 50_000), // Cap at 50K chars
+    body: text.slice(0, 50_000), // Cap at 50K chars
+    html: html ? sanitizeNewsletterHtml(html).slice(0, 200_000) : null,
   };
 }
 
 function extractBody(
   payload: gmail_v1.Schema$MessagePart | undefined
-): string {
-  if (!payload) return "";
+): { text: string; html: string | null } {
+  if (!payload) return { text: "", html: null };
 
   // Single-part message
   if (payload.body?.data) {
     const decoded = Buffer.from(payload.body.data, "base64").toString("utf-8");
-    if (payload.mimeType === "text/html") return stripHtml(decoded);
-    return decoded;
+    if (payload.mimeType === "text/html") {
+      return { text: stripHtml(decoded), html: decoded };
+    }
+    return { text: decoded, html: null };
   }
 
-  // Multipart — walk parts looking for text/plain first, then text/html
+  // Multipart — extract both plain text and HTML
   if (payload.parts) {
-    // Prefer text/plain
     const plain = findPart(payload.parts, "text/plain");
-    if (plain) return plain;
+    const htmlRaw = findPart(payload.parts, "text/html");
 
-    // Fall back to text/html (stripped)
-    const html = findPart(payload.parts, "text/html");
-    if (html) return stripHtml(html);
+    if (plain) {
+      return { text: plain, html: htmlRaw };
+    }
+    if (htmlRaw) {
+      return { text: stripHtml(htmlRaw), html: htmlRaw };
+    }
 
     // Recurse into nested multipart
     for (const part of payload.parts) {
       const nested = extractBody(part);
-      if (nested) return nested;
+      if (nested.text) return nested;
     }
   }
 
-  return "";
+  return { text: "", html: null };
 }
 
 function findPart(

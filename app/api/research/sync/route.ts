@@ -1,6 +1,6 @@
 import { db } from "@/lib/db";
 import { isGmailConfigured, getGmailClient } from "@/lib/gmail/auth";
-import { fetchNewArticles } from "@/lib/gmail/fetch";
+import { fetchNewArticles, backfillArticleHtml } from "@/lib/gmail/fetch";
 import { processUnprocessedArticles } from "@/lib/gmail/process";
 
 /**
@@ -47,6 +47,16 @@ export async function POST() {
             status: "done",
             processed: processResult.processed,
             failed: processResult.failed,
+          });
+        }
+
+        // Phase 3: Backfill HTML for older articles missing it
+        const backfillResult = await backfillArticleHtml(db, gmail);
+        if (backfillResult.updated > 0) {
+          send({
+            phase: "backfill",
+            status: "done",
+            updated: backfillResult.updated,
           });
         }
 

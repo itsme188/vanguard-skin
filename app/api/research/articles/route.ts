@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { getRecentArticles } from "@/lib/queries/research";
+import { getRecentArticles, getSymbolSecurityMap } from "@/lib/queries/research";
 
 /**
  * GET /api/research/articles — Query research articles with filters.
@@ -24,5 +24,6 @@ export async function GET(request: Request) {
     limit: limit ? Number(limit) : 50,
   });
 
-  return Response.json({ success: true, data: articles });
+  const symbolMap = getSymbolSecurityMap(db, articles.map((a) => a.id));
+  return Response.json({ success: true, data: articles, symbolMap });
 }
