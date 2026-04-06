@@ -7,6 +7,7 @@ export type SourceType =
   | "vanguard-holdings"
   | "vanguard-pdf"
   | "factor-csv"
+  | "canonical-csv"
   | "unknown";
 
 export interface ParsedTransaction {

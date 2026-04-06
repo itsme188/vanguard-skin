@@ -11,6 +11,7 @@ import { parseVanguardExport } from "./parsers/vanguard-export";
 import { parseVanguardHoldings } from "./parsers/vanguard-holdings";
 import { parseVanguardPdf } from "./parsers/vanguard-pdf";
 import { parseFactorCsv } from "./parsers/factor-csv";
+import { parseCanonicalCsv } from "./parsers/canonical-csv";
 import { upsertSecurity } from "@/lib/mutations/securities";
 import { FACTOR_COLUMNS } from "@/lib/factors";
 import {
@@ -51,6 +52,8 @@ export async function parseImport(
       return parseVanguardPdf(content, filename);
     case "factor-csv":
       return parseFactorCsv(textContent, filename);
+    case "canonical-csv":
+      return parseCanonicalCsv(textContent, filename);
     default:
       return {
         sourceType: "unknown",
