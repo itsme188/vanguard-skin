@@ -5,6 +5,7 @@ import Link from "next/link";
 const VIEWS = [
   { key: "notes", label: "Notes", href: "/dashboard/research" },
   { key: "reviews", label: "Trade Reviews", href: "/dashboard/research?view=reviews" },
+  { key: "feeds", label: "Feeds", href: "/dashboard/research?view=feeds" },
 ];
 
 export function ResearchViewToggle({ currentView }: { currentView: string }) {

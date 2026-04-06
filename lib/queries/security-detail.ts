@@ -22,6 +22,7 @@ import type { TradeRoundtrip } from "@/lib/types";
 import { getSecurityById } from "@/lib/queries/securities";
 import { getUpcomingEvents } from "@/lib/queries/calendar";
 import { getTranscriptsForSecurity } from "@/lib/queries/transcripts";
+import { getArticlesForSecurity, type ResearchMention } from "@/lib/queries/research";
 
 // ─── Result types ──────────────────────────────────────────────
 
@@ -61,6 +62,7 @@ export interface SecurityDetailData {
   factors: SecurityFactor | null;
   transcripts: EarningsTranscript[];
   tradeGrades: TradeGradeEntry[];
+  researchMentions: ResearchMention[];
 }
 
 export interface TradeGradeEntry {
@@ -329,6 +331,14 @@ export function getSecurityDetail(
   const transcripts = getTranscriptsForSecurity(db, securityId);
   const tradeGrades = getTradeGradesBySecurity(db, securityId);
 
+  // Research feed mentions
+  let researchMentions: ResearchMention[] = [];
+  try {
+    researchMentions = getArticlesForSecurity(db, securityId, 5);
+  } catch {
+    // Table may not exist yet (pre-migration 019)
+  }
+
   // Upcoming events: filter to future events for this security
   const today = new Date().toISOString().slice(0, 10);
   const upcomingEvents = getUpcomingEvents(db, {
@@ -360,5 +370,6 @@ export function getSecurityDetail(
     factors,
     transcripts,
     tradeGrades,
+    researchMentions,
   };
 }

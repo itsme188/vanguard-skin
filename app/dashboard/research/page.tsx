@@ -3,9 +3,11 @@ import { getNotesFiltered, getEarningsTimeline } from "@/lib/queries/notes";
 import { getTranscriptsSummary } from "@/lib/queries/transcripts";
 import { getTradeReviews } from "@/lib/queries/trade-reviews";
 import { getAvailableReviewPeriods } from "@/lib/compute/trade-roundtrips";
+import { getRecentArticles, getResearchSources } from "@/lib/queries/research";
 import type { NoteType } from "@/lib/types";
 import { NotesView } from "../components/NotesView";
 import { TradeReviewView } from "../components/TradeReviewView";
+import { ResearchFeedsView } from "../components/ResearchFeedsView";
 import { ResearchViewToggle } from "../components/ResearchViewToggle";
 
 interface PageProps {
@@ -79,21 +81,41 @@ export default async function ResearchPage({ searchParams }: PageProps) {
     }
   }
 
+  // Load feeds data when viewing feeds
+  let feedArticles: Awaited<ReturnType<typeof getRecentArticles>> = [];
+  let feedSources: Awaited<ReturnType<typeof getResearchSources>> = [];
+
+  if (view === "feeds") {
+    try {
+      feedArticles = getRecentArticles(db, { processedOnly: true, limit: 50 });
+      feedSources = getResearchSources(db);
+    } catch {
+      // Non-blocking — feeds table may not exist yet (pre-migration)
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-medium text-ink">Research</h2>
           <p className="text-sm text-ink-faint mt-0.5">
-            {view === "reviews"
-              ? "Monthly AI trade analysis and behavioral patterns"
-              : "Investment journal, earnings notes, and trade theses"}
+            {view === "feeds"
+              ? "Newsletter digests and market research from Gmail"
+              : view === "reviews"
+                ? "Monthly AI trade analysis and behavioral patterns"
+                : "Investment journal, earnings notes, and trade theses"}
           </p>
         </div>
         <ResearchViewToggle currentView={view} />
       </div>
 
-      {view === "reviews" ? (
+      {view === "feeds" ? (
+        <ResearchFeedsView
+          initialArticles={feedArticles}
+          sources={feedSources}
+        />
+      ) : view === "reviews" ? (
         <TradeReviewView
           initialReviews={reviews}
           accounts={accounts}
