@@ -54,5 +54,19 @@ export function detectSourceType(content: string, filename: string): SourceType 
     return "factor-csv";
   }
 
+  // Canonical CSV: 4 standardized formats produced by Claude Code preprocessing
+  if (firstLine.startsWith("account,trade_date,settlement_date,type,symbol")) {
+    return "canonical-csv";
+  }
+  if (firstLine.startsWith("account,as_of_date,symbol,security_name")) {
+    return "canonical-csv";
+  }
+  if (firstLine === "symbol,date,close_price") {
+    return "canonical-csv";
+  }
+  if (firstLine.startsWith("account,month_end_date,total_value")) {
+    return "canonical-csv";
+  }
+
   return "unknown";
 }

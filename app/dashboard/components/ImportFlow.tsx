@@ -210,7 +210,7 @@ export function ImportFlow() {
                 Drop files here to import
               </p>
               <p className="text-ink-dim text-sm mt-1">
-                Vanguard PDFs, IBKR CSVs, Vanguard CSVs, Monthly Values
+                Vanguard PDFs, IBKR CSVs, Vanguard CSVs, Canonical CSVs
               </p>
             </div>
             <span className="mt-2 px-4 py-2 rounded-lg bg-raised text-ink-dim text-sm hover:bg-muted hover:text-ink transition-colors">
@@ -456,7 +456,7 @@ export function ImportFlow() {
         {(state as { status: "error"; message: string }).message}
       </p>
       <p className="text-xs text-ink-faint mb-4">
-        Supported formats: Vanguard PDFs, IBKR activity/holdings CSVs, Vanguard cost basis/holdings CSVs, Monthly Values CSVs
+        Supported formats: Vanguard PDFs, IBKR CSVs, Vanguard CSVs, Canonical CSVs (see format guide below)
       </p>
       <button
         onClick={reset}
