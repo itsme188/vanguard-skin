@@ -3,7 +3,7 @@ import { getNotesFiltered, getEarningsTimeline } from "@/lib/queries/notes";
 import { getTranscriptsSummary } from "@/lib/queries/transcripts";
 import { getTradeReviews } from "@/lib/queries/trade-reviews";
 import { getAvailableReviewPeriods } from "@/lib/compute/trade-roundtrips";
-import { getRecentArticles, getResearchSources } from "@/lib/queries/research";
+import { getRecentArticles, getResearchSources, getSymbolSecurityMap } from "@/lib/queries/research";
 import type { NoteType } from "@/lib/types";
 import { NotesView } from "../components/NotesView";
 import { TradeReviewView } from "../components/TradeReviewView";
@@ -84,11 +84,13 @@ export default async function ResearchPage({ searchParams }: PageProps) {
   // Load feeds data when viewing feeds
   let feedArticles: Awaited<ReturnType<typeof getRecentArticles>> = [];
   let feedSources: Awaited<ReturnType<typeof getResearchSources>> = [];
+  let feedSymbolMap: Record<string, number> = {};
 
   if (view === "feeds") {
     try {
       feedArticles = getRecentArticles(db, { processedOnly: true, limit: 50 });
       feedSources = getResearchSources(db);
+      feedSymbolMap = getSymbolSecurityMap(db, feedArticles.map((a) => a.id));
     } catch {
       // Non-blocking — feeds table may not exist yet (pre-migration)
     }
@@ -114,6 +116,7 @@ export default async function ResearchPage({ searchParams }: PageProps) {
         <ResearchFeedsView
           initialArticles={feedArticles}
           sources={feedSources}
+          initialSymbolMap={feedSymbolMap}
         />
       ) : view === "reviews" ? (
         <TradeReviewView

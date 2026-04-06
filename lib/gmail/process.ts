@@ -8,6 +8,7 @@ interface UnprocessedArticle {
   sender: string;
   raw_text: string;
   source_name: string;
+  processing_prompt: string | null;
 }
 
 interface ProcessedResult {
@@ -35,7 +36,8 @@ export async function processUnprocessedArticles(
 
   const articles = db
     .prepare(
-      `SELECT a.id, a.source_id, a.subject, a.sender, a.raw_text, s.name as source_name
+      `SELECT a.id, a.source_id, a.subject, a.sender, a.raw_text,
+              s.name as source_name, s.processing_prompt
        FROM research_articles a
        JOIN research_sources s ON a.source_id = s.id
        WHERE a.processed_at IS NULL
@@ -203,7 +205,7 @@ Subject: ${article.subject}
 From: ${article.sender}
 
 Current portfolio holdings: ${holdingsContext || "(none loaded)"}
-
+${article.processing_prompt ? `\nSource-specific instructions: ${article.processing_prompt}\n` : ""}
 Article text:
 ${text}`,
       },

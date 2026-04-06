@@ -1,6 +1,6 @@
 import { db } from "@/lib/db";
 import { getResearchSources } from "@/lib/queries/research";
-import { createSource, updateSource } from "@/lib/mutations/research";
+import { createSource, updateSource, deleteSource } from "@/lib/mutations/research";
 
 /**
  * GET /api/research/sources — List all research sources with article counts.
@@ -34,5 +34,18 @@ export async function PATCH(request: Request) {
   }
   const { id, ...updates } = body;
   updateSource(db, id, updates);
+  return Response.json({ success: true });
+}
+
+/**
+ * DELETE /api/research/sources — Delete a research source.
+ * Body: { id }
+ */
+export async function DELETE(request: Request) {
+  const body = await request.json();
+  if (!body.id) {
+    return Response.json({ error: "id is required" }, { status: 400 });
+  }
+  deleteSource(db, body.id);
   return Response.json({ success: true });
 }
