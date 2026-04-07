@@ -1,71 +1,83 @@
-import type { RoundTrip, RoundTripSummary } from "@/lib/compute/trade-roundtrips";
+import type { GroupedTrade, RoundTripSummary } from "@/lib/compute/trade-roundtrips";
 import type { PriorReviewSummary } from "@/lib/queries/trade-reviews";
+import type { AccountProfile, TradeAnswer } from "./questions";
 
 /**
  * Build the system + user prompt for trade review generation.
- * Uses the design doc's grading rubric and analysis framework.
+ * Uses account-specific profiles and market context for grounded analysis.
  */
 export function buildTradeReviewPrompt(
-  roundTrips: RoundTrip[],
+  groupedTrades: GroupedTrade[],
   summary: RoundTripSummary,
   priorReviews: PriorReviewSummary[],
   periodLabel: string,
-  marketContext?: string
+  accountProfile: AccountProfile,
+  marketContext?: string,
+  answers?: TradeAnswer[]
 ): { system: string; user: string } {
-  const system = buildSystemPrompt(priorReviews.length);
+  const system = buildSystemPrompt(priorReviews.length, accountProfile);
   const user = buildUserPrompt(
-    roundTrips,
+    groupedTrades,
     summary,
     priorReviews,
     periodLabel,
-    marketContext
+    marketContext,
+    answers
   );
   return { system, user };
 }
 
-function buildSystemPrompt(priorReviewCount: number): string {
-  let prompt = `You are an elite trading coach analyzing a short-term trader's monthly activity.
-You have access to their complete trading history for this month and summaries of prior months.
-Your job is to provide honest, specific, actionable feedback — not generic platitudes.
+function buildSystemPrompt(
+  priorReviewCount: number,
+  accountProfile: AccountProfile
+): string {
+  let prompt = `You are an experienced portfolio analyst reviewing a trader's monthly activity.
+You have access to their complete trading data for this month, price history, benchmark comparisons, and summaries of prior months.
+Your job is to provide specific, evidence-based analysis using the actual data provided.
 
-TRADER PROFILE:
-- Short-term trader (holding periods: days to weeks)
-- Primarily trades stocks in an IBKR brokerage account
-- Uses FIFO cost basis for tax lot matching
-- This review covers a single calendar month
+ACCOUNT PROFILE:
+${accountProfile.description}
 
 GRADING RUBRIC — Grade each trade A through F:
-- A: Excellent execution on both entry and exit. Well-timed, appropriately sized, thesis played out.
-- B: Good trade with minor improvements possible. Solid execution, small optimizations available.
-- C: Acceptable but with clear missed opportunities. Entry or exit timing was off, or sizing was wrong.
-- D: Poor execution on entry, exit, or both. Held too long, sold too early, or lacked a clear thesis.
-- F: Clear mistake — emotional, undisciplined, or thesis-free trade. Revenge trade, FOMO, or panic sell.
+- A: Well-executed given the apparent intent. Good timing relative to price action, appropriate sizing, thesis (if stated) played out.
+- B: Solid trade with minor improvements possible. Entry or exit could have been slightly better.
+- C: Acceptable but with clear missed opportunities. Timing was off, or the trade drifted from its likely intent.
+- D: Poor execution — significant money left on the table, or position management was lacking.
+- F: Clear mistake — the data shows a materially bad decision regardless of intent.
 
 ANALYSIS FRAMEWORK — For each trade, assess:
-1. Entry quality: Was the entry well-timed? What was the likely thesis?
-2. Exit quality: Was the exit disciplined or emotional? Left money on the table?
-3. Sizing: Was position sizing appropriate relative to conviction and risk?
-4. Holding period: Was the duration appropriate for the thesis?
+1. Outcome: What happened in terms of price movement and P&L?
+2. Timing: How did entry/exit timing look relative to the stock's price range during the hold?
+3. Context: If market data is available, how did the trade compare to SPY over the same period?
+4. Sizing: Was position sizing appropriate relative to portfolio (if data available)?
 
 MONTHLY SUMMARY MUST INCLUDE:
-1. Win rate and expectancy analysis (expectancy = avg_win × win_rate + avg_loss × loss_rate)
-2. Best and worst trades with specific lessons
-3. Behavioral patterns (positive and negative) observed this month
-4. Three specific, actionable recommendations for next month
+1. Win rate and expectancy analysis
+2. Best and worst trades with specific observations from the data
+3. Patterns observed this month (positive and negative)
+4. Three specific recommendations grounded in what the data shows
 
-IMPORTANT: Be direct and specific. "You sold AAPL too early — it ran another 5% in the two days after your exit" is better than "consider holding longer." Reference actual trades by symbol and date.`;
+CRITICAL RULES:
+- Be analytical and constructive. Write as a knowledgeable colleague, not an authority figure.
+- Never use emergency language, moralizing, or condescending framing.
+- Never suggest paper trading, journaling homework, or trading boot camp exercises.
+- If the trader provided notes about a trade, use them as the authoritative context — do not override their stated intent.
+- If no notes were provided and intent is unclear, say "intent unclear from data" — do not fabricate an entry thesis.
+- Reference actual prices, dates, and percentages from the data. "Exited at $35.98, 28% below the period high of $49.75" is better than "sold too early."
+- Use market context when available to ground your analysis. "Underperformed SPY by 27% over the same period" adds real information.
+- The trade count in the summary matches the number of trades in the table. Each row is one trade (which may have consumed multiple tax lots via FIFO).
+- IMPORTANT: The "Days" column shows FIFO holding periods — the time between the oldest matched tax lot's acquisition and the sale. For actively traded securities, this does NOT reflect how long the trader perceived holding the position. A trader who buys 100 shares on Monday and sells Tuesday may show "90 days" because FIFO matched against a lot from 3 months ago. Do NOT use holding days to judge discipline or intent. Focus on sale dates, P&L, and any trader-provided notes instead.`;
 
   if (priorReviewCount >= 3) {
     prompt += `
 
 CUMULATIVE PATTERN ANALYSIS (${priorReviewCount} prior months available):
-You now have multiple months of trading history. Look for multi-month patterns:
-1. Do they consistently cut winners short? (compare avg winner holding vs avg loser holding)
-2. Do they overtrade after losses? (trade frequency changes after losing months)
-3. Do earnings plays work? (win rate on trades around earnings dates)
-4. Sizing patterns: do they size up on losers (averaging down) or winners?
-5. Recovery patterns: how do they respond to a bad trade? Next trade quality?
-6. Improvement trends: is win rate, profit factor, or expectancy improving over time?
+Look for multi-month patterns supported by evidence:
+1. Holding period trends: are holds getting shorter/longer? Is that helping?
+2. Win rate trajectory: improving, declining, or stable?
+3. Sizing patterns: does position sizing correlate with outcomes?
+4. Sector/style patterns: certain types of trades working better than others?
+5. Recovery patterns: how does the next trade look after a loss?
 
 Report ONLY patterns you actually observe with evidence from the data. Don't speculate.`;
   }
@@ -74,11 +86,12 @@ Report ONLY patterns you actually observe with evidence from the data. Don't spe
 }
 
 function buildUserPrompt(
-  roundTrips: RoundTrip[],
+  groupedTrades: GroupedTrade[],
   summary: RoundTripSummary,
   priorReviews: PriorReviewSummary[],
   periodLabel: string,
-  marketContext?: string
+  marketContext?: string,
+  answers?: TradeAnswer[]
 ): string {
   const parts: string[] = [];
 
@@ -96,27 +109,54 @@ function buildUserPrompt(
 - Best: ${summary.bestTradeSymbol} ($${summary.bestTradePnl.toFixed(2)})
 - Worst: ${summary.worstTradeSymbol} ($${summary.worstTradePnl.toFixed(2)})`);
 
-  // Round-trip table — group by sale transaction for multi-lot sells
+  // Grouped trade table
   parts.push(`\n## This Month's Trades\n`);
   parts.push(
-    "| # | Symbol | Entry Date | Entry Price | Exit Date | Exit Price | Qty | Days | P&L | Return |"
+    "| # | Symbol | Entry Date(s) | Avg Entry | Exit Date | Exit Price | Qty | Days | P&L | Return |"
   );
   parts.push(
-    "|---|--------|------------|-------------|-----------|------------|-----|------|-----|--------|"
+    "|---|--------|---------------|-----------|-----------|------------|-----|------|-----|--------|"
   );
 
-  // Group by sale transaction to aggregate multi-lot fills
-  const grouped = groupBySaleTransaction(roundTrips);
-  grouped.forEach((trade, i) => {
+  groupedTrades.forEach((trade, i) => {
     const pnlSign = trade.realizedPnl >= 0 ? "+" : "";
+    const entryDates =
+      trade.lots.length === 1
+        ? trade.earliestEntryDate
+        : `${trade.earliestEntryDate} – ${trade.latestEntryDate}`;
+
     parts.push(
-      `| ${i + 1} | ${trade.symbol} | ${trade.entryDate} | $${trade.entryPrice.toFixed(2)} | ${trade.exitDate} | $${trade.exitPrice.toFixed(2)} | ${trade.quantity.toFixed(0)} | ${trade.holdingDays} | ${pnlSign}$${trade.realizedPnl.toFixed(2)} | ${pnlSign}${trade.returnPct.toFixed(1)}% |`
+      `| ${i + 1} | ${trade.symbol} | ${entryDates} | $${trade.avgEntryPrice.toFixed(2)} | ${trade.exitDate} | $${trade.exitPrice.toFixed(2)} | ${formatQty(trade.totalQuantity)} | ${trade.avgHoldingDays} | ${pnlSign}$${trade.realizedPnl.toFixed(2)} | ${pnlSign}${trade.returnPct.toFixed(1)}% |`
     );
+
+    // Show lot breakdown for multi-lot trades
+    if (trade.lots.length > 1) {
+      const lotDetail = trade.lots
+        .map(
+          (lot) =>
+            `  - Lot: ${lot.entryDate} @ $${lot.entryPrice.toFixed(2)}, ${lot.exitQuantity} shares, ${lot.holdingDays}d, ${lot.realizedPnl >= 0 ? "+" : ""}$${lot.realizedPnl.toFixed(2)}`
+        )
+        .join("\n");
+      parts.push(`\n${lotDetail}\n`);
+    }
   });
 
-  // Market context (if available)
+  // Market context (enriched from DB)
   if (marketContext) {
     parts.push(`\n## Market Context\n${marketContext}`);
+  }
+
+  // Trader's notes (from Q&A answers)
+  if (answers && answers.length > 0) {
+    parts.push(`\n## Trader's Notes\n`);
+    for (const ans of answers) {
+      const trade = groupedTrades[ans.tradeNumber - 1];
+      if (trade) {
+        parts.push(
+          `**Trade ${ans.tradeNumber} (${trade.symbol}):** ${ans.answer}`
+        );
+      }
+    }
   }
 
   // Prior month summaries
@@ -127,9 +167,9 @@ function buildUserPrompt(
       parts.push(
         `### ${monthLabel}: ${pr.totalTrades} trades, ${(pr.winRate * 100).toFixed(0)}% win rate, $${pr.totalRealizedPnl.toFixed(0)} P&L, ${pr.profitFactor?.toFixed(1) ?? "N/A"}x profit factor`
       );
-      // Truncate prior review markdown to key findings (first ~500 chars)
-      const truncated = pr.reviewMarkdown.slice(0, 500);
-      parts.push(truncated + (pr.reviewMarkdown.length > 500 ? "..." : ""));
+      // Include more context than before (1000 chars vs 500)
+      const truncated = pr.reviewMarkdown.slice(0, 1000);
+      parts.push(truncated + (pr.reviewMarkdown.length > 1000 ? "..." : ""));
     }
 
     // Include cumulative patterns from the most recent review
@@ -149,57 +189,14 @@ function buildUserPrompt(
   }
 
   parts.push(
-    `\nPlease analyze all ${summary.totalTrades} trades and produce the monthly review using the submit_trade_review tool.`
+    `\nPlease analyze all ${summary.totalTrades} trade(s) and produce the monthly review using the submit_trade_review tool.`
   );
 
   return parts.join("\n");
 }
 
-/** Group multi-lot fills from the same SELL transaction into a single prompt row */
-interface GroupedTrade {
-  symbol: string;
-  entryDate: string;
-  entryPrice: number;
-  exitDate: string;
-  exitPrice: number;
-  quantity: number;
-  holdingDays: number;
-  realizedPnl: number;
-  returnPct: number;
-}
-
-function groupBySaleTransaction(roundTrips: RoundTrip[]): GroupedTrade[] {
-  const groups = new Map<string, RoundTrip[]>();
-
-  for (const rt of roundTrips) {
-    const key = `${rt.saleTransactionId}`;
-    const group = groups.get(key) || [];
-    group.push(rt);
-    groups.set(key, group);
-  }
-
-  return Array.from(groups.values()).map((group) => {
-    const totalQty = group.reduce((s, rt) => s + rt.exitQuantity, 0);
-    const totalCost = group.reduce((s, rt) => s + rt.entryCost, 0);
-    const totalProceeds = group.reduce((s, rt) => s + rt.exitProceeds, 0);
-    const totalPnl = group.reduce((s, rt) => s + rt.realizedPnl, 0);
-    // Weighted average entry price
-    const avgEntryPrice = totalQty > 0 ? totalCost / totalQty : 0;
-    // Use the longest holding period (most conservative)
-    const maxHoldingDays = Math.max(...group.map((rt) => rt.holdingDays));
-
-    return {
-      symbol: group[0].symbol,
-      entryDate: group[0].entryDate,
-      entryPrice: avgEntryPrice,
-      exitDate: group[0].exitDate,
-      exitPrice: group[0].exitPrice,
-      quantity: totalQty,
-      holdingDays: maxHoldingDays,
-      realizedPnl: totalPnl,
-      returnPct: totalCost > 0 ? (totalPnl / totalCost) * 100 : 0,
-    };
-  });
+function formatQty(qty: number): string {
+  return qty >= 1 ? qty.toFixed(0) : qty.toPrecision(3);
 }
 
 function formatMonthLabel(periodStart: string): string {

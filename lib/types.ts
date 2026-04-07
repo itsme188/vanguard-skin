@@ -296,4 +296,5 @@ export interface TradeRoundtrip {
   exit_assessment: string | null;
   what_went_well: string | null;
   what_went_wrong: string | null;
+  sale_transaction_id: number | null;
 }

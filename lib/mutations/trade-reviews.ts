@@ -161,18 +161,23 @@ export interface SaveRoundtripParams {
 }
 
 /**
- * Save round-trips for a review. Deletes existing roundtrips first
- * (via CASCADE when review is updated, or explicitly for safety).
+ * Save round-trips for a review. Matches AI grades by trade_number (grouped trade index).
+ * Each lot in a grouped trade gets the same grade — the grade applies to the whole position exit.
  */
 export function saveTradeRoundtrips(
   db: Database.Database,
   reviewId: number,
   roundTrips: RoundTrip[],
+  groupedTrades?: Array<{ saleTransactionId: number; lots: RoundTrip[] }>,
   grades?: Array<{
+    trade_number: number;
     symbol: string;
-    entry_date: string;
     exit_date: string;
     grade: string;
+    assessment?: string;
+    what_worked?: string;
+    what_didnt?: string;
+    // Legacy fields for backward compat
     entry_thesis?: string;
     exit_assessment?: string;
     what_went_well?: string;
@@ -182,25 +187,58 @@ export function saveTradeRoundtrips(
   // Clear existing roundtrips for this review
   db.prepare("DELETE FROM trade_roundtrips WHERE review_id = ?").run(reviewId);
 
-  const stmt = db.prepare(
-    `INSERT INTO trade_roundtrips (
-      review_id, account_id, security_id, symbol,
-      entry_date, entry_price, entry_quantity, entry_cost,
-      exit_date, exit_price, exit_quantity, exit_proceeds,
-      holding_days, realized_pnl, return_pct,
-      grade, entry_thesis, exit_assessment, what_went_well, what_went_wrong
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  );
+  // Check if sale_transaction_id column exists (migration 021)
+  const hasSaleTxCol = db
+    .prepare(
+      "SELECT COUNT(*) as cnt FROM pragma_table_info('trade_roundtrips') WHERE name = 'sale_transaction_id'"
+    )
+    .get() as { cnt: number };
+
+  const insertSql = hasSaleTxCol.cnt > 0
+    ? `INSERT INTO trade_roundtrips (
+        review_id, account_id, security_id, symbol,
+        entry_date, entry_price, entry_quantity, entry_cost,
+        exit_date, exit_price, exit_quantity, exit_proceeds,
+        holding_days, realized_pnl, return_pct,
+        grade, entry_thesis, exit_assessment, what_went_well, what_went_wrong,
+        sale_transaction_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    : `INSERT INTO trade_roundtrips (
+        review_id, account_id, security_id, symbol,
+        entry_date, entry_price, entry_quantity, entry_cost,
+        exit_date, exit_price, exit_quantity, exit_proceeds,
+        holding_days, realized_pnl, return_pct,
+        grade, entry_thesis, exit_assessment, what_went_well, what_went_wrong
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+  const stmt = db.prepare(insertSql);
+
+  // Build a map: saleTransactionId → grade (from trade_number index)
+  type GradeEntry = NonNullable<typeof grades>[number];
+  const gradeByTxId = new Map<number, GradeEntry>();
+  if (groupedTrades && grades) {
+    for (const grade of grades) {
+      const idx = grade.trade_number - 1; // trade_number is 1-indexed
+      if (idx >= 0 && idx < groupedTrades.length) {
+        gradeByTxId.set(groupedTrades[idx].saleTransactionId, grade);
+      }
+    }
+  }
 
   const insertAll = db.transaction(() => {
     let count = 0;
     for (const rt of roundTrips) {
-      // Match this round-trip to an AI grade by symbol + exit_date
-      const matched = grades?.find(
-        (g) => g.symbol === rt.symbol && g.exit_date === rt.exitDate
-      );
+      // Match by trade_number via grouped trades (new path)
+      let matched = gradeByTxId.get(rt.saleTransactionId);
 
-      stmt.run(
+      // Fallback: match by symbol + exit_date (legacy path)
+      if (!matched && grades) {
+        matched = grades.find(
+          (g) => g.symbol === rt.symbol && g.exit_date === rt.exitDate
+        );
+      }
+
+      const params: unknown[] = [
         reviewId,
         rt.accountId,
         rt.securityId,
@@ -217,11 +255,17 @@ export function saveTradeRoundtrips(
         rt.realizedPnl,
         rt.returnPct,
         matched?.grade ?? null,
-        matched?.entry_thesis ?? null,
-        matched?.exit_assessment ?? null,
-        matched?.what_went_well ?? null,
-        matched?.what_went_wrong ?? null
-      );
+        matched?.assessment ?? matched?.entry_thesis ?? null,
+        matched?.what_worked ?? matched?.exit_assessment ?? null,
+        matched?.what_didnt ?? matched?.what_went_well ?? null,
+        matched?.what_went_wrong ?? null,
+      ];
+
+      if (hasSaleTxCol.cnt > 0) {
+        params.push(rt.saleTransactionId);
+      }
+
+      stmt.run(...params);
       count++;
     }
     return count;
