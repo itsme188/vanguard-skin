@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import type { TradeReview, TradeRoundtrip } from "@/lib/types";
+import type { TradeReview } from "@/lib/types";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
@@ -16,6 +16,36 @@ interface ReviewPeriod {
 
 interface TradeReviewWithAccount extends TradeReview {
   account_name: string;
+}
+
+interface GroupedTradeResponse {
+  saleTransactionId: number | null;
+  symbol: string;
+  exitDate: string;
+  grade: string | null;
+  assessment: string | null;
+  whatWorked: string | null;
+  whatDidnt: string | null;
+  totalPnl: number;
+  avgEntryPrice: number;
+  exitPrice: number;
+  totalQuantity: number;
+  maxHoldingDays: number;
+  lots: Array<{
+    id: number;
+    entryDate: string;
+    entryPrice: number;
+    exitQuantity: number;
+    holdingDays: number;
+    realizedPnl: number;
+    returnPct: number;
+  }>;
+}
+
+interface TradeQuestion {
+  tradeNumber: number;
+  symbol: string;
+  question: string;
 }
 
 interface TradeReviewViewProps {
@@ -33,6 +63,14 @@ const GRADE_STYLES: Record<string, string> = {
   C: "bg-gold/15 text-gold border-gold/25",
   D: "bg-down/10 text-down/80 border-down/20",
   F: "bg-down/20 text-down border-down/30",
+};
+
+const GRADE_COLORS: Record<string, string> = {
+  A: "bg-up",
+  B: "bg-up/60",
+  C: "bg-gold",
+  D: "bg-down/60",
+  F: "bg-down",
 };
 
 function GradeBadge({ grade }: { grade: string | null }) {
@@ -87,9 +125,9 @@ export function TradeReviewView({
     defaultAccountId ?? accounts[0]?.id ?? 0
   );
   const [expandedReviewId, setExpandedReviewId] = useState<number | null>(null);
-  const [detailRoundtrips, setDetailRoundtrips] = useState<TradeRoundtrip[]>(
-    []
-  );
+  const [detailGroupedTrades, setDetailGroupedTrades] = useState<
+    GroupedTradeResponse[]
+  >([]);
   const [loadingDetail, setLoadingDetail] = useState(false);
 
   // Generate state
@@ -99,6 +137,16 @@ export function TradeReviewView({
     periods[0]?.periodStart ?? ""
   );
 
+  // Q&A state
+  const [questions, setQuestions] = useState<TradeQuestion[]>([]);
+  const [questionAnswers, setQuestionAnswers] = useState<
+    Record<number, string>
+  >({});
+  const [pendingGenerate, setPendingGenerate] = useState<{
+    periodStart: string;
+    periodEnd: string;
+  } | null>(null);
+
   // Confirm re-generate
   const [confirmRegenerate, setConfirmRegenerate] = useState<{
     periodStart: string;
@@ -106,28 +154,30 @@ export function TradeReviewView({
   } | null>(null);
 
   // ── Load detail ───────────────────────────────────────────────
-  const loadReviewDetail = useCallback(async (reviewId: number) => {
-    if (expandedReviewId === reviewId) {
-      setExpandedReviewId(null);
-      return;
-    }
-    setLoadingDetail(true);
-    setExpandedReviewId(reviewId);
-    try {
-      const res = await fetch(`/api/trade-review?id=${reviewId}`);
-      if (res.ok) {
-        const json = await res.json();
-        setDetailRoundtrips(json.roundTrips ?? []);
+  const loadReviewDetail = useCallback(
+    async (reviewId: number) => {
+      if (expandedReviewId === reviewId) {
+        setExpandedReviewId(null);
+        return;
       }
-    } finally {
-      setLoadingDetail(false);
-    }
-  }, [expandedReviewId]);
+      setLoadingDetail(true);
+      setExpandedReviewId(reviewId);
+      try {
+        const res = await fetch(`/api/trade-review?id=${reviewId}`);
+        if (res.ok) {
+          const json = await res.json();
+          setDetailGroupedTrades(json.groupedTrades ?? []);
+        }
+      } finally {
+        setLoadingDetail(false);
+      }
+    },
+    [expandedReviewId]
+  );
 
-  // ── Generate review ───────────────────────────────────────────
+  // ── Generate review (Phase 1) ─────────────────────────────────
   const handleGenerate = useCallback(
     async (periodStart: string, periodEnd: string) => {
-      // Check if review already exists
       const existing = reviews.find(
         (r) =>
           r.account_id === selectedAccountId &&
@@ -142,18 +192,28 @@ export function TradeReviewView({
     [reviews, selectedAccountId]
   );
 
-  const doGenerate = async (periodStart: string, periodEnd: string) => {
+  const doGenerate = async (
+    periodStart: string,
+    periodEnd: string,
+    answers?: Array<{ tradeNumber: number; answer: string }>
+  ) => {
     setGenerating(true);
     setGenerateMsg("Starting...");
+    setQuestions([]);
+    setQuestionAnswers({});
+
     try {
+      const body: Record<string, unknown> = {
+        accountId: selectedAccountId,
+        periodStart,
+        periodEnd,
+      };
+      if (answers) body.answers = answers;
+
       const res = await fetch("/api/trade-review", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          accountId: selectedAccountId,
-          periodStart,
-          periodEnd,
-        }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         setGenerateMsg(`Error: ${res.statusText}`);
@@ -162,37 +222,79 @@ export function TradeReviewView({
 
       await readSseStream(res, (data) => {
         if (data.progress) setGenerateMsg(data.progress.message);
+        if (data.questions) {
+          // Phase 1 complete — show Q&A
+          setQuestions(data.questions);
+          setPendingGenerate({ periodStart, periodEnd });
+          setGenerating(false);
+          setGenerateMsg(null);
+        }
         if (data.complete) {
           setGenerateMsg(
-            `Review complete — ${data.data.tradeCount} trades, ${(data.data.winRate * 100).toFixed(0)}% win rate`
+            `Review complete — ${data.data.tradeCount} trade(s), ${(data.data.winRate * 100).toFixed(0)}% win rate`
           );
         }
         if (data.error) setGenerateMsg(`Error: ${data.error}`);
       });
 
-      // Refresh reviews list
-      const listRes = await fetch(
-        `/api/trade-review?accountId=${selectedAccountId}`
-      );
-      if (listRes.ok) {
-        const json = await listRes.json();
-        setReviews(json.reviews);
-      }
-
-      // Refresh available periods
-      const periodsRes = await fetch(
-        `/api/trade-review?periods=true&accountId=${selectedAccountId}`
-      );
-      if (periodsRes.ok) {
-        const json = await periodsRes.json();
-        setPeriods(json.periods);
+      // If we didn't get questions (direct complete), refresh
+      if (questions.length === 0) {
+        await refreshReviews();
       }
     } catch (err) {
       setGenerateMsg(
         `Error: ${err instanceof Error ? err.message : "Unknown"}`
       );
     } finally {
-      setGenerating(false);
+      if (questions.length === 0) setGenerating(false);
+    }
+  };
+
+  // ── Submit Q&A answers (Phase 2) ──────────────────────────────
+  const handleSubmitAnswers = async () => {
+    if (!pendingGenerate) return;
+    const answers = Object.entries(questionAnswers)
+      .filter(([, ans]) => ans.trim())
+      .map(([tradeNum, answer]) => ({
+        tradeNumber: parseInt(tradeNum, 10),
+        answer: answer.trim(),
+      }));
+    setQuestions([]);
+    setPendingGenerate(null);
+    await doGenerate(
+      pendingGenerate.periodStart,
+      pendingGenerate.periodEnd,
+      answers.length > 0 ? answers : undefined
+    );
+    await refreshReviews();
+  };
+
+  const handleSkipQuestions = async () => {
+    if (!pendingGenerate) return;
+    setQuestions([]);
+    setPendingGenerate(null);
+    // Pass empty answers array to signal Phase 2 (not Phase 1 again)
+    await doGenerate(
+      pendingGenerate.periodStart,
+      pendingGenerate.periodEnd,
+      []
+    );
+    await refreshReviews();
+  };
+
+  // ── Refresh data ────────────────────────────────────────────
+  const refreshReviews = async () => {
+    const [listRes, periodsRes] = await Promise.all([
+      fetch(`/api/trade-review?accountId=${selectedAccountId}`),
+      fetch(`/api/trade-review?periods=true&accountId=${selectedAccountId}`),
+    ]);
+    if (listRes.ok) {
+      const json = await listRes.json();
+      setReviews(json.reviews);
+    }
+    if (periodsRes.ok) {
+      const json = await periodsRes.json();
+      setPeriods(json.periods);
     }
   };
 
@@ -200,6 +302,7 @@ export function TradeReviewView({
   const handleAccountChange = async (accountId: number) => {
     setSelectedAccountId(accountId);
     setExpandedReviewId(null);
+    setQuestions([]);
 
     const [listRes, periodsRes] = await Promise.all([
       fetch(`/api/trade-review?accountId=${accountId}`),
@@ -217,7 +320,7 @@ export function TradeReviewView({
     }
   };
 
-  // ── Find unreviewd periods ────────────────────────────────────
+  // ── Find unreviewed periods ─────────────────────────────────
   const unreviewedPeriods = periods.filter(
     (p) =>
       !reviews.some(
@@ -307,19 +410,73 @@ export function TradeReviewView({
         </div>
       )}
 
-      {/* ── Unreviewed prompt ────────────────────────────────── */}
-      {unreviewedPeriods.length > 0 && !generating && (
-        <div className="rounded-lg border border-gold/20 bg-gold/5 px-4 py-3 text-sm text-ink-dim">
-          {unreviewedPeriods.length} month
-          {unreviewedPeriods.length > 1 ? "s" : ""} with trades but no review:{" "}
-          {unreviewedPeriods
-            .slice(0, 3)
-            .map((p) => formatMonthLabel(p.periodStart))
-            .join(", ")}
-          {unreviewedPeriods.length > 3 &&
-            ` and ${unreviewedPeriods.length - 3} more`}
+      {/* ── Q&A Panel ────────────────────────────────────────── */}
+      {questions.length > 0 && (
+        <div className="rounded-xl border border-gold/30 bg-gold/5 p-5 space-y-4">
+          <div>
+            <h3 className="text-sm font-medium text-ink mb-1">
+              Quick context check
+            </h3>
+            <p className="text-xs text-ink-dim">
+              A few questions to help produce a more accurate review. Answer
+              what you can — skip any you don&apos;t want to answer.
+            </p>
+          </div>
+          {questions.map((q) => (
+            <div key={q.tradeNumber} className="space-y-1.5">
+              <label className="text-xs text-ink">
+                <span className="font-mono font-medium text-gold">
+                  {q.symbol}
+                </span>{" "}
+                — {q.question}
+              </label>
+              <input
+                type="text"
+                value={questionAnswers[q.tradeNumber] ?? ""}
+                onChange={(e) =>
+                  setQuestionAnswers((prev) => ({
+                    ...prev,
+                    [q.tradeNumber]: e.target.value,
+                  }))
+                }
+                placeholder="Your answer (optional)"
+                className="w-full bg-raised border border-edge rounded-lg px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus-ring"
+              />
+            </div>
+          ))}
+          <div className="flex gap-3 pt-1">
+            <button
+              onClick={handleSubmitAnswers}
+              className="px-4 py-1.5 rounded-lg bg-gold text-canvas text-sm font-medium hover:brightness-110 transition-all focus-ring"
+            >
+              Submit & Generate
+            </button>
+            <button
+              onClick={handleSkipQuestions}
+              className="px-4 py-1.5 rounded-lg border border-edge text-sm text-ink-dim hover:text-ink transition-colors focus-ring"
+            >
+              Skip — generate without my input
+            </button>
+          </div>
         </div>
       )}
+
+      {/* ── Unreviewed prompt ────────────────────────────────── */}
+      {unreviewedPeriods.length > 0 &&
+        !generating &&
+        questions.length === 0 && (
+          <div className="rounded-lg border border-gold/20 bg-gold/5 px-4 py-3 text-sm text-ink-dim">
+            {unreviewedPeriods.length} month
+            {unreviewedPeriods.length > 1 ? "s" : ""} with trades but no
+            review:{" "}
+            {unreviewedPeriods
+              .slice(0, 3)
+              .map((p) => formatMonthLabel(p.periodStart))
+              .join(", ")}
+            {unreviewedPeriods.length > 3 &&
+              ` and ${unreviewedPeriods.length - 3} more`}
+          </div>
+        )}
 
       {/* ── Reviews list ─────────────────────────────────────── */}
       {reviews.length === 0 ? (
@@ -335,8 +492,8 @@ export function TradeReviewView({
               key={review.id}
               review={review}
               isExpanded={expandedReviewId === review.id}
-              roundtrips={
-                expandedReviewId === review.id ? detailRoundtrips : []
+              groupedTrades={
+                expandedReviewId === review.id ? detailGroupedTrades : []
               }
               loadingDetail={
                 loadingDetail && expandedReviewId === review.id
@@ -376,14 +533,14 @@ export function TradeReviewView({
 function ReviewCard({
   review,
   isExpanded,
-  roundtrips,
+  groupedTrades,
   loadingDetail,
   onToggle,
   onRegenerate,
 }: {
   review: TradeReviewWithAccount;
   isExpanded: boolean;
-  roundtrips: TradeRoundtrip[];
+  groupedTrades: GroupedTradeResponse[];
   loadingDetail: boolean;
   onToggle: () => void;
   onRegenerate: () => void;
@@ -410,8 +567,10 @@ function ReviewCard({
 
         <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs">
           <span className="text-ink-dim">
-            <span className="text-ink font-medium">{review.total_trades}</span>{" "}
-            trades
+            <span className="text-ink font-medium">
+              {review.total_trades}
+            </span>{" "}
+            trade{review.total_trades !== 1 ? "s" : ""}
           </span>
           <span className="text-ink-dim">
             <span className="text-ink font-medium">
@@ -433,36 +592,10 @@ function ReviewCard({
               profit factor
             </span>
           )}
-          {review.avg_holding_days != null && (
-            <span className="text-ink-dim">
-              <span className="text-ink font-medium">
-                {review.avg_holding_days.toFixed(1)}
-              </span>{" "}
-              avg days
-            </span>
-          )}
           <span className="text-ink-faint ml-auto">
             {isExpanded ? "▲" : "▼"}
           </span>
         </div>
-
-        {/* Best/Worst trade quick view */}
-        {review.best_trade_symbol && review.worst_trade_symbol && (
-          <div className="flex gap-4 mt-2 text-xs">
-            <span className="text-up">
-              Best: {review.best_trade_symbol}{" "}
-              <span className="font-mono">
-                +${review.best_trade_pnl?.toFixed(0)}
-              </span>
-            </span>
-            <span className="text-down">
-              Worst: {review.worst_trade_symbol}{" "}
-              <span className="font-mono">
-                ${review.worst_trade_pnl?.toFixed(0)}
-              </span>
-            </span>
-          </div>
-        )}
       </button>
 
       {/* Expanded detail */}
@@ -475,7 +608,7 @@ function ReviewCard({
           ) : (
             <ReviewDetail
               review={review}
-              roundtrips={roundtrips}
+              groupedTrades={groupedTrades}
               onRegenerate={onRegenerate}
             />
           )}
@@ -489,25 +622,81 @@ function ReviewCard({
 
 function ReviewDetail({
   review,
-  roundtrips,
+  groupedTrades,
   onRegenerate,
 }: {
   review: TradeReviewWithAccount;
-  roundtrips: TradeRoundtrip[];
+  groupedTrades: GroupedTradeResponse[];
   onRegenerate: () => void;
 }) {
-  const [activeTab, setActiveTab] = useState<"review" | "grades" | "patterns">(
-    "review"
-  );
+  const [activeTab, setActiveTab] = useState<
+    "trades" | "review" | "patterns"
+  >("trades");
 
   const tabs = [
+    {
+      key: "trades" as const,
+      label: `Trades (${groupedTrades.length})`,
+    },
     { key: "review" as const, label: "Full Review" },
-    { key: "grades" as const, label: `Trade Grades (${roundtrips.length})` },
     { key: "patterns" as const, label: "Patterns" },
   ];
 
+  // Grade distribution for summary strip
+  const gradeCounts: Record<string, number> = {};
+  for (const t of groupedTrades) {
+    if (t.grade) gradeCounts[t.grade] = (gradeCounts[t.grade] || 0) + 1;
+  }
+
   return (
     <div className="divide-y divide-edge">
+      {/* Summary strip */}
+      <div className="px-5 py-3 flex flex-wrap items-center gap-4 bg-raised/20">
+        <MetricBadge
+          label="P&L"
+          value={`${review.total_realized_pnl >= 0 ? "+" : ""}$${review.total_realized_pnl.toFixed(0)}`}
+          color={review.total_realized_pnl >= 0 ? "text-up" : "text-down"}
+        />
+        <MetricBadge
+          label="Win Rate"
+          value={`${(review.win_rate * 100).toFixed(0)}%`}
+          color="text-ink"
+        />
+        {review.profit_factor != null && (
+          <MetricBadge
+            label="Profit Factor"
+            value={`${review.profit_factor.toFixed(1)}x`}
+            color="text-ink"
+          />
+        )}
+        {/* Grade distribution bar */}
+        {Object.keys(gradeCounts).length > 0 && (
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] uppercase tracking-widest text-ink-faint">
+              Grades
+            </span>
+            <div className="flex h-3 rounded-sm overflow-hidden min-w-[80px]">
+              {["A", "B", "C", "D", "F"].map((g) =>
+                gradeCounts[g] ? (
+                  <div
+                    key={g}
+                    className={`${GRADE_COLORS[g]} flex items-center justify-center`}
+                    style={{
+                      width: `${(gradeCounts[g] / groupedTrades.length) * 100}%`,
+                    }}
+                    title={`${g}: ${gradeCounts[g]}`}
+                  >
+                    <span className="text-[8px] font-bold text-canvas/80">
+                      {g}
+                    </span>
+                  </div>
+                ) : null
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Tab bar */}
       <div className="flex items-center gap-1 px-5 py-2 bg-raised/30">
         {tabs.map((tab) => (
@@ -535,19 +724,17 @@ function ReviewDetail({
 
       {/* Tab content */}
       <div className="p-5">
+        {activeTab === "trades" && (
+          <GroupedTradeCards groupedTrades={groupedTrades} />
+        )}
+
         {activeTab === "review" && (
           <div className="prose-sm max-w-none">
             <MarkdownMessage content={review.review_markdown} />
           </div>
         )}
 
-        {activeTab === "grades" && (
-          <TradeGradeTable roundtrips={roundtrips} />
-        )}
-
-        {activeTab === "patterns" && (
-          <PatternsPanel review={review} />
-        )}
+        {activeTab === "patterns" && <PatternsPanel review={review} />}
       </div>
 
       {/* Meta footer */}
@@ -565,140 +752,226 @@ function ReviewDetail({
   );
 }
 
-// ─── Trade Grade Table ──────────────────────────────────────────
+// ─── Metric Badge ───────────────────────────────────────────────
 
-function TradeGradeTable({ roundtrips }: { roundtrips: TradeRoundtrip[] }) {
-  if (roundtrips.length === 0) {
+function MetricBadge({
+  label,
+  value,
+  color,
+}: {
+  label: string;
+  value: string;
+  color: string;
+}) {
+  return (
+    <div className="flex flex-col">
+      <span className="text-[10px] uppercase tracking-widest text-ink-faint">
+        {label}
+      </span>
+      <span className={`text-sm font-mono font-medium ${color}`}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+// ─── Grouped Trade Cards ────────────────────────────────────────
+
+function GroupedTradeCards({
+  groupedTrades,
+}: {
+  groupedTrades: GroupedTradeResponse[];
+}) {
+  const [expandedTrade, setExpandedTrade] = useState<number | null>(null);
+
+  if (groupedTrades.length === 0) {
     return (
       <p className="text-sm text-ink-dim">
-        No trade grades available for this review.
+        No trade data available for this review.
       </p>
     );
   }
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="border-b border-edge">
-            <th className="text-left text-[10px] uppercase tracking-widest text-ink-faint font-medium pb-2 pr-3">
-              Grade
-            </th>
-            <th className="text-left text-[10px] uppercase tracking-widest text-ink-faint font-medium pb-2 pr-3">
-              Symbol
-            </th>
-            <th className="text-left text-[10px] uppercase tracking-widest text-ink-faint font-medium pb-2 pr-3">
-              Entry
-            </th>
-            <th className="text-left text-[10px] uppercase tracking-widest text-ink-faint font-medium pb-2 pr-3">
-              Exit
-            </th>
-            <th className="text-right text-[10px] uppercase tracking-widest text-ink-faint font-medium pb-2 pr-3">
-              Days
-            </th>
-            <th className="text-right text-[10px] uppercase tracking-widest text-ink-faint font-medium pb-2 pr-3">
-              P&L
-            </th>
-            <th className="text-right text-[10px] uppercase tracking-widest text-ink-faint font-medium pb-2">
-              Return
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {roundtrips.map((rt) => {
-            const pnlColor =
-              rt.realized_pnl >= 0 ? "text-up" : "text-down";
-            const sign = rt.realized_pnl >= 0 ? "+" : "";
-            return (
-              <tr
-                key={rt.id}
-                className="border-b border-edge/50 last:border-0 group"
-              >
-                <td className="py-2 pr-3">
-                  <GradeBadge grade={rt.grade} />
-                </td>
-                <td className="py-2 pr-3 font-mono font-medium text-ink">
-                  {rt.symbol}
-                </td>
-                <td className="py-2 pr-3 text-ink-dim tabular-nums">
-                  {rt.entry_date}
-                  <span className="text-ink-faint ml-1.5">
-                    @${rt.entry_price.toFixed(2)}
-                  </span>
-                </td>
-                <td className="py-2 pr-3 text-ink-dim tabular-nums">
-                  {rt.exit_date}
-                  <span className="text-ink-faint ml-1.5">
-                    @${rt.exit_price.toFixed(2)}
-                  </span>
-                </td>
-                <td className="py-2 pr-3 text-right tabular-nums text-ink-dim">
-                  {rt.holding_days}
-                </td>
-                <td
-                  className={`py-2 pr-3 text-right font-mono tabular-nums ${pnlColor}`}
-                >
-                  {sign}${rt.realized_pnl.toFixed(0)}
-                </td>
-                <td
-                  className={`py-2 text-right font-mono tabular-nums ${pnlColor}`}
-                >
-                  {sign}{rt.return_pct.toFixed(1)}%
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+    <div className="space-y-3">
+      {groupedTrades.map((trade, idx) => {
+        const pnlColor = trade.totalPnl >= 0 ? "text-up" : "text-down";
+        const sign = trade.totalPnl >= 0 ? "+" : "";
+        const returnPct =
+          trade.avgEntryPrice > 0
+            ? (
+                ((trade.exitPrice - trade.avgEntryPrice) /
+                  trade.avgEntryPrice) *
+                100
+              ).toFixed(1)
+            : "0.0";
+        const isExpanded = expandedTrade === idx;
 
-      {/* Per-trade AI assessments (expandable) */}
-      {roundtrips.some((rt) => rt.entry_thesis) && (
-        <div className="mt-4 space-y-3">
-          <h4 className="text-xs uppercase tracking-widest text-ink-faint font-medium">
-            Per-Trade Analysis
-          </h4>
-          {roundtrips
-            .filter((rt) => rt.entry_thesis || rt.exit_assessment)
-            .map((rt) => (
-              <div
-                key={rt.id}
-                className="rounded-lg border border-edge bg-raised/30 p-3"
-              >
-                <div className="flex items-center gap-2 mb-1.5">
-                  <GradeBadge grade={rt.grade} />
-                  <span className="font-mono text-xs font-medium text-ink">
-                    {rt.symbol}
-                  </span>
-                  <span className="text-[10px] text-ink-faint">
-                    {rt.entry_date} → {rt.exit_date}
-                  </span>
+        return (
+          <div
+            key={idx}
+            className="rounded-lg border border-edge bg-raised/30 overflow-hidden"
+          >
+            {/* Trade header */}
+            <button
+              onClick={() => setExpandedTrade(isExpanded ? null : idx)}
+              className="w-full text-left px-4 py-3 hover:bg-raised/50 transition-colors"
+            >
+              <div className="flex items-center gap-3">
+                <GradeBadge grade={trade.grade} />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-baseline gap-2">
+                    <span className="font-mono text-sm font-medium text-ink">
+                      {trade.symbol}
+                    </span>
+                    <span className={`font-mono text-sm ${pnlColor}`}>
+                      {sign}${trade.totalPnl.toFixed(0)}
+                    </span>
+                    <span
+                      className={`font-mono text-xs ${pnlColor}/70`}
+                    >
+                      ({sign}{returnPct}%)
+                    </span>
+                  </div>
+                  <div className="flex gap-3 text-[11px] text-ink-faint mt-0.5">
+                    <span>{trade.maxHoldingDays}d hold</span>
+                    <span>
+                      {trade.totalQuantity >= 1 ? trade.totalQuantity.toFixed(0) : trade.totalQuantity.toPrecision(3)} shares
+                    </span>
+                    {trade.lots.length > 1 && (
+                      <span>{trade.lots.length} lots</span>
+                    )}
+                    <span>
+                      Exit {trade.exitDate}
+                    </span>
+                  </div>
                 </div>
-                {rt.entry_thesis && (
-                  <p className="text-xs text-ink-dim mb-1">
-                    <span className="text-ink-faint">Entry:</span>{" "}
-                    {rt.entry_thesis}
-                  </p>
+                <span className="text-xs text-ink-faint">
+                  {isExpanded ? "▲" : "▼"}
+                </span>
+              </div>
+
+              {/* Price range bar */}
+              <div className="mt-2">
+                <PriceRangeBar
+                  entryPrice={trade.avgEntryPrice}
+                  exitPrice={trade.exitPrice}
+                />
+              </div>
+            </button>
+
+            {/* Expanded assessment + lot detail */}
+            {isExpanded && (
+              <div className="border-t border-edge px-4 py-3 space-y-3">
+                {trade.assessment && (
+                  <div>
+                    <h5 className="text-[10px] uppercase tracking-widest text-ink-faint font-medium mb-1">
+                      Assessment
+                    </h5>
+                    <p className="text-xs text-ink-dim leading-relaxed">
+                      {trade.assessment}
+                    </p>
+                  </div>
                 )}
-                {rt.exit_assessment && (
-                  <p className="text-xs text-ink-dim mb-1">
-                    <span className="text-ink-faint">Exit:</span>{" "}
-                    {rt.exit_assessment}
-                  </p>
-                )}
-                {rt.what_went_well && (
+                {trade.whatWorked && (
                   <p className="text-xs text-up/80">
-                    ✓ {rt.what_went_well}
+                    ✓ {trade.whatWorked}
                   </p>
                 )}
-                {rt.what_went_wrong && (
+                {trade.whatDidnt && (
                   <p className="text-xs text-down/80">
-                    ✗ {rt.what_went_wrong}
+                    ✗ {trade.whatDidnt}
                   </p>
+                )}
+
+                {/* Lot breakdown */}
+                {trade.lots.length > 1 && (
+                  <div>
+                    <h5 className="text-[10px] uppercase tracking-widest text-ink-faint font-medium mb-1">
+                      Lot Breakdown
+                    </h5>
+                    <div className="space-y-1">
+                      {trade.lots.map((lot) => {
+                        const lotPnlColor =
+                          lot.realizedPnl >= 0 ? "text-up" : "text-down";
+                        const lotSign = lot.realizedPnl >= 0 ? "+" : "";
+                        return (
+                          <div
+                            key={lot.id}
+                            className="flex gap-3 text-[11px] font-mono"
+                          >
+                            <span className="text-ink-dim">
+                              {lot.entryDate}
+                            </span>
+                            <span className="text-ink-faint">
+                              @${lot.entryPrice.toFixed(2)}
+                            </span>
+                            <span className="text-ink-faint">
+                              {lot.exitQuantity} shares
+                            </span>
+                            <span className="text-ink-faint">
+                              {lot.holdingDays}d
+                            </span>
+                            <span className={lotPnlColor}>
+                              {lotSign}${lot.realizedPnl.toFixed(0)}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
                 )}
               </div>
-            ))}
-        </div>
-      )}
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Price Range Bar ────────────────────────────────────────────
+
+function PriceRangeBar({
+  entryPrice,
+  exitPrice,
+}: {
+  entryPrice: number;
+  exitPrice: number;
+}) {
+  if (entryPrice <= 0) return null;
+
+  const min = Math.min(entryPrice, exitPrice) * 0.95;
+  const max = Math.max(entryPrice, exitPrice) * 1.05;
+  const range = max - min;
+  if (range <= 0) return null;
+
+  const entryPct = ((entryPrice - min) / range) * 100;
+  const exitPct = ((exitPrice - min) / range) * 100;
+  const isGain = exitPrice >= entryPrice;
+
+  return (
+    <div className="relative h-1.5 bg-edge/50 rounded-full">
+      {/* Fill between entry and exit */}
+      <div
+        className={`absolute top-0 h-full rounded-full ${isGain ? "bg-up/40" : "bg-down/40"}`}
+        style={{
+          left: `${Math.min(entryPct, exitPct)}%`,
+          width: `${Math.abs(exitPct - entryPct)}%`,
+        }}
+      />
+      {/* Entry marker */}
+      <div
+        className="absolute top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-ink-dim border border-canvas"
+        style={{ left: `${entryPct}%` }}
+        title={`Entry $${entryPrice.toFixed(2)}`}
+      />
+      {/* Exit marker */}
+      <div
+        className={`absolute top-1/2 -translate-y-1/2 w-2 h-2 rounded-full border border-canvas ${isGain ? "bg-up" : "bg-down"}`}
+        style={{ left: `${exitPct}%` }}
+        title={`Exit $${exitPrice.toFixed(2)}`}
+      />
     </div>
   );
 }
@@ -730,7 +1003,7 @@ function PatternsPanel({ review }: { review: TradeReview }) {
       )}
       {weaknesses && weaknesses.length > 0 && (
         <PatternSection
-          title="Weaknesses"
+          title="Areas for Improvement"
           items={weaknesses}
           color="text-down"
           icon="✗"
