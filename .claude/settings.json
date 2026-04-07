@@ -18,6 +18,10 @@
           {
             "type": "command",
             "command": "echo \"$CLAUDE_FILE_PATHS\" | while IFS= read -r f; do case \"$f\" in *.ts|*.tsx|*.js|*.jsx) npx eslint --fix \"$f\" 2>/dev/null;; esac; done; true"
+          },
+          {
+            "type": "command",
+            "command": "npx tsc --noEmit 2>&1 | head -20"
           }
         ]
       }
