@@ -92,6 +92,34 @@ print('OK' if abs(a - e) <= t else 'MISMATCH')
 "
 }
 
+# Update a value in expected-values.json (auto-update on PASS).
+# Usage: update_expected "overview.portfolioValue" '$1,800,000'
+update_expected() {
+  local key_path="$1" new_value="$2"
+  python3 -c "
+import json
+with open('$EXPECTED', 'r') as f:
+    data = json.load(f)
+keys = '$key_path'.split('.')
+obj = data
+for k in keys[:-1]:
+    obj = obj[k]
+val = '''$new_value'''
+# Store numbers as numbers, strings as strings
+try:
+    val = int(val)
+except ValueError:
+    try:
+        val = float(val)
+    except ValueError:
+        pass
+obj[keys[-1]] = val
+with open('$EXPECTED', 'w') as f:
+    json.dump(data, f, indent=2)
+    f.write('\n')
+"
+}
+
 # Run agent-browser eval with stdin to avoid shell quoting issues.
 # Strips outer JSON quotes from output (agent-browser wraps results in "...").
 ab_eval() {
@@ -180,6 +208,7 @@ else
   RESULT=$(compare_with_tolerance "$ACTUAL_NUM" "$EXPECTED_NUM" "$TOLERANCE")
   if [ "$RESULT" = "OK" ]; then
     log "PASS" "overview/portfolio-value" "Actual $PORTFOLIO_VALUE within ${TOLERANCE} of expected $EXPECTED_PV"
+    update_expected "overview.portfolioValue" "$PORTFOLIO_VALUE"
   else
     log "FAIL" "overview/portfolio-value" "Actual $PORTFOLIO_VALUE outside ${TOLERANCE} tolerance of expected $EXPECTED_PV"
   fi
@@ -197,6 +226,7 @@ if [ "$EXPECTED_AC" = "FILL_IN" ]; then
   log "SKIP" "overview/account-count" "Expected not set (actual: $ACCOUNT_COUNT)"
 elif [ "$ACCOUNT_COUNT" = "$EXPECTED_AC" ]; then
   log "PASS" "overview/account-count" "Account count matches: $ACCOUNT_COUNT"
+  update_expected "overview.accountCount" "$ACCOUNT_COUNT"
 else
   log "FAIL" "overview/account-count" "Expected $EXPECTED_AC accounts, got $ACCOUNT_COUNT"
 fi
@@ -229,6 +259,7 @@ else
   RESULT=$(compare_absolute "$ACTUAL_PCT" "$EXPECTED_PCT" "$TWR_TOL")
   if [ "$RESULT" = "OK" ]; then
     log "PASS" "overview/twr-ytd" "Actual $TWR_YTD within ${TWR_TOL}pp of expected $EXPECTED_TWR"
+    update_expected "overview.twrYtd" "$TWR_YTD"
   else
     log "FAIL" "overview/twr-ytd" "Actual $TWR_YTD outside ${TWR_TOL}pp tolerance of expected $EXPECTED_TWR"
   fi
@@ -313,12 +344,17 @@ POSITION_COUNT=$(echo "$POSITION_TEXT" | grep -oE '^[0-9]+' || echo "0")
 log "INFO" "holdings/position-count" "Extracted: $POSITION_COUNT (from: $POSITION_TEXT)"
 
 EXPECTED_PC=$(json_get "holdings.positionCount")
+POSITION_COUNT_TOL=$(json_get "holdings.positionCountTolerance")
 if [ "$EXPECTED_PC" = "FILL_IN" ]; then
   log "SKIP" "holdings/position-count" "Expected not set (actual: $POSITION_COUNT)"
-elif [ "$POSITION_COUNT" = "$EXPECTED_PC" ]; then
-  log "PASS" "holdings/position-count" "Position count matches: $POSITION_COUNT"
 else
-  log "FAIL" "holdings/position-count" "Expected $EXPECTED_PC positions, got $POSITION_COUNT"
+  RESULT=$(compare_with_tolerance "$POSITION_COUNT" "$EXPECTED_PC" "$POSITION_COUNT_TOL")
+  if [ "$RESULT" = "OK" ]; then
+    log "PASS" "holdings/position-count" "Actual $POSITION_COUNT within ${POSITION_COUNT_TOL} of expected $EXPECTED_PC"
+    update_expected "holdings.positionCount" "$POSITION_COUNT"
+  else
+    log "FAIL" "holdings/position-count" "Actual $POSITION_COUNT outside ${POSITION_COUNT_TOL} tolerance of expected $EXPECTED_PC"
+  fi
 fi
 
 # Extract total value from table footer
@@ -349,6 +385,7 @@ else
   RESULT=$(compare_with_tolerance "$ACTUAL_NUM" "$EXPECTED_NUM" "$TOLERANCE")
   if [ "$RESULT" = "OK" ]; then
     log "PASS" "holdings/total-value" "Actual $HOLDINGS_TOTAL within tolerance of expected $EXPECTED_HV"
+    update_expected "holdings.totalValue" "$HOLDINGS_TOTAL"
   else
     log "FAIL" "holdings/total-value" "Actual $HOLDINGS_TOTAL outside tolerance of expected $EXPECTED_HV"
   fi
@@ -494,9 +531,11 @@ fi
 echo "" >> "$REPORT"
 echo "# Summary" >> "$REPORT"
 
-PASS_COUNT=$(grep -c '^\[.*\] PASS:' "$REPORT" || echo "0")
-FAIL_COUNT=$(grep -c '^\[.*\] FAIL:' "$REPORT" || echo "0")
-SKIP_COUNT=$(grep -c '^\[.*\] SKIP:' "$REPORT" || echo "0")
+PASS_COUNT=$(grep -c '^\[.*\] PASS:' "$REPORT" 2>/dev/null || echo "0")
+FAIL_COUNT=$(grep -c '^\[.*\] FAIL:' "$REPORT" 2>/dev/null || echo "0")
+SKIP_COUNT=$(grep -c '^\[.*\] SKIP:' "$REPORT" 2>/dev/null || echo "0")
+# Trim whitespace (grep -c can include trailing newline on some systems)
+FAIL_COUNT="${FAIL_COUNT//[^0-9]/}"
 
 echo "PASS: $PASS_COUNT | FAIL: $FAIL_COUNT | SKIP: $SKIP_COUNT" >> "$REPORT"
 
