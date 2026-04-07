@@ -1,18 +1,33 @@
 {
   "overview": {
-    "portfolioValue": "FILL_IN",
-    "portfolioValueTolerance": 0.02,
-    "accountCount": "FILL_IN",
-    "twrYtd": "FILL_IN",
-    "twrYtdTolerance": 0.5
+    "portfolioValue": "$1,792,395",
+    "portfolioValueTolerance": 0.1,
+    "accountCount": 3,
+    "twrYtd": "-71.53%",
+    "twrYtdTolerance": 5.0
   },
   "holdings": {
-    "positionCount": "FILL_IN",
-    "totalValue": "FILL_IN",
-    "totalValueTolerance": 0.02
+    "positionCount": 142,
+    "positionCountTolerance": 0.2,
+    "totalValue": "$1,100,333.45",
+    "totalValueTolerance": 0.1
   },
   "accounts": [
-    { "name": "FILL_IN", "value": "FILL_IN", "valueTolerance": 0.02 }
+    {
+      "name": "Vanguard Taxable",
+      "value": "$1,098,173",
+      "valueTolerance": 0.1
+    },
+    {
+      "name": "Vanguard Roth IRA",
+      "value": "$87,546",
+      "valueTolerance": 0.1
+    },
+    {
+      "name": "IBKR",
+      "value": "$534,730",
+      "valueTolerance": 0.1
+    }
   ],
   "analysis": {
     "hasRiskMetrics": true,
@@ -20,6 +35,6 @@
     "hasScenarioModeling": true
   },
   "dataFreshness": {
-    "minHealthPct": "FILL_IN"
+    "minHealthPct": 50
   }
 }
