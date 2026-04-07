@@ -2,6 +2,8 @@
 
 Local-first portfolio dashboard for tracking Vanguard + IBKR investments.
 
+This is primarily a TypeScript project with some Python utilities. Use TypeScript conventions, proper type safety, and avoid type assertion workarounds unless necessary.
+
 ## Tech Stack
 
 - **Framework:** Next.js 16, React 19, TypeScript 5
@@ -86,6 +88,10 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - Dashboard "as of" dates: `getAccountSummaries()` prefers `daily_valuations` over `monthly_snapshots` when more recent
 - Daily valuations infer cash from monthly snapshot anchors: `cash = snapshot_total - holdings_value`. Cash carries forward between snapshots.
 - TWS portfolio sync filters to the personal account set via `IBKR_ACCOUNT_CODE` env var (managed advisor account excluded). `getPositions()` does NOT include `marketPrice` — use Quick Refresh for prices after sync.
+
+## Data Integrity
+
+When working with financial data (prices, valuations, dates, events), NEVER use hardcoded or guessed values. Always use authoritative data sources (APIs like FRED, Hebcal, IBKR) instead of generating dates, prices, or financial figures from training data.
 
 ## Dev Server Gotchas
 
@@ -209,11 +215,20 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - NEVER use `rm -rf` with relative paths — always absolute
 - NEVER nest worktrees inside the repo
 - NEVER run two `next dev` processes against the same project directory — Turbopack's persistent cache is single-writer; concurrent writes corrupt SST files
+- Never use broad kill commands (e.g., `pkill node`, `killall`). Only kill processes by specific PID or exact process name to avoid disrupting unrelated running projects.
 - See global ~/.claude/CLAUDE.md for git commit/push rules
 
 ## Shell Gotchas
 
 - `gh pr create --body` with backticks causes shell errors — use `--body-file /tmp/file.md` instead
+
+## Workflow Rules
+
+After making changes, always run the full test suite before committing. Report the test count and pass/fail status. Do not commit if tests are failing.
+
+## Debugging
+
+When debugging data issues, investigate root causes rather than applying smoothing or workarounds. If the user says to fix the underlying data, do not paper over gaps.
 
 ## Testing
 
