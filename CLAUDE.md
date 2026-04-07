@@ -24,7 +24,7 @@ Local-first portfolio dashboard for tracking Vanguard + IBKR investments.
 - **Chat drawer** — Slide-out right panel (Cmd+J), accessible from any tab, persists conversation
 - **Security Detail** — `/dashboard/security/[id]` hub page per security (chart, positions, lots, notes, events, factors, trade grades)
 - **Watchlist** — Track securities not yet owned, with price targets and thesis
-- **Trade Reviews** — Monthly AI trade analysis in Research tab (Notes | Trade Reviews toggle). Migration 016.
+- **Trade Reviews** — Monthly AI trade analysis in Research tab (Notes | Trade Reviews toggle). Migration 016 + 021. Two-phase: Sonnet Q&A → Opus review. Account-specific profiles (IBKR/Vanguard/Roth). GroupedTrade abstraction (lots → trades). Auto model selection (>20 trades → Sonnet).
 
 ## Directory Structure
 
@@ -128,10 +128,10 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - `POST /api/watchlist` — add security to watchlist (by securityId or symbol)
 - `PATCH /api/watchlist` — update price targets/thesis
 - `DELETE /api/watchlist?id=` — remove from watchlist (soft delete)
-- `POST /api/trade-review` — SSE streaming: generate monthly AI trade review via Claude Opus (tool_use for structured output). Body: `{ accountId, periodStart, periodEnd }`
+- `POST /api/trade-review` — SSE streaming, two-phase: Phase 1 (no answers) prepares data + Sonnet Q&A; Phase 2 (with answers) generates Opus/Sonnet review. Body: `{ accountId, periodStart, periodEnd, answers?: [{tradeNumber, answer}] }`. Auto-selects Sonnet for >20 trades.
 - `GET /api/trade-review?accountId=&year=` — list trade reviews for account
-- `GET /api/trade-review?id=` — single review with roundtrips
-- `GET /api/trade-review?periods=true&accountId=` — available review periods
+- `GET /api/trade-review?id=` — single review with grouped trades (lots grouped by sale_transaction_id)
+- `GET /api/trade-review?periods=true&accountId=` — available review periods (COUNT DISTINCT sale_transaction_id)
 - `POST /api/research/sync` — SSE streaming: fetch Gmail newsletters + AI-process with Claude Sonnet + backfill HTML for old articles
 - `GET /api/research/articles?sourceId=&securityId=&startDate=&endDate=&search=&limit=` — query research articles (includes symbolMap)
 - `GET /api/research/articles/[id]` — single article with raw_text + raw_html for expanded view
