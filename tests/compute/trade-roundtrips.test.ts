@@ -3,8 +3,11 @@ import Database from "better-sqlite3";
 import {
   getRoundTrips,
   computeRoundTripSummary,
+  computeGroupedTrades,
+  computeGroupedSummary,
   detectNewTradeReviewPeriods,
   getAvailableReviewPeriods,
+  type RoundTrip,
 } from "@/lib/compute/trade-roundtrips";
 
 function createTestDb(): Database.Database {
@@ -623,5 +626,194 @@ describe("getAvailableReviewPeriods", () => {
     const periods = getAvailableReviewPeriods(db, 1);
     expect(periods).toHaveLength(1);
     expect(periods[0].tradeCount).toBe(1);
+  });
+});
+
+// ─── computeGroupedTrades ────────────────────────────────────────
+
+describe("computeGroupedTrades", () => {
+  function makeRoundTrip(overrides: Partial<RoundTrip>): RoundTrip {
+    return {
+      accountId: 1,
+      securityId: 1,
+      symbol: "AAPL",
+      securityName: "Apple Inc",
+      entryDate: "2026-01-05",
+      entryPrice: 150,
+      entryQuantity: 10,
+      entryCost: 1500,
+      exitDate: "2026-01-20",
+      exitPrice: 160,
+      exitQuantity: 10,
+      exitProceeds: 1600,
+      holdingDays: 15,
+      realizedPnl: 100,
+      returnPct: 6.67,
+      saleTransactionId: 1,
+      ...overrides,
+    };
+  }
+
+  it("groups multiple lots from the same sale transaction", () => {
+    const roundTrips: RoundTrip[] = [
+      makeRoundTrip({
+        saleTransactionId: 100,
+        entryDate: "2025-06-01",
+        entryCost: 500,
+        exitQuantity: 5,
+        exitProceeds: 800,
+        realizedPnl: 300,
+        holdingDays: 230,
+      }),
+      makeRoundTrip({
+        saleTransactionId: 100,
+        entryDate: "2025-09-01",
+        entryCost: 600,
+        exitQuantity: 6,
+        exitProceeds: 960,
+        realizedPnl: 360,
+        holdingDays: 140,
+      }),
+      makeRoundTrip({
+        saleTransactionId: 100,
+        entryDate: "2025-11-01",
+        entryCost: 400,
+        exitQuantity: 4,
+        exitProceeds: 640,
+        realizedPnl: 240,
+        holdingDays: 80,
+      }),
+    ];
+
+    const grouped = computeGroupedTrades(roundTrips);
+    expect(grouped).toHaveLength(1);
+
+    const trade = grouped[0];
+    expect(trade.saleTransactionId).toBe(100);
+    expect(trade.lots).toHaveLength(3);
+    expect(trade.totalQuantity).toBe(15); // 5+6+4
+    expect(trade.totalCost).toBe(1500); // 500+600+400
+    expect(trade.totalProceeds).toBe(2400); // 800+960+640
+    expect(trade.realizedPnl).toBe(900); // 300+360+240
+    expect(trade.avgEntryPrice).toBe(100); // 1500/15
+    // avgHoldingDays = (5*230 + 6*140 + 4*80) / 15 = (1150+840+320)/15 = 154
+    expect(trade.avgHoldingDays).toBe(154);
+    expect(trade.maxHoldingDays).toBe(230);
+    expect(trade.minHoldingDays).toBe(80);
+    expect(trade.earliestEntryDate).toBe("2025-06-01");
+    expect(trade.latestEntryDate).toBe("2025-11-01");
+  });
+
+  it("keeps single-lot trades as individual grouped trades", () => {
+    const roundTrips: RoundTrip[] = [
+      makeRoundTrip({ saleTransactionId: 1, symbol: "AAPL" }),
+      makeRoundTrip({ saleTransactionId: 2, symbol: "GOOG" }),
+    ];
+
+    const grouped = computeGroupedTrades(roundTrips);
+    expect(grouped).toHaveLength(2);
+    expect(grouped[0].lots).toHaveLength(1);
+    expect(grouped[1].lots).toHaveLength(1);
+  });
+
+  it("returns empty array for empty input", () => {
+    expect(computeGroupedTrades([])).toHaveLength(0);
+  });
+
+  it("computes return percentage correctly", () => {
+    const roundTrips: RoundTrip[] = [
+      makeRoundTrip({
+        saleTransactionId: 1,
+        entryCost: 1000,
+        realizedPnl: -200,
+      }),
+    ];
+    const grouped = computeGroupedTrades(roundTrips);
+    expect(grouped[0].returnPct).toBeCloseTo(-20);
+  });
+});
+
+// ─── computeGroupedSummary ───────────────────────────────────────
+
+describe("computeGroupedSummary", () => {
+  it("counts grouped trades, not individual lots", () => {
+    // 2 sale transactions: one with 3 lots, one with 1 lot = 2 trades
+    const roundTrips: RoundTrip[] = [
+      // Sale tx 100: 3 lots, total loss
+      {
+        accountId: 1, securityId: 1, symbol: "CPRT", securityName: null,
+        entryDate: "2024-05-24", entryPrice: 49.75, entryQuantity: 25,
+        entryCost: 1243.75, exitDate: "2026-03-11", exitPrice: 35.98,
+        exitQuantity: 25, exitProceeds: 899.50, holdingDays: 656,
+        realizedPnl: -344.25, returnPct: -27.7, saleTransactionId: 100,
+      },
+      {
+        accountId: 1, securityId: 1, symbol: "CPRT", securityName: null,
+        entryDate: "2024-09-11", entryPrice: 45.00, entryQuantity: 20,
+        entryCost: 900, exitDate: "2026-03-11", exitPrice: 35.98,
+        exitQuantity: 20, exitProceeds: 719.60, holdingDays: 546,
+        realizedPnl: -180.40, returnPct: -20.0, saleTransactionId: 100,
+      },
+      {
+        accountId: 1, securityId: 1, symbol: "CPRT", securityName: null,
+        entryDate: "2025-07-25", entryPrice: 42.00, entryQuantity: 20,
+        entryCost: 840, exitDate: "2026-03-11", exitPrice: 35.98,
+        exitQuantity: 20, exitProceeds: 719.60, holdingDays: 229,
+        realizedPnl: -120.40, returnPct: -14.3, saleTransactionId: 100,
+      },
+      // Sale tx 200: 1 lot, winner
+      {
+        accountId: 1, securityId: 2, symbol: "AAPL", securityName: null,
+        entryDate: "2026-03-01", entryPrice: 180, entryQuantity: 10,
+        entryCost: 1800, exitDate: "2026-03-15", exitPrice: 195,
+        exitQuantity: 10, exitProceeds: 1950, holdingDays: 14,
+        realizedPnl: 150, returnPct: 8.33, saleTransactionId: 200,
+      },
+    ];
+
+    const grouped = computeGroupedTrades(roundTrips);
+    expect(grouped).toHaveLength(2); // 2 sale transactions
+
+    const summary = computeGroupedSummary(grouped);
+    expect(summary.totalTrades).toBe(2); // NOT 4
+    expect(summary.winningTrades).toBe(1); // AAPL
+    expect(summary.losingTrades).toBe(1); // CPRT (aggregated)
+    expect(summary.winRate).toBe(0.5);
+    expect(summary.bestTradeSymbol).toBe("AAPL");
+    expect(summary.worstTradeSymbol).toBe("CPRT");
+    // CPRT total PnL: -344.25 + -180.40 + -120.40 = -645.05
+    expect(summary.worstTradePnl).toBeCloseTo(-645.05);
+    expect(summary.bestTradePnl).toBe(150);
+  });
+
+  it("returns empty summary for empty input", () => {
+    const summary = computeGroupedSummary([]);
+    expect(summary.totalTrades).toBe(0);
+    expect(summary.winRate).toBe(0);
+    expect(summary.totalRealizedPnl).toBe(0);
+  });
+
+  it("uses avgHoldingDays (quantity-weighted per trade) for summary avgHoldingDays", () => {
+    const roundTrips: RoundTrip[] = [
+      {
+        accountId: 1, securityId: 1, symbol: "A", securityName: null,
+        entryDate: "2026-01-01", entryPrice: 100, entryQuantity: 10,
+        entryCost: 1000, exitDate: "2026-02-01", exitPrice: 110,
+        exitQuantity: 10, exitProceeds: 1100, holdingDays: 31,
+        realizedPnl: 100, returnPct: 10, saleTransactionId: 1,
+      },
+      {
+        accountId: 1, securityId: 2, symbol: "B", securityName: null,
+        entryDate: "2026-01-10", entryPrice: 50, entryQuantity: 20,
+        entryCost: 1000, exitDate: "2026-01-20", exitPrice: 55,
+        exitQuantity: 20, exitProceeds: 1100, holdingDays: 10,
+        realizedPnl: 100, returnPct: 10, saleTransactionId: 2,
+      },
+    ];
+
+    const grouped = computeGroupedTrades(roundTrips);
+    const summary = computeGroupedSummary(grouped);
+    // (31 + 10) / 2 = 20.5
+    expect(summary.avgHoldingDays).toBeCloseTo(20.5);
   });
 });

@@ -22,6 +22,7 @@ export interface RoundTrip {
   realizedPnl: number;
   returnPct: number;
   saleTransactionId: number;
+  sellTransactionQty: number | null; // actual quantity from the SELL transaction
 }
 
 export interface RoundTripSummary {
@@ -44,6 +45,33 @@ export interface ReviewPeriod {
   periodStart: string;
   periodEnd: string;
   tradeCount: number;
+}
+
+/**
+ * A grouped trade: one sale transaction that may have consumed multiple FIFO lots.
+ * This is the user-facing "trade" abstraction — what they think of as one decision.
+ */
+export interface GroupedTrade {
+  saleTransactionId: number;
+  securityId: number;
+  symbol: string;
+  securityName: string | null;
+  lots: RoundTrip[];
+  totalQuantity: number;
+  sellTransactionQty: number | null; // actual quantity from the SELL transaction
+  lotCoverage: number; // ratio of matched lots to actual sell qty (0-1)
+  avgEntryPrice: number; // weighted by cost
+  exitPrice: number;
+  exitDate: string;
+  earliestEntryDate: string;
+  latestEntryDate: string;
+  avgHoldingDays: number; // quantity-weighted average (negatives clamped to 0)
+  maxHoldingDays: number;
+  minHoldingDays: number;
+  totalCost: number;
+  totalProceeds: number;
+  realizedPnl: number;
+  returnPct: number;
 }
 
 /**
@@ -73,10 +101,12 @@ export function getRoundTrips(
         tls.proceeds AS exit_proceeds,
         tls.holding_period_days AS holding_days,
         tls.realized_gain_loss AS realized_pnl,
-        tls.sale_transaction_id
+        tls.sale_transaction_id,
+        ABS(sell_tx.quantity) AS sell_transaction_qty
       FROM tax_lot_sales tls
       JOIN tax_lots tl ON tl.id = tls.tax_lot_id
       JOIN securities s ON s.id = tl.security_id
+      LEFT JOIN transactions sell_tx ON sell_tx.id = tls.sale_transaction_id
       WHERE tl.account_id = ?
         AND tls.sale_date >= ?
         AND tls.sale_date <= ?
@@ -98,6 +128,7 @@ export function getRoundTrips(
     holding_days: number;
     realized_pnl: number;
     sale_transaction_id: number;
+    sell_transaction_qty: number | null;
   }>;
 
   return rows.map((r) => ({
@@ -117,6 +148,7 @@ export function getRoundTrips(
     realizedPnl: r.realized_pnl,
     returnPct: r.entry_cost !== 0 ? (r.realized_pnl / r.entry_cost) * 100 : 0,
     saleTransactionId: r.sale_transaction_id,
+    sellTransactionQty: r.sell_transaction_qty,
   }));
 }
 
@@ -197,7 +229,7 @@ export function detectNewTradeReviewPeriods(
       `SELECT
         strftime('%Y-%m-01', tls.sale_date) AS period_start,
         date(strftime('%Y-%m-01', tls.sale_date), '+1 month', '-1 day') AS period_end,
-        COUNT(*) AS trade_count
+        COUNT(DISTINCT tls.sale_transaction_id) AS trade_count
       FROM tax_lot_sales tls
       JOIN tax_lots tl ON tl.id = tls.tax_lot_id
       WHERE NOT EXISTS (
@@ -234,7 +266,7 @@ export function getAvailableReviewPeriods(
       `SELECT
         strftime('%Y-%m-01', tls.sale_date) AS period_start,
         date(strftime('%Y-%m-01', tls.sale_date), '+1 month', '-1 day') AS period_end,
-        COUNT(*) AS trade_count
+        COUNT(DISTINCT tls.sale_transaction_id) AS trade_count
       FROM tax_lot_sales tls
       JOIN tax_lots tl ON tl.id = tls.tax_lot_id
       WHERE tl.account_id = ?
@@ -252,4 +284,144 @@ export function getAvailableReviewPeriods(
     periodEnd: r.period_end,
     tradeCount: r.trade_count,
   }));
+}
+
+/**
+ * Group round-trips by sale transaction into user-facing "trades."
+ * Multiple FIFO lots from the same SELL become one grouped trade.
+ * Pure function — no DB access.
+ */
+export function computeGroupedTrades(roundTrips: RoundTrip[]): GroupedTrade[] {
+  const groups = new Map<number, RoundTrip[]>();
+
+  for (const rt of roundTrips) {
+    const group = groups.get(rt.saleTransactionId) || [];
+    group.push(rt);
+    groups.set(rt.saleTransactionId, group);
+  }
+
+  return Array.from(groups.entries()).map(([saleTransactionId, lots]) => {
+    const totalQty = lots.reduce((s, rt) => s + rt.exitQuantity, 0);
+    const totalCost = lots.reduce((s, rt) => s + rt.entryCost, 0);
+    const totalProceeds = lots.reduce((s, rt) => s + rt.exitProceeds, 0);
+    const totalPnl = lots.reduce((s, rt) => s + rt.realizedPnl, 0);
+    const holdingDays = lots.map((rt) => rt.holdingDays);
+    const entryDates = lots.map((rt) => rt.entryDate).sort();
+    // Quantity-weighted average holding days, clamping negatives to 0
+    // (negative days come from short sales where acquisition is after sale)
+    const weightedHoldingDays =
+      totalQty > 0
+        ? lots.reduce(
+            (s, rt) => s + Math.max(0, rt.holdingDays) * rt.exitQuantity,
+            0
+          ) / totalQty
+        : 0;
+
+    const sellTxQty = lots[0].sellTransactionQty;
+    const coverage =
+      sellTxQty && sellTxQty > 0 ? totalQty / sellTxQty : 1;
+
+    return {
+      saleTransactionId,
+      securityId: lots[0].securityId,
+      symbol: lots[0].symbol,
+      securityName: lots[0].securityName,
+      lots,
+      totalQuantity: totalQty,
+      sellTransactionQty: sellTxQty,
+      lotCoverage: Math.min(coverage, 1), // cap at 1 (rounding)
+      avgEntryPrice: totalQty > 0 ? totalCost / totalQty : 0,
+      exitPrice: lots[0].exitPrice,
+      exitDate: lots[0].exitDate,
+      earliestEntryDate: entryDates[0],
+      latestEntryDate: entryDates[entryDates.length - 1],
+      avgHoldingDays: Math.round(weightedHoldingDays),
+      maxHoldingDays: Math.max(...holdingDays),
+      minHoldingDays: Math.min(...holdingDays),
+      totalCost,
+      totalProceeds,
+      realizedPnl: totalPnl,
+      returnPct: totalCost > 0 ? (totalPnl / totalCost) * 100 : 0,
+    };
+  });
+}
+
+/** Minimum lot coverage ratio to include a trade in reviews (80%) */
+const MIN_LOT_COVERAGE = 0.9;
+
+/**
+ * Filter grouped trades to only those with sufficient FIFO lot coverage.
+ * Trades where matched lots cover <80% of the actual sell quantity are excluded
+ * (they represent incomplete data — e.g., positions held before import history starts).
+ */
+export function filterFullyCoveredTrades(
+  grouped: GroupedTrade[]
+): GroupedTrade[] {
+  return grouped.filter((g) => g.lotCoverage >= MIN_LOT_COVERAGE);
+}
+
+/**
+ * Compute summary metrics from grouped trades (not individual lots).
+ * Counts each sale transaction as one trade, matching user expectations.
+ * Pure function — no DB access.
+ */
+export function computeGroupedSummary(
+  grouped: GroupedTrade[]
+): RoundTripSummary {
+  if (grouped.length === 0) {
+    return {
+      totalTrades: 0,
+      winningTrades: 0,
+      losingTrades: 0,
+      winRate: 0,
+      totalRealizedPnl: 0,
+      avgHoldingDays: 0,
+      bestTradePnl: 0,
+      bestTradeSymbol: "",
+      worstTradePnl: 0,
+      worstTradeSymbol: "",
+      avgWin: 0,
+      avgLoss: 0,
+      profitFactor: 0,
+    };
+  }
+
+  const winners = grouped.filter((g) => g.realizedPnl > 0);
+  const losers = grouped.filter((g) => g.realizedPnl < 0);
+
+  const totalPnl = grouped.reduce((sum, g) => sum + g.realizedPnl, 0);
+  const totalHoldingDays = grouped.reduce(
+    (sum, g) => sum + g.avgHoldingDays,
+    0
+  );
+
+  const grossWins = winners.reduce((sum, g) => sum + g.realizedPnl, 0);
+  const grossLosses = Math.abs(
+    losers.reduce((sum, g) => sum + g.realizedPnl, 0)
+  );
+
+  const best = grouped.reduce((max, g) =>
+    g.realizedPnl > max.realizedPnl ? g : max
+  );
+  const worst = grouped.reduce((min, g) =>
+    g.realizedPnl < min.realizedPnl ? g : min
+  );
+
+  return {
+    totalTrades: grouped.length,
+    winningTrades: winners.length,
+    losingTrades: losers.length,
+    winRate: grouped.length > 0 ? winners.length / grouped.length : 0,
+    totalRealizedPnl: totalPnl,
+    avgHoldingDays:
+      grouped.length > 0 ? totalHoldingDays / grouped.length : 0,
+    bestTradePnl: best.realizedPnl,
+    bestTradeSymbol: best.symbol,
+    worstTradePnl: worst.realizedPnl,
+    worstTradeSymbol: worst.symbol,
+    avgWin: winners.length > 0 ? grossWins / winners.length : 0,
+    avgLoss: losers.length > 0 ? -(grossLosses / losers.length) : 0,
+    profitFactor:
+      grossLosses > 0 ? Math.min(grossWins / grossLosses, 99.9) : 99.9,
+  };
 }

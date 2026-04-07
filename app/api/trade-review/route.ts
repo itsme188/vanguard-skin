@@ -1,5 +1,8 @@
 import { db } from "@/lib/db";
-import { generateTradeReview } from "@/lib/trade-review/generate";
+import {
+  prepareTradeReview,
+  generateTradeReview,
+} from "@/lib/trade-review/generate";
 import {
   getTradeReviews,
   getTradeReviewById,
@@ -7,18 +10,37 @@ import {
 } from "@/lib/queries/trade-reviews";
 import { getAvailableReviewPeriods } from "@/lib/compute/trade-roundtrips";
 
+interface GroupedTradeResponse {
+  saleTransactionId: number | null;
+  symbol: string;
+  exitDate: string;
+  grade: string | null;
+  assessment: string | null;
+  whatWorked: string | null;
+  whatDidnt: string | null;
+  totalPnl: number;
+  avgEntryPrice: number;
+  exitPrice: number;
+  totalQuantity: number;
+  maxHoldingDays: number;
+  lots: Array<{
+    id: number;
+    entryDate: string;
+    entryPrice: number;
+    exitQuantity: number;
+    holdingDays: number;
+    realizedPnl: number;
+    returnPct: number;
+  }>;
+}
+
 /**
- * GET /api/trade-review — List reviews or get a single review with roundtrips.
- *
- * Query params:
- *   ?accountId=&year=         — list reviews for account (year optional)
- *   ?id=                      — single review with roundtrips
- *   ?periods=true&accountId=  — available review periods for account
+ * GET /api/trade-review — List reviews or get a single review with grouped trades.
  */
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
 
-  // Single review detail
+  // Single review detail — returns grouped trades
   const id = searchParams.get("id");
   if (id) {
     const review = getTradeReviewById(db, parseInt(id, 10));
@@ -26,7 +48,63 @@ export async function GET(request: Request) {
       return Response.json({ error: "Review not found" }, { status: 404 });
     }
     const roundTrips = getTradeRoundtrips(db, review.id);
-    return Response.json({ review, roundTrips });
+
+    // Group roundtrips by sale_transaction_id (new) or symbol+exit_date (legacy)
+    const groupMap = new Map<string, typeof roundTrips>();
+    for (const rt of roundTrips) {
+      const key =
+        rt.sale_transaction_id != null
+          ? `tx:${rt.sale_transaction_id}`
+          : `${rt.symbol}:${rt.exit_date}`;
+      const group = groupMap.get(key) || [];
+      group.push(rt);
+      groupMap.set(key, group);
+    }
+
+    const groupedTrades: GroupedTradeResponse[] = Array.from(
+      groupMap.values()
+    ).map((lots) => {
+      const totalQty = lots.reduce((s, l) => s + l.exit_quantity, 0);
+      const totalCost = lots.reduce(
+        (s, l) => s + l.entry_price * l.entry_quantity,
+        0
+      );
+      const totalPnl = lots.reduce((s, l) => s + l.realized_pnl, 0);
+
+      return {
+        saleTransactionId: lots[0].sale_transaction_id ?? null,
+        symbol: lots[0].symbol,
+        exitDate: lots[0].exit_date,
+        grade: lots[0].grade,
+        assessment: lots[0].entry_thesis, // stored as entry_thesis in DB
+        whatWorked: lots[0].exit_assessment, // stored as exit_assessment in DB
+        whatDidnt: lots[0].what_went_well, // stored as what_went_well in DB
+        totalPnl,
+        avgEntryPrice: totalQty > 0 ? totalCost / totalQty : 0,
+        exitPrice: lots[0].exit_price,
+        totalQuantity: totalQty,
+        maxHoldingDays: totalQty > 0
+          ? Math.round(
+              lots.reduce(
+                (s, l) =>
+                  s + Math.max(0, l.holding_days) * l.exit_quantity,
+                0
+              ) / totalQty
+            )
+          : 0,
+        lots: lots.map((l) => ({
+          id: l.id,
+          entryDate: l.entry_date,
+          entryPrice: l.entry_price,
+          exitQuantity: l.exit_quantity,
+          holdingDays: l.holding_days,
+          realizedPnl: l.realized_pnl,
+          returnPct: l.return_pct,
+        })),
+      };
+    });
+
+    return Response.json({ review, groupedTrades });
   }
 
   // Available periods for an account
@@ -60,16 +138,20 @@ export async function GET(request: Request) {
 }
 
 /**
- * POST /api/trade-review — Generate a trade review (SSE stream).
+ * POST /api/trade-review — Two-phase generation (SSE stream).
  *
- * Body: { accountId: number, periodStart: string, periodEnd: string }
+ * Phase 1 (no answers): Prepare data + generate questions → streams questions
+ * Phase 2 (with answers): Generate full review with user context
+ *
+ * Body: { accountId, periodStart, periodEnd, answers?: [{tradeNumber, answer}] }
  */
 export async function POST(request: Request) {
   const body = await request.json().catch(() => ({}));
-  const { accountId, periodStart, periodEnd } = body as {
+  const { accountId, periodStart, periodEnd, answers } = body as {
     accountId?: number;
     periodStart?: string;
     periodEnd?: string;
+    answers?: Array<{ tradeNumber: number; answer: string }>;
   };
 
   if (!accountId || !periodStart || !periodEnd) {
@@ -99,33 +181,113 @@ export async function POST(request: Request) {
         );
       };
 
-      try {
-        const result = await generateTradeReview(
-          db,
-          { accountId, periodStart, periodEnd },
-          {
-            onProgress: (message, current, total) => {
-              send({
-                progress: { phase: "generating", message, current, total },
-              });
-            },
-          }
-        );
+      // Heartbeat to keep SSE alive during long API calls
+      const heartbeat = setInterval(() => {
+        send({ heartbeat: true });
+      }, 15000);
 
-        send({
-          complete: true,
-          data: {
-            reviewId: result.review.id,
-            tradeCount: result.tradeCount,
-            totalPnl: result.review.total_realized_pnl,
-            winRate: result.review.win_rate,
-          },
-        });
+      try {
+        if (!answers) {
+          // Phase 1: Prepare data and generate questions
+          const prepared = await prepareTradeReview(
+            db,
+            { accountId, periodStart, periodEnd },
+            {
+              onProgress: (message, current, total) => {
+                send({
+                  progress: { phase: "preparing", message, current, total },
+                });
+              },
+            }
+          );
+
+          if (prepared.questions.length > 0) {
+            // Send questions to client — pause for answers
+            send({
+              questions: prepared.questions,
+              tradeCount: prepared.groupedTrades.length,
+              accountName: prepared.accountName,
+            });
+          } else {
+            // No questions — go straight to review generation
+            const result = await generateTradeReview(
+              db,
+              { accountId, periodStart, periodEnd },
+              prepared,
+              undefined,
+              {
+                onProgress: (message, current, total) => {
+                  send({
+                    progress: {
+                      phase: "generating",
+                      message,
+                      current,
+                      total,
+                    },
+                  });
+                },
+              }
+            );
+
+            send({
+              complete: true,
+              data: {
+                reviewId: result.review.id,
+                tradeCount: result.tradeCount,
+                totalPnl: result.review.total_realized_pnl,
+                winRate: result.review.win_rate,
+              },
+            });
+          }
+        } else {
+          // Phase 2: Generate review with answers
+          const prepared = await prepareTradeReview(
+            db,
+            { accountId, periodStart, periodEnd },
+            {
+              onProgress: (message, current, total) => {
+                send({
+                  progress: { phase: "preparing", message, current, total },
+                });
+              },
+            }
+          );
+
+          const result = await generateTradeReview(
+            db,
+            { accountId, periodStart, periodEnd },
+            prepared,
+            answers,
+            {
+              onProgress: (message, current, total) => {
+                send({
+                  progress: {
+                    phase: "generating",
+                    message,
+                    current,
+                    total,
+                  },
+                });
+              },
+            }
+          );
+
+          send({
+            complete: true,
+            data: {
+              reviewId: result.review.id,
+              tradeCount: result.tradeCount,
+              totalPnl: result.review.total_realized_pnl,
+              winRate: result.review.win_rate,
+            },
+          });
+        }
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Unknown error";
         send({ error: message });
       } finally {
+        clearInterval(heartbeat);
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
         controller.close();
       }
