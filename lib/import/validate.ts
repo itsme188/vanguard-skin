@@ -45,6 +45,12 @@ export const VALID_TRANSACTION_TYPES = new Set([
 
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
+/** Symbols that look like dates are almost certainly misaligned CSV data. */
+export function isDateLikeSymbol(symbol: string | undefined): boolean {
+  if (!symbol) return false;
+  return DATE_REGEX.test(symbol.trim());
+}
+
 /** Check that a string is a valid YYYY-MM-DD date. */
 export function isValidDate(dateStr: string): boolean {
   if (!DATE_REGEX.test(dateStr)) return false;
@@ -111,6 +117,16 @@ export function validateParsedResult(
     const txn = parsed.transactions[i];
     let skip = false;
 
+    if (isDateLikeSymbol(txn.symbol)) {
+      skippedRows.push({
+        category: "transaction",
+        index: i,
+        reason: `Symbol looks like a date: "${txn.symbol}" — likely misaligned CSV data`,
+        symbol: txn.symbol,
+      });
+      skip = true;
+    }
+
     if (!isValidDate(txn.tradeDate)) {
       skippedRows.push({
         category: "transaction",
@@ -166,6 +182,16 @@ export function validateParsedResult(
     const h = parsed.holdings[i];
     let skip = false;
 
+    if (isDateLikeSymbol(h.symbol)) {
+      skippedRows.push({
+        category: "holding",
+        index: i,
+        reason: `Symbol looks like a date: "${h.symbol}" — likely misaligned CSV data`,
+        symbol: h.symbol,
+      });
+      skip = true;
+    }
+
     if (!isValidDate(h.asOfDate)) {
       skippedRows.push({
         category: "holding",
@@ -186,6 +212,12 @@ export function validateParsedResult(
       skip = true;
     }
 
+    if (h.quantity === 0) {
+      warnings.push(
+        `Holding #${i + 1} (${h.symbol}): zero quantity — may be a closed position`,
+      );
+    }
+
     if (!skip) {
       validHoldings.push(h);
     }
@@ -196,6 +228,16 @@ export function validateParsedResult(
   for (let i = 0; i < parsed.prices.length; i++) {
     const p = parsed.prices[i];
     let skip = false;
+
+    if (isDateLikeSymbol(p.symbol)) {
+      skippedRows.push({
+        category: "price",
+        index: i,
+        reason: `Symbol looks like a date: "${p.symbol}" — likely misaligned CSV data`,
+        symbol: p.symbol,
+      });
+      skip = true;
+    }
 
     if (!isValidDate(p.date)) {
       skippedRows.push({
