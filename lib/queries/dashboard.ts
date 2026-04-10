@@ -31,6 +31,7 @@ export function getAccountSummaries(db: Database.Database): AccountSummary[] {
           ms.twr,
           ROW_NUMBER() OVER (PARTITION BY ms.account_id ORDER BY ms.month_end_date DESC) AS rn
         FROM monthly_snapshots ms
+        WHERE ms.source != 'tws'
       ),
       latest_daily AS (
         SELECT
@@ -42,15 +43,21 @@ export function getAccountSummaries(db: Database.Database): AccountSummary[] {
       )
       SELECT
         a.id, a.name,
-        CASE WHEN d.valuation_date > COALESCE(curr.month_end_date, '')
+        CASE WHEN COALESCE(d.valuation_date, '') > COALESCE(curr.month_end_date, '')
           THEN d.total_value ELSE curr.total_value END AS latestValue,
-        CASE WHEN d.valuation_date > COALESCE(curr.month_end_date, '')
+        CASE WHEN COALESCE(d.valuation_date, '') > COALESCE(curr.month_end_date, '')
           THEN d.valuation_date ELSE curr.month_end_date END AS latestDate,
         curr.twr,
-        prev.total_value AS previousValue
+        -- Previous: most recent non-TWS monthly snapshot strictly before the latest date
+        (SELECT ms2.total_value FROM monthly_snapshots ms2
+         WHERE ms2.account_id = a.id
+           AND ms2.source != 'tws'
+           AND ms2.month_end_date < CASE
+             WHEN COALESCE(d.valuation_date, '') > COALESCE(curr.month_end_date, '')
+             THEN d.valuation_date ELSE curr.month_end_date END
+         ORDER BY ms2.month_end_date DESC LIMIT 1) AS previousValue
       FROM accounts a
       LEFT JOIN ranked_monthly curr ON curr.account_id = a.id AND curr.rn = 1
-      LEFT JOIN ranked_monthly prev ON prev.account_id = a.id AND prev.rn = 2
       LEFT JOIN latest_daily d ON d.account_id = a.id AND d.rn = 1
       ORDER BY a.id`
     )
@@ -92,6 +99,7 @@ export function getPortfolioChartData(
       `SELECT ms.month_end_date, a.name as account_name, ms.total_value
        FROM monthly_snapshots ms
        JOIN accounts a ON a.id = ms.account_id
+       WHERE ms.source != 'tws'
        ORDER BY ms.month_end_date`
     )
     .all() as {
@@ -118,48 +126,66 @@ export interface PortfolioTotals {
   totalChangePercent: number;
   accountCount: number;
   snapshotCount: number;
+  latestDate: string | null;
+  oldestDate: string | null;
 }
 
 export function getPortfolioTotals(db: Database.Database): PortfolioTotals {
-  const latestValues = db
+  // Use same blending logic as getAccountSummaries: pick daily valuation or
+  // non-TWS monthly snapshot per account, whichever is more recent.
+  const row = db
     .prepare(
-      `SELECT ms.total_value
-       FROM monthly_snapshots ms
-       INNER JOIN (
-         SELECT account_id, MAX(month_end_date) as max_date
-         FROM monthly_snapshots
-         GROUP BY account_id
-       ) latest ON ms.account_id = latest.account_id
-         AND ms.month_end_date = latest.max_date`
+      `WITH latest_monthly AS (
+        SELECT account_id, month_end_date, total_value,
+          ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY month_end_date DESC) AS rn
+        FROM monthly_snapshots
+        WHERE source != 'tws'
+      ),
+      latest_daily AS (
+        SELECT account_id, valuation_date, total_value,
+          ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY valuation_date DESC) AS rn
+        FROM daily_valuations
+      ),
+      account_values AS (
+        SELECT
+          a.id,
+          CASE WHEN COALESCE(d.valuation_date, '') > COALESCE(m.month_end_date, '')
+            THEN d.total_value ELSE m.total_value END AS current_value,
+          CASE WHEN COALESCE(d.valuation_date, '') > COALESCE(m.month_end_date, '')
+            THEN d.valuation_date ELSE m.month_end_date END AS as_of_date,
+          (SELECT ms2.total_value FROM monthly_snapshots ms2
+           WHERE ms2.account_id = a.id AND ms2.source != 'tws'
+             AND ms2.month_end_date < CASE
+               WHEN COALESCE(d.valuation_date, '') > COALESCE(m.month_end_date, '')
+               THEN d.valuation_date ELSE m.month_end_date END
+           ORDER BY ms2.month_end_date DESC LIMIT 1) AS prev_value
+        FROM accounts a
+        LEFT JOIN latest_monthly m ON m.account_id = a.id AND m.rn = 1
+        LEFT JOIN latest_daily d ON d.account_id = a.id AND d.rn = 1
+      )
+      SELECT
+        COALESCE(SUM(current_value), 0) AS totalValue,
+        COALESCE(SUM(prev_value), 0) AS totalPreviousValue,
+        MIN(as_of_date) AS oldestDate,
+        MAX(as_of_date) AS latestDate
+      FROM account_values`
     )
-    .all() as { total_value: number }[];
+    .get() as {
+    totalValue: number;
+    totalPreviousValue: number;
+    oldestDate: string | null;
+    latestDate: string | null;
+  };
 
-  const previousValues = db
-    .prepare(
-      `SELECT ms.total_value
-       FROM monthly_snapshots ms
-       INNER JOIN (
-         SELECT account_id, MAX(month_end_date) as max_date
-         FROM monthly_snapshots
-         WHERE month_end_date < (SELECT MAX(month_end_date) FROM monthly_snapshots)
-         GROUP BY account_id
-       ) prev ON ms.account_id = prev.account_id
-         AND ms.month_end_date = prev.max_date`
-    )
-    .all() as { total_value: number }[];
-
-  const totalValue = latestValues.reduce((sum, v) => sum + v.total_value, 0);
-  const totalPreviousValue = previousValues.reduce(
-    (sum, v) => sum + v.total_value,
-    0
-  );
-  const totalChange = totalValue - totalPreviousValue;
+  const totalChange = row.totalValue - row.totalPreviousValue;
   const totalChangePercent =
-    totalPreviousValue !== 0 ? (totalChange / totalPreviousValue) * 100 : 0;
+    row.totalPreviousValue !== 0
+      ? (totalChange / row.totalPreviousValue) * 100
+      : 0;
 
   const snapshotCount = (
     db
-      .prepare("SELECT COUNT(*) as count FROM monthly_snapshots")
+      .prepare("SELECT COUNT(*) as count FROM monthly_snapshots WHERE source != 'tws'")
       .get() as { count: number }
   ).count;
   const accountCount = (
@@ -169,11 +195,13 @@ export function getPortfolioTotals(db: Database.Database): PortfolioTotals {
   ).count;
 
   return {
-    totalValue,
-    totalPreviousValue,
+    totalValue: row.totalValue,
+    totalPreviousValue: row.totalPreviousValue,
     totalChange,
     totalChangePercent,
     accountCount,
     snapshotCount,
+    latestDate: row.latestDate,
+    oldestDate: row.oldestDate,
   };
 }
