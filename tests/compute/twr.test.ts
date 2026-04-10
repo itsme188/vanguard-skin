@@ -14,19 +14,21 @@ function seedSnapshot(
     startingValue?: number;
     twr?: number;
     depositsWithdrawals?: number;
+    source?: string;
   } = {}
 ): void {
   db.prepare(
     `INSERT OR REPLACE INTO monthly_snapshots
-       (account_id, month_end_date, total_value, starting_value, twr, deposits_withdrawals)
-     VALUES (?, ?, ?, ?, ?, ?)`
+       (account_id, month_end_date, total_value, starting_value, twr, deposits_withdrawals, source)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
   ).run(
     accountId,
     monthEndDate,
     totalValue,
     opts.startingValue ?? null,
     opts.twr ?? null,
-    opts.depositsWithdrawals ?? null
+    opts.depositsWithdrawals ?? null,
+    opts.source ?? "manual"
   );
 }
 
@@ -90,8 +92,8 @@ describe("TWR computation", () => {
 
   it("uses IBKR-provided TWR directly when available", () => {
     // IBKR gives TWR as a percentage (e.g. 5.0 = 5%)
-    seedSnapshot(db, ACCT_1, "2025-01-31", 100000, { twr: 5.0 });
-    seedSnapshot(db, ACCT_1, "2025-02-28", 108000, { twr: 3.0 });
+    seedSnapshot(db, ACCT_1, "2025-01-31", 100000, { twr: 5.0, source: "ibkr-activity" });
+    seedSnapshot(db, ACCT_1, "2025-02-28", 108000, { twr: 3.0, source: "ibkr-activity" });
 
     const result = computeTwr(db);
     expect(result).not.toBeNull();
@@ -105,7 +107,7 @@ describe("TWR computation", () => {
 
   it("handles mixed IBKR TWR and computed months", () => {
     // Month 1: IBKR TWR = 4%, Month 2: computed (no IBKR TWR)
-    seedSnapshot(db, ACCT_1, "2025-01-31", 100000, { twr: 4.0 });
+    seedSnapshot(db, ACCT_1, "2025-01-31", 100000, { twr: 4.0, source: "ibkr-activity" });
     seedSnapshot(db, ACCT_1, "2025-02-28", 109200); // 5% over 104000
 
     const result = computeTwr(db);
@@ -290,5 +292,99 @@ describe("TWR computation", () => {
 
     const acct = result!.perAccount[0];
     expect(acct.totalReturn).toBeCloseTo(0.02097, 3);
+  });
+
+  // ─── New tests: TWS exclusion, TWR format, December handling ─────
+
+  it("excludes TWS mid-month snapshots from TWR computation", () => {
+    seedSnapshot(db, ACCT_1, "2025-01-31", 100000);
+    seedSnapshot(db, ACCT_1, "2025-02-28", 110000);
+    // TWS snapshot mid-month — should be excluded
+    seedSnapshot(db, ACCT_1, "2025-03-15", 112000, { source: "tws" });
+    seedSnapshot(db, ACCT_1, "2025-03-31", 121000);
+
+    const result = computeTwr(db);
+    expect(result).not.toBeNull();
+
+    // Should have 2 sub-periods (Jan→Feb, Feb→Mar), NOT 3
+    const acct = result!.perAccount[0];
+    expect(acct.monthsIncluded).toBe(2);
+    expect(acct.totalReturn).toBeCloseTo(0.21, 4);
+  });
+
+  it("does not crash portfolio TWR when TWS snapshot covers only one account", () => {
+    const ACCT_2 = 2;
+    // Both accounts at month-end
+    seedSnapshot(db, ACCT_1, "2025-02-28", 1000000);
+    seedSnapshot(db, ACCT_2, "2025-02-28", 500000);
+    seedSnapshot(db, ACCT_1, "2025-03-31", 1020000);
+    seedSnapshot(db, ACCT_2, "2025-03-31", 510000);
+    // TWS snapshot only for ACCT_2 in April — should be excluded
+    seedSnapshot(db, ACCT_2, "2025-04-06", 515000, { source: "tws" });
+    seedSnapshot(db, ACCT_1, "2025-04-30", 1040000);
+    seedSnapshot(db, ACCT_2, "2025-04-30", 520000);
+
+    const result = computeTwr(db);
+    expect(result).not.toBeNull();
+    // Portfolio should show reasonable positive return, not a crash from partial data
+    expect(result!.totalReturn).toBeGreaterThan(0);
+    expect(result!.totalReturn).toBeLessThan(0.10);
+  });
+
+  it("handles canonical TWR format (decimal fractions, not percentages)", () => {
+    // Canonical stores TWR as decimal: -0.05 = -5%, 0.08 = 8%
+    seedSnapshot(db, ACCT_1, "2025-01-31", 100000, { twr: -0.05, source: "canonical" });
+    seedSnapshot(db, ACCT_1, "2025-02-28", 108000, { twr: 0.08, source: "canonical" });
+
+    const result = computeTwr(db);
+    expect(result).not.toBeNull();
+
+    const acct = result!.perAccount[0];
+    // (1 + -0.05) * (1 + 0.08) - 1 = 0.95 * 1.08 - 1 = 0.026
+    expect(acct.totalReturn).toBeCloseTo(0.026, 4);
+  });
+
+  it("uses deposits_withdrawals from snapshots for Modified Dietz", () => {
+    // No external flow transactions — only snapshot deposits_withdrawals
+    seedSnapshot(db, ACCT_1, "2025-01-31", 100000);
+    seedSnapshot(db, ACCT_1, "2025-02-28", 115000, { depositsWithdrawals: 10000 });
+
+    const result = computeTwr(db);
+    expect(result).not.toBeNull();
+
+    const acct = result!.perAccount[0];
+    // Modified Dietz: (115000 - 100000 - 10000) / (100000 + 10000*0.5)
+    // = 5000 / 105000 ≈ 0.04762
+    expect(acct.totalReturn).toBeCloseTo(0.04762, 3);
+  });
+
+  it("detects and handles December annual summary rows", () => {
+    // Seed full year of monthly snapshots
+    seedSnapshot(db, ACCT_1, "2025-10-31", 340000);
+    seedSnapshot(db, ACCT_1, "2025-11-30", 350000);
+    // December annual row: starting_value is year-start (300k), NOT Nov total (350k)
+    // twr is annual TWR, should be IGNORED
+    seedSnapshot(db, ACCT_1, "2025-12-31", 355000, {
+      startingValue: 300000,
+      depositsWithdrawals: 20000,
+      twr: -0.10, // annual TWR — should not be used
+      source: "canonical",
+    });
+    // Seed Jan deposits so Dec-only can be computed
+    seedSnapshot(db, ACCT_1, "2025-01-31", 310000, { depositsWithdrawals: 5000 });
+
+    const result = computeTwr(db, { startDate: "2025-11-01", endDate: "2025-12-31" });
+    expect(result).not.toBeNull();
+
+    const acct = result!.perAccount[0];
+    // Should NOT use the annual twr of -10%
+    // Dec return: vStart = 350000, vEnd = 355000
+    // Dec-only deposits = 20000 - 5000 = 15000
+    // Modified Dietz: (355000 - 350000 - 15000) / (350000 + 15000*0.5) = -10000/357500 ≈ -0.02797
+    // Chain-linked with Nov: (350000-340000)/340000 = 0.02941
+    // (1.02941)(1-0.02797) - 1 ≈ 0.00063
+    expect(acct.totalReturn).not.toBeCloseTo(-0.10, 1);
+    expect(acct.totalReturn).toBeGreaterThan(-0.05);
+    expect(acct.totalReturn).toBeLessThan(0.05);
   });
 });
