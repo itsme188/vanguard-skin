@@ -4,6 +4,7 @@ import {
   isValidQuantity,
   isValidPrice,
   isValidTransactionType,
+  isGarbageSymbol,
   validateParsedResult,
   VALID_TRANSACTION_TYPES,
 } from "@/lib/import/validate";
@@ -72,6 +73,43 @@ describe("isValidPrice", () => {
     expect(isValidPrice(-5)).toBe(false);
     expect(isValidPrice(NaN)).toBe(false);
     expect(isValidPrice(Infinity)).toBe(false);
+  });
+});
+
+describe("isGarbageSymbol", () => {
+  it("accepts real ticker symbols", () => {
+    expect(isGarbageSymbol("AAPL")).toBeNull();
+    expect(isGarbageSymbol("BRK B")).toBeNull();
+    expect(isGarbageSymbol("SPY")).toBeNull();
+    expect(isGarbageSymbol("912797TH0")).toBeNull(); // treasury CUSIP
+    expect(isGarbageSymbol("SPY   260410C00659000")).toBeNull(); // OCC option
+    expect(isGarbageSymbol("VTI")).toBeNull();
+  });
+
+  it("rejects timestamp strings", () => {
+    expect(isGarbageSymbol("2025-01-06, 08:49:20")).toBe("timestamp");
+    expect(isGarbageSymbol("2025-01-03, 11:40:15")).toBe("timestamp");
+  });
+
+  it("rejects symbols with commas", () => {
+    expect(isGarbageSymbol("AAPL, GOOGL")).toBe("contains comma");
+  });
+
+  it("rejects overly long strings", () => {
+    expect(isGarbageSymbol("This is a very long description that is definitely not a ticker symbol")).not.toBeNull();
+  });
+
+  it("rejects purely numeric strings", () => {
+    expect(isGarbageSymbol("123456")).toBe("purely numeric");
+  });
+
+  it("rejects time-like patterns", () => {
+    expect(isGarbageSymbol("10:30:45")).toBe("contains time-like pattern");
+  });
+
+  it("returns null for undefined/empty", () => {
+    expect(isGarbageSymbol(undefined)).toBeNull();
+    expect(isGarbageSymbol("")).toBe("empty symbol");
   });
 });
 
