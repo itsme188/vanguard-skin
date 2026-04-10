@@ -21,7 +21,7 @@ function formatQuantity(value: number): string {
 }
 
 function formatOptionDescription(holding: HoldingWithSecurity): string {
-  if (holding.security_type !== "option") return "";
+  if (holding.security_type?.toLowerCase() !== "option") return "";
   const underlying = holding.underlying_symbol ?? "";
   const strike = holding.strike_price != null ? `$${holding.strike_price}` : "";
   const type = holding.option_type ?? "";
@@ -35,8 +35,8 @@ function formatOptionDescription(holding: HoldingWithSecurity): string {
 }
 
 function quantityLabel(holding: HoldingWithSecurity): string {
-  if (holding.security_type === "option") return "contracts";
-  if (holding.security_type === "bond") return "face value";
+  if (holding.security_type?.toLowerCase() === "option") return "contracts";
+  if (holding.security_type?.toLowerCase() === "bond") return "face value";
   return "shares";
 }
 

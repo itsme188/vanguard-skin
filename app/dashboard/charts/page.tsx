@@ -14,7 +14,7 @@ export default async function ChartsPage({ searchParams }: PageProps) {
 
   // Default to first stock (skip bonds/treasuries which have no OHLCV data)
   const defaultSecurity =
-    securities.find((s) => s.security_type === "stock" || s.security_type === "etf") ??
+    securities.find((s) => s.security_type?.toLowerCase() === "stock" || s.security_type?.toLowerCase() === "etf") ??
     securities[0];
 
   const initialSecurity =

@@ -172,7 +172,7 @@ function annotateHoldings(holdings: HoldingResult[], warnings: string[]): void {
 
   // Options with multiplier=1 (likely data error)
   const suspectOptions = holdings.filter(
-    (h) => h.security_type === "option" && h.quantity !== 0
+    (h) => h.security_type?.toLowerCase() === "option" && h.quantity !== 0
   );
   // We can't check multiplier from the result — but if market_value seems too low
   // relative to quantity for options, that's a signal. Skip this for now.

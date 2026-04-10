@@ -109,7 +109,7 @@ export function getOptionPositions(
        FROM holdings h
        JOIN securities s ON s.id = h.security_id
        JOIN accounts a ON a.id = h.account_id
-       WHERE s.security_type = 'option'
+       WHERE LOWER(s.security_type) = 'option'
          AND s.strike_price IS NOT NULL
          AND s.expiration_date IS NOT NULL
          AND s.option_type IS NOT NULL
@@ -179,7 +179,7 @@ export function getOptionsByUnderlying(
       // Look up underlying security ID
       const underlying = db
         .prepare(
-          "SELECT id FROM securities WHERE symbol = ? AND security_type != 'option' LIMIT 1"
+          "SELECT id FROM securities WHERE symbol = ? AND LOWER(security_type) != 'option' LIMIT 1"
         )
         .get(pos.underlying) as { id: number } | undefined;
 
@@ -232,7 +232,7 @@ export function getExpiringOptions(
        FROM holdings h
        JOIN securities s ON s.id = h.security_id
        JOIN accounts a ON a.id = h.account_id
-       WHERE s.security_type = 'option'
+       WHERE LOWER(s.security_type) = 'option'
          AND s.expiration_date >= ?
          AND s.expiration_date <= ?
          AND h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2)
@@ -294,7 +294,7 @@ export function getOptionsPnL(
        FROM tax_lot_sales tls
        JOIN tax_lots tl ON tl.id = tls.tax_lot_id
        JOIN securities s ON s.id = tl.security_id
-       WHERE s.security_type = 'option'
+       WHERE LOWER(s.security_type) = 'option'
          ${accountFilter}
        ORDER BY tls.sale_date DESC`
     )

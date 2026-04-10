@@ -27,7 +27,7 @@ export async function GET(request: NextRequest) {
                  ORDER BY p.date DESC LIMIT 1) AS current_price
          FROM holdings h
          JOIN securities s ON s.id = h.security_id
-         WHERE s.security_type IN ('stock', 'etf')
+         WHERE LOWER(s.security_type) IN ('stock', 'etf')
            AND h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2)
            ${accountFilter}`
       )

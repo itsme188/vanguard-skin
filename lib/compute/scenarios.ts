@@ -172,7 +172,7 @@ export function computeScenario(
          s.duration_years,
          s.credit_rating,
          CASE
-           WHEN s.security_type = 'bond'
+           WHEN LOWER(s.security_type) = 'bond'
              THEN lh.total_qty * COALESCE(lp.close_price, 0) / 100.0
            ELSE lh.total_qty * COALESCE(lp.close_price, 0) * COALESCE(s.multiplier, 1)
          END AS market_value

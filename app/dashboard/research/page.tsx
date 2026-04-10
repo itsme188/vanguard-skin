@@ -46,7 +46,7 @@ export default async function ResearchPage({ searchParams }: PageProps) {
         `SELECT DISTINCT s.id, s.symbol, s.name
          FROM securities s
          WHERE s.symbol IS NOT NULL AND s.symbol != ''
-           AND s.security_type IN ('stock', 'etf', 'mutual_fund')
+           AND LOWER(s.security_type) IN ('stock', 'etf', 'mutual fund')
          ORDER BY s.symbol`
       )
       .all() as { id: number; symbol: string; name: string | null }[];
