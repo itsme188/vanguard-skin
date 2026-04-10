@@ -21,6 +21,7 @@ import {
   type TradeAnswer,
 } from "./questions";
 import { fetchVitalKnowledge } from "@/lib/vital-knowledge";
+import { getRecentArticles } from "@/lib/queries/research";
 import type { TradeReview } from "@/lib/types";
 
 const REVIEW_MODEL_OPUS = "claude-opus-4-6";
@@ -61,10 +62,14 @@ const REVIEW_TOOL: Anthropic.Tool = {
             assessment: {
               type: "string",
               description:
-                "2-3 sentence overall assessment of this trade, grounded in the data provided.",
+                "2-3 sentence overall assessment of this trade, grounded in the data provided. Must reflect trim vs full exit status and any capital rotation shown in market context.",
             },
             what_worked: { type: "string" },
-            what_didnt: { type: "string" },
+            what_didnt: {
+              type: "string",
+              description:
+                "What could have been better. Must be consistent with the review_markdown — do not contradict trim/rotation facts stated there.",
+            },
           },
           required: [
             "trade_number",
@@ -249,18 +254,45 @@ export async function generateTradeReview(
   const marketContexts = getMarketContext(db, groupedTrades, params.accountId);
   let marketContextStr = formatMarketContext(marketContexts, groupedTrades);
 
-  // Append Vital Knowledge newsletter context if available
+  // Append Vital Knowledge newsletter context — anchored to trade period, not today
   const gmailAddress = process.env.GMAIL_ADDRESS;
   const gmailAppPassword = process.env.GMAIL_APP_PASSWORD;
+  const periodEndDate = new Date(params.periodEnd + "T23:59:59");
   if (gmailAddress && gmailAppPassword) {
     try {
-      const vk = await fetchVitalKnowledge(gmailAddress, gmailAppPassword, 30);
+      const vk = await fetchVitalKnowledge(
+        gmailAddress,
+        gmailAppPassword,
+        30,
+        periodEndDate
+      );
       if (vk) {
         marketContextStr += `\n\n## Market Newsletter Context\n${vk}`;
       }
     } catch {
       // Non-critical — continue without newsletter context
     }
+  }
+
+  // Also pull research articles from the trade period (local DB — works for historical reviews)
+  try {
+    const periodArticles = getRecentArticles(db, {
+      startDate: params.periodStart,
+      endDate: params.periodEnd,
+      processedOnly: true,
+      limit: 15,
+    });
+    if (periodArticles.length > 0) {
+      const articleSummaries = periodArticles
+        .map((a) => {
+          const dateStr = a.received_at?.split("T")[0] ?? "";
+          return `[${dateStr}] ${a.source_name}: ${a.subject}\n${a.summary ?? "(no summary)"}`;
+        })
+        .join("\n\n");
+      marketContextStr += `\n\n## Research Feed Context (${params.periodStart} to ${params.periodEnd})\n${articleSummaries}`;
+    }
+  } catch {
+    // Non-critical — continue without research feed context
   }
 
   // Step 3: Call Claude API
