@@ -7,6 +7,8 @@ interface TradeMarketContext {
   stockContext: StockPriceContext | null;
   benchmarkReturn: number | null; // SPY return over same period, as decimal
   positionPctOfPortfolio: number | null; // at entry, as decimal
+  remainingPosition: RemainingPositionContext | null;
+  concurrentActivity: ConcurrentActivity | null;
 }
 
 interface StockPriceContext {
@@ -17,6 +19,23 @@ interface StockPriceContext {
   entryPrice: number;
   exitPrice: number;
   stockReturn: number; // as decimal
+}
+
+interface RemainingPositionContext {
+  remainingShares: number;
+  soldShares: number;
+  retainedPct: number; // percentage of original position retained (0-1)
+  isTrim: boolean; // true if shares remain after the sale
+}
+
+interface ConcurrentActivity {
+  buys: Array<{
+    symbol: string;
+    quantity: number;
+    totalCost: number;
+    date: string;
+  }>;
+  totalBuyAmount: number;
 }
 
 /**
@@ -50,6 +69,17 @@ export function getMarketContext(
       accountId,
       trade.earliestEntryDate,
       trade.totalCost
+    ),
+    remainingPosition: getRemainingPosition(
+      db,
+      trade.securityId,
+      accountId,
+      trade.totalQuantity
+    ),
+    concurrentActivity: getConcurrentActivity(
+      db,
+      accountId,
+      trade.exitDate
     ),
   }));
 }
@@ -105,11 +135,39 @@ export function formatMarketContext(
       lines.push(
         `- SPY same period: ${benchPct}% (${label} by ${Math.abs(Number(diff)).toFixed(1)}%)`
       );
+    } else if (ctx.stockContext) {
+      // Explicitly note missing benchmark to prevent hallucination
+      lines.push(`- SPY benchmark: insufficient price data for this period`);
     }
 
     if (ctx.positionPctOfPortfolio !== null) {
       lines.push(
         `- Position size at entry: ~${(ctx.positionPctOfPortfolio * 100).toFixed(1)}% of portfolio`
+      );
+    }
+
+    if (ctx.remainingPosition) {
+      const rp = ctx.remainingPosition;
+      if (rp.isTrim) {
+        lines.push(
+          `- Position action: TRIM — sold ${formatQty(rp.soldShares)} shares, retained ${formatQty(rp.remainingShares)} shares (${(rp.retainedPct * 100).toFixed(0)}% of position kept)`
+        );
+      } else {
+        lines.push(`- Position action: FULL EXIT — no remaining shares`);
+      }
+    }
+
+    if (ctx.concurrentActivity && ctx.concurrentActivity.buys.length > 0) {
+      const ca = ctx.concurrentActivity;
+      const buyList = ca.buys
+        .map(
+          (b) =>
+            `${formatQty(b.quantity)} ${b.symbol} ($${b.totalCost.toLocaleString("en-US", { maximumFractionDigits: 0 })}) on ${b.date}`
+        )
+        .join(", ");
+      lines.push(`- Concurrent buys (±7d): ${buyList}`);
+      lines.push(
+        `- Total deployed nearby: $${ca.totalBuyAmount.toLocaleString("en-US", { maximumFractionDigits: 0 })}`
       );
     }
 
@@ -144,7 +202,20 @@ function getStockPriceContext(
     close: number;
   }>;
 
-  if (ohlcv.length > 0) {
+  // Data quality gate: need >= 5 data points AND >= 25% coverage of holding period
+  const holdingDays = Math.max(
+    1,
+    (new Date(endDate).getTime() - new Date(startDate).getTime()) /
+      (24 * 3600 * 1000)
+  );
+  const minDataPoints = 5;
+  const minCoverage = 0.25;
+  const approxTradingDays = holdingDays * (5 / 7);
+
+  if (
+    ohlcv.length >= minDataPoints &&
+    ohlcv.length / approxTradingDays >= minCoverage
+  ) {
     let periodHigh = -Infinity,
       periodHighDate = "";
     let periodLow = Infinity,
@@ -185,7 +256,10 @@ function getStockPriceContext(
     close_price: number;
   }>;
 
-  if (prices.length > 0) {
+  if (
+    prices.length >= minDataPoints &&
+    prices.length / approxTradingDays >= minCoverage
+  ) {
     let periodHigh = -Infinity,
       periodHighDate = "";
     let periodLow = Infinity,
@@ -224,21 +298,23 @@ function getBenchmarkReturn(
   // Try benchmark_prices first
   const benchStart = db
     .prepare(
-      `SELECT close_price FROM benchmark_prices
+      `SELECT date, close_price FROM benchmark_prices
        WHERE symbol = 'SPY' AND date >= ?
        ORDER BY date ASC LIMIT 1`
     )
-    .get(startDate) as { close_price: number } | undefined;
+    .get(startDate) as { date: string; close_price: number } | undefined;
 
   const benchEnd = db
     .prepare(
-      `SELECT close_price FROM benchmark_prices
+      `SELECT date, close_price FROM benchmark_prices
        WHERE symbol = 'SPY' AND date <= ?
        ORDER BY date DESC LIMIT 1`
     )
-    .get(endDate) as { close_price: number } | undefined;
+    .get(endDate) as { date: string; close_price: number } | undefined;
 
   if (benchStart && benchEnd) {
+    // Quality gate: same-date match means only 1 data point — unreliable
+    if (benchStart.date === benchEnd.date) return null;
     return (benchEnd.close_price - benchStart.close_price) / benchStart.close_price;
   }
 
@@ -250,21 +326,26 @@ function getBenchmarkReturn(
   if (spySecurity) {
     const ohlcvStart = db
       .prepare(
-        `SELECT close FROM ohlcv_bars
+        `SELECT bar_date, close FROM ohlcv_bars
          WHERE security_id = ? AND bar_date >= ? AND bar_size = '1 day'
          ORDER BY bar_date ASC LIMIT 1`
       )
-      .get(spySecurity.id, startDate) as { close: number } | undefined;
+      .get(spySecurity.id, startDate) as
+      | { bar_date: string; close: number }
+      | undefined;
 
     const ohlcvEnd = db
       .prepare(
-        `SELECT close FROM ohlcv_bars
+        `SELECT bar_date, close FROM ohlcv_bars
          WHERE security_id = ? AND bar_date <= ? AND bar_size = '1 day'
          ORDER BY bar_date DESC LIMIT 1`
       )
-      .get(spySecurity.id, endDate) as { close: number } | undefined;
+      .get(spySecurity.id, endDate) as
+      | { bar_date: string; close: number }
+      | undefined;
 
     if (ohlcvStart && ohlcvEnd) {
+      if (ohlcvStart.bar_date === ohlcvEnd.bar_date) return null;
       return (ohlcvEnd.close - ohlcvStart.close) / ohlcvStart.close;
     }
   }
@@ -273,21 +354,26 @@ function getBenchmarkReturn(
   if (spySecurity) {
     const priceStart = db
       .prepare(
-        `SELECT close_price FROM prices
+        `SELECT date, close_price FROM prices
          WHERE security_id = ? AND date >= ?
          ORDER BY date ASC LIMIT 1`
       )
-      .get(spySecurity.id, startDate) as { close_price: number } | undefined;
+      .get(spySecurity.id, startDate) as
+      | { date: string; close_price: number }
+      | undefined;
 
     const priceEnd = db
       .prepare(
-        `SELECT close_price FROM prices
+        `SELECT date, close_price FROM prices
          WHERE security_id = ? AND date <= ?
          ORDER BY date DESC LIMIT 1`
       )
-      .get(spySecurity.id, endDate) as { close_price: number } | undefined;
+      .get(spySecurity.id, endDate) as
+      | { date: string; close_price: number }
+      | undefined;
 
     if (priceStart && priceEnd) {
+      if (priceStart.date === priceEnd.date) return null;
       return (priceEnd.close_price - priceStart.close_price) / priceStart.close_price;
     }
   }
@@ -314,7 +400,94 @@ function getPositionSize(
     return positionCost / valuation.total_value;
   }
 
+  // Fallback: monthly snapshots (covers historical trades before daily valuations exist)
+  const snapshot = db
+    .prepare(
+      `SELECT total_value FROM monthly_snapshots
+       WHERE account_id = ? AND month_end_date <= ?
+       ORDER BY month_end_date DESC LIMIT 1`
+    )
+    .get(accountId, entryDate) as { total_value: number } | undefined;
+
+  if (snapshot && snapshot.total_value > 0) {
+    return positionCost / snapshot.total_value;
+  }
+
   return null;
 }
 
-export type { TradeMarketContext, StockPriceContext };
+function getRemainingPosition(
+  db: Database.Database,
+  securityId: number,
+  accountId: number,
+  soldQuantity: number
+): RemainingPositionContext | null {
+  const row = db
+    .prepare(
+      `SELECT COALESCE(SUM(quantity_remaining), 0) as remaining
+       FROM tax_lots
+       WHERE security_id = ? AND account_id = ? AND quantity_remaining > 0`
+    )
+    .get(securityId, accountId) as { remaining: number } | undefined;
+
+  if (!row) return null;
+
+  const remaining = row.remaining;
+  const originalPosition = remaining + soldQuantity;
+
+  return {
+    remainingShares: remaining,
+    soldShares: soldQuantity,
+    retainedPct:
+      originalPosition > 0 ? remaining / originalPosition : 0,
+    isTrim: remaining > 0,
+  };
+}
+
+function getConcurrentActivity(
+  db: Database.Database,
+  accountId: number,
+  saleDate: string,
+  windowDays: number = 7
+): ConcurrentActivity | null {
+  const buys = db
+    .prepare(
+      `SELECT s.symbol, t.quantity, ABS(t.amount) as total_cost, t.trade_date
+       FROM transactions t
+       JOIN securities s ON t.security_id = s.id
+       WHERE t.account_id = ?
+         AND t.type IN ('BUY', 'BUY_TO_OPEN')
+         AND t.trade_date >= date(?, '-' || ? || ' days')
+         AND t.trade_date <= date(?, '+' || ? || ' days')
+       ORDER BY t.trade_date`
+    )
+    .all(accountId, saleDate, windowDays, saleDate, windowDays) as Array<{
+    symbol: string;
+    quantity: number;
+    total_cost: number;
+    trade_date: string;
+  }>;
+
+  if (buys.length === 0) return null;
+
+  return {
+    buys: buys.map((b) => ({
+      symbol: b.symbol,
+      quantity: b.quantity,
+      totalCost: b.total_cost,
+      date: b.trade_date,
+    })),
+    totalBuyAmount: buys.reduce((sum, b) => sum + b.total_cost, 0),
+  };
+}
+
+function formatQty(qty: number): string {
+  return qty >= 1 ? String(Math.round(qty)) : qty.toPrecision(3);
+}
+
+export type {
+  TradeMarketContext,
+  StockPriceContext,
+  RemainingPositionContext,
+  ConcurrentActivity,
+};

@@ -46,7 +46,8 @@ export function findPart(
 export async function fetchVitalKnowledge(
   gmailAddress: string,
   gmailAppPassword: string,
-  lookbackDays: number = 7
+  lookbackDays: number = 7,
+  beforeDate?: Date
 ): Promise<string> {
   if (!gmailAddress || !gmailAppPassword) return "";
 
@@ -64,10 +65,22 @@ export async function fetchVitalKnowledge(
     const lock = await client.getMailboxLock("INBOX");
 
     try {
-      const since = new Date();
+      const anchor = beforeDate ?? new Date();
+      const since = new Date(anchor);
       since.setDate(since.getDate() - lookbackDays);
 
-      const uids = await client.search({ from: VK_SENDER, since }, { uid: true });
+      const searchCriteria: Record<string, unknown> = {
+        from: VK_SENDER,
+        since,
+      };
+      // When anchored to a specific date, cap the search window to avoid forward-looking data
+      if (beforeDate) {
+        const before = new Date(anchor);
+        before.setDate(before.getDate() + 1); // IMAP BEFORE is exclusive
+        searchCriteria.before = before;
+      }
+
+      const uids = await client.search(searchCriteria, { uid: true });
       if (!uids || uids.length === 0) return "";
 
       // Most recent N emails

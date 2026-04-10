@@ -65,7 +65,11 @@ CRITICAL RULES:
 - If no notes were provided and intent is unclear, say "intent unclear from data" — do not fabricate an entry thesis.
 - Reference actual prices, dates, and percentages from the data. "Exited at $35.98, 28% below the period high of $49.75" is better than "sold too early."
 - Use market context when available to ground your analysis. "Underperformed SPY by 27% over the same period" adds real information.
+- If market context shows benchmark or price data as "unavailable" or "insufficient", state that clearly. NEVER estimate, guess, or recall benchmark returns from your training data. Say "SPY data unavailable for this period" — do not write "SPY likely returned 30-50%" or similar.
+- When a trade is marked as a TRIM (retained shares listed), analyze it as a position reduction — not a full exit. Consider why the trader kept the remaining shares.
+- When concurrent buys are listed near a sale, analyze the capital rotation. What did the trader redeploy into? Is there a sector/thesis connection between the sell and the buys?
 - The trade count in the summary matches the number of trades in the table. Each row is one trade (which may have consumed multiple tax lots via FIFO).
+- When there is only 1 trade this month, skip win rate, profit factor, and best/worst trade analysis — they are tautological with N=1. Focus the monthly summary entirely on that trade's execution, context, and patterns.
 - IMPORTANT: The "Days" column shows FIFO holding periods — the time between the oldest matched tax lot's acquisition and the sale. For actively traded securities, this does NOT reflect how long the trader perceived holding the position. A trader who buys 100 shares on Monday and sells Tuesday may show "90 days" because FIFO matched against a lot from 3 months ago. Do NOT use holding days to judge discipline or intent. Focus on sale dates, P&L, and any trader-provided notes instead.`;
 
   if (priorReviewCount >= 3) {
@@ -97,8 +101,15 @@ function buildUserPrompt(
 
   parts.push(`# Trade Review Request: ${periodLabel}`);
 
-  // Summary metrics
-  parts.push(`
+  // Summary metrics — simplified for single-trade months
+  if (summary.totalTrades === 1) {
+    parts.push(`
+## Summary
+- Total trades: 1
+- P&L: $${summary.totalRealizedPnl.toFixed(2)}
+- Holding: ${summary.avgHoldingDays.toFixed(0)} days`);
+  } else {
+    parts.push(`
 ## Summary Metrics
 - Total trades: ${summary.totalTrades}
 - Winning: ${summary.winningTrades} | Losing: ${summary.losingTrades} | Win rate: ${(summary.winRate * 100).toFixed(1)}%
@@ -108,6 +119,7 @@ function buildUserPrompt(
 - Profit factor: ${summary.profitFactor.toFixed(2)}x
 - Best: ${summary.bestTradeSymbol} ($${summary.bestTradePnl.toFixed(2)})
 - Worst: ${summary.worstTradeSymbol} ($${summary.worstTradePnl.toFixed(2)})`);
+  }
 
   // Grouped trade table
   parts.push(`\n## This Month's Trades\n`);
@@ -188,9 +200,15 @@ function buildUserPrompt(
     }
   }
 
-  parts.push(
-    `\nPlease analyze all ${summary.totalTrades} trade(s) and produce the monthly review using the submit_trade_review tool.`
-  );
+  if (summary.totalTrades === 1) {
+    parts.push(
+      `\nPlease analyze this single trade and produce the monthly review using the submit_trade_review tool. Focus on the trade's execution, timing, and context — skip win rate and profit factor analysis.`
+    );
+  } else {
+    parts.push(
+      `\nPlease analyze all ${summary.totalTrades} trade(s) and produce the monthly review using the submit_trade_review tool.`
+    );
+  }
 
   return parts.join("\n");
 }

@@ -76,8 +76,10 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - Transaction types are UPPERCASE: BUY, SELL, DIVIDEND, REINVESTMENT, TAX_WITHHELD, BUY_TO_OPEN, SELL_TO_CLOSE, etc.
 - `computeTaxLots` matches on uppercase BUY/SELL — parsers must output uppercase
 - Market values use `adjustedMarketValueSQL()` from `lib/valuation.ts` — handles bonds (÷100) and options (×multiplier). Uses `LOWER()` for case-insensitive type matching.
-- **Security type casing**: DB stores capitalized types (`Bond`, `Stock`, `ETF`, `Option`, `Mutual Fund`). Always use case-insensitive comparisons (`.toLowerCase()` in TS, `LOWER()` in SQL). `mapSecurityType()` is centralized in `lib/tws/security-type-map.ts` — import from there, never duplicate.
-- **Import validation**: `lib/import/validate.ts` runs before commit — validates dates, quantities, prices, transaction types. Bad rows excluded with warnings.
+- **Security type casing**: DB stores capitalized types (`Bond`, `Stock`, `ETF`, `Option`, `Mutual Fund`). Always use case-insensitive comparisons (`.toLowerCase()` in TS, `LOWER()` in SQL). `mapSecurityType()` is centralized in `lib/tws/security-type-map.ts` — import from there, never duplicate. A PostToolUse lint hook in `.claude/settings.json` rejects new case-sensitive comparisons.
+- **Import validation**: `lib/import/validate.ts` runs before commit — validates dates, quantities, prices, transaction types, AND financial sanity (`isGarbageSymbol()` rejects timestamps, commas, >30 chars, purely numeric). Bad rows excluded with warnings.
+- **API contract tests**: `tests/contracts/api-component-contracts.test.ts` verifies compute function return shapes match component expectations. Add a test here whenever a new client component fetches from an API.
+- **Account scoping rule**: If a page has an account scope selector (e.g., Analysis), EVERY query on that page must accept and respect `accountIds`. No global queries on scoped pages.
 - **Price source priority**: Higher-priority sources overwrite lower: tws(1) > ibkr(2) > vanguard(3) > manual(4). See conditional upsert in `engine.ts`.
 - **Data Health**: `/dashboard/data-health` — coverage, freshness, gaps, reconciliation. `DataFreshness` header links there.
 - Always use `COALESCE(s.multiplier, 1)` in queries — SQLite DEFAULT is bypassed by explicit INSERT NULL
