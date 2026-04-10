@@ -276,37 +276,61 @@ export function getConcentrationMetrics(
  * broken down by classification source.
  */
 export function getClassificationCoverage(
-  db: Database.Database
+  db: Database.Database,
+  accountIds?: number[]
 ): ClassificationCoverage {
+  // Scope to securities with current holdings in the selected accounts
+  const holdingsFilter = accountIds && accountIds.length > 0
+    ? `AND h.account_id IN (${accountIds.map(() => "?").join(",")})`
+    : "";
+  const holdingsParams = accountIds ?? [];
+
+  const activeSecuritiesCTE = `
+    active_securities AS (
+      SELECT DISTINCT h.security_id
+      FROM holdings h
+      WHERE h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id)
+        AND h.quantity > 0
+        ${holdingsFilter}
+    )
+  `;
+
   const total = (
-    db.prepare("SELECT COUNT(*) AS cnt FROM securities").get() as { cnt: number }
+    db.prepare(`WITH ${activeSecuritiesCTE}
+      SELECT COUNT(*) AS cnt FROM securities s
+      WHERE s.id IN (SELECT security_id FROM active_securities)`)
+      .get(...holdingsParams) as { cnt: number }
   ).cnt;
 
   const classified = (
-    db
-      .prepare(
-        "SELECT COUNT(*) AS cnt FROM securities WHERE classification_source IS NOT NULL"
-      )
-      .get() as { cnt: number }
+    db.prepare(`WITH ${activeSecuritiesCTE}
+      SELECT COUNT(*) AS cnt FROM securities s
+      WHERE s.id IN (SELECT security_id FROM active_securities)
+        AND s.classification_source IS NOT NULL`)
+      .get(...holdingsParams) as { cnt: number }
   ).cnt;
 
   const bySource = db
     .prepare(
-      `SELECT COALESCE(classification_source, 'unclassified') AS source, COUNT(*) AS count
-       FROM securities
-       GROUP BY classification_source
+      `WITH ${activeSecuritiesCTE}
+       SELECT COALESCE(s.classification_source, 'unclassified') AS source, COUNT(*) AS count
+       FROM securities s
+       WHERE s.id IN (SELECT security_id FROM active_securities)
+       GROUP BY s.classification_source
        ORDER BY count DESC`
     )
-    .all() as Array<{ source: string; count: number }>;
+    .all(...holdingsParams) as Array<{ source: string; count: number }>;
 
   const unclassifiedSecurities = db
     .prepare(
-      `SELECT id, symbol, name, security_type
-       FROM securities
-       WHERE classification_source IS NULL
-       ORDER BY symbol`
+      `WITH ${activeSecuritiesCTE}
+       SELECT s.id, s.symbol, s.name, s.security_type
+       FROM securities s
+       WHERE s.id IN (SELECT security_id FROM active_securities)
+         AND s.classification_source IS NULL
+       ORDER BY s.symbol`
     )
-    .all() as ClassificationCoverage["unclassified_securities"];
+    .all(...holdingsParams) as ClassificationCoverage["unclassified_securities"];
 
   return {
     total,
