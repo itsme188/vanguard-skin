@@ -29,12 +29,12 @@ export function ExpirationCalendar() {
       .then((json) => {
         if (json.success && json.data.positions?.length > 0) {
           const expiring = json.data.positions
-            .filter((p: { daysToExpiry: number }) => p.daysToExpiry >= 0 && p.daysToExpiry <= 90)
+            .filter((p: { daysToExpiry: number | null }) => p.daysToExpiry != null && p.daysToExpiry >= 0 && p.daysToExpiry <= 90)
             .sort((a: { daysToExpiry: number }, b: { daysToExpiry: number }) => a.daysToExpiry - b.daysToExpiry)
             .map((p: {
               symbol: string;
               underlying: string;
-              type: string;
+              optionType: string;
               strike: number;
               expiration: string;
               daysToExpiry: number;
@@ -43,7 +43,7 @@ export function ExpirationCalendar() {
               securityId: 0,
               symbol: p.symbol,
               underlying: p.underlying,
-              optionType: p.type as "CALL" | "PUT",
+              optionType: p.optionType as "CALL" | "PUT",
               strike: p.strike,
               expiration: p.expiration,
               daysToExpiry: p.daysToExpiry,

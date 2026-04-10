@@ -272,7 +272,7 @@ function computeConcentration(
          lh.symbol,
          lh.name AS security_name,
          CASE
-           WHEN lh.security_type = 'bond'
+           WHEN LOWER(lh.security_type) = 'bond'
              THEN lh.quantity * COALESCE(lp.close_price, 0) / 100.0
            ELSE lh.quantity * COALESCE(lp.close_price, 0) * lh.multiplier
          END AS market_value
@@ -354,7 +354,7 @@ export function computePositionRisk(
          s.symbol,
          s.name AS security_name,
          CASE
-           WHEN s.security_type = 'bond'
+           WHEN LOWER(s.security_type) = 'bond'
              THEN lh.total_qty * COALESCE(lp.close_price, 0) / 100.0
            ELSE lh.total_qty * COALESCE(lp.close_price, 0) * COALESCE(s.multiplier, 1)
          END AS market_value

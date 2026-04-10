@@ -176,7 +176,7 @@ export default async function SecurityDetailPage(props: {
       )}
 
       {/* Option Details (only for option securities) */}
-      {security.security_type === "option" && security.underlying_symbol && (
+      {security.security_type?.toLowerCase() === "option" && security.underlying_symbol && (
         <section className="rounded-xl border border-edge bg-panel p-5">
           <div className="flex items-center gap-4 flex-wrap">
             <div>
@@ -185,7 +185,7 @@ export default async function SecurityDetailPage(props: {
                 <Link
                   href={`/dashboard/security/${(() => {
                     const underlying = db
-                      .prepare("SELECT id FROM securities WHERE symbol = ? AND security_type != 'option' LIMIT 1")
+                      .prepare("SELECT id FROM securities WHERE symbol = ? AND LOWER(security_type) != 'option' LIMIT 1")
                       .get(security.underlying_symbol!) as { id: number } | undefined;
                     return underlying?.id ?? securityId;
                   })()}`}
@@ -777,7 +777,7 @@ export default async function SecurityDetailPage(props: {
       )}
 
       {/* Related Options (for stock securities that have option positions) */}
-      {security.security_type !== "option" && (() => {
+      {security.security_type?.toLowerCase() !== "option" && (() => {
         const relatedOptions = db
           .prepare(
             `SELECT s.id, s.symbol, s.option_type, s.strike_price, s.expiration_date,

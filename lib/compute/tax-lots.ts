@@ -233,7 +233,7 @@ function computePremiumAdjustments(
        FROM transactions t
        JOIN securities s ON s.id = t.security_id
        WHERE LOWER(t.type) IN ('exercised', 'assigned')
-         AND s.security_type = 'option'
+         AND LOWER(s.security_type) = 'option'
          AND s.underlying_symbol IS NOT NULL
          AND s.option_type IS NOT NULL`
     )
@@ -271,7 +271,7 @@ function computePremiumAdjustments(
     // Find the linked stock transaction: same account, same underlying, same date (±1 day)
     const underlying = db
       .prepare(
-        "SELECT id FROM securities WHERE symbol = ? AND security_type != 'option' LIMIT 1"
+        "SELECT id FROM securities WHERE symbol = ? AND LOWER(security_type) != 'option' LIMIT 1"
       )
       .get(ex.underlying_symbol) as { id: number } | undefined;
 

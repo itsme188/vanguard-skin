@@ -32,7 +32,7 @@ export async function GET(request: NextRequest) {
     // Look up conId from securities table, or resolve via contract details
     const sec = db
       .prepare(
-        "SELECT ib_con_id FROM securities WHERE symbol = ? AND security_type != 'option' LIMIT 1"
+        "SELECT ib_con_id FROM securities WHERE symbol = ? AND LOWER(security_type) != 'option' LIMIT 1"
       )
       .get(symbol) as { ib_con_id: number | null } | undefined;
 

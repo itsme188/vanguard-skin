@@ -44,8 +44,8 @@ export function upsertSecurity(
     .get(p.symbol) as { id: number; security_type: string | null } | undefined;
 
   if (existing && p.securityType && existing.security_type) {
-    const existingIsOption = existing.security_type === "option";
-    const incomingIsOption = p.securityType === "option";
+    const existingIsOption = existing.security_type?.toLowerCase() === "option";
+    const incomingIsOption = p.securityType?.toLowerCase() === "option";
 
     if (existingIsOption !== incomingIsOption) {
       // Type conflict: don't merge, just return the existing ID.

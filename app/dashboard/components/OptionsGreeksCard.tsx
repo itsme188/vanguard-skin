@@ -1,54 +1,27 @@
 "use client";
 
 import { useState, useEffect } from "react";
-
-interface PositionGreek {
-  symbol: string;
-  underlying: string;
-  type: string;
-  strike: number;
-  expiration: string;
-  quantity: number;
-  underlyingPrice: number;
-  daysToExpiry: number;
-  delta: number | null;
-  gamma: number | null;
-  theta: number | null;
-  vega: number | null;
-  iv: number | null;
-}
-
-interface GreeksData {
-  portfolio: {
-    totalDelta: number;
-    totalGamma: number;
-    totalTheta: number;
-    totalVega: number;
-  };
-  positions: PositionGreek[];
-}
+import type { PortfolioGreeks, PositionGreeks } from "@/lib/compute/options-greeks";
 
 /**
  * Portfolio-level Greeks summary + per-position Greeks table.
  * Only renders if the portfolio has option positions.
  */
 export function OptionsGreeksCard() {
-  const [data, setData] = useState<GreeksData | null>(null);
+  const [data, setData] = useState<PortfolioGreeks | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     fetch("/api/compute/options-greeks")
       .then((r) => r.json())
       .then((json) => {
-        if (json.success && json.data.positions.length > 0) setData(json.data);
+        if (json.success && json.data.positions?.length > 0) setData(json.data);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
 
   if (loading || !data) return null;
-
-  const { portfolio, positions } = data;
 
   return (
     <div className="bg-raised border border-edge rounded-2xl p-6 space-y-4">
@@ -58,25 +31,25 @@ export function OptionsGreeksCard() {
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <MetricCell
           label="Net Delta"
-          value={formatNum(portfolio.totalDelta)}
+          value={formatNum(data.totalDelta)}
           description="Share-equivalents"
-          color={portfolio.totalDelta > 0 ? "text-up" : portfolio.totalDelta < 0 ? "text-down" : "text-ink"}
+          color={(data.totalDelta ?? 0) > 0 ? "text-up" : (data.totalDelta ?? 0) < 0 ? "text-down" : "text-ink"}
         />
         <MetricCell
           label="Net Gamma"
-          value={formatNum(portfolio.totalGamma)}
+          value={formatNum(data.totalGamma)}
           description="Per $1 move"
           color="text-ink"
         />
         <MetricCell
           label="Daily Theta"
-          value={formatDollar(portfolio.totalTheta)}
+          value={formatDollar(data.totalTheta)}
           description="Time decay / day"
           color="text-down"
         />
         <MetricCell
           label="Net Vega"
-          value={formatDollar(portfolio.totalVega)}
+          value={formatDollar(data.totalVega)}
           description="Per 1% IV move"
           color="text-blue"
         />
@@ -99,40 +72,49 @@ export function OptionsGreeksCard() {
             </tr>
           </thead>
           <tbody>
-            {positions.map((p) => (
-              <tr key={p.symbol} className="border-b border-edge/50 hover:bg-muted/30">
-                <td className="py-2 pr-3">
-                  <span className="font-mono text-ink">{p.underlying}</span>
-                  <span className="text-ink-faint ml-1">
-                    {formatStrike(p.strike)} {p.type[0]} {formatExpiry(p.expiration)}
-                  </span>
-                </td>
-                <td className={`text-right py-2 px-2 font-mono ${p.quantity < 0 ? "text-down" : "text-ink"}`}>
-                  {p.quantity > 0 ? `+${p.quantity}` : p.quantity}
-                </td>
-                <td className="text-right py-2 px-2 font-mono text-ink-dim">
-                  ${p.underlyingPrice.toFixed(2)}
-                </td>
-                <td className={`text-right py-2 px-2 font-mono ${p.daysToExpiry <= 7 ? "text-down" : p.daysToExpiry <= 30 ? "text-gold" : "text-ink-dim"}`}>
-                  {p.daysToExpiry}d
-                </td>
-                <td className="text-right py-2 px-2 font-mono text-ink-dim">
-                  {p.iv ?? "—"}
-                </td>
-                <td className={`text-right py-2 px-2 font-mono ${(p.delta ?? 0) > 0 ? "text-up" : (p.delta ?? 0) < 0 ? "text-down" : "text-ink-dim"}`}>
-                  {p.delta != null ? p.delta.toFixed(3) : "—"}
-                </td>
-                <td className="text-right py-2 px-2 font-mono text-ink-dim">
-                  {p.gamma != null ? p.gamma.toFixed(4) : "—"}
-                </td>
-                <td className="text-right py-2 px-2 font-mono text-down">
-                  {p.theta != null ? `$${p.theta.toFixed(2)}` : "—"}
-                </td>
-                <td className="text-right py-2 px-2 font-mono text-blue">
-                  {p.vega != null ? `$${p.vega.toFixed(2)}` : "—"}
-                </td>
-              </tr>
-            ))}
+            {data.positions.map((p) => {
+              const delta = p.greeks?.delta ?? null;
+              const gamma = p.greeks?.gamma ?? null;
+              const theta = p.greeks?.theta ?? null;
+              const vega = p.greeks?.vega ?? null;
+              const iv = p.greeks?.iv ?? null;
+              const dte = p.daysToExpiry ?? 0;
+
+              return (
+                <tr key={p.symbol} className="border-b border-edge/50 hover:bg-muted/30">
+                  <td className="py-2 pr-3">
+                    <span className="font-mono text-ink">{p.underlying}</span>
+                    <span className="text-ink-faint ml-1">
+                      {formatStrike(p.strike)} {p.optionType[0]} {formatExpiry(p.expiration)}
+                    </span>
+                  </td>
+                  <td className={`text-right py-2 px-2 font-mono ${p.quantity < 0 ? "text-down" : "text-ink"}`}>
+                    {p.quantity > 0 ? `+${p.quantity}` : p.quantity}
+                  </td>
+                  <td className="text-right py-2 px-2 font-mono text-ink-dim">
+                    ${p.underlyingPrice.toFixed(2)}
+                  </td>
+                  <td className={`text-right py-2 px-2 font-mono ${dte <= 7 ? "text-down" : dte <= 30 ? "text-gold" : "text-ink-dim"}`}>
+                    {dte}d
+                  </td>
+                  <td className="text-right py-2 px-2 font-mono text-ink-dim">
+                    {iv != null ? `${(iv * 100).toFixed(0)}%` : "—"}
+                  </td>
+                  <td className={`text-right py-2 px-2 font-mono ${(delta ?? 0) > 0 ? "text-up" : (delta ?? 0) < 0 ? "text-down" : "text-ink-dim"}`}>
+                    {delta != null ? delta.toFixed(3) : "—"}
+                  </td>
+                  <td className="text-right py-2 px-2 font-mono text-ink-dim">
+                    {gamma != null ? gamma.toFixed(4) : "—"}
+                  </td>
+                  <td className="text-right py-2 px-2 font-mono text-down">
+                    {theta != null ? `$${theta.toFixed(2)}` : "—"}
+                  </td>
+                  <td className="text-right py-2 px-2 font-mono text-blue">
+                    {vega != null ? `$${vega.toFixed(2)}` : "—"}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -162,12 +144,14 @@ function MetricCell({
   );
 }
 
-function formatNum(n: number): string {
+function formatNum(n: number | null | undefined): string {
+  if (n == null || isNaN(n)) return "—";
   if (Math.abs(n) >= 1000) return `${(n / 1000).toFixed(1)}K`;
   return n.toFixed(1);
 }
 
-function formatDollar(n: number): string {
+function formatDollar(n: number | null | undefined): string {
+  if (n == null || isNaN(n)) return "—";
   if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(1)}K`;
   return `$${n.toFixed(0)}`;
 }

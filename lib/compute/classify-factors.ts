@@ -60,7 +60,7 @@ Return ONLY a JSON array. No markdown fences. Each element:
 
 // Security types to skip (they don't need factor classification)
 const SKIP_TYPES = new Set([
-  "bond", "money_market", "Forex", "Forecast Contracts by ForecastEx",
+  "bond", "money_market", "money market", "forex", "forecast contracts by forecastex",
 ]);
 
 export async function classifyFactors(
@@ -120,9 +120,9 @@ export async function classifyFactors(
   `);
 
   for (const sec of unclassified) {
-    if (sec.security_type && SKIP_TYPES.has(sec.security_type)) {
+    if (sec.security_type && SKIP_TYPES.has(sec.security_type.toLowerCase())) {
       // Set defaults for bonds, money market, etc.
-      const isBond = sec.security_type === "bond";
+      const isBond = sec.security_type?.toLowerCase() === "bond";
       upsertFactor.run(
         sec.id,
         isBond ? "High" : "Low",    // interest_rate_sensitive

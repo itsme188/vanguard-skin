@@ -88,13 +88,13 @@ export function classifySecurities(db: Database.Database): ClassificationResult 
       }
 
       // 2. Auto-classify by security_type
-      if (sec.security_type === "bond") {
+      if (sec.security_type?.toLowerCase() === "bond") {
         updateStmt.run("US Treasury", "US", null, null, "auto", sec.id);
         classified++;
         continue;
       }
 
-      if (sec.security_type === "money_market") {
+      if (sec.security_type?.toLowerCase() === "money_market" || sec.security_type?.toLowerCase() === "money market") {
         updateStmt.run("Cash Equivalent", "US", null, null, "auto", sec.id);
         classified++;
         continue;
@@ -102,8 +102,8 @@ export function classifySecurities(db: Database.Database): ClassificationResult 
 
       // 3. Options — extract underlying symbol and inherit
       if (
-        sec.security_type === "option" ||
-        sec.security_type === "Equity and Index Options"
+        sec.security_type?.toLowerCase() === "option" ||
+        sec.security_type?.toLowerCase() === "equity and index options"
       ) {
         const underlying = extractUnderlyingSymbol(sec.symbol, sec.name);
         if (underlying) {
@@ -128,7 +128,7 @@ export function classifySecurities(db: Database.Database): ClassificationResult 
       }
 
       // 4. Forex
-      if (sec.security_type === "Forex") {
+      if (sec.security_type?.toLowerCase() === "forex") {
         updateStmt.run("Currency", "Global", null, null, "auto", sec.id);
         classified++;
         continue;
@@ -136,7 +136,7 @@ export function classifySecurities(db: Database.Database): ClassificationResult 
 
       // 5. Forecast/prediction contracts (stored in security_type or asset_class)
       if (
-        sec.security_type === "Forecast Contracts by ForecastEx" ||
+        sec.security_type?.toLowerCase() === "forecast contracts by forecastex" ||
         sec.asset_class === "Forecast Contracts by ForecastEx"
       ) {
         updateStmt.run("Prediction Market", "US", null, null, "auto", sec.id);
