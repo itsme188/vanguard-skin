@@ -80,9 +80,18 @@ export function PerformanceMetrics({
     <div className="space-y-4">
       <div className="flex items-baseline gap-6 flex-wrap">
         <div>
-          <span className="text-[11px] text-ink-faint uppercase tracking-widest">
-            Portfolio Value
-          </span>
+          <div className="flex items-baseline gap-2">
+            <span className="text-[11px] text-ink-faint uppercase tracking-widest">
+              Portfolio Value
+            </span>
+            {totals.latestDate && (
+              <span className="text-[10px] text-ink-faint font-mono">
+                as of {totals.oldestDate && totals.oldestDate !== totals.latestDate
+                  ? `${formatDateLabel(totals.oldestDate)} – ${formatDateLabel(totals.latestDate)}`
+                  : formatDateLabel(totals.latestDate)}
+              </span>
+            )}
+          </div>
           <div className="text-4xl font-semibold font-mono tabular-nums tracking-tight mt-1">
             {formatCurrency(totals.totalValue)}
           </div>

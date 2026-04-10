@@ -540,6 +540,7 @@ export function CombinedPortfolioChart({
                 strokeWidth={2}
                 dot={false}
                 name="portfolio"
+                connectNulls
               />
               {benchmark && benchmarkChartData && (
                 <Line
@@ -631,6 +632,7 @@ export function CombinedPortfolioChart({
                   stroke={ACCOUNT_COLORS[name] ?? "#888"}
                   fill={`url(#grad-${name.replace(/\s/g, "")})`}
                   strokeWidth={1.5}
+                  connectNulls
                 />
               ))}
             </AreaChart>
