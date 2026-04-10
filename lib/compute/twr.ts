@@ -38,6 +38,7 @@ interface SnapshotRow {
   starting_value: number | null;
   twr: number | null;
   deposits_withdrawals: number | null;
+  source: string;
 }
 
 interface CashFlowRow {
@@ -134,7 +135,8 @@ export function computeTwr(
   const boundsRow = db
     .prepare(
       `SELECT MIN(month_end_date) AS min_date, MAX(month_end_date) AS max_date
-       FROM monthly_snapshots`
+       FROM monthly_snapshots
+       WHERE source != 'tws'`
     )
     .get() as { min_date: string | null; max_date: string | null };
 
@@ -145,10 +147,11 @@ export function computeTwr(
 
   // Prepare statements
   const snapshotStmt = db.prepare(
-    `SELECT account_id, month_end_date, total_value, starting_value, twr, deposits_withdrawals
+    `SELECT account_id, month_end_date, total_value, starting_value, twr, deposits_withdrawals, source
      FROM monthly_snapshots
      WHERE account_id = ?
        AND month_end_date >= ? AND month_end_date <= ?
+       AND source != 'tws'
      ORDER BY month_end_date ASC`
   );
 
@@ -167,6 +170,7 @@ export function computeTwr(
      FROM monthly_snapshots
      WHERE account_id = ?
        AND month_end_date < ?
+       AND source != 'tws'
      ORDER BY month_end_date DESC
      LIMIT 1`
   );
@@ -195,25 +199,41 @@ export function computeTwr(
     for (let i = 0; i < snapshots.length; i++) {
       const snap = snapshots[i];
 
-      // Use IBKR-provided TWR if available
-      if (snap.twr !== null) {
-        // IBKR stores TWR as percentage (e.g. 14.545 = 14.545%)
-        subPeriodReturns.push(snap.twr / 100);
+      // Detect December annual summary rows.
+      // These have starting_value = year-start (not prior month) and
+      // twr = annual TWR (not monthly). They must not be used directly.
+      const priorMonthTotal =
+        i > 0 ? snapshots[i - 1].total_value : priorRow?.total_value;
+      const isAnnualSummary =
+        snap.month_end_date.slice(5, 7) === "12" &&
+        priorMonthTotal != null &&
+        snap.starting_value != null &&
+        Math.abs(snap.starting_value - priorMonthTotal) >
+          priorMonthTotal * 0.10;
+
+      // Use pre-computed TWR if available and NOT an annual summary
+      if (snap.twr !== null && !isAnnualSummary) {
+        if (snap.source === 'ibkr-activity') {
+          // IBKR stores TWR as percentage (e.g. 14.545 = 14.545%)
+          subPeriodReturns.push(snap.twr / 100);
+        } else {
+          // Canonical and other sources store TWR as decimal (e.g. -0.109699 = -10.97%)
+          subPeriodReturns.push(snap.twr);
+        }
         continue;
       }
 
       // Compute Modified Dietz for this month
+      // Always prefer prior month's total_value as vStart (avoids annual starting_value)
       let vStart: number | null = null;
 
-      if (snap.starting_value !== null) {
-        // Use IBKR's starting_value if populated
-        vStart = snap.starting_value;
-      } else if (i > 0) {
-        // Use previous month's ending value
+      if (i > 0) {
         vStart = snapshots[i - 1].total_value;
       } else if (priorRow) {
-        // Use prior-to-range snapshot
         vStart = priorRow.total_value;
+      } else if (snap.starting_value !== null && !isAnnualSummary) {
+        // Only use starting_value as last resort for non-annual rows
+        vStart = snap.starting_value;
       }
 
       if (vStart === null || vStart === 0) {
@@ -228,18 +248,51 @@ export function computeTwr(
       const totalDaysInMonth = daysInMonth(snap.month_end_date);
 
       // Get external cash flows for this month
-      const flows = cashFlowStmt.all(
-        account.id,
-        mStart,
-        mEnd
-      ) as CashFlowRow[];
+      // Prefer deposits_withdrawals from snapshot (always available)
+      // over transaction-level flows (often have NULL amounts)
+      let weightedFlows: { amount: number; weight: number }[];
 
-      const weightedFlows = flows.map((f) => {
-        const daysRemaining = daysBetween(f.trade_date, mEnd);
-        const weight =
-          totalDaysInMonth > 0 ? daysRemaining / totalDaysInMonth : 0;
-        return { amount: f.amount, weight };
-      });
+      if (isAnnualSummary && snap.deposits_withdrawals != null) {
+        // December annual row: deposits_withdrawals is cumulative for the year.
+        // Compute December-only deposits by subtracting Jan-Nov.
+        const year = snap.month_end_date.slice(0, 4);
+        const janNovDeps = db
+          .prepare(
+            `SELECT COALESCE(SUM(deposits_withdrawals), 0) AS total
+             FROM monthly_snapshots
+             WHERE account_id = ?
+               AND month_end_date >= ? AND month_end_date < ?
+               AND source != 'tws'`
+          )
+          .get(snap.account_id, `${year}-01-01`, `${year}-12-01`) as {
+          total: number;
+        };
+        const decemberDeposits =
+          snap.deposits_withdrawals - janNovDeps.total;
+        weightedFlows =
+          decemberDeposits !== 0
+            ? [{ amount: decemberDeposits, weight: 0.5 }]
+            : [];
+      } else if (snap.deposits_withdrawals != null && snap.deposits_withdrawals !== 0) {
+        // Single mid-month flow approximation (weight = 0.5)
+        weightedFlows = [{ amount: snap.deposits_withdrawals, weight: 0.5 }];
+      } else {
+        // Fall back to transaction-level flows
+        const flows = cashFlowStmt.all(
+          account.id,
+          mStart,
+          mEnd
+        ) as CashFlowRow[];
+
+        weightedFlows = flows
+          .filter((f) => f.amount != null)
+          .map((f) => {
+            const daysRemaining = daysBetween(f.trade_date, mEnd);
+            const weight =
+              totalDaysInMonth > 0 ? daysRemaining / totalDaysInMonth : 0;
+            return { amount: f.amount, weight };
+          });
+      }
 
       const r = modifiedDietzReturn(vStart, vEnd, weightedFlows);
       if (r === null) {
@@ -289,6 +342,7 @@ export function computeTwr(
               SUM(COALESCE(deposits_withdrawals, 0)) AS total_deposits_withdrawals
        FROM monthly_snapshots
        WHERE month_end_date >= ? AND month_end_date <= ?
+         AND source != 'tws'
        GROUP BY month_end_date
        ORDER BY month_end_date ASC`
     )
@@ -303,7 +357,9 @@ export function computeTwr(
          SELECT MAX(month_end_date)
          FROM monthly_snapshots
          WHERE month_end_date < ?
-       )`
+           AND source != 'tws'
+       )
+         AND source != 'tws'`
     )
     .get(effectiveStart) as { total_value: number | null } | undefined;
 
@@ -316,6 +372,65 @@ export function computeTwr(
      GROUP BY trade_date
      ORDER BY trade_date ASC`
   );
+
+  // Pre-compute December annual deposit corrections.
+  // Some December rows have cumulative annual deposits_withdrawals instead of monthly.
+  // The aggregated SUM includes these inflated values, so we correct them here.
+  const decemberCorrections = new Map<string, number>(); // month_end_date → correction amount
+
+  const decemberSnaps = db
+    .prepare(
+      `SELECT ms.account_id, ms.month_end_date, ms.starting_value, ms.total_value,
+              ms.deposits_withdrawals,
+              prev.total_value AS prev_total
+       FROM monthly_snapshots ms
+       LEFT JOIN monthly_snapshots prev
+         ON prev.account_id = ms.account_id
+         AND prev.month_end_date = (
+           SELECT MAX(p2.month_end_date)
+           FROM monthly_snapshots p2
+           WHERE p2.account_id = ms.account_id
+             AND p2.month_end_date < ms.month_end_date
+             AND p2.source != 'tws'
+         )
+       WHERE ms.month_end_date >= ? AND ms.month_end_date <= ?
+         AND ms.source != 'tws'
+         AND SUBSTR(ms.month_end_date, 6, 2) = '12'
+         AND ms.starting_value IS NOT NULL`
+    )
+    .all(effectiveStart, effectiveEnd) as {
+    account_id: number;
+    month_end_date: string;
+    starting_value: number;
+    total_value: number;
+    deposits_withdrawals: number | null;
+    prev_total: number | null;
+  }[];
+
+  for (const ds of decemberSnaps) {
+    if (ds.prev_total == null || ds.deposits_withdrawals == null) continue;
+    const gap = Math.abs(ds.starting_value - ds.prev_total);
+    if (gap <= ds.prev_total * 0.10) continue; // not annual
+
+    // This is an annual summary row — compute correction
+    const year = ds.month_end_date.slice(0, 4);
+    const janNovDeps = db
+      .prepare(
+        `SELECT COALESCE(SUM(deposits_withdrawals), 0) AS total
+         FROM monthly_snapshots
+         WHERE account_id = ?
+           AND month_end_date >= ? AND month_end_date < ?
+           AND source != 'tws'`
+      )
+      .get(ds.account_id, `${year}-01-01`, `${year}-12-01`) as {
+      total: number;
+    };
+    // Correction = what was in the aggregate - what should be (December only)
+    const decOnlyDeposits = ds.deposits_withdrawals - janNovDeps.total;
+    const correction = ds.deposits_withdrawals - decOnlyDeposits;
+    const existing = decemberCorrections.get(ds.month_end_date) ?? 0;
+    decemberCorrections.set(ds.month_end_date, existing + correction);
+  }
 
   const portfolioReturns: number[] = [];
   let portfolioPartial = false;
@@ -336,18 +451,29 @@ export function computeTwr(
     }
 
     const vEnd = snap.total_value;
-    const mStart = monthStartDate(snap.month_end_date);
-    const mEnd = snap.month_end_date;
-    const totalDaysInMonth = daysInMonth(snap.month_end_date);
 
-    const flows = allFlowStmt.all(mStart, mEnd) as CashFlowRow[];
+    // Use aggregated deposits_withdrawals, corrected for December annual rows
+    const correction = decemberCorrections.get(snap.month_end_date) ?? 0;
+    const effectiveDeposits = snap.total_deposits_withdrawals - correction;
 
-    const weightedFlows = flows.map((f) => {
-      const daysRemaining = daysBetween(f.trade_date, mEnd);
-      const weight =
-        totalDaysInMonth > 0 ? daysRemaining / totalDaysInMonth : 0;
-      return { amount: f.amount, weight };
-    });
+    let weightedFlows: { amount: number; weight: number }[];
+
+    if (effectiveDeposits !== 0) {
+      weightedFlows = [{ amount: effectiveDeposits, weight: 0.5 }];
+    } else {
+      const mStart = monthStartDate(snap.month_end_date);
+      const mEnd = snap.month_end_date;
+      const totalDaysInMonth = daysInMonth(snap.month_end_date);
+      const flows = allFlowStmt.all(mStart, mEnd) as CashFlowRow[];
+      weightedFlows = flows
+        .filter((f) => f.amount != null)
+        .map((f) => {
+          const daysRemaining = daysBetween(f.trade_date, mEnd);
+          const weight =
+            totalDaysInMonth > 0 ? daysRemaining / totalDaysInMonth : 0;
+          return { amount: f.amount, weight };
+        });
+    }
 
     const r = modifiedDietzReturn(vStart, vEnd, weightedFlows);
     if (r === null) {

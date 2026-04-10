@@ -237,7 +237,8 @@ export function computeXirr(
   const boundsRow = db
     .prepare(
       `SELECT MIN(month_end_date) AS min_date, MAX(month_end_date) AS max_date
-       FROM monthly_snapshots`
+       FROM monthly_snapshots
+       WHERE source != 'tws'`
     )
     .get() as { min_date: string | null; max_date: string | null };
 
@@ -263,6 +264,7 @@ export function computeXirr(
      FROM monthly_snapshots
      WHERE account_id = ?
        AND month_end_date <= ?
+       AND source != 'tws'
      ORDER BY month_end_date DESC
      LIMIT 1`
   );
@@ -283,6 +285,7 @@ export function computeXirr(
      FROM monthly_snapshots
      WHERE account_id = ?
        AND month_end_date < ?
+       AND source != 'tws'
      ORDER BY month_end_date DESC
      LIMIT 1`
   );
@@ -320,27 +323,99 @@ export function computeXirr(
     }
 
     // External flows: deposits are negative (money in), withdrawals are positive (money out)
-    const flows = externalFlowStmt.all(
-      account.id,
-      effectiveStart,
-      effectiveEnd
-    ) as TransactionRow[];
-
+    // Primary: use deposits_withdrawals from monthly_snapshots (always available)
+    // Fallback: transaction-level flows (often have NULL amounts for Vanguard)
     let totalInvested = 0;
     let totalWithdrawn = 0;
 
-    for (const flow of flows) {
-      // In the DB, deposits are positive amounts, withdrawals are negative
-      // For XIRR: deposits = money IN = negative cash flow
-      cashFlows.push({
-        date: flow.trade_date,
-        amount: -flow.amount, // flip sign: deposit (positive DB) → negative XIRR
-      });
+    const snapshotFlows = db
+      .prepare(
+        `SELECT ms.month_end_date, ms.deposits_withdrawals, ms.starting_value,
+                prev.total_value AS prev_total
+         FROM monthly_snapshots ms
+         LEFT JOIN monthly_snapshots prev
+           ON prev.account_id = ms.account_id
+           AND prev.month_end_date = (
+             SELECT MAX(p2.month_end_date)
+             FROM monthly_snapshots p2
+             WHERE p2.account_id = ms.account_id
+               AND p2.month_end_date < ms.month_end_date
+               AND p2.source != 'tws'
+           )
+         WHERE ms.account_id = ?
+           AND ms.month_end_date >= ? AND ms.month_end_date <= ?
+           AND ms.source != 'tws'
+           AND ms.deposits_withdrawals IS NOT NULL AND ms.deposits_withdrawals != 0
+         ORDER BY ms.month_end_date ASC`
+      )
+      .all(account.id, effectiveStart, effectiveEnd) as {
+        month_end_date: string;
+        deposits_withdrawals: number;
+        starting_value: number | null;
+        prev_total: number | null;
+      }[];
 
-      if (flow.amount > 0) {
-        totalInvested += flow.amount;
-      } else {
-        totalWithdrawn += Math.abs(flow.amount);
+    if (snapshotFlows.length > 0) {
+      for (const sf of snapshotFlows) {
+        // Detect December annual summary rows
+        const isAnnual =
+          sf.month_end_date.slice(5, 7) === "12" &&
+          sf.prev_total != null &&
+          sf.starting_value != null &&
+          Math.abs(sf.starting_value - sf.prev_total) >
+            sf.prev_total * 0.10;
+
+        let depositAmount = sf.deposits_withdrawals;
+        if (isAnnual) {
+          // Compute December-only deposits
+          const year = sf.month_end_date.slice(0, 4);
+          const janNovDeps = db
+            .prepare(
+              `SELECT COALESCE(SUM(deposits_withdrawals), 0) AS total
+               FROM monthly_snapshots
+               WHERE account_id = ?
+                 AND month_end_date >= ? AND month_end_date < ?
+                 AND source != 'tws'`
+            )
+            .get(account.id, `${year}-01-01`, `${year}-12-01`) as {
+            total: number;
+          };
+          depositAmount = sf.deposits_withdrawals - janNovDeps.total;
+          if (depositAmount === 0) continue; // no December-specific deposits
+        }
+
+        const midMonth = sf.month_end_date.slice(0, 8) + "15";
+        cashFlows.push({
+          date: midMonth,
+          amount: -depositAmount,
+        });
+
+        if (depositAmount > 0) {
+          totalInvested += depositAmount;
+        } else {
+          totalWithdrawn += Math.abs(depositAmount);
+        }
+      }
+    } else {
+      // Fallback to transaction-level flows
+      const flows = externalFlowStmt.all(
+        account.id,
+        effectiveStart,
+        effectiveEnd
+      ) as TransactionRow[];
+
+      for (const flow of flows) {
+        if (flow.amount == null) continue;
+        cashFlows.push({
+          date: flow.trade_date,
+          amount: -flow.amount,
+        });
+
+        if (flow.amount > 0) {
+          totalInvested += flow.amount;
+        } else {
+          totalWithdrawn += Math.abs(flow.amount);
+        }
       }
     }
 
@@ -405,7 +480,9 @@ export function computeXirr(
          SELECT MAX(month_end_date)
          FROM monthly_snapshots
          WHERE month_end_date < ?
-       )`
+           AND source != 'tws'
+       )
+         AND source != 'tws'`
     )
     .get(effectiveStart) as { total_value: number | null } | undefined;
 
@@ -413,7 +490,8 @@ export function computeXirr(
     .prepare(
       `SELECT MAX(month_end_date) AS d
        FROM monthly_snapshots
-       WHERE month_end_date < ?`
+       WHERE month_end_date < ?
+         AND source != 'tws'`
     )
     .get(effectiveStart) as { d: string | null } | undefined;
 
@@ -447,31 +525,93 @@ export function computeXirr(
     });
   }
 
-  // All external flows across all accounts
-  const allFlows = db
+  // All external flows — prefer snapshot deposits_withdrawals (always has amounts)
+  // over transaction-level flows (Vanguard/Roth have NULL amounts)
+  const aggSnapshotFlows = db
     .prepare(
-      `SELECT trade_date, SUM(amount) AS amount
-       FROM transactions
-       WHERE is_external_flow = 1
-         AND trade_date >= ? AND trade_date <= ?
-       GROUP BY trade_date
-       ORDER BY trade_date ASC`
+      `SELECT month_end_date, SUM(deposits_withdrawals) AS total_deps
+       FROM monthly_snapshots
+       WHERE month_end_date >= ? AND month_end_date <= ?
+         AND source != 'tws'
+         AND deposits_withdrawals IS NOT NULL AND deposits_withdrawals != 0
+       GROUP BY month_end_date
+       ORDER BY month_end_date ASC`
     )
-    .all(effectiveStart, effectiveEnd) as TransactionRow[];
+    .all(effectiveStart, effectiveEnd) as {
+      month_end_date: string;
+      total_deps: number;
+    }[];
+
+  // Pre-compute December annual deposit corrections (same logic as TWR)
+  const xirrDecCorrections = new Map<string, number>();
+  const xirrDecSnaps = db
+    .prepare(
+      `SELECT ms.account_id, ms.month_end_date, ms.starting_value,
+              ms.deposits_withdrawals,
+              prev.total_value AS prev_total
+       FROM monthly_snapshots ms
+       LEFT JOIN monthly_snapshots prev
+         ON prev.account_id = ms.account_id
+         AND prev.month_end_date = (
+           SELECT MAX(p2.month_end_date)
+           FROM monthly_snapshots p2
+           WHERE p2.account_id = ms.account_id
+             AND p2.month_end_date < ms.month_end_date
+             AND p2.source != 'tws'
+         )
+       WHERE ms.month_end_date >= ? AND ms.month_end_date <= ?
+         AND ms.source != 'tws'
+         AND SUBSTR(ms.month_end_date, 6, 2) = '12'
+         AND ms.starting_value IS NOT NULL`
+    )
+    .all(effectiveStart, effectiveEnd) as {
+    account_id: number;
+    month_end_date: string;
+    starting_value: number;
+    deposits_withdrawals: number | null;
+    prev_total: number | null;
+  }[];
+
+  for (const ds of xirrDecSnaps) {
+    if (ds.prev_total == null || ds.deposits_withdrawals == null) continue;
+    const gap = Math.abs(ds.starting_value - ds.prev_total);
+    if (gap <= ds.prev_total * 0.10) continue;
+    const year = ds.month_end_date.slice(0, 4);
+    const janNovDeps = db
+      .prepare(
+        `SELECT COALESCE(SUM(deposits_withdrawals), 0) AS total
+         FROM monthly_snapshots
+         WHERE account_id = ?
+           AND month_end_date >= ? AND month_end_date < ?
+           AND source != 'tws'`
+      )
+      .get(ds.account_id, `${year}-01-01`, `${year}-12-01`) as {
+      total: number;
+    };
+    const decOnlyDeposits = ds.deposits_withdrawals - janNovDeps.total;
+    const correction = ds.deposits_withdrawals - decOnlyDeposits;
+    const existing = xirrDecCorrections.get(ds.month_end_date) ?? 0;
+    xirrDecCorrections.set(ds.month_end_date, existing + correction);
+  }
 
   let totalInvested = 0;
   let totalWithdrawn = 0;
 
-  for (const flow of allFlows) {
+  for (const sf of aggSnapshotFlows) {
+    const correction = xirrDecCorrections.get(sf.month_end_date) ?? 0;
+    const effectiveDeps = sf.total_deps - correction;
+    if (effectiveDeps === 0) continue;
+
+    const midMonth = sf.month_end_date.slice(0, 8) + "15";
     portfolioCashFlows.push({
-      date: flow.trade_date,
-      amount: -flow.amount,
+      date: midMonth,
+      amount: -effectiveDeps,
     });
 
-    if (flow.amount > 0) {
-      totalInvested += flow.amount;
+    if (effectiveDeps > 0) {
+      totalInvested += effectiveDeps;
     } else {
-      totalWithdrawn += Math.abs(flow.amount);
+      totalWithdrawn += Math.abs(effectiveDeps);
     }
   }
 
@@ -486,7 +626,9 @@ export function computeXirr(
          SELECT MAX(month_end_date)
          FROM monthly_snapshots
          WHERE month_end_date <= ?
-       )`
+           AND source != 'tws'
+       )
+         AND source != 'tws'`
     )
     .get(effectiveEnd) as { total_value: number | null } | undefined;
 
