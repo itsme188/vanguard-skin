@@ -92,9 +92,10 @@ export async function POST(request: NextRequest) {
     try {
       const ibBarSize = barSize === "1 min" ? BarSizeSetting.MINUTES_ONE : BarSizeSetting.MINUTES_FIVE;
       const intradayDuration = barSize === "1 min" ? "1 D" : "2 D";
-      const secType = sec.security_type === "bond" ? SecType.BOND
-        : sec.security_type === "option" ? SecType.OPT
-        : sec.security_type === "mutual_fund" ? SecType.FUND
+      const st = sec.security_type?.toLowerCase();
+      const secType = st === "bond" ? SecType.BOND
+        : st === "option" ? SecType.OPT
+        : st === "mutual fund" || st === "mutual_fund" ? SecType.FUND
         : SecType.STK;
 
       const rawBars = await Promise.race([

@@ -354,7 +354,7 @@ export function computePortfolioGreeks(
          ORDER BY p.date DESC LIMIT 1) AS underlying_price
        FROM holdings h
        JOIN securities s ON s.id = h.security_id
-       WHERE s.security_type = 'option'
+       WHERE LOWER(s.security_type) = 'option'
          AND s.strike_price IS NOT NULL
          AND s.expiration_date IS NOT NULL
          AND s.option_type IS NOT NULL

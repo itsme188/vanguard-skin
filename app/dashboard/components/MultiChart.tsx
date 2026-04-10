@@ -36,7 +36,7 @@ export function MultiChart({
   const [panels, setPanels] = useState<PanelState[]>(() => {
     // Prefer stocks/ETFs over bonds/treasuries for default panel securities
     const stocks = securities.filter(
-      (s) => s.security_type === "stock" || s.security_type === "etf",
+      (s) => s.security_type?.toLowerCase() === "stock" || s.security_type?.toLowerCase() === "etf",
     );
     const initial: PanelState[] = [];
     for (let i = 0; i < 4; i++) {
