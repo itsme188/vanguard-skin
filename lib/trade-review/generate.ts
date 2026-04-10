@@ -22,6 +22,9 @@ import {
 } from "./questions";
 import { fetchVitalKnowledge } from "@/lib/vital-knowledge";
 import { getRecentArticles } from "@/lib/queries/research";
+import { getIbApi } from "@/lib/tws/client";
+import { fetchHistoricalPrices } from "@/lib/tws/historical";
+import { fetchBenchmarkPrices } from "@/lib/tws/benchmark";
 import type { TradeReview } from "@/lib/types";
 
 const REVIEW_MODEL_OPUS = "claude-opus-4-6";
@@ -236,7 +239,7 @@ export async function generateTradeReview(
     onProgress?: (msg: string, current?: number, total?: number) => void;
   }
 ): Promise<TradeReviewResult> {
-  const totalSteps = 4;
+  const totalSteps = 5;
   const { groupedTrades, summary, accountName } = preparedData;
 
   // Step 1: Get prior reviews for cumulative context
@@ -248,8 +251,13 @@ export async function generateTradeReview(
     6
   );
 
-  // Step 2: Build market context string + optional Vital Knowledge
-  options?.onProgress?.("Building analysis context...", 2, totalSteps);
+  // Step 2: Backfill price history from TWS if available and needed
+  await backfillPriceData(db, groupedTrades, (msg) => {
+    options?.onProgress?.(msg, 2, totalSteps);
+  });
+
+  // Step 3: Build market context string + optional Vital Knowledge
+  options?.onProgress?.("Building analysis context...", 3, totalSteps);
 
   const marketContexts = getMarketContext(db, groupedTrades, params.accountId);
   let marketContextStr = formatMarketContext(marketContexts, groupedTrades);
@@ -295,7 +303,7 @@ export async function generateTradeReview(
     // Non-critical — continue without research feed context
   }
 
-  // Step 3: Call Claude API
+  // Step 4: Call Claude API
   const periodLabel = formatPeriodLabel(params.periodStart, params.periodEnd);
   const accountProfile = getAccountProfile(accountName);
   const { system, user } = buildTradeReviewPrompt(
@@ -322,7 +330,7 @@ export async function generateTradeReview(
 
   options?.onProgress?.(
     `Analyzing ${tradeCount} trade(s) with ${model === REVIEW_MODEL_OPUS ? "Claude Opus" : "Claude Sonnet"}...`,
-    3,
+    4,
     totalSteps
   );
 
@@ -359,8 +367,8 @@ export async function generateTradeReview(
     cumulative_patterns?: string[];
   };
 
-  // Step 4: Save to database
-  options?.onProgress?.("Saving review to database...", 4, totalSteps);
+  // Step 5: Save to database
+  options?.onProgress?.("Saving review to database...", 5, totalSteps);
 
   const review = saveTradeReview(db, {
     accountId: params.accountId,
@@ -413,4 +421,152 @@ export async function generateTradeReview(
 function formatPeriodLabel(periodStart: string, periodEnd: string): string {
   const d = new Date(periodStart + "T00:00:00");
   return d.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+}
+
+// ─── Price backfill ──────────────────────────────────────────────
+
+/** Minimum data points for the quality gate in market-context.ts */
+const MIN_PRICE_POINTS = 5;
+
+/**
+ * Check price coverage for trade securities and SPY benchmark.
+ * If TWS is connected and data is insufficient, fetch from TWS.
+ * Silently skips if TWS is not available — review proceeds with whatever data exists.
+ */
+async function backfillPriceData(
+  db: Database.Database,
+  groupedTrades: GroupedTrade[],
+  onProgress?: (msg: string) => void
+): Promise<void> {
+  // Quick check: is TWS connected?
+  const api = getIbApi();
+  if (!api) {
+    onProgress?.("TWS not connected — using cached price data");
+    return;
+  }
+
+  // Determine the overall date range across all trades
+  let overallStart = "9999-12-31";
+  let overallEnd = "0000-01-01";
+
+  // Identify securities that need price data
+  const securitiesToFetch: number[] = [];
+  const seen = new Set<number>();
+
+  for (const trade of groupedTrades) {
+    if (trade.earliestEntryDate < overallStart) overallStart = trade.earliestEntryDate;
+    if (trade.exitDate > overallEnd) overallEnd = trade.exitDate;
+
+    if (seen.has(trade.securityId)) continue;
+    seen.add(trade.securityId);
+
+    // Check existing coverage for this security
+    const priceCount = db
+      .prepare(
+        `SELECT COUNT(*) as cnt FROM (
+           SELECT date as d FROM prices WHERE security_id = ? AND date >= ? AND date <= ?
+           UNION ALL
+           SELECT bar_date as d FROM ohlcv_bars WHERE security_id = ? AND bar_date >= ? AND bar_date <= ? AND bar_size = '1 day'
+         )`
+      )
+      .get(
+        trade.securityId, trade.earliestEntryDate, trade.exitDate,
+        trade.securityId, trade.earliestEntryDate, trade.exitDate
+      ) as { cnt: number };
+
+    if (priceCount.cnt < MIN_PRICE_POINTS) {
+      securitiesToFetch.push(trade.securityId);
+    }
+  }
+
+  // Check SPY benchmark coverage
+  let needBenchmark = false;
+  {
+    const spyCount = db
+      .prepare(
+        `SELECT COUNT(*) as cnt FROM benchmark_prices
+         WHERE symbol = 'SPY' AND date >= ? AND date <= ?`
+      )
+      .get(overallStart, overallEnd) as { cnt: number };
+
+    if (spyCount.cnt < MIN_PRICE_POINTS) {
+      // Also check SPY in prices/ohlcv as fallback source
+      const spySec = db
+        .prepare(`SELECT id FROM securities WHERE UPPER(symbol) = 'SPY' LIMIT 1`)
+        .get() as { id: number } | undefined;
+
+      if (spySec) {
+        const spyPriceCount = db
+          .prepare(
+            `SELECT COUNT(*) as cnt FROM (
+               SELECT date as d FROM prices WHERE security_id = ? AND date >= ? AND date <= ?
+               UNION ALL
+               SELECT bar_date as d FROM ohlcv_bars WHERE security_id = ? AND bar_date >= ? AND bar_date <= ? AND bar_size = '1 day'
+             )`
+          )
+          .get(
+            spySec.id, overallStart, overallEnd,
+            spySec.id, overallStart, overallEnd
+          ) as { cnt: number };
+
+        if (spyPriceCount.cnt < MIN_PRICE_POINTS) {
+          needBenchmark = true;
+        }
+      } else {
+        needBenchmark = true;
+      }
+    }
+  }
+
+  if (securitiesToFetch.length === 0 && !needBenchmark) {
+    onProgress?.("Price data sufficient — skipping TWS fetch");
+    return;
+  }
+
+  // Compute duration string from date range (cap at 2Y — IB's max for daily bars)
+  const daysNeeded = Math.ceil(
+    (new Date(overallEnd).getTime() - new Date(overallStart).getTime()) /
+      (24 * 3600 * 1000)
+  );
+  const durationStr = daysNeeded > 365 ? "2 Y" : `${Math.max(30, daysNeeded + 10)} D`;
+
+  // Fetch security prices
+  if (securitiesToFetch.length > 0) {
+    const symbols = securitiesToFetch
+      .map((id) => {
+        const row = db.prepare("SELECT symbol FROM securities WHERE id = ?").get(id) as { symbol: string } | undefined;
+        return row?.symbol ?? `#${id}`;
+      })
+      .join(", ");
+    onProgress?.(`Fetching price history for ${symbols} from TWS...`);
+
+    try {
+      await fetchHistoricalPrices(db, {
+        securityIds: securitiesToFetch,
+        durationStr,
+      });
+    } catch {
+      // Non-critical — continue with whatever data exists
+    }
+  }
+
+  // Fetch SPY benchmark
+  if (needBenchmark) {
+    onProgress?.("Fetching SPY benchmark prices from TWS...");
+    try {
+      await fetchBenchmarkPrices(db, {
+        symbols: ["SPY"],
+        durationStr,
+        incremental: false,
+      });
+    } catch {
+      // Non-critical — continue without benchmark
+    }
+  }
+
+  const fetched = [
+    ...(securitiesToFetch.length > 0 ? [`${securitiesToFetch.length} security prices`] : []),
+    ...(needBenchmark ? ["SPY benchmark"] : []),
+  ].join(" + ");
+  onProgress?.(`Price backfill complete (${fetched})`);
 }
