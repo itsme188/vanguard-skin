@@ -16,28 +16,30 @@ function computeBenchmarkReturn(
   const startRow = startDate
     ? (db
         .prepare(
-          `SELECT close_price FROM benchmark_prices
+          `SELECT date, close_price FROM benchmark_prices
            WHERE symbol = ? AND date >= ?
            ORDER BY date ASC LIMIT 1`
         )
-        .get(symbol, startDate) as { close_price: number } | undefined)
+        .get(symbol, startDate) as { date: string; close_price: number } | undefined)
     : (db
         .prepare(
-          `SELECT close_price FROM benchmark_prices
+          `SELECT date, close_price FROM benchmark_prices
            WHERE symbol = ?
            ORDER BY date ASC LIMIT 1`
         )
-        .get(symbol) as { close_price: number } | undefined);
+        .get(symbol) as { date: string; close_price: number } | undefined);
 
   const endRow = db
     .prepare(
-      `SELECT close_price FROM benchmark_prices
+      `SELECT date, close_price FROM benchmark_prices
        WHERE symbol = ? AND date <= ?
        ORDER BY date DESC LIMIT 1`
     )
-    .get(symbol, endDate) as { close_price: number } | undefined;
+    .get(symbol, endDate) as { date: string; close_price: number } | undefined;
 
   if (!startRow || !endRow || startRow.close_price === 0) return null;
+  // Quality gate: same-date match means only 1 data point — unreliable
+  if (startRow.date === endRow.date) return null;
   return (endRow.close_price - startRow.close_price) / startRow.close_price;
 }
 
