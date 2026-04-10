@@ -213,10 +213,16 @@ describe("getConcentrationMetrics", () => {
 // ─── Coverage tests ──────────────────────────────────────────────
 
 describe("getClassificationCoverage", () => {
-  it("reports coverage correctly", () => {
-    seedSecurity(db, "VTI", { security_type: "etf" });
-    seedSecurity(db, "UNKNOWN_STOCK");
-    seedSecurity(db, "912797NL7", { security_type: "bond" });
+  it("reports coverage correctly (scoped to active holdings)", () => {
+    const acctId = seedAccount(db, "Test Account");
+    const vtiId = seedSecurity(db, "VTI", { security_type: "etf" });
+    const unkId = seedSecurity(db, "UNKNOWN_STOCK");
+    const bondId = seedSecurity(db, "912797NL7", { security_type: "bond" });
+
+    // Add holdings so they appear in the scoped query
+    seedHolding(db, acctId, vtiId, 100, 10000);
+    seedHolding(db, acctId, unkId, 50, 5000);
+    seedHolding(db, acctId, bondId, 10000, 9800);
 
     // Before classification
     const before = getClassificationCoverage(db);
@@ -235,8 +241,12 @@ describe("getClassificationCoverage", () => {
   });
 
   it("tracks classification sources", () => {
-    seedSecurity(db, "VTI", { security_type: "etf" });
-    seedSecurity(db, "912797NL7", { security_type: "bond" });
+    const acctId = seedAccount(db, "Test Account");
+    const vtiId = seedSecurity(db, "VTI", { security_type: "etf" });
+    const bondId = seedSecurity(db, "912797NL7", { security_type: "bond" });
+
+    seedHolding(db, acctId, vtiId, 100, 10000);
+    seedHolding(db, acctId, bondId, 10000, 9800);
 
     classifySecurities(db);
 
@@ -244,5 +254,23 @@ describe("getClassificationCoverage", () => {
     const sources = coverage.by_source.map(s => s.source);
     expect(sources).toContain("static_lookup");
     expect(sources).toContain("auto");
+  });
+
+  it("filters by account scope", () => {
+    const acctA = seedAccount(db, "Vanguard Taxable");
+    const acctB = seedAccount(db, "IBKR");
+    const vtiId = seedSecurity(db, "VTI", { security_type: "etf" });
+    const spyId = seedSecurity(db, "SPY", { security_type: "etf" });
+
+    seedHolding(db, acctA, vtiId, 100, 10000);
+    seedHolding(db, acctB, spyId, 50, 5000);
+
+    // Scoped to Vanguard only
+    const vanguardCoverage = getClassificationCoverage(db, [acctA]);
+    expect(vanguardCoverage.total).toBe(1); // only VTI
+
+    // Scoped to all
+    const allCoverage = getClassificationCoverage(db);
+    expect(allCoverage.total).toBe(2); // VTI + SPY
   });
 });

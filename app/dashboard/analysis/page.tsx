@@ -80,7 +80,7 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
     accountIds = resolveAccountIds(scope);
     allocation = getAllocationByDimension(db, dimension, accountIds);
     concentration = getConcentrationMetrics(db, accountIds);
-    coverage = getClassificationCoverage(db);
+    coverage = getClassificationCoverage(db, accountIds);
     dataCoverage = getAnalysisDataCoverage(db, accountIds);
 
     // Factor-specific data (only when in factor mode)
