@@ -51,6 +51,28 @@ export function isDateLikeSymbol(symbol: string | undefined): boolean {
   return DATE_REGEX.test(symbol.trim());
 }
 
+/**
+ * Financial sanity checks for security symbols.
+ * Catches garbage data that no real ticker would produce:
+ * timestamps, sentences, numeric-only strings, excessive length.
+ */
+export function isGarbageSymbol(symbol: string | undefined): string | null {
+  if (symbol == null) return null;
+  const s = symbol.trim();
+  if (s.length === 0) return "empty symbol";
+  // Timestamps: "2025-01-06, 08:49:20" or "2025-01-06 08:49"
+  if (/^\d{4}-\d{2}-\d{2}[, T]\s*\d{2}:\d{2}/.test(s)) return "timestamp";
+  // Contains comma (no real ticker has commas)
+  if (s.includes(",")) return "contains comma";
+  // Longer than 30 chars (OCC options are ~21, longest tickers ~10)
+  if (s.length > 30) return "exceeds 30 characters";
+  // Purely numeric (no exchange uses all-digit tickers)
+  if (/^\d+$/.test(s)) return "purely numeric";
+  // Contains colons (time-like)
+  if (/\d:\d/.test(s)) return "contains time-like pattern";
+  return null;
+}
+
 /** Check that a string is a valid YYYY-MM-DD date. */
 export function isValidDate(dateStr: string): boolean {
   if (!DATE_REGEX.test(dateStr)) return false;
@@ -117,11 +139,12 @@ export function validateParsedResult(
     const txn = parsed.transactions[i];
     let skip = false;
 
-    if (isDateLikeSymbol(txn.symbol)) {
+    const garbageReason = isGarbageSymbol(txn.symbol) ?? (isDateLikeSymbol(txn.symbol) ? "date-like" : null);
+    if (garbageReason) {
       skippedRows.push({
         category: "transaction",
         index: i,
-        reason: `Symbol looks like a date: "${txn.symbol}" — likely misaligned CSV data`,
+        reason: `Invalid symbol "${txn.symbol}" (${garbageReason}) — likely misaligned CSV data`,
         symbol: txn.symbol,
       });
       skip = true;
@@ -182,11 +205,12 @@ export function validateParsedResult(
     const h = parsed.holdings[i];
     let skip = false;
 
-    if (isDateLikeSymbol(h.symbol)) {
+    const hGarbage = isGarbageSymbol(h.symbol) ?? (isDateLikeSymbol(h.symbol) ? "date-like" : null);
+    if (hGarbage) {
       skippedRows.push({
         category: "holding",
         index: i,
-        reason: `Symbol looks like a date: "${h.symbol}" — likely misaligned CSV data`,
+        reason: `Invalid symbol "${h.symbol}" (${hGarbage}) — likely misaligned CSV data`,
         symbol: h.symbol,
       });
       skip = true;

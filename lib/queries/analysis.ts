@@ -548,8 +548,19 @@ export function getFactorHeatmap(
  * Factor coverage: how many current holdings have factor data.
  */
 export function getFactorCoverage(
-  db: Database.Database
+  db: Database.Database,
+  accountIds?: number[]
 ): FactorCoverage {
+  const conditions = [
+    "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))",
+  ];
+  const params: (string | number)[] = [];
+
+  if (accountIds && accountIds.length > 0) {
+    conditions.push(`h.account_id IN (${accountIds.map(() => "?").join(",")})`);
+    params.push(...accountIds);
+  }
+
   const row = db
     .prepare(
       `WITH ${LATEST_HOLDINGS_CTE}
@@ -561,9 +572,9 @@ export function getFactorCoverage(
       LEFT JOIN security_factors sf ON sf.security_id = s.id
       LEFT JOIN securities s_u ON s_u.symbol = s.underlying_symbol
       LEFT JOIN security_factors sf_u ON sf_u.security_id = s_u.id
-      WHERE (s.maturity_date IS NULL OR s.maturity_date >= date('now'))`
+      WHERE ${conditions.join(" AND ")}`
     )
-    .get() as { total: number; with_factors: number };
+    .get(...params) as { total: number; with_factors: number };
 
   const bySource = db
     .prepare(

@@ -85,7 +85,7 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
 
     // Factor-specific data (only when in factor mode)
     factorHeatmap = mode === "factors" ? getFactorHeatmap(db, accountIds) : undefined;
-    factorCoverage = mode === "factors" ? getFactorCoverage(db) : undefined;
+    factorCoverage = mode === "factors" ? getFactorCoverage(db, accountIds) : undefined;
   } catch {
     throw new Error("Failed to load analysis data. The database may be unavailable.");
   }
