@@ -61,7 +61,18 @@ function formatShortDate(dateStr: string): string {
 export function DataFreshness() {
   const { pricesAsOf, holdingsAsOf, healthPct } = getFreshnessData();
 
-  if (!pricesAsOf && !holdingsAsOf) return null;
+  if (!pricesAsOf && !holdingsAsOf) {
+    return (
+      <Link
+        href="/dashboard/import"
+        className="flex items-center gap-2 text-[11px] text-ink-faint font-mono hover:text-ink-dim transition-colors"
+        title="No data imported yet — click to import"
+      >
+        <span className="w-2 h-2 rounded-full bg-ink-faint" />
+        <span>No data — import files to start</span>
+      </Link>
+    );
+  }
 
   const dotColor =
     healthPct >= 90

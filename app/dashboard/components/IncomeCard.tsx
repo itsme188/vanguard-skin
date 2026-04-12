@@ -76,7 +76,18 @@ export function IncomeCard() {
     return null;
   }
 
-  if (years.length === 0) return null;
+  if (years.length === 0) {
+    return (
+      <div className="rounded-xl border border-dashed border-edge bg-panel p-5">
+        <h3 className="text-xs font-medium text-ink-faint uppercase tracking-wider">
+          Income
+        </h3>
+        <p className="text-sm text-ink-faint mt-2">
+          No dividend or interest income recorded yet.
+        </p>
+      </div>
+    );
+  }
 
   const currentYear = years[0];
   const prevYear = years.find((y) => y.year === currentYear.year - 1);
