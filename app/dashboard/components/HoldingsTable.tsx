@@ -87,7 +87,7 @@ export function HoldingsTable({
                 className="border-b border-edge last:border-0 hover:bg-panel/50 transition-colors"
               >
                 <td className="px-4 py-3 font-mono font-medium text-ink">
-                  {holding.security_type === "option" ? (
+                  {holding.security_type?.toLowerCase() === "option" ? (
                     <>
                       <span>{holding.underlying_symbol ?? holding.symbol}</span>
                       <span className="ml-1.5 text-xs text-ink-faint font-normal">

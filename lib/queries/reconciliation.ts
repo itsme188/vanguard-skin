@@ -13,8 +13,24 @@ export interface ReconciliationCheckpoint {
 }
 
 export function getReconciliationCheckpoints(
-  db: Database.Database
+  db: Database.Database,
+  accountId?: number
 ): ReconciliationCheckpoint[] {
+  if (accountId) {
+    return db
+      .prepare(
+        `SELECT
+          rc.id, rc.account_id, a.name AS account_name,
+          rc.checkpoint_date, rc.statement_value,
+          rc.computed_value, rc.difference,
+          rc.notes, rc.created_at
+        FROM reconciliation_checkpoints rc
+        JOIN accounts a ON a.id = rc.account_id
+        WHERE rc.account_id = ?
+        ORDER BY rc.checkpoint_date DESC`
+      )
+      .all(accountId) as ReconciliationCheckpoint[];
+  }
   return db
     .prepare(
       `SELECT

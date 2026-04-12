@@ -45,8 +45,7 @@ export default async function AccountsPage(props: {
     });
     snapshots = getSnapshotsByAccount(db, selectedAccount.id);
     dailyValuations = getDailyValuationsByAccount(db, selectedAccount.id);
-    reconciliationCheckpoints = getReconciliationCheckpoints(db)
-      .filter((cp) => cp.account_id === selectedAccount.id);
+    reconciliationCheckpoints = getReconciliationCheckpoints(db, selectedAccount.id);
   } catch {
     throw new Error(`Failed to load data for ${selectedAccount.name}. The database may be unavailable.`);
   }
