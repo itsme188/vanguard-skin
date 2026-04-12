@@ -308,14 +308,14 @@ export function parseClaudePdfResponse(
 
     const isOption = h.category === "Options" || h.option_type != null;
     const securityType = isOption
-      ? "option"
+      ? "Option"
       : h.category === "Bonds"
-        ? "bond"
+        ? "Bond"
         : h.category === "ETFs"
-          ? "etf"
+          ? "ETF"
           : h.category === "Mutual funds"
-            ? "mutual_fund"
-            : "stock";
+            ? "Mutual Fund"
+            : "Stock";
 
     // For options, ensure we use OCC-format symbol (not bare ticker)
     // This prevents collisions where "INTC" stock and "INTC" option share the same symbol
@@ -356,7 +356,7 @@ export function parseClaudePdfResponse(
       sec.multiplier = 100;
     }
 
-    if (securityType === "bond") {
+    if (securityType === "Bond") {
       sec.maturityDate = extractMaturityDate(h.name) ?? undefined;
     }
 
@@ -419,7 +419,7 @@ export function parseClaudePdfResponse(
       };
 
       if (isOptionTxn) {
-        sec.securityType = "option";
+        sec.securityType = "Option";
         sec.underlyingSymbol = t.underlying_symbol;
         sec.strikePrice = t.strike_price;
         sec.expirationDate = t.expiration_date;

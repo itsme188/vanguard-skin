@@ -177,11 +177,11 @@ describe("vanguard PDF parser", () => {
       expect(stockHolding!.symbol).toBe("INTC");
 
       // Securities should be separate
-      const optionSec = result.securities.find(s => s.securityType === "option");
+      const optionSec = result.securities.find(s => s.securityType === "Option");
       expect(optionSec!.symbol).toBe("INTC  260320P00045000");
       expect(optionSec!.multiplier).toBe(100);
 
-      const stockSec = result.securities.find(s => s.securityType === "stock");
+      const stockSec = result.securities.find(s => s.securityType === "Stock");
       expect(stockSec!.symbol).toBe("INTC");
       expect(stockSec!.multiplier).toBeUndefined();
     });
@@ -238,7 +238,7 @@ describe("vanguard PDF parser", () => {
       const result = parseClaudePdfResponse(txnFixture, "test.pdf");
       expect(result.transactions[0].symbol).toBe("INTC  260320P00045000");
 
-      const sec = result.securities.find(s => s.securityType === "option");
+      const sec = result.securities.find(s => s.securityType === "Option");
       expect(sec!.symbol).toBe("INTC  260320P00045000");
     });
 

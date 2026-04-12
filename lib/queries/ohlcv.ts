@@ -74,7 +74,7 @@ export function getChartableSecurities(
       `SELECT id, symbol, name, security_type
        FROM securities
        WHERE ib_con_id IS NOT NULL
-         AND (security_type IS NULL OR security_type NOT IN ('mutual_fund'))
+         AND (security_type IS NULL OR LOWER(security_type) NOT IN ('mutual_fund', 'mutual fund'))
        ORDER BY symbol`,
     )
     .all() as ChartableSecurity[];
