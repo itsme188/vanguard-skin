@@ -118,7 +118,9 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
          WHERE LOWER(type) IN ('sell', 'sell_to_close', 'redemption', 'buy_to_cover',
                                 'expired', 'exercised', 'assigned', 'buy_to_close')
            AND security_id IS NOT NULL
-           AND price_per_share IS NOT NULL AND quantity IS NOT NULL
+           AND quantity IS NOT NULL
+           AND (price_per_share IS NOT NULL
+                OR LOWER(type) IN ('expired', 'exercised', 'assigned'))
          ORDER BY trade_date, id`
       )
       .all() as TransactionRow[];
@@ -140,14 +142,14 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
     for (const sell of sells) {
       let remainingToSell = sell.quantity;
 
-      // For EXERCISED/ASSIGNED, the option closes at $0 (premium rolls into stock)
+      // For EXERCISED/ASSIGNED/EXPIRED, the option closes at $0
       const lowerType = sell.type.toLowerCase();
-      const isExerciseOrAssignment =
-        lowerType === "exercised" || lowerType === "assigned";
-      let effectiveSalePrice = sell.price_per_share;
+      const isZeroPriceClose =
+        lowerType === "exercised" || lowerType === "assigned" || lowerType === "expired";
+      let effectiveSalePrice = sell.price_per_share ?? 0;
 
-      if (isExerciseOrAssignment) {
-        // Option lot closes at $0 — no gain/loss on the option itself
+      if (isZeroPriceClose) {
+        // Option lot closes at $0 — expired worthless or premium rolls into stock
         effectiveSalePrice = 0;
       }
 
