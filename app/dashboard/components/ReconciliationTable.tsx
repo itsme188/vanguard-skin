@@ -67,9 +67,14 @@ export function ReconciliationTable({
       if (data.success) {
         setShowForm(false);
         setFormData({ accountId: accounts[0]?.id?.toString() ?? "", checkpointDate: "", statementValue: "", notes: "" });
+        setError(null);
         toast("Checkpoint saved", "success");
         router.refresh();
+      } else {
+        setError(data.error ?? "Failed to save checkpoint");
       }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save checkpoint");
     } finally {
       setIsSubmitting(false);
     }
