@@ -24,13 +24,15 @@ const TILT_COLORS = [
 
 // ─── Component ───────────────────────────────────────────────────
 
-export function FactorAnalysisCard() {
+export function FactorAnalysisCard({ scope }: { scope?: string }) {
   const [data, setData] = useState<FactorAnalysisResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch("/api/compute/factors")
+    setLoading(true);
+    const params = scope && scope !== "all" ? `?scope=${scope}` : "";
+    fetch(`/api/compute/factors${params}`)
       .then((r) => r.json())
       .then((json) => {
         if (json.success) setData(json.data);
@@ -38,7 +40,7 @@ export function FactorAnalysisCard() {
       })
       .catch(() => setError("Failed to fetch factor analysis"))
       .finally(() => setLoading(false));
-  }, []);
+  }, [scope]);
 
   if (loading) {
     return (

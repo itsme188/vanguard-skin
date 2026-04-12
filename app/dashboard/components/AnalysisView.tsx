@@ -559,22 +559,22 @@ export function AnalysisView({
       )}
 
       {/* ── Quantitative Factor Analysis ── */}
-      <FactorAnalysisCard />
+      <FactorAnalysisCard scope={currentScope} />
 
       {/* ── Scenario Modeling ── */}
-      <ScenarioModelingCard />
+      <ScenarioModelingCard scope={currentScope} />
 
       {/* ── Options Greeks & Strategies ── */}
-      <OptionsGreeksCard />
+      <OptionsGreeksCard scope={currentScope} />
       <OptionsStrategies />
       <ExpirationCalendar />
 
       {/* ── Fixed Income Exposure ── */}
-      <FixedIncomeCard />
+      <FixedIncomeCard scope={currentScope} />
 
       {/* ── Risk Decomposition ── */}
-      <RiskMetrics />
-      <PositionRiskCard />
+      <RiskMetrics scope={currentScope} />
+      <PositionRiskCard scope={currentScope} />
     </div>
   );
 }

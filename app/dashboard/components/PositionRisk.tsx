@@ -39,13 +39,15 @@ function corrBg(corr: number): string {
 
 // ─── Component ───────────────────────────────────────────────────
 
-export function PositionRiskCard() {
+export function PositionRiskCard({ scope }: { scope?: string }) {
   const [data, setData] = useState<PositionRiskResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch("/api/compute/position-risk?topN=10")
+    setLoading(true);
+    const scopeParam = scope && scope !== "all" ? `&scope=${scope}` : "";
+    fetch(`/api/compute/position-risk?topN=10${scopeParam}`)
       .then((r) => r.json())
       .then((json) => {
         if (json.success) setData(json.data);
@@ -53,7 +55,7 @@ export function PositionRiskCard() {
       })
       .catch(() => setError("Failed to fetch position risk"))
       .finally(() => setLoading(false));
-  }, []);
+  }, [scope]);
 
   if (loading) {
     return (
