@@ -71,6 +71,7 @@ export function reconcileCostBasis(
   if (options.accountId) params.push(options.accountId);
 
   // Get current holdings with broker cost basis
+  // Uses per-account MAX date so each account uses its own most recent snapshot
   const holdings = db
     .prepare(
       `SELECT
@@ -86,9 +87,9 @@ export function reconcileCostBasis(
        FROM holdings h
        JOIN securities s ON s.id = h.security_id
        JOIN accounts a ON a.id = h.account_id
-       WHERE h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2)
+       WHERE h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id)
          AND h.quantity != 0
-         AND s.security_type NOT IN ('fund', 'money_market')
+         AND LOWER(s.security_type) NOT IN ('mutual fund', 'money market', 'fund', 'money_market')
          ${accountFilter}
        ORDER BY a.name, s.symbol`
     )
@@ -105,6 +106,11 @@ export function reconcileCostBasis(
   }>;
 
   // Get computed cost basis from open tax lots (grouped by account+security)
+  // When accountId is provided, only fetch lots for that account
+  const lotAccountFilter = options.accountId ? "AND account_id = ?" : "";
+  const lotParams: number[] = [];
+  if (options.accountId) lotParams.push(options.accountId);
+
   const computedLots = db
     .prepare(
       `SELECT
@@ -114,9 +120,10 @@ export function reconcileCostBasis(
         SUM(quantity_remaining * acquisition_price) AS total_cost_basis
        FROM tax_lots
        WHERE quantity_remaining > 0
+         ${lotAccountFilter}
        GROUP BY account_id, security_id`
     )
-    .all() as Array<{
+    .all(...lotParams) as Array<{
     account_id: number;
     security_id: number;
     total_quantity: number;
