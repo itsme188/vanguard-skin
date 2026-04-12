@@ -114,7 +114,8 @@ export default async function HoldingsPage() {
         SELECT MAX(h2.as_of_date) FROM holdings h2
         WHERE h2.account_id = h.account_id
       )
-      AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
+      AND (s.maturity_date IS NULL OR s.maturity_date >= date('now')
+           OR LOWER(s.security_type) = 'bond')
     ORDER BY current_value DESC NULLS LAST
   `;
 
@@ -154,10 +155,13 @@ export default async function HoldingsPage() {
     (sum, h) => sum + (h.current_value ?? 0),
     0
   );
-  const totalCostBasis = holdings.reduce(
-    (sum, h) => sum + (h.cost_basis ?? 0),
+  // Only sum cost basis for positions that have data — null means "unknown", not zero
+  const holdingsWithCost = holdings.filter((h) => h.cost_basis !== null);
+  const totalCostBasis = holdingsWithCost.reduce(
+    (sum, h) => sum + h.cost_basis!,
     0
   );
+  const missingCostCount = holdings.length - holdingsWithCost.length;
   const totalGain = holdings.reduce(
     (sum, h) => sum + (h.unrealized_gain ?? 0),
     0
@@ -262,7 +266,13 @@ export default async function HoldingsPage() {
                   Total ({holdings.length} positions)
                 </td>
                 <td className="px-4 py-3 text-right font-mono tabular-nums font-medium text-ink-dim">
-                  {formatCurrency(totalCostBasis)}
+                  {missingCostCount > 0 ? (
+                    <span title={`${missingCostCount} position${missingCostCount > 1 ? "s" : ""} missing cost basis data`} className="cursor-help">
+                      ~{formatCurrency(totalCostBasis)}
+                    </span>
+                  ) : (
+                    formatCurrency(totalCostBasis)
+                  )}
                 </td>
                 <td className="px-4 py-3 text-right font-mono tabular-nums font-medium text-ink">
                   {formatCurrency(totalValue)}
