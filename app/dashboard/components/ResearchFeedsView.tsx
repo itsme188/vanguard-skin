@@ -48,7 +48,11 @@ function SymbolPills({
 }) {
   if (!symbolsJson) return null;
   let symbols: string[];
-  try { symbols = JSON.parse(symbolsJson); } catch { return null; }
+  try {
+    const parsed = JSON.parse(symbolsJson);
+    if (!Array.isArray(parsed)) return null;
+    symbols = parsed;
+  } catch { return null; }
   if (symbols.length === 0) return null;
   return (
     <div className="flex flex-wrap gap-1.5">
@@ -78,7 +82,11 @@ function SymbolPills({
 function ThemePills({ themesJson }: { themesJson: string | null }) {
   if (!themesJson) return null;
   let themes: string[];
-  try { themes = JSON.parse(themesJson); } catch { return null; }
+  try {
+    const parsed = JSON.parse(themesJson);
+    if (!Array.isArray(parsed)) return null;
+    themes = parsed;
+  } catch { return null; }
   if (themes.length === 0) return null;
   return (
     <div className="flex flex-wrap gap-1.5">
@@ -132,6 +140,10 @@ export function ResearchFeedsView({ initialArticles, sources, initialSymbolMap }
 
     try {
       const res = await fetch("/api/research/sync", { method: "POST" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Sync failed" }));
+        throw new Error(err.error ?? `Sync failed (${res.status})`);
+      }
       const reader = res.body?.getReader();
       if (!reader) throw new Error("No response stream");
 

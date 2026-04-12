@@ -74,6 +74,12 @@ export function ImportFlow() {
         body: formData,
       });
 
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: `Server error (${res.status})` }));
+        setState({ status: "error", message: err.error ?? `Preview failed (${res.status})` });
+        return;
+      }
+
       const data = await res.json();
 
       if (!data.success) {
@@ -102,6 +108,12 @@ export function ImportFlow() {
         method: "POST",
         body: formData,
       });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: `Server error (${res.status})` }));
+        setState({ status: "error", message: err.error ?? `Import failed (${res.status})` });
+        return;
+      }
 
       const data = await res.json();
 

@@ -44,11 +44,22 @@ export function ImportHistory({ batches }: { batches: ImportBatch[] }) {
     );
   }
 
+  const [undoError, setUndoError] = useState<string | null>(null);
+
   const handleUndo = async (batchId: number) => {
+    if (!confirm("Undo this import? This will delete all records from this batch and recompute tax lots.")) return;
     setUndoingId(batchId);
+    setUndoError(null);
     try {
-      await fetch(`/api/import?batchId=${batchId}`, { method: "DELETE" });
+      const res = await fetch(`/api/import?batchId=${batchId}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({ error: "Undo failed" }));
+        setUndoError(data.error ?? "Undo failed");
+        return;
+      }
       router.refresh();
+    } catch (err) {
+      setUndoError(err instanceof Error ? err.message : "Undo failed");
     } finally {
       setUndoingId(null);
     }
@@ -57,6 +68,11 @@ export function ImportHistory({ batches }: { batches: ImportBatch[] }) {
   return (
     <div>
       <h3 className="text-sm font-medium text-ink-dim mb-3">Import History</h3>
+      {undoError && (
+        <div className="mb-3 px-3 py-2 bg-down/10 text-down text-xs rounded-lg">
+          {undoError}
+        </div>
+      )}
       <div className="rounded-xl border border-edge overflow-hidden overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
