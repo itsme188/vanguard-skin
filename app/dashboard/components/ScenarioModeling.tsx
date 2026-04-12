@@ -35,7 +35,7 @@ const SECTORS = [
   "Energy", "Utilities", "Real Estate", "Materials",
 ];
 
-export function ScenarioModelingCard() {
+export function ScenarioModelingCard({ scope }: { scope?: string }) {
   const [scenarios, setScenarios] = useState<ScenarioResult[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -82,7 +82,9 @@ export function ScenarioModelingCard() {
   }, [customMarketMove, customRateMove, customSectorOverrides]);
 
   useEffect(() => {
-    fetch("/api/compute/scenarios")
+    setLoading(true);
+    const params = scope && scope !== "all" ? `?scope=${scope}` : "";
+    fetch(`/api/compute/scenarios${params}`)
       .then((r) => r.json())
       .then((json) => {
         if (json.success) setScenarios(json.data);
@@ -90,7 +92,7 @@ export function ScenarioModelingCard() {
       })
       .catch(() => setError("Failed to fetch scenario analysis"))
       .finally(() => setLoading(false));
-  }, []);
+  }, [scope]);
 
   if (loading) {
     return (

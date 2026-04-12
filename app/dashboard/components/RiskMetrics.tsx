@@ -72,13 +72,15 @@ function MetricCard({
 
 // ─── Component ──────────────────────────────────────────────────
 
-export function RiskMetrics() {
+export function RiskMetrics({ scope }: { scope?: string }) {
   const [metrics, setMetrics] = useState<PortfolioRiskMetrics | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch("/api/compute/risk")
+    setLoading(true);
+    const params = scope && scope !== "all" ? `?scope=${scope}` : "";
+    fetch(`/api/compute/risk${params}`)
       .then((r) => r.json())
       .then((json) => {
         if (json.success) setMetrics(json.data);
@@ -86,7 +88,7 @@ export function RiskMetrics() {
       })
       .catch(() => setError("Failed to fetch risk metrics"))
       .finally(() => setLoading(false));
-  }, []);
+  }, [scope]);
 
   if (loading) {
     return (

@@ -281,11 +281,12 @@ function estimateBeta(
   style: string | null,
   marketCap: string | null
 ): number {
+  const type = securityType.toLowerCase();
   // Bonds have near-zero equity beta
-  if (securityType === "bond" || securityType === "money_market") return 0.1;
+  if (type === "bond" || type === "money market" || type === "money_market") return 0.1;
 
   // Options are higher beta (leverage)
-  if (securityType === "option" || securityType === "call" || securityType === "put") return 2.0;
+  if (type === "option" || type === "call" || type === "put") return 2.0;
 
   let beta = 1.0;
 
@@ -315,14 +316,15 @@ function estimateRateImpact(
 ): number {
   const rateChange = rateBps / 100; // convert bps to %
 
+  const type = securityType.toLowerCase();
   // Bonds: duration-based estimate (use actual duration if available, else assume 5yr)
-  if (securityType === "bond") {
+  if (type === "bond") {
     const duration = durationYears ?? 5;
     return -duration * rateChange / 100;
   }
 
   // Money market benefits slightly from higher rates
-  if (securityType === "money_market") {
+  if (type === "money market" || type === "money_market") {
     return rateChange * 0.002; // tiny positive
   }
 
