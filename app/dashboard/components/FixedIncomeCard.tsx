@@ -26,19 +26,22 @@ interface FixedIncomeData {
  * credit quality breakdown, and individual bond positions.
  * Only renders if portfolio has bond positions.
  */
-export function FixedIncomeCard() {
+export function FixedIncomeCard({ scope }: { scope?: string }) {
   const [data, setData] = useState<FixedIncomeData | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/compute/fixed-income")
+    setLoading(true);
+    const params = scope && scope !== "all" ? `?scope=${scope}` : "";
+    fetch(`/api/compute/fixed-income${params}`)
       .then((r) => r.json())
       .then((json) => {
         if (json.success && json.data.bonds.length > 0) setData(json.data);
+        else setData(null);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, []);
+  }, [scope]);
 
   if (loading) return null; // Don't show loading state — card is optional
   if (!data) return null; // No bonds in portfolio

@@ -7,19 +7,22 @@ import type { PortfolioGreeks, PositionGreeks } from "@/lib/compute/options-gree
  * Portfolio-level Greeks summary + per-position Greeks table.
  * Only renders if the portfolio has option positions.
  */
-export function OptionsGreeksCard() {
+export function OptionsGreeksCard({ scope }: { scope?: string }) {
   const [data, setData] = useState<PortfolioGreeks | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/compute/options-greeks")
+    setLoading(true);
+    const params = scope && scope !== "all" ? `?scope=${scope}` : "";
+    fetch(`/api/compute/options-greeks${params}`)
       .then((r) => r.json())
       .then((json) => {
         if (json.success && json.data.positions?.length > 0) setData(json.data);
+        else setData(null);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, []);
+  }, [scope]);
 
   if (loading || !data) return null;
 
