@@ -3,6 +3,7 @@ import { getBriefingByWeek } from "@/lib/queries/calendar";
 import { generateWeeklyBriefing } from "@/lib/calendar/briefing";
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
 import { sendEmail } from "@/lib/email";
+import { getCurrentMonday } from "@/lib/calendar/date-utils";
 
 /**
  * POST /api/calendar/email — Generate (if needed) and email the weekly briefing.
@@ -55,6 +56,14 @@ export async function POST(request: Request) {
       }
     }
 
+    // Safety check — briefing must exist at this point
+    if (!briefing) {
+      return Response.json(
+        { error: "Briefing generation succeeded but failed to save. Try again.", weekOf },
+        { status: 500 }
+      );
+    }
+
     // Convert markdown to styled HTML email
     const title = briefing.title || `Week of ${weekOf}`;
     const html = briefingToHtml(briefing.content, title);
@@ -83,14 +92,3 @@ export async function POST(request: Request) {
   }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────
-
-function getCurrentMonday(): string {
-  const now = new Date();
-  const day = now.getDay();
-  // Sunday = 0, Monday = 1, ..., Saturday = 6
-  const diff = day === 0 ? 6 : day - 1;
-  const monday = new Date(now);
-  monday.setDate(now.getDate() - diff);
-  return monday.toISOString().slice(0, 10);
-}
