@@ -57,11 +57,15 @@ export async function fetchSnapshotPrices(
       )
       .all(...options.securityIds) as SecurityRow[];
   } else {
+    // Fetch snapshot prices for ALL held securities with ib_con_id across all accounts.
+    // Includes stocks, ETFs, mutual funds, options, and bonds.
+    // Requires enrichment to have been run first (populates ib_con_id).
     securities = db
       .prepare(
-        `SELECT id, symbol, security_type, ib_con_id FROM securities
-         WHERE ib_con_id IS NOT NULL
-           AND (security_type IS NULL OR security_type NOT IN ('mutual_fund', 'option'))`,
+        `SELECT DISTINCT s.id, s.symbol, s.security_type, s.ib_con_id
+         FROM securities s
+         JOIN holdings h ON h.security_id = s.id AND h.quantity > 0
+         WHERE s.ib_con_id IS NOT NULL`,
       )
       .all() as SecurityRow[];
   }

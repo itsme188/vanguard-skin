@@ -23,7 +23,21 @@ function seedSecurity(
       "INSERT INTO securities (symbol, name, security_type, ib_con_id) VALUES (?, ?, ?, ?)",
     )
     .run(symbol, symbol + " Corp", opts?.securityType ?? "stock", opts?.conId ?? 12345);
-  return result.lastInsertRowid as number;
+  const secId = result.lastInsertRowid as number;
+
+  // Default fetch query requires holdings — seed one for each security
+  const accountId = ensureAccount(db);
+  db.prepare(
+    "INSERT OR IGNORE INTO holdings (account_id, security_id, quantity, as_of_date) VALUES (?, ?, 100, '2026-01-01')",
+  ).run(accountId, secId);
+
+  return secId;
+}
+
+function ensureAccount(db: Database.Database): number {
+  const row = db.prepare("SELECT id FROM accounts LIMIT 1").get() as { id: number } | undefined;
+  if (row) return row.id;
+  return db.prepare("INSERT INTO accounts (name) VALUES ('Test')").run().lastInsertRowid as number;
 }
 
 /** Build a mock MutableMarketData Map with given tick entries. */
@@ -270,9 +284,9 @@ describe("fetchSnapshotPrices", () => {
     expect(results[0].tickType).toBe("NONE");
   });
 
-  it("excludes mutual funds from default fetch", async () => {
+  it("includes mutual funds in default fetch (all held securities)", async () => {
     seedSecurity(db, "VTI", { conId: 1100 }); // stock — included
-    seedSecurity(db, "VTSAX", { securityType: "mutual_fund", conId: 1200 }); // excluded
+    seedSecurity(db, "VTSAX", { securityType: "Mutual Fund", conId: 1200 }); // also included
 
     const mockApi = {
       setMarketDataType: vi.fn(),
@@ -284,9 +298,10 @@ describe("fetchSnapshotPrices", () => {
 
     const results = await fetchSnapshotPrices(db);
 
-    // Only VTI should be fetched (VTSAX is mutual_fund)
-    expect(results).toHaveLength(1);
-    expect(results[0].symbol).toBe("VTI");
+    // Both should be fetched — snapshot now covers all held securities
+    expect(results).toHaveLength(2);
+    const symbols = results.map((r) => r.symbol).sort();
+    expect(symbols).toEqual(["VTI", "VTSAX"]);
   });
 
   it("reports progress with onProgress callback", async () => {

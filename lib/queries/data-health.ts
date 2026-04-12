@@ -195,7 +195,8 @@ export function getDataGaps(db: Database.Database): DataGaps {
     )
     .all() as DataGaps["securitiesNoPrices"];
 
-  // Securities with holdings but no transactions (can't compute tax lots)
+  // Securities with holdings but no transactions (can't compute tax lots).
+  // Excludes cash positions and money market funds (no transactions expected).
   const securitiesNoTransactions = db
     .prepare(
       `
@@ -203,6 +204,8 @@ export function getDataGaps(db: Database.Database): DataGaps {
       FROM securities s
       JOIN holdings h ON h.security_id = s.id AND h.quantity > 0
       WHERE NOT EXISTS (SELECT 1 FROM transactions t WHERE t.security_id = s.id)
+        AND LOWER(COALESCE(s.security_type, '')) NOT IN ('cash', 'money_market', 'money market')
+        AND s.symbol NOT LIKE 'CUSIP:%'
       ORDER BY s.symbol
       `,
     )

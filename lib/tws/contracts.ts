@@ -14,10 +14,76 @@ interface SecurityRow {
 }
 
 /**
+ * Parse an OCC option symbol into its components.
+ * OCC format: "ALGM  270115C00035000"
+ *   - Underlying: first chars up to padding spaces (or 6 chars)
+ *   - Date: YYMMDD
+ *   - Right: C or P
+ *   - Strike: 8-digit integer / 1000
+ */
+function parseOCCSymbol(symbol: string): {
+  underlying: string;
+  lastTradeDate: string;
+  right: string;
+  strike: number;
+} | null {
+  // OCC format: up to 6-char underlying (space-padded), YYMMDD, C/P, 8-digit strike
+  const match = symbol.match(/^(.{1,6}?)\s*(\d{6})([CP])(\d{8})$/);
+  if (!match) return null;
+
+  const [, underlying, dateStr, right, strikeStr] = match;
+  const yy = dateStr.slice(0, 2);
+  const mm = dateStr.slice(2, 4);
+  const dd = dateStr.slice(4, 6);
+  const lastTradeDate = `20${yy}${mm}${dd}`;
+  const strike = parseInt(strikeStr, 10) / 1000;
+
+  return { underlying: underlying.trim(), lastTradeDate, right, strike };
+}
+
+/**
+ * Build a TWS contract for a security, handling options specially.
+ * Options use underlying + expiry + strike + right instead of the OCC symbol.
+ */
+function buildContract(sec: SecurityRow): Record<string, unknown> | null {
+  const secType = mapSecurityType(sec.security_type);
+
+  if (secType === SecType.OPT) {
+    // Try to parse OCC symbol for option contract fields
+    const parsed = parseOCCSymbol(sec.symbol);
+    if (!parsed) return null; // can't resolve non-OCC option symbols
+
+    return {
+      symbol: parsed.underlying,
+      secType: SecType.OPT,
+      exchange: "SMART",
+      currency: "USD",
+      lastTradeDateOrContractMonth: parsed.lastTradeDate,
+      strike: parsed.strike,
+      right: parsed.right,
+    };
+  }
+
+  // Stocks, ETFs, bonds, mutual funds — simple symbol lookup
+  return {
+    symbol: sec.symbol,
+    secType,
+    exchange: "SMART",
+    currency: "USD",
+  };
+}
+
+/**
  * Enrich securities with contract details from TWS.
  *
  * Fetches industry, category, exchange, and conId for each security.
  * Only fetches securities that don't already have an ib_con_id.
+ *
+ * Covers ALL held securities across all accounts:
+ *   - Stocks/ETFs: resolved by symbol
+ *   - Mutual funds: resolved by symbol with SecType.FUND
+ *   - Options (OCC format): resolved by underlying + expiry + strike + right
+ *   - Excluded: CUSIP-prefixed bonds, Cash, non-OCC option symbols
  */
 export async function enrichSecurities(
   db: Database.Database,
@@ -35,12 +101,12 @@ export async function enrichSecurities(
       )
       .all(...securityIds) as SecurityRow[];
   } else {
-    // Only enrich held securities that TWS can resolve by ticker.
-    // Excluded (need special handling in the future):
-    //   - CUSIP-prefixed: bonds/SPACs without tickers → look up by CUSIP + SecType.BOND
-    //   - Vanguard-format options ("ARKK 270115 P 100.00") → convert to OCC format
-    //   - OCC options with spaces → trim and use SecType.OPT
-    //   - Cash positions (AUD, etc.) → use SecType.CASH
+    // Enrich all held securities across all accounts that TWS can resolve.
+    // Excluded:
+    //   - CUSIP-prefixed: bonds/SPACs without tickers
+    //   - Cash positions (AUD, etc.)
+    //   - Non-OCC option symbols (Vanguard format with spaces like "ARKK 270115 P 100.00")
+    //     → migration 022 merges these into OCC counterparts
     securities = db
       .prepare(
         `SELECT DISTINCT s.id, s.symbol, s.security_type
@@ -48,8 +114,13 @@ export async function enrichSecurities(
          JOIN holdings h ON h.security_id = s.id
          WHERE s.ib_con_id IS NULL
            AND s.symbol NOT LIKE 'CUSIP:%'
-           AND LOWER(s.security_type) NOT IN ('cash', 'option', 'money_market', 'money market')
-           AND s.symbol NOT LIKE '% %'`,
+           AND LOWER(s.security_type) NOT IN ('cash', 'money_market', 'money market')
+           AND (
+             -- Stocks, ETFs, bonds, mutual funds: simple symbols (no spaces)
+             (LOWER(s.security_type) NOT IN ('option') AND s.symbol NOT LIKE '% %')
+             -- Options: only OCC format (ends in digits, no human-readable spaces)
+             OR (LOWER(s.security_type) = 'option' AND s.symbol GLOB '*[0-9][0-9][0-9]')
+           )`,
       )
       .all() as SecurityRow[];
   }
@@ -69,12 +140,16 @@ export async function enrichSecurities(
     try {
       await rateLimiter.waitForSlot();
 
-      const contract = {
-        symbol: sec.symbol,
-        secType: mapSecurityType(sec.security_type),
-        exchange: "SMART",
-        currency: "USD",
-      };
+      const contract = buildContract(sec);
+      if (!contract) {
+        results.push({
+          symbol: sec.symbol,
+          securityId: sec.id,
+          enriched: false,
+          error: "Cannot build TWS contract from symbol",
+        });
+        continue;
+      }
 
       const details = await api.getContractDetails(contract);
 

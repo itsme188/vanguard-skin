@@ -16,37 +16,66 @@ interface FredReleaseConfig {
   eventType: CalendarEventType;
   defaultImpact: EventImpact;
   shortName: string; // concise name for the calendar
+  reportingLag: number | "weekly" | "quarterly"; // months before release that data covers
 }
 
 const TRACKED_RELEASES: FredReleaseConfig[] = [
   // ── High impact ─────────────────────────────────────────
-  { releaseId: 50,  eventType: "jobs",         defaultImpact: "high",   shortName: "Nonfarm Payrolls" },
-  { releaseId: 10,  eventType: "cpi",          defaultImpact: "high",   shortName: "CPI" },
-  { releaseId: 46,  eventType: "gdp",          defaultImpact: "high",   shortName: "GDP" },
-  { releaseId: 21,  eventType: "pmi",          defaultImpact: "high",   shortName: "ISM Manufacturing" },
-  { releaseId: 29,  eventType: "pmi",          defaultImpact: "high",   shortName: "ISM Services" },
-  { releaseId: 53,  eventType: "cpi",          defaultImpact: "high",   shortName: "Personal Income & Outlays (PCE)" },
+  //   reportingLag: 1 = prior month, 2 = two months prior,
+  //   0 = current month, "weekly" = weekly data, "quarterly" = GDP
+  { releaseId: 50,  eventType: "jobs",         defaultImpact: "high",   shortName: "Nonfarm Payrolls",                reportingLag: 1 },
+  { releaseId: 10,  eventType: "cpi",          defaultImpact: "high",   shortName: "CPI",                             reportingLag: 1 },
+  { releaseId: 46,  eventType: "gdp",          defaultImpact: "high",   shortName: "GDP",                             reportingLag: "quarterly" },
+  { releaseId: 21,  eventType: "pmi",          defaultImpact: "high",   shortName: "ISM Manufacturing",               reportingLag: 1 },
+  { releaseId: 29,  eventType: "pmi",          defaultImpact: "high",   shortName: "ISM Services",                    reportingLag: 1 },
+  { releaseId: 53,  eventType: "cpi",          defaultImpact: "high",   shortName: "Personal Income & Outlays (PCE)", reportingLag: 1 },
 
   // ── Medium impact ───────────────────────────────────────
-  { releaseId: 33,  eventType: "jobs",         defaultImpact: "medium", shortName: "ADP Employment" },
-  { releaseId: 110, eventType: "jobs",         defaultImpact: "medium", shortName: "JOLTS" },
-  { releaseId: 176, eventType: "jobs",         defaultImpact: "medium", shortName: "Initial Jobless Claims" },
-  { releaseId: 13,  eventType: "retail_sales", defaultImpact: "medium", shortName: "Retail Sales" },
-  { releaseId: 11,  eventType: "cpi",          defaultImpact: "medium", shortName: "Producer Price Index" },
-  { releaseId: 63,  eventType: "housing",      defaultImpact: "medium", shortName: "Housing Starts" },
-  { releaseId: 59,  eventType: "housing",      defaultImpact: "medium", shortName: "Existing Home Sales" },
-  { releaseId: 58,  eventType: "housing",      defaultImpact: "medium", shortName: "New Home Sales" },
-  { releaseId: 320, eventType: "other_macro",  defaultImpact: "medium", shortName: "Consumer Confidence" },
-  { releaseId: 14,  eventType: "other_macro",  defaultImpact: "medium", shortName: "U. of Michigan Consumer Sentiment" },
-  { releaseId: 15,  eventType: "other_macro",  defaultImpact: "medium", shortName: "Industrial Production" },
-  { releaseId: 36,  eventType: "other_macro",  defaultImpact: "medium", shortName: "Durable Goods Orders" },
-  { releaseId: 127, eventType: "other_macro",  defaultImpact: "medium", shortName: "Trade Balance" },
+  { releaseId: 33,  eventType: "jobs",         defaultImpact: "medium", shortName: "ADP Employment",                  reportingLag: 1 },
+  { releaseId: 110, eventType: "jobs",         defaultImpact: "medium", shortName: "JOLTS",                           reportingLag: 2 },
+  { releaseId: 176, eventType: "jobs",         defaultImpact: "medium", shortName: "Initial Jobless Claims",          reportingLag: "weekly" },
+  { releaseId: 13,  eventType: "retail_sales", defaultImpact: "medium", shortName: "Retail Sales",                    reportingLag: 1 },
+  { releaseId: 11,  eventType: "cpi",          defaultImpact: "medium", shortName: "Producer Price Index",            reportingLag: 1 },
+  { releaseId: 63,  eventType: "housing",      defaultImpact: "medium", shortName: "Housing Starts",                  reportingLag: 1 },
+  { releaseId: 59,  eventType: "housing",      defaultImpact: "medium", shortName: "Existing Home Sales",             reportingLag: 1 },
+  { releaseId: 58,  eventType: "housing",      defaultImpact: "medium", shortName: "New Home Sales",                  reportingLag: 1 },
+  { releaseId: 320, eventType: "other_macro",  defaultImpact: "medium", shortName: "Consumer Confidence",             reportingLag: 0 },
+  { releaseId: 14,  eventType: "other_macro",  defaultImpact: "medium", shortName: "U. of Michigan Consumer Sentiment", reportingLag: 0 },
+  { releaseId: 15,  eventType: "other_macro",  defaultImpact: "medium", shortName: "Industrial Production",           reportingLag: 1 },
+  { releaseId: 36,  eventType: "other_macro",  defaultImpact: "medium", shortName: "Durable Goods Orders",            reportingLag: 1 },
+  { releaseId: 127, eventType: "other_macro",  defaultImpact: "medium", shortName: "Trade Balance",                   reportingLag: 2 },
 ];
 
 // Build lookup by release_id for fast matching
 const RELEASE_MAP = new Map<number, FredReleaseConfig>();
 for (const r of TRACKED_RELEASES) {
   RELEASE_MAP.set(r.releaseId, r);
+}
+
+// ── Reporting Period ─────────────────────────────────────────────
+//
+// Economic releases lag: April 14 PPI covers March data, not April.
+// This derives the reporting period from the release date so Claude
+// doesn't have to guess.
+
+function getReportingPeriod(
+  releaseDate: string,
+  lag: FredReleaseConfig["reportingLag"]
+): string | null {
+  if (lag === "weekly") return null; // weekly data has no month prefix
+
+  const d = new Date(releaseDate + "T12:00:00");
+
+  if (lag === "quarterly") {
+    // GDP: the quarter that most recently ended before the release month
+    const currentQ = Math.floor(d.getMonth() / 3) + 1;
+    const reportQ = currentQ === 1 ? 4 : currentQ - 1;
+    return `Q${reportQ}`;
+  }
+
+  // Monthly: subtract lag months
+  d.setMonth(d.getMonth() - lag);
+  return d.toLocaleString("en-US", { month: "long" });
 }
 
 // ── FOMC Meeting Dates ──────────────────────────────────────────
@@ -147,22 +176,25 @@ interface EnrichedEvent {
  * but CANNOT change the dates (those come from FRED).
  */
 async function enrichEventsWithClaude(
-  events: { date: string; shortName: string; fredName: string }[]
+  events: { date: string; shortName: string; fredName: string; reportingPeriod: string | null }[]
 ): Promise<Map<string, EnrichedEvent>> {
   if (events.length === 0) return new Map();
 
   const client = new Anthropic();
 
   const eventList = events
-    .map((e, i) => `${i + 1}. ${e.date} — ${e.shortName} (FRED: "${e.fredName}")`)
+    .map((e, i) => {
+      const period = e.reportingPeriod ? ` [reporting period: ${e.reportingPeriod}]` : "";
+      return `${i + 1}. ${e.date} — ${e.shortName} (FRED: "${e.fredName}")${period}`;
+    })
     .join("\n");
 
-  const prompt = `I have the following confirmed US economic data releases with their exact dates from FRED (Federal Reserve Economic Data). The dates are authoritative — do NOT change them.
+  const prompt = `I have the following confirmed US economic data releases with their exact dates from FRED (Federal Reserve Economic Data). The dates are authoritative — do NOT change them. The reporting period in brackets is also authoritative — it tells you which month/quarter the data covers (economic releases lag by 1-2 months).
 
 ${eventList}
 
 For each event, provide enrichment data as a JSON array (same order as above):
-- title: concise event name (e.g., "March Nonfarm Payrolls", "February CPI Release")
+- title: concise event name using the reporting period in brackets (e.g., "March Producer Price Index", "Q1 GDP Advance Estimate"). Do NOT use the release month — use the reporting period provided.
 - description: one sentence about what this measures and why it matters for markets
 - expected_impact: "high", "medium", or "low" — based on typical market sensitivity
 - event_time: release time in HH:MM format (ET timezone) if you know the standard release time, or null
@@ -232,6 +264,7 @@ export async function fetchMacroEvents(
     date: e.date,
     shortName: e.config.shortName,
     fredName: e.fredName,
+    reportingPeriod: getReportingPeriod(e.date, e.config.reportingLag),
   }));
 
   const enriched = process.env.ANTHROPIC_API_KEY
@@ -243,7 +276,11 @@ export async function fetchMacroEvents(
     const key = `${e.date}:${e.config.shortName}`;
     const extra = enriched.get(key);
 
-    const title = extra?.title || e.config.shortName;
+    const reportingPeriod = getReportingPeriod(e.date, e.config.reportingLag);
+    const fallbackTitle = reportingPeriod
+      ? `${reportingPeriod} ${e.config.shortName}`
+      : e.config.shortName;
+    const title = extra?.title || fallbackTitle;
     const sourceKey = `fred:${e.config.releaseId}:${e.date}`;
 
     return {
