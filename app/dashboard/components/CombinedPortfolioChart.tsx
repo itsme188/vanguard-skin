@@ -120,9 +120,34 @@ function mergeData(
     merged.set(point.date, point);
   }
 
-  return Array.from(merged.values()).sort((a, b) =>
+  const sorted = Array.from(merged.values()).sort((a, b) =>
     a.date.localeCompare(b.date)
   );
+
+  // Forward-fill missing account values to prevent gaps in stacked area chart.
+  // If a date has values for some accounts but not others, carry forward the
+  // last known value for each missing account.
+  if (sorted.length > 1) {
+    const allKeys = new Set<string>();
+    for (const point of sorted) {
+      for (const key of Object.keys(point)) {
+        if (key !== "date") allKeys.add(key);
+      }
+    }
+
+    const lastKnown: Record<string, number> = {};
+    for (const point of sorted) {
+      for (const key of allKeys) {
+        if (typeof point[key] === "number") {
+          lastKnown[key] = point[key] as number;
+        } else if (key in lastKnown) {
+          point[key] = lastKnown[key];
+        }
+      }
+    }
+  }
+
+  return sorted;
 }
 
 // ─── Percent-Change Data Conversion ─────────────────────────────
@@ -321,57 +346,63 @@ export function CombinedPortfolioChart({
       let buffer = "";
       let totalInserted = 0;
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          if (line.startsWith("data: [DONE]")) break;
-          if (line.startsWith("data: ")) {
-            try {
-              const payload = JSON.parse(line.slice(6));
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          for (const line of lines) {
+            if (line.startsWith("data: [DONE]")) break;
+            if (line.startsWith("data: ")) {
+              try {
+                const payload = JSON.parse(line.slice(6));
 
-              if (payload.progress) {
-                const p = payload.progress;
-                if (p.status === "fetching") {
-                  setSyncMessage(`Fetching ${p.symbol}...`);
-                } else if (p.status === "rate_limited") {
-                  setSyncMessage(`Rate limited — waiting ${Math.ceil(p.waitingSeconds ?? 0)}s...`);
-                } else if (p.status === "done") {
-                  totalInserted += p.barsInserted ?? 0;
-                  setSyncMessage(`${p.symbol}: ${p.barsInserted ?? 0} bars`);
-                } else if (p.status === "error") {
-                  setSyncMessage(`${p.symbol}: ${p.error ?? "error"}`);
+                if (payload.progress) {
+                  const p = payload.progress;
+                  if (p.status === "fetching") {
+                    setSyncMessage(`Fetching ${p.symbol}...`);
+                  } else if (p.status === "rate_limited") {
+                    setSyncMessage(`Rate limited — waiting ${Math.ceil(p.waitingSeconds ?? 0)}s...`);
+                  } else if (p.status === "done") {
+                    totalInserted += p.barsInserted ?? 0;
+                    setSyncMessage(`${p.symbol}: ${p.barsInserted ?? 0} bars`);
+                  } else if (p.status === "error") {
+                    setSyncMessage(`${p.symbol}: ${p.error ?? "error"}`);
+                  }
                 }
-              }
 
-              if (payload.error) {
-                setSyncMessage(`Error: ${payload.error}`);
-              }
-
-              if (payload.complete) {
-                const results = payload.data as { symbol: string; barsInserted: number; error?: string }[];
-                const errors = results.filter(r => r.error);
-                const inserted = results.reduce((s, r) => s + r.barsInserted, 0);
-                setSyncMessage(
-                  errors.length > 0
-                    ? `${errors[0].error}` // show first error
-                    : `Synced ${inserted} bars for ${results.length} benchmarks`
-                );
-                // Refresh available benchmarks
-                const refreshRes = await fetch("/api/benchmark/prices?mode=available");
-                const refreshJson = await refreshRes.json();
-                if (refreshJson.success) {
-                  setAvailableBenchmarks(refreshJson.data.map((b: { symbol: string }) => b.symbol));
+                if (payload.error) {
+                  setSyncMessage(`Error: ${payload.error}`);
                 }
+
+                if (payload.complete) {
+                  const results = payload.data as { symbol: string; barsInserted: number; error?: string }[];
+                  const errors = results.filter(r => r.error);
+                  const inserted = results.reduce((s, r) => s + r.barsInserted, 0);
+                  setSyncMessage(
+                    errors.length > 0
+                      ? `${errors[0].error}`
+                      : `Synced ${inserted} bars for ${results.length} benchmarks`
+                  );
+                  // Refresh available benchmarks
+                  const refreshRes = await fetch("/api/benchmark/prices?mode=available");
+                  const refreshJson = await refreshRes.json();
+                  if (refreshJson.success) {
+                    setAvailableBenchmarks(refreshJson.data.map((b: { symbol: string }) => b.symbol));
+                  }
+                }
+              } catch {
+                // skip malformed SSE lines
               }
-            } catch {
-              // skip malformed SSE lines
             }
           }
         }
+      } catch {
+        setSyncMessage("Error: Connection lost during benchmark sync");
+      } finally {
+        reader.cancel().catch(() => {});
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to sync";

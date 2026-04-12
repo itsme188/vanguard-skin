@@ -90,7 +90,18 @@ export function PeriodComparisonTable() {
       )
       .get() as { cnt: number };
 
-    if (hasBenchmark.cnt === 0) return null;
+    if (hasBenchmark.cnt === 0) {
+      return (
+        <div className="rounded-xl border border-dashed border-edge bg-panel p-6 text-center">
+          <h3 className="text-xs font-medium text-ink-faint uppercase tracking-wider mb-2">
+            Performance vs Benchmark
+          </h3>
+          <p className="text-sm text-ink-faint">
+            Sync benchmark prices via the TWS panel or the chart below to compare your portfolio against SPY.
+          </p>
+        </div>
+      );
+    }
 
     rows = periods.map(({ label, startDate }) => {
       const twr = computeTwr(db, { startDate: startDate ?? undefined, endDate: today });
