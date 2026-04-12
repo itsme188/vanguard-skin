@@ -1,6 +1,7 @@
 import { db } from "@/lib/db";
 import { generateWeeklyBriefing } from "@/lib/calendar/briefing";
-import { getBriefingByWeek, getLatestBriefing } from "@/lib/queries/calendar";
+import { getBriefingByWeek } from "@/lib/queries/calendar";
+import { validateWeekOf } from "@/lib/calendar/date-utils";
 
 /**
  * GET /api/calendar/briefing?weekOf=YYYY-MM-DD — Fetch a stored briefing.
@@ -9,9 +10,9 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const weekOf = searchParams.get("weekOf");
 
-  const briefing = weekOf
-    ? getBriefingByWeek(db, weekOf)
-    : getLatestBriefing(db);
+  // Only return briefing for the specific week — no fallback to "latest"
+  // which would show a mismatched briefing from a different week
+  const briefing = weekOf ? getBriefingByWeek(db, weekOf) : null;
 
   return Response.json({ briefing });
 }
@@ -28,11 +29,15 @@ export async function POST(request: Request) {
   const body = await request.json().catch(() => ({}));
   const weekOf = body.weekOf as string;
 
-  if (!weekOf || !/^\d{4}-\d{2}-\d{2}$/.test(weekOf)) {
+  if (!weekOf) {
     return Response.json(
       { error: "weekOf is required (YYYY-MM-DD format)" },
       { status: 400 }
     );
+  }
+  const weekOfError = validateWeekOf(weekOf);
+  if (weekOfError) {
+    return Response.json({ error: weekOfError }, { status: 400 });
   }
 
   const encoder = new TextEncoder();

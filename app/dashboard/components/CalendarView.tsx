@@ -4,6 +4,7 @@ import { useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import type { CalendarEvent, CalendarBriefing, EventImpact } from "@/lib/types";
 import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
+import { getCurrentMonday, addDays, formatWeekRange } from "@/lib/calendar/date-utils";
 
 // ── Event type styling ───────────────────────────────────────────
 
@@ -71,6 +72,8 @@ export function CalendarView({
       }
       setWeekOf(newWeekOf);
       setExpandedEvent(null);
+      setSyncMessage(null);
+      setBriefingMessage(null);
       router.push(`/dashboard/calendar?weekOf=${newWeekOf}`);
     },
     [weekOf, router]
@@ -92,7 +95,13 @@ export function CalendarView({
         if (data.progress) setSyncMessage(data.progress.message);
         if (data.complete) {
           const d = data.data;
-          setSyncMessage(`Synced ${d.totalSaved} events (${d.wshEvents} company, ${d.macroEvents} macro)`);
+          if (d.totalSaved === 0) {
+            setSyncMessage("No events found for this week");
+          } else if (d.newEvents > 0) {
+            setSyncMessage(`Synced ${d.totalSaved} events (${d.newEvents} new, ${d.refreshedEvents} refreshed)`);
+          } else {
+            setSyncMessage(`Calendar already up to date (${d.refreshedEvents} events refreshed)`);
+          }
         }
         if (data.error) setSyncMessage(`Error: ${data.error}`);
       });
@@ -100,7 +109,7 @@ export function CalendarView({
       const eventsRes = await fetch(`/api/calendar/events?weekOf=${weekOf}`);
       if (eventsRes.ok) { const json = await eventsRes.json(); setEvents(json.events); }
     } catch (err) {
-      setSyncMessage(`Error: ${err instanceof Error ? err.message : "Unknown"}`);
+      setSyncMessage(`Error: ${err instanceof Error ? err.message : "Connection lost during sync"}`);
     } finally { setSyncing(false); }
   }, [weekOf]);
 
@@ -128,7 +137,7 @@ export function CalendarView({
         if (json.briefing) setBriefing(json.briefing);
       }
     } catch (err) {
-      setBriefingMessage(`Error: ${err instanceof Error ? err.message : "Unknown"}`);
+      setBriefingMessage(`Error: ${err instanceof Error ? err.message : "Connection lost during generation"}`);
     } finally { setGeneratingBriefing(false); }
   }, [weekOf]);
 
@@ -170,11 +179,19 @@ export function CalendarView({
         </div>
       </div>
 
-      {/* ── Status ─────────────────────────────────────────── */}
+      {/* ── Status messages (sync + briefing shown separately) ── */}
       {(syncMessage || briefingMessage) && (
-        <div className="text-xs font-mono text-ink-faint px-3 py-2 bg-panel rounded-md border border-edge">
-          {syncMessage && <div>{syncMessage}</div>}
-          {briefingMessage && <div>{briefingMessage}</div>}
+        <div className="text-xs font-mono px-3 py-2 bg-panel rounded-md border border-edge space-y-1">
+          {syncMessage && (
+            <div className={syncMessage.startsWith("Error") ? "text-down" : "text-ink-faint"}>
+              <span className="text-ink-faint/50">sync:</span> {syncMessage}
+            </div>
+          )}
+          {briefingMessage && (
+            <div className={briefingMessage.startsWith("Error") ? "text-down" : "text-ink-faint"}>
+              <span className="text-ink-faint/50">briefing:</span> {briefingMessage}
+            </div>
+          )}
         </div>
       )}
 
@@ -337,7 +354,9 @@ export function CalendarView({
                   No briefing for this week
                 </p>
                 <p className="text-xs text-ink-faint/70 max-w-xs mx-auto">
-                  Click &quot;Generate Briefing&quot; to create an AI research summary covering all events and their impact on your portfolio.
+                  {events.length > 0
+                    ? 'Click "Generate Briefing" to create an AI research summary covering all events and their impact on your portfolio.'
+                    : 'Sync the calendar first, then generate a briefing.'}
                 </p>
               </div>
             )}
@@ -402,18 +421,25 @@ async function readSseStream(res: Response, onData: (data: any) => void) {
   if (!reader) return;
   const decoder = new TextDecoder();
   let buffer = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      if (!line.startsWith("data: ")) continue;
-      const payload = line.slice(6);
-      if (payload === "[DONE]") return;
-      try { onData(JSON.parse(payload)); } catch { /* skip */ }
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const payload = line.slice(6);
+        if (payload === "[DONE]") return;
+        try { onData(JSON.parse(payload)); } catch { /* skip malformed */ }
+      }
     }
+  } catch (err) {
+    // Network error during stream — surface it to the caller
+    onData({ error: err instanceof Error ? err.message : "Connection lost" });
+  } finally {
+    reader.cancel().catch(() => {});
   }
 }
 
@@ -422,14 +448,18 @@ async function readSseStream(res: Response, onData: (data: any) => void) {
 interface DayGroup { date: string; label: string; isToday: boolean; events: CalendarEvent[]; }
 
 function groupEventsByDay(events: CalendarEvent[], weekOf: string): DayGroup[] {
-  const today = new Date().toISOString().slice(0, 10);
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  const today = `${y}-${m}-${d}`;
   const days: DayGroup[] = [];
   const dayNames = ["Mon", "Tue", "Wed", "Thu", "Fri"];
 
   for (let i = 0; i < 5; i++) {
     const date = addDays(weekOf, i);
-    const d = new Date(date + "T00:00:00");
-    const label = `${dayNames[i]} ${d.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
+    const dt = new Date(date + "T12:00:00");
+    const label = `${dayNames[i]} ${dt.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
     days.push({ date, label, isToday: date === today, events: events.filter((e) => e.event_date === date) });
   }
 
@@ -462,28 +492,4 @@ function formatEventTime(time: string): string {
   if (["BMO", "AMC", "TAS"].includes(time)) return time;
   if (time.includes(":")) return `${time} ET`;
   return time;
-}
-
-function getCurrentMonday(): string {
-  const now = new Date();
-  const day = now.getDay();
-  const diff = day === 0 ? -6 : 1 - day;
-  const monday = new Date(now);
-  monday.setDate(now.getDate() + diff);
-  return monday.toISOString().slice(0, 10);
-}
-
-function addDays(dateStr: string, days: number): string {
-  const d = new Date(dateStr + "T00:00:00");
-  d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
-}
-
-function formatWeekRange(weekOf: string): string {
-  const start = new Date(weekOf + "T00:00:00");
-  const end = new Date(weekOf + "T00:00:00");
-  end.setDate(end.getDate() + 6);
-  const fmt = (d: Date) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  const yr = start.getFullYear();
-  return `${fmt(start)} – ${fmt(end)}, ${yr}`;
 }

@@ -13,6 +13,7 @@ interface TwsGlobal {
   __tws_connectedAt: string | null;
   __tws_lastError: string | null;
   __tws_config: TwsConfig;
+  __tws_connectionSub: { unsubscribe(): void } | null;
 }
 
 const g = globalThis as unknown as Partial<TwsGlobal>;
@@ -22,9 +23,37 @@ if (g.__tws_connectionState === undefined) {
   g.__tws_connectedAt = null;
   g.__tws_lastError = null;
   g.__tws_config = { host: "127.0.0.1", port: 7496, clientId: 1 };
+  g.__tws_connectionSub = null;
+}
+
+/**
+ * Cross-check stored connection state against the actual IBApiNext instance.
+ * If we think we're connected but the socket is dead, force-transition to
+ * disconnected. This is synchronous (no I/O) — safe for polling endpoints.
+ */
+function verifyConnectionState(): void {
+  if (
+    g.__tws_connectionState === "connected" &&
+    g.__tws_ibApi &&
+    !g.__tws_ibApi.isConnected
+  ) {
+    // Socket is dead — clean up stale state
+    g.__tws_connectionSub?.unsubscribe();
+    g.__tws_connectionSub = null;
+    try {
+      g.__tws_ibApi.disconnect();
+    } catch {
+      // ignore cleanup errors
+    }
+    g.__tws_ibApi = null;
+    g.__tws_connectionState = "disconnected";
+    g.__tws_connectedAt = null;
+    g.__tws_lastError = "Connection lost";
+  }
 }
 
 export function getTwsStatus(): TwsStatus {
+  verifyConnectionState();
   return {
     state: g.__tws_connectionState!,
     host: g.__tws_config!.host,
@@ -41,6 +70,10 @@ export async function connectTws(
   if (g.__tws_connectionState === "connected" && g.__tws_ibApi) {
     return getTwsStatus();
   }
+
+  // Clean up any stale subscription
+  g.__tws_connectionSub?.unsubscribe();
+  g.__tws_connectionSub = null;
 
   // Disconnect any stale instance
   if (g.__tws_ibApi) {
@@ -103,9 +136,35 @@ export async function connectTws(
     g.__tws_ibApi = api;
     g.__tws_connectionState = "connected";
     g.__tws_connectedAt = new Date().toISOString();
+
+    // Install persistent subscription to detect disconnects automatically.
+    // Without this, g.__tws_connectionState stays "connected" forever after
+    // TWS closes — the 30s UI polling just reads the stale globalThis state.
+    g.__tws_connectionSub = api.connectionState.subscribe({
+      next: (state) => {
+        if (state === ConnectionState.Disconnected) {
+          g.__tws_connectionState = "disconnected";
+          g.__tws_connectedAt = null;
+          g.__tws_lastError = "Connection lost";
+          g.__tws_ibApi = null;
+          g.__tws_connectionSub?.unsubscribe();
+          g.__tws_connectionSub = null;
+        }
+      },
+      error: (err) => {
+        g.__tws_connectionState = "error";
+        g.__tws_lastError = err instanceof Error ? err.message : "Connection error";
+        g.__tws_ibApi = null;
+        g.__tws_connectionSub?.unsubscribe();
+        g.__tws_connectionSub = null;
+      },
+    });
   } catch (err) {
     g.__tws_connectionState = "error";
     g.__tws_lastError = err instanceof Error ? err.message : "Connection failed";
+    // Clean up subscription if somehow set
+    g.__tws_connectionSub?.unsubscribe();
+    g.__tws_connectionSub = null;
     // Clean up the local api instance to avoid orphaned TCP sockets
     if (api) {
       try {
@@ -121,6 +180,10 @@ export async function connectTws(
 }
 
 export function disconnectTws(): TwsStatus {
+  // Clean up the persistent connection subscription first
+  g.__tws_connectionSub?.unsubscribe();
+  g.__tws_connectionSub = null;
+
   if (g.__tws_ibApi) {
     try {
       g.__tws_ibApi.disconnect();
@@ -140,5 +203,6 @@ export function disconnectTws(): TwsStatus {
  * Returns null if not connected — callers should check and throw a friendly error.
  */
 export function getIbApi(): IBApiNext | null {
+  verifyConnectionState();
   return g.__tws_connectionState === "connected" ? g.__tws_ibApi! : null;
 }

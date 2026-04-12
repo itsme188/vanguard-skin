@@ -60,8 +60,8 @@ describe("upsertCalendarEvents", () => {
       makeEvent({ source_key: "macro:cpi:2026-04-02", event_type: "cpi", title: "CPI Release", event_date: "2026-04-02" }),
     ];
 
-    const count = upsertCalendarEvents(db, events);
-    expect(count).toBe(2);
+    const result = upsertCalendarEvents(db, events);
+    expect(result).toEqual({ total: 2, inserted: 2, updated: 0 });
 
     const rows = getUpcomingEvents(db, { startDate: "2026-04-01", endDate: "2026-04-05" });
     expect(rows).toHaveLength(2);
@@ -74,15 +74,44 @@ describe("upsertCalendarEvents", () => {
     upsertCalendarEvents(db, [event]);
 
     const updated = makeEvent({ source_key: "macro:fomc:2026-04-01", title: "Updated Title" });
-    upsertCalendarEvents(db, [updated]);
+    const result = upsertCalendarEvents(db, [updated]);
+    expect(result).toEqual({ total: 1, inserted: 0, updated: 1 });
 
     const rows = getUpcomingEvents(db, { startDate: "2026-04-01", endDate: "2026-04-01" });
     expect(rows).toHaveLength(1);
     expect(rows[0].title).toBe("Updated Title");
   });
 
-  it("returns 0 for empty array", () => {
-    expect(upsertCalendarEvents(db, [])).toBe(0);
+  it("returns zeros for empty array", () => {
+    expect(upsertCalendarEvents(db, [])).toEqual({ total: 0, inserted: 0, updated: 0 });
+  });
+
+  it("distinguishes new inserts from updates in mixed batch", () => {
+    // Seed 2 existing events
+    upsertCalendarEvents(db, [
+      makeEvent({ source_key: "existing:1", title: "Existing 1" }),
+      makeEvent({ source_key: "existing:2", title: "Existing 2" }),
+    ]);
+
+    // Upsert a batch of 3: 2 existing + 1 new
+    const result = upsertCalendarEvents(db, [
+      makeEvent({ source_key: "existing:1", title: "Updated 1" }),
+      makeEvent({ source_key: "existing:2", title: "Updated 2" }),
+      makeEvent({ source_key: "new:3", title: "Brand New" }),
+    ]);
+    expect(result).toEqual({ total: 3, inserted: 1, updated: 2 });
+  });
+
+  it("re-upsert of all existing events shows 0 inserted", () => {
+    const events = [
+      makeEvent({ source_key: "re:1" }),
+      makeEvent({ source_key: "re:2" }),
+      makeEvent({ source_key: "re:3" }),
+    ];
+    upsertCalendarEvents(db, events);
+
+    const result = upsertCalendarEvents(db, events);
+    expect(result).toEqual({ total: 3, inserted: 0, updated: 3 });
   });
 
   it("links security_id for WSH events", () => {

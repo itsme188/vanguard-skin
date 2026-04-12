@@ -142,7 +142,7 @@ Format as clean markdown with headers (##), bold for key figures, and bullet poi
 // ── Helpers ──────────────────────────────────────────────────────
 
 function formatWeekTitle(weekOf: string): string {
-  const d = new Date(weekOf + "T00:00:00");
+  const d = new Date(weekOf + "T12:00:00"); // noon avoids DST off-by-one
   return d.toLocaleDateString("en-US", {
     month: "long",
     day: "numeric",
