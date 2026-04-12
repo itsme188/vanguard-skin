@@ -46,7 +46,18 @@ export function UpcomingEventsCard() {
       limit: 7,
     });
   } catch {
-    return null; // Silently fail — calendar_events table may not exist yet
+    // Calendar table may not exist yet (pre-migration) — show guidance
+    return (
+      <div className="rounded-lg border border-dashed border-edge bg-panel p-4">
+        <h3 className="text-sm font-medium text-ink mb-1">Upcoming Events</h3>
+        <p className="text-sm text-ink-faint">
+          <Link href="/dashboard/calendar" className="text-gold hover:underline">
+            Sync the calendar
+          </Link>{" "}
+          to see upcoming earnings and macro events.
+        </p>
+      </div>
+    );
   }
 
   if (events.length === 0) {

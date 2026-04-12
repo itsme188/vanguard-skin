@@ -45,8 +45,16 @@ export function PerformanceMetrics({
   const [customResult, setCustomResult] = useState<TwrPeriod | null>(null);
   const [customLoading, setCustomLoading] = useState(false);
 
+  const [customError, setCustomError] = useState<string | null>(null);
+
   const fetchCustomRange = useCallback(async (start: string, end: string) => {
-    if (!start || !end || start >= end) return;
+    setCustomError(null);
+    if (!start || !end) return;
+    if (start >= end) {
+      setCustomError("Start date must be before end date");
+      setCustomResult(null);
+      return;
+    }
     setCustomLoading(true);
     try {
       const [twrRes, xirrRes] = await Promise.all([
@@ -223,6 +231,12 @@ export function PerformanceMetrics({
                 }}
                 className="bg-panel border border-edge rounded-lg px-2.5 py-1.5 text-xs font-mono text-ink focus:outline-none focus:ring-1 focus:ring-gold/50"
               />
+              {customError && (
+                <span className="text-xs text-down font-mono">{customError}</span>
+              )}
+              {!customError && customResult && customResult.totalReturn === null && !customLoading && (
+                <span className="text-xs text-ink-faint font-mono">No data for this range</span>
+              )}
               {customResult && (
                 <span className="text-xs text-ink-faint font-mono">
                   {customResult.label}
