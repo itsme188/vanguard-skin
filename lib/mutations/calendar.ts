@@ -5,6 +5,14 @@ import type {
   CalendarEventSource,
 } from "@/lib/types";
 
+// ─── Result types ─────────────────────────────────────────────────
+
+export interface UpsertResult {
+  total: number;
+  inserted: number;
+  updated: number;
+}
+
 // ─── Event input type ─────────────────────────────────────────────
 
 export interface CalendarEventInput {
@@ -30,13 +38,23 @@ export interface CalendarEventInput {
 /**
  * Batch upsert calendar events. Uses ON CONFLICT(source_key) to update
  * existing events rather than creating duplicates.
- * Returns the number of events upserted.
+ * Returns counts distinguishing new inserts from updates of existing rows.
  */
 export function upsertCalendarEvents(
   db: Database.Database,
   events: CalendarEventInput[]
-): number {
-  if (events.length === 0) return 0;
+): UpsertResult {
+  if (events.length === 0) return { total: 0, inserted: 0, updated: 0 };
+
+  // Check which source_keys already exist so we can distinguish insert vs update
+  const sourceKeys = events.map((e) => e.source_key);
+  const placeholders = sourceKeys.map(() => "?").join(",");
+  const existingRows = db
+    .prepare(
+      `SELECT source_key FROM calendar_events WHERE source_key IN (${placeholders})`
+    )
+    .all(...sourceKeys) as { source_key: string }[];
+  const existingKeys = new Set(existingRows.map((r) => r.source_key));
 
   const stmt = db.prepare(
     `INSERT INTO calendar_events
@@ -58,7 +76,8 @@ export function upsertCalendarEvents(
   );
 
   const insertAll = db.transaction(() => {
-    let count = 0;
+    let inserted = 0;
+    let updated = 0;
     for (const e of events) {
       stmt.run(
         e.source,
@@ -77,9 +96,13 @@ export function upsertCalendarEvents(
         e.source_key,
         e.week_of ?? null
       );
-      count++;
+      if (existingKeys.has(e.source_key)) {
+        updated++;
+      } else {
+        inserted++;
+      }
     }
-    return count;
+    return { total: inserted + updated, inserted, updated };
   });
 
   return insertAll();

@@ -3,7 +3,8 @@ import { fetchWshEvents } from "@/lib/tws/wsh";
 import { parseWshEvents } from "@/lib/calendar/parse-wsh";
 import { fetchMacroEvents } from "@/lib/calendar/macro-events";
 import { upsertCalendarEvents } from "@/lib/mutations/calendar";
-import { getIbApi } from "@/lib/tws/client";
+import { getIbApi, disconnectTws } from "@/lib/tws/client";
+import { getCurrentMonday, addDays, validateWeekOf } from "@/lib/calendar/date-utils";
 
 /**
  * POST /api/calendar/sync — Pull calendar events for a week.
@@ -16,7 +17,13 @@ import { getIbApi } from "@/lib/tws/client";
  */
 export async function POST(request: Request) {
   const body = await request.json().catch(() => ({}));
-  const weekOf = (body.weekOf as string) || getUpcomingMonday();
+  const weekOf = (body.weekOf as string) || getCurrentMonday();
+
+  // Validate weekOf is a real Monday
+  const weekOfError = validateWeekOf(weekOf);
+  if (weekOfError) {
+    return Response.json({ error: weekOfError }, { status: 400 });
+  }
 
   // Compute the date range for the week (Monday through Sunday)
   const startDate = weekOf;
@@ -37,7 +44,9 @@ export async function POST(request: Request) {
       };
 
       let wshCount = 0;
+      let wshNew = 0;
       let macroCount = 0;
+      let macroNew = 0;
 
       try {
         // ── Phase 1: WSH company events (if TWS connected) ──────
@@ -66,25 +75,39 @@ export async function POST(request: Request) {
 
             const wshEvents = parseWshEvents(wshJson, weekOf, db);
             if (wshEvents.length > 0) {
-              upsertCalendarEvents(db, wshEvents);
+              const result = upsertCalendarEvents(db, wshEvents);
+              wshNew = result.inserted;
             }
             wshCount = wshEvents.length;
 
             send({
               progress: {
                 phase: "wsh_done",
-                message: `Found ${wshCount} company event${wshCount !== 1 ? "s" : ""}`,
+                message: `Found ${wshCount} company event${wshCount !== 1 ? "s" : ""}${wshNew < wshCount ? ` (${wshNew} new)` : ""}`,
               },
             });
           } catch (err) {
             const msg =
               err instanceof Error ? err.message : "Unknown WSH error";
-            send({
-              progress: {
-                phase: "wsh_error",
-                message: `WSH fetch failed: ${msg}. Continuing with macro events...`,
-              },
-            });
+
+            // If WSH timed out, the connection is likely dead — auto-disconnect
+            // so the status indicator updates and the user gets a clear signal
+            if (msg.toLowerCase().includes("timeout")) {
+              disconnectTws();
+              send({
+                progress: {
+                  phase: "wsh_error",
+                  message: "TWS connection appears dead — auto-disconnected. Reconnect via TWS panel to sync company events.",
+                },
+              });
+            } else {
+              send({
+                progress: {
+                  phase: "wsh_error",
+                  message: `WSH fetch failed: ${msg}. Continuing with macro events...`,
+                },
+              });
+            }
           }
         } else {
           send({
@@ -111,14 +134,15 @@ export async function POST(request: Request) {
             weekOf
           );
           if (macroEvents.length > 0) {
-            upsertCalendarEvents(db, macroEvents);
+            const result = upsertCalendarEvents(db, macroEvents);
+            macroNew = result.inserted;
           }
           macroCount = macroEvents.length;
 
           send({
             progress: {
               phase: "macro_done",
-              message: `Found ${macroCount} macro event${macroCount !== 1 ? "s" : ""}`,
+              message: `Found ${macroCount} macro event${macroCount !== 1 ? "s" : ""}${macroNew < macroCount ? ` (${macroNew} new)` : ""}`,
             },
           });
         } catch (err) {
@@ -133,6 +157,8 @@ export async function POST(request: Request) {
         }
 
         // ── Complete ────────────────────────────────────────────
+        const totalSaved = wshCount + macroCount;
+        const newEvents = wshNew + macroNew;
         send({
           complete: true,
           data: {
@@ -141,7 +167,9 @@ export async function POST(request: Request) {
             endDate,
             wshEvents: wshCount,
             macroEvents: macroCount,
-            totalSaved: wshCount + macroCount,
+            totalSaved,
+            newEvents,
+            refreshedEvents: totalSaved - newEvents,
           },
         });
       } catch (error) {
@@ -164,20 +192,3 @@ export async function POST(request: Request) {
   });
 }
 
-// ── Date utilities ────────────────────────────────────────────────
-
-function getUpcomingMonday(): string {
-  const now = new Date();
-  const day = now.getDay(); // 0=Sun, 1=Mon, ...
-  // If it's Monday-Thursday, use this Monday. If Fri-Sun, use next Monday.
-  const daysUntilMonday = day === 0 ? 1 : day <= 4 ? 1 - day : 8 - day;
-  const monday = new Date(now);
-  monday.setDate(now.getDate() + daysUntilMonday);
-  return monday.toISOString().slice(0, 10);
-}
-
-function addDays(dateStr: string, days: number): string {
-  const d = new Date(dateStr + "T00:00:00");
-  d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
-}

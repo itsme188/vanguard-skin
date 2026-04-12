@@ -223,14 +223,20 @@ export async function fetchMacroEvents(
   // Step 1: Get authoritative dates from FRED
   const fredEvents = await fetchFredReleaseDates(startDate, endDate);
 
-  // Step 2: Enrich FRED events with Claude (descriptions, estimates, timing)
+  // Step 2: Enrich FRED events with Claude (skip gracefully if no API key)
+  if (!process.env.ANTHROPIC_API_KEY) {
+    console.warn("[fetchMacroEvents] ANTHROPIC_API_KEY not set — skipping Claude enrichment");
+  }
+
   const enrichmentInput = fredEvents.map((e) => ({
     date: e.date,
     shortName: e.config.shortName,
     fredName: e.fredName,
   }));
 
-  const enriched = await enrichEventsWithClaude(enrichmentInput);
+  const enriched = process.env.ANTHROPIC_API_KEY
+    ? await enrichEventsWithClaude(enrichmentInput)
+    : new Map<string, EnrichedEvent>();
 
   // Step 3: Combine FRED dates + Claude enrichment into CalendarEventInput[]
   const events: CalendarEventInput[] = fredEvents.map((e) => {
