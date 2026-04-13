@@ -7,6 +7,7 @@ import type {
   ParsedSnapshot,
   ParsedSecurity,
 } from "../types";
+import { resolveDescriptionToSymbol } from "../resolve-description";
 
 type CanonicalType = "transactions" | "holdings" | "prices" | "snapshots";
 
@@ -48,7 +49,30 @@ export function parseCanonicalCsv(
   for (const row of parsed.data) {
     switch (csvType) {
       case "transactions": {
-        const symbol = row.symbol?.trim();
+        let symbol = row.symbol?.trim();
+        if (!symbol && row.security_name?.trim()) {
+          const resolved = resolveDescriptionToSymbol(row.security_name.trim());
+          if (resolved) {
+            symbol = resolved.symbol;
+            if (!securitiesMap.has(symbol)) {
+              securitiesMap.set(symbol, {
+                symbol,
+                name: row.security_name.trim(),
+                securityType: resolved.securityType,
+                underlyingSymbol: resolved.underlyingSymbol,
+                strikePrice: resolved.strikePrice,
+                expirationDate: resolved.expirationDate,
+                optionType: resolved.optionType,
+                multiplier: resolved.multiplier,
+              });
+            }
+          } else {
+            warnings.push(
+              `Skipped transaction: blank symbol, couldn't resolve from "${row.security_name.trim()}"`
+            );
+            continue;
+          }
+        }
         if (!symbol || !row.trade_date) continue;
         transactions.push({
           accountName: row.account?.trim() || "Unknown",
@@ -75,7 +99,30 @@ export function parseCanonicalCsv(
       }
 
       case "holdings": {
-        const symbol = row.symbol?.trim();
+        let symbol = row.symbol?.trim();
+        if (!symbol && row.security_name?.trim()) {
+          const resolved = resolveDescriptionToSymbol(row.security_name.trim());
+          if (resolved) {
+            symbol = resolved.symbol;
+            if (!securitiesMap.has(symbol)) {
+              securitiesMap.set(symbol, {
+                symbol,
+                name: row.security_name.trim(),
+                securityType: resolved.securityType,
+                underlyingSymbol: resolved.underlyingSymbol,
+                strikePrice: resolved.strikePrice,
+                expirationDate: resolved.expirationDate,
+                optionType: resolved.optionType,
+                multiplier: resolved.multiplier,
+              });
+            }
+          } else {
+            warnings.push(
+              `Skipped holding: blank symbol, couldn't resolve from "${row.security_name.trim()}"`
+            );
+            continue;
+          }
+        }
         if (!symbol || !row.as_of_date) continue;
         const quantity = parseFloat(row.quantity);
         if (isNaN(quantity)) continue;

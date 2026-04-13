@@ -23,6 +23,7 @@ interface OpenLot {
   acquisition_date: string;
   acquisition_price: number;
   quantity_remaining: number;
+  is_short: number;
 }
 
 interface OptionExerciseRow {
@@ -81,8 +82,8 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
     const insertLot = db.prepare(
       `INSERT INTO tax_lots
        (account_id, security_id, acquisition_transaction_id, acquisition_date,
-        acquisition_price, quantity_acquired, quantity_remaining, cost_basis)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        acquisition_price, quantity_acquired, quantity_remaining, cost_basis, is_short)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
 
     let lotsCreated = 0;
@@ -94,6 +95,7 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
         effectivePrice += adj.premiumPerShare;
       }
 
+      const isShort = buy.type.toLowerCase() === "sell_to_open" ? 1 : 0;
       const costBasis = buy.quantity * effectivePrice;
       insertLot.run(
         buy.account_id,
@@ -103,7 +105,8 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
         effectivePrice,
         buy.quantity,
         buy.quantity,
-        costBasis
+        costBasis,
+        isShort
       );
       lotsCreated++;
     }
@@ -166,7 +169,7 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
       // Get open lots for this account+security, FIFO order
       const openLots = db
         .prepare(
-          `SELECT id, acquisition_date, acquisition_price, quantity_remaining
+          `SELECT id, acquisition_date, acquisition_price, quantity_remaining, is_short
            FROM tax_lots
            WHERE account_id = ? AND security_id = ? AND quantity_remaining > 0
            ORDER BY acquisition_date, id`
@@ -179,7 +182,10 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
         const quantitySold = Math.min(remainingToSell, lot.quantity_remaining);
         const costBasisAllocated = quantitySold * lot.acquisition_price;
         const proceeds = quantitySold * effectiveSalePrice;
-        const realizedGainLoss = proceeds - costBasisAllocated;
+        // For short positions (SELL_TO_OPEN), the standard formula produces
+        // inverted signs. Negate to get correct economic P&L.
+        let realizedGainLoss = proceeds - costBasisAllocated;
+        if (lot.is_short) realizedGainLoss = -realizedGainLoss;
         const holdingDays = daysBetween(lot.acquisition_date, sell.trade_date);
         const isLongTerm = holdingDays > 365 ? 1 : 0;
 
