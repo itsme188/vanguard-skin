@@ -2,6 +2,7 @@ import type { gmail_v1 } from "googleapis";
 import type Database from "better-sqlite3";
 import { stripHtml } from "../vital-knowledge";
 import { sanitizeNewsletterHtml } from "./sanitize";
+import { extractSourceUrl } from "./extract-url";
 
 /**
  * Fetch new newsletter articles from Gmail for all active research sources.
@@ -30,8 +31,8 @@ export async function fetchNewArticles(
 
   const insertArticle = db.prepare(`
     INSERT OR IGNORE INTO research_articles
-      (source_id, gmail_message_id, gmail_thread_id, received_at, subject, sender, raw_text, raw_html)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      (source_id, gmail_message_id, gmail_thread_id, received_at, subject, sender, raw_text, raw_html, source_url)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   let totalFetched = 0;
@@ -47,6 +48,7 @@ export async function fetchNewArticles(
         const detail = await getMessageDetail(gmail, msg.id!);
         if (!detail) continue;
 
+        const sourceUrl = extractSourceUrl(detail.html);
         const result = insertArticle.run(
           source.id,
           detail.messageId,
@@ -55,7 +57,8 @@ export async function fetchNewArticles(
           detail.subject,
           detail.sender,
           detail.body,
-          detail.html
+          detail.html,
+          sourceUrl
         );
 
         if (result.changes > 0) sourceFetched++;
@@ -254,4 +257,34 @@ function findPart(
     }
   }
   return null;
+}
+
+/**
+ * Backfill source_url for existing articles that have raw_html but no source_url.
+ * Extracts "View in browser" / article URLs from the stored HTML.
+ */
+export function backfillSourceUrls(db: Database.Database): number {
+  const articles = db
+    .prepare(
+      `SELECT id, raw_html FROM research_articles
+       WHERE raw_html IS NOT NULL AND source_url IS NULL`
+    )
+    .all() as { id: number; raw_html: string }[];
+
+  if (articles.length === 0) return 0;
+
+  const update = db.prepare(
+    `UPDATE research_articles SET source_url = ? WHERE id = ?`
+  );
+
+  let updated = 0;
+  for (const article of articles) {
+    const url = extractSourceUrl(article.raw_html);
+    if (url) {
+      update.run(url, article.id);
+      updated++;
+    }
+  }
+
+  return updated;
 }

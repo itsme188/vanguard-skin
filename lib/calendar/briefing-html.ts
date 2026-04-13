@@ -129,8 +129,13 @@ function convertMarkdown(md: string): string {
   return output.join("\n");
 }
 
-/** Convert inline markdown (bold, italic) to HTML. */
+/** Convert inline markdown (bold, italic, links) to HTML. */
 function inlineFormat(text: string): string {
+  // Links: [text](url) — must run before bold/italic to avoid [**text**](url) issues
+  text = text.replace(
+    /\[([^\]]+)\]\(([^)]+)\)/g,
+    `<a href="$2" style="color:${COLORS.gold}; text-decoration:underline;">$1</a>`
+  );
   // Bold: **text** or __text__
   text = text.replace(/\*\*(.+?)\*\*/g, `<strong style="color:${COLORS.heading};">$1</strong>`);
   text = text.replace(/__(.+?)__/g, `<strong style="color:${COLORS.heading};">$1</strong>`);

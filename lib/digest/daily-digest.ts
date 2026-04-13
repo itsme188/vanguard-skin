@@ -40,8 +40,13 @@ export function generateDailyDigest(db: Database.Database): string | null {
     const sentiment = article.sentiment ?? "neutral";
     lines.push(`## ${article.source_name.toUpperCase()} · *${sentiment}*`);
 
-    // Headline
-    lines.push(`### ${article.subject}`);
+    // Headline — link to per-article URL, or source homepage, or plain text
+    const articleUrl = article.source_url || article.website_url;
+    if (articleUrl) {
+      lines.push(`### [${article.subject}](${articleUrl})`);
+    } else {
+      lines.push(`### ${article.subject}`);
+    }
     lines.push("");
 
     // AI summary
