@@ -31,6 +31,7 @@ function createTestDb(): Database.Database {
       quantity_remaining REAL NOT NULL DEFAULT 0,
       cost_basis REAL NOT NULL,
       is_from_opening_snapshot INTEGER NOT NULL DEFAULT 0,
+      is_short INTEGER NOT NULL DEFAULT 0,
       FOREIGN KEY (account_id) REFERENCES accounts(id),
       FOREIGN KEY (security_id) REFERENCES securities(id)
     );
