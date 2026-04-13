@@ -127,11 +127,8 @@ describe("option tax lot handling", () => {
     expect(sales.length).toBe(1);
     expect(sales[0].sale_price).toBe(0); // expired at $0
     expect(sales[0].cost_basis_allocated).toBe(12); // 3 * $4
-    expect(sales[0].realized_gain_loss).toBe(-12); // premium "gain" appears as negative
-    // Note: for short options, the accounting works in reverse.
-    // The SELL_TO_OPEN creates a lot at the premium price, and EXPIRED closes at $0.
-    // Realized = 0 - 12 = -12. The actual economic gain (keeping the premium) is
-    // already in the account as cash from the initial sale.
+    expect(sales[0].realized_gain_loss).toBe(12); // kept full premium = $12 gain
+    // Short option P&L is negated: raw (0 - 12 = -12) → negated → +12
   });
 
   it("buy_to_close: closes short option lot", () => {
@@ -146,8 +143,8 @@ describe("option tax lot handling", () => {
     expect(sales.length).toBe(1);
     expect(sales[0].cost_basis_allocated).toBe(6); // opened at $6
     expect(sales[0].sale_price).toBe(2); // closed at $2
-    expect(sales[0].realized_gain_loss).toBe(-4); // 2 - 6 = -4 accounting loss
-    // Economic profit of $4/share is already reflected as cash from SELL_TO_OPEN
+    expect(sales[0].realized_gain_loss).toBe(4); // sold at $6, bought back at $2 = $4 profit
+    // Short option P&L is negated: raw (2 - 6 = -4) → negated → +4
   });
 
   it("long call exercised: stock cost basis includes premium", () => {
@@ -256,6 +253,30 @@ describe("option tax lot handling", () => {
     expect(optionSales[0].sale_price).toBe(5);
     expect(optionSales[0].cost_basis_allocated).toBe(7); // 2 * 3.50
     expect(optionSales[0].realized_gain_loss).toBe(3); // 10 - 7
+  });
+
+  it("sets is_short=1 on SELL_TO_OPEN lots, is_short=0 on others", () => {
+    insertOptionSecurity(10, "AAPL  260619C00200000", "CALL", 200, "2026-06-19");
+
+    // Long option (BUY_TO_OPEN) — should be is_short=0
+    insertTransaction(10, "BUY_TO_OPEN", "2026-01-10", 1, 5.00);
+    // Short option (SELL_TO_OPEN) — should be is_short=1
+    insertTransaction(10, "SELL_TO_OPEN", "2026-01-15", 1, 4.00);
+    // Regular stock buy — should be is_short=0
+    insertTransaction(1, "BUY", "2025-06-01", 100, 150.00);
+
+    computeTaxLots(db);
+
+    const lots = db
+      .prepare(
+        "SELECT is_short, acquisition_price FROM tax_lots ORDER BY acquisition_date, id"
+      )
+      .all() as Array<{ is_short: number; acquisition_price: number }>;
+
+    expect(lots).toHaveLength(3);
+    expect(lots[0].is_short).toBe(0); // stock BUY
+    expect(lots[1].is_short).toBe(0); // BUY_TO_OPEN
+    expect(lots[2].is_short).toBe(1); // SELL_TO_OPEN
   });
 
   it("existing stock/bond tax lots are unaffected by option changes", () => {
