@@ -16,6 +16,8 @@ export interface ResearchArticle {
   portfolio_relevance: string | null;
   processed_at: string | null;
   created_at: string;
+  source_url: string | null;
+  website_url: string | null;
 }
 
 export interface ResearchSource {
@@ -28,6 +30,7 @@ export interface ResearchSource {
   fetch_frequency: string;
   max_age_days: number;
   processing_prompt: string | null;
+  website_url: string | null;
   created_at: string;
   article_count?: number;
 }
@@ -93,7 +96,8 @@ export function getRecentArticles(
       `SELECT a.id, a.source_id, s.name as source_name, a.gmail_message_id,
               a.received_at, a.subject, a.sender, a.summary, a.key_themes,
               a.sentiment, a.sentiment_score, a.mentioned_symbols,
-              a.portfolio_relevance, a.processed_at, a.created_at
+              a.portfolio_relevance, a.processed_at, a.created_at,
+              a.source_url, s.website_url
        FROM research_articles a
        JOIN research_sources s ON a.source_id = s.id
        ${where}
@@ -185,7 +189,8 @@ export function getRecentArticleSummaries(
       `SELECT a.id, a.source_id, s.name as source_name, a.gmail_message_id,
               a.received_at, a.subject, a.sender, a.summary, a.key_themes,
               a.sentiment, a.sentiment_score, a.mentioned_symbols,
-              a.portfolio_relevance, a.processed_at, a.created_at
+              a.portfolio_relevance, a.processed_at, a.created_at,
+              a.source_url, s.website_url
        FROM research_articles a
        JOIN research_sources s ON a.source_id = s.id
        WHERE a.processed_at IS NOT NULL

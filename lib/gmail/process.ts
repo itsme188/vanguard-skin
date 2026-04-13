@@ -55,6 +55,7 @@ export async function processUnprocessedArticles(
        FROM holdings h
        JOIN securities s ON h.security_id = s.id
        WHERE h.quantity > 0
+         AND h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id)
        ORDER BY s.symbol`
     )
     .all() as { symbol: string; name: string | null }[];

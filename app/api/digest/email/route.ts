@@ -1,10 +1,11 @@
 import { db } from "@/lib/db";
 import { isGmailConfigured, getGmailClient } from "@/lib/gmail/auth";
-import { fetchNewArticles } from "@/lib/gmail/fetch";
+import { fetchNewArticles, backfillSourceUrls } from "@/lib/gmail/fetch";
 import { processUnprocessedArticles } from "@/lib/gmail/process";
 import { generateDailyDigest } from "@/lib/digest/daily-digest";
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
 import { sendEmail } from "@/lib/email";
+import { syncPortfolio } from "@/lib/tws/positions";
 
 /**
  * POST /api/digest/email — Sync research feeds, generate daily digest, and email it.
@@ -36,6 +37,15 @@ export async function POST(request: Request) {
     );
   }
 
+  // Best-effort TWS sync — freshen IBKR positions before generating digest
+  let twsSynced = false;
+  try {
+    await syncPortfolio(db);
+    twsSynced = true;
+  } catch {
+    console.log("[digest/email] TWS sync skipped (not connected or no IBKR account)");
+  }
+
   try {
     // Step 1: Sync research feeds from Gmail (if configured)
     let synced = { fetched: 0, processed: 0 };
@@ -49,6 +59,9 @@ export async function POST(request: Request) {
         synced.processed = processResult.processed;
       }
     }
+
+    // Step 1.5: Backfill source URLs for articles missing them
+    backfillSourceUrls(db);
 
     // Step 2: Generate digest from last 24h of processed articles
     const digest = generateDailyDigest(db);
@@ -84,6 +97,7 @@ export async function POST(request: Request) {
       sentTo: recipient,
       synced,
       title,
+      twsSynced,
     });
   } catch (err) {
     console.error("[digest/email] Error:", err);
