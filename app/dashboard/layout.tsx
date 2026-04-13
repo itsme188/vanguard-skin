@@ -21,8 +21,8 @@ export default function DashboardLayout({
         </a>
 
         {/* Header */}
-        <header className="border-b border-edge sticky top-0 z-50 bg-canvas/80 backdrop-blur-xl">
-          <div className="max-w-[1400px] mx-auto px-6 flex items-center justify-between h-14">
+        <header className="border-b border-edge sticky top-0 z-50 bg-canvas/80 backdrop-blur-xl electron:pt-7">
+          <div className="max-w-[1600px] mx-auto px-6 electron:pl-20 flex items-center justify-between h-14">
             <h1 className="font-serif text-xl text-gold tracking-tight">
               Vanguard Skin
             </h1>
@@ -39,7 +39,7 @@ export default function DashboardLayout({
         </header>
 
         {/* Content */}
-        <main id="main-content" className="max-w-[1400px] mx-auto px-6 py-6">
+        <main id="main-content" className="max-w-[1600px] mx-auto px-6 py-6">
           {children}
         </main>
 

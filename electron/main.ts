@@ -13,7 +13,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { setupIpcHandlers } from "./ipc-handlers";
 import { createTray } from "./tray";
-import { getSettings } from "./settings-store";
+import { getSettings, bootstrapFromEnvLocal } from "./settings-store";
 
 // ─── Find System Node.js ────────────────────────────────────────
 
@@ -62,12 +62,16 @@ function getServerDir(): string {
   return path.join(process.resourcesPath, "standalone");
 }
 
-/** User data directory for SQLite DB and settings. */
+/** User data directory for SQLite DB and settings.
+ *  Both dev and packaged modes use the project's data/ directory
+ *  so imports and changes are shared — single source of truth. */
 function getDataDir(): string {
   if (IS_DEV) {
     return path.join(__dirname, "..", "data");
   }
-  return path.join(app.getPath("userData"), "data");
+  // Shared with dev mode — one DB for both Electron and npm run dev
+  const homeDir = process.env.HOME || "/Users/Yitzi";
+  return path.join(homeDir, "code", "vanguard-skin", "data");
 }
 
 // ─── State ──────────────────────────────────────────────────────
@@ -200,6 +204,9 @@ function createWindow(): void {
     },
   });
 
+  // Start maximized — the dashboard is designed for full-width viewports
+  mainWindow.maximize();
+
   mainWindow.loadURL(`http://localhost:${PORT}/dashboard`);
 
   // Open external links in the default browser
@@ -311,6 +318,8 @@ function setupAutoUpdater(): void {
 app.setName(APP_NAME);
 
 app.whenReady().then(async () => {
+  // On first launch, import API keys from .env.local
+  bootstrapFromEnvLocal();
   setupIpcHandlers();
 
   try {

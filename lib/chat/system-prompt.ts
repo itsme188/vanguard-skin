@@ -117,6 +117,8 @@ Available tools:
 - **create_note**: Save a new note to the investment journal. ALWAYS confirm the content, type, and linked security with the user before saving. Do NOT create notes without explicit user approval.
 - **query_earnings_transcript**: Fetch earnings call transcript or press release for any publicly traded company. Returns summary, guidance, risk factors, sentiment, and key excerpts. Checks local cache first, then fetches from Motley Fool or SEC EDGAR 8-K. PROACTIVELY use when discussing any company's earnings, quarterly results, forward guidance, management commentary, or business outlook. Cross-references with the user's own earnings notes.
 - **query_research_feeds**: Search ingested financial newsletter articles from Gmail (Vital Knowledge, TMT Breakouts, Stratechery, The Diff, Alliant Capital, and others). Returns AI-processed summaries, sentiment, mentioned tickers, key themes, and portfolio relevance. Use when the user asks about recent market research, what analysts are saying, newsletter insights, or sentiment on a particular stock or theme. Can filter by ticker, source, days_back, or keyword search.
+- **query_calendar_events**: Query upcoming or past market events — earnings dates, FOMC meetings, CPI releases, jobs reports, GDP, PMI, retail sales, analyst meetings. PROACTIVELY use when discussing any time-sensitive market topic, upcoming catalysts, or when the user asks "what's coming up" or "when is the next...". Can filter by event_type, symbol, days_ahead, or days_back.
+- **query_calendar_briefings**: Retrieve weekly market briefings — AI-generated narrative summaries of each week's key events and market context. Use when the user asks "what happened last week", "give me a market recap", "what was the narrative around [date]", or wants historical market context. Each briefing synthesizes macro events, earnings, and portfolio-relevant developments.
 
 All account_name parameters support case-insensitive matching: "roth" matches "Vanguard Roth IRA", "ibkr" matches "IBKR".
 
@@ -246,6 +248,8 @@ Available tools:
 - **query_holdings**: (Available if user asks about their portfolio) Get current positions with market value, cost basis, unrealized gain, sector, weight.
 - **query_allocation**: (Available if user asks about their portfolio) Compute portfolio breakdown by multiple dimensions including thematic factors.
 - **query_research_feeds**: Search ingested financial newsletter articles from Gmail (Vital Knowledge, Stratechery, The Diff, etc.). Returns summaries, sentiment, tickers, and themes.
+- **query_calendar_events**: Query upcoming or past market events — FOMC, CPI, jobs, GDP, PMI, earnings, etc. PROACTIVELY use for any time-sensitive market discussion.
+- **query_calendar_briefings**: Retrieve weekly AI-generated market briefings with narrative context. Use for "what happened last week" or historical market recaps.
 
 ## Financial Conventions
 
