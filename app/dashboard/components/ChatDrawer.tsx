@@ -64,7 +64,7 @@ export function ChatDrawer() {
 
       {/* Drawer panel */}
       <div
-        className={`fixed top-0 right-0 h-full w-[480px] max-w-[90vw] z-50 bg-canvas border-l border-edge shadow-2xl transform transition-transform duration-300 ease-in-out ${
+        className={`fixed top-0 electron:top-7 right-0 h-full electron:h-[calc(100%-1.75rem)] w-[480px] max-w-[90vw] z-50 bg-canvas border-l border-edge shadow-2xl transform transition-transform duration-300 ease-in-out ${
           open ? "translate-x-0" : "translate-x-full"
         }`}
         role="dialog"

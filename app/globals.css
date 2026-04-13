@@ -1,5 +1,18 @@
 @import "tailwindcss";
 
+/* Electron desktop app — activated when ELECTRON=true sets .electron on <html> */
+@custom-variant electron (.electron &);
+
+/* Electron: make the top padding area draggable as a native title bar */
+.electron header > :first-child {
+  -webkit-app-region: drag;
+}
+.electron header button,
+.electron header a,
+.electron header input {
+  -webkit-app-region: no-drag;
+}
+
 @theme inline {
   /* Surfaces — layered elevation system */
   --color-canvas: #080B12;

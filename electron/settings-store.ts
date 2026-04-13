@@ -64,6 +64,47 @@ export function saveSettings(updates: Partial<AppSettings>): void {
   writeFile(merged);
 }
 
+/**
+ * On first launch, import API keys from the project's .env.local file
+ * so the user doesn't have to re-enter them in the Settings Modal.
+ */
+export function bootstrapFromEnvLocal(): void {
+  const current = readFile();
+  if (current.firstRunComplete) return; // Already set up
+
+  const envPath = path.join(
+    process.env.HOME || "/Users/Yitzi",
+    "code", "vanguard-skin", ".env.local"
+  );
+
+  if (!fs.existsSync(envPath)) return;
+
+  const envMap: Record<string, string> = {};
+  const lines = fs.readFileSync(envPath, "utf-8").split("\n");
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eqIdx = trimmed.indexOf("=");
+    if (eqIdx === -1) continue;
+    const key = trimmed.slice(0, eqIdx).trim();
+    const val = trimmed.slice(eqIdx + 1).trim();
+    envMap[key] = val;
+  }
+
+  const updates: Partial<AppSettings> = { firstRunComplete: true };
+  if (envMap.ANTHROPIC_API_KEY) updates.anthropicApiKey = envMap.ANTHROPIC_API_KEY;
+  if (envMap.IBKR_ACCOUNT_CODE) updates.ibkrAccountCode = envMap.IBKR_ACCOUNT_CODE;
+  if (envMap.GMAIL_ADDRESS) updates.gmailAddress = envMap.GMAIL_ADDRESS;
+  if (envMap.GMAIL_APP_PASSWORD) updates.gmailAppPassword = envMap.GMAIL_APP_PASSWORD;
+  if (envMap.BRIEFING_EMAIL_TO) updates.briefingEmailTo = envMap.BRIEFING_EMAIL_TO;
+  if (envMap.FRED_API_KEY) updates.fredApiKey = envMap.FRED_API_KEY;
+  if (envMap.EDGAR_CONTACT_EMAIL) updates.edgarContactEmail = envMap.EDGAR_CONTACT_EMAIL;
+  if (envMap.API_NINJAS_API_KEY) updates.apiNinjasKey = envMap.API_NINJAS_API_KEY;
+
+  saveSettings(updates);
+  console.log("[settings] Bootstrapped from .env.local — API keys imported");
+}
+
 export function getSanitizedSettings(): Record<string, string | number | boolean> {
   const s = getSettings();
   return {

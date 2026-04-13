@@ -520,6 +520,56 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
       },
     },
   },
+  {
+    name: "query_calendar_events",
+    description:
+      "Query upcoming or past market events from the calendar — earnings dates, FOMC meetings, CPI releases, jobs reports, GDP, PMI, retail sales, analyst meetings, and other macro/company events. Use when the user asks about upcoming events, 'what's on the calendar', 'when is the next FOMC/CPI/earnings', or wants to understand what market-moving events are ahead.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        days_ahead: {
+          type: "number",
+          description:
+            "Number of days forward to look. Default 14. Use 7 for this week, 30 for this month.",
+        },
+        days_back: {
+          type: "number",
+          description:
+            "Number of days backward to look. Default 0. Use 7 for last week, 30 for last month.",
+        },
+        event_type: {
+          type: "string",
+          description:
+            "Filter by event type (e.g., 'earnings', 'fomc', 'cpi', 'jobs', 'gdp', 'pmi', 'retail_sales', 'analyst_meeting'). Omit for all types.",
+        },
+        symbol: {
+          type: "string",
+          description:
+            "Filter by security symbol for company-specific events (e.g., 'AAPL' for Apple earnings). Omit for all events.",
+        },
+      },
+    },
+  },
+  {
+    name: "query_calendar_briefings",
+    description:
+      "Retrieve weekly market briefings — AI-generated narrative summaries of each week's key market events, including macro data releases, earnings, and portfolio-relevant developments. Each briefing includes Vital Knowledge market context when available. Use when the user asks 'what happened last week', 'give me a market summary', 'what was the narrative around [date]', or wants historical market context for a specific period.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        week_of: {
+          type: "string",
+          description:
+            "Monday date (YYYY-MM-DD) of the week to retrieve. Omit for most recent briefing.",
+        },
+        weeks_back: {
+          type: "number",
+          description:
+            "Number of recent weekly briefings to retrieve. Default 1. Use 4 for last month, 12 for last quarter.",
+        },
+      },
+    },
+  },
 ];
 
 // ─── Account Name Resolution ─────────────────────────────────────
@@ -1032,6 +1082,64 @@ export async function executeTool(
         break;
       }
 
+      case "query_calendar_events": {
+        const daysAhead = (input.days_ahead as number) ?? 14;
+        const daysBack = (input.days_back as number) ?? 0;
+        const now = new Date();
+        const startDate = new Date(now);
+        startDate.setDate(startDate.getDate() - daysBack);
+        const endDate = new Date(now);
+        endDate.setDate(endDate.getDate() + daysAhead);
+
+        const evtParams: unknown[] = [
+          startDate.toISOString().slice(0, 10),
+          endDate.toISOString().slice(0, 10),
+        ];
+
+        let evtWhere = "event_date BETWEEN ? AND ?";
+        if (input.event_type) {
+          evtWhere += " AND LOWER(event_type) LIKE '%' || LOWER(?) || '%'";
+          evtParams.push(String(input.event_type));
+        }
+        if (input.symbol) {
+          evtWhere += " AND UPPER(symbol) = ?";
+          evtParams.push(String(input.symbol).toUpperCase());
+        }
+
+        const events = db
+          .prepare(
+            `SELECT event_type, event_date, event_time, title, description, symbol,
+             expected_impact, consensus_estimate, previous_value
+             FROM calendar_events WHERE ${evtWhere}
+             ORDER BY event_date ASC, event_time ASC LIMIT 50`
+          )
+          .all(...evtParams);
+        rawResult = { events, count: events.length };
+        break;
+      }
+
+      case "query_calendar_briefings": {
+        const weeksBack = (input.weeks_back as number) ?? 1;
+
+        let briefings;
+        if (input.week_of) {
+          briefings = db
+            .prepare(
+              "SELECT week_of, title, content, event_count, generated_at FROM calendar_briefings WHERE week_of = ?"
+            )
+            .all(String(input.week_of));
+        } else {
+          briefings = db
+            .prepare(
+              "SELECT week_of, title, content, event_count, generated_at FROM calendar_briefings ORDER BY week_of DESC LIMIT ?"
+            )
+            .all(weeksBack);
+        }
+
+        rawResult = { briefings, count: briefings.length };
+        break;
+      }
+
       default:
         return { error: `Unknown tool: ${toolName}` };
     }
@@ -1068,4 +1176,6 @@ export const TOOL_LABELS: Record<string, string> = {
   query_trade_reviews: "Looking up trade reviews...",
   query_options_greeks: "Computing options Greeks...",
   query_research_feeds: "Searching research feeds...",
+  query_calendar_events: "Checking calendar events...",
+  query_calendar_briefings: "Retrieving market briefings...",
 };
