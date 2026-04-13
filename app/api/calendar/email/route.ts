@@ -4,6 +4,7 @@ import { generateWeeklyBriefing } from "@/lib/calendar/briefing";
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
 import { sendEmail } from "@/lib/email";
 import { getCurrentMonday } from "@/lib/calendar/date-utils";
+import { syncPortfolio } from "@/lib/tws/positions";
 
 /**
  * POST /api/calendar/email — Generate (if needed) and email the weekly briefing.
@@ -36,6 +37,15 @@ export async function POST(request: Request) {
       { error: "Missing GMAIL_ADDRESS or GMAIL_APP_PASSWORD env vars." },
       { status: 500 }
     );
+  }
+
+  // Best-effort TWS sync — freshen IBKR positions before generating briefing
+  let twsSynced = false;
+  try {
+    await syncPortfolio(db);
+    twsSynced = true;
+  } catch {
+    console.log("[calendar/email] TWS sync skipped (not connected or no IBKR account)");
   }
 
   try {
@@ -82,6 +92,7 @@ export async function POST(request: Request) {
       sentTo: recipient,
       generated,
       eventCount: briefing.event_count,
+      twsSynced,
     });
   } catch (err) {
     console.error("[calendar/email] Error:", err);

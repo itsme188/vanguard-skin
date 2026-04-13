@@ -12,6 +12,7 @@ export function updateSource(
     fetch_frequency?: string;
     max_age_days?: number;
     processing_prompt?: string | null;
+    website_url?: string | null;
   }
 ): void {
   const fields: string[] = [];
