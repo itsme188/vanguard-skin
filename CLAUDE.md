@@ -27,6 +27,7 @@ This is primarily a TypeScript project with some Python utilities. Use TypeScrip
 - **Security Detail** — `/dashboard/security/[id]` hub page per security (chart, positions, lots, notes, events, factors, trade grades)
 - **Watchlist** — Track securities not yet owned, with price targets and thesis
 - **Trade Reviews** — Monthly AI trade analysis in Research tab (Notes | Trade Reviews toggle). Migration 016 + 021. Two-phase: Sonnet Q&A → Opus review. Account-specific profiles (IBKR/Vanguard/Roth). GroupedTrade abstraction (lots → trades). Auto model selection (>20 trades → Sonnet).
+- **Auto-Refresh** — TWS connect triggers full sync pipeline automatically. Background refresh every 30 min. Data confidence scoring in header.
 
 ## Directory Structure
 
@@ -64,6 +65,21 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 5. Every import creates an `import_batches` record for undo
 6. Post-commit: auto-classifies securities + auto-computes tax lots + recomputes daily valuations (silent, non-blocking)
 
+## Auto-Refresh & Data Confidence
+
+On TWS connect (auto or manual), `lib/tws/auto-refresh.ts` orchestrates a 5-step pipeline:
+1. `syncPortfolio()` — positions + account values + live prices (15s)
+2. `enrichSecurities()` — TWS contract details for unenriched securities (rate-limited, skipped if none)
+3. `fetchSnapshotPrices()` — current prices for ALL held securities (~2 min, NOT rate-limited)
+4. `computeDailyValuations()` — recompute with fresh prices (instant)
+5. `fetchBenchmarkPrices()` — benchmark ETFs, incremental (parallel with steps 3-4)
+
+- **Sync state**: `lib/tws/sync-state.ts` — globalThis singleton tracking status, phase, progress. UI polls `GET /api/tws/sync-status` (3s during sync, 30s when idle).
+- **Mutex**: `isSyncing()` prevents concurrent runs. Second call returns immediately.
+- **Background refresh**: `lib/hooks/useAutoRefresh.ts` triggers quick refresh (snapshot + valuations only) every 30 min while connected. Configurable via `refreshIntervalMinutes` in Electron settings (0 = disabled).
+- **Data confidence**: `lib/queries/data-confidence.ts` scores 5 dimensions (price freshness 40%, holdings recency 25%, cash accuracy 15%, enrichment 10%, valuation coverage 10%). `DataConfidenceIndicator.tsx` replaces `DataFreshness.tsx` in header — shows score, colored dot, popover with dimension bars and actionable fix buttons. Polls `GET /api/data-confidence` every 60s.
+- **Data quality labeling**: Migration 026 adds `data_quality` column to `daily_valuations` (`live`/`recent`/`estimated`/`computed`). Set by `computeDailyValuations()` based on price staleness. Account cards show "(est.)" for stale data; portfolio total shows "~" prefix when estimated.
+
 ## Conventions
 
 - All DB query functions live in `lib/queries/` — read-only
@@ -82,7 +98,7 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - **Account scoping rule**: If a page has an account scope selector (e.g., Analysis), EVERY query on that page must accept and respect `accountIds`. No global queries on scoped pages. Client components pass `scope` prop; API routes resolve via `resolveScopeToSingleId()` or `resolveScope()` from `lib/queries/accounts.ts`.
 - **Calendar date utilities**: `lib/calendar/date-utils.ts` is the single source of truth for Monday calculations (`getCurrentMonday()`), date arithmetic (`addDays()`), week range formatting (`formatWeekRange()`), and weekOf validation (`validateWeekOf()`). Never create local date functions — import from here.
 - **Price source priority**: Higher-priority sources overwrite lower: tws(1) > ibkr(2) > vanguard(3) > manual(4). See conditional upsert in `engine.ts`.
-- **Data Health**: `/dashboard/data-health` — coverage, freshness, gaps, reconciliation. `DataFreshness` header links there.
+- **Data Health**: `/dashboard/data-health` — coverage, freshness, gaps, reconciliation. `DataConfidenceIndicator` header popover links there. Old `DataFreshness.tsx` is unused (replaced by `DataConfidenceIndicator.tsx`).
 - Always use `COALESCE(s.multiplier, 1)` in queries — SQLite DEFAULT is bypassed by explicit INSERT NULL
 - Bond unrealized gain: apply par-adjustment to BOTH current value AND cost basis
 - Option symbols MUST use OCC format (e.g., `INTC  260320P00045000`), never bare tickers — `ensureOCCSymbol()` in vanguard-pdf.ts auto-converts. Bare tickers cause stock/option collisions in `upsertSecurity()` UNIQUE(symbol) constraint.
@@ -90,7 +106,7 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 - `upsertSecurity()` has a type conflict guard — refuses to merge stock↔option on same symbol to prevent data corruption
 - Dashboard "as of" dates: `getAccountSummaries()` prefers `daily_valuations` over `monthly_snapshots` when more recent
 - Daily valuations infer cash from monthly snapshot anchors: `cash = snapshot_total - holdings_value`. Cash carries forward between snapshots.
-- TWS portfolio sync filters to the personal account set via `IBKR_ACCOUNT_CODE` env var (managed advisor account excluded). `getPositions()` does NOT include `marketPrice` — use Quick Refresh for prices after sync.
+- TWS portfolio sync filters to the personal account set via `IBKR_ACCOUNT_CODE` env var (managed advisor account excluded). `getAccountUpdates()` includes `marketPrice` in the position data. On TWS connect, auto-refresh pipeline runs automatically (positions → enrich → snapshot prices → valuations → benchmarks).
 - **ALL portfolio queries exclude TWS snapshots** (`source != 'tws'`). TWS rows are live-sync data for daily valuations, not month-end statements — including them breaks Modified Dietz, corrupts change calculations (shifts global MAX date), and adds irregular chart points. This applies to: TWR, XIRR, portfolio totals, account summaries, chart data. TWR format is source-aware: `ibkr-activity` stores as percentage, `canonical` stores as decimal fraction.
 - **December annual snapshots**: Vanguard year-end statements produce December rows with annual `starting_value` and cumulative `deposits_withdrawals`. TWR/XIRR detect these (starting_value mismatch >10% from prior month) and compute December-only values.
 
@@ -134,7 +150,10 @@ When working with financial data (prices, valuations, dates, events), NEVER use 
 - `GET /api/benchmark/prices?mode=prices|chart|stats|available&symbol=SPY` — benchmark data and analytics
 - `GET /api/tws/stream` — SSE: streaming live quotes for current holdings
 - `POST /api/tws/stream` — control streaming: `{ action: "stop" | "snapshot" }`
-- `GET /api/summary` — lightweight portfolio summary (total value, data freshness, TWS state) for Electron tray
+- `GET /api/tws/sync-status` — current auto-refresh pipeline state (status, phase, progress, last sync result)
+- `POST /api/tws/auto-refresh` — trigger sync pipeline. Body: `{ level?: "full" | "quick" }`. Default: full. Quick = snapshot prices + valuations only.
+- `GET /api/data-confidence` — 5-dimension data confidence score with actionable fix list
+- `GET /api/summary` — lightweight portfolio summary (total value, data freshness, TWS state, confidence score) for Electron tray
 - `GET /api/watchlist` — list active watchlist items
 - `POST /api/watchlist` — add security to watchlist (by securityId or symbol)
 - `PATCH /api/watchlist` — update price targets/thesis
@@ -177,7 +196,7 @@ When working with financial data (prices, valuations, dates, events), NEVER use 
 - **Bottom nav** (`MobileBottomNav.tsx`): 5 icons — Home, Research, Chat (gold center), Calendar, Analysis. `md:hidden electron:hidden`.
 - **Desktop tabs** hidden on mobile (`hidden md:flex` on TabNav `<nav>`). Maintenance tabs (Accounts, Holdings, Charts, Import) only in desktop nav.
 - **Chat**: full-screen overlay on mobile (`fixed inset-0`, slide-up via `translate-y`), 480px side drawer on desktop. Uses `useIsMobile` hook + `toggle-mobile-chat` DOM event.
-- **Header**: simplified on mobile — only Title + Search + Settings. DataFreshness, TwsStatus, ChatDrawer toggle, AppVersion hidden via `hidden md:flex`.
+- **Header**: simplified on mobile — only Title + Search + Settings. DataConfidenceIndicator, TwsStatus, ChatDrawer toggle, AppVersion hidden via `hidden md:flex`.
 - **ChatDrawer rendered at layout root** (not inside header) so mobile full-screen overlay works. Do NOT wrap in `hidden md:flex`.
 - **Breakpoint**: `md:` (768px) separates phone from tablet/desktop. Mobile-first defaults.
 - **Safe area**: `pb-safe` utility in globals.css, `viewport-fit=cover` meta tag for iPhone notch/home indicator.
@@ -219,7 +238,7 @@ When working with financial data (prices, valuations, dates, events), NEVER use 
 - **Explicit `node_modules`** in `extraResources` — electron-builder silently excludes `node_modules` directories even from `extraResources`; the standalone server needs them
 - **App icon**: `build/icon.icns` (tracked in git despite `/build/*` in gitignore via `!/build/icon.icns`)
 - **Tray icons**: `public/tray-iconTemplate.png` + `@2x.png` — macOS template images (black on transparent, auto-adapt to dark/light)
-- **Settings**: `autoConnectTws` (default: true) and `firstRunComplete` (default: false) in AppSettings
+- **Settings**: `autoConnectTws` (default: true), `refreshIntervalMinutes` (default: 30), and `firstRunComplete` (default: false) in AppSettings
 - **WelcomeOverlay ↔ SettingsModal**: communicate via custom DOM event `open-settings` (siblings in server component layout, can't share state via props)
 - **Code signing**: Developer ID Application certificate (team 8D2724Y4G2), hardened runtime, notarization via App Store Connect API key
 - **Notarization env vars**: `APPLE_API_KEY`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER` (set in `~/.zshrc`, not `.env.local`)
