@@ -53,13 +53,30 @@ export function AccountSummaryCards({
               </h3>
             </div>
             {account.latestDate && (
-              <span className="text-[11px] text-ink-faint font-mono">
+              <span
+                className={`text-[11px] font-mono ${
+                  account.dataQuality === "live" ? "text-up" :
+                  account.dataQuality === "recent" ? "text-ink-faint" :
+                  "text-gold"
+                }`}
+                title={
+                  account.dataQuality === "live"
+                    ? "All prices from today"
+                    : account.dataQuality === "recent"
+                      ? "Prices within 3 days"
+                      : account.holdingsAsOf
+                        ? `Holdings from ${account.holdingsAsOf} — values estimated`
+                        : "Values estimated from stale data"
+                }
+              >
                 {account.latestDate}
+                {account.dataQuality === "estimated" && " (est.)"}
               </span>
             )}
           </div>
 
           <div className="text-2xl font-semibold font-mono tabular-nums tracking-tight">
+            {account.dataQuality === "estimated" && account.latestValue !== null ? "~" : ""}
             {formatCurrency(account.latestValue)}
           </div>
 

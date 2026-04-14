@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getTwsStatus } from "@/lib/tws/client";
+import { getDataConfidence } from "@/lib/queries/data-confidence";
 
 /**
  * Lightweight portfolio summary for the Electron tray tooltip.
@@ -29,12 +30,25 @@ export async function GET() {
     // TWS connection state
     const twsStatus = getTwsStatus();
 
+    // Data confidence score
+    let confidenceScore: number | null = null;
+    let confidenceLevel: string | null = null;
+    try {
+      const confidence = getDataConfidence(db);
+      confidenceScore = confidence.overallScore;
+      confidenceLevel = confidence.overallLevel;
+    } catch {
+      // Non-critical — tray works without it
+    }
+
     return NextResponse.json({
       totalValue: valueRow?.total_value ?? null,
       valuationDate: valueRow?.valuation_date ?? null,
       pricesAsOf: priceRow?.latest ?? null,
       holdingsAsOf: holdingsRow?.latest ?? null,
       twsState: twsStatus.state,
+      confidenceScore,
+      confidenceLevel,
     });
   } catch {
     return NextResponse.json({
@@ -43,6 +57,8 @@ export async function GET() {
       pricesAsOf: null,
       holdingsAsOf: null,
       twsState: "disconnected",
+      confidenceScore: null,
+      confidenceLevel: null,
     });
   }
 }
