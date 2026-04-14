@@ -239,7 +239,7 @@ export function CalendarView({
                         >
                           {/* Top row: title + badges */}
                           <div className="flex items-center justify-between gap-2">
-                            <span className="text-sm text-ink font-medium">
+                            <span className="text-sm text-ink font-medium min-w-0 truncate">
                               {icon} {event.title}
                             </span>
                             <div className="flex items-center gap-1.5 flex-shrink-0">

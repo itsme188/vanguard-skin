@@ -206,7 +206,7 @@ export function AnalysisView({
 
       {/* Mode toggle + Account scope */}
       <div className="flex flex-col gap-3">
-        <div className="flex items-center gap-3">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3">
           {/* Mode toggle */}
           <div className="flex items-center bg-canvas rounded-lg p-0.5 border border-edge" role="group" aria-label="Analysis mode">
             <button
@@ -255,7 +255,7 @@ export function AnalysisView({
         </div>
 
         {/* Dimension pills */}
-        <div className="flex flex-wrap gap-1.5" role="group" aria-label="Analysis dimension">
+        <div className="flex gap-1.5 overflow-x-auto md:flex-wrap" role="group" aria-label="Analysis dimension">
           {dimensionPills.map((dim) => (
             <button
               key={dim}

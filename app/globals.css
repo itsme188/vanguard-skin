@@ -3,6 +3,9 @@
 /* Electron desktop app — activated when ELECTRON=true sets .electron on <html> */
 @custom-variant electron (.electron &);
 
+/* iPhone safe area for bottom nav / home indicator */
+.pb-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }
+
 /* Electron: make the top padding area draggable as a native title bar */
 .electron header > :first-child {
   -webkit-app-region: drag;

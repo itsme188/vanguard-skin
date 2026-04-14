@@ -49,7 +49,7 @@ export function TabNav() {
       ref={navRef}
       role="tablist"
       aria-label="Dashboard navigation"
-      className="max-w-[1600px] mx-auto px-6 electron:pl-20 flex gap-1 -mb-px overflow-x-auto"
+      className="max-w-[1600px] mx-auto px-4 md:px-6 electron:pl-20 hidden md:flex gap-1 -mb-px overflow-x-auto"
       onKeyDown={handleKeyDown}
     >
       {tabs.map((tab, index) => {
