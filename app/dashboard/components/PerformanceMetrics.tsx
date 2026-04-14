@@ -34,9 +34,12 @@ function formatDateLabel(dateStr: string): string {
 export function PerformanceMetrics({
   totals,
   twrPeriods = [],
+  dataQuality,
 }: {
   totals: PortfolioTotals;
   twrPeriods?: TwrPeriod[];
+  /** Worst data quality across all accounts: 'live' | 'recent' | 'estimated' | null */
+  dataQuality?: string | null;
 }) {
   const [selectedPeriod, setSelectedPeriod] = useState(0);
   const [customMode, setCustomMode] = useState(false);
@@ -101,7 +104,16 @@ export function PerformanceMetrics({
             )}
           </div>
           <div className="text-4xl font-semibold font-mono tabular-nums tracking-tight mt-1">
+            {dataQuality === "estimated" ? "~" : ""}
             {formatCurrency(totals.totalValue)}
+            {dataQuality === "estimated" && (
+              <span
+                className="text-sm text-gold font-normal ml-2"
+                title="Some account data is estimated from stale prices or old statements"
+              >
+                est.
+              </span>
+            )}
           </div>
         </div>
 
