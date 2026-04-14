@@ -1,7 +1,7 @@
 import { TabNav } from "./components/TabNav";
 import { TwsStatus } from "./components/TwsStatus";
 import { ToastProvider } from "./components/Toast";
-import { DataFreshness } from "./components/DataFreshness";
+import { DataConfidenceIndicator } from "./components/DataConfidenceIndicator";
 import { ChatDrawer } from "./components/ChatDrawer";
 import { CommandPalette, SearchButton } from "./components/CommandPalette";
 import { SettingsModal } from "./components/SettingsModal";
@@ -28,7 +28,7 @@ export default function DashboardLayout({
               Vanguard Skin
             </h1>
             <div className="flex items-center gap-3 md:gap-4">
-              <div className="hidden md:flex"><DataFreshness /></div>
+              <div className="hidden md:flex"><DataConfidenceIndicator /></div>
               <SearchButton />
               <div className="hidden md:flex"><TwsStatus /></div>
               <SettingsModal />

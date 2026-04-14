@@ -20,6 +20,7 @@ const SECTIONS = [
       { key: "twsHost", label: "Host", sensitive: false },
       { key: "twsPort", label: "Port", sensitive: false },
       { key: "autoConnectTws", label: "Auto-connect on startup", sensitive: false, type: "toggle" as const },
+      { key: "refreshIntervalMinutes", label: "Auto-refresh interval (min)", sensitive: false, type: "select" as const, options: ["0", "15", "30", "60"] },
     ],
   },
   {
@@ -98,7 +99,7 @@ export function SettingsModal() {
     // Only send fields the user actually changed
     const updates: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(dirty)) {
-      if (key === "twsPort") {
+      if (key === "twsPort" || key === "refreshIntervalMinutes") {
         updates[key] = Number(val);
       } else if (key === "autoConnectTws" || key === "firstRunComplete") {
         updates[key] = val === "true";
@@ -196,6 +197,33 @@ export function SettingsModal() {
                               {field.label}
                             </span>
                           </label>
+                        );
+                      }
+
+                      // Select fields (dropdown)
+                      if ("type" in field && field.type === "select" && "options" in field) {
+                        const currentVal = field.key in dirty
+                          ? dirty[field.key]
+                          : String(values[field.key] ?? "");
+                        return (
+                          <div key={field.key}>
+                            <label className="block text-[11px] text-ink-dim mb-0.5">
+                              {field.label}
+                            </label>
+                            <select
+                              value={currentVal}
+                              onChange={(e) => handleFieldChange(field.key, e.target.value)}
+                              className={`w-full px-2 py-1 text-xs font-mono bg-raised border rounded text-ink ${
+                                isFieldDirty ? "border-gold/50" : "border-edge"
+                              }`}
+                            >
+                              {(field.options as readonly string[]).map((opt) => (
+                                <option key={opt} value={opt}>
+                                  {opt === "0" ? "Disabled" : `${opt} min`}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
                         );
                       }
 

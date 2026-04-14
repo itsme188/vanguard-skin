@@ -9,6 +9,10 @@ export interface AccountSummary {
   monthlyChange: number | null;
   monthlyChangePercent: number | null;
   twr: number | null;
+  /** 'live' | 'recent' | 'estimated' | 'computed' — from latest daily valuation */
+  dataQuality: string | null;
+  /** Date of the most recent holdings snapshot for this account */
+  holdingsAsOf: string | null;
 }
 
 interface AccountSummaryRow {
@@ -18,6 +22,8 @@ interface AccountSummaryRow {
   latestDate: string | null;
   twr: number | null;
   previousValue: number | null;
+  dataQuality: string | null;
+  holdingsAsOf: string | null;
 }
 
 export function getAccountSummaries(db: Database.Database): AccountSummary[] {
@@ -38,8 +44,13 @@ export function getAccountSummaries(db: Database.Database): AccountSummary[] {
           dv.account_id,
           dv.valuation_date,
           dv.total_value,
+          dv.data_quality,
           ROW_NUMBER() OVER (PARTITION BY dv.account_id ORDER BY dv.valuation_date DESC) AS rn
         FROM daily_valuations dv
+      ),
+      latest_holdings AS (
+        SELECT account_id, MAX(as_of_date) AS max_date
+        FROM holdings GROUP BY account_id
       )
       SELECT
         a.id, a.name,
@@ -55,10 +66,13 @@ export function getAccountSummaries(db: Database.Database): AccountSummary[] {
            AND ms2.month_end_date < CASE
              WHEN COALESCE(d.valuation_date, '') > COALESCE(curr.month_end_date, '')
              THEN d.valuation_date ELSE curr.month_end_date END
-         ORDER BY ms2.month_end_date DESC LIMIT 1) AS previousValue
+         ORDER BY ms2.month_end_date DESC LIMIT 1) AS previousValue,
+        d.data_quality AS dataQuality,
+        lh.max_date AS holdingsAsOf
       FROM accounts a
       LEFT JOIN ranked_monthly curr ON curr.account_id = a.id AND curr.rn = 1
       LEFT JOIN latest_daily d ON d.account_id = a.id AND d.rn = 1
+      LEFT JOIN latest_holdings lh ON lh.account_id = a.id
       ORDER BY a.id`
     )
     .all() as AccountSummaryRow[];
@@ -82,6 +96,8 @@ export function getAccountSummaries(db: Database.Database): AccountSummary[] {
       monthlyChange,
       monthlyChangePercent,
       twr: row.twr ?? null,
+      dataQuality: row.dataQuality ?? null,
+      holdingsAsOf: row.holdingsAsOf ?? null,
     };
   });
 }

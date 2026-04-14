@@ -2,7 +2,9 @@
 
 import { useState, useEffect, useCallback } from "react";
 import type { TwsStatus as TwsStatusType } from "@/lib/tws/types";
+import type { SyncState } from "@/lib/tws/sync-state";
 import { useStreamingQuotes } from "@/lib/hooks/useStreamingQuotes";
+import { useAutoRefresh } from "@/lib/hooks/useAutoRefresh";
 
 const STATE_CONFIG = {
   disconnected: { color: "bg-ink-faint", label: "TWS Disconnected" },
@@ -11,16 +13,40 @@ const STATE_CONFIG = {
   error: { color: "bg-down", label: "TWS Error" },
 } as const;
 
+const PHASE_LABELS: Record<string, string> = {
+  positions: "Syncing positions",
+  enriching: "Enriching securities",
+  prices: "Refreshing prices",
+  valuations: "Recomputing valuations",
+  benchmarks: "Syncing benchmarks",
+};
+
+function formatTimeSince(isoDate: string): string {
+  const diffMs = Date.now() - new Date(isoDate).getTime();
+  const mins = Math.floor(diffMs / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
 export function TwsStatus() {
   const [status, setStatus] = useState<TwsStatusType | null>(null);
+  const [syncState, setSyncState] = useState<SyncState | null>(null);
   const [showPanel, setShowPanel] = useState(false);
   const streaming = useStreamingQuotes(false);
 
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await fetch("/api/tws/status");
-      const json = await res.json();
-      if (json.success) setStatus(json.data);
+      const [statusRes, syncRes] = await Promise.all([
+        fetch("/api/tws/status"),
+        fetch("/api/tws/sync-status"),
+      ]);
+      const statusJson = await statusRes.json();
+      const syncJson = await syncRes.json();
+      if (statusJson.success) setStatus(statusJson.data);
+      if (syncJson.success) setSyncState(syncJson.data);
     } catch {
       // API not reachable — leave status as-is
     }
@@ -28,14 +54,24 @@ export function TwsStatus() {
 
   useEffect(() => {
     fetchStatus();
-    const interval = setInterval(fetchStatus, 30_000);
+    // Poll faster (3s) when syncing, normal (30s) when idle
+    const intervalMs = syncState?.status === "syncing" ? 3_000 : 30_000;
+    const interval = setInterval(fetchStatus, intervalMs);
     return () => clearInterval(interval);
-  }, [fetchStatus]);
+  }, [fetchStatus, syncState?.status]);
+
+  // Background refresh: trigger quick refresh every 30 min when connected + idle
+  useAutoRefresh({
+    twsConnected: status?.state === "connected",
+    syncState,
+    intervalMinutes: 30,
+  });
 
   if (!status) return null;
 
   const config = STATE_CONFIG[status.state];
   const quoteCount = streaming.quotes.size;
+  const isSyncing = syncState?.status === "syncing";
 
   return (
     <div className="relative">
@@ -43,8 +79,26 @@ export function TwsStatus() {
         onClick={() => setShowPanel(!showPanel)}
         className="flex items-center gap-1.5 text-[11px] text-ink-faint font-mono hover:text-ink-dim transition-colors"
       >
-        <span className={`w-1.5 h-1.5 rounded-full ${config.color}`} />
-        {config.label}
+        <span className={`w-1.5 h-1.5 rounded-full ${isSyncing ? "bg-blue animate-pulse" : config.color}`} />
+        {isSyncing ? (
+          <span className="text-blue">
+            {syncState.currentPhase
+              ? PHASE_LABELS[syncState.currentPhase] ?? syncState.currentPhase
+              : "Syncing"}
+            {syncState.phaseProgress && syncState.phaseProgress.total > 0
+              ? ` (${syncState.phaseProgress.current}/${syncState.phaseProgress.total})`
+              : "..."}
+          </span>
+        ) : (
+          <>
+            {config.label}
+            {syncState?.lastSyncAt && status.state === "connected" && (
+              <span className="text-ink-faint">
+                · synced {formatTimeSince(syncState.lastSyncAt)}
+              </span>
+            )}
+          </>
+        )}
         {streaming.isStreaming && (
           <span className="flex items-center gap-1 text-blue">
             <span className="w-1 h-1 rounded-full bg-blue animate-pulse" />
@@ -56,6 +110,7 @@ export function TwsStatus() {
       {showPanel && (
         <TwsPanel
           status={status}
+          syncState={syncState}
           onClose={() => setShowPanel(false)}
           onStatusChange={(s) => setStatus(s)}
           streaming={streaming}
@@ -80,11 +135,13 @@ interface PriceProgress {
 
 function TwsPanel({
   status,
+  syncState,
   onClose,
   onStatusChange,
   streaming,
 }: {
   status: TwsStatusType;
+  syncState: SyncState | null;
   onClose: () => void;
   onStatusChange: (s: TwsStatusType) => void;
   streaming: ReturnType<typeof useStreamingQuotes>;
@@ -441,6 +498,70 @@ function TwsPanel({
             )}
           </div>
         </div>
+
+        {/* Auto-refresh status */}
+        {isConnected && syncState && (
+          <div className="space-y-2 pt-2 border-t border-edge">
+            <p className="text-[10px] text-ink-faint uppercase tracking-wider">
+              Auto-Refresh
+            </p>
+
+            {syncState.status === "syncing" && syncState.currentPhase && (
+              <div className="space-y-1.5">
+                <div className="w-full h-1 rounded-full bg-raised overflow-hidden">
+                  <div
+                    className="h-full bg-blue rounded-full transition-all duration-300"
+                    style={{
+                      width: syncState.phaseProgress && syncState.phaseProgress.total > 0
+                        ? `${(syncState.phaseProgress.current / syncState.phaseProgress.total) * 100}%`
+                        : "30%",
+                    }}
+                  />
+                </div>
+                <p className="text-[10px] text-blue font-mono">
+                  {PHASE_LABELS[syncState.currentPhase] ?? syncState.currentPhase}
+                  {syncState.phaseProgress?.label ? ` — ${syncState.phaseProgress.label}` : "..."}
+                </p>
+              </div>
+            )}
+
+            {syncState.status === "error" && syncState.error && (
+              <p className="text-[10px] text-down font-mono">
+                Sync error: {syncState.error}
+              </p>
+            )}
+
+            {syncState.status === "idle" && syncState.lastSyncResult && (
+              <p className="text-[10px] text-ink-dim font-mono">
+                Last sync: {syncState.lastSyncResult.pricesUpdated} prices
+                {syncState.lastSyncResult.errors.length > 0
+                  ? ` · ${syncState.lastSyncResult.errors.length} errors`
+                  : ""}
+                {" · "}
+                {(syncState.lastSyncResult.durationMs / 1000).toFixed(0)}s
+              </p>
+            )}
+
+            <button
+              onClick={async () => {
+                try {
+                  await fetch("/api/tws/auto-refresh", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ level: "full" }),
+                  });
+                } catch {
+                  // sync-status polling will show the result
+                }
+              }}
+              disabled={syncState.status === "syncing" || loading !== null}
+              className="w-full px-3 py-1.5 text-xs font-medium rounded-lg bg-blue/20 text-blue hover:bg-blue/30 disabled:opacity-50 transition-colors"
+              title="Run full sync: positions → enrich → prices → valuations → benchmarks"
+            >
+              {syncState.status === "syncing" ? "Syncing..." : "Re-sync All"}
+            </button>
+          </div>
+        )}
 
         {/* Connected actions */}
         {isConnected && (

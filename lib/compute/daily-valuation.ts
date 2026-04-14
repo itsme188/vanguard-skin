@@ -24,6 +24,7 @@ interface HoldingRow {
 
 interface PriceRow {
   close_price: number;
+  price_date: string;
 }
 
 interface CashAnchor {
@@ -51,15 +52,15 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
 
     const insertValuation = db.prepare(
       `INSERT OR REPLACE INTO daily_valuations
-       (account_id, valuation_date, cash_balance, holdings_value, total_value, holdings_count, priced_count)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+       (account_id, valuation_date, cash_balance, holdings_value, total_value, holdings_count, priced_count, data_quality)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     );
 
     // Use most recent price on or before this date, within staleness window.
     // This carries forward month-end prices for mutual funds/bonds that lack
     // daily pricing, eliminating the month-end spike artifacts.
     const getPrice = db.prepare(
-      `SELECT close_price FROM prices
+      `SELECT close_price, date AS price_date FROM prices
        WHERE security_id = ? AND date <= ? AND date >= date(?, '-${PRICE_STALENESS_DAYS} days')
        ORDER BY date DESC LIMIT 1`
     );
@@ -93,6 +94,7 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
 
         let holdingsValue = 0;
         let pricedCount = 0;
+        let maxPriceStaleDays = 0;
 
         for (const holding of holdings) {
           const price = getPrice.get(holding.security_id, date, date) as PriceRow | undefined;
@@ -100,6 +102,12 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
           if (price) {
             holdingsValue += marketValue(holding.quantity, price.close_price, holding.security_type, holding.multiplier);
             pricedCount++;
+
+            // Track staleness of the oldest price used in this valuation
+            const priceDateMs = new Date(price.price_date).getTime();
+            const valDateMs = new Date(date).getTime();
+            const staleDays = Math.floor((valDateMs - priceDateMs) / 86_400_000);
+            if (staleDays > maxPriceStaleDays) maxPriceStaleDays = staleDays;
           }
         }
 
@@ -108,6 +116,12 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
         const cashBalance = 0; // Cash tracking could be added later
         const totalValue = cashBalance + holdingsValue;
 
+        // Assess data quality based on price staleness and coverage
+        const dataQuality =
+          pricedCount === holdings.length && maxPriceStaleDays <= 1 ? "live" :
+          maxPriceStaleDays <= 3 ? "recent" :
+          "estimated";
+
         insertValuation.run(
           account.account_id,
           date,
@@ -115,7 +129,8 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
           holdingsValue,
           totalValue,
           holdings.length,
-          pricedCount
+          pricedCount,
+          dataQuality
         );
 
         datesComputed++;

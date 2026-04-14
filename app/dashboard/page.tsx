@@ -109,7 +109,16 @@ export default function OverviewPage() {
     <div className="space-y-6">
       {hasData ? (
         <>
-          <PerformanceMetrics totals={totals} twrPeriods={twrPeriods} />
+          <PerformanceMetrics
+            totals={totals}
+            twrPeriods={twrPeriods}
+            dataQuality={
+              accounts.some(a => a.dataQuality === "estimated") ? "estimated" :
+              accounts.some(a => a.dataQuality === "recent") ? "recent" :
+              accounts.some(a => a.dataQuality === "live") ? "live" :
+              null
+            }
+          />
           <MorningBriefing />
           <AccountSummaryCards accounts={accounts} twrByAccount={twrByAccount} />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">

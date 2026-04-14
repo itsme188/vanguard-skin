@@ -20,6 +20,8 @@ interface AppSettings {
   fredApiKey?: string;
   edgarContactEmail?: string;
   apiNinjasKey?: string;
+  /** Auto-refresh interval in minutes. 0 = disabled. Default: 30. */
+  refreshIntervalMinutes?: number;
   firstRunComplete?: boolean;
 }
 
@@ -27,6 +29,7 @@ const DEFAULTS: AppSettings = {
   twsHost: "127.0.0.1",
   twsPort: 7496,
   autoConnectTws: true,
+  refreshIntervalMinutes: 30,
   firstRunComplete: false,
 };
 
@@ -120,6 +123,7 @@ export function getSanitizedSettings(): Record<string, string | number | boolean
     apiNinjasKey: s.apiNinjasKey ? "***" + s.apiNinjasKey.slice(-4) : "",
     hasAnthropicKey: !!s.anthropicApiKey,
     autoConnectTws: s.autoConnectTws ?? true,
+    refreshIntervalMinutes: s.refreshIntervalMinutes ?? 30,
     firstRunComplete: s.firstRunComplete ?? false,
   };
 }
