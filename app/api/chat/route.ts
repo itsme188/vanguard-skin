@@ -92,6 +92,12 @@ export async function POST(request: NextRequest) {
     // Convert existing Anthropic tool definitions to AI SDK tool format.
     // Each tool wraps the existing executeTool() dispatcher, preserving all
     // tool logic and data quality annotations without any rewrite.
+    // When scope is set to a specific account, auto-inject account_name into
+    // tool inputs so the AI can't accidentally query all accounts.
+    const scopeAccountName = scope !== "all" && scope !== "macro"
+      ? resolveAccountName(db, { ibkr: "IBKR", "vanguard-taxable": "Vanguard Taxable", "vanguard-roth-ira": "Vanguard Roth IRA" }[scope] ?? "")
+      : undefined;
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const aiTools: Record<string, any> = {};
     for (const t of CHAT_TOOLS) {
@@ -100,7 +106,16 @@ export async function POST(request: NextRequest) {
         description: t.description,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         inputSchema: jsonSchema<Record<string, unknown>>(t.input_schema as any),
-        execute: async (input) => executeTool(db, name, input),
+        execute: async (rawInput) => {
+          // Enforce scope: inject account_name if scoped and tool accepts it
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          let input = rawInput as Record<string, any>;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          if (scopeAccountName && !input.account_name && (t.input_schema as any)?.properties?.account_name) {
+            input = { ...input, account_name: scopeAccountName };
+          }
+          return executeTool(db, name, input);
+        },
       });
     }
 
