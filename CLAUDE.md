@@ -172,6 +172,17 @@ When working with financial data (prices, valuations, dates, events), NEVER use 
 - **Holdings** tab shows cross-account positions with P&L and allocation %
 - Old routes (/dashboard/notes, /dashboard/reconciliation, /dashboard/chat) redirect to new locations
 
+## Mobile Responsive
+
+- **Bottom nav** (`MobileBottomNav.tsx`): 5 icons — Home, Research, Chat (gold center), Calendar, Analysis. `md:hidden electron:hidden`.
+- **Desktop tabs** hidden on mobile (`hidden md:flex` on TabNav `<nav>`). Maintenance tabs (Accounts, Holdings, Charts, Import) only in desktop nav.
+- **Chat**: full-screen overlay on mobile (`fixed inset-0`, slide-up via `translate-y`), 480px side drawer on desktop. Uses `useIsMobile` hook + `toggle-mobile-chat` DOM event.
+- **Header**: simplified on mobile — only Title + Search + Settings. DataFreshness, TwsStatus, ChatDrawer toggle, AppVersion hidden via `hidden md:flex`.
+- **ChatDrawer rendered at layout root** (not inside header) so mobile full-screen overlay works. Do NOT wrap in `hidden md:flex`.
+- **Breakpoint**: `md:` (768px) separates phone from tablet/desktop. Mobile-first defaults.
+- **Safe area**: `pb-safe` utility in globals.css, `viewport-fit=cover` meta tag for iPhone notch/home indicator.
+- **Remote access**: Tailscale VPN — iPhone accesses Electron app at `100.88.9.46:3099`. Server binds to `0.0.0.0` (not localhost).
+
 ## Benchmark & Risk
 
 - Benchmark prices stored in `benchmark_prices` table (migration 014), separate from portfolio `prices`
