@@ -7,6 +7,7 @@ import { CommandPalette, SearchButton } from "./components/CommandPalette";
 import { SettingsModal } from "./components/SettingsModal";
 import { AppVersion } from "./components/AppVersion";
 import { WelcomeOverlay } from "./components/WelcomeOverlay";
+import { MobileBottomNav } from "./components/MobileBottomNav";
 
 export default function DashboardLayout({
   children,
@@ -22,32 +23,37 @@ export default function DashboardLayout({
 
         {/* Header */}
         <header className="border-b border-edge sticky top-0 z-50 bg-canvas/80 backdrop-blur-xl electron:pt-7">
-          <div className="max-w-[1600px] mx-auto px-6 electron:pl-20 flex items-center justify-between h-14">
-            <h1 className="font-serif text-xl text-gold tracking-tight">
+          <div className="max-w-[1600px] mx-auto px-4 md:px-6 electron:pl-20 flex items-center justify-between h-14">
+            <h1 className="font-serif text-lg md:text-xl text-gold tracking-tight">
               Vanguard Skin
             </h1>
-            <div className="flex items-center gap-4">
-              <DataFreshness />
+            <div className="flex items-center gap-3 md:gap-4">
+              <div className="hidden md:flex"><DataFreshness /></div>
               <SearchButton />
-              <ChatDrawer />
-              <TwsStatus />
+              <div className="hidden md:flex"><TwsStatus /></div>
               <SettingsModal />
-              <AppVersion />
+              <span className="hidden md:inline"><AppVersion /></span>
             </div>
           </div>
           <TabNav />
         </header>
 
         {/* Content */}
-        <main id="main-content" className="max-w-[1600px] mx-auto px-6 py-6">
+        <main id="main-content" className="max-w-[1600px] mx-auto px-4 md:px-6 pt-4 md:pt-6 pb-20 md:pb-6">
           {children}
         </main>
 
         {/* Global command palette (Cmd+K) */}
         <CommandPalette />
 
+        {/* Chat drawer — rendered at root level so mobile full-screen overlay works */}
+        <ChatDrawer />
+
         {/* Electron first-run onboarding */}
         <WelcomeOverlay />
+
+        {/* Mobile bottom navigation (phone only) */}
+        <MobileBottomNav />
       </div>
     </ToastProvider>
   );

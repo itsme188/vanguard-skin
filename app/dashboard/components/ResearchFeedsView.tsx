@@ -246,8 +246,8 @@ export function ResearchFeedsView({ initialArticles, sources, initialSymbolMap }
   return (
     <div className="space-y-5">
       {/* Controls bar */}
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex items-center gap-2 flex-wrap">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="flex items-center gap-2 overflow-x-auto">
           <button
             onClick={() => handleFilterChange(null)}
             className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
@@ -282,7 +282,7 @@ export function ResearchFeedsView({ initialArticles, sources, initialSymbolMap }
             placeholder="Search articles..."
             value={searchQuery}
             onChange={(e) => handleSearch(e.target.value)}
-            className="px-3 py-1.5 rounded-md bg-raised border border-edge text-sm text-ink placeholder:text-ink-faint w-56 focus:outline-none focus:border-gold"
+            className="px-3 py-1.5 rounded-md bg-raised border border-edge text-sm text-ink placeholder:text-ink-faint w-full sm:w-56 focus:outline-none focus:border-gold"
           />
           <button
             onClick={() => setManageOpen(true)}

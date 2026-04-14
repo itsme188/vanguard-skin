@@ -439,8 +439,8 @@ export function CombinedPortfolioChart({
   return (
     <div className="rounded-xl border border-edge bg-panel p-5">
       {/* Header: title, mode toggle, benchmark selector, date range pills */}
-      <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-4 gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <h3 className="text-sm font-medium text-ink-dim">
             Portfolio Over Time
           </h3>

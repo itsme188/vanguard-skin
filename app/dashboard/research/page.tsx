@@ -98,7 +98,7 @@ export default async function ResearchPage({ searchParams }: PageProps) {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-medium text-ink">Research</h2>
           <p className="text-sm text-ink-faint mt-0.5">
