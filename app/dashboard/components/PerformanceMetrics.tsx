@@ -131,8 +131,8 @@ export function PerformanceMetrics({
 
       {twrPeriods.length > 0 && (
         <div className="space-y-3">
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-1.5" role="group" aria-label="Performance period">
+          <div className="flex flex-col md:flex-row md:items-center gap-3 md:gap-4">
+            <div className="flex items-center gap-1.5 overflow-x-auto" role="group" aria-label="Performance period">
               {twrPeriods.map((period, i) => (
                 <button
                   key={period.label}
@@ -206,7 +206,7 @@ export function PerformanceMetrics({
           </div>
 
           {customMode && (
-            <div className="flex items-center gap-3">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
               <label className="text-[11px] text-ink-faint uppercase tracking-widest">From</label>
               <input
                 type="date"
