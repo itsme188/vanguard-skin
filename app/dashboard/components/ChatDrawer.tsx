@@ -1,12 +1,14 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { usePathname } from "next/navigation";
 import { ChatInterface } from "./ChatInterface";
 import { useIsMobile } from "@/lib/hooks/useIsMobile";
 
 export function ChatDrawer() {
   const [open, setOpen] = useState(false);
   const isMobile = useIsMobile();
+  const pathname = usePathname();
 
   const toggle = useCallback(() => setOpen((v) => !v), []);
 
@@ -145,7 +147,7 @@ export function ChatDrawer() {
 
         {/* Chat content — always mounted to preserve conversation */}
         <div className={isMobile ? "h-[calc(100dvh-49px)] pb-safe" : "h-[calc(100%-49px)]"}>
-          <ChatInterface />
+          <ChatInterface pathname={pathname} />
         </div>
       </div>
     </>
