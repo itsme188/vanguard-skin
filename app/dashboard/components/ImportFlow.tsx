@@ -281,7 +281,7 @@ export function ImportFlow() {
               </div>
 
               {result.success && result.preview ? (
-                <div className="grid grid-cols-5 gap-2 text-center">
+                <div className="grid grid-cols-3 md:grid-cols-5 gap-2 text-center">
                   {(
                     [
                       ["Transactions", result.preview.transactionCount],
