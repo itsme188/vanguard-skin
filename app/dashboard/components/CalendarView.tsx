@@ -341,7 +341,7 @@ export function CalendarView({
                     {briefing.event_count} events
                   </span>
                 </div>
-                <div className="px-4 py-4 max-h-[calc(100vh-280px)] overflow-y-auto">
+                <div className="px-4 py-4 max-h-[60vh] md:max-h-[calc(100vh-280px)] overflow-y-auto">
                   <BriefingContent content={briefing.content} />
                   <div className="mt-4 pt-3 border-t border-edge text-[10px] text-ink-faint font-mono">
                     Generated {new Date(briefing.generated_at).toLocaleString()} via {briefing.model}

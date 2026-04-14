@@ -255,7 +255,7 @@ export function AnalysisView({
         </div>
 
         {/* Dimension pills */}
-        <div className="flex gap-1.5 overflow-x-auto md:flex-wrap" role="group" aria-label="Analysis dimension">
+        <div className="flex gap-1.5 flex-wrap" role="group" aria-label="Analysis dimension">
           {dimensionPills.map((dim) => (
             <button
               key={dim}
@@ -342,7 +342,7 @@ export function AnalysisView({
         {/* Breakdown Table */}
         <div className="bg-panel border border-edge rounded-lg p-4">
           <h3 className="text-sm font-medium text-ink mb-4">Breakdown</h3>
-          <div className="overflow-y-auto max-h-[380px]">
+          <div className="overflow-y-auto max-h-[280px] md:max-h-[380px]">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-edge text-ink-faint">

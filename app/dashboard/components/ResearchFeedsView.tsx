@@ -54,9 +54,10 @@ function SymbolPills({
     symbols = parsed;
   } catch { return null; }
   if (symbols.length === 0) return null;
+
   return (
     <div className="flex flex-wrap gap-1.5">
-      {symbols.slice(0, 8).map((s) => {
+      {symbols.slice(0, 6).map((s) => {
         const secId = symbolMap[s];
         return secId ? (
           <Link
@@ -72,8 +73,8 @@ function SymbolPills({
           </span>
         );
       })}
-      {symbols.length > 8 && (
-        <span className="text-xs text-ink-faint">+{symbols.length - 8} more</span>
+      {symbols.length > 6 && (
+        <span className="text-xs text-ink-faint">+{symbols.length - 6} more</span>
       )}
     </div>
   );
@@ -410,7 +411,7 @@ function ArticleCard({
         )}
 
         {/* Tags row */}
-        <div className="flex items-center justify-between gap-3 mt-3">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-3 mt-3">
           <SymbolPills symbolsJson={article.mentioned_symbols} symbolMap={symbolMap} />
           <ThemePills themesJson={article.key_themes} />
         </div>
