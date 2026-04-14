@@ -13,10 +13,11 @@ import { CHAT_TOOLS, executeTool, resolveAccountName } from "@/lib/chat/tools";
 import { buildSystemPrompt } from "@/lib/chat/system-prompt";
 import { getAnthropicApiKey } from "@/lib/env";
 import { VALID_SCOPES, type ChatScope } from "@/lib/types";
+import { createConversation, saveMessage, updateConversationTitle } from "@/lib/mutations/chat";
 
 export async function POST(request: NextRequest) {
   try {
-    const { messages, scope: rawScope } = await request.json();
+    const { messages, scope: rawScope, conversationId: rawConvId, pageContext } = await request.json();
 
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       return Response.json(
@@ -37,6 +38,21 @@ export async function POST(request: NextRequest) {
         );
       }
       scope = rawScope;
+    }
+
+    let conversationId = rawConvId ? Number(rawConvId) : null;
+    if (!conversationId) {
+      conversationId = createConversation(db, scope);
+    }
+
+    // Save latest user message
+    const lastUserMsg = [...messages].reverse().find((m: any) => m.role === "user");
+    if (lastUserMsg) {
+      const textContent = lastUserMsg.parts
+        ?.filter((p: any) => p.type === "text")
+        .map((p: any) => p.text)
+        .join("") ?? "";
+      if (textContent) saveMessage(db, conversationId, "user", textContent, null);
     }
 
     const apiKey = getAnthropicApiKey();
@@ -65,7 +81,10 @@ export async function POST(request: NextRequest) {
       portfolioContext = getPortfolioSummaryForChat(db, accountName);
     }
     const currentDate = new Date().toISOString().slice(0, 10);
-    const systemPrompt = buildSystemPrompt(portfolioContext, currentDate, scope);
+    let systemPromptText = buildSystemPrompt(portfolioContext, currentDate, scope);
+    if (pageContext) {
+      systemPromptText += `\n\n[Current Page Context]\n${pageContext}`;
+    }
 
     // Create Anthropic provider with explicit API key
     const anthropic = createAnthropic({ apiKey });
@@ -91,7 +110,7 @@ export async function POST(request: NextRequest) {
       maxOutputTokens: 16000,
       system: {
         role: "system",
-        content: systemPrompt,
+        content: systemPromptText,
         providerOptions: {
           anthropic: { cacheControl: { type: "ephemeral" } },
         },
@@ -104,10 +123,22 @@ export async function POST(request: NextRequest) {
           thinking: { type: "adaptive" },
         },
       },
+      onFinish: async ({ text }) => {
+        if (text && conversationId) {
+          saveMessage(db, conversationId, "assistant", text, null);
+          // Auto-title from first exchange
+          const msgCount = messages.filter((m: any) => m.role === "user").length;
+          if (msgCount <= 1) {
+            const title = text.slice(0, 80).split("\n")[0].replace(/[#*_`]/g, "").trim();
+            if (title) updateConversationTitle(db, conversationId, title);
+          }
+        }
+      },
     });
 
     return result.toUIMessageStreamResponse({
       sendReasoning: true,
+      headers: { "X-Conversation-Id": String(conversationId) },
       onError: (error) =>
         error instanceof Error ? error.message : "Stream error",
     });
