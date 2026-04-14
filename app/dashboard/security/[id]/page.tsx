@@ -89,9 +89,9 @@ export default async function SecurityDetailPage(props: {
       </nav>
 
       {/* Header */}
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between md:gap-4">
         <div>
-          <div className="flex items-baseline gap-3">
+          <div className="flex items-baseline gap-3 flex-wrap">
             <h1 className="text-2xl font-mono font-bold text-ink">
               {security.symbol}
             </h1>
@@ -107,7 +107,7 @@ export default async function SecurityDetailPage(props: {
         </div>
 
         {price && (
-          <div className="text-right">
+          <div className="md:text-right">
             <div className="text-2xl font-mono font-bold text-ink">
               {formatPrecise(price.close_price)}
             </div>

@@ -106,7 +106,7 @@ export function ChartsView({
       {/* Chart content */}
       {viewMode === "single" ? (
         selected && (
-          <div className="rounded-xl border border-edge bg-panel overflow-hidden h-[600px]">
+          <div className="rounded-xl border border-edge bg-panel overflow-hidden h-[400px] md:h-[600px]">
             <SecurityChart
               key={selected.id}
               securityId={selected.id}
