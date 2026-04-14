@@ -5,7 +5,11 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import type { UIMessage } from "ai";
 import { MarkdownMessage } from "./MarkdownMessage";
+import { QuickActionChips } from "./QuickActionChips";
+import { getQuickActions } from "@/lib/chat/quick-actions";
+import { getPageContext } from "@/lib/chat/page-context";
 import type { ChatScope } from "@/lib/types";
+import type { ChatConversation, ChatMessage } from "@/lib/queries/chat";
 
 // Friendly labels for tool call indicators
 const TOOL_LABELS: Record<string, string> = {
@@ -41,20 +45,6 @@ const SCOPE_SUBTITLES: Record<ChatScope, string> = {
   "vanguard-roth-ira": "Analyzing your Vanguard Roth IRA.",
   macro: "Market & macro analysis — no portfolio data by default.",
 };
-
-const PORTFOLIO_SUGGESTIONS = [
-  "Give me a full portfolio health check",
-  "Analyze my sector concentration",
-  "Find tax-loss harvesting opportunities",
-  "Which factor am I most exposed to right now?",
-];
-
-const MACRO_SUGGESTIONS = [
-  "What's moving markets today?",
-  "Compare sector performance YTD",
-  "Summarize the current yield curve",
-  "What are the biggest macro risks right now?",
-];
 
 // ─── Sub-components ──────────────────────────────────────────────
 
@@ -159,22 +149,132 @@ function renderUserParts(parts: UIMessage["parts"]) {
   );
 }
 
+// ─── Helper: convert DB messages to UIMessage format ────────────
+
+function dbMessageToUIMessage(m: ChatMessage): UIMessage {
+  return {
+    id: String(m.id),
+    role: m.role as "user" | "assistant",
+    parts: m.parts
+      ? JSON.parse(m.parts)
+      : [{ type: "text" as const, text: m.content ?? "" }],
+  };
+}
+
+// ─── Conversation history dropdown ──────────────────────────────
+
+function ConversationHistory({
+  conversations,
+  currentId,
+  onSelect,
+  onNew,
+}: {
+  conversations: ChatConversation[];
+  currentId: number | null;
+  onSelect: (conv: ChatConversation) => void;
+  onNew: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown on click outside
+  useEffect(() => {
+    if (!open) return;
+    function handleClick(e: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [open]);
+
+  const currentConv = conversations.find((c) => c.id === currentId);
+  const displayTitle = currentConv?.title ?? "Current conversation";
+
+  return (
+    <div className="relative" ref={dropdownRef}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1.5 text-xs text-ink-dim hover:text-ink transition-colors max-w-[200px] truncate"
+        title={displayTitle}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+        <span className="truncate">{displayTitle}</span>
+      </button>
+
+      {open && (
+        <div className="absolute top-full left-0 mt-1 w-64 bg-panel border border-edge rounded-lg shadow-xl z-50 py-1 max-h-72 overflow-y-auto">
+          <button
+            onClick={() => { onNew(); setOpen(false); }}
+            className="w-full text-left px-3 py-2 text-xs text-gold hover:bg-raised transition-colors flex items-center gap-2"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+            New Conversation
+          </button>
+          <div className="border-t border-edge my-1" />
+          {conversations.length === 0 && (
+            <div className="px-3 py-2 text-xs text-ink-faint">No conversations yet</div>
+          )}
+          {conversations.map((conv) => (
+            <button
+              key={conv.id}
+              onClick={() => { onSelect(conv); setOpen(false); }}
+              className={`w-full text-left px-3 py-2 text-xs transition-colors truncate ${
+                conv.id === currentId
+                  ? "bg-raised text-ink"
+                  : "text-ink-dim hover:bg-raised hover:text-ink"
+              }`}
+              title={conv.title ?? `Conversation ${conv.id}`}
+            >
+              <div className="truncate">
+                {conv.title ?? `Conversation ${conv.id}`}
+              </div>
+              <div className="text-[10px] text-ink-faint mt-0.5">
+                {SCOPE_OPTIONS.find((s) => s.value === conv.scope)?.label ?? conv.scope}
+                {" \u00b7 "}
+                {new Date(conv.updated_at).toLocaleDateString()}
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main component ──────────────────────────────────────────────
 
-export function ChatInterface() {
+interface ChatInterfaceProps {
+  pathname: string;
+}
+
+export function ChatInterface({ pathname }: ChatInterfaceProps) {
   const [scope, setScope] = useState<ChatScope>("all");
   const [inputText, setInputText] = useState("");
+  const [conversationId, setConversationId] = useState<number | null>(null);
+  const [conversations, setConversations] = useState<ChatConversation[]>([]);
+  const [loadedInitial, setLoadedInitial] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Recreate transport when scope changes (scope is locked after first message)
+  // Compute page context and quick actions from pathname
+  const pageContext = useMemo(() => getPageContext(pathname), [pathname]);
+  const quickActions = useMemo(() => getQuickActions(pathname), [pathname]);
+
+  // Recreate transport when scope or conversationId changes
   const transport = useMemo(
     () =>
       new DefaultChatTransport({
         api: "/api/chat",
-        body: { scope },
+        body: { scope, conversationId, pageContext },
       }),
-    [scope]
+    [scope, conversationId, pageContext]
   );
 
   const {
@@ -189,9 +289,75 @@ export function ChatInterface() {
 
   const isStreaming = status === "streaming" || status === "submitted";
   const isLocked = messages.length > 0;
-  const suggestions = scope === "macro" ? MACRO_SUGGESTIONS : PORTFOLIO_SUGGESTIONS;
   const scopeLabel =
     SCOPE_OPTIONS.find((s) => s.value === scope)?.label ?? "All Accounts";
+
+  // Fetch conversation list
+  const fetchConversations = useCallback(async () => {
+    try {
+      const res = await fetch("/api/chat/conversations");
+      if (res.ok) {
+        const data = await res.json();
+        setConversations(data.conversations ?? []);
+        return data.conversations ?? [];
+      }
+    } catch {
+      // Silently fail — conversations are non-critical
+    }
+    return [];
+  }, []);
+
+  // Load a conversation's messages by ID
+  const loadConversation = useCallback(async (conv: ChatConversation) => {
+    try {
+      const res = await fetch(`/api/chat/conversations/${conv.id}/messages`);
+      if (res.ok) {
+        const data = await res.json();
+        const dbMessages: ChatMessage[] = data.messages ?? [];
+        const uiMessages = dbMessages.map(dbMessageToUIMessage);
+        setMessages(uiMessages);
+        setConversationId(conv.id);
+        setScope((conv.scope as ChatScope) || "all");
+      }
+    } catch {
+      // Silently fail
+    }
+  }, [setMessages]);
+
+  // On mount: load most recent conversation
+  useEffect(() => {
+    if (loadedInitial) return;
+    setLoadedInitial(true);
+
+    (async () => {
+      const convs = await fetchConversations();
+      if (convs.length > 0) {
+        // Load the most recent conversation (already sorted by updated_at DESC)
+        const latest = convs[0];
+        if (latest.message_count > 0) {
+          await loadConversation(latest);
+        }
+      }
+    })();
+  }, [loadedInitial, fetchConversations, loadConversation]);
+
+  // After streaming ends, refresh conversation list to pick up new/updated conversations
+  const prevStatusRef = useRef(status);
+  useEffect(() => {
+    const wasStreaming = prevStatusRef.current === "streaming" || prevStatusRef.current === "submitted";
+    const doneNow = status === "ready" || status === "error";
+    if (wasStreaming && doneNow) {
+      // Refresh conversations + capture conversationId from the latest if we don't have one
+      (async () => {
+        const convs = await fetchConversations();
+        if (!conversationId && convs.length > 0) {
+          // The server created a conversation — find the most recent one
+          setConversationId(convs[0].id);
+        }
+      })();
+    }
+    prevStatusRef.current = status;
+  }, [status, conversationId, fetchConversations]);
 
   // Auto-scroll on new content
   useEffect(() => {
@@ -217,8 +383,14 @@ export function ChatInterface() {
   function handleNewConversation() {
     if (isStreaming) stop();
     setMessages([]);
+    setConversationId(null);
     setScope("all");
     setInputText("");
+  }
+
+  function handleQuickAction(prompt: string) {
+    setInputText(prompt);
+    inputRef.current?.focus();
   }
 
   return (
@@ -229,12 +401,12 @@ export function ChatInterface() {
         aria-live="polite"
         aria-label="Chat messages"
       >
-        {/* Scope badge header (shown when conversation is active) */}
+        {/* Conversation header (shown when conversation is active) */}
         {isLocked && (
           <div className="flex items-center justify-between pb-3 mb-3 border-b border-edge">
             <div className="flex items-center gap-2">
               <span
-                className="px-3 py-1 rounded-full text-[11px] border"
+                className="px-3 py-1 rounded-full text-[11px] border shrink-0"
                 style={{
                   background: "rgba(201,164,78,0.15)",
                   borderColor: "rgba(201,164,78,0.3)",
@@ -243,13 +415,18 @@ export function ChatInterface() {
               >
                 {scopeLabel}
               </span>
-              <span className="text-[10px] text-ink-faint">
-                Start a new conversation to change scope
-              </span>
+              {conversations.length > 0 && (
+                <ConversationHistory
+                  conversations={conversations}
+                  currentId={conversationId}
+                  onSelect={loadConversation}
+                  onNew={handleNewConversation}
+                />
+              )}
             </div>
             <button
               onClick={handleNewConversation}
-              className="text-xs text-ink-faint hover:text-ink-dim transition-colors focus-ring"
+              className="text-xs text-ink-faint hover:text-ink-dim transition-colors focus-ring shrink-0"
             >
               New Conversation
             </button>
@@ -301,21 +478,30 @@ export function ChatInterface() {
                 ))}
               </div>
 
-              {/* Dynamic prompt suggestions */}
-              <div className="flex flex-wrap justify-center gap-2">
-                {suggestions.map((suggestion) => (
-                  <button
-                    key={suggestion}
-                    onClick={() => {
-                      setInputText(suggestion);
-                      inputRef.current?.focus();
-                    }}
-                    className="px-3 py-1.5 rounded-lg border border-edge text-xs text-ink-dim hover:text-ink hover:border-edge-strong transition-all focus-ring"
-                  >
-                    {suggestion}
-                  </button>
-                ))}
-              </div>
+              {/* Conversation history in empty state */}
+              {conversations.length > 0 && (
+                <div className="mb-6">
+                  <div className="text-[11px] text-ink-faint mb-2 uppercase tracking-wider">Recent Conversations</div>
+                  <div className="flex flex-col gap-1 max-h-32 overflow-y-auto">
+                    {conversations.slice(0, 5).map((conv) => (
+                      <button
+                        key={conv.id}
+                        onClick={() => loadConversation(conv)}
+                        className="text-left px-3 py-1.5 rounded-lg border border-edge text-xs text-ink-dim hover:text-ink hover:border-edge-strong transition-all focus-ring truncate"
+                        title={conv.title ?? `Conversation ${conv.id}`}
+                      >
+                        {conv.title ?? `Conversation ${conv.id}`}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Quick action chips (context-aware) */}
+              <QuickActionChips
+                actions={quickActions}
+                onSelect={handleQuickAction}
+              />
             </div>
           </div>
         )}
