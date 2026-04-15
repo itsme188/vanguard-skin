@@ -200,7 +200,7 @@ When working with financial data (prices, valuations, dates, events), NEVER use 
 - **ChatDrawer rendered at layout root** (not inside header) so mobile full-screen overlay works. Do NOT wrap in `hidden md:flex`.
 - **Breakpoint**: `md:` (768px) separates phone from tablet/desktop. Mobile-first defaults.
 - **Safe area**: `pb-safe` utility in globals.css, `viewport-fit=cover` meta tag for iPhone notch/home indicator.
-- **Remote access**: Tailscale VPN — iPhone accesses Electron app at `100.88.9.46:3099`. Server binds to `0.0.0.0` (not localhost).
+- **Remote access**: Cloudflare Mesh — iPhone accesses Electron app at `100.96.0.1:3099` via Cloudflare One Client. Server binds to `0.0.0.0` (not localhost). Team: `isafier`. MDM config at `/Library/Managed Preferences/com.cloudflare.warp.plist`. Device profile: "Mesh Network Profile" (Include mode, `100.96.0.0/12`).
 
 ## Benchmark & Risk
 
