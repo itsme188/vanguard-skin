@@ -5,7 +5,7 @@ Add new entries at the bottom.
 
 ---
 
-- **PDF parsing via Claude API, not OCR** — Vanguard PDFs are image-heavy. The Anthropic SDK sends PDF pages to Claude for structured extraction. More accurate than tesseract/pdftotext and worth the API cost (~$0.50-0.80 per statement with Opus 4.6).
+- **PDF parsing via Claude API, not OCR** — Vanguard PDFs are image-heavy. The Anthropic SDK sends PDF pages to Claude for structured extraction. More accurate than tesseract/pdftotext and worth the API cost (~$0.50-0.80 per statement with Opus 4.7).
 
 - **SQLite over Postgres** — Local-first, single-user app. No need for a database server. WAL mode handles concurrent reads during imports.
 
@@ -17,7 +17,7 @@ Add new entries at the bottom.
 
 - **Thematic factor exposure — separate table, query-time inheritance** — `security_factors` is standalone (not bolted onto `securities`) because factors are opinionated macro assessments, not security identity. Options inherit factors at query time via `LEFT JOIN securities u ON u.symbol = s.underlying_symbol` + `COALESCE(sf.col, sf_u.col)`. Constants/labels/colors shared from `lib/factors.ts`. Auto-classify uses Sonnet 4 with training examples.
 
-- **Sampling strategy per API call** — (1) Chat: Opus 4.6 + adaptive thinking (temperature locked at 1.0, `effort: high`); (2) PDF extraction: Opus 4.6 + temperature 0 (determinism for structured JSON); (3) Factor classification: Sonnet 4 + temperature 0.2 (categorization with training examples). When thinking is enabled, the API requires temperature=1.0.
+- **Sampling strategy per API call** — (1) Chat: Opus 4.7 + adaptive thinking (temperature locked at 1.0, `effort: high`); (2) PDF extraction: Opus 4.7 + temperature 0 (determinism for structured JSON); (3) Factor classification: Sonnet 4 + temperature 0.2 (categorization with training examples). When thinking is enabled, the API requires temperature=1.0.
 
 - **TWS singleton on globalThis** — Module-level `let` variables reset on Turbopack HMR reload, orphaning TCP sockets. `lib/tws/client.ts` stores all TWS state on `globalThis.__tws_*` properties.
 
@@ -63,7 +63,7 @@ Add new entries at the bottom.
 
 - **Calendar: WSH via raw IBApi** — IBApiNext has no WSH wrappers. Access via `(ibApiNext as any).api`. WSH JSON format is undocumented — `raw_json` column preserves responses for parser iteration. Dividends/ex-dividends filtered out (user preference — too noisy).
 
-- **Calendar: Sonnet for enrichment, not Opus** — Macro event enrichment uses Sonnet 4.6 (structured JSON extraction, not deep reasoning). Briefing generation also uses Sonnet (analysis is substantive but doesn't need Opus-level reasoning). Saves ~5x cost vs. Opus per calendar sync.
+- **Calendar: Sonnet for enrichment, not Opus** — Macro event enrichment uses Sonnet 4.7 (structured JSON extraction, not deep reasoning). Briefing generation also uses Sonnet (analysis is substantive but doesn't need Opus-level reasoning). Saves ~5x cost vs. Opus per calendar sync.
 
 - **FOMC dates: hardcoded, not API** — The Fed publishes the FOMC schedule a year in advance (8 meetings). FRED doesn't have a clean single release_id for FOMC meetings — it publishes multiple releases (statement, minutes, projections) around each meeting. Hardcoded approach is 20 lines, zero API calls, zero failure modes. Update once a year. Source: federalreserve.gov/monetarypolicy/fomccalendars.htm.
 
@@ -72,3 +72,9 @@ Add new entries at the bottom.
 - **Email briefing: inline styles, not CSS** — Email clients (Gmail, Outlook, Apple Mail) strip `<style>` blocks and ignore CSS classes. All styling in `briefing-html.ts` uses inline `style=""` attributes. Midnight Portfolio theme colors translate directly to hex values. Simple markdown-to-HTML converter handles the subset Claude produces (##, **, -, paragraphs) without adding a dependency like `marked`.
 
 - **Overview chart: daily overrides monthly on merge** — `CombinedPortfolioChart` merges monthly snapshots with daily valuations by date key. Daily data overwrites monthly on the same date (more granular/recent). Monthly fills gaps for older dates. Simpler than `EquityCurveChart`'s shape-preserving normalization because the stacked-area chart uses absolute values per account, not proportional adjustment.
+
+- **Source URL extraction: raw_text > raw_html for Substack** — `extractSourceUrl()` checks `raw_html` first (view-in-browser regex), then falls back to `raw_text` for the Substack "View this post on the web at {URL}" pattern. This was the root cause of most missing URLs — Substack emails don't always include "View in browser" in their HTML, but always include the clean URL in the plaintext body. Ghost newsletters use `/r/{hash}` redirect links (3rd occurrence = article title). Bloomberg uses "Read in browser" (not "View in browser"). Source profiles documented in memory for future reference.
+
+- **Manual digest email with mode parameter** — `POST /api/digest/email` accepts `mode: "today" | "since_last" | "since_date"` + `sinceDate` for flexible date ranges. Default (no mode) = last 24h for backward compatibility with launchd cron. `last_digest_sent_at` and `last_briefing_sent_at` tracked in `settings` table for "since last" mode. UI panel in Feeds tab supports both daily digest and weekly briefing to arbitrary recipients.
+
+- **Launchd retry script** — `scripts/send-daily-digest.sh` replaces raw curl in the daily digest launchd plist. Retries 3 times with 2-minute delays in case the Electron app is still starting. `DigestCatchup.tsx` shows a banner on weekday app startup if today's digest wasn't sent.
