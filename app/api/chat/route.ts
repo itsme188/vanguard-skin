@@ -121,7 +121,7 @@ export async function POST(request: NextRequest) {
 
     // Stream with automatic agentic tool loop (up to 8 model calls)
     const result = streamText({
-      model: anthropic("claude-opus-4-6"),
+      model: anthropic("claude-opus-4-7"),
       maxOutputTokens: 16000,
       system: {
         role: "system",

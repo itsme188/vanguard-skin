@@ -101,7 +101,7 @@ export async function processUnprocessedArticles(
         result.sentiment_score,
         JSON.stringify(result.mentioned_symbols),
         result.portfolio_relevance,
-        "claude-sonnet-4-6",
+        "claude-sonnet-4-7",
         article.id
       );
 
@@ -142,7 +142,7 @@ async function extractWithClaude(
       : article.raw_text;
 
   const response = await client.messages.create({
-    model: "claude-sonnet-4-6",
+    model: "claude-sonnet-4-7",
     max_tokens: 2048,
     tools: [
       {

@@ -169,12 +169,26 @@ export function CalendarView({
 
         <div className="flex items-center gap-2">
           <button onClick={handleSync} disabled={syncing}
-            className="px-3 py-1.5 text-xs font-medium rounded-md bg-gold/10 text-gold border border-gold/30 hover:bg-gold/20 disabled:opacity-50 transition-colors">
-            {syncing ? "Syncing..." : "Sync Calendar"}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-gold/10 text-gold border border-gold/30 hover:bg-gold/20 disabled:opacity-50 transition-colors">
+            {syncing ? (
+              <div className="w-3.5 h-3.5 border-2 border-gold border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182" />
+              </svg>
+            )}
+            <span className="hidden sm:inline">{syncing ? "Syncing..." : "Sync Calendar"}</span>
           </button>
           <button onClick={handleGenerateBriefing} disabled={generatingBriefing || events.length === 0}
-            className="px-3 py-1.5 text-xs font-medium rounded-md bg-blue/10 text-blue border border-blue/30 hover:bg-blue/20 disabled:opacity-50 transition-colors">
-            {generatingBriefing ? "Generating..." : "Generate Briefing"}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-blue/10 text-blue border border-blue/30 hover:bg-blue/20 disabled:opacity-50 transition-colors">
+            {generatingBriefing ? (
+              <div className="w-3.5 h-3.5 border-2 border-blue border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+              </svg>
+            )}
+            <span className="hidden sm:inline">{generatingBriefing ? "Generating..." : "Generate Briefing"}</span>
           </button>
         </div>
       </div>

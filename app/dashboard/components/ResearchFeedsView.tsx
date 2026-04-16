@@ -115,6 +115,7 @@ export function ResearchFeedsView({ initialArticles, sources, initialSymbolMap }
   const [syncStatus, setSyncStatus] = useState<string | null>(null);
   const [manageOpen, setManageOpen] = useState(false);
   const [sendOpen, setSendOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [expandedText, setExpandedText] = useState<string | null>(null);
   const [expandedHtml, setExpandedHtml] = useState<string | null>(null);
@@ -299,13 +300,27 @@ export function ResearchFeedsView({ initialArticles, sources, initialSymbolMap }
         )}
 
         <div className="flex items-center gap-2">
+          {/* Search: full input on desktop, icon toggle on mobile */}
           <input
             type="text"
             placeholder="Search articles..."
             value={searchQuery}
             onChange={(e) => handleSearch(e.target.value)}
-            className="px-3 py-1.5 rounded-md bg-raised border border-edge text-sm text-ink placeholder:text-ink-faint w-full sm:w-56 focus:outline-none focus:border-gold"
+            className="hidden sm:block px-3 py-1.5 rounded-md bg-raised border border-edge text-sm text-ink placeholder:text-ink-faint sm:w-56 focus:outline-none focus:border-gold"
           />
+          <button
+            onClick={() => setSearchOpen(!searchOpen)}
+            className={`sm:hidden inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium border transition-colors ${
+              searchOpen || searchQuery
+                ? "bg-gold/10 border-gold/30 text-gold"
+                : "border-edge text-ink-dim hover:text-ink hover:bg-raised"
+            }`}
+            title="Search articles"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
+            </svg>
+          </button>
           <button
             onClick={() => setManageOpen(true)}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium border border-edge text-ink-dim hover:text-ink hover:bg-raised transition-colors"
@@ -313,7 +328,7 @@ export function ResearchFeedsView({ initialArticles, sources, initialSymbolMap }
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 6h9.75M10.5 6a1.5 1.5 0 1 1-3 0m3 0a1.5 1.5 0 1 0-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-9.75 0h9.75" />
             </svg>
-            Sources
+            <span className="hidden sm:inline">Sources</span>
           </button>
           <button
             onClick={handleSync}
@@ -327,7 +342,7 @@ export function ResearchFeedsView({ initialArticles, sources, initialSymbolMap }
                 <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182" />
               </svg>
             )}
-            Sync Feeds
+            <span className="hidden sm:inline">Sync Feeds</span>
           </button>
           <button
             onClick={() => setSendOpen(!sendOpen)}
@@ -345,6 +360,18 @@ export function ResearchFeedsView({ initialArticles, sources, initialSymbolMap }
           </button>
         </div>
       </div>
+
+      {/* Mobile search input (expands below controls when magnifying glass is tapped) */}
+      {searchOpen && isMobile && (
+        <input
+          type="text"
+          placeholder="Search articles..."
+          value={searchQuery}
+          onChange={(e) => handleSearch(e.target.value)}
+          autoFocus
+          className="px-3 py-1.5 rounded-md bg-raised border border-edge text-sm text-ink placeholder:text-ink-faint w-full focus:outline-none focus:border-gold"
+        />
+      )}
 
       {/* Send digest panel */}
       {sendOpen && <SendDigestPanel onClose={() => setSendOpen(false)} />}
