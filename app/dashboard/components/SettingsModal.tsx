@@ -155,7 +155,7 @@ export function SettingsModal() {
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
 
           {/* Modal */}
-          <div className="relative w-full max-w-lg max-h-[85vh] overflow-y-auto rounded-xl border border-edge bg-panel shadow-2xl">
+          <div className="relative w-full max-w-lg mx-4 max-h-[85vh] overflow-y-auto rounded-xl border border-edge bg-panel shadow-2xl">
             {/* Header */}
             <div className="sticky top-0 z-10 flex items-center justify-between px-5 py-3.5 border-b border-edge bg-panel/95 backdrop-blur-sm rounded-t-xl">
               <h2 className="text-sm font-medium text-ink">Settings</h2>
