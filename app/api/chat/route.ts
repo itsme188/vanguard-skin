@@ -11,6 +11,8 @@ import { db } from "@/lib/db";
 import { getPortfolioSummaryForChat } from "@/lib/queries/portfolio-summary";
 import { CHAT_TOOLS, executeTool, resolveAccountName } from "@/lib/chat/tools";
 import { buildSystemPrompt } from "@/lib/chat/system-prompt";
+import { computeIbkrTradingContext } from "@/lib/chat/ibkr-context";
+import { getAccountByName } from "@/lib/queries/accounts";
 import { getAnthropicApiKey } from "@/lib/env";
 import { VALID_SCOPES, type ChatScope } from "@/lib/types";
 import { createConversation, saveMessage, updateConversationTitle } from "@/lib/mutations/chat";
@@ -81,7 +83,19 @@ export async function POST(request: NextRequest) {
       portfolioContext = getPortfolioSummaryForChat(db, accountName);
     }
     const currentDate = new Date().toISOString().slice(0, 10);
-    let systemPromptText = buildSystemPrompt(portfolioContext, currentDate, scope);
+
+    // Compute IBKR dynamic trading context when scoped to IBKR
+    const ibkrContext = scope === "ibkr"
+      ? (() => {
+          const ibkrAccountName = resolveAccountName(db, "IBKR");
+          if (!ibkrAccountName) return undefined;
+          const ibkrAccount = getAccountByName(db, ibkrAccountName);
+          if (!ibkrAccount) return undefined;
+          return computeIbkrTradingContext(db, ibkrAccount.id, ibkrAccount.name);
+        })()
+      : undefined;
+
+    let systemPromptText = buildSystemPrompt(portfolioContext, currentDate, scope, ibkrContext);
     if (pageContext) {
       systemPromptText += `\n\n[Current Page Context]\n${pageContext}`;
     }
