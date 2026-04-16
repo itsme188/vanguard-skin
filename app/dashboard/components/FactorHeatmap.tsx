@@ -126,10 +126,10 @@ export function FactorHeatmap({ rows }: FactorHeatmapProps) {
               >
                 Weight{sortIndicator("weight")}
               </th>
-              {FACTOR_COLUMNS.map((col) => (
+              {FACTOR_COLUMNS.map((col, colIdx) => (
                 <th
                   key={col}
-                  className="text-center py-2 px-1 font-medium text-ink-faint min-w-[72px] cursor-pointer hover:text-ink-dim select-none"
+                  className={`text-center py-2 px-1 font-medium text-ink-faint min-w-[72px] cursor-pointer hover:text-ink-dim select-none ${colIdx >= 3 ? "hidden md:table-cell" : ""}`}
                   title={`Sort by ${FACTOR_LABELS[col]}`}
                   onClick={() => handleSort(col)}
                 >
@@ -165,7 +165,7 @@ export function FactorHeatmap({ rows }: FactorHeatmapProps) {
                   return (
                     <td
                       key={col}
-                      className="text-center py-1.5 px-1 relative"
+                      className={`text-center py-1.5 px-1 relative ${colIdx >= 3 ? "hidden md:table-cell" : ""}`}
                       onMouseEnter={() => setHoveredCell({ row: rowIdx, col: colIdx })}
                       onMouseLeave={() => setHoveredCell(null)}
                     >

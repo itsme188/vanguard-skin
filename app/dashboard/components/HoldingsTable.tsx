@@ -66,7 +66,7 @@ export function HoldingsTable({
               <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">
                 Symbol
               </th>
-              <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">
+              <th className="hidden md:table-cell text-left px-4 py-2.5 text-ink-faint font-medium text-xs">
                 Name
               </th>
               <th className="text-right px-4 py-2.5 text-ink-faint font-medium text-xs">
@@ -75,7 +75,7 @@ export function HoldingsTable({
               <th className="text-right px-4 py-2.5 text-ink-faint font-medium text-xs">
                 Cost Basis
               </th>
-              <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">
+              <th className="hidden md:table-cell text-left px-4 py-2.5 text-ink-faint font-medium text-xs">
                 As Of
               </th>
             </tr>
@@ -101,7 +101,7 @@ export function HoldingsTable({
                     />
                   )}
                 </td>
-                <td className="px-4 py-3 text-ink-dim truncate max-w-[200px]">
+                <td className="hidden md:table-cell px-4 py-3 text-ink-dim truncate max-w-[200px]">
                   {holding.security_name ?? "\u2014"}
                 </td>
                 <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
@@ -117,7 +117,7 @@ export function HoldingsTable({
                     <span title="Import a Vanguard cost basis CSV to populate" className="cursor-help">—</span>
                   )}
                 </td>
-                <td className="px-4 py-3 text-ink-faint font-mono text-xs">
+                <td className="hidden md:table-cell px-4 py-3 text-ink-faint font-mono text-xs">
                   {holding.as_of_date}
                 </td>
               </tr>

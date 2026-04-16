@@ -1,5 +1,6 @@
 import type { TransactionWithSecurity } from "@/lib/queries/transactions";
 import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
+import { ScrollFade } from "./ScrollFade";
 
 const TYPE_STYLES: Record<string, string> = {
   BUY: "bg-up-tint text-up",
@@ -43,19 +44,20 @@ export function TransactionHistory({
         Recent Transactions
       </h3>
       <div className="rounded-xl border border-edge overflow-hidden">
+        <ScrollFade>
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-edge bg-panel">
               <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">
                 Date
               </th>
-              <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">
+              <th className="hidden md:table-cell text-left px-4 py-2.5 text-ink-faint font-medium text-xs">
                 Type
               </th>
               <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">
                 Symbol
               </th>
-              <th className="text-right px-4 py-2.5 text-ink-faint font-medium text-xs">
+              <th className="hidden md:table-cell text-right px-4 py-2.5 text-ink-faint font-medium text-xs">
                 Quantity
               </th>
               <th className="text-right px-4 py-2.5 text-ink-faint font-medium text-xs">
@@ -72,7 +74,7 @@ export function TransactionHistory({
                 <td className="px-4 py-3 font-mono text-xs text-ink-dim">
                   {txn.trade_date}
                 </td>
-                <td className="px-4 py-3">
+                <td className="hidden md:table-cell px-4 py-3">
                   <span
                     className={`text-xs px-2 py-0.5 rounded font-mono ${
                       TYPE_STYLES[txn.type] ?? "bg-raised text-ink-dim"
@@ -88,7 +90,7 @@ export function TransactionHistory({
                     txn.symbol ?? "\u2014"
                   )}
                 </td>
-                <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
+                <td className="hidden md:table-cell px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
                   {txn.quantity !== null
                     ? new Intl.NumberFormat("en-US", {
                         maximumFractionDigits: 4,
@@ -102,6 +104,7 @@ export function TransactionHistory({
             ))}
           </tbody>
         </table>
+        </ScrollFade>
       </div>
     </div>
   );
