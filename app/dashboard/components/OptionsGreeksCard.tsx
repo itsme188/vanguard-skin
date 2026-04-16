@@ -64,14 +64,14 @@ export function OptionsGreeksCard({ scope }: { scope?: string }) {
           <thead>
             <tr className="text-ink-faint border-b border-edge">
               <th className="text-left py-2 pr-3 font-medium">Option</th>
-              <th className="text-right py-2 px-2 font-medium">Qty</th>
-              <th className="text-right py-2 px-2 font-medium">Underlying</th>
+              <th className="hidden md:table-cell text-right py-2 px-2 font-medium">Qty</th>
+              <th className="hidden md:table-cell text-right py-2 px-2 font-medium">Underlying</th>
               <th className="text-right py-2 px-2 font-medium">DTE</th>
-              <th className="text-right py-2 px-2 font-medium">IV</th>
+              <th className="hidden md:table-cell text-right py-2 px-2 font-medium">IV</th>
               <th className="text-right py-2 px-2 font-medium">Delta</th>
-              <th className="text-right py-2 px-2 font-medium">Gamma</th>
+              <th className="hidden md:table-cell text-right py-2 px-2 font-medium">Gamma</th>
               <th className="text-right py-2 px-2 font-medium">Theta</th>
-              <th className="text-right py-2 px-2 font-medium">Vega</th>
+              <th className="hidden md:table-cell text-right py-2 px-2 font-medium">Vega</th>
             </tr>
           </thead>
           <tbody>
@@ -91,28 +91,28 @@ export function OptionsGreeksCard({ scope }: { scope?: string }) {
                       {formatStrike(p.strike)} {p.optionType[0]} {formatExpiry(p.expiration)}
                     </span>
                   </td>
-                  <td className={`text-right py-2 px-2 font-mono ${p.quantity < 0 ? "text-down" : "text-ink"}`}>
+                  <td className={`hidden md:table-cell text-right py-2 px-2 font-mono ${p.quantity < 0 ? "text-down" : "text-ink"}`}>
                     {p.quantity > 0 ? `+${p.quantity}` : p.quantity}
                   </td>
-                  <td className="text-right py-2 px-2 font-mono text-ink-dim">
+                  <td className="hidden md:table-cell text-right py-2 px-2 font-mono text-ink-dim">
                     ${p.underlyingPrice.toFixed(2)}
                   </td>
                   <td className={`text-right py-2 px-2 font-mono ${dte <= 7 ? "text-down" : dte <= 30 ? "text-gold" : "text-ink-dim"}`}>
                     {dte}d
                   </td>
-                  <td className="text-right py-2 px-2 font-mono text-ink-dim">
+                  <td className="hidden md:table-cell text-right py-2 px-2 font-mono text-ink-dim">
                     {iv != null ? `${(iv * 100).toFixed(0)}%` : "—"}
                   </td>
                   <td className={`text-right py-2 px-2 font-mono ${(delta ?? 0) > 0 ? "text-up" : (delta ?? 0) < 0 ? "text-down" : "text-ink-dim"}`}>
                     {delta != null ? delta.toFixed(3) : "—"}
                   </td>
-                  <td className="text-right py-2 px-2 font-mono text-ink-dim">
+                  <td className="hidden md:table-cell text-right py-2 px-2 font-mono text-ink-dim">
                     {gamma != null ? gamma.toFixed(4) : "—"}
                   </td>
                   <td className="text-right py-2 px-2 font-mono text-down">
                     {theta != null ? `$${theta.toFixed(2)}` : "—"}
                   </td>
-                  <td className="text-right py-2 px-2 font-mono text-blue">
+                  <td className="hidden md:table-cell text-right py-2 px-2 font-mono text-blue">
                     {vega != null ? `$${vega.toFixed(2)}` : "—"}
                   </td>
                 </tr>
