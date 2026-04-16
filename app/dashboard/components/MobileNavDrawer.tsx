@@ -53,7 +53,7 @@ export function MobileNavDrawer() {
 
       {/* Drawer panel */}
       <nav
-        className={`fixed top-0 left-0 h-full w-64 z-50 bg-canvas border-r border-edge shadow-2xl transform transition-transform duration-300 ease-in-out md:hidden ${
+        className={`fixed top-0 left-0 h-full w-64 z-50 bg-panel border-r border-edge shadow-2xl transform transition-transform duration-300 ease-in-out md:hidden ${
           open ? "translate-x-0" : "-translate-x-full"
         }`}
         role="dialog"
@@ -61,7 +61,7 @@ export function MobileNavDrawer() {
         aria-hidden={!open}
       >
         {/* Drawer header */}
-        <div className="flex items-center justify-between px-4 py-4 border-b border-edge">
+        <div className="flex items-center justify-between px-4 py-4 border-b border-edge bg-raised/50">
           <span className="font-serif text-lg text-gold tracking-tight">
             Vanguard Skin
           </span>

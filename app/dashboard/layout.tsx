@@ -34,7 +34,7 @@ export default function DashboardLayout({
             <div className="flex items-center gap-3 md:gap-4">
               <div className="hidden md:flex"><DataConfidenceIndicator /></div>
               <SearchButton />
-              <div className="hidden md:flex"><TwsStatus /></div>
+              <TwsStatus />
               <SettingsModal />
               <span className="hidden md:inline"><AppVersion /></span>
             </div>
