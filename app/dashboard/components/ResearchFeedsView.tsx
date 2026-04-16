@@ -5,6 +5,8 @@ import Link from "next/link";
 import type { ResearchArticle, ResearchSource } from "@/lib/queries/research";
 import { trimEmailFooter } from "@/lib/gmail/sanitize";
 import { ManageSourcesModal } from "./ManageSourcesModal";
+import { SendDigestPanel } from "./SendDigestPanel";
+import { useIsMobile } from "@/lib/hooks/useIsMobile";
 
 interface Props {
   initialArticles: ResearchArticle[];
@@ -103,6 +105,7 @@ function ThemePills({ themesJson }: { themesJson: string | null }) {
 // ── Main view ────────────────────────────────────────────────────────
 
 export function ResearchFeedsView({ initialArticles, sources, initialSymbolMap }: Props) {
+  const isMobile = useIsMobile();
   const [articles, setArticles] = useState(initialArticles);
   const [symbolMap, setSymbolMap] = useState<Record<string, number>>(initialSymbolMap);
   const [currentSources, setCurrentSources] = useState(sources);
@@ -111,6 +114,7 @@ export function ResearchFeedsView({ initialArticles, sources, initialSymbolMap }
   const [syncing, setSyncing] = useState(false);
   const [syncStatus, setSyncStatus] = useState<string | null>(null);
   const [manageOpen, setManageOpen] = useState(false);
+  const [sendOpen, setSendOpen] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [expandedText, setExpandedText] = useState<string | null>(null);
   const [expandedHtml, setExpandedHtml] = useState<string | null>(null);
@@ -248,34 +252,51 @@ export function ResearchFeedsView({ initialArticles, sources, initialSymbolMap }
     <div className="space-y-5">
       {/* Controls bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div className="flex items-center gap-2 overflow-x-auto">
-          <button
-            onClick={() => handleFilterChange(null)}
-            className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-              sourceFilter === null
-                ? "bg-panel text-ink shadow-sm border border-edge"
-                : "text-ink-dim hover:text-ink hover:bg-raised"
-            }`}
+        {isMobile ? (
+          <select
+            value={sourceFilter ?? ""}
+            onChange={(e) => handleFilterChange(e.target.value ? Number(e.target.value) : null)}
+            className="px-3 py-1.5 rounded-md bg-raised border border-edge text-sm text-ink w-full"
           >
-            All
-          </button>
-          {currentSources
-            .filter((s) => s.is_active && s.article_count && s.article_count > 0)
-            .map((s) => (
-              <button
-                key={s.id}
-                onClick={() => handleFilterChange(s.id)}
-                className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                  sourceFilter === s.id
-                    ? "bg-panel text-ink shadow-sm border border-edge"
-                    : "text-ink-dim hover:text-ink hover:bg-raised"
-                }`}
-              >
-                {s.name}
-                <span className="ml-1 text-ink-faint">({s.article_count})</span>
-              </button>
-            ))}
-        </div>
+            <option value="">All Sources</option>
+            {currentSources
+              .filter((s) => s.is_active && s.article_count && s.article_count > 0)
+              .map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name} ({s.article_count})
+                </option>
+              ))}
+          </select>
+        ) : (
+          <div className="flex items-center gap-2 overflow-x-auto">
+            <button
+              onClick={() => handleFilterChange(null)}
+              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                sourceFilter === null
+                  ? "bg-panel text-ink shadow-sm border border-edge"
+                  : "text-ink-dim hover:text-ink hover:bg-raised"
+              }`}
+            >
+              All
+            </button>
+            {currentSources
+              .filter((s) => s.is_active && s.article_count && s.article_count > 0)
+              .map((s) => (
+                <button
+                  key={s.id}
+                  onClick={() => handleFilterChange(s.id)}
+                  className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                    sourceFilter === s.id
+                      ? "bg-panel text-ink shadow-sm border border-edge"
+                      : "text-ink-dim hover:text-ink hover:bg-raised"
+                  }`}
+                >
+                  {s.name}
+                  <span className="ml-1 text-ink-faint">({s.article_count})</span>
+                </button>
+              ))}
+          </div>
+        )}
 
         <div className="flex items-center gap-2">
           <input
@@ -308,8 +329,25 @@ export function ResearchFeedsView({ initialArticles, sources, initialSymbolMap }
             )}
             Sync Feeds
           </button>
+          <button
+            onClick={() => setSendOpen(!sendOpen)}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium border transition-colors ${
+              sendOpen
+                ? "bg-gold/10 border-gold/30 text-gold"
+                : "border-edge text-ink-dim hover:text-ink hover:bg-raised"
+            }`}
+            title="Send email"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 0 1-2.25 2.25h-15a2.25 2.25 0 0 1-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25m19.5 0v.243a2.25 2.25 0 0 1-1.07 1.916l-7.5 4.615a2.25 2.25 0 0 1-2.36 0L3.32 8.91a2.25 2.25 0 0 1-1.07-1.916V6.75" />
+            </svg>
+            <span className="hidden sm:inline">Email</span>
+          </button>
         </div>
       </div>
+
+      {/* Send digest panel */}
+      {sendOpen && <SendDigestPanel onClose={() => setSendOpen(false)} />}
 
       {/* Sync status */}
       {syncStatus && (

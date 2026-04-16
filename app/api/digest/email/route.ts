@@ -2,7 +2,7 @@ import { db } from "@/lib/db";
 import { isGmailConfigured, getGmailClient } from "@/lib/gmail/auth";
 import { fetchNewArticles, backfillSourceUrls } from "@/lib/gmail/fetch";
 import { processUnprocessedArticles } from "@/lib/gmail/process";
-import { generateDailyDigest } from "@/lib/digest/daily-digest";
+import { generateDailyDigest, generateDigestSince, getLastDigestSentAt, setLastDigestSentAt } from "@/lib/digest/daily-digest";
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
 import { sendEmail } from "@/lib/email";
 import { syncPortfolio } from "@/lib/tws/positions";
@@ -10,11 +10,13 @@ import { syncPortfolio } from "@/lib/tws/positions";
 /**
  * POST /api/digest/email — Sync research feeds, generate daily digest, and email it.
  *
- * Body: { to?: string }
- *   - to: recipient email. Defaults to BRIEFING_EMAIL_TO env var.
+ * Body: { to?: string, mode?: "today" | "since_last" | "since_date", sinceDate?: string }
+ *   - to: recipient email(s), comma-separated. Defaults to BRIEFING_EMAIL_TO env var.
+ *   - mode: date range mode. Default (omitted) = last 24 hours (backward-compatible with cron).
+ *   - sinceDate: YYYY-MM-DD for "since_date" mode.
  *
  * Flow: sync Gmail → AI-process articles → compile digest → send email.
- * Skips gracefully if no new articles in the last 24 hours.
+ * Skips gracefully if no articles in the selected range.
  */
 export async function POST(request: Request) {
   const body = await request.json().catch(() => ({}));
@@ -63,14 +65,29 @@ export async function POST(request: Request) {
     // Step 1.5: Backfill source URLs for articles missing them
     backfillSourceUrls(db);
 
-    // Step 2: Generate digest from last 24h of processed articles
-    const digest = generateDailyDigest(db);
+    // Step 2: Generate digest based on mode
+    const mode = body.mode as string | undefined;
+    let digest: string | null;
+
+    if (mode === "today") {
+      const today = new Date().toISOString().slice(0, 10);
+      digest = generateDigestSince(db, today);
+    } else if (mode === "since_last") {
+      const lastSent = getLastDigestSentAt(db);
+      const fallback = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      digest = generateDigestSince(db, lastSent || fallback);
+    } else if (mode === "since_date" && body.sinceDate) {
+      digest = generateDigestSince(db, body.sinceDate as string);
+    } else {
+      // Default: last 24 hours (backward-compatible with launchd cron)
+      digest = generateDailyDigest(db);
+    }
 
     if (!digest) {
       return Response.json({
         success: true,
         skipped: true,
-        reason: "No processed articles in last 24 hours",
+        reason: "No processed articles in the selected range",
         synced,
       });
     }
@@ -91,6 +108,9 @@ export async function POST(request: Request) {
       `\u{1F4F0} ${title}`,
       html
     );
+
+    // Record send timestamp for "since last email" mode
+    setLastDigestSentAt(db, new Date().toISOString());
 
     return Response.json({
       success: true,

@@ -1,6 +1,6 @@
 import { db } from "@/lib/db";
 import { isGmailConfigured, getGmailClient } from "@/lib/gmail/auth";
-import { fetchNewArticles, backfillArticleHtml } from "@/lib/gmail/fetch";
+import { fetchNewArticles, backfillArticleHtml, backfillSourceUrls } from "@/lib/gmail/fetch";
 import { processUnprocessedArticles } from "@/lib/gmail/process";
 
 /**
@@ -57,6 +57,16 @@ export async function POST() {
             phase: "backfill",
             status: "done",
             updated: backfillResult.updated,
+          });
+        }
+
+        // Phase 3.5: Re-try URL extraction for articles missing source_url
+        const urlsBackfilled = backfillSourceUrls(db);
+        if (urlsBackfilled > 0) {
+          send({
+            phase: "urls",
+            status: "done",
+            updated: urlsBackfilled,
           });
         }
 

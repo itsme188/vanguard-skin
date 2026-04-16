@@ -8,7 +8,7 @@ import { discoverNewsletterSenders } from "@/lib/gmail/discover";
 export async function POST() {
   if (!isGmailConfigured()) {
     return Response.json(
-      { error: "Gmail OAuth not configured" },
+      { error: "Gmail OAuth not configured. Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REFRESH_TOKEN in .env.local" },
       { status: 400 }
     );
   }

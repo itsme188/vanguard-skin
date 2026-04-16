@@ -5,6 +5,7 @@ import { briefingToHtml } from "@/lib/calendar/briefing-html";
 import { sendEmail } from "@/lib/email";
 import { getCurrentMonday } from "@/lib/calendar/date-utils";
 import { syncPortfolio } from "@/lib/tws/positions";
+import { setLastBriefingSentAt } from "@/lib/digest/daily-digest";
 
 /**
  * POST /api/calendar/email — Generate (if needed) and email the weekly briefing.
@@ -85,6 +86,9 @@ export async function POST(request: Request) {
       `📊 ${title} — Weekly Portfolio Briefing`,
       html
     );
+
+    // Record send timestamp for "since last email" mode
+    setLastBriefingSentAt(db, new Date().toISOString());
 
     return Response.json({
       success: true,
