@@ -126,7 +126,7 @@ When working with financial data (prices, valuations, dates, events), NEVER use 
 - `POST /api/import?mode=commit` — parse and commit to database
 - `POST /api/compute/valuations` — recompute daily valuations
 - `POST /api/compute/tax-lots` — recompute tax lots (FIFO)
-- `POST /api/chat` — AI SDK v6 `streamText` with `@ai-sdk/anthropic` provider (Opus 4.6, adaptive thinking, ephemeral cache control, `stopWhen: stepCountIs(8)`). Client uses `useChat` from `@ai-sdk/react`.
+- `POST /api/chat` — AI SDK v6 `streamText` with `@ai-sdk/anthropic` provider (Opus 4.7, adaptive thinking, ephemeral cache control, `stopWhen: stepCountIs(8)`). Client uses `useChat` from `@ai-sdk/react`.
 - `POST /api/tws/positions` — SSE streaming: sync live IBKR positions + account summary from TWS
 - `POST /api/tws/chart` — OHLCV bars for per-security charting. Supports daily (cached in `ohlcv_bars`) and intraday 1m/5m (live from TWS, not cached). Returns transactions for BUY/SELL markers.
 - `POST /api/calendar/sync` — SSE streaming: pulls WSH company events (earnings, analyst meetings) from TWS + macro events (FOMC, CPI, jobs) from Claude API. Stores in `calendar_events` table.
@@ -162,7 +162,7 @@ When working with financial data (prices, valuations, dates, events), NEVER use 
 - `GET /api/trade-review?accountId=&year=` — list trade reviews for account
 - `GET /api/trade-review?id=` — single review with grouped trades (lots grouped by sale_transaction_id)
 - `GET /api/trade-review?periods=true&accountId=` — available review periods (COUNT DISTINCT sale_transaction_id)
-- `POST /api/research/sync` — SSE streaming: fetch Gmail newsletters + AI-process with Claude Sonnet + backfill HTML for old articles
+- `POST /api/research/sync` — SSE streaming: fetch Gmail newsletters + AI-process with Claude Sonnet + backfill HTML + backfill source URLs for old articles
 - `GET /api/research/articles?sourceId=&securityId=&startDate=&endDate=&search=&limit=` — query research articles (includes symbolMap)
 - `GET /api/research/articles/[id]` — single article with raw_text + raw_html for expanded view
 - `GET /api/research/sources` — list newsletter sources with article counts
@@ -171,7 +171,8 @@ When working with financial data (prices, valuations, dates, events), NEVER use 
 - `DELETE /api/research/sources` — delete newsletter source. Body: `{ id }`
 - `POST /api/research/discover` — scan Gmail for newsletter senders (90-day window, 1+ emails)
 - `GET /api/gmail/status` — check Gmail OAuth connection
-- `POST /api/digest/email` — sync feeds + compile daily digest + send email. Body: `{ to? }`. Skips if no articles in last 24h.
+- `POST /api/digest/email` — sync feeds + compile daily digest + send email. Body: `{ to?, mode?: "today" | "since_last" | "since_date", sinceDate? }`. Default (no mode) = last 24h. Records `last_digest_sent_at` in settings table.
+- `GET /api/digest/status` — last-sent timestamps (`lastDigestSentAt`, `lastBriefingSentAt`) and `defaultRecipient` from env
 
 ## Security Detail Page
 
