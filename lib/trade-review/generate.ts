@@ -27,8 +27,8 @@ import { fetchHistoricalPrices } from "@/lib/tws/historical";
 import { fetchBenchmarkPrices } from "@/lib/tws/benchmark";
 import type { TradeReview } from "@/lib/types";
 
-const REVIEW_MODEL_OPUS = "claude-opus-4-6";
-const REVIEW_MODEL_SONNET = "claude-sonnet-4-20250514";
+const REVIEW_MODEL_OPUS = "claude-opus-4-7";
+const REVIEW_MODEL_SONNET = "claude-sonnet-4-7";
 /** Use Sonnet for months with many trades to avoid timeouts */
 const SONNET_TRADE_THRESHOLD = 20;
 

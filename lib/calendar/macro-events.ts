@@ -204,7 +204,7 @@ For each event, provide enrichment data as a JSON array (same order as above):
 Return ONLY a JSON array of objects, one per event, in the same order. No markdown, no explanation.`;
 
   const response = await client.messages.create({
-    model: "claude-sonnet-4-6",
+    model: "claude-sonnet-4-7",
     max_tokens: 4096,
     messages: [{ role: "user", content: prompt }],
   });
