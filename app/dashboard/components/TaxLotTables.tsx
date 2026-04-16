@@ -61,11 +61,11 @@ export function OpenLotsTable({
                   <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">Account</th>
                 )}
                 <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">Symbol</th>
-                <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">Acquired</th>
+                <th className="hidden md:table-cell text-left px-4 py-2.5 text-ink-faint font-medium text-xs">Acquired</th>
                 <th className="text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Qty</th>
-                <th className="text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Cost/Share</th>
+                <th className="hidden md:table-cell text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Cost/Share</th>
                 <th className="text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Cost Basis</th>
-                <th className="text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Mkt Value</th>
+                <th className="hidden md:table-cell text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Mkt Value</th>
                 <th className="text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Unrealized</th>
               </tr>
             </thead>
@@ -81,17 +81,17 @@ export function OpenLotsTable({
                   <td className="px-4 py-3 font-mono font-medium text-ink">
                     <SymbolLink securityId={lot.security_id} symbol={lot.symbol} />
                   </td>
-                  <td className="px-4 py-3 text-ink-faint font-mono text-xs">{lot.acquisition_date}</td>
+                  <td className="hidden md:table-cell px-4 py-3 text-ink-faint font-mono text-xs">{lot.acquisition_date}</td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
                     {formatQuantity(lot.quantity_remaining)}
                   </td>
-                  <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
+                  <td className="hidden md:table-cell px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
                     {formatCurrency(lot.acquisition_price)}
                   </td>
                   <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
                     {formatCurrency(lot.adjusted_cost_basis)}
                   </td>
-                  <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
+                  <td className="hidden md:table-cell px-4 py-3 text-right font-mono tabular-nums text-ink">
                     {formatCurrency(lot.current_value)}
                   </td>
                   <td className="px-4 py-3 text-right">
@@ -133,13 +133,13 @@ export function ClosedSalesTable({
                   <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">Account</th>
                 )}
                 <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">Symbol</th>
-                <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">Sold</th>
-                <th className="text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Qty</th>
-                <th className="text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Proceeds</th>
-                <th className="text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Cost Basis</th>
+                <th className="hidden md:table-cell text-left px-4 py-2.5 text-ink-faint font-medium text-xs">Sold</th>
+                <th className="hidden md:table-cell text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Qty</th>
+                <th className="hidden md:table-cell text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Proceeds</th>
+                <th className="hidden md:table-cell text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Cost Basis</th>
                 <th className="text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Gain/Loss</th>
                 <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">Term</th>
-                <th className="text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Days</th>
+                <th className="hidden md:table-cell text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Days</th>
               </tr>
             </thead>
             <tbody>
@@ -154,14 +154,14 @@ export function ClosedSalesTable({
                   <td className="px-4 py-3 font-mono font-medium text-ink">
                     <SymbolLink securityId={sale.security_id} symbol={sale.symbol} />
                   </td>
-                  <td className="px-4 py-3 text-ink-faint font-mono text-xs">{sale.sale_date}</td>
-                  <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
+                  <td className="hidden md:table-cell px-4 py-3 text-ink-faint font-mono text-xs">{sale.sale_date}</td>
+                  <td className="hidden md:table-cell px-4 py-3 text-right font-mono tabular-nums text-ink">
                     {formatQuantity(sale.quantity_sold)}
                   </td>
-                  <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
+                  <td className="hidden md:table-cell px-4 py-3 text-right font-mono tabular-nums text-ink">
                     {formatCurrency(sale.proceeds)}
                   </td>
-                  <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
+                  <td className="hidden md:table-cell px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
                     {formatCurrency(sale.cost_basis_allocated)}
                   </td>
                   <td className="px-4 py-3 text-right">
@@ -178,7 +178,7 @@ export function ClosedSalesTable({
                       {sale.is_long_term ? "Long" : "Short"}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-faint text-xs">
+                  <td className="hidden md:table-cell px-4 py-3 text-right font-mono tabular-nums text-ink-faint text-xs">
                     {sale.holding_period_days}
                   </td>
                 </tr>

@@ -230,7 +230,7 @@ export default async function SecurityDetailPage(props: {
 
       {/* Chart */}
       <section className="rounded-xl border border-edge bg-panel overflow-hidden">
-        <div className="h-[400px]">
+        <div className="h-[280px] md:h-[400px]">
           <SecurityChart securityId={securityId} symbol={security.symbol} />
         </div>
       </section>
@@ -252,7 +252,7 @@ export default async function SecurityDetailPage(props: {
                   </th>
                   <th className="text-right px-5 py-2 font-medium">Value</th>
                   <th className="text-right px-5 py-2 font-medium">Gain</th>
-                  <th className="text-right px-5 py-2 font-medium">%</th>
+                  <th className="hidden md:table-cell text-right px-5 py-2 font-medium">%</th>
                 </tr>
               </thead>
               <tbody>
@@ -290,7 +290,7 @@ export default async function SecurityDetailPage(props: {
                           : "\u2013"}
                       </td>
                       <td
-                        className={`px-5 py-2.5 text-right font-mono ${gainClass(pct)}`}
+                        className={`hidden md:table-cell px-5 py-2.5 text-right font-mono ${gainClass(pct)}`}
                       >
                         {pct != null ? formatPct(pct) : "\u2013"}
                       </td>
@@ -321,7 +321,7 @@ export default async function SecurityDetailPage(props: {
                       {formatCurrency(detail.totalUnrealizedGain)}
                     </td>
                     <td
-                      className={`px-5 py-2.5 text-right font-mono ${gainClass(detail.totalUnrealizedGain)}`}
+                      className={`hidden md:table-cell px-5 py-2.5 text-right font-mono ${gainClass(detail.totalUnrealizedGain)}`}
                     >
                       {detail.totalCostBasis > 0
                         ? formatPct(
@@ -358,7 +358,7 @@ export default async function SecurityDetailPage(props: {
               <thead>
                 <tr className="border-b border-edge text-ink-faint text-xs">
                   <th className="text-left px-5 py-2 font-medium">Acquired</th>
-                  <th className="text-left px-5 py-2 font-medium">Account</th>
+                  <th className="hidden md:table-cell text-left px-5 py-2 font-medium">Account</th>
                   <th className="text-right px-5 py-2 font-medium">Qty</th>
                   <th className="text-right px-5 py-2 font-medium">
                     Cost Basis
@@ -378,7 +378,7 @@ export default async function SecurityDetailPage(props: {
                     <td className="px-5 py-2.5 font-mono text-ink-dim text-xs">
                       {lot.acquisition_date}
                     </td>
-                    <td className="px-5 py-2.5 text-ink">
+                    <td className="hidden md:table-cell px-5 py-2.5 text-ink">
                       {lot.account_name}
                     </td>
                     <td className="px-5 py-2.5 text-right font-mono text-ink">
@@ -428,8 +428,8 @@ export default async function SecurityDetailPage(props: {
                   <th className="text-left px-5 py-2 font-medium">
                     Sale Date
                   </th>
-                  <th className="text-left px-5 py-2 font-medium">Account</th>
-                  <th className="text-right px-5 py-2 font-medium">Qty</th>
+                  <th className="hidden md:table-cell text-left px-5 py-2 font-medium">Account</th>
+                  <th className="hidden md:table-cell text-right px-5 py-2 font-medium">Qty</th>
                   <th className="text-right px-5 py-2 font-medium">
                     Proceeds
                   </th>
@@ -448,10 +448,10 @@ export default async function SecurityDetailPage(props: {
                     <td className="px-5 py-2.5 font-mono text-ink-dim text-xs">
                       {sale.sale_date}
                     </td>
-                    <td className="px-5 py-2.5 text-ink">
+                    <td className="hidden md:table-cell px-5 py-2.5 text-ink">
                       {sale.account_name}
                     </td>
-                    <td className="px-5 py-2.5 text-right font-mono text-ink">
+                    <td className="hidden md:table-cell px-5 py-2.5 text-right font-mono text-ink">
                       {sale.quantity_sold}
                     </td>
                     <td className="px-5 py-2.5 text-right font-mono text-ink-dim">
@@ -502,7 +502,7 @@ export default async function SecurityDetailPage(props: {
                   <th className="text-center px-5 py-2 font-medium">Grade</th>
                   <th className="text-left px-5 py-2 font-medium">Entry</th>
                   <th className="text-left px-5 py-2 font-medium">Exit</th>
-                  <th className="text-right px-5 py-2 font-medium">Days</th>
+                  <th className="hidden md:table-cell text-right px-5 py-2 font-medium">Days</th>
                   <th className="text-right px-5 py-2 font-medium">P&L</th>
                   <th className="text-right px-5 py-2 font-medium">Return</th>
                 </tr>
@@ -533,7 +533,7 @@ export default async function SecurityDetailPage(props: {
                       <td className="px-5 py-2.5 font-mono text-xs text-ink-dim">
                         {tg.exit_date}
                       </td>
-                      <td className="px-5 py-2.5 text-right font-mono text-ink-dim">
+                      <td className="hidden md:table-cell px-5 py-2.5 text-right font-mono text-ink-dim">
                         {tg.holding_days}
                       </td>
                       <td className={`px-5 py-2.5 text-right font-mono ${gainClass(tg.realized_pnl)}`}>
@@ -586,9 +586,9 @@ export default async function SecurityDetailPage(props: {
                 <tr className="border-b border-edge text-ink-faint text-xs">
                   <th className="text-left px-5 py-2 font-medium">Date</th>
                   <th className="text-left px-5 py-2 font-medium">Type</th>
-                  <th className="text-left px-5 py-2 font-medium">Account</th>
+                  <th className="hidden md:table-cell text-left px-5 py-2 font-medium">Account</th>
                   <th className="text-right px-5 py-2 font-medium">Qty</th>
-                  <th className="text-right px-5 py-2 font-medium">Price</th>
+                  <th className="hidden md:table-cell text-right px-5 py-2 font-medium">Price</th>
                   <th className="text-right px-5 py-2 font-medium">Amount</th>
                 </tr>
               </thead>
@@ -616,13 +616,13 @@ export default async function SecurityDetailPage(props: {
                         {t.type}
                       </span>
                     </td>
-                    <td className="px-5 py-2.5 text-ink-dim">
+                    <td className="hidden md:table-cell px-5 py-2.5 text-ink-dim">
                       {t.account_name}
                     </td>
                     <td className="px-5 py-2.5 text-right font-mono text-ink">
                       {t.quantity != null ? t.quantity.toLocaleString() : "\u2013"}
                     </td>
-                    <td className="px-5 py-2.5 text-right font-mono text-ink-dim">
+                    <td className="hidden md:table-cell px-5 py-2.5 text-right font-mono text-ink-dim">
                       {t.price_per_share != null
                         ? formatPrecise(t.price_per_share)
                         : "\u2013"}
