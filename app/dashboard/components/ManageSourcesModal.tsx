@@ -34,6 +34,7 @@ export function ManageSourcesModal({
   const [manualName, setManualName] = useState("");
   const [manualEmail, setManualEmail] = useState("");
   const [adding, setAdding] = useState(false);
+  const [discoverError, setDiscoverError] = useState<string | null>(null);
 
   // Sync local sources when prop changes (e.g., modal reopens)
   useEffect(() => {
@@ -93,14 +94,17 @@ export function ManageSourcesModal({
   const handleDiscover = useCallback(async () => {
     setDiscovering(true);
     setShowDiscover(true);
+    setDiscoverError(null);
     try {
       const res = await fetch("/api/research/discover", { method: "POST" });
       const data = await res.json();
       if (data.success) {
         setDiscovered(data.data);
+      } else {
+        setDiscoverError(data.error || "Discovery failed");
       }
-    } catch {
-      // Keep empty
+    } catch (err) {
+      setDiscoverError(err instanceof Error ? err.message : "Failed to connect to Gmail");
     } finally {
       setDiscovering(false);
     }
@@ -329,6 +333,10 @@ export function ManageSourcesModal({
                 <div className="flex items-center gap-2 py-4 justify-center text-sm text-ink-dim">
                   <div className="w-4 h-4 border-2 border-ink-faint border-t-transparent rounded-full animate-spin" />
                   Scanning Gmail...
+                </div>
+              ) : discoverError ? (
+                <div className="px-3 py-2.5 rounded-lg bg-down/10 border border-down/30 text-sm text-down">
+                  {discoverError}
                 </div>
               ) : discovered.length === 0 ? (
                 <p className="text-sm text-ink-dim py-2">

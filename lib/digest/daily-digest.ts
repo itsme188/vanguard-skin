@@ -1,22 +1,50 @@
 import type Database from "better-sqlite3";
 import { getRecentArticles } from "@/lib/queries/research";
 
+// ── Last-sent tracking ──────────────────────────────────────────────
+
+export function getLastDigestSentAt(db: Database.Database): string | null {
+  const row = db
+    .prepare(`SELECT value FROM settings WHERE key = 'last_digest_sent_at'`)
+    .get() as { value: string } | undefined;
+  return row?.value ?? null;
+}
+
+export function setLastDigestSentAt(db: Database.Database, isoDate: string): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('last_digest_sent_at', ?, datetime('now'))`
+  ).run(isoDate);
+}
+
+export function getLastBriefingSentAt(db: Database.Database): string | null {
+  const row = db
+    .prepare(`SELECT value FROM settings WHERE key = 'last_briefing_sent_at'`)
+    .get() as { value: string } | undefined;
+  return row?.value ?? null;
+}
+
+export function setLastBriefingSentAt(db: Database.Database, isoDate: string): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('last_briefing_sent_at', ?, datetime('now'))`
+  ).run(isoDate);
+}
+
+// ── Digest generation ───────────────────────────────────────────────
+
 /**
- * Generate a markdown daily digest from research articles received in the last 24 hours.
+ * Generate a markdown digest from research articles received since a given date.
  * Returns null if no processed articles are available.
  */
-export function generateDailyDigest(db: Database.Database): string | null {
-  const now = new Date();
-  const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-  const startDate = yesterday.toISOString().slice(0, 10);
-
+export function generateDigestSince(db: Database.Database, sinceDate: string): string | null {
   const articles = getRecentArticles(db, {
-    startDate,
+    startDate: sinceDate,
     processedOnly: true,
     limit: 30,
   });
 
   if (articles.length === 0) return null;
+
+  const now = new Date();
 
   const dateStr = now.toLocaleDateString("en-US", {
     weekday: "long",
@@ -73,6 +101,15 @@ export function generateDailyDigest(db: Database.Database): string | null {
   }
 
   return lines.join("\n").trim();
+}
+
+/**
+ * Generate a markdown daily digest from research articles received in the last 24 hours.
+ * Backward-compatible wrapper for the cron job.
+ */
+export function generateDailyDigest(db: Database.Database): string | null {
+  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  return generateDigestSince(db, yesterday.toISOString().slice(0, 10));
 }
 
 function countSources(articles: { source_name: string }[]): number {
