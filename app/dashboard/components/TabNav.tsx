@@ -3,17 +3,7 @@
 import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { useRef, useCallback } from "react";
-
-const tabs = [
-  { name: "Overview", href: "/dashboard" },
-  { name: "Accounts", href: "/dashboard/accounts" },
-  { name: "Holdings", href: "/dashboard/holdings" },
-  { name: "Analysis", href: "/dashboard/analysis" },
-  { name: "Charts", href: "/dashboard/charts" },
-  { name: "Calendar", href: "/dashboard/calendar" },
-  { name: "Research", href: "/dashboard/research" },
-  { name: "Import", href: "/dashboard/import" },
-];
+import { tabs } from "./nav-tabs";
 
 export function TabNav() {
   const pathname = usePathname();
