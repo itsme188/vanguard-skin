@@ -9,6 +9,7 @@ import { AppVersion } from "./components/AppVersion";
 import { WelcomeOverlay } from "./components/WelcomeOverlay";
 import { MobileBottomNav } from "./components/MobileBottomNav";
 import { MobileNavDrawer } from "./components/MobileNavDrawer";
+import { DigestCatchup } from "./components/DigestCatchup";
 
 export default function DashboardLayout({
   children,
@@ -41,6 +42,9 @@ export default function DashboardLayout({
           </div>
           <TabNav />
         </header>
+
+        {/* Digest catch-up notification */}
+        <DigestCatchup />
 
         {/* Content */}
         <main id="main-content" className="max-w-[1600px] mx-auto px-4 md:px-6 pt-4 md:pt-6 pb-20 md:pb-6">
