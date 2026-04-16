@@ -8,6 +8,7 @@ import { SettingsModal } from "./components/SettingsModal";
 import { AppVersion } from "./components/AppVersion";
 import { WelcomeOverlay } from "./components/WelcomeOverlay";
 import { MobileBottomNav } from "./components/MobileBottomNav";
+import { MobileNavDrawer } from "./components/MobileNavDrawer";
 
 export default function DashboardLayout({
   children,
@@ -24,9 +25,12 @@ export default function DashboardLayout({
         {/* Header */}
         <header className="border-b border-edge sticky top-0 z-50 bg-canvas/80 backdrop-blur-xl electron:pt-7">
           <div className="max-w-[1600px] mx-auto px-4 md:px-6 electron:pl-20 flex items-center justify-between h-14">
-            <h1 className="font-serif text-lg md:text-xl text-gold tracking-tight">
-              Vanguard Skin
-            </h1>
+            <div className="flex items-center gap-2">
+              <MobileNavDrawer />
+              <h1 className="font-serif text-lg md:text-xl text-gold tracking-tight">
+                Vanguard Skin
+              </h1>
+            </div>
             <div className="flex items-center gap-3 md:gap-4">
               <div className="hidden md:flex"><DataConfidenceIndicator /></div>
               <SearchButton />
