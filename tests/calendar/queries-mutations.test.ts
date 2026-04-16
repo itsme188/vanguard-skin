@@ -259,7 +259,7 @@ describe("briefings", () => {
       title: "Week of March 30, 2026",
       content: "# Briefing\n\nThis week...",
       eventCount: 5,
-      model: "claude-sonnet-4-6",
+      model: "claude-sonnet-4-7",
     });
 
     const briefing = getBriefingByWeek(db, "2026-03-30");
@@ -275,7 +275,7 @@ describe("briefings", () => {
       title: "V1",
       content: "old",
       eventCount: 3,
-      model: "claude-sonnet-4-6",
+      model: "claude-sonnet-4-7",
     });
 
     saveBriefing(db, {
@@ -283,7 +283,7 @@ describe("briefings", () => {
       title: "V2",
       content: "new",
       eventCount: 5,
-      model: "claude-sonnet-4-6",
+      model: "claude-sonnet-4-7",
     });
 
     const briefing = getBriefingByWeek(db, "2026-03-30");
@@ -298,14 +298,14 @@ describe("briefings", () => {
       title: "Older",
       content: "old",
       eventCount: 2,
-      model: "claude-sonnet-4-6",
+      model: "claude-sonnet-4-7",
     });
     saveBriefing(db, {
       weekOf: "2026-03-30",
       title: "Newer",
       content: "new",
       eventCount: 5,
-      model: "claude-sonnet-4-6",
+      model: "claude-sonnet-4-7",
     });
 
     const latest = getLatestBriefing(db);
