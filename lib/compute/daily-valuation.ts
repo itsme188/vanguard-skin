@@ -31,6 +31,7 @@ interface CashAnchor {
   month_end_date: string;
   snapshot_total: number;
   holdings_value: number | null;
+  cash_value: number | null;
 }
 
 export function computeDailyValuations(db: Database.Database): DailyValuationResult {
@@ -116,8 +117,14 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
         const cashBalance = 0; // Cash tracking could be added later
         const totalValue = cashBalance + holdingsValue;
 
-        // Assess data quality based on price staleness and coverage
+        // Holdings staleness: how old is the holdings snapshot relative to valuation date?
+        const holdingsAgeDays = Math.floor(
+          (new Date(date).getTime() - new Date(holdings[0].as_of_date).getTime()) / 86_400_000
+        );
+
+        // Assess data quality: if holdings are from a prior date, always estimated
         const dataQuality =
+          holdingsAgeDays > 0 ? "estimated" :
           pricedCount === holdings.length && maxPriceStaleDays <= 1 ? "live" :
           maxPriceStaleDays <= 3 ? "recent" :
           "estimated";
@@ -142,7 +149,7 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
     // At each snapshot date: cash = snapshot_total − computed_holdings_value.
     // Carry this cash forward until the next snapshot arrives.
     const getCashAnchors = db.prepare(
-      `SELECT ms.month_end_date, ms.total_value AS snapshot_total, dv.holdings_value
+      `SELECT ms.month_end_date, ms.total_value AS snapshot_total, dv.holdings_value, ms.cash_value
        FROM monthly_snapshots ms
        LEFT JOIN daily_valuations dv
          ON dv.account_id = ms.account_id AND dv.valuation_date = ms.month_end_date
@@ -170,9 +177,14 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
 
       for (let i = 0; i < anchors.length; i++) {
         const anchor = anchors[i];
-        if (anchor.holdings_value === null) continue;
+        if (anchor.holdings_value === null && anchor.cash_value === null) continue;
 
-        const cashResidual = anchor.snapshot_total - anchor.holdings_value;
+        // Prefer TWS-reported cash when available; fall back to inference
+        const cashResidual = anchor.cash_value != null
+          ? anchor.cash_value
+          : anchor.holdings_value != null
+            ? anchor.snapshot_total - anchor.holdings_value
+            : 0;
 
         if (i < anchors.length - 1) {
           // Apply from this snapshot up to (but not including) the next

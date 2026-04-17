@@ -19,25 +19,63 @@ const SEVERITY_STYLES = {
 
 export function DataConfidenceIndicator() {
   const [confidence, setConfidence] = useState<DataConfidence | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
   const [showPopover, setShowPopover] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
 
   const fetchConfidence = useCallback(async () => {
+    setLoading(true);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
     try {
-      const res = await fetch("/api/data-confidence");
+      const res = await fetch("/api/data-confidence", { signal: controller.signal });
       const json = await res.json();
-      if (json.success) setConfidence(json.data);
+      if (json.success) {
+        setConfidence(json.data);
+        setError(null);
+        setSyncing(false);
+        return;
+      }
     } catch {
-      // Leave as-is
+      // Network error or timeout — fall through to sync check
+    } finally {
+      clearTimeout(timeout);
+      setLoading(false);
     }
-  }, []);
+
+    // Data-confidence failed — check if TWS is syncing
+    try {
+      const syncRes = await fetch("/api/tws/sync-status");
+      const syncJson = await syncRes.json();
+      if (syncJson.status === "syncing") {
+        setSyncing(true);
+        setError(null);
+        return;
+      }
+    } catch {
+      // sync-status also failed
+    }
+
+    // Not syncing and data-confidence failed — genuine error
+    if (!confidence) {
+      setError("Unable to load data");
+    }
+    setSyncing(false);
+  }, [confidence]);
 
   useEffect(() => {
     fetchConfidence();
-    const interval = setInterval(fetchConfidence, 60_000);
+    // Poll every 15s while syncing (quiet, no flicker), 60s when healthy.
+    // Don't auto-poll on error — user clicks retry.
+    const interval = setInterval(() => {
+      if (syncing) fetchConfidence();
+      else if (!error) fetchConfidence();
+    }, syncing ? 15_000 : 60_000);
     return () => clearInterval(interval);
-  }, [fetchConfidence]);
+  }, [fetchConfidence, syncing, error]);
 
   // Close popover on outside click
   useEffect(() => {
@@ -52,10 +90,32 @@ export function DataConfidenceIndicator() {
   }, [showPopover]);
 
   if (!confidence) {
+    if (syncing) {
+      return (
+        <div className="flex items-center gap-2 text-[11px] text-ink-faint font-mono">
+          <span className="w-2 h-2 rounded-full bg-gold animate-pulse" />
+          Syncing...
+        </div>
+      );
+    }
+    if (error && !loading) {
+      return (
+        <div className="flex items-center gap-2 text-[11px] text-ink-faint font-mono">
+          <span className="w-2 h-2 rounded-full bg-orange-400" />
+          <span>Data unavailable</span>
+          <button
+            onClick={fetchConfidence}
+            className="text-blue hover:text-blue/80 underline"
+          >
+            Retry
+          </button>
+        </div>
+      );
+    }
     return (
       <div className="flex items-center gap-2 text-[11px] text-ink-faint font-mono">
         <span className="w-2 h-2 rounded-full bg-ink-faint animate-pulse" />
-        Loading...
+        {loading ? "Loading..." : "Loading..."}
       </div>
     );
   }
