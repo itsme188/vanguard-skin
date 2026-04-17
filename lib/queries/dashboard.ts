@@ -13,6 +13,14 @@ export interface AccountSummary {
   dataQuality: string | null;
   /** Date of the most recent holdings snapshot for this account */
   holdingsAsOf: string | null;
+  /** 'tws_live' when value comes from TWS netLiquidation, null otherwise */
+  dataSource: string | null;
+  /** Latest statement value (non-TWS monthly snapshot) */
+  canonicalValue: number | null;
+  /** Date of latest statement */
+  canonicalDate: string | null;
+  /** Estimated current value (daily valuation with current prices) — null when canonical is current */
+  estimatedValue: number | null;
 }
 
 interface AccountSummaryRow {
@@ -24,6 +32,10 @@ interface AccountSummaryRow {
   previousValue: number | null;
   dataQuality: string | null;
   holdingsAsOf: string | null;
+  dataSource: string | null;
+  canonicalValue: number | null;
+  canonicalDate: string | null;
+  estimatedValue: number | null;
 }
 
 export function getAccountSummaries(db: Database.Database): AccountSummary[] {
@@ -48,30 +60,57 @@ export function getAccountSummaries(db: Database.Database): AccountSummary[] {
           ROW_NUMBER() OVER (PARTITION BY dv.account_id ORDER BY dv.valuation_date DESC) AS rn
         FROM daily_valuations dv
       ),
+      latest_tws AS (
+        SELECT
+          ms.account_id,
+          ms.month_end_date,
+          ms.total_value,
+          ROW_NUMBER() OVER (PARTITION BY ms.account_id ORDER BY ms.month_end_date DESC) AS rn
+        FROM monthly_snapshots ms
+        WHERE ms.source = 'tws'
+          AND ms.month_end_date >= date('now', '-1 day')
+      ),
       latest_holdings AS (
         SELECT account_id, MAX(as_of_date) AS max_date
         FROM holdings GROUP BY account_id
       )
       SELECT
         a.id, a.name,
-        CASE WHEN COALESCE(d.valuation_date, '') > COALESCE(curr.month_end_date, '')
-          THEN d.total_value ELSE curr.total_value END AS latestValue,
-        CASE WHEN COALESCE(d.valuation_date, '') > COALESCE(curr.month_end_date, '')
-          THEN d.valuation_date ELSE curr.month_end_date END AS latestDate,
+        -- Prefer recent TWS netLiquidation, then daily valuation, then monthly snapshot
+        CASE
+          WHEN tw.total_value IS NOT NULL THEN tw.total_value
+          WHEN COALESCE(d.valuation_date, '') > COALESCE(curr.month_end_date, '')
+            THEN d.total_value
+          ELSE curr.total_value
+        END AS latestValue,
+        CASE
+          WHEN tw.total_value IS NOT NULL THEN tw.month_end_date
+          WHEN COALESCE(d.valuation_date, '') > COALESCE(curr.month_end_date, '')
+            THEN d.valuation_date
+          ELSE curr.month_end_date
+        END AS latestDate,
         curr.twr,
         -- Previous: most recent non-TWS monthly snapshot strictly before the latest date
         (SELECT ms2.total_value FROM monthly_snapshots ms2
          WHERE ms2.account_id = a.id
            AND ms2.source != 'tws'
            AND ms2.month_end_date < CASE
+             WHEN tw.total_value IS NOT NULL THEN tw.month_end_date
              WHEN COALESCE(d.valuation_date, '') > COALESCE(curr.month_end_date, '')
              THEN d.valuation_date ELSE curr.month_end_date END
          ORDER BY ms2.month_end_date DESC LIMIT 1) AS previousValue,
-        d.data_quality AS dataQuality,
-        lh.max_date AS holdingsAsOf
+        CASE WHEN tw.total_value IS NOT NULL THEN 'live' ELSE d.data_quality END AS dataQuality,
+        lh.max_date AS holdingsAsOf,
+        CASE WHEN tw.total_value IS NOT NULL THEN 'tws_live' ELSE NULL END AS dataSource,
+        curr.total_value AS canonicalValue,
+        curr.month_end_date AS canonicalDate,
+        -- Estimated value: daily valuation when it's newer than the canonical snapshot
+        CASE WHEN COALESCE(d.valuation_date, '') > COALESCE(curr.month_end_date, '')
+          THEN d.total_value ELSE NULL END AS estimatedValue
       FROM accounts a
       LEFT JOIN ranked_monthly curr ON curr.account_id = a.id AND curr.rn = 1
       LEFT JOIN latest_daily d ON d.account_id = a.id AND d.rn = 1
+      LEFT JOIN latest_tws tw ON tw.account_id = a.id AND tw.rn = 1
       LEFT JOIN latest_holdings lh ON lh.account_id = a.id
       ORDER BY a.id`
     )
@@ -98,6 +137,10 @@ export function getAccountSummaries(db: Database.Database): AccountSummary[] {
       twr: row.twr ?? null,
       dataQuality: row.dataQuality ?? null,
       holdingsAsOf: row.holdingsAsOf ?? null,
+      dataSource: row.dataSource ?? null,
+      canonicalValue: row.canonicalValue ?? null,
+      canonicalDate: row.canonicalDate ?? null,
+      estimatedValue: row.estimatedValue ?? null,
     };
   });
 }
@@ -147,8 +190,8 @@ export interface PortfolioTotals {
 }
 
 export function getPortfolioTotals(db: Database.Database): PortfolioTotals {
-  // Use same blending logic as getAccountSummaries: pick daily valuation or
-  // non-TWS monthly snapshot per account, whichever is more recent.
+  // Use same blending logic as getAccountSummaries: prefer recent TWS value,
+  // then daily valuation, then non-TWS monthly snapshot per account.
   const row = db
     .prepare(
       `WITH latest_monthly AS (
@@ -162,22 +205,39 @@ export function getPortfolioTotals(db: Database.Database): PortfolioTotals {
           ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY valuation_date DESC) AS rn
         FROM daily_valuations
       ),
+      latest_tws AS (
+        SELECT account_id, month_end_date, total_value,
+          ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY month_end_date DESC) AS rn
+        FROM monthly_snapshots
+        WHERE source = 'tws'
+          AND month_end_date >= date('now', '-1 day')
+      ),
       account_values AS (
         SELECT
           a.id,
-          CASE WHEN COALESCE(d.valuation_date, '') > COALESCE(m.month_end_date, '')
-            THEN d.total_value ELSE m.total_value END AS current_value,
-          CASE WHEN COALESCE(d.valuation_date, '') > COALESCE(m.month_end_date, '')
-            THEN d.valuation_date ELSE m.month_end_date END AS as_of_date,
+          CASE
+            WHEN tw.total_value IS NOT NULL THEN tw.total_value
+            WHEN COALESCE(d.valuation_date, '') > COALESCE(m.month_end_date, '')
+              THEN d.total_value
+            ELSE m.total_value
+          END AS current_value,
+          CASE
+            WHEN tw.total_value IS NOT NULL THEN tw.month_end_date
+            WHEN COALESCE(d.valuation_date, '') > COALESCE(m.month_end_date, '')
+              THEN d.valuation_date
+            ELSE m.month_end_date
+          END AS as_of_date,
           (SELECT ms2.total_value FROM monthly_snapshots ms2
            WHERE ms2.account_id = a.id AND ms2.source != 'tws'
              AND ms2.month_end_date < CASE
+               WHEN tw.total_value IS NOT NULL THEN tw.month_end_date
                WHEN COALESCE(d.valuation_date, '') > COALESCE(m.month_end_date, '')
                THEN d.valuation_date ELSE m.month_end_date END
            ORDER BY ms2.month_end_date DESC LIMIT 1) AS prev_value
         FROM accounts a
         LEFT JOIN latest_monthly m ON m.account_id = a.id AND m.rn = 1
         LEFT JOIN latest_daily d ON d.account_id = a.id AND d.rn = 1
+        LEFT JOIN latest_tws tw ON tw.account_id = a.id AND tw.rn = 1
       )
       SELECT
         COALESCE(SUM(current_value), 0) AS totalValue,

@@ -234,6 +234,24 @@ export function commitImport(
       }
     }
 
+    // 4b. Derive prices from holdings that have marketValue.
+    //     price = marketValue / quantity (for bonds this gives % of par, for stocks $/share).
+    //     These are statement-sourced prices — lower priority than TWS but fill gaps
+    //     for securities that can't be priced via TWS (mutual funds, CUSIPs).
+    for (const h of parsed.holdings) {
+      if (h.marketValue != null && h.quantity > 0) {
+        const pricePerShare = h.marketValue / h.quantity;
+        if (pricePerShare > 0 && isFinite(pricePerShare)) {
+          parsed.prices.push({
+            symbol: h.symbol,
+            date: h.asOfDate,
+            closePrice: pricePerShare,
+            source: "canonical",
+          });
+        }
+      }
+    }
+
     // 5. Insert prices with source priority (higher-priority sources overwrite lower)
     //    Priority: tws (1) > ibkr statement (2) > vanguard statement (3) > other (4)
     //    On conflict: overwrite only if incoming source has equal or higher priority.

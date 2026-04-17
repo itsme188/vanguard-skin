@@ -330,9 +330,9 @@ export async function syncPortfolio(
       // Insert as a monthly_snapshots anchor — the cash inference in
       // computeDailyValuations will pick this up automatically.
       db.prepare(
-        `INSERT OR REPLACE INTO monthly_snapshots (account_id, month_end_date, total_value, source)
-         VALUES (?, ?, ?, 'tws')`
-      ).run(accountId, today, netLiquidation);
+        `INSERT OR REPLACE INTO monthly_snapshots (account_id, month_end_date, total_value, cash_value, source)
+         VALUES (?, ?, ?, ?, 'tws')`
+      ).run(accountId, today, netLiquidation, cashBalance);
       snapshotInserted = true;
     } catch (err) {
       console.warn("[syncPortfolio] Snapshot insert failed:", err);

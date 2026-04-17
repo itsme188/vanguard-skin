@@ -100,6 +100,10 @@ function scorePriceFreshness(db: Database.Database): PriceFreshnessScore {
       SELECT account_id, MAX(as_of_date) AS max_date
       FROM holdings GROUP BY account_id
     ) latest ON latest.account_id = h.account_id AND h.as_of_date = latest.max_date
+    LEFT JOIN (
+      SELECT security_id, MAX(date) AS latest_date
+      FROM prices GROUP BY security_id
+    ) p ON p.security_id = h.security_id
     WHERE h.quantity > 0
   `).get(today, today) as { totalHeld: number; pricedToday: number; pricedRecent: number };
 

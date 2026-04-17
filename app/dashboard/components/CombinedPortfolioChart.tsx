@@ -10,6 +10,7 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
+  ReferenceLine,
   ResponsiveContainer,
 } from "recharts";
 import type {
@@ -65,8 +66,22 @@ function formatDate(date: string): string {
   return d.toLocaleDateString("en-US", { month: "short", year: "2-digit" });
 }
 
+function formatDateFromTs(ts: number): string {
+  const d = new Date(ts);
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
 function formatFullDate(date: string): string {
   const d = new Date(date + "T00:00:00");
+  return d.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function formatFullDateFromTs(ts: number): string {
+  const d = new Date(ts);
   return d.toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
@@ -114,10 +129,16 @@ function mergeData(
   const merged = new Map<string, PortfolioChartPoint>();
 
   for (const point of monthly) {
-    merged.set(point.date, point);
+    merged.set(point.date, { ...point });
   }
   for (const point of daily) {
-    merged.set(point.date, point);
+    const existing = merged.get(point.date);
+    if (existing) {
+      // Merge: daily values override per-account, but keep monthly values for other accounts
+      merged.set(point.date, { ...existing, ...point });
+    } else {
+      merged.set(point.date, { ...point });
+    }
   }
 
   const sorted = Array.from(merged.values()).sort((a, b) =>
@@ -154,8 +175,10 @@ function mergeData(
 
 interface PercentChartPoint {
   date: string;
-  portfolio: number; // cumulative % return
-  benchmark?: number; // cumulative % return
+  _ts: number;
+  Total: number;
+  benchmark?: number;
+  [accountName: string]: number | string | undefined;
 }
 
 function toPercentChange(
@@ -165,17 +188,16 @@ function toPercentChange(
 ): PercentChartPoint[] {
   if (chartData.length < 2) return [];
 
-  // Compute total portfolio value per date
-  const portfolioSeries = chartData.map((point) => {
-    let total = 0;
-    for (const name of accountNames) {
-      total += (point[name] as number) ?? 0;
-    }
-    return { date: point.date, total };
-  });
-
-  const startValue = portfolioSeries[0].total;
-  if (startValue <= 0) return [];
+  // Compute starting values for total and each account
+  const first = chartData[0];
+  let startTotal = 0;
+  const startByAccount: Record<string, number> = {};
+  for (const name of accountNames) {
+    const v = (first[name] as number) ?? 0;
+    startByAccount[name] = v;
+    startTotal += v;
+  }
+  if (startTotal <= 0) return [];
 
   // Build benchmark lookup if available
   const benchByDate = new Map<string, number>();
@@ -185,11 +207,24 @@ function toPercentChange(
     }
   }
 
-  return portfolioSeries.map((p) => ({
-    date: p.date,
-    portfolio: ((p.total - startValue) / startValue) * 100,
-    benchmark: benchByDate.get(p.date),
-  }));
+  return chartData.map((point) => {
+    let total = 0;
+    const result: PercentChartPoint = {
+      date: point.date,
+      _ts: new Date(point.date + "T00:00:00").getTime(),
+      Total: 0,
+    };
+    for (const name of accountNames) {
+      const v = (point[name] as number) ?? 0;
+      total += v;
+      if (startByAccount[name] > 0) {
+        result[name] = ((v - startByAccount[name]) / startByAccount[name]) * 100;
+      }
+    }
+    result.Total = ((total - startTotal) / startTotal) * 100;
+    result.benchmark = benchByDate.get(point.date);
+    return result;
+  });
 }
 
 // ─── Benchmark Stats Display ────────────────────────────────────
@@ -240,8 +275,18 @@ export function CombinedPortfolioChart({
   dailyData?: PortfolioChartPoint[];
   accounts: AccountSummary[];
 }) {
+  // Build canonical cutoff dates: accounts with TWS live data have no cutoff (line goes through today)
+  // Statement-based accounts show estimated data after their last canonical date
+  const canonicalCutoffs = useMemo(() => {
+    const map: Record<string, string | null> = {};
+    for (const a of accounts) {
+      map[a.name] = a.dataSource === "tws_live" ? null : (a.canonicalDate ?? null);
+    }
+    return map;
+  }, [accounts]);
   const [selectedRange, setSelectedRange] = useState("All");
-  const [chartMode, setChartMode] = useState<"$" | "%">("$");
+  const [chartMode, setChartMode] = useState<"$" | "%">("%");
+  const [selectedAccount, setSelectedAccount] = useState<string>("Total");
   const [benchmark, setBenchmark] = useState<string | null>(null);
   const [benchmarkChartData, setBenchmarkChartData] = useState<
     { date: string; portfolioReturn: number; benchmarkReturn: number }[] | null
@@ -254,10 +299,27 @@ export function CombinedPortfolioChart({
   const accountNames = accounts.map((a) => a.name);
   const hasDaily = (dailyData?.length ?? 0) > 0;
 
+  // Latest canonical date across all statement-based accounts — used for reference line
+  const lastCanonicalDate = useMemo(() => {
+    const dates = Object.values(canonicalCutoffs).filter((d): d is string => d != null);
+    return dates.length > 0 ? dates.sort().pop()! : null;
+  }, [canonicalCutoffs]);
+  const lastCanonicalTs = lastCanonicalDate
+    ? new Date(lastCanonicalDate + "T00:00:00").getTime()
+    : null;
+
   const chartData = useMemo(() => {
     const merged = mergeData(data, dailyData ?? []);
-    return filterByRange(merged, selectedRange);
-  }, [data, dailyData, selectedRange]);
+    const filtered = filterByRange(merged, selectedRange);
+    // Add Total + numeric timestamp for time-proportional x-axis
+    return filtered.map((point) => {
+      let total = 0;
+      for (const name of accountNames) {
+        total += (point[name] as number) ?? 0;
+      }
+      return { ...point, Total: total, _ts: new Date(point.date + "T00:00:00").getTime() };
+    });
+  }, [data, dailyData, selectedRange, accountNames]);
 
   // Check which benchmarks have data
   useEffect(() => {
@@ -435,6 +497,8 @@ export function CombinedPortfolioChart({
   }
 
   const benchmarkLabel = BENCHMARK_OPTIONS.find(b => b.symbol === benchmark)?.label ?? benchmark ?? "";
+  const selectedColor = selectedAccount === "Total" ? "#E2E6F0" : (ACCOUNT_COLORS[selectedAccount] ?? "#888");
+  const selectedDataKey = selectedAccount; // "Total" or account name — matches keys in chartData and percentData
 
   return (
     <div className="rounded-xl border border-edge bg-panel p-5">
@@ -472,6 +536,17 @@ export function CombinedPortfolioChart({
               %
             </button>
           </div>
+          {/* Account selector */}
+          <select
+            value={selectedAccount}
+            onChange={(e) => setSelectedAccount(e.target.value)}
+            className="bg-panel border border-edge rounded-lg px-2 py-0.5 text-xs text-ink-faint focus:outline-none focus:ring-1 focus:ring-gold/50 ml-1"
+          >
+            <option value="Total">All Accounts</option>
+            {accountNames.map((name) => (
+              <option key={name} value={name}>{name}</option>
+            ))}
+          </select>
           {/* Benchmark selector */}
           <select
             value={benchmark ?? ""}
@@ -527,15 +602,18 @@ export function CombinedPortfolioChart({
       <div className="h-[240px] sm:h-[280px] md:h-[320px]">
         <ResponsiveContainer width="100%" height="100%">
           {chartMode === "%" ? (
-            // Percent-change mode: line chart with portfolio + optional benchmark
+            // Percent-change mode
             <LineChart
               data={percentData}
               margin={{ top: 4, right: 4, left: 0, bottom: 0 }}
             >
               <CartesianGrid strokeDasharray="3 3" stroke="#1E2534" vertical={false} />
               <XAxis
-                dataKey="date"
-                tickFormatter={formatDate}
+                dataKey="_ts"
+                type="number"
+                scale="time"
+                domain={["dataMin", "dataMax"]}
+                tickFormatter={formatDateFromTs}
                 stroke="#4E5668"
                 tick={{ fontSize: 11 }}
                 axisLine={false}
@@ -558,19 +636,18 @@ export function CombinedPortfolioChart({
                   color: "#E2E6F0",
                   fontSize: 12,
                 }}
-                labelFormatter={(label) => formatFullDate(String(label))}
-                formatter={(value, name) => [
-                  formatPercent(Number(value)),
-                  String(name) === "portfolio" ? "Portfolio" : benchmarkLabel,
-                ]}
+                labelFormatter={(ts) => formatFullDateFromTs(Number(ts))}
+                formatter={(value, name) => {
+                  if (String(name) === "_ts") return [null, null];
+                  return [formatPercent(Number(value)), String(name)];
+                }}
               />
               <Line
                 type="monotone"
-                dataKey="portfolio"
-                stroke="#C9A44E"
+                dataKey={selectedDataKey}
+                stroke={selectedColor}
                 strokeWidth={2}
                 dot={false}
-                name="portfolio"
                 connectNulls
               />
               {benchmark && benchmarkChartData && (
@@ -581,48 +658,35 @@ export function CombinedPortfolioChart({
                   strokeWidth={1.5}
                   strokeDasharray="6 3"
                   dot={false}
-                  name="benchmark"
                   connectNulls
+                />
+              )}
+              {lastCanonicalTs && (
+                <ReferenceLine
+                  x={lastCanonicalTs}
+                  stroke="#4E5668"
+                  strokeDasharray="4 3"
+                  label={{ value: "est. →", position: "top", fill: "#4E5668", fontSize: 10 }}
                 />
               )}
             </LineChart>
           ) : (
-            // Absolute $ mode: stacked area chart (existing)
-            <AreaChart
+            // Absolute $ mode
+            <LineChart
               data={chartData}
               margin={{ top: 4, right: 4, left: 0, bottom: 0 }}
             >
-              <defs>
-                {accountNames.map((name) => (
-                  <linearGradient
-                    key={name}
-                    id={`grad-${name.replace(/\s/g, "")}`}
-                    x1="0"
-                    y1="0"
-                    x2="0"
-                    y2="1"
-                  >
-                    <stop
-                      offset="0%"
-                      stopColor={ACCOUNT_COLORS[name] ?? "#888"}
-                      stopOpacity={0.25}
-                    />
-                    <stop
-                      offset="100%"
-                      stopColor={ACCOUNT_COLORS[name] ?? "#888"}
-                      stopOpacity={0.02}
-                    />
-                  </linearGradient>
-                ))}
-              </defs>
               <CartesianGrid
                 strokeDasharray="3 3"
                 stroke="#1E2534"
                 vertical={false}
               />
               <XAxis
-                dataKey="date"
-                tickFormatter={formatDate}
+                dataKey="_ts"
+                type="number"
+                scale="time"
+                domain={["dataMin", "dataMax"]}
+                tickFormatter={formatDateFromTs}
                 stroke="#4E5668"
                 tick={{ fontSize: 11 }}
                 axisLine={false}
@@ -645,62 +709,50 @@ export function CombinedPortfolioChart({
                   color: "#E2E6F0",
                   fontSize: 12,
                 }}
-                labelFormatter={(label) => formatFullDate(String(label))}
-                formatter={(value, name) => [
-                  `$${Number(value).toLocaleString("en-US", {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2,
-                  })}`,
-                  String(name),
-                ]}
+                labelFormatter={(ts) => formatFullDateFromTs(Number(ts))}
+                formatter={(value, name) => {
+                  if (String(name) === "_ts") return [null, null];
+                  return [formatCurrency(Number(value)), String(name)];
+                }}
               />
-              {accountNames.map((name) => (
-                <Area
-                  key={name}
-                  type="monotone"
-                  dataKey={name}
-                  stackId="1"
-                  stroke={ACCOUNT_COLORS[name] ?? "#888"}
-                  fill={`url(#grad-${name.replace(/\s/g, "")})`}
-                  strokeWidth={1.5}
-                  connectNulls
+              <Line
+                type="monotone"
+                dataKey={selectedDataKey}
+                stroke={selectedColor}
+                strokeWidth={2}
+                dot={false}
+                connectNulls
+              />
+              {lastCanonicalTs && (
+                <ReferenceLine
+                  x={lastCanonicalTs}
+                  stroke="#4E5668"
+                  strokeDasharray="4 3"
+                  label={{ value: "est. →", position: "top", fill: "#4E5668", fontSize: 10 }}
                 />
-              ))}
-            </AreaChart>
+              )}
+            </LineChart>
           )}
         </ResponsiveContainer>
       </div>
 
       {/* Legend + benchmark stats */}
       <div className="flex items-center gap-5 mt-3 pt-3 border-t border-edge flex-wrap">
-        {chartMode === "$" ? (
-          <>
-            {accountNames.map((name) => (
-              <div
-                key={name}
-                className="flex items-center gap-1.5 text-xs text-ink-dim"
-              >
-                <div
-                  className="w-2 h-2 rounded-full"
-                  style={{ backgroundColor: ACCOUNT_COLORS[name] ?? "#888" }}
-                />
-                {name}
-              </div>
-            ))}
-          </>
-        ) : (
-          <>
-            <div className="flex items-center gap-1.5 text-xs text-ink-dim">
-              <div className="w-2 h-2 rounded-full" style={{ backgroundColor: "#C9A44E" }} />
-              Portfolio
-            </div>
-            {benchmark && (
-              <div className="flex items-center gap-1.5 text-xs text-ink-dim">
-                <div className="w-4 h-0 border-t border-dashed" style={{ borderColor: BENCHMARK_COLOR }} />
-                {benchmarkLabel}
-              </div>
-            )}
-          </>
+        <div className="flex items-center gap-1.5 text-xs text-ink">
+          <div className="w-3 h-0.5 rounded-full" style={{ backgroundColor: selectedColor }} />
+          {selectedAccount === "Total" ? "All Accounts" : selectedAccount}
+        </div>
+        {benchmark && chartMode === "%" && (
+          <div className="flex items-center gap-1.5 text-xs text-ink-dim">
+            <div className="w-4 h-0 border-t border-dashed" style={{ borderColor: BENCHMARK_COLOR }} />
+            {benchmarkLabel}
+          </div>
+        )}
+        {lastCanonicalDate && (
+          <div className="flex items-center gap-1.5 text-xs text-ink-faint">
+            <div className="w-4 h-0 border-t border-dashed" style={{ borderColor: "#4E5668" }} />
+            est. after {lastCanonicalDate}
+          </div>
         )}
         {benchmarkStats && benchmark && (
           <div className="ml-auto">
