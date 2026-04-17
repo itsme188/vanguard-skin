@@ -99,10 +99,20 @@ export function IncomeCard() {
   });
   const maxMonthly = Math.max(...monthlyData, 1);
 
-  // YoY comparison
-  const yoyChange = prevYear && prevYear.total > 0
-    ? ((currentYear.total - prevYear.total) / prevYear.total) * 100
+  // YTD-over-YTD comparison (same months only)
+  const currentMonth = new Date().getMonth() + 1; // 1-12
+  const currentYtd = currentYear.months
+    .filter((m) => m.month <= currentMonth)
+    .reduce((sum, m) => sum + m.total, 0);
+  const prevYtd = prevYear
+    ? prevYear.months
+        .filter((m) => m.month <= currentMonth)
+        .reduce((sum, m) => sum + m.total, 0)
     : null;
+  const yoyChange =
+    prevYtd != null && prevYtd > 0
+      ? ((currentYtd - prevYtd) / prevYtd) * 100
+      : null;
 
   return (
     <div className="rounded-xl border border-edge bg-panel p-5 space-y-4">
@@ -122,7 +132,7 @@ export function IncomeCard() {
             }`}
           >
             {yoyChange >= 0 ? "+" : ""}
-            {yoyChange.toFixed(1)}% YoY
+            {yoyChange.toFixed(1)}% vs {MONTH_LABELS[0]}-{MONTH_LABELS[currentMonth - 1]} {currentYear.year - 1}
           </span>
         )}
       </div>
@@ -141,11 +151,13 @@ export function IncomeCard() {
             {formatCurrency(currentYear.interest)}
           </div>
         </div>
-        {prevYear && (
+        {prevYear && prevYtd != null && (
           <div>
-            <span className="text-ink-faint">{prevYear.year} Total</span>
+            <span className="text-ink-faint">
+              {MONTH_LABELS[0]}-{MONTH_LABELS[currentMonth - 1]} {prevYear.year}
+            </span>
             <div className="font-mono font-medium text-ink-dim mt-0.5">
-              {formatCurrency(prevYear.total)}
+              {formatCurrency(prevYtd)}
             </div>
           </div>
         )}

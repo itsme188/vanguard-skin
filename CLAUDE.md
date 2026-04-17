@@ -110,9 +110,17 @@ On TWS connect (auto or manual), `lib/tws/auto-refresh.ts` orchestrates a 5-step
 - **ALL portfolio queries exclude TWS snapshots** (`source != 'tws'`). TWS rows are live-sync data for daily valuations, not month-end statements — including them breaks Modified Dietz, corrupts change calculations (shifts global MAX date), and adds irregular chart points. This applies to: TWR, XIRR, portfolio totals, account summaries, chart data. TWR format is source-aware: `ibkr-activity` stores as percentage, `canonical` stores as decimal fraction.
 - **December annual snapshots**: Vanguard year-end statements produce December rows with annual `starting_value` and cumulative `deposits_withdrawals`. TWR/XIRR detect these (starting_value mismatch >10% from prior month) and compute December-only values.
 
+## Bug Fixes
+
+When fixing bugs, verify the fix against the actual data/edge cases before declaring it done. Do not assume a calculation is correct — test with real values (e.g., holding periods, XIRR, bond pricing, portfolio valuations).
+
 ## Data Integrity
 
 When working with financial data (prices, valuations, dates, events), NEVER use hardcoded or guessed values. Always use authoritative data sources (APIs like FRED, Hebcal, IBKR) instead of generating dates, prices, or financial figures from training data.
+
+## External APIs
+
+When working with external APIs (TWS/IBKR, Gmail, FRED), check the correct API contract (parameter names, types, rate limits) before writing code. Do not guess field names like `symbol` vs `conId`.
 
 ## Dev Server Gotchas
 
@@ -260,7 +268,7 @@ When working with financial data (prices, valuations, dates, events), NEVER use 
 
 ## Workflow Rules
 
-After making changes, always run the full test suite before committing. Report the test count and pass/fail status. Do not commit if tests are failing.
+After implementing a fix or feature, always run the full test suite (`npx vitest run`) and report the result before committing. This project has 1600+ tests — use them. Report the test count and pass/fail status. Do not commit if tests are failing.
 
 ## Debugging
 
