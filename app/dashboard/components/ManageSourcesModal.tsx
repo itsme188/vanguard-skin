@@ -324,51 +324,67 @@ export function ManageSourcesModal({
           )}
 
           {/* Discover results */}
-          {showDiscover && (
-            <div className="space-y-2">
-              <p className="text-xs text-ink-faint uppercase tracking-wider">
-                Found in Gmail
-              </p>
-              {discovering ? (
-                <div className="flex items-center gap-2 py-4 justify-center text-sm text-ink-dim">
-                  <div className="w-4 h-4 border-2 border-ink-faint border-t-transparent rounded-full animate-spin" />
-                  Scanning Gmail...
-                </div>
-              ) : discoverError ? (
-                <div className="px-3 py-2.5 rounded-lg bg-down/10 border border-down/30 text-sm text-down">
-                  {discoverError}
-                </div>
-              ) : discovered.length === 0 ? (
-                <p className="text-sm text-ink-dim py-2">
-                  No newsletter senders found.
+          {showDiscover && (() => {
+            const newSenders = discovered.filter(
+              (s) =>
+                !existingEmails.has(s.email.toLowerCase()) &&
+                !addedEmails.has(s.email.toLowerCase())
+            );
+            const alreadyAddedCount = discovered.length - newSenders.length;
+
+            return (
+              <div className="space-y-2">
+                <p className="text-xs text-ink-faint uppercase tracking-wider">
+                  Found in Gmail
                 </p>
-              ) : (
-                <div className="space-y-1 max-h-64 overflow-y-auto">
-                  {discovered.map((sender) => {
-                    const alreadyAdded =
-                      existingEmails.has(sender.email.toLowerCase()) ||
-                      addedEmails.has(sender.email.toLowerCase());
-                    return (
-                      <div
-                        key={sender.email}
-                        className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg bg-raised/50"
-                      >
-                        <div className="flex-1 min-w-0">
-                          <div className="text-sm font-medium text-ink">
-                            {sender.name}
+                {discovering ? (
+                  <div className="flex items-center gap-2 py-4 justify-center text-sm text-ink-dim">
+                    <div className="w-4 h-4 border-2 border-ink-faint border-t-transparent rounded-full animate-spin" />
+                    Scanning Gmail...
+                  </div>
+                ) : discoverError ? (
+                  <div className="px-3 py-2.5 rounded-lg bg-down/10 border border-down/30 text-sm text-down">
+                    {discoverError}
+                  </div>
+                ) : discovered.length === 0 ? (
+                  <div className="px-3 py-2.5 rounded-lg bg-raised/50 text-sm text-ink-dim space-y-1">
+                    <div>Scanned Gmail — no newsletter senders found in the last 90 days.</div>
+                    <div className="text-xs text-ink-faint">
+                      Discovery looks for emails with an &ldquo;unsubscribe&rdquo; link. Senders without one won&rsquo;t appear — use &ldquo;Add Manually&rdquo; instead.
+                    </div>
+                  </div>
+                ) : newSenders.length === 0 ? (
+                  <div className="px-3 py-2.5 rounded-lg bg-raised/50 text-sm text-ink-dim space-y-1">
+                    <div>
+                      Scanned {discovered.length} sender{discovered.length === 1 ? "" : "s"} — all are already in your list.
+                    </div>
+                    <div className="text-xs text-ink-faint">
+                      Use &ldquo;Add Manually&rdquo; for any newsletter that doesn&rsquo;t have an unsubscribe link.
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <p className="text-xs text-ink-faint">
+                      {newSenders.length} new sender{newSenders.length === 1 ? "" : "s"}
+                      {alreadyAddedCount > 0 && ` · ${alreadyAddedCount} already in list`}
+                    </p>
+                    <div className="space-y-1 max-h-64 overflow-y-auto">
+                      {newSenders.map((sender) => (
+                        <div
+                          key={sender.email}
+                          className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg bg-raised/50"
+                        >
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm font-medium text-ink">
+                              {sender.name}
+                            </div>
+                            <div className="text-xs text-ink-faint font-mono truncate">
+                              {sender.email}
+                            </div>
+                            <div className="text-xs text-ink-faint mt-0.5 truncate">
+                              {sender.messageCount} emails &middot; {sender.latestSubject}
+                            </div>
                           </div>
-                          <div className="text-xs text-ink-faint font-mono truncate">
-                            {sender.email}
-                          </div>
-                          <div className="text-xs text-ink-faint mt-0.5 truncate">
-                            {sender.messageCount} emails &middot; {sender.latestSubject}
-                          </div>
-                        </div>
-                        {alreadyAdded ? (
-                          <span className="text-xs text-up font-medium shrink-0">
-                            Added
-                          </span>
-                        ) : (
                           <button
                             onClick={() => handleAddDiscovered(sender)}
                             disabled={adding}
@@ -376,14 +392,14 @@ export function ManageSourcesModal({
                           >
                             Add
                           </button>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
 
         {/* Footer */}

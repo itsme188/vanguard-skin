@@ -8,6 +8,7 @@ import type {
   ParsedSnapshot,
 } from "../types";
 import { extractMaturityDate } from "@/lib/bonds";
+import { OPUS_MODEL } from "@/lib/claude-models";
 import { buildOCCSymbol, isOCCFormat, ensureOCCSymbol } from "../occ-symbol";
 
 // ── Claude API response schema ──────────────────────────────────────
@@ -136,7 +137,7 @@ export async function callClaudeForPdfExtraction(
 
   // Use streaming to avoid 10-minute timeout on large PDFs
   const stream = client.messages.stream({
-    model: "claude-opus-4-7",
+    model: OPUS_MODEL,
     max_tokens: 64000,
     temperature: 0,
     messages: [
@@ -524,7 +525,7 @@ async function callClaudeWithPdf<T>(pdfBuffer: Buffer, prompt: string): Promise<
   const base64Pdf = pdfBuffer.toString("base64");
 
   const stream = client.messages.stream({
-    model: "claude-opus-4-7",
+    model: OPUS_MODEL,
     max_tokens: 64000,
     temperature: 0,
     messages: [
