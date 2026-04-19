@@ -26,9 +26,10 @@ import { getIbApi } from "@/lib/tws/client";
 import { fetchHistoricalPrices } from "@/lib/tws/historical";
 import { fetchBenchmarkPrices } from "@/lib/tws/benchmark";
 import type { TradeReview } from "@/lib/types";
+import { OPUS_MODEL, SONNET_MODEL } from "@/lib/claude-models";
 
-const REVIEW_MODEL_OPUS = "claude-opus-4-7";
-const REVIEW_MODEL_SONNET = "claude-sonnet-4-7";
+const REVIEW_MODEL_OPUS = OPUS_MODEL;
+const REVIEW_MODEL_SONNET = SONNET_MODEL;
 /** Use Sonnet for months with many trades to avoid timeouts */
 const SONNET_TRADE_THRESHOLD = 20;
 

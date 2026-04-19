@@ -118,6 +118,8 @@ When fixing bugs, verify the fix against the actual data/edge cases before decla
 
 When working with financial data (prices, valuations, dates, events), NEVER use hardcoded or guessed values. Always use authoritative data sources (APIs like FRED, Hebcal, IBKR) instead of generating dates, prices, or financial figures from training data.
 
+When data appears missing or wrong, investigate the root cause (check the API response, query the DB directly) before building UI workarounds. The import engine now derives prices from holdings `market_value` — every holding with a market value produces a price automatically on import.
+
 ## External APIs
 
 When working with external APIs (TWS/IBKR, Gmail, FRED), check the correct API contract (parameter names, types, rate limits) before writing code. Do not guess field names like `symbol` vs `conId`.

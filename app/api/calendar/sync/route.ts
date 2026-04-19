@@ -2,7 +2,7 @@ import { db } from "@/lib/db";
 import { fetchWshEvents } from "@/lib/tws/wsh";
 import { parseWshEvents } from "@/lib/calendar/parse-wsh";
 import { fetchMacroEvents } from "@/lib/calendar/macro-events";
-import { upsertCalendarEvents } from "@/lib/mutations/calendar";
+import { upsertCalendarEvents, deleteEventsForWeek } from "@/lib/mutations/calendar";
 import { getIbApi, disconnectTws } from "@/lib/tws/client";
 import { getCurrentMonday, addDays, validateWeekOf } from "@/lib/calendar/date-utils";
 
@@ -134,6 +134,12 @@ export async function POST(request: Request) {
             weekOf
           );
           if (macroEvents.length > 0) {
+            // Clear stale macro rows for this week before inserting. The
+            // source_key for FRED/non-FRED events includes the date, so
+            // when a release gets rescheduled the next sync would otherwise
+            // leave an orphaned row with the old (wrong) date. Deleting
+            // first ensures the week reflects the latest source data.
+            deleteEventsForWeek(db, weekOf, "claude_macro");
             const result = upsertCalendarEvents(db, macroEvents);
             macroNew = result.inserted;
           }

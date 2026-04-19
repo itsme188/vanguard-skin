@@ -8,6 +8,7 @@ import {
 } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { db } from "@/lib/db";
+import { OPUS_MODEL } from "@/lib/claude-models";
 import { getPortfolioSummaryForChat } from "@/lib/queries/portfolio-summary";
 import { CHAT_TOOLS, executeTool, resolveAccountName } from "@/lib/chat/tools";
 import { buildSystemPrompt } from "@/lib/chat/system-prompt";
@@ -135,7 +136,7 @@ export async function POST(request: NextRequest) {
 
     // Stream with automatic agentic tool loop (up to 8 model calls)
     const result = streamText({
-      model: anthropic("claude-opus-4-7"),
+      model: anthropic(OPUS_MODEL),
       maxOutputTokens: 16000,
       system: {
         role: "system",

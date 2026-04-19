@@ -13,6 +13,7 @@
 import fs from "fs";
 import path from "path";
 import Anthropic from "@anthropic-ai/sdk";
+import { SONNET_MODEL } from "@/lib/claude-models";
 
 // ── Load env ────────────────────────────────────────────────────────
 
@@ -142,7 +143,7 @@ async function main() {
       }
 
       const response = await client.messages.create({
-        model: "claude-sonnet-4-7",
+        model: SONNET_MODEL,
         max_tokens: 16384,
         system: SYSTEM_PROMPT,
         messages: [{ role: "user", content }],

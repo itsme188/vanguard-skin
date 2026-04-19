@@ -5,8 +5,9 @@ import { getEventsByWeek } from "@/lib/queries/calendar";
 import { saveBriefing } from "@/lib/mutations/calendar";
 import { fetchVitalKnowledge } from "@/lib/vital-knowledge";
 import { getRecentArticles } from "@/lib/queries/research";
+import { SONNET_MODEL } from "@/lib/claude-models";
 
-const BRIEFING_MODEL = "claude-sonnet-4-7";
+const BRIEFING_MODEL = SONNET_MODEL;
 
 /**
  * Generate a weekly research briefing for all calendar events in a given week.
