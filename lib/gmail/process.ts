@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import Anthropic from "@anthropic-ai/sdk";
+import { SONNET_MODEL } from "@/lib/claude-models";
 
 interface UnprocessedArticle {
   id: number;
@@ -101,7 +102,7 @@ export async function processUnprocessedArticles(
         result.sentiment_score,
         JSON.stringify(result.mentioned_symbols),
         result.portfolio_relevance,
-        "claude-sonnet-4-7",
+        SONNET_MODEL,
         article.id
       );
 
@@ -142,7 +143,7 @@ async function extractWithClaude(
       : article.raw_text;
 
   const response = await client.messages.create({
-    model: "claude-sonnet-4-7",
+    model: SONNET_MODEL,
     max_tokens: 2048,
     tools: [
       {

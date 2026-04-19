@@ -16,21 +16,34 @@ export function DigestCatchup() {
     const day = new Date().getDay();
     if (day === 0 || day === 6) return;
 
-    fetch("/api/digest/status")
-      .then((r) => r.json())
-      .then((data) => {
-        if (!data.lastDigestSentAt) {
-          setShow(true);
-          return;
-        }
-        const lastSent = new Date(data.lastDigestSentAt);
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        if (lastSent < today) {
-          setShow(true);
-        }
-      })
-      .catch(() => {});
+    // Check once on mount, then poll every 5 min, and also re-check when
+    // the window regains focus. Needed because the 9am launchd cron sends
+    // the digest via curl — without polling, a dashboard that was already
+    // open at 8:59am would keep nagging forever.
+    const checkStatus = () => {
+      fetch("/api/digest/status")
+        .then((r) => r.json())
+        .then((data) => {
+          if (!data.lastDigestSentAt) {
+            setShow(true);
+            return;
+          }
+          const lastSent = new Date(data.lastDigestSentAt);
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+          setShow(lastSent < today);
+        })
+        .catch(() => {});
+    };
+
+    checkStatus();
+    const pollId = setInterval(checkStatus, 5 * 60 * 1000);
+    window.addEventListener("focus", checkStatus);
+
+    return () => {
+      clearInterval(pollId);
+      window.removeEventListener("focus", checkStatus);
+    };
   }, []);
 
   if (!show || sent) return null;
