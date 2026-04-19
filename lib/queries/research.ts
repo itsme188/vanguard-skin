@@ -179,6 +179,48 @@ export function getArticleById(
     .get(id) as (ResearchArticle & { raw_text: string }) | undefined;
 }
 
+/**
+ * Full-text fetch for the weekend-deep-read briefing path. Returns the most
+ * recent processed article PER source within the lookback window — ordered
+ * most-recent first. For sources that publish multiple times per window
+ * (e.g. Vital Knowledge), only the latest is returned; callers wanting
+ * multi-article deep context should pass source-specific lookback windows.
+ */
+export function getFullTextForSources(
+  db: Database.Database,
+  sourceIds: number[],
+  hours = 72
+): {
+  article_id: number;
+  source_id: number;
+  source_name: string;
+  subject: string;
+  received_at: string;
+  raw_text: string;
+}[] {
+  if (sourceIds.length === 0) return [];
+  const placeholders = sourceIds.map(() => "?").join(",");
+  return db
+    .prepare(
+      `SELECT a.id as article_id, a.source_id, s.name as source_name,
+              a.subject, a.received_at, a.raw_text
+       FROM research_articles a
+       JOIN research_sources s ON a.source_id = s.id
+       WHERE a.source_id IN (${placeholders})
+         AND a.processed_at IS NOT NULL
+         AND a.received_at >= datetime('now', '-' || ? || ' hours')
+       ORDER BY a.received_at DESC`
+    )
+    .all(...sourceIds, hours) as {
+      article_id: number;
+      source_id: number;
+      source_name: string;
+      subject: string;
+      received_at: string;
+      raw_text: string;
+    }[];
+}
+
 export function getRecentArticleSummaries(
   db: Database.Database,
   hours = 24,

@@ -4,19 +4,37 @@ import type { CalendarEvent } from "@/lib/types";
 import { getEventsByWeek } from "@/lib/queries/calendar";
 import { saveBriefing } from "@/lib/mutations/calendar";
 import { fetchVitalKnowledge } from "@/lib/vital-knowledge";
-import { getRecentArticles } from "@/lib/queries/research";
-import { SONNET_MODEL } from "@/lib/claude-models";
+import {
+  getFullTextForSources,
+  getRecentArticles,
+} from "@/lib/queries/research";
+import { OPUS_MODEL, SONNET_MODEL } from "@/lib/claude-models";
 
-const BRIEFING_MODEL = SONNET_MODEL;
+const BRIEFING_MODEL = OPUS_MODEL;
+
+// Preferred weekend-reading sources — full raw_text is sent to the model.
+// ids correspond to research_sources.id. Keep aligned with DB; wrong ids
+// will just yield empty deep-read context (no crash).
+const PREFERRED_SOURCE_IDS = [
+  1,  // Vital Knowledge
+  18, // Eliant Capital
+  19, // Purple Drink's Market Musings
+  28, // Helene Meisler
+];
+
+// Deep-read window. Weekend newsletters land Fri/Sat/Sun — 72h covers them
+// without pulling mid-week back-catalog.
+const DEEP_READ_HOURS = 72;
+
+// Hard caps to keep input cost predictable.
+const MAX_CHARS_PER_ARTICLE = 30_000;   // truncate extremely long pieces
+const MAX_TOTAL_DEEP_CHARS = 200_000;   // ~50k tokens input ceiling for deep section
+const BROADER_ARTICLE_LIMIT = 15;       // summary-level articles from other sources
 
 /**
  * Generate a weekly research briefing for all calendar events in a given week.
- * Uses Claude to research each event and produce a comprehensive markdown document.
- *
- * @param db      Database instance
- * @param weekOf  YYYY-MM-DD (Monday of the week)
- * @param options.onProgress  Callback for progress updates
- * @returns The generated briefing content (markdown)
+ * Uses Opus to synthesize full weekend newsletter text, portfolio context,
+ * macro/earnings events, and expiring option positions.
  */
 export async function generateWeeklyBriefing(
   db: Database.Database,
@@ -34,9 +52,9 @@ export async function generateWeeklyBriefing(
     };
   }
 
-  options?.onProgress?.("Building event context...", 0, events.length);
+  options?.onProgress?.("Building portfolio + events context...", 0, 4);
 
-  // Get portfolio holdings for context
+  // ── Portfolio holdings (cross-account) ─────────────────────────
   const holdings = db
     .prepare(
       `SELECT DISTINCT s.symbol, s.name, s.security_type, s.sector
@@ -46,77 +64,80 @@ export async function generateWeeklyBriefing(
          AND h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id)
        ORDER BY s.symbol`
     )
-    .all() as { symbol: string; name: string | null; security_type: string | null; sector: string | null }[];
+    .all() as {
+      symbol: string;
+      name: string | null;
+      security_type: string | null;
+      sector: string | null;
+    }[];
 
   const holdingsList = holdings
     .map((h) => `${h.symbol} (${h.name ?? "unknown"}, ${h.sector ?? "N/A"})`)
     .join("\n");
 
-  // Build the event list for the prompt
-  const eventSummary = events
-    .map((e, i) => formatEventForPrompt(e, i + 1))
-    .join("\n\n");
+  // ── Event partitioning: portfolio earnings (Finnhub) vs macro ──
+  const weekStart = weekOf;
+  const weekEnd = addDays(weekOf, 6);
+  const portfolioEarnings = events.filter(
+    (e) => e.source === "finnhub" && e.event_type === "earnings"
+  );
+  const wshEarnings = events.filter(
+    (e) => e.source === "wsh" && e.event_type === "earnings"
+  );
+  const otherEvents = events.filter(
+    (e) => e.source !== "finnhub" && !(e.source === "wsh" && e.event_type === "earnings")
+  );
 
-  // Fetch market context from research feeds (preferred) or IMAP Vital Knowledge (fallback)
-  let marketContext = "";
-  try {
-    const recentArticles = getRecentArticles(db, { processedOnly: true, limit: 10 });
-    if (recentArticles.length > 0) {
-      options?.onProgress?.("Loading research feed context...", 1, 3);
-      marketContext = recentArticles
-        .map((a) => `[${a.received_at.slice(0, 10)}] ${a.source_name}: ${a.subject}\n${a.summary || ""}`)
-        .join("\n\n---\n\n");
-    }
-  } catch {
-    // Table may not exist yet (pre-migration 019)
-  }
+  // ── Expiring options ─────────────────────────────────────────────
+  const expiringOptions = getExpiringOptions(db, weekStart, weekEnd);
 
-  // Fallback to IMAP if no research articles available
-  if (!marketContext) {
+  options?.onProgress?.("Loading weekend deep reads...", 1, 4);
+
+  // ── Weekend deep-read context (full raw_text of 4 preferred sources) ──
+  const deepArticles = getFullTextForSources(db, PREFERRED_SOURCE_IDS, DEEP_READ_HOURS);
+  const deepContext = buildDeepReadSection(deepArticles);
+
+  options?.onProgress?.("Loading broader market signals...", 2, 4);
+
+  // ── Broader market signals (summary level for other sources) ────
+  const allRecent = getRecentArticles(db, { processedOnly: true, limit: 40 });
+  const otherSourceSummaries = allRecent
+    .filter((a) => !PREFERRED_SOURCE_IDS.includes(a.source_id))
+    .slice(0, BROADER_ARTICLE_LIMIT);
+
+  const breadthContext = otherSourceSummaries
+    .map(
+      (a) =>
+        `[${a.received_at.slice(0, 10)}] ${a.source_name}: ${a.subject}\n${a.summary || ""}`
+    )
+    .join("\n\n---\n\n");
+
+  // ── Optional: Vital Knowledge IMAP fallback if DB has no VK rows ─
+  let imapFallback = "";
+  const vkInDeep = deepArticles.some((a) => a.source_id === 1);
+  if (!vkInDeep) {
     const gmailAddress = process.env.GMAIL_ADDRESS;
     const gmailAppPassword = process.env.GMAIL_APP_PASSWORD;
     if (gmailAddress && gmailAppPassword) {
-      options?.onProgress?.("Fetching Vital Knowledge market context...", 1, 3);
-      marketContext = await fetchVitalKnowledge(gmailAddress, gmailAppPassword, 7);
+      imapFallback = await fetchVitalKnowledge(gmailAddress, gmailAppPassword, 7);
     }
   }
 
-  options?.onProgress?.("Generating briefing via Claude...", marketContext ? 2 : 1, marketContext ? 3 : 2);
+  options?.onProgress?.("Generating briefing via Opus...", 3, 4);
 
-  const marketContextSection = marketContext
-    ? `\n## Market Context (Vital Knowledge Newsletter Digests)\nUse this market commentary to add depth to your analysis. Reference specific market narratives where they connect to the week's events.\n\n${marketContext}\n`
-    : "";
-
-  const prompt = `You are a financial research analyst preparing a weekly market briefing for a portfolio manager. Generate a comprehensive briefing for the week of ${formatWeekTitle(weekOf)}.
-
-## Portfolio Holdings (for context on which events directly affect the portfolio)
-${holdingsList}
-
-## Events This Week
-${eventSummary}
-${marketContextSection}
-## Instructions
-
-Write a well-structured markdown briefing document that covers:
-
-1. **Week Overview** (2-3 sentences) — What's the big picture for this week? What are the highest-impact events?
-
-2. **Key Events** — For each significant event (skip low-impact ones unless they affect portfolio holdings):
-   - What it is and when it happens
-   - Market consensus expectations (if available)
-   - What to watch for — what outcome is "priced in" vs. what would surprise
-   - How it could affect the portfolio specifically (reference holdings where relevant)
-   - Historical context: how markets have reacted to recent readings
-
-3. **Portfolio Implications** — A summary section tying it all together:
-   - Which holdings have the most event-driven risk this week
-   - Key levels or thresholds to watch
-   - Suggested positioning considerations (stay the course, reduce exposure, etc.)
-
-Format as clean markdown with headers (##), bold for key figures, and bullet points for readability. Keep the total length under 2000 words — concise but substantive.`;
+  const prompt = buildPrompt({
+    weekOf,
+    holdingsList,
+    portfolioEarnings,
+    wshEarnings,
+    otherEvents,
+    expiringOptions,
+    deepContext,
+    breadthContext,
+    imapFallback,
+  });
 
   const client = new Anthropic();
-
   const response = await client.messages.create({
     model: BRIEFING_MODEL,
     max_tokens: 8192,
@@ -124,9 +145,11 @@ Format as clean markdown with headers (##), bold for key figures, and bullet poi
   });
 
   const textBlock = response.content.find((b) => b.type === "text");
-  const content = textBlock && textBlock.type === "text" ? textBlock.text : "Failed to generate briefing.";
+  const content =
+    textBlock && textBlock.type === "text"
+      ? textBlock.text
+      : "Failed to generate briefing.";
 
-  // Save to database
   const title = `Week of ${formatWeekTitle(weekOf)}`;
   saveBriefing(db, {
     weekOf,
@@ -136,15 +159,176 @@ Format as clean markdown with headers (##), bold for key figures, and bullet poi
     model: BRIEFING_MODEL,
   });
 
-  options?.onProgress?.("Briefing complete", marketContext ? 3 : 2, marketContext ? 3 : 2);
+  options?.onProgress?.("Briefing complete", 4, 4);
 
   return { content, eventCount: events.length };
 }
 
-// ── Helpers ──────────────────────────────────────────────────────
+// ── Prompt assembly ────────────────────────────────────────────────
+
+interface PromptInput {
+  weekOf: string;
+  holdingsList: string;
+  portfolioEarnings: CalendarEvent[];
+  wshEarnings: CalendarEvent[];
+  otherEvents: CalendarEvent[];
+  expiringOptions: ExpiringOption[];
+  deepContext: string;
+  breadthContext: string;
+  imapFallback: string;
+}
+
+function buildPrompt(p: PromptInput): string {
+  const weekTitle = formatWeekTitle(p.weekOf);
+
+  const portfolioEarningsSection =
+    p.portfolioEarnings.length > 0
+      ? `\n## Portfolio Earnings This Week\nThese are earnings from companies the user currently holds (Finnhub, cross-referenced against all accounts). For each: setup going in, Street expectations (EPS/revenue consensus are embedded in the description below), how the company has performed against estimates over the last 4 quarters (also in description), key thing to watch on the call, and position implications given current holdings.\n\n${p.portfolioEarnings
+          .map((e, i) => formatEventForPrompt(e, i + 1))
+          .join("\n\n")}\n`
+      : "";
+
+  const wshSection =
+    p.wshEarnings.length > 0
+      ? `\n## Other Earnings Announcements This Week (WSH)\n${p.wshEarnings
+          .map((e, i) => formatEventForPrompt(e, i + 1))
+          .join("\n\n")}\n`
+      : "";
+
+  const optionsSection =
+    p.expiringOptions.length > 0
+      ? `\n## Options Expiring This Week\nThe user has the following open option positions that expire this week. For each, assess: ITM / OTM / ATM vs the stated strike, action the user should consider (let expire worthless, close before expiry, roll, exercise), and — for sold calls/puts — assignment risk. If you don't have a current underlying price, flag that explicitly rather than guessing.\n\n${p.expiringOptions
+          .map((o, i) => formatOptionForPrompt(o, i + 1))
+          .join("\n")}\n`
+      : "";
+
+  const otherEventsSection =
+    p.otherEvents.length > 0
+      ? `\n## Macro & Other Events This Week\n${p.otherEvents
+          .map((e, i) => formatEventForPrompt(e, i + 1))
+          .join("\n\n")}\n`
+      : "";
+
+  const weekendSection = p.deepContext
+    ? `\n## Weekend Reading — Full Newsletter Text\nThese are the complete texts of the user's preferred weekend newsletters. Read each carefully. The user's goal is for your synthesis below to **replace** him reading these himself. Identify where authors agree, where they disagree, the consensus call vs contrarian takes, and any specific securities or sectors they highlight. Cite authors by name when referencing a view.\n\n${p.deepContext}\n`
+    : p.imapFallback
+      ? `\n## Weekend Market Context (Vital Knowledge — IMAP fallback)\n${p.imapFallback}\n`
+      : "";
+
+  const breadthSection = p.breadthContext
+    ? `\n## Broader Market Signals (Summary Level — Other Sources)\nPre-summarized by the research-feed pipeline. Use for breadth, not depth.\n\n${p.breadthContext}\n`
+    : "";
+
+  return `You are a financial research analyst preparing a weekly market briefing for a single portfolio manager. Generate a comprehensive briefing for the week of ${weekTitle}.
+
+## Portfolio Holdings (for context on which events directly affect the portfolio)
+${p.holdingsList}
+${portfolioEarningsSection}${wshSection}${optionsSection}${otherEventsSection}${weekendSection}${breadthSection}
+
+## Instructions
+
+Write a markdown briefing structured as follows:
+
+1. **Week Overview** (2–3 sentences) — the big picture. Highest-impact events, the single most important question the week will answer.
+
+2. **Weekend Reading Synthesis** — synthesize the full weekend newsletters into a narrative. Where do the four authors agree? Where do they diverge? What is the week's consensus call? What's the strongest contrarian take? Cite authors by name. This section should feel like reading the best parts of all four at once, not four disconnected summaries.
+
+3. **Portfolio Earnings** — for each held-company earning above, give the setup, expectations vs. consensus (the estimates and last-4-quarter surprise history are in each event's description), what to watch, and position implications. If none reporting, skip this section.
+
+4. **Options Expiring This Week** — for each expiring option, give the assessment (ITM/OTM/ATM if derivable), action to consider, and assignment risk where relevant. If none expire, skip this section.
+
+5. **Macro & Other Events** — concise coverage of the remaining calendar. What's priced in, what would surprise, which holdings have exposure.
+
+6. **Portfolio Implications** — a tight closing section. Which holdings have the most event-driven risk this week. Key levels or thresholds. Suggested positioning considerations (stay the course, reduce exposure, hedge, etc.).
+
+Format as clean markdown. Use \`##\` for section headers, \`###\` for sub-sections, **bold** for key figures, and bullet points where helpful. Aim for a substantive briefing in the 2,500–3,500 word range — dense with actionable information, not filler.`;
+}
+
+// ── Expiring options query ─────────────────────────────────────────
+
+interface ExpiringOption {
+  symbol: string;
+  underlying_symbol: string | null;
+  expiration_date: string;
+  option_type: string | null;
+  strike_price: number | null;
+  quantity: number;
+  account_name: string;
+}
+
+function getExpiringOptions(
+  db: Database.Database,
+  startDate: string,
+  endDate: string
+): ExpiringOption[] {
+  return db
+    .prepare(
+      `SELECT s.symbol, s.underlying_symbol, s.expiration_date,
+              s.option_type, s.strike_price,
+              h.quantity, a.name AS account_name
+       FROM holdings h
+       JOIN securities s ON s.id = h.security_id
+       JOIN accounts a ON a.id = h.account_id
+       WHERE LOWER(s.security_type) = 'option'
+         AND h.quantity != 0
+         AND s.expiration_date BETWEEN ? AND ?
+         AND h.as_of_date = (
+           SELECT MAX(h2.as_of_date) FROM holdings h2
+           WHERE h2.account_id = h.account_id
+         )
+       ORDER BY s.expiration_date, s.underlying_symbol`
+    )
+    .all(startDate, endDate) as ExpiringOption[];
+}
+
+function formatOptionForPrompt(o: ExpiringOption, index: number): string {
+  const side = (o.quantity ?? 0) > 0 ? "LONG" : "SHORT";
+  const qty = Math.abs(o.quantity);
+  const strike = o.strike_price != null ? `$${o.strike_price}` : "?";
+  const type = o.option_type ?? "?";
+  return `${index}. **${o.underlying_symbol ?? o.symbol}** ${type} ${strike} exp ${o.expiration_date} — ${side} ${qty} contract${qty === 1 ? "" : "s"} in ${o.account_name}`;
+}
+
+// ── Deep-read section builder ──────────────────────────────────────
+
+function buildDeepReadSection(
+  articles: {
+    source_id: number;
+    source_name: string;
+    subject: string;
+    received_at: string;
+    raw_text: string;
+  }[]
+): string {
+  if (articles.length === 0) return "";
+
+  const sections: string[] = [];
+  let totalChars = 0;
+
+  for (const a of articles) {
+    let body = a.raw_text;
+    if (body.length > MAX_CHARS_PER_ARTICLE) {
+      body = body.slice(0, MAX_CHARS_PER_ARTICLE) + "\n...[truncated]";
+    }
+    const header = `### ${a.source_name} — "${a.subject}" (${a.received_at.slice(0, 10)})`;
+    const section = `${header}\n${body}`;
+    if (totalChars + section.length > MAX_TOTAL_DEEP_CHARS) {
+      sections.push(
+        `### ...[remaining weekend articles truncated to stay within budget]`
+      );
+      break;
+    }
+    sections.push(section);
+    totalChars += section.length;
+  }
+
+  return sections.join("\n\n---\n\n");
+}
+
+// ── Existing helpers ────────────────────────────────────────────────
 
 function formatWeekTitle(weekOf: string): string {
-  const d = new Date(weekOf + "T12:00:00"); // noon avoids DST off-by-one
+  const d = new Date(weekOf + "T12:00:00");
   return d.toLocaleDateString("en-US", {
     month: "long",
     day: "numeric",
@@ -152,26 +336,25 @@ function formatWeekTitle(weekOf: string): string {
   });
 }
 
+function addDays(isoDate: string, days: number): string {
+  const d = new Date(isoDate + "T12:00:00");
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
 function formatEventForPrompt(event: CalendarEvent, index: number): string {
   const parts = [`${index}. **${event.title}**`];
-  parts.push(`   - Date: ${event.event_date}${event.event_time ? ` at ${event.event_time} ET` : ""}`);
+  parts.push(
+    `   - Date: ${event.event_date}${event.event_time ? ` at ${event.event_time} ET` : ""}`
+  );
   parts.push(`   - Type: ${event.event_type}`);
-
-  if (event.symbol) {
-    parts.push(`   - Company: ${event.symbol}`);
-  }
-  if (event.expected_impact) {
-    parts.push(`   - Expected Impact: ${event.expected_impact}`);
-  }
-  if (event.consensus_estimate) {
-    parts.push(`   - Consensus: ${event.consensus_estimate}`);
-  }
-  if (event.previous_value) {
-    parts.push(`   - Previous: ${event.previous_value}`);
-  }
-  if (event.description) {
-    parts.push(`   - ${event.description}`);
-  }
-
+  if (event.symbol) parts.push(`   - Company: ${event.symbol}`);
+  if (event.expected_impact) parts.push(`   - Expected Impact: ${event.expected_impact}`);
+  if (event.consensus_estimate) parts.push(`   - Consensus: ${event.consensus_estimate}`);
+  if (event.previous_value) parts.push(`   - Previous: ${event.previous_value}`);
+  if (event.description) parts.push(`   - ${event.description}`);
   return parts.join("\n");
 }
+
+// Keep SONNET_MODEL import intentional — exports for downstream reuse/tests.
+export { SONNET_MODEL };
