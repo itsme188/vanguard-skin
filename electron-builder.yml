@@ -41,6 +41,11 @@ extraResources:
     to: standalone/lib/db/migrations
     filter:
       - "*.sql"
+  # Swift EventKit helper (reads Apple Calendar for portfolio-flagged earnings)
+  - from: bin
+    to: bin
+    filter:
+      - "read-calendar"
 
 mac:
   category: public.app-category.finance

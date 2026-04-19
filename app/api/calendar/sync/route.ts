@@ -2,6 +2,8 @@ import { db } from "@/lib/db";
 import { fetchWshEvents } from "@/lib/tws/wsh";
 import { parseWshEvents } from "@/lib/calendar/parse-wsh";
 import { fetchMacroEvents } from "@/lib/calendar/macro-events";
+import { fetchFinnhubEarningsForSymbols } from "@/lib/calendar/finnhub";
+import { getHeldStockSymbols } from "@/lib/queries/briefing-symbols";
 import { upsertCalendarEvents, deleteEventsForWeek } from "@/lib/mutations/calendar";
 import { getIbApi, disconnectTws } from "@/lib/tws/client";
 import { getCurrentMonday, addDays, validateWeekOf } from "@/lib/calendar/date-utils";
@@ -162,9 +164,68 @@ export async function POST(request: Request) {
           });
         }
 
+        // ── Phase 3: Finnhub portfolio earnings ──────────────────
+        let finnhubCount = 0;
+        let finnhubNew = 0;
+        if (process.env.FINNHUB_API_KEY) {
+          const symbols = getHeldStockSymbols(db);
+          send({
+            progress: {
+              phase: "finnhub_fetch",
+              message: `Scanning ${symbols.length} held stock${symbols.length === 1 ? "" : "s"} via Finnhub...`,
+            },
+          });
+          try {
+            const finnhubInputs = await fetchFinnhubEarningsForSymbols(
+              db,
+              symbols,
+              startDate,
+              endDate,
+              weekOf,
+              (done, total) => {
+                send({
+                  progress: {
+                    phase: "finnhub_progress",
+                    message: `Finnhub ${done}/${total} scanned`,
+                  },
+                });
+              }
+            );
+            if (finnhubInputs.length > 0) {
+              // Clear stale finnhub rows for this week before re-upserting —
+              // estimates update between scans and source_key is date+symbol.
+              deleteEventsForWeek(db, weekOf, "finnhub");
+              const result = upsertCalendarEvents(db, finnhubInputs);
+              finnhubNew = result.inserted;
+            }
+            finnhubCount = finnhubInputs.length;
+            send({
+              progress: {
+                phase: "finnhub_done",
+                message: `Found ${finnhubCount} portfolio earning${finnhubCount !== 1 ? "s" : ""}${finnhubNew < finnhubCount ? ` (${finnhubNew} new)` : ""}`,
+              },
+            });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : "Unknown error";
+            send({
+              progress: {
+                phase: "finnhub_error",
+                message: `Finnhub scan failed: ${msg}`,
+              },
+            });
+          }
+        } else {
+          send({
+            progress: {
+              phase: "finnhub_skip",
+              message: "FINNHUB_API_KEY not set — skipping portfolio earnings scan.",
+            },
+          });
+        }
+
         // ── Complete ────────────────────────────────────────────
-        const totalSaved = wshCount + macroCount;
-        const newEvents = wshNew + macroNew;
+        const totalSaved = wshCount + macroCount + finnhubCount;
+        const newEvents = wshNew + macroNew + finnhubNew;
         send({
           complete: true,
           data: {
@@ -173,6 +234,7 @@ export async function POST(request: Request) {
             endDate,
             wshEvents: wshCount,
             macroEvents: macroCount,
+            finnhubEvents: finnhubCount,
             totalSaved,
             newEvents,
             refreshedEvents: totalSaved - newEvents,

@@ -187,7 +187,7 @@ export const VALID_SCOPES: ChatScope[] = ["all", "ibkr", "vanguard-taxable", "va
 
 // ── Calendar Events ──────────────────────────────────────────
 
-export type CalendarEventSource = "wsh" | "claude_macro" | "manual";
+export type CalendarEventSource = "wsh" | "claude_macro" | "manual" | "apple_calendar" | "finnhub";
 
 export type CalendarEventType =
   // Company events (from WSH)

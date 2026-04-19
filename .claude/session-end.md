@@ -1,0 +1,55 @@
+# Vanguard Skin — Session End Checklist
+
+Perform these steps in order. Skip any that don't apply.
+
+## 1. Uncommitted changes
+
+Run `git status --short` in the main repo (and any worktrees if working in one).
+
+If anything is uncommitted: ask the user whether to commit, stash, or discard. If committing, follow the project's commit conventions (descriptive 1-2 sentence message focused on "why," `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>` trailer, name files explicitly — never `git add -A`).
+
+## 2. Open PRs
+
+Run `gh pr list 2>/dev/null`. If any open PRs from this session, ask the user about each.
+
+## 3. Worktrees
+
+Run `git worktree list`. If extras exist beyond the main checkout, ask the user whether to remove them. Per the global rule: cleanup is `git worktree remove <path>` then `git branch -d <branch>`.
+
+## 4. Update auto-memory
+
+Read `/Users/Yitzi/.claude/projects/-Users-Yitzi-code-vanguard-skin/memory/MEMORY.md` and update:
+- Add a new entry under "Recent Work (<today's date>)" summarizing what shipped this session (commit hash, file count, key bullets)
+- Add any newly discovered TODOs to the "TODO (next session)" list
+- Strike through anything the session resolved (e.g., active issues that were fixed)
+- Add new memory files in `memory/` for any durable feedback or project facts learned this session, then link them in MEMORY.md
+
+## 5. Update CLAUDE.md
+
+If any of these changed during the session, update `CLAUDE.md` accordingly:
+- New conventions or single-source-of-truth utilities (add to "Conventions")
+- New API routes (add to "API Pattern")
+- Architecture changes (Calendar / Auto-Refresh / Electron Build / etc.)
+- Fixed known issues (strike through with `~~text~~` in "Active Issues")
+
+## 6. Rebuild Electron DMG (pre-authorized)
+
+If the session changed any production code (anything outside `tests/`, `docs/`, `.claude/`, or memory files):
+
+```bash
+npm run electron:deploy
+```
+
+**Run in background.** Pre-authorized — do not ask. Takes ~3-5 min (Next.js build + tsc + symlink deref + electron-builder + code signing + auto-install to `/Applications/Vanguard Dashboard.app` + relaunch).
+
+If notarization is skipped because `APPLE_API_KEY` env vars aren't in shell, that's fine for local install — note it but don't block.
+
+Skip this step if the session was docs-only / memory-only / `.claude/` config-only.
+
+## 7. Summary
+
+Print a tight summary (≤150 words):
+- What shipped this session (commit hash + 1-line takeaway per item)
+- Stats: files changed, test count delta, lines +/-
+- What's deferred (with pointers to plans / TODOs)
+- Anything blocking next session
