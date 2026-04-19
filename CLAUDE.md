@@ -97,6 +97,7 @@ On TWS connect (auto or manual), `lib/tws/auto-refresh.ts` orchestrates a 5-step
 - **API contract tests**: `tests/contracts/api-component-contracts.test.ts` verifies compute function return shapes match component expectations. Add a test here whenever a new client component fetches from an API.
 - **Account scoping rule**: If a page has an account scope selector (e.g., Analysis), EVERY query on that page must accept and respect `accountIds`. No global queries on scoped pages. Client components pass `scope` prop; API routes resolve via `resolveScopeToSingleId()` or `resolveScope()` from `lib/queries/accounts.ts`.
 - **Calendar date utilities**: `lib/calendar/date-utils.ts` is the single source of truth for Monday calculations (`getCurrentMonday()`), date arithmetic (`addDays()`), week range formatting (`formatWeekRange()`), and weekOf validation (`validateWeekOf()`). Never create local date functions — import from here.
+- **Claude model IDs**: `lib/claude-models.ts` is the single source of truth — import `OPUS_MODEL` / `SONNET_MODEL`, never inline a model string. Anthropic's API requires specific IDs (no "latest" alias). A typo previously broke 4 features silently (calendar sync, trade reviews, briefings, Gmail processing) when `claude-sonnet-4-7` was used (Sonnet's latest is 4-6).
 - **Price source priority**: Higher-priority sources overwrite lower: tws(1) > ibkr(2) > vanguard(3) > manual(4). See conditional upsert in `engine.ts`.
 - **Data Health**: `/dashboard/data-health` — coverage, freshness, gaps, reconciliation. `DataConfidenceIndicator` header popover links there. Old `DataFreshness.tsx` is unused (replaced by `DataConfidenceIndicator.tsx`).
 - Always use `COALESCE(s.multiplier, 1)` in queries — SQLite DEFAULT is bypassed by explicit INSERT NULL
@@ -139,7 +140,7 @@ When working with external APIs (TWS/IBKR, Gmail, FRED), check the correct API c
 - `POST /api/chat` — AI SDK v6 `streamText` with `@ai-sdk/anthropic` provider (Opus 4.7, adaptive thinking, ephemeral cache control, `stopWhen: stepCountIs(8)`). Client uses `useChat` from `@ai-sdk/react`.
 - `POST /api/tws/positions` — SSE streaming: sync live IBKR positions + account summary from TWS
 - `POST /api/tws/chart` — OHLCV bars for per-security charting. Supports daily (cached in `ohlcv_bars`) and intraday 1m/5m (live from TWS, not cached). Returns transactions for BUY/SELL markers.
-- `POST /api/calendar/sync` — SSE streaming: pulls WSH company events (earnings, analyst meetings) from TWS + macro events (FOMC, CPI, jobs) from Claude API. Stores in `calendar_events` table.
+- `POST /api/calendar/sync` — SSE streaming: three phases — (1) WSH company events from TWS, (2) macro events (FOMC, CPI, jobs) from FRED/Claude, (3) Finnhub per-held-stock earnings scan (requires `FINNHUB_API_KEY`). Stores in `calendar_events` table.
 - `GET /api/calendar/events?start=&end=&weekOf=` — read calendar events from DB
 - `POST /api/calendar/briefing` — SSE streaming: generates weekly research briefing via Claude for all events in a given week. Includes Vital Knowledge market context if Gmail env vars set. Stores in `calendar_briefings` table.
 - `POST /api/calendar/email` — generates briefing (if needed), converts markdown→styled HTML, sends via Gmail. Body: `{ weekOf?, to? }`. Requires `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `BRIEFING_EMAIL_TO` env vars.
@@ -228,17 +229,25 @@ When working with external APIs (TWS/IBKR, Gmail, FRED), check the correct API c
 
 - WSH (Wall Street Horizon) provides company events via `reqWshEventData()` on raw `IBApi` — IBApiNext has NO WSH wrapper, so we access `(ibApiNext as any).api`
 - WSH JSON format is undocumented — `raw_json` column stores the full response for debugging/iteration
-- Macro event dates from FRED `releases/dates` API (authoritative); FOMC dates hardcoded from federalreserve.gov
-- Claude Sonnet used for enrichment only (descriptions, consensus estimates, impact ratings — never dates)
+- Macro event dates from FRED `releases/dates` API (authoritative); FOMC + ISM Mfg/Svc + UMich Sentiment + Conf Board Consumer Confidence dates hardcoded (publishers are not federal agencies, so not in FRED)
+- Claude Sonnet used for enrichment only (descriptions, consensus estimates, impact ratings — never dates from scratch)
+- **FRED release ID drift guard**: every entry in `RELEASE_MAP` has `expectedNameKeywords`; `releaseNameMatches()` skips + warns if FRED's `release_name` doesn't match. Verified against FRED `/releases` on 2026-04-18 — do NOT edit IDs without re-verifying (memory: `feedback_verify_external_truth.md`).
+- **Reschedule verification (non-FRED)**: `verifyNonFredReschedules()` calls Claude with `web_search_20250305` against publisher calendars; if rescheduled, applies new date + stores `reschedule_verified_at` + `source_url` in event `raw_json`. On Claude error, falls back to hardcoded date (never regresses).
+- **Sync-route cleanup**: `app/api/calendar/sync/route.ts` calls `deleteEventsForWeek(db, weekOf, "claude_macro")` before macro upsert. `source_key` includes the date, so without this a reschedule leaves an orphan row.
 - Dividends/ex-dividends are filtered OUT of the calendar (user preference — too noisy)
 - `lib/tws/wsh.ts` — WSH fetch with Promise wrapper, `lib/calendar/parse-wsh.ts` — defensive parser
-- `lib/calendar/macro-events.ts` — FRED dates + FOMC schedule + Claude enrichment
-- `lib/calendar/briefing.ts` — weekly briefing generation (includes VK market context if available)
+- `lib/calendar/macro-events.ts` — FRED dates + non-FRED hardcoded schedules + Claude verify + Claude enrichment
+- `lib/calendar/finnhub.ts` — per-held-stock earnings scan (source `finnhub`). Two-phase: `/calendar/earnings` per symbol → surprise history (`/stock/earnings` — free tier returns empty array, estimates-only is enough). 550ms pacing → ~35s for ~60 stocks. `FINNHUB_API_KEY` in `.env.local`.
+- `lib/queries/briefing-symbols.ts` — `getHeldStockSymbols()` filters to `security_type IN ('stock', 'common stock')` across all accounts, latest date per account.
+- `lib/calendar/briefing.ts` — weekly briefing via **Opus 4.7** (not Sonnet — this is the one email read most carefully). Reads FULL raw_text from 4 preferred weekend sources (Vital Knowledge id=1, Eliant Capital 18, Purple Drink's Market Musings 19, Helene Meisler 28), summary-level from other sources, surfaces expiring options + Finnhub earnings + macro events. 30k chars/article + 200k total cap keeps input cost ~$0.65/run.
+- `lib/queries/research.ts::getFullTextForSources()` — fetches processed articles' raw_text for a source-id list over a lookback window.
 - `lib/vital-knowledge.ts` — IMAP-based Vital Knowledge newsletter fetching (ported from Stock Contest)
 - `lib/email.ts` — nodemailer Gmail sending utility; `lib/calendar/briefing-html.ts` — markdown→HTML for email
 - Weekly briefings stored in `calendar_briefings` table, one per week (UNIQUE on `week_of`)
+- **Email-route caching quirk**: `POST /api/calendar/email` does NOT regenerate if a briefing row already exists for the week. If you run `/sync` after a briefing was saved (e.g., new Finnhub events land), you must POST `/api/calendar/briefing` first to regenerate, then POST `/api/calendar/email`. Sunday automation isn't affected because sync fires before email.
+- **Apple Calendar dormant code**: `scripts/read-calendar.swift`, `bin/read-calendar`, `lib/calendar/apple-calendar.ts` exist but are not wired into any route. Kept in case IBKR ever exposes per-calendar routing. `CalendarEventSource` still lists `"apple_calendar"` for the same reason.
 - Automated emails via launchd plists in `~/Library/LaunchAgents/`:
-  - `com.vanguard-skin.weekly-email.plist` — Sunday 5 PM, week-ahead calendar briefing
+  - `com.vanguard-skin.weekly-email.plist` — **Sunday 3 PM** (shifted from 5 PM 2026-04-19), week-ahead calendar briefing
   - `com.vanguard-skin.daily-digest.plist` — Weekdays 9 AM, research feed digest
 
 ## Electron Build
