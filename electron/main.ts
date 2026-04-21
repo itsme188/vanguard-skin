@@ -111,6 +111,8 @@ function startServer(): Promise<void> {
     if (settings.fredApiKey) env.FRED_API_KEY = settings.fredApiKey;
     if (settings.edgarContactEmail) env.EDGAR_CONTACT_EMAIL = settings.edgarContactEmail;
     if (settings.apiNinjasKey) env.API_NINJAS_API_KEY = settings.apiNinjasKey;
+    if (settings.pushoverAppToken) env.PUSHOVER_APP_TOKEN = settings.pushoverAppToken;
+    if (settings.pushoverUserKey) env.PUSHOVER_USER_KEY = settings.pushoverUserKey;
 
     // Use the standalone server.js (works in both dev and packaged modes)
     const serverScript = IS_DEV
