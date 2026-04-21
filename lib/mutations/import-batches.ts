@@ -26,6 +26,16 @@ export function completeImportBatch(
   ).run(recordCount, summary ?? null, batchId);
 }
 
+export function setImportBatchR2Key(
+  db: Database.Database,
+  batchId: number,
+  r2Key: string
+): void {
+  db.prepare(
+    "UPDATE import_batches SET raw_file_r2_key = ? WHERE id = ?"
+  ).run(r2Key, batchId);
+}
+
 export function deleteImportBatch(db: Database.Database, batchId: number): void {
   db.transaction(() => {
     // Clear derived data first (tax lots reference transactions via FK)
