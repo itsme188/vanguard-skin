@@ -9,6 +9,7 @@ import { CorporateActionsSection } from "../../components/CorporateActionsSectio
 import { SecurityChart } from "../../components/SecurityChart";
 import { WatchlistButton } from "../../components/WatchlistButton";
 import { LevelsPanel } from "../../components/LevelsPanel";
+import { RecentAlertsPanel } from "../../components/RecentAlertsPanel";
 import {
   FACTOR_COLUMNS,
   FACTOR_LABELS,
@@ -244,6 +245,9 @@ export default async function SecurityDetailPage(props: {
         symbol={security.symbol}
         currentPrice={price?.close_price ?? null}
       />
+
+      {/* Alerts history for this security (auto-hides if empty). */}
+      <RecentAlertsPanel securityId={securityId} />
 
       {/* Positions */}
       {positions.length > 0 && (

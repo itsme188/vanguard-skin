@@ -11,11 +11,26 @@ interface EnrichedAlert extends LevelAlert {
   level: {
     level_type: string;
     price: number;
+    price_source: string;
     direction: string | null;
     source: string;
     source_author: string | null;
     thesis: string | null;
   } | null;
+}
+
+function triggeredTodayIso(triggeredAt: string): boolean {
+  const t = new Date(triggeredAt);
+  if (isNaN(t.getTime())) return false;
+  const now = new Date();
+  return t.toDateString() === now.toDateString();
+}
+
+function formatPriceSourceLabel(source: string): string {
+  // sma_50 → SMA 50, ema_9 → EMA 9
+  const m = /^(sma|ema)_(\d+)$/.exec(source);
+  if (!m) return source;
+  return `${m[1].toUpperCase()} ${m[2]}`;
 }
 
 const FILTER_OPTIONS: Array<{ label: string; value: AlertResponse | "all" }> = [
@@ -209,12 +224,60 @@ export default function AlertsPage() {
             </Link>.
           </p>
         </div>
+      ) : filter === "pending" ? (
+        <GroupedPendingAlerts alerts={alerts} onRespond={respond} />
       ) : (
         <ul className="space-y-2">
           {alerts.map((a) => (
             <AlertRow key={a.id} alert={a} onRespond={respond} />
           ))}
         </ul>
+      )}
+    </div>
+  );
+}
+
+function GroupedPendingAlerts({
+  alerts,
+  onRespond,
+}: {
+  alerts: EnrichedAlert[];
+  onRespond: (id: number, response: AlertResponse, note?: string) => void;
+}) {
+  // Split pending alerts so "Triggered today" — the ones the user most likely
+  // wants to act on before market close — surface above everything older.
+  const today: EnrichedAlert[] = [];
+  const older: EnrichedAlert[] = [];
+  for (const a of alerts) {
+    if (triggeredTodayIso(a.triggered_at)) today.push(a);
+    else older.push(a);
+  }
+
+  return (
+    <div className="space-y-5">
+      {today.length > 0 && (
+        <section>
+          <h2 className="text-[11px] font-medium text-gold uppercase tracking-wider mb-2">
+            Triggered today <span className="text-ink-faint font-mono ml-1">{today.length}</span>
+          </h2>
+          <ul className="space-y-2">
+            {today.map((a) => (
+              <AlertRow key={a.id} alert={a} onRespond={onRespond} />
+            ))}
+          </ul>
+        </section>
+      )}
+      {older.length > 0 && (
+        <section>
+          <h2 className="text-[11px] font-medium text-ink-dim uppercase tracking-wider mb-2">
+            Older pending <span className="text-ink-faint font-mono ml-1">{older.length}</span>
+          </h2>
+          <ul className="space-y-2">
+            {older.map((a) => (
+              <AlertRow key={a.id} alert={a} onRespond={onRespond} />
+            ))}
+          </ul>
+        </section>
       )}
     </div>
   );
@@ -268,6 +331,14 @@ function AlertRow({
             {alert.level && (
               <span className="text-[11px] text-ink-dim">
                 {alert.level.level_type.replace("_", " ")} @ ${alert.level.price.toFixed(2)}
+                {alert.level.price_source && alert.level.price_source !== "static" && (
+                  <span
+                    className="ml-1.5 inline-block px-1 py-0.5 rounded text-[9px] bg-raised text-ink-faint uppercase tracking-wider"
+                    title="This level references a moving average — the trigger price shown is the MA value at the moment of the cross, not a fixed number."
+                  >
+                    {formatPriceSourceLabel(alert.level.price_source)}
+                  </span>
+                )}
               </span>
             )}
             <span className="text-[11px] text-ink-faint">

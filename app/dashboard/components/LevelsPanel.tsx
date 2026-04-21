@@ -79,6 +79,9 @@ export function LevelsPanel({
   const [adding, setAdding] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
   const [sourceOptions, setSourceOptions] = useState<string[]>([]);
+  // Provenance filter: "All" | "Me" | specific author. Lets the user triage
+  // their own levels vs newsletter-derived ones once the list grows.
+  const [authorFilter, setAuthorFilter] = useState<string>("All");
 
   // Form state. Default author = "Me" so user-originated levels are tracked as
   // the user's own. Dropdown also surfaces known research_sources for one-click
@@ -92,6 +95,10 @@ export function LevelsPanel({
   const [thesis, setThesis] = useState("");
   const [timeframe, setTimeframe] = useState<LevelTimeframe | "">("");
   const [expiresAt, setExpiresAt] = useState("");
+  // Mobile only: collapses Direction/Action/Source/Timeframe/Expires/Thesis
+  // behind a "More options" disclosure to keep tap targets large. Desktop
+  // always shows the full form.
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -283,33 +290,45 @@ export function LevelsPanel({
                 className="w-full bg-canvas border border-edge rounded px-2 py-1 text-xs disabled:opacity-40"
               />
             </Field>
-            <Field label="Direction">
-              <select
-                value={direction}
-                onChange={(e) => setDirection(e.target.value as LevelDirection | "")}
-                className="w-full bg-canvas border border-edge rounded px-2 py-1 text-xs"
-              >
-                <option value="">—</option>
-                <option value="bullish">Bullish</option>
-                <option value="bearish">Bearish</option>
-              </select>
-            </Field>
-            <Field label="Action">
-              <select
-                value={actionHint}
-                onChange={(e) => setActionHint(e.target.value as LevelActionHint | "")}
-                className="w-full bg-canvas border border-edge rounded px-2 py-1 text-xs"
-              >
-                <option value="">—</option>
-                <option value="new_position">New position</option>
-                <option value="scale_in">Scale in</option>
-                <option value="trim">Trim</option>
-                <option value="close">Close</option>
-                <option value="watch">Watch</option>
-              </select>
-            </Field>
+            <div className={`contents ${showAdvanced ? "" : "hidden md:contents"}`}>
+              <Field label="Direction">
+                <select
+                  value={direction}
+                  onChange={(e) => setDirection(e.target.value as LevelDirection | "")}
+                  className="w-full bg-canvas border border-edge rounded px-2 py-1 text-xs"
+                >
+                  <option value="">—</option>
+                  <option value="bullish">Bullish</option>
+                  <option value="bearish">Bearish</option>
+                </select>
+              </Field>
+              <Field label="Action">
+                <select
+                  value={actionHint}
+                  onChange={(e) => setActionHint(e.target.value as LevelActionHint | "")}
+                  className="w-full bg-canvas border border-edge rounded px-2 py-1 text-xs"
+                >
+                  <option value="">—</option>
+                  <option value="new_position">New position</option>
+                  <option value="scale_in">Scale in</option>
+                  <option value="trim">Trim</option>
+                  <option value="close">Close</option>
+                  <option value="watch">Watch</option>
+                </select>
+              </Field>
+            </div>
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {/* Mobile-only disclosure. Desktop always shows the second grid. */}
+          {!showAdvanced && (
+            <button
+              type="button"
+              onClick={() => setShowAdvanced(true)}
+              className="md:hidden w-full text-center text-[11px] text-gold py-2 border border-dashed border-gold/30 rounded hover:bg-gold/5"
+            >
+              More options ↓
+            </button>
+          )}
+          <div className={`grid grid-cols-2 md:grid-cols-4 gap-3 ${showAdvanced ? "" : "hidden md:grid"}`}>
             <Field label="Source / Author">
               <input
                 type="text"
@@ -369,13 +388,52 @@ export function LevelsPanel({
         </form>
       )}
 
-      {levels.length === 0 ? (
-        <p className="text-[11px] text-ink-faint italic py-4 text-center">
-          No levels set. Add one above.
-        </p>
-      ) : (
-        <ul className="divide-y divide-edge">
-          {levels.map((l) => (
+      {/* Provenance filter — derived from distinct authors on this security's
+          levels. Hidden when there's nothing to filter (≤1 distinct author). */}
+      {(() => {
+        const distinctAuthors = Array.from(
+          new Set(levels.map((l) => l.source_author).filter((a): a is string => !!a))
+        ).sort();
+        if (distinctAuthors.length <= 1) return null;
+        const pills = ["All", ...distinctAuthors];
+        return (
+          <div className="flex items-center gap-1 mb-3 flex-wrap">
+            {pills.map((p) => (
+              <button
+                key={p}
+                onClick={() => setAuthorFilter(p)}
+                className={`px-2 py-0.5 rounded-full text-[10px] transition-colors ${
+                  authorFilter === p
+                    ? "bg-gold/20 text-gold"
+                    : "bg-raised text-ink-faint hover:text-ink-dim"
+                }`}
+              >
+                {p}
+              </button>
+            ))}
+          </div>
+        );
+      })()}
+
+      {(() => {
+        const visibleLevels =
+          authorFilter === "All"
+            ? levels
+            : levels.filter((l) => l.source_author === authorFilter);
+
+        if (visibleLevels.length === 0) {
+          return (
+            <p className="text-[11px] text-ink-faint italic py-4 text-center">
+              {levels.length === 0
+                ? "No levels set. Add one above."
+                : `No levels from ${authorFilter}.`}
+            </p>
+          );
+        }
+
+        return (
+          <ul className="divide-y divide-edge">
+            {visibleLevels.map((l) => (
             <li key={l.id} className="py-2.5 flex items-start gap-3">
               <div
                 className={`text-[10px] uppercase tracking-wider font-medium w-20 shrink-0 ${LEVEL_TYPE_COLOR[l.level_type]}`}
@@ -474,7 +532,8 @@ export function LevelsPanel({
             </li>
           ))}
         </ul>
-      )}
+        );
+      })()}
     </section>
   );
 }

@@ -124,6 +124,7 @@ export function findCrossedLevels(
        LEFT JOIN latest_primary lp ON lp.security_id = sl.security_id
        LEFT JOIN latest_benchmark lb ON lb.security_id = sl.security_id
        WHERE sl.is_active = 1
+         AND sl.review_status = 'auto_approved'
          AND (sl.expires_at IS NULL OR sl.expires_at >= date('now'))
          AND COALESCE(lp.close_price, lb.close_price) IS NOT NULL
          AND COALESCE(lp.date, lb.date) >= date('now', '-4 days')`
@@ -175,6 +176,68 @@ export function getAlerts(
        LIMIT ?`
     )
     .all(...params, limit) as LevelAlert[];
+}
+
+/**
+ * Count active, non-expired levels per security_id. Used by the calendar
+ * cross-reference to show "N levels" chips on events with an associated
+ * security — surfaces the earnings-vs-level combo that matters most for
+ * short-term positioning decisions.
+ */
+export function getActiveLevelCountsForSecurityIds(
+  db: Database.Database,
+  securityIds: number[]
+): Map<number, number> {
+  const result = new Map<number, number>();
+  if (securityIds.length === 0) return result;
+  const placeholders = securityIds.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `SELECT security_id, COUNT(*) AS n
+         FROM security_levels
+        WHERE is_active = 1
+          AND review_status = 'auto_approved'
+          AND (expires_at IS NULL OR expires_at >= date('now'))
+          AND security_id IN (${placeholders})
+        GROUP BY security_id`
+    )
+    .all(...securityIds) as Array<{ security_id: number; n: number }>;
+  for (const r of rows) result.set(r.security_id, r.n);
+  return result;
+}
+
+/** Count of levels awaiting user review (newsletter-extracted, pending_review). */
+export function getPendingReviewCount(db: Database.Database): number {
+  const row = db
+    .prepare(
+      "SELECT COUNT(*) AS n FROM security_levels WHERE review_status = 'pending_review'"
+    )
+    .get() as { n: number };
+  return row.n;
+}
+
+/** Return all pending_review levels enriched with security info for the review inbox. */
+export interface PendingReviewLevel extends SecurityLevel {
+  symbol: string;
+  security_name: string | null;
+  current_price: number | null;
+}
+
+export function getPendingReviewLevels(db: Database.Database): PendingReviewLevel[] {
+  return db
+    .prepare(
+      `SELECT sl.*, s.symbol, s.name AS security_name, p.close_price AS current_price
+       FROM security_levels sl
+       JOIN securities s ON s.id = sl.security_id
+       LEFT JOIN (
+         SELECT security_id, close_price
+         FROM prices p1
+         WHERE date = (SELECT MAX(date) FROM prices p2 WHERE p2.security_id = p1.security_id)
+       ) p ON p.security_id = sl.security_id
+       WHERE sl.review_status = 'pending_review'
+       ORDER BY sl.created_at DESC`
+    )
+    .all() as PendingReviewLevel[];
 }
 
 export function getPendingAlertCount(db: Database.Database): number {

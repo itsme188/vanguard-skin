@@ -34,11 +34,12 @@ export async function GET(request: NextRequest) {
         .prepare("SELECT symbol, name FROM securities WHERE id = ?")
         .get(a.security_id) as { symbol: string; name: string | null } | undefined;
       const level = db
-        .prepare("SELECT level_type, price, direction, source, source_author, thesis FROM security_levels WHERE id = ?")
+        .prepare("SELECT level_type, price, price_source, direction, source, source_author, thesis FROM security_levels WHERE id = ?")
         .get(a.level_id) as
         | {
             level_type: string;
             price: number;
+            price_source: string;
             direction: string | null;
             source: string;
             source_author: string | null;

@@ -543,21 +543,38 @@ export function SecurityChart({
           {!compact && <span className="font-mono font-semibold text-ink text-lg">{symbol}</span>}
           {!compact && legend && (
             <div className="flex items-center gap-3 text-xs font-mono">
-              <span className="text-ink-faint">O</span>
-              <span className="text-ink">{legend.open.toFixed(2)}</span>
-              <span className="text-ink-faint">H</span>
-              <span className="text-ink">{legend.high.toFixed(2)}</span>
-              <span className="text-ink-faint">L</span>
-              <span className="text-ink">{legend.low.toFixed(2)}</span>
-              <span className="text-ink-faint">C</span>
-              <span className={legend.close >= legend.open ? "text-up" : "text-down"}>
-                {legend.close.toFixed(2)}
+              {/* O/H/L hidden on phones — too cramped with indicators.
+                  Close + optional delta-to-open + active indicators always show. */}
+              <span className="hidden md:inline-flex items-center gap-1">
+                <span className="text-ink-faint">O</span>
+                <span className="text-ink">{legend.open.toFixed(2)}</span>
+              </span>
+              <span className="hidden md:inline-flex items-center gap-1">
+                <span className="text-ink-faint">H</span>
+                <span className="text-ink">{legend.high.toFixed(2)}</span>
+              </span>
+              <span className="hidden md:inline-flex items-center gap-1">
+                <span className="text-ink-faint">L</span>
+                <span className="text-ink">{legend.low.toFixed(2)}</span>
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span className="text-ink-faint">C</span>
+                <span className={legend.close >= legend.open ? "text-up" : "text-down"}>
+                  {legend.close.toFixed(2)}
+                </span>
+              </span>
+              {/* Mobile-only: signed delta from open (replaces O/H/L for context). */}
+              <span className="inline-flex md:hidden items-baseline">
+                <span className={legend.close >= legend.open ? "text-up" : "text-down"}>
+                  {legend.close - legend.open >= 0 ? "+" : ""}
+                  {(legend.close - legend.open).toFixed(2)}
+                </span>
               </span>
               {legend.volume != null && (
-                <>
+                <span className="hidden md:inline-flex items-center gap-1">
                   <span className="text-ink-faint">Vol</span>
                   <span className="text-ink">{legend.volume.toLocaleString()}</span>
-                </>
+                </span>
               )}
               {legend.indicators && Object.entries(legend.indicators).map(([key, value]) => {
                 const label = INDICATORS.find((i) => i.key === key)?.label ?? key;

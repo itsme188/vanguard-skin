@@ -6,6 +6,7 @@ import type {
   LevelSource,
   LevelTimeframe,
   LevelPriceSource,
+  LevelReviewStatus,
   AlertResponse,
 } from "@/lib/types";
 import { hasAlertToday } from "@/lib/queries/security-levels";
@@ -28,6 +29,7 @@ export interface UpsertLevelInput {
   expires_at?: string | null;
   group_id?: string | null;
   notes?: string | null;
+  review_status?: LevelReviewStatus;
 }
 
 export function upsertLevel(
@@ -49,6 +51,7 @@ export function upsertLevel(
     expires_at: input.expires_at ?? null,
     group_id: input.group_id ?? null,
     notes: input.notes ?? null,
+    review_status: input.review_status ?? "auto_approved",
   };
 
   if (input.id) {
@@ -59,7 +62,7 @@ export function upsertLevel(
            direction = @direction, action_hint = @action_hint, source = @source,
            source_article_id = @source_article_id, source_author = @source_author,
            thesis = @thesis, timeframe = @timeframe, expires_at = @expires_at,
-           group_id = @group_id, notes = @notes,
+           group_id = @group_id, notes = @notes, review_status = @review_status,
            updated_at = datetime('now')
        WHERE id = @id`
     ).run({ ...common, id: input.id });
@@ -71,14 +74,30 @@ export function upsertLevel(
       `INSERT INTO security_levels
         (security_id, level_type, price, price_source, direction, action_hint, source,
          source_article_id, source_author, thesis, timeframe, expires_at,
-         group_id, notes)
+         group_id, notes, review_status)
        VALUES
         (@security_id, @level_type, @price, @price_source, @direction, @action_hint, @source,
          @source_article_id, @source_author, @thesis, @timeframe, @expires_at,
-         @group_id, @notes)`
+         @group_id, @notes, @review_status)`
     )
     .run(common);
   return result.lastInsertRowid as number;
+}
+
+/**
+ * Flip review_status for a pending newsletter-extracted level.
+ * Approved → armed; rejected → kept in DB (for audit) but excluded from scans.
+ */
+export function setLevelReviewStatus(
+  db: Database.Database,
+  id: number,
+  status: LevelReviewStatus
+): void {
+  db.prepare(
+    `UPDATE security_levels
+     SET review_status = ?, updated_at = datetime('now')
+     WHERE id = ?`
+  ).run(status, id);
 }
 
 export function deactivateLevel(db: Database.Database, id: number): void {

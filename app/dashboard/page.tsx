@@ -18,6 +18,8 @@ import { UpcomingEventsCard } from "./components/UpcomingEventsCard";
 import { IncomeCard } from "./components/IncomeCard";
 import { PeriodComparisonTable } from "./components/PeriodComparisonTable";
 import { MorningBriefing } from "./components/MorningBriefing";
+import { NearbyLevelsCard } from "./components/NearbyLevelsCard";
+import { getLevelsNearPrice } from "@/lib/queries/briefing-levels";
 
 function computePerformancePeriods(): { periods: TwrPeriod[]; perAccount: Map<number, { totalReturn: number; annualizedReturn: number | null }> } {
   const today = new Date().toISOString().slice(0, 10);
@@ -95,12 +97,14 @@ function computePerformancePeriods(): { periods: TwrPeriod[]; perAccount: Map<nu
 
 export default function OverviewPage() {
   let accounts, chartData, dailyChartData, totals, twrPeriods: TwrPeriod[], twrByAccount: Map<number, { totalReturn: number; annualizedReturn: number | null }>;
+  let nearbyLevels;
   try {
     accounts = getAccountSummaries(db);
     chartData = getPortfolioChartData(db);
     dailyChartData = getDailyValuationsPivoted(db);
     totals = getPortfolioTotals(db);
     ({ periods: twrPeriods, perAccount: twrByAccount } = computePerformancePeriods());
+    nearbyLevels = getLevelsNearPrice(db, 0.05);
   } catch {
     throw new Error("Failed to load overview data. The database may be unavailable.");
   }
@@ -123,6 +127,7 @@ export default function OverviewPage() {
           />
           <MorningBriefing />
           <AccountSummaryCards accounts={accounts} twrByAccount={twrByAccount} />
+          <NearbyLevelsCard levels={nearbyLevels} />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <UpcomingEventsCard />
             <IncomeCard />

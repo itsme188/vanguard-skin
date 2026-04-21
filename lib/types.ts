@@ -306,6 +306,7 @@ export type LevelDirection = "bullish" | "bearish";
 export type LevelActionHint = "new_position" | "scale_in" | "trim" | "close" | "watch";
 export type LevelSource = "user" | "newsletter" | "technical" | "claude";
 export type LevelTimeframe = "day" | "week" | "month";
+export type LevelReviewStatus = "auto_approved" | "pending_review" | "rejected";
 export type LevelPriceSource =
   | "static"
   | "sma_9"
@@ -336,6 +337,7 @@ export interface SecurityLevel {
   triggered_at: string | null;
   triggered_price: number | null;
   notes: string | null;
+  review_status: LevelReviewStatus;
   created_at: string;
   updated_at: string;
 }

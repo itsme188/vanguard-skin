@@ -17,7 +17,12 @@ import {
   triggerLevel,
   respondToAlert,
   setAlertSuggestion,
+  setLevelReviewStatus,
 } from "@/lib/mutations/security-levels";
+import {
+  getPendingReviewCount,
+  getPendingReviewLevels,
+} from "@/lib/queries/security-levels";
 
 let db: Database.Database;
 
@@ -257,6 +262,129 @@ describe("security_levels — findCrossedLevels", () => {
     const threeDaysAgo = new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString().slice(0, 10);
     seedPrice(secId, 175, threeDaysAgo);
 
+    expect(findCrossedLevels(db)).toHaveLength(1);
+  });
+
+  it("ignores pending_review levels (newsletter extraction review gate)", () => {
+    const secId = seedSecurity("AAPL");
+    upsertLevel(db, {
+      security_id: secId,
+      level_type: "support",
+      price: 180,
+      source: "newsletter",
+      review_status: "pending_review",
+    });
+    seedPrice(secId, 175);
+
+    // Price has crossed the level, but the scan should skip it until the user
+    // reviews and approves.
+    expect(findCrossedLevels(db)).toHaveLength(0);
+  });
+
+  it("ignores rejected levels too (kept for audit, never fires)", () => {
+    const secId = seedSecurity("AAPL");
+    upsertLevel(db, {
+      security_id: secId,
+      level_type: "support",
+      price: 180,
+      source: "newsletter",
+      review_status: "rejected",
+    });
+    seedPrice(secId, 175);
+    expect(findCrossedLevels(db)).toHaveLength(0);
+  });
+});
+
+describe("security_levels — review workflow", () => {
+  it("pending_review counts and listing work end-to-end", () => {
+    const aapl = seedSecurity("AAPL");
+    const spy = seedSecurity("SPY");
+    upsertLevel(db, {
+      security_id: aapl,
+      level_type: "support",
+      price: 180,
+      source: "newsletter",
+      source_author: "Purple Drink",
+      review_status: "pending_review",
+    });
+    upsertLevel(db, {
+      security_id: spy,
+      level_type: "resistance",
+      price: 585,
+      source: "newsletter",
+      source_author: "Eliant Capital",
+      review_status: "pending_review",
+    });
+    upsertLevel(db, {
+      // user-created — should NOT appear in review inbox
+      security_id: aapl,
+      level_type: "stop",
+      price: 175,
+    });
+
+    expect(getPendingReviewCount(db)).toBe(2);
+    const pending = getPendingReviewLevels(db);
+    expect(pending).toHaveLength(2);
+    expect(pending.every((l) => l.review_status === "pending_review")).toBe(true);
+  });
+
+  it("approving a pending level arms it for the scanner", () => {
+    const secId = seedSecurity("AAPL");
+    const levelId = upsertLevel(db, {
+      security_id: secId,
+      level_type: "support",
+      price: 180,
+      source: "newsletter",
+      review_status: "pending_review",
+    });
+    seedPrice(secId, 175);
+
+    // Before approval: scan ignores the level.
+    expect(findCrossedLevels(db)).toHaveLength(0);
+
+    setLevelReviewStatus(db, levelId, "auto_approved");
+
+    // After approval: scan picks it up and reports the cross.
+    const crossed = findCrossedLevels(db);
+    expect(crossed).toHaveLength(1);
+    expect(crossed[0].id).toBe(levelId);
+  });
+
+  it("rejecting a pending level keeps it in DB but excludes from scans + inbox", () => {
+    const secId = seedSecurity("AAPL");
+    const levelId = upsertLevel(db, {
+      security_id: secId,
+      level_type: "support",
+      price: 180,
+      source: "newsletter",
+      review_status: "pending_review",
+    });
+    seedPrice(secId, 175);
+
+    setLevelReviewStatus(db, levelId, "rejected");
+
+    expect(getPendingReviewCount(db)).toBe(0);
+    expect(findCrossedLevels(db)).toHaveLength(0);
+
+    // But the row still exists — preserved for audit (user can see which
+    // levels they've rejected from a given source).
+    const allLevels = db
+      .prepare("SELECT id, review_status FROM security_levels WHERE id = ?")
+      .get(levelId) as { id: number; review_status: string };
+    expect(allLevels.review_status).toBe("rejected");
+  });
+
+  it("user-created levels default to auto_approved and bypass the review gate", () => {
+    const secId = seedSecurity("AAPL");
+    upsertLevel(db, {
+      security_id: secId,
+      level_type: "support",
+      price: 180,
+    });
+
+    expect(getPendingReviewCount(db)).toBe(0);
+
+    seedPrice(secId, 175);
     expect(findCrossedLevels(db)).toHaveLength(1);
   });
 });
