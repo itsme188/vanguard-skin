@@ -106,7 +106,14 @@ export function deleteLevel(db: Database.Database, id: number): void {
  * Mark a level as triggered and insert a corresponding alert.
  * Flips is_active=0 so the level won't re-fire until user re-activates (one alert per level).
  * Also checks hasAlertToday as a secondary guard in case is_active wasn't flipped for some reason.
+ *
+ * Return shape: when `deduped` is true, `reason` explains why so callers/UI can
+ * show an informative state instead of silently no-op'ing.
  */
+export type TriggerLevelResult =
+  | { alertId: number; deduped: false; reason?: never }
+  | { alertId: null; deduped: true; reason: "already_alerted_today" };
+
 export function triggerLevel(
   db: Database.Database,
   opts: {
@@ -117,9 +124,9 @@ export function triggerLevel(
     positionContext?: string | null;
     suggestedAction?: string | null;
   }
-): { alertId: number | null; deduped: boolean } {
+): TriggerLevelResult {
   if (hasAlertToday(db, opts.levelId)) {
-    return { alertId: null, deduped: true };
+    return { alertId: null, deduped: true, reason: "already_alerted_today" };
   }
 
   const triggeredAt = opts.triggeredAt ?? new Date().toISOString();

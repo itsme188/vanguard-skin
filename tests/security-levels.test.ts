@@ -224,6 +224,41 @@ describe("security_levels — findCrossedLevels", () => {
 
     expect(findCrossedLevels(db)).toHaveLength(0);
   });
+
+  it("falls back to benchmark_prices for securities without entries in prices", () => {
+    // DIA is a benchmark-only security in this setup — no portfolio holdings.
+    const secId = seedSecurity("DIA");
+    upsertLevel(db, { security_id: secId, level_type: "support", price: 420 });
+    // Seed only benchmark_prices; `prices` table has no row for DIA.
+    const today = new Date().toISOString().slice(0, 10);
+    db.prepare(
+      "INSERT INTO benchmark_prices (symbol, date, close_price, source) VALUES (?, ?, ?, 'tws')"
+    ).run("DIA", today, 418);
+
+    const crossed = findCrossedLevels(db);
+    expect(crossed).toHaveLength(1);
+    expect(crossed[0].current_price).toBe(418);
+  });
+
+  it("skips levels whose latest price is older than 4 days (stale-price guard)", () => {
+    const secId = seedSecurity("AAPL");
+    upsertLevel(db, { security_id: secId, level_type: "support", price: 180 });
+    // Seed a price dated 10 days ago — clearly stale (TWS offline scenario).
+    const stale = new Date(Date.now() - 10 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+    seedPrice(secId, 175, stale);
+
+    expect(findCrossedLevels(db)).toHaveLength(0);
+  });
+
+  it("still fires when the latest price is within 4 days (tolerates weekends)", () => {
+    const secId = seedSecurity("AAPL");
+    upsertLevel(db, { security_id: secId, level_type: "support", price: 180 });
+    // 3 days old — covers a typical weekend gap. Should still scan.
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+    seedPrice(secId, 175, threeDaysAgo);
+
+    expect(findCrossedLevels(db)).toHaveLength(1);
+  });
 });
 
 describe("security_levels — triggerLevel + alerts", () => {

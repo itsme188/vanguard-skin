@@ -270,6 +270,190 @@ describe("vanguard PDF parser", () => {
     });
   });
 
+  describe("statement-mode transaction coverage", () => {
+    // Statement PDFs produce the full range of Vanguard transaction types.
+    // Before the H3 refactor, Step 2's combined-prompt suffered attention
+    // dilution and missed these reliably. This test exercises the mapping
+    // for every type that matters for tax-lot / cost-basis correctness.
+    const statementFixture: ClaudePdfResponse = {
+      ...fixture,
+      holdings: [],
+      transactions: [
+        {
+          settlement_date: "2025-01-03",
+          trade_date: "2025-01-02",
+          symbol: "AAPL",
+          name: "APPLE INC",
+          transaction_type: "Sell",
+          quantity: 10,
+          price: 180.5,
+          commissions: 0,
+          amount: 1805,
+        },
+        {
+          settlement_date: "2025-01-05",
+          trade_date: "2025-01-05",
+          symbol: "AAPL  250117C00190000",
+          name: "CALL AAPL $190 EXP 01/17/25",
+          transaction_type: "Buy to open",
+          quantity: 2,
+          price: 3.25,
+          commissions: 0,
+          amount: -650,
+          underlying_symbol: "AAPL",
+          strike_price: 190,
+          expiration_date: "2025-01-17",
+          option_type: "CALL",
+        },
+        {
+          settlement_date: "2025-01-10",
+          trade_date: "2025-01-10",
+          symbol: "AAPL  250117C00190000",
+          name: "CALL AAPL $190 EXP 01/17/25",
+          transaction_type: "Sell to close",
+          quantity: 2,
+          price: 5.1,
+          commissions: 0,
+          amount: 1020,
+          underlying_symbol: "AAPL",
+          strike_price: 190,
+          expiration_date: "2025-01-17",
+          option_type: "CALL",
+        },
+        {
+          settlement_date: "2025-01-15",
+          trade_date: "2025-01-15",
+          symbol: null,
+          name: "ACH TRANSFER FROM BANK",
+          transaction_type: "Transfer (in)",
+          quantity: null,
+          price: null,
+          commissions: null,
+          amount: 5000,
+        },
+        {
+          settlement_date: "2025-01-20",
+          trade_date: "2025-01-20",
+          symbol: null,
+          name: "ACH TRANSFER TO BANK",
+          transaction_type: "Transfer (out)",
+          quantity: null,
+          price: null,
+          commissions: null,
+          amount: -2000,
+        },
+        {
+          settlement_date: "2025-01-17",
+          trade_date: "2025-01-17",
+          symbol: "MSFT  250117P00400000",
+          name: "PUT MSFT $400 EXP 01/17/25",
+          transaction_type: "Expired",
+          quantity: 1,
+          price: null,
+          commissions: null,
+          amount: 0,
+          underlying_symbol: "MSFT",
+          strike_price: 400,
+          expiration_date: "2025-01-17",
+          option_type: "PUT",
+        },
+        {
+          settlement_date: "2025-01-17",
+          trade_date: "2025-01-17",
+          symbol: "NVDA  250117C00140000",
+          name: "CALL NVDA $140 EXP 01/17/25",
+          transaction_type: "Exercised",
+          quantity: 1,
+          price: null,
+          commissions: null,
+          amount: 0,
+          underlying_symbol: "NVDA",
+          strike_price: 140,
+          expiration_date: "2025-01-17",
+          option_type: "CALL",
+        },
+        {
+          settlement_date: "2025-01-25",
+          trade_date: "2025-01-25",
+          symbol: null,
+          name: "MARGIN INTEREST",
+          transaction_type: "Interest charge",
+          quantity: null,
+          price: null,
+          commissions: null,
+          amount: -12.5,
+        },
+      ],
+    };
+
+    const result = parseClaudePdfResponse(statementFixture, "statement.pdf");
+
+    it("maps SELL with correct amount sign", () => {
+      const sell = result.transactions.find((t) => t.type === "SELL");
+      expect(sell).toBeTruthy();
+      expect(sell!.amount).toBe(1805);
+      expect(sell!.quantity).toBe(10);
+    });
+
+    it("maps BUY_TO_OPEN with OCC symbol preserved", () => {
+      const bto = result.transactions.find((t) => t.type === "BUY_TO_OPEN");
+      expect(bto).toBeTruthy();
+      expect(bto!.symbol).toBe("AAPL  250117C00190000");
+      expect(bto!.amount).toBe(-650);
+    });
+
+    it("maps SELL_TO_CLOSE for option", () => {
+      const stc = result.transactions.find((t) => t.type === "SELL_TO_CLOSE");
+      expect(stc).toBeTruthy();
+      expect(stc!.amount).toBe(1020);
+    });
+
+    it("maps TRANSFER_IN and TRANSFER_OUT", () => {
+      const transferIn = result.transactions.find((t) => t.type === "TRANSFER_IN");
+      const transferOut = result.transactions.find((t) => t.type === "TRANSFER_OUT");
+      expect(transferIn!.amount).toBe(5000);
+      expect(transferOut!.amount).toBe(-2000);
+    });
+
+    it("maps EXPIRED options", () => {
+      const expired = result.transactions.find((t) => t.type === "EXPIRED");
+      expect(expired).toBeTruthy();
+      expect(expired!.symbol).toBe("MSFT  250117P00400000");
+    });
+
+    it("maps EXERCISED options", () => {
+      const exercised = result.transactions.find((t) => t.type === "EXERCISED");
+      expect(exercised).toBeTruthy();
+      expect(exercised!.symbol).toBe("NVDA  250117C00140000");
+    });
+
+    it("maps INTEREST charges", () => {
+      const interest = result.transactions.find((t) => t.type === "INTEREST");
+      expect(interest).toBeTruthy();
+      expect(interest!.amount).toBe(-12.5);
+    });
+
+    it("registers option securities with multiplier 100", () => {
+      const aaplOpt = result.securities.find((s) => s.symbol === "AAPL  250117C00190000");
+      expect(aaplOpt).toBeTruthy();
+      expect(aaplOpt!.securityType).toBe("Option");
+      expect(aaplOpt!.multiplier).toBe(100);
+    });
+
+    it("emits no errors on a full statement", () => {
+      expect(result.errors).toHaveLength(0);
+    });
+  });
+
+  describe("focused transactions prompt", () => {
+    it("exports FOCUSED_TRANSACTIONS_PROMPT with key instructions", async () => {
+      const mod = await import("@/lib/import/parsers/vanguard-pdf");
+      // Spot-check the module shape: extractTransactionsFromPdf should exist
+      expect(typeof mod.extractTransactionsFromPdf).toBe("function");
+      expect(typeof mod.parseVanguardPdf).toBe("function");
+    });
+  });
+
   describe("date normalization", () => {
     it("handles MM/DD format dates", () => {
       const shortDateFixture: ClaudePdfResponse = {

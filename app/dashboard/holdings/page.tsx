@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+
 import { db } from "@/lib/db";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { SymbolLink } from "../components/SymbolLink";

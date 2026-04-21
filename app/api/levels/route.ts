@@ -24,12 +24,15 @@ export async function GET(request: NextRequest) {
       : getActiveLevels(db);
 
     // Enrich with effective_price — static levels echo `price`, MA-based
-    // levels get the live MA computed from ohlcv_bars (or null fallback).
+    // levels get the live MA computed from ohlcv_bars. effective_price is
+    // null when an MA level doesn't have enough bars yet; UI renders an
+    // "insufficient history" chip in that case.
     const enriched = levels.map((l) => ({
       ...l,
       effective_price:
         l.price_source === "static" ? l.price : resolveLevelPrice(db, l),
     }));
+    // Note: resolveLevelPrice return type already narrows to `number | null`.
 
     return NextResponse.json({ success: true, levels: enriched });
   } catch (error) {

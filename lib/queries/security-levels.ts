@@ -89,27 +89,44 @@ export function getLevelById(
  *   - 'stop': triggered when current_price <= effective_price (protective stop)
  *
  * Effective price: for static levels, the stored `price`. For MA-based levels,
- * the live MA computed from ohlcv_bars (falls back to stored price if bars are
- * missing).
+ * the live MA computed from ohlcv_bars (returns null + skips level if bars are
+ * insufficient — see resolveLevelPrice).
  *
- * This is intentionally simple — no intraday high/low check. If the price is AT or
- * through the level right now, it counts. A more sophisticated version would track
- * day high/low from ohlcv_bars, but for the user's cadence (daily + weekend) this is fine.
+ * Price source: primary is the `prices` table (portfolio securities). Falls
+ * back to `benchmark_prices` for index ETFs the user tracks but doesn't hold
+ * (DIA/VOO/etc.) — joined via the security's `symbol`.
+ *
+ * Stale-price guard: skips levels whose latest price is older than 4 calendar
+ * days. 4 days tolerates both weekends (Fri → Mon = 3 days) and long-weekend
+ * Mondays. Longer gaps mean TWS has been offline and prices are suspect, so
+ * scanning them could produce spurious alerts from old crossings.
  */
 export function findCrossedLevels(
   db: Database.Database
 ): Array<SecurityLevel & { current_price: number; effective_price: number; price_date: string }> {
   const rows = db
     .prepare(
-      `SELECT sl.*, p.close_price AS current_price, p.date AS price_date
-       FROM security_levels sl
-       JOIN (
-         SELECT security_id, close_price, date
+      `WITH latest_primary AS (
+         SELECT p1.security_id, p1.close_price, p1.date
          FROM prices p1
-         WHERE date = (SELECT MAX(date) FROM prices p2 WHERE p2.security_id = p1.security_id)
-       ) p ON p.security_id = sl.security_id
+         WHERE p1.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = p1.security_id)
+       ),
+       latest_benchmark AS (
+         SELECT s.id AS security_id, bp.close_price, bp.date
+         FROM securities s
+         JOIN benchmark_prices bp ON bp.symbol = s.symbol
+         WHERE bp.date = (SELECT MAX(bp2.date) FROM benchmark_prices bp2 WHERE bp2.symbol = bp.symbol)
+       )
+       SELECT sl.*,
+         COALESCE(lp.close_price, lb.close_price) AS current_price,
+         COALESCE(lp.date, lb.date) AS price_date
+       FROM security_levels sl
+       LEFT JOIN latest_primary lp ON lp.security_id = sl.security_id
+       LEFT JOIN latest_benchmark lb ON lb.security_id = sl.security_id
        WHERE sl.is_active = 1
-         AND (sl.expires_at IS NULL OR sl.expires_at >= date('now'))`
+         AND (sl.expires_at IS NULL OR sl.expires_at >= date('now'))
+         AND COALESCE(lp.close_price, lb.close_price) IS NOT NULL
+         AND COALESCE(lp.date, lb.date) >= date('now', '-4 days')`
     )
     .all() as Array<SecurityLevel & { current_price: number; price_date: string }>;
 
@@ -117,6 +134,7 @@ export function findCrossedLevels(
 
   for (const r of rows) {
     const effective = resolveLevelPrice(db, r);
+    if (effective === null) continue; // MA can't be computed — skip rather than use stale snapshot
     const goingDown = ["support", "entry", "scale_in", "stop"].includes(r.level_type);
     const hit = goingDown
       ? r.current_price <= effective

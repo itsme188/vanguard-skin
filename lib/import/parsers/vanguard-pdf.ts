@@ -663,22 +663,117 @@ export async function extractHoldingsFromPdf(
   return response;
 }
 
+// ── Focused transactions extraction (no holdings) ──────────────────
+
+const FOCUSED_TRANSACTIONS_PROMPT = `You are extracting transactions from a Vanguard monthly brokerage statement PDF.
+
+IMPORTANT: Extract the account summary and ALL transactions from the statement. Do NOT extract holdings — return holdings as an empty array.
+
+Return ONLY valid JSON matching this exact schema (no markdown, no explanation):
+
+{
+  "account_type": "Individual brokerage account" or "Roth IRA brokerage account",
+  "account_number_masked": "XXXX####",
+  "statement_date": "YYYY-MM-DD",
+  "total_value": <number>,
+  "prior_value": <number or null>,
+  "cash_balance": <number>,
+  "income_summary": { "dividends": <number>, "interest": <number> },
+  "holdings": [],
+  "transactions": [
+    {
+      "settlement_date": "YYYY-MM-DD",
+      "trade_date": "YYYY-MM-DD",
+      "symbol": "<ticker, CUSIP, or null>",
+      "name": "<security or description>",
+      "transaction_type": "<type>",
+      "quantity": <number or null>,
+      "price": <number or null>,
+      "commissions": <number or null>,
+      "amount": <number>,
+      "underlying_symbol": "<ticker, only for option transactions>",
+      "strike_price": <number, only for option transactions>,
+      "expiration_date": "YYYY-MM-DD" (only for option transactions),
+      "option_type": "CALL" or "PUT" (only for option transactions)
+    }
+  ]
+}
+
+CRITICAL — COMPLETENESS (READ THIS CAREFULLY):
+- The transaction activity section may span 3-15 PAGES. You MUST read EVERY transaction page.
+- Sections to extract from, in order:
+  1. **Dividends and interest** — Dividend, Reinvestment, Foreign Tax Withheld
+  2. **Transaction activity / Securities activity** — Buy, Sell, Buy to open, Sell to close, Expired, Exercised
+  3. **Cash activity / Money transfer** — Transfer (in), Transfer (out), Interest charge
+  4. **Other activity** — corporate actions, special dividends, capital gains distributions
+- A typical Vanguard monthly statement has **15-60 transactions** across all sections. If you extracted fewer than 10 from an active account, you likely missed a section.
+- Option transactions appear in the securities activity section with OCC-style detail. Include them.
+- After extraction, VERIFY: every dividend should be paired with either a reinvestment or a cash credit of matching magnitude.
+
+Rules:
+- Convert all dates from MM/DD to YYYY-MM-DD using the statement year
+- For transaction amounts: dividends/interest are positive, purchases are negative, sales are positive
+- Skip sweep out/sweep in transactions (internal cash-to-money-market movements)
+- Include ALL transaction types: Dividend, Reinvestment, Buy, Sell, Buy to open, Sell to close, Transfer (in), Transfer (out), Expired, Exercised, Interest charge, Foreign Tax Withheld
+- For option transactions: include underlying_symbol, strike_price, expiration_date, option_type. Prefer OCC symbol format "UNDER  YYMMDDC/P#########" when available.
+- For bonds by CUSIP: use the CUSIP as the symbol
+- If a field is not applicable or not shown, use null`;
+
+/**
+ * Extract transactions from a PDF using a focused prompt that instructs Claude
+ * to ignore holdings pages. Parallel to extractHoldingsFromPdf().
+ * Returns a ClaudePdfResponse with transactions populated and holdings empty.
+ */
+export async function extractTransactionsFromPdf(
+  pdfBuffer: Buffer
+): Promise<ClaudePdfResponse> {
+  const response = await callClaudeWithPdf<ClaudePdfResponse>(pdfBuffer, FOCUSED_TRANSACTIONS_PROMPT);
+  response.holdings = []; // Ensure empty
+
+  console.log(
+    `[transactions] Extracted ${response.transactions.length} transactions`
+  );
+
+  return response;
+}
+
 // ── Full parse entry point (used by import engine) ──────────────────
+
+export interface ParseVanguardPdfOptions {
+  mode?: "statement" | "holdings-only";
+}
 
 export async function parseVanguardPdf(
   pdfBuffer: Buffer,
-  filename: string
+  filename: string,
+  options: ParseVanguardPdfOptions = {}
 ): Promise<ParsedImportResult> {
-  // Step 1: Extract holdings with multi-attempt validation (no transactions)
-  const response = await extractHoldingsFromPdf(pdfBuffer);
+  const mode = options.mode ?? "statement";
 
-  // Step 2: Extract transactions in a separate call
-  console.log(`[vanguard-pdf] Extracting transactions separately...`);
-  try {
-    const txnResponse = await callClaudeForPdfExtraction(pdfBuffer);
-    response.transactions = txnResponse.transactions;
-  } catch (err) {
-    console.error(`[vanguard-pdf] Transaction extraction failed: ${err}. Continuing with holdings only.`);
+  if (mode === "holdings-only") {
+    const response = await extractHoldingsFromPdf(pdfBuffer);
+    response.transactions = [];
+    return parseClaudePdfResponse(response, filename);
+  }
+
+  // Statement mode: run holdings and transactions extractions in parallel.
+  // Both are focused (no attention dilution). Using Promise.allSettled so a
+  // transaction-extraction failure doesn't abort the whole import.
+  const [holdingsResult, txnResult] = await Promise.allSettled([
+    extractHoldingsFromPdf(pdfBuffer),
+    extractTransactionsFromPdf(pdfBuffer),
+  ]);
+
+  if (holdingsResult.status === "rejected") {
+    throw holdingsResult.reason;
+  }
+
+  const response = holdingsResult.value;
+
+  if (txnResult.status === "fulfilled") {
+    response.transactions = txnResult.value.transactions;
+  } else {
+    console.error(`[vanguard-pdf] Transaction extraction failed: ${txnResult.reason}. Continuing with holdings only.`);
     response.transactions = [];
   }
 

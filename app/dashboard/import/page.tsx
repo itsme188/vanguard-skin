@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+
 import { db } from "@/lib/db";
 import { getAllImportBatches } from "@/lib/queries/import-batches";
 import { ImportFlow } from "../components/ImportFlow";

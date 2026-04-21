@@ -673,15 +673,37 @@ export function SecurityChart({
 
       {/* Footer (hidden in compact/multi-panel mode) */}
       {!compact && (
-        <div className="px-4 py-1.5 border-t border-edge flex items-center justify-between text-xs text-ink-faint">
-          <span>
-            {barCount > 0 ? `${barCount} bars` : "No data"}
-            {lastDate && ` \u00b7 through ${lastDate}`}
-          </span>
+        <div className="px-4 py-1.5 border-t border-edge flex items-center justify-between text-xs text-ink-faint gap-3 flex-wrap">
+          <div className="flex items-center gap-3 flex-wrap">
+            <span>
+              {barCount > 0 ? `${barCount} bars` : "No data"}
+              {lastDate && ` \u00b7 through ${lastDate}`}
+            </span>
+            {/* Level-type color key — maps chart overlay colors to what they mean. */}
+            <div className="hidden sm:flex items-center gap-2 text-[10px] opacity-70">
+              <LegendDot color="#34D399" label="support / entry" />
+              <LegendDot color="#6EE7B7" label="scale" />
+              <LegendDot color="#60A5FA" label="target" />
+              <LegendDot color="#F87171" label="resistance / stop" />
+            </div>
+          </div>
           <span>{isIntraday ? `${activeTimeframe} intraday` : "Daily OHLCV"} via TWS</span>
         </div>
       )}
     </div>
+  );
+}
+
+function LegendDot({ color, label }: { color: string; label: string }) {
+  return (
+    <span className="flex items-center gap-1">
+      <span
+        aria-hidden
+        className="inline-block w-2.5 h-[2px] rounded-sm"
+        style={{ background: color, boxShadow: `0 0 0 1px ${color}` }}
+      />
+      <span>{label}</span>
+    </span>
   );
 }
 

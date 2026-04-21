@@ -1,16 +1,34 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
 
 export function AlertsBell() {
   const [count, setCount] = useState<number | null>(null);
+  // Tracks the previous count so we can detect an INCREASE (new alert fired)
+  // vs decrease (user responded to an alert) vs same (no change). Using a ref
+  // instead of a state dep keeps fetchCount stable and avoids the
+  // render-loop trap documented in CLAUDE.md (DataConfidenceIndicator fix).
+  const prevCountRef = useRef<number | null>(null);
 
   const fetchCount = useCallback(async () => {
     try {
       const res = await fetch("/api/alerts?countOnly=true");
       const json = await res.json();
-      if (json.success) setCount(json.pendingCount);
+      if (json.success) {
+        const next = json.pendingCount as number;
+        const prev = prevCountRef.current;
+        // Fire "alert-fired" when pending count increases. Skip the null→N
+        // case (initial mount) so re-opening the dashboard with pre-existing
+        // alerts doesn't spam listeners.
+        if (prev !== null && next > prev) {
+          window.dispatchEvent(
+            new CustomEvent("alert-fired", { detail: { delta: next - prev, pendingCount: next } })
+          );
+        }
+        prevCountRef.current = next;
+        setCount(next);
+      }
     } catch {
       // silent
     }

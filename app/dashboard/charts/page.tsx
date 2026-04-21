@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+
 import { db } from "@/lib/db";
 import { getChartableSecurities, getLatestPrice } from "@/lib/queries/ohlcv";
 import { ChartsView } from "../components/ChartsView";
