@@ -10,6 +10,7 @@ import { WelcomeOverlay } from "./components/WelcomeOverlay";
 import { MobileBottomNav } from "./components/MobileBottomNav";
 import { MobileNavDrawer } from "./components/MobileNavDrawer";
 import { DigestCatchup } from "./components/DigestCatchup";
+import { AlertsBell } from "./components/AlertsBell";
 
 export default function DashboardLayout({
   children,
@@ -36,6 +37,7 @@ export default function DashboardLayout({
               <div className="hidden md:flex"><DataConfidenceIndicator /></div>
               <SearchButton />
               <TwsStatus />
+              <AlertsBell />
               <SettingsModal />
               <span className="hidden md:inline"><AppVersion /></span>
             </div>

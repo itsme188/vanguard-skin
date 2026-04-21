@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
-import type { DataConfidence, DataAction } from "@/lib/queries/data-confidence";
+import type { DataConfidence, DataAction, DimensionScore } from "@/lib/queries/data-confidence";
 
 const LEVEL_CONFIG = {
   high: { color: "bg-up", label: "Data reliable" },
@@ -25,6 +25,13 @@ export function DataConfidenceIndicator() {
   const [showPopover, setShowPopover] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
+  // Ref mirrors `confidence` so the fetch callback can read the latest value
+  // without depending on it (which would invalidate the callback on every state
+  // change and cause a render/poll loop — previously fired ~300k requests/hr).
+  const confidenceRef = useRef<DataConfidence | null>(null);
+  useEffect(() => {
+    confidenceRef.current = confidence;
+  }, [confidence]);
 
   const fetchConfidence = useCallback(async () => {
     setLoading(true);
@@ -59,12 +66,14 @@ export function DataConfidenceIndicator() {
       // sync-status also failed
     }
 
-    // Not syncing and data-confidence failed — genuine error
-    if (!confidence) {
+    // Not syncing and data-confidence failed — genuine error.
+    // Only flip to error state if we didn't already have a valid read (read via
+    // ref so this callback can be stable — see note above).
+    if (!confidenceRef.current) {
       setError("Unable to load data");
     }
     setSyncing(false);
-  }, [confidence]);
+  }, []);
 
   useEffect(() => {
     fetchConfidence();
@@ -158,11 +167,11 @@ export function DataConfidenceIndicator() {
 
           {/* Dimension bars */}
           <div className="space-y-2">
-            <DimensionBar label="Prices" score={confidence.priceFreshness.score} detail={confidence.priceFreshness.detail} />
-            <DimensionBar label="Holdings" score={confidence.holdingsRecency.score} detail={confidence.holdingsRecency.detail} />
-            <DimensionBar label="Cash" score={confidence.cashAccuracy.score} detail={confidence.cashAccuracy.detail} />
-            <DimensionBar label="Enrichment" score={confidence.enrichmentCompleteness.score} detail={confidence.enrichmentCompleteness.detail} />
-            <DimensionBar label="Valuations" score={confidence.valuationCoverage.score} detail={confidence.valuationCoverage.detail} />
+            <DimensionBar label="Prices" dim={confidence.priceFreshness} />
+            <DimensionBar label="Holdings" dim={confidence.holdingsRecency} />
+            <DimensionBar label="Cash" dim={confidence.cashAccuracy} />
+            <DimensionBar label="Enrichment" dim={confidence.enrichmentCompleteness} />
+            <DimensionBar label="Valuations" dim={confidence.valuationCoverage} />
           </div>
 
           {/* Actions */}
@@ -203,19 +212,30 @@ export function DataConfidenceIndicator() {
   );
 }
 
-function DimensionBar({ label, score, detail }: { label: string; score: number; detail: string }) {
+function DimensionBar({ label, dim }: { label: string; dim: DimensionScore }) {
+  const [expanded, setExpanded] = useState(false);
+  const { score, detail, whyMatters, guidance } = dim;
   const barColor =
     score >= 80 ? "bg-up" :
     score >= 50 ? "bg-gold" :
     score >= 20 ? "bg-orange-400" :
     "bg-down";
+  const guidanceColor = score >= 80 ? "text-ink-faint" : "text-gold";
 
   return (
     <div className="space-y-0.5">
-      <div className="flex items-center justify-between">
-        <span className="text-[10px] text-ink-dim font-medium">{label}</span>
+      <button
+        type="button"
+        onClick={() => setExpanded(v => !v)}
+        className="w-full flex items-center justify-between hover:opacity-80 transition-opacity"
+        aria-expanded={expanded}
+      >
+        <span className="text-[10px] text-ink-dim font-medium flex items-center gap-1">
+          <span className="text-ink-faint text-[8px] w-2 inline-block">{expanded ? "▾" : "▸"}</span>
+          {label}
+        </span>
         <span className="text-[10px] text-ink-faint font-mono">{score}%</span>
-      </div>
+      </button>
       <div className="w-full h-1 rounded-full bg-raised overflow-hidden">
         <div
           className={`h-full rounded-full transition-all duration-500 ${barColor}`}
@@ -223,6 +243,18 @@ function DimensionBar({ label, score, detail }: { label: string; score: number; 
         />
       </div>
       <p className="text-[9px] text-ink-faint">{detail}</p>
+      {expanded && (
+        <div className="pt-1 pl-3 space-y-1 border-l border-edge ml-0.5">
+          <p className="text-[9px] text-ink-dim leading-snug">
+            <span className="text-ink-faint">Why it matters: </span>
+            {whyMatters}
+          </p>
+          <p className={`text-[9px] leading-snug ${guidanceColor}`}>
+            <span className="text-ink-faint">What to do: </span>
+            {guidance}
+          </p>
+        </div>
+      )}
     </div>
   );
 }

@@ -27,6 +27,8 @@ import { enrichSecurities } from "./contracts";
 import { fetchSnapshotPrices } from "./snapshot";
 import { fetchBenchmarkPrices } from "./benchmark";
 import { computeDailyValuations } from "../compute/daily-valuation";
+import { detectAndFireAlerts } from "../alerts/detect";
+import { generateSuggestionsForPendingAlerts } from "../alerts/generate-suggestion";
 
 export type RefreshLevel = "full" | "quick";
 
@@ -54,6 +56,7 @@ export async function runAutoRefresh(
   let pricesUpdated = 0;
   let valuationsRecomputed = false;
   let benchmarksSynced = 0;
+  let alertsFired = 0;
 
   try {
     // ── Step 1: Sync Portfolio (full only) ──────────────────────
@@ -191,6 +194,33 @@ export async function runAutoRefresh(
     }
     await benchmarkPromise;
 
+    // Step 6: Detect crossed levels + fire alerts (after prices + valuations are fresh)
+    setSyncPhase("alerts");
+    try {
+      const detect = detectAndFireAlerts(db);
+      alertsFired = detect.fired;
+      console.log(
+        `[auto-refresh] Alerts: ${detect.fired} fired, ${detect.deduped} deduped, ${detect.scanned} scanned`,
+      );
+
+      // Generate suggestions in parallel — awaited but tolerant of Claude errors.
+      // A handful of Sonnet calls resolve in ~3-5s total (Promise.all).
+      if (detect.fired > 0) {
+        try {
+          const s = await generateSuggestionsForPendingAlerts(db);
+          console.log(
+            `[auto-refresh] Suggestions: ${s.generated} generated, ${s.failed} failed`,
+          );
+        } catch (err) {
+          console.warn("[auto-refresh] Suggestion generation wrapper failed:", err);
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Alert detection failed";
+      errors.push(msg);
+      console.error("[auto-refresh] Alert detection error:", msg);
+    }
+
     // ── Done ───────────────────────────────────────────────────
     const result: AutoRefreshResult = {
       positionsSynced,
@@ -198,6 +228,7 @@ export async function runAutoRefresh(
       pricesUpdated,
       valuationsRecomputed,
       benchmarksSynced,
+      alertsFired,
       errors,
       durationMs: Date.now() - startTime,
     };
@@ -220,6 +251,7 @@ export async function runAutoRefresh(
       pricesUpdated,
       valuationsRecomputed,
       benchmarksSynced,
+      alertsFired,
       errors: [...errors, msg],
       durationMs: Date.now() - startTime,
     };

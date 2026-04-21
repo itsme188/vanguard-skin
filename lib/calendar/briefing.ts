@@ -8,6 +8,12 @@ import {
   getFullTextForSources,
   getRecentArticles,
 } from "@/lib/queries/research";
+import {
+  getLevelsTriggeredInWindow,
+  getLevelsNearPrice,
+  type LevelTriggeredThisWeek,
+  type LevelNearPrice,
+} from "@/lib/queries/briefing-levels";
 import { OPUS_MODEL, SONNET_MODEL } from "@/lib/claude-models";
 
 const BRIEFING_MODEL = OPUS_MODEL;
@@ -91,6 +97,10 @@ export async function generateWeeklyBriefing(
   // ── Expiring options ─────────────────────────────────────────────
   const expiringOptions = getExpiringOptions(db, weekStart, weekEnd);
 
+  // ── Price levels: triggered this past week + approaching ─────────
+  const levelsTriggered = getLevelsTriggeredInWindow(db, 7);
+  const levelsNearby = getLevelsNearPrice(db, 0.05);
+
   options?.onProgress?.("Loading weekend deep reads...", 1, 4);
 
   // ── Weekend deep-read context (full raw_text of 4 preferred sources) ──
@@ -132,6 +142,8 @@ export async function generateWeeklyBriefing(
     wshEarnings,
     otherEvents,
     expiringOptions,
+    levelsTriggered,
+    levelsNearby,
     deepContext,
     breadthContext,
     imapFallback,
@@ -173,6 +185,8 @@ interface PromptInput {
   wshEarnings: CalendarEvent[];
   otherEvents: CalendarEvent[];
   expiringOptions: ExpiringOption[];
+  levelsTriggered: LevelTriggeredThisWeek[];
+  levelsNearby: LevelNearPrice[];
   deepContext: string;
   breadthContext: string;
   imapFallback: string;
@@ -202,6 +216,30 @@ function buildPrompt(p: PromptInput): string {
           .join("\n")}\n`
       : "";
 
+  const triggeredLevelsSection =
+    p.levelsTriggered.length > 0
+      ? `\n## Price Levels Hit in the Past Week\nLevels the user set — or that were auto-extracted from newsletters — that the price crossed in the last 7 days. Include whether the user responded (acted / ignored / dismissed) and whether the subsequent price action validated the signal.\n\n${p.levelsTriggered
+          .map((l, i) => {
+            const who = l.source_author || l.source;
+            const thesis = l.thesis ? ` — "${l.thesis}"` : "";
+            return `${i + 1}. **${l.symbol}** ${l.level_type.replace("_", " ")} at $${l.level_price.toFixed(2)} hit on ${l.triggered_at.slice(0, 10)} (price: $${l.triggered_price.toFixed(2)}). Source: ${who}${thesis}. User response: ${l.user_response}.`;
+          })
+          .join("\n")}\n`
+      : "";
+
+  const nearbyLevelsSection =
+    p.levelsNearby.length > 0
+      ? `\n## Active Levels Within 5% of Current Price (likely to be tested this week)\nLevels that have NOT yet triggered but are close enough to be in play this week. If price trends toward these, the user should be prepared.\n\n${p.levelsNearby
+          .map((l, i) => {
+            const who = l.source_author || l.source;
+            const thesis = l.thesis ? ` — "${l.thesis}"` : "";
+            const distance = `${(l.distance_pct * 100).toFixed(1)}% ${l.distance_pct >= 0 ? "above" : "below"}`;
+            const action = l.action_hint ? ` [action hint: ${l.action_hint.replace("_", " ")}]` : "";
+            return `${i + 1}. **${l.symbol}** ${l.level_type.replace("_", " ")} at $${l.level_price.toFixed(2)} — currently $${l.current_price.toFixed(2)} (${distance}). ${who}${thesis}${action}`;
+          })
+          .join("\n")}\n`
+      : "";
+
   const otherEventsSection =
     p.otherEvents.length > 0
       ? `\n## Macro & Other Events This Week\n${p.otherEvents
@@ -223,7 +261,7 @@ function buildPrompt(p: PromptInput): string {
 
 ## Portfolio Holdings (for context on which events directly affect the portfolio)
 ${p.holdingsList}
-${portfolioEarningsSection}${wshSection}${optionsSection}${otherEventsSection}${weekendSection}${breadthSection}
+${portfolioEarningsSection}${wshSection}${optionsSection}${triggeredLevelsSection}${nearbyLevelsSection}${otherEventsSection}${weekendSection}${breadthSection}
 
 ## Instructions
 
@@ -237,9 +275,13 @@ Write a markdown briefing structured as follows:
 
 4. **Options Expiring This Week** — for each expiring option, give the assessment (ITM/OTM/ATM if derivable), action to consider, and assignment risk where relevant. If none expire, skip this section.
 
-5. **Macro & Other Events** — concise coverage of the remaining calendar. What's priced in, what would surprise, which holdings have exposure.
+5. **Price Levels in Play** — ONLY include if the data sections above show triggered or nearby levels. Two subsections:
+   - Recent triggers (last 7 days): did the user's response make sense? Did price action validate or invalidate the level?
+   - This week's watch list: for each level within 5% of current price, say what a hit would mean and the action to consider. Ground each in the source author's thesis where cited. Skip this whole section if there are no triggered or nearby levels.
 
-6. **Portfolio Implications** — a tight closing section. Which holdings have the most event-driven risk this week. Key levels or thresholds. Suggested positioning considerations (stay the course, reduce exposure, hedge, etc.).
+6. **Macro & Other Events** — concise coverage of the remaining calendar. What's priced in, what would surprise, which holdings have exposure.
+
+7. **Portfolio Implications** — a tight closing section. Which holdings have the most event-driven risk this week. Key levels or thresholds (tie back to the Price Levels section). Suggested positioning considerations (stay the course, reduce exposure, hedge, etc.).
 
 Format as clean markdown. Use \`##\` for section headers, \`###\` for sub-sections, **bold** for key figures, and bullet points where helpful. Aim for a substantive briefing in the 2,500–3,500 word range — dense with actionable information, not filler.`;
 }

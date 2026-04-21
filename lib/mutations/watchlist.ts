@@ -5,6 +5,7 @@ interface AddToWatchlistParams {
   priceTargetLow?: number;
   priceTargetHigh?: number;
   thesis?: string;
+  groupName?: string;
 }
 
 /**
@@ -16,23 +17,25 @@ export function addToWatchlist(
   params: AddToWatchlistParams
 ): void {
   db.prepare(
-    `INSERT INTO watchlist (security_id, price_target_low, price_target_high, thesis)
-     VALUES (?, ?, ?, ?)
+    `INSERT INTO watchlist (security_id, price_target_low, price_target_high, thesis, group_name)
+     VALUES (?, ?, ?, ?, COALESCE(?, 'default'))
      ON CONFLICT(security_id) DO UPDATE SET
        is_active = 1,
        price_target_low = COALESCE(excluded.price_target_low, watchlist.price_target_low),
        price_target_high = COALESCE(excluded.price_target_high, watchlist.price_target_high),
-       thesis = COALESCE(excluded.thesis, watchlist.thesis)`
+       thesis = COALESCE(excluded.thesis, watchlist.thesis),
+       group_name = COALESCE(excluded.group_name, watchlist.group_name)`
   ).run(
     params.securityId,
     params.priceTargetLow ?? null,
     params.priceTargetHigh ?? null,
-    params.thesis ?? null
+    params.thesis ?? null,
+    params.groupName ?? null
   );
 }
 
 /**
- * Update price targets and/or thesis for an existing watchlist item.
+ * Update price targets, thesis, or group for an existing watchlist item.
  */
 export function updateWatchlistItem(
   db: Database.Database,
@@ -41,6 +44,7 @@ export function updateWatchlistItem(
     priceTargetLow?: number | null;
     priceTargetHigh?: number | null;
     thesis?: string | null;
+    groupName?: string | null;
   }
 ): void {
   const sets: string[] = [];
@@ -57,6 +61,10 @@ export function updateWatchlistItem(
   if (updates.thesis !== undefined) {
     sets.push("thesis = ?");
     params.push(updates.thesis);
+  }
+  if (updates.groupName !== undefined) {
+    sets.push("group_name = ?");
+    params.push(updates.groupName);
   }
 
   if (sets.length === 0) return;

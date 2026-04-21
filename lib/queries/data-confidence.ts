@@ -12,6 +12,8 @@ import type Database from "better-sqlite3";
 export interface DimensionScore {
   score: number; // 0-100
   detail: string; // human-readable summary
+  whyMatters: string; // static per-dimension explanation
+  guidance: string; // conditional on score — reassurance when high, action when low
 }
 
 export interface PriceFreshnessScore extends DimensionScore {
@@ -120,9 +122,20 @@ function scorePriceFreshness(db: Database.Database): PriceFreshnessScore {
   `).get(today) as { symbol: string; days_stale: number } | undefined;
 
   const { totalHeld, pricedToday, pricedRecent } = row;
+  const whyMatters =
+    "Stale prices mean today's valuations, P&L, and change numbers are based on yesterday's market.";
 
   if (totalHeld === 0) {
-    return { score: 100, detail: "No holdings to price", pricedToday: 0, totalHeld: 0, stalestSymbol: null, stalestDays: null };
+    return {
+      score: 100,
+      detail: "No holdings to price",
+      whyMatters,
+      guidance: "Import holdings to get started.",
+      pricedToday: 0,
+      totalHeld: 0,
+      stalestSymbol: null,
+      stalestDays: null,
+    };
   }
 
   // Score: 100 if all priced today, scale down by how many are stale
@@ -135,9 +148,18 @@ function scorePriceFreshness(db: Database.Database): PriceFreshnessScore {
       ? `All ${totalHeld} securities priced within 3 days`
       : `${pricedRecent}/${totalHeld} securities have recent prices`;
 
+  const guidance =
+    score >= 90
+      ? "Prices are fresh — nothing to do."
+      : score >= 50
+        ? "Run Quick Refresh to update prices, or connect TWS for live quotes."
+        : "Open TWS and run Quick Refresh — many holdings have stale prices.";
+
   return {
     score,
     detail,
+    whyMatters,
+    guidance,
     pricedToday,
     totalHeld,
     stalestSymbol: stalest?.symbol ?? null,
@@ -167,8 +189,17 @@ function scoreHoldingsRecency(db: Database.Database): HoldingsRecencyScore {
     daysOld: r.days_old,
   }));
 
+  const whyMatters =
+    "Old holdings mean positions may not reflect recent trades, corporate actions, or dividends.";
+
   if (perAccount.length === 0) {
-    return { score: 100, detail: "No accounts", perAccount: [] };
+    return {
+      score: 100,
+      detail: "No accounts",
+      whyMatters,
+      guidance: "Add an account to get started.",
+      perAccount: [],
+    };
   }
 
   // Score based on worst account (weakest link)
@@ -185,7 +216,14 @@ function scoreHoldingsRecency(db: Database.Database): HoldingsRecencyScore {
     .map(a => `${a.name}: ${a.daysOld != null && a.daysOld <= 1 ? "today" : a.date}`);
   const detail = parts.join(", ") || "No holdings imported";
 
-  return { score, detail, perAccount };
+  const guidance =
+    score >= 80
+      ? "Holdings are current across accounts."
+      : score >= 50
+        ? "Import the latest monthly statement (Vanguard) or sync TWS (IBKR)."
+        : "Holdings are weeks+ old — import latest statements or reconnect TWS now.";
+
+  return { score, detail, whyMatters, guidance, perAccount };
 }
 
 function scoreCashAccuracy(db: Database.Database): CashAccuracyScore {
@@ -201,8 +239,18 @@ function scoreCashAccuracy(db: Database.Database): CashAccuracyScore {
     WHERE source != 'tws'
   `).get(today) as { latest_date: string | null; days_since: number | null };
 
+  const whyMatters =
+    "Cash is inferred from the latest statement — the older the anchor, the more it can drift from reality.";
+
   if (!row.latest_date) {
-    return { score: 0, detail: "No statement snapshots for cash inference", latestAnchorDate: null, daysSinceAnchor: null };
+    return {
+      score: 0,
+      detail: "No statement snapshots for cash inference",
+      whyMatters,
+      guidance: "Import a monthly statement to establish a cash anchor.",
+      latestAnchorDate: null,
+      daysSinceAnchor: null,
+    };
   }
 
   const days = row.days_since ?? 999;
@@ -217,7 +265,21 @@ function scoreCashAccuracy(db: Database.Database): CashAccuracyScore {
     ? `Cash anchor from ${row.latest_date} (${days}d ago)`
     : `Cash inferred from ${row.latest_date} (${days}d old — may be inaccurate)`;
 
-  return { score, detail, latestAnchorDate: row.latest_date, daysSinceAnchor: days };
+  const guidance =
+    score >= 85
+      ? "Cash anchor is recent."
+      : score >= 50
+        ? "Consider importing this month's statement to refresh the cash anchor."
+        : "Cash may be significantly wrong — import the latest monthly statement.";
+
+  return {
+    score,
+    detail,
+    whyMatters,
+    guidance,
+    latestAnchorDate: row.latest_date,
+    daysSinceAnchor: days,
+  };
 }
 
 function scoreEnrichment(db: Database.Database): EnrichmentScore {
@@ -241,9 +303,19 @@ function scoreEnrichment(db: Database.Database): EnrichmentScore {
 
   const total = enrichable.length;
   const count = enriched.length;
+  const whyMatters =
+    "Securities without TWS contract IDs can't fetch live prices, option chains, or historical bars.";
 
   if (total === 0) {
-    return { score: 100, detail: "No securities need enrichment", enriched: 0, total: 0, missing: [] };
+    return {
+      score: 100,
+      detail: "No securities need enrichment",
+      whyMatters,
+      guidance: "Nothing to enrich.",
+      enriched: 0,
+      total: 0,
+      missing: [],
+    };
   }
 
   const score = Math.round((count / total) * 100);
@@ -251,7 +323,12 @@ function scoreEnrichment(db: Database.Database): EnrichmentScore {
     ? `All ${total} securities enriched`
     : `${count}/${total} enriched — ${missing.length} missing conId`;
 
-  return { score, detail, enriched: count, total, missing };
+  const guidance =
+    score >= 95
+      ? "All enrichable securities have contract IDs."
+      : "Click Enrich (requires TWS running) to fetch the missing contract IDs.";
+
+  return { score, detail, whyMatters, guidance, enriched: count, total, missing };
 }
 
 function scoreValuationCoverage(db: Database.Database): ValuationCoverageScore {
@@ -263,8 +340,18 @@ function scoreValuationCoverage(db: Database.Database): ValuationCoverageScore {
     LIMIT 1
   `).get() as { holdings_count: number | null; priced_count: number | null } | undefined;
 
+  const whyMatters =
+    "Missing holdings in the latest daily valuation understate portfolio value and distort change calculations.";
+
   if (!row || !row.holdings_count) {
-    return { score: 0, detail: "No daily valuations computed", pricedCount: 0, totalCount: 0 };
+    return {
+      score: 0,
+      detail: "No daily valuations computed",
+      whyMatters,
+      guidance: "Run Quick Refresh to compute today's valuation.",
+      pricedCount: 0,
+      totalCount: 0,
+    };
   }
 
   const total = row.holdings_count;
@@ -274,7 +361,14 @@ function scoreValuationCoverage(db: Database.Database): ValuationCoverageScore {
     ? `All ${total} holdings in latest valuation`
     : `${priced}/${total} holdings priced in latest valuation`;
 
-  return { score, detail, pricedCount: priced, totalCount: total };
+  const guidance =
+    score >= 95
+      ? "Full coverage in the latest valuation."
+      : score >= 50
+        ? "Run Quick Refresh to price the remaining holdings."
+        : "Many holdings unpriced — Quick Refresh, then enrich any still missing.";
+
+  return { score, detail, whyMatters, guidance, pricedCount: priced, totalCount: total };
 }
 
 // ── Actions ──────────────────────────────────────────────────────────

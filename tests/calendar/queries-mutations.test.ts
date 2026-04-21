@@ -8,6 +8,7 @@ import {
   getEventCountBySource,
   getLatestBriefing,
   getBriefingByWeek,
+  isBriefingStale,
 } from "@/lib/queries/calendar";
 import {
   upsertCalendarEvents,
@@ -316,5 +317,78 @@ describe("briefings", () => {
   it("returns null when no briefings exist", () => {
     expect(getLatestBriefing(db)).toBeNull();
     expect(getBriefingByWeek(db, "2026-03-30")).toBeNull();
+  });
+});
+
+// ─── isBriefingStale ─────────────────────────────────────────────
+
+describe("isBriefingStale", () => {
+  it("returns false when no briefing exists", () => {
+    expect(isBriefingStale(db, "2026-03-30")).toBe(false);
+  });
+
+  it("returns false when briefing exists but no events", () => {
+    saveBriefing(db, {
+      weekOf: "2026-03-30",
+      title: "Empty",
+      content: "none",
+      eventCount: 0,
+      model: "claude-opus-4-7",
+    });
+    expect(isBriefingStale(db, "2026-03-30")).toBe(false);
+  });
+
+  it("returns false when all events were created before the briefing", () => {
+    // Insert event with an explicit older timestamp
+    db.prepare(
+      `INSERT INTO calendar_events (source, event_type, event_date, title, source_key, week_of, created_at)
+       VALUES ('claude_macro', 'cpi', '2026-04-01', 'Old CPI', 'old:1', '2026-03-30', '2026-03-29T00:00:00Z')`
+    ).run();
+
+    saveBriefing(db, {
+      weekOf: "2026-03-30",
+      title: "After events",
+      content: "generated after events landed",
+      eventCount: 1,
+      model: "claude-opus-4-7",
+    });
+
+    expect(isBriefingStale(db, "2026-03-30")).toBe(false);
+  });
+
+  it("returns true when a newer event has been added since briefing", () => {
+    saveBriefing(db, {
+      weekOf: "2026-03-30",
+      title: "Pre-event",
+      content: "generated before event landed",
+      eventCount: 0,
+      model: "claude-opus-4-7",
+    });
+
+    // Insert event with explicit newer timestamp
+    db.prepare(
+      `INSERT INTO calendar_events (source, event_type, event_date, title, source_key, week_of, created_at)
+       VALUES ('finnhub', 'earnings', '2026-04-02', 'AAPL Earnings', 'fh:AAPL:2026-04-02', '2026-03-30', '2099-01-01T00:00:00Z')`
+    ).run();
+
+    expect(isBriefingStale(db, "2026-03-30")).toBe(true);
+  });
+
+  it("only considers events for the target week", () => {
+    saveBriefing(db, {
+      weekOf: "2026-03-30",
+      title: "Week A",
+      content: "for week A",
+      eventCount: 0,
+      model: "claude-opus-4-7",
+    });
+
+    // New event for a DIFFERENT week — should not make week A stale
+    db.prepare(
+      `INSERT INTO calendar_events (source, event_type, event_date, title, source_key, week_of, created_at)
+       VALUES ('finnhub', 'earnings', '2026-04-08', 'Other Week', 'fh:other:1', '2026-04-06', '2099-01-01T00:00:00Z')`
+    ).run();
+
+    expect(isBriefingStale(db, "2026-03-30")).toBe(false);
   });
 });

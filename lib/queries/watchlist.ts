@@ -13,8 +13,19 @@ export interface WatchlistItem {
   thesis: string | null;
   is_active: number;
   created_at: string;
+  group_name: string;
   current_price: number | null;
   price_date: string | null;
+}
+
+export function getWatchlistGroups(db: Database.Database): string[] {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT group_name FROM watchlist
+       WHERE is_active = 1 ORDER BY group_name`
+    )
+    .all() as { group_name: string }[];
+  return rows.map((r) => r.group_name);
 }
 
 /**
@@ -27,7 +38,7 @@ export function getActiveWatchlist(db: Database.Database): WatchlistItem[] {
         w.id, w.security_id, s.symbol, s.name AS security_name,
         s.security_type, s.sector,
         w.added_date, w.price_target_low, w.price_target_high,
-        w.thesis, w.is_active, w.created_at,
+        w.thesis, w.is_active, w.created_at, w.group_name,
         p.close_price AS current_price, p.date AS price_date
       FROM watchlist w
       JOIN securities s ON s.id = w.security_id

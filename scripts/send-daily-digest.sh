@@ -11,7 +11,7 @@ for i in $(seq 1 $MAX_RETRIES); do
   echo "$(date '+%Y-%m-%d %H:%M:%S') — Attempt $i of $MAX_RETRIES"
   RESPONSE=$(curl -sS --max-time 300 -X POST \
     -H "Content-Type: application/json" \
-    -d '{}' \
+    -d '{"mode":"since_last"}' \
     "$URL" 2>&1)
   EXIT_CODE=$?
 

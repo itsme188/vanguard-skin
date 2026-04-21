@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { getBriefingByWeek } from "@/lib/queries/calendar";
+import { getBriefingByWeek, isBriefingStale } from "@/lib/queries/calendar";
 import { generateWeeklyBriefing } from "@/lib/calendar/briefing";
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
 import { sendEmail } from "@/lib/email";
@@ -49,12 +49,16 @@ export async function POST(request: Request) {
     console.log("[calendar/email] TWS sync skipped (not connected or no IBKR account)");
   }
 
+  const force = body.force === true;
+
   try {
-    // Get or generate briefing
+    // Get or generate briefing. Regenerate if missing, forced, or stale
+    // (new events added to calendar_events since briefing was saved).
     let briefing = getBriefingByWeek(db, weekOf);
     let generated = false;
+    const stale = briefing ? isBriefingStale(db, weekOf) : false;
 
-    if (!briefing || !briefing.content) {
+    if (!briefing || !briefing.content || force || stale) {
       const result = await generateWeeklyBriefing(db, weekOf);
       briefing = getBriefingByWeek(db, weekOf);
       generated = true;

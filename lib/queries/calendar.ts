@@ -120,3 +120,23 @@ export function getBriefingByWeek(
       .get(weekOf) as CalendarBriefing) ?? null
   );
 }
+
+export function isBriefingStale(
+  db: Database.Database,
+  weekOf: string
+): boolean {
+  const row = db
+    .prepare(
+      `SELECT
+         cb.generated_at AS briefing_at,
+         MAX(ce.created_at) AS latest_event_at
+       FROM calendar_briefings cb
+       LEFT JOIN calendar_events ce ON ce.week_of = cb.week_of
+       WHERE cb.week_of = ?
+       GROUP BY cb.week_of`
+    )
+    .get(weekOf) as { briefing_at: string; latest_event_at: string | null } | undefined;
+
+  if (!row || !row.latest_event_at) return false;
+  return row.latest_event_at > row.briefing_at;
+}
