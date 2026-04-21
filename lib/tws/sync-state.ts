@@ -17,6 +17,7 @@ export interface AutoRefreshResult {
   pricesUpdated: number;
   valuationsRecomputed: boolean;
   benchmarksSynced: number;
+  alertsFired: number;
   errors: string[];
   durationMs: number;
 }
@@ -29,6 +30,7 @@ export interface SyncState {
     | "prices"
     | "valuations"
     | "benchmarks"
+    | "alerts"
     | null;
   phaseProgress: PhaseProgress | null;
   lastSyncAt: string | null; // ISO timestamp

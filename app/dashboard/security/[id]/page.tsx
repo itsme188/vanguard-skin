@@ -6,6 +6,7 @@ import Link from "next/link";
 import { CorporateActionsSection } from "../../components/CorporateActionsSection";
 import { SecurityChart } from "../../components/SecurityChart";
 import { WatchlistButton } from "../../components/WatchlistButton";
+import { LevelsPanel } from "../../components/LevelsPanel";
 import {
   FACTOR_COLUMNS,
   FACTOR_LABELS,
@@ -234,6 +235,13 @@ export default async function SecurityDetailPage(props: {
           <SecurityChart securityId={securityId} symbol={security.symbol} />
         </div>
       </section>
+
+      {/* Levels & Alerts */}
+      <LevelsPanel
+        securityId={securityId}
+        symbol={security.symbol}
+        currentPrice={price?.close_price ?? null}
+      />
 
       {/* Positions */}
       {positions.length > 0 && (
