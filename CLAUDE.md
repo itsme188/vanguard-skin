@@ -28,6 +28,7 @@ This is primarily a TypeScript project with some Python utilities. Use TypeScrip
 - **Watchlist** — Track securities not yet owned, with price targets and thesis
 - **Trade Reviews** — Monthly AI trade analysis in Research tab (Notes | Trade Reviews toggle). Migration 016 + 021. Two-phase: Sonnet Q&A → Opus review. Account-specific profiles (IBKR/Vanguard/Roth). GroupedTrade abstraction (lots → trades). Auto model selection (>20 trades → Sonnet).
 - **Auto-Refresh** — TWS connect triggers full sync pipeline automatically. Background refresh every 30 min. Data confidence scoring in header.
+- **Security Levels & Alerts** — Migrations 029-031. Per-security price levels (static OR moving-average-resolved: SMA/EMA 9/21/50/200) for both held + watchlist. `LevelsPanel` on Security Detail (add/edit/pause/reactivate/delete) with chart `priceLine` overlays. `findCrossedLevels` + `detectAndFireAlerts` run as Step 6 of auto-refresh; Sonnet 4.6 generates one-sentence recommendations per alert. Header `AlertsBell` shows pending count, `/dashboard/alerts` is the inbox. Newsletter extraction (`extractLevelsFromNewArticles`) auto-runs after research sync, scoped to held+watchlist symbols. Sunday briefing surfaces "Levels Hit This Week" + "Active Levels Within 5%".
 
 ## Directory Structure
 
@@ -67,12 +68,13 @@ All imports follow: **Detect → Parse → Preview → Confirm → Commit**
 
 ## Auto-Refresh & Data Confidence
 
-On TWS connect (auto or manual), `lib/tws/auto-refresh.ts` orchestrates a 5-step pipeline:
+On TWS connect (auto or manual), `lib/tws/auto-refresh.ts` orchestrates a 6-step pipeline:
 1. `syncPortfolio()` — positions + account values + live prices (15s)
 2. `enrichSecurities()` — TWS contract details for unenriched securities (rate-limited, skipped if none)
 3. `fetchSnapshotPrices()` — current prices for ALL held securities (~2 min, NOT rate-limited)
 4. `computeDailyValuations()` — recompute with fresh prices (instant)
 5. `fetchBenchmarkPrices()` — benchmark ETFs, incremental (parallel with steps 3-4)
+6. `detectAndFireAlerts()` + `generateSuggestionsForPendingAlerts()` — scan active `security_levels` against fresh prices, insert `level_alerts` + Claude one-sentence recommendations
 
 - **Sync state**: `lib/tws/sync-state.ts` — globalThis singleton tracking status, phase, progress. UI polls `GET /api/tws/sync-status` (3s during sync, 30s when idle).
 - **Mutex**: `isSyncing()` prevents concurrent runs. Second call returns immediately.
@@ -110,6 +112,10 @@ On TWS connect (auto or manual), `lib/tws/auto-refresh.ts` orchestrates a 5-step
 - TWS portfolio sync filters to the personal account set via `IBKR_ACCOUNT_CODE` env var (managed advisor account excluded). `getAccountUpdates()` includes `marketPrice` in the position data. On TWS connect, auto-refresh pipeline runs automatically (positions → enrich → snapshot prices → valuations → benchmarks).
 - **ALL portfolio queries exclude TWS snapshots** (`source != 'tws'`). TWS rows are live-sync data for daily valuations, not month-end statements — including them breaks Modified Dietz, corrupts change calculations (shifts global MAX date), and adds irregular chart points. This applies to: TWR, XIRR, portfolio totals, account summaries, chart data. TWR format is source-aware: `ibkr-activity` stores as percentage, `canonical` stores as decimal fraction.
 - **December annual snapshots**: Vanguard year-end statements produce December rows with annual `starting_value` and cumulative `deposits_withdrawals`. TWR/XIRR detect these (starting_value mismatch >10% from prior month) and compute December-only values.
+- **Security levels effective price**: For `price_source != 'static'`, the level's effective trigger price is computed from `ohlcv_bars` via `lib/alerts/resolve-level-price.ts::resolveLevelPrice()`. Falls back to stored `price` only when bars are insufficient. **Always use `resolveLevelPrice` (or query `effective_price` from `/api/levels`)** rather than reading the raw `price` column when comparing against current prices. The `findCrossedLevels` query already does this.
+- **Levels-and-alerts dedup**: Triggering a level flips `is_active=0` (primary dedup) and inserts an alert. `hasAlertToday` is the secondary safety net for re-activation paths. To re-arm a level after trigger, user clicks "Reactivate" — clears `triggered_at` + flips `is_active=1`.
+- **Levels-on-benchmark gotcha**: `findCrossedLevels` joins the `prices` table only. Securities with prices ONLY in `benchmark_prices` (some indexes) won't trigger. SPY/QQQ/VTI typically have `prices` rows because user holds related ETFs; DIA/VOO often don't. Future fix is to fall back to `benchmark_prices`.
+- **useCallback render-loop trap**: `DataConfidenceIndicator` had `confidence` in its `useCallback` deps, which recreated the function on every state update, retriggered the polling `useEffect`, and caused ~300k requests/session. **Pattern to follow:** if a callback needs to read state but shouldn't depend on it, mirror the state to a `useRef` and read `.current` inside the callback. Same trap likely exists elsewhere — check any `useCallback` whose body reads state that the callback also sets.
 
 ## Bug Fixes
 
@@ -165,10 +171,19 @@ When working with external APIs (TWS/IBKR, Gmail, FRED), check the correct API c
 - `POST /api/tws/auto-refresh` — trigger sync pipeline. Body: `{ level?: "full" | "quick" }`. Default: full. Quick = snapshot prices + valuations only.
 - `GET /api/data-confidence` — 5-dimension data confidence score with actionable fix list
 - `GET /api/summary` — lightweight portfolio summary (total value, data freshness, TWS state, confidence score) for Electron tray
-- `GET /api/watchlist` — list active watchlist items
-- `POST /api/watchlist` — add security to watchlist (by securityId or symbol)
-- `PATCH /api/watchlist` — update price targets/thesis
+- `GET /api/watchlist` — list active watchlist items (includes `group_name`)
+- `POST /api/watchlist` — add security to watchlist (by securityId or symbol). Accepts `groupName` for behavioral groupings ("vanguard_buy", "ibkr_buy_next", etc.)
+- `PATCH /api/watchlist` — update price targets, thesis, or group_name
 - `DELETE /api/watchlist?id=` — remove from watchlist (soft delete)
+- `GET /api/levels?securityId=&activeOnly=true` — list price levels (per-security or all). Returns `effective_price` resolved from `ohlcv_bars` for MA-based levels.
+- `POST /api/levels` — create or update a level. Body matches `UpsertLevelInput` (security_id, level_type, price, price_source, direction, action_hint, source, source_author, thesis, timeframe, expires_at, group_id, notes).
+- `PATCH /api/levels` — update OR pass `{ id, action: "deactivate" | "reactivate" }` for state flips.
+- `DELETE /api/levels?id=` — hard delete a level.
+- `POST /api/levels/extract` — Claude scans recent unscanned `research_articles` for ticker+level mentions against held+watchlist symbols. Body: `{ sinceDays?, batchSize? }`. Auto-runs after `/api/research/sync`.
+- `GET /api/alerts?response=&securityId=&limit=&countOnly=true` — list level_alerts with enriched security + level info, OR just the pending count.
+- `PATCH /api/alerts` — update alert response (acted/ignored/dismissed) with optional note, or set `suggestedAction`.
+- `POST /api/alerts/detect` — manual run of `detectAndFireAlerts` (the auto-refresh pipeline runs this automatically as Step 6).
+- `POST /api/alerts/suggest` — Claude generates a one-sentence recommendation for an alert. Body `{ alertId? }` for single, otherwise fills all pending alerts without a suggestion.
 - `POST /api/trade-review` — SSE streaming, two-phase: Phase 1 (no answers) prepares data + Sonnet Q&A; Phase 2 (with answers) generates Opus/Sonnet review. Body: `{ accountId, periodStart, periodEnd, answers?: [{tradeNumber, answer}] }`. Auto-selects Sonnet for >20 trades.
 - `GET /api/trade-review?accountId=&year=` — list trade reviews for account
 - `GET /api/trade-review?id=` — single review with grouped trades (lots grouped by sale_transaction_id)
