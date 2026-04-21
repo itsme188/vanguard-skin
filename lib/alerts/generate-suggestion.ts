@@ -1,6 +1,6 @@
-import Anthropic from "@anthropic-ai/sdk";
 import type Database from "better-sqlite3";
-import { SONNET_MODEL } from "@/lib/claude-models";
+import { generateText } from "ai";
+import { getModelForFeature } from "@/lib/ai/provider";
 import { setAlertSuggestion } from "@/lib/mutations/security-levels";
 
 interface LevelRow {
@@ -167,16 +167,13 @@ export async function generateSuggestionForAlert(
   };
 
   try {
-    const client = new Anthropic();
-    const response = await client.messages.create({
-      model: SONNET_MODEL,
-      max_tokens: 256,
-      messages: [{ role: "user", content: buildSuggestionPrompt(ctx) }],
+    const { text } = await generateText({
+      model: getModelForFeature("alertSuggestion"),
+      maxOutputTokens: 256,
+      prompt: buildSuggestionPrompt(ctx),
     });
-    const textBlock = response.content.find((b) => b.type === "text");
-    if (!textBlock || textBlock.type !== "text") return null;
 
-    const suggestion = textBlock.text.trim();
+    const suggestion = text.trim();
     if (!suggestion) return null;
 
     setAlertSuggestion(db, alertId, suggestion);

@@ -1,4 +1,3 @@
-import Anthropic from "@anthropic-ai/sdk";
 import type {
   ParsedImportResult,
   ParsedTransaction,
@@ -8,8 +7,17 @@ import type {
   ParsedSnapshot,
 } from "../types";
 import { extractMaturityDate } from "@/lib/bonds";
-import { OPUS_MODEL } from "@/lib/claude-models";
+import { getRawAnthropicClient } from "@/lib/ai/provider";
+import { resolveFeatureModel } from "@/lib/ai/models";
 import { buildOCCSymbol, isOCCFormat, ensureOCCSymbol } from "../occ-symbol";
+
+/**
+ * PDF parsing keeps the raw @anthropic-ai/sdk client because it relies on
+ * client.messages.stream() with custom multi-attempt retry semantics that are
+ * tighter than the AI SDK's equivalents. The client is still Gateway-routed
+ * when CLOUDFLARE_* env vars are set — observability works the same.
+ */
+const PDF_MODEL_ID = resolveFeatureModel("pdfParsing").modelId;
 
 // ── Claude API response schema ──────────────────────────────────────
 
@@ -131,13 +139,13 @@ Rules:
 export async function callClaudeForPdfExtraction(
   pdfBuffer: Buffer
 ): Promise<ClaudePdfResponse> {
-  const client = new Anthropic();
+  const client = getRawAnthropicClient("pdfParsing");
 
   const base64Pdf = pdfBuffer.toString("base64");
 
   // Use streaming to avoid 10-minute timeout on large PDFs
   const stream = client.messages.stream({
-    model: OPUS_MODEL,
+    model: PDF_MODEL_ID,
     max_tokens: 64000,
     temperature: 0,
     messages: [
@@ -521,11 +529,11 @@ CRITICAL:
 
 /** Generic Claude API call with a given prompt against a PDF. */
 async function callClaudeWithPdf<T>(pdfBuffer: Buffer, prompt: string): Promise<T> {
-  const client = new Anthropic();
+  const client = getRawAnthropicClient("pdfParsing");
   const base64Pdf = pdfBuffer.toString("base64");
 
   const stream = client.messages.stream({
-    model: OPUS_MODEL,
+    model: PDF_MODEL_ID,
     max_tokens: 64000,
     temperature: 0,
     messages: [

@@ -1,6 +1,6 @@
-import Anthropic from "@anthropic-ai/sdk";
 import type Database from "better-sqlite3";
-import { SONNET_MODEL } from "@/lib/claude-models";
+import { generateText } from "ai";
+import { getModelForFeature } from "@/lib/ai/provider";
 import { upsertLevel } from "@/lib/mutations/security-levels";
 import type {
   LevelType,
@@ -223,27 +223,26 @@ export async function extractLevelsFromArticle(
 ): Promise<{ inserted: number; skipped: number }> {
   const bySymbol = new Map(relevantSymbols.map((s) => [s.symbol.toUpperCase(), s]));
 
-  let response: Anthropic.Message;
+  let responseText: string;
   try {
-    const client = new Anthropic();
-    response = await client.messages.create({
-      model: SONNET_MODEL,
-      max_tokens: 2048,
-      messages: [{ role: "user", content: buildExtractionPrompt(article, relevantSymbols) }],
+    const { text } = await generateText({
+      model: getModelForFeature("newsletterLevelExtraction"),
+      maxOutputTokens: 2048,
+      prompt: buildExtractionPrompt(article, relevantSymbols),
     });
+    responseText = text;
   } catch (err) {
     console.warn(`[levels/extract] Claude failed for article ${article.id}:`, err instanceof Error ? err.message : err);
     // Don't mark scanned — transient failures should retry on next run
     return { inserted: 0, skipped: 0 };
   }
 
-  const textBlock = response.content.find((b) => b.type === "text");
-  if (!textBlock || textBlock.type !== "text") {
+  if (!responseText.trim()) {
     markArticleScanned(db, article.id);
     return { inserted: 0, skipped: 0 };
   }
 
-  const extracted = parseExtractionResponse(textBlock.text);
+  const extracted = parseExtractionResponse(responseText);
   let inserted = 0;
   let skipped = 0;
 
