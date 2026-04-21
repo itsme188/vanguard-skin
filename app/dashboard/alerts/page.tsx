@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import type { LevelAlert, AlertResponse } from "@/lib/types";
+import { useToast } from "../components/Toast";
 
 interface EnrichedAlert extends LevelAlert {
   symbol: string | null;
@@ -26,6 +27,7 @@ const FILTER_OPTIONS: Array<{ label: string; value: AlertResponse | "all" }> = [
 ];
 
 export default function AlertsPage() {
+  const { toast } = useToast();
   const [alerts, setAlerts] = useState<EnrichedAlert[]>([]);
   const [filter, setFilter] = useState<AlertResponse | "all">("pending");
   const [loading, setLoading] = useState(false);
@@ -54,11 +56,17 @@ export default function AlertsPage() {
   }, [refresh]);
 
   async function respond(id: number, response: AlertResponse, note?: string) {
-    await fetch("/api/alerts", {
+    const res = await fetch("/api/alerts", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id, response, note }),
     });
+    if (res.ok) {
+      const kind: "success" | "info" = response === "acted" ? "success" : "info";
+      toast(`Alert marked ${response}`, kind);
+    } else {
+      toast("Failed to update alert", "error");
+    }
     refresh();
   }
 

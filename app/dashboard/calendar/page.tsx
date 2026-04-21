@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+
 import { db } from "@/lib/db";
 import { getUpcomingEvents } from "@/lib/queries/calendar";
 import { getBriefingByWeek } from "@/lib/queries/calendar";

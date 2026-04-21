@@ -1,6 +1,71 @@
 import type Database from "better-sqlite3";
 import { getRecentArticles } from "@/lib/queries/research";
 
+// ── Alerts block ────────────────────────────────────────────────────
+
+interface RecentAlertRow {
+  symbol: string | null;
+  level_type: string | null;
+  price: number | null;
+  price_source: string | null;
+  source_author: string | null;
+  triggered_price: number;
+  user_response: string;
+  suggested_action: string | null;
+}
+
+/**
+ * Returns a markdown block summarizing alerts triggered since `sinceDate`,
+ * or an empty string if none fired. Prepended to the digest so the user sees
+ * actionable level crossings before article content.
+ */
+export function formatTriggeredAlertsSection(
+  db: Database.Database,
+  sinceDate: string
+): string {
+  const rows = db
+    .prepare(
+      `SELECT s.symbol, sl.level_type, sl.price, sl.price_source, sl.source_author,
+              la.triggered_price, la.user_response, la.suggested_action
+         FROM level_alerts la
+         JOIN security_levels sl ON sl.id = la.level_id
+         JOIN securities s ON s.id = la.security_id
+        WHERE la.triggered_at >= ?
+        ORDER BY la.triggered_at DESC
+        LIMIT 20`
+    )
+    .all(sinceDate + "T00:00:00") as RecentAlertRow[];
+
+  if (rows.length === 0) return "";
+
+  const lines: string[] = [
+    `## Price Levels Triggered Since Last Digest`,
+    "",
+    `${rows.length} alert${rows.length === 1 ? "" : "s"} fired. Review on the [alerts page](#alerts).`,
+    "",
+  ];
+  for (const r of rows) {
+    const sym = r.symbol ?? "?";
+    const lt = (r.level_type ?? "level").replace("_", " ");
+    const srcLabel =
+      r.price_source && r.price_source !== "static"
+        ? r.price_source.toUpperCase().replace("_", " ")
+        : r.price != null
+          ? `$${r.price.toFixed(2)}`
+          : "";
+    const author = r.source_author ? ` — ${r.source_author}` : "";
+    const response = r.user_response !== "pending" ? ` (${r.user_response})` : "";
+    const suggestion = r.suggested_action ? ` — _${r.suggested_action}_` : "";
+    lines.push(
+      `- **${sym}** ${lt} ${srcLabel} hit $${r.triggered_price.toFixed(2)}${author}${response}${suggestion}`
+    );
+  }
+  lines.push("");
+  lines.push("---");
+  lines.push("");
+  return lines.join("\n");
+}
+
 // ── Last-sent tracking ──────────────────────────────────────────────
 
 export function getLastDigestSentAt(db: Database.Database): string | null {
@@ -53,6 +118,8 @@ export function generateDigestSince(db: Database.Database, sinceDate: string): s
     year: "numeric",
   });
 
+  const alertsBlock = formatTriggeredAlertsSection(db, sinceDate);
+
   const lines: string[] = [
     `# Morning Research Digest`,
     `### ${dateStr}`,
@@ -62,6 +129,10 @@ export function generateDigestSince(db: Database.Database, sinceDate: string): s
     "---",
     "",
   ];
+
+  if (alertsBlock) {
+    lines.push(alertsBlock);
+  }
 
   for (const article of articles) {
     // Source + sentiment header

@@ -6,8 +6,6 @@ import type { LevelPriceSource } from "@/lib/types";
  * MA-based levels store a reference `price` (snapshot at creation time) but
  * the effective trigger price is recomputed daily from ohlcv_bars. This helper
  * does that computation — returning null if we don't have enough history.
- *
- * Callers are expected to fall back to the static `price` when this returns null.
  */
 export function computeMovingAverage(
   db: Database.Database,
@@ -44,14 +42,15 @@ export function computeMovingAverage(
 
 /**
  * Resolve a level's effective trigger price. Static levels return their stored
- * price; MA-based levels compute from ohlcv_bars with a fallback to the stored
- * reference price if bars are missing.
+ * price; MA-based levels compute from ohlcv_bars and return null when bars are
+ * insufficient. The stored `price` is a snapshot from creation time and drifts
+ * from the real MA over days/weeks, so we never silently fall back to it —
+ * callers render "insufficient history" UI and the scan skips the level.
  */
 export function resolveLevelPrice(
   db: Database.Database,
   level: { security_id: number; price: number; price_source: LevelPriceSource }
-): number {
+): number | null {
   if (level.price_source === "static") return level.price;
-  const computed = computeMovingAverage(db, level.security_id, level.price_source);
-  return computed ?? level.price;
+  return computeMovingAverage(db, level.security_id, level.price_source);
 }

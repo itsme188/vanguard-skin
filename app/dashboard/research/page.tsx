@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+
 import { db } from "@/lib/db";
 import { getNotesFiltered, getEarningsTimeline } from "@/lib/queries/notes";
 import { getTranscriptsSummary } from "@/lib/queries/transcripts";

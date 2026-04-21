@@ -22,6 +22,8 @@ import { getTradeReviews, getTradeReviewByPeriod, getTradeRoundtrips } from "@/l
 import { computePortfolioGreeks } from "@/lib/compute/options-greeks";
 import { getOptionPositions } from "@/lib/queries/options";
 import { detectStrategies, type PositionLeg } from "@/lib/compute/options-strategy";
+import { getActiveLevels, getAlerts, getLevelsForSecurity } from "@/lib/queries/security-levels";
+import { resolveLevelPrice } from "@/lib/alerts/resolve-level-price";
 
 // ─── Tool Definitions ─────────────────────────────────────────────
 
@@ -566,6 +568,63 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
           type: "number",
           description:
             "Number of recent weekly briefings to retrieve. Default 1. Use 4 for last month, 12 for last quarter.",
+        },
+      },
+    },
+  },
+  {
+    name: "query_levels",
+    description:
+      "Query active price levels — support, resistance, entry, exit, stop, and scale-in prices set by the user or extracted from research newsletters. Each level includes its effective price (live-computed MA for EMA/SMA-based levels, or the static price) plus the author, thesis, and timeframe context. Use when the user asks 'what levels are closest to triggering?', 'show Eliant's levels', 'what support levels do I have on SPY?', or 'which levels should I watch this week?'.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        symbol: {
+          type: "string",
+          description: "Filter by security symbol (e.g., 'SPY', 'AAPL'). Omit for all securities.",
+        },
+        source_author: {
+          type: "string",
+          description:
+            "Filter by who set the level — e.g., 'Me' for user-originated, 'Eliant Capital', 'Purple Drink', 'Helene Meisler'. Omit for all authors.",
+        },
+        level_type: {
+          type: "string",
+          enum: ["support", "resistance", "entry", "exit", "stop", "scale_in"],
+          description: "Filter by level type. Omit for all types.",
+        },
+        include_inactive: {
+          type: "boolean",
+          description:
+            "Include inactive (triggered or paused) levels. Default false — only armed levels.",
+        },
+      },
+    },
+  },
+  {
+    name: "query_alerts",
+    description:
+      "Query level alerts — events where a price has crossed an armed level. Each alert includes the level's author, thesis, triggered price, current position context (held/watchlist), Claude's suggested action, and the user's response state. Use when the user asks 'what alerts have fired recently?', 'show me pending alerts', 'which Eliant levels have hit?', or 'alerts I ignored last month'.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        symbol: {
+          type: "string",
+          description: "Filter by security symbol. Omit for all alerts.",
+        },
+        response: {
+          type: "string",
+          enum: ["pending", "acted", "ignored", "dismissed"],
+          description: "Filter by the user's response state. Omit for all states.",
+        },
+        since_days: {
+          type: "number",
+          description:
+            "Only alerts from the last N days. Default 30. Use 7 for this week, 90 for this quarter.",
+        },
+        limit: {
+          type: "number",
+          description: "Max results. Default 50.",
         },
       },
     },
@@ -1140,6 +1199,110 @@ export async function executeTool(
         break;
       }
 
+      case "query_levels": {
+        const symbol = input.symbol ? String(input.symbol).toUpperCase() : undefined;
+        const securityId = symbol ? getSecurityIdBySymbol(db, symbol) ?? undefined : undefined;
+        const activeOnly = !input.include_inactive;
+        const rawLevels = securityId
+          ? getLevelsForSecurity(db, securityId, { activeOnly })
+          : getActiveLevels(db);
+        const sourceAuthor = input.source_author ? String(input.source_author) : undefined;
+        const levelType = input.level_type ? String(input.level_type) : undefined;
+
+        const filtered = rawLevels.filter((l) => {
+          if (sourceAuthor && l.source_author?.toLowerCase() !== sourceAuthor.toLowerCase()) return false;
+          if (levelType && l.level_type !== levelType) return false;
+          return true;
+        });
+
+        // Join security symbol via a single lookup so the chat gets human-readable context.
+        const symByIdStmt = db.prepare("SELECT symbol, name FROM securities WHERE id = ?");
+        const enriched = filtered.map((l) => {
+          const sec = symByIdStmt.get(l.security_id) as { symbol: string; name: string } | undefined;
+          const effective =
+            l.price_source === "static" ? l.price : resolveLevelPrice(db, l);
+          return {
+            id: l.id,
+            symbol: sec?.symbol ?? null,
+            security_name: sec?.name ?? null,
+            level_type: l.level_type,
+            price: l.price,
+            price_source: l.price_source,
+            effective_price: effective,
+            direction: l.direction,
+            action_hint: l.action_hint,
+            source: l.source,
+            source_author: l.source_author,
+            thesis: l.thesis,
+            timeframe: l.timeframe,
+            expires_at: l.expires_at,
+            is_active: l.is_active,
+            triggered_at: l.triggered_at,
+            triggered_price: l.triggered_price,
+            set_date: l.set_date,
+          };
+        });
+
+        rawResult = { levels: enriched, count: enriched.length };
+        break;
+      }
+
+      case "query_alerts": {
+        const symbol = input.symbol ? String(input.symbol).toUpperCase() : undefined;
+        const securityId = symbol ? getSecurityIdBySymbol(db, symbol) ?? undefined : undefined;
+        const sinceDays = (input.since_days as number) ?? 30;
+        const response = input.response as
+          | "pending"
+          | "acted"
+          | "ignored"
+          | "dismissed"
+          | undefined;
+        const limit = (input.limit as number) ?? 50;
+        const sinceIso = new Date(Date.now() - sinceDays * 86400000).toISOString();
+
+        const rawAlerts = getAlerts(db, { securityId, response, limit });
+        const recent = rawAlerts.filter((a) => a.triggered_at >= sinceIso);
+
+        // Enrich with security symbol + level author/thesis for narrative context.
+        const symByIdStmt = db.prepare("SELECT symbol, name FROM securities WHERE id = ?");
+        const levelByIdStmt = db.prepare(
+          "SELECT level_type, price, price_source, source_author, thesis, timeframe FROM security_levels WHERE id = ?"
+        );
+        const enriched = recent.map((a) => {
+          const sec = symByIdStmt.get(a.security_id) as { symbol: string; name: string } | undefined;
+          const lvl = levelByIdStmt.get(a.level_id) as
+            | {
+                level_type: string;
+                price: number;
+                price_source: string;
+                source_author: string | null;
+                thesis: string | null;
+                timeframe: string | null;
+              }
+            | undefined;
+          return {
+            id: a.id,
+            symbol: sec?.symbol ?? null,
+            security_name: sec?.name ?? null,
+            level_type: lvl?.level_type ?? null,
+            level_price: lvl?.price ?? null,
+            price_source: lvl?.price_source ?? null,
+            source_author: lvl?.source_author ?? null,
+            thesis: lvl?.thesis ?? null,
+            timeframe: lvl?.timeframe ?? null,
+            triggered_at: a.triggered_at,
+            triggered_price: a.triggered_price,
+            suggested_action: a.suggested_action,
+            user_response: a.user_response,
+            user_response_at: a.user_response_at,
+            user_response_note: a.user_response_note,
+          };
+        });
+
+        rawResult = { alerts: enriched, count: enriched.length };
+        break;
+      }
+
       default:
         return { error: `Unknown tool: ${toolName}` };
     }
@@ -1178,4 +1341,6 @@ export const TOOL_LABELS: Record<string, string> = {
   query_research_feeds: "Searching research feeds...",
   query_calendar_events: "Checking calendar events...",
   query_calendar_briefings: "Retrieving market briefings...",
+  query_levels: "Scanning price levels...",
+  query_alerts: "Reviewing alert history...",
 };
