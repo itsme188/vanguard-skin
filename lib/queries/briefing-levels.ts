@@ -20,6 +20,7 @@ export interface LevelTriggeredThisWeek {
 
 export interface LevelNearPrice {
   level_id: number;
+  security_id: number;
   symbol: string;
   security_name: string | null;
   level_type: string;
@@ -86,6 +87,7 @@ export function getLevelsNearPrice(
     .prepare(
       `SELECT
          sl.id AS level_id,
+         s.id AS security_id,
          s.symbol,
          s.name AS security_name,
          sl.level_type,
@@ -105,6 +107,7 @@ export function getLevelsNearPrice(
          WHERE date = (SELECT MAX(date) FROM prices p2 WHERE p2.security_id = p1.security_id)
        ) p ON p.security_id = sl.security_id
        WHERE sl.is_active = 1
+         AND sl.review_status = 'auto_approved'
          AND (sl.expires_at IS NULL OR sl.expires_at >= date('now'))
          AND ABS((p.close_price - sl.price) / sl.price) <= ?
        ORDER BY ABS((p.close_price - sl.price) / sl.price) ASC`

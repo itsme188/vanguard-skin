@@ -269,6 +269,9 @@ export async function extractLevelsFromArticle(
       source_author: article.source_name,
       thesis: lvl.thesis,
       timeframe: lvl.timeframe,
+      // Newsletter-extracted levels stage in pending_review. The user approves
+      // or rejects on /dashboard/levels/review before the scan arms them.
+      review_status: "pending_review",
     });
     inserted++;
   }

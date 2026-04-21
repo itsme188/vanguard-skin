@@ -3,6 +3,7 @@ export const dynamic = "force-dynamic";
 import { db } from "@/lib/db";
 import { getUpcomingEvents } from "@/lib/queries/calendar";
 import { getBriefingByWeek } from "@/lib/queries/calendar";
+import { getActiveLevelCountsForSecurityIds } from "@/lib/queries/security-levels";
 import { getCurrentMonday, addDays } from "@/lib/calendar/date-utils";
 import { CalendarView } from "../components/CalendarView";
 
@@ -18,11 +19,22 @@ export default async function CalendarPage({ searchParams }: PageProps) {
 
   // Load events for the selected week
   const endDate = addDays(weekOf, 6);
-  let events, briefing;
+  let events, briefing, levelCounts: Record<number, number>;
   try {
     events = getUpcomingEvents(db, { startDate: weekOf, endDate });
     // Only show briefing for the viewed week — no fallback to latest
     briefing = getBriefingByWeek(db, weekOf);
+    // Collect unique security_ids from events, then count active levels per id.
+    // Serialized as a plain object so it crosses the server → client boundary.
+    const ids = Array.from(
+      new Set(
+        events
+          .map((e) => e.security_id)
+          .filter((id): id is number => id != null)
+      )
+    );
+    const countsMap = getActiveLevelCountsForSecurityIds(db, ids);
+    levelCounts = Object.fromEntries(countsMap);
   } catch {
     throw new Error("Failed to load calendar data. The database may be unavailable.");
   }
@@ -40,6 +52,7 @@ export default async function CalendarPage({ searchParams }: PageProps) {
         initialEvents={events}
         initialBriefing={briefing}
         initialWeekOf={weekOf}
+        levelCounts={levelCounts}
       />
     </div>
   );
