@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { useElectron } from "@/lib/hooks/useElectron";
 
 /** Fields grouped by section for the settings form. */
@@ -150,8 +151,11 @@ export function SettingsModal() {
         </svg>
       </button>
 
-      {/* Modal overlay */}
-      {open && (
+      {/* Modal overlay — portaled to document.body so it escapes the
+          dashboard header's stacking context (z-50 + backdrop-blur-xl).
+          Without the portal, the modal body rendered visually behind
+          the dashboard main content. */}
+      {open && typeof document !== "undefined" && createPortal(
         <div
           className="fixed inset-0 z-[100] overflow-y-auto overscroll-contain"
           onClick={(e) => {
@@ -326,7 +330,8 @@ export function SettingsModal() {
               </div>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </>
   );
