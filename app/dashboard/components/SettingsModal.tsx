@@ -153,18 +153,24 @@ export function SettingsModal() {
       {/* Modal overlay */}
       {open && (
         <div
-          className="fixed inset-0 z-[100] flex items-start justify-center pt-12 pb-6 px-4 electron:pt-16 overflow-y-auto"
+          className="fixed inset-0 z-[100] overflow-y-auto overscroll-contain"
           onClick={(e) => {
             if (e.target === e.currentTarget) setOpen(false);
           }}
         >
-          {/* Backdrop */}
-          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setOpen(false)} />
+          {/* Backdrop — behind the modal, click-to-close */}
+          <div
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={() => setOpen(false)}
+            aria-hidden="true"
+          />
 
-          {/* Modal */}
-          <div className="relative w-full max-w-lg max-h-[calc(100vh-6rem)] flex flex-col rounded-xl border border-edge bg-panel shadow-2xl">
-            {/* Header — always visible, close button always reachable */}
-            <div className="shrink-0 flex items-center justify-between px-5 py-3.5 border-b border-edge bg-panel rounded-t-xl">
+          {/* Modal — outer container scrolls the viewport; no internal height
+              cap so content is never clipped. Sticky header keeps the close
+              button pinned while scrolling. */}
+          <div className="relative w-full max-w-lg mx-auto my-12 electron:mt-16 rounded-xl border border-edge bg-panel shadow-2xl">
+            {/* Header — sticky relative to outer scroll container */}
+            <div className="sticky top-0 z-10 flex items-center justify-between px-5 py-3.5 border-b border-edge bg-panel/95 backdrop-blur-sm rounded-t-xl">
               <h2 className="text-sm font-medium text-ink">Settings</h2>
               <button
                 onClick={() => setOpen(false)}
@@ -175,7 +181,7 @@ export function SettingsModal() {
               </button>
             </div>
 
-            <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-5">
+            <div className="p-5 space-y-5">
               {/* Setting sections */}
               {SECTIONS.map((section) => (
                 <div key={section.title} className="space-y-2">
