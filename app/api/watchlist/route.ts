@@ -23,7 +23,7 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { securityId, symbol, priceTargetLow, priceTargetHigh, thesis } =
+    const { securityId, symbol, priceTargetLow, priceTargetHigh, thesis, groupName } =
       body;
 
     // If a symbol is provided instead of securityId, resolve it
@@ -58,6 +58,7 @@ export async function POST(request: NextRequest) {
       priceTargetLow,
       priceTargetHigh,
       thesis,
+      groupName,
     });
 
     return NextResponse.json({ success: true });

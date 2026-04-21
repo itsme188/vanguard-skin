@@ -103,6 +103,8 @@ export function SecurityChart({
   const indicatorMapRef = useRef<Map<string, ISeriesApi<"Line">>>(new Map());
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const markersPluginRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const priceLinesRef = useRef<any[]>([]);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -112,7 +114,9 @@ export function SecurityChart({
   const [barCount, setBarCount] = useState(0);
   const [lastDate, setLastDate] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [legend, setLegend] = useState<OhlcvBar | null>(null);
+  const [legend, setLegend] = useState<
+    (OhlcvBar & { indicators?: Record<string, number> }) | null
+  >(null);
 
   // Toggle states
   const [activeIndicators, setActiveIndicators] = useState<Set<IndicatorKey>>(new Set());
@@ -224,7 +228,9 @@ export function SecurityChart({
         visible: false,
       });
 
-      // Crosshair legend
+      // Crosshair legend — OHLCV + active indicator values at the cursor position.
+      // Indicators are resolved via the ref so new toggles show up immediately without
+      // re-subscribing.
       chart.subscribeCrosshairMove((param) => {
         if (!param.time || !param.seriesData.size) {
           setLegend(null);
@@ -235,10 +241,16 @@ export function SecurityChart({
         } | undefined;
         if (cd?.open != null) {
           const vd = param.seriesData.get(volumeSeries) as { value?: number } | undefined;
+          const indicators: Record<string, number> = {};
+          for (const [key, series] of indicatorMapRef.current) {
+            const d = param.seriesData.get(series) as { value?: number } | undefined;
+            if (d?.value != null) indicators[key] = d.value;
+          }
           setLegend({
             date: String(param.time),
             open: cd.open, high: cd.high!, low: cd.low!, close: cd.close!,
             volume: vd?.value ?? null,
+            indicators: Object.keys(indicators).length > 0 ? indicators : undefined,
           });
         }
       });
@@ -308,6 +320,75 @@ export function SecurityChart({
       markersPluginRef.current = updateMarkers(lc, candleSeriesRef.current!, currentTransactionsRef.current, showMarkers, markersPluginRef.current);
     })();
   }, [showMarkers]);
+
+  // Render active security_levels as horizontal price lines on the chart.
+  // Polls on mount + every 30s so manual edits in LevelsPanel show up without a page reload.
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadLevels() {
+      const series = candleSeriesRef.current;
+      if (!series) return;
+
+      try {
+        const res = await fetch(`/api/levels?securityId=${securityId}&activeOnly=true`);
+        const json = await res.json();
+        if (cancelled || !json.success) return;
+
+        // Clear existing lines
+        for (const line of priceLinesRef.current) {
+          try { series.removePriceLine(line); } catch { /* already removed */ }
+        }
+        priceLinesRef.current = [];
+
+        // Color by level_type — match Midnight Portfolio palette
+        const COLOR: Record<string, string> = {
+          support: "#34D399",     // emerald (up)
+          entry: "#34D399",
+          scale_in: "#6EE7B7",
+          resistance: "#F87171",  // rose (down)
+          exit: "#60A5FA",        // blue — target
+          stop: "#F87171",
+        };
+
+        for (const lvl of json.levels) {
+          // effective_price: echoes static price OR current MA value. Falls back to
+          // lvl.price if the server couldn't compute (insufficient bars).
+          const displayPrice = typeof lvl.effective_price === "number" ? lvl.effective_price : lvl.price;
+          const titleBase = lvl.level_type === "scale_in" ? "scale" : lvl.level_type;
+          const title = lvl.price_source && lvl.price_source !== "static"
+            ? `${titleBase} (${lvl.price_source.replace("_", " ")})`
+            : titleBase;
+          const line = series.createPriceLine({
+            price: displayPrice,
+            color: COLOR[lvl.level_type] ?? "#C9A44E",
+            lineWidth: 1,
+            lineStyle: 2, // dashed
+            axisLabelVisible: true,
+            title,
+          });
+          priceLinesRef.current.push(line);
+        }
+      } catch {
+        // network error — skip silently
+      }
+    }
+
+    loadLevels();
+    const interval = setInterval(loadLevels, 30_000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      const series = candleSeriesRef.current;
+      if (series) {
+        for (const line of priceLinesRef.current) {
+          try { series.removePriceLine(line); } catch { /* noop */ }
+        }
+      }
+      priceLinesRef.current = [];
+    };
+  }, [securityId]);
 
   const handleDurationChange = useCallback(
     async (label: string) => {
@@ -478,6 +559,16 @@ export function SecurityChart({
                   <span className="text-ink">{legend.volume.toLocaleString()}</span>
                 </>
               )}
+              {legend.indicators && Object.entries(legend.indicators).map(([key, value]) => {
+                const label = INDICATORS.find((i) => i.key === key)?.label ?? key;
+                const color = INDICATORS.find((i) => i.key === key)?.color ?? "#C9A44E";
+                return (
+                  <span key={key} className="flex items-baseline gap-1">
+                    <span className="text-ink-faint" style={{ color }}>{label}</span>
+                    <span className="text-ink">{value.toFixed(2)}</span>
+                  </span>
+                );
+              })}
             </div>
           )}
         </div>

@@ -298,3 +298,58 @@ export interface TradeRoundtrip {
   what_went_wrong: string | null;
   sale_transaction_id: number | null;
 }
+
+// ─── Security levels + alerts ──────────────────────────────────────
+
+export type LevelType = "support" | "resistance" | "entry" | "exit" | "stop" | "scale_in";
+export type LevelDirection = "bullish" | "bearish";
+export type LevelActionHint = "new_position" | "scale_in" | "trim" | "close" | "watch";
+export type LevelSource = "user" | "newsletter" | "technical" | "claude";
+export type LevelTimeframe = "day" | "week" | "month";
+export type LevelPriceSource =
+  | "static"
+  | "sma_9"
+  | "sma_21"
+  | "sma_50"
+  | "sma_200"
+  | "ema_9"
+  | "ema_21";
+export type AlertResponse = "pending" | "acted" | "ignored" | "dismissed";
+
+export interface SecurityLevel {
+  id: number;
+  security_id: number;
+  level_type: LevelType;
+  price: number;
+  price_source: LevelPriceSource;
+  direction: LevelDirection | null;
+  action_hint: LevelActionHint | null;
+  source: LevelSource;
+  source_article_id: number | null;
+  source_author: string | null;
+  thesis: string | null;
+  timeframe: LevelTimeframe | null;
+  expires_at: string | null;
+  group_id: string | null;
+  set_date: string;
+  is_active: number;
+  triggered_at: string | null;
+  triggered_price: number | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LevelAlert {
+  id: number;
+  level_id: number;
+  security_id: number;
+  triggered_at: string;
+  triggered_price: number;
+  suggested_action: string | null;
+  position_context: string | null;
+  user_response: AlertResponse;
+  user_response_at: string | null;
+  user_response_note: string | null;
+  created_at: string;
+}

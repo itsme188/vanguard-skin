@@ -2,6 +2,7 @@ import { db } from "@/lib/db";
 import { isGmailConfigured, getGmailClient } from "@/lib/gmail/auth";
 import { fetchNewArticles, backfillArticleHtml, backfillSourceUrls } from "@/lib/gmail/fetch";
 import { processUnprocessedArticles } from "@/lib/gmail/process";
+import { extractLevelsFromNewArticles } from "@/lib/alerts/extract-newsletter-levels";
 
 /**
  * POST /api/research/sync — Fetch and process newsletter articles from Gmail.
@@ -67,6 +68,27 @@ export async function POST() {
             phase: "urls",
             status: "done",
             updated: urlsBackfilled,
+          });
+        }
+
+        // Phase 4: Extract price levels from the newly-processed articles
+        // for the user's held + watchlist symbols. Tolerant of Claude errors
+        // — a failure here shouldn't abort the whole sync.
+        try {
+          send({ phase: "levels", status: "started" });
+          const levelsResult = await extractLevelsFromNewArticles(db);
+          send({
+            phase: "levels",
+            status: "done",
+            articlesScanned: levelsResult.articlesScanned,
+            levelsInserted: levelsResult.levelsInserted,
+            levelsSkipped: levelsResult.levelsSkipped,
+          });
+        } catch (err) {
+          send({
+            phase: "levels",
+            status: "error",
+            message: err instanceof Error ? err.message : "Level extraction failed",
           });
         }
 
