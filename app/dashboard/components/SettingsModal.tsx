@@ -37,6 +37,13 @@ const SECTIONS = [
       { key: "edgarContactEmail", label: "Contact Email", sensitive: false },
     ],
   },
+  {
+    title: "Mobile Push (Pushover)",
+    fields: [
+      { key: "pushoverAppToken", label: "App Token", sensitive: true },
+      { key: "pushoverUserKey", label: "User Key", sensitive: true },
+    ],
+  },
 ] as const;
 
 type FieldKey = (typeof SECTIONS)[number]["fields"][number]["key"];

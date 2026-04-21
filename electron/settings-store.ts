@@ -20,6 +20,8 @@ interface AppSettings {
   fredApiKey?: string;
   edgarContactEmail?: string;
   apiNinjasKey?: string;
+  pushoverAppToken?: string;
+  pushoverUserKey?: string;
   /** Auto-refresh interval in minutes. 0 = disabled. Default: 30. */
   refreshIntervalMinutes?: number;
   firstRunComplete?: boolean;
@@ -103,6 +105,8 @@ export function bootstrapFromEnvLocal(): void {
   if (envMap.FRED_API_KEY) updates.fredApiKey = envMap.FRED_API_KEY;
   if (envMap.EDGAR_CONTACT_EMAIL) updates.edgarContactEmail = envMap.EDGAR_CONTACT_EMAIL;
   if (envMap.API_NINJAS_API_KEY) updates.apiNinjasKey = envMap.API_NINJAS_API_KEY;
+  if (envMap.PUSHOVER_APP_TOKEN) updates.pushoverAppToken = envMap.PUSHOVER_APP_TOKEN;
+  if (envMap.PUSHOVER_USER_KEY) updates.pushoverUserKey = envMap.PUSHOVER_USER_KEY;
 
   saveSettings(updates);
   console.log("[settings] Bootstrapped from .env.local — API keys imported");
@@ -121,6 +125,8 @@ export function getSanitizedSettings(): Record<string, string | number | boolean
     fredApiKey: s.fredApiKey ? "***" + s.fredApiKey.slice(-4) : "",
     edgarContactEmail: s.edgarContactEmail ?? "",
     apiNinjasKey: s.apiNinjasKey ? "***" + s.apiNinjasKey.slice(-4) : "",
+    pushoverAppToken: s.pushoverAppToken ? "***" + s.pushoverAppToken.slice(-4) : "",
+    pushoverUserKey: s.pushoverUserKey ? "***" + s.pushoverUserKey.slice(-4) : "",
     hasAnthropicKey: !!s.anthropicApiKey,
     autoConnectTws: s.autoConnectTws ?? true,
     refreshIntervalMinutes: s.refreshIntervalMinutes ?? 30,
