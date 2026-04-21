@@ -5,6 +5,7 @@ import type { TwsStatus as TwsStatusType } from "@/lib/tws/types";
 import type { SyncState } from "@/lib/tws/sync-state";
 import { useStreamingQuotes } from "@/lib/hooks/useStreamingQuotes";
 import { useAutoRefresh } from "@/lib/hooks/useAutoRefresh";
+import { Money } from "@/lib/privacy/components";
 
 const STATE_CONFIG = {
   disconnected: { color: "bg-ink-faint", label: "TWS Disconnected" },
@@ -151,6 +152,10 @@ function TwsPanel({
   const [clientId, setClientId] = useState(String(status.clientId));
   const [loading, setLoading] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
+  const [resultBalances, setResultBalances] = useState<{
+    netLiquidation: number | null;
+    cashBalance: number | null;
+  } | null>(null);
   const [priceProgress, setPriceProgress] = useState<PriceProgress | null>(
     null,
   );
@@ -159,6 +164,7 @@ function TwsPanel({
   async function handleConnect() {
     setLoading("connect");
     setResult(null);
+    setResultBalances(null);
     try {
       const res = await fetch("/api/tws/connect", {
         method: "POST",
@@ -190,6 +196,7 @@ function TwsPanel({
   async function handleDisconnect() {
     setLoading("disconnect");
     setResult(null);
+    setResultBalances(null);
     try {
       const res = await fetch("/api/tws/disconnect", { method: "POST" });
       const json = await res.json();
@@ -207,6 +214,7 @@ function TwsPanel({
   async function handleFetchPrices(mode: FetchMode) {
     setLoading(mode === "snapshot" ? "snapshot" : "historical");
     setResult(null);
+    setResultBalances(null);
     setPriceProgress(null);
     let completed = 0;
     let errors = 0;
@@ -301,6 +309,7 @@ function TwsPanel({
   async function handleEnrich() {
     setLoading("enrich");
     setResult(null);
+    setResultBalances(null);
     try {
       const res = await fetch("/api/tws/enrich", {
         method: "POST",
@@ -326,6 +335,7 @@ function TwsPanel({
   async function handleSyncPortfolio() {
     setLoading("sync");
     setResult(null);
+    setResultBalances(null);
     setSyncStatus("Connecting...");
 
     try {
@@ -377,13 +387,13 @@ function TwsPanel({
               if (d.pricesSaved > 0) {
                 parts.push(`${d.pricesSaved} prices`);
               }
-              if (d.netLiquidation != null) {
-                parts.push(`NLV $${Math.round(d.netLiquidation).toLocaleString()}`);
-              }
-              if (d.cashBalance != null) {
-                parts.push(`Cash $${Math.round(d.cashBalance).toLocaleString()}`);
-              }
               setResult(parts.join(" · "));
+              if (d.netLiquidation != null || d.cashBalance != null) {
+                setResultBalances({
+                  netLiquidation: d.netLiquidation ?? null,
+                  cashBalance: d.cashBalance ?? null,
+                });
+              }
             }
 
             if (parsed.error) {
@@ -701,6 +711,18 @@ function TwsPanel({
             }`}
           >
             {result}
+            {resultBalances?.netLiquidation != null && (
+              <>
+                {" · NLV "}
+                <Money value={Math.round(resultBalances.netLiquidation)} />
+              </>
+            )}
+            {resultBalances?.cashBalance != null && (
+              <>
+                {" · Cash "}
+                <Money value={Math.round(resultBalances.cashBalance)} />
+              </>
+            )}
           </p>
         )}
       </div>

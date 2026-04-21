@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { PrivateText } from "@/lib/privacy/components";
 
 interface Strategy {
   type: string;
@@ -64,13 +65,21 @@ export function OptionsStrategies() {
               <div>
                 <p className="text-[10px] text-ink-faint uppercase">Max Profit</p>
                 <p className="text-xs font-mono text-up">
-                  {s.maxProfit != null ? formatDollar(s.maxProfit) : "Unlimited"}
+                  {s.maxProfit != null ? (
+                    <PrivateText>{formatDollar(s.maxProfit)}</PrivateText>
+                  ) : (
+                    "Unlimited"
+                  )}
                 </p>
               </div>
               <div>
                 <p className="text-[10px] text-ink-faint uppercase">Max Loss</p>
                 <p className="text-xs font-mono text-down">
-                  {s.maxLoss != null ? formatDollar(s.maxLoss) : "Unlimited"}
+                  {s.maxLoss != null ? (
+                    <PrivateText>{formatDollar(s.maxLoss)}</PrivateText>
+                  ) : (
+                    "Unlimited"
+                  )}
                 </p>
               </div>
               <div>

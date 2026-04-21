@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { OhlcvBar } from "@/lib/tws/types";
 import { computeSMA, computeEMA } from "@/lib/chart/indicators";
+import { Money, Count } from "@/lib/privacy/components";
+import { usePrivacy } from "@/lib/privacy/context";
 
 // LightweightCharts types imported dynamically to avoid SSR issues
 type IChartApi = import("lightweight-charts").IChartApi;
@@ -128,6 +130,10 @@ export function SecurityChart({
   const currentBarsRef = useRef<OhlcvBar[]>([]);
   const currentTransactionsRef = useRef<TransactionMarker[]>([]);
 
+  const { isPrivate } = usePrivacy();
+  const isPrivateRef = useRef(isPrivate);
+  isPrivateRef.current = isPrivate;
+
   const fetchChartData = useCallback(
     async (duration: string, refresh = false, barSizeOverride?: string) => {
       try {
@@ -181,6 +187,12 @@ export function SecurityChart({
       if (disposed || !chartContainerRef.current) return;
 
       chart = lc.createChart(chartContainerRef.current, {
+        localization: {
+          priceFormatter: (p: number) =>
+            isPrivateRef.current
+              ? "\u2022\u2022\u2022"
+              : `$${p.toFixed(2)}`,
+        },
         layout: {
           background: { color: C.background },
           textColor: C.text,
@@ -220,7 +232,16 @@ export function SecurityChart({
       });
 
       volumeSeries = chart.addSeries(lc.HistogramSeries, {
-        priceFormat: { type: "volume" },
+        priceFormat: {
+          type: "custom",
+          minMove: 1,
+          formatter: (v: number) => {
+            if (isPrivateRef.current) return "\u2022\u2022\u2022";
+            if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+            if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
+            return `${v}`;
+          },
+        },
         priceScaleId: "volume",
       });
       chart.priceScale("volume").applyOptions({
@@ -271,7 +292,7 @@ export function SecurityChart({
         const defaultDuration = DURATIONS.find((d) => d.label === "1Y")!;
         const visibleBars = filterBarsByWindow(data.bars, defaultDuration.months);
         applyBarsToChart(lc, candleSeries, volumeSeries, visibleBars);
-        markersPluginRef.current = updateMarkers(lc, candleSeries, data.transactions ?? [], true, null);
+        markersPluginRef.current = updateMarkers(lc, candleSeries, data.transactions ?? [], true, null, isPrivateRef.current);
         chart.timeScale().fitContent();
       }
     }
@@ -317,9 +338,51 @@ export function SecurityChart({
 
     (async () => {
       const lc = await import("lightweight-charts");
-      markersPluginRef.current = updateMarkers(lc, candleSeriesRef.current!, currentTransactionsRef.current, showMarkers, markersPluginRef.current);
+      markersPluginRef.current = updateMarkers(lc, candleSeriesRef.current!, currentTransactionsRef.current, showMarkers, markersPluginRef.current, isPrivateRef.current);
     })();
   }, [showMarkers]);
+
+  // Privacy toggle: force chart to re-read its formatters (axis labels) + re-render markers.
+  // LightweightCharts only calls priceFormatter/volume formatter when data changes, so we
+  // nudge it with applyOptions and explicitly re-render the marker text.
+  useEffect(() => {
+    const chart = chartRef.current;
+    const volume = volumeSeriesRef.current;
+    if (!chart || !volume) return;
+
+    chart.applyOptions({
+      localization: {
+        priceFormatter: (p: number) =>
+          isPrivate ? "\u2022\u2022\u2022" : `$${p.toFixed(2)}`,
+      },
+    });
+    volume.applyOptions({
+      priceFormat: {
+        type: "custom",
+        minMove: 1,
+        formatter: (v: number) => {
+          if (isPrivate) return "\u2022\u2022\u2022";
+          if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+          if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
+          return `${v}`;
+        },
+      },
+    });
+
+    if (candleSeriesRef.current) {
+      (async () => {
+        const lc = await import("lightweight-charts");
+        markersPluginRef.current = updateMarkers(
+          lc,
+          candleSeriesRef.current!,
+          currentTransactionsRef.current,
+          showMarkers,
+          markersPluginRef.current,
+          isPrivate,
+        );
+      })();
+    }
+  }, [isPrivate, showMarkers]);
 
   // Render active security_levels as horizontal price lines on the chart.
   // Polls on mount + every 30s so manual edits in LevelsPanel show up without a page reload.
@@ -437,7 +500,7 @@ export function SecurityChart({
                   cutoff.setMonth(cutoff.getMonth() - selected.months);
                   return t.date >= cutoff.toISOString().slice(0, 10);
                 });
-            markersPluginRef.current = updateMarkers(lc, candleSeriesRef.current!, filteredTxns, true, markersPluginRef.current);
+            markersPluginRef.current = updateMarkers(lc, candleSeriesRef.current!, filteredTxns, true, markersPluginRef.current, isPrivateRef.current);
           }
           chartRef.current?.timeScale().fitContent();
         }
@@ -485,7 +548,7 @@ export function SecurityChart({
           if (candleSeriesRef.current && volumeSeriesRef.current) {
             applyBarsToChart(lc, candleSeriesRef.current, volumeSeriesRef.current, visibleBars);
             updateIndicators(lc, chartRef.current!, data.bars, activeIndicators, indicatorMapRef.current, visibleStart);
-            if (showMarkers) markersPluginRef.current = updateMarkers(lc, candleSeriesRef.current!, data.transactions ?? [], true, markersPluginRef.current);
+            if (showMarkers) markersPluginRef.current = updateMarkers(lc, candleSeriesRef.current!, data.transactions ?? [], true, markersPluginRef.current, isPrivateRef.current);
             chartRef.current?.timeScale().fitContent();
           }
         }
@@ -519,7 +582,7 @@ export function SecurityChart({
         if (candleSeriesRef.current && volumeSeriesRef.current) {
           applyBarsToChart(lc, candleSeriesRef.current, volumeSeriesRef.current, visibleBars);
           updateIndicators(lc, chartRef.current!, data.bars, activeIndicators, indicatorMapRef.current, visibleStart);
-          if (showMarkers) markersPluginRef.current = updateMarkers(lc, candleSeriesRef.current!, data.transactions ?? [], true, markersPluginRef.current);
+          if (showMarkers) markersPluginRef.current = updateMarkers(lc, candleSeriesRef.current!, data.transactions ?? [], true, markersPluginRef.current, isPrivateRef.current);
           chartRef.current?.timeScale().fitContent();
         }
       });
@@ -547,33 +610,37 @@ export function SecurityChart({
                   Close + optional delta-to-open + active indicators always show. */}
               <span className="hidden md:inline-flex items-center gap-1">
                 <span className="text-ink-faint">O</span>
-                <span className="text-ink">{legend.open.toFixed(2)}</span>
+                <Money value={legend.open} precise className="text-ink" />
               </span>
               <span className="hidden md:inline-flex items-center gap-1">
                 <span className="text-ink-faint">H</span>
-                <span className="text-ink">{legend.high.toFixed(2)}</span>
+                <Money value={legend.high} precise className="text-ink" />
               </span>
               <span className="hidden md:inline-flex items-center gap-1">
                 <span className="text-ink-faint">L</span>
-                <span className="text-ink">{legend.low.toFixed(2)}</span>
+                <Money value={legend.low} precise className="text-ink" />
               </span>
               <span className="inline-flex items-center gap-1">
                 <span className="text-ink-faint">C</span>
-                <span className={legend.close >= legend.open ? "text-up" : "text-down"}>
-                  {legend.close.toFixed(2)}
-                </span>
+                <Money
+                  value={legend.close}
+                  precise
+                  className={legend.close >= legend.open ? "text-up" : "text-down"}
+                />
               </span>
               {/* Mobile-only: signed delta from open (replaces O/H/L for context). */}
               <span className="inline-flex md:hidden items-baseline">
-                <span className={legend.close >= legend.open ? "text-up" : "text-down"}>
-                  {legend.close - legend.open >= 0 ? "+" : ""}
-                  {(legend.close - legend.open).toFixed(2)}
-                </span>
+                <Money
+                  value={legend.close - legend.open}
+                  precise
+                  signed
+                  className={legend.close >= legend.open ? "text-up" : "text-down"}
+                />
               </span>
               {legend.volume != null && (
                 <span className="hidden md:inline-flex items-center gap-1">
                   <span className="text-ink-faint">Vol</span>
-                  <span className="text-ink">{legend.volume.toLocaleString()}</span>
+                  <Count value={legend.volume} className="text-ink" />
                 </span>
               )}
               {legend.indicators && Object.entries(legend.indicators).map(([key, value]) => {
@@ -582,7 +649,7 @@ export function SecurityChart({
                 return (
                   <span key={key} className="flex items-baseline gap-1">
                     <span className="text-ink-faint" style={{ color }}>{label}</span>
-                    <span className="text-ink">{value.toFixed(2)}</span>
+                    <Money value={value} precise className="text-ink" />
                   </span>
                 );
               })}
@@ -817,6 +884,11 @@ function updateIndicators(
   }
 }
 
+function markerText(t: TransactionMarker, privateMode: boolean): string {
+  if (privateMode) return t.type;
+  return `${t.type}${t.quantity != null ? ` ${t.quantity}` : ""}`;
+}
+
 function updateMarkers(
   lc: LightweightChartsModule,
   candleSeries: ISeriesApi<"Candlestick">,
@@ -824,6 +896,7 @@ function updateMarkers(
   show: boolean,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   existing: any,
+  privateMode = false,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): any {
   // Remove old markers
@@ -842,7 +915,7 @@ function updateMarkers(
     position: isBuy(t.type) ? ("belowBar" as const) : ("aboveBar" as const),
     shape: isBuy(t.type) ? ("arrowUp" as const) : ("arrowDown" as const),
     color: isBuy(t.type) ? C.upColor : C.downColor,
-    text: `${t.type}${t.quantity != null ? ` ${t.quantity}` : ""}`,
+    text: markerText(t, privateMode),
     size: 1,
   }));
 

@@ -1,24 +1,7 @@
 import type { HoldingWithSecurity } from "@/lib/queries/holdings";
 import { ScrollFade } from "./ScrollFade";
 import { SymbolLink } from "./SymbolLink";
-
-function formatCurrency(value: number | null): string {
-  if (value === null) return "\u2014";
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-  }).format(value);
-}
-
-function formatQuantity(value: number): string {
-  if (Number.isInteger(value))
-    return new Intl.NumberFormat("en-US").format(value);
-  return new Intl.NumberFormat("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 4,
-  }).format(value);
-}
+import { Money, Shares } from "@/lib/privacy/components";
 
 function formatOptionDescription(holding: HoldingWithSecurity): string {
   if (holding.security_type?.toLowerCase() !== "option") return "";
@@ -81,47 +64,50 @@ export function HoldingsTable({
             </tr>
           </thead>
           <tbody>
-            {holdings.map((holding) => (
-              <tr
-                key={holding.id}
-                className="border-b border-edge last:border-0 hover:bg-panel/50 transition-colors"
-              >
-                <td className="px-4 py-3 font-mono font-medium text-ink">
-                  {holding.security_type?.toLowerCase() === "option" ? (
-                    <>
-                      <span>{holding.underlying_symbol ?? holding.symbol}</span>
-                      <span className="ml-1.5 text-xs text-ink-faint font-normal">
-                        {formatOptionDescription(holding)}
-                      </span>
-                    </>
-                  ) : (
-                    <SymbolLink
-                      securityId={holding.security_id}
-                      symbol={holding.symbol}
-                    />
-                  )}
-                </td>
-                <td className="hidden md:table-cell px-4 py-3 text-ink-dim truncate max-w-[200px]">
-                  {holding.security_name ?? "\u2014"}
-                </td>
-                <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
-                  {formatQuantity(holding.quantity)}
-                  <span className="ml-1 text-xs text-ink-faint font-normal">
-                    {quantityLabel(holding)}
-                  </span>
-                </td>
-                <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
-                  {holding.cost_basis != null ? (
-                    formatCurrency(holding.cost_basis)
-                  ) : (
-                    <span title="Import a Vanguard cost basis CSV to populate" className="cursor-help">—</span>
-                  )}
-                </td>
-                <td className="hidden md:table-cell px-4 py-3 text-ink-faint font-mono text-xs">
-                  {holding.as_of_date}
-                </td>
-              </tr>
-            ))}
+            {holdings.map((holding) => {
+              const qtyDigits = Number.isInteger(holding.quantity) ? 0 : 4;
+              return (
+                <tr
+                  key={holding.id}
+                  className="border-b border-edge last:border-0 hover:bg-panel/50 transition-colors"
+                >
+                  <td className="px-4 py-3 font-mono font-medium text-ink">
+                    {holding.security_type?.toLowerCase() === "option" ? (
+                      <>
+                        <span>{holding.underlying_symbol ?? holding.symbol}</span>
+                        <span className="ml-1.5 text-xs text-ink-faint font-normal">
+                          {formatOptionDescription(holding)}
+                        </span>
+                      </>
+                    ) : (
+                      <SymbolLink
+                        securityId={holding.security_id}
+                        symbol={holding.symbol}
+                      />
+                    )}
+                  </td>
+                  <td className="hidden md:table-cell px-4 py-3 text-ink-dim truncate max-w-[200px]">
+                    {holding.security_name ?? "\u2014"}
+                  </td>
+                  <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
+                    <Shares value={holding.quantity} digits={qtyDigits} />
+                    <span className="ml-1 text-xs text-ink-faint font-normal">
+                      {quantityLabel(holding)}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
+                    {holding.cost_basis != null ? (
+                      <Money value={holding.cost_basis} precise />
+                    ) : (
+                      <span title="Import a Vanguard cost basis CSV to populate" className="cursor-help">—</span>
+                    )}
+                  </td>
+                  <td className="hidden md:table-cell px-4 py-3 text-ink-faint font-mono text-xs">
+                    {holding.as_of_date}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
         </ScrollFade>

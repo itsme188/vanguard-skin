@@ -6,15 +6,7 @@ import type { ReconciliationCheckpoint } from "@/lib/queries/reconciliation";
 import { useToast } from "./Toast";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
-
-function formatCurrency(value: number | null): string {
-  if (value === null) return "\u2014";
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-  }).format(value);
-}
+import { Money } from "@/lib/privacy/components";
 
 interface Account {
   id: number;
@@ -228,10 +220,10 @@ export function ReconciliationTable({
                     <td className="px-4 py-3 text-ink-dim text-xs">{cp.account_name}</td>
                     <td className="px-4 py-3 font-mono text-xs text-ink-faint">{cp.checkpoint_date}</td>
                     <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
-                      {formatCurrency(cp.statement_value)}
+                      <Money value={cp.statement_value} precise />
                     </td>
                     <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
-                      {formatCurrency(cp.computed_value)}
+                      <Money value={cp.computed_value} precise />
                     </td>
                     <td className="px-4 py-3 text-right">
                       {cp.difference !== null ? (
@@ -245,8 +237,7 @@ export function ReconciliationTable({
                           }`}
                         >
                           <span aria-hidden="true">{isMatch ? "\u2713" : isClose ? "~" : "!"}</span>
-                          {cp.difference >= 0 ? "+" : ""}
-                          {formatCurrency(cp.difference)}
+                          <Money value={cp.difference} precise signed />
                         </span>
                       ) : (
                         <span className="text-ink-faint text-xs">&mdash;</span>

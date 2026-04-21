@@ -5,6 +5,7 @@ import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { SymbolLink } from "../components/SymbolLink";
 import { ScrollFade } from "../components/ScrollFade";
 import { EmptyState } from "../components/EmptyState";
+import { Money, Pct, Shares } from "@/lib/privacy/components";
 
 interface HoldingRow {
   account_id: number;
@@ -22,61 +23,23 @@ interface HoldingRow {
   unrealized_gain: number | null;
 }
 
-function formatCurrency(value: number | null): string {
-  if (value === null) return "\u2014";
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-  }).format(value);
-}
-
-function formatQuantity(value: number): string {
-  if (Number.isInteger(value))
-    return new Intl.NumberFormat("en-US").format(value);
-  return new Intl.NumberFormat("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 4,
-  }).format(value);
-}
-
-function formatPercent(value: number | null): string {
-  if (value === null) return "\u2014";
-  return new Intl.NumberFormat("en-US", {
-    style: "percent",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(value);
-}
-
 function GainCell({ value }: { value: number | null }) {
   if (value === null) return <span className="text-ink-faint">&mdash;</span>;
   const isPositive = value >= 0;
-  return (
-    <span
-      className={`font-mono tabular-nums ${
-        value === 0 ? "text-ink-dim" : isPositive ? "text-up" : "text-down"
-      }`}
-    >
-      {isPositive && value !== 0 ? "+" : ""}
-      {formatCurrency(value)}
-    </span>
-  );
+  const className = `font-mono tabular-nums ${
+    value === 0 ? "text-ink-dim" : isPositive ? "text-up" : "text-down"
+  }`;
+  return <Money value={value} precise signed className={className} />;
 }
 
 function GainPercentCell({ value }: { value: number | null }) {
   if (value === null) return <span className="text-ink-faint">&mdash;</span>;
   const isPositive = value >= 0;
-  return (
-    <span
-      className={`font-mono tabular-nums ${
-        value === 0 ? "text-ink-dim" : isPositive ? "text-up" : "text-down"
-      }`}
-    >
-      {isPositive && value !== 0 ? "+" : ""}
-      {formatPercent(value)}
-    </span>
-  );
+  const className = `font-mono tabular-nums ${
+    value === 0 ? "text-ink-dim" : isPositive ? "text-up" : "text-down"
+  }`;
+  // value is a decimal (e.g. 0.123 means 12.3%)
+  return <Pct value={value * 100} digits={2} signed className={className} />;
 }
 
 export default async function HoldingsPage() {
@@ -222,6 +185,7 @@ export default async function HoldingsPage() {
                   h.current_value !== null && totalValue > 0
                     ? h.current_value / totalValue
                     : null;
+                const qtyDigits = Number.isInteger(h.quantity) ? 0 : 4;
 
                 return (
                   <tr
@@ -241,13 +205,13 @@ export default async function HoldingsPage() {
                       {h.account_name}
                     </td>
                     <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
-                      {formatQuantity(h.quantity)}
+                      <Shares value={h.quantity} digits={qtyDigits} />
                     </td>
                     <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
-                      {formatCurrency(h.cost_basis)}
+                      <Money value={h.cost_basis} precise />
                     </td>
                     <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
-                      {formatCurrency(h.current_value)}
+                      <Money value={h.current_value} precise />
                     </td>
                     <td className="px-4 py-3 text-right">
                       <GainCell value={h.unrealized_gain} />
@@ -256,7 +220,11 @@ export default async function HoldingsPage() {
                       <GainPercentCell value={gainPct} />
                     </td>
                     <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
-                      {allocPct !== null ? formatPercent(allocPct) : "\u2014"}
+                      {allocPct !== null ? (
+                        <Pct value={allocPct * 100} digits={2} />
+                      ) : (
+                        "\u2014"
+                      )}
                     </td>
                   </tr>
                 );
@@ -270,14 +238,14 @@ export default async function HoldingsPage() {
                 <td className="px-4 py-3 text-right font-mono tabular-nums font-medium text-ink-dim">
                   {missingCostCount > 0 ? (
                     <span title={`${missingCostCount} position${missingCostCount > 1 ? "s" : ""} missing cost basis data`} className="cursor-help">
-                      ~{formatCurrency(totalCostBasis)}
+                      ~<Money value={totalCostBasis} precise />
                     </span>
                   ) : (
-                    formatCurrency(totalCostBasis)
+                    <Money value={totalCostBasis} precise />
                   )}
                 </td>
                 <td className="px-4 py-3 text-right font-mono tabular-nums font-medium text-ink">
-                  {formatCurrency(totalValue)}
+                  <Money value={totalValue} precise />
                 </td>
                 <td className="px-4 py-3 text-right">
                   <GainCell value={totalGain} />

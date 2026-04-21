@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import type { LevelAlert, AlertResponse } from "@/lib/types";
+import { Money, Shares } from "@/lib/privacy/components";
 import { useToast } from "../components/Toast";
 
 interface EnrichedAlert extends LevelAlert {
@@ -330,7 +331,7 @@ function AlertRow({
             )}
             {alert.level && (
               <span className="text-[11px] text-ink-dim">
-                {alert.level.level_type.replace("_", " ")} @ ${alert.level.price.toFixed(2)}
+                {alert.level.level_type.replace("_", " ")} @ <Money value={alert.level.price} precise />
                 {alert.level.price_source && alert.level.price_source !== "static" && (
                   <span
                     className="ml-1.5 inline-block px-1 py-0.5 rounded text-[9px] bg-raised text-ink-faint uppercase tracking-wider"
@@ -342,7 +343,7 @@ function AlertRow({
               </span>
             )}
             <span className="text-[11px] text-ink-faint">
-              hit ${alert.triggered_price.toFixed(2)}
+              hit <Money value={alert.triggered_price} precise />
             </span>
             <span className="text-[10px] text-ink-faint">{when}</span>
           </div>
@@ -360,9 +361,12 @@ function AlertRow({
               {context.held && context.held.length > 0 && (
                 <span>
                   Holding:{" "}
-                  {context.held
-                    .map((h) => `${h.quantity.toFixed(0)} in ${h.account}`)
-                    .join(", ")}
+                  {context.held.map((h, i) => (
+                    <span key={`${h.account}-${i}`}>
+                      {i > 0 && ", "}
+                      <Shares value={h.quantity} /> in {h.account}
+                    </span>
+                  ))}
                 </span>
               )}
               {context.held && context.held.length > 0 && context.onWatchlist && " · "}

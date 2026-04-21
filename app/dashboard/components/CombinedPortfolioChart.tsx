@@ -17,6 +17,7 @@ import type {
   AccountSummary,
   PortfolioChartPoint,
 } from "@/lib/queries/dashboard";
+import { Pct, usePrivateFormatter } from "@/lib/privacy/components";
 
 const ACCOUNT_COLORS: Record<string, string> = {
   "Vanguard Taxable": "#C9A44E",
@@ -243,11 +244,11 @@ function BenchmarkStatsBar({ stats, benchLabel }: { stats: BenchmarkStats; bench
     <div className="flex items-center gap-4 text-xs font-mono">
       <span className="text-ink-faint">vs {benchLabel}:</span>
       <span className={stats.alpha >= 0 ? "text-up" : "text-down"}>
-        Alpha {stats.alpha >= 0 ? "+" : ""}{(stats.alpha * 100).toFixed(2)}%
+        Alpha <Pct value={stats.alpha * 100} digits={2} signed />
       </span>
       {stats.trackingError != null && (
         <span className="text-ink-faint">
-          TE {(stats.trackingError * 100).toFixed(1)}%
+          TE <Pct value={stats.trackingError * 100} digits={1} />
         </span>
       )}
       {stats.informationRatio != null && (
@@ -295,6 +296,8 @@ export function CombinedPortfolioChart({
   const [availableBenchmarks, setAvailableBenchmarks] = useState<string[]>([]);
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const pctTickFormatter = usePrivateFormatter(formatPercent);
+  const currencyTickFormatter = usePrivateFormatter(formatCurrency);
 
   const accountNames = accounts.map((a) => a.name);
   const hasDaily = (dailyData?.length ?? 0) > 0;
@@ -621,7 +624,7 @@ export function CombinedPortfolioChart({
                 minTickGap={40}
               />
               <YAxis
-                tickFormatter={formatPercent}
+                tickFormatter={pctTickFormatter}
                 stroke="#4E5668"
                 tick={{ fontSize: 11 }}
                 axisLine={false}
@@ -639,7 +642,7 @@ export function CombinedPortfolioChart({
                 labelFormatter={(ts) => formatFullDateFromTs(Number(ts))}
                 formatter={(value, name) => {
                   if (String(name) === "_ts") return [null, null];
-                  return [formatPercent(Number(value)), String(name)];
+                  return [pctTickFormatter(Number(value)), String(name)];
                 }}
               />
               <Line
@@ -694,7 +697,7 @@ export function CombinedPortfolioChart({
                 minTickGap={40}
               />
               <YAxis
-                tickFormatter={formatCurrency}
+                tickFormatter={currencyTickFormatter}
                 stroke="#4E5668"
                 tick={{ fontSize: 11 }}
                 axisLine={false}
@@ -712,7 +715,7 @@ export function CombinedPortfolioChart({
                 labelFormatter={(ts) => formatFullDateFromTs(Number(ts))}
                 formatter={(value, name) => {
                   if (String(name) === "_ts") return [null, null];
-                  return [formatCurrency(Number(value)), String(name)];
+                  return [currencyTickFormatter(Number(value)), String(name)];
                 }}
               />
               <Line

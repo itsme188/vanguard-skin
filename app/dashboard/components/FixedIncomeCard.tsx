@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, type ReactNode } from "react";
+import { Pct, PrivateText } from "@/lib/privacy/components";
 
 interface BondHolding {
   symbol: string;
@@ -54,8 +55,12 @@ export function FixedIncomeCard({ scope }: { scope?: string }) {
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <MetricCell
           label="Bond Allocation"
-          value={`${data.bondAllocationPct.toFixed(1)}%`}
-          subtext={`$${(data.totalBondValue / 1000).toFixed(0)}K of $${(data.portfolioValue / 1000).toFixed(0)}K`}
+          value={<Pct value={data.bondAllocationPct} digits={1} />}
+          subtext={
+            <PrivateText>
+              {`$${(data.totalBondValue / 1000).toFixed(0)}K of $${(data.portfolioValue / 1000).toFixed(0)}K`}
+            </PrivateText>
+          }
         />
         <MetricCell
           label="Weighted Avg Duration"
@@ -113,7 +118,7 @@ export function FixedIncomeCard({ scope }: { scope?: string }) {
                   style={{ backgroundColor: creditColor(bucket.rating) }}
                 />
                 <span className="text-ink-dim">
-                  {bucket.rating}: <span className="font-mono text-ink">{(bucket.weight * 100).toFixed(0)}%</span>
+                  {bucket.rating}: <Pct value={bucket.weight * 100} digits={0} className="font-mono text-ink" />
                 </span>
               </div>
             ))}
@@ -143,7 +148,7 @@ export function FixedIncomeCard({ scope }: { scope?: string }) {
                   )}
                 </td>
                 <td className="py-1.5 pr-3 text-right font-mono text-ink tabular-nums">
-                  ${(bond.marketValue / 1000).toFixed(0)}K
+                  <PrivateText>{`$${(bond.marketValue / 1000).toFixed(0)}K`}</PrivateText>
                 </td>
                 <td className="py-1.5 pr-3 text-right font-mono text-ink-dim tabular-nums">
                   {bond.durationYears != null ? `${bond.durationYears.toFixed(1)} yr` : "—"}
@@ -181,8 +186,8 @@ function MetricCell({
   subtext,
 }: {
   label: string;
-  value: string;
-  subtext: string;
+  value: ReactNode;
+  subtext: ReactNode;
 }) {
   return (
     <div>

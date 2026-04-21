@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, type ReactNode } from "react";
 import {
   AreaChart,
   Area,
@@ -13,6 +13,7 @@ import {
   Cell,
 } from "recharts";
 import type { PortfolioRiskMetrics, PositionWeight } from "@/lib/compute/risk";
+import { Money, Pct, PrivateText, usePrivateFormatter } from "@/lib/privacy/components";
 
 // ─── Formatters ─────────────────────────────────────────────────
 
@@ -49,8 +50,8 @@ function MetricCard({
   color,
 }: {
   label: string;
-  value: string;
-  sublabel?: string;
+  value: ReactNode;
+  sublabel?: ReactNode;
   color?: "up" | "down" | "neutral";
 }) {
   const colorClass =
@@ -76,6 +77,8 @@ export function RiskMetrics({ scope }: { scope?: string }) {
   const [metrics, setMetrics] = useState<PortfolioRiskMetrics | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const concPctTickFormatter = usePrivateFormatter((v: number) => `${(v * 100).toFixed(0)}%`);
+  const weightTooltipFormatter = usePrivateFormatter((v: number | string) => formatPercent(Number(v)));
 
   useEffect(() => {
     setLoading(true);
@@ -144,7 +147,13 @@ export function RiskMetrics({ scope }: { scope?: string }) {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <MetricCard
           label="Max Drawdown"
-          value={metrics.maxDrawdown ? `-${formatPercent(metrics.maxDrawdown.percent)}` : "\u2014"}
+          value={
+            metrics.maxDrawdown ? (
+              <Pct value={-metrics.maxDrawdown.percent * 100} digits={2} signed />
+            ) : (
+              "\u2014"
+            )
+          }
           sublabel={
             metrics.maxDrawdown
               ? `${formatDate(metrics.maxDrawdown.peakDate)} \u2192 ${formatDate(metrics.maxDrawdown.troughDate)}`
@@ -154,17 +163,28 @@ export function RiskMetrics({ scope }: { scope?: string }) {
         />
         <MetricCard
           label="Current Drawdown"
-          value={metrics.currentDrawdown ? `-${formatPercent(metrics.currentDrawdown.percent)}` : "At High"}
+          value={
+            metrics.currentDrawdown ? (
+              <Pct value={-metrics.currentDrawdown.percent * 100} digits={2} signed />
+            ) : (
+              "At High"
+            )
+          }
           sublabel={
-            metrics.currentDrawdown
-              ? `Peak: ${formatMoney(metrics.currentDrawdown.peakValue)} on ${formatDate(metrics.currentDrawdown.peakDate)}`
-              : "Portfolio at all-time high"
+            metrics.currentDrawdown ? (
+              <>
+                Peak: <PrivateText>{formatMoney(metrics.currentDrawdown.peakValue)}</PrivateText> on{" "}
+                {formatDate(metrics.currentDrawdown.peakDate)}
+              </>
+            ) : (
+              "Portfolio at all-time high"
+            )
           }
           color={metrics.currentDrawdown ? "down" : "up"}
         />
         <MetricCard
           label="Volatility"
-          value={metrics.volatility != null ? formatPercent(metrics.volatility) : "\u2014"}
+          value={<Pct value={metrics.volatility != null ? metrics.volatility * 100 : null} digits={2} />}
           sublabel="Annualized"
           color="neutral"
         />
@@ -192,13 +212,17 @@ export function RiskMetrics({ scope }: { scope?: string }) {
             <div className="flex items-center gap-3 text-xs text-ink-faint">
               <span>
                 Herfindahl:{" "}
-                <span className="font-mono text-ink">
+                <PrivateText className="font-mono text-ink">
                   {metrics.herfindahl != null ? metrics.herfindahl.toFixed(3) : "\u2014"}
-                </span>
+                </PrivateText>
               </span>
               <span>
                 Top-5:{" "}
-                <span className="font-mono text-ink">{formatPercent(metrics.top5Concentration)}</span>
+                <Pct
+                  value={metrics.top5Concentration != null ? metrics.top5Concentration * 100 : null}
+                  digits={2}
+                  className="font-mono text-ink"
+                />
               </span>
             </div>
           </div>
@@ -213,7 +237,7 @@ export function RiskMetrics({ scope }: { scope?: string }) {
                 <XAxis
                   type="number"
                   domain={[0, Math.ceil(concentrationData[0]?.weight * 100 + 5) / 100]}
-                  tickFormatter={(v: number) => `${(v * 100).toFixed(0)}%`}
+                  tickFormatter={concPctTickFormatter}
                   tick={{ fill: "#64748B", fontSize: 10 }}
                   axisLine={false}
                   tickLine={false}
@@ -227,7 +251,7 @@ export function RiskMetrics({ scope }: { scope?: string }) {
                   tickLine={false}
                 />
                 <Tooltip
-                  formatter={(value) => [formatPercent(Number(value)), "Weight"]}
+                  formatter={(value) => [weightTooltipFormatter(value as number | string), "Weight"]}
                   contentStyle={{
                     background: "#0F1218",
                     border: "1px solid #1E293B",
