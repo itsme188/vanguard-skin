@@ -9,8 +9,9 @@ import type {
   LevelTimeframe,
   LevelPriceSource,
 } from "@/lib/types";
+import { useToast } from "./Toast";
 
-type EnrichedLevel = SecurityLevel & { effective_price: number };
+type EnrichedLevel = SecurityLevel & { effective_price: number | null };
 
 const PRICE_SOURCE_OPTIONS: Array<{ value: LevelPriceSource; label: string }> = [
   { value: "static", label: "Specific price" },
@@ -24,6 +25,16 @@ const PRICE_SOURCE_OPTIONS: Array<{ value: LevelPriceSource; label: string }> = 
 
 function priceSourceLabel(src: LevelPriceSource): string {
   return PRICE_SOURCE_OPTIONS.find((o) => o.value === src)?.label ?? src;
+}
+
+function triggeredToday(triggeredAt: string | null): boolean {
+  if (!triggeredAt) return false;
+  // Compare local dates (user's tz). The scanner dedup uses SQLite's date('now')
+  // which is UTC, but this is a UI hint — good-enough tolerance.
+  const t = new Date(triggeredAt);
+  if (isNaN(t.getTime())) return false;
+  const now = new Date();
+  return t.toDateString() === now.toDateString();
 }
 
 const LEVEL_TYPE_OPTIONS: LevelType[] = [
@@ -62,6 +73,7 @@ export function LevelsPanel({
   symbol: string;
   currentPrice: number | null;
 }) {
+  const { toast } = useToast();
   const [levels, setLevels] = useState<EnrichedLevel[]>([]);
   const [loading, setLoading] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -79,6 +91,7 @@ export function LevelsPanel({
   const [sourceAuthor, setSourceAuthor] = useState("Me");
   const [thesis, setThesis] = useState("");
   const [timeframe, setTimeframe] = useState<LevelTimeframe | "">("");
+  const [expiresAt, setExpiresAt] = useState("");
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -95,6 +108,15 @@ export function LevelsPanel({
 
   useEffect(() => {
     refresh();
+  }, [refresh]);
+
+  // Refetch when an alert fires elsewhere (AlertsBell's poll detects it).
+  // Without this the panel can show a level as active for up to 30s after it
+  // triggered, even though is_active flipped to 0 in the DB.
+  useEffect(() => {
+    const onAlertFired = () => refresh();
+    window.addEventListener("alert-fired", onAlertFired);
+    return () => window.removeEventListener("alert-fired", onAlertFired);
   }, [refresh]);
 
   // Load known research sources once so the Source/Author field can offer
@@ -122,7 +144,7 @@ export function LevelsPanel({
 
     setLoading(true);
     try {
-      await fetch("/api/levels", {
+      const res = await fetch("/api/levels", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -136,14 +158,22 @@ export function LevelsPanel({
           source_author: sourceAuthor || null,
           thesis: thesis || null,
           timeframe: timeframe || null,
+          expires_at: expiresAt || null,
         }),
       });
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        toast(`Failed to add level: ${json.error ?? "unknown"}`, "error");
+        return;
+      }
+      toast(`${symbol} ${levelType} level added`, "success");
       // Reset form — keep "Me" as the default author after submit so a quick
       // series of self-originated entries doesn't need re-typing.
       setPrice("");
       setThesis("");
       setSourceAuthor("Me");
       setPriceSource("static");
+      setExpiresAt("");
       setAdding(false);
       await refresh();
     } finally {
@@ -152,26 +182,32 @@ export function LevelsPanel({
   }
 
   async function handleDeactivate(id: number) {
-    await fetch("/api/levels", {
+    const res = await fetch("/api/levels", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id, action: "deactivate" }),
     });
+    if (res.ok) toast("Level paused", "info");
+    else toast("Failed to pause level", "error");
     refresh();
   }
 
   async function handleReactivate(id: number) {
-    await fetch("/api/levels", {
+    const res = await fetch("/api/levels", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id, action: "reactivate" }),
     });
+    if (res.ok) toast("Level reactivated", "success");
+    else toast("Failed to reactivate level", "error");
     refresh();
   }
 
   async function handleDelete(id: number) {
     if (!confirm("Delete this level permanently?")) return;
-    await fetch(`/api/levels?id=${id}`, { method: "DELETE" });
+    const res = await fetch(`/api/levels?id=${id}`, { method: "DELETE" });
+    if (res.ok) toast("Level deleted", "info");
+    else toast("Failed to delete level", "error");
     refresh();
   }
 
@@ -302,17 +338,24 @@ export function LevelsPanel({
                 <option value="month">Month</option>
               </select>
             </Field>
-            <div className="col-span-2">
-              <Field label="Thesis (why this level)">
-                <input
-                  type="text"
-                  value={thesis}
-                  onChange={(e) => setThesis(e.target.value)}
-                  placeholder="e.g. 50-day SMA held in March"
-                  className="w-full bg-canvas border border-edge rounded px-2 py-1 text-xs"
-                />
-              </Field>
-            </div>
+            <Field label="Expires (auto-deactivate)">
+              <input
+                type="date"
+                value={expiresAt}
+                onChange={(e) => setExpiresAt(e.target.value)}
+                className="w-full bg-canvas border border-edge rounded px-2 py-1 text-xs"
+                title="Optional. After this date the level is ignored by the scan. Separate from Timeframe, which is informational only."
+              />
+            </Field>
+            <Field label="Thesis (why this level)">
+              <input
+                type="text"
+                value={thesis}
+                onChange={(e) => setThesis(e.target.value)}
+                placeholder="e.g. 50-day SMA held in March"
+                className="w-full bg-canvas border border-edge rounded px-2 py-1 text-xs"
+              />
+            </Field>
           </div>
           <div className="flex justify-end">
             <button
@@ -350,9 +393,15 @@ export function LevelsPanel({
                       <span className="text-sm font-mono font-medium text-ink">
                         {priceSourceLabel(l.price_source)}
                       </span>
-                      <span className="text-[10px] text-ink-faint">
-                        ≈ ${l.effective_price.toFixed(2)}
-                      </span>
+                      {l.effective_price !== null ? (
+                        <span className="text-[10px] text-ink-faint">
+                          ≈ ${l.effective_price.toFixed(2)}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-amber-400" title="Not enough OHLCV history to compute this MA yet — the level won't fire until bars accumulate.">
+                          insufficient history
+                        </span>
+                      )}
                     </>
                   )}
                   {l.direction && (
@@ -368,6 +417,14 @@ export function LevelsPanel({
                   {l.is_active === 0 && l.triggered_at && (
                     <span className="text-[10px] text-gold">
                       triggered @ ${l.triggered_price?.toFixed(2)}
+                    </span>
+                  )}
+                  {triggeredToday(l.triggered_at) && (
+                    <span
+                      className="text-[10px] text-amber-400 uppercase"
+                      title="Already alerted today. Reactivating now would no-op — the dedup guard suppresses a same-day second alert. Reactivate tomorrow or after the price has moved off the level."
+                    >
+                      alerted today
                     </span>
                   )}
                   {l.is_active === 0 && !l.triggered_at && (
@@ -395,8 +452,13 @@ export function LevelsPanel({
                 ) : (
                   <button
                     onClick={() => handleReactivate(l.id)}
-                    className="text-[10px] text-emerald-400 hover:text-emerald-300"
-                    title="Reactivate"
+                    disabled={triggeredToday(l.triggered_at)}
+                    className="text-[10px] text-emerald-400 hover:text-emerald-300 disabled:text-ink-faint disabled:cursor-not-allowed disabled:hover:text-ink-faint"
+                    title={
+                      triggeredToday(l.triggered_at)
+                        ? "Already alerted today — reactivation is blocked until tomorrow to prevent duplicate alerts."
+                        : "Reactivate"
+                    }
                   >
                     Reactivate
                   </button>

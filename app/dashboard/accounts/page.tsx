@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+
 import { db } from "@/lib/db";
 import { getAllAccounts } from "@/lib/queries/accounts";
 import { getHoldingsByAccount } from "@/lib/queries/holdings";

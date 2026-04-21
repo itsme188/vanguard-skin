@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+
 import { db } from "@/lib/db";
 import { getSecurityDetail } from "@/lib/queries/security-detail";
 import { isOnWatchlist, getWatchlistItem } from "@/lib/queries/watchlist";

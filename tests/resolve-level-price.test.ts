@@ -104,7 +104,7 @@ describe("resolveLevelPrice", () => {
     expect(result).toBeCloseTo(150, 4);
   });
 
-  it("falls back to stored price when insufficient bars", () => {
+  it("returns null when MA bars are insufficient (no stale-snapshot fallback)", () => {
     const sec = seedSec("AAPL");
     seedBars(sec, [100, 101]); // only 2 bars — not enough for sma_50
     const result = resolveLevelPrice(db, {
@@ -112,6 +112,9 @@ describe("resolveLevelPrice", () => {
       price: 175,
       price_source: "sma_50",
     });
-    expect(result).toBe(175);
+    // Stored price (175) is a creation-time snapshot and drifts from the real
+    // MA over time. Returning null lets the scan skip and the UI show
+    // "insufficient history" instead of a misleading number.
+    expect(result).toBeNull();
   });
 });
