@@ -1,5 +1,5 @@
-import Anthropic from "@anthropic-ai/sdk";
 import type Database from "better-sqlite3";
+import { generateText } from "ai";
 import type { CalendarEvent } from "@/lib/types";
 import { getEventsByWeek } from "@/lib/queries/calendar";
 import { saveBriefing } from "@/lib/mutations/calendar";
@@ -14,9 +14,8 @@ import {
   type LevelTriggeredThisWeek,
   type LevelNearPrice,
 } from "@/lib/queries/briefing-levels";
-import { OPUS_MODEL, SONNET_MODEL } from "@/lib/claude-models";
-
-const BRIEFING_MODEL = OPUS_MODEL;
+import { getModelForFeature } from "@/lib/ai/provider";
+import { FEATURE_MODELS } from "@/lib/ai/models";
 
 // Preferred weekend-reading sources — full raw_text is sent to the model.
 // ids correspond to research_sources.id. Keep aligned with DB; wrong ids
@@ -149,18 +148,13 @@ export async function generateWeeklyBriefing(
     imapFallback,
   });
 
-  const client = new Anthropic();
-  const response = await client.messages.create({
-    model: BRIEFING_MODEL,
-    max_tokens: 8192,
-    messages: [{ role: "user", content: prompt }],
+  const { text } = await generateText({
+    model: getModelForFeature("briefing"),
+    maxOutputTokens: 8192,
+    prompt,
   });
 
-  const textBlock = response.content.find((b) => b.type === "text");
-  const content =
-    textBlock && textBlock.type === "text"
-      ? textBlock.text
-      : "Failed to generate briefing.";
+  const content = text.trim() || "Failed to generate briefing.";
 
   const title = `Week of ${formatWeekTitle(weekOf)}`;
   saveBriefing(db, {
@@ -168,7 +162,7 @@ export async function generateWeeklyBriefing(
     title,
     content,
     eventCount: events.length,
-    model: BRIEFING_MODEL,
+    model: FEATURE_MODELS.briefing,
   });
 
   options?.onProgress?.("Briefing complete", 4, 4);
@@ -398,5 +392,3 @@ function formatEventForPrompt(event: CalendarEvent, index: number): string {
   return parts.join("\n");
 }
 
-// Keep SONNET_MODEL import intentional — exports for downstream reuse/tests.
-export { SONNET_MODEL };

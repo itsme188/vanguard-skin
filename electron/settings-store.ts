@@ -22,6 +22,14 @@ interface AppSettings {
   apiNinjasKey?: string;
   pushoverAppToken?: string;
   pushoverUserKey?: string;
+  // Cloudflare AI Gateway — when both accountId + gatewayId are set, every
+  // Claude / OpenAI / Workers AI call routes through Cloudflare for
+  // observability, caching, and per-feature cost tracking.
+  cloudflareAccountId?: string;
+  cloudflareGatewayId?: string;
+  cloudflareGatewayToken?: string;
+  cloudflareWorkersAIToken?: string;
+  openaiApiKey?: string;
   /** Auto-refresh interval in minutes. 0 = disabled. Default: 30. */
   refreshIntervalMinutes?: number;
   firstRunComplete?: boolean;
@@ -107,6 +115,11 @@ export function bootstrapFromEnvLocal(): void {
   if (envMap.API_NINJAS_API_KEY) updates.apiNinjasKey = envMap.API_NINJAS_API_KEY;
   if (envMap.PUSHOVER_APP_TOKEN) updates.pushoverAppToken = envMap.PUSHOVER_APP_TOKEN;
   if (envMap.PUSHOVER_USER_KEY) updates.pushoverUserKey = envMap.PUSHOVER_USER_KEY;
+  if (envMap.CLOUDFLARE_ACCOUNT_ID) updates.cloudflareAccountId = envMap.CLOUDFLARE_ACCOUNT_ID;
+  if (envMap.CLOUDFLARE_GATEWAY_ID) updates.cloudflareGatewayId = envMap.CLOUDFLARE_GATEWAY_ID;
+  if (envMap.CLOUDFLARE_GATEWAY_TOKEN) updates.cloudflareGatewayToken = envMap.CLOUDFLARE_GATEWAY_TOKEN;
+  if (envMap.CLOUDFLARE_WORKERS_AI_TOKEN) updates.cloudflareWorkersAIToken = envMap.CLOUDFLARE_WORKERS_AI_TOKEN;
+  if (envMap.OPENAI_API_KEY) updates.openaiApiKey = envMap.OPENAI_API_KEY;
 
   saveSettings(updates);
   console.log("[settings] Bootstrapped from .env.local — API keys imported");
@@ -127,7 +140,13 @@ export function getSanitizedSettings(): Record<string, string | number | boolean
     apiNinjasKey: s.apiNinjasKey ? "***" + s.apiNinjasKey.slice(-4) : "",
     pushoverAppToken: s.pushoverAppToken ? "***" + s.pushoverAppToken.slice(-4) : "",
     pushoverUserKey: s.pushoverUserKey ? "***" + s.pushoverUserKey.slice(-4) : "",
+    cloudflareAccountId: s.cloudflareAccountId ?? "",
+    cloudflareGatewayId: s.cloudflareGatewayId ?? "",
+    cloudflareGatewayToken: s.cloudflareGatewayToken ? "***" + s.cloudflareGatewayToken.slice(-4) : "",
+    cloudflareWorkersAIToken: s.cloudflareWorkersAIToken ? "***" + s.cloudflareWorkersAIToken.slice(-4) : "",
+    openaiApiKey: s.openaiApiKey ? "***" + s.openaiApiKey.slice(-4) : "",
     hasAnthropicKey: !!s.anthropicApiKey,
+    hasCloudflareGateway: !!(s.cloudflareAccountId && s.cloudflareGatewayId),
     autoConnectTws: s.autoConnectTws ?? true,
     refreshIntervalMinutes: s.refreshIntervalMinutes ?? 30,
     firstRunComplete: s.firstRunComplete ?? false,

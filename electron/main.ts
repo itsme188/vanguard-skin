@@ -113,6 +113,11 @@ function startServer(): Promise<void> {
     if (settings.apiNinjasKey) env.API_NINJAS_API_KEY = settings.apiNinjasKey;
     if (settings.pushoverAppToken) env.PUSHOVER_APP_TOKEN = settings.pushoverAppToken;
     if (settings.pushoverUserKey) env.PUSHOVER_USER_KEY = settings.pushoverUserKey;
+    if (settings.cloudflareAccountId) env.CLOUDFLARE_ACCOUNT_ID = settings.cloudflareAccountId;
+    if (settings.cloudflareGatewayId) env.CLOUDFLARE_GATEWAY_ID = settings.cloudflareGatewayId;
+    if (settings.cloudflareGatewayToken) env.CLOUDFLARE_GATEWAY_TOKEN = settings.cloudflareGatewayToken;
+    if (settings.cloudflareWorkersAIToken) env.CLOUDFLARE_WORKERS_AI_TOKEN = settings.cloudflareWorkersAIToken;
+    if (settings.openaiApiKey) env.OPENAI_API_KEY = settings.openaiApiKey;
 
     // Use the standalone server.js (works in both dev and packaged modes)
     const serverScript = IS_DEV
