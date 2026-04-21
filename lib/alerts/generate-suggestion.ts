@@ -25,7 +25,7 @@ interface AlertRow {
 
 interface SecurityRow {
   symbol: string;
-  name: string | null;
+  security_name: string | null;  // SELECT aliases s.name AS security_name
   security_type: string | null;
 }
 
