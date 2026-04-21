@@ -403,6 +403,7 @@ describe("computeRoundTripSummary", () => {
         realizedPnl: 1000,
         returnPct: 6.67,
         saleTransactionId: 1,
+        sellTransactionQty: null,
       },
       // Win: NVDA +$600
       {
@@ -422,6 +423,7 @@ describe("computeRoundTripSummary", () => {
         realizedPnl: 600,
         returnPct: 10,
         saleTransactionId: 2,
+        sellTransactionQty: null,
       },
       // Loss: TSLA -$400
       {
@@ -441,6 +443,7 @@ describe("computeRoundTripSummary", () => {
         realizedPnl: -400,
         returnPct: -6.67,
         saleTransactionId: 3,
+        sellTransactionQty: null,
       },
     ];
 
@@ -480,6 +483,7 @@ describe("computeRoundTripSummary", () => {
         realizedPnl: 1000,
         returnPct: 6.67,
         saleTransactionId: 1,
+        sellTransactionQty: null,
       },
     ];
 
@@ -508,6 +512,7 @@ describe("computeRoundTripSummary", () => {
         realizedPnl: -400,
         returnPct: -6.67,
         saleTransactionId: 1,
+        sellTransactionQty: null,
       },
     ];
 
@@ -651,6 +656,7 @@ describe("computeGroupedTrades", () => {
       realizedPnl: 100,
       returnPct: 6.67,
       saleTransactionId: 1,
+      sellTransactionQty: null,
       ...overrides,
     };
   }
@@ -746,21 +752,21 @@ describe("computeGroupedSummary", () => {
         entryDate: "2024-05-24", entryPrice: 49.75, entryQuantity: 25,
         entryCost: 1243.75, exitDate: "2026-03-11", exitPrice: 35.98,
         exitQuantity: 25, exitProceeds: 899.50, holdingDays: 656,
-        realizedPnl: -344.25, returnPct: -27.7, saleTransactionId: 100,
+        realizedPnl: -344.25, returnPct: -27.7, saleTransactionId: 100, sellTransactionQty: null,
       },
       {
         accountId: 1, securityId: 1, symbol: "CPRT", securityName: null,
         entryDate: "2024-09-11", entryPrice: 45.00, entryQuantity: 20,
         entryCost: 900, exitDate: "2026-03-11", exitPrice: 35.98,
         exitQuantity: 20, exitProceeds: 719.60, holdingDays: 546,
-        realizedPnl: -180.40, returnPct: -20.0, saleTransactionId: 100,
+        realizedPnl: -180.40, returnPct: -20.0, saleTransactionId: 100, sellTransactionQty: null,
       },
       {
         accountId: 1, securityId: 1, symbol: "CPRT", securityName: null,
         entryDate: "2025-07-25", entryPrice: 42.00, entryQuantity: 20,
         entryCost: 840, exitDate: "2026-03-11", exitPrice: 35.98,
         exitQuantity: 20, exitProceeds: 719.60, holdingDays: 229,
-        realizedPnl: -120.40, returnPct: -14.3, saleTransactionId: 100,
+        realizedPnl: -120.40, returnPct: -14.3, saleTransactionId: 100, sellTransactionQty: null,
       },
       // Sale tx 200: 1 lot, winner
       {
@@ -768,7 +774,7 @@ describe("computeGroupedSummary", () => {
         entryDate: "2026-03-01", entryPrice: 180, entryQuantity: 10,
         entryCost: 1800, exitDate: "2026-03-15", exitPrice: 195,
         exitQuantity: 10, exitProceeds: 1950, holdingDays: 14,
-        realizedPnl: 150, returnPct: 8.33, saleTransactionId: 200,
+        realizedPnl: 150, returnPct: 8.33, saleTransactionId: 200, sellTransactionQty: null,
       },
     ];
 
@@ -801,14 +807,14 @@ describe("computeGroupedSummary", () => {
         entryDate: "2026-01-01", entryPrice: 100, entryQuantity: 10,
         entryCost: 1000, exitDate: "2026-02-01", exitPrice: 110,
         exitQuantity: 10, exitProceeds: 1100, holdingDays: 31,
-        realizedPnl: 100, returnPct: 10, saleTransactionId: 1,
+        realizedPnl: 100, returnPct: 10, saleTransactionId: 1, sellTransactionQty: null,
       },
       {
         accountId: 1, securityId: 2, symbol: "B", securityName: null,
         entryDate: "2026-01-10", entryPrice: 50, entryQuantity: 20,
         entryCost: 1000, exitDate: "2026-01-20", exitPrice: 55,
         exitQuantity: 20, exitProceeds: 1100, holdingDays: 10,
-        realizedPnl: 100, returnPct: 10, saleTransactionId: 2,
+        realizedPnl: 100, returnPct: 10, saleTransactionId: 2, sellTransactionQty: null,
       },
     ];
 
