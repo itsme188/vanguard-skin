@@ -1,8 +1,7 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { generateObject, jsonSchema } from "ai";
+import { getModelForFeature } from "@/lib/ai/provider";
 import type { GroupedTrade, RoundTripSummary } from "@/lib/compute/trade-roundtrips";
 import type { TradeMarketContext } from "./market-context";
-
-const QUESTION_MODEL = "claude-sonnet-4-20250514";
 
 export interface TradeQuestion {
   tradeNumber: number;
@@ -61,37 +60,39 @@ export function getAccountProfile(accountName: string): AccountProfile {
   };
 }
 
-/** Tool schema for question generation */
-const QUESTIONS_TOOL: Anthropic.Tool = {
-  name: "submit_questions",
-  description:
-    "Submit clarifying questions about trades where the intent or context is unclear. Only ask about trades where additional context would materially change the assessment. Return an empty array if all trades have sufficient context.",
-  input_schema: {
-    type: "object" as const,
-    properties: {
-      questions: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            trade_number: {
-              type: "number",
-              description: "Matches the # column in the trade table",
-            },
-            symbol: { type: "string" },
-            question: {
-              type: "string",
-              description:
-                "A specific, concise question about this trade. Focus on intent, thesis, or circumstances that would affect grading.",
-            },
+interface QuestionsResult {
+  questions: Array<{
+    trade_number: number;
+    symbol: string;
+    question: string;
+  }>;
+}
+
+const QUESTIONS_SCHEMA = jsonSchema<QuestionsResult>({
+  type: "object",
+  properties: {
+    questions: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          trade_number: {
+            type: "number",
+            description: "Matches the # column in the trade table",
           },
-          required: ["trade_number", "symbol", "question"],
+          symbol: { type: "string" },
+          question: {
+            type: "string",
+            description:
+              "A specific, concise question about this trade. Focus on intent, thesis, or circumstances that would affect grading.",
+          },
         },
+        required: ["trade_number", "symbol", "question"],
       },
     },
-    required: ["questions"],
   },
-};
+  required: ["questions"],
+});
 
 /**
  * Generate clarifying questions about trades where context is unclear.
@@ -133,27 +134,14 @@ Do NOT ask about trades where:
 
 Keep questions concise and specific. One question per trade maximum.`;
 
-  const client = new Anthropic();
-  const response = await client.messages.create({
-    model: QUESTION_MODEL,
-    max_tokens: 2000,
-    messages: [{ role: "user", content: prompt }],
-    tools: [QUESTIONS_TOOL],
-    tool_choice: { type: "tool", name: "submit_questions" },
+  const { object } = await generateObject({
+    model: getModelForFeature("tradeReviewQA"),
+    maxOutputTokens: 2000,
+    schema: QUESTIONS_SCHEMA,
+    prompt,
   });
 
-  const toolBlock = response.content.find((b) => b.type === "tool_use");
-  if (!toolBlock || toolBlock.type !== "tool_use") return [];
-
-  const result = toolBlock.input as {
-    questions: Array<{
-      trade_number: number;
-      symbol: string;
-      question: string;
-    }>;
-  };
-
-  return result.questions.map((q) => ({
+  return (object.questions ?? []).map((q) => ({
     tradeNumber: q.trade_number,
     symbol: q.symbol,
     question: q.question,

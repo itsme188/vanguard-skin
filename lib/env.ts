@@ -20,6 +20,40 @@ function readEnvLocal(key: string): string | undefined {
   return undefined;
 }
 
+function readEnv(key: string): string | undefined {
+  return process.env[key] || readEnvLocal(key);
+}
+
 export function getAnthropicApiKey(): string | undefined {
-  return process.env.ANTHROPIC_API_KEY || readEnvLocal("ANTHROPIC_API_KEY");
+  return readEnv("ANTHROPIC_API_KEY");
+}
+
+export function getOpenAIApiKey(): string | undefined {
+  return readEnv("OPENAI_API_KEY");
+}
+
+export interface CloudflareGatewayConfig {
+  accountId: string;
+  gatewayId: string;
+  token?: string;
+}
+
+/**
+ * Returns Cloudflare AI Gateway config when both account + gateway IDs are set.
+ * Missing values mean "no gateway" — provider factory transparently falls back
+ * to direct Anthropic/OpenAI endpoints.
+ */
+export function getCloudflareGateway(): CloudflareGatewayConfig | undefined {
+  const accountId = readEnv("CLOUDFLARE_ACCOUNT_ID");
+  const gatewayId = readEnv("CLOUDFLARE_GATEWAY_ID");
+  if (!accountId || !gatewayId) return undefined;
+  return {
+    accountId,
+    gatewayId,
+    token: readEnv("CLOUDFLARE_GATEWAY_TOKEN"),
+  };
+}
+
+export function getCloudflareWorkersAIToken(): string | undefined {
+  return readEnv("CLOUDFLARE_WORKERS_AI_TOKEN");
 }

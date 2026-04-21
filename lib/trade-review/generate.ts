@@ -1,5 +1,8 @@
-import Anthropic from "@anthropic-ai/sdk";
 import type Database from "better-sqlite3";
+import { generateObject, jsonSchema } from "ai";
+import { getModelForFeature } from "@/lib/ai/provider";
+import { FEATURE_MODELS } from "@/lib/ai/models";
+import type { FeatureKey } from "@/lib/ai/feature-keys";
 import {
   getRoundTrips,
   computeGroupedTrades,
@@ -26,21 +29,31 @@ import { getIbApi } from "@/lib/tws/client";
 import { fetchHistoricalPrices } from "@/lib/tws/historical";
 import { fetchBenchmarkPrices } from "@/lib/tws/benchmark";
 import type { TradeReview } from "@/lib/types";
-import { OPUS_MODEL, SONNET_MODEL } from "@/lib/claude-models";
 
-const REVIEW_MODEL_OPUS = OPUS_MODEL;
-const REVIEW_MODEL_SONNET = SONNET_MODEL;
-/** Use Sonnet for months with many trades to avoid timeouts */
+/** Use the "large" model slot for months with many trades — defaults to Sonnet to avoid Opus timeouts */
 const SONNET_TRADE_THRESHOLD = 20;
 
-/** Tool schema for structured output — forces Claude to return both markdown and structured data */
-const REVIEW_TOOL: Anthropic.Tool = {
-  name: "submit_trade_review",
-  description:
-    "Submit the completed trade review with structured analysis. Call this tool once with all analysis results.",
-  input_schema: {
-    type: "object" as const,
-    properties: {
+interface TradeReviewStructured {
+  review_markdown: string;
+  trade_grades: Array<{
+    trade_number: number;
+    symbol: string;
+    exit_date: string;
+    grade: string;
+    assessment?: string;
+    what_worked?: string;
+    what_didnt?: string;
+  }>;
+  patterns_identified: string[];
+  strengths: string[];
+  weaknesses: string[];
+  cumulative_patterns?: string[];
+}
+
+/** Schema for structured output — forces Claude to return both markdown and structured data */
+const REVIEW_SCHEMA = jsonSchema<TradeReviewStructured>({
+  type: "object",
+  properties: {
       review_markdown: {
         type: "string",
         description:
@@ -113,8 +126,7 @@ const REVIEW_TOOL: Anthropic.Tool = {
       "strengths",
       "weaknesses",
     ],
-  },
-};
+});
 
 export interface TradeReviewResult {
   review: TradeReview;
@@ -317,12 +329,12 @@ export async function generateTradeReview(
     answers
   );
 
-  // Use Sonnet for large months (faster, avoids timeouts), Opus for smaller ones
+  // Pick Opus for small months, Sonnet for large (via separate feature keys so
+  // either can be independently swapped in FEATURE_MODELS without touching code).
   const tradeCount = groupedTrades.length;
-  const model =
-    tradeCount > SONNET_TRADE_THRESHOLD
-      ? REVIEW_MODEL_SONNET
-      : REVIEW_MODEL_OPUS;
+  const featureKey: FeatureKey =
+    tradeCount > SONNET_TRADE_THRESHOLD ? "tradeReviewMainLarge" : "tradeReviewMain";
+  const modelSpec = FEATURE_MODELS[featureKey];
   // Scale max_tokens with trade count — each grade needs ~150 tokens
   const maxTokens = Math.min(
     Math.max(8000, 4000 + tradeCount * 200),
@@ -330,43 +342,18 @@ export async function generateTradeReview(
   );
 
   options?.onProgress?.(
-    `Analyzing ${tradeCount} trade(s) with ${model === REVIEW_MODEL_OPUS ? "Claude Opus" : "Claude Sonnet"}...`,
+    `Analyzing ${tradeCount} trade(s) with ${modelSpec}...`,
     4,
     totalSteps
   );
 
-  const client = new Anthropic();
-  const response = await client.messages.create({
-    model,
-    max_tokens: maxTokens,
+  const { object: result, usage } = await generateObject({
+    model: getModelForFeature(featureKey),
+    maxOutputTokens: maxTokens,
+    schema: REVIEW_SCHEMA,
     system,
-    messages: [{ role: "user", content: user }],
-    tools: [REVIEW_TOOL],
-    tool_choice: { type: "tool", name: "submit_trade_review" },
+    prompt: user,
   });
-
-  // Extract the tool_use block
-  const toolBlock = response.content.find((b) => b.type === "tool_use");
-  if (!toolBlock || toolBlock.type !== "tool_use") {
-    throw new Error("Claude did not return structured trade review data");
-  }
-
-  const result = toolBlock.input as {
-    review_markdown: string;
-    trade_grades: Array<{
-      trade_number: number;
-      symbol: string;
-      exit_date: string;
-      grade: string;
-      assessment?: string;
-      what_worked?: string;
-      what_didnt?: string;
-    }>;
-    patterns_identified: string[];
-    strengths: string[];
-    weaknesses: string[];
-    cumulative_patterns?: string[];
-  };
 
   // Step 5: Save to database
   options?.onProgress?.("Saving review to database...", 5, totalSteps);
@@ -397,9 +384,9 @@ export async function generateTradeReview(
     cumulativePatterns: result.cumulative_patterns
       ? JSON.stringify(result.cumulative_patterns)
       : null,
-    model,
-    promptTokens: response.usage?.input_tokens ?? null,
-    completionTokens: response.usage?.output_tokens ?? null,
+    model: modelSpec,
+    promptTokens: usage?.inputTokens ?? null,
+    completionTokens: usage?.outputTokens ?? null,
   });
 
   // Save round-trips with AI grades matched by trade_number

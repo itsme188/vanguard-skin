@@ -5,7 +5,8 @@
  */
 
 import type Database from "better-sqlite3";
-import Anthropic from "@anthropic-ai/sdk";
+import { generateText } from "ai";
+import { getModelForFeature } from "@/lib/ai/provider";
 import { FACTOR_COLUMNS, FACTOR_LABELS, type FactorColumn } from "@/lib/factors";
 
 export interface FactorClassifyResult {
@@ -66,12 +67,6 @@ const SKIP_TYPES = new Set([
 export async function classifyFactors(
   db: Database.Database
 ): Promise<FactorClassifyResult> {
-  const { getAnthropicApiKey } = await import("@/lib/env");
-  const apiKey = getAnthropicApiKey();
-  if (!apiKey) {
-    return { classified: 0, skipped: 0, errors: ["ANTHROPIC_API_KEY not set"] };
-  }
-
   // Find securities that need factor classification:
   // - Have active holdings (quantity > 0, not matured)
   // - Not already in security_factors
@@ -147,7 +142,7 @@ export async function classifyFactors(
   }
 
   // Batch and classify with Claude
-  const client = new Anthropic({ apiKey });
+  const model = getModelForFeature("factorClassification");
   const BATCH_SIZE = 25;
   let classified = 0;
   const errors: string[] = [];
@@ -159,24 +154,16 @@ export async function classifyFactors(
       .join("\n")}`;
 
     try {
-      const response = await client.messages.create({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 8000,
+      const { text } = await generateText({
+        model,
+        maxOutputTokens: 8000,
         temperature: 0.2,
         system: SYSTEM_PROMPT,
-        messages: [{ role: "user", content: prompt }],
+        prompt,
       });
 
-      // Extract text from response
-      let jsonText = "";
-      for (const block of response.content) {
-        if (block.type === "text") {
-          jsonText += block.text;
-        }
-      }
-
       // Strip markdown code fences if present
-      jsonText = jsonText.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+      const jsonText = text.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
 
       const results = JSON.parse(jsonText) as Array<Record<string, string>>;
 

@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
-import Anthropic from "@anthropic-ai/sdk";
-import { SONNET_MODEL } from "@/lib/claude-models";
+import { generateObject, jsonSchema } from "ai";
+import { FEATURE_MODELS } from "@/lib/ai/models";
+import { getModelForFeature } from "@/lib/ai/provider";
 
 interface UnprocessedArticle {
   id: number;
@@ -29,12 +30,6 @@ interface ProcessedResult {
 export async function processUnprocessedArticles(
   db: Database.Database
 ): Promise<{ processed: number; failed: number }> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    console.error("[research] ANTHROPIC_API_KEY not set, skipping AI processing");
-    return { processed: 0, failed: 0 };
-  }
-
   const articles = db
     .prepare(
       `SELECT a.id, a.source_id, a.subject, a.sender, a.raw_text,
@@ -65,8 +60,6 @@ export async function processUnprocessedArticles(
     .map((h) => `${h.symbol}${h.name ? ` (${h.name})` : ""}`)
     .join(", ");
 
-  const client = new Anthropic({ apiKey });
-
   const updateArticle = db.prepare(`
     UPDATE research_articles
     SET summary = ?, key_themes = ?, sentiment = ?, sentiment_score = ?,
@@ -89,11 +82,7 @@ export async function processUnprocessedArticles(
 
   for (const article of articles) {
     try {
-      const result = await extractWithClaude(
-        client,
-        article,
-        holdingsContext
-      );
+      const result = await extractWithClaude(article, holdingsContext);
 
       updateArticle.run(
         result.summary,
@@ -102,7 +91,7 @@ export async function processUnprocessedArticles(
         result.sentiment_score,
         JSON.stringify(result.mentioned_symbols),
         result.portfolio_relevance,
-        SONNET_MODEL,
+        FEATURE_MODELS.newsletterProcessing,
         article.id
       );
 
@@ -131,8 +120,48 @@ export async function processUnprocessedArticles(
 
 // ── Claude extraction ───────────────────────────────────────────────
 
+const ANALYSIS_SCHEMA = jsonSchema<ProcessedResult>({
+  type: "object",
+  properties: {
+    summary: {
+      type: "string",
+      description: "2-3 sentence summary of the article's key points and conclusions.",
+    },
+    key_themes: {
+      type: "array",
+      items: { type: "string" },
+      description: 'Key themes/topics (e.g., ["fed policy", "tech earnings", "inflation"]) — max 5.',
+    },
+    sentiment: {
+      type: "string",
+      enum: ["bullish", "bearish", "neutral", "mixed"],
+      description: "Overall market sentiment of the article.",
+    },
+    sentiment_score: {
+      type: "number",
+      description: "Sentiment score from -1.0 (very bearish) to 1.0 (very bullish).",
+    },
+    mentioned_symbols: {
+      type: "array",
+      items: { type: "string" },
+      description: "Stock ticker symbols mentioned (e.g., AAPL, MSFT). Only include actual traded tickers, not generic terms.",
+    },
+    portfolio_relevance: {
+      type: "string",
+      description: "One sentence on how this article is relevant to the user's current portfolio holdings.",
+    },
+  },
+  required: [
+    "summary",
+    "key_themes",
+    "sentiment",
+    "sentiment_score",
+    "mentioned_symbols",
+    "portfolio_relevance",
+  ],
+});
+
 async function extractWithClaude(
-  client: Anthropic,
   article: UnprocessedArticle,
   holdingsContext: string
 ): Promise<ProcessedResult> {
@@ -142,65 +171,11 @@ async function extractWithClaude(
       ? article.raw_text.slice(0, 15_000) + "\n...[truncated]"
       : article.raw_text;
 
-  const response = await client.messages.create({
-    model: SONNET_MODEL,
-    max_tokens: 2048,
-    tools: [
-      {
-        name: "submit_analysis",
-        description: "Submit the analysis of a financial newsletter article.",
-        input_schema: {
-          type: "object" as const,
-          properties: {
-            summary: {
-              type: "string",
-              description:
-                "2-3 sentence summary of the article's key points and conclusions.",
-            },
-            key_themes: {
-              type: "array",
-              items: { type: "string" },
-              description:
-                'Key themes/topics (e.g., ["fed policy", "tech earnings", "inflation"]) — max 5.',
-            },
-            sentiment: {
-              type: "string",
-              enum: ["bullish", "bearish", "neutral", "mixed"],
-              description: "Overall market sentiment of the article.",
-            },
-            sentiment_score: {
-              type: "number",
-              description:
-                "Sentiment score from -1.0 (very bearish) to 1.0 (very bullish).",
-            },
-            mentioned_symbols: {
-              type: "array",
-              items: { type: "string" },
-              description:
-                "Stock ticker symbols mentioned (e.g., AAPL, MSFT). Only include actual traded tickers, not generic terms.",
-            },
-            portfolio_relevance: {
-              type: "string",
-              description:
-                "One sentence on how this article is relevant to the user's current portfolio holdings.",
-            },
-          },
-          required: [
-            "summary",
-            "key_themes",
-            "sentiment",
-            "sentiment_score",
-            "mentioned_symbols",
-            "portfolio_relevance",
-          ],
-        },
-      },
-    ],
-    tool_choice: { type: "tool", name: "submit_analysis" },
-    messages: [
-      {
-        role: "user",
-        content: `Analyze this financial newsletter article and extract structured data.
+  const { object } = await generateObject({
+    model: getModelForFeature("newsletterProcessing"),
+    maxOutputTokens: 2048,
+    schema: ANALYSIS_SCHEMA,
+    prompt: `Analyze this financial newsletter article and extract structured data.
 
 Source: ${article.source_name}
 Subject: ${article.subject}
@@ -210,28 +185,18 @@ Current portfolio holdings: ${holdingsContext || "(none loaded)"}
 ${article.processing_prompt ? `\nSource-specific instructions: ${article.processing_prompt}\n` : ""}
 Article text:
 ${text}`,
-      },
-    ],
   });
-
-  // Extract tool call result
-  const toolBlock = response.content.find((b) => b.type === "tool_use");
-  if (!toolBlock || toolBlock.type !== "tool_use") {
-    throw new Error("No tool_use block in Claude response");
-  }
-
-  const input = toolBlock.input as ProcessedResult;
 
   // Normalize
   return {
-    summary: input.summary || "",
-    key_themes: (input.key_themes || []).slice(0, 5),
-    sentiment: input.sentiment || "neutral",
-    sentiment_score: Math.max(-1, Math.min(1, input.sentiment_score || 0)),
-    mentioned_symbols: (input.mentioned_symbols || []).map((s) =>
+    summary: object.summary || "",
+    key_themes: (object.key_themes || []).slice(0, 5),
+    sentiment: object.sentiment || "neutral",
+    sentiment_score: Math.max(-1, Math.min(1, object.sentiment_score || 0)),
+    mentioned_symbols: (object.mentioned_symbols || []).map((s) =>
       s.toUpperCase().trim()
     ),
-    portfolio_relevance: input.portfolio_relevance || "",
+    portfolio_relevance: object.portfolio_relevance || "",
   };
 }
 

@@ -50,6 +50,7 @@ tests/fixtures/real/
 
 # claude code (local state)
 .claude/worktrees/
+.claude/agent-memory/
 .superpowers/
 
 # local machine configs (contain absolute paths)

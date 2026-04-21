@@ -6,15 +6,14 @@ import {
   convertToModelMessages,
   stepCountIs,
 } from "ai";
-import { createAnthropic } from "@ai-sdk/anthropic";
 import { db } from "@/lib/db";
-import { OPUS_MODEL } from "@/lib/claude-models";
 import { getPortfolioSummaryForChat } from "@/lib/queries/portfolio-summary";
 import { CHAT_TOOLS, executeTool, resolveAccountName } from "@/lib/chat/tools";
 import { buildSystemPrompt } from "@/lib/chat/system-prompt";
 import { computeIbkrTradingContext } from "@/lib/chat/ibkr-context";
 import { getAccountByName } from "@/lib/queries/accounts";
 import { getAnthropicApiKey } from "@/lib/env";
+import { getModelForFeature } from "@/lib/ai/provider";
 import { VALID_SCOPES, type ChatScope } from "@/lib/types";
 import { createConversation, saveMessage, updateConversationTitle } from "@/lib/mutations/chat";
 
@@ -101,9 +100,6 @@ export async function POST(request: NextRequest) {
       systemPromptText += `\n\n[Current Page Context]\n${pageContext}`;
     }
 
-    // Create Anthropic provider with explicit API key
-    const anthropic = createAnthropic({ apiKey });
-
     // Convert existing Anthropic tool definitions to AI SDK tool format.
     // Each tool wraps the existing executeTool() dispatcher, preserving all
     // tool logic and data quality annotations without any rewrite.
@@ -136,7 +132,7 @@ export async function POST(request: NextRequest) {
 
     // Stream with automatic agentic tool loop (up to 8 model calls)
     const result = streamText({
-      model: anthropic(OPUS_MODEL),
+      model: getModelForFeature("chat"),
       maxOutputTokens: 16000,
       system: {
         role: "system",

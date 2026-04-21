@@ -1,7 +1,8 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { generateText } from "ai";
 import type { CalendarEventType, EventImpact } from "@/lib/types";
 import type { CalendarEventInput } from "@/lib/mutations/calendar";
 import { SONNET_MODEL } from "@/lib/claude-models";
+import { getModelForFeature, getRawAnthropicClient } from "@/lib/ai/provider";
 
 // ── FRED Release IDs → Calendar Event Types ──────────────────────
 //
@@ -261,8 +262,6 @@ async function enrichEventsWithClaude(
 ): Promise<Map<string, EnrichedEvent>> {
   if (events.length === 0) return new Map();
 
-  const client = new Anthropic();
-
   const eventList = events
     .map((e, i) => {
       const period = e.reportingPeriod ? ` [reporting period: ${e.reportingPeriod}]` : "";
@@ -284,16 +283,13 @@ For each event, provide enrichment data as a JSON array (same order as above):
 
 Return ONLY a JSON array of objects, one per event, in the same order. No markdown, no explanation.`;
 
-  const response = await client.messages.create({
-    model: SONNET_MODEL,
-    max_tokens: 4096,
-    messages: [{ role: "user", content: prompt }],
+  const { text } = await generateText({
+    model: getModelForFeature("macroEnrichment"),
+    maxOutputTokens: 4096,
+    prompt,
   });
 
-  const textBlock = response.content.find((b) => b.type === "text");
-  if (!textBlock || textBlock.type !== "text") return new Map();
-
-  let jsonStr = textBlock.text.trim();
+  let jsonStr = text.trim();
   const fenceMatch = jsonStr.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
   if (fenceMatch) jsonStr = fenceMatch[1].trim();
 
@@ -375,7 +371,7 @@ Each object must have:
 Return ONLY a JSON array. No markdown, no preamble.`;
 
   try {
-    const client = new Anthropic();
+    const client = getRawAnthropicClient("scheduleVerification");
     const response = await client.messages.create({
       model: SONNET_MODEL,
       max_tokens: 4096,
