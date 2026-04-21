@@ -1,0 +1,112 @@
+import type Database from "better-sqlite3";
+import { getBriefingByWeek, isBriefingStale } from "@/lib/queries/calendar";
+import { generateWeeklyBriefing } from "@/lib/calendar/briefing";
+import { briefingToHtml } from "@/lib/calendar/briefing-html";
+import { sendEmail } from "@/lib/email";
+import { getCurrentMonday } from "@/lib/calendar/date-utils";
+import { syncPortfolio } from "@/lib/tws/positions";
+import { setLastBriefingSentAt } from "@/lib/digest/daily-digest";
+
+export class BriefingSendError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number
+  ) {
+    super(message);
+    this.name = "BriefingSendError";
+  }
+}
+
+export interface SendBriefingOpts {
+  weekOf?: string;
+  recipient?: string;
+  force?: boolean;
+  footerNote?: string;
+}
+
+export interface SendBriefingResult {
+  success: true;
+  weekOf: string;
+  sentTo: string;
+  generated: boolean;
+  eventCount: number;
+  twsSynced: boolean;
+}
+
+export async function sendBriefingEmail(
+  db: Database.Database,
+  opts: SendBriefingOpts = {}
+): Promise<SendBriefingResult> {
+  const weekOf = opts.weekOf || getCurrentMonday();
+  const recipient = opts.recipient || process.env.BRIEFING_EMAIL_TO;
+
+  if (!recipient) {
+    throw new BriefingSendError(
+      "No recipient. Set BRIEFING_EMAIL_TO env var or pass 'recipient'.",
+      400
+    );
+  }
+
+  const gmailAddress = process.env.GMAIL_ADDRESS;
+  const gmailAppPassword = process.env.GMAIL_APP_PASSWORD;
+
+  if (!gmailAddress || !gmailAppPassword) {
+    throw new BriefingSendError(
+      "Missing GMAIL_ADDRESS or GMAIL_APP_PASSWORD env vars.",
+      500
+    );
+  }
+
+  let twsSynced = false;
+  try {
+    await syncPortfolio(db);
+    twsSynced = true;
+  } catch {
+    console.log("[send-briefing] TWS sync skipped (not connected or no IBKR account)");
+  }
+
+  let briefing = getBriefingByWeek(db, weekOf);
+  let generated = false;
+  const stale = briefing ? isBriefingStale(db, weekOf) : false;
+
+  if (!briefing || !briefing.content || opts.force || stale) {
+    const result = await generateWeeklyBriefing(db, weekOf);
+    briefing = getBriefingByWeek(db, weekOf);
+    generated = true;
+
+    if (!briefing || result.eventCount === 0) {
+      throw new BriefingSendError(
+        `No events found for this week. Run a calendar sync first. (weekOf=${weekOf})`,
+        404
+      );
+    }
+  }
+
+  if (!briefing) {
+    throw new BriefingSendError(
+      `Briefing generation succeeded but failed to save. (weekOf=${weekOf})`,
+      500
+    );
+  }
+
+  const title = briefing.title || `Week of ${weekOf}`;
+  const html = briefingToHtml(briefing.content, title, opts.footerNote);
+
+  await sendEmail(
+    { gmailAddress, gmailAppPassword },
+    recipient,
+    `📊 ${title} — Weekly Portfolio Briefing`,
+    html
+  );
+
+  setLastBriefingSentAt(db, new Date().toISOString());
+
+  return {
+    success: true,
+    weekOf,
+    sentTo: recipient,
+    generated,
+    eventCount: briefing.event_count,
+    twsSynced,
+  };
+}

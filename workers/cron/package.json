@@ -1,0 +1,17 @@
+{
+  "name": "vanguard-skin-cron",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Worker cron — primary-path + fallback for Mac briefing/digest emails (Phase 4)",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250101.0",
+    "typescript": "^5.4.0",
+    "wrangler": "^4.0.0"
+  }
+}
