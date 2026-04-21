@@ -7,6 +7,8 @@ import { classifySecurities } from "@/lib/compute/classify-securities";
 import { computeTaxLots } from "@/lib/compute/tax-lots";
 import { computeDailyValuations } from "@/lib/compute/daily-valuation";
 import { detectNewTradeReviewPeriods } from "@/lib/compute/trade-roundtrips";
+import { buildStatementKey, isR2Configured, uploadStatementPdf } from "@/lib/storage/r2";
+import { setImportBatchR2Key } from "@/lib/mutations/import-batches";
 
 /**
  * POST /api/import?mode=preview  — parse only, return preview JSON
@@ -86,6 +88,26 @@ export async function POST(request: NextRequest) {
 
       // Commit mode — write to DB
       const commitResult = commitImport(db, parsed);
+
+      // Phase 3: archive source PDFs to R2 (fire-and-forget; never blocks).
+      // Only PDFs are archived — CSVs are usually user-managed/version-tracked
+      // and less likely to be lost.
+      if (isPdf && Buffer.isBuffer(content) && isR2Configured()) {
+        const key = buildStatementKey({
+          sourceType: parsed.sourceType,
+          filename: file.name,
+        });
+        uploadStatementPdf(key, content)
+          .then((returnedKey) => {
+            if (returnedKey) setImportBatchR2Key(db, commitResult.batchId, returnedKey);
+          })
+          .catch((err) => {
+            console.warn(
+              `[import] R2 archive failed for batch ${commitResult.batchId} (${file.name}):`,
+              err instanceof Error ? err.message : err
+            );
+          });
+      }
 
       results.push({
         filename: file.name,

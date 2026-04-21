@@ -33,11 +33,26 @@ export const FEATURE_MODELS: Record<FeatureKey, string> = {
   // Large trade reviews (>20 trades) use Sonnet to avoid Opus timeout risk.
   tradeReviewMainLarge: `anthropic/${SONNET_MODEL}`,
 
-  // Structured / lower-stakes Claude work — stay on Sonnet today.
-  // Phase 2 candidates to flip to workers-ai/Kimi or Llama.
+  // Structured / lower-stakes work. Phase 2 experiments route extraction and
+  // one-sentence generation to Workers AI. Rollback = flip back to
+  // `anthropic/${SONNET_MODEL}` if quality regresses.
+  //
+  // Two Workers AI quirks we've hit:
+  //
+  // 1. Kimi K2.x is a *reasoning* model — emits reasoning_content that
+  //    consumes the max_tokens budget before any visible content. Use only
+  //    where the caller's maxOutputTokens is >= 1024 AND latency-tolerant
+  //    (reasoning adds 5-20s).
+  //
+  // 2. Llama 3.3 via the compat endpoint: if the response *looks* like valid
+  //    JSON, Cloudflare auto-parses `message.content` into an object rather
+  //    than a string. AI SDK's OpenAI-compatible provider chokes on that
+  //    (expects content to be a string). Avoid Llama for any call whose
+  //    prompt asks for raw JSON output — use Sonnet on Anthropic, or Kimi
+  //    (whose reasoning_content bypass keeps message.content as string).
   tradeReviewQA: `anthropic/${SONNET_MODEL}`,
-  alertSuggestion: `anthropic/${SONNET_MODEL}`,
-  newsletterLevelExtraction: `anthropic/${SONNET_MODEL}`,
+  alertSuggestion: "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+  newsletterLevelExtraction: "workers-ai/@cf/moonshotai/kimi-k2.6",
   newsletterProcessing: `anthropic/${SONNET_MODEL}`,
   factorClassification: `anthropic/${SONNET_MODEL}`,
   macroEnrichment: `anthropic/${SONNET_MODEL}`,
