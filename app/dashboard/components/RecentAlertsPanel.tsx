@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { LevelAlert, AlertResponse } from "@/lib/types";
+import { Money } from "@/lib/privacy/components";
 
 // Same enriched shape that /api/alerts returns (matches alerts page type).
 interface EnrichedAlert extends LevelAlert {
@@ -89,7 +90,7 @@ export function RecentAlertsPanel({ securityId }: { securityId: number }) {
                       {a.level.level_type.replace("_", " ")}
                     </span>
                     <span className="text-ink font-mono">
-                      @ ${a.level.price.toFixed(2)}
+                      @ <Money value={a.level.price} precise />
                     </span>
                     {a.level.price_source && a.level.price_source !== "static" && (
                       <span className="px-1 py-0.5 rounded text-[9px] bg-raised text-ink-faint uppercase tracking-wider">
@@ -98,7 +99,7 @@ export function RecentAlertsPanel({ securityId }: { securityId: number }) {
                     )}
                   </>
                 )}
-                <span className="text-ink-faint">hit ${a.triggered_price.toFixed(2)}</span>
+                <span className="text-ink-faint">hit <Money value={a.triggered_price} precise /></span>
                 {a.level?.source_author && (
                   <span className="text-ink-faint italic">— {a.level.source_author}</span>
                 )}

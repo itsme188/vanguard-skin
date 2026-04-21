@@ -10,34 +10,13 @@ import { SecurityChart } from "../../components/SecurityChart";
 import { WatchlistButton } from "../../components/WatchlistButton";
 import { LevelsPanel } from "../../components/LevelsPanel";
 import { RecentAlertsPanel } from "../../components/RecentAlertsPanel";
+import { Money, Pct, Shares } from "@/lib/privacy/components";
 import {
   FACTOR_COLUMNS,
   FACTOR_LABELS,
   getFactorColor,
   type FactorColumn,
 } from "@/lib/factors";
-
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(value);
-}
-
-function formatPrecise(value: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(value);
-}
-
-function formatPct(value: number): string {
-  return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
-}
 
 function gainClass(value: number | null): string {
   if (value == null) return "text-ink-dim";
@@ -113,14 +92,13 @@ export default async function SecurityDetailPage(props: {
         {price && (
           <div className="md:text-right">
             <div className="text-2xl font-mono font-bold text-ink">
-              {formatPrecise(price.close_price)}
+              <Money value={price.close_price} precise />
             </div>
             {price.change != null && price.change_pct != null && (
               <div
                 className={`text-sm font-mono ${gainClass(price.change)}`}
               >
-                {price.change >= 0 ? "+" : ""}
-                {formatPrecise(price.change)} ({formatPct(price.change_pct)})
+                <Money value={price.change} precise signed /> (<Pct value={price.change_pct} digits={2} signed />)
               </div>
             )}
             <div className="text-xs text-ink-faint mt-0.5">
@@ -158,17 +136,13 @@ export default async function SecurityDetailPage(props: {
           {watchlistItem.price_target_low && (
             <span className="text-ink-faint">
               Target Low:{" "}
-              <span className="font-mono text-down">
-                {formatPrecise(watchlistItem.price_target_low)}
-              </span>
+              <Money value={watchlistItem.price_target_low} precise className="font-mono text-down" />
             </span>
           )}
           {watchlistItem.price_target_high && (
             <span className="text-ink-faint">
               Target High:{" "}
-              <span className="font-mono text-up">
-                {formatPrecise(watchlistItem.price_target_high)}
-              </span>
+              <Money value={watchlistItem.price_target_high} precise className="font-mono text-up" />
             </span>
           )}
           {watchlistItem.thesis && (
@@ -209,7 +183,7 @@ export default async function SecurityDetailPage(props: {
               <div>
                 <span className="text-xs text-ink-faint uppercase">Strike</span>
                 <p className="font-mono text-ink font-medium">
-                  {formatPrecise(security.strike_price)}
+                  <Money value={security.strike_price} precise />
                 </p>
               </div>
             )}
@@ -284,29 +258,23 @@ export default async function SecurityDetailPage(props: {
                         {p.account_name}
                       </td>
                       <td className="px-5 py-2.5 text-right font-mono text-ink">
-                        {p.quantity.toLocaleString()}
+                        <Shares value={p.quantity} />
                       </td>
                       <td className="px-5 py-2.5 text-right font-mono text-ink-dim">
-                        {p.cost_basis != null
-                          ? formatCurrency(p.cost_basis)
-                          : "\u2013"}
+                        <Money value={p.cost_basis} fallback="–" />
                       </td>
                       <td className="px-5 py-2.5 text-right font-mono text-ink">
-                        {p.current_value != null
-                          ? formatCurrency(p.current_value)
-                          : "\u2013"}
+                        <Money value={p.current_value} fallback="–" />
                       </td>
                       <td
                         className={`px-5 py-2.5 text-right font-mono ${gainClass(p.unrealized_gain)}`}
                       >
-                        {p.unrealized_gain != null
-                          ? formatCurrency(p.unrealized_gain)
-                          : "\u2013"}
+                        <Money value={p.unrealized_gain} fallback="–" />
                       </td>
                       <td
                         className={`hidden md:table-cell px-5 py-2.5 text-right font-mono ${gainClass(pct)}`}
                       >
-                        {pct != null ? formatPct(pct) : "\u2013"}
+                        <Pct value={pct} digits={2} signed fallback="–" />
                       </td>
                     </tr>
                   );
@@ -319,31 +287,31 @@ export default async function SecurityDetailPage(props: {
                       Total
                     </td>
                     <td className="px-5 py-2.5 text-right font-mono font-semibold text-ink">
-                      {positions
-                        .reduce((sum, p) => sum + p.quantity, 0)
-                        .toLocaleString()}
+                      <Shares value={positions.reduce((sum, p) => sum + p.quantity, 0)} />
                     </td>
                     <td className="px-5 py-2.5 text-right font-mono text-ink-dim">
-                      {formatCurrency(detail.totalCostBasis)}
+                      <Money value={detail.totalCostBasis} />
                     </td>
                     <td className="px-5 py-2.5 text-right font-mono font-semibold text-ink">
-                      {formatCurrency(detail.totalValue)}
+                      <Money value={detail.totalValue} />
                     </td>
                     <td
                       className={`px-5 py-2.5 text-right font-mono font-semibold ${gainClass(detail.totalUnrealizedGain)}`}
                     >
-                      {formatCurrency(detail.totalUnrealizedGain)}
+                      <Money value={detail.totalUnrealizedGain} />
                     </td>
                     <td
                       className={`hidden md:table-cell px-5 py-2.5 text-right font-mono ${gainClass(detail.totalUnrealizedGain)}`}
                     >
-                      {detail.totalCostBasis > 0
-                        ? formatPct(
-                            (detail.totalUnrealizedGain /
-                              detail.totalCostBasis) *
-                              100
-                          )
-                        : "\u2013"}
+                      {detail.totalCostBasis > 0 ? (
+                        <Pct
+                          value={(detail.totalUnrealizedGain / detail.totalCostBasis) * 100}
+                          digits={2}
+                          signed
+                        />
+                      ) : (
+                        "\u2013"
+                      )}
                     </td>
                   </tr>
                 </tfoot>
@@ -396,17 +364,15 @@ export default async function SecurityDetailPage(props: {
                       {lot.account_name}
                     </td>
                     <td className="px-5 py-2.5 text-right font-mono text-ink">
-                      {lot.quantity_remaining}
+                      <Shares value={lot.quantity_remaining} />
                     </td>
                     <td className="px-5 py-2.5 text-right font-mono text-ink-dim">
-                      {formatCurrency(lot.adjusted_cost_basis)}
+                      <Money value={lot.adjusted_cost_basis} />
                     </td>
                     <td
                       className={`px-5 py-2.5 text-right font-mono ${gainClass(lot.unrealized_gain)}`}
                     >
-                      {lot.unrealized_gain != null
-                        ? formatCurrency(lot.unrealized_gain)
-                        : "\u2013"}
+                      <Money value={lot.unrealized_gain} fallback="–" />
                     </td>
                     <td className="px-5 py-2.5 text-center">
                       <span
@@ -466,15 +432,15 @@ export default async function SecurityDetailPage(props: {
                       {sale.account_name}
                     </td>
                     <td className="hidden md:table-cell px-5 py-2.5 text-right font-mono text-ink">
-                      {sale.quantity_sold}
+                      <Shares value={sale.quantity_sold} />
                     </td>
                     <td className="px-5 py-2.5 text-right font-mono text-ink-dim">
-                      {formatCurrency(sale.proceeds)}
+                      <Money value={sale.proceeds} />
                     </td>
                     <td
                       className={`px-5 py-2.5 text-right font-mono ${gainClass(sale.realized_gain_loss)}`}
                     >
-                      {formatCurrency(sale.realized_gain_loss)}
+                      <Money value={sale.realized_gain_loss} />
                     </td>
                     <td className="px-5 py-2.5 text-center">
                       <span
@@ -551,10 +517,10 @@ export default async function SecurityDetailPage(props: {
                         {tg.holding_days}
                       </td>
                       <td className={`px-5 py-2.5 text-right font-mono ${gainClass(tg.realized_pnl)}`}>
-                        {formatCurrency(tg.realized_pnl)}
+                        <Money value={tg.realized_pnl} />
                       </td>
                       <td className={`px-5 py-2.5 text-right font-mono ${gainClass(tg.return_pct)}`}>
-                        {tg.return_pct >= 0 ? "+" : ""}{tg.return_pct.toFixed(1)}%
+                        <Pct value={tg.return_pct} digits={1} signed />
                       </td>
                     </tr>
                   );
@@ -634,15 +600,13 @@ export default async function SecurityDetailPage(props: {
                       {t.account_name}
                     </td>
                     <td className="px-5 py-2.5 text-right font-mono text-ink">
-                      {t.quantity != null ? t.quantity.toLocaleString() : "\u2013"}
+                      <Shares value={t.quantity} fallback="–" />
                     </td>
                     <td className="hidden md:table-cell px-5 py-2.5 text-right font-mono text-ink-dim">
-                      {t.price_per_share != null
-                        ? formatPrecise(t.price_per_share)
-                        : "\u2013"}
+                      <Money value={t.price_per_share} precise fallback="–" />
                     </td>
                     <td className="px-5 py-2.5 text-right font-mono text-ink">
-                      {t.amount != null ? formatCurrency(t.amount) : "\u2013"}
+                      <Money value={t.amount} fallback="–" />
                     </td>
                   </tr>
                 ))}
@@ -843,13 +807,13 @@ export default async function SecurityDetailPage(props: {
                         </Link>
                       </td>
                       <td className="px-5 py-2.5 text-right font-mono text-ink">
-                        {formatPrecise(o.strike_price)}
+                        <Money value={o.strike_price} precise />
                       </td>
                       <td className="px-5 py-2.5 font-mono text-ink-dim text-xs">
                         {o.expiration_date}
                       </td>
                       <td className={`px-5 py-2.5 text-right font-mono ${o.quantity < 0 ? "text-down" : "text-ink"}`}>
-                        {o.quantity > 0 ? `+${o.quantity}` : o.quantity}
+                        {o.quantity > 0 ? "+" : ""}<Shares value={o.quantity} />
                       </td>
                     </tr>
                   ))}

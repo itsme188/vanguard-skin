@@ -22,6 +22,8 @@ import { FixedIncomeCard } from "./FixedIncomeCard";
 import { OptionsGreeksCard } from "./OptionsGreeksCard";
 import { OptionsStrategies } from "./OptionsStrategies";
 import { ExpirationCalendar } from "./ExpirationCalendar";
+import { Pct, PrivateText, usePrivateFormatter } from "@/lib/privacy/components";
+import { usePrivacy } from "@/lib/privacy/context";
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis,
 } from "recharts";
@@ -125,9 +127,14 @@ export function AnalysisView({
   const router = useRouter();
   const searchParams = useSearchParams();
   const { toast } = useToast();
+  const { isPrivate } = usePrivacy();
   const [showCoverage, setShowCoverage] = useState(false);
   const [classifyLoading, setClassifyLoading] = useState(false);
   const [factorClassifyLoading, setFactorClassifyLoading] = useState(false);
+  const pctTickFormatter = usePrivateFormatter((v: number) => `${v.toFixed(0)}%`);
+  const pctTooltipFormatter = usePrivateFormatter(
+    (v: number | string | undefined) => `${Number(v).toFixed(1)}%`,
+  );
 
   function navigate(updates: Record<string, string>) {
     const params = new URLSearchParams(searchParams.toString());
@@ -195,8 +202,8 @@ export function AnalysisView({
       {/* Data coverage warning */}
       {dataCoverage.coveragePct < 90 && (
         <div role="alert" className="bg-gold/5 border border-gold/20 rounded-lg px-4 py-3 text-sm text-gold">
-          Analysis covers {formatMoney(dataCoverage.holdingsTotal)} of{" "}
-          {formatMoney(dataCoverage.snapshotTotal)} ({dataCoverage.coveragePct}% of portfolio).
+          Analysis covers <PrivateText>{formatMoney(dataCoverage.holdingsTotal)}</PrivateText> of{" "}
+          <PrivateText>{formatMoney(dataCoverage.snapshotTotal)}</PrivateText> (<PrivateText>{dataCoverage.coveragePct}%</PrivateText> of portfolio).
           {dataCoverage.missingAccounts.length > 0 && (
             <> {dataCoverage.missingAccounts.join(", ")} missing holdings data.</>
           )}
@@ -327,7 +334,7 @@ export function AnalysisView({
                   fontWeight={600}
                   fontFamily="var(--font-geist-mono), monospace"
                 >
-                  {formatMoney(totalValue)}
+                  {isPrivate ? "•••" : formatMoney(totalValue)}
                 </text>
               </PieChart>
             </ResponsiveContainer>
@@ -366,10 +373,10 @@ export function AnalysisView({
                       <span className="text-ink">{row.group_name}</span>
                     </td>
                     <td className="text-right py-2 pr-4 font-mono text-ink-dim">
-                      {formatMoney(row.total_market_value)}
+                      <PrivateText>{formatMoney(row.total_market_value)}</PrivateText>
                     </td>
                     <td className="text-right py-2 pr-4 font-mono text-ink-dim">
-                      {row.percentage?.toFixed(1) ?? "—"}%
+                      <Pct value={row.percentage} digits={1} />
                     </td>
                     <td className="text-right py-2 font-mono text-ink-faint">
                       {row.position_count}
@@ -470,10 +477,10 @@ export function AnalysisView({
                     layout="vertical"
                     margin={{ left: 60, right: 20 }}
                   >
-                    <XAxis type="number" tickFormatter={(v: number) => `${v.toFixed(0)}%`} tick={{ fill: "#94A3B8", fontSize: 11 }} />
+                    <XAxis type="number" tickFormatter={pctTickFormatter} tick={{ fill: "#94A3B8", fontSize: 11 }} />
                     <YAxis type="category" dataKey="symbol" tick={{ fill: "#E5E7EB", fontSize: 11 }} width={55} />
                     <Tooltip
-                      formatter={(value: number | string | undefined) => [`${Number(value).toFixed(1)}%`, "Weight"]}
+                      formatter={(value: number | string | undefined) => [pctTooltipFormatter(value), "Weight"]}
                       contentStyle={{
                         backgroundColor: "#0F1219",
                         border: "1px solid #1E2533",
@@ -491,7 +498,9 @@ export function AnalysisView({
             {concentration.warnings.length > 0 && (
               <div className="mt-4 space-y-1">
                 {concentration.warnings.slice(0, 8).map((w, i) => (
-                  <p key={i} className="text-xs text-gold">{w}</p>
+                  <p key={i} className="text-xs text-gold">
+                    {/\d/.test(w) ? <PrivateText>{w}</PrivateText> : w}
+                  </p>
                 ))}
               </div>
             )}

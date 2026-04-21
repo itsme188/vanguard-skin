@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { PrivateText } from "@/lib/privacy/components";
 
 interface TaxReportSummary {
   year: number;
@@ -109,7 +110,7 @@ export function TaxReportCard({ year }: { year: number }) {
           <div className="bg-raised border border-edge rounded-lg px-3 py-2.5">
             <div className="text-[10px] text-ink-faint uppercase tracking-wider mb-1">Short-Term</div>
             <div className={`text-base font-mono tabular-nums font-semibold ${report.shortTermTotal.gainLoss >= 0 ? "text-up" : "text-down"}`}>
-              {formatMoney(report.shortTermTotal.gainLoss)}
+              <PrivateText>{formatMoney(report.shortTermTotal.gainLoss)}</PrivateText>
             </div>
             <div className="text-[10px] text-ink-faint mt-0.5">{report.shortTermRows?.length ?? 0} sales</div>
           </div>
@@ -117,7 +118,7 @@ export function TaxReportCard({ year }: { year: number }) {
           <div className="bg-raised border border-edge rounded-lg px-3 py-2.5">
             <div className="text-[10px] text-ink-faint uppercase tracking-wider mb-1">Long-Term</div>
             <div className={`text-base font-mono tabular-nums font-semibold ${report.longTermTotal.gainLoss >= 0 ? "text-up" : "text-down"}`}>
-              {formatMoney(report.longTermTotal.gainLoss)}
+              <PrivateText>{formatMoney(report.longTermTotal.gainLoss)}</PrivateText>
             </div>
             <div className="text-[10px] text-ink-faint mt-0.5">{report.longTermRows?.length ?? 0} sales</div>
           </div>
@@ -125,7 +126,7 @@ export function TaxReportCard({ year }: { year: number }) {
           <div className="bg-raised border border-edge rounded-lg px-3 py-2.5">
             <div className="text-[10px] text-ink-faint uppercase tracking-wider mb-1">Net Gain/Loss</div>
             <div className={`text-base font-mono tabular-nums font-semibold ${totalGainLoss >= 0 ? "text-up" : "text-down"}`}>
-              {formatMoney(totalGainLoss)}
+              <PrivateText>{formatMoney(totalGainLoss)}</PrivateText>
             </div>
             <div className="text-[10px] text-ink-faint mt-0.5">{totalSales} total sales</div>
           </div>
@@ -151,7 +152,7 @@ export function TaxReportCard({ year }: { year: number }) {
               {report.washSaleWarnings.map((w, i) => (
                 <div key={i} className="text-xs text-ink-dim">
                   <span className="font-mono font-medium text-ink">{w.symbol}</span>
-                  {" \u2014 "}Sold {w.saleDate} (loss {formatMoney(w.lossAmount)}), repurchased {w.purchaseDate}
+                  {" \u2014 "}Sold {w.saleDate} (loss <PrivateText>{formatMoney(w.lossAmount)}</PrivateText>), repurchased {w.purchaseDate}
                 </div>
               ))}
             </div>

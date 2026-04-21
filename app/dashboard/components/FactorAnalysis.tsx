@@ -1,7 +1,9 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, type ReactNode } from "react";
 import type { FactorAnalysisResult, FactorTilt } from "@/lib/compute/factors";
+import { Pct } from "@/lib/privacy/components";
+import { usePrivacy } from "@/lib/privacy/context";
 
 // ─── Formatters ──────────────────────────────────────────────────
 
@@ -101,13 +103,13 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
             />
             <MetricCell
               label="Alpha"
-              value={formatPct(reg.alpha, 2)}
+              value={<Pct value={reg.alpha * 100} digits={2} signed />}
               hint="Annualized excess return"
               color={reg.alpha >= 0 ? "up" : "down"}
             />
             <MetricCell
               label="R²"
-              value={`${(reg.rSquared * 100).toFixed(1)}%`}
+              value={<Pct value={reg.rSquared * 100} digits={1} />}
               hint={
                 reg.rSquared > 0.8
                   ? "High market dependence"
@@ -119,7 +121,7 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
             />
             <MetricCell
               label="Tracking Error"
-              value={formatPct(reg.trackingError, 2)}
+              value={<Pct value={reg.trackingError * 100} digits={2} signed />}
               hint="Annualized active risk"
               color="neutral"
             />
@@ -160,7 +162,7 @@ function MetricCell({
   color,
 }: {
   label: string;
-  value: string;
+  value: ReactNode;
   hint: string;
   color: "up" | "down" | "neutral" | "amber" | "blue";
 }) {
@@ -200,6 +202,8 @@ function TiltBar({ tilt }: { tilt: FactorTilt }) {
       ? [...significant, { label: "Other", weight: other }]
       : significant;
 
+  const { isPrivate } = usePrivacy();
+
   return (
     <div>
       <div className="text-xs font-medium text-ink mb-1.5">{tilt.dimension}</div>
@@ -214,7 +218,11 @@ function TiltBar({ tilt }: { tilt: FactorTilt }) {
               width: `${bucket.weight * 100}%`,
               backgroundColor: TILT_COLORS[i % TILT_COLORS.length],
             }}
-            title={`${bucket.label}: ${(bucket.weight * 100).toFixed(1)}%`}
+            title={
+              isPrivate
+                ? `${bucket.label}: •••`
+                : `${bucket.label}: ${(bucket.weight * 100).toFixed(1)}%`
+            }
           />
         ))}
       </div>
@@ -228,7 +236,7 @@ function TiltBar({ tilt }: { tilt: FactorTilt }) {
               style={{ backgroundColor: TILT_COLORS[i % TILT_COLORS.length] }}
             />
             {bucket.label}
-            <span className="font-mono text-ink-dim">{(bucket.weight * 100).toFixed(0)}%</span>
+            <Pct value={bucket.weight * 100} digits={0} className="font-mono text-ink-dim" />
           </span>
         ))}
       </div>

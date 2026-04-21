@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import type { LevelReviewStatus } from "@/lib/types";
+import { Money, Pct } from "@/lib/privacy/components";
 import { useToast } from "../../components/Toast";
 
 interface PendingLevel {
@@ -29,11 +30,9 @@ function formatPriceSourceLabel(source: string): string {
   return `${m[1].toUpperCase()} ${m[2]}`;
 }
 
-function distancePct(level: number, current: number | null): string | null {
+function distancePctValue(level: number, current: number | null): number | null {
   if (current == null) return null;
-  const pct = ((current - level) / level) * 100;
-  const sign = pct >= 0 ? "+" : "";
-  return `${sign}${pct.toFixed(1)}%`;
+  return ((current - level) / level) * 100;
 }
 
 export default function LevelsReviewPage() {
@@ -152,7 +151,7 @@ export default function LevelsReviewPage() {
               </h2>
               <ul className="space-y-2">
                 {rows.map((l) => {
-                  const dist = distancePct(l.price, l.current_price);
+                  const distVal = distancePctValue(l.price, l.current_price);
                   return (
                     <li
                       key={l.id}
@@ -170,16 +169,16 @@ export default function LevelsReviewPage() {
                             {l.level_type.replace("_", " ")}
                           </span>
                           <span className="text-sm font-mono text-ink">
-                            @ ${l.price.toFixed(2)}
+                            @ <Money value={l.price} precise />
                           </span>
                           {l.price_source && l.price_source !== "static" && (
                             <span className="text-[9px] px-1 py-0.5 rounded bg-raised text-ink-faint uppercase tracking-wider">
                               {formatPriceSourceLabel(l.price_source)}
                             </span>
                           )}
-                          {dist && (
+                          {distVal !== null && (
                             <span className="text-[11px] text-ink-faint font-mono">
-                              {dist} vs ${l.current_price!.toFixed(2)}
+                              <Pct value={distVal} digits={1} signed /> vs <Money value={l.current_price} precise />
                             </span>
                           )}
                         </div>

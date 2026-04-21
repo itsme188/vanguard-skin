@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import type { ScenarioResult } from "@/lib/compute/scenarios";
+import { PrivateText } from "@/lib/privacy/components";
 
 // ─── Formatters ──────────────────────────────────────────────────
 
@@ -126,7 +127,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-medium text-ink">Scenario Modeling</h3>
         <span className="text-xs text-ink-faint">
-          Current: <span className="font-mono text-ink">{formatMoney(currentValue)}</span>
+          Current: <PrivateText className="font-mono text-ink">{formatMoney(currentValue)}</PrivateText>
         </span>
       </div>
 
@@ -170,25 +171,25 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
 
               {/* Impact summary */}
               <div className="flex items-baseline gap-3 mt-3">
-                <span
+                <PrivateText
                   className={`text-lg font-mono tabular-nums font-semibold ${
                     isPositive ? "text-up" : "text-down"
                   }`}
                 >
                   {formatPct(result.estimatedChangePercent)}
-                </span>
-                <span
+                </PrivateText>
+                <PrivateText
                   className={`text-sm font-mono tabular-nums ${
                     isPositive ? "text-up/70" : "text-down/70"
                   }`}
                 >
                   {formatMoney(result.estimatedChange)}
-                </span>
+                </PrivateText>
               </div>
 
               {/* Estimated new value */}
               <div className="mt-1 text-[10px] text-ink-faint">
-                Est. value: <span className="font-mono">{formatMoney(result.estimatedPortfolioValue)}</span>
+                Est. value: <PrivateText className="font-mono">{formatMoney(result.estimatedPortfolioValue)}</PrivateText>
               </div>
 
               {/* ── Expanded detail ── */}
@@ -215,12 +216,12 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                               </span>
                             </div>
                             <div className="flex items-center gap-3">
-                              <span className="font-mono tabular-nums text-down">
+                              <PrivateText className="font-mono tabular-nums text-down">
                                 {formatPct(pos.changePercent)}
-                              </span>
-                              <span className="font-mono tabular-nums text-down/70 w-16 text-right">
+                              </PrivateText>
+                              <PrivateText className="font-mono tabular-nums text-down/70 w-16 text-right">
                                 {formatMoney(pos.estimatedChange)}
-                              </span>
+                              </PrivateText>
                             </div>
                           </div>
                         ))}
@@ -249,12 +250,12 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                               </span>
                             </div>
                             <div className="flex items-center gap-3">
-                              <span className="font-mono tabular-nums text-up">
+                              <PrivateText className="font-mono tabular-nums text-up">
                                 {formatPct(pos.changePercent)}
-                              </span>
-                              <span className="font-mono tabular-nums text-up/70 w-16 text-right">
+                              </PrivateText>
+                              <PrivateText className="font-mono tabular-nums text-up/70 w-16 text-right">
                                 {formatMoney(pos.estimatedChange)}
-                              </span>
+                              </PrivateText>
                             </div>
                           </div>
                         ))}

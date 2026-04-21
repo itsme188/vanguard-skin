@@ -1,21 +1,6 @@
 import type { AccountSummary } from "@/lib/queries/dashboard";
 import Link from "next/link";
-
-function formatCurrency(value: number | null): string {
-  if (value === null) return "\u2014";
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(value);
-}
-
-function formatPercent(value: number | null): string {
-  if (value === null) return "\u2014";
-  const sign = value >= 0 ? "+" : "";
-  return `${sign}${value.toFixed(2)}%`;
-}
+import { Money, Pct } from "@/lib/privacy/components";
 
 function daysAgo(dateStr: string): number {
   const then = new Date(dateStr + "T00:00:00");
@@ -69,7 +54,7 @@ export function AccountSummaryCards({
           <Link
             key={account.id}
             href={`/dashboard/accounts?id=${account.id}`}
-            aria-label={`${account.name} — ${account.latestValue !== null ? formatCurrency(account.latestValue) : "no data"}`}
+            aria-label={`${account.name} portfolio value`}
             className="group rounded-xl border border-edge bg-panel p-5 hover:border-edge-strong hover:bg-raised/50 transition-all focus-ring"
           >
             {/* Header: account name + date label */}
@@ -100,38 +85,46 @@ export function AccountSummaryCards({
 
             {/* Primary value: canonical (statement) or live */}
             <div className="text-2xl font-semibold font-mono tabular-nums tracking-tight">
-              {hasEstimate
-                ? formatCurrency(account.canonicalValue)
-                : formatCurrency(account.latestValue)}
+              <Money value={hasEstimate ? account.canonicalValue : account.latestValue} />
             </div>
 
             {/* Primary change: statement-to-statement or live change */}
             {hasEstimate ? (
               canonicalChange !== null && (
                 <div className="mt-1.5 flex items-center gap-2">
-                  <span className={`text-sm font-mono tabular-nums ${canonicalChange >= 0 ? "text-up" : "text-down"}`}>
-                    {canonicalChange >= 0 ? "+" : ""}{formatCurrency(canonicalChange)}
-                  </span>
-                  <span className={`text-xs px-1.5 py-0.5 rounded font-mono tabular-nums ${
-                    canonicalChangePct != null && canonicalChangePct >= 0
-                      ? "bg-up-tint text-up" : "bg-down-tint text-down"
-                  }`}>
-                    {formatPercent(canonicalChangePct)}
-                  </span>
+                  <Money
+                    value={canonicalChange}
+                    signed
+                    className={`text-sm font-mono tabular-nums ${canonicalChange >= 0 ? "text-up" : "text-down"}`}
+                  />
+                  <Pct
+                    value={canonicalChangePct}
+                    digits={2}
+                    signed
+                    className={`text-xs px-1.5 py-0.5 rounded font-mono tabular-nums ${
+                      canonicalChangePct != null && canonicalChangePct >= 0
+                        ? "bg-up-tint text-up" : "bg-down-tint text-down"
+                    }`}
+                  />
                 </div>
               )
             ) : (
               account.monthlyChange !== null && (
                 <div className="mt-1.5 flex items-center gap-2">
-                  <span className={`text-sm font-mono tabular-nums ${account.monthlyChange >= 0 ? "text-up" : "text-down"}`}>
-                    {account.monthlyChange >= 0 ? "+" : ""}{formatCurrency(account.monthlyChange)}
-                  </span>
-                  <span className={`text-xs px-1.5 py-0.5 rounded font-mono tabular-nums ${
-                    account.monthlyChangePercent != null && account.monthlyChangePercent >= 0
-                      ? "bg-up-tint text-up" : "bg-down-tint text-down"
-                  }`}>
-                    {formatPercent(account.monthlyChangePercent)}
-                  </span>
+                  <Money
+                    value={account.monthlyChange}
+                    signed
+                    className={`text-sm font-mono tabular-nums ${account.monthlyChange >= 0 ? "text-up" : "text-down"}`}
+                  />
+                  <Pct
+                    value={account.monthlyChangePercent}
+                    digits={2}
+                    signed
+                    className={`text-xs px-1.5 py-0.5 rounded font-mono tabular-nums ${
+                      account.monthlyChangePercent != null && account.monthlyChangePercent >= 0
+                        ? "bg-up-tint text-up" : "bg-down-tint text-down"
+                    }`}
+                  />
                 </div>
               )
             )}
@@ -141,7 +134,7 @@ export function AccountSummaryCards({
               <div className="mt-3 pt-2.5 border-t border-edge/50">
                 <div className="flex items-baseline justify-between">
                   <span className="text-lg font-mono tabular-nums text-gold/80">
-                    ~{formatCurrency(account.estimatedValue)}
+                    ~<Money value={account.estimatedValue} />
                   </span>
                   <span className="text-[10px] font-mono text-gold/60">
                     est. +{daysAgo(account.canonicalDate!)}d
@@ -149,7 +142,7 @@ export function AccountSummaryCards({
                 </div>
                 {estimateChange !== null && (
                   <div className="mt-0.5 text-[11px] font-mono text-ink-faint">
-                    {estimateChange >= 0 ? "+" : ""}{formatCurrency(estimateChange)} since statement
+                    <Money value={estimateChange} signed /> since statement
                   </div>
                 )}
               </div>
@@ -159,17 +152,16 @@ export function AccountSummaryCards({
             {twrByAccount?.get(account.id) && (
               <div className="mt-1.5 flex items-center gap-1.5 text-xs text-ink-faint">
                 <span>TWR</span>
-                <span
+                <Pct
+                  value={twrByAccount.get(account.id)!.totalReturn * 100}
+                  digits={2}
+                  signed
                   className={`font-mono tabular-nums ${
                     twrByAccount.get(account.id)!.totalReturn >= 0
                       ? "text-up"
                       : "text-down"
                   }`}
-                >
-                  {formatPercent(
-                    twrByAccount.get(account.id)!.totalReturn * 100
-                  )}
-                </span>
+                />
               </div>
             )}
           </Link>

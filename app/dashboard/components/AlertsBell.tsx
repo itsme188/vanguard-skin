@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
+import { Money } from "@/lib/privacy/components";
 
 interface PreviewAlert {
   id: number;
@@ -149,9 +150,9 @@ export function AlertsBell() {
                     </div>
                     {a.level && (
                       <p className="text-[10px] text-ink-faint mt-0.5">
-                        {a.level.level_type.replace("_", " ")} @ ${a.level.price.toFixed(2)}
+                        {a.level.level_type.replace("_", " ")} @ <Money value={a.level.price} precise />
                         <span className="ml-1.5 text-ink-dim">
-                          hit ${a.triggered_price.toFixed(2)}
+                          hit <Money value={a.triggered_price} precise />
                         </span>
                         {a.level.source_author && (
                           <span className="text-ink-faint italic"> — {a.level.source_author}</span>

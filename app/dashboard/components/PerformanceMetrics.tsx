@@ -2,27 +2,13 @@
 
 import { useState, useCallback } from "react";
 import type { PortfolioTotals } from "@/lib/queries/dashboard";
+import { Money, Pct } from "@/lib/privacy/components";
 
 export interface TwrPeriod {
   label: string;
   totalReturn: number | null;
   annualizedReturn: number | null;
   xirr?: number | null;
-}
-
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(value);
-}
-
-function formatReturn(value: number | null): string {
-  if (value === null) return "\u2014";
-  const sign = value >= 0 ? "+" : "";
-  return `${sign}${(value * 100).toFixed(2)}%`;
 }
 
 /** Format a YYYY-MM-DD string for display */
@@ -105,7 +91,7 @@ export function PerformanceMetrics({
           </div>
           <div className="text-4xl font-semibold font-mono tabular-nums tracking-tight mt-1">
             {dataQuality === "estimated" ? "~" : ""}
-            {formatCurrency(totals.totalValue)}
+            <Money value={totals.totalValue} />
             {dataQuality === "estimated" && (
               <span
                 className="text-sm text-gold font-normal ml-2"
@@ -119,24 +105,23 @@ export function PerformanceMetrics({
 
         {totals.totalPreviousValue > 0 && (
           <div className="flex items-center gap-3">
-            <span
+            <Money
+              value={totals.totalChange}
+              signed
               className={`text-lg font-mono tabular-nums ${
                 totals.totalChange >= 0 ? "text-up" : "text-down"
               }`}
-            >
-              {totals.totalChange >= 0 ? "+" : ""}
-              {formatCurrency(totals.totalChange)}
-            </span>
-            <span
+            />
+            <Pct
+              value={totals.totalChangePercent}
+              digits={2}
+              signed
               className={`text-sm px-2 py-0.5 rounded font-mono tabular-nums ${
                 totals.totalChangePercent >= 0
                   ? "bg-up-tint text-up"
                   : "bg-down-tint text-down"
               }`}
-            >
-              {totals.totalChangePercent >= 0 ? "+" : ""}
-              {totals.totalChangePercent.toFixed(2)}%
-            </span>
+            />
           </div>
         )}
       </div>
@@ -180,16 +165,17 @@ export function PerformanceMetrics({
                 <span className="text-[11px] text-ink-faint uppercase tracking-widest">
                   TWR
                 </span>
-                <span
+                <Pct
+                  value={activePeriod.totalReturn * 100}
+                  digits={2}
+                  signed
                   className={`text-lg font-mono tabular-nums font-semibold ${
                     activePeriod.totalReturn >= 0 ? "text-up" : "text-down"
                   }`}
-                >
-                  {formatReturn(activePeriod.totalReturn)}
-                </span>
+                />
                 {activePeriod.annualizedReturn !== null && (
                   <span className="text-xs text-ink-faint font-mono tabular-nums">
-                    ({formatReturn(activePeriod.annualizedReturn)} ann.)
+                    (<Pct value={activePeriod.annualizedReturn * 100} digits={2} signed /> ann.)
                   </span>
                 )}
               </div>
@@ -200,15 +186,16 @@ export function PerformanceMetrics({
                 <span className="text-[11px] text-ink-faint uppercase tracking-widest">
                   XIRR
                 </span>
-                <span
+                <Pct
+                  value={activePeriod.xirr == null ? null : activePeriod.xirr * 100}
+                  digits={2}
+                  signed
                   className={`text-lg font-mono tabular-nums font-semibold ${
                     activePeriod.xirr == null
                       ? "text-ink-faint"
                       : activePeriod.xirr >= 0 ? "text-up" : "text-down"
                   }`}
-                >
-                  {activePeriod.xirr == null ? "\u2014" : formatReturn(activePeriod.xirr)}
-                </span>
+                />
               </div>
             )}
 

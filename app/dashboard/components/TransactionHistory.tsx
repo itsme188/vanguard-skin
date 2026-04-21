@@ -1,5 +1,6 @@
 import type { TransactionWithSecurity } from "@/lib/queries/transactions";
 import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
+import { Money, Shares } from "@/lib/privacy/components";
 import { ScrollFade } from "./ScrollFade";
 
 const TYPE_STYLES: Record<string, string> = {
@@ -13,15 +14,6 @@ const TYPE_STYLES: Record<string, string> = {
   DEPOSIT: "bg-up-tint text-up",
   WITHDRAWAL: "bg-down-tint text-down",
 };
-
-function formatCurrency(value: number | null): string {
-  if (value === null) return "\u2014";
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-  }).format(value);
-}
 
 export function TransactionHistory({
   transactions,
@@ -91,14 +83,10 @@ export function TransactionHistory({
                   )}
                 </td>
                 <td className="hidden md:table-cell px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
-                  {txn.quantity !== null
-                    ? new Intl.NumberFormat("en-US", {
-                        maximumFractionDigits: 4,
-                      }).format(txn.quantity)
-                    : "\u2014"}
+                  <Shares value={txn.quantity} digits={4} />
                 </td>
                 <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
-                  {formatCurrency(txn.amount)}
+                  <Money value={txn.amount} precise />
                 </td>
               </tr>
             ))}

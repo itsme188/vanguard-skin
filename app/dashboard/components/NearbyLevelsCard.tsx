@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { LevelNearPrice } from "@/lib/queries/briefing-levels";
+import { Money, Pct } from "@/lib/privacy/components";
 
 /**
  * Overview card surfacing active levels within ~5% of the current price.
@@ -40,13 +41,13 @@ export function NearbyLevelsCard({ levels }: { levels: LevelNearPrice[] }) {
               <span className="text-ink-dim uppercase">
                 {l.level_type.replace("_", " ")}
               </span>
-              <span className="text-ink font-mono">@ ${l.level_price.toFixed(2)}</span>
+              <span className="text-ink font-mono">@ <Money value={l.level_price} precise /></span>
               {l.source_author && (
                 <span className="text-ink-faint italic">— {l.source_author}</span>
               )}
             </span>
             <span className={`font-mono shrink-0 ${distanceColor(l.distance_pct)}`}>
-              {formatDistance(l.distance_pct)}
+              {l.distance_pct > 0 ? "↑" : "↓"} <Pct value={Math.abs(l.distance_pct) * 100} digits={1} />
             </span>
           </li>
         ))}
@@ -56,12 +57,6 @@ export function NearbyLevelsCard({ levels }: { levels: LevelNearPrice[] }) {
       )}
     </section>
   );
-}
-
-function formatDistance(pct: number): string {
-  const abs = Math.abs(pct) * 100;
-  const sign = pct > 0 ? "↑" : "↓";
-  return `${sign} ${abs.toFixed(1)}%`;
 }
 
 // Distance >0 = price is above the level (approaching from above for

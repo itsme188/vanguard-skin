@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { Money } from "@/lib/privacy/components";
 import { SecurityChart } from "./SecurityChart";
 import { MultiChart } from "./MultiChart";
 
@@ -93,9 +94,11 @@ export function ChartsView({
         {/* Price info (single mode only) */}
         {viewMode === "single" && initialPrice && selected?.id === initialSecurity?.id && (
           <div className="text-right">
-            <div className="font-mono text-lg text-ink tabular-nums">
-              ${initialPrice.close_price.toFixed(2)}
-            </div>
+            <Money
+              value={initialPrice.close_price}
+              precise
+              className="font-mono text-lg text-ink tabular-nums block"
+            />
             <div className="text-xs text-ink-faint">
               as of {initialPrice.date}
             </div>

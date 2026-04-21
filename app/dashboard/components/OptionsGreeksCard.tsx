@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, type ReactNode } from "react";
 import type { PortfolioGreeks, PositionGreeks } from "@/lib/compute/options-greeks";
+import { PrivateText } from "@/lib/privacy/components";
 
 /**
  * Portfolio-level Greeks summary + per-position Greeks table.
@@ -34,25 +35,25 @@ export function OptionsGreeksCard({ scope }: { scope?: string }) {
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <MetricCell
           label="Net Delta"
-          value={formatNum(data.totalDelta)}
+          value={<PrivateText>{formatNum(data.totalDelta)}</PrivateText>}
           description="Share-equivalents"
           color={(data.totalDelta ?? 0) > 0 ? "text-up" : (data.totalDelta ?? 0) < 0 ? "text-down" : "text-ink"}
         />
         <MetricCell
           label="Net Gamma"
-          value={formatNum(data.totalGamma)}
+          value={<PrivateText>{formatNum(data.totalGamma)}</PrivateText>}
           description="Per $1 move"
           color="text-ink"
         />
         <MetricCell
           label="Daily Theta"
-          value={formatDollar(data.totalTheta)}
+          value={<PrivateText>{formatDollar(data.totalTheta)}</PrivateText>}
           description="Time decay / day"
           color="text-down"
         />
         <MetricCell
           label="Net Vega"
-          value={formatDollar(data.totalVega)}
+          value={<PrivateText>{formatDollar(data.totalVega)}</PrivateText>}
           description="Per 1% IV move"
           color="text-blue"
         />
@@ -92,7 +93,7 @@ export function OptionsGreeksCard({ scope }: { scope?: string }) {
                     </span>
                   </td>
                   <td className={`hidden md:table-cell text-right py-2 px-2 font-mono ${p.quantity < 0 ? "text-down" : "text-ink"}`}>
-                    {p.quantity > 0 ? `+${p.quantity}` : p.quantity}
+                    <PrivateText>{p.quantity > 0 ? `+${p.quantity}` : String(p.quantity)}</PrivateText>
                   </td>
                   <td className="hidden md:table-cell text-right py-2 px-2 font-mono text-ink-dim">
                     ${p.underlyingPrice.toFixed(2)}
@@ -110,10 +111,18 @@ export function OptionsGreeksCard({ scope }: { scope?: string }) {
                     {gamma != null ? gamma.toFixed(4) : "—"}
                   </td>
                   <td className="text-right py-2 px-2 font-mono text-down">
-                    {theta != null ? `$${theta.toFixed(2)}` : "—"}
+                    {theta != null ? (
+                      <PrivateText>{`$${theta.toFixed(2)}`}</PrivateText>
+                    ) : (
+                      "—"
+                    )}
                   </td>
                   <td className="hidden md:table-cell text-right py-2 px-2 font-mono text-blue">
-                    {vega != null ? `$${vega.toFixed(2)}` : "—"}
+                    {vega != null ? (
+                      <PrivateText>{`$${vega.toFixed(2)}`}</PrivateText>
+                    ) : (
+                      "—"
+                    )}
                   </td>
                 </tr>
               );
@@ -134,7 +143,7 @@ function MetricCell({
   color,
 }: {
   label: string;
-  value: string;
+  value: ReactNode;
   description: string;
   color: string;
 }) {

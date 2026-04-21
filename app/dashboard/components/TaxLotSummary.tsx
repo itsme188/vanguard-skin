@@ -1,13 +1,5 @@
 import type { TaxLotSummary, AccountTaxSummary } from "@/lib/queries/tax-lots";
-
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(value);
-}
+import { Money } from "@/lib/privacy/components";
 
 function GainCard({
   label,
@@ -24,14 +16,13 @@ function GainCard({
       <div className="text-xs font-medium text-ink-faint uppercase tracking-wider mb-2">
         {label}
       </div>
-      <div
-        className={`text-2xl font-semibold font-mono tabular-nums tracking-tight ${
+      <Money
+        value={value}
+        signed
+        className={`block text-2xl font-semibold font-mono tabular-nums tracking-tight ${
           value === 0 ? "text-ink-dim" : isPositive ? "text-up" : "text-down"
         }`}
-      >
-        {isPositive && value !== 0 ? "+" : ""}
-        {formatCurrency(value)}
-      </div>
+      />
       {sublabel && (
         <div className="text-xs text-ink-faint mt-1">{sublabel}</div>
       )}
@@ -95,25 +86,23 @@ export function AccountSummaryCards({
               <div className="text-xs text-ink-faint mb-1.5 truncate">
                 {acct.account_name}
               </div>
-              <div
-                className={`text-lg font-semibold font-mono tabular-nums ${
+              <Money
+                value={acct.shortTermGain}
+                signed
+                className={`block text-lg font-semibold font-mono tabular-nums ${
                   acct.shortTermGain === 0
                     ? "text-ink-dim"
                     : isPositive
                       ? "text-up"
                       : "text-down"
                 }`}
-              >
-                {isPositive && acct.shortTermGain !== 0 ? "+" : ""}
-                {formatCurrency(acct.shortTermGain)}
-              </div>
+              />
               <div className="text-[11px] text-ink-faint mt-1">
                 {acct.totalClosedSales} sale{acct.totalClosedSales !== 1 ? "s" : ""}
                 {acct.longTermGain !== 0 && (
-                  <span>
-                    {" "}· LT: {acct.longTermGain >= 0 ? "+" : ""}
-                    {formatCurrency(acct.longTermGain)}
-                  </span>
+                  <>
+                    {" "}· LT: <Money value={acct.longTermGain} signed />
+                  </>
                 )}
               </div>
             </div>

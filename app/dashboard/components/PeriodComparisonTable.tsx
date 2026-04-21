@@ -1,5 +1,6 @@
 import { db } from "@/lib/db";
 import { computeTwr } from "@/lib/compute/twr";
+import { Pct } from "@/lib/privacy/components";
 
 interface PeriodRow {
   label: string;
@@ -41,12 +42,6 @@ function computeBenchmarkReturn(
   // Quality gate: same-date match means only 1 data point — unreliable
   if (startRow.date === endRow.date) return null;
   return (endRow.close_price - startRow.close_price) / startRow.close_price;
-}
-
-function formatPct(value: number | null): string {
-  if (value == null) return "\u2014";
-  const pct = value * 100;
-  return `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
 }
 
 function valueClass(value: number | null): string {
@@ -149,17 +144,17 @@ export function PeriodComparisonTable() {
               <td
                 className={`px-5 py-2.5 text-right font-mono tabular-nums ${valueClass(row.portfolioReturn)}`}
               >
-                {formatPct(row.portfolioReturn)}
+                <Pct value={row.portfolioReturn != null ? row.portfolioReturn * 100 : null} digits={1} signed />
               </td>
               <td
                 className={`px-5 py-2.5 text-right font-mono tabular-nums ${valueClass(row.benchmarkReturn)}`}
               >
-                {formatPct(row.benchmarkReturn)}
+                <Pct value={row.benchmarkReturn != null ? row.benchmarkReturn * 100 : null} digits={1} signed />
               </td>
               <td
                 className={`px-5 py-2.5 text-right font-mono tabular-nums font-medium ${valueClass(row.alpha)}`}
               >
-                {formatPct(row.alpha)}
+                <Pct value={row.alpha != null ? row.alpha * 100 : null} digits={1} signed />
               </td>
             </tr>
           ))}

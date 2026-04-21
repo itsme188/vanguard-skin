@@ -5,6 +5,7 @@ import type { TradeReview } from "@/lib/types";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
+import { Money, Pct, Shares, PrivateText } from "@/lib/privacy/components";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -547,7 +548,6 @@ function ReviewCard({
 }) {
   const pnlColor =
     review.total_realized_pnl >= 0 ? "text-up" : "text-down";
-  const pnlSign = review.total_realized_pnl >= 0 ? "+" : "";
 
   return (
     <div className="rounded-xl border border-edge bg-panel overflow-hidden">
@@ -573,15 +573,19 @@ function ReviewCard({
             trade{review.total_trades !== 1 ? "s" : ""}
           </span>
           <span className="text-ink-dim">
-            <span className="text-ink font-medium">
-              {(review.win_rate * 100).toFixed(0)}%
-            </span>{" "}
+            <Pct
+              value={review.win_rate * 100}
+              digits={0}
+              className="text-ink font-medium"
+            />{" "}
             win rate
           </span>
           <span className={pnlColor}>
-            <span className="font-mono font-medium">
-              {pnlSign}${review.total_realized_pnl.toFixed(0)}
-            </span>{" "}
+            <Money
+              value={review.total_realized_pnl}
+              signed
+              className="font-mono font-medium"
+            />{" "}
             P&L
           </span>
           {review.profit_factor != null && (
@@ -654,12 +658,12 @@ function ReviewDetail({
       <div className="px-5 py-3 flex flex-wrap items-center gap-4 bg-raised/20">
         <MetricBadge
           label="P&L"
-          value={`${review.total_realized_pnl >= 0 ? "+" : ""}$${review.total_realized_pnl.toFixed(0)}`}
+          value={<Money value={review.total_realized_pnl} signed />}
           color={review.total_realized_pnl >= 0 ? "text-up" : "text-down"}
         />
         <MetricBadge
           label="Win Rate"
-          value={`${(review.win_rate * 100).toFixed(0)}%`}
+          value={<Pct value={review.win_rate * 100} digits={0} />}
           color="text-ink"
         />
         {review.profit_factor != null && (
@@ -760,7 +764,7 @@ function MetricBadge({
   color,
 }: {
   label: string;
-  value: string;
+  value: React.ReactNode;
   color: string;
 }) {
   return (
@@ -796,15 +800,12 @@ function GroupedTradeCards({
     <div className="space-y-3">
       {groupedTrades.map((trade, idx) => {
         const pnlColor = trade.totalPnl >= 0 ? "text-up" : "text-down";
-        const sign = trade.totalPnl >= 0 ? "+" : "";
-        const returnPct =
+        const returnPctValue =
           trade.avgEntryPrice > 0
-            ? (
-                ((trade.exitPrice - trade.avgEntryPrice) /
-                  trade.avgEntryPrice) *
-                100
-              ).toFixed(1)
-            : "0.0";
+            ? ((trade.exitPrice - trade.avgEntryPrice) /
+                trade.avgEntryPrice) *
+              100
+            : 0;
         const isExpanded = expandedTrade === idx;
 
         return (
@@ -824,19 +825,23 @@ function GroupedTradeCards({
                     <span className="font-mono text-sm font-medium text-ink">
                       {trade.symbol}
                     </span>
-                    <span className={`font-mono text-sm ${pnlColor}`}>
-                      {sign}${trade.totalPnl.toFixed(0)}
-                    </span>
-                    <span
-                      className={`font-mono text-xs ${pnlColor}/70`}
-                    >
-                      ({sign}{returnPct}%)
+                    <Money
+                      value={trade.totalPnl}
+                      signed
+                      className={`font-mono text-sm ${pnlColor}`}
+                    />
+                    <span className={`font-mono text-xs ${pnlColor}/70`}>
+                      (<Pct value={returnPctValue} digits={1} signed />)
                     </span>
                   </div>
                   <div className="flex gap-3 text-[11px] text-ink-faint mt-0.5">
                     <span>{trade.maxHoldingDays}d hold</span>
                     <span>
-                      {trade.totalQuantity >= 1 ? trade.totalQuantity.toFixed(0) : trade.totalQuantity.toPrecision(3)} shares
+                      <Shares
+                        value={trade.totalQuantity}
+                        digits={trade.totalQuantity >= 1 ? 0 : 3}
+                      />{" "}
+                      shares
                     </span>
                     {trade.lots.length > 1 && (
                       <span>{trade.lots.length} lots</span>
@@ -894,7 +899,6 @@ function GroupedTradeCards({
                       {trade.lots.map((lot) => {
                         const lotPnlColor =
                           lot.realizedPnl >= 0 ? "text-up" : "text-down";
-                        const lotSign = lot.realizedPnl >= 0 ? "+" : "";
                         return (
                           <div
                             key={lot.id}
@@ -904,17 +908,19 @@ function GroupedTradeCards({
                               {lot.entryDate}
                             </span>
                             <span className="text-ink-faint">
-                              @${lot.entryPrice.toFixed(2)}
+                              @<Money value={lot.entryPrice} precise />
                             </span>
                             <span className="text-ink-faint">
-                              {lot.exitQuantity} shares
+                              <Shares value={lot.exitQuantity} /> shares
                             </span>
                             <span className="text-ink-faint">
                               {lot.holdingDays}d
                             </span>
-                            <span className={lotPnlColor}>
-                              {lotSign}${lot.realizedPnl.toFixed(0)}
-                            </span>
+                            <Money
+                              value={lot.realizedPnl}
+                              signed
+                              className={lotPnlColor}
+                            />
                           </div>
                         );
                       })}

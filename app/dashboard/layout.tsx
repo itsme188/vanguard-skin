@@ -12,6 +12,8 @@ import { MobileNavDrawer } from "./components/MobileNavDrawer";
 import { DigestCatchup } from "./components/DigestCatchup";
 import { AlertsBell } from "./components/AlertsBell";
 import { ReviewBell } from "./components/ReviewBell";
+import { PrivacyToggle } from "./components/PrivacyToggle";
+import { PrivacyProvider } from "@/lib/privacy/context";
 
 export default function DashboardLayout({
   children,
@@ -20,6 +22,7 @@ export default function DashboardLayout({
 }) {
   return (
     <ToastProvider>
+     <PrivacyProvider>
       <div className="min-h-screen bg-canvas">
         <a href="#main-content" className="skip-link">
           Skip to main content
@@ -40,6 +43,7 @@ export default function DashboardLayout({
               <TwsStatus />
               <ReviewBell />
               <AlertsBell />
+              <PrivacyToggle />
               <SettingsModal />
               <span className="hidden md:inline"><AppVersion /></span>
             </div>
@@ -67,6 +71,7 @@ export default function DashboardLayout({
         {/* Mobile bottom navigation (phone only) */}
         <MobileBottomNav />
       </div>
+     </PrivacyProvider>
     </ToastProvider>
   );
 }

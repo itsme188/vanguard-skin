@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { Money, Shares } from "@/lib/privacy/components";
 
 interface ExpiringOption {
   securityId: number;
@@ -105,14 +106,15 @@ export function ExpirationCalendar() {
                         {o.underlying}
                       </span>
                       <span className="text-ink-dim">
-                        {formatStrike(o.strike)} {o.optionType[0]}
+                        <Money value={o.strike} precise /> {o.optionType[0]}
                       </span>
                       <span
                         className={`font-mono ${
                           o.quantity < 0 ? "text-down" : "text-ink-dim"
                         }`}
                       >
-                        {o.quantity > 0 ? `+${o.quantity}` : o.quantity}
+                        {o.quantity > 0 ? "+" : ""}
+                        <Shares value={o.quantity} />
                       </span>
                     </div>
                   ))}
@@ -133,6 +135,3 @@ function formatDate(dateStr: string): string {
   return `${days[d.getUTCDay()]}, ${months[d.getUTCMonth()]} ${d.getUTCDate()}`;
 }
 
-function formatStrike(strike: number): string {
-  return strike % 1 === 0 ? `$${strike}` : `$${strike.toFixed(2)}`;
-}

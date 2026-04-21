@@ -9,6 +9,7 @@ import type {
   SnapshotReconciliation,
   DataHealthSummary,
 } from "@/lib/queries/data-health";
+import { Money } from "@/lib/privacy/components";
 
 interface DataHealthResponse {
   success: boolean;
@@ -375,10 +376,10 @@ export function DataHealthView() {
                     <td className="px-5 py-2 font-mono text-ink">{d.symbol}</td>
                     <td className="px-3 py-2 text-ink-dim font-mono tabular-nums">{d.date}</td>
                     <td className="px-3 py-2 text-right text-ink-dim font-mono tabular-nums">
-                      ${d.priceA.toFixed(2)}
+                      <Money value={d.priceA} precise />
                     </td>
                     <td className="px-3 py-2 text-right text-ink-dim font-mono tabular-nums">
-                      ${d.priceB.toFixed(2)}
+                      <Money value={d.priceB} precise />
                     </td>
                     <td className="px-5 py-2 text-right">
                       <span className={`font-mono tabular-nums ${d.diffPct > 5 ? "text-down" : "text-gold"}`}>
@@ -429,12 +430,10 @@ export function DataHealthView() {
                         {r.snapshotDate}
                       </td>
                       <td className="px-3 py-2 text-right text-ink-dim font-mono tabular-nums">
-                        ${r.snapshotTotal.toLocaleString("en-US", { minimumFractionDigits: 0 })}
+                        <Money value={r.snapshotTotal} />
                       </td>
                       <td className="px-3 py-2 text-right text-ink-dim font-mono tabular-nums">
-                        {r.computedTotal !== null
-                          ? `$${r.computedTotal.toLocaleString("en-US", { minimumFractionDigits: 0 })}`
-                          : "—"}
+                        <Money value={r.computedTotal} />
                       </td>
                       <td className="px-3 py-2 text-right">
                         {r.diffPct !== null ? (

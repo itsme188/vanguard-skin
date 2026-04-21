@@ -6,13 +6,9 @@ import type {
   CorrelationEntry,
   PositionRiskResult,
 } from "@/lib/compute/risk";
+import { Pct } from "@/lib/privacy/components";
 
 // ─── Formatters ──────────────────────────────────────────────────
-
-function formatPct(value: number | null): string {
-  if (value == null) return "\u2014";
-  return `${(value * 100).toFixed(1)}%`;
-}
 
 function formatCorr(value: number): string {
   return value.toFixed(2);
@@ -102,7 +98,7 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
         {data.portfolioVol != null && (
           <span className="text-xs text-ink-faint">
             Portfolio Vol:{" "}
-            <span className="font-mono text-ink">{formatPct(data.portfolioVol)}</span>
+            <Pct value={data.portfolioVol * 100} digits={1} className="font-mono text-ink" />
           </span>
         )}
       </div>
@@ -131,10 +127,10 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
                   )}
                 </td>
                 <td className="text-right py-2 px-3 font-mono tabular-nums text-ink-dim">
-                  {formatPct(pos.weight)}
+                  <Pct value={pos.weight != null ? pos.weight * 100 : null} digits={1} />
                 </td>
                 <td className="text-right py-2 px-3 font-mono tabular-nums text-ink">
-                  {formatPct(pos.annualizedVol)}
+                  <Pct value={pos.annualizedVol != null ? pos.annualizedVol * 100 : null} digits={1} />
                 </td>
                 <td className="text-right py-2 px-3">
                   {pos.correlationWithPortfolio != null ? (
@@ -158,9 +154,11 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
                           }}
                         />
                       </div>
-                      <span className="font-mono tabular-nums text-ink text-xs w-12 text-right">
-                        {formatPct(pos.riskContribution)}
-                      </span>
+                      <Pct
+                        value={pos.riskContribution != null ? pos.riskContribution * 100 : null}
+                        digits={1}
+                        className="font-mono tabular-nums text-ink text-xs w-12 text-right"
+                      />
                     </div>
                   ) : (
                     <span className="text-ink-faint">{"\u2014"}</span>

@@ -10,12 +10,7 @@ import {
   getFactorColor,
   type FactorColumn,
 } from "@/lib/factors";
-
-function formatMoney(value: number): string {
-  if (Math.abs(value) >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`;
-  if (Math.abs(value) >= 1_000) return `$${(value / 1_000).toFixed(0)}K`;
-  return `$${value.toFixed(0)}`;
-}
+import { Pct } from "@/lib/privacy/components";
 
 type SortColumn = FactorColumn | "weight";
 
@@ -154,7 +149,7 @@ export function FactorHeatmap({ rows }: FactorHeatmapProps) {
                   </div>
                 </td>
                 <td className="text-right py-1.5 px-2 font-mono text-ink-dim">
-                  {row.weight_pct.toFixed(1)}%
+                  <Pct value={row.weight_pct} digits={1} />
                 </td>
                 {FACTOR_COLUMNS.map((col, colIdx) => {
                   const value = row[col];
