@@ -42,6 +42,9 @@ interface CalendarViewProps {
   initialEvents: CalendarEvent[];
   initialBriefing: CalendarBriefing | null;
   initialWeekOf: string;
+  // Map of security_id -> active-level count. Keyed as string because the
+  // server serializes Map to a plain object across the boundary.
+  levelCounts?: Record<number, number>;
 }
 
 // ── Component ────────────────────────────────────────────────────
@@ -50,6 +53,7 @@ export function CalendarView({
   initialEvents,
   initialBriefing,
   initialWeekOf,
+  levelCounts = {},
 }: CalendarViewProps) {
   const router = useRouter();
   const [events, setEvents] = useState(initialEvents);
@@ -258,11 +262,21 @@ export function CalendarView({
                             </span>
                             <div className="flex items-center gap-1.5 flex-shrink-0">
                               {event.symbol && event.security_id != null ? (
-                                <SymbolLink
-                                  securityId={event.security_id}
-                                  symbol={event.symbol}
-                                  className="text-xs font-mono font-semibold text-gold"
-                                />
+                                <>
+                                  <SymbolLink
+                                    securityId={event.security_id}
+                                    symbol={event.symbol}
+                                    className="text-xs font-mono font-semibold text-gold"
+                                  />
+                                  {levelCounts[event.security_id] > 0 && (
+                                    <span
+                                      className="text-[9px] px-1 py-0.5 rounded bg-gold/15 text-gold uppercase tracking-wider"
+                                      title={`${levelCounts[event.security_id]} active level${levelCounts[event.security_id] === 1 ? "" : "s"} on ${event.symbol} — earnings + nearby levels often produce outsized moves.`}
+                                    >
+                                      {levelCounts[event.security_id]} level{levelCounts[event.security_id] === 1 ? "" : "s"}
+                                    </span>
+                                  )}
+                                </>
                               ) : event.symbol ? (
                                 <span className="text-xs font-mono font-semibold text-gold">
                                   {event.symbol}
