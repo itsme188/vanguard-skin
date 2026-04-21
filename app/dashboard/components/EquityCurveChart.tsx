@@ -15,6 +15,7 @@ import {
 } from "recharts";
 import type { MonthlySnapshot } from "@/lib/types";
 import type { DailyValuation } from "@/lib/queries/daily-valuations";
+import { usePrivateFormatter } from "@/lib/privacy/components";
 
 const ACCOUNT_COLORS: Record<string, string> = {
   "Vanguard Taxable": "#C9A44E",
@@ -227,6 +228,7 @@ export function EquityCurveChart({
 }) {
   const [selectedRange, setSelectedRange] = useState(5); // default: All
   const [showLines, setShowLines] = useState(showBreakdown);
+  const currencyTickFormatter = usePrivateFormatter(formatCurrency);
 
   // Merge monthly snapshots (authoritative) with daily valuations (inter-month granularity).
   // Monthly snapshots come from actual statements and are always correct.
@@ -319,7 +321,7 @@ export function EquityCurveChart({
                 tickLine={false}
               />
               <YAxis
-                tickFormatter={formatCurrency}
+                tickFormatter={currencyTickFormatter}
                 stroke="#4E5668"
                 tick={{ fontSize: 11 }}
                 axisLine={false}
@@ -337,7 +339,7 @@ export function EquityCurveChart({
                 labelFormatter={(label) => dateFormatter(String(label))}
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 formatter={(value: any, name: any) => [
-                  `$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+                  currencyTickFormatter(Number(value)),
                   String(name) === "total"
                     ? "Total Value"
                     : String(name) === "holdings"
@@ -411,7 +413,7 @@ export function EquityCurveChart({
                 tickLine={false}
               />
               <YAxis
-                tickFormatter={formatCurrency}
+                tickFormatter={currencyTickFormatter}
                 stroke="#4E5668"
                 tick={{ fontSize: 11 }}
                 axisLine={false}
@@ -429,7 +431,7 @@ export function EquityCurveChart({
                 labelFormatter={(label) => dateFormatter(String(label))}
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 formatter={(value: any) => [
-                  `$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+                  currencyTickFormatter(Number(value)),
                   "Value",
                 ]}
               />

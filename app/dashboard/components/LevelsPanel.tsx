@@ -9,6 +9,7 @@ import type {
   LevelTimeframe,
   LevelPriceSource,
 } from "@/lib/types";
+import { Money } from "@/lib/privacy/components";
 import { useToast } from "./Toast";
 
 type EnrichedLevel = SecurityLevel & { effective_price: number | null };
@@ -443,9 +444,7 @@ export function LevelsPanel({
               <div className="flex-1 min-w-0">
                 <div className="flex items-baseline gap-2 flex-wrap">
                   {l.price_source === "static" ? (
-                    <span className="text-sm font-mono font-medium text-ink">
-                      ${l.price.toFixed(2)}
-                    </span>
+                    <Money value={l.price} precise className="text-sm font-mono font-medium text-ink" />
                   ) : (
                     <>
                       <span className="text-sm font-mono font-medium text-ink">
@@ -453,7 +452,7 @@ export function LevelsPanel({
                       </span>
                       {l.effective_price !== null ? (
                         <span className="text-[10px] text-ink-faint">
-                          ≈ ${l.effective_price.toFixed(2)}
+                          ≈ <Money value={l.effective_price} precise />
                         </span>
                       ) : (
                         <span className="text-[10px] text-amber-400" title="Not enough OHLCV history to compute this MA yet — the level won't fire until bars accumulate.">
@@ -474,7 +473,7 @@ export function LevelsPanel({
                   )}
                   {l.is_active === 0 && l.triggered_at && (
                     <span className="text-[10px] text-gold">
-                      triggered @ ${l.triggered_price?.toFixed(2)}
+                      triggered @ <Money value={l.triggered_price} precise />
                     </span>
                   )}
                   {triggeredToday(l.triggered_at) && (

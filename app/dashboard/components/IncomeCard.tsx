@@ -1,4 +1,6 @@
 import { db } from "@/lib/db";
+import { Money, Pct } from "@/lib/privacy/components";
+import { formatUSD } from "@/lib/format";
 
 interface MonthlyIncome {
   year: number;
@@ -57,15 +59,6 @@ function getIncomeSummary(): YearSummary[] {
   return Array.from(yearMap.values()).sort((a, b) => b.year - a.year);
 }
 
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(value);
-}
-
 const MONTH_LABELS = ["J", "F", "M", "A", "M", "J", "J", "A", "S", "O", "N", "D"];
 
 export function IncomeCard() {
@@ -122,7 +115,7 @@ export function IncomeCard() {
             Income ({currentYear.year})
           </h3>
           <div className="text-2xl font-mono font-bold text-ink mt-1">
-            {formatCurrency(currentYear.total)}
+            <Money value={currentYear.total} />
           </div>
         </div>
         {yoyChange !== null && (
@@ -131,8 +124,7 @@ export function IncomeCard() {
               yoyChange >= 0 ? "bg-up/10 text-up" : "bg-down/10 text-down"
             }`}
           >
-            {yoyChange >= 0 ? "+" : ""}
-            {yoyChange.toFixed(1)}% vs {MONTH_LABELS[0]}-{MONTH_LABELS[currentMonth - 1]} {currentYear.year - 1}
+            <Pct value={yoyChange} digits={1} signed /> vs {MONTH_LABELS[0]}-{MONTH_LABELS[currentMonth - 1]} {currentYear.year - 1}
           </span>
         )}
       </div>
@@ -142,13 +134,13 @@ export function IncomeCard() {
         <div>
           <span className="text-ink-faint">Dividends</span>
           <div className="font-mono font-medium text-gold mt-0.5">
-            {formatCurrency(currentYear.dividends)}
+            <Money value={currentYear.dividends} />
           </div>
         </div>
         <div>
           <span className="text-ink-faint">Interest</span>
           <div className="font-mono font-medium text-blue mt-0.5">
-            {formatCurrency(currentYear.interest)}
+            <Money value={currentYear.interest} />
           </div>
         </div>
         {prevYear && prevYtd != null && (
@@ -157,7 +149,7 @@ export function IncomeCard() {
               {MONTH_LABELS[0]}-{MONTH_LABELS[currentMonth - 1]} {prevYear.year}
             </span>
             <div className="font-mono font-medium text-ink-dim mt-0.5">
-              {formatCurrency(prevYtd)}
+              <Money value={prevYtd} />
             </div>
           </div>
         )}
@@ -181,7 +173,7 @@ export function IncomeCard() {
                       : "bg-muted/40"
                 }`}
                 style={{ height: `${Math.max(height, 2)}%` }}
-                title={`${MONTH_LABELS[i]}: ${formatCurrency(value)}`}
+                title={`${MONTH_LABELS[i]}: ${formatUSD(value)}`}
               />
               <span className="text-[9px] text-ink-faint font-mono">
                 {MONTH_LABELS[i]}
