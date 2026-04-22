@@ -18,6 +18,11 @@ export type ResearchDocumentSentiment =
   | "neutral"
   | "mixed";
 
+export type ResearchDocumentProcessingState =
+  | "ready"
+  | "pending_body"
+  | "failed";
+
 export interface ResearchDocument {
   id: number;
   title: string;
@@ -36,6 +41,7 @@ export interface ResearchDocument {
   target_prices: string | null; // JSON string
   ai_model: string | null;
   char_count: number | null;
+  processing_state: ResearchDocumentProcessingState;
   uploaded_at: string;
   processed_at: string;
 }
@@ -52,6 +58,7 @@ export interface ResearchDocumentSummary {
   mentioned_symbols: string | null;
   tags: string | null;
   sentiment: ResearchDocumentSentiment | null;
+  processing_state: ResearchDocumentProcessingState;
   uploaded_at: string;
   char_count: number | null;
 }
@@ -110,7 +117,7 @@ export function listResearchDocuments(
     .prepare(
       `SELECT id, title, author, source, filename, publication_date,
               document_type, summary, mentioned_symbols, tags, sentiment,
-              uploaded_at, char_count
+              processing_state, uploaded_at, char_count
        FROM research_documents
        ${whereSql}
        ORDER BY COALESCE(publication_date, uploaded_at) DESC
@@ -200,7 +207,7 @@ export function searchResearchDocuments(
       `SELECT rd.id, rd.title, rd.author, rd.source, rd.filename,
               rd.publication_date, rd.document_type, rd.summary,
               rd.mentioned_symbols, rd.tags, rd.sentiment,
-              rd.uploaded_at, rd.char_count, rd.key_points,
+              rd.processing_state, rd.uploaded_at, rd.char_count, rd.key_points,
               snippet(research_documents_fts, -1, '<mark>', '</mark>', '…', 20) AS snippet
        FROM research_documents rd
        JOIN research_documents_fts fts ON fts.rowid = rd.id

@@ -26,6 +26,7 @@ export async function GET(
       : [],
     tags: doc.tags ? JSON.parse(doc.tags) : [],
     target_prices: doc.target_prices ? JSON.parse(doc.target_prices) : [],
+    processing_state: doc.processing_state ?? "ready",
   });
 }
 
