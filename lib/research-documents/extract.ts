@@ -51,9 +51,14 @@ export interface ExtractedResearchDocument {
   ai_model: string;
 }
 
+const RAW_TEXT_BEGIN = "---RAW_TEXT_BEGIN---";
+const RAW_TEXT_END = "---RAW_TEXT_END---";
+
 const EXTRACTION_PROMPT = `You are reading a research PDF (analyst report, bank research note, market analysis, or industry primer). Extract structured metadata AND the full plain-text body.
 
-Return ONLY valid JSON matching this exact schema (no markdown, no code fences, no commentary):
+Output format (TWO PARTS, in this exact order):
+
+PART 1 — A single JSON object. No markdown fences, no preamble, just JSON:
 
 {
   "title": "<best document title from cover/header>",
@@ -63,21 +68,31 @@ Return ONLY valid JSON matching this exact schema (no markdown, no code fences, 
   "publication_date": "YYYY-MM-DD" | null,
   "summary": "<2-4 sentence plain-text summary of the document's core thesis — do NOT hallucinate content that is not in the PDF>",
   "key_points": ["<bullet 1>", "<bullet 2>", "..."],
-  "mentioned_symbols": ["AAPL", "NVDA", "..."] (upper-case ticker symbols mentioned; empty array if none),
+  "mentioned_symbols": ["AAPL", "NVDA", "..."],
   "sentiment": "bullish" | "bearish" | "neutral" | "mixed" | null,
   "target_prices": [
     {"symbol": "NVDA", "price": 1200, "horizon": "12mo"}
-  ],
-  "raw_text": "<full plain-text body of the document — preserve paragraph breaks with \\n\\n, preserve table cell separators with \\t, strip decorative whitespace, keep every sentence — this IS the searchable corpus>"
+  ]
 }
 
+PART 2 — On a new line after the JSON, write this exact literal delimiter:
+
+${RAW_TEXT_BEGIN}
+
+Then dump the FULL plain-text body of the document. No JSON escaping — write newlines as real newlines, quotes as real quotes. Preserve paragraph breaks with blank lines. Preserve table cell separators with tabs. Strip decorative whitespace. Keep every sentence — this IS the searchable corpus.
+
+End with this exact literal delimiter on its own line:
+
+${RAW_TEXT_END}
+
 Rules:
-- Do NOT summarize raw_text — it must be the complete document body.
+- Do NOT summarize the body — it must be the complete document text.
 - mentioned_symbols: only real tickers, uppercase, no duplicates, no company names.
 - target_prices: only explicit numeric targets the author states; omit if none.
 - sentiment: reflect the author's stated view; use null if not a directional call.
 - Dates: if only "Q1 2026" or "March 2026" is given, resolve to last day of period (2026-03-31).
-- If content is ambiguous, prefer null over guessing.`;
+- If content is ambiguous, prefer null over guessing.
+- Do NOT output anything outside of PART 1 JSON and PART 2 body. No explanation text.`;
 
 export class ResearchPdfTooLargeError extends Error {
   constructor(bytes: number) {
@@ -121,7 +136,7 @@ export async function extractResearchPdf(
 
   const response = await client.messages.create({
     model: modelId,
-    max_tokens: 16000,
+    max_tokens: 32000,
     messages: [
       {
         role: "user",
@@ -151,24 +166,67 @@ export async function extractResearchPdf(
     );
   }
 
-  const rawText = textBlock.text;
-  // Claude occasionally wraps JSON in ```json fences despite the prompt.
-  const unfenced = rawText
+  return parseClaudeResponse(textBlock.text, modelId);
+}
+
+/**
+ * Parse Claude's two-part response: JSON metadata envelope + sentinel-delimited
+ * raw body. Exported for unit testing.
+ */
+export function parseClaudeResponse(
+  raw: string,
+  modelId: string,
+): ExtractedResearchDocument {
+  const beginIdx = raw.indexOf(RAW_TEXT_BEGIN);
+  if (beginIdx === -1) {
+    throw new ResearchPdfExtractionError(
+      `Claude response missing ${RAW_TEXT_BEGIN} delimiter — raw_text could not be located.`,
+      raw.slice(0, 500),
+    );
+  }
+
+  // JSON is everything before the delimiter. Strip markdown fences + stray
+  // leading/trailing whitespace Claude occasionally emits despite the prompt.
+  let jsonText = raw.slice(0, beginIdx).trim();
+  jsonText = jsonText
     .replace(/^\s*```(?:json)?\s*/i, "")
     .replace(/\s*```\s*$/i, "")
     .trim();
 
-  let parsed: unknown;
+  let parsedMeta: unknown;
   try {
-    parsed = JSON.parse(unfenced);
+    parsedMeta = JSON.parse(jsonText);
   } catch {
     throw new ResearchPdfExtractionError(
-      "Claude response was not valid JSON",
-      unfenced.slice(0, 300),
+      "Metadata JSON (PART 1) did not parse.",
+      jsonText.slice(0, 500),
     );
   }
 
-  return normalizeExtracted(parsed, modelId);
+  // Raw text: everything after the BEGIN delimiter. Strip the END delimiter
+  // if present (not strictly required since we keep up through it, but the
+  // prompt asks for it as a clean terminator).
+  let rawText = raw.slice(beginIdx + RAW_TEXT_BEGIN.length);
+  const endIdx = rawText.indexOf(RAW_TEXT_END);
+  if (endIdx !== -1) {
+    rawText = rawText.slice(0, endIdx);
+  }
+  rawText = rawText.trim();
+
+  if (!rawText) {
+    throw new ResearchPdfExtractionError(
+      "raw_text was empty after the delimiter — nothing to index.",
+      raw.slice(Math.max(0, beginIdx - 100), beginIdx + 200),
+    );
+  }
+
+  // Re-inject raw_text into the metadata object so normalizeExtracted can
+  // apply its existing validation rules.
+  if (parsedMeta && typeof parsedMeta === "object") {
+    (parsedMeta as Record<string, unknown>).raw_text = rawText;
+  }
+
+  return normalizeExtracted(parsedMeta, modelId);
 }
 
 // ─── Normalization helpers ───────────────────────────────────────

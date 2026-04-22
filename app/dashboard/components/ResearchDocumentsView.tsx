@@ -72,7 +72,13 @@ function UploadZone({ onUploadComplete }: UploadZoneProps) {
         });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
-          setError(body.error ?? `Upload failed (HTTP ${res.status})`);
+          const baseMsg = body.error ?? `Upload failed (HTTP ${res.status})`;
+          const snippet = typeof body.snippet === "string" ? body.snippet : null;
+          setError(
+            snippet
+              ? `${baseMsg}\n\nModel output snippet:\n${snippet}`
+              : baseMsg,
+          );
           return;
         }
         setProgressMessage(null);
@@ -129,7 +135,9 @@ function UploadZone({ onUploadComplete }: UploadZoneProps) {
             </div>
           )}
           {error && (
-            <div className="text-xs text-down mt-2">{error}</div>
+            <pre className="text-xs text-down mt-2 whitespace-pre-wrap font-mono max-h-40 overflow-auto">
+              {error}
+            </pre>
           )}
         </div>
         <div className="shrink-0">
