@@ -47,7 +47,7 @@ Headline features not reflected in the v2 archive:
 - ✅ **Phase 1** — AI Gateway routing (commit `8c82c1e`)
 - ✅ **Phase 2** — Workers AI downroute: alertSuggestion → Llama 3.3, newsletterLevelExtraction → Kimi K2.6 (`264bc73`)
 - ✅ **Phase 3** — R2 PDF archival (`264bc73`, migration 033)
-- [ ] **Phase 4** — Workers Cron hybrid pattern. Design doc at [2026-04-21-workers-cron-hybrid.md](2026-04-21-workers-cron-hybrid.md). 4 open questions. Revisit after first missed briefing. ~1 day.
+- ✅ **Phase 4** — Workers Cron hybrid shipped 2026-04-21 (`16ba5a7` Sessions A+B, `3e2c7af` Session C). Live at vanguard-skin-cron.isaac-3d1.workers.dev. Design doc: [2026-04-21-workers-cron-hybrid.md](2026-04-21-workers-cron-hybrid.md).
 
 ---
 
