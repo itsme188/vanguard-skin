@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { normalizeExtracted } from "@/lib/research-documents/extract";
+import {
+  normalizeExtracted,
+  parseClaudeResponse,
+} from "@/lib/research-documents/extract";
 
 describe("normalizeExtracted", () => {
   it("normalizes a well-formed Claude payload", () => {
@@ -104,5 +107,68 @@ describe("normalizeExtracted", () => {
     expect(out.key_points).toEqual([]);
     expect(out.mentioned_symbols).toEqual([]);
     expect(out.target_prices).toEqual([]);
+  });
+});
+
+describe("parseClaudeResponse (two-part format)", () => {
+  const meta = `{
+    "title": "Goldman NVDA Q1",
+    "author": "Jane Doe",
+    "source": "Goldman Sachs",
+    "document_type": "analyst_report",
+    "publication_date": "2026-03-15",
+    "summary": "Buy rated.",
+    "key_points": ["DC +60%"],
+    "mentioned_symbols": ["NVDA"],
+    "sentiment": "bullish",
+    "target_prices": [{"symbol": "NVDA", "price": 1200, "horizon": "12mo"}]
+  }`;
+  const body = 'The full "document" body.\n\nWith paragraphs. And "quotes" that would normally break JSON. Plus newlines that would too.';
+
+  it("parses a clean two-part response", () => {
+    const raw = `${meta}\n---RAW_TEXT_BEGIN---\n${body}\n---RAW_TEXT_END---`;
+    const out = parseClaudeResponse(raw, "claude-sonnet-4-6");
+    expect(out.title).toBe("Goldman NVDA Q1");
+    expect(out.raw_text).toBe(body);
+    expect(out.mentioned_symbols).toEqual(["NVDA"]);
+    expect(out.target_prices).toEqual([
+      { symbol: "NVDA", price: 1200, horizon: "12mo" },
+    ]);
+  });
+
+  it("tolerates missing END delimiter (uses rest of response)", () => {
+    const raw = `${meta}\n---RAW_TEXT_BEGIN---\n${body}`;
+    const out = parseClaudeResponse(raw, "m");
+    expect(out.raw_text).toBe(body);
+  });
+
+  it("tolerates ```json fences around the metadata", () => {
+    const raw = `\`\`\`json\n${meta}\n\`\`\`\n---RAW_TEXT_BEGIN---\n${body}\n---RAW_TEXT_END---`;
+    const out = parseClaudeResponse(raw, "m");
+    expect(out.title).toBe("Goldman NVDA Q1");
+    expect(out.raw_text).toBe(body);
+  });
+
+  it("throws when the BEGIN delimiter is missing", () => {
+    expect(() =>
+      parseClaudeResponse(`${meta}\n(full body with no delimiter)`, "m"),
+    ).toThrow(/RAW_TEXT_BEGIN/);
+  });
+
+  it("throws when the JSON half is malformed", () => {
+    const raw = `{ not valid json \n---RAW_TEXT_BEGIN---\n${body}`;
+    expect(() => parseClaudeResponse(raw, "m")).toThrow(/PART 1/);
+  });
+
+  it("throws when raw_text is empty after the delimiter", () => {
+    const raw = `${meta}\n---RAW_TEXT_BEGIN---\n   \n---RAW_TEXT_END---`;
+    expect(() => parseClaudeResponse(raw, "m")).toThrow(/empty/i);
+  });
+
+  it("body with embedded unescaped quotes + newlines works", () => {
+    const ugly = `First "quote" here.\n\nSecond line with \\backslash\\ and multiple\n\n\nblank lines.`;
+    const raw = `${meta}\n---RAW_TEXT_BEGIN---\n${ugly}\n---RAW_TEXT_END---`;
+    const out = parseClaudeResponse(raw, "m");
+    expect(out.raw_text).toBe(ugly);
   });
 });
