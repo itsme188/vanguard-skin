@@ -30,7 +30,7 @@ Headline features not reflected in the v2 archive:
 
 - ✅ **useCallback render-loop audit** — complete 2026-04-21, 0 candidates found. Pattern documented in `memory/feedback_usecallback_pattern.md`.
 - [ ] **Next.js 16 async-params migration** — hook flagged ~10 files. Dedicated session.
-- [ ] **`trade-roundtrips.test.ts` TS errors** — `sellTransactionQty` missing in fixtures. Vitest tolerates, `tsc --noEmit` flags. ~30 min.
+- ✅ **`trade-roundtrips.test.ts` TS errors** — fixed 2026-04-21 (`458ad59`). Repo-wide `tsc --noEmit` now 0 errors.
 - [ ] **Q1 2026 Vanguard Taxable income gap** — dividends/interest not landing in the income card. Investigation first.
 - [ ] **Settings UI fallback for localhost** — optional `POST /api/settings` so `SettingsModal` works in plain-browser dev.
 
