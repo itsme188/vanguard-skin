@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import type {
   ResearchDocumentType,
   ResearchDocumentSentiment,
+  ResearchDocumentProcessingState,
 } from "@/lib/queries/research-documents";
 import { normalizeTags } from "@/lib/research-documents/extract";
 
@@ -22,6 +23,7 @@ export interface CreateResearchDocumentInput {
   target_prices: Array<{ symbol: string; price: number; horizon?: string }> | null;
   ai_model: string | null;
   char_count: number | null;
+  processing_state?: ResearchDocumentProcessingState;
 }
 
 export function createResearchDocument(
@@ -38,8 +40,8 @@ export function createResearchDocument(
       `INSERT INTO research_documents (
         title, author, source, filename, file_size_bytes, publication_date,
         document_type, raw_text, summary, key_points, mentioned_symbols, tags,
-        sentiment, target_prices, ai_model, char_count
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        sentiment, target_prices, ai_model, char_count, processing_state
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.title,
@@ -60,6 +62,7 @@ export function createResearchDocument(
       input.target_prices ? JSON.stringify(input.target_prices) : null,
       input.ai_model,
       input.char_count,
+      input.processing_state ?? "ready",
     );
   return result.lastInsertRowid as number;
 }
@@ -73,6 +76,46 @@ export function updateResearchDocumentTags(
   const result = db
     .prepare(`UPDATE research_documents SET tags = ? WHERE id = ?`)
     .run(cleaned.length > 0 ? JSON.stringify(cleaned) : null, id);
+  return result.changes > 0;
+}
+
+/**
+ * Swap the placeholder raw_text for the real body once the deferred
+ * extraction call resolves, and flip processing_state to 'ready'. The
+ * FTS5 update trigger picks up the new body automatically.
+ */
+export function updateResearchDocumentRawText(
+  db: Database.Database,
+  id: number,
+  rawText: string,
+): boolean {
+  const result = db
+    .prepare(
+      `UPDATE research_documents
+         SET raw_text = ?,
+             char_count = ?,
+             processing_state = 'ready'
+       WHERE id = ?`,
+    )
+    .run(rawText, rawText.length, id);
+  return result.changes > 0;
+}
+
+/**
+ * Mark a doc as processing_state='failed' when the deferred raw_text
+ * extraction errors out. The row keeps whatever metadata already
+ * landed so the user sees the document in the list and can either
+ * retry or delete it.
+ */
+export function markResearchDocumentProcessingFailed(
+  db: Database.Database,
+  id: number,
+): boolean {
+  const result = db
+    .prepare(
+      `UPDATE research_documents SET processing_state = 'failed' WHERE id = ?`,
+    )
+    .run(id);
   return result.changes > 0;
 }
 

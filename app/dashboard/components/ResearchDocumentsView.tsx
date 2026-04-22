@@ -5,6 +5,7 @@ import type {
   ResearchDocumentSummary,
   ResearchDocumentType,
   ResearchDocumentSentiment,
+  ResearchDocumentProcessingState,
 } from "@/lib/queries/research-documents";
 
 interface DocumentListResponse {
@@ -272,6 +273,7 @@ interface ResearchDocumentDetail {
   char_count: number | null;
   uploaded_at: string;
   ai_model: string | null;
+  processing_state: ResearchDocumentProcessingState;
 }
 
 // ─── Tag editor ─────────────────────────────────────────────────
@@ -399,6 +401,16 @@ function DocumentRow({
   const symbols = parseSymbols(doc.mentioned_symbols);
   const rowTags = parseSymbols(doc.tags);
 
+  async function fetchDetail() {
+    const res = await fetch(`/api/research/documents/${doc.id}`);
+    if (res.ok) {
+      const data = await res.json();
+      setDetail(data);
+      return data as ResearchDocumentDetail;
+    }
+    return null;
+  }
+
   async function toggleExpanded() {
     if (expanded) {
       setExpanded(false);
@@ -408,16 +420,24 @@ function DocumentRow({
     if (!detail) {
       setLoadingDetail(true);
       try {
-        const res = await fetch(`/api/research/documents/${doc.id}`);
-        if (res.ok) {
-          const data = await res.json();
-          setDetail(data);
-        }
+        await fetchDetail();
       } finally {
         setLoadingDetail(false);
       }
     }
   }
+
+  // Poll for ready state while the body is still extracting, only when the
+  // row is expanded (to avoid poll storms across many rows).
+  useEffect(() => {
+    if (!expanded) return;
+    if (!detail || detail.processing_state !== "pending_body") return;
+    const interval = setInterval(() => {
+      fetchDetail();
+    }, 15000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expanded, detail?.processing_state, detail?.id]);
 
   async function handleDelete(e: React.MouseEvent) {
     e.stopPropagation();
@@ -461,6 +481,17 @@ function DocumentRow({
               )}
               {doc.publication_date && <span>· {doc.publication_date}</span>}
             </div>
+            {doc.processing_state === "pending_body" && (
+              <div className="flex items-center gap-1.5 mt-1.5 text-[10px] text-gold">
+                <span className="inline-block w-1 h-1 rounded-full bg-gold animate-pulse" />
+                Extracting full text…
+              </div>
+            )}
+            {doc.processing_state === "failed" && (
+              <div className="mt-1.5 text-[10px] text-down">
+                Full-text extraction failed
+              </div>
+            )}
             {(symbols.length > 0 || rowTags.length > 0) && (
               <div className="flex flex-wrap gap-1 mt-2">
                 {symbols.slice(0, 6).map((s) => (
@@ -560,7 +591,24 @@ function DocumentRow({
                   </div>
                 </div>
               )}
-              {detail.raw_text && (
+              {detail.processing_state === "pending_body" ? (
+                <div className="pt-2 border-t border-edge">
+                  <div className="flex items-center gap-2 text-[11px] text-gold">
+                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-gold animate-pulse" />
+                    <span>
+                      Full text still extracting in the background. This
+                      panel will refresh automatically (every 15s).
+                    </span>
+                  </div>
+                </div>
+              ) : detail.processing_state === "failed" ? (
+                <div className="pt-2 border-t border-edge">
+                  <div className="text-[11px] text-down">
+                    Full-text extraction failed. Metadata is preserved — you
+                    can re-upload the PDF to retry, or delete this entry.
+                  </div>
+                </div>
+              ) : detail.raw_text ? (
                 <div className="pt-2 border-t border-edge">
                   <button
                     onClick={() => setShowFullText((v) => !v)}
@@ -587,7 +635,7 @@ function DocumentRow({
                     </div>
                   )}
                 </div>
-              )}
+              ) : null}
               <div className="flex items-center justify-between pt-2 border-t border-edge">
                 <span className="text-[10px] text-ink-faint">
                   {detail.filename}

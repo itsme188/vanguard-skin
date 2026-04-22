@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   normalizeExtracted,
   parseClaudeResponse,
+  parseMetadataResponse,
 } from "@/lib/research-documents/extract";
 
 describe("normalizeExtracted", () => {
@@ -170,5 +171,48 @@ describe("parseClaudeResponse (two-part format)", () => {
     const raw = `${meta}\n---RAW_TEXT_BEGIN---\n${ugly}\n---RAW_TEXT_END---`;
     const out = parseClaudeResponse(raw, "m");
     expect(out.raw_text).toBe(ugly);
+  });
+});
+
+describe("parseMetadataResponse (metadata-only)", () => {
+  it("parses a metadata-only JSON payload", () => {
+    const raw = `{
+      "title": "Rubrik State of the Agent",
+      "author": null,
+      "source": "Rubrik Zero Labs",
+      "document_type": "industry_primer",
+      "publication_date": "2026-04-16",
+      "summary": "Agent risk primer.",
+      "key_points": ["AI agents introduce new attack surfaces"],
+      "mentioned_symbols": [],
+      "suggested_tags": ["enterprise-ai", "security"],
+      "sentiment": null,
+      "target_prices": []
+    }`;
+    const out = parseMetadataResponse(raw, "claude-sonnet-4-6");
+    expect(out.title).toBe("Rubrik State of the Agent");
+    expect(out.source).toBe("Rubrik Zero Labs");
+    expect(out.document_type).toBe("industry_primer");
+    expect(out.tags).toEqual(["enterprise-ai", "security"]);
+    // Metadata-only — no raw_text field present at all
+    expect((out as { raw_text?: unknown }).raw_text).toBeUndefined();
+  });
+
+  it("tolerates ```json fences", () => {
+    const raw = '```json\n{"title":"T","document_type":"other"}\n```';
+    const out = parseMetadataResponse(raw, "m");
+    expect(out.title).toBe("T");
+  });
+
+  it("throws when JSON is malformed", () => {
+    expect(() => parseMetadataResponse("not json at all", "m")).toThrow(
+      /not valid JSON/,
+    );
+  });
+
+  it("does NOT require raw_text (unlike normalizeExtracted)", () => {
+    // parseMetadataResponse should be OK with metadata that has no raw_text
+    const raw = `{"title":"T","document_type":"article"}`;
+    expect(() => parseMetadataResponse(raw, "m")).not.toThrow();
   });
 });
