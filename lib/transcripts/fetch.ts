@@ -255,9 +255,15 @@ export async function fetchTranscript(
     // Fall through to EDGAR
   }
 
-  // 4. Fall back to EDGAR 8-K press release
+  // 4. Fall back to EDGAR 8-K press release.
+  // Request full text so cached rows have the complete body; the chat-tool
+  // layer decides whether to return an excerpt or the full thing to the
+  // model.
   try {
-    const filings = await getEarnings8KFilings(upperTicker, { limit: 4 });
+    const filings = await getEarnings8KFilings(upperTicker, {
+      limit: 4,
+      fullText: true,
+    });
     if (filings.length > 0) {
       // Find the filing closest to our target quarter
       const filing = filings[0]; // Most recent
@@ -289,14 +295,32 @@ export async function fetchTranscript(
 }
 
 /**
+ * Detect whether a cached edgar_8k entry pre-dates the full-text upgrade
+ * (Theme E2 — 2026-04-22). Old caches are <=5100 chars; new ones cap at
+ * 60K. If the caller asks for full text and the cached body is suspiciously
+ * short, we invalidate and re-fetch so they actually get the richer body.
+ */
+function isLegacyShortEdgar8k(t: EarningsTranscript): boolean {
+  if (t.source !== "edgar_8k") return false;
+  return !!t.transcript && t.transcript.length <= 5200;
+}
+
+/**
  * Get transcript for the chat tool — returns structured data
  * optimized for Claude's context window.
+ *
+ * @param fullText when true, returns the complete transcript body in the
+ *   `excerpt` field (field name kept for back-compat). Default false keeps
+ *   the ~1000-word excerpt that list views rely on. If the cached entry
+ *   was produced pre-E2 with the 5000-char EDGAR truncation, the cache is
+ *   busted and re-fetched to actually deliver full text.
  */
 export async function getTranscriptForChat(
   db: Database.Database,
   ticker: string,
   year?: number,
-  quarter?: number
+  quarter?: number,
+  options: { fullText?: boolean } = {},
 ): Promise<{
   ticker: string;
   year: number;
@@ -310,20 +334,37 @@ export async function getTranscriptForChat(
   excerpt: string | null;
   transcript_length_words: number;
   has_full_transcript: boolean;
+  truncated: boolean;
 } | null> {
-  const result = await fetchTranscript(db, ticker, year, quarter);
+  let result = await fetchTranscript(db, ticker, year, quarter);
   if (!result) return null;
+
+  const fullText = !!options.fullText;
+
+  // Cache upgrade: re-fetch legacy EDGAR rows when the caller wants full text.
+  if (fullText && result.fromCache && isLegacyShortEdgar8k(result.transcript)) {
+    // Invalidate by deleting the cached row, then re-fetch.
+    const t = result.transcript;
+    db.prepare("DELETE FROM earnings_transcripts WHERE id = ?").run(t.id);
+    const refreshed = await fetchTranscript(db, ticker, year, quarter);
+    if (refreshed) result = refreshed;
+  }
 
   const t = result.transcript;
 
-  // Build a truncated excerpt (~1000 words from key sections)
   let excerpt: string | null = null;
+  let truncated = false;
   if (t.transcript) {
-    const words = t.transcript.split(/\s+/);
-    if (words.length > 1000) {
-      excerpt = words.slice(0, 1000).join(" ") + "...";
-    } else {
+    if (fullText) {
       excerpt = t.transcript;
+    } else {
+      const words = t.transcript.split(/\s+/);
+      if (words.length > 1000) {
+        excerpt = words.slice(0, 1000).join(" ") + "...";
+        truncated = true;
+      } else {
+        excerpt = t.transcript;
+      }
     }
   }
 
@@ -345,5 +386,6 @@ export async function getTranscriptForChat(
       ? t.transcript.split(/\s+/).length
       : 0,
     has_full_transcript: !!t.transcript && t.transcript.length > 100,
+    truncated,
   };
 }
