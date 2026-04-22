@@ -101,9 +101,9 @@ export function AccountSummaryCards({
                     value={canonicalChangePct}
                     digits={2}
                     signed
-                    className={`text-xs px-1.5 py-0.5 rounded font-mono tabular-nums ${
+                    className={`text-xs font-medium px-1.5 py-0.5 rounded font-mono tabular-nums ${
                       canonicalChangePct != null && canonicalChangePct >= 0
-                        ? "bg-up-tint text-up" : "bg-down-tint text-down"
+                        ? "bg-up/20 text-up" : "bg-down/20 text-down"
                     }`}
                   />
                 </div>
@@ -120,9 +120,9 @@ export function AccountSummaryCards({
                     value={account.monthlyChangePercent}
                     digits={2}
                     signed
-                    className={`text-xs px-1.5 py-0.5 rounded font-mono tabular-nums ${
+                    className={`text-xs font-medium px-1.5 py-0.5 rounded font-mono tabular-nums ${
                       account.monthlyChangePercent != null && account.monthlyChangePercent >= 0
-                        ? "bg-up-tint text-up" : "bg-down-tint text-down"
+                        ? "bg-up/20 text-up" : "bg-down/20 text-down"
                     }`}
                   />
                 </div>
@@ -136,7 +136,7 @@ export function AccountSummaryCards({
                   <span className="text-lg font-mono tabular-nums text-gold/80">
                     ~<Money value={account.estimatedValue} />
                   </span>
-                  <span className="text-[10px] font-mono text-gold/60">
+                  <span className="text-[11px] font-mono font-medium text-gold">
                     est. +{daysAgo(account.canonicalDate!)}d
                   </span>
                 </div>

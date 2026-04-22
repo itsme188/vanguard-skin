@@ -228,12 +228,12 @@ export function ReconciliationTable({
                     <td className="px-4 py-3 text-right">
                       {cp.difference !== null ? (
                         <span
-                          className={`font-mono tabular-nums text-xs px-2 py-0.5 rounded inline-flex items-center gap-1 ${
+                          className={`font-mono font-medium tabular-nums text-xs px-2 py-0.5 rounded inline-flex items-center gap-1 ${
                             isMatch
-                              ? "bg-up-tint text-up"
+                              ? "bg-up/20 text-up"
                               : isClose
-                                ? "bg-gold-glow text-gold"
-                                : "bg-down-tint text-down"
+                                ? "bg-gold/20 text-gold"
+                                : "bg-down/20 text-down"
                           }`}
                         >
                           <span aria-hidden="true">{isMatch ? "\u2713" : isClose ? "~" : "!"}</span>

@@ -35,7 +35,7 @@ function FilterPills({
           aria-pressed={opt.value === currentValue}
           className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap focus-ring ${
             opt.value === currentValue
-              ? "bg-gold-glow text-gold"
+              ? "bg-gold/20 text-gold"
               : "text-ink-dim hover:text-ink hover:bg-panel"
           }`}
         >

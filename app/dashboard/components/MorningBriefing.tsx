@@ -23,9 +23,9 @@ const EVENT_ICONS: Record<string, string> = {
 };
 
 const IMPACT_STYLES: Record<string, string> = {
-  high: "bg-down/10 text-down",
-  medium: "bg-amber-400/10 text-amber-400",
-  low: "bg-ink-faint/10 text-ink-faint",
+  high: "bg-down/20 text-down",
+  medium: "bg-amber-400/20 text-amber-300",
+  low: "bg-ink-faint/20 text-ink-dim",
 };
 
 // ── Market session logic (US Eastern) ──

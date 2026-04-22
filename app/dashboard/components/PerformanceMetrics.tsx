@@ -118,8 +118,8 @@ export function PerformanceMetrics({
               signed
               className={`text-sm px-2 py-0.5 rounded font-mono tabular-nums ${
                 totals.totalChangePercent >= 0
-                  ? "bg-up-tint text-up"
-                  : "bg-down-tint text-down"
+                  ? "bg-up/20 text-up"
+                  : "bg-down/20 text-down"
               }`}
             />
           </div>
@@ -140,7 +140,7 @@ export function PerformanceMetrics({
                   aria-pressed={!customMode && i === selectedPeriod}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors focus-ring ${
                     !customMode && i === selectedPeriod
-                      ? "bg-gold-glow text-gold"
+                      ? "bg-gold/20 text-gold"
                       : "text-ink-faint hover:text-ink hover:bg-panel"
                   }`}
                 >
@@ -152,7 +152,7 @@ export function PerformanceMetrics({
                 aria-pressed={customMode}
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors focus-ring ${
                   customMode
-                    ? "bg-gold-glow text-gold"
+                    ? "bg-gold/20 text-gold"
                     : "text-ink-faint hover:text-ink hover:bg-panel"
                 }`}
               >
