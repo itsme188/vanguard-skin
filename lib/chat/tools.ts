@@ -25,6 +25,10 @@ import { detectStrategies, type PositionLeg } from "@/lib/compute/options-strate
 import { getActiveLevels, getAlerts, getLevelsForSecurity } from "@/lib/queries/security-levels";
 import { resolveLevelPrice } from "@/lib/alerts/resolve-level-price";
 import { getFilingSection } from "@/lib/apis/filing-extract";
+import {
+  searchResearchDocuments,
+  type ResearchDocumentType,
+} from "@/lib/queries/research-documents";
 
 // ─── Tool Definitions ─────────────────────────────────────────────
 
@@ -442,6 +446,47 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         },
       },
       required: ["ticker"],
+    },
+  },
+  {
+    name: "query_research_documents",
+    description:
+      "Search the user's uploaded research PDF knowledge base — analyst reports, bank research notes, market analyses, and industry primers. Returns matching documents with snippet highlights showing the term in context, plus summary, key points, mentioned tickers, target prices, and sentiment. Use when the user asks what research they have on a topic/company, references 'that Goldman note' or 'the Bernstein piece', wants to synthesize a thesis from uploaded reports, or asks 'what does my research say about X?'. Combine filters: free-text query + specific ticker + document type + recency. Documents are lexically searchable via FTS5 (keyword match, not semantic).",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        query: {
+          type: "string",
+          description:
+            "Free-text search phrase matched across title, author, source, summary, mentioned tickers, and raw body. Omit to list recent docs by filter only.",
+        },
+        symbol: {
+          type: "string",
+          description:
+            "Ticker filter (e.g., 'NVDA'). Only returns docs where the symbol is in mentioned_symbols. Case-insensitive.",
+        },
+        document_type: {
+          type: "string",
+          enum: [
+            "analyst_report",
+            "research_note",
+            "market_analysis",
+            "industry_primer",
+            "other",
+          ],
+          description:
+            "Restrict to one document type. Omit to search across all types.",
+        },
+        days_back: {
+          type: "integer",
+          description:
+            "Only return docs published or uploaded within the last N days. Omit for no time filter.",
+        },
+        limit: {
+          type: "integer",
+          description: "Max results. Defaults to 10, cap 100.",
+        },
+      },
     },
   },
   {
@@ -929,6 +974,39 @@ export async function executeTool(
         break;
       }
 
+      case "query_research_documents": {
+        const results = searchResearchDocuments(db, {
+          query: input.query as string | undefined,
+          symbol: input.symbol as string | undefined,
+          document_type: input.document_type as ResearchDocumentType | undefined,
+          days_back: input.days_back as number | undefined,
+          limit: (input.limit as number) || 10,
+        });
+        // Parse JSON fields for the model. Strip raw_text from the response —
+        // returning the full body of every match would explode context for
+        // minimal marginal value; the snippet carries the hit context.
+        rawResult = {
+          count: results.length,
+          documents: results.map((r) => ({
+            id: r.id,
+            title: r.title,
+            author: r.author,
+            source: r.source,
+            publication_date: r.publication_date,
+            document_type: r.document_type,
+            sentiment: r.sentiment,
+            mentioned_symbols: r.mentioned_symbols
+              ? JSON.parse(r.mentioned_symbols)
+              : [],
+            key_points: r.key_points ? JSON.parse(r.key_points) : [],
+            summary: r.summary,
+            snippet: r.snippet,
+            uploaded_at: r.uploaded_at,
+          })),
+        };
+        break;
+      }
+
       case "query_earnings_transcript": {
         const ticker = input.ticker as string;
         const transcriptData = await getTranscriptForChat(
@@ -1377,6 +1455,7 @@ export const TOOL_LABELS: Record<string, string> = {
   create_note: "Saving note...",
   query_earnings_transcript: "Fetching earnings transcript...",
   query_filing_section: "Summarizing SEC filing...",
+  query_research_documents: "Searching research documents...",
   query_trade_reviews: "Looking up trade reviews...",
   query_options_greeks: "Computing options Greeks...",
   query_research_feeds: "Searching research feeds...",

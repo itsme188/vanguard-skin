@@ -64,6 +64,12 @@ export const FEATURE_MODELS: Record<FeatureKey, string> = {
   // (symbol, accession, section) and strong enough to reliably summarize
   // ~30-100K char filings into structured bullets.
   filingSectionExtraction: `anthropic/${SONNET_MODEL}`,
+
+  // Research PDF knowledge base — extracts metadata + raw text from uploaded
+  // analyst reports / research notes. Anthropic's native PDF content block
+  // handles layout + tables; Sonnet is plenty for the structured-extraction
+  // task and one-shot per upload keeps costs predictable.
+  researchDocumentExtraction: `anthropic/${SONNET_MODEL}`,
 };
 
 export interface ResolvedModel {
