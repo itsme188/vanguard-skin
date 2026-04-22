@@ -27,4 +27,6 @@ export type FeatureKey =
   | "macroEnrichment"
   | "scheduleVerification"
   | "filingSectionExtraction"
-  | "researchDocumentExtraction";
+  | "researchDocumentExtraction"
+  | "researchMentionVerification"
+  | "suggestedLevelNarrative";
