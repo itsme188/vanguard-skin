@@ -38,3 +38,13 @@ export function updateConversationTitle(
     `UPDATE chat_conversations SET title = ?, updated_at = datetime('now') WHERE id = ?`,
   ).run(title, conversationId);
 }
+
+export function deleteConversation(
+  db: Database.Database,
+  conversationId: number,
+): boolean {
+  const result = db
+    .prepare(`DELETE FROM chat_conversations WHERE id = ?`)
+    .run(conversationId);
+  return result.changes > 0;
+}

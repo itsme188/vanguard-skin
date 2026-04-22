@@ -59,6 +59,11 @@ export const FEATURE_MODELS: Record<FeatureKey, string> = {
 
   // Must stay on Anthropic — uses Claude-native web_search tool.
   scheduleVerification: `anthropic/${SONNET_MODEL}`,
+
+  // 10-K / 10-Q section summarization. Sonnet is cheap enough to cache per
+  // (symbol, accession, section) and strong enough to reliably summarize
+  // ~30-100K char filings into structured bullets.
+  filingSectionExtraction: `anthropic/${SONNET_MODEL}`,
 };
 
 export interface ResolvedModel {

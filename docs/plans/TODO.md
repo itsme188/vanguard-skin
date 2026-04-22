@@ -1,6 +1,6 @@
 # Vanguard Skin — TODO
 
-> **In-repo shortlist.** Updated 2026-04-21.
+> **In-repo shortlist.** Updated 2026-04-22.
 >
 > - v2 build log (Mar–Apr 2026): [archive/TODO-v2-complete-2026-03-30.md](archive/TODO-v2-complete-2026-03-30.md)
 > - Master roadmap (off-repo, session-driven): `~/.claude/plans/last-session-session-summary-eventual-ripple.md`
@@ -8,7 +8,7 @@
 
 ---
 
-## Shipped since v2 (2026-03-30 → 2026-04-21)
+## Shipped since v2 (2026-03-30 → 2026-04-22)
 
 Headline features not reflected in the v2 archive:
 
@@ -23,6 +23,8 @@ Headline features not reflected in the v2 archive:
 - **AI Gateway + model-agnostic routing** — FEATURE_MODELS policy plane (`8c82c1e`)
 - **Cloudflare Workers AI downroute** — Llama 3.3 + Kimi K2.6 (`264bc73`)
 - **R2 PDF archival** — 39 Vanguard PDFs backfilled (`264bc73`, migration 033)
+- **Chat history delete** (2026-04-22) — sidebar trash icon + `deleteConversation` mutation + `DELETE /api/chat/conversations/[id]`. Completes Theme I.
+- **EDGAR 10-K / 10-Q section extraction** (2026-04-22, migration 034) — new chat tool `query_filing_section` summarizes Item 1A Risk Factors and MD&A via Sonnet, cached per `(symbol, accession, section)`. Feature key `filingSectionExtraction` in FEATURE_MODELS.
 
 ---
 
@@ -48,10 +50,10 @@ Headline features not reflected in the v2 archive:
 ## Backlog themes (from off-repo roadmap)
 
 - **Theme D — Level source performance attribution** (blocked on data): hit-rate + P&L by `source_author`. Wait until ~30+ alerts have fired.
-- **Theme E — Chat broader company data**: press releases, 10-K/10-Q risk factors. Lowest-hanging: E3 EDGAR extraction (~4-5 hr).
+- **Theme E — Chat broader company data**: press releases (E1), full 8-K body (E2), analyst estimates (E4). E3 EDGAR 10-K/10-Q shipped 2026-04-22.
 - **Theme F1 — Research PDF knowledge base**: analyst reports, FTS5 search, new `research_documents` table. ~1 day. (New migration — coordinate with in-flight phases.)
 - **Theme G — Chart entry/exit signals**: design pass first, then 1-2 implementation sessions.
-- **Theme I — Chat history persistence**: migration + API + ChatDrawer sidebar. ~3-4 hr.
+- ✅ **Theme I — Chat history persistence**: shipped across 2026-04-21 + 2026-04-22. Schema (migration 025), route persistence, sidebar + delete.
 - **Theme J — Cleanup track** (partial): J1 ✅ + J3 ✅ shipped 2026-04-21. J2 (E2E browser tests, ~15 hr) deferred.
 - **Theme K — Options Phase 2 end-to-end verification**: blocked on the user holding more than 1 option position at once.
 

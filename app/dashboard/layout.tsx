@@ -3,6 +3,7 @@ import { TwsStatus } from "./components/TwsStatus";
 import { ToastProvider } from "./components/Toast";
 import { DataConfidenceIndicator } from "./components/DataConfidenceIndicator";
 import { ChatDrawer } from "./components/ChatDrawer";
+import { ChatToggleButton } from "./components/ChatToggleButton";
 import { CommandPalette, SearchButton } from "./components/CommandPalette";
 import { SettingsModal } from "./components/SettingsModal";
 import { AppVersion } from "./components/AppVersion";
@@ -43,6 +44,7 @@ export default function DashboardLayout({
               <TwsStatus />
               <ReviewBell />
               <AlertsBell />
+              <ChatToggleButton />
               <PrivacyToggle />
               <SettingsModal />
               <span className="hidden md:inline"><AppVersion /></span>
