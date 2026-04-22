@@ -28,6 +28,7 @@ const TOOL_LABELS: Record<string, string> = {
   create_note: "Saving note",
   query_earnings_transcript: "Fetching earnings transcript",
   query_filing_section: "Summarizing SEC filing",
+  query_research_documents: "Searching research documents",
 };
 
 // Scope configuration

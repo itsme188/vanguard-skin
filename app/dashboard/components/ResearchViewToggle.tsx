@@ -6,6 +6,7 @@ const VIEWS = [
   { key: "notes", label: "Notes", href: "/dashboard/research" },
   { key: "reviews", label: "Trade Reviews", href: "/dashboard/research?view=reviews" },
   { key: "feeds", label: "Feeds", href: "/dashboard/research?view=feeds" },
+  { key: "documents", label: "Documents", href: "/dashboard/research?view=documents" },
 ];
 
 export function ResearchViewToggle({ currentView }: { currentView: string }) {
