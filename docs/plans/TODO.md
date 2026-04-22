@@ -51,7 +51,7 @@ Headline features not reflected in the v2 archive:
 ## Backlog themes (from off-repo roadmap)
 
 - **Theme D — Level source performance attribution** (blocked on data): hit-rate + P&L by `source_author`. Wait until ~30+ alerts have fired.
-- **Theme E — Chat broader company data**: E1 press releases (`272566d`), E2 full 8-K body (`6328a99`), E3 EDGAR 10-K/10-Q all shipped 2026-04-22. Remaining: E4 analyst estimates.
+- ✅ **Theme E — Chat broader company data** complete: E1 press releases (`272566d`), E2 full 8-K body (`6328a99`), E3 EDGAR 10-K/10-Q, E4 analyst coverage (`1bf65d3`) all shipped 2026-04-22. Finnhub free tier covers recommendation trend only; price targets + upgrade/downgrade require Premium, code gracefully returns empty sections for those.
 - ✅ **Theme F1 — Research PDF knowledge base** shipped 2026-04-22 (migration 035, commit `6624382`).
 - ✅ **Theme G — Chart entry/exit signals v1** shipped 2026-04-22 (commit `51fcc51`). Pivot S/R detection + suggested-levels API + chart overlay + accept flow. Claude narrative layer still deferred.
 - ✅ **Theme I — Chat history persistence**: shipped across 2026-04-21 + 2026-04-22. Schema (migration 025), route persistence, sidebar + delete.
