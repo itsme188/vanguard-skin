@@ -27,6 +27,7 @@ const TOOL_LABELS: Record<string, string> = {
   query_notes: "Searching notes",
   create_note: "Saving note",
   query_earnings_transcript: "Fetching earnings transcript",
+  query_filing_section: "Summarizing SEC filing",
 };
 
 // Scope configuration
@@ -168,11 +169,13 @@ function ConversationHistory({
   currentId,
   onSelect,
   onNew,
+  onDelete,
 }: {
   conversations: ChatConversation[];
   currentId: number | null;
   onSelect: (conv: ChatConversation) => void;
   onNew: () => void;
+  onDelete: (conv: ChatConversation) => void;
 }) {
   const [open, setOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -222,25 +225,43 @@ function ConversationHistory({
             <div className="px-3 py-2 text-xs text-ink-faint">No conversations yet</div>
           )}
           {conversations.map((conv) => (
-            <button
+            <div
               key={conv.id}
-              onClick={() => { onSelect(conv); setOpen(false); }}
-              className={`w-full text-left px-3 py-2 text-xs transition-colors truncate ${
-                conv.id === currentId
-                  ? "bg-raised text-ink"
-                  : "text-ink-dim hover:bg-raised hover:text-ink"
+              className={`group flex items-center transition-colors ${
+                conv.id === currentId ? "bg-raised" : "hover:bg-raised"
               }`}
-              title={conv.title ?? `Conversation ${conv.id}`}
             >
-              <div className="truncate">
-                {conv.title ?? `Conversation ${conv.id}`}
-              </div>
-              <div className="text-[10px] text-ink-faint mt-0.5">
-                {SCOPE_OPTIONS.find((s) => s.value === conv.scope)?.label ?? conv.scope}
-                {" \u00b7 "}
-                {new Date(conv.updated_at).toLocaleDateString()}
-              </div>
-            </button>
+              <button
+                onClick={() => { onSelect(conv); setOpen(false); }}
+                className={`flex-1 min-w-0 text-left pl-3 pr-2 py-2 text-xs ${
+                  conv.id === currentId ? "text-ink" : "text-ink-dim group-hover:text-ink"
+                }`}
+                title={conv.title ?? `Conversation ${conv.id}`}
+              >
+                <div className="truncate">
+                  {conv.title ?? `Conversation ${conv.id}`}
+                </div>
+                <div className="text-[10px] text-ink-faint mt-0.5">
+                  {SCOPE_OPTIONS.find((s) => s.value === conv.scope)?.label ?? conv.scope}
+                  {" \u00b7 "}
+                  {new Date(conv.updated_at).toLocaleDateString()}
+                </div>
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); onDelete(conv); }}
+                className="shrink-0 p-2 mr-1 text-ink-faint hover:text-down opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+                aria-label={`Delete conversation ${conv.title ?? conv.id}`}
+                title="Delete"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="3 6 5 6 21 6" />
+                  <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                  <path d="M10 11v6" />
+                  <path d="M14 11v6" />
+                  <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+                </svg>
+              </button>
+            </div>
           ))}
         </div>
       )}
@@ -388,6 +409,31 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
     setInputText("");
   }
 
+  const handleDeleteConversation = useCallback(
+    async (conv: ChatConversation) => {
+      const label = conv.title ?? `Conversation ${conv.id}`;
+      if (!window.confirm(`Delete "${label}"? This cannot be undone.`)) return;
+
+      try {
+        const res = await fetch(`/api/chat/conversations/${conv.id}`, {
+          method: "DELETE",
+        });
+        if (!res.ok) return;
+
+        // If the deleted conversation is currently loaded, reset to empty state
+        if (conv.id === conversationId) {
+          if (isStreaming) stop();
+          setMessages([]);
+          setConversationId(null);
+        }
+        await fetchConversations();
+      } catch {
+        // Silently fail
+      }
+    },
+    [conversationId, fetchConversations, isStreaming, setMessages, stop],
+  );
+
   function handleQuickAction(prompt: string) {
     setInputText(prompt);
     inputRef.current?.focus();
@@ -421,6 +467,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
                   currentId={conversationId}
                   onSelect={loadConversation}
                   onNew={handleNewConversation}
+                  onDelete={handleDeleteConversation}
                 />
               )}
             </div>

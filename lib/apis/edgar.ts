@@ -684,6 +684,133 @@ export async function getEarnings8KFilings(
   return results;
 }
 
+// ─── 10-K / 10-Q Section Extraction ─────────────────────────────
+
+export interface LatestFilingRef {
+  cik: string;
+  accessionNumber: string;
+  filingDate: string;
+  primaryDocument: string;
+  form: "10-K" | "10-Q";
+  filingUrl: string;
+}
+
+/**
+ * Locate the most recent 10-K or 10-Q filing for a ticker and return the
+ * identifiers needed to fetch its primary document.
+ */
+export async function getLatestAnnualOrQuarterlyFiling(
+  ticker: string,
+  filingType: "10-K" | "10-Q",
+): Promise<LatestFilingRef | null> {
+  const cik = await getCik(ticker);
+  const filings = await getRecentFilings(ticker, { formType: filingType, limit: 1 });
+  if (filings.length === 0) return null;
+
+  const [filing] = filings;
+  const cikNum = parseInt(cik);
+  const accessionNoDashes = filing.accessionNumber.replace(/-/g, "");
+  const filingUrl = `https://www.sec.gov/Archives/edgar/data/${cikNum}/${accessionNoDashes}/${filing.primaryDocument}`;
+  return {
+    cik,
+    accessionNumber: filing.accessionNumber,
+    filingDate: filing.filingDate,
+    primaryDocument: filing.primaryDocument,
+    form: filingType,
+    filingUrl,
+  };
+}
+
+/**
+ * Fetch the primary filing document (HTML) for a 10-K or 10-Q. Callers are
+ * expected to strip tags and extract the relevant section via
+ * `stripFilingHtml` + `extractItemSection` before sending to an LLM.
+ */
+export async function fetchFilingPrimaryDoc(
+  ref: LatestFilingRef,
+): Promise<string> {
+  return edgarFetchText(ref.filingUrl);
+}
+
+/**
+ * Strip tags + decode entities from a filing HTML. Mirrors `stripHtmlTags`
+ * used for 8-K press releases but exported so the section extractor can
+ * reuse it without dragging the 8-K code path in.
+ */
+export function stripFilingHtml(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n\n")
+    .replace(/<\/tr>/gi, "\n")
+    .replace(/<\/td>/gi, "\t")
+    .replace(/<\/th>/gi, "\t")
+    .replace(/<\/div>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/**
+ * Regex-locate a named section in stripped 10-K / 10-Q text.
+ *
+ * For 10-K the mapping is:
+ *   risk_factors → "Item 1A. Risk Factors" ... until "Item 1B" or "Item 2"
+ *   mda          → "Item 7." (MD&A) ... until "Item 7A" or "Item 8"
+ *
+ * For 10-Q the mapping is:
+ *   risk_factors → "Item 1A. Risk Factors" ... until next "Item" (Part II)
+ *   mda          → "Item 2." (MD&A of Part I) ... until "Item 3"
+ *
+ * Table-of-contents matches are suppressed by requiring the heading be
+ * followed by at least 600 chars before the next "Item" heading — TOC
+ * entries have nothing between consecutive headings.
+ *
+ * Returns null when the section can't be located.
+ */
+export function extractItemSection(
+  text: string,
+  filingType: "10-K" | "10-Q",
+  section: "risk_factors" | "mda",
+): string | null {
+  const heading =
+    section === "risk_factors"
+      ? /Item\s+1A\.?\s*(?:[-—–:]\s*)?Risk\s+Factors/i
+      : filingType === "10-K"
+        ? /Item\s+7\.?\s*(?:[-—–:]\s*)?Management[^\n]{0,40}Discussion/i
+        : /Item\s+2\.?\s*(?:[-—–:]\s*)?Management[^\n]{0,40}Discussion/i;
+
+  const nextHeading =
+    section === "risk_factors"
+      ? /Item\s+1B\.?|Item\s+2\.?|Unresolved\s+Staff\s+Comments|Properties/i
+      : filingType === "10-K"
+        ? /Item\s+7A\.?|Item\s+8\.?|Quantitative\s+and\s+Qualitative/i
+        : /Item\s+3\.?|Quantitative\s+and\s+Qualitative/i;
+
+  // Find the best match by scanning all heading positions and picking one
+  // where enough body text follows before the next heading (filters out TOC).
+  const headingGlobal = new RegExp(heading.source, "gi");
+  let match: RegExpExecArray | null;
+  while ((match = headingGlobal.exec(text)) !== null) {
+    const start = match.index + match[0].length;
+    const rest = text.slice(start);
+    const nextMatch = rest.match(nextHeading);
+    const end = nextMatch ? start + (nextMatch.index ?? 0) : text.length;
+    const body = text.slice(start, end).trim();
+    if (body.length >= 600) {
+      return body;
+    }
+  }
+  return null;
+}
+
 // ─── Company Search ─────────────────────────────────────────────
 
 /**
