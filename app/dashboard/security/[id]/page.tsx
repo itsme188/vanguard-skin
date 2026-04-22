@@ -13,6 +13,7 @@ import { WatchlistButton } from "../../components/WatchlistButton";
 import { LevelsPanel } from "../../components/LevelsPanel";
 import { RecentAlertsPanel } from "../../components/RecentAlertsPanel";
 import { TransactionsSection } from "../../components/TransactionsSection";
+import { ResearchMentionsSection } from "../../components/ResearchMentionsSection";
 import { Money, Pct, Shares } from "@/lib/privacy/components";
 import {
   FACTOR_COLUMNS,
@@ -623,62 +624,10 @@ export default async function SecurityDetailPage(props: {
         documents={researchDocuments}
       />
 
-      {/* Research Mentions */}
-      {researchMentions.length > 0 && (
-        <section className="rounded-xl border border-edge bg-panel overflow-hidden">
-          <div className="px-5 py-3 border-b border-edge flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-ink">
-              Research Mentions ({researchMentions.length})
-            </h2>
-            <Link
-              href="/dashboard/research?view=feeds"
-              className="text-xs text-gold hover:underline"
-            >
-              View All Feeds
-            </Link>
-          </div>
-          <div className="divide-y divide-edge/50">
-            {researchMentions.map((mention) => (
-              <div key={mention.article_id} className="px-5 py-3">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-[10px] font-medium text-gold uppercase tracking-wide">
-                    {mention.source_name}
-                  </span>
-                  <span className="text-xs text-ink-faint font-mono">
-                    {mention.received_at.slice(0, 10)}
-                  </span>
-                  {mention.sentiment && (
-                    <span
-                      className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${
-                        mention.sentiment === "bullish"
-                          ? "bg-up/20 text-up"
-                          : mention.sentiment === "bearish"
-                            ? "bg-down/20 text-down"
-                            : "bg-raised text-ink-dim"
-                      }`}
-                    >
-                      {mention.sentiment}
-                    </span>
-                  )}
-                </div>
-                <p className="text-sm text-ink font-medium truncate">
-                  {mention.subject}
-                </p>
-                {mention.summary && (
-                  <p className="text-xs text-ink-dim line-clamp-2 mt-0.5">
-                    {mention.summary}
-                  </p>
-                )}
-                {mention.mention_context && (
-                  <p className="text-xs text-ink-faint italic line-clamp-1 mt-0.5">
-                    &quot;...{mention.mention_context}...&quot;
-                  </p>
-                )}
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
+      {/* Research Mentions — client component handles filtering URL-fragment
+          false positives, inline expansion, and click-through to article. */}
+      <ResearchMentionsSection mentions={researchMentions} />
+
 
       {/* Upcoming Events */}
       {upcomingEvents.length > 0 && (
