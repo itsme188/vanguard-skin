@@ -123,7 +123,7 @@ export function AlertsBell() {
             </span>
             <Link
               href="/dashboard/alerts"
-              className="text-[10px] text-gold hover:text-gold/80"
+              className="text-[11px] font-medium text-gold hover:brightness-110"
             >
               View all →
             </Link>

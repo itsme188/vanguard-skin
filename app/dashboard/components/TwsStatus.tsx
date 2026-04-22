@@ -706,8 +706,8 @@ function TwsPanel({
           <p
             className={`text-xs p-2 rounded-lg ${
               result.startsWith("Error")
-                ? "bg-down/10 text-down"
-                : "bg-up/10 text-up"
+                ? "bg-down/20 text-down"
+                : "bg-up/20 text-up"
             }`}
           >
             {result}

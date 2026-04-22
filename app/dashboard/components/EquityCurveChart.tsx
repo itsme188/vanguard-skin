@@ -270,9 +270,9 @@ export function EquityCurveChart({
           {hasCashData && (
             <button
               onClick={() => setShowLines((v) => !v)}
-              className={`text-[10px] px-2 py-1 rounded transition-colors ${
+              className={`text-[11px] font-medium px-2 py-1 rounded transition-colors ${
                 showLines
-                  ? "bg-gold-glow text-gold"
+                  ? "bg-gold/20 text-gold"
                   : "text-ink-faint hover:text-ink hover:bg-raised"
               }`}
             >
@@ -286,9 +286,9 @@ export function EquityCurveChart({
               <button
                 key={range.label}
                 onClick={() => setSelectedRange(i)}
-                className={`px-2 py-1 rounded text-[10px] font-medium transition-colors ${
+                className={`px-2 py-1 rounded text-[11px] font-medium transition-colors ${
                   i === selectedRange
-                    ? "bg-gold-glow text-gold"
+                    ? "bg-gold/20 text-gold"
                     : "text-ink-faint hover:text-ink hover:bg-raised"
                 }`}
               >

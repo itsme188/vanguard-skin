@@ -58,7 +58,7 @@ function formatPriceSource(source: string): string {
 
 function qualityChip(days: number, source: string | null): { label: string; className: string } {
   if (days === 0 && source === "tws") {
-    return { label: "live", className: "text-up bg-up-tint" };
+    return { label: "live", className: "text-up bg-up/20" };
   }
   if (days <= 1) {
     return { label: "fresh", className: "text-ink-dim bg-raised" };
@@ -66,7 +66,7 @@ function qualityChip(days: number, source: string | null): { label: string; clas
   if (days <= 4) {
     return { label: `${days}d old`, className: "text-ink-faint bg-raised" };
   }
-  return { label: `${days}d old`, className: "text-down bg-down-tint" };
+  return { label: `${days}d old`, className: "text-down bg-down/20" };
 }
 
 export default async function TodayPage() {

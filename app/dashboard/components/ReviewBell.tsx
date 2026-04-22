@@ -39,7 +39,7 @@ export function ReviewBell() {
   return (
     <Link
       href="/dashboard/levels/review"
-      className="text-[10px] font-medium px-2 py-1 rounded-full bg-amber-400/15 text-amber-400 hover:bg-amber-400/25 transition-colors uppercase tracking-wider"
+      className="text-[11px] font-semibold px-2 py-1 rounded-full bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 transition-colors uppercase tracking-wide"
       title={`${count} newsletter-extracted level${count === 1 ? "" : "s"} awaiting your review before they arm`}
     >
       {count} to review

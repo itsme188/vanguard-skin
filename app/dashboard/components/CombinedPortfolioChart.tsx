@@ -512,7 +512,7 @@ export function CombinedPortfolioChart({
             Portfolio Over Time
           </h3>
           {hasDaily && (
-            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-blue/10 text-blue border border-blue/20">
+            <span className="text-[11px] font-medium px-1.5 py-0.5 rounded bg-blue/20 text-blue border border-blue/30">
               Daily
             </span>
           )}
