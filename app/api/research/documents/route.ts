@@ -5,13 +5,21 @@ import {
   getResearchDocumentCount,
   type ResearchDocumentType,
 } from "@/lib/queries/research-documents";
-import { createResearchDocument } from "@/lib/mutations/research-documents";
 import {
-  extractResearchPdf,
+  createResearchDocument,
+  updateResearchDocumentRawText,
+  markResearchDocumentProcessingFailed,
+} from "@/lib/mutations/research-documents";
+import {
+  extractResearchMetadata,
+  extractResearchRawText,
   ResearchPdfTooLargeError,
   ResearchPdfExtractionError,
   RESEARCH_DOC_PDF_MAX_BYTES,
 } from "@/lib/research-documents/extract";
+
+const RAW_TEXT_PLACEHOLDER =
+  "[Full text is still being extracted — check back in a few minutes.]";
 
 const DOC_TYPES: ResearchDocumentType[] = [
   "analyst_report",
@@ -79,9 +87,20 @@ export async function POST(req: NextRequest) {
   const arrayBuffer = await uploaded.arrayBuffer();
   const bytes = new Uint8Array(arrayBuffer);
 
-  let extracted;
+  // Fire both calls in parallel; the raw_text promise keeps running while we
+  // await metadata, insert the row, and respond to the client.
+  const metadataPromise = extractResearchMetadata(bytes);
+  const rawTextPromise = extractResearchRawText(bytes);
+
+  // We don't want an unhandled rejection if raw_text fails before we attach
+  // a .catch() below. Attach a no-op catch now; the real handler runs later.
+  rawTextPromise.catch(() => {
+    /* intentional: handled in the deferred continuation below */
+  });
+
+  let metadata;
   try {
-    extracted = await extractResearchPdf(bytes);
+    metadata = await metadataPromise;
   } catch (err) {
     if (err instanceof ResearchPdfTooLargeError) {
       return Response.json({ error: err.message }, { status: 413 });
@@ -97,34 +116,54 @@ export async function POST(req: NextRequest) {
   }
 
   const id = createResearchDocument(db, {
-    title: extracted.title,
-    author: extracted.author,
-    source: extracted.source,
+    title: metadata.title,
+    author: metadata.author,
+    source: metadata.source,
     filename: uploaded.name,
     file_size_bytes: uploaded.size,
-    publication_date: extracted.publication_date,
-    document_type: extracted.document_type,
-    raw_text: extracted.raw_text,
-    summary: extracted.summary,
-    key_points: extracted.key_points,
-    mentioned_symbols: extracted.mentioned_symbols,
-    tags: extracted.tags,
-    sentiment: extracted.sentiment,
-    target_prices: extracted.target_prices,
-    ai_model: extracted.ai_model,
-    char_count: extracted.raw_text.length,
+    publication_date: metadata.publication_date,
+    document_type: metadata.document_type,
+    raw_text: RAW_TEXT_PLACEHOLDER,
+    summary: metadata.summary,
+    key_points: metadata.key_points,
+    mentioned_symbols: metadata.mentioned_symbols,
+    tags: metadata.tags,
+    sentiment: metadata.sentiment,
+    target_prices: metadata.target_prices,
+    ai_model: metadata.ai_model,
+    char_count: null,
+    processing_state: "pending_body",
   });
+
+  // Fire-and-forget: when raw_text resolves (potentially minutes later), swap
+  // the placeholder for the real body and flip processing_state to 'ready'.
+  // On error, mark the row 'failed' so the UI can surface it.
+  rawTextPromise
+    .then((rawText) => {
+      updateResearchDocumentRawText(db, id, rawText);
+    })
+    .catch((err) => {
+      console.error(`[research-docs] raw_text extraction failed for id=${id}:`, err);
+      try {
+        markResearchDocumentProcessingFailed(db, id);
+      } catch (markErr) {
+        console.error(
+          `[research-docs] could not mark id=${id} as failed:`,
+          markErr,
+        );
+      }
+    });
 
   return Response.json({
     id,
-    title: extracted.title,
-    source: extracted.source,
-    summary: extracted.summary,
-    document_type: extracted.document_type,
-    publication_date: extracted.publication_date,
-    mentioned_symbols: extracted.mentioned_symbols,
-    tags: extracted.tags,
-    key_points: extracted.key_points,
-    char_count: extracted.raw_text.length,
+    title: metadata.title,
+    source: metadata.source,
+    summary: metadata.summary,
+    document_type: metadata.document_type,
+    publication_date: metadata.publication_date,
+    mentioned_symbols: metadata.mentioned_symbols,
+    tags: metadata.tags,
+    key_points: metadata.key_points,
+    processing_state: "pending_body" as const,
   });
 }
