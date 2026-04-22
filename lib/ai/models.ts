@@ -1,4 +1,4 @@
-import { OPUS_MODEL, SONNET_MODEL } from "@/lib/claude-models";
+import { HAIKU_MODEL, OPUS_MODEL, SONNET_MODEL } from "@/lib/claude-models";
 import type { FeatureKey } from "@/lib/ai/feature-keys";
 
 /**
@@ -70,6 +70,16 @@ export const FEATURE_MODELS: Record<FeatureKey, string> = {
   // handles layout + tables; Sonnet is plenty for the structured-extraction
   // task and one-shot per upload keeps costs predictable.
   researchDocumentExtraction: `anthropic/${SONNET_MODEL}`,
+
+  // Post-extraction verification of ticker mentions. Drops homonyms like
+  // "HOOD" in "likelihood", "NET" in "net income", URL fragments. Haiku is
+  // plenty for yes/no judgments with short context snippets.
+  researchMentionVerification: `anthropic/${HAIKU_MODEL}`,
+
+  // One-sentence narrative per suggested S/R level on the chart. Cached per
+  // (security_id, level_price, day) so a single Haiku call amortizes across
+  // all same-day views.
+  suggestedLevelNarrative: `anthropic/${HAIKU_MODEL}`,
 };
 
 export interface ResolvedModel {

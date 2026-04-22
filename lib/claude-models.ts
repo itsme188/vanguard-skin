@@ -19,3 +19,6 @@ export const OPUS_MODEL = "claude-opus-4-7";
 
 /** Fast/cheap. Used for enrichment, Gmail processing, high-volume tasks. */
 export const SONNET_MODEL = "claude-sonnet-4-6";
+
+/** Cheapest + fastest. Used for one-sentence generation, verification passes. */
+export const HAIKU_MODEL = "claude-haiku-4-5-20251001";
