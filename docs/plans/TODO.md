@@ -25,6 +25,7 @@ Headline features not reflected in the v2 archive:
 - **R2 PDF archival** — 39 Vanguard PDFs backfilled (`264bc73`, migration 033)
 - **Chat history delete** (2026-04-22) — sidebar trash icon + `deleteConversation` mutation + `DELETE /api/chat/conversations/[id]`. Completes Theme I.
 - **EDGAR 10-K / 10-Q section extraction** (2026-04-22, migration 034) — new chat tool `query_filing_section` summarizes Item 1A Risk Factors and MD&A via Sonnet, cached per `(symbol, accession, section)`. Feature key `filingSectionExtraction` in FEATURE_MODELS.
+- **Research PDF knowledge base** (2026-04-22, migration 035) — upload analyst reports / research notes as PDFs; Claude extracts metadata + full body; SQLite FTS5 powers lexical search; chat tool `query_research_documents`; Documents tab in Research view. `researchDocumentExtraction` → Sonnet via native `document` content block.
 
 ---
 
@@ -51,7 +52,7 @@ Headline features not reflected in the v2 archive:
 
 - **Theme D — Level source performance attribution** (blocked on data): hit-rate + P&L by `source_author`. Wait until ~30+ alerts have fired.
 - **Theme E — Chat broader company data**: press releases (E1), full 8-K body (E2), analyst estimates (E4). E3 EDGAR 10-K/10-Q shipped 2026-04-22.
-- **Theme F1 — Research PDF knowledge base**: analyst reports, FTS5 search, new `research_documents` table. ~1 day. (New migration — coordinate with in-flight phases.)
+- ✅ **Theme F1 — Research PDF knowledge base** shipped 2026-04-22 (migration 035, commit `6624382`).
 - **Theme G — Chart entry/exit signals**: design pass first, then 1-2 implementation sessions.
 - ✅ **Theme I — Chat history persistence**: shipped across 2026-04-21 + 2026-04-22. Schema (migration 025), route persistence, sidebar + delete.
 - **Theme J — Cleanup track** (partial): J1 ✅ + J3 ✅ shipped 2026-04-21. J2 (E2E browser tests, ~15 hr) deferred.
