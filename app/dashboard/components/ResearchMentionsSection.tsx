@@ -32,14 +32,41 @@ function isUrlFragmentContext(ctx: string | null): boolean {
   return false;
 }
 
+/**
+ * True when the ticker appears only as a substring of a larger word in
+ * the mention context / subject (e.g. "HOOD" inside "likelihood",
+ * "NET" inside "internet"). Extractor is currently substring-match, so
+ * common-word tickers generate loud false positives until the better
+ * gating ships. We leave mentions with null context alone — we can't
+ * prove either way without fetching the article body.
+ *
+ * The \b anchor uses ASCII word chars, which works for all US tickers.
+ */
+function lacksWordBoundaryMatch(
+  ticker: string,
+  ctx: string | null,
+  subject: string,
+): boolean {
+  if (!ctx) return false;
+  const escaped = ticker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`\\b${escaped}\\b`, "i");
+  if (re.test(ctx)) return false;
+  if (re.test(subject)) return false;
+  return true;
+}
+
 export function ResearchMentionsSection({
+  ticker,
   mentions,
 }: {
+  ticker: string;
   mentions: ResearchMention[];
 }) {
-  const filtered = mentions.filter(
-    (m) => !isUrlFragmentContext(m.mention_context),
-  );
+  const filtered = mentions.filter((m) => {
+    if (isUrlFragmentContext(m.mention_context)) return false;
+    if (lacksWordBoundaryMatch(ticker, m.mention_context, m.subject)) return false;
+    return true;
+  });
 
   if (filtered.length === 0) return null;
 
