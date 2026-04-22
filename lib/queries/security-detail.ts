@@ -261,6 +261,13 @@ export function getTransactionsBySecurity(
  * Get option transactions whose underlying is this stock. Lets the Security
  * Detail page for e.g. APP surface the user's APP calls/puts alongside the
  * stock's own transactions.
+ *
+ * Dual match logic: historical IBKR-imported options often have a NULL
+ * `underlying_symbol` — their ticker lives only in the symbol prefix
+ * (e.g. "HOOD 03JUL25 89 C" or the OCC-padded "HOOD  250620C00043000").
+ * The symbol-prefix LIKE (`ticker + ' %'`) picks those up. The required
+ * space after the ticker prevents cross-ticker false matches (ticker "HO"
+ * won't match "HOOD ..." because position 3 is 'O', not a space).
  */
 export function getRelatedOptionTransactions(
   db: Database.Database,
@@ -276,11 +283,14 @@ export function getRelatedOptionTransactions(
        JOIN securities s ON s.id = t.security_id
        JOIN accounts a ON a.id = t.account_id
        WHERE LOWER(s.security_type) = 'option'
-         AND UPPER(s.underlying_symbol) = UPPER(?)
+         AND (
+           UPPER(s.underlying_symbol) = UPPER(?)
+           OR UPPER(s.symbol) LIKE UPPER(?) || ' %'
+         )
        ORDER BY t.trade_date DESC
        LIMIT ?`
     )
-    .all(underlyingSymbol, limit) as SecurityDetailTransaction[];
+    .all(underlyingSymbol, underlyingSymbol, limit) as SecurityDetailTransaction[];
 }
 
 /**

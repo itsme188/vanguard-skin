@@ -209,10 +209,23 @@ function FilterPill({
 
 function OptionLabel({ txn }: { txn: SecurityDetailTransaction }) {
   const type = txn.option_type;
-  const tone = type === "CALL" ? "up" : type === "PUT" ? "down" : "neutral";
   const strike = txn.strike_price;
   const exp = txn.expiration_date;
+  const hasStructured = type != null || strike != null || exp != null;
 
+  // IBKR-imported options often have null metadata but their symbol is
+  // human-readable as-is (e.g. "HOOD 03JUL25 89 C"). Show the symbol
+  // instead of an empty cell. The ' ' → ' ' normalize collapses the
+  // OCC double-space padding so "HOOD  250620C00043000" reads cleaner.
+  if (!hasStructured) {
+    return (
+      <span className="text-[11px] font-mono text-ink-dim">
+        {txn.symbol?.replace(/\s+/g, " ").trim() ?? "—"}
+      </span>
+    );
+  }
+
+  const tone = type === "CALL" ? "up" : type === "PUT" ? "down" : "neutral";
   return (
     <div className="flex items-center gap-2 flex-wrap">
       {type && (
