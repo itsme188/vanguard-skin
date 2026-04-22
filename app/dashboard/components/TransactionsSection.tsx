@@ -4,6 +4,10 @@ import { useMemo, useState } from "react";
 import type { SecurityDetailTransaction } from "@/lib/queries/security-detail";
 import { Money, Shares } from "@/lib/privacy/components";
 import { Chip } from "./Chip";
+import { SortableHeader } from "./SortableHeader";
+import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
+
+type SortField = "trade_date" | "type" | "account_name" | "quantity" | "price_per_share" | "amount";
 
 type TypeScope = "all" | "stocks" | "options";
 
@@ -50,15 +54,25 @@ export function TransactionsSection({
   const hasOptions = optionTransactions.length > 0;
   const [account, setAccount] = useState<string>("All");
   const [typeScope, setTypeScope] = useState<TypeScope>("all");
+  const { sort, setSort } = useSortParam<SortField>("secTxns", "trade_date", "desc");
 
   const filtered = useMemo(() => {
-    return all.filter((t) => {
+    const base = all.filter((t) => {
       if (account !== "All" && t.account_name !== account) return false;
       if (typeScope === "stocks" && isOptionTxn(t)) return false;
       if (typeScope === "options" && !isOptionTxn(t)) return false;
       return true;
     });
-  }, [all, account, typeScope]);
+    if (!sort.field) return base;
+    const field = sort.field;
+    return [...base].sort((a, b) =>
+      compareValues(
+        a[field as keyof SecurityDetailTransaction],
+        b[field as keyof SecurityDetailTransaction],
+        sort.dir,
+      ),
+    );
+  }, [all, account, typeScope, sort]);
 
   if (all.length === 0) return null;
 
@@ -124,13 +138,36 @@ export function TransactionsSection({
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-edge text-ink-faint text-xs">
-              <th className="text-left px-5 py-2 font-medium">Date</th>
-              <th className="text-left px-5 py-2 font-medium">Type</th>
-              <th className="hidden md:table-cell text-left px-5 py-2 font-medium">Account</th>
-              <th className="text-left px-5 py-2 font-medium">Security</th>
-              <th className="text-right px-5 py-2 font-medium">Qty</th>
-              <th className="hidden md:table-cell text-right px-5 py-2 font-medium">Price</th>
-              <th className="text-right px-5 py-2 font-medium">Amount</th>
+              <SortableHeader field="trade_date" sort={sort} onSort={setSort} className="px-5">
+                Date
+              </SortableHeader>
+              <SortableHeader field="type" sort={sort} onSort={setSort} className="px-5">
+                Type
+              </SortableHeader>
+              <SortableHeader
+                field="account_name"
+                sort={sort}
+                onSort={setSort}
+                className="px-5 hidden md:table-cell"
+              >
+                Account
+              </SortableHeader>
+              <th className="text-left px-5 py-2.5 font-medium">Security</th>
+              <SortableHeader field="quantity" sort={sort} onSort={setSort} align="right" className="px-5">
+                Qty
+              </SortableHeader>
+              <SortableHeader
+                field="price_per_share"
+                sort={sort}
+                onSort={setSort}
+                align="right"
+                className="px-5 hidden md:table-cell"
+              >
+                Price
+              </SortableHeader>
+              <SortableHeader field="amount" sort={sort} onSort={setSort} align="right" className="px-5">
+                Amount
+              </SortableHeader>
             </tr>
           </thead>
           <tbody>

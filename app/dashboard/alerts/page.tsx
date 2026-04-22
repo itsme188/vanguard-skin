@@ -1,10 +1,21 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import Link from "next/link";
 import type { LevelAlert, AlertResponse } from "@/lib/types";
 import { Money, Shares } from "@/lib/privacy/components";
 import { useToast } from "../components/Toast";
+import { SortPicker } from "../components/SortPicker";
+import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
+
+type AlertSortField = "triggered_at" | "symbol" | "level_price" | "source_author";
+
+const SORT_OPTIONS = [
+  { field: "triggered_at" as const, label: "Triggered" },
+  { field: "symbol" as const, label: "Symbol" },
+  { field: "level_price" as const, label: "Price" },
+  { field: "source_author" as const, label: "Source" },
+];
 
 interface EnrichedAlert extends LevelAlert {
   symbol: string | null;
@@ -51,6 +62,20 @@ export default function AlertsPage() {
   const [detecting, setDetecting] = useState(false);
   const [suggesting, setSuggesting] = useState(false);
   const [actionStatus, setActionStatus] = useState<string | null>(null);
+  const { sort, setSort } = useSortParam<AlertSortField>("alerts", "triggered_at", "desc");
+
+  const sortedAlerts = useMemo(() => {
+    if (!sort.field) return alerts;
+    const field = sort.field;
+    const getValue = (a: EnrichedAlert): unknown => {
+      if (field === "triggered_at") return a.triggered_at;
+      if (field === "symbol") return a.symbol;
+      if (field === "level_price") return a.level?.price ?? null;
+      if (field === "source_author") return a.level?.source_author ?? null;
+      return null;
+    };
+    return [...alerts].sort((a, b) => compareValues(getValue(a), getValue(b), sort.dir));
+  }, [alerts, sort]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -213,6 +238,10 @@ export default function AlertsPage() {
         </div>
       )}
 
+      {alerts.length > 1 && (
+        <SortPicker options={SORT_OPTIONS} sort={sort} onSort={setSort} />
+      )}
+
       {loading && alerts.length === 0 ? (
         <p className="text-[11px] text-ink-faint italic py-6 text-center">Loading...</p>
       ) : alerts.length === 0 ? (
@@ -226,10 +255,10 @@ export default function AlertsPage() {
           </p>
         </div>
       ) : filter === "pending" ? (
-        <GroupedPendingAlerts alerts={alerts} onRespond={respond} />
+        <GroupedPendingAlerts alerts={sortedAlerts} onRespond={respond} />
       ) : (
         <ul className="space-y-2">
-          {alerts.map((a) => (
+          {sortedAlerts.map((a) => (
             <AlertRow key={a.id} alert={a} onRespond={respond} />
           ))}
         </ul>

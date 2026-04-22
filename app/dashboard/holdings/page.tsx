@@ -2,45 +2,8 @@ export const dynamic = "force-dynamic";
 
 import { db } from "@/lib/db";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
-import { SymbolLink } from "../components/SymbolLink";
-import { ScrollFade } from "../components/ScrollFade";
 import { EmptyState } from "../components/EmptyState";
-import { Money, Pct, Shares } from "@/lib/privacy/components";
-
-interface HoldingRow {
-  account_id: number;
-  account_name: string;
-  security_id: number;
-  symbol: string;
-  security_name: string | null;
-  security_type: string | null;
-  multiplier: number;
-  quantity: number;
-  cost_basis: number | null;
-  as_of_date: string;
-  current_price: number | null;
-  current_value: number | null;
-  unrealized_gain: number | null;
-}
-
-function GainCell({ value }: { value: number | null }) {
-  if (value === null) return <span className="text-ink-faint">&mdash;</span>;
-  const isPositive = value >= 0;
-  const className = `font-mono tabular-nums ${
-    value === 0 ? "text-ink-dim" : isPositive ? "text-up" : "text-down"
-  }`;
-  return <Money value={value} precise signed className={className} />;
-}
-
-function GainPercentCell({ value }: { value: number | null }) {
-  if (value === null) return <span className="text-ink-faint">&mdash;</span>;
-  const isPositive = value >= 0;
-  const className = `font-mono tabular-nums ${
-    value === 0 ? "text-ink-dim" : isPositive ? "text-up" : "text-down"
-  }`;
-  // value is a decimal (e.g. 0.123 means 12.3%)
-  return <Pct value={value * 100} digits={2} signed className={className} />;
-}
+import { AllHoldingsTable, type AllHoldingsRow } from "../components/AllHoldingsTable";
 
 export default async function HoldingsPage() {
   const marketValueExpr = adjustedMarketValueSQL(
@@ -84,9 +47,9 @@ export default async function HoldingsPage() {
     ORDER BY current_value DESC NULLS LAST
   `;
 
-  let holdings: HoldingRow[];
+  let holdings: AllHoldingsRow[];
   try {
-    holdings = db.prepare(sql).all() as HoldingRow[];
+    holdings = db.prepare(sql).all() as AllHoldingsRow[];
   } catch {
     throw new Error(
       "Failed to load holdings. The database may be unavailable."
@@ -115,23 +78,6 @@ export default async function HoldingsPage() {
     );
   }
 
-  // Compute totals for summary row and allocation percentages
-  const totalValue = holdings.reduce(
-    (sum, h) => sum + (h.current_value ?? 0),
-    0
-  );
-  // Only sum cost basis for positions that have data — null means "unknown", not zero
-  const holdingsWithCost = holdings.filter((h) => h.cost_basis !== null);
-  const totalCostBasis = holdingsWithCost.reduce(
-    (sum, h) => sum + h.cost_basis!,
-    0
-  );
-  const missingCostCount = holdings.length - holdingsWithCost.length;
-  const totalGain = holdings.reduce(
-    (sum, h) => sum + (h.unrealized_gain ?? 0),
-    0
-  );
-
   return (
     <div className="space-y-6">
       <div>
@@ -140,131 +86,7 @@ export default async function HoldingsPage() {
           {holdings.length} positions across all accounts
         </p>
       </div>
-
-      <div className="rounded-xl border border-edge overflow-hidden">
-        <ScrollFade>
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-edge bg-panel">
-                <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">
-                  Symbol
-                </th>
-                <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">
-                  Name
-                </th>
-                <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">
-                  Account
-                </th>
-                <th className="text-right px-4 py-2.5 text-ink-faint font-medium text-xs">
-                  Qty
-                </th>
-                <th className="text-right px-4 py-2.5 text-ink-faint font-medium text-xs">
-                  Cost Basis
-                </th>
-                <th className="text-right px-4 py-2.5 text-ink-faint font-medium text-xs">
-                  Value
-                </th>
-                <th className="text-right px-4 py-2.5 text-ink-faint font-medium text-xs">
-                  Gain
-                </th>
-                <th className="text-right px-4 py-2.5 text-ink-faint font-medium text-xs">
-                  Gain %
-                </th>
-                <th className="text-right px-4 py-2.5 text-ink-faint font-medium text-xs">
-                  Alloc %
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {holdings.map((h) => {
-                const gainPct =
-                  h.unrealized_gain !== null && h.cost_basis !== null && h.cost_basis !== 0
-                    ? h.unrealized_gain / h.cost_basis
-                    : null;
-                const allocPct =
-                  h.current_value !== null && totalValue > 0
-                    ? h.current_value / totalValue
-                    : null;
-                const qtyDigits = Number.isInteger(h.quantity) ? 0 : 4;
-
-                return (
-                  <tr
-                    key={`${h.account_id}-${h.security_id}`}
-                    className="border-b border-edge last:border-0 hover:bg-panel/50 transition-colors"
-                  >
-                    <td className="px-4 py-3 font-mono font-medium text-ink">
-                      <SymbolLink
-                        securityId={h.security_id}
-                        symbol={h.symbol}
-                      />
-                    </td>
-                    <td className="px-4 py-3 text-ink-dim text-xs max-w-[200px] truncate">
-                      {h.security_name ?? "\u2014"}
-                    </td>
-                    <td className="px-4 py-3 text-ink-dim text-xs">
-                      {h.account_name}
-                    </td>
-                    <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
-                      <Shares value={h.quantity} digits={qtyDigits} />
-                    </td>
-                    <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
-                      <Money value={h.cost_basis} precise />
-                    </td>
-                    <td className="px-4 py-3 text-right font-mono tabular-nums text-ink">
-                      <Money value={h.current_value} precise />
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <GainCell value={h.unrealized_gain} />
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <GainPercentCell value={gainPct} />
-                    </td>
-                    <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
-                      {allocPct !== null ? (
-                        <Pct value={allocPct * 100} digits={2} />
-                      ) : (
-                        "\u2014"
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-            <tfoot>
-              <tr className="border-t-2 border-edge bg-panel/50">
-                <td className="px-4 py-3 font-medium text-ink text-xs" colSpan={4}>
-                  Total ({holdings.length} positions)
-                </td>
-                <td className="px-4 py-3 text-right font-mono tabular-nums font-medium text-ink-dim">
-                  {missingCostCount > 0 ? (
-                    <span title={`${missingCostCount} position${missingCostCount > 1 ? "s" : ""} missing cost basis data`} className="cursor-help">
-                      ~<Money value={totalCostBasis} precise />
-                    </span>
-                  ) : (
-                    <Money value={totalCostBasis} precise />
-                  )}
-                </td>
-                <td className="px-4 py-3 text-right font-mono tabular-nums font-medium text-ink">
-                  <Money value={totalValue} precise />
-                </td>
-                <td className="px-4 py-3 text-right">
-                  <GainCell value={totalGain} />
-                </td>
-                <td className="px-4 py-3 text-right">
-                  <GainPercentCell
-                    value={
-                      totalCostBasis !== 0 ? totalGain / totalCostBasis : null
-                    }
-                  />
-                </td>
-                <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
-                  100.00%
-                </td>
-              </tr>
-            </tfoot>
-          </table>
-        </ScrollFade>
-      </div>
+      <AllHoldingsTable holdings={holdings} />
     </div>
   );
 }

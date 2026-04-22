@@ -1,7 +1,33 @@
+"use client";
+
+import { useMemo } from "react";
 import type { TaxLotWithSecurity, TaxLotSaleWithDetails } from "@/lib/queries/tax-lots";
 import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
 import { Money, Shares } from "@/lib/privacy/components";
 import { ScrollFade } from "./ScrollFade";
+import { SortableHeader } from "./SortableHeader";
+import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
+
+type OpenField =
+  | "account_name"
+  | "symbol"
+  | "acquisition_date"
+  | "quantity_remaining"
+  | "acquisition_price"
+  | "adjusted_cost_basis"
+  | "current_value"
+  | "unrealized_gain";
+
+type ClosedField =
+  | "account_name"
+  | "symbol"
+  | "sale_date"
+  | "quantity_sold"
+  | "proceeds"
+  | "cost_basis_allocated"
+  | "realized_gain_loss"
+  | "is_long_term"
+  | "holding_period_days";
 
 function GainCell({ value }: { value: number | null }) {
   if (value === null) return <span className="text-ink-faint">&mdash;</span>;
@@ -25,6 +51,20 @@ export function OpenLotsTable({
   lots: TaxLotWithSecurity[];
   showAccount?: boolean;
 }) {
+  const { sort, setSort } = useSortParam<OpenField>("openLots", null, "desc");
+
+  const rows = useMemo(() => {
+    if (!sort.field) return lots;
+    const field = sort.field;
+    return [...lots].sort((a, b) =>
+      compareValues(
+        a[field as keyof TaxLotWithSecurity],
+        b[field as keyof TaxLotWithSecurity],
+        sort.dir,
+      ),
+    );
+  }, [lots, sort]);
+
   if (lots.length === 0) {
     return null;
   }
@@ -41,19 +81,52 @@ export function OpenLotsTable({
             <thead>
               <tr className="border-b border-edge bg-panel">
                 {showAccount && (
-                  <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">Account</th>
+                  <SortableHeader field="account_name" sort={sort} onSort={setSort}>
+                    Account
+                  </SortableHeader>
                 )}
-                <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">Symbol</th>
-                <th className="hidden md:table-cell text-left px-4 py-2.5 text-ink-faint font-medium text-xs">Acquired</th>
-                <th className="text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Qty</th>
-                <th className="hidden md:table-cell text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Cost/Share</th>
-                <th className="text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Cost Basis</th>
-                <th className="hidden md:table-cell text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Mkt Value</th>
-                <th className="text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Unrealized</th>
+                <SortableHeader field="symbol" sort={sort} onSort={setSort}>
+                  Symbol
+                </SortableHeader>
+                <SortableHeader
+                  field="acquisition_date"
+                  sort={sort}
+                  onSort={setSort}
+                  className="hidden md:table-cell"
+                >
+                  Acquired
+                </SortableHeader>
+                <SortableHeader field="quantity_remaining" sort={sort} onSort={setSort} align="right">
+                  Qty
+                </SortableHeader>
+                <SortableHeader
+                  field="acquisition_price"
+                  sort={sort}
+                  onSort={setSort}
+                  align="right"
+                  className="hidden md:table-cell"
+                >
+                  Cost/Share
+                </SortableHeader>
+                <SortableHeader field="adjusted_cost_basis" sort={sort} onSort={setSort} align="right">
+                  Cost Basis
+                </SortableHeader>
+                <SortableHeader
+                  field="current_value"
+                  sort={sort}
+                  onSort={setSort}
+                  align="right"
+                  className="hidden md:table-cell"
+                >
+                  Mkt Value
+                </SortableHeader>
+                <SortableHeader field="unrealized_gain" sort={sort} onSort={setSort} align="right">
+                  Unrealized
+                </SortableHeader>
               </tr>
             </thead>
             <tbody>
-              {lots.map((lot) => {
+              {rows.map((lot) => {
                 const qtyDigits = Number.isInteger(lot.quantity_remaining) ? 0 : 4;
                 return (
                   <tr
@@ -100,6 +173,20 @@ export function ClosedSalesTable({
   sales: TaxLotSaleWithDetails[];
   showAccount?: boolean;
 }) {
+  const { sort, setSort } = useSortParam<ClosedField>("closedLots", null, "desc");
+
+  const rows = useMemo(() => {
+    if (!sort.field) return sales;
+    const field = sort.field;
+    return [...sales].sort((a, b) =>
+      compareValues(
+        a[field as keyof TaxLotSaleWithDetails],
+        b[field as keyof TaxLotSaleWithDetails],
+        sort.dir,
+      ),
+    );
+  }, [sales, sort]);
+
   if (sales.length === 0) {
     return null;
   }
@@ -116,20 +203,67 @@ export function ClosedSalesTable({
             <thead>
               <tr className="border-b border-edge bg-panel">
                 {showAccount && (
-                  <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">Account</th>
+                  <SortableHeader field="account_name" sort={sort} onSort={setSort}>
+                    Account
+                  </SortableHeader>
                 )}
-                <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">Symbol</th>
-                <th className="hidden md:table-cell text-left px-4 py-2.5 text-ink-faint font-medium text-xs">Sold</th>
-                <th className="hidden md:table-cell text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Qty</th>
-                <th className="hidden md:table-cell text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Proceeds</th>
-                <th className="hidden md:table-cell text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Cost Basis</th>
-                <th className="text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Gain/Loss</th>
-                <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">Term</th>
-                <th className="hidden md:table-cell text-right px-4 py-2.5 text-ink-faint font-medium text-xs">Days</th>
+                <SortableHeader field="symbol" sort={sort} onSort={setSort}>
+                  Symbol
+                </SortableHeader>
+                <SortableHeader
+                  field="sale_date"
+                  sort={sort}
+                  onSort={setSort}
+                  className="hidden md:table-cell"
+                >
+                  Sold
+                </SortableHeader>
+                <SortableHeader
+                  field="quantity_sold"
+                  sort={sort}
+                  onSort={setSort}
+                  align="right"
+                  className="hidden md:table-cell"
+                >
+                  Qty
+                </SortableHeader>
+                <SortableHeader
+                  field="proceeds"
+                  sort={sort}
+                  onSort={setSort}
+                  align="right"
+                  className="hidden md:table-cell"
+                >
+                  Proceeds
+                </SortableHeader>
+                <SortableHeader
+                  field="cost_basis_allocated"
+                  sort={sort}
+                  onSort={setSort}
+                  align="right"
+                  className="hidden md:table-cell"
+                >
+                  Cost Basis
+                </SortableHeader>
+                <SortableHeader field="realized_gain_loss" sort={sort} onSort={setSort} align="right">
+                  Gain/Loss
+                </SortableHeader>
+                <SortableHeader field="is_long_term" sort={sort} onSort={setSort}>
+                  Term
+                </SortableHeader>
+                <SortableHeader
+                  field="holding_period_days"
+                  sort={sort}
+                  onSort={setSort}
+                  align="right"
+                  className="hidden md:table-cell"
+                >
+                  Days
+                </SortableHeader>
               </tr>
             </thead>
             <tbody>
-              {sales.map((sale) => {
+              {rows.map((sale) => {
                 const qtyDigits = Number.isInteger(sale.quantity_sold) ? 0 : 4;
                 return (
                   <tr
