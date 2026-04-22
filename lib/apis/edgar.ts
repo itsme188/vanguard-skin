@@ -604,9 +604,17 @@ export async function getEarnings8KFilings(
   ticker: string,
   options?: {
     limit?: number;
+    /**
+     * When true, return the full press-release text (capped at ~60K chars
+     * to keep things sane for the LLM). Default false keeps the old
+     * 5000-char summary behavior for back-compat with callers that feed
+     * this into list views or small-context contexts.
+     */
+    fullText?: boolean;
   }
 ): Promise<Earnings8KFiling[]> {
   const limit = Math.min(options?.limit || 4, 10);
+  const fullText = !!options?.fullText;
 
   // Get recent 8-K filings
   const filings = await getRecentFilings(ticker, {
@@ -665,9 +673,17 @@ export async function getEarnings8KFilings(
         pressRelease = stripHtmlTags(docText);
       }
 
-      // Truncate very long press releases (keep first ~5000 chars)
-      if (pressRelease.length > 5000) {
-        pressRelease = pressRelease.slice(0, 5000) + "\n\n[Truncated — full text available on SEC EDGAR]";
+      // Truncation policy:
+      //   - Default (fullText=false): 5000-char summary, back-compat for
+      //     list views and small-context callers.
+      //   - fullText=true: cap at 60K chars so the chat tool can pass
+      //     the body through to Claude (Sonnet handles this easily). Some
+      //     8-K exhibits exceed 200K chars, which blows context without
+      //     a cap.
+      const cap = fullText ? 60_000 : 5000;
+      if (pressRelease.length > cap) {
+        pressRelease = pressRelease.slice(0, cap) +
+          `\n\n[Truncated at ${cap.toLocaleString()} chars — full text: ${`https://www.sec.gov/Archives/edgar/data/${cikNum}/${accessionNoDashes}/${filing.primaryDocument}`}]`;
       }
 
       results.push({
