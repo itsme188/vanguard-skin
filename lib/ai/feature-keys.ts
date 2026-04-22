@@ -25,4 +25,5 @@ export type FeatureKey =
   | "newsletterProcessing"
   | "factorClassification"
   | "macroEnrichment"
-  | "scheduleVerification";
+  | "scheduleVerification"
+  | "filingSectionExtraction";

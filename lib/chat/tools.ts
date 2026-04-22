@@ -24,6 +24,7 @@ import { getOptionPositions } from "@/lib/queries/options";
 import { detectStrategies, type PositionLeg } from "@/lib/compute/options-strategy";
 import { getActiveLevels, getAlerts, getLevelsForSecurity } from "@/lib/queries/security-levels";
 import { resolveLevelPrice } from "@/lib/alerts/resolve-level-price";
+import { getFilingSection } from "@/lib/apis/filing-extract";
 
 // ─── Tool Definitions ─────────────────────────────────────────────
 
@@ -441,6 +442,33 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         },
       },
       required: ["ticker"],
+    },
+  },
+  {
+    name: "query_filing_section",
+    description:
+      "Fetch and summarize a specific section of a company's latest 10-K or 10-Q filing from SEC EDGAR. Returns a structured summary (2-4 paragraphs), key bullet points, and a direct link to the filing. Sections: 'risk_factors' (Item 1A — the risks management believes are most material) and 'mda' (Management's Discussion and Analysis — financial results commentary, trends, outlook). Results are cached per filing — re-asking is free. Use when the user asks about a company's risks, material threats, business outlook, management commentary, or wants to go deeper than the press release. Prefer 10-K for annual / comprehensive; 10-Q for quarterly updates. Both are public SEC data.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        ticker: {
+          type: "string",
+          description: "Stock ticker symbol (e.g., 'AAPL', 'MSFT', 'NVDA')",
+        },
+        filing_type: {
+          type: "string",
+          enum: ["10-K", "10-Q"],
+          description:
+            "'10-K' for the most recent annual report, '10-Q' for the most recent quarterly. Defaults to '10-K' when unsure.",
+        },
+        section: {
+          type: "string",
+          enum: ["risk_factors", "mda"],
+          description:
+            "'risk_factors' = Item 1A risk disclosures; 'mda' = Management's Discussion & Analysis (Item 7 in 10-K, Item 2 in 10-Q).",
+        },
+      },
+      required: ["ticker", "filing_type", "section"],
     },
   },
   {
@@ -886,6 +914,18 @@ export async function executeTool(
           tags: (input.tags as string[]) || null,
         });
         rawResult = { saved: true, note };
+        break;
+      }
+
+      case "query_filing_section": {
+        const ticker = input.ticker as string;
+        const filingType = input.filing_type as "10-K" | "10-Q";
+        const section = input.section as "risk_factors" | "mda";
+        rawResult = await getFilingSection(db, {
+          symbol: ticker,
+          filing_type: filingType,
+          section,
+        });
         break;
       }
 
@@ -1336,6 +1376,7 @@ export const TOOL_LABELS: Record<string, string> = {
   query_notes: "Searching notes...",
   create_note: "Saving note...",
   query_earnings_transcript: "Fetching earnings transcript...",
+  query_filing_section: "Summarizing SEC filing...",
   query_trade_reviews: "Looking up trade reviews...",
   query_options_greeks: "Computing options Greeks...",
   query_research_feeds: "Searching research feeds...",

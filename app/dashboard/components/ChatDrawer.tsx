@@ -12,6 +12,15 @@ export function ChatDrawer() {
 
   const toggle = useCallback(() => setOpen((v) => !v), []);
 
+  // Broadcast open-state changes so the header <ChatToggleButton /> can reflect
+  // the active styling. Same channel (`chat-state-change`) can be consumed by
+  // any other surface that wants to mirror the drawer state.
+  useEffect(() => {
+    window.dispatchEvent(
+      new CustomEvent("chat-state-change", { detail: { open } }),
+    );
+  }, [open]);
+
   // Keyboard shortcut: Cmd+J to toggle
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -28,44 +37,17 @@ export function ChatDrawer() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [open, toggle]);
 
-  // Listen for toggle-mobile-chat from MobileBottomNav
+  // Listen for toggle-mobile-chat from MobileBottomNav + ChatToggleButton
   useEffect(() => {
-    function handleMobileToggle() {
+    function handleToggle() {
       toggle();
     }
-    window.addEventListener("toggle-mobile-chat", handleMobileToggle);
-    return () => window.removeEventListener("toggle-mobile-chat", handleMobileToggle);
+    window.addEventListener("toggle-mobile-chat", handleToggle);
+    return () => window.removeEventListener("toggle-mobile-chat", handleToggle);
   }, [toggle]);
 
   return (
     <>
-      {/* Toggle button — desktop only (mobile uses bottom nav) */}
-      <button
-        onClick={toggle}
-        className={`hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-          open
-            ? "bg-gold/10 text-gold border border-gold/30"
-            : "text-ink-faint hover:text-ink-dim hover:bg-raised border border-transparent"
-        }`}
-        title="Toggle chat (Cmd+J)"
-        aria-label="Toggle chat assistant"
-        aria-expanded={open}
-      >
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={1.5}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-        </svg>
-        Chat
-      </button>
-
       {/* Backdrop — desktop only */}
       {open && !isMobile && (
         <div
