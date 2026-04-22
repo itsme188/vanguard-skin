@@ -24,6 +24,7 @@ export async function GET(
     mentioned_symbols: doc.mentioned_symbols
       ? JSON.parse(doc.mentioned_symbols)
       : [],
+    tags: doc.tags ? JSON.parse(doc.tags) : [],
     target_prices: doc.target_prices ? JSON.parse(doc.target_prices) : [],
   });
 }
