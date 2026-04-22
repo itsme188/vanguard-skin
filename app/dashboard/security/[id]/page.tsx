@@ -626,7 +626,7 @@ export default async function SecurityDetailPage(props: {
 
       {/* Research Mentions — client component handles filtering URL-fragment
           false positives, inline expansion, and click-through to article. */}
-      <ResearchMentionsSection mentions={researchMentions} />
+      <ResearchMentionsSection ticker={security.symbol} mentions={researchMentions} />
 
 
       {/* Upcoming Events */}
