@@ -32,7 +32,7 @@ Headline features not reflected in the v2 archive:
 ## Next up (unblocked)
 
 - ✅ **useCallback render-loop audit** — complete 2026-04-21, 0 candidates found. Pattern documented in `memory/feedback_usecallback_pattern.md`.
-- [ ] **Next.js 16 async-params migration** — hook flagged ~10 files. Dedicated session.
+- ✅ **Next.js 16 async-params migration** — no-op as of 2026-04-22: all `page.tsx` files that take `searchParams`/`params` already type them as `Promise<...>` and await. The hook flag is a false positive; it pattern-matches `params.foo` literally without distinguishing pre- vs post-await.
 - ✅ **`trade-roundtrips.test.ts` TS errors** — fixed 2026-04-21 (`458ad59`). Repo-wide `tsc --noEmit` now 0 errors.
 - [ ] **Q1 2026 Vanguard Taxable income gap** — dividends/interest not landing in the income card. Investigation first.
 - [ ] **Settings UI fallback for localhost** — optional `POST /api/settings` so `SettingsModal` works in plain-browser dev.
