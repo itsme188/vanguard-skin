@@ -1,6 +1,6 @@
 # Vanguard Skin — TODO
 
-> **In-repo shortlist.** Updated 2026-04-22.
+> **In-repo shortlist.** Updated 2026-04-23.
 >
 > - v2 build log (Mar–Apr 2026): [archive/TODO-v2-complete-2026-03-30.md](archive/TODO-v2-complete-2026-03-30.md)
 > - Master roadmap (off-repo, session-driven): `~/.claude/plans/last-session-session-summary-eventual-ripple.md`
@@ -32,12 +32,13 @@ Headline features not reflected in the v2 archive:
 ## Next up (unblocked)
 
 - ✅ **useCallback render-loop audit** — complete 2026-04-21, 0 candidates found. Pattern documented in `memory/feedback_usecallback_pattern.md`.
-- ✅ **Next.js 16 async-params migration** — no-op as of 2026-04-22: all `page.tsx` files that take `searchParams`/`params` already type them as `Promise<...>` and await. The hook flag is a false positive; it pattern-matches `params.foo` literally without distinguishing pre- vs post-await.
-- ✅ **`trade-roundtrips.test.ts` TS errors** — fixed 2026-04-21 (`458ad59`). Repo-wide `tsc --noEmit` now 0 errors.
-- [ ] **Q1 2026 Vanguard Taxable income gap** — dividends/interest not landing in the income card. Investigation first.
-- [ ] **Sortable column headers** — Holdings table should sort by symbol / name / account / gain% / allocation (click column header, ↑↓ indicator). Apply same pattern to other applicable tables (Transactions, Watchlist, Tax Lots). Client-side sort, persist in URL param. Raised 2026-04-22 during Track-C validation.
-- [ ] **Research mention extraction quality** — word-boundary + ticker-shape guard in extractor; LLM verification pass. Known false positives: "hood" inside "likelihood", "net" inside "net income", URL-anchor substrings. Client-side word-boundary filter shipped 2026-04-22 as a stopgap; real fix requires re-running extraction with better gating.
-- ✅ **Settings UI fallback for localhost** — shipped 2026-04-22 (commit `8ce0099`). `/api/settings` dev-only route + SettingsSource abstraction in SettingsModal; Electron IPC still used in packaged app.
+- ✅ **Next.js 16 async-params migration** — no-op as of 2026-04-22.
+- ✅ **`trade-roundtrips.test.ts` TS errors** — fixed 2026-04-21 (`458ad59`).
+- ✅ **Sortable column headers** — shipped 2026-04-23 (`882e620`). Shared `<SortableHeader>` + `<SortPicker>` + `useSortParam` hook. Applied across 7 tables (Holdings, 2× Transactions, 2× Tax Lots, Alerts, LevelsPanel).
+- ✅ **Research mention extraction quality** — shipped 2026-04-23 (`64bdc39`). Two-layer gate (word-boundary + Haiku) at extraction time; 250 articles re-verified via `scripts/backfill-research-mentions.ts`. New FeatureKey `researchMentionVerification` → Haiku 4.5.
+- ✅ **IBKR options metadata backfill** — shipped 2026-04-23 (`8707181`). 393 of 394 options now have structured `underlying_symbol` / `option_type` / `strike_price` / `expiration_date`; CALL/PUT chips now render on Security Detail.
+- ✅ **Settings UI fallback for localhost** — shipped 2026-04-22 (`8ce0099`).
+- [ ] **Q1 2026 Vanguard Taxable income gap** — unchanged. User re-runs 11 unimported PDFs through Co-Work when ready.
 
 ---
 
@@ -53,10 +54,10 @@ Headline features not reflected in the v2 archive:
 ## Backlog themes (from off-repo roadmap)
 
 - **Theme D — Level source performance attribution** (blocked on data): hit-rate + P&L by `source_author`. Wait until ~30+ alerts have fired.
-- ✅ **Theme E — Chat broader company data** complete: E1 press releases (`272566d`), E2 full 8-K body (`6328a99`), E3 EDGAR 10-K/10-Q, E4 analyst coverage (`1bf65d3`) all shipped 2026-04-22. Finnhub free tier covers recommendation trend only; price targets + upgrade/downgrade require Premium, code gracefully returns empty sections for those.
+- ✅ **Theme E — Chat broader company data** complete: E1 press releases (`272566d`), E2 full 8-K body (`6328a99`), E3 EDGAR 10-K/10-Q, E4 analyst coverage (`1bf65d3`) all shipped 2026-04-22.
 - ✅ **Theme F1 — Research PDF knowledge base** shipped 2026-04-22 (migration 035, commit `6624382`).
-- ✅ **Theme G — Chart entry/exit signals v1** shipped 2026-04-22 (commit `51fcc51`). Pivot S/R detection + suggested-levels API + chart overlay + accept flow. Claude narrative layer still deferred.
-- ✅ **Theme I — Chat history persistence**: shipped across 2026-04-21 + 2026-04-22. Schema (migration 025), route persistence, sidebar + delete.
+- ✅ **Theme G — Chart entry/exit signals v1 + narrative layer** complete: pivot S/R shipped 2026-04-22 (`51fcc51`), Haiku one-sentence narratives shipped 2026-04-23 (`25016cf`, migration 040).
+- ✅ **Theme I — Chat history persistence**: shipped across 2026-04-21 + 2026-04-22.
 - **Theme J — Cleanup track** (partial): J1 ✅ + J3 ✅ shipped 2026-04-21. J2 (E2E browser tests, ~15 hr) deferred.
 - **Theme K — Options Phase 2 end-to-end verification**: blocked on the user holding more than 1 option position at once.
 
