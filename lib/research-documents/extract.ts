@@ -155,7 +155,12 @@ export async function extractResearchPdf(
 
   const base64 = Buffer.from(pdfBytes).toString("base64");
 
-  const response = await client.messages.create({
+  // Anthropic SDK requires streaming when max_tokens is high enough that a
+  // non-streaming request *could* exceed the 10-minute server timeout,
+  // regardless of actual PDF size. We await finalMessage() to get the
+  // assembled message — behaviorally identical to messages.create() from
+  // this code's POV.
+  const stream = client.messages.stream({
     model: modelId,
     max_tokens: 32000,
     messages: [
@@ -178,6 +183,8 @@ export async function extractResearchPdf(
       },
     ],
   });
+
+  const response = await stream.finalMessage();
 
   const textBlock = response.content.find((b) => b.type === "text");
   if (!textBlock || textBlock.type !== "text") {
