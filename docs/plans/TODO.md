@@ -35,6 +35,8 @@ Headline features not reflected in the v2 archive:
 - ✅ **Next.js 16 async-params migration** — no-op as of 2026-04-22: all `page.tsx` files that take `searchParams`/`params` already type them as `Promise<...>` and await. The hook flag is a false positive; it pattern-matches `params.foo` literally without distinguishing pre- vs post-await.
 - ✅ **`trade-roundtrips.test.ts` TS errors** — fixed 2026-04-21 (`458ad59`). Repo-wide `tsc --noEmit` now 0 errors.
 - [ ] **Q1 2026 Vanguard Taxable income gap** — dividends/interest not landing in the income card. Investigation first.
+- [ ] **Sortable column headers** — Holdings table should sort by symbol / name / account / gain% / allocation (click column header, ↑↓ indicator). Apply same pattern to other applicable tables (Transactions, Watchlist, Tax Lots). Client-side sort, persist in URL param. Raised 2026-04-22 during Track-C validation.
+- [ ] **Research mention extraction quality** — word-boundary + ticker-shape guard in extractor; LLM verification pass. Known false positives: "hood" inside "likelihood", "net" inside "net income", URL-anchor substrings. Client-side word-boundary filter shipped 2026-04-22 as a stopgap; real fix requires re-running extraction with better gating.
 - ✅ **Settings UI fallback for localhost** — shipped 2026-04-22 (commit `8ce0099`). `/api/settings` dev-only route + SettingsSource abstraction in SettingsModal; Electron IPC still used in packaged app.
 
 ---
