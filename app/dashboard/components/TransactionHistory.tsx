@@ -1,7 +1,12 @@
+"use client";
+
+import { useMemo } from "react";
 import type { TransactionWithSecurity } from "@/lib/queries/transactions";
 import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
 import { Money, Shares } from "@/lib/privacy/components";
 import { ScrollFade } from "./ScrollFade";
+import { SortableHeader } from "./SortableHeader";
+import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
 
 const TYPE_STYLES: Record<string, string> = {
   BUY: "bg-up/20 text-up",
@@ -15,11 +20,27 @@ const TYPE_STYLES: Record<string, string> = {
   WITHDRAWAL: "bg-down/20 text-down",
 };
 
+type Field = "trade_date" | "type" | "symbol" | "quantity" | "amount";
+
 export function TransactionHistory({
   transactions,
 }: {
   transactions: TransactionWithSecurity[];
 }) {
+  const { sort, setSort } = useSortParam<Field>("txns", "trade_date", "desc");
+
+  const rows = useMemo(() => {
+    if (!sort.field) return transactions;
+    const field = sort.field;
+    return [...transactions].sort((a, b) =>
+      compareValues(
+        a[field as keyof TransactionWithSecurity],
+        b[field as keyof TransactionWithSecurity],
+        sort.dir,
+      ),
+    );
+  }, [transactions, sort]);
+
   if (transactions.length === 0) {
     return (
       <div className="rounded-xl border border-dashed border-edge bg-panel/50 p-8 text-center">
@@ -40,25 +61,36 @@ export function TransactionHistory({
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-edge bg-panel">
-              <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">
+              <SortableHeader field="trade_date" sort={sort} onSort={setSort}>
                 Date
-              </th>
-              <th className="hidden md:table-cell text-left px-4 py-2.5 text-ink-faint font-medium text-xs">
+              </SortableHeader>
+              <SortableHeader
+                field="type"
+                sort={sort}
+                onSort={setSort}
+                className="hidden md:table-cell"
+              >
                 Type
-              </th>
-              <th className="text-left px-4 py-2.5 text-ink-faint font-medium text-xs">
+              </SortableHeader>
+              <SortableHeader field="symbol" sort={sort} onSort={setSort}>
                 Symbol
-              </th>
-              <th className="hidden md:table-cell text-right px-4 py-2.5 text-ink-faint font-medium text-xs">
+              </SortableHeader>
+              <SortableHeader
+                field="quantity"
+                sort={sort}
+                onSort={setSort}
+                align="right"
+                className="hidden md:table-cell"
+              >
                 Quantity
-              </th>
-              <th className="text-right px-4 py-2.5 text-ink-faint font-medium text-xs">
+              </SortableHeader>
+              <SortableHeader field="amount" sort={sort} onSort={setSort} align="right">
                 Amount
-              </th>
+              </SortableHeader>
             </tr>
           </thead>
           <tbody>
-            {transactions.map((txn) => (
+            {rows.map((txn) => (
               <tr
                 key={txn.id}
                 className="border-b border-edge last:border-0 hover:bg-panel/50 transition-colors"

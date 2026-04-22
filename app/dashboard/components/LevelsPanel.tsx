@@ -12,6 +12,25 @@ import type {
 import { Money } from "@/lib/privacy/components";
 import { useToast } from "./Toast";
 import { Chip } from "./Chip";
+import { SortPicker } from "./SortPicker";
+import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
+
+type LevelSortField =
+  | "price"
+  | "level_type"
+  | "direction"
+  | "source_author"
+  | "created_at"
+  | "is_active";
+
+const LEVEL_SORT_OPTIONS = [
+  { field: "price" as const, label: "Price" },
+  { field: "level_type" as const, label: "Type" },
+  { field: "direction" as const, label: "Direction" },
+  { field: "source_author" as const, label: "Source" },
+  { field: "created_at" as const, label: "Added" },
+  { field: "is_active" as const, label: "Status" },
+];
 
 type EnrichedLevel = SecurityLevel & { effective_price: number | null };
 
@@ -255,6 +274,11 @@ export function LevelsPanel({
   // Provenance filter: "All" | "Me" | specific author. Lets the user triage
   // their own levels vs newsletter-derived ones once the list grows.
   const [authorFilter, setAuthorFilter] = useState<string>("All");
+  const { sort: levelSort, setSort: setLevelSort } = useSortParam<LevelSortField>(
+    "levels",
+    null,
+    "desc",
+  );
 
   // Form state. Default author = "Me" so user-originated levels are tracked as
   // the user's own. Dropdown also surfaces known research_sources for one-click
@@ -602,11 +626,30 @@ export function LevelsPanel({
         );
       })()}
 
+      {levels.length > 1 && (
+        <div className="mb-3">
+          <SortPicker
+            options={LEVEL_SORT_OPTIONS}
+            sort={levelSort}
+            onSort={setLevelSort}
+          />
+        </div>
+      )}
+
       {(() => {
-        const visibleLevels =
+        const filtered =
           authorFilter === "All"
             ? levels
             : levels.filter((l) => l.source_author === authorFilter);
+        const visibleLevels = levelSort.field
+          ? [...filtered].sort((a, b) =>
+              compareValues(
+                a[levelSort.field as keyof EnrichedLevel] as unknown,
+                b[levelSort.field as keyof EnrichedLevel] as unknown,
+                levelSort.dir,
+              ),
+            )
+          : filtered;
 
         if (visibleLevels.length === 0) {
           return (
