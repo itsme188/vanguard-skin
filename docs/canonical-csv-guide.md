@@ -56,11 +56,16 @@ REDEMPTION, EXCHANGE, CORPORATE_ACTION, SPINOFF, MERGER,
 SPLIT, RETURN_OF_CAPITAL, SHORT_SELL
 ```
 
+**Income-row placement rule:** For `DIVIDEND`, `INTEREST`, and `TAX_WITHHELD` rows, leave `quantity` and `price` empty and put the cash amount in the `amount` column — never in `fees`. For `REINVESTMENT` rows, populate both `quantity`/`price` (shares received at the reinvestment price) **and** `amount` (total value reinvested).
+
 **Example:**
 ```csv
 account,trade_date,settlement_date,type,symbol,security_name,security_type,quantity,price,amount,fees,notes
 Vanguard Taxable,2025-06-15,,BUY,AAPL,Apple Inc,Stock,10,150.25,1502.50,4.95,
 Vanguard Taxable,2025-06-20,,DIVIDEND,AAPL,Apple Inc,Stock,,,25.00,,Q2 dividend
+Vanguard Taxable,2025-06-30,,INTEREST,VMFXX,Vanguard Federal Money Market Fund,Mutual Fund,,,12.45,,
+Vanguard Taxable,2025-06-20,,REINVESTMENT,VTI,Vanguard Total Stock Market ETF,ETF,0.098,255.10,25.00,,Reinvested Q2 dividend
+Vanguard Taxable,2025-07-15,,TAX_WITHHELD,VXUS,Vanguard Total International Stock ETF,ETF,,,-3.50,,Foreign withholding
 IBKR,2025-06-18,2025-06-20,SELL,VTI,Vanguard Total Stock Market ETF,ETF,20,242.50,4850.00,1.00,Rebalancing
 ```
 
