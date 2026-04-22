@@ -85,8 +85,8 @@ PART 1 — A single JSON object. No markdown fences, no preamble, just JSON:
   "source": "<firm / publication / fund — e.g. 'Goldman Sachs', 'Bloomberg', 'Lead Edge Capital', 'The Information', 'Artemis Capital'; null if unclear>",
   "document_type": "<one of the values above>",
   "publication_date": "YYYY-MM-DD" | null,
-  "summary": "<2-4 sentence plain-text summary of the document's core thesis / content — do NOT hallucinate content that is not in the PDF>",
-  "key_points": ["<bullet 1>", "<bullet 2>", "..."],
+  "summary": "<depth-proportional summary. SHORT notes / articles / essays: 1-2 paragraphs. MEDIUM analyst reports / investor letters: 2-3 paragraphs. LONG primers / earnings decks / macro notes: 3-5 paragraphs covering thesis, supporting analysis, and conclusions. Use paragraph breaks (double-newline) for multi-paragraph output. Prefer substance over brevity — this summary should substitute for re-reading the document later. Do NOT hallucinate content not in the PDF.>",
+  "key_points": ["<bullet 1>", "<bullet 2>", "..."],   // Extract EVERY meaningful takeaway — specific numbers, dated claims, company-specific insights, predictions, recommendations. A short note may yield 5-8 bullets; a 100-page primer 25-40. Don't pad, don't under-serve. No upper limit.
   "mentioned_symbols": ["AAPL", "NVDA", "..."],
   "suggested_tags": ["<3-8 lowercase tags describing theme, sector, geography, style, or era — e.g. 'semiconductors', 'ai infrastructure', 'founder-led', 'q3 2024', 'value-investing', 'china', 'saas'>"],
   "sentiment": "bullish" | "bearish" | "neutral" | "mixed" | null,

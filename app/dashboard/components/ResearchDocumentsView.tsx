@@ -48,12 +48,38 @@ interface UploadZoneProps {
   onUploadComplete: () => void;
 }
 
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return s === 0 ? `${m}m` : `${m}m ${s}s`;
+}
+
+function phaseFor(elapsed: number, filename: string): string {
+  if (elapsed < 2) return `Uploading ${filename}`;
+  if (elapsed < 8) return "Sending to Claude";
+  if (elapsed < 30) return "Claude is reading the PDF";
+  if (elapsed < 90) return "Claude is extracting metadata and body text";
+  return "Claude is still working — dense reports with graphics can take 3-5 min";
+}
+
 function UploadZone({ onUploadComplete }: UploadZoneProps) {
   const [dragOver, setDragOver] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [progressMessage, setProgressMessage] = useState<string | null>(null);
+  const [currentFilename, setCurrentFilename] = useState<string | null>(null);
+  const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Live elapsed timer while uploading.
+  useEffect(() => {
+    if (!uploading) {
+      setElapsed(0);
+      return;
+    }
+    const interval = setInterval(() => setElapsed((e) => e + 1), 1000);
+    return () => clearInterval(interval);
+  }, [uploading]);
 
   const handleFile = useCallback(
     async (file: File) => {
@@ -65,7 +91,8 @@ function UploadZone({ onUploadComplete }: UploadZoneProps) {
       }
 
       setUploading(true);
-      setProgressMessage(`Extracting ${file.name}...`);
+      setCurrentFilename(file.name);
+      setElapsed(0);
 
       const form = new FormData();
       form.append("file", file);
@@ -86,13 +113,12 @@ function UploadZone({ onUploadComplete }: UploadZoneProps) {
           );
           return;
         }
-        setProgressMessage(null);
         onUploadComplete();
       } catch (err) {
         setError(err instanceof Error ? err.message : "Upload failed");
       } finally {
         setUploading(false);
-        setProgressMessage(null);
+        setCurrentFilename(null);
         if (inputRef.current) inputRef.current.value = "";
       }
     },
@@ -133,10 +159,15 @@ function UploadZone({ onUploadComplete }: UploadZoneProps) {
             Claude extracts title, author, tickers, summary, and full text. Then it&apos;s
             searchable from chat via <code className="font-mono">query_research_documents</code>.
           </div>
-          {progressMessage && (
+          {uploading && currentFilename && (
             <div className="text-xs text-gold mt-2 flex items-center gap-2">
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-gold animate-pulse" />
-              {progressMessage}
+              <span className="flex-1 truncate">
+                {phaseFor(elapsed, currentFilename)}
+              </span>
+              <span className="font-mono text-ink-faint tabular-nums">
+                {formatElapsed(elapsed)}
+              </span>
             </div>
           )}
           {error && (
@@ -363,6 +394,7 @@ function DocumentRow({
   const [expanded, setExpanded] = useState(false);
   const [detail, setDetail] = useState<ResearchDocumentDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [showFullText, setShowFullText] = useState(false);
 
   const symbols = parseSymbols(doc.mentioned_symbols);
   const rowTags = parseSymbols(doc.tags);
@@ -483,9 +515,14 @@ function DocumentRow({
                   <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1">
                     Summary
                   </div>
-                  <p className="text-sm text-ink-dim whitespace-pre-wrap">
-                    {detail.summary}
-                  </p>
+                  <div className="text-sm text-ink-dim space-y-2 leading-relaxed">
+                    {detail.summary
+                      .split(/\n{2,}/)
+                      .filter((p) => p.trim())
+                      .map((para, i) => (
+                        <p key={i}>{para.trim()}</p>
+                      ))}
+                  </div>
                 </div>
               )}
               {detail.key_points.length > 0 && (
@@ -523,9 +560,37 @@ function DocumentRow({
                   </div>
                 </div>
               )}
+              {detail.raw_text && (
+                <div className="pt-2 border-t border-edge">
+                  <button
+                    onClick={() => setShowFullText((v) => !v)}
+                    className="text-[10px] uppercase tracking-wider text-ink-faint hover:text-ink-dim transition-colors flex items-center gap-1.5"
+                  >
+                    <span>{showFullText ? "▾" : "▸"}</span>
+                    {showFullText ? "Hide" : "Show"} full text
+                    <span className="text-ink-faint/70 normal-case tracking-normal">
+                      · {detail.raw_text.length.toLocaleString()} chars
+                    </span>
+                  </button>
+                  {showFullText && (
+                    <div
+                      className="mt-3 max-h-[60vh] overflow-y-auto rounded-lg border border-edge bg-panel/50 p-4 text-sm text-ink-dim leading-relaxed space-y-3"
+                    >
+                      {detail.raw_text
+                        .split(/\n{2,}/)
+                        .filter((p) => p.trim())
+                        .map((para, i) => (
+                          <p key={i} className="whitespace-pre-wrap">
+                            {para.trim()}
+                          </p>
+                        ))}
+                    </div>
+                  )}
+                </div>
+              )}
               <div className="flex items-center justify-between pt-2 border-t border-edge">
                 <span className="text-[10px] text-ink-faint">
-                  {detail.filename} · {detail.char_count?.toLocaleString() ?? "?"} chars
+                  {detail.filename}
                   {detail.ai_model && ` · ${detail.ai_model}`}
                 </span>
                 <button
