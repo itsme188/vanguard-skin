@@ -1,8 +1,19 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useElectron } from "@/lib/hooks/useElectron";
+
+/**
+ * Settings source abstraction — either Electron IPC (packaged app) or the
+ * /api/settings dev-mode HTTP fallback. Same shape as the Electron API
+ * surface the modal expects.
+ */
+interface SettingsSource {
+  getSettings: () => Promise<Record<string, string | number | boolean>>;
+  saveSettings: (updates: Record<string, unknown>) => Promise<unknown>;
+  available: boolean;
+}
 
 /** Fields grouped by section for the settings form. */
 const SECTIONS = [
@@ -57,18 +68,65 @@ export function SettingsModal() {
   const [showSensitive, setShowSensitive] = useState<Record<string, boolean>>({});
   const [version, setVersion] = useState("");
   const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">("idle");
+  const [unavailableReason, setUnavailableReason] = useState<string | null>(null);
 
-  const loadSettings = useCallback(async () => {
-    if (!api) return;
-    const settings = await api.getSettings();
-    setValues(settings);
-    setDirty({});
-    setSaveStatus("idle");
+  // Resolve the settings source: Electron IPC first, HTTP dev route as
+  // fallback. `available=false` means neither channel is usable — the modal
+  // surfaces a friendly message instead of showing empty fields.
+  const source = useMemo<SettingsSource>(() => {
+    if (api) {
+      return {
+        getSettings: () => api.getSettings(),
+        saveSettings: (updates) => api.saveSettings(updates),
+        available: true,
+      };
+    }
+    return {
+      getSettings: async () => {
+        const res = await fetch("/api/settings");
+        if (!res.ok) {
+          throw new Error(
+            res.status === 404
+              ? "Settings API is only available in development mode. Use the packaged Electron app instead."
+              : `Settings fetch failed (HTTP ${res.status})`,
+          );
+        }
+        return res.json();
+      },
+      saveSettings: async (updates) => {
+        const res = await fetch("/api/settings", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(updates),
+        });
+        if (!res.ok) {
+          throw new Error(`Save failed (HTTP ${res.status})`);
+        }
+      },
+      // We don't know yet whether the route exists — the first getSettings
+      // call below will set unavailableReason if it 404s.
+      available: true,
+    };
   }, [api]);
 
+  const loadSettings = useCallback(async () => {
+    try {
+      const settings = await source.getSettings();
+      setValues(settings);
+      setDirty({});
+      setSaveStatus("idle");
+      setUnavailableReason(null);
+    } catch (err) {
+      setUnavailableReason(
+        err instanceof Error ? err.message : "Settings unavailable.",
+      );
+    }
+  }, [source]);
+
   useEffect(() => {
-    if (open && api) {
-      loadSettings();
+    if (!open) return;
+    loadSettings();
+    if (api) {
       api.getAppVersion().then(setVersion);
     }
   }, [open, api, loadSettings]);
@@ -81,9 +139,6 @@ export function SettingsModal() {
     window.addEventListener("open-settings", handleOpenEvent);
     return () => window.removeEventListener("open-settings", handleOpenEvent);
   }, []);
-
-  // Not in Electron — render nothing
-  if (!isElectron) return null;
 
   function handleFieldChange(key: FieldKey, value: string) {
     setDirty((prev) => ({ ...prev, [key]: value }));
@@ -102,7 +157,7 @@ export function SettingsModal() {
   const hasDirtyFields = Object.keys(dirty).length > 0;
 
   async function handleSave() {
-    if (!api || !hasDirtyFields) return;
+    if (!hasDirtyFields) return;
 
     // Only send fields the user actually changed
     const updates: Record<string, unknown> = {};
@@ -117,7 +172,7 @@ export function SettingsModal() {
     }
 
     try {
-      await api.saveSettings(updates);
+      await source.saveSettings(updates);
       setSaveStatus("saved");
       setDirty({});
       // Reload settings to get updated sanitized values
@@ -186,8 +241,14 @@ export function SettingsModal() {
             </div>
 
             <div className="p-5 space-y-5">
-              {/* Setting sections */}
-              {SECTIONS.map((section) => (
+              {unavailableReason && (
+                <div className="rounded-lg border border-edge bg-raised/40 p-3 text-[11px] text-ink-dim">
+                  {unavailableReason}
+                </div>
+              )}
+
+              {/* Setting sections — hidden when the source didn't load. */}
+              {!unavailableReason && SECTIONS.map((section) => (
                 <div key={section.title} className="space-y-2">
                   <p className="text-[10px] text-ink-faint uppercase tracking-wider">
                     {section.title}
@@ -284,7 +345,8 @@ export function SettingsModal() {
                 </div>
               ))}
 
-              {/* Save button */}
+              {/* Save button — hidden when unavailable */}
+              {!unavailableReason && (
               <div className="pt-2 border-t border-edge space-y-2">
                 <div className="flex items-center gap-2">
                   <button
@@ -301,7 +363,7 @@ export function SettingsModal() {
                     <span className="text-[11px] text-down">Save failed</span>
                   )}
                 </div>
-                {saveStatus === "saved" && (
+                {saveStatus === "saved" && isElectron && (
                   <p className="text-[10px] text-ink-faint">
                     API key changes require a restart to take effect.{" "}
                     <button
@@ -312,9 +374,18 @@ export function SettingsModal() {
                     </button>
                   </p>
                 )}
+                {saveStatus === "saved" && !isElectron && (
+                  <p className="text-[10px] text-ink-faint">
+                    Settings saved to the Electron app&apos;s Application Support
+                    directory. Restart the dev server for API-key changes to
+                    take effect.
+                  </p>
+                )}
               </div>
+              )}
 
-              {/* Footer — data dir + version */}
+              {/* Footer — data dir + version (Electron-only). */}
+              {isElectron && (
               <div className="pt-2 border-t border-edge flex items-center justify-between">
                 <button
                   onClick={handleOpenData}
@@ -328,6 +399,7 @@ export function SettingsModal() {
                   </span>
                 )}
               </div>
+              )}
             </div>
           </div>
         </div>,
