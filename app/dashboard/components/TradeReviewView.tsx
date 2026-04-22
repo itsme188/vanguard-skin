@@ -59,11 +59,11 @@ interface TradeReviewViewProps {
 // ─── Grade styling ──────────────────────────────────────────────
 
 const GRADE_STYLES: Record<string, string> = {
-  A: "bg-up/20 text-up border-up/30",
-  B: "bg-up/10 text-up/80 border-up/20",
-  C: "bg-gold/15 text-gold border-gold/25",
-  D: "bg-down/10 text-down/80 border-down/20",
-  F: "bg-down/20 text-down border-down/30",
+  A: "bg-up/25 text-up border-up/40",
+  B: "bg-up/20 text-up border-up/30",
+  C: "bg-gold/25 text-gold border-gold/40",
+  D: "bg-down/20 text-down border-down/30",
+  F: "bg-down/25 text-down border-down/40",
 };
 
 const GRADE_COLORS: Record<string, string> = {
@@ -400,7 +400,7 @@ export function TradeReviewView({
         <div
           className={`rounded-lg border px-4 py-3 text-sm ${
             generateMsg.startsWith("Error")
-              ? "border-down/30 bg-down/10 text-down"
+              ? "border-down/30 bg-down/20 text-down"
               : "border-edge bg-raised text-ink-dim"
           }`}
         >

@@ -17,10 +17,10 @@ interface Props {
 // ── Sentiment helpers ────────────────────────────────────────────────
 
 const sentimentColors: Record<string, string> = {
-  bullish: "bg-up-tint text-up",
-  bearish: "bg-down-tint text-down",
+  bullish: "bg-up/20 text-up",
+  bearish: "bg-down/20 text-down",
   neutral: "bg-raised text-ink-dim",
-  mixed: "bg-gold/10 text-gold",
+  mixed: "bg-gold/20 text-gold",
 };
 
 const sentimentBorder: Record<string, string> = {
@@ -65,7 +65,7 @@ function SymbolPills({
           <Link
             key={s}
             href={`/dashboard/security/${secId}`}
-            className="px-2 py-0.5 rounded bg-blue-tint text-blue text-xs font-mono hover:bg-blue/20 transition-colors"
+            className="px-2 py-0.5 rounded bg-blue/20 text-blue text-xs font-mono font-medium hover:bg-blue/30 transition-colors"
           >
             {s}
           </Link>

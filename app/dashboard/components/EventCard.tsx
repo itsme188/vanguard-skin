@@ -9,29 +9,29 @@ const EVENT_TYPE_CONFIG: Record<
   string,
   { icon: string; color: string; bgColor: string }
 > = {
-  earnings: { icon: "📊", color: "text-gold", bgColor: "bg-gold/10" },
-  analyst_meeting: { icon: "🎤", color: "text-gold", bgColor: "bg-gold/10" },
-  conference: { icon: "🏛", color: "text-gold", bgColor: "bg-gold/10" },
-  split: { icon: "✂️", color: "text-blue", bgColor: "bg-blue/10" },
-  fomc: { icon: "🏦", color: "text-down", bgColor: "bg-down/10" },
-  cpi: { icon: "📈", color: "text-down", bgColor: "bg-down/10" },
-  jobs: { icon: "👷", color: "text-down", bgColor: "bg-down/10" },
-  gdp: { icon: "🌐", color: "text-down", bgColor: "bg-down/10" },
-  pmi: { icon: "🏭", color: "text-amber-400", bgColor: "bg-amber-400/10" },
+  earnings: { icon: "📊", color: "text-gold", bgColor: "bg-gold/20" },
+  analyst_meeting: { icon: "🎤", color: "text-gold", bgColor: "bg-gold/20" },
+  conference: { icon: "🏛", color: "text-gold", bgColor: "bg-gold/20" },
+  split: { icon: "✂️", color: "text-blue", bgColor: "bg-blue/20" },
+  fomc: { icon: "🏦", color: "text-down", bgColor: "bg-down/20" },
+  cpi: { icon: "📈", color: "text-down", bgColor: "bg-down/20" },
+  jobs: { icon: "👷", color: "text-down", bgColor: "bg-down/20" },
+  gdp: { icon: "🌐", color: "text-down", bgColor: "bg-down/20" },
+  pmi: { icon: "🏭", color: "text-amber-400", bgColor: "bg-amber-400/20" },
   retail_sales: {
     icon: "🛒",
     color: "text-amber-400",
-    bgColor: "bg-amber-400/10",
+    bgColor: "bg-amber-400/20",
   },
   housing: {
     icon: "🏠",
     color: "text-amber-400",
-    bgColor: "bg-amber-400/10",
+    bgColor: "bg-amber-400/20",
   },
   other_macro: {
     icon: "📅",
     color: "text-amber-400",
-    bgColor: "bg-amber-400/10",
+    bgColor: "bg-amber-400/20",
   },
   other: { icon: "📌", color: "text-ink-dim", bgColor: "bg-muted" },
 };
@@ -39,8 +39,8 @@ const EVENT_TYPE_CONFIG: Record<
 const IMPACT_BADGE: Record<EventImpact, { label: string; className: string }> =
   {
     high: { label: "High Impact", className: "bg-down/20 text-down" },
-    medium: { label: "Medium", className: "bg-amber-400/20 text-amber-400" },
-    low: { label: "Low", className: "bg-muted text-ink-faint" },
+    medium: { label: "Medium", className: "bg-amber-500/20 text-amber-300" },
+    low: { label: "Low", className: "bg-muted text-ink-dim" },
   };
 
 // ── Component ────────────────────────────────────────────────────
@@ -166,7 +166,7 @@ function ImpactBadge({ impact }: { impact: EventImpact }) {
   const cfg = IMPACT_BADGE[impact];
   return (
     <span
-      className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${cfg.className}`}
+      className={`inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium ${cfg.className}`}
     >
       {cfg.label}
     </span>

@@ -4,14 +4,14 @@ import { useState } from "react";
 import type { TranscriptSummaryEntry } from "@/lib/queries/transcripts";
 
 const SOURCE_BADGES: Record<string, { label: string; className: string }> = {
-  edgar_8k: { label: "8-K", className: "bg-gold/15 text-gold" },
-  motley_fool: { label: "MF", className: "bg-blue/15 text-blue" },
-  api_ninjas: { label: "API", className: "bg-up/15 text-up" },
+  edgar_8k: { label: "8-K", className: "bg-gold/20 text-gold" },
+  motley_fool: { label: "MF", className: "bg-blue/20 text-blue" },
+  api_ninjas: { label: "API", className: "bg-up/20 text-up" },
 };
 
 const SENTIMENT_STYLES: Record<string, string> = {
-  bullish: "bg-up/15 text-up",
-  bearish: "bg-down/15 text-down",
+  bullish: "bg-up/20 text-up",
+  bearish: "bg-down/20 text-down",
   neutral: "bg-muted text-ink-dim",
 };
 
@@ -84,13 +84,13 @@ export function TranscriptCard({
             </span>
           )}
           <span
-            className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${source.className}`}
+            className={`text-[11px] font-medium px-1.5 py-0.5 rounded ${source.className}`}
           >
             {source.label}
           </span>
           {t.sentiment_label && (
             <span
-              className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${SENTIMENT_STYLES[t.sentiment_label] ?? ""}`}
+              className={`text-[11px] font-medium px-1.5 py-0.5 rounded ${SENTIMENT_STYLES[t.sentiment_label] ?? ""}`}
             >
               {t.sentiment_label}
               {t.sentiment_score !== null && (
@@ -192,7 +192,7 @@ export function TranscriptCard({
                   Q{t.quarter} {t.year} Earnings
                 </span>
                 <span
-                  className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${source.className}`}
+                  className={`text-[11px] font-medium px-1.5 py-0.5 rounded ${source.className}`}
                 >
                   {source.label}
                 </span>

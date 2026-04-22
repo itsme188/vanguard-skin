@@ -159,8 +159,8 @@ export function ClosedSalesTable({
                       <span
                         className={`text-xs px-2 py-0.5 rounded font-medium ${
                           sale.is_long_term
-                            ? "bg-blue-tint text-blue"
-                            : "bg-gold-glow text-gold"
+                            ? "bg-blue/20 text-blue"
+                            : "bg-gold/20 text-gold"
                         }`}
                       >
                         {sale.is_long_term ? "Long" : "Short"}

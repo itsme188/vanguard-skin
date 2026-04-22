@@ -121,7 +121,7 @@ export function IncomeCard() {
         {yoyChange !== null && (
           <span
             className={`text-xs font-mono font-medium px-2 py-1 rounded-lg ${
-              yoyChange >= 0 ? "bg-up/10 text-up" : "bg-down/10 text-down"
+              yoyChange >= 0 ? "bg-up/20 text-up" : "bg-down/20 text-down"
             }`}
           >
             <Pct value={yoyChange} digits={1} signed /> vs {MONTH_LABELS[0]}-{MONTH_LABELS[currentMonth - 1]} {currentYear.year - 1}

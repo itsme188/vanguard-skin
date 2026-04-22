@@ -69,7 +69,7 @@ export function ImportHistory({ batches }: { batches: ImportBatch[] }) {
     <div>
       <h3 className="text-sm font-medium text-ink-dim mb-3">Import History</h3>
       {undoError && (
-        <div className="mb-3 px-3 py-2 bg-down/10 text-down text-xs rounded-lg">
+        <div className="mb-3 px-3 py-2 bg-down/20 text-down text-xs font-medium rounded-lg">
           {undoError}
         </div>
       )}
@@ -102,7 +102,7 @@ export function ImportHistory({ batches }: { batches: ImportBatch[] }) {
                   {batch.filename ?? "\u2014"}
                 </td>
                 <td className="px-4 py-3">
-                  <span className="text-xs px-2 py-0.5 rounded bg-blue-tint text-blue font-mono">
+                  <span className="text-xs px-2 py-0.5 rounded bg-blue/20 text-blue font-mono font-medium">
                     {SOURCE_LABELS[batch.source_type] ?? batch.source_type}
                   </span>
                 </td>

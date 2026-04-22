@@ -4,15 +4,15 @@ import { Money, Shares } from "@/lib/privacy/components";
 import { ScrollFade } from "./ScrollFade";
 
 const TYPE_STYLES: Record<string, string> = {
-  BUY: "bg-up-tint text-up",
-  SELL: "bg-down-tint text-down",
-  DIVIDEND: "bg-gold-glow text-gold",
-  INTEREST: "bg-blue-tint text-blue",
-  FEE: "bg-down-tint text-down",
-  COMMISSION: "bg-down-tint text-down",
-  TRANSFER: "bg-blue-tint text-blue",
-  DEPOSIT: "bg-up-tint text-up",
-  WITHDRAWAL: "bg-down-tint text-down",
+  BUY: "bg-up/20 text-up",
+  SELL: "bg-down/20 text-down",
+  DIVIDEND: "bg-gold/20 text-gold",
+  INTEREST: "bg-blue/20 text-blue",
+  FEE: "bg-down/20 text-down",
+  COMMISSION: "bg-down/20 text-down",
+  TRANSFER: "bg-blue/20 text-blue",
+  DEPOSIT: "bg-up/20 text-up",
+  WITHDRAWAL: "bg-down/20 text-down",
 };
 
 export function TransactionHistory({
@@ -68,7 +68,7 @@ export function TransactionHistory({
                 </td>
                 <td className="hidden md:table-cell px-4 py-3">
                   <span
-                    className={`text-xs px-2 py-0.5 rounded font-mono ${
+                    className={`text-xs font-medium px-2 py-0.5 rounded-full ${
                       TYPE_STYLES[txn.type] ?? "bg-raised text-ink-dim"
                     }`}
                   >

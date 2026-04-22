@@ -39,11 +39,11 @@ const SENTIMENT_OPTIONS: { label: string; value: NoteSentiment }[] = [
 ];
 
 const SENTIMENT_STYLES: Record<string, string> = {
-  bullish: "bg-up/15 text-up",
-  bearish: "bg-down/15 text-down",
+  bullish: "bg-up/20 text-up",
+  bearish: "bg-down/20 text-down",
   neutral: "bg-muted text-ink-dim",
-  cautious: "bg-gold/15 text-gold",
-  confident: "bg-blue/15 text-blue",
+  cautious: "bg-gold/20 text-gold",
+  confident: "bg-blue/20 text-blue",
 };
 
 const TYPE_BORDER: Record<string, string> = {
@@ -207,7 +207,7 @@ export function NotesView({
             aria-pressed={(opt.value || null) === currentType}
             className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap focus-ring ${
               (opt.value || null) === currentType
-                ? "bg-gold-glow text-gold"
+                ? "bg-gold/20 text-gold"
                 : "text-ink-faint hover:text-ink hover:bg-panel"
             }`}
           >
@@ -676,7 +676,7 @@ function NoteCard({
             )}
             {note.sentiment && (
               <span
-                className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${SENTIMENT_STYLES[note.sentiment] ?? ""}`}
+                className={`text-[11px] font-medium px-1.5 py-0.5 rounded ${SENTIMENT_STYLES[note.sentiment] ?? ""}`}
               >
                 {note.sentiment}
               </span>

@@ -264,7 +264,7 @@ export function ImportFlow() {
                   {result.filename}
                 </span>
                 {result.sourceType && (
-                  <span className="text-xs px-2 py-0.5 rounded bg-blue-tint text-blue font-mono">
+                  <span className="text-xs px-2 py-0.5 rounded bg-blue/20 text-blue font-mono font-medium">
                     {result.sourceType}
                   </span>
                 )}
@@ -274,7 +274,7 @@ export function ImportFlow() {
                   </span>
                 )}
                 {(result.warnings?.length ?? 0) > 0 && !(result.skippedRows?.length) && (
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-gold/10 text-gold/80 font-medium">
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-gold/20 text-gold font-medium">
                     {result.warnings!.length} warning{result.warnings!.length !== 1 ? "s" : ""}
                   </span>
                 )}

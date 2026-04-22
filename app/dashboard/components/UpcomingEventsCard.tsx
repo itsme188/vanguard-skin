@@ -121,7 +121,7 @@ export function UpcomingEventsCard() {
                   ) : null}
                   {event.expected_impact && (
                     <span
-                      className={`text-[10px] font-medium ${IMPACT_COLORS[event.expected_impact] ?? "text-ink-faint"}`}
+                      className={`text-[11px] font-semibold uppercase tracking-wide ${IMPACT_COLORS[event.expected_impact] ?? "text-ink-faint"}`}
                     >
                       {event.expected_impact.toUpperCase()}
                     </span>
