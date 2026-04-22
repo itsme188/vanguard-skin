@@ -11,6 +11,7 @@ import { NotesView } from "../components/NotesView";
 import { TradeReviewView } from "../components/TradeReviewView";
 import { ResearchFeedsView } from "../components/ResearchFeedsView";
 import { ResearchViewToggle } from "../components/ResearchViewToggle";
+import { ResearchDocumentsView } from "../components/ResearchDocumentsView";
 
 interface PageProps {
   searchParams: Promise<{
@@ -108,13 +109,17 @@ export default async function ResearchPage({ searchParams }: PageProps) {
               ? "Newsletter digests and market research from Gmail"
               : view === "reviews"
                 ? "Monthly AI trade analysis and behavioral patterns"
-                : "Investment journal, earnings notes, and trade theses"}
+                : view === "documents"
+                  ? "Uploaded research PDFs — searchable from chat"
+                  : "Investment journal, earnings notes, and trade theses"}
           </p>
         </div>
         <ResearchViewToggle currentView={view} />
       </div>
 
-      {view === "feeds" ? (
+      {view === "documents" ? (
+        <ResearchDocumentsView />
+      ) : view === "feeds" ? (
         <ResearchFeedsView
           initialArticles={feedArticles}
           sources={feedSources}

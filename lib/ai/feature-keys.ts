@@ -26,4 +26,5 @@ export type FeatureKey =
   | "factorClassification"
   | "macroEnrichment"
   | "scheduleVerification"
-  | "filingSectionExtraction";
+  | "filingSectionExtraction"
+  | "researchDocumentExtraction";
