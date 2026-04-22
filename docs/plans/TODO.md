@@ -53,7 +53,7 @@ Headline features not reflected in the v2 archive:
 - **Theme D — Level source performance attribution** (blocked on data): hit-rate + P&L by `source_author`. Wait until ~30+ alerts have fired.
 - **Theme E — Chat broader company data**: press releases (E1), full 8-K body (E2), analyst estimates (E4). E3 EDGAR 10-K/10-Q shipped 2026-04-22.
 - ✅ **Theme F1 — Research PDF knowledge base** shipped 2026-04-22 (migration 035, commit `6624382`).
-- **Theme G — Chart entry/exit signals**: design pass first, then 1-2 implementation sessions.
+- ✅ **Theme G — Chart entry/exit signals v1** shipped 2026-04-22 (commit `51fcc51`). Pivot S/R detection + suggested-levels API + chart overlay + accept flow. Claude narrative layer still deferred.
 - ✅ **Theme I — Chat history persistence**: shipped across 2026-04-21 + 2026-04-22. Schema (migration 025), route persistence, sidebar + delete.
 - **Theme J — Cleanup track** (partial): J1 ✅ + J3 ✅ shipped 2026-04-21. J2 (E2E browser tests, ~15 hr) deferred.
 - **Theme K — Options Phase 2 end-to-end verification**: blocked on the user holding more than 1 option position at once.
