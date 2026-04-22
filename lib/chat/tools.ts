@@ -31,6 +31,12 @@ import {
 } from "@/lib/queries/research-documents";
 import { listPressReleases } from "@/lib/queries/press-releases";
 import { fetchAndCachePressReleases } from "@/lib/apis/press-releases";
+import {
+  getRecommendationHistory,
+  getPriceTarget,
+  getRatingChanges,
+} from "@/lib/queries/analyst-estimates";
+import { syncAnalystCoverage } from "@/lib/apis/analyst-estimates";
 
 // ─── Tool Definitions ─────────────────────────────────────────────
 
@@ -423,6 +429,31 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         },
       },
       required: ["note_type", "content"],
+    },
+  },
+  {
+    name: "query_analyst_coverage",
+    description:
+      "Fetch analyst coverage for a ticker: the latest buy/hold/sell consensus trend (monthly, last 6 months), current consensus price target (high / low / mean / median + analyst count), and recent upgrade/downgrade/initiation actions by firm. Use when the user asks what the Street thinks, wants a price-target check, asks about recent Wall Street rating changes, or needs to frame a position against consensus. Sync-then-query pattern via Finnhub free tier — first call per ticker caches everything; subsequent calls are free from local DB. Returns empty sections (not errors) when a given dataset is unavailable for the ticker (common for small-caps and non-US tickers).",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        ticker: {
+          type: "string",
+          description: "Stock ticker (e.g., 'AAPL', 'NVDA'). Case-insensitive.",
+        },
+        months_history: {
+          type: "integer",
+          description:
+            "How many months of recommendation trend history to return. Default 6, cap 24. Finnhub provides monthly snapshots.",
+        },
+        rating_changes_limit: {
+          type: "integer",
+          description:
+            "Max rating changes (upgrades/downgrades/inits) to return. Default 10, cap 50.",
+        },
+      },
+      required: ["ticker"],
     },
   },
   {
@@ -1055,6 +1086,49 @@ export async function executeTool(
         break;
       }
 
+      case "query_analyst_coverage": {
+        const ticker = (input.ticker as string).toUpperCase();
+        const monthsHistory = Math.min((input.months_history as number) || 6, 24);
+        const rcLimit = Math.min((input.rating_changes_limit as number) || 10, 50);
+
+        const sync = await syncAnalystCoverage(db, ticker);
+        const recommendations = getRecommendationHistory(db, ticker, monthsHistory);
+        const priceTarget = getPriceTarget(db, ticker);
+        const ratingChanges = getRatingChanges(db, ticker, rcLimit);
+
+        rawResult = {
+          ticker,
+          warnings: sync.errors.length > 0 ? sync.errors : undefined,
+          recommendation_trend: recommendations.map((r) => ({
+            period: r.period,
+            strong_buy: r.strong_buy,
+            buy: r.buy,
+            hold: r.hold,
+            sell: r.sell,
+            strong_sell: r.strong_sell,
+            total: r.strong_buy + r.buy + r.hold + r.sell + r.strong_sell,
+          })),
+          price_target: priceTarget
+            ? {
+                high: priceTarget.target_high,
+                low: priceTarget.target_low,
+                mean: priceTarget.target_mean,
+                median: priceTarget.target_median,
+                number_of_analysts: priceTarget.number_of_analysts,
+                last_updated: priceTarget.last_updated,
+              }
+            : null,
+          rating_changes: ratingChanges.map((c) => ({
+            date: c.rating_date,
+            firm: c.firm,
+            from: c.from_grade,
+            to: c.to_grade,
+            action: c.action,
+          })),
+        };
+        break;
+      }
+
       case "query_press_releases": {
         const ticker = (input.ticker as string).toUpperCase();
         const daysBack = (input.days_back as number) || 7;
@@ -1540,6 +1614,7 @@ export const TOOL_LABELS: Record<string, string> = {
   create_note: "Saving note...",
   query_earnings_transcript: "Fetching earnings transcript...",
   query_press_releases: "Fetching press releases...",
+  query_analyst_coverage: "Fetching analyst coverage...",
   query_filing_section: "Summarizing SEC filing...",
   query_research_documents: "Searching research documents...",
   query_trade_reviews: "Looking up trade reviews...",
