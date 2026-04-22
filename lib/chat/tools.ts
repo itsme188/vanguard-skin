@@ -29,6 +29,8 @@ import {
   searchResearchDocuments,
   type ResearchDocumentType,
 } from "@/lib/queries/research-documents";
+import { listPressReleases } from "@/lib/queries/press-releases";
+import { fetchAndCachePressReleases } from "@/lib/apis/press-releases";
 
 // ─── Tool Definitions ─────────────────────────────────────────────
 
@@ -421,6 +423,35 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         },
       },
       required: ["note_type", "content"],
+    },
+  },
+  {
+    name: "query_press_releases",
+    description:
+      "Fetch recent press releases and company news for a ticker — Business Wire, PR Newswire, Reuters, SeekingAlpha, Yahoo Finance, and company IR feeds aggregated by Finnhub. Returns headline, summary (lead paragraph), source, URL, and publication date. Use when the user asks 'what did COMPANY announce today/this week?', references news coverage, wants recent announcements (M&A, product launches, executive changes, dividend declarations), or needs the latest news alongside fundamentals. Transparently sync-then-query: the first call per ticker+window hits Finnhub and caches; subsequent calls in the same window are free from the local DB. Free tier covers all common US tickers.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        ticker: {
+          type: "string",
+          description: "Stock ticker (e.g., 'AAPL', 'NVDA'). Case-insensitive.",
+        },
+        days_back: {
+          type: "integer",
+          description:
+            "Sliding window in days. Default 7. Max 365. Wider windows cost no more API calls but return more rows.",
+        },
+        keyword: {
+          type: "string",
+          description:
+            "Optional keyword filter applied to headline + summary (case-insensitive LIKE). E.g., 'dividend', 'guidance', 'CEO'.",
+        },
+        limit: {
+          type: "integer",
+          description: "Max results to return. Default 15, cap 100.",
+        },
+      },
+      required: ["ticker"],
     },
   },
   {
@@ -1019,6 +1050,42 @@ export async function executeTool(
         break;
       }
 
+      case "query_press_releases": {
+        const ticker = (input.ticker as string).toUpperCase();
+        const daysBack = (input.days_back as number) || 7;
+        const keyword = input.keyword as string | undefined;
+        const limit = (input.limit as number) || 15;
+
+        // Sync + query pattern. Sync errors are surfaced as a warning
+        // alongside any locally-cached rows so the user still gets
+        // something actionable when Finnhub is down.
+        const sync = await fetchAndCachePressReleases(db, ticker, daysBack);
+        const rows = listPressReleases(db, {
+          symbol: ticker,
+          keyword,
+          days_back: daysBack,
+          limit,
+        });
+
+        rawResult = {
+          ticker,
+          days_back: daysBack,
+          keyword: keyword ?? null,
+          fetched: sync.upserted,
+          warning: sync.error ?? undefined,
+          count: rows.length,
+          press_releases: rows.map((r) => ({
+            headline: r.headline,
+            summary: r.summary,
+            source: r.source,
+            category: r.category,
+            url: r.url,
+            published_at: r.published_at,
+          })),
+        };
+        break;
+      }
+
       case "query_earnings_transcript": {
         const ticker = input.ticker as string;
         const transcriptData = await getTranscriptForChat(
@@ -1466,6 +1533,7 @@ export const TOOL_LABELS: Record<string, string> = {
   query_notes: "Searching notes...",
   create_note: "Saving note...",
   query_earnings_transcript: "Fetching earnings transcript...",
+  query_press_releases: "Fetching press releases...",
   query_filing_section: "Summarizing SEC filing...",
   query_research_documents: "Searching research documents...",
   query_trade_reviews: "Looking up trade reviews...",

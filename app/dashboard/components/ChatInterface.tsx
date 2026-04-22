@@ -27,6 +27,7 @@ const TOOL_LABELS: Record<string, string> = {
   query_notes: "Searching notes",
   create_note: "Saving note",
   query_earnings_transcript: "Fetching earnings transcript",
+  query_press_releases: "Fetching press releases",
   query_filing_section: "Summarizing SEC filing",
   query_research_documents: "Searching research documents",
 };
