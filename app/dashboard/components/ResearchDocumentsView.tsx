@@ -17,6 +17,11 @@ const DOC_TYPE_LABELS: Record<ResearchDocumentType, string> = {
   research_note: "Research Note",
   market_analysis: "Market Analysis",
   industry_primer: "Industry Primer",
+  investor_letter: "Investor Letter",
+  earnings_presentation: "Earnings / IR Deck",
+  article: "Article / Journalism",
+  book_summary_or_essay: "Book Summary / Essay",
+  macro_note: "Macro Note",
   other: "Other",
 };
 
@@ -229,12 +234,105 @@ interface ResearchDocumentDetail {
   summary: string | null;
   key_points: string[];
   mentioned_symbols: string[];
+  tags: string[];
   sentiment: ResearchDocumentSentiment | null;
   target_prices: Array<{ symbol: string; price: number; horizon?: string }>;
   raw_text: string;
   char_count: number | null;
   uploaded_at: string;
   ai_model: string | null;
+}
+
+// ─── Tag editor ─────────────────────────────────────────────────
+
+function TagEditor({
+  docId,
+  initialTags,
+  onTagsChanged,
+}: {
+  docId: number;
+  initialTags: string[];
+  onTagsChanged: (tags: string[]) => void;
+}) {
+  const [tags, setTags] = useState<string[]>(initialTags);
+  const [input, setInput] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const commit = useCallback(
+    async (next: string[]) => {
+      setSaving(true);
+      try {
+        const res = await fetch(`/api/research/documents/${docId}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ tags: next }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const normalized: string[] = Array.isArray(data.tags) ? data.tags : [];
+          setTags(normalized);
+          onTagsChanged(normalized);
+        }
+      } finally {
+        setSaving(false);
+      }
+    },
+    [docId, onTagsChanged],
+  );
+
+  function addTag() {
+    const raw = input.trim();
+    if (!raw) return;
+    const next = [...new Set([...tags, raw.toLowerCase()])];
+    setInput("");
+    commit(next);
+  }
+
+  function removeTag(t: string) {
+    commit(tags.filter((x) => x !== t));
+  }
+
+  return (
+    <div>
+      <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">
+        Tags
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {tags.map((t) => (
+          <span
+            key={t}
+            className="group inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-raised border border-edge text-[11px] text-ink-dim"
+          >
+            {t}
+            <button
+              onClick={() => removeTag(t)}
+              disabled={saving}
+              className="text-ink-faint hover:text-down transition-colors"
+              aria-label={`Remove tag ${t}`}
+            >
+              ×
+            </button>
+          </span>
+        ))}
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            addTag();
+          }}
+          className="inline-flex items-center"
+        >
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="add tag…"
+            disabled={saving}
+            className="px-2 py-0.5 rounded-full border border-dashed border-edge text-[11px] bg-transparent text-ink placeholder:text-ink-faint w-28 focus:outline-none focus:border-gold"
+          />
+        </form>
+      </div>
+    </div>
+  );
 }
 
 function DocumentRow({
@@ -249,6 +347,7 @@ function DocumentRow({
   const [loadingDetail, setLoadingDetail] = useState(false);
 
   const symbols = parseSymbols(doc.mentioned_symbols);
+  const rowTags = parseSymbols(doc.tags);
 
   async function toggleExpanded() {
     if (expanded) {
@@ -279,6 +378,11 @@ function DocumentRow({
     if (res.ok) onDeleted();
   }
 
+  function handleTagsChanged(newTags: string[]) {
+    if (!detail) return;
+    setDetail({ ...detail, tags: newTags });
+  }
+
   return (
     <div className="rounded-xl bg-panel border border-edge overflow-hidden">
       <button
@@ -307,11 +411,11 @@ function DocumentRow({
               )}
               {doc.publication_date && <span>· {doc.publication_date}</span>}
             </div>
-            {symbols.length > 0 && (
+            {(symbols.length > 0 || rowTags.length > 0) && (
               <div className="flex flex-wrap gap-1 mt-2">
                 {symbols.slice(0, 6).map((s) => (
                   <span
-                    key={s}
+                    key={`sym-${s}`}
                     className="px-1.5 py-0.5 rounded bg-raised text-ink-faint text-[10px] font-mono"
                   >
                     {s}
@@ -320,6 +424,19 @@ function DocumentRow({
                 {symbols.length > 6 && (
                   <span className="text-[10px] text-ink-faint">
                     +{symbols.length - 6}
+                  </span>
+                )}
+                {rowTags.slice(0, 5).map((t) => (
+                  <span
+                    key={`tag-${t}`}
+                    className="px-1.5 py-0.5 rounded-full bg-gold/5 border border-gold/20 text-gold/80 text-[10px]"
+                  >
+                    {t}
+                  </span>
+                ))}
+                {rowTags.length > 5 && (
+                  <span className="text-[10px] text-ink-faint">
+                    +{rowTags.length - 5} tags
                   </span>
                 )}
               </div>
@@ -338,6 +455,11 @@ function DocumentRow({
             <div className="text-xs text-ink-faint">Loading…</div>
           ) : detail ? (
             <div className="space-y-3">
+              <TagEditor
+                docId={detail.id}
+                initialTags={detail.tags}
+                onTagsChanged={handleTagsChanged}
+              />
               {detail.summary && (
                 <div>
                   <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1">

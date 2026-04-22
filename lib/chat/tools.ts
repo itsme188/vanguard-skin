@@ -451,14 +451,14 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   {
     name: "query_research_documents",
     description:
-      "Search the user's uploaded research PDF knowledge base — analyst reports, bank research notes, market analyses, and industry primers. Returns matching documents with snippet highlights showing the term in context, plus summary, key points, mentioned tickers, target prices, and sentiment. Use when the user asks what research they have on a topic/company, references 'that Goldman note' or 'the Bernstein piece', wants to synthesize a thesis from uploaded reports, or asks 'what does my research say about X?'. Combine filters: free-text query + specific ticker + document type + recency. Documents are lexically searchable via FTS5 (keyword match, not semantic).",
+      "Search the user's uploaded research PDF knowledge base — analyst reports, bank research notes, investor letters, industry primers, earnings decks, long-form articles, book summaries, macro essays, and more. Returns matching documents with snippet highlights showing the term in context, plus summary, key points, mentioned tickers, tags, target prices, and sentiment. Use when the user asks what research they have on a topic/company/theme, references 'that Goldman note' or 'the Bernstein piece' or 'the Artemis essay', wants to synthesize a thesis from uploaded reports, or asks 'what does my research say about X?'. Combine filters: free-text query + ticker + document type + tag + recency. Documents are lexically searchable via FTS5 (keyword match, not semantic).",
     input_schema: {
       type: "object" as const,
       properties: {
         query: {
           type: "string",
           description:
-            "Free-text search phrase matched across title, author, source, summary, mentioned tickers, and raw body. Omit to list recent docs by filter only.",
+            "Free-text search phrase matched across title, author, source, summary, mentioned tickers, tags, and raw body. Omit to list recent docs by filter only.",
         },
         symbol: {
           type: "string",
@@ -472,10 +472,20 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
             "research_note",
             "market_analysis",
             "industry_primer",
+            "investor_letter",
+            "earnings_presentation",
+            "article",
+            "book_summary_or_essay",
+            "macro_note",
             "other",
           ],
           description:
             "Restrict to one document type. Omit to search across all types.",
+        },
+        tag: {
+          type: "string",
+          description:
+            "Filter by a single tag (lowercase free-text — e.g. 'semiconductors', 'value-investing', 'q3 2024'). Matches any doc with that tag in its tags array. Combine with other filters. Use this when the user's phrasing suggests a theme or sector rather than a ticker.",
         },
         days_back: {
           type: "integer",
@@ -979,6 +989,7 @@ export async function executeTool(
           query: input.query as string | undefined,
           symbol: input.symbol as string | undefined,
           document_type: input.document_type as ResearchDocumentType | undefined,
+          tag: input.tag as string | undefined,
           days_back: input.days_back as number | undefined,
           limit: (input.limit as number) || 10,
         });
@@ -998,6 +1009,7 @@ export async function executeTool(
             mentioned_symbols: r.mentioned_symbols
               ? JSON.parse(r.mentioned_symbols)
               : [],
+            tags: r.tags ? JSON.parse(r.tags) : [],
             key_points: r.key_points ? JSON.parse(r.key_points) : [],
             summary: r.summary,
             snippet: r.snippet,

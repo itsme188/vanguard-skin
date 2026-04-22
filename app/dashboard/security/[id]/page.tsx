@@ -3,6 +3,8 @@ export const dynamic = "force-dynamic";
 import { db } from "@/lib/db";
 import { getSecurityDetail } from "@/lib/queries/security-detail";
 import { isOnWatchlist, getWatchlistItem } from "@/lib/queries/watchlist";
+import { getResearchDocumentsForSymbol } from "@/lib/queries/research-documents";
+import { ResearchDocumentsPanel } from "../../components/ResearchDocumentsPanel";
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { CorporateActionsSection } from "../../components/CorporateActionsSection";
@@ -51,6 +53,10 @@ export default async function SecurityDetailPage(props: {
   const { security, price, positions, openTaxLots, closedSales, recentTransactions, notes, upcomingEvents, factors, transcripts, tradeGrades, researchMentions } = detail;
   const watched = isOnWatchlist(db, securityId);
   const watchlistItem = watched ? getWatchlistItem(db, securityId) : null;
+
+  const researchDocuments = security.symbol
+    ? getResearchDocumentsForSymbol(db, security.symbol, 10)
+    : [];
 
   const typeLabel = [
     security.security_type?.replace(/_/g, " "),
@@ -666,6 +672,12 @@ export default async function SecurityDetailPage(props: {
           </div>
         </section>
       )}
+
+      {/* Research Documents (uploaded PDFs mentioning this security) */}
+      <ResearchDocumentsPanel
+        symbol={security.symbol}
+        documents={researchDocuments}
+      />
 
       {/* Research Mentions */}
       {researchMentions.length > 0 && (

@@ -21,13 +21,19 @@
 import { resolveFeatureModel } from "@/lib/ai/models";
 import { getRawAnthropicClient } from "@/lib/ai/provider";
 
-export const RESEARCH_DOC_PDF_MAX_BYTES = 25 * 1024 * 1024; // 25 MB
+// Anthropic's hard PDF limit is 32 MB; we keep the cap at 32 to match.
+export const RESEARCH_DOC_PDF_MAX_BYTES = 32 * 1024 * 1024; // 32 MB
 
 export type ResearchDocumentType =
   | "analyst_report"
   | "research_note"
   | "market_analysis"
   | "industry_primer"
+  | "investor_letter"
+  | "earnings_presentation"
+  | "article"
+  | "book_summary_or_essay"
+  | "macro_note"
   | "other";
 
 export type ResearchDocumentSentiment =
@@ -45,6 +51,7 @@ export interface ExtractedResearchDocument {
   summary: string | null;
   key_points: string[];
   mentioned_symbols: string[]; // uppercase tickers
+  tags: string[]; // AI-suggested lowercase tags (user can edit after)
   sentiment: ResearchDocumentSentiment | null;
   target_prices: Array<{ symbol: string; price: number; horizon?: string }>;
   raw_text: string;
@@ -54,21 +61,34 @@ export interface ExtractedResearchDocument {
 const RAW_TEXT_BEGIN = "---RAW_TEXT_BEGIN---";
 const RAW_TEXT_END = "---RAW_TEXT_END---";
 
-const EXTRACTION_PROMPT = `You are reading a research PDF (analyst report, bank research note, market analysis, or industry primer). Extract structured metadata AND the full plain-text body.
+const EXTRACTION_PROMPT = `You are reading a research PDF. It may be any of:
+  - analyst_report: sell-side / buy-side equity research (Goldman, Morgan Stanley, Bernstein, etc.)
+  - research_note: shorter thematic or event-driven note from a research shop
+  - market_analysis: cross-asset or market-structure commentary
+  - industry_primer: sector / industry deep dive (often 50-200 pages, historical)
+  - investor_letter: quarterly / annual fund commentary (Ackman, Lead Edge, Bireme, Artemis, etc.)
+  - earnings_presentation: corporate IR deck or earnings call slides
+  - article: long-form journalism or magazine piece saved as PDF (The Information, Bloomberg, WSJ feature, n+1 essay)
+  - book_summary_or_essay: book chapter summary, evergreen essay, framework piece
+  - macro_note: macro / monetary-policy / long-duration framework (10-year market outlook, cycle analyses)
+  - other: anything that doesn't fit
+
+Extract structured metadata AND the full plain-text body.
 
 Output format (TWO PARTS, in this exact order):
 
 PART 1 — A single JSON object. No markdown fences, no preamble, just JSON:
 
 {
-  "title": "<best document title from cover/header>",
+  "title": "<best document title from cover/header; for articles, the headline; for investor letters, include firm + quarter>",
   "author": "<primary author name, or null>",
-  "source": "<firm or publication — e.g. 'Goldman Sachs', 'Bernstein Research', 'Morgan Stanley'; null if unclear>",
-  "document_type": "analyst_report" | "research_note" | "market_analysis" | "industry_primer" | "other",
+  "source": "<firm / publication / fund — e.g. 'Goldman Sachs', 'Bloomberg', 'Lead Edge Capital', 'The Information', 'Artemis Capital'; null if unclear>",
+  "document_type": "<one of the values above>",
   "publication_date": "YYYY-MM-DD" | null,
-  "summary": "<2-4 sentence plain-text summary of the document's core thesis — do NOT hallucinate content that is not in the PDF>",
+  "summary": "<2-4 sentence plain-text summary of the document's core thesis / content — do NOT hallucinate content that is not in the PDF>",
   "key_points": ["<bullet 1>", "<bullet 2>", "..."],
   "mentioned_symbols": ["AAPL", "NVDA", "..."],
+  "suggested_tags": ["<3-8 lowercase tags describing theme, sector, geography, style, or era — e.g. 'semiconductors', 'ai infrastructure', 'founder-led', 'q3 2024', 'value-investing', 'china', 'saas'>"],
   "sentiment": "bullish" | "bearish" | "neutral" | "mixed" | null,
   "target_prices": [
     {"symbol": "NVDA", "price": 1200, "horizon": "12mo"}
@@ -88,8 +108,9 @@ ${RAW_TEXT_END}
 Rules:
 - Do NOT summarize the body — it must be the complete document text.
 - mentioned_symbols: only real tickers, uppercase, no duplicates, no company names.
-- target_prices: only explicit numeric targets the author states; omit if none.
-- sentiment: reflect the author's stated view; use null if not a directional call.
+- suggested_tags: useful for future retrieval; prefer sector/theme/style over the literal content ("semiconductors" good, "nvda" redundant since it's in mentioned_symbols). 3-8 tags, lowercase, no hashtags.
+- target_prices: only explicit numeric targets the author states; omit if none. For articles / essays / investor letters with no price target, pass an empty array.
+- sentiment: reflect the author's stated view; use null if not a directional call (most articles + primers).
 - Dates: if only "Q1 2026" or "March 2026" is given, resolve to last day of period (2026-03-31).
 - If content is ambiguous, prefer null over guessing.
 - Do NOT output anything outside of PART 1 JSON and PART 2 body. No explanation text.`;
@@ -236,8 +257,43 @@ const DOC_TYPES: ResearchDocumentType[] = [
   "research_note",
   "market_analysis",
   "industry_primer",
+  "investor_letter",
+  "earnings_presentation",
+  "article",
+  "book_summary_or_essay",
+  "macro_note",
   "other",
 ];
+
+/**
+ * Normalize free-text tags: lowercase, trim, strip weird chars, dedupe, cap
+ * per-tag length + collection size. Accepts an array or a single string.
+ * Exported for the mutation layer to reuse on user-edited tags.
+ */
+export function normalizeTags(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const cleaned = raw
+    .filter((t): t is string => typeof t === "string")
+    .map((t) =>
+      t
+        .toLowerCase()
+        .replace(/[^a-z0-9\s&+\-./]/g, " ") // allow common separators, strip emoji/control
+        .replace(/\s+/g, " ")
+        .trim(),
+    )
+    .filter((t) => t.length > 0 && t.length <= 40);
+  // Preserve first-seen order for dedupe.
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const t of cleaned) {
+    if (!seen.has(t)) {
+      seen.add(t);
+      out.push(t);
+    }
+    if (out.length >= 15) break;
+  }
+  return out;
+}
 
 const SENTIMENTS: ResearchDocumentSentiment[] = [
   "bullish",
@@ -314,6 +370,8 @@ function normalizeExtracted(raw: unknown, modelId: string): ExtractedResearchDoc
     })
     .filter((x): x is { symbol: string; price: number; horizon?: string } => x !== null);
 
+  const tags = normalizeTags(r.suggested_tags ?? r.tags);
+
   return {
     title,
     author,
@@ -323,6 +381,7 @@ function normalizeExtracted(raw: unknown, modelId: string): ExtractedResearchDoc
     summary,
     key_points: keyPoints,
     mentioned_symbols: mentionedSymbols,
+    tags,
     sentiment,
     target_prices: targetPrices,
     raw_text: rawText,
