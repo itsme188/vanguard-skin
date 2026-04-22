@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { generateObject, jsonSchema } from "ai";
 import { FEATURE_MODELS } from "@/lib/ai/models";
 import { getModelForFeature } from "@/lib/ai/provider";
+import { verifyMentions } from "@/lib/research/verify-mentions";
 
 interface UnprocessedArticle {
   id: number;
@@ -84,23 +85,30 @@ export async function processUnprocessedArticles(
     try {
       const result = await extractWithClaude(article, holdingsContext);
 
+      // Two-layer mention gate before linking: word-boundary drops substring
+      // matches ("HOOD" in "likelihood"), Haiku drops homonyms ("Robin Hood"
+      // the outlaw, "NET" as "net income"). See lib/research/verify-mentions.
+      const verified = await verifyMentions(
+        result.mentioned_symbols,
+        article.subject,
+        article.raw_text,
+      );
+      const verifiedSymbols = verified.map((v) => v.symbol);
+
       updateArticle.run(
         result.summary,
         JSON.stringify(result.key_themes),
         result.sentiment,
         result.sentiment_score,
-        JSON.stringify(result.mentioned_symbols),
+        JSON.stringify(verifiedSymbols),
         result.portfolio_relevance,
         FEATURE_MODELS.newsletterProcessing,
         article.id
       );
 
-      // Link mentioned symbols to securities
-      for (const symbol of result.mentioned_symbols) {
+      for (const { symbol, context } of verified) {
         const sec = findSecurity.get(symbol) as { id: number } | undefined;
         if (sec) {
-          // Find a brief context snippet mentioning this symbol
-          const context = findMentionContext(article.raw_text, symbol);
           linkSecurity.run(article.id, sec.id, context, result.sentiment);
         }
       }
@@ -201,14 +209,3 @@ ${text}`,
   };
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────
-
-function findMentionContext(text: string, symbol: string): string {
-  // Find the first sentence/paragraph containing the symbol
-  const regex = new RegExp(`[^.]*\\b${symbol}\\b[^.]*\\.?`, "i");
-  const match = text.match(regex);
-  if (match) {
-    return match[0].trim().slice(0, 300);
-  }
-  return "";
-}
