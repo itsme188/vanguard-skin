@@ -12,6 +12,7 @@ import { SecurityChart } from "../../components/SecurityChart";
 import { WatchlistButton } from "../../components/WatchlistButton";
 import { LevelsPanel } from "../../components/LevelsPanel";
 import { RecentAlertsPanel } from "../../components/RecentAlertsPanel";
+import { TransactionsSection } from "../../components/TransactionsSection";
 import { Money, Pct, Shares } from "@/lib/privacy/components";
 import {
   FACTOR_COLUMNS,
@@ -50,7 +51,7 @@ export default async function SecurityDetailPage(props: {
 
   if (!detail) notFound();
 
-  const { security, price, positions, openTaxLots, closedSales, recentTransactions, notes, upcomingEvents, factors, transcripts, tradeGrades, researchMentions } = detail;
+  const { security, price, positions, openTaxLots, closedSales, recentTransactions, relatedOptionTransactions, notes, upcomingEvents, factors, transcripts, tradeGrades, researchMentions } = detail;
   const watched = isOnWatchlist(db, securityId);
   const watchlistItem = watched ? getWatchlistItem(db, securityId) : null;
 
@@ -384,8 +385,8 @@ export default async function SecurityDetailPage(props: {
                       <span
                         className={`text-xs font-medium px-2 py-0.5 rounded-full ${
                           holdingPeriodLabel(lot.acquisition_date) === "LT"
-                            ? "bg-up/10 text-up"
-                            : "bg-gold/10 text-gold"
+                            ? "bg-up/20 text-up"
+                            : "bg-gold/20 text-gold"
                         }`}
                       >
                         {holdingPeriodLabel(lot.acquisition_date)}
@@ -452,8 +453,8 @@ export default async function SecurityDetailPage(props: {
                       <span
                         className={`text-xs font-medium px-2 py-0.5 rounded-full ${
                           sale.is_long_term
-                            ? "bg-up/10 text-up"
-                            : "bg-gold/10 text-gold"
+                            ? "bg-up/20 text-up"
+                            : "bg-gold/20 text-gold"
                         }`}
                       >
                         {sale.is_long_term ? "LT" : "ST"}
@@ -496,11 +497,11 @@ export default async function SecurityDetailPage(props: {
               <tbody>
                 {tradeGrades.map((tg, i) => {
                   const gradeStyle: Record<string, string> = {
-                    A: "bg-up/20 text-up border-up/30",
-                    B: "bg-up/10 text-up/80 border-up/20",
-                    C: "bg-gold/15 text-gold border-gold/25",
-                    D: "bg-down/10 text-down/80 border-down/20",
-                    F: "bg-down/20 text-down border-down/30",
+                    A: "bg-up/25 text-up border-up/40",
+                    B: "bg-up/20 text-up border-up/30",
+                    C: "bg-gold/25 text-gold border-gold/40",
+                    D: "bg-down/20 text-down border-down/30",
+                    F: "bg-down/25 text-down border-down/40",
                   };
                   return (
                     <tr key={i} className="border-b border-edge/50 last:border-0">
@@ -541,8 +542,8 @@ export default async function SecurityDetailPage(props: {
                 <div key={i} className="text-xs space-y-0.5">
                   <div className="flex items-center gap-2">
                     {tg.grade && (
-                      <span className={`inline-flex items-center justify-center w-5 h-5 rounded text-[10px] font-bold ${
-                        { A: "bg-up/20 text-up", B: "bg-up/10 text-up/80", C: "bg-gold/15 text-gold", D: "bg-down/10 text-down/80", F: "bg-down/20 text-down" }[tg.grade] ?? "bg-muted text-ink-dim"
+                      <span className={`inline-flex items-center justify-center w-5 h-5 rounded text-[11px] font-bold ${
+                        { A: "bg-up/25 text-up", B: "bg-up/20 text-up", C: "bg-gold/25 text-gold", D: "bg-down/20 text-down", F: "bg-down/25 text-down" }[tg.grade] ?? "bg-muted text-ink-dim"
                       }`}>
                         {tg.grade}
                       </span>
@@ -558,69 +559,12 @@ export default async function SecurityDetailPage(props: {
         </section>
       )}
 
-      {/* Recent Transactions */}
-      {recentTransactions.length > 0 && (
-        <section className="rounded-xl border border-edge bg-panel overflow-hidden">
-          <div className="px-5 py-3 border-b border-edge">
-            <h2 className="text-sm font-semibold text-ink">
-              Recent Transactions
-            </h2>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-edge text-ink-faint text-xs">
-                  <th className="text-left px-5 py-2 font-medium">Date</th>
-                  <th className="text-left px-5 py-2 font-medium">Type</th>
-                  <th className="hidden md:table-cell text-left px-5 py-2 font-medium">Account</th>
-                  <th className="text-right px-5 py-2 font-medium">Qty</th>
-                  <th className="hidden md:table-cell text-right px-5 py-2 font-medium">Price</th>
-                  <th className="text-right px-5 py-2 font-medium">Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                {recentTransactions.map((t) => (
-                  <tr
-                    key={t.id}
-                    className="border-b border-edge/50 last:border-0"
-                  >
-                    <td className="px-5 py-2.5 font-mono text-ink-dim text-xs">
-                      {t.trade_date}
-                    </td>
-                    <td className="px-5 py-2.5">
-                      <span
-                        className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                          t.type.startsWith("BUY")
-                            ? "bg-up/10 text-up"
-                            : t.type.startsWith("SELL")
-                              ? "bg-down/10 text-down"
-                              : t.type === "DIVIDEND"
-                                ? "bg-gold/10 text-gold"
-                                : "bg-muted text-ink-dim"
-                        }`}
-                      >
-                        {t.type}
-                      </span>
-                    </td>
-                    <td className="hidden md:table-cell px-5 py-2.5 text-ink-dim">
-                      {t.account_name}
-                    </td>
-                    <td className="px-5 py-2.5 text-right font-mono text-ink">
-                      <Shares value={t.quantity} fallback="–" />
-                    </td>
-                    <td className="hidden md:table-cell px-5 py-2.5 text-right font-mono text-ink-dim">
-                      <Money value={t.price_per_share} precise fallback="–" />
-                    </td>
-                    <td className="px-5 py-2.5 text-right font-mono text-ink">
-                      <Money value={t.amount} fallback="–" />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
+      {/* Recent Transactions (client component — handles account + stock/option filters) */}
+      <TransactionsSection
+        stockTransactions={recentTransactions}
+        optionTransactions={relatedOptionTransactions}
+      />
+
 
       {/* Notes & Theses */}
       {notes.length > 0 && (
@@ -643,10 +587,10 @@ export default async function SecurityDetailPage(props: {
                   <span
                     className={`text-xs font-medium px-2 py-0.5 rounded-full ${
                       note.note_type === "trade_thesis"
-                        ? "bg-up/10 text-up"
+                        ? "bg-up/20 text-up"
                         : note.note_type === "earnings"
-                          ? "bg-blue/10 text-blue"
-                          : "bg-gold/10 text-gold"
+                          ? "bg-blue/20 text-blue"
+                          : "bg-gold/20 text-gold"
                     }`}
                   >
                     {note.note_type === "trade_thesis"
@@ -705,11 +649,11 @@ export default async function SecurityDetailPage(props: {
                   </span>
                   {mention.sentiment && (
                     <span
-                      className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
+                      className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${
                         mention.sentiment === "bullish"
-                          ? "bg-up-tint text-up"
+                          ? "bg-up/20 text-up"
                           : mention.sentiment === "bearish"
-                            ? "bg-down-tint text-down"
+                            ? "bg-down/20 text-down"
                             : "bg-raised text-ink-dim"
                       }`}
                     >
@@ -751,9 +695,9 @@ export default async function SecurityDetailPage(props: {
                 <span
                   className={`text-xs font-medium px-2 py-0.5 rounded-full shrink-0 ${
                     event.expected_impact === "high"
-                      ? "bg-down/10 text-down"
+                      ? "bg-down/20 text-down"
                       : event.expected_impact === "medium"
-                        ? "bg-gold/10 text-gold"
+                        ? "bg-gold/20 text-gold"
                         : "bg-muted text-ink-dim"
                   }`}
                 >
@@ -889,9 +833,9 @@ export default async function SecurityDetailPage(props: {
                     <span
                       className={`text-xs font-medium px-2 py-0.5 rounded-full ${
                         t.sentiment_label === "positive"
-                          ? "bg-up/10 text-up"
+                          ? "bg-up/20 text-up"
                           : t.sentiment_label === "negative"
-                            ? "bg-down/10 text-down"
+                            ? "bg-down/20 text-down"
                             : "bg-muted text-ink-dim"
                       }`}
                     >
