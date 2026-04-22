@@ -245,16 +245,34 @@ interface ResearchDocumentDetail {
 
 // ─── Tag editor ─────────────────────────────────────────────────
 
+function coerceTags(raw: unknown): string[] {
+  if (Array.isArray(raw)) {
+    return raw.filter((t): t is string => typeof t === "string");
+  }
+  if (typeof raw === "string") {
+    // Defensive: server should already have parsed this, but tolerate drift.
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed)
+        ? parsed.filter((t): t is string => typeof t === "string")
+        : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
 function TagEditor({
   docId,
   initialTags,
   onTagsChanged,
 }: {
   docId: number;
-  initialTags: string[];
+  initialTags: unknown;
   onTagsChanged: (tags: string[]) => void;
 }) {
-  const [tags, setTags] = useState<string[]>(initialTags);
+  const [tags, setTags] = useState<string[]>(() => coerceTags(initialTags));
   const [input, setInput] = useState("");
   const [saving, setSaving] = useState(false);
 
