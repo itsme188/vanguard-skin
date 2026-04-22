@@ -93,6 +93,7 @@ interface SuggestedLevel {
   firstTouchDate: string;
   confidence: "high" | "medium" | "low";
   distancePct: number;
+  narrative?: string | null;
 }
 
 interface SuggestedLevelsResponse {
@@ -123,7 +124,7 @@ function SuggestedLevels({
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    fetch(`/api/suggested-levels?securityId=${securityId}`)
+    fetch(`/api/suggested-levels?securityId=${securityId}&narratives=1`)
       .then((r) => (r.ok ? r.json() : null))
       .then((json: SuggestedLevelsResponse | null) => {
         if (!cancelled) setData(json);
@@ -166,7 +167,9 @@ function SuggestedLevels({
           action_hint: "watch",
           source: "suggested",
           source_author: "chart-analysis",
-          thesis: `Auto-suggested from pivot clustering · ${sug.touches}× touches, last ${sug.lastTouchDate} · confidence: ${sug.confidence}`,
+          thesis: sug.narrative
+            ? sug.narrative
+            : `Auto-suggested from pivot clustering · ${sug.touches}× touches, last ${sug.lastTouchDate} · confidence: ${sug.confidence}`,
           timeframe: null,
           expires_at: null,
         }),
@@ -214,37 +217,44 @@ function SuggestedLevels({
           {filtered.map((sug, i) => (
             <div
               key={`${sug.type}-${sug.price}-${i}`}
-              className="px-3 py-2 flex items-center justify-between gap-2"
+              className="px-3 py-2 flex items-start justify-between gap-2"
             >
-              <div className="flex-1 min-w-0 flex items-center gap-2 flex-wrap">
-                <span
-                  className={`font-mono text-sm font-medium ${
-                    sug.type === "resistance" ? "text-down" : "text-up"
-                  }`}
-                >
-                  ${sug.price.toFixed(2)}
-                </span>
-                <Chip tone={sug.type === "resistance" ? "down" : "up"} size="xs" uppercase>
-                  {sug.type}
-                </Chip>
-                <span className="text-[11px] text-ink-dim">
-                  {sug.distancePct >= 0 ? "+" : ""}
-                  {sug.distancePct.toFixed(1)}%
-                </span>
-                <Chip
-                  tone={sug.confidence === "high" ? "gold" : "neutral"}
-                  size="xs"
-                >
-                  {sug.confidence}
-                </Chip>
-                <span className="text-[11px] text-ink-faint">
-                  {sug.touches}× · last {sug.lastTouchDate}
-                </span>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span
+                    className={`font-mono text-sm font-medium ${
+                      sug.type === "resistance" ? "text-down" : "text-up"
+                    }`}
+                  >
+                    ${sug.price.toFixed(2)}
+                  </span>
+                  <Chip tone={sug.type === "resistance" ? "down" : "up"} size="xs" uppercase>
+                    {sug.type}
+                  </Chip>
+                  <span className="text-[11px] text-ink-dim">
+                    {sug.distancePct >= 0 ? "+" : ""}
+                    {sug.distancePct.toFixed(1)}%
+                  </span>
+                  <Chip
+                    tone={sug.confidence === "high" ? "gold" : "neutral"}
+                    size="xs"
+                  >
+                    {sug.confidence}
+                  </Chip>
+                  <span className="text-[11px] text-ink-faint">
+                    {sug.touches}× · last {sug.lastTouchDate}
+                  </span>
+                </div>
+                {sug.narrative && (
+                  <p className="mt-1 text-[11px] text-ink-dim leading-snug">
+                    {sug.narrative}
+                  </p>
+                )}
               </div>
               <button
                 onClick={() => accept(sug, i)}
                 disabled={accepting === i}
-                className="px-2.5 py-1 text-[11px] font-medium rounded border border-edge text-ink hover:bg-raised hover:border-edge-strong disabled:opacity-40 transition-colors"
+                className="px-2.5 py-1 text-[11px] font-medium rounded border border-edge text-ink hover:bg-raised hover:border-edge-strong disabled:opacity-40 transition-colors shrink-0"
               >
                 {accepting === i ? "…" : "accept"}
               </button>
