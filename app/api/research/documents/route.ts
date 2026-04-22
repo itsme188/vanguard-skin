@@ -108,6 +108,7 @@ export async function POST(req: NextRequest) {
     summary: extracted.summary,
     key_points: extracted.key_points,
     mentioned_symbols: extracted.mentioned_symbols,
+    tags: extracted.tags,
     sentiment: extracted.sentiment,
     target_prices: extracted.target_prices,
     ai_model: extracted.ai_model,
@@ -122,6 +123,7 @@ export async function POST(req: NextRequest) {
     document_type: extracted.document_type,
     publication_date: extracted.publication_date,
     mentioned_symbols: extracted.mentioned_symbols,
+    tags: extracted.tags,
     key_points: extracted.key_points,
     char_count: extracted.raw_text.length,
   });

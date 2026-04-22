@@ -6,10 +6,13 @@ import {
   listResearchDocuments,
   searchResearchDocuments,
   getResearchDocumentCount,
+  getResearchDocumentsForSymbol,
+  getAllResearchDocumentTags,
 } from "@/lib/queries/research-documents";
 import {
   createResearchDocument,
   deleteResearchDocument,
+  updateResearchDocumentTags,
 } from "@/lib/mutations/research-documents";
 
 function makeDb(): Database.Database {
@@ -35,6 +38,7 @@ function seedDoc(
     summary: null,
     key_points: null,
     mentioned_symbols: null,
+    tags: null,
     sentiment: null,
     target_prices: null,
     ai_model: null,
@@ -251,5 +255,143 @@ describe("searchResearchDocuments (FTS5)", () => {
     expect(
       searchResearchDocuments(db, { query: "alphabeta" }).length,
     ).toBe(0);
+  });
+});
+
+// ─── New tags + expanded doc types ────────────────────────────────
+
+describe("tags support", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = makeDb();
+  });
+
+  it("stores + retrieves tags, normalized to lowercase + dedup", () => {
+    const id = seedDoc(db, {
+      title: "T",
+      // Upper-case, duplicates, junk chars, extra whitespace
+      tags: ["Semiconductors", "AI  Infrastructure", "semiconductors", "Q3-2024", "🔥emoji"],
+    });
+    const doc = getResearchDocument(db, id);
+    const tags = doc?.tags ? JSON.parse(doc.tags) : [];
+    expect(tags).toContain("semiconductors");
+    expect(tags).toContain("ai infrastructure");
+    expect(tags).toContain("q3-2024");
+    // Deduped
+    expect(tags.filter((t: string) => t === "semiconductors").length).toBe(1);
+    // Emoji stripped
+    expect(tags).not.toContain("🔥emoji");
+  });
+
+  it("filters by tag in listResearchDocuments", () => {
+    seedDoc(db, { title: "A", tags: ["semiconductors", "ai"] });
+    seedDoc(db, { title: "B", tags: ["consumer"] });
+    seedDoc(db, { title: "C", tags: ["semiconductors"] });
+
+    const rows = listResearchDocuments(db, { tag: "semiconductors" });
+    expect(rows.map((r) => r.title).sort()).toEqual(["A", "C"]);
+  });
+
+  it("tag filter is case-insensitive (normalized to lowercase on input)", () => {
+    seedDoc(db, { title: "A", tags: ["AI"] });
+    const rows = listResearchDocuments(db, { tag: "AI" });
+    expect(rows).toHaveLength(1);
+  });
+
+  it("combines tag + symbol filters in searchResearchDocuments", () => {
+    seedDoc(db, {
+      title: "A",
+      mentioned_symbols: ["NVDA"],
+      tags: ["semiconductors"],
+      raw_text: "thesis body here",
+    });
+    seedDoc(db, {
+      title: "B",
+      mentioned_symbols: ["AAPL"],
+      tags: ["semiconductors"],
+      raw_text: "thesis body here",
+    });
+    const rows = searchResearchDocuments(db, {
+      query: "thesis",
+      symbol: "NVDA",
+      tag: "semiconductors",
+    });
+    expect(rows.map((r) => r.title)).toEqual(["A"]);
+  });
+
+  it("updateResearchDocumentTags overwrites tags on the row + FTS index", () => {
+    const id = seedDoc(db, {
+      title: "A",
+      tags: ["old-tag"],
+      raw_text: "body",
+    });
+    expect(updateResearchDocumentTags(db, id, ["new-tag", "another"])).toBe(true);
+
+    const doc = getResearchDocument(db, id);
+    expect(JSON.parse(doc!.tags!)).toEqual(["new-tag", "another"]);
+
+    // FTS index now reflects new tag
+    expect(
+      searchResearchDocuments(db, { query: "another" }).length,
+    ).toBe(1);
+    // Old tag should be gone from FTS
+    expect(
+      searchResearchDocuments(db, { query: "old-tag" }).length,
+    ).toBe(0);
+  });
+
+  it("updateResearchDocumentTags with empty array nulls the column", () => {
+    const id = seedDoc(db, { title: "A", tags: ["to-clear"] });
+    expect(updateResearchDocumentTags(db, id, [])).toBe(true);
+    const doc = getResearchDocument(db, id);
+    expect(doc!.tags).toBeNull();
+  });
+
+  it("getAllResearchDocumentTags returns unique tags sorted by frequency", () => {
+    seedDoc(db, { title: "A", tags: ["ai", "semiconductors"] });
+    seedDoc(db, { title: "B", tags: ["ai", "consumer"] });
+    seedDoc(db, { title: "C", tags: ["ai"] });
+
+    const tags = getAllResearchDocumentTags(db);
+    expect(tags[0]).toEqual({ tag: "ai", count: 3 });
+    const tagNames = tags.map((t) => t.tag);
+    expect(tagNames).toContain("semiconductors");
+    expect(tagNames).toContain("consumer");
+  });
+});
+
+describe("expanded document_type constraint", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = makeDb();
+  });
+
+  it.each([
+    "investor_letter",
+    "earnings_presentation",
+    "article",
+    "book_summary_or_essay",
+    "macro_note",
+  ] as const)("accepts new document_type %s", (type) => {
+    const id = seedDoc(db, { title: "T", document_type: type });
+    expect(id).toBeGreaterThan(0);
+  });
+});
+
+describe("getResearchDocumentsForSymbol", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = makeDb();
+  });
+
+  it("returns only docs that mention the symbol", () => {
+    seedDoc(db, { title: "A", mentioned_symbols: ["NVDA", "AMD"] });
+    seedDoc(db, { title: "B", mentioned_symbols: ["AAPL"] });
+    seedDoc(db, { title: "C", mentioned_symbols: ["nvda"] }); // lowercased — still stored upper
+    const rows = getResearchDocumentsForSymbol(db, "nvda");
+    expect(rows.map((r) => r.title).sort()).toEqual(["A", "C"]);
   });
 });

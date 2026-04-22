@@ -5,6 +5,11 @@ export type ResearchDocumentType =
   | "research_note"
   | "market_analysis"
   | "industry_primer"
+  | "investor_letter"
+  | "earnings_presentation"
+  | "article"
+  | "book_summary_or_essay"
+  | "macro_note"
   | "other";
 
 export type ResearchDocumentSentiment =
@@ -26,6 +31,7 @@ export interface ResearchDocument {
   summary: string | null;
   key_points: string | null; // JSON array string
   mentioned_symbols: string | null; // JSON array string
+  tags: string | null; // JSON array string (lowercase free-text tags)
   sentiment: ResearchDocumentSentiment | null;
   target_prices: string | null; // JSON string
   ai_model: string | null;
@@ -44,6 +50,7 @@ export interface ResearchDocumentSummary {
   document_type: ResearchDocumentType | null;
   summary: string | null;
   mentioned_symbols: string | null;
+  tags: string | null;
   sentiment: ResearchDocumentSentiment | null;
   uploaded_at: string;
   char_count: number | null;
@@ -72,6 +79,7 @@ export interface ListResearchDocumentsOptions {
   document_type?: ResearchDocumentType;
   limit?: number;
   symbol?: string;
+  tag?: string;
 }
 
 export function listResearchDocuments(
@@ -90,6 +98,10 @@ export function listResearchDocuments(
     where.push("mentioned_symbols LIKE ?");
     params.push(`%"${opts.symbol.toUpperCase()}"%`);
   }
+  if (opts.tag) {
+    where.push("tags LIKE ?");
+    params.push(`%"${opts.tag.toLowerCase()}"%`);
+  }
 
   const limit = Math.max(1, Math.min(opts.limit ?? 50, 200));
   const whereSql = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
@@ -97,7 +109,7 @@ export function listResearchDocuments(
   return db
     .prepare(
       `SELECT id, title, author, source, filename, publication_date,
-              document_type, summary, mentioned_symbols, sentiment,
+              document_type, summary, mentioned_symbols, tags, sentiment,
               uploaded_at, char_count
        FROM research_documents
        ${whereSql}
@@ -107,12 +119,28 @@ export function listResearchDocuments(
     .all(...params, limit) as ResearchDocumentSummary[];
 }
 
+/**
+ * Docs that mention a given security symbol. Used by the security detail
+ * page to surface "what have I read about NVDA?".
+ */
+export function getResearchDocumentsForSymbol(
+  db: Database.Database,
+  symbol: string,
+  limit: number = 25,
+): ResearchDocumentSummary[] {
+  return listResearchDocuments(db, {
+    symbol: symbol.toUpperCase(),
+    limit,
+  });
+}
+
 // ─── Full-text search ─────────────────────────────────────────────
 
 export interface SearchResearchDocumentsOptions {
   query?: string;
   symbol?: string;
   document_type?: ResearchDocumentType;
+  tag?: string;
   days_back?: number;
   limit?: number;
 }
@@ -138,6 +166,7 @@ export function searchResearchDocuments(
     return listResearchDocuments(db, {
       document_type: opts.document_type,
       symbol: opts.symbol,
+      tag: opts.tag,
       limit,
     }).map((d) => ({ ...d, snippet: null, key_points: null }));
   }
@@ -155,6 +184,10 @@ export function searchResearchDocuments(
     where.push("rd.mentioned_symbols LIKE ?");
     params.push(`%"${opts.symbol.toUpperCase()}"%`);
   }
+  if (opts.tag) {
+    where.push("rd.tags LIKE ?");
+    params.push(`%"${opts.tag.toLowerCase()}"%`);
+  }
   if (opts.days_back && opts.days_back > 0) {
     where.push(
       "COALESCE(rd.publication_date, rd.uploaded_at) >= date('now', ?)",
@@ -166,8 +199,8 @@ export function searchResearchDocuments(
     .prepare(
       `SELECT rd.id, rd.title, rd.author, rd.source, rd.filename,
               rd.publication_date, rd.document_type, rd.summary,
-              rd.mentioned_symbols, rd.sentiment, rd.uploaded_at, rd.char_count,
-              rd.key_points,
+              rd.mentioned_symbols, rd.tags, rd.sentiment,
+              rd.uploaded_at, rd.char_count, rd.key_points,
               snippet(research_documents_fts, -1, '<mark>', '</mark>', '…', 20) AS snippet
        FROM research_documents rd
        JOIN research_documents_fts fts ON fts.rowid = rd.id
@@ -176,6 +209,33 @@ export function searchResearchDocuments(
        LIMIT ?`,
     )
     .all(...params, limit) as ResearchDocumentSearchResult[];
+}
+
+// ─── All distinct tags (for filter dropdowns) ────────────────────
+
+export function getAllResearchDocumentTags(
+  db: Database.Database,
+): Array<{ tag: string; count: number }> {
+  const rows = db
+    .prepare(`SELECT tags FROM research_documents WHERE tags IS NOT NULL`)
+    .all() as { tags: string }[];
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    try {
+      const arr = JSON.parse(row.tags);
+      if (!Array.isArray(arr)) continue;
+      for (const t of arr) {
+        if (typeof t === "string" && t) {
+          counts.set(t, (counts.get(t) ?? 0) + 1);
+        }
+      }
+    } catch {
+      // ignore malformed rows
+    }
+  }
+  return Array.from(counts.entries())
+    .map(([tag, count]) => ({ tag, count }))
+    .sort((a, b) => b.count - a.count);
 }
 
 // ─── Aggregate counts ─────────────────────────────────────────────
