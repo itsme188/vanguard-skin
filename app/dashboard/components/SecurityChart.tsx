@@ -123,6 +123,10 @@ export function SecurityChart({
   // Toggle states
   const [activeIndicators, setActiveIndicators] = useState<Set<IndicatorKey>>(new Set());
   const [showMarkers, setShowMarkers] = useState(true);
+  const [showSuggested, setShowSuggested] = useState(false);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const suggestedLinesRef = useRef<any[]>([]);
 
   const isIntraday = activeTimeframe !== "D";
 
@@ -453,6 +457,69 @@ export function SecurityChart({
     };
   }, [securityId]);
 
+  // Suggested support/resistance overlay (Theme G). Toggleable — off by
+  // default to avoid visual clutter. Dashed muted lines, distinct from the
+  // user-created level colors above so the two don't get confused.
+  useEffect(() => {
+    const series = candleSeriesRef.current;
+    if (!series) return;
+
+    // Always clear existing suggested lines when toggle flips or securityId changes.
+    const clear = () => {
+      for (const line of suggestedLinesRef.current) {
+        try { series.removePriceLine(line); } catch { /* noop */ }
+      }
+      suggestedLinesRef.current = [];
+    };
+
+    if (!showSuggested) {
+      clear();
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadSuggested() {
+      const s = candleSeriesRef.current;
+      if (!s) return;
+      try {
+        const res = await fetch(`/api/suggested-levels?securityId=${securityId}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+
+        clear();
+
+        for (const lvl of data.levels ?? []) {
+          const color = lvl.type === "resistance" ? "#F8717170" : "#34D39970";
+          const conf = lvl.confidence === "high" ? "★" : lvl.confidence === "medium" ? "·" : "";
+          const title = `suggested ${lvl.type}${conf ? ` ${conf}` : ""} (${lvl.touches}×)`;
+          const line = s.createPriceLine({
+            price: lvl.price,
+            color,
+            lineWidth: 1,
+            lineStyle: 1, // dotted — visually distinct from user levels (dashed)
+            axisLabelVisible: true,
+            title,
+          });
+          suggestedLinesRef.current.push(line);
+        }
+      } catch {
+        /* silent */
+      }
+    }
+
+    loadSuggested();
+    // Re-fetch every 5 min — pivot structure only shifts when new daily bars land.
+    const interval = setInterval(loadSuggested, 5 * 60 * 1000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      clear();
+    };
+  }, [securityId, showSuggested]);
+
   const handleDurationChange = useCallback(
     async (label: string) => {
       setActiveDuration(label);
@@ -722,6 +789,15 @@ export function SecurityChart({
               title="Show BUY/SELL transaction markers"
             >
               Txns
+            </button>
+            <button
+              onClick={() => setShowSuggested((v) => !v)}
+              className={`px-2 py-1 text-xs font-medium rounded-md transition-colors ${
+                showSuggested ? "bg-panel text-gold" : "text-ink-faint hover:text-ink-dim"
+              }`}
+              title="Show computed support / resistance levels (pivot-based)"
+            >
+              S/R
             </button>
             </div>
           )}
