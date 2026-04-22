@@ -65,6 +65,182 @@ const LEVEL_TYPE_COLOR: Record<LevelType, string> = {
   scale_in: "text-emerald-300",
 };
 
+interface SuggestedLevel {
+  price: number;
+  type: "support" | "resistance";
+  touches: number;
+  lastTouchDate: string;
+  firstTouchDate: string;
+  confidence: "high" | "medium" | "low";
+  distancePct: number;
+}
+
+interface SuggestedLevelsResponse {
+  levels: SuggestedLevel[];
+  atr: number | null;
+  currentPrice: number | null;
+  barsAnalyzed: number;
+  warning?: string;
+}
+
+function SuggestedLevels({
+  securityId,
+  symbol,
+  userLevels,
+  onAccepted,
+}: {
+  securityId: number;
+  symbol: string;
+  userLevels: EnrichedLevel[];
+  onAccepted: () => void;
+}) {
+  const { toast } = useToast();
+  const [data, setData] = useState<SuggestedLevelsResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [accepting, setAccepting] = useState<number | null>(null);
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetch(`/api/suggested-levels?securityId=${securityId}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((json: SuggestedLevelsResponse | null) => {
+        if (!cancelled) setData(json);
+      })
+      .catch(() => {
+        /* silent */
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [securityId]);
+
+  // Filter out suggestions that already have a matching user level (within a
+  // small tolerance) — prevents double-adding the same price.
+  const filtered = (data?.levels ?? []).filter((sug) => {
+    const tol = Math.max(0.25, sug.price * 0.005); // 0.5% or $0.25, whichever bigger
+    return !userLevels.some(
+      (u) =>
+        u.price_source === "static" &&
+        typeof u.price === "number" &&
+        Math.abs(u.price - sug.price) <= tol,
+    );
+  });
+
+  async function accept(sug: SuggestedLevel, index: number) {
+    setAccepting(index);
+    try {
+      const res = await fetch("/api/levels", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          security_id: securityId,
+          level_type: sug.type,
+          price: sug.price,
+          price_source: "static",
+          direction: null,
+          action_hint: "watch",
+          source: "suggested",
+          source_author: "chart-analysis",
+          thesis: `Auto-suggested from pivot clustering · ${sug.touches}× touches, last ${sug.lastTouchDate} · confidence: ${sug.confidence}`,
+          timeframe: null,
+          expires_at: null,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        toast(`Failed to add level: ${json.error ?? "unknown"}`, "error");
+        return;
+      }
+      toast(`${symbol} ${sug.type} at $${sug.price.toFixed(2)} added`, "success");
+      onAccepted();
+    } finally {
+      setAccepting(null);
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="mb-3 text-[11px] text-ink-faint">
+        Computing suggested levels…
+      </div>
+    );
+  }
+  if (!data || filtered.length === 0) return null;
+
+  return (
+    <div className="mb-3 rounded-lg border border-edge bg-raised/40 overflow-hidden">
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full px-3 py-2 flex items-center justify-between text-[11px] hover:bg-raised transition-colors"
+      >
+        <span className="text-ink-dim">
+          <span className="text-gold">▸</span> {filtered.length} suggested level
+          {filtered.length === 1 ? "" : "s"}
+          {data.atr != null && (
+            <span className="text-ink-faint ml-2">
+              · ATR ≈ ${data.atr.toFixed(2)}
+            </span>
+          )}
+        </span>
+        <span className="text-ink-faint">{expanded ? "hide" : "show"}</span>
+      </button>
+      {expanded && (
+        <div className="divide-y divide-edge/50">
+          {filtered.map((sug, i) => (
+            <div
+              key={`${sug.type}-${sug.price}-${i}`}
+              className="px-3 py-2 flex items-center justify-between gap-2"
+            >
+              <div className="flex-1 min-w-0 flex items-center gap-2 flex-wrap">
+                <span
+                  className={`font-mono text-xs ${
+                    sug.type === "resistance" ? "text-rose-400" : "text-emerald-400"
+                  }`}
+                >
+                  ${sug.price.toFixed(2)}
+                </span>
+                <span className="text-[10px] text-ink-faint uppercase tracking-wide">
+                  {sug.type}
+                </span>
+                <span className="text-[10px] text-ink-faint">
+                  {sug.distancePct >= 0 ? "+" : ""}
+                  {sug.distancePct.toFixed(1)}%
+                </span>
+                <span
+                  className={`px-1.5 py-0.5 rounded text-[10px] ${
+                    sug.confidence === "high"
+                      ? "bg-gold/20 text-gold"
+                      : sug.confidence === "medium"
+                        ? "bg-raised text-ink-dim"
+                        : "bg-raised text-ink-faint"
+                  }`}
+                >
+                  {sug.confidence}
+                </span>
+                <span className="text-[10px] text-ink-faint">
+                  {sug.touches}× · last {sug.lastTouchDate}
+                </span>
+              </div>
+              <button
+                onClick={() => accept(sug, i)}
+                disabled={accepting === i}
+                className="px-2 py-0.5 text-[10px] rounded border border-edge text-ink-dim hover:text-ink hover:border-edge-strong disabled:opacity-40 transition-colors"
+              >
+                {accepting === i ? "…" : "accept"}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function LevelsPanel({
   securityId,
   symbol,
@@ -388,6 +564,15 @@ export function LevelsPanel({
           </div>
         </form>
       )}
+
+      {/* Auto-suggested support/resistance from pivot clustering. Collapsible,
+          hidden when no novel suggestions exist. */}
+      <SuggestedLevels
+        securityId={securityId}
+        symbol={symbol}
+        userLevels={levels}
+        onAccepted={refresh}
+      />
 
       {/* Provenance filter — derived from distinct authors on this security's
           levels. Hidden when there's nothing to filter (≤1 distinct author). */}
