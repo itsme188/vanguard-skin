@@ -27,6 +27,8 @@ import {
   todayET,
 } from "./dst";
 import { callPrimary, type PrimaryResult } from "./primary";
+import { runFallbackDigest, type FallbackResult } from "./fallback-digest";
+import { runFallbackBriefing } from "./fallback-briefing";
 
 export interface Env {
   // Bindings
@@ -65,46 +67,64 @@ function parseJobFromClock(env: Env): { type: JobType; expectedHour: number } | 
   return null;
 }
 
-async function runJob(type: JobType, env: Env): Promise<{
+interface RunJobOpts {
+  dryRun?: boolean;
+  fallbackOnly?: boolean; // skip primary, go straight to fallback (smoke test)
+}
+
+interface RunJobResult {
   skipped?: "already_sent" | "already_sent_by_cloud";
   primary?: PrimaryResult;
+  fallback?: FallbackResult;
   sentBy?: SentBy;
-}> {
+}
+
+async function runJob(type: JobType, env: Env, opts: RunJobOpts = {}): Promise<RunJobResult> {
   const date = todayET();
   const markers = await readMarkers(env.CRON_KV, type, date);
 
-  if (markers.mac) {
-    return { skipped: "already_sent" };
-  }
-  if (markers.cloud) {
-    return { skipped: "already_sent_by_cloud" };
-  }
+  if (markers.mac && !opts.dryRun) return { skipped: "already_sent" };
+  if (markers.cloud && !opts.dryRun) return { skipped: "already_sent_by_cloud" };
 
-  const primary = await callPrimary({
-    meshHostname: env.MESH_HOSTNAME,
-    cronSecret: env.CRON_SHARED_SECRET,
-    type,
-    timeoutMs: parseInt(env.PRIMARY_TIMEOUT_MS, 10) || 120000,
-  });
+  // Optionally skip primary entirely — for exercising the fallback path in tests.
+  let primary: PrimaryResult | undefined;
+  if (!opts.fallbackOnly) {
+    primary = await callPrimary({
+      meshHostname: env.MESH_HOSTNAME,
+      cronSecret: env.CRON_SHARED_SECRET,
+      type,
+      timeoutMs: parseInt(env.PRIMARY_TIMEOUT_MS, 10) || 120000,
+    });
 
-  if (primary.kind === "success") {
-    await writeMarker(env.CRON_KV, "mac", type, date);
-    return { primary, sentBy: "mac" };
-  }
-
-  if (primary.kind === "skipped_by_mac") {
-    // Mac route returned `skipped: true` because it saw a cloud-sent marker.
-    // Nothing to do — cloud already delivered.
-    return { primary };
+    if (primary.kind === "success") {
+      if (!opts.dryRun) await writeMarker(env.CRON_KV, "mac", type, date);
+      return { primary, sentBy: "mac" };
+    }
+    if (primary.kind === "skipped_by_mac") {
+      return { primary };
+    }
   }
 
-  // TODO(Session C): call fallback here.
-  // const fallback = await runFallback(type, env);
-  // if (fallback.kind === "success") {
-  //   await writeMarker(env.CRON_KV, "cloud", type, date);
-  //   return { primary, fallback, sentBy: "cloud" };
-  // }
-  return { primary };
+  // Primary failed (timeout / network / 5xx) or was skipped — run fallback.
+  let fallback: FallbackResult;
+  try {
+    fallback = type === "briefing"
+      ? await runFallbackBriefing(env, { dryRun: opts.dryRun })
+      : await runFallbackDigest(env, { dryRun: opts.dryRun });
+  } catch (err) {
+    console.error(`[runJob ${type}] fallback threw:`, err);
+    fallback = {
+      kind: "error",
+      error: err instanceof Error ? `${err.message}\n${err.stack?.slice(0, 500)}` : String(err),
+    };
+  }
+
+  if (fallback.kind === "success") {
+    if (!opts.dryRun) await writeMarker(env.CRON_KV, "cloud", type, date);
+    return { primary, fallback, sentBy: "cloud" };
+  }
+
+  return { primary, fallback };
 }
 
 export default {
@@ -151,7 +171,9 @@ export default {
       if (typeParam !== "briefing" && typeParam !== "digest") {
         return Response.json({ error: "type must be briefing or digest" }, { status: 400 });
       }
-      const result = await runJob(typeParam, env);
+      const dryRun = url.searchParams.get("dryRun") === "true";
+      const fallbackOnly = url.searchParams.get("fallbackOnly") === "true";
+      const result = await runJob(typeParam, env, { dryRun, fallbackOnly });
       return Response.json(result);
     }
 
