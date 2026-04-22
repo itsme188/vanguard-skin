@@ -457,7 +457,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
   {
     name: "query_earnings_transcript",
     description:
-      "Fetch an earnings call transcript or press release for a company. Returns summary, guidance, risk factors, sentiment, and key excerpts. Checks local cache first, then fetches from Motley Fool or SEC EDGAR 8-K filings. Use PROACTIVELY when discussing any company's earnings, quarterly results, forward guidance, management commentary, or business outlook. Also useful for comparing performance across quarters or validating financial trends.",
+      "Fetch an earnings call transcript or press release for a company. Returns summary, guidance, risk factors, sentiment, and an excerpt (first ~1000 words by default). Checks local cache first, then fetches from Motley Fool or SEC EDGAR 8-K filings. Use PROACTIVELY when discussing any company's earnings, quarterly results, forward guidance, management commentary, or business outlook. Also useful for comparing performance across quarters or validating financial trends. Set `include_full_text: true` when the user asks for specific quotes, detailed management commentary, segment revenue breakdowns, or to cite exact numbers — this returns the complete body (up to ~60K chars for EDGAR sources).",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -474,6 +474,11 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
           type: "integer",
           description:
             "Quarter (1-4). Omit for most recent available quarter.",
+        },
+        include_full_text: {
+          type: "boolean",
+          description:
+            "Return the complete transcript body instead of a 1000-word excerpt. Use when the user wants exact quotes, detailed commentary, or segment-level numbers. Default false (summary-only) keeps context small when a broad answer is enough.",
         },
       },
       required: ["ticker"],
@@ -1092,7 +1097,8 @@ export async function executeTool(
           db,
           ticker,
           input.year as number | undefined,
-          input.quarter as number | undefined
+          input.quarter as number | undefined,
+          { fullText: input.include_full_text === true },
         );
 
         if (!transcriptData) {
