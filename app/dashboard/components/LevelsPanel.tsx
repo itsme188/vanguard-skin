@@ -11,6 +11,7 @@ import type {
 } from "@/lib/types";
 import { Money } from "@/lib/privacy/components";
 import { useToast } from "./Toast";
+import { Chip } from "./Chip";
 
 type EnrichedLevel = SecurityLevel & { effective_price: number | null };
 
@@ -198,38 +199,33 @@ function SuggestedLevels({
             >
               <div className="flex-1 min-w-0 flex items-center gap-2 flex-wrap">
                 <span
-                  className={`font-mono text-xs ${
-                    sug.type === "resistance" ? "text-rose-400" : "text-emerald-400"
+                  className={`font-mono text-sm font-medium ${
+                    sug.type === "resistance" ? "text-down" : "text-up"
                   }`}
                 >
                   ${sug.price.toFixed(2)}
                 </span>
-                <span className="text-[10px] text-ink-faint uppercase tracking-wide">
+                <Chip tone={sug.type === "resistance" ? "down" : "up"} size="xs" uppercase>
                   {sug.type}
-                </span>
-                <span className="text-[10px] text-ink-faint">
+                </Chip>
+                <span className="text-[11px] text-ink-dim">
                   {sug.distancePct >= 0 ? "+" : ""}
                   {sug.distancePct.toFixed(1)}%
                 </span>
-                <span
-                  className={`px-1.5 py-0.5 rounded text-[10px] ${
-                    sug.confidence === "high"
-                      ? "bg-gold/20 text-gold"
-                      : sug.confidence === "medium"
-                        ? "bg-raised text-ink-dim"
-                        : "bg-raised text-ink-faint"
-                  }`}
+                <Chip
+                  tone={sug.confidence === "high" ? "gold" : "neutral"}
+                  size="xs"
                 >
                   {sug.confidence}
-                </span>
-                <span className="text-[10px] text-ink-faint">
+                </Chip>
+                <span className="text-[11px] text-ink-faint">
                   {sug.touches}× · last {sug.lastTouchDate}
                 </span>
               </div>
               <button
                 onClick={() => accept(sug, i)}
                 disabled={accepting === i}
-                className="px-2 py-0.5 text-[10px] rounded border border-edge text-ink-dim hover:text-ink hover:border-edge-strong disabled:opacity-40 transition-colors"
+                className="px-2.5 py-1 text-[11px] font-medium rounded border border-edge text-ink hover:bg-raised hover:border-edge-strong disabled:opacity-40 transition-colors"
               >
                 {accepting === i ? "…" : "accept"}
               </button>
@@ -299,8 +295,13 @@ export function LevelsPanel({
   // triggered, even though is_active flipped to 0 in the DB.
   useEffect(() => {
     const onAlertFired = () => refresh();
+    const onLevelAdded = () => refresh();
     window.addEventListener("alert-fired", onAlertFired);
-    return () => window.removeEventListener("alert-fired", onAlertFired);
+    window.addEventListener("level-added", onLevelAdded);
+    return () => {
+      window.removeEventListener("alert-fired", onAlertFired);
+      window.removeEventListener("level-added", onLevelAdded);
+    };
   }, [refresh]);
 
   // Load known research sources once so the Source/Author field can offer
@@ -588,10 +589,10 @@ export function LevelsPanel({
               <button
                 key={p}
                 onClick={() => setAuthorFilter(p)}
-                className={`px-2 py-0.5 rounded-full text-[10px] transition-colors ${
+                className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${
                   authorFilter === p
                     ? "bg-gold/20 text-gold"
-                    : "bg-raised text-ink-faint hover:text-ink-dim"
+                    : "bg-raised text-ink-dim hover:text-ink"
                 }`}
               >
                 {p}
@@ -622,7 +623,7 @@ export function LevelsPanel({
             {visibleLevels.map((l) => (
             <li key={l.id} className="py-2.5 flex items-start gap-3">
               <div
-                className={`text-[10px] uppercase tracking-wider font-medium w-20 shrink-0 ${LEVEL_TYPE_COLOR[l.level_type]}`}
+                className={`text-[11px] uppercase tracking-wide font-semibold w-20 shrink-0 ${LEVEL_TYPE_COLOR[l.level_type]}`}
               >
                 {LEVEL_TYPE_LABEL[l.level_type]}
               </div>
@@ -647,30 +648,32 @@ export function LevelsPanel({
                     </>
                   )}
                   {l.direction && (
-                    <span className="text-[10px] text-ink-faint uppercase">
+                    <span className="text-[11px] font-medium text-ink-dim uppercase tracking-wide">
                       {l.direction}
                     </span>
                   )}
                   {l.action_hint && (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-raised text-ink-dim">
+                    <Chip size="xs" tone="neutral">
                       {l.action_hint.replace("_", " ")}
-                    </span>
+                    </Chip>
                   )}
                   {l.is_active === 0 && l.triggered_at && (
-                    <span className="text-[10px] text-gold">
+                    <Chip size="xs" tone="gold">
                       triggered @ <Money value={l.triggered_price} precise />
-                    </span>
+                    </Chip>
                   )}
                   {triggeredToday(l.triggered_at) && (
-                    <span
-                      className="text-[10px] text-amber-400 uppercase"
+                    <Chip
+                      size="xs"
+                      tone="warn"
+                      uppercase
                       title="Already alerted today. Reactivating now would no-op — the dedup guard suppresses a same-day second alert. Reactivate tomorrow or after the price has moved off the level."
                     >
                       alerted today
-                    </span>
+                    </Chip>
                   )}
                   {l.is_active === 0 && !l.triggered_at && (
-                    <span className="text-[10px] text-ink-faint">inactive</span>
+                    <Chip size="xs" tone="neutral">inactive</Chip>
                   )}
                 </div>
                 {(l.thesis || l.source_author) && (

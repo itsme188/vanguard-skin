@@ -47,6 +47,14 @@ export interface SecurityPriceInfo {
   change_pct: number | null;
 }
 
+export interface SecurityDetailTransaction extends TransactionWithSecurity {
+  security_type: string | null;
+  option_type: "CALL" | "PUT" | null;
+  underlying_symbol: string | null;
+  strike_price: number | null;
+  expiration_date: string | null;
+}
+
 export interface SecurityDetailData {
   security: Security;
   price: SecurityPriceInfo | null;
@@ -56,7 +64,8 @@ export interface SecurityDetailData {
   totalUnrealizedGain: number;
   openTaxLots: TaxLotWithSecurity[];
   closedSales: TaxLotSaleWithDetails[];
-  recentTransactions: TransactionWithSecurity[];
+  recentTransactions: SecurityDetailTransaction[];
+  relatedOptionTransactions: SecurityDetailTransaction[];
   notes: NoteWithContext[];
   upcomingEvents: CalendarEvent[];
   factors: SecurityFactor | null;
@@ -231,11 +240,13 @@ export function getClosedSalesBySecurity(
 export function getTransactionsBySecurity(
   db: Database.Database,
   securityId: number,
-  limit: number = 20
-): TransactionWithSecurity[] {
+  limit: number = 100
+): SecurityDetailTransaction[] {
   return db
     .prepare(
-      `SELECT t.*, s.symbol, s.name AS security_name, a.name AS account_name
+      `SELECT t.*, s.symbol, s.name AS security_name, a.name AS account_name,
+              s.security_type, s.option_type, s.underlying_symbol,
+              s.strike_price, s.expiration_date
       FROM transactions t
       LEFT JOIN securities s ON s.id = t.security_id
       JOIN accounts a ON a.id = t.account_id
@@ -243,7 +254,33 @@ export function getTransactionsBySecurity(
       ORDER BY t.trade_date DESC
       LIMIT ?`
     )
-    .all(securityId, limit) as TransactionWithSecurity[];
+    .all(securityId, limit) as SecurityDetailTransaction[];
+}
+
+/**
+ * Get option transactions whose underlying is this stock. Lets the Security
+ * Detail page for e.g. APP surface the user's APP calls/puts alongside the
+ * stock's own transactions.
+ */
+export function getRelatedOptionTransactions(
+  db: Database.Database,
+  underlyingSymbol: string,
+  limit: number = 100
+): SecurityDetailTransaction[] {
+  return db
+    .prepare(
+      `SELECT t.*, s.symbol, s.name AS security_name, a.name AS account_name,
+              s.security_type, s.option_type, s.underlying_symbol,
+              s.strike_price, s.expiration_date
+       FROM transactions t
+       JOIN securities s ON s.id = t.security_id
+       JOIN accounts a ON a.id = t.account_id
+       WHERE LOWER(s.security_type) = 'option'
+         AND UPPER(s.underlying_symbol) = UPPER(?)
+       ORDER BY t.trade_date DESC
+       LIMIT ?`
+    )
+    .all(underlyingSymbol, limit) as SecurityDetailTransaction[];
 }
 
 /**
@@ -326,6 +363,13 @@ export function getSecurityDetail(
   const openTaxLots = getOpenTaxLotsBySecurity(db, securityId);
   const closedSales = getClosedSalesBySecurity(db, securityId);
   const recentTransactions = getTransactionsBySecurity(db, securityId);
+  // Related options: only when the current security is a stock (or unknown) —
+  // option pages don't cross-link to sibling strikes.
+  const isOption = (security.security_type ?? "").toLowerCase() === "option";
+  const relatedOptionTransactions =
+    !isOption && security.symbol
+      ? getRelatedOptionTransactions(db, security.symbol)
+      : [];
   const notes = getNotesForSecurity(db, securityId);
   const factors = getFactorsForSecurity(db, securityId);
   const transcripts = getTranscriptsForSecurity(db, securityId);
@@ -365,6 +409,7 @@ export function getSecurityDetail(
     openTaxLots,
     closedSales,
     recentTransactions,
+    relatedOptionTransactions,
     notes,
     upcomingEvents,
     factors,

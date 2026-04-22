@@ -7,6 +7,7 @@ import type {
   ResearchDocumentSentiment,
   ResearchDocumentProcessingState,
 } from "@/lib/queries/research-documents";
+import { Chip } from "./Chip";
 
 interface DocumentListResponse {
   documents: ResearchDocumentSummary[];
@@ -26,11 +27,11 @@ const DOC_TYPE_LABELS: Record<ResearchDocumentType, string> = {
   other: "Other",
 };
 
-const SENTIMENT_CLASSES: Record<ResearchDocumentSentiment, string> = {
-  bullish: "bg-up-tint text-up",
-  bearish: "bg-down-tint text-down",
-  neutral: "bg-raised text-ink-dim",
-  mixed: "bg-gold/10 text-gold",
+const SENTIMENT_TONE: Record<ResearchDocumentSentiment, "up" | "down" | "neutral" | "gold"> = {
+  bullish: "up",
+  bearish: "down",
+  neutral: "neutral",
+  mixed: "gold",
 };
 
 function parseSymbols(json: string | null): string[] {
@@ -466,11 +467,9 @@ function DocumentRow({
                 {doc.title}
               </span>
               {doc.sentiment && (
-                <span
-                  className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${SENTIMENT_CLASSES[doc.sentiment]}`}
-                >
+                <Chip tone={SENTIMENT_TONE[doc.sentiment]} size="xs">
                   {doc.sentiment}
-                </span>
+                </Chip>
               )}
             </div>
             <div className="flex items-center gap-2 flex-wrap text-[11px] text-ink-faint">
@@ -482,13 +481,13 @@ function DocumentRow({
               {doc.publication_date && <span>· {doc.publication_date}</span>}
             </div>
             {doc.processing_state === "pending_body" && (
-              <div className="flex items-center gap-1.5 mt-1.5 text-[10px] text-gold">
-                <span className="inline-block w-1 h-1 rounded-full bg-gold animate-pulse" />
+              <div className="flex items-center gap-1.5 mt-1.5 text-[11px] font-medium text-gold">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-gold animate-pulse" />
                 Extracting full text…
               </div>
             )}
             {doc.processing_state === "failed" && (
-              <div className="mt-1.5 text-[10px] text-down">
+              <div className="mt-1.5 text-[11px] font-medium text-down">
                 Full-text extraction failed
               </div>
             )}
@@ -497,20 +496,20 @@ function DocumentRow({
                 {symbols.slice(0, 6).map((s) => (
                   <span
                     key={`sym-${s}`}
-                    className="px-1.5 py-0.5 rounded bg-raised text-ink-faint text-[10px] font-mono"
+                    className="px-1.5 py-0.5 rounded bg-raised text-ink-dim text-[11px] font-mono font-medium"
                   >
                     {s}
                   </span>
                 ))}
                 {symbols.length > 6 && (
-                  <span className="text-[10px] text-ink-faint">
+                  <span className="text-[11px] text-ink-faint">
                     +{symbols.length - 6}
                   </span>
                 )}
                 {rowTags.slice(0, 5).map((t) => (
                   <span
                     key={`tag-${t}`}
-                    className="px-1.5 py-0.5 rounded-full bg-gold/5 border border-gold/20 text-gold/80 text-[10px]"
+                    className="px-1.5 py-0.5 rounded-full bg-gold/15 text-gold text-[11px] font-medium"
                   >
                     {t}
                   </span>

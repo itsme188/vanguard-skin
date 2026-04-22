@@ -5,6 +5,7 @@ import type { OhlcvBar } from "@/lib/tws/types";
 import { computeSMA, computeEMA } from "@/lib/chart/indicators";
 import { Money, Count } from "@/lib/privacy/components";
 import { usePrivacy } from "@/lib/privacy/context";
+import { AddLevelPopover } from "./AddLevelPopover";
 
 // LightweightCharts types imported dynamically to avoid SSR issues
 type IChartApi = import("lightweight-charts").IChartApi;
@@ -125,6 +126,14 @@ export function SecurityChart({
   const [showMarkers, setShowMarkers] = useState(true);
   const [showSuggested, setShowSuggested] = useState(false);
 
+  // Click-to-add-level popover. Null when no level is being added.
+  const [addPopover, setAddPopover] = useState<{
+    x: number;
+    y: number;
+    price: number;
+  } | null>(null);
+  const [latestClose, setLatestClose] = useState<number | null>(null);
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const suggestedLinesRef = useRef<any[]>([]);
 
@@ -163,6 +172,9 @@ export function SecurityChart({
         setLastDate(data.lastBarDate);
         currentBarsRef.current = data.bars;
         currentTransactionsRef.current = data.transactions ?? [];
+        if (data.bars.length > 0) {
+          setLatestClose(data.bars[data.bars.length - 1].close);
+        }
         return data;
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Failed to load chart";
@@ -278,6 +290,20 @@ export function SecurityChart({
             indicators: Object.keys(indicators).length > 0 ? indicators : undefined,
           });
         }
+      });
+
+      // Click-to-add-level. LightweightCharts only fires this on an actual
+      // click (not while dragging to pan/zoom), so we don't need extra
+      // gating. We still guard: ignore if the click landed outside the pane
+      // (no point) or if we couldn't resolve a price (chart empty).
+      chart.subscribeClick((param) => {
+        if (compact) return;
+        if (!param.point) return;
+        const series = candleSeriesRef.current;
+        if (!series) return;
+        const price = series.coordinateToPrice(param.point.y);
+        if (typeof price !== "number" || !Number.isFinite(price)) return;
+        setAddPopover({ x: param.point.x, y: param.point.y, price });
       });
 
       chartRef.current = chart;
@@ -444,9 +470,15 @@ export function SecurityChart({
     loadLevels();
     const interval = setInterval(loadLevels, 30_000);
 
+    // Refresh immediately when a level is added from the click popover (or
+    // elsewhere) so the new priceLine appears without the 30s poll wait.
+    const onLevelAdded = () => loadLevels();
+    window.addEventListener("level-added", onLevelAdded);
+
     return () => {
       cancelled = true;
       clearInterval(interval);
+      window.removeEventListener("level-added", onLevelAdded);
       const series = candleSeriesRef.current;
       if (series) {
         for (const line of priceLinesRef.current) {
@@ -816,7 +848,7 @@ export function SecurityChart({
 
       {/* Status bar */}
       {(warning || error) && (
-        <div className={`px-4 py-1.5 text-xs ${error ? "bg-down-tint text-down" : "bg-gold-glow text-gold"}`}>
+        <div className={`px-4 py-1.5 text-xs font-medium ${error ? "bg-down/20 text-down" : "bg-gold/20 text-gold"}`}>
           {error || warning}
         </div>
       )}
@@ -829,6 +861,18 @@ export function SecurityChart({
           </div>
         )}
         <div ref={chartContainerRef} className="w-full h-full" />
+        {addPopover && !compact && (
+          <AddLevelPopover
+            securityId={securityId}
+            symbol={symbol}
+            price={addPopover.price}
+            currentPrice={latestClose}
+            x={addPopover.x}
+            y={addPopover.y}
+            onClose={() => setAddPopover(null)}
+            onAdded={() => setAddPopover(null)}
+          />
+        )}
       </div>
 
       {/* Footer (hidden in compact/multi-panel mode) */}
