@@ -70,11 +70,13 @@ interface QuestionsResult {
 
 const QUESTIONS_SCHEMA = jsonSchema<QuestionsResult>({
   type: "object",
+  additionalProperties: false,
   properties: {
     questions: {
       type: "array",
       items: {
         type: "object",
+        additionalProperties: false,
         properties: {
           trade_number: {
             type: "number",

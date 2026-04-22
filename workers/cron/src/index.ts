@@ -94,6 +94,10 @@ async function runJob(type: JobType, env: Env, opts: RunJobOpts = {}): Promise<R
       cronSecret: env.CRON_SHARED_SECRET,
       type,
       timeoutMs: parseInt(env.PRIMARY_TIMEOUT_MS, 10) || 120000,
+      // Digest: since last sent (matches launchd wrapper). Without this the
+      // Mac defaults to generateDailyDigest (last 24h) — which is yesterday's
+      // content re-packaged as today's email.
+      body: type === "digest" ? { mode: "since_last" } : undefined,
     });
 
     if (primary.kind === "success") {

@@ -122,6 +122,7 @@ export async function processUnprocessedArticles(
 
 const ANALYSIS_SCHEMA = jsonSchema<ProcessedResult>({
   type: "object",
+  additionalProperties: false,
   properties: {
     summary: {
       type: "string",

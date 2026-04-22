@@ -53,6 +53,7 @@ interface TradeReviewStructured {
 /** Schema for structured output — forces Claude to return both markdown and structured data */
 const REVIEW_SCHEMA = jsonSchema<TradeReviewStructured>({
   type: "object",
+  additionalProperties: false,
   properties: {
       review_markdown: {
         type: "string",
@@ -65,6 +66,7 @@ const REVIEW_SCHEMA = jsonSchema<TradeReviewStructured>({
           "Grade for each trade. Must have one entry per trade in the table (one per grouped sale, not per lot).",
         items: {
           type: "object",
+          additionalProperties: false,
           properties: {
             trade_number: {
               type: "number",

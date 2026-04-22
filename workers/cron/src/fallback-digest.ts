@@ -149,6 +149,7 @@ const ARTICLE_SCHEMA = jsonSchema<{
   portfolio_relevance: string;
 }>({
   type: "object",
+  additionalProperties: false,
   properties: {
     summary: { type: "string" },
     key_themes: { type: "array", items: { type: "string" } },
