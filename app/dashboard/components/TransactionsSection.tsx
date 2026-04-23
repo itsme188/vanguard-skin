@@ -3,9 +3,9 @@
 import { useMemo, useState } from "react";
 import type { SecurityDetailTransaction } from "@/lib/queries/security-detail";
 import { Money, Shares } from "@/lib/privacy/components";
-import { Chip } from "./Chip";
 import { SortableHeader } from "./SortableHeader";
 import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
+import { TerminalSection, TerminalTD, TerminalTag } from "./TerminalSection";
 
 type SortField = "trade_date" | "type" | "account_name" | "quantity" | "price_per_share" | "amount";
 
@@ -25,11 +25,12 @@ function isOptionTxn(t: SecurityDetailTransaction): boolean {
   return OPTION_TYPES.has(t.type);
 }
 
-function typeToneOf(type: string): "up" | "down" | "gold" | "neutral" {
-  if (type.startsWith("BUY")) return "up";
-  if (type.startsWith("SELL")) return "down";
-  if (type === "DIVIDEND") return "gold";
-  return "neutral";
+/** Terminal-aesthetic color per transaction type. */
+function typeColorOf(type: string): string {
+  if (type.startsWith("BUY")) return "#22c55e";
+  if (type.startsWith("SELL")) return "#ef4444";
+  if (type === "DIVIDEND") return "#ffb84d";
+  return "#888";
 }
 
 export function TransactionsSection({
@@ -82,16 +83,34 @@ export function TransactionsSection({
   const showTypeFilter = hasOptions;
 
   return (
-    <section className="rounded-xl border border-edge bg-panel overflow-hidden">
-      <div className="px-5 py-3 border-b border-edge flex items-center justify-between flex-wrap gap-3">
-        <h2 className="text-sm font-semibold text-ink">Recent Transactions</h2>
-        <span className="text-[11px] text-ink-faint">
+    <TerminalSection
+      title="Recent Transactions"
+      action={
+        <span
+          style={{
+            fontFamily: "var(--font-mono), monospace",
+            fontSize: "11px",
+            letterSpacing: "0.18em",
+            textTransform: "uppercase",
+            color: "#666",
+          }}
+        >
           {filtered.length} of {all.length}
         </span>
-      </div>
+      }
+    >
 
       {(showAccountFilter || showTypeFilter) && (
-        <div className="px-5 py-2.5 border-b border-edge/50 flex items-center gap-3 flex-wrap">
+        <div
+          style={{
+            padding: "10px 20px",
+            borderBottom: "1px solid #1f1f1f",
+            display: "flex",
+            alignItems: "center",
+            gap: "12px",
+            flexWrap: "wrap",
+          }}
+        >
           {showAccountFilter && (
             <div className="flex items-center gap-1 flex-wrap">
               <FilterPill
@@ -110,7 +129,7 @@ export function TransactionsSection({
             </div>
           )}
           {showAccountFilter && showTypeFilter && (
-            <span className="h-4 w-px bg-edge" aria-hidden />
+            <span style={{ height: "16px", width: "1px", background: "#333" }} aria-hidden />
           )}
           {showTypeFilter && (
             <div className="flex items-center gap-1">
@@ -135,25 +154,41 @@ export function TransactionsSection({
       )}
 
       <div className="overflow-x-auto">
-        <table className="w-full text-sm">
+        <table className="w-full" style={{ borderCollapse: "collapse" }}>
           <thead>
-            <tr className="border-b border-edge text-ink-faint text-xs">
-              <SortableHeader field="trade_date" sort={sort} onSort={setSort} className="px-5">
+            <tr>
+              <SortableHeader field="trade_date" sort={sort} onSort={setSort} variant="terminal">
                 Date
               </SortableHeader>
-              <SortableHeader field="type" sort={sort} onSort={setSort} className="px-5">
+              <SortableHeader field="type" sort={sort} onSort={setSort} variant="terminal">
                 Type
               </SortableHeader>
               <SortableHeader
                 field="account_name"
                 sort={sort}
                 onSort={setSort}
-                className="px-5 hidden md:table-cell"
+                className="hidden md:table-cell"
+                variant="terminal"
               >
                 Account
               </SortableHeader>
-              <th className="text-left px-5 py-2.5 font-medium">Security</th>
-              <SortableHeader field="quantity" sort={sort} onSort={setSort} align="right" className="px-5">
+              <th
+                className="text-left"
+                style={{
+                  padding: "10px 20px",
+                  background: "#0a0a0a",
+                  borderBottom: "1px solid #1f1f1f",
+                  fontFamily: "var(--font-mono), monospace",
+                  fontSize: "11px",
+                  letterSpacing: "0.18em",
+                  textTransform: "uppercase",
+                  color: "#888",
+                  fontWeight: 400,
+                }}
+              >
+                Security
+              </th>
+              <SortableHeader field="quantity" sort={sort} onSort={setSort} align="right" variant="terminal">
                 Qty
               </SortableHeader>
               <SortableHeader
@@ -161,11 +196,12 @@ export function TransactionsSection({
                 sort={sort}
                 onSort={setSort}
                 align="right"
-                className="px-5 hidden md:table-cell"
+                className="hidden md:table-cell"
+                variant="terminal"
               >
                 Price
               </SortableHeader>
-              <SortableHeader field="amount" sort={sort} onSort={setSort} align="right" className="px-5">
+              <SortableHeader field="amount" sort={sort} onSort={setSort} align="right" variant="terminal">
                 Amount
               </SortableHeader>
             </tr>
@@ -175,41 +211,49 @@ export function TransactionsSection({
               <tr>
                 <td
                   colSpan={7}
-                  className="px-5 py-6 text-center text-[11px] text-ink-faint italic"
+                  style={{
+                    padding: "20px",
+                    textAlign: "center",
+                    fontFamily: "var(--font-mono), monospace",
+                    fontSize: "12px",
+                    letterSpacing: "0.18em",
+                    textTransform: "uppercase",
+                    color: "#555",
+                  }}
                 >
-                  No transactions match these filters.
+                  No transactions match these filters
                 </td>
               </tr>
             ) : (
               filtered.map((t) => {
                 const isOpt = isOptionTxn(t);
                 return (
-                  <tr key={t.id} className="border-b border-edge/50 last:border-0">
-                    <td className="px-5 py-2.5 font-mono text-ink-dim text-xs">
-                      {t.trade_date}
-                    </td>
-                    <td className="px-5 py-2.5">
-                      <Chip tone={typeToneOf(t.type)}>{t.type}</Chip>
-                    </td>
-                    <td className="hidden md:table-cell px-5 py-2.5 text-ink-dim">
+                  <tr key={t.id}>
+                    <TerminalTD mono color="#888">{t.trade_date}</TerminalTD>
+                    <TerminalTD>
+                      <TerminalTag color={typeColorOf(t.type)} size="xs">
+                        {t.type}
+                      </TerminalTag>
+                    </TerminalTD>
+                    <TerminalTD className="hidden md:table-cell" color="#aaa">
                       {t.account_name}
-                    </td>
-                    <td className="px-5 py-2.5">
+                    </TerminalTD>
+                    <TerminalTD>
                       {isOpt ? (
                         <OptionLabel txn={t} />
                       ) : (
-                        <span className="text-ink-dim">—</span>
+                        <span style={{ color: "#555" }}>—</span>
                       )}
-                    </td>
-                    <td className="px-5 py-2.5 text-right font-mono text-ink">
+                    </TerminalTD>
+                    <TerminalTD align="right" mono>
                       <Shares value={t.quantity} fallback="–" />
-                    </td>
-                    <td className="hidden md:table-cell px-5 py-2.5 text-right font-mono text-ink-dim">
+                    </TerminalTD>
+                    <TerminalTD align="right" mono color="#888" className="hidden md:table-cell">
                       <Money value={t.price_per_share} precise fallback="–" />
-                    </td>
-                    <td className="px-5 py-2.5 text-right font-mono text-ink">
+                    </TerminalTD>
+                    <TerminalTD align="right" mono>
                       <Money value={t.amount} fallback="–" />
-                    </td>
+                    </TerminalTD>
                   </tr>
                 );
               })
@@ -217,7 +261,7 @@ export function TransactionsSection({
           </tbody>
         </table>
       </div>
-    </section>
+    </TerminalSection>
   );
 }
 
@@ -233,11 +277,32 @@ function FilterPill({
   return (
     <button
       onClick={onClick}
-      className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${
-        active
-          ? "bg-gold/20 text-gold"
-          : "bg-raised text-ink-dim hover:text-ink"
-      }`}
+      style={{
+        padding: "4px 10px",
+        background: active ? "rgba(255, 184, 77, 0.1)" : "transparent",
+        border: `1px solid ${active ? "#ffb84d" : "#333"}`,
+        color: active ? "#ffb84d" : "#888",
+        fontFamily: "var(--font-mono), monospace",
+        fontSize: "11px",
+        fontWeight: 600,
+        letterSpacing: "0.16em",
+        textTransform: "uppercase",
+        borderRadius: "2px",
+        cursor: "pointer",
+        transition: "all 180ms ease",
+      }}
+      onMouseEnter={(e) => {
+        if (!active) {
+          e.currentTarget.style.color = "#ddd";
+          e.currentTarget.style.borderColor = "#555";
+        }
+      }}
+      onMouseLeave={(e) => {
+        if (!active) {
+          e.currentTarget.style.color = "#888";
+          e.currentTarget.style.borderColor = "#333";
+        }
+      }}
     >
       {label}
     </button>
@@ -250,27 +315,23 @@ function OptionLabel({ txn }: { txn: SecurityDetailTransaction }) {
   const exp = txn.expiration_date;
   const hasStructured = type != null || strike != null || exp != null;
 
-  // IBKR-imported options often have null metadata but their symbol is
-  // human-readable as-is (e.g. "HOOD 03JUL25 89 C"). Show the symbol
-  // instead of an empty cell. The ' ' → ' ' normalize collapses the
-  // OCC double-space padding so "HOOD  250620C00043000" reads cleaner.
   if (!hasStructured) {
     return (
-      <span className="text-[11px] font-mono text-ink-dim">
+      <span style={{ fontFamily: "var(--font-mono), monospace", fontSize: "13px", color: "#888" }}>
         {txn.symbol?.replace(/\s+/g, " ").trim() ?? "—"}
       </span>
     );
   }
 
-  const tone = type === "CALL" ? "up" : type === "PUT" ? "down" : "neutral";
+  const color = type === "CALL" ? "#22c55e" : type === "PUT" ? "#ef4444" : "#888";
   return (
     <div className="flex items-center gap-2 flex-wrap">
       {type && (
-        <Chip tone={tone} size="xs" uppercase>
+        <TerminalTag color={color} size="xs">
           {type}
-        </Chip>
+        </TerminalTag>
       )}
-      <span className="text-[11px] font-mono text-ink-dim">
+      <span style={{ fontFamily: "var(--font-mono), monospace", fontSize: "13px", color: "#aaa" }}>
         {strike != null && `$${strike}`}
         {strike != null && exp && " · "}
         {exp && exp}

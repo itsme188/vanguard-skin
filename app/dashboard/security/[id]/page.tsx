@@ -8,12 +8,12 @@ import { ResearchDocumentsPanel } from "../../components/ResearchDocumentsPanel"
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { CorporateActionsSection } from "../../components/CorporateActionsSection";
-import { SecurityChart } from "../../components/SecurityChart";
+import { MarketDataPanel } from "../../components/MarketDataPanel";
 import { WatchlistButton } from "../../components/WatchlistButton";
-import { LevelsPanel } from "../../components/LevelsPanel";
 import { RecentAlertsPanel } from "../../components/RecentAlertsPanel";
 import { TransactionsSection } from "../../components/TransactionsSection";
 import { ResearchMentionsSection } from "../../components/ResearchMentionsSection";
+import { TerminalSection, TerminalTH, TerminalTD, TerminalTag } from "../../components/TerminalSection";
 import { Money, Pct, Shares } from "@/lib/privacy/components";
 import {
   FACTOR_COLUMNS,
@@ -25,6 +25,33 @@ import {
 function gainClass(value: number | null): string {
   if (value == null) return "text-ink-dim";
   return value >= 0 ? "text-up" : "text-down";
+}
+
+/** Terminal-aesthetic color for gain/loss values. Returns hex for inline styles. */
+function gainColor(value: number | null): string {
+  if (value == null) return "#888";
+  return value >= 0 ? "#22c55e" : "#ef4444";
+}
+
+/** Uppercase-label + value cell, used in the option-contract strip. */
+function OptionCell({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <div
+        style={{
+          fontFamily: "var(--font-mono), monospace",
+          fontSize: "11px",
+          letterSpacing: "0.22em",
+          textTransform: "uppercase",
+          color: "#666",
+          marginBottom: "4px",
+        }}
+      >
+        {label}
+      </div>
+      {children}
+    </div>
+  );
 }
 
 function holdingPeriodLabel(acquisitionDate: string): string {
@@ -79,56 +106,55 @@ export default async function SecurityDetailPage(props: {
         <span className="text-ink">{security.symbol}</span>
       </nav>
 
-      {/* Header */}
-      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between md:gap-4">
-        <div>
-          <div className="flex items-baseline gap-3 flex-wrap">
-            <h1 className="text-2xl font-mono font-bold text-ink">
-              {security.symbol}
-            </h1>
-            {security.name && (
-              <span className="text-lg text-ink-dim">{security.name}</span>
-            )}
-          </div>
-          {typeLabel && (
-            <p className="text-sm text-ink-faint mt-1 capitalize">
-              {typeLabel}
-            </p>
-          )}
-        </div>
+      {/* Market data panel — Terminal-style dark module holding symbol header,
+          chart, and levels. Designed to survive a future app-wide light theme
+          by staying dark-on-whatever. */}
+      <MarketDataPanel
+        securityId={securityId}
+        symbol={security.symbol}
+        name={security.name ?? null}
+        typeLabel={typeLabel || null}
+        currentPrice={price?.close_price ?? null}
+        priceChange={price?.change ?? null}
+        priceChangePct={price?.change_pct ?? null}
+        priceDate={price?.date ?? null}
+      />
 
-        {price && (
-          <div className="md:text-right">
-            <div className="text-2xl font-mono font-bold text-ink">
-              <Money value={price.close_price} precise />
-            </div>
-            {price.change != null && price.change_pct != null && (
-              <div
-                className={`text-sm font-mono ${gainClass(price.change)}`}
-              >
-                <Money value={price.change} precise signed /> (<Pct value={price.change_pct} digits={2} signed />)
-              </div>
-            )}
-            <div className="text-xs text-ink-faint mt-0.5">
-              as of {price.date}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Action buttons */}
+      {/* Action buttons — terminal-styled bordered pills */}
       <div className="flex items-center gap-2">
         <Link
           href={`/dashboard/charts?id=${securityId}`}
-          className="px-3 py-1.5 text-xs font-medium rounded-lg border border-edge text-ink-dim hover:text-ink hover:border-ink-faint transition-colors"
+          style={{
+            padding: "6px 14px",
+            border: "1px solid #333",
+            color: "#999",
+            fontFamily: "var(--font-mono), monospace",
+            fontSize: "12px",
+            fontWeight: 600,
+            letterSpacing: "0.2em",
+            textTransform: "uppercase",
+            borderRadius: "2px",
+          }}
+          className="hover:border-ink-faint hover:text-ink transition-colors"
         >
           Full Chart
         </Link>
         <Link
           href={`/dashboard/research?security=${securityId}`}
-          className="px-3 py-1.5 text-xs font-medium rounded-lg border border-edge text-ink-dim hover:text-ink hover:border-ink-faint transition-colors"
+          style={{
+            padding: "6px 14px",
+            border: "1px solid #333",
+            color: "#999",
+            fontFamily: "var(--font-mono), monospace",
+            fontSize: "12px",
+            fontWeight: 600,
+            letterSpacing: "0.2em",
+            textTransform: "uppercase",
+            borderRadius: "2px",
+          }}
+          className="hover:border-ink-faint hover:text-ink transition-colors"
         >
-          + Create Note
+          + Note
         </Link>
         <WatchlistButton
           securityId={securityId}
@@ -163,92 +189,69 @@ export default async function SecurityDetailPage(props: {
 
       {/* Option Details (only for option securities) */}
       {security.security_type?.toLowerCase() === "option" && security.underlying_symbol && (
-        <section className="rounded-xl border border-edge bg-panel p-5">
-          <div className="flex items-center gap-4 flex-wrap">
-            <div>
-              <span className="text-xs text-ink-faint uppercase">Underlying</span>
-              <p className="font-mono text-ink font-medium">
-                <Link
-                  href={`/dashboard/security/${(() => {
-                    const underlying = db
-                      .prepare("SELECT id FROM securities WHERE symbol = ? AND LOWER(security_type) != 'option' LIMIT 1")
-                      .get(security.underlying_symbol!) as { id: number } | undefined;
-                    return underlying?.id ?? securityId;
-                  })()}`}
-                  className="text-gold hover:underline"
-                >
-                  {security.underlying_symbol}
-                </Link>
-              </p>
-            </div>
-            <div>
-              <span className="text-xs text-ink-faint uppercase">Type</span>
-              <p className={`font-mono font-medium ${security.option_type === "CALL" ? "text-up" : "text-down"}`}>
+        <TerminalSection title="Option Contract">
+          <div className="flex items-center gap-8 flex-wrap p-5">
+            <OptionCell label="Underlying">
+              <Link
+                href={`/dashboard/security/${(() => {
+                  const underlying = db
+                    .prepare("SELECT id FROM securities WHERE symbol = ? AND LOWER(security_type) != 'option' LIMIT 1")
+                    .get(security.underlying_symbol!) as { id: number } | undefined;
+                  return underlying?.id ?? securityId;
+                })()}`}
+                style={{ color: "#ffb84d", fontFamily: "var(--font-mono), monospace", fontSize: "18px", fontWeight: 600 }}
+                className="hover:underline"
+              >
+                {security.underlying_symbol}
+              </Link>
+            </OptionCell>
+            <OptionCell label="Type">
+              <span style={{ color: security.option_type === "CALL" ? "#22c55e" : "#ef4444", fontFamily: "var(--font-mono), monospace", fontSize: "18px", fontWeight: 600 }}>
                 {security.option_type}
-              </p>
-            </div>
+              </span>
+            </OptionCell>
             {security.strike_price && (
-              <div>
-                <span className="text-xs text-ink-faint uppercase">Strike</span>
-                <p className="font-mono text-ink font-medium">
+              <OptionCell label="Strike">
+                <span style={{ color: "#ddd", fontFamily: "var(--font-mono), monospace", fontSize: "18px", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
                   <Money value={security.strike_price} precise />
-                </p>
-              </div>
+                </span>
+              </OptionCell>
             )}
             {security.expiration_date && (
-              <div>
-                <span className="text-xs text-ink-faint uppercase">Expiration</span>
-                <p className="font-mono text-ink font-medium">
+              <OptionCell label="Expiration">
+                <span style={{ color: "#ddd", fontFamily: "var(--font-mono), monospace", fontSize: "18px", fontWeight: 600 }}>
                   {security.expiration_date}
-                  <span className="text-xs text-ink-faint ml-1">
+                  <span style={{ fontSize: "12px", color: "#666", marginLeft: "6px" }}>
                     ({Math.max(0, Math.floor((new Date(security.expiration_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24)))}d)
                   </span>
-                </p>
-              </div>
+                </span>
+              </OptionCell>
             )}
-            <div>
-              <span className="text-xs text-ink-faint uppercase">Multiplier</span>
-              <p className="font-mono text-ink font-medium">{security.multiplier}x</p>
-            </div>
+            <OptionCell label="Multiplier">
+              <span style={{ color: "#ddd", fontFamily: "var(--font-mono), monospace", fontSize: "18px", fontWeight: 600 }}>
+                {security.multiplier}x
+              </span>
+            </OptionCell>
           </div>
-        </section>
+        </TerminalSection>
       )}
-
-      {/* Chart */}
-      <section className="rounded-xl border border-edge bg-panel overflow-hidden">
-        <div className="h-[280px] md:h-[400px]">
-          <SecurityChart securityId={securityId} symbol={security.symbol} />
-        </div>
-      </section>
-
-      {/* Levels & Alerts */}
-      <LevelsPanel
-        securityId={securityId}
-        symbol={security.symbol}
-        currentPrice={price?.close_price ?? null}
-      />
 
       {/* Alerts history for this security (auto-hides if empty). */}
       <RecentAlertsPanel securityId={securityId} />
 
       {/* Positions */}
       {positions.length > 0 && (
-        <section className="rounded-xl border border-edge bg-panel overflow-hidden">
-          <div className="px-5 py-3 border-b border-edge">
-            <h2 className="text-sm font-semibold text-ink">Positions</h2>
-          </div>
+        <TerminalSection title="Positions">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full" style={{ borderCollapse: "collapse" }}>
               <thead>
-                <tr className="border-b border-edge text-ink-faint text-xs">
-                  <th className="text-left px-5 py-2 font-medium">Account</th>
-                  <th className="text-right px-5 py-2 font-medium">Qty</th>
-                  <th className="text-right px-5 py-2 font-medium">
-                    Cost Basis
-                  </th>
-                  <th className="text-right px-5 py-2 font-medium">Value</th>
-                  <th className="text-right px-5 py-2 font-medium">Gain</th>
-                  <th className="hidden md:table-cell text-right px-5 py-2 font-medium">%</th>
+                <tr>
+                  <TerminalTH>Account</TerminalTH>
+                  <TerminalTH align="right">Qty</TerminalTH>
+                  <TerminalTH align="right">Cost Basis</TerminalTH>
+                  <TerminalTH align="right">Value</TerminalTH>
+                  <TerminalTH align="right">Gain</TerminalTH>
+                  <TerminalTH align="right">%</TerminalTH>
                 </tr>
               </thead>
               <tbody>
@@ -258,306 +261,269 @@ export default async function SecurityDetailPage(props: {
                       ? (p.unrealized_gain / p.cost_basis) * 100
                       : null;
                   return (
-                    <tr
-                      key={p.account_id}
-                      className="border-b border-edge/50 last:border-0"
-                    >
-                      <td className="px-5 py-2.5 text-ink">
-                        {p.account_name}
-                      </td>
-                      <td className="px-5 py-2.5 text-right font-mono text-ink">
+                    <tr key={p.account_id}>
+                      <TerminalTD>{p.account_name}</TerminalTD>
+                      <TerminalTD align="right" mono>
                         <Shares value={p.quantity} />
-                      </td>
-                      <td className="px-5 py-2.5 text-right font-mono text-ink-dim">
+                      </TerminalTD>
+                      <TerminalTD align="right" mono color="#888">
                         <Money value={p.cost_basis} fallback="–" />
-                      </td>
-                      <td className="px-5 py-2.5 text-right font-mono text-ink">
+                      </TerminalTD>
+                      <TerminalTD align="right" mono>
                         <Money value={p.current_value} fallback="–" />
-                      </td>
-                      <td
-                        className={`px-5 py-2.5 text-right font-mono ${gainClass(p.unrealized_gain)}`}
-                      >
+                      </TerminalTD>
+                      <TerminalTD align="right" mono color={gainColor(p.unrealized_gain)}>
                         <Money value={p.unrealized_gain} fallback="–" />
-                      </td>
-                      <td
-                        className={`hidden md:table-cell px-5 py-2.5 text-right font-mono ${gainClass(pct)}`}
-                      >
+                      </TerminalTD>
+                      <TerminalTD align="right" mono color={gainColor(pct)}>
                         <Pct value={pct} digits={2} signed fallback="–" />
-                      </td>
+                      </TerminalTD>
                     </tr>
                   );
                 })}
               </tbody>
               {positions.length > 1 && (
                 <tfoot>
-                  <tr className="border-t border-edge bg-raised/50">
-                    <td className="px-5 py-2.5 font-semibold text-ink">
-                      Total
-                    </td>
-                    <td className="px-5 py-2.5 text-right font-mono font-semibold text-ink">
+                  <tr style={{ background: "#111" }}>
+                    <TerminalTD color="#ccc">
+                      <span style={{ fontFamily: "var(--font-mono), monospace", fontSize: "11px", letterSpacing: "0.22em", textTransform: "uppercase", fontWeight: 600 }}>Total</span>
+                    </TerminalTD>
+                    <TerminalTD align="right" mono color="#eee">
                       <Shares value={positions.reduce((sum, p) => sum + p.quantity, 0)} />
-                    </td>
-                    <td className="px-5 py-2.5 text-right font-mono text-ink-dim">
+                    </TerminalTD>
+                    <TerminalTD align="right" mono color="#888">
                       <Money value={detail.totalCostBasis} />
-                    </td>
-                    <td className="px-5 py-2.5 text-right font-mono font-semibold text-ink">
+                    </TerminalTD>
+                    <TerminalTD align="right" mono color="#eee">
                       <Money value={detail.totalValue} />
-                    </td>
-                    <td
-                      className={`px-5 py-2.5 text-right font-mono font-semibold ${gainClass(detail.totalUnrealizedGain)}`}
-                    >
+                    </TerminalTD>
+                    <TerminalTD align="right" mono color={gainColor(detail.totalUnrealizedGain)}>
                       <Money value={detail.totalUnrealizedGain} />
-                    </td>
-                    <td
-                      className={`hidden md:table-cell px-5 py-2.5 text-right font-mono ${gainClass(detail.totalUnrealizedGain)}`}
-                    >
+                    </TerminalTD>
+                    <TerminalTD align="right" mono color={gainColor(detail.totalUnrealizedGain)}>
                       {detail.totalCostBasis > 0 ? (
-                        <Pct
-                          value={(detail.totalUnrealizedGain / detail.totalCostBasis) * 100}
-                          digits={2}
-                          signed
-                        />
+                        <Pct value={(detail.totalUnrealizedGain / detail.totalCostBasis) * 100} digits={2} signed />
                       ) : (
-                        "\u2013"
+                        "–"
                       )}
-                    </td>
+                    </TerminalTD>
                   </tr>
                 </tfoot>
               )}
             </table>
           </div>
-        </section>
+        </TerminalSection>
       )}
 
       {/* Tax Lots */}
       {openTaxLots.length > 0 && (
-        <section className="rounded-xl border border-edge bg-panel overflow-hidden">
-          <div className="px-5 py-3 border-b border-edge flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-ink">
-              Open Tax Lots ({openTaxLots.length})
-            </h2>
+        <TerminalSection
+          title={`Open Tax Lots · ${openTaxLots.length}`}
+          action={
             <Link
               href="/dashboard/tax-lots"
-              className="text-xs text-gold hover:underline"
+              style={{
+                fontFamily: "var(--font-mono), monospace",
+                fontSize: "11px",
+                letterSpacing: "0.22em",
+                textTransform: "uppercase",
+                color: "#ffb84d",
+              }}
+              className="hover:underline"
             >
-              View All Lots
+              View all →
             </Link>
-          </div>
+          }
+        >
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full" style={{ borderCollapse: "collapse" }}>
               <thead>
-                <tr className="border-b border-edge text-ink-faint text-xs">
-                  <th className="text-left px-5 py-2 font-medium">Acquired</th>
-                  <th className="hidden md:table-cell text-left px-5 py-2 font-medium">Account</th>
-                  <th className="text-right px-5 py-2 font-medium">Qty</th>
-                  <th className="text-right px-5 py-2 font-medium">
-                    Cost Basis
-                  </th>
-                  <th className="text-right px-5 py-2 font-medium">
-                    Unrealized
-                  </th>
-                  <th className="text-center px-5 py-2 font-medium">Term</th>
+                <tr>
+                  <TerminalTH>Acquired</TerminalTH>
+                  <TerminalTH>Account</TerminalTH>
+                  <TerminalTH align="right">Qty</TerminalTH>
+                  <TerminalTH align="right">Cost Basis</TerminalTH>
+                  <TerminalTH align="right">Unrealized</TerminalTH>
+                  <TerminalTH align="center">Term</TerminalTH>
                 </tr>
               </thead>
               <tbody>
-                {openTaxLots.map((lot) => (
-                  <tr
-                    key={lot.id}
-                    className="border-b border-edge/50 last:border-0"
-                  >
-                    <td className="px-5 py-2.5 font-mono text-ink-dim text-xs">
-                      {lot.acquisition_date}
-                    </td>
-                    <td className="hidden md:table-cell px-5 py-2.5 text-ink">
-                      {lot.account_name}
-                    </td>
-                    <td className="px-5 py-2.5 text-right font-mono text-ink">
-                      <Shares value={lot.quantity_remaining} />
-                    </td>
-                    <td className="px-5 py-2.5 text-right font-mono text-ink-dim">
-                      <Money value={lot.adjusted_cost_basis} />
-                    </td>
-                    <td
-                      className={`px-5 py-2.5 text-right font-mono ${gainClass(lot.unrealized_gain)}`}
-                    >
-                      <Money value={lot.unrealized_gain} fallback="–" />
-                    </td>
-                    <td className="px-5 py-2.5 text-center">
-                      <span
-                        className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                          holdingPeriodLabel(lot.acquisition_date) === "LT"
-                            ? "bg-up/20 text-up"
-                            : "bg-gold/20 text-gold"
-                        }`}
-                      >
-                        {holdingPeriodLabel(lot.acquisition_date)}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
-
-      {/* Closed Sales */}
-      {closedSales.length > 0 && (
-        <section className="rounded-xl border border-edge bg-panel overflow-hidden">
-          <div className="px-5 py-3 border-b border-edge">
-            <h2 className="text-sm font-semibold text-ink">
-              Recent Sales ({closedSales.length})
-            </h2>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-edge text-ink-faint text-xs">
-                  <th className="text-left px-5 py-2 font-medium">
-                    Sale Date
-                  </th>
-                  <th className="hidden md:table-cell text-left px-5 py-2 font-medium">Account</th>
-                  <th className="hidden md:table-cell text-right px-5 py-2 font-medium">Qty</th>
-                  <th className="text-right px-5 py-2 font-medium">
-                    Proceeds
-                  </th>
-                  <th className="text-right px-5 py-2 font-medium">
-                    Realized
-                  </th>
-                  <th className="text-center px-5 py-2 font-medium">Term</th>
-                </tr>
-              </thead>
-              <tbody>
-                {closedSales.map((sale) => (
-                  <tr
-                    key={sale.id}
-                    className="border-b border-edge/50 last:border-0"
-                  >
-                    <td className="px-5 py-2.5 font-mono text-ink-dim text-xs">
-                      {sale.sale_date}
-                    </td>
-                    <td className="hidden md:table-cell px-5 py-2.5 text-ink">
-                      {sale.account_name}
-                    </td>
-                    <td className="hidden md:table-cell px-5 py-2.5 text-right font-mono text-ink">
-                      <Shares value={sale.quantity_sold} />
-                    </td>
-                    <td className="px-5 py-2.5 text-right font-mono text-ink-dim">
-                      <Money value={sale.proceeds} />
-                    </td>
-                    <td
-                      className={`px-5 py-2.5 text-right font-mono ${gainClass(sale.realized_gain_loss)}`}
-                    >
-                      <Money value={sale.realized_gain_loss} />
-                    </td>
-                    <td className="px-5 py-2.5 text-center">
-                      <span
-                        className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                          sale.is_long_term
-                            ? "bg-up/20 text-up"
-                            : "bg-gold/20 text-gold"
-                        }`}
-                      >
-                        {sale.is_long_term ? "LT" : "ST"}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
-
-      {/* Trade Grades (from AI reviews) */}
-      {tradeGrades.length > 0 && (
-        <section className="rounded-xl border border-edge bg-panel overflow-hidden">
-          <div className="px-5 py-3 border-b border-edge flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-ink">
-              AI Trade Grades ({tradeGrades.length})
-            </h2>
-            <Link
-              href="/dashboard/research?view=reviews"
-              className="text-xs text-gold hover:brightness-125 transition-colors"
-            >
-              View All Reviews →
-            </Link>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-edge text-ink-faint text-xs">
-                  <th className="text-center px-5 py-2 font-medium">Grade</th>
-                  <th className="text-left px-5 py-2 font-medium">Entry</th>
-                  <th className="text-left px-5 py-2 font-medium">Exit</th>
-                  <th className="hidden md:table-cell text-right px-5 py-2 font-medium">Days</th>
-                  <th className="text-right px-5 py-2 font-medium">P&L</th>
-                  <th className="text-right px-5 py-2 font-medium">Return</th>
-                </tr>
-              </thead>
-              <tbody>
-                {tradeGrades.map((tg, i) => {
-                  const gradeStyle: Record<string, string> = {
-                    A: "bg-up/25 text-up border-up/40",
-                    B: "bg-up/20 text-up border-up/30",
-                    C: "bg-gold/25 text-gold border-gold/40",
-                    D: "bg-down/20 text-down border-down/30",
-                    F: "bg-down/25 text-down border-down/40",
-                  };
+                {openTaxLots.map((lot) => {
+                  const isLT = holdingPeriodLabel(lot.acquisition_date) === "LT";
                   return (
-                    <tr key={i} className="border-b border-edge/50 last:border-0">
-                      <td className="px-5 py-2.5 text-center">
-                        {tg.grade ? (
-                          <span className={`inline-flex items-center justify-center w-7 h-7 rounded-md border text-xs font-bold ${gradeStyle[tg.grade] ?? "bg-muted text-ink-dim border-edge"}`}>
-                            {tg.grade}
-                          </span>
-                        ) : (
-                          <span className="text-ink-faint">—</span>
-                        )}
-                      </td>
-                      <td className="px-5 py-2.5 font-mono text-xs text-ink-dim">
-                        {tg.entry_date}
-                      </td>
-                      <td className="px-5 py-2.5 font-mono text-xs text-ink-dim">
-                        {tg.exit_date}
-                      </td>
-                      <td className="hidden md:table-cell px-5 py-2.5 text-right font-mono text-ink-dim">
-                        {tg.holding_days}
-                      </td>
-                      <td className={`px-5 py-2.5 text-right font-mono ${gainClass(tg.realized_pnl)}`}>
-                        <Money value={tg.realized_pnl} />
-                      </td>
-                      <td className={`px-5 py-2.5 text-right font-mono ${gainClass(tg.return_pct)}`}>
-                        <Pct value={tg.return_pct} digits={1} signed />
-                      </td>
+                    <tr key={lot.id}>
+                      <TerminalTD mono color="#888">{lot.acquisition_date}</TerminalTD>
+                      <TerminalTD>{lot.account_name}</TerminalTD>
+                      <TerminalTD align="right" mono>
+                        <Shares value={lot.quantity_remaining} />
+                      </TerminalTD>
+                      <TerminalTD align="right" mono color="#888">
+                        <Money value={lot.adjusted_cost_basis} />
+                      </TerminalTD>
+                      <TerminalTD align="right" mono color={gainColor(lot.unrealized_gain)}>
+                        <Money value={lot.unrealized_gain} fallback="–" />
+                      </TerminalTD>
+                      <TerminalTD align="center">
+                        <TerminalTag color={isLT ? "#22c55e" : "#ffb84d"} variant="outline" size="xs">
+                          {isLT ? "LT" : "ST"}
+                        </TerminalTag>
+                      </TerminalTD>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
           </div>
-          {/* AI Assessment detail for graded trades */}
+        </TerminalSection>
+      )}
+
+      {/* Closed Sales */}
+      {closedSales.length > 0 && (
+        <TerminalSection title={`Recent Sales · ${closedSales.length}`}>
+          <div className="overflow-x-auto">
+            <table className="w-full" style={{ borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <TerminalTH>Sale Date</TerminalTH>
+                  <TerminalTH>Account</TerminalTH>
+                  <TerminalTH align="right">Qty</TerminalTH>
+                  <TerminalTH align="right">Proceeds</TerminalTH>
+                  <TerminalTH align="right">Realized</TerminalTH>
+                  <TerminalTH align="center">Term</TerminalTH>
+                </tr>
+              </thead>
+              <tbody>
+                {closedSales.map((sale) => (
+                  <tr key={sale.id}>
+                    <TerminalTD mono color="#888">{sale.sale_date}</TerminalTD>
+                    <TerminalTD>{sale.account_name}</TerminalTD>
+                    <TerminalTD align="right" mono>
+                      <Shares value={sale.quantity_sold} />
+                    </TerminalTD>
+                    <TerminalTD align="right" mono color="#888">
+                      <Money value={sale.proceeds} />
+                    </TerminalTD>
+                    <TerminalTD align="right" mono color={gainColor(sale.realized_gain_loss)}>
+                      <Money value={sale.realized_gain_loss} />
+                    </TerminalTD>
+                    <TerminalTD align="center">
+                      <TerminalTag color={sale.is_long_term ? "#22c55e" : "#ffb84d"} variant="outline" size="xs">
+                        {sale.is_long_term ? "LT" : "ST"}
+                      </TerminalTag>
+                    </TerminalTD>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </TerminalSection>
+      )}
+
+      {/* Trade Grades (from AI reviews) */}
+      {tradeGrades.length > 0 && (
+        <TerminalSection
+          title={`AI Trade Grades · ${tradeGrades.length}`}
+          action={
+            <Link
+              href="/dashboard/research?view=reviews"
+              style={{
+                fontFamily: "var(--font-mono), monospace",
+                fontSize: "11px",
+                letterSpacing: "0.22em",
+                textTransform: "uppercase",
+                color: "#ffb84d",
+              }}
+              className="hover:underline"
+            >
+              All reviews →
+            </Link>
+          }
+        >
+          <div className="overflow-x-auto">
+            <table className="w-full" style={{ borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <TerminalTH align="center">Grade</TerminalTH>
+                  <TerminalTH>Entry</TerminalTH>
+                  <TerminalTH>Exit</TerminalTH>
+                  <TerminalTH align="right">Days</TerminalTH>
+                  <TerminalTH align="right">P&amp;L</TerminalTH>
+                  <TerminalTH align="right">Return</TerminalTH>
+                </tr>
+              </thead>
+              <tbody>
+                {tradeGrades.map((tg, i) => {
+                  const gradeColor = (g: string | null) => {
+                    if (g === "A" || g === "B") return "#22c55e";
+                    if (g === "C") return "#ffb84d";
+                    if (g === "D" || g === "F") return "#ef4444";
+                    return "#666";
+                  };
+                  return (
+                    <tr key={i}>
+                      <TerminalTD align="center">
+                        {tg.grade ? (
+                          <TerminalTag color={gradeColor(tg.grade)}>
+                            {tg.grade}
+                          </TerminalTag>
+                        ) : (
+                          <span style={{ color: "#555" }}>—</span>
+                        )}
+                      </TerminalTD>
+                      <TerminalTD mono color="#888">{tg.entry_date}</TerminalTD>
+                      <TerminalTD mono color="#888">{tg.exit_date}</TerminalTD>
+                      <TerminalTD align="right" mono color="#888">{tg.holding_days}</TerminalTD>
+                      <TerminalTD align="right" mono color={gainColor(tg.realized_pnl)}>
+                        <Money value={tg.realized_pnl} />
+                      </TerminalTD>
+                      <TerminalTD align="right" mono color={gainColor(tg.return_pct)}>
+                        <Pct value={tg.return_pct} digits={1} signed />
+                      </TerminalTD>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
           {tradeGrades.some(tg => tg.entry_thesis) && (
-            <div className="border-t border-edge px-5 py-3 space-y-2">
-              {tradeGrades.filter(tg => tg.entry_thesis || tg.exit_assessment).map((tg, i) => (
-                <div key={i} className="text-xs space-y-0.5">
-                  <div className="flex items-center gap-2">
-                    {tg.grade && (
-                      <span className={`inline-flex items-center justify-center w-5 h-5 rounded text-[11px] font-bold ${
-                        { A: "bg-up/25 text-up", B: "bg-up/20 text-up", C: "bg-gold/25 text-gold", D: "bg-down/20 text-down", F: "bg-down/25 text-down" }[tg.grade] ?? "bg-muted text-ink-dim"
-                      }`}>
-                        {tg.grade}
+            <div style={{ borderTop: "1px solid #1f1f1f", padding: "14px 20px", display: "flex", flexDirection: "column", gap: "12px" }}>
+              {tradeGrades.filter(tg => tg.entry_thesis || tg.exit_assessment).map((tg, i) => {
+                const gradeColor = (g: string | null) => {
+                  if (g === "A" || g === "B") return "#22c55e";
+                  if (g === "C") return "#ffb84d";
+                  if (g === "D" || g === "F") return "#ef4444";
+                  return "#666";
+                };
+                return (
+                  <div key={i} style={{ fontFamily: "Geist, system-ui, sans-serif", fontSize: "14px", lineHeight: 1.55 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+                      {tg.grade && (
+                        <TerminalTag color={gradeColor(tg.grade)} size="xs">
+                          {tg.grade}
+                        </TerminalTag>
+                      )}
+                      <span style={{ color: "#666", fontFamily: "var(--font-mono), monospace", fontSize: "11px", letterSpacing: "0.14em", textTransform: "uppercase" }}>
+                        {tg.entry_date} → {tg.exit_date}
                       </span>
+                    </div>
+                    {tg.entry_thesis && (
+                      <p style={{ color: "#bbb", marginBottom: "3px" }}>
+                        <span style={{ color: "#666", fontFamily: "var(--font-mono), monospace", fontSize: "12px", letterSpacing: "0.14em", textTransform: "uppercase", marginRight: "0.5em" }}>Entry</span>
+                        {tg.entry_thesis}
+                      </p>
                     )}
-                    <span className="text-ink-faint">{tg.entry_date} → {tg.exit_date}</span>
+                    {tg.exit_assessment && (
+                      <p style={{ color: "#bbb" }}>
+                        <span style={{ color: "#666", fontFamily: "var(--font-mono), monospace", fontSize: "12px", letterSpacing: "0.14em", textTransform: "uppercase", marginRight: "0.5em" }}>Exit</span>
+                        {tg.exit_assessment}
+                      </p>
+                    )}
                   </div>
-                  {tg.entry_thesis && <p className="text-ink-dim"><span className="text-ink-faint">Entry:</span> {tg.entry_thesis}</p>}
-                  {tg.exit_assessment && <p className="text-ink-dim"><span className="text-ink-faint">Exit:</span> {tg.exit_assessment}</p>}
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
-        </section>
+        </TerminalSection>
       )}
 
       {/* Recent Transactions (client component — handles account + stock/option filters) */}
@@ -569,53 +535,89 @@ export default async function SecurityDetailPage(props: {
 
       {/* Notes & Theses */}
       {notes.length > 0 && (
-        <section className="rounded-xl border border-edge bg-panel overflow-hidden">
-          <div className="px-5 py-3 border-b border-edge flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-ink">
-              Notes & Theses ({notes.length})
-            </h2>
+        <TerminalSection
+          title={`Notes & Theses · ${notes.length}`}
+          action={
             <Link
               href={`/dashboard/research?security=${securityId}`}
-              className="text-xs text-gold hover:underline"
+              style={{
+                fontFamily: "var(--font-mono), monospace",
+                fontSize: "11px",
+                letterSpacing: "0.22em",
+                textTransform: "uppercase",
+                color: "#ffb84d",
+              }}
+              className="hover:underline"
             >
-              View All
+              View all →
             </Link>
-          </div>
-          <div className="divide-y divide-edge/50">
-            {notes.slice(0, 5).map((note) => (
-              <div key={note.id} className="px-5 py-3">
-                <div className="flex items-center gap-2 mb-1">
-                  <span
-                    className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                      note.note_type === "trade_thesis"
-                        ? "bg-up/20 text-up"
-                        : note.note_type === "earnings"
-                          ? "bg-blue/20 text-blue"
-                          : "bg-gold/20 text-gold"
-                    }`}
-                  >
-                    {note.note_type === "trade_thesis"
-                      ? "Trade Thesis"
-                      : note.note_type === "earnings"
-                        ? "Earnings"
-                        : "Journal"}
-                  </span>
-                  <span className="text-xs text-ink-faint">
-                    {note.event_date}
-                  </span>
-                  {note.sentiment && (
-                    <span className="text-xs text-ink-faint capitalize">
-                      {note.sentiment}
+          }
+        >
+          <div>
+            {notes.slice(0, 5).map((note, idx) => {
+              const noteColor = note.note_type === "trade_thesis"
+                ? "#22c55e"
+                : note.note_type === "earnings"
+                  ? "#60a5fa"
+                  : "#ffb84d";
+              const noteLabel = note.note_type === "trade_thesis"
+                ? "Thesis"
+                : note.note_type === "earnings"
+                  ? "Earnings"
+                  : "Journal";
+              return (
+                <div
+                  key={note.id}
+                  style={{
+                    padding: "14px 20px",
+                    borderTop: idx === 0 ? undefined : "1px solid #161616",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "6px" }}>
+                    <TerminalTag color={noteColor} size="xs">
+                      {noteLabel}
+                    </TerminalTag>
+                    <span
+                      style={{
+                        fontFamily: "var(--font-mono), monospace",
+                        fontSize: "11px",
+                        color: "#666",
+                        letterSpacing: "0.14em",
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      {note.event_date}
                     </span>
-                  )}
+                    {note.sentiment && (
+                      <span
+                        style={{
+                          fontFamily: "var(--font-mono), monospace",
+                          fontSize: "11px",
+                          color: "#888",
+                          letterSpacing: "0.14em",
+                          textTransform: "uppercase",
+                        }}
+                      >
+                        · {note.sentiment}
+                      </span>
+                    )}
+                  </div>
+                  <p
+                    className="line-clamp-2"
+                    style={{
+                      fontFamily: "Geist, system-ui, sans-serif",
+                      fontSize: "14px",
+                      lineHeight: 1.55,
+                      color: "#bbb",
+                    }}
+                  >
+                    {note.content}
+                  </p>
                 </div>
-                <p className="text-sm text-ink-dim line-clamp-2">
-                  {note.content}
-                </p>
-              </div>
-            ))}
+              );
+            })}
           </div>
-        </section>
+        </TerminalSection>
       )}
 
       {/* Research Documents (uploaded PDFs mentioning this security) */}
@@ -631,32 +633,56 @@ export default async function SecurityDetailPage(props: {
 
       {/* Upcoming Events */}
       {upcomingEvents.length > 0 && (
-        <section className="rounded-xl border border-edge bg-panel overflow-hidden">
-          <div className="px-5 py-3 border-b border-edge">
-            <h2 className="text-sm font-semibold text-ink">Upcoming Events</h2>
-          </div>
-          <div className="divide-y divide-edge/50">
-            {upcomingEvents.map((event) => (
-              <div key={event.id} className="px-5 py-3 flex items-center gap-3">
-                <div className="text-xs font-mono text-ink-faint w-20 shrink-0">
-                  {event.event_date}
-                </div>
-                <span
-                  className={`text-xs font-medium px-2 py-0.5 rounded-full shrink-0 ${
-                    event.expected_impact === "high"
-                      ? "bg-down/20 text-down"
-                      : event.expected_impact === "medium"
-                        ? "bg-gold/20 text-gold"
-                        : "bg-muted text-ink-dim"
-                  }`}
+        <TerminalSection title="Upcoming Events" dense>
+          <div>
+            {upcomingEvents.map((event, idx) => {
+              const impactColor =
+                event.expected_impact === "high"
+                  ? "#ef4444"
+                  : event.expected_impact === "medium"
+                    ? "#ffb84d"
+                    : "#666";
+              return (
+                <div
+                  key={event.id}
+                  style={{
+                    padding: "11px 20px",
+                    borderTop: idx === 0 ? undefined : "1px solid #161616",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "14px",
+                  }}
                 >
-                  {event.event_type.replace(/_/g, " ")}
-                </span>
-                <span className="text-sm text-ink truncate">{event.title}</span>
-              </div>
-            ))}
+                  <div
+                    style={{
+                      fontFamily: "var(--font-mono), monospace",
+                      fontSize: "12px",
+                      color: "#888",
+                      letterSpacing: "0.1em",
+                      width: "90px",
+                      flexShrink: 0,
+                    }}
+                  >
+                    {event.event_date}
+                  </div>
+                  <TerminalTag color={impactColor} variant="outline" size="xs">
+                    {event.event_type.replace(/_/g, " ")}
+                  </TerminalTag>
+                  <span
+                    className="truncate"
+                    style={{
+                      fontFamily: "Geist, system-ui, sans-serif",
+                      fontSize: "14px",
+                      color: "#ddd",
+                    }}
+                  >
+                    {event.title}
+                  </span>
+                </div>
+              );
+            })}
           </div>
-        </section>
+        </TerminalSection>
       )}
 
       {/* Related Options (for stock securities that have option positions) */}
@@ -684,48 +710,42 @@ export default async function SecurityDetailPage(props: {
 
         if (relatedOptions.length === 0) return null;
         return (
-          <section className="rounded-xl border border-edge bg-panel overflow-hidden">
-            <div className="px-5 py-3 border-b border-edge">
-              <h2 className="text-sm font-semibold text-ink">
-                Related Options ({relatedOptions.length})
-              </h2>
-            </div>
+          <TerminalSection title={`Related Options · ${relatedOptions.length}`}>
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="w-full" style={{ borderCollapse: "collapse" }}>
                 <thead>
-                  <tr className="border-b border-edge text-ink-faint text-xs">
-                    <th className="text-left px-5 py-2 font-medium">Type</th>
-                    <th className="text-right px-5 py-2 font-medium">Strike</th>
-                    <th className="text-left px-5 py-2 font-medium">Expiration</th>
-                    <th className="text-right px-5 py-2 font-medium">Qty</th>
+                  <tr>
+                    <TerminalTH>Type</TerminalTH>
+                    <TerminalTH align="right">Strike</TerminalTH>
+                    <TerminalTH>Expiration</TerminalTH>
+                    <TerminalTH align="right">Qty</TerminalTH>
                   </tr>
                 </thead>
                 <tbody>
                   {relatedOptions.map((o) => (
-                    <tr key={o.id} className="border-b border-edge/50 last:border-0">
-                      <td className="px-5 py-2.5">
+                    <tr key={o.id}>
+                      <TerminalTD>
                         <Link
                           href={`/dashboard/security/${o.id}`}
-                          className="text-gold hover:underline font-medium"
+                          style={{ color: o.option_type === "CALL" ? "#22c55e" : "#ef4444", fontFamily: "var(--font-mono), monospace", fontWeight: 600 }}
+                          className="hover:underline"
                         >
                           {o.option_type}
                         </Link>
-                      </td>
-                      <td className="px-5 py-2.5 text-right font-mono text-ink">
+                      </TerminalTD>
+                      <TerminalTD align="right" mono>
                         <Money value={o.strike_price} precise />
-                      </td>
-                      <td className="px-5 py-2.5 font-mono text-ink-dim text-xs">
-                        {o.expiration_date}
-                      </td>
-                      <td className={`px-5 py-2.5 text-right font-mono ${o.quantity < 0 ? "text-down" : "text-ink"}`}>
+                      </TerminalTD>
+                      <TerminalTD mono color="#888">{o.expiration_date}</TerminalTD>
+                      <TerminalTD align="right" mono color={o.quantity < 0 ? "#ef4444" : "#ddd"}>
                         {o.quantity > 0 ? "+" : ""}<Shares value={o.quantity} />
-                      </td>
+                      </TerminalTD>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-          </section>
+          </TerminalSection>
         );
       })()}
 
@@ -734,76 +754,115 @@ export default async function SecurityDetailPage(props: {
 
       {/* Factor Exposure */}
       {factors && (
-        <section className="rounded-xl border border-edge bg-panel overflow-hidden">
-          <div className="px-5 py-3 border-b border-edge">
-            <h2 className="text-sm font-semibold text-ink">Factor Exposure</h2>
-          </div>
-          <div className="px-5 py-4 grid grid-cols-2 md:grid-cols-3 gap-3">
+        <TerminalSection title="Factor Exposure">
+          <div
+            className="grid grid-cols-2 md:grid-cols-3 gap-x-8 gap-y-3"
+            style={{ padding: "18px 20px" }}
+          >
             {FACTOR_COLUMNS.map((col) => {
-              const value = factors[col as keyof typeof factors] as
-                | string
-                | null;
+              const value = factors[col as keyof typeof factors] as string | null;
               if (!value || value === "Unknown") return null;
               return (
                 <div key={col} className="flex items-center gap-2">
                   <div
-                    className="w-3 h-3 rounded-full shrink-0"
-                    style={{ backgroundColor: getFactorColor(value) }}
+                    className="w-2 h-2 shrink-0"
+                    style={{ background: getFactorColor(value), borderRadius: "2px" }}
                   />
-                  <span className="text-xs text-ink-faint">
+                  <span
+                    style={{
+                      fontFamily: "var(--font-mono), monospace",
+                      fontSize: "11px",
+                      letterSpacing: "0.18em",
+                      textTransform: "uppercase",
+                      color: "#888",
+                    }}
+                  >
                     {FACTOR_LABELS[col as FactorColumn]}
                   </span>
-                  <span className="text-xs font-medium text-ink ml-auto">
+                  <span
+                    style={{
+                      fontFamily: "Geist, system-ui, sans-serif",
+                      fontSize: "14px",
+                      color: "#ddd",
+                      fontWeight: 500,
+                      marginLeft: "auto",
+                    }}
+                  >
                     {value}
                   </span>
                 </div>
               );
             })}
           </div>
-        </section>
+        </TerminalSection>
       )}
 
       {/* Transcripts */}
       {transcripts.length > 0 && (
-        <section className="rounded-xl border border-edge bg-panel overflow-hidden">
-          <div className="px-5 py-3 border-b border-edge">
-            <h2 className="text-sm font-semibold text-ink">
-              Earnings Transcripts ({transcripts.length})
-            </h2>
-          </div>
-          <div className="divide-y divide-edge/50">
-            {transcripts.slice(0, 4).map((t) => (
-              <div key={t.id} className="px-5 py-3">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-sm font-medium text-ink">
-                    Q{t.quarter} {t.year}
-                  </span>
-                  {t.sentiment_label && (
+        <TerminalSection title={`Earnings Transcripts · ${transcripts.length}`}>
+          <div>
+            {transcripts.slice(0, 4).map((t, idx) => {
+              const sentimentColor = t.sentiment_label === "positive"
+                ? "#22c55e"
+                : t.sentiment_label === "negative"
+                  ? "#ef4444"
+                  : "#888";
+              return (
+                <div
+                  key={t.id}
+                  style={{
+                    padding: "14px 20px",
+                    borderTop: idx === 0 ? undefined : "1px solid #161616",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "6px" }}>
                     <span
-                      className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                        t.sentiment_label === "positive"
-                          ? "bg-up/20 text-up"
-                          : t.sentiment_label === "negative"
-                            ? "bg-down/20 text-down"
-                            : "bg-muted text-ink-dim"
-                      }`}
+                      style={{
+                        fontFamily: "var(--font-mono), monospace",
+                        fontSize: "14px",
+                        fontWeight: 600,
+                        color: "#eee",
+                        letterSpacing: "0.02em",
+                      }}
                     >
-                      {t.sentiment_label}
+                      Q{t.quarter} {t.year}
                     </span>
+                    {t.sentiment_label && (
+                      <TerminalTag color={sentimentColor} variant="outline" size="xs">
+                        {t.sentiment_label}
+                      </TerminalTag>
+                    )}
+                    <span
+                      style={{
+                        fontFamily: "var(--font-mono), monospace",
+                        fontSize: "11px",
+                        letterSpacing: "0.14em",
+                        textTransform: "uppercase",
+                        color: "#666",
+                        marginLeft: "auto",
+                      }}
+                    >
+                      {t.source}
+                    </span>
+                  </div>
+                  {t.summary && (
+                    <p
+                      className="line-clamp-2"
+                      style={{
+                        fontFamily: "Geist, system-ui, sans-serif",
+                        fontSize: "14px",
+                        lineHeight: 1.55,
+                        color: "#bbb",
+                      }}
+                    >
+                      {t.summary}
+                    </p>
                   )}
-                  <span className="text-xs text-ink-faint ml-auto">
-                    {t.source}
-                  </span>
                 </div>
-                {t.summary && (
-                  <p className="text-sm text-ink-dim line-clamp-2">
-                    {t.summary}
-                  </p>
-                )}
-              </div>
-            ))}
+              );
+            })}
           </div>
-        </section>
+        </TerminalSection>
       )}
 
       {/* Empty state — no positions, no data */}
