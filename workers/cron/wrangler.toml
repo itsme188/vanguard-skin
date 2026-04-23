@@ -5,14 +5,14 @@ compatibility_flags = ["nodejs_compat"]
 
 # Two UTC slots per target local time — only one fires for real each day;
 # the scheduled() handler gates via Intl.DateTimeFormat("America/New_York").
-# Summer (EDT, UTC-4): 3pm ET = 19:00 UTC, 9am ET = 13:00 UTC.
-# Winter (EST, UTC-5): 3pm ET = 20:00 UTC, 9am ET = 14:00 UTC.
+# Summer (EDT, UTC-4): 3pm ET = 19:00 UTC, 8:45am ET = 12:45 UTC.
+# Winter (EST, UTC-5): 3pm ET = 20:00 UTC, 8:45am ET = 13:45 UTC.
 [triggers]
 crons = [
-  "0 19 * * SUN",      # Sunday 3pm ET (summer) — weekly briefing
-  "0 20 * * SUN",      # Sunday 3pm ET (winter) — weekly briefing
-  "0 13 * * MON-FRI",  # Weekdays 9am ET (summer) — daily digest
-  "0 14 * * MON-FRI",  # Weekdays 9am ET (winter) — daily digest
+  "0 19 * * SUN",       # Sunday 3pm ET (summer) — weekly briefing
+  "0 20 * * SUN",       # Sunday 3pm ET (winter) — weekly briefing
+  "45 12 * * MON-FRI",  # Weekdays 8:45am ET (summer) — daily digest
+  "45 13 * * MON-FRI",  # Weekdays 8:45am ET (winter) — daily digest
 ]
 
 # KV namespace — created via `wrangler kv namespace create CRON_KV`.
@@ -30,5 +30,5 @@ bucket_name = "vanguard-skin-statements"
 # Non-secret env vars. Secrets (see README) go via `wrangler secret put`.
 [vars]
 EXPECTED_HOUR_BRIEFING = "15"        # 3pm ET
-EXPECTED_HOUR_DIGEST = "9"           # 9am ET
+EXPECTED_HOUR_DIGEST = "8"           # 8:45am ET (Worker gates on hour only)
 PRIMARY_TIMEOUT_MS = "120000"        # 120s for Mac webhook
