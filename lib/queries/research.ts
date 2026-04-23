@@ -71,12 +71,19 @@ export function getRecentArticles(
     );
     params.push(options.securityId);
   }
+  // Both `received_at` (SQLite `datetime('now')` → "YYYY-MM-DD HH:MM:SS")
+  // and caller-supplied timestamps (e.g. `new Date().toISOString()` →
+  // "YYYY-MM-DDTHH:MM:SS.sssZ") need to compare as moments in time, not
+  // as strings. Without `datetime()` on both sides, "2026-04-22 22:53:41"
+  // string-compares as LESS than "2026-04-22T13:44:44.806Z" because the
+  // space (ASCII 32) < 'T' (ASCII 84), even though the actual moment is
+  // later. That silently broke "send digest since last email".
   if (options?.startDate) {
-    conditions.push("a.received_at >= ?");
+    conditions.push("datetime(a.received_at) >= datetime(?)");
     params.push(options.startDate);
   }
   if (options?.endDate) {
-    conditions.push("a.received_at <= ?");
+    conditions.push("datetime(a.received_at) <= datetime(?)");
     params.push(options.endDate + " 23:59:59");
   }
   if (options?.search) {
