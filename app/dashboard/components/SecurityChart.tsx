@@ -58,26 +58,36 @@ function filterBarsByWindow(bars: OhlcvBar[], months: number): OhlcvBar[] {
   return bars.filter((b) => b.date >= cutoffStr);
 }
 
-// Midnight Portfolio theme
+// Terminal Pro theme — dark Bloomberg-adjacent. Amber current-price, bright
+// emerald/rose for level treatments (strong, solid) so they can never be
+// confused with the amber current-price line.
 const C = {
-  background: "#0E1118",
-  gridLines: "#1E2534",
-  text: "#8891A6",
-  upColor: "#34D399",
-  downColor: "#F87171",
-  borderUp: "#34D399",
-  borderDown: "#F87171",
-  wickUp: "#34D39980",
-  wickDown: "#F8717180",
-  volumeUp: "#34D39930",
-  volumeDown: "#F8717130",
-  crosshair: "#C9A44E60",
-  gold: "#C9A44E",
+  background: "#0a0a0a",
+  gridLines: "#1a1a1a",
+  text: "#777777",
+  upColor: "#22c55e",
+  downColor: "#ef4444",
+  borderUp: "#22c55e",
+  borderDown: "#ef4444",
+  wickUp: "#22c55e",
+  wickDown: "#ef4444",
+  volumeUp: "#22c55e40",
+  volumeDown: "#ef444440",
+  crosshair: "#ffb84d80",
+  gold: "#ffd666",
+  // Current-price line: bright amber, solid, thick. This is the ONE horizontal
+  // element that uses amber — levels use emerald/rose, so they're visually
+  // unambiguous at a glance.
+  currentPrice: "#ffb84d",
+  // Level line colors (full-strength, solid). Suggested variants fade to ~60%.
+  supportLine: "#22c55e",
+  resistanceLine: "#ef4444",
+  targetLine: "#60A5FA",
   // Indicator colors
-  ema9: "#C9A44E",     // gold — short-term
-  ema21: "#F59E0B",    // amber
-  sma50: "#60A5FA",    // blue — medium
-  sma200: "#8891A6",   // ink-dim — long-term
+  ema9: "#ffd666",     // gold — short-term
+  ema21: "#f59e0b",    // amber
+  sma50: "#60a5fa",    // blue — medium
+  sma200: "#888888",   // grey — long-term
 };
 
 // Indicator definitions
@@ -245,6 +255,12 @@ export function SecurityChart({
         borderDownColor: C.borderDown,
         wickUpColor: C.wickUp,
         wickDownColor: C.wickDown,
+        // Current-price line: override the default (which tracks candle color
+        // and collides with resistance rose). Bright amber, solid, thick — the
+        // only amber element on the chart, so current price is unambiguous.
+        priceLineColor: C.currentPrice,
+        priceLineStyle: 0, // solid
+        priceLineWidth: 2,
       });
 
       volumeSeries = chart.addSeries(lc.HistogramSeries, {
@@ -434,31 +450,35 @@ export function SecurityChart({
         }
         priceLinesRef.current = [];
 
-        // Color by level_type — match Midnight Portfolio palette
+        // Level colors — full-strength, solid, 2px. Terminal Pro treatment:
+        // impossible to confuse with the amber current-price line.
         const COLOR: Record<string, string> = {
-          support: "#34D399",     // emerald (up)
-          entry: "#34D399",
-          scale_in: "#6EE7B7",
-          resistance: "#F87171",  // rose (down)
-          exit: "#60A5FA",        // blue — target
-          stop: "#F87171",
+          support: C.supportLine,
+          entry: C.supportLine,
+          scale_in: C.supportLine,
+          resistance: C.resistanceLine,
+          exit: C.targetLine,
+          stop: C.resistanceLine,
         };
 
         for (const lvl of json.levels) {
           // effective_price: echoes static price OR current MA value. Falls back to
           // lvl.price if the server couldn't compute (insufficient bars).
           const displayPrice = typeof lvl.effective_price === "number" ? lvl.effective_price : lvl.price;
-          const titleBase = lvl.level_type === "scale_in" ? "scale" : lvl.level_type;
-          const title = lvl.price_source && lvl.price_source !== "static"
-            ? `${titleBase} (${lvl.price_source.replace("_", " ")})`
-            : titleBase;
+          const lineColor = COLOR[lvl.level_type] ?? C.gold;
           const line = series.createPriceLine({
             price: displayPrice,
-            color: COLOR[lvl.level_type] ?? "#C9A44E",
-            lineWidth: 1,
-            lineStyle: 2, // dashed
+            color: lineColor,
+            lineWidth: 2,
+            lineStyle: 0, // solid — strong/committed S/R
             axisLabelVisible: true,
-            title,
+            // No title — the verbose per-line label clutters the right axis
+            // and redundantly echoes what LevelsPanel already shows below.
+            // Color + solid-vs-dotted distinguishes active from suggested;
+            // the panel row carries type/touches/narrative context.
+            title: "",
+            axisLabelColor: lineColor,
+            axisLabelTextColor: "#0a0a0a",
           });
           priceLinesRef.current.push(line);
         }
@@ -523,16 +543,22 @@ export function SecurityChart({
         clear();
 
         for (const lvl of data.levels ?? []) {
-          const color = lvl.type === "resistance" ? "#F8717170" : "#34D39970";
-          const conf = lvl.confidence === "high" ? "★" : lvl.confidence === "medium" ? "·" : "";
-          const title = `suggested ${lvl.type}${conf ? ` ${conf}` : ""} (${lvl.touches}×)`;
+          // Suggested levels share hue with active S/R (green/red) but are
+          // dotted + faded so they read as "proposed, not yet committed."
+          // The axis pill uses the full-strength color for readability — only
+          // the line itself is dimmed, not the label.
+          const isRes = lvl.type === "resistance";
+          const fullColor = isRes ? "#ef4444" : "#22c55e";
+          const fadedColor = isRes ? "#ef444480" : "#22c55e80";
           const line = s.createPriceLine({
             price: lvl.price,
-            color,
+            color: fadedColor,
             lineWidth: 1,
-            lineStyle: 1, // dotted — visually distinct from user levels (dashed)
+            lineStyle: 1, // dotted — visually distinct from user-accepted levels (solid)
             axisLabelVisible: true,
-            title,
+            title: "", // LevelsPanel below carries confidence/touches context
+            axisLabelColor: fullColor,
+            axisLabelTextColor: "#0a0a0a",
           });
           suggestedLinesRef.current.push(line);
         }
@@ -885,10 +911,10 @@ export function SecurityChart({
             </span>
             {/* Level-type color key — maps chart overlay colors to what they mean. */}
             <div className="hidden sm:flex items-center gap-2 text-[10px] opacity-70">
-              <LegendDot color="#34D399" label="support / entry" />
-              <LegendDot color="#6EE7B7" label="scale" />
-              <LegendDot color="#60A5FA" label="target" />
-              <LegendDot color="#F87171" label="resistance / stop" />
+              <LegendDot color="#ffb84d" label="last price" />
+              <LegendDot color="#22c55e" label="support / entry" />
+              <LegendDot color="#60a5fa" label="target" />
+              <LegendDot color="#ef4444" label="resistance / stop" />
             </div>
           </div>
           <span>{isIntraday ? `${activeTimeframe} intraday` : "Daily OHLCV"} via TWS</span>

@@ -109,17 +109,19 @@ function SuggestedLevels({
   symbol,
   userLevels,
   onAccepted,
+  embedded = false,
 }: {
   securityId: number;
   symbol: string;
   userLevels: EnrichedLevel[];
   onAccepted: () => void;
+  embedded?: boolean;
 }) {
   const { toast } = useToast();
   const [data, setData] = useState<SuggestedLevelsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [accepting, setAccepting] = useState<number | null>(null);
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -187,6 +189,22 @@ function SuggestedLevels({
   }
 
   if (loading) {
+    if (embedded) {
+      return (
+        <div
+          style={{
+            padding: "10px 0",
+            fontFamily: "var(--font-mono), monospace",
+            fontSize: "12px",
+            letterSpacing: "0.18em",
+            textTransform: "uppercase",
+            color: "#555",
+          }}
+        >
+          Computing suggested levels…
+        </div>
+      );
+    }
     return (
       <div className="mb-3 text-[11px] text-ink-faint">
         Computing suggested levels…
@@ -195,6 +213,163 @@ function SuggestedLevels({
   }
   if (!data || filtered.length === 0) return null;
 
+  if (embedded) {
+    return (
+      <div style={{ marginBottom: "1rem", borderTop: "1px solid #1f1f1f", borderBottom: "1px solid #1f1f1f" }}>
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          style={{
+            width: "100%",
+            padding: "10px 0",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            background: "transparent",
+            border: "none",
+            cursor: "pointer",
+            fontFamily: "var(--font-mono), monospace",
+            fontSize: "12px",
+            letterSpacing: "0.18em",
+            textTransform: "uppercase",
+            color: "#999",
+          }}
+        >
+          <span>
+            <span style={{ color: "#ffb84d", marginRight: "0.5em" }}>{expanded ? "▾" : "▸"}</span>
+            {filtered.length} Suggested · Auto-detected
+            {data.atr != null && (
+              <span style={{ color: "#555", marginLeft: "1em" }}>
+                · ATR ≈ ${data.atr.toFixed(2)}
+              </span>
+            )}
+          </span>
+          <span style={{ color: "#555" }}>{expanded ? "hide" : "show"}</span>
+        </button>
+        {expanded && (
+          <div>
+            {filtered.map((sug, i) => {
+              const isRes = sug.type === "resistance";
+              const color = isRes ? "#ef4444" : "#22c55e";
+              return (
+                <div
+                  key={`${sug.type}-${sug.price}-${i}`}
+                  style={{
+                    padding: "14px 0",
+                    borderTop: "1px solid #161616",
+                    display: "grid",
+                    gridTemplateColumns: "minmax(0, 1fr) auto",
+                    gap: "16px",
+                    alignItems: "start",
+                  }}
+                >
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: "14px", flexWrap: "wrap" }}>
+                      {/* Colored tag block — matches the chart's left-edge level chips */}
+                      <span
+                        style={{
+                          background: color,
+                          color: "#0a0a0a",
+                          fontFamily: "var(--font-mono), monospace",
+                          fontSize: "12px",
+                          fontWeight: 700,
+                          letterSpacing: "0.14em",
+                          textTransform: "uppercase",
+                          padding: "3px 8px",
+                          borderRadius: "2px",
+                        }}
+                      >
+                        {isRes ? "R" : "S"}
+                      </span>
+                      {/* Price — the row's dominant element */}
+                      <span
+                        style={{
+                          fontFamily: "var(--font-mono), monospace",
+                          fontSize: "20px",
+                          fontWeight: 600,
+                          color,
+                          fontVariantNumeric: "tabular-nums",
+                          letterSpacing: "-0.01em",
+                        }}
+                      >
+                        ${sug.price.toFixed(2)}
+                      </span>
+                      {/* Distance — colored to match side */}
+                      <span
+                        style={{
+                          fontFamily: "var(--font-mono), monospace",
+                          fontSize: "14px",
+                          color,
+                          fontVariantNumeric: "tabular-nums",
+                        }}
+                      >
+                        {sug.distancePct >= 0 ? "+" : ""}{sug.distancePct.toFixed(1)}%
+                      </span>
+                      {/* Touches, confidence, last date — uppercase meta strip */}
+                      <span
+                        style={{
+                          fontFamily: "var(--font-mono), monospace",
+                          fontSize: "11px",
+                          letterSpacing: "0.18em",
+                          textTransform: "uppercase",
+                          color: sug.confidence === "high" ? "#ffb84d" : "#888",
+                        }}
+                      >
+                        {sug.confidence} · {sug.touches}× · last {sug.lastTouchDate}
+                      </span>
+                    </div>
+                    {sug.narrative && (
+                      <p
+                        style={{
+                          marginTop: "10px",
+                          fontFamily: "Geist, system-ui, sans-serif",
+                          fontSize: "14px",
+                          lineHeight: 1.55,
+                          color: "#bbb",
+                        }}
+                      >
+                        {sug.narrative}
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => accept(sug, i)}
+                    disabled={accepting === i}
+                    style={{
+                      padding: "6px 14px",
+                      background: "transparent",
+                      border: "1px solid #444",
+                      color: "#ffb84d",
+                      fontFamily: "var(--font-mono), monospace",
+                      fontSize: "12px",
+                      fontWeight: 600,
+                      letterSpacing: "0.2em",
+                      textTransform: "uppercase",
+                      borderRadius: "2px",
+                      cursor: "pointer",
+                      transition: "all 180ms ease",
+                      opacity: accepting === i ? 0.4 : 1,
+                      alignSelf: "center",
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.borderColor = "#ffb84d";
+                      e.currentTarget.style.background = "rgba(255, 184, 77, 0.08)";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.borderColor = "#444";
+                      e.currentTarget.style.background = "transparent";
+                    }}
+                  >
+                    {accepting === i ? "…" : "Accept"}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="mb-3 rounded-lg border border-edge bg-raised/40 overflow-hidden">
       <button
@@ -202,7 +377,7 @@ function SuggestedLevels({
         className="w-full px-3 py-2 flex items-center justify-between text-[11px] hover:bg-raised transition-colors"
       >
         <span className="text-ink-dim">
-          <span className="text-gold">▸</span> {filtered.length} suggested level
+          <span className="text-gold">{expanded ? "▾" : "▸"}</span> {filtered.length} suggested level
           {filtered.length === 1 ? "" : "s"}
           {data.atr != null && (
             <span className="text-ink-faint ml-2">
@@ -270,10 +445,15 @@ export function LevelsPanel({
   securityId,
   symbol,
   currentPrice,
+  embedded = false,
 }: {
   securityId: number;
   symbol: string;
   currentPrice: number | null;
+  // When embedded inside MarketDataPanel, drop the outer chrome (rounded
+  // border, bg-panel, padding) so the component becomes a flat content region
+  // that inherits the panel's dark Terminal background.
+  embedded?: boolean;
 }) {
   const { toast } = useToast();
   const [levels, setLevels] = useState<EnrichedLevel[]>([]);
@@ -431,29 +611,93 @@ export function LevelsPanel({
   }
 
   return (
-    <section className="rounded-xl border border-edge bg-panel p-5">
+    <section
+      className={
+        embedded
+          ? "px-5 py-5"
+          : "rounded-xl border border-edge bg-panel p-5"
+      }
+    >
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h2 className="text-sm font-medium text-ink">Levels & Alerts</h2>
-          <p className="text-[11px] text-ink-faint mt-0.5">
-            Entry, exit, stop, or support/resistance levels. Alerts fire once per level when crossed.
-          </p>
+          <h2 className="text-sm font-medium text-ink tracking-wide uppercase" style={embedded ? { letterSpacing: "0.18em", fontSize: "12px", color: "#999" } : undefined}>
+            {embedded ? "Levels · Auto-detected" : "Levels & Alerts"}
+          </h2>
+          {!embedded && (
+            <p className="text-[11px] text-ink-faint mt-0.5">
+              Entry, exit, stop, or support/resistance levels. Alerts fire once per level when crossed.
+            </p>
+          )}
         </div>
-        <div className="flex items-center gap-2">
-          <label className="text-[10px] text-ink-faint flex items-center gap-1 cursor-pointer">
+        <div className="flex items-center gap-3">
+          <label
+            className="flex items-center gap-1.5 cursor-pointer"
+            style={
+              embedded
+                ? {
+                    fontFamily: "var(--font-mono), monospace",
+                    fontSize: "11px",
+                    letterSpacing: "0.18em",
+                    textTransform: "uppercase",
+                    color: "#888",
+                  }
+                : undefined
+            }
+          >
             <input
               type="checkbox"
               checked={showInactive}
               onChange={(e) => setShowInactive(e.target.checked)}
-              className="accent-gold"
+              className={embedded ? "" : "accent-gold"}
+              style={embedded ? { accentColor: "#ffb84d" } : undefined}
             />
-            Show inactive
+            <span className={embedded ? "" : "text-[10px] text-ink-faint"}>
+              Show inactive
+            </span>
           </label>
           <button
             onClick={() => setAdding((v) => !v)}
-            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gold/30 bg-gold/10 text-gold hover:bg-gold/20 transition-colors"
+            className={
+              embedded
+                ? ""
+                : "px-3 py-1.5 text-xs font-medium rounded-lg border border-gold/30 bg-gold/10 text-gold hover:bg-gold/20 transition-colors"
+            }
+            style={
+              embedded
+                ? {
+                    padding: "6px 14px",
+                    background: "transparent",
+                    border: "1px solid #444",
+                    color: "#ffb84d",
+                    fontFamily: "var(--font-mono), monospace",
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    letterSpacing: "0.2em",
+                    textTransform: "uppercase",
+                    borderRadius: "2px",
+                    cursor: "pointer",
+                    transition: "all 180ms ease",
+                  }
+                : undefined
+            }
+            onMouseEnter={
+              embedded
+                ? (e) => {
+                    e.currentTarget.style.borderColor = "#ffb84d";
+                    e.currentTarget.style.background = "rgba(255, 184, 77, 0.08)";
+                  }
+                : undefined
+            }
+            onMouseLeave={
+              embedded
+                ? (e) => {
+                    e.currentTarget.style.borderColor = "#444";
+                    e.currentTarget.style.background = "transparent";
+                  }
+                : undefined
+            }
           >
-            {adding ? "Cancel" : "+ Add Level"}
+            {adding ? "Cancel" : embedded ? "+ Add Level" : "+ Add Level"}
           </button>
         </div>
       </div>
@@ -607,6 +851,7 @@ export function LevelsPanel({
         symbol={symbol}
         userLevels={levels}
         onAccepted={refresh}
+        embedded={embedded}
       />
 
       {/* Provenance filter — derived from distinct authors on this security's
@@ -662,12 +907,309 @@ export function LevelsPanel({
           : filtered;
 
         if (visibleLevels.length === 0) {
+          if (embedded) {
+            return (
+              <p
+                style={{
+                  fontFamily: "var(--font-mono), monospace",
+                  fontSize: "12px",
+                  letterSpacing: "0.18em",
+                  textTransform: "uppercase",
+                  color: "#555",
+                  padding: "20px 0",
+                  textAlign: "center",
+                  borderTop: "1px solid #1f1f1f",
+                  marginTop: "1rem",
+                }}
+              >
+                {levels.length === 0
+                  ? "No active levels · accept a suggestion or add your own"
+                  : `No levels from ${authorFilter}`}
+              </p>
+            );
+          }
           return (
             <p className="text-[11px] text-ink-faint italic py-4 text-center">
               {levels.length === 0
                 ? "No levels set. Add one above."
                 : `No levels from ${authorFilter}.`}
             </p>
+          );
+        }
+
+        if (embedded) {
+          // Terminal render — uppercase meta, colored tag block, big mono price,
+          // full-width thesis, right-aligned actions. Mirrors the suggested-levels
+          // row pattern so active + suggested read as one visual language.
+          const typeColor = (t: LevelType) => {
+            if (t === "support" || t === "entry" || t === "scale_in") return "#22c55e";
+            if (t === "resistance" || t === "stop") return "#ef4444";
+            if (t === "exit") return "#60a5fa";
+            return "#ffb84d";
+          };
+          const typeTag = (t: LevelType) => {
+            if (t === "support") return "S";
+            if (t === "resistance") return "R";
+            if (t === "entry") return "E";
+            if (t === "exit") return "T"; // target
+            if (t === "stop") return "X";
+            if (t === "scale_in") return "+S";
+            return "·";
+          };
+          return (
+            <div>
+              {visibleLevels.map((l) => {
+                const color = typeColor(l.level_type);
+                const triggered = l.is_active === 0 && l.triggered_at != null;
+                const alertedToday = triggeredToday(l.triggered_at);
+                const inactive = l.is_active === 0 && !l.triggered_at;
+                return (
+                  <div
+                    key={l.id}
+                    style={{
+                      padding: "14px 0",
+                      borderTop: "1px solid #161616",
+                      display: "grid",
+                      gridTemplateColumns: "minmax(0, 1fr) auto",
+                      gap: "16px",
+                      alignItems: "start",
+                    }}
+                  >
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "baseline", gap: "14px", flexWrap: "wrap" }}>
+                        <span
+                          style={{
+                            background: color,
+                            color: "#0a0a0a",
+                            fontFamily: "var(--font-mono), monospace",
+                            fontSize: "12px",
+                            fontWeight: 700,
+                            letterSpacing: "0.14em",
+                            textTransform: "uppercase",
+                            padding: "3px 8px",
+                            borderRadius: "2px",
+                            opacity: inactive ? 0.4 : 1,
+                          }}
+                        >
+                          {typeTag(l.level_type)}
+                        </span>
+                        {l.price_source === "static" ? (
+                          <span
+                            style={{
+                              fontFamily: "var(--font-mono), monospace",
+                              fontSize: "20px",
+                              fontWeight: 600,
+                              color,
+                              fontVariantNumeric: "tabular-nums",
+                              letterSpacing: "-0.01em",
+                              opacity: inactive ? 0.5 : 1,
+                            }}
+                          >
+                            <Money value={l.price} precise />
+                          </span>
+                        ) : (
+                          <>
+                            <span
+                              style={{
+                                fontFamily: "var(--font-mono), monospace",
+                                fontSize: "18px",
+                                fontWeight: 600,
+                                color,
+                                letterSpacing: "0.02em",
+                                opacity: inactive ? 0.5 : 1,
+                              }}
+                            >
+                              {priceSourceLabel(l.price_source).toUpperCase()}
+                            </span>
+                            {l.effective_price !== null ? (
+                              <span
+                                style={{
+                                  fontFamily: "var(--font-mono), monospace",
+                                  fontSize: "16px",
+                                  color: "#888",
+                                  fontVariantNumeric: "tabular-nums",
+                                }}
+                              >
+                                ≈ <Money value={l.effective_price} precise />
+                              </span>
+                            ) : (
+                              <span
+                                title="Not enough OHLCV history to compute this MA yet — the level won't fire until bars accumulate."
+                                style={{
+                                  fontFamily: "var(--font-mono), monospace",
+                                  fontSize: "11px",
+                                  color: "#ffb84d",
+                                  letterSpacing: "0.14em",
+                                  textTransform: "uppercase",
+                                }}
+                              >
+                                insufficient history
+                              </span>
+                            )}
+                          </>
+                        )}
+                        {/* Uppercase meta strip — direction, action, status */}
+                        <span
+                          style={{
+                            fontFamily: "var(--font-mono), monospace",
+                            fontSize: "11px",
+                            letterSpacing: "0.18em",
+                            textTransform: "uppercase",
+                            color: "#888",
+                          }}
+                        >
+                          {[l.direction, l.action_hint?.replace("_", " ")]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </span>
+                        {triggered && (
+                          <span
+                            style={{
+                              fontFamily: "var(--font-mono), monospace",
+                              fontSize: "11px",
+                              letterSpacing: "0.14em",
+                              textTransform: "uppercase",
+                              color: "#ffb84d",
+                              border: "1px solid #ffb84d",
+                              padding: "2px 6px",
+                              borderRadius: "2px",
+                            }}
+                          >
+                            Triggered @ <Money value={l.triggered_price} precise />
+                          </span>
+                        )}
+                        {alertedToday && (
+                          <span
+                            title="Already alerted today. Reactivating now would no-op — the dedup guard suppresses a same-day second alert."
+                            style={{
+                              fontFamily: "var(--font-mono), monospace",
+                              fontSize: "11px",
+                              letterSpacing: "0.14em",
+                              textTransform: "uppercase",
+                              color: "#f59e0b",
+                              border: "1px solid #f59e0b",
+                              padding: "2px 6px",
+                              borderRadius: "2px",
+                            }}
+                          >
+                            Alerted Today
+                          </span>
+                        )}
+                        {inactive && (
+                          <span
+                            style={{
+                              fontFamily: "var(--font-mono), monospace",
+                              fontSize: "11px",
+                              letterSpacing: "0.14em",
+                              textTransform: "uppercase",
+                              color: "#666",
+                              border: "1px solid #333",
+                              padding: "2px 6px",
+                              borderRadius: "2px",
+                            }}
+                          >
+                            Inactive
+                          </span>
+                        )}
+                      </div>
+                      {(l.thesis || l.source_author) && (
+                        <p
+                          style={{
+                            marginTop: "8px",
+                            fontFamily: "Geist, system-ui, sans-serif",
+                            fontSize: "14px",
+                            lineHeight: 1.55,
+                            color: "#bbb",
+                          }}
+                        >
+                          {l.source_author && (
+                            <span
+                              style={{
+                                color: "#888",
+                                fontFamily: "var(--font-mono), monospace",
+                                fontSize: "12px",
+                                letterSpacing: "0.1em",
+                                textTransform: "uppercase",
+                                marginRight: "0.5em",
+                              }}
+                            >
+                              {l.source_author}
+                            </span>
+                          )}
+                          {l.thesis}
+                        </p>
+                      )}
+                    </div>
+                    <div style={{ display: "flex", gap: "8px", alignSelf: "center" }}>
+                      {l.is_active === 1 ? (
+                        <button
+                          onClick={() => handleDeactivate(l.id)}
+                          title="Deactivate"
+                          style={{
+                            background: "transparent",
+                            border: "1px solid #333",
+                            color: "#888",
+                            fontFamily: "var(--font-mono), monospace",
+                            fontSize: "11px",
+                            fontWeight: 600,
+                            letterSpacing: "0.2em",
+                            textTransform: "uppercase",
+                            padding: "5px 10px",
+                            borderRadius: "2px",
+                            cursor: "pointer",
+                          }}
+                        >
+                          Pause
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => handleReactivate(l.id)}
+                          disabled={alertedToday}
+                          title={
+                            alertedToday
+                              ? "Already alerted today — reactivation is blocked until tomorrow."
+                              : "Reactivate"
+                          }
+                          style={{
+                            background: "transparent",
+                            border: "1px solid " + (alertedToday ? "#333" : "#22c55e"),
+                            color: alertedToday ? "#555" : "#22c55e",
+                            fontFamily: "var(--font-mono), monospace",
+                            fontSize: "11px",
+                            fontWeight: 600,
+                            letterSpacing: "0.2em",
+                            textTransform: "uppercase",
+                            padding: "5px 10px",
+                            borderRadius: "2px",
+                            cursor: alertedToday ? "not-allowed" : "pointer",
+                          }}
+                        >
+                          Reactivate
+                        </button>
+                      )}
+                      <button
+                        onClick={() => handleDelete(l.id)}
+                        title="Delete"
+                        style={{
+                          background: "transparent",
+                          border: "1px solid #444",
+                          color: "#ef4444",
+                          fontFamily: "var(--font-mono), monospace",
+                          fontSize: "13px",
+                          fontWeight: 700,
+                          padding: "4px 10px",
+                          borderRadius: "2px",
+                          cursor: "pointer",
+                          lineHeight: 1,
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           );
         }
 

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import type { ResearchMention } from "@/lib/queries/research";
+import { TerminalSection } from "./TerminalSection";
 
 interface ArticleDetail {
   id: number;
@@ -70,31 +71,37 @@ export function ResearchMentionsSection({
 
   if (filtered.length === 0) return null;
 
+  const subtitle =
+    mentions.length > filtered.length
+      ? `${filtered.length} of ${mentions.length} — filtered`
+      : undefined;
+
   return (
-    <section className="rounded-xl border border-edge bg-panel overflow-hidden">
-      <div className="px-5 py-3 border-b border-edge flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-ink">
-          Research Mentions ({filtered.length}
-          {mentions.length > filtered.length && (
-            <span className="text-ink-faint font-normal">
-              {` of ${mentions.length}`}
-            </span>
-          )}
-          )
-        </h2>
+    <TerminalSection
+      title={`Research Mentions · ${filtered.length}`}
+      subtitle={subtitle}
+      action={
         <Link
           href="/dashboard/research?view=feeds"
-          className="text-xs text-gold hover:brightness-110"
+          style={{
+            fontFamily: "var(--font-mono), monospace",
+            fontSize: "10px",
+            letterSpacing: "0.22em",
+            textTransform: "uppercase",
+            color: "#ffb84d",
+          }}
+          className="hover:underline"
         >
-          View All Feeds →
+          All feeds →
         </Link>
-      </div>
-      <div className="divide-y divide-edge/50">
+      }
+    >
+      <div className="divide-y" style={{ borderColor: "#161616" }}>
         {filtered.map((m) => (
           <MentionRow key={m.article_id} mention={m} />
         ))}
       </div>
-    </section>
+    </TerminalSection>
   );
 }
 

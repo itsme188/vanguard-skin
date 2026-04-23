@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import type { LevelAlert, AlertResponse } from "@/lib/types";
 import { Money } from "@/lib/privacy/components";
+import { TerminalSection } from "./TerminalSection";
 
 // Same enriched shape that /api/alerts returns (matches alerts page type).
 interface EnrichedAlert extends LevelAlert {
@@ -19,11 +20,11 @@ interface EnrichedAlert extends LevelAlert {
   } | null;
 }
 
-const RESPONSE_STYLES: Record<AlertResponse, { label: string; className: string }> = {
-  pending: { label: "Pending", className: "text-gold" },
-  acted: { label: "Acted", className: "text-emerald-400" },
-  ignored: { label: "Ignored", className: "text-ink-faint" },
-  dismissed: { label: "Dismissed", className: "text-ink-faint" },
+const RESPONSE_STYLES: Record<AlertResponse, { label: string; color: string }> = {
+  pending: { label: "Pending", color: "#ffb84d" },
+  acted: { label: "Acted", color: "#22c55e" },
+  ignored: { label: "Ignored", color: "#666" },
+  dismissed: { label: "Dismissed", color: "#666" },
 };
 
 function formatPriceSourceLabel(source: string): string {
@@ -64,16 +65,12 @@ export function RecentAlertsPanel({ securityId }: { securityId: number }) {
   if (alerts.length === 0) return null; // Hide the section entirely when there's no history.
 
   return (
-    <section className="rounded-xl border border-edge bg-panel p-5">
-      <div className="mb-3">
-        <h2 className="text-sm font-medium text-ink">Recent alerts</h2>
-        <p className="text-[11px] text-ink-faint mt-0.5">
-          Last {alerts.length} level crossing{alerts.length === 1 ? "" : "s"} on this security. Use
-          past responses as context for current levels.
-        </p>
-      </div>
-      <ul className="divide-y divide-edge">
-        {alerts.map((a) => {
+    <TerminalSection
+      title="Recent Alerts"
+      subtitle={`Last ${alerts.length} level crossing${alerts.length === 1 ? "" : "s"} · past responses as context`}
+    >
+      <div>
+        {alerts.map((a, idx) => {
           const when = new Date(a.triggered_at).toLocaleString("en-US", {
             month: "short",
             day: "numeric",
@@ -81,34 +78,72 @@ export function RecentAlertsPanel({ securityId }: { securityId: number }) {
           });
           const respStyle = RESPONSE_STYLES[a.user_response];
           return (
-            <li key={a.id} className="py-2 flex items-baseline gap-3 text-[11px]">
-              <span className="text-ink-faint w-20 shrink-0 font-mono">{when}</span>
-              <span className="flex-1 min-w-0 flex items-baseline gap-2 flex-wrap">
+            <div
+              key={a.id}
+              style={{
+                padding: "12px 20px",
+                borderTop: idx === 0 ? undefined : "1px solid #161616",
+                display: "flex",
+                alignItems: "baseline",
+                gap: "14px",
+                fontFamily: "Geist, system-ui, sans-serif",
+                fontSize: "14px",
+              }}
+            >
+              <span style={{ fontFamily: "var(--font-mono), monospace", fontSize: "12px", color: "#666", width: "100px", flexShrink: 0, letterSpacing: "0.08em" }}>
+                {when}
+              </span>
+              <span style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "baseline", gap: "10px", flexWrap: "wrap" }}>
                 {a.level && (
                   <>
-                    <span className="text-ink-dim uppercase">
+                    <span style={{ color: "#bbb", fontFamily: "var(--font-mono), monospace", fontSize: "11px", letterSpacing: "0.18em", textTransform: "uppercase" }}>
                       {a.level.level_type.replace("_", " ")}
                     </span>
-                    <span className="text-ink font-mono">
+                    <span style={{ color: "#ddd", fontFamily: "var(--font-mono), monospace", fontVariantNumeric: "tabular-nums" }}>
                       @ <Money value={a.level.price} precise />
                     </span>
                     {a.level.price_source && a.level.price_source !== "static" && (
-                      <span className="px-1 py-0.5 rounded text-[9px] bg-raised text-ink-faint uppercase tracking-wider">
+                      <span
+                        style={{
+                          fontFamily: "var(--font-mono), monospace",
+                          fontSize: "10px",
+                          letterSpacing: "0.2em",
+                          textTransform: "uppercase",
+                          color: "#888",
+                          border: "1px solid #333",
+                          padding: "2px 5px",
+                          borderRadius: "2px",
+                        }}
+                      >
                         {formatPriceSourceLabel(a.level.price_source)}
                       </span>
                     )}
                   </>
                 )}
-                <span className="text-ink-faint">hit <Money value={a.triggered_price} precise /></span>
+                <span style={{ color: "#888", fontFamily: "var(--font-mono), monospace", fontVariantNumeric: "tabular-nums" }}>
+                  hit <Money value={a.triggered_price} precise />
+                </span>
                 {a.level?.source_author && (
-                  <span className="text-ink-faint italic">— {a.level.source_author}</span>
+                  <span style={{ color: "#666", fontSize: "13px" }}>— {a.level.source_author}</span>
                 )}
               </span>
-              <span className={`shrink-0 ${respStyle.className}`}>{respStyle.label}</span>
-            </li>
+              <span
+                style={{
+                  flexShrink: 0,
+                  color: respStyle.color,
+                  fontFamily: "var(--font-mono), monospace",
+                  fontSize: "11px",
+                  letterSpacing: "0.2em",
+                  textTransform: "uppercase",
+                  fontWeight: 600,
+                }}
+              >
+                {respStyle.label}
+              </span>
+            </div>
           );
         })}
-      </ul>
-    </section>
+      </div>
+    </TerminalSection>
   );
 }
