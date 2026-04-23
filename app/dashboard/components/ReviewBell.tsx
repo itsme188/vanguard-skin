@@ -27,10 +27,15 @@ export function ReviewBell() {
     // new pending reviews at any time.
     const interval = setInterval(fetchCount, 60_000);
     const onFocus = () => fetchCount();
+    // Dispatched by the review inbox after an approve/reject PATCH so the
+    // header chip updates immediately instead of waiting up to 60s.
+    const onReviewsUpdated = () => fetchCount();
     window.addEventListener("focus", onFocus);
+    window.addEventListener("reviews-updated", onReviewsUpdated);
     return () => {
       clearInterval(interval);
       window.removeEventListener("focus", onFocus);
+      window.removeEventListener("reviews-updated", onReviewsUpdated);
     };
   }, [fetchCount]);
 
