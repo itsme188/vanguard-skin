@@ -23,6 +23,8 @@ import { getSecurityById } from "@/lib/queries/securities";
 import { getUpcomingEvents } from "@/lib/queries/calendar";
 import { getTranscriptsForSecurity } from "@/lib/queries/transcripts";
 import { getArticlesForSecurity, type ResearchMention } from "@/lib/queries/research";
+import { getLatestDailyBar, get52WeekRange, getOhlcvBars } from "@/lib/queries/ohlcv";
+import { computeATR, type OhlcBar } from "@/lib/chart/indicators";
 
 // ─── Result types ──────────────────────────────────────────────
 
@@ -55,9 +57,23 @@ export interface SecurityDetailTransaction extends TransactionWithSecurity {
   expiration_date: string | null;
 }
 
+export interface SecurityKpis {
+  /** Date of the latest daily bar (may lag by weekend/holidays). */
+  asOfDate: string;
+  open: number | null;
+  dayHigh: number | null;
+  dayLow: number | null;
+  volume: number | null;
+  week52High: number | null;
+  week52Low: number | null;
+  /** 14-period ATR on daily bars (Wilder smoothing). Null if <15 bars. */
+  atr14: number | null;
+}
+
 export interface SecurityDetailData {
   security: Security;
   price: SecurityPriceInfo | null;
+  kpis: SecurityKpis | null;
   positions: SecurityPosition[];
   totalValue: number;
   totalCostBasis: number;
@@ -332,6 +348,54 @@ export function getFactorsForSecurity(
 }
 
 /**
+ * Collect "quote-strip" KPIs for the Security Detail Terminal panel:
+ * open, day high/low, volume, 52-week range, and ATR(14). All derived
+ * from the stored daily OHLCV bars — no external fetch.
+ *
+ * Returns null when the security has no daily bars at all (option contracts,
+ * newly-tracked symbols before first backfill). Returns partial values when
+ * some pieces are available and others aren't (e.g. <15 bars → atr14 = null
+ * but everything else populated).
+ */
+export function getKpisForSecurity(
+  db: Database.Database,
+  securityId: number,
+): SecurityKpis | null {
+  const latest = getLatestDailyBar(db, securityId);
+  if (!latest) return null;
+
+  const range = get52WeekRange(db, securityId);
+
+  // ATR needs consecutive bars with prev-close. 30 is enough for a stable
+  // Wilder-smoothed 14-period ATR and cheap to read.
+  const recentBars = getOhlcvBars(db, securityId, "1 day", { limit: undefined })
+    .slice(-30);
+  let atr14: number | null = null;
+  if (recentBars.length >= 15) {
+    const ohlcBars: OhlcBar[] = recentBars.map((b) => ({
+      date: b.date,
+      open: b.open,
+      high: b.high,
+      low: b.low,
+      close: b.close,
+    }));
+    const series = computeATR(ohlcBars, 14);
+    if (series.length > 0) atr14 = series[series.length - 1].value;
+  }
+
+  return {
+    asOfDate: latest.date,
+    open: latest.open,
+    dayHigh: latest.high,
+    dayLow: latest.low,
+    volume: latest.volume,
+    week52High: range?.high ?? null,
+    week52Low: range?.low ?? null,
+    atr14,
+  };
+}
+
+/**
  * Get AI trade grades for a specific security from trade_roundtrips.
  * Returns most recent grades (up to 10) with the review period they came from.
  */
@@ -369,6 +433,7 @@ export function getSecurityDetail(
   if (!security) return null;
 
   const price = getLatestPriceForSecurity(db, securityId);
+  const kpis = getKpisForSecurity(db, securityId);
   const positions = getHoldingsBySecurity(db, securityId);
   const openTaxLots = getOpenTaxLotsBySecurity(db, securityId);
   const closedSales = getClosedSalesBySecurity(db, securityId);
@@ -412,6 +477,7 @@ export function getSecurityDetail(
   return {
     security,
     price,
+    kpis,
     positions,
     totalValue,
     totalCostBasis,

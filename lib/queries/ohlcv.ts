@@ -95,3 +95,67 @@ export function getLatestPrice(
       .get(securityId) as { close_price: number; date: string } | undefined
   ) ?? null;
 }
+
+/**
+ * Get the most recent daily bar for a security. "Today" here means "the
+ * freshest bar we have" — the table usually lags by one close, and on
+ * weekends/holidays it may lag by several days. Callers should show the
+ * returned date as the "as of" label.
+ */
+export function getLatestDailyBar(
+  db: Database.Database,
+  securityId: number,
+): { date: string; open: number; high: number; low: number; close: number; volume: number | null } | null {
+  return (
+    db
+      .prepare(
+        `SELECT bar_date as date, open, high, low, close, volume
+         FROM ohlcv_bars
+         WHERE security_id = ? AND bar_size = '1 day'
+         ORDER BY bar_date DESC
+         LIMIT 1`,
+      )
+      .get(securityId) as
+      | { date: string; open: number; high: number; low: number; close: number; volume: number | null }
+      | undefined
+  ) ?? null;
+}
+
+/**
+ * 52-week high/low from ohlcv_bars. Trailing window based on the DB's most
+ * recent bar date, not calendar today — otherwise a 3-day weekend drops us
+ * out of range. Returns null when fewer than 10 bars exist (arbitrary floor
+ * — below that, "range" is just noise).
+ */
+export function get52WeekRange(
+  db: Database.Database,
+  securityId: number,
+): { high: number; low: number; startDate: string; endDate: string } | null {
+  const row = db
+    .prepare(
+      `SELECT
+        MAX(high) AS high,
+        MIN(low) AS low,
+        MIN(bar_date) AS startDate,
+        MAX(bar_date) AS endDate,
+        COUNT(*) AS n
+       FROM ohlcv_bars
+       WHERE security_id = ?
+         AND bar_size = '1 day'
+         AND bar_date >= date(
+           (SELECT MAX(bar_date) FROM ohlcv_bars WHERE security_id = ? AND bar_size = '1 day'),
+           '-365 days'
+         )`,
+    )
+    .get(securityId, securityId) as
+    | { high: number | null; low: number | null; startDate: string | null; endDate: string | null; n: number }
+    | undefined;
+
+  if (!row || row.high == null || row.low == null || row.n < 10) return null;
+  return {
+    high: row.high,
+    low: row.low,
+    startDate: row.startDate as string,
+    endDate: row.endDate as string,
+  };
+}
