@@ -76,6 +76,7 @@ export default function LevelsReviewPage() {
       );
       // Optimistic: drop the row immediately.
       setLevels((prev) => prev.filter((l) => l.id !== id));
+      window.dispatchEvent(new CustomEvent("reviews-updated"));
     } finally {
       setBusyId(null);
     }
@@ -96,6 +97,7 @@ export default function LevelsReviewPage() {
       );
       toast(`${ids.length} level${ids.length === 1 ? "" : "s"} approved`, "success");
       setLevels([]);
+      window.dispatchEvent(new CustomEvent("reviews-updated"));
     } finally {
       setBusyId(null);
     }

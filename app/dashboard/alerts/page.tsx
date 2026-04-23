@@ -105,6 +105,11 @@ export default function AlertsPage() {
     if (res.ok) {
       const kind: "success" | "info" = response === "acted" ? "success" : "info";
       toast(`Alert marked ${response}`, kind);
+      // Tell AlertsBell (and anything else watching) to re-fetch its pending count.
+      // Without this the bell relies on its 60s poll or a window-focus event,
+      // so ignoring every pending alert in the inbox leaves the bell stuck on
+      // the stale count for up to a minute ("phantom pending alert").
+      window.dispatchEvent(new CustomEvent("alerts-updated"));
     } else {
       toast("Failed to update alert", "error");
     }

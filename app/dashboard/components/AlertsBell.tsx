@@ -60,10 +60,15 @@ export function AlertsBell() {
     fetchCount();
     const interval = setInterval(fetchCount, 60_000);
     const onFocus = () => fetchCount();
+    // Dispatched by the alerts inbox after a respond PATCH so the bell
+    // updates immediately instead of waiting up to 60s for the poll.
+    const onAlertsUpdated = () => fetchCount();
     window.addEventListener("focus", onFocus);
+    window.addEventListener("alerts-updated", onAlertsUpdated);
     return () => {
       clearInterval(interval);
       window.removeEventListener("focus", onFocus);
+      window.removeEventListener("alerts-updated", onAlertsUpdated);
     };
   }, [fetchCount]);
 
