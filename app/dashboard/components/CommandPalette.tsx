@@ -3,18 +3,41 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 
+type SearchResultType =
+  | "security"
+  | "note"
+  | "transaction"
+  | "research_article"
+  | "research_document"
+  | "level"
+  | "alert";
+
 interface SearchResult {
-  type: "security" | "note" | "transaction";
+  type: SearchResultType;
   id: number;
   title: string;
   subtitle: string;
   href: string;
 }
 
-const TYPE_ICONS: Record<string, string> = {
-  security: "\u{1F4C8}", // chart icon
-  note: "\u{1F4DD}",     // memo icon
-  transaction: "\u{1F4B1}", // currency icon
+const TYPE_ICONS: Record<SearchResultType, string> = {
+  security: "\u{1F4C8}",          // chart icon
+  note: "\u{1F4DD}",              // memo icon
+  transaction: "\u{1F4B1}",       // currency icon
+  research_article: "\u{1F4F0}",  // newspaper icon
+  research_document: "\u{1F4D1}", // bookmark tabs icon
+  level: "\u{1F4CC}",             // pin icon
+  alert: "\u{1F514}",             // bell icon
+};
+
+const TYPE_LABELS: Record<SearchResultType, string> = {
+  security: "security",
+  note: "note",
+  transaction: "txn",
+  research_article: "article",
+  research_document: "document",
+  level: "level",
+  alert: "alert",
 };
 
 export function CommandPalette() {
@@ -134,7 +157,7 @@ export function CommandPalette() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyNav}
-            placeholder="Search securities, notes, transactions..."
+            placeholder="Search securities, notes, articles, documents, levels, alerts..."
             className="flex-1 bg-transparent text-sm text-ink placeholder:text-ink-faint outline-none"
             autoComplete="off"
             spellCheck={false}
@@ -173,7 +196,7 @@ export function CommandPalette() {
                   </div>
                 </div>
                 <span className="text-[10px] text-ink-faint bg-muted px-1.5 py-0.5 rounded shrink-0 mt-0.5">
-                  {result.type}
+                  {TYPE_LABELS[result.type]}
                 </span>
               </button>
             ))}
@@ -190,7 +213,7 @@ export function CommandPalette() {
         {/* Hint when empty */}
         {!query.trim() && (
           <div className="px-4 py-4 text-xs text-ink-faint">
-            Type to search securities by symbol or name, notes by content, or transactions by symbol.
+            Type to search across securities, notes, transactions, research articles + documents, levels, and alerts.
           </div>
         )}
       </div>
