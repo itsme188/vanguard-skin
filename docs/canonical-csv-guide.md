@@ -58,6 +58,8 @@ SPLIT, RETURN_OF_CAPITAL, SHORT_SELL
 
 **Income-row placement rule:** For `DIVIDEND`, `INTEREST`, and `TAX_WITHHELD` rows, leave `quantity` and `price` empty and put the cash amount in the `amount` column — never in `fees`. For `REINVESTMENT` rows, populate both `quantity`/`price` (shares received at the reinvestment price) **and** `amount` (total value reinvested).
 
+**TRANSFER sign rule:** For Vanguard `TRANSFER` rows (VMFXX money-market sweeps), `amount` is **signed**: "Sweep Into Settlement Fund" is positive (cash entering VMFXX), "Sweep Out Of Settlement Fund" is negative (cash leaving VMFXX to settle a trade). The direction is already in the notes column — mirror it in the sign.
+
 **Example:**
 ```csv
 account,trade_date,settlement_date,type,symbol,security_name,security_type,quantity,price,amount,fees,notes
@@ -66,6 +68,8 @@ Vanguard Taxable,2025-06-20,,DIVIDEND,AAPL,Apple Inc,Stock,,,25.00,,Q2 dividend
 Vanguard Taxable,2025-06-30,,INTEREST,VMFXX,Vanguard Federal Money Market Fund,Mutual Fund,,,12.45,,
 Vanguard Taxable,2025-06-20,,REINVESTMENT,VTI,Vanguard Total Stock Market ETF,ETF,0.098,255.10,25.00,,Reinvested Q2 dividend
 Vanguard Taxable,2025-07-15,,TAX_WITHHELD,VXUS,Vanguard Total International Stock ETF,ETF,,,-3.50,,Foreign withholding
+Vanguard Taxable,2025-06-10,,TRANSFER,VMFXX,Vanguard Federal Money Market Fund,Mutual Fund,,,1000.00,,Sweep Into Settlement Fund
+Vanguard Taxable,2025-06-12,,TRANSFER,VMFXX,Vanguard Federal Money Market Fund,Mutual Fund,,,-250.00,,Sweep Out Of Settlement Fund
 IBKR,2025-06-18,2025-06-20,SELL,VTI,Vanguard Total Stock Market ETF,ETF,20,242.50,4850.00,1.00,Rebalancing
 ```
 

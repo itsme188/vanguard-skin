@@ -116,6 +116,21 @@ IBKR,2025-03-03,,SELL,AAPL,Apple Inc,Stock,5,155,775,0,`;
       "Apple Inc"
     );
   });
+
+  it("preserves signed amounts on VMFXX sweep TRANSFERs", () => {
+    // Sweep Into Settlement Fund is positive; Sweep Out Of is negative.
+    // Regression: a prior Co-Work prompt stripped the sign so all
+    // sweeps imported positive, which inflated running-total views.
+    const csv = `${header}
+Vanguard Taxable,2025-06-10,,TRANSFER,VMFXX,Vanguard Federal Money Market Fund,Mutual Fund,,,1000.00,,Sweep Into Settlement Fund
+Vanguard Taxable,2025-06-12,,TRANSFER,VMFXX,Vanguard Federal Money Market Fund,Mutual Fund,,,-250.00,,Sweep Out Of Settlement Fund`;
+
+    const result = parseCanonicalCsv(csv, "txn.csv");
+    expect(result.transactions).toHaveLength(2);
+    expect(result.transactions[0].type).toBe("TRANSFER");
+    expect(result.transactions[0].amount).toBe(1000);
+    expect(result.transactions[1].amount).toBe(-250);
+  });
 });
 
 // ── Holdings parser ────────────────────────────────���────────────────
