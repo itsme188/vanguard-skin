@@ -60,4 +60,43 @@ describe("migration system", () => {
       .get() as { count: number };
     expect(applied.count).toBeGreaterThanOrEqual(2);
   });
+
+  it("041_calendar_enrichment adds enrichment columns", () => {
+    runMigrations(db);
+    const cols = db
+      .prepare("PRAGMA table_info(calendar_events)")
+      .all() as { name: string }[];
+    const names = cols.map((c) => c.name);
+    expect(names).toContain("release_time");
+    expect(names).toContain("actual_value");
+    expect(names).toContain("consensus_value");
+    expect(names).toContain("reaction_snapshot");
+    expect(names).toContain("enriched_at");
+  });
+
+  it("041_calendar_enrichment creates sector_etf_gaps table", () => {
+    runMigrations(db);
+    const tbl = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='sector_etf_gaps'",
+      )
+      .get();
+    expect(tbl).toBeTruthy();
+
+    // Verify upsert dedup via PRIMARY KEY(symbol, sector)
+    db.prepare(
+      "INSERT INTO sector_etf_gaps (symbol, sector) VALUES (?, ?)",
+    ).run("ACME", "Industrials");
+    db.prepare(
+      `INSERT INTO sector_etf_gaps (symbol, sector, last_seen_at, count)
+       VALUES (?, ?, datetime('now'), 1)
+       ON CONFLICT(symbol, sector) DO UPDATE SET
+         last_seen_at = datetime('now'),
+         count = count + 1`,
+    ).run("ACME", "Industrials");
+    const row = db
+      .prepare("SELECT count FROM sector_etf_gaps WHERE symbol = ?")
+      .get("ACME") as { count: number };
+    expect(row.count).toBe(2);
+  });
 });
