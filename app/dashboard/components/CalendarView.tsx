@@ -5,6 +5,11 @@ import { useRouter } from "next/navigation";
 import type { CalendarEvent, CalendarBriefing, EventImpact } from "@/lib/types";
 import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
 import { getCurrentMonday, addDays, formatWeekRange } from "@/lib/calendar/date-utils";
+import {
+  EnrichmentRowSummary,
+  EnrichmentDetail,
+  parseReactionSnapshot,
+} from "@/app/dashboard/components/calendar/EnrichmentChips";
 
 // ── Event type styling ───────────────────────────────────────────
 
@@ -290,16 +295,25 @@ export function CalendarView({
                             </div>
                           </div>
 
-                          {/* Detail row: time + estimates */}
+                          {/* Detail row: time + estimates (or post-release actual + reaction) */}
                           <div className="flex items-center gap-3 mt-1 text-xs font-mono text-ink-faint">
                             {event.event_time && (
                               <span>{formatEventTime(event.event_time)}</span>
                             )}
-                            {event.consensus_estimate && (
-                              <span>Est: <span className="text-ink-dim">{event.consensus_estimate}</span></span>
-                            )}
-                            {event.previous_value && (
-                              <span>Prev: <span className="text-ink-dim">{event.previous_value}</span></span>
+                            {event.enriched_at ? (
+                              <EnrichmentRowSummary
+                                actual={event.actual_value}
+                                snapshot={parseReactionSnapshot(event.reaction_snapshot)}
+                              />
+                            ) : (
+                              <>
+                                {event.consensus_estimate && (
+                                  <span>Est: <span className="text-ink-dim">{event.consensus_estimate}</span></span>
+                                )}
+                                {event.previous_value && (
+                                  <span>Prev: <span className="text-ink-dim">{event.previous_value}</span></span>
+                                )}
+                              </>
                             )}
                           </div>
 
@@ -329,6 +343,15 @@ export function CalendarView({
                                     </div>
                                   )}
                                 </div>
+                              )}
+
+                              {/* Post-release enrichment — actual value + market reaction */}
+                              {event.enriched_at && (
+                                <EnrichmentDetail
+                                  actual={event.actual_value}
+                                  snapshot={parseReactionSnapshot(event.reaction_snapshot)}
+                                  enrichedAt={event.enriched_at}
+                                />
                               )}
 
                               {/* Metadata row */}

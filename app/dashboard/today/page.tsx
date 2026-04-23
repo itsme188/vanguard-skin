@@ -6,10 +6,11 @@ import { getAlerts } from "@/lib/queries/security-levels";
 import { getLevelsNearPrice } from "@/lib/queries/briefing-levels";
 import { getAccountByName } from "@/lib/queries/accounts";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
-import type { LevelAlert } from "@/lib/types";
+import type { LevelAlert, CalendarEvent } from "@/lib/types";
 import { NearbyLevelsCard } from "../components/NearbyLevelsCard";
 import { OpenChatButton } from "../components/OpenChatButton";
 import { Money, Pct, Shares } from "@/lib/privacy/components";
+import { TodayReleases } from "../components/TodayReleases";
 
 interface EnrichedAlert extends LevelAlert {
   symbol: string | null;
@@ -147,6 +148,17 @@ export default async function TodayPage() {
         .at(-1) ?? null;
   }
 
+  // ── Today's calendar releases (with release_time set) ─────────────
+  const today = new Date().toISOString().slice(0, 10);
+  const todayReleases = db
+    .prepare(
+      `SELECT * FROM calendar_events
+       WHERE event_date = ?
+         AND release_time IS NOT NULL
+       ORDER BY release_time ASC`,
+    )
+    .all(today) as CalendarEvent[];
+
   const overallDaysOld = latestPriceDate ? daysAgo(latestPriceDate) : null;
   const overallSource = holdings.find((h) => h.price_date === latestPriceDate)?.price_source ?? null;
   const overallQuality =
@@ -163,6 +175,9 @@ export default async function TodayPage() {
           </span>
         )}
       </header>
+
+      {/* ── Today's releases (macro + earnings with known release_time) ── */}
+      {todayReleases.length > 0 && <TodayReleases releases={todayReleases} />}
 
       {/* ── Alerts ── */}
       <section className="rounded-xl border border-edge bg-panel p-5">
