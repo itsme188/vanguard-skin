@@ -23,6 +23,11 @@ export function formatTriggeredAlertsSection(
   db: Database.Database,
   sinceDate: string
 ): string {
+  // sinceDate may arrive as YYYY-MM-DD (today/since_date modes) OR a full ISO
+  // timestamp (since_last mode reads last_digest_sent_at, stored as full ISO).
+  // Wrap in datetime() so SQLite interprets both correctly; never string-
+  // concat a time suffix — that produced "...ZT00:00:00" for the ISO form
+  // and silently matched zero rows.
   const rows = db
     .prepare(
       `SELECT s.symbol, sl.level_type, sl.price, sl.price_source, sl.source_author,
@@ -34,7 +39,7 @@ export function formatTriggeredAlertsSection(
         ORDER BY la.triggered_at DESC
         LIMIT 20`
     )
-    .all(sinceDate + "T00:00:00") as RecentAlertRow[];
+    .all(sinceDate) as RecentAlertRow[];
 
   if (rows.length === 0) return "";
 
@@ -107,7 +112,13 @@ export function generateDigestSince(db: Database.Database, sinceDate: string): s
     limit: 30,
   });
 
-  if (articles.length === 0) return null;
+  const alertsBlock = formatTriggeredAlertsSection(db, sinceDate);
+
+  // Send the email if EITHER articles OR alerts exist. Returning null on
+  // zero-articles previously caused alerts-only mornings to silently skip
+  // the digest entirely — a real case when level crossings fire overnight
+  // but the newsletter mailing list is quiet.
+  if (articles.length === 0 && !alertsBlock) return null;
 
   const now = new Date();
 
@@ -118,13 +129,16 @@ export function generateDigestSince(db: Database.Database, sinceDate: string): s
     year: "numeric",
   });
 
-  const alertsBlock = formatTriggeredAlertsSection(db, sinceDate);
+  const countLine =
+    articles.length === 0
+      ? "No new research articles, but price levels fired — see below."
+      : `${articles.length} article${articles.length === 1 ? "" : "s"} from ${countSources(articles)} source${countSources(articles) === 1 ? "" : "s"}`;
 
   const lines: string[] = [
     `# Morning Research Digest`,
     `### ${dateStr}`,
     "",
-    `${articles.length} article${articles.length === 1 ? "" : "s"} from ${countSources(articles)} source${countSources(articles) === 1 ? "" : "s"}`,
+    countLine,
     "",
     "---",
     "",
