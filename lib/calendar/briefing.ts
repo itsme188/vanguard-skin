@@ -134,6 +134,19 @@ export async function generateWeeklyBriefing(
 
   options?.onProgress?.("Generating briefing via Opus...", 3, 4);
 
+  // ── Released last week — enriched events from the prior 7 days ──
+  const priorWeekStart = addDays(weekOf, -7);
+  const priorWeekEnd = addDays(weekOf, -1);
+  const releasedLastWeek = db
+    .prepare(
+      `SELECT * FROM calendar_events
+       WHERE enriched_at IS NOT NULL
+         AND event_date BETWEEN ? AND ?
+         AND actual_value IS NOT NULL
+       ORDER BY event_date ASC, release_time ASC`,
+    )
+    .all(priorWeekStart, priorWeekEnd) as CalendarEvent[];
+
   const prompt = buildPrompt({
     weekOf,
     holdingsList,
@@ -146,6 +159,7 @@ export async function generateWeeklyBriefing(
     deepContext,
     breadthContext,
     imapFallback,
+    releasedLastWeek,
   });
 
   const { text } = await generateText({
@@ -184,6 +198,7 @@ interface PromptInput {
   deepContext: string;
   breadthContext: string;
   imapFallback: string;
+  releasedLastWeek: CalendarEvent[];
 }
 
 function buildPrompt(p: PromptInput): string {
@@ -241,6 +256,13 @@ function buildPrompt(p: PromptInput): string {
           .join("\n\n")}\n`
       : "";
 
+  const releasedLastWeekSection =
+    p.releasedLastWeek.length > 0
+      ? `\n## Released Last Week (actual + market reaction)\nCalendar events that printed in the last 7 days, with the actual value and the 2-hour market reaction captured automatically. Use this for continuity context — e.g., "last Tuesday's CPI came in hot and SPY sold off -0.4%" sets up this week's setup more honestly than consensus-only framing.\n\n${p.releasedLastWeek
+          .map((e, i) => formatReleasedEventForPrompt(e, i + 1))
+          .join("\n")}\n`
+      : "";
+
   const weekendSection = p.deepContext
     ? `\n## Weekend Reading — Full Newsletter Text\nThese are the complete texts of the user's preferred weekend newsletters. Read each carefully. The user's goal is for your synthesis below to **replace** him reading these himself. Identify where authors agree, where they disagree, the consensus call vs contrarian takes, and any specific securities or sectors they highlight. Cite authors by name when referencing a view.\n\n${p.deepContext}\n`
     : p.imapFallback
@@ -255,7 +277,7 @@ function buildPrompt(p: PromptInput): string {
 
 ## Portfolio Holdings (for context on which events directly affect the portfolio)
 ${p.holdingsList}
-${portfolioEarningsSection}${wshSection}${optionsSection}${triggeredLevelsSection}${nearbyLevelsSection}${otherEventsSection}${weekendSection}${breadthSection}
+${portfolioEarningsSection}${wshSection}${optionsSection}${triggeredLevelsSection}${nearbyLevelsSection}${otherEventsSection}${releasedLastWeekSection}${weekendSection}${breadthSection}
 
 ## Instructions
 
@@ -390,5 +412,55 @@ function formatEventForPrompt(event: CalendarEvent, index: number): string {
   if (event.previous_value) parts.push(`   - Previous: ${event.previous_value}`);
   if (event.description) parts.push(`   - ${event.description}`);
   return parts.join("\n");
+}
+
+/**
+ * One-liner per released event for the "Released last week" context block.
+ *
+ * Example:
+ *   - **CPI** (Apr 16): actual 3.2% vs est 3.1% · SPY -0.41% / QQQ -0.57% / XLF -0.68%
+ */
+function formatReleasedEventForPrompt(event: CalendarEvent, index: number): string {
+  const parts: string[] = [];
+  parts.push(`${index}. **${event.title}**`);
+  parts.push(`(${event.event_date})`);
+
+  const values: string[] = [];
+  if (event.actual_value) values.push(`actual ${event.actual_value}`);
+  if (event.consensus_value && event.consensus_value !== event.actual_value) {
+    values.push(`vs est ${event.consensus_value}`);
+  }
+  if (values.length > 0) parts.push(`— ${values.join(" ")}`);
+
+  if (event.reaction_snapshot) {
+    try {
+      const snap = JSON.parse(event.reaction_snapshot) as {
+        spy?: { delta_pct: number };
+        qqq?: { delta_pct: number };
+        tlt?: { delta_pct: number };
+        sector?: { symbol: string; delta_pct: number };
+      };
+      const reacts: string[] = [];
+      if (snap.spy) reacts.push(`SPY ${fmtSignedPct(snap.spy.delta_pct)}`);
+      if (snap.qqq) reacts.push(`QQQ ${fmtSignedPct(snap.qqq.delta_pct)}`);
+      if (snap.tlt) reacts.push(`TLT ${fmtSignedPct(snap.tlt.delta_pct)}`);
+      if (snap.sector) {
+        reacts.push(
+          `${snap.sector.symbol} ${fmtSignedPct(snap.sector.delta_pct)}`,
+        );
+      }
+      if (reacts.length > 0) parts.push(`· ${reacts.join(" / ")}`);
+    } catch {
+      // malformed snapshot — skip reaction line
+    }
+  }
+
+  return `- ${parts.join(" ")}`;
+}
+
+function fmtSignedPct(n: number | null | undefined): string {
+  if (n == null) return "—";
+  const sign = n > 0 ? "+" : "";
+  return `${sign}${n.toFixed(2)}%`;
 }
 
