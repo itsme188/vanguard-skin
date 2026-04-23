@@ -228,6 +228,13 @@ export interface CalendarEvent {
   week_of: string | null;
   fetched_at: string;
   created_at: string;
+  // Migration 041 — living-record enrichment. All nullable; unpopulated
+  // rows behave exactly as they did pre-sprint.
+  release_time: string | null;
+  actual_value: string | null;
+  consensus_value: string | null;
+  reaction_snapshot: string | null;
+  enriched_at: string | null;
 }
 
 export interface CalendarBriefing {
