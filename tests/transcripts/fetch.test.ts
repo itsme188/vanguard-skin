@@ -1,8 +1,32 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { upsertTranscript } from "@/lib/mutations/transcripts";
 import { getTranscriptForChat } from "@/lib/transcripts/fetch";
+
+// Mock external fetchers so tests stay offline. The cache-hit tests don't
+// reach these; only the legacy-invalidation test does (test #4), and it
+// expects either a successful refresh with non-legacy content or a full
+// miss — a real network call would hang the suite at 5s.
+vi.mock("@/lib/apis/api-ninjas", () => ({
+  isApiNinjasConfigured: () => false,
+  getEarningsTranscript: vi.fn(async () => null),
+}));
+
+vi.mock("@/lib/apis/motley-fool", () => ({
+  getLatestTranscript: vi.fn(async () => null),
+}));
+
+vi.mock("@/lib/apis/edgar", () => ({
+  getEarnings8KFilings: vi.fn(async () => [
+    {
+      accessionNumber: "refresh-accession",
+      filingDate: "2026-01-31",
+      filingUrl: "https://example.test/filing",
+      pressReleaseText: "refreshed ".repeat(2000),
+    },
+  ]),
+}));
 
 function makeDb(): Database.Database {
   const db = new Database(":memory:");
