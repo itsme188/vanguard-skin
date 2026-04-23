@@ -30,7 +30,7 @@ export function formatTriggeredAlertsSection(
          FROM level_alerts la
          JOIN security_levels sl ON sl.id = la.level_id
          JOIN securities s ON s.id = la.security_id
-        WHERE la.triggered_at >= ?
+        WHERE datetime(la.triggered_at) >= datetime(?)
         ORDER BY la.triggered_at DESC
         LIMIT 20`
     )
