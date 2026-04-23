@@ -3,6 +3,7 @@ import type {
   ResearchDocumentSummary,
   ResearchDocumentType,
 } from "@/lib/queries/research-documents";
+import { TerminalSection } from "./TerminalSection";
 
 const DOC_TYPE_LABELS: Record<ResearchDocumentType, string> = {
   analyst_report: "Analyst Report",
@@ -39,60 +40,81 @@ export function ResearchDocumentsPanel({
   if (!symbol || documents.length === 0) return null;
 
   return (
-    <section className="rounded-xl border border-edge bg-panel overflow-hidden">
-      <div className="px-5 py-3 border-b border-edge flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-ink">
-          Research Documents ({documents.length})
-        </h2>
+    <TerminalSection
+      title={`Research Documents · ${documents.length}`}
+      action={
         <Link
           href={`/dashboard/research?view=documents`}
-          className="text-xs text-gold hover:underline"
+          style={{
+            fontFamily: "var(--font-mono), monospace",
+            fontSize: "11px",
+            letterSpacing: "0.22em",
+            textTransform: "uppercase",
+            color: "#ffb84d",
+          }}
+          className="hover:underline"
         >
-          View All
+          View all →
         </Link>
-      </div>
-      <div className="divide-y divide-edge/50">
-        {documents.map((doc) => {
+      }
+    >
+      <div>
+        {documents.map((doc, idx) => {
           const tags = parseStringArray(doc.tags);
           return (
-            <div key={doc.id} className="px-5 py-3">
-              <div className="flex items-center gap-2 mb-1 flex-wrap">
+            <div
+              key={doc.id}
+              style={{
+                padding: "14px 20px",
+                borderTop: idx === 0 ? undefined : "1px solid #161616",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "6px", flexWrap: "wrap" }}>
                 {doc.source && (
-                  <span className="text-[10px] font-medium text-gold uppercase tracking-wide">
+                  <span style={{ fontFamily: "var(--font-mono), monospace", fontSize: "11px", fontWeight: 600, color: "#ffb84d", letterSpacing: "0.18em", textTransform: "uppercase" }}>
                     {doc.source}
                   </span>
                 )}
                 {doc.publication_date && (
-                  <span className="text-xs text-ink-faint font-mono">
+                  <span style={{ fontFamily: "var(--font-mono), monospace", fontSize: "12px", color: "#666", letterSpacing: "0.08em" }}>
                     {doc.publication_date}
                   </span>
                 )}
                 {doc.document_type && (
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-raised text-ink-dim">
+                  <span style={{ fontFamily: "var(--font-mono), monospace", fontSize: "11px", letterSpacing: "0.14em", textTransform: "uppercase", color: "#888", border: "1px solid #333", padding: "2px 6px", borderRadius: "2px" }}>
                     {DOC_TYPE_LABELS[doc.document_type]}
                   </span>
                 )}
               </div>
-              <p className="text-sm text-ink font-medium">{doc.title}</p>
+              <p style={{ fontFamily: "Geist, system-ui, sans-serif", fontSize: "16px", fontWeight: 500, color: "#eee", marginBottom: doc.summary ? "4px" : 0 }}>
+                {doc.title}
+              </p>
               {doc.summary && (
-                <p className="text-xs text-ink-dim line-clamp-2 mt-0.5">
+                <p className="line-clamp-2" style={{ fontFamily: "Geist, system-ui, sans-serif", fontSize: "14px", color: "#aaa", lineHeight: 1.55 }}>
                   {doc.summary}
                 </p>
               )}
               {tags.length > 0 && (
-                <div className="flex flex-wrap gap-1 mt-1.5">
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "8px" }}>
                   {tags.slice(0, 6).map((t) => (
                     <span
                       key={t}
-                      className="px-1.5 py-0.5 rounded-full bg-gold/5 border border-gold/20 text-gold/80 text-[10px]"
+                      style={{
+                        fontFamily: "var(--font-mono), monospace",
+                        fontSize: "11px",
+                        color: "#ffb84d",
+                        border: "1px solid rgba(255, 184, 77, 0.25)",
+                        background: "rgba(255, 184, 77, 0.05)",
+                        padding: "2px 6px",
+                        borderRadius: "2px",
+                        letterSpacing: "0.06em",
+                      }}
                     >
                       {t}
                     </span>
                   ))}
                   {tags.length > 6 && (
-                    <span className="text-[10px] text-ink-faint">
-                      +{tags.length - 6}
-                    </span>
+                    <span style={{ fontSize: "11px", color: "#666" }}>+{tags.length - 6}</span>
                   )}
                 </div>
               )}
@@ -100,6 +122,6 @@ export function ResearchDocumentsPanel({
           );
         })}
       </div>
-    </section>
+    </TerminalSection>
   );
 }
