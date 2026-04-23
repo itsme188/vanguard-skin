@@ -1,6 +1,6 @@
 # Vanguard Skin — TODO
 
-> **In-repo shortlist.** Updated 2026-04-24.
+> **In-repo shortlist.** Updated 2026-04-24 (reconciled pass — added open items from master roadmap that code-grep confirmed unshipped, plus 3 user-reported bugs/asks).
 >
 > - v2 build log (Mar–Apr 2026): [archive/TODO-v2-complete-2026-03-30.md](archive/TODO-v2-complete-2026-03-30.md)
 > - Master roadmap (off-repo, session-driven): `~/.claude/plans/last-session-session-summary-eventual-ripple.md`
@@ -28,6 +28,8 @@ Headline features not reflected in the v2 archive:
 - **Research PDF knowledge base** (2026-04-22, migration 035) — upload analyst reports / research notes as PDFs; Claude extracts metadata + full body; SQLite FTS5 powers lexical search; chat tool `query_research_documents`; Documents tab in Research view. `researchDocumentExtraction` → Sonnet via native `document` content block.
 - **Terminal redesign Phase 2 — MarketDataPanel KPI row** (2026-04-24) — 5-cell quote-strip between chart and LevelsPanel: Open / Day Range / 52w Range / Volume / ATR(14). Hidden on securities with no daily bars. New `<KpiCell>` primitive in `TerminalSection.tsx`; new queries `getLatestDailyBar` + `get52WeekRange` + `getKpisForSecurity`. Shipped alongside a `bare` option on `<Money>` to fix a `$$` double-dollar bug in the hero and new cells.
 - **Stability burndown** (2026-04-24) — +43 tests. Fixed flaky transcript test (mocked EDGAR/Motley Fool/API Ninjas fetchers). Added 7 auto-refresh pipeline integration tests. Added 19 Cloudflare Worker cron tests (dst gates, KV dedup, primary/fallback paths, `/internal/*` handlers). Added 7 API route contract tests (sync-status, levels/extract, research/sync SSE).
+- **Levels & alerts polish — Sessions 4+** (2026-04-20 → 2026-04-22, discovered during reconciliation pass) — items from master roadmap Theme A/L that shipped without being reflected in this file: A2 chat tools `query_levels` + `query_alerts` (`lib/chat/tools.ts:726,755`), L1 alerts inbox grouping into "Triggered today" / "Older pending" (`app/dashboard/alerts/page.tsx:277`), L4 `AlertsBell` hover preview, L5 alert row price-source chip (SMA/EMA), L8 `RecentAlertsPanel` on Security Detail.
+- **Q1 2026 Vanguard Taxable income gap — closed** (2026-04-23) — all 11 Vanguard brokerage PDFs imported via Claude Co-Work. 167 dividends ($8,941) + 19 interest ($3,219) landed. VMFXX sweep-sign bug (201 rows) SQL-repaired in place; canonical CSV prompt patched (`176a064`) across all 3 synced sources so future imports preserve signed amounts.
 
 ---
 
@@ -40,7 +42,32 @@ Headline features not reflected in the v2 archive:
 - ✅ **Research mention extraction quality** — shipped 2026-04-23 (`64bdc39`). Two-layer gate (word-boundary + Haiku) at extraction time; 250 articles re-verified via `scripts/backfill-research-mentions.ts`. New FeatureKey `researchMentionVerification` → Haiku 4.5.
 - ✅ **IBKR options metadata backfill** — shipped 2026-04-23 (`8707181`). 393 of 394 options now have structured `underlying_symbol` / `option_type` / `strike_price` / `expiration_date`; CALL/PUT chips now render on Security Detail.
 - ✅ **Settings UI fallback for localhost** — shipped 2026-04-22 (`8ce0099`).
-- [ ] **Q1 2026 Vanguard Taxable income gap** — unchanged. User re-runs 11 unimported PDFs through Co-Work when ready.
+- ✅ **Q1 2026 Vanguard Taxable income gap** — closed 2026-04-23. See "Shipped since v2" above.
+
+---
+
+## Open items
+
+User-reported (2026-04-24):
+
+- [ ] **Phantom alert after full inbox clear** — user had 2 pending alerts, opened both, responded "ignored" on each, but the header `AlertsBell` still showed 1 pending. Likely a stale count source: either the `GET /api/alerts?countOnly=true` cache on the bell isn't invalidated on `PATCH /api/alerts`, or the pending-count query doesn't filter on `response` the same way the inbox list does. Repro: two pending alerts → ignore both → check bell without hard-refresh. Suspect files: `app/dashboard/components/AlertsBell.tsx`, `app/api/alerts/route.ts`, `lib/queries/alerts.ts` (count vs list query parity). ~45 min to diagnose + fix + test.
+- [ ] **Global / in-page search** — no search bar today (header Search icon opens a modal that already exists via `/api/search` but coverage is thin). Scope to define: (a) global search across securities + notes + transactions + research articles + levels, Cmd+K palette pattern; OR (b) per-page filter bars (Holdings table / Transactions / Research feed). Probably both eventually, but pick one first. Start with scoping session to define which pages need in-page filtering vs which queries belong in the global palette. ~30 min scoping + 3–4 hr implementation.
+- [ ] **Calendar / macro event post-release enrichment** — after a scheduled event (FOMC, CPI, jobs, earnings) passes, fetch the actual released value and a market-reaction snapshot. Two-phase cron: (1) T+5min — pull actual value from FRED for macro events (already have a FRED client in `lib/calendar/macro-events.ts`) or Finnhub for earnings; fill into `calendar_events.actual_value` / `consensus_beat` columns. (2) T+2h — snapshot SPY/QQQ/DIA/sector-ETF intraday move since the release time, store alongside the actual value so briefing + Security Detail event blocks can show "CPI 3.2% vs 3.1% consensus; SPY -0.4% in the hour after". Requires new migration for the two result columns + a polling scheduler (likely extends the existing auto-refresh pipeline or adds a new launchd/Workers cron tick every 15 min during US market hours). ~4–6 hr.
+
+From master roadmap — still open despite being planned pre-session-6:
+
+- [ ] **A3 — Daily-digest "Yesterday's triggered alerts" section** (~15 min). Query `level_alerts WHERE triggered_at >= date('now','-1 day') AND user_response='pending'` and render an HTML block above the article digest. File: `lib/digest/daily-digest.ts`.
+- [ ] **A5 — Explicit `expires_at` field in `LevelsPanel` form** (~15 min). API already accepts `expires_at`; UI doesn't expose it. Add an optional date input beneath "Timeframe (context)" labeled "Expires (auto-deactivate after)". File: `app/dashboard/security/[id]/LevelsPanel.tsx`.
+- [ ] **A13 — Cross-form validation audit** (~30 min). Grep `disabled=\{.*!` across `app/dashboard/**` forms; verify each still submits across all field-dependent modes (precedent bug: `disabled={loading || !price}` broke MA-mode level creation).
+- [ ] **L2 — `LevelsPanel` mobile quick-add form** (~45 min). Collapse the ~10-field form to 3 (Type, Reference, Price) with "More options…" disclosure on mobile. Desktop unchanged.
+- [ ] **L3 — Provenance filter in `LevelsPanel`** (~20 min). Source-author pills above the level list (All / Me / Newsletter / per-author from `distinct(source_author)`). Reuse existing filter-pill pattern.
+- [ ] **L6 — Chart crosshair legend mobile density** (~20 min). With 4 MAs + OHLCV + Vol the crosshair legend overflows on phones. Hide raw OHLC on mobile breakpoint; show only delta-to-prior-close + active indicator values.
+- [ ] **L9 — Calendar × levels cross-reference** (~1–1.5 hr). Each earnings event on the Calendar view shows "2 active levels on NVDA" → links to Security Detail. Query: `security_levels WHERE security_id=? AND is_active=1`. File: `app/dashboard/calendar/` components.
+- [ ] **H3 — Vanguard statement PDF → direct import** (~2–3 hr). Parser exists for holdings extraction; extend `lib/import/parsers/vanguard-pdf.ts` to also extract transactions (dividends / interest / trades) so the Co-Work round-trip becomes optional. Add anonymized fixture + tests.
+
+Other open (from MEMORY, not previously in this file):
+
+- [ ] **IBKR April 2026 transactions gap** — zero IBKR transactions in DB for 2026-04-01 → 2026-04-21. Full PURR round-trip (−$1,220 realized loss) missing from P&L. User needs to export an IBKR Activity Statement (Flex Query) for April and drop it on the Import tab. 2026-04-21 reconciles to 0.43% against the live CSV; 2026-04-16 +4.8% snapshot-vs-computed flag is a TWS timing artifact, not a data bug.
 
 ---
 
@@ -85,4 +112,4 @@ Headline features not reflected in the v2 archive:
 
 - [2026-04-15-cloudflare-saas-rewrite.md](2026-04-15-cloudflare-saas-rewrite.md) — SaaS v3 scoping (D1, TWS bridge, multi-tenant, ~7 months)
 - [2026-04-21-mobile-today-view-decision.md](2026-04-21-mobile-today-view-decision.md) — shipped
-- [2026-04-21-workers-cron-hybrid.md](2026-04-21-workers-cron-hybrid.md) — Phase 4, in progress
+- [2026-04-21-workers-cron-hybrid.md](2026-04-21-workers-cron-hybrid.md) — Phase 4, shipped 2026-04-21
