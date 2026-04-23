@@ -63,3 +63,4 @@ scripts/capture-screenshots.mjs
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+.claude/scheduled_tasks.lock
