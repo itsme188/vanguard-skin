@@ -107,8 +107,6 @@ Per-security Bloomberg-style terminal page — candlestick chart with auto-sugge
 
 ## Screenshots
 
-> Most screenshots reflect the v2.0 dashboard. The Security Detail page was redesigned in v2.1 (not yet captured).
-
 <details>
 <summary>Account Details</summary>
 
@@ -152,7 +150,7 @@ Per-security Bloomberg-style terminal page — candlestick chart with auto-sugge
 </details>
 
 <details>
-<summary>Security Detail (v2.0 look — v2.1 Terminal redesign not yet captured)</summary>
+<summary>Security Detail — Terminal aesthetic</summary>
 
 ![Security Detail](docs/screenshots/security-detail.png)
 </details>
