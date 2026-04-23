@@ -37,6 +37,7 @@ import {
   getRatingChanges,
 } from "@/lib/queries/analyst-estimates";
 import { syncAnalystCoverage } from "@/lib/apis/analyst-estimates";
+import { getRecentReleaseReactions } from "@/lib/queries/level-performance";
 
 // ─── Tool Definitions ─────────────────────────────────────────────
 
@@ -775,6 +776,33 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         limit: {
           type: "number",
           description: "Max results. Default 50.",
+        },
+      },
+    },
+  },
+  {
+    name: "query_release_reactions",
+    description:
+      "Look up how the market reacted to past macro releases or earnings. Each row includes the actual value, consensus at release time, and the 2-hour post-release price change for SPY, QQQ, TLT, and (when mapped) the sector ETF. Use when the user asks 'what did SPY do on the last three hot CPI prints?', 'how does NVDA typically trade after earnings?', or 'show me the last few FOMC reactions'. Pass event_type = 'cpi' / 'fomc' / 'jobs' / 'gdp' for macro, or 'earnings_NVDA' / 'earnings_SPY' for a specific ticker's earnings.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        event_type: {
+          type: "string",
+          description:
+            "Event type key: 'cpi' | 'fomc' | 'jobs' | 'gdp' | 'pmi' | 'retail_sales' | 'housing' for macro, or 'earnings_TICKER' (e.g. 'earnings_NVDA') for a specific company's earnings. Omit for all event types.",
+        },
+        symbol: {
+          type: "string",
+          description: "Filter by ticker symbol (alternative to earnings_TICKER shortcut). Omit for all.",
+        },
+        since_date: {
+          type: "string",
+          description: "YYYY-MM-DD. Limit to events on or after this date.",
+        },
+        limit: {
+          type: "number",
+          description: "Max results. Default 10.",
         },
       },
     },
@@ -1580,6 +1608,37 @@ export async function executeTool(
         break;
       }
 
+      case "query_release_reactions": {
+        const rows = getRecentReleaseReactions(db, {
+          eventType: input.event_type as string | undefined,
+          symbol: input.symbol ? String(input.symbol).toUpperCase() : undefined,
+          sinceDate: input.since_date as string | undefined,
+          limit: (input.limit as number) ?? 10,
+        });
+        const decoded = rows.map((r) => {
+          let reaction: unknown = null;
+          if (r.reaction_snapshot) {
+            try {
+              reaction = JSON.parse(r.reaction_snapshot);
+            } catch {
+              reaction = null;
+            }
+          }
+          return {
+            event_id: r.event_id,
+            title: r.title,
+            event_date: r.event_date,
+            event_type: r.event_type,
+            symbol: r.symbol,
+            actual_value: r.actual_value,
+            consensus_value: r.consensus_value,
+            reaction,
+          };
+        });
+        rawResult = { releases: decoded, count: decoded.length };
+        break;
+      }
+
       default:
         return { error: `Unknown tool: ${toolName}` };
     }
@@ -1624,4 +1683,5 @@ export const TOOL_LABELS: Record<string, string> = {
   query_calendar_briefings: "Retrieving market briefings...",
   query_levels: "Scanning price levels...",
   query_alerts: "Reviewing alert history...",
+  query_release_reactions: "Looking up release reactions...",
 };
