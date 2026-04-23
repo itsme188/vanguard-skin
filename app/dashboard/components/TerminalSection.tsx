@@ -145,6 +145,86 @@ export function TerminalTD({
 }
 
 /**
+ * "Quote-strip" KPI cell — uppercase mono label above a big mono value.
+ * Used for the 5-across KPI row on MarketDataPanel (Open / Day range / 52w
+ * range / Volume / ATR). Handles null gracefully with `—`.
+ *
+ * The cell paints its own right border so callers can stack them in a flex
+ * row without wiring separators. The outermost cell's border is harmless —
+ * the parent container masks it via `overflow: hidden`.
+ */
+export function KpiCell({
+  label,
+  value,
+  subvalue,
+  tone,
+}: {
+  label: string;
+  value: ReactNode;
+  subvalue?: ReactNode;
+  /** Subtle color tint for the primary value. Defaults to near-white. */
+  tone?: string;
+}) {
+  return (
+    <div
+      style={{
+        flex: "1 1 0",
+        minWidth: 0,
+        padding: "14px 20px",
+        borderRight: "1px solid #1f1f1f",
+      }}
+    >
+      <div
+        style={{
+          fontFamily: "var(--font-mono), monospace",
+          fontSize: "10px",
+          letterSpacing: "0.22em",
+          textTransform: "uppercase",
+          color: "#666",
+          marginBottom: "6px",
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+      >
+        {label}
+      </div>
+      <div
+        style={{
+          fontFamily: "var(--font-mono), monospace",
+          fontSize: "15px",
+          fontWeight: 600,
+          color: tone ?? "#eee",
+          fontVariantNumeric: "tabular-nums",
+          lineHeight: 1.2,
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+      >
+        {value}
+      </div>
+      {subvalue != null && (
+        <div
+          style={{
+            fontFamily: "var(--font-mono), monospace",
+            fontSize: "11px",
+            color: "#777",
+            fontVariantNumeric: "tabular-nums",
+            marginTop: "3px",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {subvalue}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * Small inline "pill" used for grade letters, term markers (LT/ST), etc.
  * Rendered as a filled square block — no rounded pills.
  */

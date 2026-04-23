@@ -3,7 +3,9 @@
 import { useEffect, useState } from "react";
 import { SecurityChart } from "./SecurityChart";
 import { LevelsPanel } from "./LevelsPanel";
-import { Money, Pct } from "@/lib/privacy/components";
+import { KpiCell } from "./TerminalSection";
+import { Money, Pct, Count } from "@/lib/privacy/components";
+import type { SecurityKpis } from "@/lib/queries/security-detail";
 
 /**
  * Live clock — conveys "this panel is streaming, not static." Updates every
@@ -33,6 +35,19 @@ interface Props {
   priceChange: number | null;
   priceChangePct: number | null;
   priceDate: string | null;
+  kpis: SecurityKpis | null;
+}
+
+/**
+ * Compact volume label: 12.3M / 4.7K / 812. Privacy-aware via the <Count>
+ * wrapper around the numeric piece.
+ */
+function formatVolumeValue(v: number | null): { num: number; suffix: string } | null {
+  if (v == null) return null;
+  if (v >= 1e9) return { num: v / 1e9, suffix: "B" };
+  if (v >= 1e6) return { num: v / 1e6, suffix: "M" };
+  if (v >= 1e3) return { num: v / 1e3, suffix: "K" };
+  return { num: v, suffix: "" };
 }
 
 /**
@@ -53,9 +68,11 @@ export function MarketDataPanel({
   priceChange,
   priceChangePct,
   priceDate,
+  kpis,
 }: Props) {
   const isUp = priceChange != null && priceChange >= 0;
   const gainColor = isUp ? "#22c55e" : "#ef4444";
+  const vol = kpis ? formatVolumeValue(kpis.volume) : null;
 
   return (
     <section
@@ -159,7 +176,7 @@ export function MarketDataPanel({
               >
                 $
               </span>
-              <Money value={currentPrice} precise />
+              <Money value={currentPrice} precise bare />
             </div>
 
             {priceChange != null && priceChangePct != null && (
@@ -205,6 +222,84 @@ export function MarketDataPanel({
       <div className="h-[460px] md:h-[520px]" style={{ borderBottom: "1px solid #1f1f1f" }}>
         <SecurityChart securityId={securityId} symbol={symbol} />
       </div>
+
+      {/* Quote-strip KPIs — Bloomberg-style row between chart and levels.
+          Hidden entirely when no bars exist (options, new watchlist adds). */}
+      {kpis && (
+        <div
+          className="flex flex-wrap"
+          style={{ borderBottom: "1px solid #1f1f1f", background: "#0b0b0b" }}
+        >
+          <KpiCell
+            label="Open"
+            value={
+              kpis.open != null ? (
+                <>
+                  <span style={{ color: "#555", marginRight: "0.08em" }}>$</span>
+                  <Money value={kpis.open} precise bare />
+                </>
+              ) : (
+                "—"
+              )
+            }
+          />
+          <KpiCell
+            label="Day Range"
+            value={
+              kpis.dayLow != null && kpis.dayHigh != null ? (
+                <>
+                  <Money value={kpis.dayLow} precise /> – <Money value={kpis.dayHigh} precise />
+                </>
+              ) : (
+                "—"
+              )
+            }
+          />
+          <KpiCell
+            label="52w Range"
+            value={
+              kpis.week52Low != null && kpis.week52High != null ? (
+                <>
+                  <Money value={kpis.week52Low} precise /> – <Money value={kpis.week52High} precise />
+                </>
+              ) : (
+                "—"
+              )
+            }
+          />
+          <KpiCell
+            label="Volume"
+            value={
+              vol != null ? (
+                <>
+                  <Count value={vol.suffix ? Math.round(vol.num * 10) / 10 : Math.round(vol.num)} />
+                  {vol.suffix && <span style={{ color: "#777" }}>{vol.suffix}</span>}
+                </>
+              ) : (
+                "—"
+              )
+            }
+          />
+          <KpiCell
+            label="ATR 14"
+            value={
+              kpis.atr14 != null ? (
+                <>
+                  <span style={{ color: "#555", marginRight: "0.08em" }}>$</span>
+                  <Money value={kpis.atr14} precise bare />
+                </>
+              ) : (
+                "—"
+              )
+            }
+            subvalue={
+              kpis.atr14 != null && currentPrice != null && currentPrice > 0 ? (
+                <Pct value={(kpis.atr14 / currentPrice) * 100} digits={2} />
+              ) : undefined
+            }
+          />
+        </div>
+      )}
 
       {/* Levels — rendered embedded so it drops its own chrome and inherits
           the dark Terminal background from this panel. */}

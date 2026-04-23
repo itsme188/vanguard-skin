@@ -79,7 +79,7 @@ export default async function SecurityDetailPage(props: {
 
   if (!detail) notFound();
 
-  const { security, price, positions, openTaxLots, closedSales, recentTransactions, relatedOptionTransactions, notes, upcomingEvents, factors, transcripts, tradeGrades, researchMentions } = detail;
+  const { security, price, kpis, positions, openTaxLots, closedSales, recentTransactions, relatedOptionTransactions, notes, upcomingEvents, factors, transcripts, tradeGrades, researchMentions } = detail;
   const watched = isOnWatchlist(db, securityId);
   const watchlistItem = watched ? getWatchlistItem(db, securityId) : null;
 
@@ -118,6 +118,7 @@ export default async function SecurityDetailPage(props: {
         priceChange={price?.change ?? null}
         priceChangePct={price?.change_pct ?? null}
         priceDate={price?.date ?? null}
+        kpis={kpis}
       />
 
       {/* Action buttons — terminal-styled bordered pills */}

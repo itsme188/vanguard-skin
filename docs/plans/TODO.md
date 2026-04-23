@@ -1,6 +1,6 @@
 # Vanguard Skin — TODO
 
-> **In-repo shortlist.** Updated 2026-04-23.
+> **In-repo shortlist.** Updated 2026-04-24.
 >
 > - v2 build log (Mar–Apr 2026): [archive/TODO-v2-complete-2026-03-30.md](archive/TODO-v2-complete-2026-03-30.md)
 > - Master roadmap (off-repo, session-driven): `~/.claude/plans/last-session-session-summary-eventual-ripple.md`
@@ -26,6 +26,8 @@ Headline features not reflected in the v2 archive:
 - **Chat history delete** (2026-04-22) — sidebar trash icon + `deleteConversation` mutation + `DELETE /api/chat/conversations/[id]`. Completes Theme I.
 - **EDGAR 10-K / 10-Q section extraction** (2026-04-22, migration 034) — new chat tool `query_filing_section` summarizes Item 1A Risk Factors and MD&A via Sonnet, cached per `(symbol, accession, section)`. Feature key `filingSectionExtraction` in FEATURE_MODELS.
 - **Research PDF knowledge base** (2026-04-22, migration 035) — upload analyst reports / research notes as PDFs; Claude extracts metadata + full body; SQLite FTS5 powers lexical search; chat tool `query_research_documents`; Documents tab in Research view. `researchDocumentExtraction` → Sonnet via native `document` content block.
+- **Terminal redesign Phase 2 — MarketDataPanel KPI row** (2026-04-24) — 5-cell quote-strip between chart and LevelsPanel: Open / Day Range / 52w Range / Volume / ATR(14). Hidden on securities with no daily bars. New `<KpiCell>` primitive in `TerminalSection.tsx`; new queries `getLatestDailyBar` + `get52WeekRange` + `getKpisForSecurity`. Shipped alongside a `bare` option on `<Money>` to fix a `$$` double-dollar bug in the hero and new cells.
+- **Stability burndown** (2026-04-24) — +43 tests. Fixed flaky transcript test (mocked EDGAR/Motley Fool/API Ninjas fetchers). Added 7 auto-refresh pipeline integration tests. Added 19 Cloudflare Worker cron tests (dst gates, KV dedup, primary/fallback paths, `/internal/*` handlers). Added 7 API route contract tests (sync-status, levels/extract, research/sync SSE).
 
 ---
 

@@ -18,6 +18,13 @@ interface MoneyProps {
   signed?: boolean;
   fallback?: string;
   className?: string;
+  /**
+   * Omit the leading `$` glyph — useful for display patterns that render
+   * the currency symbol separately (e.g. the faint-`$` + big-amber-number
+   * split in the Terminal hero). Negative values still get a "−" prefix;
+   * `signed` still controls the explicit "+".
+   */
+  bare?: boolean;
 }
 
 export function Money({
@@ -26,6 +33,7 @@ export function Money({
   signed = false,
   fallback = "—",
   className,
+  bare = false,
 }: MoneyProps) {
   const { isPrivate } = usePrivacy();
   if (value === null || value === undefined || !Number.isFinite(value)) {
@@ -36,8 +44,10 @@ export function Money({
   }
   const formatter = precise ? formatUSDPrecise : formatUSD;
   const formatted = formatter(Math.abs(value));
+  // formatter output always begins with "$" — strip it when `bare`.
+  const numeric = bare ? formatted.replace(/^\$/, "") : formatted;
   const sign = signed && value > 0 ? "+" : value < 0 ? "−" : "";
-  return <span className={className}>{`${sign}${formatted}`}</span>;
+  return <span className={className}>{`${sign}${numeric}`}</span>;
 }
 
 interface PctProps {
