@@ -24,6 +24,14 @@ export function getCurrentETHour(now: Date = new Date()): number {
   return hour % 24;
 }
 
+export function getCurrentETMinute(now: Date = new Date()): number {
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: ET_ZONE,
+    minute: "numeric",
+  });
+  return parseInt(fmt.format(now), 10);
+}
+
 export function shouldRunNow(expectedHour: number, now: Date = new Date()): boolean {
   return getCurrentETHour(now) === expectedHour;
 }
