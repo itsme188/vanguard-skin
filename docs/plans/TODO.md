@@ -48,11 +48,22 @@ Headline features not reflected in the v2 archive:
 
 ## Open items
 
+Closed this session (2026-04-24 evening — Calendar Living Record Tier-3 sprint):
+
+- ✅ **Phantom alert after full inbox clear** — closed 2026-04-24 afternoon (`c363e6d`). CustomEvent `alerts-updated` dispatch from inbox → AlertsBell listener. Sibling fix for ReviewBell via `reviews-updated`.
+- ✅ **Global / in-page search** — closed 2026-04-24 afternoon (`e3085d6`). Cmd+K palette expanded to 7 source types (added research_article, research_document via FTS5, level, alert); AllHoldingsTable gained text filter.
+- ✅ **Calendar / macro event post-release enrichment** — closed 2026-04-24 evening (migration 041, commits `58eef66` through `e353a79`). Full pipeline: scheduler + FRED/Finnhub actuals + TWS reaction capture + UI chips + briefing context block. Every-15-min Workers cron trigger covers off-Mac windows (primary-only for now). Plan: `docs/plans/2026-04-24-calendar-living-record.md`.
+- ✅ **L9 — Calendar × Levels cross-reference** — verified shipped in earlier session (already in `CalendarView.tsx:276-281` via `getActiveLevelCountsForSecurityIds`).
+
+Theme D capstone:
+
+- ✅ **Theme D — Level source performance attribution v1** — shipped 2026-04-24 evening (`f906284`). New query `getSourcePerformance` + `/dashboard/levels/performance` page (empty-state tolerant) + chat tool `query_release_reactions` + Data Health "Unmapped sector ETFs" admin section.
+
+Still open:
+
 User-reported (2026-04-24):
 
-- [ ] **Phantom alert after full inbox clear** — user had 2 pending alerts, opened both, responded "ignored" on each, but the header `AlertsBell` still showed 1 pending. Likely a stale count source: either the `GET /api/alerts?countOnly=true` cache on the bell isn't invalidated on `PATCH /api/alerts`, or the pending-count query doesn't filter on `response` the same way the inbox list does. Repro: two pending alerts → ignore both → check bell without hard-refresh. Suspect files: `app/dashboard/components/AlertsBell.tsx`, `app/api/alerts/route.ts`, `lib/queries/alerts.ts` (count vs list query parity). ~45 min to diagnose + fix + test.
-- [ ] **Global / in-page search** — no search bar today (header Search icon opens a modal that already exists via `/api/search` but coverage is thin). Scope to define: (a) global search across securities + notes + transactions + research articles + levels, Cmd+K palette pattern; OR (b) per-page filter bars (Holdings table / Transactions / Research feed). Probably both eventually, but pick one first. Start with scoping session to define which pages need in-page filtering vs which queries belong in the global palette. ~30 min scoping + 3–4 hr implementation.
-- [ ] **Calendar / macro event post-release enrichment** — after a scheduled event (FOMC, CPI, jobs, earnings) passes, fetch the actual released value and a market-reaction snapshot. Two-phase cron: (1) T+5min — pull actual value from FRED for macro events (already have a FRED client in `lib/calendar/macro-events.ts`) or Finnhub for earnings; fill into `calendar_events.actual_value` / `consensus_beat` columns. (2) T+2h — snapshot SPY/QQQ/DIA/sector-ETF intraday move since the release time, store alongside the actual value so briefing + Security Detail event blocks can show "CPI 3.2% vs 3.1% consensus; SPY -0.4% in the hour after". Requires new migration for the two result columns + a polling scheduler (likely extends the existing auto-refresh pipeline or adds a new launchd/Workers cron tick every 15 min during US market hours). ~4–6 hr.
+_(All three user-reported items closed this session.)_
 
 From master roadmap — still open despite being planned pre-session-6:
 
@@ -62,8 +73,11 @@ From master roadmap — still open despite being planned pre-session-6:
 - [ ] **L2 — `LevelsPanel` mobile quick-add form** (~45 min). Collapse the ~10-field form to 3 (Type, Reference, Price) with "More options…" disclosure on mobile. Desktop unchanged.
 - [ ] **L3 — Provenance filter in `LevelsPanel`** (~20 min). Source-author pills above the level list (All / Me / Newsletter / per-author from `distinct(source_author)`). Reuse existing filter-pill pattern.
 - [ ] **L6 — Chart crosshair legend mobile density** (~20 min). With 4 MAs + OHLCV + Vol the crosshair legend overflows on phones. Hide raw OHLC on mobile breakpoint; show only delta-to-prior-close + active indicator values.
-- [ ] **L9 — Calendar × levels cross-reference** (~1–1.5 hr). Each earnings event on the Calendar view shows "2 active levels on NVDA" → links to Security Detail. Query: `security_levels WHERE security_id=? AND is_active=1`. File: `app/dashboard/calendar/` components.
 - [ ] **H3 — Vanguard statement PDF → direct import** (~2–3 hr). Parser exists for holdings extraction; extend `lib/import/parsers/vanguard-pdf.ts` to also extract transactions (dividends / interest / trades) so the Co-Work round-trip becomes optional. Add anonymized fixture + tests.
+
+New from Phase 9 (calendar-enrich Worker):
+
+- [ ] **Phase 9b — Calendar-enrich cloud-fallback parity** (~3 hr). Worker currently logs primary failure but doesn't independently fetch FRED/Finnhub actuals or Polygon reaction bars. Staging a full parity build needs: (a) Mac-side `GET /api/calendar/enrich/candidates` to expose which events would be enriched; (b) Worker-side Polygon intraday bar client (aws4fetch-style fetch); (c) Mac-side `POST /api/calendar/reconcile-cloud-enrich` consumer that reads KV entries and upserts into calendar_events with TWS-always-wins precedence. Pull data from `enrich-fail-*` KV markers after ~1 week to decide if the complexity is earned — most failures will be Mac-offline-overnight, which is low-stakes given the events can still be enriched on next-day wake.
 
 Other open (from MEMORY, not previously in this file):
 
