@@ -190,7 +190,13 @@ export default function AlertsPage() {
         <div>
           <h1 className="font-serif text-2xl text-ink">Alerts</h1>
           <p className="text-[11px] text-ink-faint mt-0.5">
-            Price level triggers across your holdings, watchlist, and flagged names.
+            Price level triggers across your holdings, watchlist, and flagged names.{" "}
+            <a
+              href="/dashboard/levels/performance"
+              className="text-gold hover:text-gold/80"
+            >
+              Source performance →
+            </a>
           </p>
         </div>
         <div className="flex items-center gap-2">
