@@ -29,6 +29,7 @@ import {
 import { callPrimary, type PrimaryResult } from "./primary";
 import { runFallbackDigest, type FallbackResult } from "./fallback-digest";
 import { runFallbackBriefing } from "./fallback-briefing";
+import { runCalendarEnrich, shouldRunCalendarEnrich } from "./calendar-enrich";
 
 export interface Env {
   // Bindings
@@ -133,11 +134,28 @@ async function runJob(type: JobType, env: Env, opts: RunJobOpts = {}): Promise<R
 
 export default {
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    // Calendar-enrich trigger (every 15 min) is dispatched separately — it
+    // fires far more often than the briefing/digest triggers, so we check
+    // its window first and only fall through to the hourly-job dispatcher
+    // when calendar-enrich doesn't claim the tick.
+    if (shouldRunCalendarEnrich()) {
+      ctx.waitUntil(
+        (async () => {
+          console.log(`[cron ${event.cron}] running calendar-enrich at ${todayET()}`);
+          const result = await runCalendarEnrich(env);
+          console.log(`[cron calendar-enrich] result:`, JSON.stringify(result));
+        })()
+      );
+      // Continue below — the briefing/digest hour check is independent.
+    }
+
     const job = parseJobFromClock(env);
     if (!job) {
-      console.log(
-        `[cron ${event.cron}] wrong-hour slot — ET ${getCurrentETHour()}:00, dow=${getCurrentETDayOfWeek()} — skipping.`
-      );
+      if (!shouldRunCalendarEnrich()) {
+        console.log(
+          `[cron ${event.cron}] wrong-hour slot — ET ${getCurrentETHour()}:00, dow=${getCurrentETDayOfWeek()} — skipping.`
+        );
+      }
       return;
     }
 

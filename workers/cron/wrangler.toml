@@ -7,12 +7,17 @@ compatibility_flags = ["nodejs_compat"]
 # the scheduled() handler gates via Intl.DateTimeFormat("America/New_York").
 # Summer (EDT, UTC-4): 3pm ET = 19:00 UTC, 8:45am ET = 12:45 UTC.
 # Winter (EST, UTC-5): 3pm ET = 20:00 UTC, 8:45am ET = 13:45 UTC.
+#
+# Calendar enrichment: every 15 min, self-gated in scheduled() to Mon-Fri
+# 09:30-18:00 ET (covers both BMO 08:00 releases by T+2h and AMC 16:15
+# releases by T+2h = 18:15).
 [triggers]
 crons = [
   "0 19 * * SUN",       # Sunday 3pm ET (summer) — weekly briefing
   "0 20 * * SUN",       # Sunday 3pm ET (winter) — weekly briefing
   "45 12 * * MON-FRI",  # Weekdays 8:45am ET (summer) — daily digest
   "45 13 * * MON-FRI",  # Weekdays 8:45am ET (winter) — daily digest
+  "*/15 * * * *",       # Every 15 min — calendar enrich (self-gates in JS)
 ]
 
 # KV namespace — created via `wrangler kv namespace create CRON_KV`.
