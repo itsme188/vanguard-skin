@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { SymbolLink } from "./SymbolLink";
 import { ScrollFade } from "./ScrollFade";
 import { SortableHeader } from "./SortableHeader";
@@ -54,14 +54,30 @@ function GainPercentCell({ value }: { value: number | null }) {
 
 export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
   const { sort, setSort } = useSortParam<Field>("holdings", "current_value", "desc");
+  const [filter, setFilter] = useState("");
 
+  // Filter on symbol, security_name, or account_name — three fields a user
+  // might type when scanning a 100+-position list. Normalize to lowercase
+  // so "HOOD" and "hood" both match.
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return holdings;
+    return holdings.filter((h) =>
+      [h.symbol, h.security_name, h.account_name]
+        .some((v) => v?.toLowerCase().includes(q))
+    );
+  }, [holdings, filter]);
+
+  // Totals reflect the filtered view so the footer stays honest when a
+  // filter is applied — otherwise "$2.1M total" is misleading when you're
+  // looking at a 3-row subset.
   const totalValue = useMemo(
-    () => holdings.reduce((sum, h) => sum + (h.current_value ?? 0), 0),
-    [holdings],
+    () => filtered.reduce((sum, h) => sum + (h.current_value ?? 0), 0),
+    [filtered],
   );
 
   const rows = useMemo(() => {
-    const enriched = holdings.map((h) => ({
+    const enriched = filtered.map((h) => ({
       ...h,
       gain_pct:
         h.unrealized_gain !== null && h.cost_basis !== null && h.cost_basis !== 0
@@ -76,15 +92,41 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
     return [...enriched].sort((a, b) =>
       compareValues(a[field as keyof typeof a], b[field as keyof typeof b], sort.dir),
     );
-  }, [holdings, sort, totalValue]);
+  }, [filtered, sort, totalValue]);
 
-  const holdingsWithCost = holdings.filter((h) => h.cost_basis !== null);
+  const holdingsWithCost = filtered.filter((h) => h.cost_basis !== null);
   const totalCostBasis = holdingsWithCost.reduce((sum, h) => sum + h.cost_basis!, 0);
-  const missingCostCount = holdings.length - holdingsWithCost.length;
-  const totalGain = holdings.reduce((sum, h) => sum + (h.unrealized_gain ?? 0), 0);
+  const missingCostCount = filtered.length - holdingsWithCost.length;
+  const totalGain = filtered.reduce((sum, h) => sum + (h.unrealized_gain ?? 0), 0);
+  const isFiltered = filter.trim().length > 0;
 
   return (
     <div className="rounded-xl border border-edge overflow-hidden">
+      <div className="flex items-center gap-3 px-4 py-2 border-b border-edge bg-panel/40">
+        <input
+          type="text"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder="Filter by symbol, name, or account…"
+          className="flex-1 bg-transparent text-xs text-ink placeholder:text-ink-faint outline-none"
+          spellCheck={false}
+          autoComplete="off"
+        />
+        {isFiltered && (
+          <>
+            <span className="text-[11px] text-ink-faint font-mono">
+              {filtered.length} of {holdings.length}
+            </span>
+            <button
+              onClick={() => setFilter("")}
+              className="text-[11px] text-ink-faint hover:text-ink transition-colors"
+              title="Clear filter"
+            >
+              ×
+            </button>
+          </>
+        )}
+      </div>
       <ScrollFade>
         <table className="w-full text-sm">
           <thead>
@@ -162,7 +204,9 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
           <tfoot>
             <tr className="border-t-2 border-edge bg-panel/50">
               <td className="px-4 py-3 font-medium text-ink text-xs" colSpan={4}>
-                Total ({holdings.length} positions)
+                {isFiltered
+                  ? `Filtered (${filtered.length} position${filtered.length === 1 ? "" : "s"})`
+                  : `Total (${holdings.length} positions)`}
               </td>
               <td className="px-4 py-3 text-right font-mono tabular-nums font-medium text-ink-dim">
                 {missingCostCount > 0 ? (
