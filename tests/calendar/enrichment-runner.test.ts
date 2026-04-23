@@ -1,0 +1,255 @@
+/**
+ * Unit tests for lib/calendar/enrichment-runner.ts
+ *
+ * The runner orchestrates: findCandidates → fetchActualForEvent → capture
+ * reaction → persist. We mock the underlying fetch and verify the SQL
+ * side effects.
+ */
+
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import Database from "better-sqlite3";
+import { runMigrations } from "@/lib/db/migrate";
+import { runEnrichment } from "@/lib/calendar/enrichment-runner";
+
+function seedSecurity(
+  db: Database.Database,
+  id: number,
+  symbol: string,
+  sector: string | null,
+) {
+  db.prepare(
+    `INSERT INTO securities (id, symbol, name, security_type, asset_class, multiplier, sector)
+     VALUES (?, ?, ?, 'stock', 'equity', 1, ?)`,
+  ).run(id, symbol, `${symbol} Corp`, sector);
+}
+
+function insertEvent(
+  db: Database.Database,
+  opts: {
+    id?: number;
+    source_key: string;
+    event_type: string;
+    event_date: string;
+    release_time: string | null;
+    symbol?: string | null;
+    security_id?: number | null;
+    consensus_estimate?: string | null;
+    raw_json?: string | null;
+  },
+) {
+  return db.prepare(
+    `INSERT INTO calendar_events
+       (source, event_type, event_date, event_time, release_time, title,
+        symbol, security_id, consensus_estimate, raw_json, source_key, week_of)
+     VALUES ('claude_macro', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    opts.event_type,
+    opts.event_date,
+    opts.release_time,
+    opts.release_time,
+    "Test event",
+    opts.symbol ?? null,
+    opts.security_id ?? null,
+    opts.consensus_estimate ?? null,
+    opts.raw_json ?? null,
+    opts.source_key,
+    opts.event_date,
+  );
+}
+
+describe("runEnrichment", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    vi.stubGlobal("fetch", vi.fn());
+    process.env.FRED_API_KEY = "test_fred_key";
+    process.env.FINNHUB_API_KEY = "test_finnhub_key";
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.FRED_API_KEY;
+    delete process.env.FINNHUB_API_KEY;
+  });
+
+  it("does nothing when no events fall in the enrichment window", async () => {
+    // Event is 4 hours old — outside the [now-2h, now-5min] window
+    insertEvent(db, {
+      source_key: "fred:10:2026-04-11",
+      event_type: "cpi",
+      event_date: "2026-04-11",
+      release_time: "08:30",
+    });
+
+    // 08:30 EDT = 12:30 UTC. 4 hours post-release → 16:30 UTC, outside window.
+    const now = new Date("2026-04-11T16:30:00Z");
+    const results = await runEnrichment(db, { now });
+    expect(results).toEqual([]);
+
+    const row = db
+      .prepare("SELECT enriched_at FROM calendar_events")
+      .get() as { enriched_at: string | null };
+    expect(row.enriched_at).toBeNull();
+  });
+
+  it("enriches an in-window macro event and writes actual + enriched_at", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        observations: [
+          { date: "2026-04-01", value: "310.326" },
+          { date: "2026-03-01", value: "309.685" },
+          { date: "2025-04-01", value: "300.84" },
+        ],
+      }),
+    });
+
+    insertEvent(db, {
+      source_key: "fred:10:2026-04-11",
+      event_type: "cpi",
+      event_date: "2026-04-11",
+      release_time: "08:30",
+      consensus_estimate: "3.2%",
+    });
+
+    // 08:30 EDT = 12:30 UTC. 1 hour post-release → 13:30 UTC.
+    const now = new Date("2026-04-11T13:30:00Z");
+    const results = await runEnrichment(db, { now });
+    expect(results).toHaveLength(1);
+    expect(results[0].enriched).toBe(true);
+    expect(results[0].actual).toMatch(/%/);
+
+    const row = db
+      .prepare(
+        `SELECT actual_value, consensus_value, enriched_at, reaction_snapshot
+         FROM calendar_events`,
+      )
+      .get() as {
+      actual_value: string | null;
+      consensus_value: string | null;
+      enriched_at: string | null;
+      reaction_snapshot: string | null;
+    };
+
+    expect(row.actual_value).toMatch(/%/);
+    expect(row.consensus_value).toBe("3.2%");
+    expect(row.enriched_at).toBeTruthy();
+    expect(row.reaction_snapshot).toBeNull(); // no TWS passed
+  });
+
+  it("skips already-enriched events", async () => {
+    insertEvent(db, {
+      source_key: "fred:10:2026-04-11",
+      event_type: "cpi",
+      event_date: "2026-04-11",
+      release_time: "08:30",
+      consensus_estimate: "3.2%",
+    });
+    // Pre-mark the row as already enriched
+    db.prepare(
+      `UPDATE calendar_events SET enriched_at = datetime('now')`,
+    ).run();
+
+    const now = new Date("2026-04-11T10:00:00Z");
+    const results = await runEnrichment(db, { now });
+    expect(results).toEqual([]);
+  });
+
+  it("eventId override bypasses the time-window filter", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        observations: [
+          { date: "2026-04-01", value: "310.326" },
+          { date: "2025-04-01", value: "300.84" },
+        ],
+      }),
+    });
+
+    const { lastInsertRowid } = insertEvent(db, {
+      source_key: "fred:10:2026-04-11",
+      event_type: "cpi",
+      event_date: "2026-04-11",
+      release_time: "08:30",
+    });
+
+    // "now" is a month after release — way out of window, but we still
+    // enrich because eventId was passed.
+    const now = new Date("2026-05-11T13:30:00Z");
+    const results = await runEnrichment(db, {
+      now,
+      eventId: Number(lastInsertRowid),
+    });
+    expect(results).toHaveLength(1);
+    expect(results[0].enriched).toBe(true);
+  });
+
+  it("logs an unmapped-sector earnings gap", async () => {
+    // Finnhub actual fetch
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        earningsCalendar: [
+          {
+            symbol: "ACME",
+            date: "2026-05-15",
+            epsActual: 1.0,
+            epsEstimate: 0.9,
+            revenueActual: null,
+            revenueEstimate: null,
+          },
+        ],
+      }),
+    });
+
+    seedSecurity(db, 1, "ACME", "Made-Up Sector");
+    insertEvent(db, {
+      source_key: "finnhub:ACME:2026-05-15",
+      event_type: "earnings",
+      event_date: "2026-05-15",
+      release_time: "08:00",
+      symbol: "ACME",
+      security_id: 1,
+    });
+
+    const now = new Date("2026-05-15T13:00:00Z"); // 1h after 08:00 ET (12:00Z)
+    const mockTws = { getHistoricalData: async () => [] };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const results = await runEnrichment(db, { now, tws: mockTws as any, pacingMs: 0 });
+    expect(results).toHaveLength(1);
+
+    const gap = db
+      .prepare("SELECT * FROM sector_etf_gaps WHERE symbol = 'ACME'")
+      .get() as { symbol: string; sector: string; count: number };
+    expect(gap.symbol).toBe("ACME");
+    expect(gap.sector).toBe("Made-Up Sector");
+    expect(gap.count).toBe(1);
+  });
+
+  it("records fetch failures without marking the row enriched", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+      throw new Error("network down");
+    });
+
+    insertEvent(db, {
+      source_key: "fred:10:2026-04-11",
+      event_type: "cpi",
+      event_date: "2026-04-11",
+      release_time: "08:30",
+    });
+
+    const now = new Date("2026-04-11T13:30:00Z");
+    const results = await runEnrichment(db, { now });
+    expect(results).toHaveLength(1);
+    expect(results[0].enriched).toBe(false);
+    expect(results[0].reason).toMatch(/network down/);
+
+    const row = db
+      .prepare("SELECT enriched_at FROM calendar_events")
+      .get() as { enriched_at: string | null };
+    expect(row.enriched_at).toBeNull();
+  });
+});

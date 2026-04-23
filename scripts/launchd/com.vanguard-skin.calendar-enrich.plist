@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.vanguard-skin.calendar-enrich</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/Yitzi/code/vanguard-skin/scripts/enrich-calendar-events.sh</string>
+  </array>
+  <!-- Every 15 minutes. The wrapper no-ops cheaply (<200ms) outside
+       business hours since findCandidates returns [] when no events are
+       in the [now-2h, now-5min] window. Runs 24/7 to keep the plist
+       tiny + deterministic; weekend/overnight ticks are harmless. -->
+  <key>StartInterval</key>
+  <integer>900</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/Yitzi/Library/Logs/vanguard-calendar-enrich.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/Yitzi/Library/Logs/vanguard-calendar-enrich.log</string>
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>
