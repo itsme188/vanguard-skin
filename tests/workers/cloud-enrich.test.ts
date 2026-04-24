@@ -202,7 +202,7 @@ describe("runCloudFallback", () => {
       deepReadArticles: [],
     };
 
-    // Mock FRED + Finnhub + Polygon responses.
+    // Mock FRED + Finnhub + Yahoo responses.
     (global.fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
       if (url.includes("api.stlouisfed.org")) {
         return {
@@ -236,18 +236,26 @@ describe("runCloudFallback", () => {
           },
         };
       }
-      if (url.includes("polygon.io")) {
+      if (url.includes("finance.yahoo.com")) {
+        const release = nowMs - 90 * 60 * 1000;
+        // Yahoo returns timestamps in seconds; 3 bars straddling release.
+        const ts = [
+          Math.floor((release - 5 * 60 * 1000) / 1000),
+          Math.floor(release / 1000),
+          Math.floor((release + 120 * 60 * 1000) / 1000),
+        ];
         return {
           ok: true,
           async json() {
-            // Return 3 bars straddling release: t-5m, t+0, t+120m
-            const release = nowMs - 90 * 60 * 1000;
             return {
-              results: [
-                { t: release - 5 * 60 * 1000, c: 500 },
-                { t: release, c: 502 },
-                { t: release + 120 * 60 * 1000, c: 506 },
-              ],
+              chart: {
+                result: [
+                  {
+                    timestamp: ts,
+                    indicators: { quote: [{ close: [500, 502, 506] }] },
+                  },
+                ],
+              },
             };
           },
         };
@@ -265,7 +273,6 @@ describe("runCloudFallback", () => {
       CLOUD_ENRICH_ENABLED: "true",
       FRED_API_KEY: "fred-key",
       FINNHUB_API_KEY: "finnhub-key",
-      POLYGON_API_KEY: "polygon-key",
     } as Parameters<typeof runCloudFallback>[0];
 
     const result = await runCloudFallback(env, { nowMs, pacingMs: 0 });
@@ -280,10 +287,10 @@ describe("runCloudFallback", () => {
     const fredPayload = JSON.parse(store.get(cloudEnrichedKey(100))!);
     expect(fredPayload.source).toBe("fred");
     expect(fredPayload.actual).toMatch(/%/);
-    expect(fredPayload.reaction?.source).toBe("polygon");
+    expect(fredPayload.reaction?.source).toBe("yahoo");
   });
 
-  it("defers claude nonfred events — writes deferred payload with no reaction-fetch attempt", async () => {
+  it("defers claude nonfred events — writes deferred payload with reaction captured via Yahoo", async () => {
     const nowMs = Date.now();
     const snapshot = {
       schemaVersion: 1,
@@ -298,16 +305,24 @@ describe("runCloudFallback", () => {
     };
 
     (global.fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
-      if (url.includes("polygon.io")) {
+      if (url.includes("finance.yahoo.com")) {
         const release = nowMs - 60 * 60 * 1000;
+        const ts = [
+          Math.floor((release - 5 * 60 * 1000) / 1000),
+          Math.floor((release + 120 * 60 * 1000) / 1000),
+        ];
         return {
           ok: true,
           async json() {
             return {
-              results: [
-                { t: release - 5 * 60 * 1000, c: 500 },
-                { t: release + 120 * 60 * 1000, c: 510 },
-              ],
+              chart: {
+                result: [
+                  {
+                    timestamp: ts,
+                    indicators: { quote: [{ close: [500, 510] }] },
+                  },
+                ],
+              },
             };
           },
         };
@@ -325,7 +340,6 @@ describe("runCloudFallback", () => {
       CLOUD_ENRICH_ENABLED: "true",
       FRED_API_KEY: "fred-key",
       FINNHUB_API_KEY: "finnhub-key",
-      POLYGON_API_KEY: "polygon-key",
     } as Parameters<typeof runCloudFallback>[0];
 
     const result = await runCloudFallback(env, { nowMs, pacingMs: 0 });
@@ -337,11 +351,11 @@ describe("runCloudFallback", () => {
     expect(payload.source).toBe("claude_nonfred_deferred");
     expect(payload.actual).toBeNull();
     expect(payload.deferred).toBe(true);
-    // Polygon reaction still captured (it's orthogonal to actual value)
-    expect(payload.reaction?.source).toBe("polygon");
+    // Yahoo reaction still captured (it's orthogonal to actual value)
+    expect(payload.reaction?.source).toBe("yahoo");
   });
 
-  it("is idempotent — pre-seeded cloud-enriched KV marker short-circuits FRED + Polygon", async () => {
+  it("is idempotent — pre-seeded cloud-enriched KV marker short-circuits FRED + Yahoo", async () => {
     const nowMs = Date.now();
     const snapshot = {
       schemaVersion: 1,
@@ -362,7 +376,7 @@ describe("runCloudFallback", () => {
 
     const kv = makeKv();
     // Pre-seed the cloud-enriched marker so the KV check short-circuits the
-    // FRED + Polygon fetches for this candidate.
+    // FRED + Yahoo fetches for this candidate.
     await kv.put(
       cloudEnrichedKey(300),
       JSON.stringify({ eventId: 300, actual: "3.4%", source: "fred" }),
@@ -377,12 +391,11 @@ describe("runCloudFallback", () => {
       CLOUD_ENRICH_ENABLED: "true",
       FRED_API_KEY: "fred-key",
       FINNHUB_API_KEY: "finnhub-key",
-      POLYGON_API_KEY: "polygon-key",
     } as Parameters<typeof runCloudFallback>[0];
 
     const result = await runCloudFallback(env, { nowMs, pacingMs: 0 });
     expect(result.kind).toBe("success");
-    // 0 fetch calls confirms FRED + Polygon were skipped via the KV check.
+    // 0 fetch calls confirms FRED + Yahoo were skipped via the KV check.
     expect((global.fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
   });
 });
@@ -437,16 +450,24 @@ describe("runCalendarEnrich primary-fail → cloud success", () => {
           },
         };
       }
-      if (url.includes("polygon.io")) {
+      if (url.includes("finance.yahoo.com")) {
         const release = nowMs - 90 * 60 * 1000;
+        const ts = [
+          Math.floor((release - 5 * 60 * 1000) / 1000),
+          Math.floor((release + 120 * 60 * 1000) / 1000),
+        ];
         return {
           ok: true,
           async json() {
             return {
-              results: [
-                { t: release - 5 * 60 * 1000, c: 500 },
-                { t: release + 120 * 60 * 1000, c: 506 },
-              ],
+              chart: {
+                result: [
+                  {
+                    timestamp: ts,
+                    indicators: { quote: [{ close: [500, 506] }] },
+                  },
+                ],
+              },
             };
           },
         };
@@ -464,7 +485,6 @@ describe("runCalendarEnrich primary-fail → cloud success", () => {
       CLOUD_ENRICH_ENABLED: "true",
       FRED_API_KEY: "fred-key",
       FINNHUB_API_KEY: "finnhub-key",
-      POLYGON_API_KEY: "polygon-key",
     } as Parameters<typeof runCalendarEnrich>[0];
 
     const result = await runCalendarEnrich(env, { pacingMs: 0 });
