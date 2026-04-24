@@ -27,8 +27,9 @@ interface TodayHolding {
   quantity: number;
   current_price: number | null;
   current_value: number | null;
-  unrealized_gain: number | null;
-  unrealized_pct: number | null;
+  prior_close: number | null;
+  today_gain: number | null;
+  today_pct: number | null;
   price_date: string | null;
   price_source: string | null;
 }
@@ -106,37 +107,54 @@ export default async function TodayPage() {
   let latestPriceDate: string | null = null;
 
   if (ibkrAccount) {
-    const marketValueExpr = adjustedMarketValueSQL(
+    const marketValueCurrent = adjustedMarketValueSQL(
       "h.quantity",
-      "p.close_price",
+      "p_today.close_price",
       "s.security_type",
-      "COALESCE(s.multiplier, 1)"
+      "COALESCE(s.multiplier, 1)",
     );
+    const marketValuePrior = adjustedMarketValueSQL(
+      "h.quantity",
+      "p_prior.close_price",
+      "s.security_type",
+      "COALESCE(s.multiplier, 1)",
+    );
+    // Rank every price row per security so we can pull the top two.
+    // rn=1 is the most recent close, rn=2 is the prior — today's move is
+    // the delta between them. When a security has only one price row,
+    // p_prior joins null and today_gain/today_pct fall through to null.
     holdings = db
       .prepare(
-        `SELECT
+        `WITH ranked_prices AS (
+           SELECT security_id, date, close_price, source,
+                  ROW_NUMBER() OVER (PARTITION BY security_id ORDER BY date DESC) AS rn
+           FROM prices
+         )
+         SELECT
            h.security_id,
            s.symbol,
            s.name AS security_name,
            h.quantity,
-           p.close_price AS current_price,
-           p.date AS price_date,
-           p.source AS price_source,
-           CASE WHEN p.close_price IS NOT NULL THEN ${marketValueExpr} ELSE NULL END AS current_value,
-           CASE WHEN p.close_price IS NOT NULL AND h.cost_basis IS NOT NULL
-             THEN ${marketValueExpr} - h.cost_basis ELSE NULL END AS unrealized_gain,
-           CASE WHEN p.close_price IS NOT NULL AND h.cost_basis IS NOT NULL AND h.cost_basis != 0
-             THEN (${marketValueExpr} - h.cost_basis) / h.cost_basis ELSE NULL END AS unrealized_pct
+           p_today.close_price AS current_price,
+           p_today.date AS price_date,
+           p_today.source AS price_source,
+           p_prior.close_price AS prior_close,
+           CASE WHEN p_today.close_price IS NOT NULL THEN ${marketValueCurrent} ELSE NULL END AS current_value,
+           CASE WHEN p_today.close_price IS NOT NULL AND p_prior.close_price IS NOT NULL
+             THEN ${marketValueCurrent} - ${marketValuePrior} ELSE NULL END AS today_gain,
+           CASE WHEN p_today.close_price IS NOT NULL AND p_prior.close_price IS NOT NULL
+                  AND p_prior.close_price != 0
+             THEN (p_today.close_price - p_prior.close_price) / p_prior.close_price ELSE NULL END AS today_pct
          FROM holdings h
          JOIN securities s ON s.id = h.security_id
-         LEFT JOIN prices p ON p.security_id = h.security_id
-           AND p.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = h.security_id)
+         LEFT JOIN ranked_prices p_today ON p_today.security_id = h.security_id AND p_today.rn = 1
+         LEFT JOIN ranked_prices p_prior ON p_prior.security_id = h.security_id AND p_prior.rn = 2
          WHERE h.account_id = ?
            AND h.quantity > 0
            AND h.as_of_date = (SELECT MAX(as_of_date) FROM holdings WHERE account_id = ?)
            AND (s.maturity_date IS NULL OR s.maturity_date >= date('now')
                 OR LOWER(s.security_type) = 'bond')
-         ORDER BY ABS(COALESCE(${marketValueExpr} - h.cost_basis, 0)) DESC`
+         ORDER BY ABS(COALESCE(${marketValueCurrent} - ${marketValuePrior}, 0)) DESC`,
       )
       .all(ibkrAccount.id, ibkrAccount.id) as TodayHolding[];
 
@@ -219,9 +237,9 @@ export default async function TodayPage() {
       {/* ── Holdings ── */}
       <section className="rounded-xl border border-edge bg-panel p-5">
         <div className="mb-3 flex items-baseline justify-between">
-          <h2 className="text-sm font-medium text-ink">IBKR holdings</h2>
+          <h2 className="text-sm font-medium text-ink">IBKR today</h2>
           <span className="text-[11px] text-ink-faint font-mono">
-            {holdings.length}
+            {holdings.length} · today&rsquo;s move
           </span>
         </div>
 
@@ -265,22 +283,26 @@ export default async function TodayPage() {
                   <div className="text-right shrink-0">
                     <div
                       className={`text-[13px] font-mono tabular-nums ${
-                        h.unrealized_gain === null
+                        h.today_gain === null
                           ? "text-ink-faint"
-                          : h.unrealized_gain >= 0
+                          : h.today_gain >= 0
                             ? "text-up"
                             : "text-down"
                       }`}
                     >
-                      <Money value={h.unrealized_gain} signed />
+                      {h.today_gain === null ? (
+                        <span title="No prior-close price — today's move unavailable">&mdash;</span>
+                      ) : (
+                        <Money value={h.today_gain} signed />
+                      )}
                     </div>
-                    {h.unrealized_pct !== null && (
+                    {h.today_pct !== null && (
                       <div
                         className={`text-[11px] font-mono tabular-nums ${
-                          h.unrealized_pct >= 0 ? "text-up" : "text-down"
+                          h.today_pct >= 0 ? "text-up" : "text-down"
                         }`}
                       >
-                        <Pct value={h.unrealized_pct * 100} digits={1} signed />
+                        <Pct value={h.today_pct * 100} digits={2} signed />
                       </div>
                     )}
                   </div>
