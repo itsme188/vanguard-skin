@@ -16,8 +16,23 @@ import {
   type ReactionSnapshot,
 } from "./reaction-snapshot";
 
-const MAX_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours
+// Macro releases (FRED/FOMC/nonfred): data is typically published within
+// minutes of release, and the reaction window is the immediate 2-hour
+// market response. 2h is the right budget.
+const MAX_AGE_MS_MACRO = 2 * 60 * 60 * 1000;
+// Earnings releases: a Before Market Open earnings call at 08:00 ET can't
+// produce a meaningful reaction snapshot before 09:30 (market open). Pre-fix
+// the 2h window expired 30 min after market opened. Widen to 12h so a
+// single afternoon catch-up captures the full-day reaction.
+const MAX_AGE_MS_EARNINGS = 12 * 60 * 60 * 1000;
 const MIN_AGE_MS = 5 * 60 * 1000;      // 5 minutes
+
+function maxAgeFor(event: { source: string; event_type: string }): number {
+  if (event.source === "finnhub" || event.event_type === "earnings") {
+    return MAX_AGE_MS_EARNINGS;
+  }
+  return MAX_AGE_MS_MACRO;
+}
 
 interface EnrichmentCandidate {
   id: number;
@@ -120,7 +135,8 @@ function findCandidates(
     const releaseInstant = composeReleaseInstant(row.event_date, row.release_time);
     if (!releaseInstant) continue;
     const ageMs = nowMs - releaseInstant.getTime();
-    if (ageMs >= MIN_AGE_MS && ageMs <= MAX_AGE_MS) {
+    const maxAge = maxAgeFor(row);
+    if (ageMs >= MIN_AGE_MS && ageMs <= maxAge) {
       filtered.push(row);
       if (filtered.length >= limit) break;
     }
