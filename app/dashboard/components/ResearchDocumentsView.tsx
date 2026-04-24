@@ -8,6 +8,7 @@ import type {
   ResearchDocumentProcessingState,
 } from "@/lib/queries/research-documents";
 import { Chip } from "./Chip";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 interface DocumentListResponse {
   documents: ResearchDocumentSummary[];
@@ -398,6 +399,7 @@ function DocumentRow({
   const [detail, setDetail] = useState<ResearchDocumentDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [showFullText, setShowFullText] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const symbols = parseSymbols(doc.mentioned_symbols);
   const rowTags = parseSymbols(doc.tags);
@@ -440,9 +442,13 @@ function DocumentRow({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expanded, detail?.processing_state, detail?.id]);
 
-  async function handleDelete(e: React.MouseEvent) {
+  function handleDelete(e: React.MouseEvent) {
     e.stopPropagation();
-    if (!window.confirm(`Delete "${doc.title}"? This cannot be undone.`)) return;
+    setConfirmingDelete(true);
+  }
+
+  async function confirmDelete() {
+    setConfirmingDelete(false);
     const res = await fetch(`/api/research/documents/${doc.id}`, {
       method: "DELETE",
     });
@@ -653,6 +659,15 @@ function DocumentRow({
           )}
         </div>
       )}
+      <ConfirmDialog
+        open={confirmingDelete}
+        title="Delete document"
+        message={`Delete "${doc.title}"? This cannot be undone.`}
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={confirmDelete}
+        onCancel={() => setConfirmingDelete(false)}
+      />
     </div>
   );
 }
