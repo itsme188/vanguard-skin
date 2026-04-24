@@ -27,7 +27,7 @@ export interface BenchmarkReaction {
 export interface ReactionSnapshot {
   t0_utc: string;
   window_min: 120;
-  source: "tws" | "polygon";
+  source: "tws" | "polygon" | "yahoo";
   spy: BenchmarkReaction;
   qqq: BenchmarkReaction;
   tlt: BenchmarkReaction;
