@@ -30,7 +30,7 @@ Checklist:
 2. Pending alerts section renders (either "No pending alerts" empty state OR a list of alert cards).
 3. If alerts present: each alert card has symbol, triggered price, optional author, and a "View" link to /dashboard/security/[id].
 4. IBKR holdings section renders a table with at least one row (unless the user holds zero IBKR positions).
-5. Each IBKR row shows: symbol link, shares, current price, today's $ change, today's % change, data-quality chip.
+5. Each IBKR row shows: symbol link, shares, current price, today's $ change, today's % change. (Data-quality chip is page-level on the H1, not per-row — by design.)
 6. Holdings are sorted by absolute today-change descending (biggest movers top).
 7. Full-width "Open chat" button is visible at the bottom-ish of the page (above the mobile bottom-nav would sit on phones).
 8. Clicking the "Open chat" button dispatches a `toggle-mobile-chat` event or opens the ChatDrawer.
