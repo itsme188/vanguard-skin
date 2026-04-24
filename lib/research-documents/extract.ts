@@ -111,7 +111,7 @@ Return a single JSON object (no markdown fences, no preamble, no explanation):
   "source": "<firm / publication / fund — e.g. 'Goldman Sachs', 'Bloomberg', 'Lead Edge Capital', 'The Information', 'Artemis Capital'; null if unclear>",
   "document_type": "<one of the values above>",
   "publication_date": "YYYY-MM-DD" | null,
-  "summary": "<depth-proportional summary. SHORT notes / articles / essays: 1-2 paragraphs. MEDIUM analyst reports / investor letters: 2-3 paragraphs. LONG primers / earnings decks / macro notes: 3-5 paragraphs covering thesis, supporting analysis, and conclusions. Use paragraph breaks (double-newline) for multi-paragraph output. Prefer substance over brevity — this summary should substitute for re-reading the document later. Do NOT hallucinate content not in the PDF.>",
+  "summary": "<depth-proportional summary, MAXIMUM 1500 characters. SHORT notes / articles / essays: 1-2 paragraphs. MEDIUM analyst reports / investor letters: 2-3 paragraphs. LONG primers / earnings decks / macro notes: 3-5 short paragraphs covering thesis, supporting analysis, and conclusions. Use paragraph breaks (double-newline) for multi-paragraph output. Prefer substance over brevity — this summary should substitute for re-reading the document later. Do NOT hallucinate content not in the PDF. HARD CAP: summary must fit in 1500 characters; if longer, prioritize thesis + conclusions and trim middle elaboration.>",
   "key_points": ["<bullet>", "..."],
   "mentioned_symbols": ["AAPL", "NVDA", "..."],
   "suggested_tags": ["<3-8 lowercase tags describing theme, sector, geography, style, or era — e.g. 'semiconductors', 'ai infrastructure', 'founder-led', 'q3 2024', 'value-investing', 'china', 'saas'>"],
@@ -157,7 +157,7 @@ export async function extractResearchMetadata(
     pdfBytes,
     METADATA_PROMPT,
     "researchDocumentExtraction",
-    4000, // metadata response is tiny
+    8000, // headroom for long key_points + multi-paragraph summary on dense research notes
   );
   return parseMetadataResponse(raw, modelId);
 }
