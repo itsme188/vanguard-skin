@@ -51,7 +51,7 @@ describe("verifyNonFredReschedules", () => {
   it("returns empty map when ANTHROPIC_API_KEY missing (graceful skip)", async () => {
     delete process.env.ANTHROPIC_API_KEY;
     const result = await verifyNonFredReschedules([
-      { date: "2026-05-01", shortName: "ISM Manufacturing", eventType: "pmi", defaultImpact: "high", reportingLag: 1 },
+      { date: "2026-05-01", shortName: "ISM Manufacturing", eventType: "pmi", defaultImpact: "high", reportingLag: 1, releaseTime: "10:00" },
     ]);
     expect(result.size).toBe(0);
   });
@@ -72,7 +72,7 @@ describe("verifyNonFredReschedules", () => {
     vi.resetModules();
     const mod = await import("@/lib/calendar/macro-events");
     const result = await mod.verifyNonFredReschedules([
-      { date: "2026-05-01", shortName: "ISM Manufacturing", eventType: "pmi", defaultImpact: "high", reportingLag: 1 },
+      { date: "2026-05-01", shortName: "ISM Manufacturing", eventType: "pmi", defaultImpact: "high", reportingLag: 1, releaseTime: "10:00" },
     ]);
     expect(result.size).toBe(0); // caller treats empty map as "use hardcoded"
   });
@@ -106,7 +106,7 @@ describe("verifyNonFredReschedules", () => {
     vi.resetModules();
     const mod = await import("@/lib/calendar/macro-events");
     const result = await mod.verifyNonFredReschedules([
-      { date: "2026-05-01", shortName: "ISM Manufacturing", eventType: "pmi", defaultImpact: "high", reportingLag: 1 },
+      { date: "2026-05-01", shortName: "ISM Manufacturing", eventType: "pmi", defaultImpact: "high", reportingLag: 1, releaseTime: "10:00" },
     ]);
 
     const entry = result.get("2026-05-01:ISM Manufacturing");
@@ -139,7 +139,7 @@ describe("verifyNonFredReschedules", () => {
     vi.resetModules();
     const mod = await import("@/lib/calendar/macro-events");
     const result = await mod.verifyNonFredReschedules([
-      { date: "2026-05-01", shortName: "ISM Manufacturing", eventType: "pmi", defaultImpact: "high", reportingLag: 1 },
+      { date: "2026-05-01", shortName: "ISM Manufacturing", eventType: "pmi", defaultImpact: "high", reportingLag: 1, releaseTime: "10:00" },
     ]);
 
     const entry = result.get("2026-05-01:ISM Manufacturing");
@@ -163,7 +163,7 @@ describe("verifyNonFredReschedules", () => {
     vi.resetModules();
     const mod = await import("@/lib/calendar/macro-events");
     const result = await mod.verifyNonFredReschedules([
-      { date: "2026-05-01", shortName: "ISM Manufacturing", eventType: "pmi", defaultImpact: "high", reportingLag: 1 },
+      { date: "2026-05-01", shortName: "ISM Manufacturing", eventType: "pmi", defaultImpact: "high", reportingLag: 1, releaseTime: "10:00" },
     ]);
     expect(result.size).toBe(0);
   });
