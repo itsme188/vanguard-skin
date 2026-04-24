@@ -576,14 +576,32 @@ export function getFactorCoverage(
     )
     .get(...params) as { total: number; with_factors: number };
 
+  // bySource must mirror the scope of the main query above — otherwise this
+  // subquery reports global `security_factors` counts while the top-line
+  // coverage number is scoped to `accountIds`, which breaks the bar chart
+  // on the Factor Exposure view whenever a single-account scope is picked.
   const bySource = db
     .prepare(
-      `SELECT COALESCE(factor_source, 'none') AS source, COUNT(*) AS count
-       FROM security_factors
-       GROUP BY factor_source
+      `WITH ${LATEST_HOLDINGS_CTE},
+         scoped_security_ids AS (
+           SELECT DISTINCT s.id AS security_id
+           FROM latest_holdings h
+           JOIN securities s ON s.id = h.security_id
+           WHERE ${conditions.join(" AND ")}
+           UNION
+           SELECT DISTINCT s_u.id AS security_id
+           FROM latest_holdings h
+           JOIN securities s ON s.id = h.security_id
+           JOIN securities s_u ON s_u.symbol = s.underlying_symbol
+           WHERE ${conditions.join(" AND ")}
+         )
+       SELECT COALESCE(sf.factor_source, 'none') AS source, COUNT(*) AS count
+       FROM security_factors sf
+       WHERE sf.security_id IN (SELECT security_id FROM scoped_security_ids)
+       GROUP BY sf.factor_source
        ORDER BY count DESC`
     )
-    .all() as Array<{ source: string; count: number }>;
+    .all(...params, ...params) as Array<{ source: string; count: number }>;
 
   return {
     totalHoldings: row.total,
