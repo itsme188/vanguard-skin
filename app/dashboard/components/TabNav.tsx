@@ -4,6 +4,7 @@ import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { useRef, useCallback } from "react";
 import { tabs } from "./nav-tabs";
+import { TabDropdown } from "./TabDropdown";
 
 export function TabNav() {
   const pathname = usePathname();
@@ -13,6 +14,10 @@ export function TabNav() {
     (e: React.KeyboardEvent) => {
       const nav = navRef.current;
       if (!nav) return;
+
+      // Don't intercept arrow keys when a dropdown menu is open — it handles its own up/down.
+      const target = e.target as HTMLElement;
+      if (target?.getAttribute("role") === "menuitem") return;
 
       const links = Array.from(
         nav.querySelectorAll<HTMLAnchorElement>('[role="tab"]')
@@ -42,11 +47,15 @@ export function TabNav() {
       className="max-w-[1600px] mx-auto px-4 md:px-6 electron:pl-20 hidden md:flex gap-1 -mb-px overflow-x-auto"
       onKeyDown={handleKeyDown}
     >
-      {tabs.map((tab, index) => {
+      {tabs.map((tab) => {
         const isActive =
           tab.href === "/dashboard"
             ? pathname === "/dashboard"
             : pathname.startsWith(tab.href);
+
+        if (tab.subviews && tab.subviews.length > 0) {
+          return <TabDropdown key={tab.href} tab={tab} isActive={isActive} />;
+        }
 
         return (
           <Link
