@@ -98,13 +98,18 @@ function getSettingValue(db: Database.Database, key: string): string | null {
 }
 
 function buildSnapshot(db: Database.Database): Snapshot {
+  // Includes trailing-1-day so the Worker's cloud-enrich fallback can find
+  // same-day-before-midnight releases that still need enrichment when the
+  // Mac was unreachable during the [release, release+2h] window. SELECT *
+  // already pulls release_time / actual_value / enriched_at / reaction_snapshot
+  // so Phase 9b parity needs no column additions here.
   const calendarEvents = db
     .prepare(
       `SELECT * FROM calendar_events
          WHERE event_date >= ? AND event_date <= ?
          ORDER BY event_date, event_time`
     )
-    .all(today(), daysAhead(CALENDAR_LOOKAHEAD_DAYS)) as Record<string, unknown>[];
+    .all(daysAgo(1), daysAhead(CALENDAR_LOOKAHEAD_DAYS)) as Record<string, unknown>[];
 
   const researchSources = db
     .prepare(
