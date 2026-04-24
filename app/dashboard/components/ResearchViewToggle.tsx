@@ -10,8 +10,10 @@ const VIEWS = [
 ];
 
 export function ResearchViewToggle({ currentView }: { currentView: string }) {
+  // Desktop users get the tab-dropdown in TabNav; this pill toggle is mobile-only
+  // (mobile bottom-nav has no subviews so we need an in-page switcher there).
   return (
-    <div className="flex items-center gap-1 rounded-lg bg-raised border border-edge p-0.5">
+    <div className="md:hidden flex items-center gap-1 rounded-lg bg-raised border border-edge p-0.5">
       {VIEWS.map((v) => (
         <Link
           key={v.key}
