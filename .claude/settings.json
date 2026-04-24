@@ -9,6 +9,16 @@
             "prompt": "If the file path targets any .db file (e.g., vanguard.db, *.db), REJECT with: 'Database files must be modified through API routes or migrations, not directly edited.' Otherwise, ALLOW."
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/check-todo-reconciled.sh",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "Stop": [
