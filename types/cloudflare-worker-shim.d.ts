@@ -21,6 +21,17 @@
  */
 
 declare global {
+  interface KVNamespaceListKey {
+    name: string;
+    expiration?: number;
+  }
+
+  interface KVNamespaceListResult {
+    keys: KVNamespaceListKey[];
+    list_complete: boolean;
+    cursor?: string;
+  }
+
   interface KVNamespace {
     get(key: string): Promise<string | null>;
     put(
@@ -29,6 +40,7 @@ declare global {
       opts?: { expirationTtl?: number },
     ): Promise<void>;
     delete(key: string): Promise<void>;
+    list(opts?: { prefix?: string; limit?: number; cursor?: string }): Promise<KVNamespaceListResult>;
   }
 
   interface R2Object {

@@ -30,12 +30,21 @@ export async function POST(request: NextRequest) {
 
   const body = await request.json().catch(() => ({})) as {
     eventId?: number;
+    upgradeReactionToTws?: boolean;
   };
+
+  // Phase 9b: before running our own enrichment, drain any cloud-enriched
+  // payloads the Worker wrote while the Mac was unreachable. Fire-and-forget
+  // so a Worker outage doesn't block local enrichment.
+  reconcileCloudEnrichment(request).catch((err) => {
+    console.warn("[calendar-enrich] reconcile-cloud-enrich failed:", err);
+  });
 
   const tws = getIbApi();
   const results = await runEnrichment(db, {
     tws,
     eventId: body.eventId,
+    upgradeReactionToTws: body.upgradeReactionToTws === true,
   });
 
   return NextResponse.json({
@@ -50,4 +59,16 @@ export async function POST(request: NextRequest) {
       reason: r.reason,
     })),
   });
+}
+
+async function reconcileCloudEnrichment(request: NextRequest): Promise<void> {
+  const secret = process.env.CRON_SHARED_SECRET;
+  const hostHeader = request.headers.get("host");
+  if (!secret || !hostHeader) return;
+  const proto = request.headers.get("x-forwarded-proto") ?? "http";
+  const url = `${proto}://${hostHeader}/api/calendar/reconcile-cloud-enrich`;
+  await fetch(url, {
+    method: "POST",
+    headers: { "X-Cron-Secret": secret },
+  }).catch(() => null);
 }

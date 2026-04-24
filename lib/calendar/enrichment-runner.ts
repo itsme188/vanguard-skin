@@ -44,6 +44,13 @@ export interface EnrichOptions {
   limit?: number;
   /** Pacing override for the TWS path (useful for tests). */
   pacingMs?: number;
+  /**
+   * Phase 9b: re-run TWS reaction capture for an already-enriched event and
+   * overwrite reaction_snapshot even if it's present. Only meaningful with
+   * `eventId` + `tws` set. Used by the "Upgrade to TWS" action on calendar
+   * rows that were initially enriched via the Worker's Polygon fallback.
+   */
+  upgradeReactionToTws?: boolean;
 }
 
 export interface EnrichmentResult {
@@ -159,12 +166,29 @@ const updateEnrichment = (db: Database.Database) =>
   );
 
 /**
+ * Reaction-only upgrade path (Phase 9b): overwrite reaction_snapshot but
+ * leave actual_value/consensus_value intact. Used when a cloud-enriched
+ * row gets re-captured via TWS post-facto.
+ */
+const updateReactionOnly = (db: Database.Database) =>
+  db.prepare(
+    `UPDATE calendar_events
+     SET reaction_snapshot = ?
+     WHERE id = ?`,
+  );
+
+/**
  * Run one enrichment pass. Returns per-event results for logging.
  */
 export async function runEnrichment(
   db: Database.Database,
   opts: EnrichOptions = {},
 ): Promise<EnrichmentResult[]> {
+  // Phase 9b upgrade path: re-capture reaction for a single event and return.
+  if (opts.upgradeReactionToTws && opts.eventId && opts.tws) {
+    return runTwsReactionUpgrade(db, opts);
+  }
+
   const candidates = findCandidates(db, opts);
   if (candidates.length === 0) return [];
 
@@ -231,4 +255,76 @@ export async function runEnrichment(
   }
 
   return results;
+}
+
+async function runTwsReactionUpgrade(
+  db: Database.Database,
+  opts: EnrichOptions,
+): Promise<EnrichmentResult[]> {
+  if (!opts.eventId || !opts.tws) return [];
+
+  const row = db
+    .prepare(
+      `SELECT id, source, source_key, event_type, event_date, release_time,
+              symbol, title, consensus_estimate, raw_json, security_id
+       FROM calendar_events
+       WHERE id = ?`,
+    )
+    .get(opts.eventId) as EnrichmentCandidate | undefined;
+  if (!row || !row.release_time) return [];
+
+  const releaseInstant = composeReleaseInstant(row.event_date, row.release_time);
+  if (!releaseInstant) {
+    return [
+      {
+        eventId: row.id,
+        source_key: row.source_key,
+        actual: null,
+        reaction: null,
+        enriched: false,
+        reason: "malformed_release_time",
+      },
+    ];
+  }
+
+  let sectorEtf: string | null = null;
+  if (row.event_type === "earnings") {
+    const resolved = resolveSectorForEarnings(db, row.security_id);
+    sectorEtf = resolved.etf;
+    if (!sectorEtf && row.symbol) logSectorGap(db, row.symbol, resolved.sector);
+  } else {
+    sectorEtf = resolveSectorEtf(row.event_type, null);
+  }
+
+  const reaction = await captureReactionFromTws(
+    opts.tws,
+    releaseInstant,
+    sectorEtf,
+    { pacingMs: opts.pacingMs },
+  );
+
+  if (!reaction) {
+    return [
+      {
+        eventId: row.id,
+        source_key: row.source_key,
+        actual: null,
+        reaction: null,
+        enriched: false,
+        reason: "tws_reaction_unavailable",
+      },
+    ];
+  }
+
+  updateReactionOnly(db).run(JSON.stringify(reaction), row.id);
+
+  return [
+    {
+      eventId: row.id,
+      source_key: row.source_key,
+      actual: null,
+      reaction,
+      enriched: true,
+    },
+  ];
 }
