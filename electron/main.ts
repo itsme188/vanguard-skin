@@ -214,7 +214,7 @@ function createWindow(): void {
   // Start maximized — the dashboard is designed for full-width viewports
   mainWindow.maximize();
 
-  mainWindow.loadURL(`http://localhost:${PORT}/dashboard`);
+  mainWindow.loadURL(`http://localhost:${PORT}/dashboard/today`);
 
   // Open external links in the default browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
