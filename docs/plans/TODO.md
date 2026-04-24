@@ -65,15 +65,15 @@ User-reported (2026-04-24):
 
 _(All three user-reported items closed this session.)_
 
-From master roadmap — still open despite being planned pre-session-6:
+From master roadmap — reconciled 2026-04-24 evening after drift audit:
 
-- [ ] **A3 — Daily-digest "Yesterday's triggered alerts" section** (~15 min). Query `level_alerts WHERE triggered_at >= date('now','-1 day') AND user_response='pending'` and render an HTML block above the article digest. File: `lib/digest/daily-digest.ts`.
-- [ ] **A5 — Explicit `expires_at` field in `LevelsPanel` form** (~15 min). API already accepts `expires_at`; UI doesn't expose it. Add an optional date input beneath "Timeframe (context)" labeled "Expires (auto-deactivate after)". File: `app/dashboard/security/[id]/LevelsPanel.tsx`.
-- [ ] **A13 — Cross-form validation audit** (~30 min). Grep `disabled=\{.*!` across `app/dashboard/**` forms; verify each still submits across all field-dependent modes (precedent bug: `disabled={loading || !price}` broke MA-mode level creation).
-- [ ] **L2 — `LevelsPanel` mobile quick-add form** (~45 min). Collapse the ~10-field form to 3 (Type, Reference, Price) with "More options…" disclosure on mobile. Desktop unchanged.
-- [ ] **L3 — Provenance filter in `LevelsPanel`** (~20 min). Source-author pills above the level list (All / Me / Newsletter / per-author from `distinct(source_author)`). Reuse existing filter-pill pattern.
-- [ ] **L6 — Chart crosshair legend mobile density** (~20 min). With 4 MAs + OHLCV + Vol the crosshair legend overflows on phones. Hide raw OHLC on mobile breakpoint; show only delta-to-prior-close + active indicator values.
-- [ ] **H3 — Vanguard statement PDF → direct import** (~2–3 hr). Parser exists for holdings extraction; extend `lib/import/parsers/vanguard-pdf.ts` to also extract transactions (dividends / interest / trades) so the Co-Work round-trip becomes optional. Add anonymized fixture + tests.
+- ✅ **A3 — Daily-digest "Yesterday's triggered alerts"** — already shipped (`formatTriggeredAlertsSection` in `lib/digest/daily-digest.ts:22`); two bugs in it were also fixed this session (`6cb2cac`).
+- ✅ **A5 — `expires_at` field in LevelsPanel form** — already shipped (`LevelsPanel.tsx:484 expiresAt state + :816 Field "Expires (auto-deactivate)"`).
+- ✅ **L2 — LevelsPanel mobile quick-add form** — already shipped (`LevelsPanel.tsx:488 showAdvanced state, :778 "More options ↓" disclosure`).
+- ✅ **L3 — Provenance filter in LevelsPanel** — already shipped (`LevelsPanel.tsx:861 authorFilter set + :898 filter application`).
+- ✅ **L6 — Chart crosshair legend mobile density** — already shipped (`SecurityChart.tsx:736 hidden md:inline-flex for O/H/L + :757 mobile-only delta-from-open`).
+- ✅ **H3 — Vanguard PDF direct import** — already shipped (`vanguard-pdf.ts:735 extractTransactionsFromPdf + :770 Promise.allSettled parallel holdings + transactions extraction`).
+- [ ] **A13 — Cross-form validation audit** (~30 min). Spot-grep of `disabled=\{.*!` across `app/dashboard/**` came up clean — the 10 matches are all legitimate required-field gates. Still worth a full walkthrough of every form with MA-mode vs static-mode field dependencies (the original bug class). Low urgency.
 
 UX — tab navigation (flagged 2026-04-24):
 
