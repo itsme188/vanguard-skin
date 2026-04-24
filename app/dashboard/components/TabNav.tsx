@@ -2,9 +2,33 @@
 
 import { usePathname } from "next/navigation";
 import Link from "next/link";
-import { useRef, useCallback } from "react";
+import { Suspense, useRef, useCallback } from "react";
+import type { Tab } from "./nav-tabs";
 import { tabs } from "./nav-tabs";
 import { TabDropdown } from "./TabDropdown";
+
+// TabDropdown reads useSearchParams. Rendering it unwrapped would trigger a
+// CSR-bailout during `next build` for any dashboard page that isn't
+// force-dynamic. Wrapping in Suspense isolates the bailout to the dropdown
+// itself and keeps the rest of the nav statically renderable.
+function TabDropdownFallback({ tab, isActive }: { tab: Tab; isActive: boolean }) {
+  return (
+    <Link
+      href={tab.href}
+      role="tab"
+      aria-selected={isActive}
+      tabIndex={isActive ? 0 : -1}
+      className={`relative px-4 py-2.5 text-sm font-medium whitespace-nowrap transition-colors ${
+        isActive ? "text-gold" : "text-ink-faint hover:text-ink-dim"
+      }`}
+    >
+      {tab.name}
+      {isActive && (
+        <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-gold rounded-full" />
+      )}
+    </Link>
+  );
+}
 
 export function TabNav() {
   const pathname = usePathname();
@@ -54,7 +78,14 @@ export function TabNav() {
             : pathname.startsWith(tab.href);
 
         if (tab.subviews && tab.subviews.length > 0) {
-          return <TabDropdown key={tab.href} tab={tab} isActive={isActive} />;
+          return (
+            <Suspense
+              key={tab.href}
+              fallback={<TabDropdownFallback tab={tab} isActive={isActive} />}
+            >
+              <TabDropdown tab={tab} isActive={isActive} />
+            </Suspense>
+          );
         }
 
         return (
