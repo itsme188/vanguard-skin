@@ -320,6 +320,22 @@ describe("tags support", () => {
     expect(rows.map((r) => r.title)).toEqual(["A"]);
   });
 
+  it("FTS5 query 'ai' surfaces a doc tagged 'agentic ai' / 'ai risk' (E2E #2 regression)", () => {
+    seedDoc(db, {
+      title: "The State of the Agent",
+      tags: ["agentic ai", "ai risk", "cybersecurity"],
+      raw_text: "Body talks about agents and security.",
+    });
+    seedDoc(db, {
+      title: "Coffee shop M&A roundup",
+      tags: ["consumer", "m&a"],
+      raw_text: "Body about coffee shop consumer trends and recent deals.",
+    });
+
+    const rows = searchResearchDocuments(db, { query: "ai" });
+    expect(rows.map((r) => r.title)).toEqual(["The State of the Agent"]);
+  });
+
   it("updateResearchDocumentTags overwrites tags on the row + FTS index", () => {
     const id = seedDoc(db, {
       title: "A",
