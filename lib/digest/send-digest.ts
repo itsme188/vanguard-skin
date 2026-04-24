@@ -70,6 +70,26 @@ export async function sendDigestEmail(
     );
   }
 
+  // Capture digest range boundaries BEFORE the slow fetch/process step.
+  // Otherwise a concurrent manual trigger that completes during our
+  // fetch+process window will update `last_digest_sent_at` to "now" and
+  // our subsequent getLastDigestSentAt() would return a future-of-our-
+  // articles cutoff — silently producing zero matches and a "No processed
+  // articles" skip. Same race produced 3 weekdays of mystery skips
+  // (Apr 22 / 23 / 24 2026).
+  const sinceSnapshot = (() => {
+    if (opts.mode === "today") return new Date().toISOString().slice(0, 10);
+    if (opts.mode === "since_last") {
+      const lastSent = getLastDigestSentAt(db);
+      const fallback = new Date(Date.now() - 24 * 60 * 60 * 1000)
+        .toISOString()
+        .slice(0, 10);
+      return lastSent || fallback;
+    }
+    if (opts.mode === "since_date" && opts.sinceDate) return opts.sinceDate;
+    return null; // legacy generateDailyDigest path
+  })();
+
   let twsSynced = false;
   try {
     await syncPortfolio(db);
@@ -92,21 +112,9 @@ export async function sendDigestEmail(
 
   backfillSourceUrls(db);
 
-  let digest: string | null;
-  if (opts.mode === "today") {
-    const today = new Date().toISOString().slice(0, 10);
-    digest = generateDigestSince(db, today);
-  } else if (opts.mode === "since_last") {
-    const lastSent = getLastDigestSentAt(db);
-    const fallback = new Date(Date.now() - 24 * 60 * 60 * 1000)
-      .toISOString()
-      .slice(0, 10);
-    digest = generateDigestSince(db, lastSent || fallback);
-  } else if (opts.mode === "since_date" && opts.sinceDate) {
-    digest = generateDigestSince(db, opts.sinceDate);
-  } else {
-    digest = generateDailyDigest(db);
-  }
+  const digest = sinceSnapshot !== null
+    ? generateDigestSince(db, sinceSnapshot)
+    : generateDailyDigest(db);
 
   if (!digest) {
     return {

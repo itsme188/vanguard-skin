@@ -2,9 +2,16 @@
 
 import { useState, useEffect } from "react";
 
+// Mirrors com.vanguard-skin.daily-digest.plist — Mon-Fri 8:45 AM local.
+const DIGEST_HOUR = 8;
+const DIGEST_MINUTE = 45;
+const DIGEST_TIME_LABEL = "8:45 AM";
+
 /**
  * Shows a notification banner if today's digest email wasn't sent.
- * Checks /api/digest/status on mount. Only shows on weekdays.
+ * Checks /api/digest/status on mount. Only shows on weekdays AFTER the
+ * scheduled send time has passed — pre-8:45 AM the digest is "expected,
+ * not late."
  */
 export function DigestCatchup() {
   const [show, setShow] = useState(false);
@@ -17,10 +24,20 @@ export function DigestCatchup() {
     if (day === 0 || day === 6) return;
 
     // Check once on mount, then poll every 5 min, and also re-check when
-    // the window regains focus. Needed because the 9am launchd cron sends
+    // the window regains focus. Needed because the 8:45 launchd cron sends
     // the digest via curl — without polling, a dashboard that was already
-    // open at 8:59am would keep nagging forever.
+    // open at 8:44 AM would keep nagging forever.
     const checkStatus = () => {
+      const now = new Date();
+      const scheduled = new Date();
+      scheduled.setHours(DIGEST_HOUR, DIGEST_MINUTE, 0, 0);
+      // Pre-scheduled-time on a weekday: digest hasn't been sent yet, and
+      // that's expected. Don't nag.
+      if (now < scheduled) {
+        setShow(false);
+        return;
+      }
+
       fetch("/api/digest/status")
         .then((r) => r.json())
         .then((data) => {
@@ -29,9 +46,10 @@ export function DigestCatchup() {
             return;
           }
           const lastSent = new Date(data.lastDigestSentAt);
-          const today = new Date();
-          today.setHours(0, 0, 0, 0);
-          setShow(lastSent < today);
+          // "Sent today" = sent at or after the scheduled trigger today.
+          // Tolerates a stale midnight rollover where lastSent is from
+          // yesterday's late-night manual catch-up but pre-trigger today.
+          setShow(lastSent < scheduled);
         })
         .catch(() => {});
     };
@@ -76,7 +94,7 @@ export function DigestCatchup() {
         {sent ? (
           <span className="text-up">Digest sent!</span>
         ) : (
-          "Today's digest wasn't sent at 9 AM"
+          `Today's digest wasn't sent at ${DIGEST_TIME_LABEL}`
         )}
       </span>
       <div className="flex items-center gap-2">
