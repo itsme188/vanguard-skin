@@ -188,13 +188,19 @@ async function getMessageDetail(
   const dateStr =
     headers.find((h) => h.name?.toLowerCase() === "date")?.value || "";
 
-  // Parse date to ISO format
-  let receivedAt: string;
-  try {
-    receivedAt = new Date(dateStr).toISOString().replace("T", " ").slice(0, 19);
-  } catch {
-    receivedAt = new Date().toISOString().replace("T", " ").slice(0, 19);
+  // Parse the Gmail `Date:` header. RFC 2822 is normally reliable, but a
+  // malformed header previously fell back silently to `new Date()` (now),
+  // poisoning `received_at` with a future timestamp. That breaks digest
+  // filtering (`datetime('now') > received_at`) and re-scans. Prefer to
+  // drop the message than to store a fabricated timestamp.
+  const parsed = new Date(dateStr).getTime();
+  if (!Number.isFinite(parsed)) {
+    console.warn(
+      `[gmail/fetch] Dropping message ${messageId}: unparseable Date header "${dateStr}"`,
+    );
+    return null;
   }
+  const receivedAt = new Date(parsed).toISOString().replace("T", " ").slice(0, 19);
 
   // Extract body text and original HTML (if available)
   const { text, html } = extractBody(msg.data.payload);

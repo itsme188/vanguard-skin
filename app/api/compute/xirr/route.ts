@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { computeXirr } from "@/lib/compute/xirr";
+import { resolveScopeToSingleId } from "@/lib/queries/accounts";
 
 export async function GET(request: NextRequest) {
   try {
@@ -8,7 +9,8 @@ export async function GET(request: NextRequest) {
     const startDate = searchParams.get("startDate") ?? undefined;
     const endDate = searchParams.get("endDate") ?? undefined;
     const accountIdParam = searchParams.get("accountId");
-    const accountId = accountIdParam ? Number(accountIdParam) : undefined;
+    const scope = searchParams.get("scope");
+    const accountId = accountIdParam ? Number(accountIdParam) : resolveScopeToSingleId(db, scope);
 
     const result = computeXirr(db, { startDate, endDate, accountId });
 

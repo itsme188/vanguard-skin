@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import type { ParsedImportResult } from "./types";
+import type { ParsedImportResult, SourceType } from "./types";
 import type { ImportBatch } from "@/lib/types";
 import { detectSourceType } from "./detect";
 import { validateParsedResult } from "./validate";
@@ -82,6 +82,21 @@ export interface CommitResult {
   newFactors: number;
   skippedDuplicates: number;
   unmatchedFactors?: string[];
+}
+
+// Map the parser's sourceType to the price.source value used by step 5's
+// priority CASE. Sources not listed here fall through to the ELSE=4 bucket.
+function holdingDerivedPriceSource(sourceType: SourceType): string {
+  switch (sourceType) {
+    case "ibkr-activity":
+    case "ibkr-holdings":
+    case "vanguard-pdf":
+    case "vanguard-export":
+    case "vanguard-holdings":
+      return sourceType;
+    default:
+      return "canonical";
+  }
 }
 
 export function commitImport(
@@ -238,6 +253,11 @@ export function commitImport(
     //     price = marketValue / quantity (for bonds this gives % of par, for stocks $/share).
     //     These are statement-sourced prices — lower priority than TWS but fill gaps
     //     for securities that can't be priced via TWS (mutual funds, CUSIPs).
+    //     Inherit the parser's sourceType so the priority CASE in step 5 picks
+    //     the right tier (vanguard-pdf=3, ibkr-*=2) instead of falling through
+    //     to the ELSE=4 bucket, which would let a stale "manual" price survive
+    //     a fresh Vanguard PDF import.
+    const derivedPriceSource = holdingDerivedPriceSource(parsed.sourceType);
     for (const h of parsed.holdings) {
       if (h.marketValue != null && h.quantity > 0) {
         const pricePerShare = h.marketValue / h.quantity;
@@ -246,7 +266,7 @@ export function commitImport(
             symbol: h.symbol,
             date: h.asOfDate,
             closePrice: pricePerShare,
-            source: "canonical",
+            source: derivedPriceSource,
           });
         }
       }
