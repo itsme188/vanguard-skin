@@ -16,7 +16,17 @@ Run `gh pr list 2>/dev/null`. If any open PRs from this session, ask the user ab
 
 Run `git worktree list`. If extras exist beyond the main checkout, ask the user whether to remove them. Per the global rule: cleanup is `git worktree remove <path>` then `git branch -d <branch>`.
 
-## 4. Update auto-memory
+## 4. Reconcile TODO.md
+
+Read `docs/plans/TODO.md` and reconcile it against what actually shipped this session:
+
+- Cross-reference every open item (`- [ ]` checkboxes) against `git log` since session start — sibling fixes often ride along with the headline work and must be ticked too.
+- **Before ticking any item, verify it actually shipped** — `grep` the codebase for its identifiers (file paths, function names, migration numbers, commit hashes referenced in the item). Drift goes both ways: items get ticked that weren't done, and items stay open after silently shipping in an earlier session. Flag the latter rather than re-implementing.
+- Match the file's existing convention: completed items move from "Open items" to the "Closed this session" block with `✅`, today's date, and commit hash(es). Do NOT introduce a new convention.
+- Add any new TODOs discovered this session (bugs found, deferred work, follow-ups the user mentioned) to "Open items" with enough context (files, ~time estimate, why) that next session can pick them up cold.
+- If the session closed a roadmap-level theme (Theme A / Theme D / etc.), update the "Backlog themes" list too.
+
+## 5. Update auto-memory
 
 Read `/Users/Yitzi/.claude/projects/-Users-Yitzi-code-vanguard-skin/memory/MEMORY.md` and update:
 - Add a new entry under "Recent Work (<today's date>)" summarizing what shipped this session (commit hash, file count, key bullets)
@@ -24,7 +34,7 @@ Read `/Users/Yitzi/.claude/projects/-Users-Yitzi-code-vanguard-skin/memory/MEMOR
 - Strike through anything the session resolved (e.g., active issues that were fixed)
 - Add new memory files in `memory/` for any durable feedback or project facts learned this session, then link them in MEMORY.md
 
-## 5. Update CLAUDE.md
+## 6. Update CLAUDE.md
 
 If any of these changed during the session, update `CLAUDE.md` accordingly:
 - New conventions or single-source-of-truth utilities (add to "Conventions")
@@ -32,7 +42,7 @@ If any of these changed during the session, update `CLAUDE.md` accordingly:
 - Architecture changes (Calendar / Auto-Refresh / Electron Build / etc.)
 - Fixed known issues (strike through with `~~text~~` in "Active Issues")
 
-## 6. Rebuild Electron DMG (pre-authorized)
+## 7. Rebuild Electron DMG (pre-authorized)
 
 If the session changed any production code (anything outside `tests/`, `docs/`, `.claude/`, or memory files):
 
@@ -46,7 +56,7 @@ If notarization is skipped because `APPLE_API_KEY` env vars aren't in shell, tha
 
 Skip this step if the session was docs-only / memory-only / `.claude/` config-only.
 
-## 7. Summary
+## 8. Summary
 
 Print a tight summary (≤150 words):
 - What shipped this session (commit hash + 1-line takeaway per item)
