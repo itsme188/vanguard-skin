@@ -1,4 +1,5 @@
 export const tabs = [
+  { name: "Today", href: "/dashboard/today" },
   { name: "Overview", href: "/dashboard" },
   { name: "Accounts", href: "/dashboard/accounts" },
   { name: "Holdings", href: "/dashboard/holdings" },
