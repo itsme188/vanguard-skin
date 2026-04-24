@@ -214,8 +214,8 @@ export function AnalysisView({
       {/* Mode toggle + Account scope */}
       <div className="flex flex-col gap-3">
         <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-          {/* Mode toggle */}
-          <div className="flex items-center bg-canvas rounded-lg p-0.5 border border-edge" role="group" aria-label="Analysis mode">
+          {/* Mode toggle — mobile only; desktop uses the Analysis tab dropdown in TabNav */}
+          <div className="md:hidden flex items-center bg-canvas rounded-lg p-0.5 border border-edge" role="group" aria-label="Analysis mode">
             <button
               onClick={() => navigate({ mode: "classification", dimension: "fund_category" })}
               aria-pressed={!isFactorMode}
@@ -240,7 +240,7 @@ export function AnalysisView({
             </button>
           </div>
 
-          <div className="h-5 w-px bg-edge" />
+          <div className="md:hidden h-5 w-px bg-edge" />
 
           {/* Account scope pills */}
           <div className="flex items-center gap-1.5" role="group" aria-label="Account scope">
