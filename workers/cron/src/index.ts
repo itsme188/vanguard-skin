@@ -55,7 +55,6 @@ export interface Env {
   CLOUD_ENRICH_ENABLED?: string;
   FRED_API_KEY?: string;
   FINNHUB_API_KEY?: string;
-  POLYGON_API_KEY?: string;
 }
 
 function parseJobFromClock(env: Env): { type: JobType; expectedHour: number } | null {

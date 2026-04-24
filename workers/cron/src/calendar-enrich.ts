@@ -26,7 +26,7 @@
 import { getCurrentETHour, getCurrentETMinute, getCurrentETDayOfWeek, todayET } from "./dst";
 import { loadLatestSnapshot } from "./state";
 import { composeReleaseInstant, resolveSectorEtf } from "./reaction-matcher";
-import { captureReactionFromPolygon } from "./polygon";
+import { captureReactionFromYahoo } from "./yahoo";
 import { fetchActualForEventCloud, type WorkerEnrichActualResult } from "./enrich-actuals";
 
 // ── Primary call ────────────────────────────────────────────────────
@@ -153,7 +153,6 @@ export interface EnrichRunEnv {
   CLOUD_ENRICH_ENABLED?: string;
   FRED_API_KEY?: string;
   FINNHUB_API_KEY?: string;
-  POLYGON_API_KEY?: string;
 }
 
 // ── Fallback: cloud enrichment ──────────────────────────────────────
@@ -259,9 +258,8 @@ export async function runCloudFallback(
       // ETF and publish SPY/QQQ/TLT only — Mac's TWS-upgrade path can add
       // the sector ETF later if needed.
       const sectorEtf = resolveSectorEtf(cand.event_type, null);
-      const reaction = env.POLYGON_API_KEY
-        ? await captureReactionFromPolygon(env.POLYGON_API_KEY, cand.releaseInstant, sectorEtf, { pacingMs })
-        : null;
+      // Yahoo requires no API key — always attempt reaction capture.
+      const reaction = await captureReactionFromYahoo(cand.releaseInstant, sectorEtf, { pacingMs });
 
       const payload: CloudEnrichedPayload = {
         eventId: cand.id,
