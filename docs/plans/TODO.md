@@ -87,6 +87,10 @@ Other open (from MEMORY, not previously in this file):
 
 - [ ] **IBKR April 2026 transactions gap** — waiting on April statement to arrive; will import normally when it lands. (Phase 5 plan note.)
 
+Closed this session (follow-up):
+
+- ✅ **UMich Consumer Sentiment calendar gap** — closed 2026-04-25 (`01bf248`). User flagged today's 04-24 Final release wasn't captured. Two bugs: hardcoded schedule only had prelim dates (2nd Friday, no 4th Friday finals), AND non-FRED events were inserted with null `event_time` → `resolveReleaseTime` had nothing to resolve → `release_time` stayed null → enrichment runner filtered them out (Consumer Confidence row id 67 was silently broken the same way). Fix: `NonFredEvent.releaseTime` required field, UMich split into prelim/final arrays with distinct shortNames, push site emits `event_time: src.releaseTime`. 2026 UMich dates cross-checked against `data.sca.isr.umich.edu/schedule.php`. Ran sync for weekOf 2026-04-20 → 2026-07-27 to upsert new rows. Today's 04-24 Final retroactively enriched via `/api/calendar/enrich {eventId:97}` (actual="49.8" via Claude+web_search; reaction absent because TWS is disconnected right now — acceptable for this one-off).
+
 New from Phase 4 E2E scenario sweep (2026-04-25):
 
 - [ ] **Security Detail Transactions table sort doesn't write URL params** (Scenario 2 #9). Clicking the DATE header (which shows a ↓ arrow) does not update `location.search` — other tables with the `useSortParam` pattern (Holdings, LevelsPanel) persist sort state to the URL. Likely the Security Detail Transactions section doesn't wrap its header in `<SortableHeader>` or isn't scope-keyed. 10-min fix.
