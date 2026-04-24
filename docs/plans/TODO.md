@@ -1,6 +1,6 @@
 # Vanguard Skin — TODO
 
-> **In-repo shortlist.** Updated 2026-04-24 (reconciled pass — added open items from master roadmap that code-grep confirmed unshipped, plus 3 user-reported bugs/asks).
+> **In-repo shortlist.** Updated 2026-04-25 (session-end reconciliation; Phase 2 + Phase 9b shipped, CLAUDE.md updated in `b40bb1d`, Yahoo provider swap in `8e22ebe`).
 >
 > - v2 build log (Mar–Apr 2026): [archive/TODO-v2-complete-2026-03-30.md](archive/TODO-v2-complete-2026-03-30.md)
 > - Master roadmap (off-repo, session-driven): `~/.claude/plans/last-session-session-summary-eventual-ripple.md`
