@@ -128,6 +128,14 @@ interface NonFredEvent {
   eventType: CalendarEventType;
   defaultImpact: EventImpact;
   reportingLag: 1 | 0; // 1 = prior month data, 0 = current month
+  /**
+   * Release time in US-Eastern "HH:MM". Written to `event_time` at insert so
+   * `resolveReleaseTime` returns it on priority 1 (ahead of the event_type
+   * lookup, which doesn't cover `other_macro`). Without this, UMich +
+   * Consumer Confidence rows end up with null release_time and never reach
+   * the enrichment runner.
+   */
+  releaseTime: string;
 }
 
 function buildNonFredSchedule2026(): NonFredEvent[] {
@@ -135,22 +143,34 @@ function buildNonFredSchedule2026(): NonFredEvent[] {
 
   const ismMfg = ["2026-01-02", "2026-02-02", "2026-03-02", "2026-04-01", "2026-05-01", "2026-06-01", "2026-07-01", "2026-08-03", "2026-09-01", "2026-10-01", "2026-11-02", "2026-12-01"];
   for (const date of ismMfg) {
-    schedule.push({ date, shortName: "ISM Manufacturing", eventType: "pmi", defaultImpact: "high", reportingLag: 1 });
+    schedule.push({ date, shortName: "ISM Manufacturing", eventType: "pmi", defaultImpact: "high", reportingLag: 1, releaseTime: "10:00" });
   }
 
   const ismSvc = ["2026-01-06", "2026-02-04", "2026-03-04", "2026-04-03", "2026-05-05", "2026-06-03", "2026-07-06", "2026-08-05", "2026-09-03", "2026-10-05", "2026-11-04", "2026-12-03"];
   for (const date of ismSvc) {
-    schedule.push({ date, shortName: "ISM Services", eventType: "pmi", defaultImpact: "high", reportingLag: 1 });
+    schedule.push({ date, shortName: "ISM Services", eventType: "pmi", defaultImpact: "high", reportingLag: 1, releaseTime: "10:00" });
   }
 
-  const umich = ["2026-01-09", "2026-02-13", "2026-03-13", "2026-04-10", "2026-05-08", "2026-06-12", "2026-07-10", "2026-08-14", "2026-09-11", "2026-10-09", "2026-11-13", "2026-12-11"];
-  for (const date of umich) {
-    schedule.push({ date, shortName: "U. of Michigan Consumer Sentiment", eventType: "other_macro", defaultImpact: "medium", reportingLag: 0 });
+  // UMich Consumer Sentiment publishes twice per month — preliminary (~2nd
+  // Friday) and final (~last Friday). Both are market-moving, especially
+  // the inflation-expectations breakouts in the final. Observed 2026
+  // dates from data.sca.isr.umich.edu/schedule.php (as of 2026-04-24):
+  //   Jan Final 01-23, Feb Prelim 02-06, Feb Final 02-20, Mar Prelim 03-13,
+  //   Mar Final 03-27. Remaining months use 2nd-Friday / 4th-Friday heuristic;
+  //   verifyNonFredReschedules corrects drift at sync time.
+  const umichPrelim = ["2026-01-09", "2026-02-06", "2026-03-13", "2026-04-10", "2026-05-08", "2026-06-12", "2026-07-10", "2026-08-14", "2026-09-11", "2026-10-09", "2026-11-13", "2026-12-11"];
+  for (const date of umichPrelim) {
+    schedule.push({ date, shortName: "U. of Michigan Consumer Sentiment (Preliminary)", eventType: "other_macro", defaultImpact: "medium", reportingLag: 0, releaseTime: "10:00" });
+  }
+
+  const umichFinal = ["2026-01-23", "2026-02-20", "2026-03-27", "2026-04-24", "2026-05-22", "2026-06-26", "2026-07-24", "2026-08-28", "2026-09-25", "2026-10-23", "2026-11-27", "2026-12-25"];
+  for (const date of umichFinal) {
+    schedule.push({ date, shortName: "U. of Michigan Consumer Sentiment (Final)", eventType: "other_macro", defaultImpact: "medium", reportingLag: 0, releaseTime: "10:00" });
   }
 
   const cbCcx = ["2026-01-27", "2026-02-24", "2026-03-31", "2026-04-28", "2026-05-26", "2026-06-30", "2026-07-28", "2026-08-25", "2026-09-29", "2026-10-27", "2026-11-24", "2026-12-29"];
   for (const date of cbCcx) {
-    schedule.push({ date, shortName: "Consumer Confidence", eventType: "other_macro", defaultImpact: "medium", reportingLag: 0 });
+    schedule.push({ date, shortName: "Consumer Confidence", eventType: "other_macro", defaultImpact: "medium", reportingLag: 0, releaseTime: "10:00" });
   }
 
   return schedule;
@@ -565,7 +585,7 @@ export async function fetchMacroEvents(
         source: "claude_macro" as const,
         event_type: src.eventType,
         event_date: finalDate,
-        event_time: null,
+        event_time: src.releaseTime,
         title,
         description: null,
         expected_impact: src.defaultImpact,
