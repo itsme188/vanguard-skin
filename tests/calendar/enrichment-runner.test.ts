@@ -27,6 +27,7 @@ function insertEvent(
   db: Database.Database,
   opts: {
     id?: number;
+    source?: string;
     source_key: string;
     event_type: string;
     event_date: string;
@@ -41,8 +42,9 @@ function insertEvent(
     `INSERT INTO calendar_events
        (source, event_type, event_date, event_time, release_time, title,
         symbol, security_id, consensus_estimate, raw_json, source_key, week_of)
-     VALUES ('claude_macro', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
+    opts.source ?? "claude_macro",
     opts.event_type,
     opts.event_date,
     opts.release_time,
@@ -76,7 +78,7 @@ describe("runEnrichment", () => {
   });
 
   it("does nothing when no events fall in the enrichment window", async () => {
-    // Event is 4 hours old — outside the [now-2h, now-5min] window
+    // Event is 4 hours old — outside the macro [now-2h, now-5min] window
     insertEvent(db, {
       source_key: "fred:10:2026-04-11",
       event_type: "cpi",
@@ -84,7 +86,7 @@ describe("runEnrichment", () => {
       release_time: "08:30",
     });
 
-    // 08:30 EDT = 12:30 UTC. 4 hours post-release → 16:30 UTC, outside window.
+    // 08:30 EDT = 12:30 UTC. 4 hours post-release → 16:30 UTC, outside macro window.
     const now = new Date("2026-04-11T16:30:00Z");
     const results = await runEnrichment(db, { now });
     expect(results).toEqual([]);
@@ -93,6 +95,45 @@ describe("runEnrichment", () => {
       .prepare("SELECT enriched_at FROM calendar_events")
       .get() as { enriched_at: string | null };
     expect(row.enriched_at).toBeNull();
+  });
+
+  it("BMO earnings released 4 hours ago is still in the (12h) earnings window", async () => {
+    // Mock Finnhub `/calendar/earnings` for the actual fetch.
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        earningsCalendar: [
+          { symbol: "NSC", date: "2026-04-24", epsActual: 3.45, epsEstimate: 3.32 },
+        ],
+      }),
+    });
+
+    seedSecurity(db, 100, "NSC", "Industrials");
+    insertEvent(db, {
+      source: "finnhub",
+      source_key: "finnhub:NSC:2026-04-24",
+      event_type: "earnings",
+      event_date: "2026-04-24",
+      release_time: "08:00",
+      symbol: "NSC",
+      security_id: 100,
+    });
+
+    // 08:00 EDT = 12:00 UTC. 4.5 hours post-release → 16:30 UTC. Outside the
+    // macro 2h window but inside the earnings 12h window. This is the exact
+    // NSC scenario from 2026-04-24 — the runner cron didn't see NSC at 08:13
+    // because Finnhub sync hadn't inserted it yet, then by mid-day it was
+    // outside the old 2h window forever.
+    const now = new Date("2026-04-24T16:30:00Z");
+    const results = await runEnrichment(db, { now });
+    expect(results).toHaveLength(1);
+    expect(results[0].enriched).toBe(true);
+
+    const row = db
+      .prepare("SELECT enriched_at, actual_value FROM calendar_events")
+      .get() as { enriched_at: string | null; actual_value: string | null };
+    expect(row.enriched_at).toBeTruthy();
+    expect(row.actual_value).toBeTruthy();
   });
 
   it("enriches an in-window macro event and writes actual + enriched_at", async () => {
