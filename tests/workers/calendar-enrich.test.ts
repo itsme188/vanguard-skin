@@ -137,7 +137,7 @@ describe("runCalendarEnrich", () => {
     expect((global.fetch as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
   });
 
-  it("returns fallback=not_implemented when primary fails", async () => {
+  it("returns fallback=cloud_enrich_disabled when flag unset and primary fails", async () => {
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: false,
       status: 500,
@@ -145,7 +145,9 @@ describe("runCalendarEnrich", () => {
     });
     const env = baseEnv();
     const result = await runCalendarEnrich(env);
-    expect(result.fallback).toBe("not_implemented");
+    expect(result.fallback?.kind).toBe("error");
+    expect(result.fallback?.error).toBe("cloud_enrich_disabled");
+    expect(result.sentBy).toBe("none");
     expect(result.primary?.kind).toBe("server_error");
 
     // No success marker written — next slot should retry

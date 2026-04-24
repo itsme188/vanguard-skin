@@ -29,7 +29,7 @@ import {
 import { callPrimary, type PrimaryResult } from "./primary";
 import { runFallbackDigest, type FallbackResult } from "./fallback-digest";
 import { runFallbackBriefing } from "./fallback-briefing";
-import { runCalendarEnrich, shouldRunCalendarEnrich } from "./calendar-enrich";
+import { runCalendarEnrich, runCloudFallback, shouldRunCalendarEnrich } from "./calendar-enrich";
 
 export interface Env {
   // Bindings
@@ -51,6 +51,11 @@ export interface Env {
   WORKER_GMAIL_REFRESH_TOKEN?: string;
   BRIEFING_EMAIL_TO?: string;
   FROM_EMAIL?: string;
+  // Phase 9b — cloud-enrich fallback secrets + flag.
+  CLOUD_ENRICH_ENABLED?: string;
+  FRED_API_KEY?: string;
+  FINNHUB_API_KEY?: string;
+  POLYGON_API_KEY?: string;
 }
 
 function parseJobFromClock(env: Env): { type: JobType; expectedHour: number } | null {
@@ -190,13 +195,52 @@ export default {
 
     if (request.method === "POST" && url.pathname === "/internal/trigger") {
       const typeParam = url.searchParams.get("type");
+      if (typeParam === "calendar-enrich") {
+        const fallbackOnly = url.searchParams.get("fallbackOnly") === "true";
+        if (fallbackOnly) {
+          const result = await runCloudFallback(env);
+          return Response.json({ fallback: result });
+        }
+        const result = await runCalendarEnrich(env);
+        return Response.json(result);
+      }
       if (typeParam !== "briefing" && typeParam !== "digest") {
-        return Response.json({ error: "type must be briefing or digest" }, { status: 400 });
+        return Response.json({ error: "type must be briefing, digest, or calendar-enrich" }, { status: 400 });
       }
       const dryRun = url.searchParams.get("dryRun") === "true";
       const fallbackOnly = url.searchParams.get("fallbackOnly") === "true";
       const result = await runJob(typeParam, env, { dryRun, fallbackOnly });
       return Response.json(result);
+    }
+
+    // Phase 9b — Mac reconcile endpoints. Mac polls to read cloud-enriched
+    // payloads, then calls DELETE per eventId after it has committed to DB.
+    if (request.method === "GET" && url.pathname === "/internal/cloud-enriched") {
+      const list = await env.CRON_KV.list({ prefix: "cloud-enriched-" });
+      const payloads: Record<string, unknown> = {};
+      await Promise.all(list.keys.map(async (k) => {
+        const value = await env.CRON_KV.get(k.name);
+        if (value) {
+          const m = /^cloud-enriched-(\d+)$/.exec(k.name);
+          if (m) {
+            try {
+              payloads[m[1]] = JSON.parse(value);
+            } catch {
+              // skip malformed entries
+            }
+          }
+        }
+      }));
+      return Response.json({ payloads });
+    }
+
+    if (request.method === "DELETE" && url.pathname === "/internal/cloud-enriched") {
+      const eventIdStr = url.searchParams.get("eventId");
+      if (!eventIdStr || !/^\d+$/.test(eventIdStr)) {
+        return Response.json({ error: "eventId (numeric) is required" }, { status: 400 });
+      }
+      await env.CRON_KV.delete(`cloud-enriched-${eventIdStr}`);
+      return Response.json({ ok: true });
     }
 
     if (url.pathname === "/" || url.pathname === "/health") {
