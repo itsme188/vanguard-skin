@@ -6,6 +6,7 @@ import { DefaultChatTransport } from "ai";
 import type { UIMessage } from "ai";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { QuickActionChips } from "./QuickActionChips";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { getQuickActions } from "@/lib/chat/quick-actions";
 import { getPageContext } from "@/lib/chat/page-context";
 import type { ChatScope } from "@/lib/types";
@@ -284,6 +285,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
   const [conversationId, setConversationId] = useState<number | null>(null);
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
   const [loadedInitial, setLoadedInitial] = useState(false);
+  const [deletePending, setDeletePending] = useState<ChatConversation | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -412,30 +414,32 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
     setInputText("");
   }
 
-  const handleDeleteConversation = useCallback(
-    async (conv: ChatConversation) => {
-      const label = conv.title ?? `Conversation ${conv.id}`;
-      if (!window.confirm(`Delete "${label}"? This cannot be undone.`)) return;
+  const handleDeleteConversation = useCallback((conv: ChatConversation) => {
+    setDeletePending(conv);
+  }, []);
 
-      try {
-        const res = await fetch(`/api/chat/conversations/${conv.id}`, {
-          method: "DELETE",
-        });
-        if (!res.ok) return;
+  const confirmDeleteConversation = useCallback(async () => {
+    const conv = deletePending;
+    if (!conv) return;
+    setDeletePending(null);
 
-        // If the deleted conversation is currently loaded, reset to empty state
-        if (conv.id === conversationId) {
-          if (isStreaming) stop();
-          setMessages([]);
-          setConversationId(null);
-        }
-        await fetchConversations();
-      } catch {
-        // Silently fail
+    try {
+      const res = await fetch(`/api/chat/conversations/${conv.id}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) return;
+
+      // If the deleted conversation is currently loaded, reset to empty state
+      if (conv.id === conversationId) {
+        if (isStreaming) stop();
+        setMessages([]);
+        setConversationId(null);
       }
-    },
-    [conversationId, fetchConversations, isStreaming, setMessages, stop],
-  );
+      await fetchConversations();
+    } catch {
+      // Silently fail
+    }
+  }, [deletePending, conversationId, fetchConversations, isStreaming, setMessages, stop]);
 
   function handleQuickAction(prompt: string) {
     setInputText(prompt);
@@ -640,6 +644,15 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
           investment advice.
         </p>
       </div>
+      <ConfirmDialog
+        open={deletePending !== null}
+        title="Delete conversation"
+        message={`Delete "${deletePending?.title ?? `Conversation ${deletePending?.id}`}"? This cannot be undone.`}
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={confirmDeleteConversation}
+        onCancel={() => setDeletePending(null)}
+      />
     </div>
   );
 }
