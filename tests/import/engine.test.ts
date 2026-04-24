@@ -347,6 +347,58 @@ describe("import engine", () => {
       expect(price.source).toBe("tws");
     });
 
+    it("derived prices inherit the parser sourceType (not hardcoded 'canonical')", () => {
+      // Regression: engine.ts used to emit `source: "canonical"` (priority 4)
+      // for every holding-derived price, regardless of the parser. A stale
+      // "manual" price (also priority 4) would then survive a fresh Vanguard
+      // PDF import because both rows had equal priority. Now derived prices
+      // inherit the sourceType so vanguard-pdf → priority 3, ibkr-* → 2, etc.
+      const secId = db.prepare(
+        "INSERT INTO securities (symbol, name) VALUES ('DERIV', 'Derived Inc') RETURNING id",
+      ).get() as { id: number };
+
+      db.prepare(
+        "INSERT INTO accounts (name) VALUES ('Roth')",
+      ).run();
+
+      // Seed a stale "manual" (priority 4) price.
+      db.prepare(
+        "INSERT INTO prices (security_id, date, close_price, source) VALUES (?, '2025-03-15', 50.0, 'manual')",
+      ).run(secId.id);
+
+      // Import a Vanguard PDF whose holding has marketValue → the engine
+      // derives a price. vanguard-pdf is priority 3, which must beat manual (4).
+      const parsed: import("@/lib/import/types").ParsedImportResult = {
+        sourceType: "vanguard-pdf",
+        sourceName: "vanguard-derived.pdf",
+        transactions: [],
+        securities: [{ symbol: "DERIV", name: "Derived Inc" }],
+        holdings: [
+          {
+            accountName: "Roth",
+            symbol: "DERIV",
+            quantity: 10,
+            marketValue: 600,
+            asOfDate: "2025-03-15",
+            sourceKey: "deriv:2025-03-15",
+          },
+        ],
+        prices: [],
+        snapshots: [],
+        errors: [],
+        warnings: [],
+      };
+
+      commitImport(db, parsed);
+
+      const price = db.prepare(
+        "SELECT close_price, source FROM prices WHERE security_id = ? AND date = '2025-03-15'",
+      ).get(secId.id) as { close_price: number; source: string };
+
+      expect(price.source).toBe("vanguard-pdf");
+      expect(price.close_price).toBe(60.0);
+    });
+
     it("same-source re-import updates price (idempotent)", () => {
       // Insert a vanguard price
       const secId = db.prepare(

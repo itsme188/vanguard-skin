@@ -2,12 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getOptionPositions } from "@/lib/queries/options";
 import { detectStrategies, type PositionLeg } from "@/lib/compute/options-strategy";
+import { resolveScopeToSingleId } from "@/lib/queries/accounts";
 
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const accountIdParam = searchParams.get("accountId");
-    const accountId = accountIdParam ? Number(accountIdParam) : undefined;
+    const scope = searchParams.get("scope");
+    const accountId = accountIdParam ? Number(accountIdParam) : resolveScopeToSingleId(db, scope);
 
     const optionPositions = getOptionPositions(db, accountId);
 
@@ -15,7 +17,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: true, data: [] });
     }
 
-    // Get stock holdings for strategy detection (covered calls need stock positions)
+    // Get stock holdings for strategy detection (covered calls need stock positions).
+    // Use a per-account MAX(as_of_date) subquery — a global MAX would miss an
+    // account whose latest statement trails another account's.
     const accountFilter = accountId ? "AND h.account_id = ?" : "";
     const params: number[] = [];
     if (accountId) params.push(accountId);
@@ -28,7 +32,10 @@ export async function GET(request: NextRequest) {
          FROM holdings h
          JOIN securities s ON s.id = h.security_id
          WHERE LOWER(s.security_type) IN ('stock', 'etf')
-           AND h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2)
+           AND h.as_of_date = (
+             SELECT MAX(h2.as_of_date) FROM holdings h2
+             WHERE h2.account_id = h.account_id
+           )
            ${accountFilter}`
       )
       .all(...params) as Array<{
