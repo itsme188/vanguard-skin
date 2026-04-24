@@ -1,6 +1,6 @@
 # Vanguard Skin — TODO
 
-> **In-repo shortlist.** Updated 2026-04-25 (session-end reconciliation; Phase 2 + Phase 9b shipped, CLAUDE.md updated in `b40bb1d`, Yahoo provider swap in `8e22ebe`).
+> **In-repo shortlist.** Updated 2026-04-25 (session-end reconciliation; data-integrity burndown from 9-tab parallel audit shipped in `b60d71e`).
 >
 > - v2 build log (Mar–Apr 2026): [archive/TODO-v2-complete-2026-03-30.md](archive/TODO-v2-complete-2026-03-30.md)
 > - Master roadmap (off-repo, session-driven): `~/.claude/plans/last-session-session-summary-eventual-ripple.md`
@@ -112,6 +112,15 @@ Phase 4 E2E sweep cleanup (also closed this session):
 - ✅ **E2E #2 — Research Documents FTS5 tag matches** — closed 2026-04-25 as verified-non-bug. Migration 036 already extends FTS5 to include `tags` column + triggers wire it correctly. Live DB confirms FTS5 query "ai" returns the doc tagged "agentic ai" / "ai risk". Added explicit regression test in `tests/queries/research-documents.test.ts::"FTS5 query 'ai' surfaces a doc tagged 'agentic ai' / 'ai risk'"`.
 - ✅ **E2E #3 — Chat delete + Research doc delete swap window.confirm for ConfirmDialog** — closed 2026-04-25. `ChatInterface.tsx` and `ResearchDocumentsView.tsx` both swapped to the project's `ConfirmDialog` component (the same pattern `NotesView` uses). `deletePending` / `confirmingDelete` state holds the target; `<ConfirmDialog variant="danger">` renders the modal.
 - ✅ **E2E #4 — Today data-quality chip placement** — closed 2026-04-25 as spec correction. Updated `tests/e2e/SCENARIOS.md` Scenario 1 #5 to reflect the page-level qualityChip currently shipped (per-row chips would add row-clutter for marginal info — user opted close).
+
+Closed this session (2026-04-25 night — data-integrity burndown from 9-tab audit, `b60d71e`):
+
+- ✅ **Import engine price-source mapping** — derived prices from holdings were hardcoded `source: "canonical"` (priority 4) regardless of parser. Vanguard-PDF-derived prices now inherit `vanguard-pdf` (priority 3) so a stale manual price (also priority 4) can no longer survive a fresh PDF import. New helper `holdingDerivedPriceSource()` in `lib/import/engine.ts`. Regression test added in `tests/import/engine.test.ts`.
+- ✅ **Analysis scope leak in `getFactorCoverage.bySource`** — `lib/queries/analysis.ts:579-586` was querying all `security_factors` globally, breaking the Factor Exposure bar chart under single-account scope. Fixed via CTE-joined `scoped_security_ids` that covers both direct holdings AND option underlyings.
+- ✅ **Missing `scope` param on 3 API routes** — `/api/compute/xirr`, `/api/compute/reconciliation`, `/api/compute/options-strategies` now accept `scope` via `resolveScopeToSingleId`. Peer routes (risk, factors) already had it. `options-strategies` also got a bonus fix: per-account `MAX(as_of_date)` subquery (global MAX could pick a different account's stale date).
+- ✅ **Gmail date-header silent fallback** — `lib/gmail/fetch.ts:194` silently fell back to `new Date()` (now) on unparseable `Date:` headers, poisoning `received_at` with future timestamps and breaking digest filtering. Now drops the message with a `console.warn`.
+
+**Audit meta:** 9 parallel Explore agents spawned (one per dashboard tab) surfaced 11 candidate findings. 6 were real bugs (shipped above); 7 were false positives verified-and-skipped (bond par on holdings page, AllHoldingsTable allocation %, getCashAnchors TWS filter, Money null rendering, reaction-snapshot DST year-rotation, calendar enrich POST force-dynamic, send-digest timestamp ordering). Grep-verify before acting saved ~4 bad fixes. 1245 → 1246 tests.
 
 User-reported (2026-04-25 late night — open):
 
