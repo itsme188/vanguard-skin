@@ -41,13 +41,18 @@ export function useSortParam<Field extends string>(
   const setSort = useCallback(
     (field: Field) => {
       const next = new URLSearchParams(searchParams.toString());
-      const currentField = next.get(sortKey);
-      const currentDir = next.get(dirKey);
+      // Compare against the DISPLAYED sort, not just the URL params. Otherwise
+      // clicking the default-sorted column (URL field=null, displayed=default
+      // desc) writes a redundant explicit-desc to the URL with no visual
+      // change — feels broken. Comparing against `sort.field`/`sort.dir`
+      // makes the first click on the default column actually flip to asc.
+      const displayedField = sort.field;
+      const displayedDir = sort.dir;
 
-      if (currentField !== field) {
+      if (displayedField !== field) {
         next.set(sortKey, field);
         next.set(dirKey, "desc");
-      } else if (currentDir === "desc") {
+      } else if (displayedDir === "desc") {
         next.set(sortKey, field);
         next.set(dirKey, "asc");
       } else {
@@ -58,7 +63,7 @@ export function useSortParam<Field extends string>(
       const qs = next.toString();
       router.replace(qs ? `?${qs}` : "?", { scroll: false });
     },
-    [router, searchParams, sortKey, dirKey],
+    [router, searchParams, sortKey, dirKey, sort.field, sort.dir],
   );
 
   return { sort, setSort };
