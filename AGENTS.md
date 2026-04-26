@@ -1,5 +1,7 @@
 # Vanguard Skin — Agent Instructions
 
+> **Read `CLAUDE.md` in this directory before any task.** It is the authoritative source for project architecture, conventions, gotchas, API patterns, and the decision log. Codex also auto-loads it via `project_doc_fallback_filenames`. The rest of this file documents the canonical-CSV conversion contract used when ingesting raw brokerage exports.
+
 ## Converting Brokerage Data to Canonical CSV
 
 When the user provides raw financial documents (PDFs, proprietary CSVs, screenshots, or pasted data from any brokerage), convert them into the standardized CSV formats described below. These CSVs can then be imported directly into the Vanguard Skin dashboard.
