@@ -6,6 +6,7 @@ import { sendEmail } from "@/lib/email";
 import { getCurrentMonday } from "@/lib/calendar/date-utils";
 import { syncPortfolio } from "@/lib/tws/positions";
 import { setLastBriefingSentAt } from "@/lib/digest/daily-digest";
+import { syncCalendarForWeek } from "@/lib/calendar/sync";
 
 export class BriefingSendError extends Error {
   constructor(
@@ -63,6 +64,21 @@ export async function sendBriefingEmail(
     twsSynced = true;
   } catch {
     console.log("[send-briefing] TWS sync skipped (not connected or no IBKR account)");
+  }
+
+  // Calendar sync. Until 2026-04-27 the briefing path skipped this,
+  // and Sunday 4/26's briefing missed PCE + Q1 GDP (both released the
+  // following Thursday) because no one had run /api/calendar/sync for
+  // week_of=2026-04-27. Errors here are logged but never block — partial
+  // calendar data is still better than no briefing.
+  try {
+    const result = await syncCalendarForWeek(db, weekOf);
+    if (result.errors.length > 0) {
+      console.warn(`[send-briefing] calendar sync had errors: ${result.errors.join("; ")}`);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[send-briefing] calendar sync failed: ${msg}`);
   }
 
   let briefing = getBriefingByWeek(db, weekOf);
