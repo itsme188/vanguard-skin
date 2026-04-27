@@ -87,6 +87,62 @@ describe("upsertCalendarEvents", () => {
     expect(upsertCalendarEvents(db, [])).toEqual({ total: 0, inserted: 0, updated: 0 });
   });
 
+  it("stores normalized release_time during upsert", () => {
+    upsertCalendarEvents(db, [
+      makeEvent({
+        source_key: "macro:cpi:release-time",
+        event_type: "cpi",
+        event_time: null,
+      }),
+      makeEvent({
+        source_key: "manual:custom:release-time",
+        event_type: "other",
+        event_time: "07:15",
+      }),
+      makeEvent({
+        source_key: "wsh:aapl:earnings:bmo",
+        source: "wsh",
+        event_type: "earnings",
+        event_time: "BMO",
+        title: "AAPL Earnings",
+      }),
+      makeEvent({
+        source_key: "finnhub:msft:earnings:amc",
+        source: "finnhub",
+        event_type: "earnings",
+        event_time: null,
+        title: "MSFT Earnings",
+        raw_json: JSON.stringify({ entry: { hour: "amc" } }),
+      }),
+      makeEvent({
+        source_key: "manual:unknown:release-time",
+        event_type: "other",
+        event_time: null,
+      }),
+    ]);
+
+    const rows = db
+      .prepare(
+        `SELECT source_key, release_time
+         FROM calendar_events
+         WHERE source_key IN (
+           'macro:cpi:release-time',
+           'manual:custom:release-time',
+           'wsh:aapl:earnings:bmo',
+           'finnhub:msft:earnings:amc',
+           'manual:unknown:release-time'
+         )`,
+      )
+      .all() as { source_key: string; release_time: string | null }[];
+    const byKey = new Map(rows.map((r) => [r.source_key, r.release_time]));
+
+    expect(byKey.get("macro:cpi:release-time")).toBe("08:30");
+    expect(byKey.get("manual:custom:release-time")).toBe("07:15");
+    expect(byKey.get("wsh:aapl:earnings:bmo")).toBe("08:00");
+    expect(byKey.get("finnhub:msft:earnings:amc")).toBe("16:15");
+    expect(byKey.get("manual:unknown:release-time")).toBeNull();
+  });
+
   it("distinguishes new inserts from updates in mixed batch", () => {
     // Seed 2 existing events
     upsertCalendarEvents(db, [

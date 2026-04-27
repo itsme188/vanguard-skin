@@ -399,6 +399,148 @@ describe("import engine", () => {
       expect(price.close_price).toBe(60.0);
     });
 
+    it("derives option prices from market value without double-counting the multiplier", () => {
+      db.prepare("INSERT INTO accounts (name) VALUES ('Roth')").run();
+
+      const parsed: import("@/lib/import/types").ParsedImportResult = {
+        sourceType: "vanguard-pdf",
+        sourceName: "vanguard-options.pdf",
+        transactions: [],
+        securities: [
+          {
+            symbol: "AAPL  260619C00180000",
+            name: "AAPL Jun 2026 180 Call",
+            securityType: "Option",
+            multiplier: 100,
+          },
+        ],
+        holdings: [
+          {
+            accountName: "Roth",
+            symbol: "AAPL  260619C00180000",
+            quantity: 5,
+            marketValue: 1750,
+            asOfDate: "2025-03-15",
+            sourceKey: "option:2025-03-15",
+          },
+        ],
+        prices: [],
+        snapshots: [],
+        errors: [],
+        warnings: [],
+      };
+
+      commitImport(db, parsed);
+
+      const price = db
+        .prepare(
+          `SELECT p.close_price
+           FROM prices p
+           JOIN securities s ON s.id = p.security_id
+           WHERE s.symbol = 'AAPL  260619C00180000'`,
+        )
+        .get() as { close_price: number };
+
+      expect(price.close_price).toBe(3.5);
+    });
+
+    it("derives bond prices using percent-of-par pricing", () => {
+      db.prepare("INSERT INTO accounts (name) VALUES ('Taxable')").run();
+
+      const parsed: import("@/lib/import/types").ParsedImportResult = {
+        sourceType: "vanguard-pdf",
+        sourceName: "vanguard-bonds.pdf",
+        transactions: [],
+        securities: [
+          {
+            symbol: "9128285M8",
+            name: "US Treasury",
+            securityType: "Bond",
+          },
+        ],
+        holdings: [
+          {
+            accountName: "Taxable",
+            symbol: "9128285M8",
+            quantity: 10000,
+            marketValue: 9850,
+            asOfDate: "2025-03-15",
+            sourceKey: "bond:2025-03-15",
+          },
+        ],
+        prices: [],
+        snapshots: [],
+        errors: [],
+        warnings: [],
+      };
+
+      commitImport(db, parsed);
+
+      const price = db
+        .prepare(
+          `SELECT p.close_price
+           FROM prices p
+           JOIN securities s ON s.id = p.security_id
+           WHERE s.symbol = '9128285M8'`,
+        )
+        .get() as { close_price: number };
+
+      expect(price.close_price).toBe(98.5);
+    });
+
+    it("does not let a holding-derived price replace an explicit same-import price", () => {
+      db.prepare("INSERT INTO accounts (name) VALUES ('Roth')").run();
+
+      const parsed: import("@/lib/import/types").ParsedImportResult = {
+        sourceType: "vanguard-pdf",
+        sourceName: "vanguard-explicit-price.pdf",
+        transactions: [],
+        securities: [
+          {
+            symbol: "AAPL  260619C00180000",
+            name: "AAPL Jun 2026 180 Call",
+            securityType: "Option",
+            multiplier: 100,
+          },
+        ],
+        holdings: [
+          {
+            accountName: "Roth",
+            symbol: "AAPL  260619C00180000",
+            quantity: 5,
+            marketValue: 1750,
+            asOfDate: "2025-03-15",
+            sourceKey: "option-explicit:2025-03-15",
+          },
+        ],
+        prices: [
+          {
+            symbol: "AAPL  260619C00180000",
+            date: "2025-03-15",
+            closePrice: 3.6,
+            source: "vanguard-pdf",
+          },
+        ],
+        snapshots: [],
+        errors: [],
+        warnings: [],
+      };
+
+      const result = commitImport(db, parsed);
+
+      const price = db
+        .prepare(
+          `SELECT p.close_price
+           FROM prices p
+           JOIN securities s ON s.id = p.security_id
+           WHERE s.symbol = 'AAPL  260619C00180000'`,
+        )
+        .get() as { close_price: number };
+
+      expect(result.newPrices).toBe(1);
+      expect(price.close_price).toBe(3.6);
+    });
+
     it("same-source re-import updates price (idempotent)", () => {
       // Insert a vanguard price
       const secId = db.prepare(

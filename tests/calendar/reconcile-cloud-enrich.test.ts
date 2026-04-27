@@ -48,7 +48,7 @@ function insertEvent(
   );
 }
 
-function makeRequest(headers: Record<string, string> = {}) {
+function makeRequest(headers: Record<string, string> = { "x-cron-secret": "test-secret" }) {
   return new NextRequest("http://localhost:3000/api/calendar/reconcile-cloud-enrich", {
     method: "POST",
     headers,
@@ -84,6 +84,17 @@ describe("POST /api/calendar/reconcile-cloud-enrich", () => {
   it("returns 403 when X-Cron-Secret is provided but wrong", async () => {
     const res = await POST(makeRequest({ "x-cron-secret": "wrong" }));
     expect(res.status).toBe(403);
+  });
+
+  it("returns 403 when X-Cron-Secret is missing", async () => {
+    const res = await POST(makeRequest({}));
+    expect(res.status).toBe(403);
+  });
+
+  it("returns 500 when CRON_SHARED_SECRET is not configured", async () => {
+    delete process.env.CRON_SHARED_SECRET;
+    const res = await POST(makeRequest({}));
+    expect(res.status).toBe(500);
   });
 
   it("returns 502 when Worker returns an error", async () => {

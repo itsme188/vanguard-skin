@@ -1,47 +1,6 @@
-# Vanguard Skin QA Report — 2026-04-07 09:27:02
+# Vanguard Skin QA Report — 2026-04-27 02:00:04
 
-[2026-04-07 09:27:02] PASS: pre-flight — Dev server responding at http://localhost:3099
-[2026-04-07 09:27:07] INFO: overview/screenshot — Saved to screenshots/overview.png
-[2026-04-07 09:27:07] PASS: overview/no-errors — Page loaded without errors
-[2026-04-07 09:27:08] INFO: overview/portfolio-value — Extracted: $1,792,395
-[2026-04-07 09:27:08] PASS: overview/portfolio-value — Actual $1,792,395 within 0.1 of expected $1,792,395
-[2026-04-07 09:27:08] INFO: overview/account-count — Extracted: 3
-[2026-04-07 09:27:08] PASS: overview/account-count — Account count matches: 3
-[2026-04-07 09:27:08] INFO: overview/twr-ytd — Extracted: -71.53%
-[2026-04-07 09:27:08] PASS: overview/twr-ytd — Actual -71.53% within 5.0pp of expected -71.53%
-[2026-04-07 09:27:08] PASS: overview/xirr-present — XIRR metric is displayed
-[2026-04-07 09:27:08] PASS: overview/data-freshness — Indicator present: Data health: 62% coverage — click for details
-[2026-04-07 09:27:09] PASS: overview/portfolio-chart — Portfolio chart rendered
-[2026-04-07 09:27:13] INFO: accounts/screenshot — Saved to screenshots/accounts.png
-[2026-04-07 09:27:14] PASS: accounts/no-errors — Page loaded without errors
-[2026-04-07 09:27:14] INFO: accounts/tabs — Account tabs: [\"Vanguard Taxable\",\"Vanguard Roth IRA\",\"IBKR\"]
-[2026-04-07 09:27:18] INFO: holdings/screenshot — Saved to screenshots/holdings.png
-[2026-04-07 09:27:19] PASS: holdings/no-errors — Page loaded without errors
-[2026-04-07 09:27:19] INFO: holdings/position-count — Extracted: 142 (from: 142 positions across all accounts)
-[2026-04-07 09:27:19] PASS: holdings/position-count — Actual 142 within 0.2 of expected 142
-[2026-04-07 09:27:19] INFO: holdings/total-value — Extracted footer total: $1,100,333.45
-[2026-04-07 09:27:19] PASS: holdings/total-value — Actual $1,100,333.45 within tolerance of expected $1,100,333
-[2026-04-07 09:27:19] PASS: holdings/table-rows — Holdings table has 142 rows
-[2026-04-07 09:27:23] INFO: analysis/screenshot — Saved to screenshots/analysis.png
-[2026-04-07 09:27:24] PASS: analysis/no-errors — Page loaded without errors
-[2026-04-07 09:27:24] INFO: analysis/sections — Found: {\"riskMetrics\":true,\"factorAnalysis\":true,\"scenarioModeling\":true,\"fixedIncome\":false,\"allocationChart\":true}
-[2026-04-07 09:27:24] PASS: analysis/riskMetrics — Section present
-[2026-04-07 09:27:24] PASS: analysis/factorAnalysis — Section present
-[2026-04-07 09:27:24] PASS: analysis/scenarioModeling — Section present
-[2026-04-07 09:27:28] INFO: charts/screenshot — Saved to screenshots/charts.png
-[2026-04-07 09:27:28] PASS: charts/no-errors — Page loaded without errors
-[2026-04-07 09:27:28] PASS: charts/chart-rendered — Chart or data element found
-[2026-04-07 09:27:32] INFO: calendar/screenshot — Saved to screenshots/calendar.png
-[2026-04-07 09:27:32] PASS: calendar/no-errors — Page loaded without errors
-[2026-04-07 09:27:33] PASS: calendar/navigation — Week navigation present
-[2026-04-07 09:27:36] INFO: research/screenshot — Saved to screenshots/research.png
-[2026-04-07 09:27:37] PASS: research/no-errors — Page loaded without errors
-[2026-04-07 09:27:37] PASS: research/view-toggle — View toggle present
-[2026-04-07 09:27:41] INFO: import/screenshot — Saved to screenshots/import.png
-[2026-04-07 09:27:41] PASS: import/no-errors — Page loaded without errors
-[2026-04-07 09:27:42] PASS: import/drop-zone — File upload area present
-
-# Summary
-PASS: 25 | FAIL: 0
-0 | SKIP: 0
-0
+[2026-04-27 02:00:04] PASS: pre-flight — Dev server responding at http://localhost:3099
+[2026-04-27 02:00:12] INFO: overview/screenshot — Saved to screenshots/overview.png
+[2026-04-27 02:00:13] PASS: overview/no-errors — Page loaded without errors
+[2026-04-27 02:00:13] INFO: overview/portfolio-value — Extracted: ~$1,884,010est.

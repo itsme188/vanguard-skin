@@ -65,6 +65,16 @@ export function earningsHourToReleaseTime(
   }
 }
 
+function normalizeEarningsHour(value: unknown): "bmo" | "amc" | "dmh" | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "bmo" || normalized === "amc" || normalized === "dmh") {
+    return normalized;
+  }
+  if (normalized === "unknown") return null;
+  return null;
+}
+
 /**
  * Return the release time for a calendar_events row.
  *
@@ -83,16 +93,24 @@ export function resolveReleaseTime(row: {
     return row.event_time;
   }
 
+  if (row.event_type === "earnings") {
+    const fromEventTime = normalizeEarningsHour(row.event_time);
+    if (fromEventTime || row.event_time?.trim().toLowerCase() === "unknown") {
+      return earningsHourToReleaseTime(fromEventTime);
+    }
+  }
+
   const fromMap = RELEASE_TIMES_ET[row.event_type];
   if (fromMap) return fromMap;
 
   if (row.event_type === "earnings" && row.raw_json) {
     try {
       const parsed = JSON.parse(row.raw_json) as {
-        entry?: { hour?: "bmo" | "amc" | "dmh" | null };
+        entry?: { hour?: unknown };
       };
-      const hour = parsed.entry?.hour;
-      if (hour) return earningsHourToReleaseTime(hour);
+      if (Object.prototype.hasOwnProperty.call(parsed.entry ?? {}, "hour")) {
+        return earningsHourToReleaseTime(normalizeEarningsHour(parsed.entry?.hour));
+      }
     } catch {
       // Malformed JSON — fall through to null.
     }

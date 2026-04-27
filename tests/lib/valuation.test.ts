@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   marketValue,
+  unitPriceFromMarketValue,
   adjustedMarketValueSQL,
 } from "@/lib/valuation";
 
@@ -55,6 +56,27 @@ describe("marketValue", () => {
     expect(marketValue(0, 98.5, "bond")).toBe(0);
     expect(marketValue(10000, 0, "bond")).toBe(0);
     expect(marketValue(0, 3.5, "option", 100)).toBe(0);
+  });
+});
+
+describe("unitPriceFromMarketValue", () => {
+  it("inverts equity market value", () => {
+    expect(unitPriceFromMarketValue(5000, 100, "stock")).toBe(50);
+    expect(unitPriceFromMarketValue(5000, 100, null)).toBe(50);
+  });
+
+  it("inverts bond market value using percent-of-par pricing", () => {
+    expect(unitPriceFromMarketValue(9850, 10000, "bond")).toBe(98.5);
+  });
+
+  it("inverts option market value using the contract multiplier", () => {
+    expect(unitPriceFromMarketValue(1750, 5, "option", 100)).toBe(3.5);
+  });
+
+  it("returns null for invalid inputs", () => {
+    expect(unitPriceFromMarketValue(0, 5, "stock")).toBeNull();
+    expect(unitPriceFromMarketValue(100, 0, "stock")).toBeNull();
+    expect(unitPriceFromMarketValue(Number.NaN, 5, "stock")).toBeNull();
   });
 });
 

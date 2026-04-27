@@ -16,17 +16,29 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getIbApi } from "@/lib/tws/client";
 import { runEnrichment } from "@/lib/calendar/enrichment-runner";
+import { reconcileCloudEnrichment } from "@/lib/calendar/cloud-reconcile";
+
+function requireCronSecret(request: NextRequest): string | NextResponse {
+  const secret = process.env.CRON_SHARED_SECRET;
+  if (!secret) {
+    return NextResponse.json(
+      { error: "Server not configured: CRON_SHARED_SECRET missing." },
+      { status: 500 },
+    );
+  }
+
+  const provided = request.headers.get("x-cron-secret") ?? "";
+  if (provided !== secret) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+
+  return secret;
+}
 
 export async function POST(request: NextRequest) {
-  // Optional shared-secret gate — enforced when the Worker calls in.
-  // Local UI / launchd both run without the header (trusted local caller).
-  const secret = process.env.CRON_SHARED_SECRET;
-  if (secret) {
-    const provided = request.headers.get("x-cron-secret");
-    if (provided && provided !== secret) {
-      return NextResponse.json({ error: "forbidden" }, { status: 403 });
-    }
-  }
+  const secretOrResponse = requireCronSecret(request);
+  if (typeof secretOrResponse !== "string") return secretOrResponse;
+  const secret = secretOrResponse;
 
   const body = await request.json().catch(() => ({})) as {
     eventId?: number;
@@ -34,11 +46,13 @@ export async function POST(request: NextRequest) {
   };
 
   // Phase 9b: before running our own enrichment, drain any cloud-enriched
-  // payloads the Worker wrote while the Mac was unreachable. Fire-and-forget
-  // so a Worker outage doesn't block local enrichment.
-  reconcileCloudEnrichment(request).catch((err) => {
-    console.warn("[calendar-enrich] reconcile-cloud-enrich failed:", err);
-  });
+  // payloads the Worker wrote while the Mac was unreachable. A Worker outage
+  // should not block local enrichment, but it must not leak the cron secret to
+  // a caller-controlled Host header.
+  const reconcile = await reconcileCloudEnrichment(db, secret);
+  if (!reconcile.ok) {
+    console.warn("[calendar-enrich] reconcile-cloud-enrich failed:", reconcile.error);
+  }
 
   const tws = getIbApi();
   const results = await runEnrichment(db, {
@@ -59,16 +73,4 @@ export async function POST(request: NextRequest) {
       reason: r.reason,
     })),
   });
-}
-
-async function reconcileCloudEnrichment(request: NextRequest): Promise<void> {
-  const secret = process.env.CRON_SHARED_SECRET;
-  const hostHeader = request.headers.get("host");
-  if (!secret || !hostHeader) return;
-  const proto = request.headers.get("x-forwarded-proto") ?? "http";
-  const url = `${proto}://${hostHeader}/api/calendar/reconcile-cloud-enrich`;
-  await fetch(url, {
-    method: "POST",
-    headers: { "X-Cron-Secret": secret },
-  }).catch(() => null);
 }
