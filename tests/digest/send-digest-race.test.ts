@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
-import { setLastDigestSentAt } from "@/lib/digest/daily-digest";
+import { setLastDigestSentAt, getLastDigestSentAt } from "@/lib/digest/daily-digest";
 
 /**
  * Regression test for the 2026-04-22 → 24 "digest skipped despite N processed
@@ -114,5 +114,68 @@ describe("send-digest race-condition snapshot", () => {
     const result = await sendDigestEmail(db, { mode: "since_last" });
     expect(result.success).toBe(true);
     expect("skipped" in result && result.skipped).toBe(true);
+  });
+});
+
+/**
+ * B1 (2026-04-27): the DigestCatchup banner manually fires the digest when
+ * the 8:45 cron didn't show. If the cron is still in flight, the manual
+ * send's "now" timestamp would poison `last_digest_sent_at` and cause a
+ * thinned-out duplicate when the Worker fallback fires. The skipMarkerUpdate
+ * flag suppresses that update specifically for catch-up flows.
+ */
+describe("send-digest skipMarkerUpdate flag", () => {
+  it("does NOT update last_digest_sent_at when skipMarkerUpdate is true", async () => {
+    const { sendDigestEmail } = await import("@/lib/digest/send-digest");
+
+    // Initial state: yesterday's marker.
+    const yesterday = "2026-04-26T12:45:00.000Z";
+    setLastDigestSentAt(db, yesterday);
+
+    // Seed an article so the digest actually sends.
+    seedProcessedArticle("2026-04-27 02:00:00");
+
+    const result = await sendDigestEmail(db, {
+      mode: "since_last",
+      skipMarkerUpdate: true,
+    });
+
+    expect(result.success).toBe(true);
+    expect("sentTo" in result && result.sentTo).toBe("to@example.com");
+    // Marker should still point at yesterday — catch-up didn't claim the slot.
+    expect(getLastDigestSentAt(db)).toBe(yesterday);
+  });
+
+  it("still updates last_digest_sent_at by default (skipMarkerUpdate not set)", async () => {
+    const { sendDigestEmail } = await import("@/lib/digest/send-digest");
+
+    const yesterday = "2026-04-26T12:45:00.000Z";
+    setLastDigestSentAt(db, yesterday);
+
+    seedProcessedArticle("2026-04-27 02:00:00");
+
+    const result = await sendDigestEmail(db, { mode: "since_last" });
+
+    expect(result.success).toBe(true);
+    // Default behavior preserved: cron still claims the slot.
+    expect(getLastDigestSentAt(db)).not.toBe(yesterday);
+  });
+
+  it("does not update marker when skipped (no articles), regardless of flag", async () => {
+    const { sendDigestEmail } = await import("@/lib/digest/send-digest");
+
+    const yesterday = "2026-04-26T12:45:00.000Z";
+    setLastDigestSentAt(db, yesterday);
+
+    // No articles seeded — should skip.
+    const result = await sendDigestEmail(db, {
+      mode: "since_last",
+      skipMarkerUpdate: false,
+    });
+
+    expect("skipped" in result && result.skipped).toBe(true);
+    // Even without the flag, a skipped send leaves the marker alone
+    // because setLastDigestSentAt is only called on the success path.
+    expect(getLastDigestSentAt(db)).toBe(yesterday);
   });
 });

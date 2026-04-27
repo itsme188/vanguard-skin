@@ -313,7 +313,7 @@ export async function runCalendarEnrich(
   const primary = await callEnrichPrimary(
     env.MESH_HOSTNAME,
     env.CRON_SHARED_SECRET,
-    parseInt(env.PRIMARY_TIMEOUT_MS, 10) || 120000,
+    parseInt(env.PRIMARY_TIMEOUT_MS, 10) || 300000,
   );
 
   if (primary.kind === "success") {

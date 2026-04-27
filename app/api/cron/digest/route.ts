@@ -6,6 +6,10 @@ import {
   type DigestMode,
 } from "@/lib/digest/send-digest";
 import { checkCloudMarker } from "@/lib/cron/marker-check";
+import {
+  setRunningMarker,
+  clearRunningMarker,
+} from "@/lib/cron/running-marker";
 
 /**
  * POST /api/cron/digest — Cron-authenticated daily digest trigger.
@@ -41,6 +45,10 @@ export async function POST(request: Request) {
     });
   }
 
+  // Signal to Worker that we're starting — fallback path will skip while
+  // this marker is set. Fire-and-forget; never block delivery on Worker RTT.
+  void setRunningMarker("digest");
+
   try {
     const result = await sendDigestEmail(db, {
       recipient: body.to as string | undefined,
@@ -57,6 +65,10 @@ export async function POST(request: Request) {
       { error: err instanceof Error ? err.message : "Unknown error" },
       { status: 500 }
     );
+  } finally {
+    // Always clear, even on error — leaving the marker set would block
+    // subsequent retries. Auto-expires after 10min if this clear fails.
+    void clearRunningMarker("digest");
   }
 }
 

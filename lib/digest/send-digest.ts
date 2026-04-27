@@ -29,6 +29,17 @@ export interface SendDigestOpts {
   mode?: DigestMode;
   sinceDate?: string;
   footerNote?: string;
+  /**
+   * When true, skip writing `last_digest_sent_at` after a successful send.
+   * Used by manual catch-up flows (DigestCatchup) so that an in-flight cron
+   * isn't poisoned by the catch-up's "now" timestamp. The race that this
+   * guards against produced today's 8:45→8:57 duplicate-with-thin-content
+   * email: cron fired and was still completing when the user manually sent
+   * via the banner; the manual send's marker update made the cron's
+   * sinceSnapshot read a future-of-its-articles value, and the Worker
+   * fallback then re-fired with stale snapshot data.
+   */
+  skipMarkerUpdate?: boolean;
 }
 
 export type SendDigestResult =
@@ -140,7 +151,9 @@ export async function sendDigestEmail(
     html
   );
 
-  setLastDigestSentAt(db, new Date().toISOString());
+  if (!opts.skipMarkerUpdate) {
+    setLastDigestSentAt(db, new Date().toISOString());
+  }
 
   return {
     success: true,

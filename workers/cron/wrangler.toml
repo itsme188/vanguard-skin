@@ -36,4 +36,4 @@ bucket_name = "vanguard-skin-statements"
 [vars]
 EXPECTED_HOUR_BRIEFING = "15"        # 3pm ET
 EXPECTED_HOUR_DIGEST = "8"           # 8:45am ET (Worker gates on hour only)
-PRIMARY_TIMEOUT_MS = "120000"        # 120s for Mac webhook
+PRIMARY_TIMEOUT_MS = "300000"        # 300s for Mac webhook. Bumped from 120s 2026-04-27: Mac's full pipeline (TWS sync + Gmail fetch + Sonnet processing + email send) routinely exceeds 120s when many articles arrive overnight, causing the Worker to fire its fallback even though the Mac email had already gone out — produced the 8:45→8:57 thinned-out duplicate.

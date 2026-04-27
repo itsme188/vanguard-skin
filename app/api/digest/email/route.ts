@@ -8,10 +8,13 @@ import {
 /**
  * POST /api/digest/email — Sync research feeds, generate daily digest, and email it.
  *
- * Body: { to?: string, mode?: "today" | "since_last" | "since_date", sinceDate?: string }
+ * Body: { to?: string, mode?: "today" | "since_last" | "since_date", sinceDate?: string, skipMarkerUpdate?: boolean }
  *   - to: recipient email(s), comma-separated. Defaults to BRIEFING_EMAIL_TO env var.
  *   - mode: date range mode. Default (omitted) = last 24 hours (backward-compatible with cron).
  *   - sinceDate: YYYY-MM-DD for "since_date" mode.
+ *   - skipMarkerUpdate: when true, don't write `last_digest_sent_at` after sending.
+ *     Used by the DigestCatchup banner so an in-flight cron isn't poisoned by
+ *     the catch-up's "now" timestamp.
  *
  * Flow: sync Gmail → AI-process articles → compile digest → send email.
  * Skips gracefully if no articles in the selected range.
@@ -24,6 +27,7 @@ export async function POST(request: Request) {
       recipient: body.to as string | undefined,
       mode: body.mode as DigestMode | undefined,
       sinceDate: body.sinceDate as string | undefined,
+      skipMarkerUpdate: body.skipMarkerUpdate === true,
     });
     return Response.json(result);
   } catch (err) {
