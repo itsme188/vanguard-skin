@@ -16,6 +16,7 @@ import {
 } from "@/lib/queries/briefing-levels";
 import { getModelForFeature } from "@/lib/ai/provider";
 import { FEATURE_MODELS } from "@/lib/ai/models";
+import { issuerSiblings } from "@/lib/securities/issuer-family";
 
 // Preferred weekend-reading sources — full raw_text is sent to the model.
 // ids correspond to research_sources.id. Keep aligned with DB; wrong ids
@@ -76,10 +77,6 @@ export async function generateWeeklyBriefing(
       sector: string | null;
     }[];
 
-  const holdingsList = holdings
-    .map((h) => `${h.symbol} (${h.name ?? "unknown"}, ${h.sector ?? "N/A"})`)
-    .join("\n");
-
   // ── Event partitioning: portfolio earnings (Finnhub) vs macro ──
   const weekStart = weekOf;
   const weekEnd = addDays(weekOf, 6);
@@ -96,9 +93,57 @@ export async function generateWeeklyBriefing(
   // ── Expiring options ─────────────────────────────────────────────
   const expiringOptions = getExpiringOptions(db, weekStart, weekEnd);
 
+  // ── Current prices (held + option underlyings + earnings symbols) ─
+  // The briefing once wrote "TER closed Friday well below $180" when TER was at $420.
+  // Without explicit prices in the prompt, Opus fabricates them when assessing option moneyness.
+  // We collect every symbol the model might reference and pass the latest close for each.
+  const currentPrices = buildCurrentPrices(db, {
+    holdings,
+    expiringOptions,
+    portfolioEarnings,
+    wshEarnings,
+  });
+
+  // ── Combined positions per earnings event (issuer-family normalization) ─
+  // Bug this fixes: a Finnhub earnings event uses ticker "GOOGL", but the
+  // user holds "GOOG" Class C common. String equality misses the link, so
+  // the briefing's "largest exposure" framing only saw the GOOGL LEAP and
+  // ranked AMZN above Alphabet. With issuerSiblings, GOOG common rolls up
+  // under GOOGL earnings and the roster is honest.
+  const combinedPositions = buildCombinedPositionsForEvents(
+    db,
+    portfolioEarnings,
+    currentPrices,
+  );
+
+  // ── Deterministic macro-exposure lists per macro event ───────────
+  // Bug this fixes: the briefing's §6 ISM Manufacturing exposure list said
+  // "XPO, NSC, CSX, PRIM, PWR, CLH, GFL — basically every industrial in
+  // the book" and silently dropped XMTR (sector="Industrial"). Letting
+  // Opus enumerate exposure from prose is unreliable for niche names. We
+  // compute the list deterministically by sector and pass it verbatim.
+  const macroExposures = buildMacroExposures(db, otherEvents);
+
   // ── Price levels: triggered this past week + approaching ─────────
   const levelsTriggered = getLevelsTriggeredInWindow(db, 7);
   const levelsNearby = getLevelsNearPrice(db, 0.05);
+
+  // Build holdings list with inline current prices.
+  const holdingsList = holdings
+    .map((h) => {
+      const p = currentPrices.get(h.symbol);
+      const priceSuffix = p
+        ? ` — last $${p.close.toFixed(2)} (${p.date})`
+        : ` — no recent price`;
+      return `${h.symbol} (${h.name ?? "unknown"}, ${h.sector ?? "N/A"})${priceSuffix}`;
+    })
+    .join("\n");
+
+  // Standalone current-prices block — covers option underlyings + earnings
+  // symbols not already in the holdings list (e.g., a LEAP whose underlying
+  // stock isn't currently held). Belt-and-suspenders so Opus has the price
+  // in context regardless of which section it's writing.
+  const currentPricesBlock = formatCurrentPricesBlock(currentPrices);
 
   options?.onProgress?.("Loading weekend deep reads...", 1, 4);
 
@@ -150,6 +195,9 @@ export async function generateWeeklyBriefing(
   const prompt = buildPrompt({
     weekOf,
     holdingsList,
+    currentPricesBlock,
+    combinedPositions,
+    macroExposures,
     portfolioEarnings,
     wshEarnings,
     otherEvents,
@@ -189,6 +237,9 @@ export async function generateWeeklyBriefing(
 interface PromptInput {
   weekOf: string;
   holdingsList: string;
+  currentPricesBlock: string;
+  combinedPositions: Map<number, CombinedPosition>;
+  macroExposures: Map<number, MacroExposure>;
   portfolioEarnings: CalendarEvent[];
   wshEarnings: CalendarEvent[];
   otherEvents: CalendarEvent[];
@@ -204,10 +255,16 @@ interface PromptInput {
 function buildPrompt(p: PromptInput): string {
   const weekTitle = formatWeekTitle(p.weekOf);
 
+  const currentPricesSection = p.currentPricesBlock
+    ? `\n## Current Prices (last market close — use these verbatim)\n${p.currentPricesBlock}\n\n**CRITICAL:** When discussing any price, option moneyness ("ITM/OTM", "above/below strike"), dollar exposure, or "closed above/below" claims, use the prices listed above. Do NOT fabricate or infer prices. If a symbol you'd reference isn't listed here, say so explicitly rather than guessing.\n`
+    : "";
+
   const portfolioEarningsSection =
     p.portfolioEarnings.length > 0
-      ? `\n## Portfolio Earnings This Week\nThese are earnings from companies the user currently holds (Finnhub, cross-referenced against all accounts). For each: setup going in, Street expectations (EPS/revenue consensus are embedded in the description below), how the company has performed against estimates over the last 4 quarters (also in description), key thing to watch on the call, and position implications given current holdings.\n\n${p.portfolioEarnings
-          .map((e, i) => formatEventForPrompt(e, i + 1))
+      ? `\n## Portfolio Earnings This Week\nThese are earnings from companies the user currently holds (Finnhub, cross-referenced against all accounts). For each event, the **User's combined position** field rolls up *every* sibling-class share + option held under the issuer family (e.g., GOOG common counts as exposure to GOOGL earnings). Use that field verbatim — do NOT infer position size from prose elsewhere. For each: setup going in, Street expectations (EPS/revenue consensus are embedded in the description below), how the company has performed against estimates over the last 4 quarters (also in description), key thing to watch on the call, and position implications given current holdings.\n\n${p.portfolioEarnings
+          .map((e, i) =>
+            formatEventForPrompt(e, i + 1, p.combinedPositions.get(e.id)),
+          )
           .join("\n\n")}\n`
       : "";
 
@@ -251,8 +308,15 @@ function buildPrompt(p: PromptInput): string {
 
   const otherEventsSection =
     p.otherEvents.length > 0
-      ? `\n## Macro & Other Events This Week\n${p.otherEvents
-          .map((e, i) => formatEventForPrompt(e, i + 1))
+      ? `\n## Macro & Other Events This Week\nFor each macro event below, the **Holdings exposure** field lists the user's specific holdings that map to the relevant sector(s) for that release. Use this list verbatim — do NOT enumerate exposure from prose, do NOT add or drop names. If you'd describe the list as "basically every industrial in the book," instead enumerate the actual symbols provided.\n\n${p.otherEvents
+          .map((e, i) =>
+            formatEventForPrompt(
+              e,
+              i + 1,
+              undefined,
+              p.macroExposures.get(e.id),
+            ),
+          )
           .join("\n\n")}\n`
       : "";
 
@@ -277,7 +341,7 @@ function buildPrompt(p: PromptInput): string {
 
 ## Portfolio Holdings (for context on which events directly affect the portfolio)
 ${p.holdingsList}
-${portfolioEarningsSection}${wshSection}${optionsSection}${triggeredLevelsSection}${nearbyLevelsSection}${otherEventsSection}${releasedLastWeekSection}${weekendSection}${breadthSection}
+${currentPricesSection}${portfolioEarningsSection}${wshSection}${optionsSection}${triggeredLevelsSection}${nearbyLevelsSection}${otherEventsSection}${releasedLastWeekSection}${weekendSection}${breadthSection}
 
 ## Instructions
 
@@ -297,7 +361,7 @@ Write a markdown briefing structured as follows:
 
 6. **Macro & Other Events** — concise coverage of the remaining calendar. What's priced in, what would surprise, which holdings have exposure.
 
-7. **Portfolio Implications** — a tight closing section. Which holdings have the most event-driven risk this week. Key levels or thresholds (tie back to the Price Levels section). Suggested positioning considerations (stay the course, reduce exposure, hedge, etc.).
+7. **Portfolio Implications** — a tight closing section. Which holdings have the most event-driven risk this week. **When ranking "largest position" or "biggest exposure," use the User's combined position rosters from §3 — they include cross-class siblings (e.g., GOOG common counts toward GOOGL earnings exposure). State your sizing basis explicitly (notional market value, option intrinsic, etc.); do not hand-wave.** Key levels or thresholds (tie back to the Price Levels section). Suggested positioning considerations (stay the course, reduce exposure, hedge, etc.).
 
 Format as clean markdown. Use \`##\` for section headers, \`###\` for sub-sections, **bold** for key figures, and bullet points where helpful. Aim for a substantive briefing in the 2,500–3,500 word range — dense with actionable information, not filler.`;
 }
@@ -345,6 +409,362 @@ function formatOptionForPrompt(o: ExpiringOption, index: number): string {
   const strike = o.strike_price != null ? `$${o.strike_price}` : "?";
   const type = o.option_type ?? "?";
   return `${index}. **${o.underlying_symbol ?? o.symbol}** ${type} ${strike} exp ${o.expiration_date} — ${side} ${qty} contract${qty === 1 ? "" : "s"} in ${o.account_name}`;
+}
+
+// ── Macro-exposure helpers ─────────────────────────────────────────
+
+export interface MacroExposure {
+  basis: string; // human-readable explanation (e.g. "sector=Industrial")
+  symbols: string[];
+}
+
+/**
+ * For each macro event in the input list, compute the user's specific
+ * holdings that map to that release's sector exposure. Returns a map keyed
+ * by event.id so the formatter can attach the list to the event line.
+ *
+ * Why this exists: the briefing's §6 once said "ISM Manufacturing exposure:
+ * XPO, NSC, CSX, PRIM, PWR, CLH, GFL — basically every industrial in the
+ * book" and silently dropped XMTR (sector="Industrial"). Letting Opus
+ * enumerate exposure from prose is unreliable for niche names. We pre-
+ * compute the list and pass it verbatim.
+ */
+export function buildMacroExposures(
+  db: Database.Database,
+  events: CalendarEvent[],
+): Map<number, MacroExposure> {
+  const out = new Map<number, MacroExposure>();
+  for (const e of events) {
+    if (e.id == null) continue;
+    const mapping = macroEventToSectors(e);
+    if (!mapping) continue;
+    const symbols = querySymbolsBySectors(db, mapping.sectors);
+    if (symbols.length > 0) {
+      out.set(e.id, { basis: mapping.basis, symbols });
+    }
+  }
+  return out;
+}
+
+/**
+ * Map a macro CalendarEvent to a sector whitelist. Returns null when the
+ * event type isn't macro-mappable (e.g. earnings events, or events with no
+ * meaningful sector exposure).
+ *
+ * For PMI we differentiate ISM Manufacturing vs ISM Services by the title.
+ * For "broad" releases (GDP) we return an empty sectors array meaning
+ * "all equity holdings."
+ */
+function macroEventToSectors(
+  event: CalendarEvent,
+): { sectors: string[]; basis: string } | null {
+  const title = (event.title ?? "").toLowerCase();
+  const type = event.event_type;
+
+  if (type === "pmi" && title.includes("services")) {
+    return {
+      sectors: [
+        "Consumer, Cyclical",
+        "Consumer, Non-cyclical",
+        "Communications",
+        "Financial",
+      ],
+      basis: "ISM Services-sensitive sectors",
+    };
+  }
+  if (type === "pmi") {
+    return {
+      sectors: ["Industrial", "Basic Materials"],
+      basis: "ISM Manufacturing-sensitive sectors (Industrial + Basic Materials)",
+    };
+  }
+  if (type === "fomc") {
+    return {
+      sectors: ["Financial"],
+      basis: "rate-sensitive (Financial sector incl. Banks + REITs)",
+    };
+  }
+  if (type === "cpi") {
+    return {
+      sectors: ["Consumer, Non-cyclical", "Consumer, Cyclical", "Industrial"],
+      basis: "inflation-pass-through (Consumer + Industrial)",
+    };
+  }
+  if (type === "gdp") {
+    return {
+      sectors: [],
+      basis: "broad equity exposure (all holdings)",
+    };
+  }
+  if (type === "jobs") {
+    return {
+      sectors: ["Consumer, Cyclical", "Financial"],
+      basis: "labor-market-sensitive (Consumer Cyclical + Financial)",
+    };
+  }
+  if (type === "housing") {
+    return {
+      sectors: ["Financial"],
+      basis: "housing/rate-sensitive (Financial sector incl. REITs + mortgage)",
+    };
+  }
+  if (type === "retail_sales") {
+    return {
+      sectors: ["Consumer, Cyclical"],
+      basis: "Consumer Cyclical sector",
+    };
+  }
+  if (
+    type === "other_macro" &&
+    (title.includes("consumer confidence") ||
+      title.includes("umich") ||
+      title.includes("sentiment"))
+  ) {
+    return {
+      sectors: ["Consumer, Cyclical", "Consumer, Non-cyclical"],
+      basis: "consumer-sentiment-sensitive (Consumer sectors)",
+    };
+  }
+  return null;
+}
+
+function querySymbolsBySectors(
+  db: Database.Database,
+  sectors: string[],
+): string[] {
+  if (sectors.length === 0) {
+    // Broad / all-equity case
+    const rows = db
+      .prepare(
+        `SELECT DISTINCT s.symbol
+         FROM holdings h
+         JOIN securities s ON s.id = h.security_id
+         WHERE h.quantity > 0
+           AND LOWER(s.security_type) IN ('stock','common stock','etf')
+           AND s.sector IS NOT NULL
+           AND h.as_of_date = (
+             SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id
+           )
+         ORDER BY s.symbol`,
+      )
+      .all() as { symbol: string }[];
+    return rows.map((r) => r.symbol);
+  }
+  const placeholders = sectors.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT s.symbol
+       FROM holdings h
+       JOIN securities s ON s.id = h.security_id
+       WHERE h.quantity > 0
+         AND LOWER(s.security_type) IN ('stock','common stock','etf')
+         AND s.sector IN (${placeholders})
+         AND h.as_of_date = (
+           SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id
+         )
+       ORDER BY s.symbol`,
+    )
+    .all(...sectors) as { symbol: string }[];
+  return rows.map((r) => r.symbol);
+}
+
+// ── Combined-position helpers (issuer family per earnings event) ────
+
+interface CombinedStockPosition {
+  symbol: string;
+  quantity: number;
+  account: string;
+  latestClose: number | null;
+}
+
+interface CombinedOptionPosition {
+  occSymbol: string;
+  underlying: string;
+  strike: number | null;
+  expiry: string;
+  optionType: string | null;
+  quantity: number;
+  account: string;
+}
+
+export interface CombinedPosition {
+  family: readonly string[];
+  stockPositions: CombinedStockPosition[];
+  optionPositions: CombinedOptionPosition[];
+}
+
+/**
+ * For each earnings event, gather every position the user holds under the
+ * same issuer family (Class A + Class C common, plus options on any
+ * sibling). Returned keyed by event.id so the caller can attach the roster
+ * to the corresponding event line in the prompt.
+ *
+ * Why this exists: a Finnhub earnings event uses ticker "GOOGL" but the
+ * user holds "GOOG" Class C common. Without family normalization the GOOG
+ * shares stay orphaned and the briefing's "largest exposure" framing is
+ * wrong.
+ */
+export function buildCombinedPositionsForEvents(
+  db: Database.Database,
+  events: CalendarEvent[],
+  currentPrices: Map<string, { close: number; date: string }>,
+): Map<number, CombinedPosition> {
+  const out = new Map<number, CombinedPosition>();
+  for (const e of events) {
+    if (!e.symbol || e.id == null) continue;
+    const family = issuerSiblings(e.symbol);
+    const placeholders = family.map(() => "?").join(",");
+
+    const stocks = db
+      .prepare(
+        `SELECT s.symbol, h.quantity, a.name AS account
+         FROM holdings h
+         JOIN securities s ON s.id = h.security_id
+         JOIN accounts a ON a.id = h.account_id
+         WHERE s.symbol IN (${placeholders})
+           AND LOWER(s.security_type) != 'option'
+           AND h.quantity != 0
+           AND h.as_of_date = (
+             SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id
+           )`,
+      )
+      .all(...family) as { symbol: string; quantity: number; account: string }[];
+
+    const stockPositions: CombinedStockPosition[] = stocks.map((s) => ({
+      symbol: s.symbol,
+      quantity: s.quantity,
+      account: s.account,
+      latestClose: currentPrices.get(s.symbol)?.close ?? null,
+    }));
+
+    const optionPositions = db
+      .prepare(
+        `SELECT s.symbol AS occSymbol, s.underlying_symbol AS underlying,
+                s.strike_price AS strike, s.expiration_date AS expiry,
+                s.option_type AS optionType, h.quantity, a.name AS account
+         FROM holdings h
+         JOIN securities s ON s.id = h.security_id
+         JOIN accounts a ON a.id = h.account_id
+         WHERE LOWER(s.security_type) = 'option'
+           AND s.underlying_symbol IN (${placeholders})
+           AND h.quantity != 0
+           AND h.as_of_date = (
+             SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id
+           )`,
+      )
+      .all(...family) as CombinedOptionPosition[];
+
+    if (stockPositions.length > 0 || optionPositions.length > 0) {
+      out.set(e.id, { family, stockPositions, optionPositions });
+    }
+  }
+  return out;
+}
+
+export function formatCombinedPosition(cp: CombinedPosition): string {
+  const parts: string[] = [];
+  for (const s of cp.stockPositions) {
+    const mktVal =
+      s.latestClose != null ? Math.round(s.quantity * s.latestClose) : null;
+    const valSuffix =
+      mktVal != null ? `, ~$${mktVal.toLocaleString()} mkt val` : "";
+    parts.push(
+      `${formatQty(s.quantity)} sh ${s.symbol} (${s.account}${valSuffix})`,
+    );
+  }
+  for (const o of cp.optionPositions) {
+    const side = o.quantity > 0 ? "long" : "short";
+    const qty = Math.abs(o.quantity);
+    const strike = o.strike != null ? `$${o.strike}` : "?";
+    parts.push(
+      `${qty} ${side} ${o.underlying} ${o.expiry} ${strike} ${o.optionType ?? "?"} (${o.account})`,
+    );
+  }
+  return parts.join(" + ");
+}
+
+function formatQty(q: number): string {
+  // Integer-quantity stocks render cleanly; fractional shares (Vanguard
+  // dividend-reinvest etc.) get two decimals.
+  if (Number.isInteger(q)) return q.toString();
+  return q.toFixed(2);
+}
+
+// ── Current-prices helpers ─────────────────────────────────────────
+
+/**
+ * Collects every symbol the briefing might cite a price for and returns the
+ * latest close per symbol. Sources of symbols:
+ *   - held stocks/ETFs (the holdings list)
+ *   - underlyings of options expiring this week
+ *   - earnings event tickers (Finnhub + WSH)
+ *   - underlyings of any non-expiring options the user holds (e.g. a TER LEAP
+ *     when TER stock isn't currently in holdings)
+ * Why all four: we don't want Opus inferring "TER closed Friday well below
+ * $180" when TER is at $420. Pass the price; do not let the model guess.
+ */
+export function buildCurrentPrices(
+  db: Database.Database,
+  args: {
+    holdings: { symbol: string }[];
+    expiringOptions: ExpiringOption[];
+    portfolioEarnings: CalendarEvent[];
+    wshEarnings: CalendarEvent[];
+  }
+): Map<string, { close: number; date: string }> {
+  const symbols = new Set<string>();
+  for (const h of args.holdings) symbols.add(h.symbol);
+  for (const o of args.expiringOptions) {
+    if (o.underlying_symbol) symbols.add(o.underlying_symbol);
+  }
+  for (const e of args.portfolioEarnings) if (e.symbol) symbols.add(e.symbol);
+  for (const e of args.wshEarnings) if (e.symbol) symbols.add(e.symbol);
+
+  const optUnderlyings = db
+    .prepare(
+      `SELECT DISTINCT s.underlying_symbol AS sym
+       FROM holdings h JOIN securities s ON s.id = h.security_id
+       WHERE LOWER(s.security_type) = 'option'
+         AND h.quantity != 0
+         AND s.underlying_symbol IS NOT NULL
+         AND h.as_of_date = (
+           SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id
+         )`
+    )
+    .all() as { sym: string }[];
+  for (const u of optUnderlyings) if (u.sym) symbols.add(u.sym);
+
+  const out = new Map<string, { close: number; date: string }>();
+  if (symbols.size === 0) return out;
+
+  const list = Array.from(symbols);
+  const placeholders = list.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `SELECT s.symbol, p.close_price, p.date
+       FROM securities s
+       JOIN prices p ON p.security_id = s.id
+       WHERE s.symbol IN (${placeholders})
+         AND LOWER(s.security_type) IN ('stock','etf','mutual fund','common stock','bond')
+         AND p.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = s.id)`
+    )
+    .all(...list) as { symbol: string; close_price: number; date: string }[];
+
+  for (const r of rows) out.set(r.symbol, { close: r.close_price, date: r.date });
+  return out;
+}
+
+export function formatCurrentPricesBlock(
+  currentPrices: Map<string, { close: number; date: string }>
+): string {
+  if (currentPrices.size === 0) return "";
+  return Array.from(currentPrices.keys())
+    .sort()
+    .map((sym) => {
+      const p = currentPrices.get(sym)!;
+      return `- ${sym}: $${p.close.toFixed(2)} (${p.date})`;
+    })
+    .join("\n");
 }
 
 // ── Deep-read section builder ──────────────────────────────────────
@@ -400,7 +820,12 @@ function addDays(isoDate: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-function formatEventForPrompt(event: CalendarEvent, index: number): string {
+function formatEventForPrompt(
+  event: CalendarEvent,
+  index: number,
+  combinedPosition?: CombinedPosition,
+  macroExposure?: MacroExposure,
+): string {
   const parts = [`${index}. **${event.title}**`];
   parts.push(
     `   - Date: ${event.event_date}${event.event_time ? ` at ${event.event_time} ET` : ""}`
@@ -411,6 +836,20 @@ function formatEventForPrompt(event: CalendarEvent, index: number): string {
   if (event.consensus_estimate) parts.push(`   - Consensus: ${event.consensus_estimate}`);
   if (event.previous_value) parts.push(`   - Previous: ${event.previous_value}`);
   if (event.description) parts.push(`   - ${event.description}`);
+  if (
+    combinedPosition &&
+    (combinedPosition.stockPositions.length > 0 ||
+      combinedPosition.optionPositions.length > 0)
+  ) {
+    parts.push(
+      `   - User's combined position (across ${combinedPosition.family.join(" + ")}): ${formatCombinedPosition(combinedPosition)}`,
+    );
+  }
+  if (macroExposure && macroExposure.symbols.length > 0) {
+    parts.push(
+      `   - Holdings exposure (${macroExposure.basis}): ${macroExposure.symbols.join(", ")}`,
+    );
+  }
   return parts.join("\n");
 }
 
