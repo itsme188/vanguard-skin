@@ -17,6 +17,8 @@
 import {
   readMarkers,
   writeMarker,
+  setRunningMarker,
+  clearRunningMarker,
   getMarkerStatus,
   type JobType,
   type SentBy,
@@ -78,7 +80,7 @@ interface RunJobOpts {
 }
 
 interface RunJobResult {
-  skipped?: "already_sent" | "already_sent_by_cloud";
+  skipped?: "already_sent" | "already_sent_by_cloud" | "mac_still_running";
   primary?: PrimaryResult;
   fallback?: FallbackResult;
   sentBy?: SentBy;
@@ -98,7 +100,7 @@ async function runJob(type: JobType, env: Env, opts: RunJobOpts = {}): Promise<R
       meshHostname: env.MESH_HOSTNAME,
       cronSecret: env.CRON_SHARED_SECRET,
       type,
-      timeoutMs: parseInt(env.PRIMARY_TIMEOUT_MS, 10) || 120000,
+      timeoutMs: parseInt(env.PRIMARY_TIMEOUT_MS, 10) || 300000,
       // Digest: since last sent (matches launchd wrapper). Without this the
       // Mac defaults to generateDailyDigest (last 24h) — which is yesterday's
       // content re-packaged as today's email.
@@ -111,6 +113,21 @@ async function runJob(type: JobType, env: Env, opts: RunJobOpts = {}): Promise<R
     }
     if (primary.kind === "skipped_by_mac") {
       return { primary };
+    }
+
+    // Primary timed out or errored from our perspective. Re-read markers
+    // before firing the fallback: the Mac may have completed slowly during
+    // our timeout window and written mac-sent (via the Mac→Worker callback
+    // wired into /api/cron/*), or it may still be running and have set the
+    // mac-running marker. Either way, we should NOT re-send. This closes
+    // the 8:45→8:57 race observed 2026-04-27.
+    if (!opts.dryRun) {
+      const reMarkers = await readMarkers(env.CRON_KV, type, date);
+      if (reMarkers.mac) return { primary, sentBy: "mac", skipped: "already_sent" };
+      if (reMarkers.cloud) return { primary, skipped: "already_sent_by_cloud" };
+      if (reMarkers.macRunning) {
+        return { primary, skipped: "mac_still_running" };
+      }
     }
   }
 
@@ -190,6 +207,27 @@ export default {
       }
       const status = await getMarkerStatus(env.CRON_KV, typeParam);
       return Response.json(status);
+    }
+
+    // Mac calls this at the start (action=set) and end (action=clear) of
+    // /api/cron/{briefing,digest}. Worker re-checks markers before firing
+    // fallback so a slow-but-successful Mac primary doesn't trigger a
+    // duplicate fallback email.
+    if (request.method === "POST" && url.pathname === "/internal/running-marker") {
+      const typeParam = url.searchParams.get("type");
+      const action = url.searchParams.get("action");
+      if (typeParam !== "briefing" && typeParam !== "digest") {
+        return Response.json({ error: "type must be briefing or digest" }, { status: 400 });
+      }
+      if (action !== "set" && action !== "clear") {
+        return Response.json({ error: "action must be set or clear" }, { status: 400 });
+      }
+      if (action === "set") {
+        await setRunningMarker(env.CRON_KV, typeParam);
+      } else {
+        await clearRunningMarker(env.CRON_KV, typeParam);
+      }
+      return Response.json({ ok: true, action, type: typeParam });
     }
 
     if (request.method === "POST" && url.pathname === "/internal/trigger") {

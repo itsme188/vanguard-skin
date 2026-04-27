@@ -69,10 +69,14 @@ export function DigestCatchup() {
   const handleSend = async () => {
     setSending(true);
     try {
+      // Send the same window the missed cron WOULD have sent (since_last),
+      // and skip the last_digest_sent_at update so a still-in-flight cron
+      // isn't poisoned by our "now" timestamp. Catches the 8:45 → 8:57
+      // duplicate-with-thin-content race observed 2026-04-27.
       const res = await fetch("/api/digest/email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ mode: "since_last", skipMarkerUpdate: true }),
       });
       const data = await res.json();
       if (data.success && !data.skipped) {
