@@ -100,6 +100,37 @@ describe("resolveReleaseTime", () => {
     expect(amc).toBe("16:15");
   });
 
+  it("parses earnings BMO/AMC/DMH from event_time codes", () => {
+    expect(resolveReleaseTime({
+      event_type: "earnings",
+      event_time: "BMO",
+      raw_json: null,
+    })).toBe("08:00");
+    expect(resolveReleaseTime({
+      event_type: "earnings",
+      event_time: "AMC",
+      raw_json: null,
+    })).toBe("16:15");
+    expect(resolveReleaseTime({
+      event_type: "earnings",
+      event_time: "DMH",
+      raw_json: null,
+    })).toBe("16:15");
+  });
+
+  it("defaults explicit unknown earnings timing to after close", () => {
+    expect(resolveReleaseTime({
+      event_type: "earnings",
+      event_time: "UNKNOWN",
+      raw_json: null,
+    })).toBe("16:15");
+    expect(resolveReleaseTime({
+      event_type: "earnings",
+      event_time: null,
+      raw_json: JSON.stringify({ entry: { hour: null } }),
+    })).toBe("16:15");
+  });
+
   it("returns null for unmapped event_type with no clues", () => {
     const rt = resolveReleaseTime({
       event_type: "other_macro",
