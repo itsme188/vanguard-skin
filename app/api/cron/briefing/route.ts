@@ -5,6 +5,10 @@ import {
   BriefingSendError,
 } from "@/lib/digest/send-briefing";
 import { checkCloudMarker } from "@/lib/cron/marker-check";
+import {
+  setRunningMarker,
+  clearRunningMarker,
+} from "@/lib/cron/running-marker";
 
 /**
  * POST /api/cron/briefing — Cron-authenticated weekly briefing trigger.
@@ -48,6 +52,10 @@ export async function POST(request: Request) {
     });
   }
 
+  // Signal to Worker that we're starting — fallback path will skip while
+  // this marker is set. Fire-and-forget; never block delivery on Worker RTT.
+  void setRunningMarker("briefing");
+
   try {
     const result = await sendBriefingEmail(db, {
       weekOf: body.weekOf as string | undefined,
@@ -64,6 +72,8 @@ export async function POST(request: Request) {
       { error: err instanceof Error ? err.message : "Unknown error" },
       { status: 500 }
     );
+  } finally {
+    void clearRunningMarker("briefing");
   }
 }
 

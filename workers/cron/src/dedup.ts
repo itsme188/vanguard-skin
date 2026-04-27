@@ -1,22 +1,31 @@
 /**
  * Marker-based dedup between the Mac primary path and Worker cloud fallback.
  *
- * Two markers per day, stored in CRON_KV with 30h TTL:
+ * Three markers per day, stored in CRON_KV:
  *
- *   mac-sent-{type}-{YYYY-MM-DD}   — set by Worker after a successful Mac call
- *   cloud-sent-{type}-{YYYY-MM-DD} — set by Worker after a successful fallback
+ *   mac-sent-{type}-{YYYY-MM-DD}    — set by Worker after a successful Mac call (30h TTL)
+ *   cloud-sent-{type}-{YYYY-MM-DD}  — set by Worker after a successful fallback (30h TTL)
+ *   mac-running-{type}-{YYYY-MM-DD} — set by Mac at start of /api/cron/* and cleared in finally (10min TTL)
  *
  * Flow:
- *   1. Worker fires → reads `mac-sent-*` + `cloud-sent-*` → skips if either present.
+ *   1. Worker fires → reads sent markers → skips if either present.
  *   2. Worker calls Mac webhook → on 200, writes `mac-sent-*`.
  *   3. Fallback fires (Session C) → writes `cloud-sent-*`.
  *   4. Mac's /api/cron/* route calls Worker's /internal/marker endpoint first;
  *      if `cloud-sent-*` is present, route returns 200 {skipped:true} without
  *      regenerating. This closes the race where launchd runs catch-up style
  *      after fallback has already delivered.
+ *   5. Mac's /api/cron/* route also POSTs /internal/running-marker at entry
+ *      (action=set) and at exit (action=clear). Worker re-reads markers right
+ *      before firing fallback — if mac-running OR mac-sent appeared during the
+ *      primary timeout window, fallback skips. This closes the 8:45→8:57 race
+ *      where Mac succeeded slowly during the Worker's primary timeout, Worker
+ *      fired fallback anyway, and the user got a thinned-out duplicate.
  *
- * 30h TTL covers same-day re-triggers plus a generous overnight buffer for
- * timezone/clock skew between Mac and Worker.
+ * 30h TTL on sent markers covers same-day re-triggers plus generous overnight
+ * buffer for timezone/clock skew. 10min TTL on running-marker auto-expires if
+ * Mac dies mid-process — long enough to outlive a 5-min Mac pipeline plus a
+ * safety margin for clock skew.
  */
 
 import { todayET } from "./dst";
@@ -24,22 +33,32 @@ import { todayET } from "./dst";
 export type JobType = "briefing" | "digest";
 export type SentBy = "mac" | "cloud";
 
-const TTL_SECONDS = 30 * 3600; // 30h
+const SENT_TTL_SECONDS = 30 * 3600; // 30h
+const RUNNING_TTL_SECONDS = 10 * 60; // 10 min
 
 function markerKey(sentBy: SentBy, type: JobType, date: string): string {
   return `${sentBy}-sent-${type}-${date}`;
+}
+
+function runningKey(type: JobType, date: string): string {
+  return `mac-running-${type}-${date}`;
 }
 
 export async function readMarkers(
   kv: KVNamespace,
   type: JobType,
   date: string = todayET()
-): Promise<{ mac: boolean; cloud: boolean }> {
-  const [mac, cloud] = await Promise.all([
+): Promise<{ mac: boolean; cloud: boolean; macRunning: boolean }> {
+  const [mac, cloud, macRunning] = await Promise.all([
     kv.get(markerKey("mac", type, date)),
     kv.get(markerKey("cloud", type, date)),
+    kv.get(runningKey(type, date)),
   ]);
-  return { mac: mac !== null, cloud: cloud !== null };
+  return {
+    mac: mac !== null,
+    cloud: cloud !== null,
+    macRunning: macRunning !== null,
+  };
 }
 
 export async function writeMarker(
@@ -49,8 +68,26 @@ export async function writeMarker(
   date: string = todayET()
 ): Promise<void> {
   await kv.put(markerKey(sentBy, type, date), new Date().toISOString(), {
-    expirationTtl: TTL_SECONDS,
+    expirationTtl: SENT_TTL_SECONDS,
   });
+}
+
+export async function setRunningMarker(
+  kv: KVNamespace,
+  type: JobType,
+  date: string = todayET()
+): Promise<void> {
+  await kv.put(runningKey(type, date), new Date().toISOString(), {
+    expirationTtl: RUNNING_TTL_SECONDS,
+  });
+}
+
+export async function clearRunningMarker(
+  kv: KVNamespace,
+  type: JobType,
+  date: string = todayET()
+): Promise<void> {
+  await kv.delete(runningKey(type, date));
 }
 
 /** Used by the /internal/marker endpoint the Mac polls. */
