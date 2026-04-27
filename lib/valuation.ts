@@ -24,6 +24,34 @@ export function marketValue(
 }
 
 /**
+ * Inverse of marketValue(): derive the quoted unit price from a known market
+ * value. Used when broker statements provide holdings value but no price.
+ */
+export function unitPriceFromMarketValue(
+  marketValue: number,
+  quantity: number,
+  securityType: string | null,
+  multiplier: number = 1
+): number | null {
+  if (
+    quantity <= 0 ||
+    marketValue <= 0 ||
+    !Number.isFinite(quantity) ||
+    !Number.isFinite(marketValue)
+  ) {
+    return null;
+  }
+
+  if (securityType?.toLowerCase() === "bond") {
+    return (marketValue * 100) / quantity;
+  }
+
+  const effectiveMultiplier =
+    multiplier > 0 && Number.isFinite(multiplier) ? multiplier : 1;
+  return marketValue / quantity / effectiveMultiplier;
+}
+
+/**
  * SQL CASE expression for adjusted market value.
  * Handles bonds (par-adjusted) and options (multiplier-adjusted).
  * Use in raw SQL queries where the TypeScript function cannot be called.

@@ -23,18 +23,22 @@ if [ -n "$SECRET" ]; then
 fi
 
 # Try the HTTP path first (Electron app running + TWS session shared).
-RESPONSE=$(curl -sS --max-time 180 -X POST \
+RESPONSE=$(curl -sS --max-time 180 -w $'\n%{http_code}' -X POST \
   "${HEADERS[@]}" \
   -d '{}' \
   "$URL" 2>&1)
 CURL_EXIT=$?
 
-if [ $CURL_EXIT -eq 0 ]; then
+HTTP_STATUS=$(printf '%s\n' "$RESPONSE" | tail -n 1)
+HTTP_BODY=$(printf '%s\n' "$RESPONSE" | sed '$d')
+
+if [ $CURL_EXIT -eq 0 ] && [[ "$HTTP_STATUS" =~ ^2[0-9][0-9]$ ]]; then
   echo "$(date '+%Y-%m-%d %H:%M:%S') — HTTP path OK"
-  echo "$RESPONSE"
+  echo "$HTTP_BODY"
   exit 0
 fi
 
-echo "$(date '+%Y-%m-%d %H:%M:%S') — HTTP path failed ($CURL_EXIT), falling back to tsx"
+echo "$(date '+%Y-%m-%d %H:%M:%S') — HTTP path failed (curl=$CURL_EXIT status=$HTTP_STATUS), falling back to tsx"
+echo "$HTTP_BODY"
 cd "$PROJECT_DIR" || exit 2
 npx tsx scripts/enrich-calendar-events.ts

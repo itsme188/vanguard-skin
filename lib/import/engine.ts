@@ -14,6 +14,7 @@ import { parseFactorCsv } from "./parsers/factor-csv";
 import { parseCanonicalCsv } from "./parsers/canonical-csv";
 import { upsertSecurity } from "@/lib/mutations/securities";
 import { FACTOR_COLUMNS } from "@/lib/factors";
+import { unitPriceFromMarketValue } from "@/lib/valuation";
 import {
   createImportBatch,
   completeImportBatch,
@@ -177,6 +178,27 @@ export function commitImport(
       return id;
     }
 
+    const securityMetaStmt = db.prepare(
+      `SELECT security_type, multiplier FROM securities WHERE id = ?`,
+    );
+    const securityMetaCache = new Map<
+      string,
+      { security_type: string | null; multiplier: number | null }
+    >();
+    function getSecurityMeta(symbol: string) {
+      const cached = securityMetaCache.get(symbol);
+      if (cached) return cached;
+      const row = securityMetaStmt.get(getSecurityId(symbol)) as
+        | { security_type: string | null; multiplier: number | null }
+        | undefined;
+      const meta = {
+        security_type: row?.security_type ?? null,
+        multiplier: row?.multiplier ?? null,
+      };
+      securityMetaCache.set(symbol, meta);
+      return meta;
+    }
+
     // 3. Insert transactions (skip duplicates via source_key)
     const insertTxn = db.prepare(`
       INSERT OR IGNORE INTO transactions
@@ -258,10 +280,21 @@ export function commitImport(
     //     to the ELSE=4 bucket, which would let a stale "manual" price survive
     //     a fresh Vanguard PDF import.
     const derivedPriceSource = holdingDerivedPriceSource(parsed.sourceType);
+    const explicitPrices = new Set(
+      parsed.prices.map((p) => `${p.symbol}\u0000${p.date}\u0000${p.source}`),
+    );
     for (const h of parsed.holdings) {
       if (h.marketValue != null && h.quantity > 0) {
-        const pricePerShare = h.marketValue / h.quantity;
-        if (pricePerShare > 0 && isFinite(pricePerShare)) {
+        const meta = getSecurityMeta(h.symbol);
+        const pricePerShare = unitPriceFromMarketValue(
+          h.marketValue,
+          h.quantity,
+          meta.security_type,
+          meta.multiplier ?? 1,
+        );
+        if (pricePerShare != null && pricePerShare > 0 && isFinite(pricePerShare)) {
+          const key = `${h.symbol}\u0000${h.asOfDate}\u0000${derivedPriceSource}`;
+          if (explicitPrices.has(key)) continue;
           parsed.prices.push({
             symbol: h.symbol,
             date: h.asOfDate,

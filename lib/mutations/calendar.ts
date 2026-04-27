@@ -4,6 +4,7 @@ import type {
   CalendarBriefing,
   CalendarEventSource,
 } from "@/lib/types";
+import { resolveReleaseTime } from "@/lib/calendar/release-times";
 
 // ─── Result types ─────────────────────────────────────────────────
 
@@ -58,14 +59,15 @@ export function upsertCalendarEvents(
 
   const stmt = db.prepare(
     `INSERT INTO calendar_events
-       (source, event_type, event_date, event_time, title, description,
+       (source, event_type, event_date, event_time, release_time, title, description,
         security_id, symbol, ib_con_id, expected_impact, consensus_estimate,
         previous_value, raw_json, source_key, week_of)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(source_key) DO UPDATE SET
        event_type = excluded.event_type,
        event_date = excluded.event_date,
        event_time = excluded.event_time,
+       release_time = excluded.release_time,
        title = excluded.title,
        description = excluded.description,
        expected_impact = excluded.expected_impact,
@@ -79,11 +81,17 @@ export function upsertCalendarEvents(
     let inserted = 0;
     let updated = 0;
     for (const e of events) {
+      const releaseTime = resolveReleaseTime({
+        event_type: e.event_type,
+        event_time: e.event_time ?? null,
+        raw_json: e.raw_json ?? null,
+      });
       stmt.run(
         e.source,
         e.event_type,
         e.event_date,
         e.event_time ?? null,
+        releaseTime,
         e.title,
         e.description ?? null,
         e.security_id ?? null,
