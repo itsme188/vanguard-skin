@@ -308,7 +308,7 @@ function buildPrompt(p: PromptInput): string {
 
   const otherEventsSection =
     p.otherEvents.length > 0
-      ? `\n## Macro & Other Events This Week\nFor each macro event below, the **Holdings exposure** field lists the user's specific holdings that map to the relevant sector(s) for that release. Use this list verbatim — do NOT enumerate exposure from prose, do NOT add or drop names. If you'd describe the list as "basically every industrial in the book," instead enumerate the actual symbols provided.\n\n${p.otherEvents
+      ? `\n## Macro & Other Events This Week\n**HARD RULE — exposure lists are data, not narrative.** Each macro event below has a **Holdings exposure** field. That field is the authoritative roster of the user's holdings exposed to that release. When you write the holdings-exposure paragraph for that event, the symbols you list MUST equal the symbols in the Holdings exposure field — same set, no additions, no drops, no substitutions, no "plus other industrials". You may render them in any order and add brief context per name, but every symbol in the field must appear in your output, and no symbol that is NOT in the field may appear (no ETFs/baskets, no companies you happen to recall as relevant). If you find yourself writing "basically every industrial in the book" or adding a familiar name, STOP and copy the field verbatim. The user's portfolio classifications are intentionally narrower than your training prior in some cases (e.g., PWR is classified as Consumer in this DB) — trust the data over your memory.\n\n${p.otherEvents
           .map((e, i) =>
             formatEventForPrompt(
               e,

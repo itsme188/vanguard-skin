@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { buildMacroExposures } from "@/lib/calendar/briefing";
@@ -172,5 +174,27 @@ describe("buildMacroExposures", () => {
     const out = buildMacroExposures(db, [makeMacro(1, "pmi", "ISM Manufacturing")]);
     const exp = out.get(1);
     expect(exp!.symbols).toEqual(["XMTR"]);
+  });
+});
+
+describe("§6 prompt directive — exposure-list verbatim rule", () => {
+  // Regression: 4/27 live regen of the briefing showed Opus still dropping
+  // XMTR + PRIM + CLH + GFL from the ISM Manufacturing exposure paragraph,
+  // even though all four were in the deterministic Holdings exposure field
+  // fed to the prompt. The original directive ("Use this list verbatim — do
+  // NOT enumerate exposure from prose, do NOT add or drop names") wasn't
+  // strong enough. Strengthened 2026-04-27 with imperative HARD RULE
+  // language that explicitly forbids ETF additions, prose hand-waves, and
+  // memory-driven substitutions. This test guards against a future edit
+  // that softens the directive.
+  it("contains the strengthened HARD RULE directive in briefing.ts", () => {
+    const briefingSource = readFileSync(
+      join(process.cwd(), "lib/calendar/briefing.ts"),
+      "utf8",
+    );
+    expect(briefingSource).toContain("HARD RULE");
+    expect(briefingSource).toContain("exposure lists are data, not narrative");
+    expect(briefingSource).toContain("MUST equal the symbols in the Holdings exposure field");
+    expect(briefingSource).toContain("trust the data over your memory");
   });
 });
