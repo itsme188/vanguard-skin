@@ -259,7 +259,10 @@ export async function runCloudFallback(
       // the sector ETF later if needed.
       const sectorEtf = resolveSectorEtf(cand.event_type, null);
       // Yahoo requires no API key — always attempt reaction capture.
-      const reaction = await captureReactionFromYahoo(cand.releaseInstant, sectorEtf, { pacingMs });
+      const reaction = await captureReactionFromYahoo(cand.releaseInstant, sectorEtf, {
+        pacingMs,
+        eventSymbol: cand.event_type === "earnings" ? cand.symbol : null,
+      });
 
       const payload: CloudEnrichedPayload = {
         eventId: cand.id,

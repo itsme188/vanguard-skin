@@ -12,6 +12,7 @@ import {
   getRatingChanges,
 } from "@/lib/queries/analyst-estimates";
 import { getCachedTranscript } from "@/lib/queries/transcripts";
+import { getNotesForFamily, type NoteWithContext } from "@/lib/queries/notes";
 import type { CalendarEvent, EarningsTranscript } from "@/lib/types";
 
 // Preferred newsletter sources for pre-earnings color. Same list as
@@ -112,11 +113,21 @@ async function sendEarningsEmail(
   }
 
   const symbol = event.symbol.toUpperCase();
+  const ctx = phase === "preview"
+    ? buildPreviewContext(db, event)
+    : buildRecapContext(db, event);
   const prompt = phase === "preview"
-    ? renderPreviewPrompt(buildPreviewContext(db, event))
-    : renderRecapPrompt(buildRecapContext(db, event));
+    ? renderPreviewPrompt(ctx)
+    : renderRecapPrompt(ctx as RecapContext);
 
-  const markdown = await callClaude(prompt, phase);
+  const headlineTable = renderHeadlineTable(ctx, phase);
+  const aiMarkdown = await callClaude(prompt, phase);
+  // Headline scoreboard is rendered deterministically from structured fields
+  // (consensus_estimate, actual_value, reaction_snapshot) — printable + same
+  // shape across preview + recap. AI takes over after for line-by-line +
+  // prose. Preview cells in the rightmost two columns are left blank so the
+  // user can fill in by hand during the call.
+  const markdown = `${headlineTable}\n\n${aiMarkdown}`;
 
   const dateStr = formatDateLong(event.event_date);
   const releaseTimeStr = event.release_time
@@ -193,6 +204,7 @@ interface PreviewContext {
   positions: PositionEntry[];
   combinedShares: number;
   combinedContracts: number;
+  userNotes: NoteWithContext[];
   recentArticles: NewsletterEntry[];
   recommendationTrend: string | null;
   priceTarget: string | null;
@@ -224,6 +236,7 @@ function buildPreviewContext(
     }
   }
 
+  const userNotes = getNotesForFamily(db, family, 90);
   const recentArticles = getNewsletterContext(db, family);
   const recommendationTrend = formatRecommendationTrend(db, symbol);
   const priceTarget = formatPriceTarget(db, symbol);
@@ -238,6 +251,7 @@ function buildPreviewContext(
     positions,
     combinedShares,
     combinedContracts,
+    userNotes,
     recentArticles,
     recommendationTrend,
     priceTarget,
@@ -543,6 +557,120 @@ function pctSign(v: number): string {
   return v >= 0 ? `+${n}%` : `${n}%`;
 }
 
+// ── Deterministic headline scoreboard ──────────────────────────────
+//
+// A markdown table at the very top of every earnings email — same shape
+// across preview + recap so the user can print the preview, sit through
+// the call, and fill in the right-hand columns by hand. Recap fills the
+// same cells in automatically. Built from structured fields only:
+// `consensus_estimate`, `actual_value`, `reaction_snapshot`. Anything we
+// don't have lands as `—` (the HTML renderer detects this and pads the
+// cell taller for handwriting).
+
+interface ParsedFinnhubFigure {
+  eps: string | null;
+  revenue: string | null;
+}
+
+function parseFinnhubFigure(s: string | null): ParsedFinnhubFigure {
+  // Finnhub format: "EPS 0.70 · Rev 4,305,870,107"
+  if (!s) return { eps: null, revenue: null };
+  const out: ParsedFinnhubFigure = { eps: null, revenue: null };
+  const epsMatch = /EPS\s+(-?\d+(?:\.\d+)?)/i.exec(s);
+  if (epsMatch) out.eps = epsMatch[1];
+  const revMatch = /Rev\s+([\d.,]+)/i.exec(s);
+  if (revMatch) out.revenue = revMatch[1].replace(/,/g, "");
+  return out;
+}
+
+function formatRevenue(raw: string | null): string {
+  if (!raw) return "—";
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return raw;
+  if (n >= 1_000_000_000) return `$${(n / 1_000_000_000).toFixed(2)}B`;
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
+  return `$${n.toLocaleString()}`;
+}
+
+function formatPctDelta(actual: number, consensus: number): string {
+  if (consensus === 0) return "—";
+  const pct = ((actual - consensus) / Math.abs(consensus)) * 100;
+  const abs = Math.abs(pct);
+  if (abs < 0.05) return "in-line";
+  const sign = pct >= 0 ? "+" : "";
+  return `${sign}${pct.toFixed(1)}%`;
+}
+
+function readReactionDelta(json: string | null, key: "spy" | "qqq" | "tlt" | "symbol"): string {
+  if (!json) return "—";
+  try {
+    const snap = JSON.parse(json) as Record<string, unknown>;
+    const node = snap[key] as { delta_pct?: number } | undefined;
+    if (!node || node.delta_pct == null) return "—";
+    const v = Number(node.delta_pct);
+    if (!Number.isFinite(v)) return "—";
+    const sign = v >= 0 ? "+" : "";
+    return `${sign}${v.toFixed(2)}%`;
+  } catch {
+    return "—";
+  }
+}
+
+function renderHeadlineTable(
+  ctx: PreviewContext | RecapContext,
+  phase: "preview" | "recap",
+): string {
+  const cons = parseFinnhubFigure(ctx.event.consensus_estimate);
+  const actual = phase === "recap"
+    ? parseFinnhubFigure(ctx.event.actual_value ?? ctx.event.consensus_value)
+    : { eps: null, revenue: null };
+
+  const epsConsensus = cons.eps ?? "—";
+  const epsActual = actual.eps ?? "—";
+  const epsDelta = (() => {
+    if (!cons.eps || !actual.eps) return "—";
+    const c = Number(cons.eps);
+    const a = Number(actual.eps);
+    if (!Number.isFinite(c) || !Number.isFinite(a)) return "—";
+    return formatPctDelta(a, c);
+  })();
+
+  const revConsensus = formatRevenue(cons.revenue);
+  const revActual = formatRevenue(actual.revenue);
+  const revDelta = (() => {
+    if (!cons.revenue || !actual.revenue) return "—";
+    const c = Number(cons.revenue);
+    const a = Number(actual.revenue);
+    if (!Number.isFinite(c) || !Number.isFinite(a)) return "—";
+    return formatPctDelta(a, c);
+  })();
+
+  // Reaction rows are recap-only; preview leaves the actual columns blank.
+  const isRecap = phase === "recap";
+  const stockReaction = isRecap ? readReactionDelta(ctx.event.reaction_snapshot, "symbol") : "—";
+  const spyReaction = isRecap ? readReactionDelta(ctx.event.reaction_snapshot, "spy") : "—";
+  const qqqReaction = isRecap ? readReactionDelta(ctx.event.reaction_snapshot, "qqq") : "—";
+
+  const phaseLabel = phase === "preview" ? "into the print" : "post-print";
+
+  const rows = [
+    `| **EPS** | ${epsConsensus} | ${epsActual} | ${epsDelta} |`,
+    `| **Revenue** | ${revConsensus} | ${revActual} | ${revDelta} |`,
+    `| **Guidance (next quarter)** | — | — | — |`,
+    `| **${ctx.symbol} @ T+2h** | — | ${stockReaction} | — |`,
+    `| **SPY @ T+2h** | — | ${spyReaction} | — |`,
+    `| **QQQ @ T+2h** | — | ${qqqReaction} | — |`,
+  ].join("\n");
+
+  return `## ${ctx.symbol} scoreboard — ${phaseLabel}
+
+| Metric | Consensus | Actual | Δ |
+|---|---|---|---|
+${rows}
+
+*Empty cells in a preview are intentional — print this, fill them in live during the call. Recap fills them automatically. \`—\` in the actual column on a recap means data wasn't available at send time (e.g. TWS disconnected, transcript not posted).*`;
+}
+
 // ── Prompt rendering (pure for testability) ────────────────────────
 
 export function renderPreviewPrompt(ctx: PreviewContext): string {
@@ -551,6 +679,7 @@ export function renderPreviewPrompt(ctx: PreviewContext): string {
     : `\n## Street Consensus\nNot in our database. Use web_search to find consensus EPS, revenue, and any other key metrics analysts are watching for this print. Cite source URLs.\n`;
 
   const positionsBlock = renderPositionsBlock(ctx);
+  const userNotesBlock = renderUserNotesBlock(ctx);
   const newslettersBlock = renderNewslettersBlock(ctx, "preview");
   const analystBlock = renderAnalystBlock(ctx);
   const pressBlock = ctx.recentPressReleases
@@ -567,6 +696,7 @@ export function renderPreviewPrompt(ctx: PreviewContext): string {
 - Release time: ${ctx.event.release_time ?? "(not specified — assume BMO or AMC based on context)"}
 - Source: ${ctx.event.source}
 - Expected impact: ${ctx.event.expected_impact ?? "n/a"}
+${userNotesBlock}
 ${consensusBlock}
 ${positionsBlock}
 ${newslettersBlock}
@@ -578,21 +708,28 @@ ${priorCallBlock}
 
 Use the structured context above as the source of truth for positions, consensus, and newsletter quotes. **For anything missing or thin, use web_search** — bogies for the print, sell-side notes published in the last 24-48 hours, recent buy-side commentary, expectations on segment-level metrics, prior-quarter takeaways. Cite source URLs inline as [Source Name](url).
 
-Write the briefing as markdown, structured as follows:
+**IMPORTANT — output structure.** A deterministic "scoreboard" headline table is rendered ABOVE your output by the system; do NOT repeat the headline metrics (EPS / Revenue / SPY reaction / QQQ reaction) — your output starts AFTER the scoreboard. Lead with the line-by-line bogies table, then prose. Specifically:
 
-1. **The Setup** — 2-3 sentences. Where does ${ctx.symbol} go into the print? Stock action over the past 30 days. Posture into the call.
+1. **\`## Line-by-line bogies\`** — a markdown table the user can print and fill in by hand during the call. Columns MUST be exactly:
 
-2. **Bogies** — what the Street is looking for line by line. Consensus EPS, revenue, segment splits, margin, key KPIs specific to ${ctx.symbol}'s business. Where the buy-side sits vs. sell-side (whisper / bogie). If you only have official consensus, say so.
+\`\`\`
+| Metric | Consensus / Prior | Actual | Δ |
+|---|---|---|---|
+\`\`\`
 
-3. **Bull case / bear case** — concise. What sets up a beat-and-raise; what triggers a sell-off. Reference newsletter views by author when applicable.
+Rows: every segment, KPI, and guidance metric the Street is watching for ${ctx.symbol} specifically — pulled from the prior-quarter transcript / sell-side notes / press releases in the context above (or web_search if context is thin). Examples for a tech name: revenue by segment, gross margin, operating margin, FCF, capex, ARR / billings, customer count, guide for next quarter, full-year guide. Examples for a consumer name: organic revenue growth, unit case volume by region, operating margin by segment. **Use \`—\` (em-dash) in the Actual + Δ columns** — this is a preview, the user writes in the actuals during the call. Aim for 8–15 rows; segment-rich names get more, narrow-business names get fewer.
 
-4. **What to watch on the call** — guidance change, segment commentary, capex, any specific issue current sell-side notes are pushing for.
+2. **\`## The setup\`** — 2-3 sentences. Where does ${ctx.symbol} go into the print? Stock action over the past 30 days. Posture into the call.
 
-5. **Position implications** — given the user's combined position (use the §Positions block verbatim), what's the asymmetry? Hedged or naked? If there are option positions in the data, mention assignment / IV-crush risk explicitly.
+3. **\`## Bull case / bear case\`** — concise. What sets up a beat-and-raise; what triggers a sell-off. Reference newsletter views by author when applicable.
 
-6. **Sources** — a footer listing the newsletter article subjects + dates we cited, plus any web URLs.
+4. **\`## What to watch on the call\`** — guidance change, segment commentary, capex, any specific issue current sell-side notes are pushing for.
 
-Tone: analytical colleague, not coach. No "you should" prescriptions; offer scenarios and let the reader decide. Aim for 600-1100 words — dense, no filler.`;
+5. **\`## Position implications\`** — given the user's combined position (use the §Positions block verbatim), what's the asymmetry? Hedged or naked? If there are option positions in the data, mention assignment / IV-crush risk explicitly.
+
+6. **\`## Sources\`** — a footer listing the newsletter article subjects + dates we cited, plus any web URLs.
+
+Tone: analytical colleague, not coach. No "you should" prescriptions; offer scenarios and let the reader decide. Lead with numbers + tables; prose comes after. Aim for 600-1000 words of prose (the line-by-line table is in addition to that budget).`;
 }
 
 export function renderRecapPrompt(ctx: RecapContext): string {
@@ -609,6 +746,7 @@ export function renderRecapPrompt(ctx: RecapContext): string {
     : `\n## Market reaction\nReaction snapshot not yet captured. If you can determine after-hours / immediate reaction from web_search, cite it; otherwise note the gap.\n`;
 
   const positionsBlock = renderPositionsBlock(ctx);
+  const userNotesBlock = renderUserNotesBlock(ctx);
   const newslettersBlock = renderNewslettersBlock(ctx, "recap");
   const analystBlock = renderAnalystBlock(ctx);
   const pressBlock = ctx.freshPressReleases
@@ -624,6 +762,7 @@ export function renderRecapPrompt(ctx: RecapContext): string {
 - Date: ${ctx.event.event_date}
 - Release time: ${ctx.event.release_time ?? "(not specified)"}
 - Source: ${ctx.event.source}
+${userNotesBlock}
 ${consensusBlock}
 ${actualBlock}
 ${reactionBlock}
@@ -637,21 +776,26 @@ ${priorCallBlock}
 
 Use the structured context above as the source of truth. **For anything missing — call commentary, post-print sell-side reactions, transcript quotes, guidance change details — use web_search** with focus on the last 4 hours of coverage. Cite source URLs inline.
 
-Write the recap as markdown:
+**IMPORTANT — output structure.** A deterministic "scoreboard" table is rendered ABOVE your output by the system (it shows EPS / Revenue / stock + SPY + QQQ reactions). Do NOT repeat those headline metrics. Your output starts with the line-by-line table (same shape as the preview, but filled in), then prose. Specifically:
 
-1. **Headline** — beat / miss / in-line. Clean numbers: actual vs. consensus on EPS and revenue with beat-by-X% calls. Guidance direction.
+1. **\`## Line-by-line metrics\`** — a markdown table with EXACTLY these columns:
 
-2. **Line by line** — every reportable metric we have data on (EPS, revenue, segments, margin, FCF where available). Compare to consensus and to year-ago. Flag anything that surprised either way.
+\`\`\`
+| Metric | Consensus / Prior | Actual | Δ |
+|---|---|---|---|
+\`\`\`
 
-3. **The reaction** — stock move vs. SPY/QQQ/sector. If transcript / call quotes are available via web_search, lead with the one or two quotes that explain the move. If not, note "transcript not yet posted — recap will update if a follow-up runs."
+Rows: every segment, KPI, and guidance line ${ctx.symbol} reported — fill from the press release (use web_search to find it if not in the press-release context above). Mirror the bogies the prior-quarter transcript called out so the recap visually overlays the preview. **Fill in the Actual + Δ columns** with the reported values; use \`—\` only when truly unavailable (e.g., a metric the company didn't break out this quarter). Aim for 8–15 rows.
 
-4. **Sell-side first takes** — web_search for analyst notes published in the last few hours. Quote the headline, flag price-target changes, name the firm. If nothing is out yet, say so.
+2. **\`## The reaction\`** — stock move vs. SPY/QQQ/sector. If a transcript or call quotes are available via web_search, lead with the one or two quotes that explain the move. If not, note "transcript not yet posted — recap will update if a follow-up runs."
 
-5. **Position implications** — given the user's combined position (use §Positions verbatim), what's the immediate P&L impact at the reaction-snapshot price? Any hedging / IV-crush dynamics for option holdings? Should the thesis change?
+3. **\`## Sell-side first takes\`** — web_search for analyst notes published in the last few hours. Quote the headline, flag price-target changes, name the firm. If nothing is out yet, say so.
 
-6. **Sources** — newsletter articles cited + web URLs.
+4. **\`## Position implications\`** — given the user's combined position (use §Positions verbatim), what's the immediate P&L impact at the reaction-snapshot price? Any hedging / IV-crush dynamics for option holdings? Should the thesis change?
 
-Tone: analytical colleague. Numbers and direct quotes over adjectives. 500-900 words.`;
+5. **\`## Sources\`** — newsletter articles cited + web URLs.
+
+Tone: analytical colleague. Numbers and direct quotes over adjectives. Lead with tables; prose after. Aim for 500-800 words of prose (the line-by-line table is in addition).`;
 }
 
 function renderPositionsBlock(ctx: PreviewContext): string {
@@ -739,6 +883,28 @@ function renderAnalystBlock(ctx: PreviewContext): string {
     return `\n## Analyst coverage\nNo cached analyst data for ${ctx.symbol}. If relevant, use web_search to fill in price-target consensus and recent upgrade/downgrade activity.\n`;
   }
   return `\n## Analyst coverage (cached, Finnhub)\n${parts.join("\n\n")}\n`;
+}
+
+// User's own notes — placed FIRST in the prompt (before consensus / positions /
+// newsletters) so the AI frames the briefing as a conversation with the user's
+// prior thesis rather than synthesizing from external sources alone. Cap each
+// note's content to keep the total contribution bounded; truncated notes are
+// suffixed with "…" so the AI knows there's more (and can ask the user to
+// elaborate via web_search if needed).
+const NOTE_CHAR_CAP = 1500;
+
+function renderUserNotesBlock(ctx: PreviewContext): string {
+  if (ctx.userNotes.length === 0) return "";
+  const lines = ctx.userNotes.map((n) => {
+    const content = n.content.length > NOTE_CHAR_CAP
+      ? n.content.slice(0, NOTE_CHAR_CAP) + "…"
+      : n.content;
+    const sym = n.symbol ?? ctx.symbol;
+    const sentSuffix = n.sentiment ? ` · sentiment: ${n.sentiment}` : "";
+    const tagsSuffix = n.tags ? ` · tags: ${n.tags}` : "";
+    return `### [${n.event_date}] ${n.note_type} on ${sym}${sentSuffix}${tagsSuffix}\n${content}`;
+  });
+  return `\n## Your prior notes on ${ctx.symbol} — read these FIRST and frame the briefing in conversation with the prior thesis\n\nThese are the user's own journal / earnings / trade-thesis notes attached to ${ctx.symbol} or any sibling-class security in the family. Treat them as the **primary lens** through which the briefing should be written — quote dates, refer to the user's prior view directly, and flag where the new event either confirms, evolves, or contradicts what the user already wrote. Do NOT paraphrase these as if they were newsletter content; they're the user's own words.\n\n${lines.join("\n\n---\n\n")}\n`;
 }
 
 function renderPriorTranscriptBlock(ctx: PreviewContext): string {

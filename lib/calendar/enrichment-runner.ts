@@ -238,7 +238,10 @@ export async function runEnrichment(
             opts.tws,
             releaseInstant,
             sectorEtf,
-            { pacingMs: opts.pacingMs },
+            {
+              pacingMs: opts.pacingMs,
+              eventSymbol: event.event_type === "earnings" ? event.symbol : null,
+            },
           );
         }
       }
@@ -316,7 +319,10 @@ async function runTwsReactionUpgrade(
     opts.tws,
     releaseInstant,
     sectorEtf,
-    { pacingMs: opts.pacingMs },
+    {
+      pacingMs: opts.pacingMs,
+      eventSymbol: row.event_type === "earnings" ? row.symbol : null,
+    },
   );
 
   if (!reaction) {

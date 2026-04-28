@@ -32,6 +32,11 @@ export interface ReactionSnapshot {
   qqq: BenchmarkReaction;
   tlt: BenchmarkReaction;
   sector?: BenchmarkReaction & { symbol: string };
+  // Mirror of the Mac-side type — `lib/calendar/reaction-snapshot.ts`. The
+  // event symbol's own bars; lets the recap email contrast the stock with
+  // the benchmarks. Optional because cloud + Mac paths both degrade
+  // gracefully when bars for the event symbol are unavailable.
+  symbol?: BenchmarkReaction & { symbol: string };
 }
 
 export interface TimedClose {
