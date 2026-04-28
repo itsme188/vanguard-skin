@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { issuerSiblings } from "@/lib/securities/issuer-family";
 
 /**
  * Returns distinct stock symbols currently held across all accounts (latest
@@ -66,8 +67,25 @@ export function getSymbolStatus(
 ): Record<string, SymbolStatus> {
   if (symbols.length === 0) return {};
   const upperInput = symbols.map((s) => s.toUpperCase());
-  // Dedup the input — caller may pass dupes; SQL placeholders should still match.
-  const distinctInput = Array.from(new Set(upperInput));
+
+  // Dual-class aware: GOOGL's earnings event should classify as "held" when
+  // the user holds GOOG (or any sibling). We expand each input symbol to its
+  // family, query against the union, then collapse the held/watchlist hits
+  // back through the family to the original input keys.
+  const inputFamilies = new Map<string, readonly string[]>();
+  for (const sym of upperInput) {
+    if (inputFamilies.has(sym)) continue;
+    inputFamilies.set(sym, issuerSiblings(sym).map((s) => s.toUpperCase()));
+  }
+
+  const allFamilyMembers = new Set<string>();
+  for (const fam of inputFamilies.values()) {
+    for (const m of fam) allFamilyMembers.add(m);
+  }
+  if (allFamilyMembers.size === 0) {
+    return Object.fromEntries(upperInput.map((s) => [s, "neither" as const]));
+  }
+  const distinctInput = Array.from(allFamilyMembers);
   const placeholders = distinctInput.map(() => "?").join(",");
 
   const heldRows = db
@@ -99,9 +117,33 @@ export function getSymbolStatus(
 
   const out: Record<string, SymbolStatus> = {};
   for (const sym of upperInput) {
-    if (held.has(sym)) out[sym] = "held";
-    else if (watchlist.has(sym)) out[sym] = "watchlist";
+    const family = inputFamilies.get(sym) ?? [sym];
+    const familyHeld = family.some((m) => held.has(m));
+    const familyWatched = family.some((m) => watchlist.has(m));
+    if (familyHeld) out[sym] = "held";
+    else if (familyWatched) out[sym] = "watchlist";
     else out[sym] = "neither";
   }
   return out;
+}
+
+/**
+ * Resolve `symbol` to a `security_id` we can link to. Falls back to issuer
+ * siblings if the exact symbol isn't in the securities table — e.g., the
+ * Finnhub event for GOOGL still resolves to the GOOG securities row when
+ * that's the only sibling we own. Returns null only when no family member
+ * is in the table.
+ */
+export function getSecurityIdForSymbolWithSiblings(
+  db: Database.Database,
+  symbol: string,
+): number | null {
+  const family = issuerSiblings(symbol);
+  for (const candidate of family) {
+    const row = db
+      .prepare(`SELECT id FROM securities WHERE UPPER(symbol) = ? LIMIT 1`)
+      .get(candidate.toUpperCase()) as { id: number } | undefined;
+    if (row) return row.id;
+  }
+  return null;
 }

@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import type { CalendarEvent } from "@/lib/types";
+import { SymbolLink } from "./SymbolLink";
+import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
 import {
   EnrichmentRowSummary,
   parseReactionSnapshot,
@@ -43,14 +45,21 @@ export function TodayReleases({ releases }: { releases: CalendarEvent[] }) {
           return (
             <li key={event.id} className="px-5 py-2.5 space-y-1">
               <div className="flex items-baseline justify-between gap-2">
-                <span className="text-[13px] text-ink font-medium min-w-0 truncate">
+                <span className="text-[14px] text-ink font-medium min-w-0 truncate">
+                  {event.symbol && event.security_id != null && (
+                    <SymbolLink
+                      securityId={event.security_id}
+                      symbol={event.symbol}
+                      className="font-mono mr-1.5"
+                    />
+                  )}
                   {event.title}
                 </span>
                 <span className="text-[11px] font-mono text-ink-faint shrink-0">
                   {event.release_time ? fmtTime(event.release_time) : ""}
                 </span>
               </div>
-              <div className="text-[11px] font-mono">
+              <div className="text-[12px] font-mono">
                 {enriched ? (
                   <EnrichmentRowSummary
                     actual={event.actual_value}
@@ -59,7 +68,7 @@ export function TodayReleases({ releases }: { releases: CalendarEvent[] }) {
                 ) : (
                   <span className="text-ink-faint">
                     {event.consensus_estimate
-                      ? `Est: ${event.consensus_estimate}`
+                      ? `Est: ${formatFinnhubFigureCompact(event.consensus_estimate)}`
                       : "Pending release"}
                   </span>
                 )}

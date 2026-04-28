@@ -31,4 +31,5 @@ export type FeatureKey =
   | "researchMentionVerification"
   | "suggestedLevelNarrative"
   | "earningsPreview"
-  | "earningsRecap";
+  | "earningsRecap"
+  | "earningsBogeysExtraction";

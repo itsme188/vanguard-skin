@@ -1,0 +1,158 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
+
+interface EmailContentResponse {
+  title: string;
+  sentAt: string;
+  sentTo: string;
+  eventDate: string;
+  symbol: string;
+  phase: "preview" | "recap";
+  fullHtml: string;
+}
+
+interface EarningsEmailViewerProps {
+  eventId: number;
+  phase: "preview" | "recap";
+  open: boolean;
+  onClose: () => void;
+}
+
+/**
+ * Modal that renders a previously-sent earnings email in-app via iframe.
+ *
+ * The full HTML (scoreboard rebuilt from current calendar_events fields +
+ * AI prose from earnings_emails.ai_output_md) is fetched on open and
+ * srcDoc'd into an iframe so the email-specific styling stays isolated
+ * from the app's global CSS.
+ */
+export function EarningsEmailViewer({
+  eventId,
+  phase,
+  open,
+  onClose,
+}: EarningsEmailViewerProps) {
+  const [data, setData] = useState<EmailContentResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setData(null);
+    fetch(`/api/earnings/email-content?eventId=${eventId}&phase=${phase}`)
+      .then(async (res) => {
+        if (!res.ok) {
+          const body = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(body.error ?? `HTTP ${res.status}`);
+        }
+        return res.json() as Promise<EmailContentResponse>;
+      })
+      .then((d) => {
+        if (!cancelled) setData(d);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Failed to load email.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, eventId, phase]);
+
+  // Escape key closes the modal.
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open, onClose]);
+
+  if (!open || typeof document === "undefined") return null;
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[100] overflow-y-auto overscroll-contain"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div
+        className="fixed inset-0 bg-black/60 backdrop-blur-sm"
+        onClick={onClose}
+        aria-hidden="true"
+      />
+      <div className="relative w-full max-w-3xl mx-auto my-8 electron:mt-12 rounded-xl border border-edge bg-panel shadow-2xl">
+        {/* Sticky header */}
+        <div className="sticky top-0 z-10 flex items-baseline justify-between px-5 py-3.5 border-b border-edge bg-panel/95 backdrop-blur-sm rounded-t-xl gap-3">
+          <div className="flex flex-col min-w-0">
+            <h2 className="text-sm font-medium text-ink truncate">
+              {data?.title ?? "Earnings email"}
+            </h2>
+            {data && (
+              <p className="text-[11px] text-ink-faint font-mono mt-0.5 truncate">
+                Sent {formatSentAt(data.sentAt)} ET to {data.sentTo}
+              </p>
+            )}
+          </div>
+          <button
+            onClick={onClose}
+            className="text-ink-faint hover:text-ink text-lg leading-none w-6 h-6 flex items-center justify-center rounded hover:bg-raised shrink-0"
+            aria-label="Close email viewer"
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="p-0 min-h-[300px]">
+          {loading && (
+            <div className="px-5 py-12 text-center text-[14px] text-ink-faint">
+              Loading email…
+            </div>
+          )}
+          {error && (
+            <div className="px-5 py-12 text-center text-[14px] text-down">
+              {error}
+            </div>
+          )}
+          {data && (
+            <iframe
+              title={data.title}
+              srcDoc={data.fullHtml}
+              className="w-full block border-0 rounded-b-xl"
+              style={{ height: "75vh", backgroundColor: "#1a1a1a" }}
+              sandbox="allow-same-origin"
+            />
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function formatSentAt(iso: string): string {
+  // Audit row stores `YYYY-MM-DD HH:MM:SS` in UTC (SQLite datetime('now')).
+  // Render as ET wall-clock for the user.
+  const utc = iso.replace(" ", "T") + (iso.endsWith("Z") ? "" : "Z");
+  const d = new Date(utc);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: "America/New_York",
+  });
+}

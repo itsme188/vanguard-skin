@@ -65,7 +65,7 @@ export function EarningsHubRefreshButton({ weekOf }: Props) {
   }
 
   return (
-    <div className="flex items-center gap-2 text-[12px]">
+    <div className="flex items-center gap-2 text-[14px]">
       {progress && <span className="text-[11px] text-ink-faint italic">{progress}</span>}
       {error && <span className="text-[11px] text-down">{error}</span>}
       <button

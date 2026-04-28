@@ -86,6 +86,11 @@ export const FEATURE_MODELS: Record<FeatureKey, string> = {
   // when Finnhub data is missing or thin.
   earningsPreview: `anthropic/${SONNET_MODEL}`,
   earningsRecap: `anthropic/${SONNET_MODEL}`,
+
+  // Multi-symbol earnings bogeys PDF (e.g., TMT Breakout's weekly preview).
+  // Sonnet via Anthropic — native PDF content block handles tables + layout
+  // reliably; Workers AI doesn't currently support binary PDF input.
+  earningsBogeysExtraction: `anthropic/${SONNET_MODEL}`,
 };
 
 export interface ResolvedModel {
