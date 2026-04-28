@@ -72,8 +72,51 @@ export interface CalendarEventRow {
   [k: string]: unknown;
 }
 
+export interface HoldingRow {
+  id: number;
+  account_id: number;
+  security_id: number;
+  quantity: number;
+  cost_basis: number | null;
+  as_of_date: string;
+}
+
+export interface SecurityRow {
+  id: number;
+  symbol: string;
+  name: string | null;
+  security_type: string | null;
+  asset_class: string | null;
+  sector: string | null;
+  underlying_symbol: string | null;
+  option_type: string | null;
+  strike_price: number | null;
+  expiration_date: string | null;
+  multiplier: number | null;
+}
+
+export interface AccountRow {
+  id: number;
+  name: string;
+}
+
+export interface EarningsEmailRow {
+  id: number;
+  event_id: number;
+  phase: "preview" | "recap";
+  recipient: string;
+  sent_at: string;
+  error: string | null;
+}
+
+/**
+ * Snapshot schema is forward-compatible: schemaVersion 1 (briefing/digest only)
+ * and schemaVersion 2 (adds earnings cloud-fallback context). All earnings
+ * fields are optional + default to [] / { enabled: true, mutedSymbols: [] }
+ * when reading an older snapshot.
+ */
 export interface Snapshot {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   snapshotDate: string;
   generatedAt: string;
   heldSymbols: string[];
@@ -85,6 +128,16 @@ export interface Snapshot {
   researchSources: ResearchSource[];
   recentArticlesMeta: RecentArticleMeta[];
   deepReadArticles: DeepReadArticle[];
+  // Phase 4 — earnings cloud fallback. Optional for back-compat with v1
+  // snapshots; the fallback gracefully degrades when these are missing.
+  holdings?: HoldingRow[];
+  securities?: SecurityRow[];
+  accounts?: AccountRow[];
+  earningsEmails?: EarningsEmailRow[];
+  earningsSettings?: {
+    enabled: boolean;
+    mutedSymbols: string[];
+  };
 }
 
 /** Fetch the most recent snapshot (within 7d). Returns null if none exist. */
