@@ -4,6 +4,7 @@ import { useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import type { CalendarEvent, CalendarBriefing, EventImpact } from "@/lib/types";
 import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
+import { EarningsEmailViewer } from "@/app/dashboard/components/EarningsEmailViewer";
 import { getCurrentMonday, addDays, formatWeekRange } from "@/lib/calendar/date-utils";
 import {
   EnrichmentRowSummary,
@@ -50,6 +51,10 @@ interface CalendarViewProps {
   // Map of security_id -> active-level count. Keyed as string because the
   // server serializes Map to a plain object across the boundary.
   levelCounts?: Record<number, number>;
+  // Per-event_id flags for whether preview / recap emails have been sent.
+  // Drives the "View preview email" / "View recap email" buttons in the
+  // expanded row. Empty object when no audit rows exist.
+  sentPhases?: Record<number, { preview: boolean; recap: boolean }>;
 }
 
 // ── Component ────────────────────────────────────────────────────
@@ -59,6 +64,7 @@ export function CalendarView({
   initialBriefing,
   initialWeekOf,
   levelCounts = {},
+  sentPhases = {},
 }: CalendarViewProps) {
   const router = useRouter();
   const [events, setEvents] = useState(initialEvents);
@@ -69,6 +75,11 @@ export function CalendarView({
   const [generatingBriefing, setGeneratingBriefing] = useState(false);
   const [briefingMessage, setBriefingMessage] = useState<string | null>(null);
   const [expandedEvent, setExpandedEvent] = useState<number | null>(null);
+  // Email viewer modal — kept here (not nested in the expanded panel) so
+  // it survives a row collapse without unmounting the iframe mid-fetch.
+  const [emailViewer, setEmailViewer] = useState<
+    { eventId: number; phase: "preview" | "recap" } | null
+  >(null);
 
   // ── Week navigation ──────────────────────────────────────────
   const navigateWeek = useCallback(
@@ -354,6 +365,36 @@ export function CalendarView({
                                 />
                               )}
 
+                              {/* Sent earnings emails — click to view in-app */}
+                              {(sentPhases[event.id]?.preview || sentPhases[event.id]?.recap) && (
+                                <div className="flex flex-wrap items-center gap-2">
+                                  {sentPhases[event.id]?.preview && (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setEmailViewer({ eventId: event.id, phase: "preview" });
+                                      }}
+                                      className="text-[12px] font-medium text-gold hover:text-gold/80 underline underline-offset-2"
+                                    >
+                                      View preview email
+                                    </button>
+                                  )}
+                                  {sentPhases[event.id]?.recap && (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setEmailViewer({ eventId: event.id, phase: "recap" });
+                                      }}
+                                      className="text-[12px] font-medium text-gold hover:text-gold/80 underline underline-offset-2"
+                                    >
+                                      View recap email
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+
                               {/* Metadata row */}
                               <div className="flex items-center gap-3 text-[10px] text-ink-faint">
                                 <span>Type: {formatEventType(event.event_type)}</span>
@@ -413,6 +454,17 @@ export function CalendarView({
             )}
           </div>
         </div>
+      )}
+
+      {/* Earnings email viewer — mounted once at the root so a row collapse
+          doesn't unmount it mid-fetch. */}
+      {emailViewer && (
+        <EarningsEmailViewer
+          eventId={emailViewer.eventId}
+          phase={emailViewer.phase}
+          open={true}
+          onClose={() => setEmailViewer(null)}
+        />
       )}
     </div>
   );

@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { getUpcomingEvents } from "@/lib/queries/calendar";
 import { getBriefingByWeek } from "@/lib/queries/calendar";
 import { getActiveLevelCountsForSecurityIds } from "@/lib/queries/security-levels";
+import { getSentPhasesForEvents } from "@/lib/queries/earnings-emails";
 import { getCurrentMonday, addDays } from "@/lib/calendar/date-utils";
 import { CalendarView } from "../components/CalendarView";
 
@@ -19,7 +20,10 @@ export default async function CalendarPage({ searchParams }: PageProps) {
 
   // Load events for the selected week
   const endDate = addDays(weekOf, 6);
-  let events, briefing, levelCounts: Record<number, number>;
+  let events,
+    briefing,
+    levelCounts: Record<number, number>,
+    sentPhases: Record<number, { preview: boolean; recap: boolean }>;
   try {
     events = getUpcomingEvents(db, { startDate: weekOf, endDate });
     // Only show briefing for the viewed week — no fallback to latest
@@ -35,6 +39,13 @@ export default async function CalendarPage({ searchParams }: PageProps) {
     );
     const countsMap = getActiveLevelCountsForSecurityIds(db, ids);
     levelCounts = Object.fromEntries(countsMap);
+    // Which earnings events already have a sent preview/recap email — drives
+    // the "View preview email" / "View recap email" buttons in the expanded
+    // calendar row.
+    sentPhases = getSentPhasesForEvents(
+      db,
+      events.map((e) => e.id),
+    );
   } catch {
     throw new Error("Failed to load calendar data. The database may be unavailable.");
   }
@@ -53,6 +64,7 @@ export default async function CalendarPage({ searchParams }: PageProps) {
         initialBriefing={briefing}
         initialWeekOf={weekOf}
         levelCounts={levelCounts}
+        sentPhases={sentPhases}
       />
     </div>
   );

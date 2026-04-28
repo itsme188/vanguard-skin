@@ -65,7 +65,7 @@ export function EarningsHubAddForm({ weekOf: _weekOf }: Props) {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="text-[12px] font-medium text-gold hover:text-gold/80"
+        className="text-[14px] font-medium text-gold hover:text-gold/80"
       >
         + Add ticker
       </button>
@@ -73,7 +73,7 @@ export function EarningsHubAddForm({ weekOf: _weekOf }: Props) {
   }
 
   return (
-    <form onSubmit={submit} className="flex flex-wrap items-center gap-2 text-[12px]">
+    <form onSubmit={submit} className="flex flex-wrap items-center gap-2 text-[14px]">
       <input
         type="text"
         value={symbol}

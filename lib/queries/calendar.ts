@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import type { CalendarEvent, CalendarBriefing } from "@/lib/types";
+import { getSecurityIdForSymbolWithSiblings } from "@/lib/queries/briefing-symbols";
 
 // ─── Filter types ─────────────────────────────────────────────────
 
@@ -101,7 +102,7 @@ export function getEarningsForWeekDeduped(
   db: Database.Database,
   weekOf: string,
 ): CalendarEvent[] {
-  return db
+  const events = db
     .prepare(
       `WITH ranked AS (
          SELECT *,
@@ -123,6 +124,17 @@ export function getEarningsForWeekDeduped(
         ORDER BY event_date ASC, release_time ASC NULLS LAST, symbol ASC`,
     )
     .all(weekOf) as CalendarEvent[];
+
+  // Dual-class fallback: if the row's security_id is null but a sibling
+  // class is in our securities table (e.g., GOOGL event but we hold GOOG),
+  // fill in the sibling's id so SymbolLink can render. Pure post-process —
+  // doesn't mutate the calendar_events row.
+  for (const e of events) {
+    if (e.security_id == null && e.symbol) {
+      e.security_id = getSecurityIdForSymbolWithSiblings(db, e.symbol);
+    }
+  }
+  return events;
 }
 
 export function getEventCountBySource(
