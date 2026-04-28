@@ -3,7 +3,7 @@ import { getBriefingByWeek, isBriefingStale } from "@/lib/queries/calendar";
 import { generateWeeklyBriefing } from "@/lib/calendar/briefing";
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
 import { sendEmail } from "@/lib/email";
-import { getCurrentMonday } from "@/lib/calendar/date-utils";
+import { addDays, getCurrentMonday } from "@/lib/calendar/date-utils";
 import { syncPortfolio } from "@/lib/tws/positions";
 import { setLastBriefingSentAt } from "@/lib/digest/daily-digest";
 import { syncCalendarForWeek } from "@/lib/calendar/sync";
@@ -71,14 +71,22 @@ export async function sendBriefingEmail(
   // following Thursday) because no one had run /api/calendar/sync for
   // week_of=2026-04-27. Errors here are logged but never block — partial
   // calendar data is still better than no briefing.
-  try {
-    const result = await syncCalendarForWeek(db, weekOf);
-    if (result.errors.length > 0) {
-      console.warn(`[send-briefing] calendar sync had errors: ${result.errors.join("; ")}`);
+  //
+  // Sync the current week AND the following week. The +1 sweep catches
+  // Finnhub-newly-published earnings dates that landed in the past week
+  // (the Sunday TER-shaped scenario), so the EarningsHub UI on /today
+  // surfaces them automatically rather than waiting for the user to
+  // click "Refresh from Finnhub" themselves.
+  for (const w of [weekOf, addDays(weekOf, 7)]) {
+    try {
+      const result = await syncCalendarForWeek(db, w);
+      if (result.errors.length > 0) {
+        console.warn(`[send-briefing] calendar sync (${w}) had errors: ${result.errors.join("; ")}`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[send-briefing] calendar sync (${w}) failed: ${msg}`);
     }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[send-briefing] calendar sync failed: ${msg}`);
   }
 
   let briefing = getBriefingByWeek(db, weekOf);

@@ -373,6 +373,10 @@ async function runTwsReactionUpgrade(
 // second tick from re-firing the same event/phase pair.
 
 import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
+import {
+  getEarningsSettings,
+  shouldSendEarningsEmail,
+} from "@/lib/queries/earnings-settings";
 
 const PREVIEW_WINDOW_MIN_MS = 105 * 60 * 1000;
 const PREVIEW_WINDOW_MAX_MS = 135 * 60 * 1000;
@@ -409,6 +413,9 @@ export function findEmailCandidates(
   db: Database.Database,
   opts: EmailSweepOpts = {},
 ): EmailCandidate[] {
+  const settings = getEarningsSettings(db);
+  if (!settings.enabled) return []; // master toggle off → never fire
+
   const now = opts.now ?? new Date();
   const nowMs = now.getTime();
   const limit = opts.limit ?? 10;
@@ -474,14 +481,17 @@ export function findEmailCandidates(
   const isCovered = (sym: string | null): boolean =>
     !!sym && (status[sym.toUpperCase()] === "held" || status[sym.toUpperCase()] === "watchlist");
 
+  const isAllowed = (sym: string | null): boolean =>
+    !!sym && shouldSendEarningsEmail(settings, sym);
+
   const out: EmailCandidate[] = [];
   for (const row of previewCandidates) {
-    if (!row.symbol || !isCovered(row.symbol)) continue;
+    if (!row.symbol || !isCovered(row.symbol) || !isAllowed(row.symbol)) continue;
     out.push({ eventId: row.id, symbol: row.symbol, phase: "preview" });
     if (out.length >= limit) return out;
   }
   for (const row of recapRows) {
-    if (!row.symbol || !isCovered(row.symbol)) continue;
+    if (!row.symbol || !isCovered(row.symbol) || !isAllowed(row.symbol)) continue;
     out.push({ eventId: row.id, symbol: row.symbol, phase: "recap" });
     if (out.length >= limit) return out;
   }
