@@ -184,9 +184,9 @@ export default async function TodayPage() {
     overallDaysOld !== null ? qualityChip(overallDaysOld, overallSource) : null;
 
   return (
-    <div className="space-y-6 md:max-w-2xl md:mx-auto">
+    <div className="space-y-6">
       <header className="flex items-baseline justify-between">
-        <h1 className="font-serif text-2xl text-gold">Today</h1>
+        <h1 className="font-serif text-2xl text-gold tracking-tight">Today</h1>
         {overallQuality && (
           <span className={`text-[11px] font-mono rounded px-2 py-0.5 ${overallQuality.className}`}>
             {overallQuality.label}
@@ -196,12 +196,17 @@ export default async function TodayPage() {
       </header>
 
       {/* ── Today's releases (macro + earnings with known release_time) ── */}
-      {todayReleases.length > 0 && <TodayReleases releases={todayReleases} />}
+      {todayReleases.length > 0 && (
+        <div className="md:max-w-3xl">
+          <TodayReleases releases={todayReleases} />
+        </div>
+      )}
 
-      {/* ── Week-ahead Earnings Hub (held + watchlist + manual + Finnhub) ── */}
+      {/* ── Week-ahead Earnings Hub (full width — primary attention magnet) ── */}
       <EarningsHub />
 
-      {/* ── Alerts ── */}
+      {/* ── Alerts | Levels @ 5% — side-by-side only when both have content ── */}
+      <div className={nearbyLevels.length > 0 ? "grid grid-cols-1 md:grid-cols-2 gap-6" : ""}>
       <section className="rounded-xl border border-edge bg-panel p-5">
         <div className="mb-3 flex items-baseline justify-between">
           <h2 className="text-sm font-medium text-ink">Alerts</h2>
@@ -211,7 +216,7 @@ export default async function TodayPage() {
         </div>
 
         {alerts.length === 0 ? (
-          <p className="text-[13px] text-ink-faint">
+          <p className="text-[14px] text-ink-faint">
             No pending alerts. Levels are armed — you&rsquo;ll be notified when they trigger.
           </p>
         ) : (
@@ -224,7 +229,7 @@ export default async function TodayPage() {
             )}
             <Link
               href="/dashboard/alerts"
-              className="block text-center text-[12px] font-medium text-gold hover:text-gold/80 py-1"
+              className="block text-center text-[14px] font-medium text-gold hover:text-gold/80 py-1"
             >
               Respond in alerts inbox &rarr;
             </Link>
@@ -234,6 +239,7 @@ export default async function TodayPage() {
 
       {/* ── Levels near price ── */}
       <NearbyLevelsCard levels={nearbyLevels} />
+      </div>
 
       {/* ── Chat ── */}
       <OpenChatButton />
@@ -248,11 +254,11 @@ export default async function TodayPage() {
         </div>
 
         {!ibkrAccount ? (
-          <p className="text-[13px] text-ink-faint">
+          <p className="text-[14px] text-ink-faint">
             No IBKR account set up yet.
           </p>
         ) : holdings.length === 0 ? (
-          <p className="text-[13px] text-ink-faint">
+          <p className="text-[14px] text-ink-faint">
             No holdings found. Connect TWS or import IBKR activity files.
           </p>
         ) : (
@@ -265,14 +271,14 @@ export default async function TodayPage() {
                 >
                   <div className="flex-1 min-w-0">
                     <div className="flex items-baseline gap-2">
-                      <span className="font-mono text-[13px] font-medium text-ink group-hover:text-gold">
+                      <span className="font-mono text-[14px] font-medium text-ink group-hover:text-gold">
                         {h.symbol}
                       </span>
                       <span className="text-[11px] text-ink-faint truncate">
                         {h.security_name}
                       </span>
                     </div>
-                    <div className="text-[11px] text-ink-faint font-mono mt-0.5 flex items-center gap-2">
+                    <div className="text-[12px] text-ink-faint font-mono mt-0.5 flex items-center gap-2">
                       <span>
                         <Shares value={h.quantity} />
                         {" @ "}
@@ -286,7 +292,7 @@ export default async function TodayPage() {
                   </div>
                   <div className="text-right shrink-0">
                     <div
-                      className={`text-[13px] font-mono tabular-nums ${
+                      className={`text-[14px] font-mono tabular-nums ${
                         h.today_gain === null
                           ? "text-ink-faint"
                           : h.today_gain >= 0
@@ -302,7 +308,7 @@ export default async function TodayPage() {
                     </div>
                     {h.today_pct !== null && (
                       <div
-                        className={`text-[11px] font-mono tabular-nums ${
+                        className={`text-[12px] font-mono tabular-nums ${
                           h.today_pct >= 0 ? "text-up" : "text-down"
                         }`}
                       >
@@ -336,7 +342,7 @@ function AlertGroup({
       </h3>
       <ul className="space-y-1.5">
         {alerts.map((a) => (
-          <li key={a.id} className="text-[12px]">
+          <li key={a.id} className="text-[14px]">
             <Link
               href={`/dashboard/security/${a.security_id}`}
               className="flex items-baseline gap-2 group"
@@ -359,7 +365,7 @@ function AlertGroup({
               </span>
             </Link>
             {a.suggested_action && (
-              <p className="ml-16 mt-0.5 text-[11px] text-ink-faint italic">
+              <p className="ml-16 mt-0.5 text-[12px] text-ink-faint italic">
                 {a.suggested_action}
               </p>
             )}

@@ -1,6 +1,7 @@
 "use client";
 
 import type { ReactionSnapshot } from "@/lib/calendar/reaction-snapshot";
+import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
 
 /**
  * Compact post-release result chips for the Calendar page event row.
@@ -47,12 +48,13 @@ export function EnrichmentRowSummary({
   snapshot: ReactionSnapshot | null;
 }) {
   if (!actual && !snapshot) return null;
+  const formatted = actual ? formatFinnhubFigureCompact(actual) : null;
   return (
     <span className="flex items-center gap-1.5 text-[11px] font-mono">
-      {actual && (
+      {formatted && (
         <>
           <span className="text-ink-faint">actual</span>
-          <span className="text-gold font-semibold">{actual}</span>
+          <span className="text-gold font-semibold">{formatted}</span>
         </>
       )}
       {snapshot && (
@@ -108,7 +110,7 @@ export function EnrichmentDetail({
         )}
       </div>
       <div className="text-sm font-mono font-semibold text-gold mt-0.5">
-        {actual ?? "—"}
+        {actual ? formatFinnhubFigureCompact(actual) : "—"}
       </div>
 
       {snapshot && (

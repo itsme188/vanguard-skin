@@ -5,6 +5,8 @@ import { briefingToHtml } from "@/lib/calendar/briefing-html";
 import { sendEmail } from "@/lib/email";
 import { getRawAnthropicClient } from "@/lib/ai/provider";
 import { SONNET_MODEL } from "@/lib/claude-models";
+import { formatLargeUSD } from "@/lib/format";
+import { parseFinnhubFigure } from "@/lib/format/finnhub-figure";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { listPressReleases } from "@/lib/queries/press-releases";
 import {
@@ -14,6 +16,7 @@ import {
 } from "@/lib/queries/analyst-estimates";
 import { getCachedTranscript } from "@/lib/queries/transcripts";
 import { getNotesForFamily, type NoteWithContext } from "@/lib/queries/notes";
+import { getBogeysForEvent, type EarningsBogey } from "@/lib/queries/earnings-bogeys";
 import type { CalendarEvent, EarningsTranscript } from "@/lib/types";
 
 // Preferred newsletter sources for pre-earnings color. Same list as
@@ -121,7 +124,7 @@ async function sendEarningsEmail(
     ? renderPreviewPrompt(ctx)
     : renderRecapPrompt(ctx as RecapContext);
 
-  const headlineTable = renderHeadlineTable(ctx, phase);
+  const headlineTable = renderHeadlineTable(ctx.event, ctx.symbol, phase);
   const aiMarkdown = await callClaude(prompt, phase);
   // Headline scoreboard is rendered deterministically from structured fields
   // (consensus_estimate, actual_value, reaction_snapshot) — printable + same
@@ -269,6 +272,7 @@ interface PreviewContext {
   ratingChanges: string | null;
   recentPressReleases: string | null;
   priorTranscript: EarningsTranscript | null;
+  bogeys: EarningsBogey[];
 }
 
 interface RecapContext extends PreviewContext {
@@ -301,6 +305,7 @@ function buildPreviewContext(
   const ratingChanges = formatRatingChanges(db, symbol);
   const recentPressReleases = formatPressReleases(db, family, 30, 8);
   const priorTranscript = findPriorTranscript(db, symbol, event.event_date);
+  const bogeys = getBogeysForEvent(db, event.id);
 
   return {
     symbol,
@@ -316,6 +321,7 @@ function buildPreviewContext(
     ratingChanges,
     recentPressReleases,
     priorTranscript,
+    bogeys,
   };
 }
 
@@ -625,29 +631,9 @@ function pctSign(v: number): string {
 // don't have lands as `—` (the HTML renderer detects this and pads the
 // cell taller for handwriting).
 
-interface ParsedFinnhubFigure {
-  eps: string | null;
-  revenue: string | null;
-}
-
-function parseFinnhubFigure(s: string | null): ParsedFinnhubFigure {
-  // Finnhub format: "EPS 0.70 · Rev 4,305,870,107"
-  if (!s) return { eps: null, revenue: null };
-  const out: ParsedFinnhubFigure = { eps: null, revenue: null };
-  const epsMatch = /EPS\s+(-?\d+(?:\.\d+)?)/i.exec(s);
-  if (epsMatch) out.eps = epsMatch[1];
-  const revMatch = /Rev\s+([\d.,]+)/i.exec(s);
-  if (revMatch) out.revenue = revMatch[1].replace(/,/g, "");
-  return out;
-}
-
-function formatRevenue(raw: string | null): string {
-  if (!raw) return "—";
-  const n = Number(raw);
-  if (!Number.isFinite(n)) return raw;
-  if (n >= 1_000_000_000) return `$${(n / 1_000_000_000).toFixed(2)}B`;
-  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
-  return `$${n.toLocaleString()}`;
+function formatRevenueDisplay(n: number | null): string {
+  if (n == null || !Number.isFinite(n)) return "—";
+  return formatLargeUSD(n);
 }
 
 function formatPctDelta(actual: number, consensus: number): string {
@@ -674,40 +660,38 @@ function readReactionDelta(json: string | null, key: "spy" | "qqq" | "tlt" | "sy
   }
 }
 
-function renderHeadlineTable(
-  ctx: PreviewContext | RecapContext,
+// Pure function — exported so the in-app email viewer can rebuild the
+// scoreboard from a stored audit row + the live calendar_events fields.
+// The scoreboard is deterministic (no AI involvement) so re-rendering on
+// read gives the user current consensus/actual/reaction values, not the
+// snapshot at email-send time.
+export function renderHeadlineTable(
+  event: Pick<CalendarEvent, "consensus_estimate" | "actual_value" | "consensus_value" | "reaction_snapshot">,
+  symbol: string,
   phase: "preview" | "recap",
 ): string {
-  const cons = parseFinnhubFigure(ctx.event.consensus_estimate);
+  const cons = parseFinnhubFigure(event.consensus_estimate);
   const actual = phase === "recap"
-    ? parseFinnhubFigure(ctx.event.actual_value ?? ctx.event.consensus_value)
+    ? parseFinnhubFigure(event.actual_value ?? event.consensus_value)
     : { eps: null, revenue: null };
 
-  const epsConsensus = cons.eps ?? "—";
-  const epsActual = actual.eps ?? "—";
-  const epsDelta = (() => {
-    if (!cons.eps || !actual.eps) return "—";
-    const c = Number(cons.eps);
-    const a = Number(actual.eps);
-    if (!Number.isFinite(c) || !Number.isFinite(a)) return "—";
-    return formatPctDelta(a, c);
-  })();
+  const epsConsensus = cons.eps != null ? cons.eps.toFixed(2) : "—";
+  const epsActual = actual.eps != null ? actual.eps.toFixed(2) : "—";
+  const epsDelta =
+    cons.eps != null && actual.eps != null ? formatPctDelta(actual.eps, cons.eps) : "—";
 
-  const revConsensus = formatRevenue(cons.revenue);
-  const revActual = formatRevenue(actual.revenue);
-  const revDelta = (() => {
-    if (!cons.revenue || !actual.revenue) return "—";
-    const c = Number(cons.revenue);
-    const a = Number(actual.revenue);
-    if (!Number.isFinite(c) || !Number.isFinite(a)) return "—";
-    return formatPctDelta(a, c);
-  })();
+  const revConsensus = formatRevenueDisplay(cons.revenue);
+  const revActual = formatRevenueDisplay(actual.revenue);
+  const revDelta =
+    cons.revenue != null && actual.revenue != null
+      ? formatPctDelta(actual.revenue, cons.revenue)
+      : "—";
 
   // Reaction rows are recap-only; preview leaves the actual columns blank.
   const isRecap = phase === "recap";
-  const stockReaction = isRecap ? readReactionDelta(ctx.event.reaction_snapshot, "symbol") : "—";
-  const spyReaction = isRecap ? readReactionDelta(ctx.event.reaction_snapshot, "spy") : "—";
-  const qqqReaction = isRecap ? readReactionDelta(ctx.event.reaction_snapshot, "qqq") : "—";
+  const stockReaction = isRecap ? readReactionDelta(event.reaction_snapshot, "symbol") : "—";
+  const spyReaction = isRecap ? readReactionDelta(event.reaction_snapshot, "spy") : "—";
+  const qqqReaction = isRecap ? readReactionDelta(event.reaction_snapshot, "qqq") : "—";
 
   const phaseLabel = phase === "preview" ? "into the print" : "post-print";
 
@@ -715,12 +699,12 @@ function renderHeadlineTable(
     `| **EPS** | ${epsConsensus} | ${epsActual} | ${epsDelta} |`,
     `| **Revenue** | ${revConsensus} | ${revActual} | ${revDelta} |`,
     `| **Guidance (next quarter)** | — | — | — |`,
-    `| **${ctx.symbol} @ T+2h** | — | ${stockReaction} | — |`,
+    `| **${symbol} @ T+2h** | — | ${stockReaction} | — |`,
     `| **SPY @ T+2h** | — | ${spyReaction} | — |`,
     `| **QQQ @ T+2h** | — | ${qqqReaction} | — |`,
   ].join("\n");
 
-  return `## ${ctx.symbol} scoreboard — ${phaseLabel}
+  return `## ${symbol} scoreboard — ${phaseLabel}
 
 | Metric | Consensus | Actual | Δ |
 |---|---|---|---|
@@ -738,6 +722,7 @@ export function renderPreviewPrompt(ctx: PreviewContext): string {
 
   const positionsBlock = renderPositionsBlock(ctx);
   const userNotesBlock = renderUserNotesBlock(ctx);
+  const bogeysBlock = renderBogeysBlock(ctx);
   const newslettersBlock = renderNewslettersBlock(ctx, "preview");
   const analystBlock = renderAnalystBlock(ctx);
   const pressBlock = ctx.recentPressReleases
@@ -755,6 +740,7 @@ export function renderPreviewPrompt(ctx: PreviewContext): string {
 - Source: ${ctx.event.source}
 - Expected impact: ${ctx.event.expected_impact ?? "n/a"}
 ${userNotesBlock}
+${bogeysBlock}
 ${consensusBlock}
 ${positionsBlock}
 ${newslettersBlock}
@@ -787,6 +773,8 @@ Rows: every segment, KPI, and guidance metric the Street is watching for ${ctx.s
 
 6. **\`## Sources\`** — a footer listing the newsletter article subjects + dates we cited, plus any web URLs.
 
+**Number formatting (strict):** Quote large monetary values in compact form — \`$4.34B\` for billions (2dp), \`$245M\` for millions (1dp), \`$0.91\` for EPS-scale dollars (2dp), \`12.3M units\` for unit counts (1dp). Never write out full digits with commas like \`4,345,870,107\` or \`$11,000,000,000\` — they're hard to read on a phone and impossible to print legibly. Percentages stay as \`±N.N%\` (1dp). Apply this rule everywhere: tables, prose, scenarios.
+
 Tone: analytical colleague, not coach. No "you should" prescriptions; offer scenarios and let the reader decide. Lead with numbers + tables; prose comes after. Aim for 600-1000 words of prose (the line-by-line table is in addition to that budget).`;
 }
 
@@ -805,6 +793,7 @@ export function renderRecapPrompt(ctx: RecapContext): string {
 
   const positionsBlock = renderPositionsBlock(ctx);
   const userNotesBlock = renderUserNotesBlock(ctx);
+  const bogeysBlock = renderBogeysBlock(ctx);
   const newslettersBlock = renderNewslettersBlock(ctx, "recap");
   const analystBlock = renderAnalystBlock(ctx);
   const pressBlock = ctx.freshPressReleases
@@ -821,6 +810,7 @@ export function renderRecapPrompt(ctx: RecapContext): string {
 - Release time: ${ctx.event.release_time ?? "(not specified)"}
 - Source: ${ctx.event.source}
 ${userNotesBlock}
+${bogeysBlock}
 ${consensusBlock}
 ${actualBlock}
 ${reactionBlock}
@@ -832,7 +822,7 @@ ${priorCallBlock}
 
 ## Your task
 
-Use the structured context above as the source of truth. **For anything missing — call commentary, post-print sell-side reactions, transcript quotes, guidance change details — use web_search** with focus on the last 4 hours of coverage. Cite source URLs inline.
+Use the structured context above as the source of truth. **For anything missing — call commentary, post-print sell-side reactions, transcript quotes, guidance change details — use web_search** with focus on the last 4 hours of coverage. Cite source URLs inline. **When evaluating beat/miss, anchor against the bogeys block (especially whisper numbers) when present, not just the Finnhub consensus.**
 
 **IMPORTANT — output structure.** A deterministic "scoreboard" table is rendered ABOVE your output by the system (it shows EPS / Revenue / stock + SPY + QQQ reactions). Do NOT repeat those headline metrics. Your output starts with the line-by-line table (same shape as the preview, but filled in), then prose. Specifically:
 
@@ -852,6 +842,8 @@ Rows: every segment, KPI, and guidance line ${ctx.symbol} reported — fill from
 4. **\`## Position implications\`** — given the user's combined position (use §Positions verbatim), what's the immediate P&L impact at the reaction-snapshot price? Any hedging / IV-crush dynamics for option holdings? Should the thesis change?
 
 5. **\`## Sources\`** — newsletter articles cited + web URLs.
+
+**Number formatting (strict):** Quote large monetary values in compact form — \`$4.34B\` for billions (2dp), \`$245M\` for millions (1dp), \`$0.91\` for EPS-scale dollars (2dp), \`12.3M units\` for unit counts (1dp). Never write out full digits with commas like \`4,345,870,107\` or \`$11,000,000,000\` — they're hard to read on a phone and impossible to print legibly. Percentages stay as \`±N.N%\` (1dp). Apply this rule everywhere: tables, prose, quoted figures.
 
 Tone: analytical colleague. Numbers and direct quotes over adjectives. Lead with tables; prose after. Aim for 500-800 words of prose (the line-by-line table is in addition).`;
 }
@@ -965,6 +957,48 @@ function renderUserNotesBlock(ctx: PreviewContext): string {
   return `\n## Your prior notes on ${ctx.symbol} — read these FIRST and frame the briefing in conversation with the prior thesis\n\nThese are the user's own journal / earnings / trade-thesis notes attached to ${ctx.symbol} or any sibling-class security in the family. Treat them as the **primary lens** through which the briefing should be written — quote dates, refer to the user's prior view directly, and flag where the new event either confirms, evolves, or contradicts what the user already wrote. Do NOT paraphrase these as if they were newsletter content; they're the user's own words.\n\n${lines.join("\n\n---\n\n")}\n`;
 }
 
+function renderBogeysBlock(ctx: PreviewContext): string {
+  if (ctx.bogeys.length === 0) return "";
+  const lines = ctx.bogeys.map((b, i) => {
+    const sourceLabel = b.source_label ?? `${b.source} (no label)`;
+    const fields: string[] = [];
+    if (b.eps_consensus != null) fields.push(`EPS consensus ${b.eps_consensus.toFixed(2)}`);
+    if (b.eps_whisper != null) fields.push(`EPS **whisper ${b.eps_whisper.toFixed(2)}**`);
+    if (b.revenue_consensus_usd != null) fields.push(`revenue consensus ${formatLargeUSD(b.revenue_consensus_usd)}`);
+    if (b.revenue_whisper_usd != null) fields.push(`revenue **whisper ${formatLargeUSD(b.revenue_whisper_usd)}**`);
+    const head = fields.length > 0 ? `\n${fields.join(" · ")}` : "";
+    let segs = "";
+    if (b.segment_breakdown_json) {
+      try {
+        const parsed = JSON.parse(b.segment_breakdown_json) as Record<
+          string,
+          { consensus?: number; whisper?: number }
+        >;
+        const segLines = Object.entries(parsed).map(([name, vals]) => {
+          const segFields: string[] = [];
+          if (vals.consensus != null) segFields.push(`consensus ${formatLargeUSD(vals.consensus)}`);
+          if (vals.whisper != null) segFields.push(`whisper ${formatLargeUSD(vals.whisper)}`);
+          return `  - ${name}: ${segFields.join(", ")}`;
+        });
+        if (segLines.length > 0) {
+          segs = `\nSegment splits:\n${segLines.join("\n")}`;
+        }
+      } catch {
+        // Stored JSON malformed — skip silently.
+      }
+    }
+    const guidance = b.guidance_notes ? `\nGuidance: ${b.guidance_notes}` : "";
+    const notes = b.notes ? `\nNotes: ${b.notes}` : "";
+    return `### [${i + 1}] ${sourceLabel} (uploaded ${b.uploaded_at})${head}${segs}${guidance}${notes}`;
+  });
+  return `\n## Bogeys (user-curated — preferred over Finnhub consensus, most recent first)
+
+These are bogeys the user pulled from preferred sources (TMT Breakout, sell-side notes) and uploaded for THIS event. **Treat the most recent entry as the primary consensus reference.** Whisper numbers, when present, are the directional bar that matters — beat-the-whisper is the meaningful event, not beat-consensus. Cite the source label inline when discussing them.
+
+${lines.join("\n\n---\n\n")}
+`;
+}
+
 function renderPriorTranscriptBlock(ctx: PreviewContext): string {
   if (!ctx.priorTranscript) return "";
   const t = ctx.priorTranscript;
@@ -1010,7 +1044,7 @@ async function callClaude(
 
 // ── Date helpers ───────────────────────────────────────────────────
 
-function formatDateLong(iso: string): string {
+export function formatDateLong(iso: string): string {
   const d = new Date(iso + "T12:00:00Z");
   return d.toLocaleDateString("en-US", {
     weekday: "long",
