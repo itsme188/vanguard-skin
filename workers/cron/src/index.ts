@@ -31,7 +31,21 @@ import {
 import { callPrimary, type PrimaryResult } from "./primary";
 import { runFallbackDigest, type FallbackResult } from "./fallback-digest";
 import { runFallbackBriefing } from "./fallback-briefing";
-import { runCalendarEnrich, runCloudFallback, shouldRunCalendarEnrich } from "./calendar-enrich";
+import {
+  runCalendarEnrich,
+  runCloudFallback,
+  shouldRunCalendarEnrich,
+  shouldRunEarningsFallback,
+} from "./calendar-enrich";
+import { runEarningsFallback } from "./fallback-earnings";
+import {
+  getEarningsMarkerStatus,
+  readEarningsMarkers,
+  setEarningsRunningMarker,
+  clearEarningsRunningMarker,
+  writeEarningsMarker,
+  type EarningsPhase,
+} from "./earnings-markers";
 
 export interface Env {
   // Bindings
@@ -170,6 +184,25 @@ export default {
       // Continue below — the briefing/digest hour check is independent.
     }
 
+    // Earnings cloud-fallback sweep — runs alongside calendar-enrich on the
+    // same 15-min cadence. Mac is primary; this only fires when Mac hasn't
+    // touched a candidate (no audit row in snapshot, no mac-sent marker, no
+    // mac-running marker, no cloud-sent marker). Self-gates via
+    // shouldRunEarningsFallback (Mon-Fri 05:00-20:00 ET) — wider than the
+    // calendar-enrich gate to cover BMO previews at 06:00 AND the 18:15+
+    // AMC recap window which the calendar-enrich 18:00 cutoff would miss.
+    if (shouldRunEarningsFallback()) {
+      ctx.waitUntil(
+        (async () => {
+          console.log(`[cron ${event.cron}] running earnings-fallback at ${todayET()}`);
+          const result = await runEarningsFallback(env);
+          if (result.swept > 0) {
+            console.log(`[cron earnings-fallback] result:`, JSON.stringify(result));
+          }
+        })()
+      );
+    }
+
     const job = parseJobFromClock(env);
     if (!job) {
       if (!shouldRunCalendarEnrich()) {
@@ -241,13 +274,77 @@ export default {
         const result = await runCalendarEnrich(env);
         return Response.json(result);
       }
+      if (typeParam === "earnings-fallback") {
+        const dryRun = url.searchParams.get("dryRun") === "true";
+        const result = await runEarningsFallback(env, { dryRun });
+        return Response.json(result);
+      }
       if (typeParam !== "briefing" && typeParam !== "digest") {
-        return Response.json({ error: "type must be briefing, digest, or calendar-enrich" }, { status: 400 });
+        return Response.json(
+          { error: "type must be briefing, digest, calendar-enrich, or earnings-fallback" },
+          { status: 400 },
+        );
       }
       const dryRun = url.searchParams.get("dryRun") === "true";
       const fallbackOnly = url.searchParams.get("fallbackOnly") === "true";
       const result = await runJob(typeParam, env, { dryRun, fallbackOnly });
       return Response.json(result);
+    }
+
+    // Earnings markers — Mac side polls before firing /api/cron/earnings-*
+    // (skip if cloud already sent) and POSTs running marker at entry/clear
+    // at exit. Same shape as the briefing/digest endpoints but keyed on
+    // (phase, eventId).
+    if (request.method === "GET" && url.pathname === "/internal/earnings-marker") {
+      const phase = url.searchParams.get("phase");
+      const eventIdStr = url.searchParams.get("eventId");
+      if (phase !== "preview" && phase !== "recap") {
+        return Response.json({ error: "phase must be preview or recap" }, { status: 400 });
+      }
+      const eventId = parseInt(eventIdStr ?? "", 10);
+      if (!Number.isInteger(eventId) || eventId <= 0) {
+        return Response.json({ error: "eventId must be a positive integer" }, { status: 400 });
+      }
+      const status = await getEarningsMarkerStatus(env.CRON_KV, phase as EarningsPhase, eventId);
+      return Response.json(status);
+    }
+
+    if (request.method === "POST" && url.pathname === "/internal/earnings-running-marker") {
+      const phase = url.searchParams.get("phase");
+      const eventIdStr = url.searchParams.get("eventId");
+      const action = url.searchParams.get("action");
+      if (phase !== "preview" && phase !== "recap") {
+        return Response.json({ error: "phase must be preview or recap" }, { status: 400 });
+      }
+      const eventId = parseInt(eventIdStr ?? "", 10);
+      if (!Number.isInteger(eventId) || eventId <= 0) {
+        return Response.json({ error: "eventId must be a positive integer" }, { status: 400 });
+      }
+      if (action !== "set" && action !== "clear") {
+        return Response.json({ error: "action must be set or clear" }, { status: 400 });
+      }
+      if (action === "set") {
+        await setEarningsRunningMarker(env.CRON_KV, phase as EarningsPhase, eventId);
+      } else {
+        await clearEarningsRunningMarker(env.CRON_KV, phase as EarningsPhase, eventId);
+      }
+      return Response.json({ ok: true, phase, eventId, action });
+    }
+
+    // Mac POSTs this when its earnings route fires successfully so the
+    // Worker fallback knows to skip on the next sweep tick.
+    if (request.method === "POST" && url.pathname === "/internal/earnings-sent-marker") {
+      const phase = url.searchParams.get("phase");
+      const eventIdStr = url.searchParams.get("eventId");
+      if (phase !== "preview" && phase !== "recap") {
+        return Response.json({ error: "phase must be preview or recap" }, { status: 400 });
+      }
+      const eventId = parseInt(eventIdStr ?? "", 10);
+      if (!Number.isInteger(eventId) || eventId <= 0) {
+        return Response.json({ error: "eventId must be a positive integer" }, { status: 400 });
+      }
+      await writeEarningsMarker(env.CRON_KV, "mac", phase as EarningsPhase, eventId);
+      return Response.json({ ok: true, phase, eventId });
     }
 
     // Phase 9b — Mac reconcile endpoints. Mac polls to read cloud-enriched

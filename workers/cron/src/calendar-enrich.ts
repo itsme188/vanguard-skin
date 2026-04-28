@@ -91,6 +91,27 @@ export function shouldRunCalendarEnrich(
   return minuteOfDay >= 9 * 60 + 30 && minuteOfDay <= 17 * 60 + 59;
 }
 
+/**
+ * Gate for the earnings cloud-fallback sweep. Wider than the
+ * calendar-enrich gate so the AMC-recap window (release at 16:15 → recap
+ * at ~18:15) is covered. Window: Mon–Fri 05:00–20:00 ET (covers BMO
+ * preview at 06:00 → AMC recap at 18:15+, plus hour of slack on either
+ * side for clock skew). Outside this window the Mac sweep is also idle
+ * (TWS market session is 09:30–16:00 + extended hours) so there's
+ * nothing to fall back ON.
+ */
+export function shouldRunEarningsFallback(
+  now: { hour: number; minute: number; dow: number } = {
+    hour: getCurrentETHour(),
+    minute: getCurrentETMinute(),
+    dow: getCurrentETDayOfWeek(),
+  },
+): boolean {
+  if (now.dow < 1 || now.dow > 5) return false;
+  const minuteOfDay = now.hour * 60 + now.minute;
+  return minuteOfDay >= 5 * 60 && minuteOfDay <= 20 * 60;
+}
+
 // ── Slot keys ───────────────────────────────────────────────────────
 
 function slotKey(date: string, hour: number, minute: number): string {

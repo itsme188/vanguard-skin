@@ -17,6 +17,19 @@ const COLORS = {
   heading: "#F0F2F7",
 };
 
+// Tables use a light palette regardless of the surrounding dark email so they
+// print cleanly to paper and remain handwriting-friendly. Mirrors Mac-side
+// lib/calendar/briefing-html.ts (locked 2026-04-28). Empty / em-dash cells
+// get extra vertical padding so they're tall enough to write a value in pen.
+const TABLE_COLORS = {
+  headerBg: "#F4EFE0",
+  headerText: "#3A2E0F",
+  bodyBg: "#FFFFFF",
+  bodyText: "#1A1A1A",
+  border: "#777777",
+  labelText: "#1A1A1A",
+};
+
 export function briefingToHtml(
   markdown: string,
   title: string,
@@ -52,6 +65,49 @@ export function briefingToHtml(
 </html>`;
 }
 
+const tableRowRe = /^\|(.+)\|\s*$/;
+const tableSeparatorRe = /^\|(\s*:?-+:?\s*\|)+\s*$/;
+
+function parseTableRow(line: string): string[] {
+  return line.trim().slice(1, -1).split("|").map((s) => s.trim());
+}
+
+function isFillableCell(text: string): boolean {
+  const t = text.trim();
+  return t === "" || t === "—" || t === "-" || t === "–";
+}
+
+function renderTable(headers: string[], rows: string[][]): string {
+  const headerCells = headers
+    .map(
+      (h) =>
+        `<th style="border:1px solid ${TABLE_COLORS.border}; padding:8px 10px; background-color:${TABLE_COLORS.headerBg}; color:${TABLE_COLORS.headerText}; font-size:11px; font-weight:600; text-align:left; text-transform:uppercase; letter-spacing:0.06em; white-space:nowrap;">${inlineFormat(h)}</th>`,
+    )
+    .join("");
+  const bodyRows = rows
+    .map((row) => {
+      const cells = row
+        .map((c, idx) => {
+          const fillable = isFillableCell(c);
+          const isLabel = idx === 0;
+          const content = fillable && !isLabel ? "&nbsp;" : inlineFormat(c) || "&nbsp;";
+          const padding = !isLabel && fillable ? "14px 10px" : "8px 10px";
+          const align = !isLabel ? "text-align:right;" : "";
+          const numAlign = !isLabel ? "font-variant-numeric:tabular-nums;" : "";
+          const cellColor = isLabel ? TABLE_COLORS.labelText : TABLE_COLORS.bodyText;
+          const fontWeight = isLabel ? "font-weight:500;" : "";
+          return `<td style="border:1px solid ${TABLE_COLORS.border}; padding:${padding}; background-color:${TABLE_COLORS.bodyBg}; color:${cellColor}; font-size:13px; ${fontWeight} ${align} ${numAlign}">${content}</td>`;
+        })
+        .join("");
+      return `<tr>${cells}</tr>`;
+    })
+    .join("");
+  return `<table cellpadding="0" cellspacing="0" style="border-collapse:collapse; margin:14px 0; width:100%; border:1px solid ${TABLE_COLORS.border}; background-color:${TABLE_COLORS.bodyBg};">
+<thead><tr>${headerCells}</tr></thead>
+<tbody>${bodyRows}</tbody>
+</table>`;
+}
+
 function convertMarkdown(md: string): string {
   const lines = md.split("\n");
   const out: string[] = [];
@@ -63,8 +119,28 @@ function convertMarkdown(md: string): string {
     }
   };
 
-  for (const rawLine of lines) {
-    const line = rawLine;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Markdown table block — mirror Mac-side lookahead detection.
+    if (
+      tableRowRe.test(line.trim()) &&
+      i + 1 < lines.length &&
+      tableSeparatorRe.test(lines[i + 1].trim())
+    ) {
+      closeList();
+      const headerCells = parseTableRow(line);
+      let j = i + 2;
+      const dataRows: string[][] = [];
+      while (j < lines.length && tableRowRe.test(lines[j].trim())) {
+        const cells = parseTableRow(lines[j]);
+        if (!tableSeparatorRe.test(lines[j].trim())) dataRows.push(cells);
+        j++;
+      }
+      out.push(renderTable(headerCells, dataRows));
+      i = j - 1;
+      continue;
+    }
 
     if (/^---+$/.test(line.trim())) {
       closeList();
@@ -122,11 +198,13 @@ function convertMarkdown(md: string): string {
 function inlineFormat(text: string): string {
   let t = text;
   t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, `<a href="$2" style="color:${COLORS.gold}; text-decoration:underline;">$1</a>`);
-  t = t.replace(/\*\*(.+?)\*\*/g, `<strong style="color:${COLORS.heading};">$1</strong>`);
-  t = t.replace(/__(.+?)__/g, `<strong style="color:${COLORS.heading};">$1</strong>`);
+  // Bold inherits parent color so light-bg table cells render dark-on-light
+  // (white-on-white bug if pinned to heading color). Same fix as Mac side.
+  t = t.replace(/\*\*(.+?)\*\*/g, `<strong>$1</strong>`);
+  t = t.replace(/__(.+?)__/g, `<strong>$1</strong>`);
   t = t.replace(/\*(.+?)\*/g, "<em>$1</em>");
   t = t.replace(/_(.+?)_/g, "<em>$1</em>");
-  t = t.replace(/`(.+?)`/g, `<code style="background:${COLORS.bg}; padding:1px 4px; border-radius:3px;">$1</code>`);
+  t = t.replace(/`(.+?)`/g, `<code style="background:rgba(127,127,127,0.18); padding:1px 5px; border-radius:3px; font-family:ui-monospace,Menlo,Consolas,monospace;">$1</code>`);
   return t;
 }
 
