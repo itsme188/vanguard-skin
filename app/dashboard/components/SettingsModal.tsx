@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useElectron } from "@/lib/hooks/useElectron";
+import { EarningsEmailsSection } from "./EarningsEmailsSection";
 
 /**
  * Settings source abstraction — either Electron IPC (packaged app) or the
@@ -344,6 +345,15 @@ export function SettingsModal() {
                   </div>
                 </div>
               ))}
+
+              {/* Earnings-emails section — uses its own DB-backed
+                  endpoint instead of the Electron settings file so changes
+                  apply immediately to the next cron sweep. */}
+              {!unavailableReason && (
+                <div className="pt-2 border-t border-edge">
+                  <EarningsEmailsSection />
+                </div>
+              )}
 
               {/* Save button — hidden when unavailable */}
               {!unavailableReason && (
