@@ -63,6 +63,24 @@ export function formatWeekRange(weekOf: string): string {
   return `${fmt(start)} – ${fmt(end)}, ${start.getFullYear()}`;
 }
 
+/**
+ * Given any YYYY-MM-DD, return the Monday of that ISO week. Used by the
+ * Earnings Hub manual-add flow: user picks a date, we compute the Monday
+ * for `week_of` so the deduped query and weekly views surface the row.
+ *
+ * Sunday rolls back to the *previous* Monday (treats Sunday as part of
+ * the week ending that day) — this matches how `getCurrentMonday()` shifts
+ * Sunday FORWARD because the business week is over, but "the Monday this
+ * date belongs to" naturally includes Sunday in the prior week.
+ */
+export function mondayOf(dateStr: string): string {
+  const d = new Date(dateStr + "T12:00:00");
+  const day = d.getDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
+  const offset = day === 0 ? -6 : 1 - day;
+  d.setDate(d.getDate() + offset);
+  return formatDate(d);
+}
+
 /** Format a Date as YYYY-MM-DD using local date parts (avoids UTC shift). */
 function formatDate(d: Date): string {
   const y = d.getFullYear();
