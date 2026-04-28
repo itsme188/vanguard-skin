@@ -38,7 +38,7 @@ const CALENDAR_LOOKAHEAD_DAYS = 7;
 const SNAPSHOT_RETENTION_DAYS = 7;
 
 interface Snapshot {
-  schemaVersion: 1;
+  schemaVersion: 2;
   snapshotDate: string;
   generatedAt: string;
   heldSymbols: string[];
@@ -50,6 +50,21 @@ interface Snapshot {
   researchSources: Record<string, unknown>[];
   recentArticlesMeta: Record<string, unknown>[];
   deepReadArticles: Record<string, unknown>[];
+  // Phase 4 — Worker cloud fallback for earnings emails. Worker reads
+  // these to compose a compact preview/recap when the Mac primary cron
+  // is unreachable. Holdings + securities give cross-account positions
+  // (incl. options via underlying_symbol), accounts maps id→name, and
+  // earnings_emails lets the Worker skip events Mac already audited.
+  // Snapshot bumped to schemaVersion 2; Workers reading older snapshots
+  // gracefully degrade (these fields default to []).
+  holdings: Record<string, unknown>[];
+  securities: Record<string, unknown>[];
+  accounts: Record<string, unknown>[];
+  earningsEmails: Record<string, unknown>[];
+  earningsSettings: {
+    enabled: boolean;
+    mutedSymbols: string[];
+  };
 }
 
 function today(): string {
@@ -164,8 +179,58 @@ function buildSnapshot(db: Database.Database): Snapshot {
     raw_html: null, // drop HTML — body is already in raw_text
   }));
 
+  // Phase 4 — earnings cloud-fallback context. Cross-account latest holdings
+  // (matches per-account MAX(as_of_date) per CLAUDE.md), full securities table
+  // (Worker needs underlying_symbol to roll options into family positions),
+  // accounts (id → name for the position block), audit rows (so Worker can
+  // skip events Mac already fired), and earnings settings (master toggle +
+  // muted symbols). Anything else the Mac composer reads (newsletters,
+  // analyst recs, transcripts, notes) is intentionally NOT in the fallback —
+  // the cloud email is a leaner "actuals + reaction + positions" version
+  // with a footer disclosing limited context.
+  const holdings = db
+    .prepare(
+      `SELECT h.id, h.account_id, h.security_id, h.quantity, h.cost_basis, h.as_of_date
+         FROM holdings h
+        WHERE h.quantity > 0
+          AND h.as_of_date = (
+            SELECT MAX(h2.as_of_date) FROM holdings h2
+             WHERE h2.account_id = h.account_id
+               AND h2.security_id = h.security_id
+          )`,
+    )
+    .all() as Record<string, unknown>[];
+
+  const securities = db
+    .prepare(
+      `SELECT id, symbol, name, security_type, asset_class, sector,
+              underlying_symbol, option_type, strike_price, expiration_date, multiplier
+         FROM securities`,
+    )
+    .all() as Record<string, unknown>[];
+
+  const accounts = db
+    .prepare(`SELECT id, name FROM accounts`)
+    .all() as Record<string, unknown>[];
+
+  const earningsEmails = db
+    .prepare(
+      `SELECT id, event_id, phase, recipient, sent_at, error
+         FROM earnings_emails
+        WHERE datetime(sent_at) >= datetime('now', '-3 days')
+        ORDER BY sent_at DESC`,
+    )
+    .all() as Record<string, unknown>[];
+
+  const earningsEnabledRow = db
+    .prepare(`SELECT value FROM settings WHERE key = 'earnings_emails_enabled'`)
+    .get() as { value: string } | undefined;
+  const earningsMutedRow = db
+    .prepare(`SELECT value FROM settings WHERE key = 'earnings_emails_muted_symbols'`)
+    .get() as { value: string } | undefined;
+
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     snapshotDate: today(),
     generatedAt: new Date().toISOString(),
     heldSymbols: getHeldStockSymbolsRO(db),
@@ -177,6 +242,16 @@ function buildSnapshot(db: Database.Database): Snapshot {
     researchSources,
     recentArticlesMeta,
     deepReadArticles,
+    holdings,
+    securities,
+    accounts,
+    earningsEmails,
+    earningsSettings: {
+      enabled: earningsEnabledRow ? earningsEnabledRow.value === "1" || earningsEnabledRow.value.toLowerCase() === "true" : true,
+      mutedSymbols: earningsMutedRow
+        ? earningsMutedRow.value.split(",").map((s) => s.trim().toUpperCase()).filter((s) => s.length > 0)
+        : [],
+    },
   };
 }
 
@@ -215,7 +290,10 @@ async function main() {
       `${snapshot.calendarEvents.length} events, ` +
       `${snapshot.researchSources.length} sources, ` +
       `${snapshot.recentArticlesMeta.length} article-meta, ` +
-      `${snapshot.deepReadArticles.length} deep-read`
+      `${snapshot.deepReadArticles.length} deep-read, ` +
+      `${snapshot.holdings.length} holdings, ` +
+      `${snapshot.securities.length} securities, ` +
+      `${snapshot.earningsEmails.length} audit rows`
   );
 
   const keepFromDate = daysAgo(SNAPSHOT_RETENTION_DAYS);
