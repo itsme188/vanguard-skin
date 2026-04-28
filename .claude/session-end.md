@@ -2,19 +2,23 @@
 
 Perform these steps in order. Skip any that don't apply.
 
+**`/session-end` itself is the authorization** — do NOT pause for commit / push / rebuild confirmation. The user invoking the command IS the green light. Only stop for destructive operations (force-push, branch delete, dropping data).
+
 ## 1. Uncommitted changes
 
 Run `git status --short` in the main repo (and any worktrees if working in one).
 
-If anything is uncommitted: ask the user whether to commit, stash, or discard. If committing, follow the project's commit conventions (descriptive 1-2 sentence message focused on "why," `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>` trailer, name files explicitly — never `git add -A`).
+If anything is uncommitted: stage + commit straight through. Follow the project's commit conventions (descriptive 1-2 sentence message focused on "why," `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>` trailer, name files explicitly — never `git add -A`). Multi-commit splits are fine when they reflect distinct concerns (e.g., feature code + docs reconciliation), and the established project pattern is to land docs reconciliation as a separate `chore(claude)` commit after the feature commit so commit hashes can be cross-referenced from TODO.md / MEMORY.md.
+
+After committing: `git push origin <current-branch>`. Don't ask. If push fails (auth, network, conflict), surface the failure and stop — do not retry destructively.
 
 ## 2. Open PRs
 
-Run `gh pr list 2>/dev/null`. If any open PRs from this session, ask the user about each.
+Run `gh pr list 2>/dev/null`. If any open PRs from this session, surface them in the summary at the end. No action required unless explicitly asked.
 
 ## 3. Worktrees
 
-Run `git worktree list`. If extras exist beyond the main checkout, ask the user whether to remove them. Per the global rule: cleanup is `git worktree remove <path>` then `git branch -d <branch>`.
+Run `git worktree list`. If extras exist beyond the main checkout, mention them in the summary so the user can clean up next session. Don't auto-remove (worktree cleanup can lose in-progress work; the user gets to decide).
 
 ## 4. Reconcile TODO.md
 
