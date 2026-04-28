@@ -80,6 +80,12 @@ export const FEATURE_MODELS: Record<FeatureKey, string> = {
   // (security_id, level_price, day) so a single Haiku call amortizes across
   // all same-day views.
   suggestedLevelNarrative: `anthropic/${HAIKU_MODEL}`,
+
+  // Earnings preview/recap emails. Must stay on Anthropic — composer enables
+  // Claude-native web_search to fill consensus + sell-side commentary gaps
+  // when Finnhub data is missing or thin.
+  earningsPreview: `anthropic/${SONNET_MODEL}`,
+  earningsRecap: `anthropic/${SONNET_MODEL}`,
 };
 
 export interface ResolvedModel {
