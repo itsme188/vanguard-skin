@@ -350,3 +350,199 @@ async function runTwsReactionUpgrade(
     },
   ];
 }
+
+// ── Phase 3: earnings preview/recap sweep ──────────────────────────
+//
+// Runs alongside the post-release enrichment on the same 15-min launchd
+// cadence (scripts/enrich-calendar-events.sh dispatches both per tick).
+// Two candidate windows:
+//
+//   Preview: release_time IS NOT NULL AND
+//            now+105min ≤ release_instant ≤ now+135min AND
+//            no preview audit row AND
+//            symbol in held|watchlist set
+//
+//   Recap:   enriched_at IS NOT NULL AND
+//            now ≤ enriched_at + 4h AND
+//            no recap audit row AND
+//            symbol in held|watchlist set
+//
+// The held|watchlist filter prevents emailing about every random earnings
+// the user doesn't own. The audit-row filter is the dedup floor — when
+// the email lands, the composer's UNIQUE-protected INSERT prevents a
+// second tick from re-firing the same event/phase pair.
+
+import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
+
+const PREVIEW_WINDOW_MIN_MS = 105 * 60 * 1000;
+const PREVIEW_WINDOW_MAX_MS = 135 * 60 * 1000;
+const RECAP_WINDOW_MAX_MS   = 4 * 60 * 60 * 1000;
+
+export interface EmailCandidate {
+  eventId: number;
+  symbol: string;
+  phase: "preview" | "recap";
+  reason?: string;
+}
+
+interface PreviewCandidateRow {
+  id: number;
+  symbol: string | null;
+  event_date: string;
+  release_time: string;
+}
+
+interface RecapCandidateRow {
+  id: number;
+  symbol: string | null;
+  enriched_at: string;
+}
+
+export interface EmailSweepOpts {
+  /** Override "now" for testing. */
+  now?: Date;
+  /** Cap candidates to fire per pass. */
+  limit?: number;
+}
+
+export function findEmailCandidates(
+  db: Database.Database,
+  opts: EmailSweepOpts = {},
+): EmailCandidate[] {
+  const now = opts.now ?? new Date();
+  const nowMs = now.getTime();
+  const limit = opts.limit ?? 10;
+
+  // ── Preview candidates ──────────────────────────────────────────
+  // Pre-filter SQL by event_date proximity to today; final window check is
+  // in JS because release_time is ET wall-clock and SQL `datetime()` would
+  // silently shift across DST. Same pattern as findCandidates above.
+  const todayStr = new Date(nowMs).toISOString().slice(0, 10);
+  const tomorrowStr = new Date(nowMs + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  const previewRows = db
+    .prepare(
+      `SELECT ce.id, ce.symbol, ce.event_date, ce.release_time
+         FROM calendar_events ce
+         LEFT JOIN earnings_emails ee
+           ON ee.event_id = ce.id AND ee.phase = 'preview'
+        WHERE ce.event_type = 'earnings'
+          AND ce.release_time IS NOT NULL
+          AND ce.symbol IS NOT NULL
+          AND ce.event_date BETWEEN ? AND ?
+          AND ee.id IS NULL`,
+    )
+    .all(todayStr, tomorrowStr) as PreviewCandidateRow[];
+
+  const previewCandidates: PreviewCandidateRow[] = [];
+  for (const row of previewRows) {
+    const releaseInstant = composeReleaseInstant(row.event_date, row.release_time);
+    if (!releaseInstant) continue;
+    const msUntilRelease = releaseInstant.getTime() - nowMs;
+    if (msUntilRelease >= PREVIEW_WINDOW_MIN_MS && msUntilRelease <= PREVIEW_WINDOW_MAX_MS) {
+      previewCandidates.push(row);
+    }
+  }
+
+  // ── Recap candidates ────────────────────────────────────────────
+  const recapCutoff = new Date(nowMs - RECAP_WINDOW_MAX_MS).toISOString().replace("T", " ").slice(0, 19);
+  const recapRows = db
+    .prepare(
+      `SELECT ce.id, ce.symbol, ce.enriched_at
+         FROM calendar_events ce
+         LEFT JOIN earnings_emails ee
+           ON ee.event_id = ce.id AND ee.phase = 'recap'
+        WHERE ce.event_type = 'earnings'
+          AND ce.enriched_at IS NOT NULL
+          AND datetime(ce.enriched_at) >= datetime(?)
+          AND ce.symbol IS NOT NULL
+          AND ee.id IS NULL`,
+    )
+    .all(recapCutoff) as RecapCandidateRow[];
+
+  // ── Held|watchlist filter ───────────────────────────────────────
+  const allSymbols = Array.from(
+    new Set(
+      [...previewCandidates, ...recapRows]
+        .map((r) => r.symbol)
+        .filter((s): s is string => !!s),
+    ),
+  );
+  if (allSymbols.length === 0) return [];
+
+  const status = getSymbolStatus(db, allSymbols);
+  const isCovered = (sym: string | null): boolean =>
+    !!sym && (status[sym.toUpperCase()] === "held" || status[sym.toUpperCase()] === "watchlist");
+
+  const out: EmailCandidate[] = [];
+  for (const row of previewCandidates) {
+    if (!row.symbol || !isCovered(row.symbol)) continue;
+    out.push({ eventId: row.id, symbol: row.symbol, phase: "preview" });
+    if (out.length >= limit) return out;
+  }
+  for (const row of recapRows) {
+    if (!row.symbol || !isCovered(row.symbol)) continue;
+    out.push({ eventId: row.id, symbol: row.symbol, phase: "recap" });
+    if (out.length >= limit) return out;
+  }
+  return out;
+}
+
+export interface EmailSweepResult {
+  candidate: EmailCandidate;
+  ok: boolean;
+  status: number;
+  body: string;
+  durationMs: number;
+}
+
+/**
+ * Run one email-sweep pass. Posts each candidate to its respective
+ * cron-authenticated endpoint. The endpoints in turn invoke the composer,
+ * which writes the audit row on success — that single source of truth
+ * dedups across this sweep + manual fires + (Phase 4) Worker fallback.
+ *
+ * Caller passes `baseUrl` (e.g. `http://localhost:3000` or `:3099`) and
+ * the cron secret. Returns per-candidate results for log emission.
+ */
+export async function runEmailSweep(
+  db: Database.Database,
+  opts: EmailSweepOpts & { baseUrl: string; cronSecret: string },
+): Promise<EmailSweepResult[]> {
+  const candidates = findEmailCandidates(db, opts);
+  const results: EmailSweepResult[] = [];
+
+  for (const cand of candidates) {
+    const t0 = Date.now();
+    const path = cand.phase === "preview"
+      ? "/api/cron/earnings-preview"
+      : "/api/cron/earnings-recap";
+    try {
+      const res = await fetch(`${opts.baseUrl.replace(/\/$/, "")}${path}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Cron-Secret": opts.cronSecret,
+        },
+        body: JSON.stringify({ eventId: cand.eventId }),
+      });
+      const body = await res.text();
+      results.push({
+        candidate: cand,
+        ok: res.ok,
+        status: res.status,
+        body: body.slice(0, 500),
+        durationMs: Date.now() - t0,
+      });
+    } catch (err) {
+      results.push({
+        candidate: cand,
+        ok: false,
+        status: 0,
+        body: err instanceof Error ? err.message : String(err),
+        durationMs: Date.now() - t0,
+      });
+    }
+  }
+  return results;
+}
