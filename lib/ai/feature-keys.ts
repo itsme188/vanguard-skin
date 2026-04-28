@@ -29,4 +29,6 @@ export type FeatureKey =
   | "filingSectionExtraction"
   | "researchDocumentExtraction"
   | "researchMentionVerification"
-  | "suggestedLevelNarrative";
+  | "suggestedLevelNarrative"
+  | "earningsPreview"
+  | "earningsRecap";
