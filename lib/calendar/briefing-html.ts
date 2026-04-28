@@ -16,6 +16,21 @@ const COLORS = {
   heading: "#F0F2F7",
 };
 
+// Tables use a light palette regardless of the surrounding dark email so they
+// print cleanly to paper and remain handwriting-friendly. The user explicitly
+// flagged on 2026-04-28 that a dark-background scoreboard is unprintable.
+// Empty/fillable cells stay white with a clear gray border so handwriting is
+// visible against them. Borders are intentionally darker than typical email
+// table borders so they show up at default printer fidelity (≥600 DPI grayscale).
+const TABLE_COLORS = {
+  headerBg: "#F4EFE0",       // light warm gold tint — keeps brand association
+  headerText: "#3A2E0F",     // dark warm — high contrast on the gold tint
+  bodyBg: "#FFFFFF",
+  bodyText: "#1A1A1A",
+  border: "#777777",
+  labelText: "#1A1A1A",      // metric-label column (first cell of each row)
+};
+
 export function briefingToHtml(
   markdown: string,
   title: string,
@@ -64,6 +79,60 @@ function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
+// Markdown table detection. Header row is `| h1 | h2 |`, immediately followed
+// by a separator line `|---|---|` (with optional `:` alignment markers we
+// ignore for now). Body rows continue until a non-table line. Tables render
+// to email-safe `<table>` HTML with inline styles + tabular-nums so numbers
+// align under each other when printed for fill-by-hand. Empty/em-dash cells
+// get extra vertical padding so the user has room to write a value in pen.
+const tableRowRe = /^\|(.+)\|\s*$/;
+const tableSeparatorRe = /^\|(\s*:?-+:?\s*\|)+\s*$/;
+
+function parseTableRow(line: string): string[] {
+  return line.trim().slice(1, -1).split("|").map((s) => s.trim());
+}
+
+function isFillableCell(text: string): boolean {
+  const t = text.trim();
+  return t === "" || t === "—" || t === "-" || t === "–";
+}
+
+function renderTable(headers: string[], rows: string[][]): string {
+  const headerCells = headers
+    .map(
+      (h) =>
+        `<th style="border:1px solid ${TABLE_COLORS.border}; padding:8px 10px; background-color:${TABLE_COLORS.headerBg}; color:${TABLE_COLORS.headerText}; font-size:11px; font-weight:600; text-align:left; text-transform:uppercase; letter-spacing:0.06em; white-space:nowrap;">${inlineFormat(h)}</th>`,
+    )
+    .join("");
+
+  const bodyRows = rows
+    .map((row) => {
+      const cells = row
+        .map((c, idx) => {
+          const fillable = isFillableCell(c);
+          // First column is metric label — always left-aligned, no fill padding.
+          const isLabel = idx === 0;
+          const content = fillable && !isLabel
+            ? "&nbsp;"
+            : inlineFormat(c) || "&nbsp;";
+          const padding = !isLabel && fillable ? "14px 10px" : "8px 10px";
+          const align = !isLabel ? "text-align:right;" : "";
+          const numAlign = !isLabel ? "font-variant-numeric:tabular-nums;" : "";
+          const cellColor = isLabel ? TABLE_COLORS.labelText : TABLE_COLORS.bodyText;
+          const fontWeight = isLabel ? "font-weight:500;" : "";
+          return `<td style="border:1px solid ${TABLE_COLORS.border}; padding:${padding}; background-color:${TABLE_COLORS.bodyBg}; color:${cellColor}; font-size:13px; ${fontWeight} ${align} ${numAlign}">${content}</td>`;
+        })
+        .join("");
+      return `<tr>${cells}</tr>`;
+    })
+    .join("");
+
+  return `<table cellpadding="0" cellspacing="0" style="border-collapse:collapse; margin:14px 0; width:100%; border:1px solid ${TABLE_COLORS.border}; background-color:${TABLE_COLORS.bodyBg};">
+<thead><tr>${headerCells}</tr></thead>
+<tbody>${bodyRows}</tbody>
+</table>`;
+}
+
 function convertMarkdown(md: string): string {
   const lines = md.split("\n");
   const output: string[] = [];
@@ -71,6 +140,34 @@ function convertMarkdown(md: string): string {
 
   for (let i = 0; i < lines.length; i++) {
     let line = lines[i];
+
+    // Markdown table block: header row + separator row + 1+ data rows.
+    // Detect by lookahead so we don't mistake a single |-bracketed sentence
+    // for the start of a table.
+    if (
+      tableRowRe.test(line.trim()) &&
+      i + 1 < lines.length &&
+      tableSeparatorRe.test(lines[i + 1].trim())
+    ) {
+      if (inList) {
+        output.push("</ul>");
+        inList = false;
+      }
+      const headerCells = parseTableRow(line);
+      let j = i + 2;
+      const dataRows: string[][] = [];
+      while (j < lines.length && tableRowRe.test(lines[j].trim())) {
+        const cells = parseTableRow(lines[j]);
+        // Skip stray separator rows (e.g. mid-table dividers).
+        if (!tableSeparatorRe.test(lines[j].trim())) {
+          dataRows.push(cells);
+        }
+        j++;
+      }
+      output.push(renderTable(headerCells, dataRows));
+      i = j - 1; // outer for will increment past the last consumed row
+      continue;
+    }
 
     // Horizontal rule
     if (/^---+$/.test(line.trim())) {
@@ -145,20 +242,27 @@ function convertMarkdown(md: string): string {
   return output.join("\n");
 }
 
-/** Convert inline markdown (bold, italic, links) to HTML. */
+/** Convert inline markdown (bold, italic, links) to HTML.
+ *
+ * Bold + code do NOT pin a text color — they inherit from the parent cell /
+ * paragraph. Without this, a `<strong style="color:white">` inside a
+ * light-bg table cell renders white-on-white. The dark-mode prose cells
+ * already have white text from the surrounding `<p>` color, so inheritance
+ * is safe in both contexts.
+ */
 function inlineFormat(text: string): string {
   // Links: [text](url) — must run before bold/italic to avoid [**text**](url) issues
   text = text.replace(
     /\[([^\]]+)\]\(([^)]+)\)/g,
     `<a href="$2" style="color:${COLORS.gold}; text-decoration:underline;">$1</a>`
   );
-  // Bold: **text** or __text__
-  text = text.replace(/\*\*(.+?)\*\*/g, `<strong style="color:${COLORS.heading};">$1</strong>`);
-  text = text.replace(/__(.+?)__/g, `<strong style="color:${COLORS.heading};">$1</strong>`);
+  // Bold: **text** or __text__ — inherit color from parent
+  text = text.replace(/\*\*(.+?)\*\*/g, `<strong>$1</strong>`);
+  text = text.replace(/__(.+?)__/g, `<strong>$1</strong>`);
   // Italic: *text* or _text_
   text = text.replace(/\*(.+?)\*/g, "<em>$1</em>");
   text = text.replace(/_(.+?)_/g, "<em>$1</em>");
-  // Inline code
-  text = text.replace(/`(.+?)`/g, `<code style="background:${COLORS.bg}; padding:1px 4px; border-radius:3px; font-size:13px;">$1</code>`);
+  // Inline code — neutral semi-transparent backdrop works in both light and dark contexts
+  text = text.replace(/`(.+?)`/g, `<code style="background:rgba(127,127,127,0.18); padding:1px 5px; border-radius:3px; font-size:13px; font-family:ui-monospace,Menlo,Consolas,monospace;">$1</code>`);
   return text;
 }

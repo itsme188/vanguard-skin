@@ -165,6 +165,52 @@ describe("captureReactionFromTws", () => {
     expect(snap!.sector).toBeUndefined();
   });
 
+  it("includes the event symbol's own bars when eventSymbol is passed", async () => {
+    const mockApi = {
+      getHistoricalData: async (
+        contract: { symbol: string },
+      ) => {
+        const base = release.getTime();
+        if (contract.symbol === "SPY") return makeBars(base, 585.21, 582.84);
+        if (contract.symbol === "QQQ") return makeBars(base, 495.10, 492.30);
+        if (contract.symbol === "TLT") return makeBars(base, 92.30, 91.80);
+        if (contract.symbol === "GLW") return makeBars(base, 50.10, 52.20); // +4.19%
+        return [];
+      },
+    } as unknown as IBApiNext;
+
+    const snap = await captureReactionFromTws(mockApi, release, null, {
+      pacingMs: 0,
+      eventSymbol: "GLW",
+    });
+    expect(snap?.symbol?.symbol).toBe("GLW");
+    expect(snap?.symbol?.delta_pct).toBeGreaterThan(4); // GLW outperformed SPY by ~4.6 pts
+    expect(snap?.spy.delta_pct).toBeLessThan(0);
+  });
+
+  it("omits the symbol field when eventSymbol bars are unavailable", async () => {
+    const mockApi = {
+      getHistoricalData: async (
+        contract: { symbol: string },
+      ) => {
+        const base = release.getTime();
+        if (contract.symbol === "SPY") return makeBars(base, 585.21, 582.84);
+        if (contract.symbol === "QQQ") return makeBars(base, 495.10, 492.30);
+        if (contract.symbol === "TLT") return makeBars(base, 92.30, 91.80);
+        // ZZZZ returns empty — captures core benchmarks only.
+        return [];
+      },
+    } as unknown as IBApiNext;
+
+    const snap = await captureReactionFromTws(mockApi, release, null, {
+      pacingMs: 0,
+      eventSymbol: "ZZZZ",
+    });
+    expect(snap).not.toBeNull();
+    expect(snap!.symbol).toBeUndefined();
+    expect(snap!.spy.delta_pct).toBeLessThan(0);
+  });
+
   it("includes sector ETF when mapped", async () => {
     const mockApi = {
       getHistoricalData: async (

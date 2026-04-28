@@ -29,6 +29,11 @@ export interface ReactionSnapshot {
   qqq: BenchmarkReaction;
   tlt: BenchmarkReaction;
   sector?: BenchmarkReaction & { symbol: string };
+  // The event's own stock — populated for earnings (and any future event type
+  // that passes `eventSymbol`). Lets the recap email say "GLW closed +4.2% vs
+  // SPY +0.1%" instead of just the benchmark deltas. Optional because it
+  // gracefully degrades if bars for the event symbol aren't available.
+  symbol?: BenchmarkReaction & { symbol: string };
 }
 
 /** A single time/close pair — format-agnostic across data sources. */
@@ -258,12 +263,19 @@ export async function captureReactionFromTws(
   api: IBApiNext,
   releaseInstant: Date,
   sectorEtf: string | null,
-  opts: { pacingMs?: number } = {},
+  opts: { pacingMs?: number; eventSymbol?: string | null } = {},
 ): Promise<ReactionSnapshot | null> {
   const pacingMs = opts.pacingMs ?? 500;
-  const symbols = [...CORE_BENCHMARKS];
-  if (sectorEtf && !symbols.includes(sectorEtf as (typeof CORE_BENCHMARKS)[number])) {
-    symbols.push(sectorEtf as (typeof CORE_BENCHMARKS)[number]);
+  const eventSymbol = opts.eventSymbol?.trim().toUpperCase() || null;
+  const symbols: string[] = [...CORE_BENCHMARKS];
+  if (sectorEtf && !symbols.includes(sectorEtf)) {
+    symbols.push(sectorEtf);
+  }
+  // Add event symbol last — its capture is best-effort and gates only the
+  // optional `symbol` field in the snapshot. Skip if it's already in the
+  // basket (e.g., a SPY-on-SPY hypothetical or sector ETF == event symbol).
+  if (eventSymbol && !symbols.includes(eventSymbol)) {
+    symbols.push(eventSymbol);
   }
 
   // TWS must fetch bars up to at least T+120min, plus a small buffer.
@@ -301,6 +313,13 @@ export async function captureReactionFromTws(
     const sector = matchBarsToReaction(barsMap[sectorEtf], releaseMs);
     if (sector) {
       snapshot.sector = { symbol: sectorEtf, ...sector };
+    }
+  }
+
+  if (eventSymbol && barsMap[eventSymbol]) {
+    const symbolReaction = matchBarsToReaction(barsMap[eventSymbol], releaseMs);
+    if (symbolReaction) {
+      snapshot.symbol = { symbol: eventSymbol, ...symbolReaction };
     }
   }
 

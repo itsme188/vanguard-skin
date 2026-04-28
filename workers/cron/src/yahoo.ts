@@ -94,9 +94,10 @@ async function fetchYahooBars(
 export async function captureReactionFromYahoo(
   releaseInstant: Date,
   sectorEtf: string | null,
-  opts: { pacingMs?: number } = {},
+  opts: { pacingMs?: number; eventSymbol?: string | null } = {},
 ): Promise<ReactionSnapshot | null> {
   const pacingMs = opts.pacingMs ?? 200;
+  const eventSymbol = opts.eventSymbol?.trim().toUpperCase() || null;
   const releaseMs = releaseInstant.getTime();
   // Window covers pre (T-5min) and post (T+120min) with buffer.
   const fromSec = Math.floor((releaseMs - 15 * 60 * 1000) / 1000);
@@ -104,6 +105,7 @@ export async function captureReactionFromYahoo(
 
   const symbols: string[] = [...CORE_BENCHMARKS];
   if (sectorEtf && !symbols.includes(sectorEtf)) symbols.push(sectorEtf);
+  if (eventSymbol && !symbols.includes(eventSymbol)) symbols.push(eventSymbol);
 
   const barsMap: Record<string, TimedClose[]> = {};
   for (const sym of symbols) {
@@ -135,6 +137,11 @@ export async function captureReactionFromYahoo(
   if (sectorEtf && barsMap[sectorEtf]) {
     const sector = matchBarsToReaction(barsMap[sectorEtf], releaseMs);
     if (sector) snapshot.sector = { symbol: sectorEtf, ...sector };
+  }
+
+  if (eventSymbol && barsMap[eventSymbol]) {
+    const symbolReaction = matchBarsToReaction(barsMap[eventSymbol], releaseMs);
+    if (symbolReaction) snapshot.symbol = { symbol: eventSymbol, ...symbolReaction };
   }
 
   return snapshot;

@@ -163,3 +163,33 @@ export function getSecurityIdBySymbol(
     .get(symbol) as { id: number } | undefined;
   return row?.id ?? null;
 }
+
+/**
+ * Notes attached to any security whose symbol or underlying_symbol is in the
+ * given family. Used by the earnings-email composer to feed the user's prior
+ * thesis (journal / earnings / trade_thesis notes) into the briefing prompt.
+ *
+ * The `underlying_symbol` traversal is critical: a note tagged to a TER LEAP
+ * option (security.symbol = OCC format like "TER   280121C00180000") would
+ * otherwise be invisible when family = ["TER"]. Same pattern as the positions
+ * query in lib/digest/send-earnings-email.ts.
+ */
+export function getNotesForFamily(
+  db: Database.Database,
+  family: readonly string[],
+  daysBack: number = 90
+): NoteWithContext[] {
+  if (family.length === 0) return [];
+  const upperFamily = family.map((s) => s.toUpperCase());
+  const placeholders = upperFamily.map(() => "?").join(",");
+  const sinceArg = `-${Math.max(1, Math.floor(daysBack))} days`;
+  return db
+    .prepare(
+      `${NOTE_SELECT}
+       WHERE (UPPER(s.symbol) IN (${placeholders})
+              OR UPPER(COALESCE(s.underlying_symbol, '')) IN (${placeholders}))
+         AND datetime(n.event_date) >= datetime('now', ?)
+       ORDER BY n.event_date DESC, n.created_at DESC`,
+    )
+    .all(...upperFamily, ...upperFamily, sinceArg) as NoteWithContext[];
+}
