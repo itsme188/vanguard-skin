@@ -81,6 +81,50 @@ export function getEventsForSecurity(
     .all(securityId) as CalendarEvent[];
 }
 
+/**
+ * Earnings events for the week — deduplicated when the same logical event
+ * exists in multiple sources. Concrete case: a user manually adds TER for
+ * 2026-04-28 because Finnhub didn't have the date at sync time, then later
+ * Finnhub catches up and inserts its own row for the same event. Both rows
+ * have unique source_keys (`manual:TER:...` vs `finnhub:TER:...`) so the DB
+ * happily stores them, but downstream readers (the EarningsHub UI, the
+ * Phase-3 email sweep) should treat them as one event. ROW_NUMBER() picks
+ * the Finnhub row when both exist (Finnhub typically has consensus_estimate
+ * populated, manual rows usually don't), falling back to the most-recent
+ * created_at as the tiebreaker.
+ *
+ * Used by:
+ *   - EarningsHub block on /dashboard/today (Phase 2)
+ *   - email-sweep candidate finder in enrichment-runner (Phase 3)
+ */
+export function getEarningsForWeekDeduped(
+  db: Database.Database,
+  weekOf: string,
+): CalendarEvent[] {
+  return db
+    .prepare(
+      `WITH ranked AS (
+         SELECT *,
+                ROW_NUMBER() OVER (
+                  PARTITION BY UPPER(symbol), event_date, event_type
+                  ORDER BY CASE WHEN source = 'finnhub' THEN 0 ELSE 1 END ASC,
+                           datetime(created_at) DESC
+                ) AS rn
+           FROM calendar_events
+          WHERE week_of = ?
+            AND event_type = 'earnings'
+       )
+       SELECT id, source, event_type, event_date, event_time, title, description,
+              security_id, symbol, ib_con_id, expected_impact, consensus_estimate,
+              previous_value, raw_json, source_key, week_of, fetched_at, created_at,
+              release_time, actual_value, consensus_value, reaction_snapshot, enriched_at
+         FROM ranked
+        WHERE rn = 1
+        ORDER BY event_date ASC, release_time ASC NULLS LAST, symbol ASC`,
+    )
+    .all(weekOf) as CalendarEvent[];
+}
+
 export function getEventCountBySource(
   db: Database.Database,
   weekOf: string
