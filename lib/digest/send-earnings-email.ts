@@ -1,4 +1,5 @@
 import type Anthropic from "@anthropic-ai/sdk";
+import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
 import { sendEmail } from "@/lib/email";
@@ -145,6 +146,19 @@ async function sendEarningsEmail(
     html,
   );
 
+  // Audit row for the EarningsHub UI status chips + Phase-3 cron dedup.
+  // UNIQUE(event_id, phase) — re-fires of the same event/phase update in
+  // place rather than INSERT-fail. We treat re-fire as a refresh, not a
+  // separate audit event; the latest sent_at + ai_output_md wins.
+  recordEarningsEmailAudit(db, {
+    eventId,
+    phase,
+    recipient,
+    aiInputHash: hashPrompt(prompt),
+    aiOutputMd: aiMarkdown,
+    error: null,
+  });
+
   return {
     success: true,
     eventId,
@@ -167,6 +181,50 @@ function getEventByIdRow(
       .prepare(`SELECT * FROM calendar_events WHERE id = ?`)
       .get(id) as CalendarEvent | undefined) ?? null
   );
+}
+
+// ── Audit row writer ───────────────────────────────────────────────
+
+interface AuditInput {
+  eventId: number;
+  phase: "preview" | "recap";
+  recipient: string;
+  aiInputHash: string;
+  aiOutputMd: string;
+  error: string | null;
+}
+
+function recordEarningsEmailAudit(
+  db: Database.Database,
+  input: AuditInput,
+): void {
+  // ON CONFLICT updates in place — a re-fire (manual or cron) overwrites the
+  // previous row's sent_at + ai_output_md. The Phase-3 cron sweep checks
+  // `WHERE NOT EXISTS (SELECT 1 FROM earnings_emails ...)` to skip events
+  // already audited, so a successful row here is the dedup floor.
+  db
+    .prepare(
+      `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, ai_input_hash, ai_output_md, error)
+       VALUES (?, ?, ?, datetime('now'), ?, ?, ?)
+       ON CONFLICT(event_id, phase) DO UPDATE SET
+         recipient = excluded.recipient,
+         sent_at = excluded.sent_at,
+         ai_input_hash = excluded.ai_input_hash,
+         ai_output_md = excluded.ai_output_md,
+         error = excluded.error`,
+    )
+    .run(
+      input.eventId,
+      input.phase,
+      input.recipient,
+      input.aiInputHash,
+      input.aiOutputMd,
+      input.error,
+    );
+}
+
+function hashPrompt(prompt: string): string {
+  return createHash("sha256").update(prompt).digest("hex").slice(0, 16);
 }
 
 // ── Context builders ───────────────────────────────────────────────

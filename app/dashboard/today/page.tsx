@@ -11,6 +11,7 @@ import { NearbyLevelsCard } from "../components/NearbyLevelsCard";
 import { OpenChatButton } from "../components/OpenChatButton";
 import { Money, Pct, Shares } from "@/lib/privacy/components";
 import { TodayReleases } from "../components/TodayReleases";
+import { EarningsHub } from "./EarningsHub";
 
 interface EnrichedAlert extends LevelAlert {
   symbol: string | null;
@@ -196,6 +197,9 @@ export default async function TodayPage() {
 
       {/* ── Today's releases (macro + earnings with known release_time) ── */}
       {todayReleases.length > 0 && <TodayReleases releases={todayReleases} />}
+
+      {/* ── Week-ahead Earnings Hub (held + watchlist + manual + Finnhub) ── */}
+      <EarningsHub />
 
       {/* ── Alerts ── */}
       <section className="rounded-xl border border-edge bg-panel p-5">
