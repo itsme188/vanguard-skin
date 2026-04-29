@@ -3,6 +3,146 @@
 /* Electron desktop app — activated when ELECTRON=true sets .electron on <html> */
 @custom-variant electron (.electron &);
 
+/* Dual-theme token system.
+ *
+ * Token NAMES are preserved from the legacy "Midnight Portfolio" palette
+ * (canvas/panel/raised/muted/edge/ink/gold/up/down/blue) so existing components
+ * that use Tailwind utility classes (bg-canvas, text-ink, text-gold, bg-up/20,
+ * etc.) auto-adapt without code changes.
+ *
+ * Token VALUES flip per theme:
+ *   :root                       → light "Sage & Linen + IBM Plex"
+ *   [data-theme="dark"]         → dark "Bloomberg-pro + Plex Mono"
+ *
+ * Anti-FOUC: a small script in app/layout.tsx reads localStorage["vgs:theme"]
+ * and sets <html data-theme> before React hydrates.
+ *
+ * Note: "gold" is a semantic name, not a literal color. In light mode it is
+ * the moss-green brand (#3a4a3f); in dark mode it is the Bloomberg amber
+ * (#ffb84d). Both contrast >10:1 on their respective canvases.
+ */
+
+:root {
+  /* Surfaces */
+  --canvas: #f7f4ed;        /* warm cream */
+  --panel: #fffefa;         /* ivory white */
+  --raised: #f3efe5;
+  --muted: #ece4d3;         /* parchment */
+
+  /* Borders */
+  --edge: #e2dfd4;          /* linen */
+  --edge-strong: #cdc7b4;
+
+  /* Text hierarchy.
+   * ink     — 16:1, headlines
+   * ink-dim — 8.7:1 (AAA), body text
+   * ink-faint — 7.0:1, metadata / micro-labels / column headers.
+   *
+   * Two iterations of bumps on 2026-04-29:
+   *   #7a7c70 (3.7:1, original) → too light, captions unreadable
+   *   #65685c (5.7:1, first bump) → still too light at 10px uppercase
+   *     (EarningsHub "WHEN / POS / TICKER" column headers)
+   *   #54574c (7.0:1, current) — close to body, but mono micro-labels at
+   *     10-11px need every bit of contrast they can get; the wishlist's
+   *     "what does this do" + reader-app rules both push toward readable
+   *     over fashionable. */
+  --ink: #1f211c;
+  --ink-dim: #3d4036;
+  --ink-faint: #54574c;
+
+  /* Brand — deep moss (the "gold" slot, semantic name preserved) */
+  --gold: #3a4a3f;
+  --gold-glow: rgba(58, 74, 63, 0.09);
+
+  /* Status — muted sage / burned sienna */
+  --up: #5a7a5c;
+  --up-tint: rgba(90, 122, 92, 0.15);
+  --down: #a05a4f;
+  --down-tint: rgba(160, 90, 79, 0.15);
+
+  /* Info accent — steel blue that fits cream */
+  --blue: #4a6fa5;
+  --blue-tint: rgba(74, 111, 165, 0.15);
+
+  /* Default scrollbar tinting (overridden in dark) */
+  --scrollbar-thumb: #cdc7b4;
+  --scrollbar-thumb-hover: #a89b80;
+}
+
+[data-theme="dark"] {
+  /* Surfaces — soft black, NOT pure #000 (eye-strain reduction) */
+  --canvas: #0a0a0a;
+  --panel: #0d0d0d;
+  --raised: #111111;
+  --muted: #1f1f1f;
+
+  /* Borders — hairline */
+  --edge: #1f1f1f;
+  --edge-strong: #2a2a2a;
+
+  /* Text — body bumped to #d4d4d4 (~12:1) per holistic-redesign decision */
+  --ink: #e5e5e5;
+  --ink-dim: #d4d4d4;       /* body */
+  --ink-faint: #888888;     /* metadata */
+
+  /* Brand — Bloomberg amber (the only warm color in dark mode) */
+  --gold: #ffb84d;
+  --gold-glow: rgba(255, 184, 77, 0.09);
+
+  /* Status — pure semantic green/red */
+  --up: #22c55e;
+  --up-tint: rgba(34, 197, 94, 0.15);
+  --down: #ef4444;
+  --down-tint: rgba(239, 68, 68, 0.15);
+
+  /* Info accent — true blue */
+  --blue: #60a5fa;
+  --blue-tint: rgba(96, 165, 250, 0.15);
+
+  --scrollbar-thumb: #1f1f1f;
+  --scrollbar-thumb-hover: #444;
+}
+
+@theme inline {
+  /* Surfaces */
+  --color-canvas: var(--canvas);
+  --color-panel: var(--panel);
+  --color-raised: var(--raised);
+  --color-muted: var(--muted);
+
+  /* Borders */
+  --color-edge: var(--edge);
+  --color-edge-strong: var(--edge-strong);
+
+  /* Text hierarchy */
+  --color-ink: var(--ink);
+  --color-ink-dim: var(--ink-dim);
+  --color-ink-faint: var(--ink-faint);
+
+  /* Brand */
+  --color-gold: var(--gold);
+  --color-gold-glow: var(--gold-glow);
+
+  /* Status */
+  --color-up: var(--up);
+  --color-up-tint: var(--up-tint);
+  --color-down: var(--down);
+  --color-down-tint: var(--down-tint);
+  --color-blue: var(--blue);
+  --color-blue-tint: var(--blue-tint);
+
+  /* Fonts — IBM Plex Sans + Mono load in app/layout.tsx.
+   * Instrument Serif kept transitionally for legacy `font-serif` headlines
+   * (sweep per tab in Phases 3-7; remove in Phase 8 cleanup). */
+  --font-sans: var(--font-plex-sans);
+  --font-mono: var(--font-plex-mono);
+  --font-serif: var(--font-instrument-serif);
+
+  /* Compat with default Tailwind */
+  --color-background: var(--canvas);
+  --color-foreground: var(--ink);
+}
+
 /* iPhone safe area for bottom nav / home indicator */
 .pb-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }
 
@@ -16,47 +156,10 @@
   -webkit-app-region: no-drag;
 }
 
-@theme inline {
-  /* Surfaces — layered elevation system */
-  --color-canvas: #080B12;
-  --color-panel: #0E1118;
-  --color-raised: #151A24;
-  --color-muted: #1B2230;
-
-  /* Borders */
-  --color-edge: #1E2534;
-  --color-edge-strong: #2A3244;
-
-  /* Text hierarchy */
-  --color-ink: #E2E6F0;
-  --color-ink-dim: #8891A6;
-  --color-ink-faint: #4E5668;
-
-  /* Brand accent — warm gold */
-  --color-gold: #C9A44E;
-  --color-gold-glow: #C9A44E18;
-
-  /* Status colors */
-  --color-up: #34D399;
-  --color-up-tint: #34D39918;
-  --color-down: #F87171;
-  --color-down-tint: #F8717118;
-  --color-blue: #60A5FA;
-  --color-blue-tint: #60A5FA18;
-
-  /* Fonts */
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-  --font-serif: var(--font-instrument-serif);
-
-  /* Compat with default Tailwind */
-  --color-background: #080B12;
-  --color-foreground: #E2E6F0;
-}
-
 body {
   background: var(--color-canvas);
   color: var(--color-ink);
+  font-family: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
 }
 
 /* Tabular numbers for financial data */
@@ -79,12 +182,12 @@ html {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--color-edge-strong);
+  background: var(--scrollbar-thumb);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-ink-faint);
+  background: var(--scrollbar-thumb-hover);
 }
 
 /* Focus ring — consistent gold outline on keyboard focus */
