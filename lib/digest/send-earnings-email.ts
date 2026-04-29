@@ -90,15 +90,6 @@ async function sendEarningsEmail(
       400,
     );
   }
-  const gmailAddress = process.env.GMAIL_ADDRESS;
-  const gmailAppPassword = process.env.GMAIL_APP_PASSWORD;
-  if (!gmailAddress || !gmailAppPassword) {
-    throw new EarningsEmailError(
-      "Missing GMAIL_ADDRESS or GMAIL_APP_PASSWORD env vars.",
-      500,
-    );
-  }
-
   const event = getEventByIdRow(db, eventId);
   if (!event) {
     throw new EarningsEmailError(`Event ${eventId} not found.`, 404);
@@ -142,12 +133,17 @@ async function sendEarningsEmail(
   const title = `${symbol} ${phaseLabel} — ${dateStr}${releaseTimeStr}`;
   const html = briefingToHtml(markdown, title, opts.footerNote);
 
-  await sendEmail(
-    { gmailAddress, gmailAppPassword },
-    recipient,
-    `${phaseEmoji} ${title}`,
-    html,
-  );
+  try {
+    await sendEmail({
+      to: recipient,
+      subject: `${phaseEmoji} ${title}`,
+      html,
+      fromLocalPart: "earnings",
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new EarningsEmailError(`Send failed: ${msg}`, 500);
+  }
 
   // Audit row for the EarningsHub UI status chips + Phase-3 cron dedup.
   // UNIQUE(event_id, phase) — re-fires of the same event/phase update in

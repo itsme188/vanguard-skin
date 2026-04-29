@@ -89,7 +89,8 @@ function makeEnv(overrides: Partial<Record<string, unknown>> = {}) {
     WORKER_GMAIL_CLIENT_SECRET: "gmail-secret",
     WORKER_GMAIL_REFRESH_TOKEN: "gmail-refresh",
     BRIEFING_EMAIL_TO: "to@test",
-    FROM_EMAIL: "from@test",
+    RESEND_API_KEY: "re_test",
+    RESEND_FROM_DOMAIN: "test.example.com",
     ...overrides,
   } as unknown as Parameters<typeof worker.fetch>[1];
 }

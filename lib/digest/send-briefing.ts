@@ -48,16 +48,6 @@ export async function sendBriefingEmail(
     );
   }
 
-  const gmailAddress = process.env.GMAIL_ADDRESS;
-  const gmailAppPassword = process.env.GMAIL_APP_PASSWORD;
-
-  if (!gmailAddress || !gmailAppPassword) {
-    throw new BriefingSendError(
-      "Missing GMAIL_ADDRESS or GMAIL_APP_PASSWORD env vars.",
-      500
-    );
-  }
-
   let twsSynced = false;
   try {
     await syncPortfolio(db);
@@ -116,12 +106,17 @@ export async function sendBriefingEmail(
   const title = briefing.title || `Week of ${weekOf}`;
   const html = briefingToHtml(briefing.content, title, opts.footerNote);
 
-  await sendEmail(
-    { gmailAddress, gmailAppPassword },
-    recipient,
-    `📊 ${title} — Weekly Portfolio Briefing`,
-    html
-  );
+  try {
+    await sendEmail({
+      to: recipient,
+      subject: `📊 ${title} — Weekly Portfolio Briefing`,
+      html,
+      fromLocalPart: "briefing",
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new BriefingSendError(`Send failed: ${msg}`, 500);
+  }
 
   setLastBriefingSentAt(db, new Date().toISOString());
 
