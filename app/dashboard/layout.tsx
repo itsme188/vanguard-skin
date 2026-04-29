@@ -25,7 +25,13 @@ export default function DashboardLayout({
   return (
     <ToastProvider>
      <PrivacyProvider>
-      <div className="min-h-screen bg-canvas">
+      {/*
+        xl:pr-[480px] reserves the right rail for the persistent chat panel
+        (≥1280px viewport). Chat panel is fixed-positioned, so this is a
+        layout-level reservation, not a flex/grid container — header sticky
+        positioning still works inside.
+      */}
+      <div className="min-h-screen bg-canvas xl:pr-[480px]">
         <a href="#main-content" className="skip-link">
           Skip to main content
         </a>
