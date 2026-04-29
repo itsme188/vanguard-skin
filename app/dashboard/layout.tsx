@@ -14,6 +14,7 @@ import { DigestCatchup } from "./components/DigestCatchup";
 import { AlertsBell } from "./components/AlertsBell";
 import { ReviewBell } from "./components/ReviewBell";
 import { PrivacyToggle } from "./components/PrivacyToggle";
+import { ThemeToggle } from "./components/ThemeToggle";
 import { PrivacyProvider } from "@/lib/privacy/context";
 
 export default function DashboardLayout({
@@ -34,8 +35,8 @@ export default function DashboardLayout({
           <div className="max-w-[1600px] mx-auto px-4 md:px-6 electron:pl-20 flex items-center justify-between h-14">
             <div className="flex items-center gap-2">
               <MobileNavDrawer />
-              <h1 className="font-serif text-lg md:text-xl text-gold tracking-tight">
-                Vanguard Skin
+              <h1 className="text-lg md:text-xl text-gold tracking-tight font-medium">
+                Portfolio Desk
               </h1>
             </div>
             <div className="flex items-center gap-3 md:gap-4">
@@ -45,6 +46,7 @@ export default function DashboardLayout({
               <ReviewBell />
               <AlertsBell />
               <ChatToggleButton />
+              <ThemeToggle />
               <PrivacyToggle />
               <SettingsModal />
               <span className="hidden md:inline"><AppVersion /></span>
