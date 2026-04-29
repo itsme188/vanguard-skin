@@ -66,7 +66,8 @@ export interface Env {
   WORKER_GMAIL_CLIENT_SECRET?: string;
   WORKER_GMAIL_REFRESH_TOKEN?: string;
   BRIEFING_EMAIL_TO?: string;
-  FROM_EMAIL?: string;
+  RESEND_API_KEY?: string;
+  RESEND_FROM_DOMAIN?: string;
   // Phase 9b — cloud-enrich fallback secrets + flag.
   CLOUD_ENRICH_ENABLED?: string;
   FRED_API_KEY?: string;

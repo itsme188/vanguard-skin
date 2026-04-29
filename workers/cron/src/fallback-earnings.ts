@@ -40,7 +40,7 @@ import type {
 } from "./state";
 import { loadLatestSnapshot } from "./state";
 import { briefingToHtml } from "./html";
-import { sendMessage, getAccessToken } from "./gmail";
+import { sendEmail } from "./resend";
 import { composeReleaseInstant } from "./reaction-matcher";
 import { captureReactionFromYahoo } from "./yahoo";
 import {
@@ -90,7 +90,8 @@ export interface FallbackEnv {
   WORKER_GMAIL_CLIENT_SECRET?: string;
   WORKER_GMAIL_REFRESH_TOKEN?: string;
   BRIEFING_EMAIL_TO?: string;
-  FROM_EMAIL?: string;
+  RESEND_API_KEY?: string;
+  RESEND_FROM_DOMAIN?: string;
 }
 
 export interface EarningsFallbackResult {
@@ -245,8 +246,11 @@ async function composeAndSend(
   snapshot: Snapshot,
   cand: SnapshotCandidate,
 ): Promise<void> {
-  if (!env.BRIEFING_EMAIL_TO || !env.FROM_EMAIL) {
-    throw new Error("BRIEFING_EMAIL_TO / FROM_EMAIL missing");
+  if (!env.BRIEFING_EMAIL_TO) {
+    throw new Error("BRIEFING_EMAIL_TO missing");
+  }
+  if (!env.RESEND_API_KEY || !env.RESEND_FROM_DOMAIN) {
+    throw new Error("RESEND_API_KEY / RESEND_FROM_DOMAIN missing");
   }
 
   const family = issuerSiblings(cand.symbol);
@@ -266,12 +270,11 @@ async function composeAndSend(
   const footer = `Cloud fallback delivery (state snapshot ${snapshot.snapshotDate}) — Mac was offline. Newsletter bogies, analyst data, prior-call notes are NOT included; the Mac primary version has them.`;
   const html = briefingToHtml(body, title, footer);
 
-  const accessToken = await getAccessToken(env);
-  await sendMessage(accessToken, {
-    from: `"Vanguard Dashboard" <${env.FROM_EMAIL}>`,
+  await sendEmail(env, {
     to: env.BRIEFING_EMAIL_TO,
     subject: `${phaseEmoji} ${title}`,
     html,
+    fromLocalPart: "earnings",
   });
 }
 

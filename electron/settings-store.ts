@@ -16,6 +16,10 @@ interface AppSettings {
   autoConnectTws?: boolean;
   gmailAddress?: string;
   gmailAppPassword?: string;
+  /** Resend API key — outbound email (briefing/digest/earnings). Inbound IMAP still uses gmailAddress/gmailAppPassword. */
+  resendApiKey?: string;
+  /** Verified Resend domain — local-part is set per-call ("briefing", "digest", "earnings"). */
+  resendFromDomain?: string;
   briefingEmailTo?: string;
   fredApiKey?: string;
   edgarContactEmail?: string;
@@ -109,6 +113,8 @@ export function bootstrapFromEnvLocal(): void {
   if (envMap.IBKR_ACCOUNT_CODE) updates.ibkrAccountCode = envMap.IBKR_ACCOUNT_CODE;
   if (envMap.GMAIL_ADDRESS) updates.gmailAddress = envMap.GMAIL_ADDRESS;
   if (envMap.GMAIL_APP_PASSWORD) updates.gmailAppPassword = envMap.GMAIL_APP_PASSWORD;
+  if (envMap.RESEND_API_KEY) updates.resendApiKey = envMap.RESEND_API_KEY;
+  if (envMap.RESEND_FROM_DOMAIN) updates.resendFromDomain = envMap.RESEND_FROM_DOMAIN;
   if (envMap.BRIEFING_EMAIL_TO) updates.briefingEmailTo = envMap.BRIEFING_EMAIL_TO;
   if (envMap.FRED_API_KEY) updates.fredApiKey = envMap.FRED_API_KEY;
   if (envMap.EDGAR_CONTACT_EMAIL) updates.edgarContactEmail = envMap.EDGAR_CONTACT_EMAIL;
@@ -134,6 +140,8 @@ export function getSanitizedSettings(): Record<string, string | number | boolean
     twsPort: s.twsPort ?? 7496,
     gmailAddress: s.gmailAddress ?? "",
     gmailAppPassword: s.gmailAppPassword ? "****" : "",
+    resendApiKey: s.resendApiKey ? "***" + s.resendApiKey.slice(-4) : "",
+    resendFromDomain: s.resendFromDomain ?? "",
     briefingEmailTo: s.briefingEmailTo ?? "",
     fredApiKey: s.fredApiKey ? "***" + s.fredApiKey.slice(-4) : "",
     edgarContactEmail: s.edgarContactEmail ?? "",

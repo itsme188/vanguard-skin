@@ -22,9 +22,9 @@ import {
   listMessages,
   getMessage,
   extractMessage,
-  sendMessage,
   type ExtractedMessage,
 } from "./gmail";
+import { sendEmail } from "./resend";
 import { loadLatestSnapshot, type Snapshot, type RecentArticleMeta } from "./state";
 import { getModelForFeature } from "./ai";
 import { briefingToHtml } from "./html";
@@ -42,7 +42,8 @@ export interface FallbackEnv {
   WORKER_GMAIL_CLIENT_SECRET?: string;
   WORKER_GMAIL_REFRESH_TOKEN?: string;
   BRIEFING_EMAIL_TO?: string;
-  FROM_EMAIL?: string;
+  RESEND_API_KEY?: string;
+  RESEND_FROM_DOMAIN?: string;
 }
 
 export interface FallbackResult {
@@ -67,8 +68,14 @@ export async function runFallbackDigest(
   env: FallbackEnv,
   opts: { dryRun?: boolean } = {}
 ): Promise<FallbackResult> {
-  if (!env.BRIEFING_EMAIL_TO || !env.FROM_EMAIL) {
-    return { kind: "error", error: "BRIEFING_EMAIL_TO / FROM_EMAIL missing" };
+  if (!env.BRIEFING_EMAIL_TO) {
+    return { kind: "error", error: "BRIEFING_EMAIL_TO missing" };
+  }
+  if (!env.RESEND_API_KEY || !env.RESEND_FROM_DOMAIN) {
+    return {
+      kind: "error",
+      error: "RESEND_API_KEY / RESEND_FROM_DOMAIN missing",
+    };
   }
 
   const snapshot = await loadLatestSnapshot(env.ARCHIVE);
@@ -131,11 +138,11 @@ export async function runFallbackDigest(
     return { kind: "success", processedCount: newProcessed.length };
   }
 
-  const send = await sendMessage(accessToken, {
-    from: `"Vanguard Dashboard" <${env.FROM_EMAIL}>`,
+  const send = await sendEmail(env, {
     to: env.BRIEFING_EMAIL_TO,
     subject: `📰 ${title}`,
     html,
+    fromLocalPart: "digest",
   });
   return { kind: "success", sentMessageId: send.id, processedCount: newProcessed.length };
 }
