@@ -62,8 +62,8 @@ export function MobileNavDrawer() {
       >
         {/* Drawer header */}
         <div className="flex items-center justify-between px-4 py-4 border-b border-edge bg-raised/50">
-          <span className="font-serif text-lg text-gold tracking-tight">
-            Vanguard Skin
+          <span className="text-lg text-gold tracking-tight font-medium">
+            Portfolio Desk
           </span>
           <button
             onClick={close}
