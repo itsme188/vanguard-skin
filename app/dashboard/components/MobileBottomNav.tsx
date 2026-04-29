@@ -1,9 +1,26 @@
 "use client";
 
-import { usePathname } from "next/navigation";
+import { Suspense } from "react";
+import { usePathname, useSearchParams } from "next/navigation";
 import Link from "next/link";
 
-const navItems = [
+type NavItem =
+  | {
+      name: string;
+      href: string;
+      isChat?: false;
+      activeWhen?: { searchParam: string; value: string };
+      activeUnlessSearchParam?: { key: string; value: string };
+      icon: React.ReactNode;
+    }
+  | {
+      name: string;
+      href: string;
+      isChat: true;
+      icon: React.ReactNode;
+    };
+
+const navItems: NavItem[] = [
   {
     name: "Today",
     href: "/dashboard/today",
@@ -17,6 +34,8 @@ const navItems = [
   {
     name: "Research",
     href: "/dashboard/research",
+    // Research highlights when on /dashboard/research and not in the Notes sub-view.
+    activeUnlessSearchParam: { key: "view", value: "notes" },
     icon: (
       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
         <path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2" />
@@ -35,13 +54,15 @@ const navItems = [
     ),
   },
   {
-    name: "Calendar",
-    href: "/dashboard/calendar",
+    name: "Notes",
+    href: "/dashboard/research?view=notes",
+    activeWhen: { searchParam: "view", value: "notes" },
     icon: (
       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
-        <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
-        <line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" />
-        <line x1="3" y1="10" x2="21" y2="10" />
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+        <polyline points="14 2 14 8 20 8" />
+        <line x1="9" y1="13" x2="15" y2="13" />
+        <line x1="9" y1="17" x2="13" y2="17" />
       </svg>
     ),
   },
@@ -57,12 +78,30 @@ const navItems = [
   },
 ];
 
-export function MobileBottomNav() {
+function MobileBottomNavInner() {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
 
   function handleChatClick(e: React.MouseEvent) {
     e.preventDefault();
     window.dispatchEvent(new CustomEvent("toggle-mobile-chat"));
+  }
+
+  function isItemActive(item: NavItem): boolean {
+    if (item.isChat) return false;
+    const pathPart = item.href.split("?")[0];
+    const onPath =
+      pathPart === "/dashboard"
+        ? pathname === "/dashboard"
+        : pathname.startsWith(pathPart);
+    if (!onPath) return false;
+    if (item.activeWhen) {
+      return searchParams.get(item.activeWhen.searchParam) === item.activeWhen.value;
+    }
+    if (item.activeUnlessSearchParam) {
+      return searchParams.get(item.activeUnlessSearchParam.key) !== item.activeUnlessSearchParam.value;
+    }
+    return true;
   }
 
   return (
@@ -72,14 +111,7 @@ export function MobileBottomNav() {
     >
       <div className="flex items-end justify-around px-2 pt-2 pb-1">
         {navItems.map((item) => {
-          const isChat = "isChat" in item && item.isChat;
-          const isActive = isChat
-            ? false
-            : item.href === "/dashboard"
-              ? pathname === "/dashboard"
-              : pathname.startsWith(item.href);
-
-          if (isChat) {
+          if (item.isChat) {
             return (
               <button
                 key="chat"
@@ -97,6 +129,8 @@ export function MobileBottomNav() {
             );
           }
 
+          const isActive = isItemActive(item);
+
           return (
             <Link
               key={item.href}
@@ -112,5 +146,15 @@ export function MobileBottomNav() {
         })}
       </div>
     </nav>
+  );
+}
+
+// useSearchParams forces Suspense per Next.js 16. Wrap so the rest of the
+// layout statically renders without the bottom nav holding it back.
+export function MobileBottomNav() {
+  return (
+    <Suspense fallback={null}>
+      <MobileBottomNavInner />
+    </Suspense>
   );
 }
