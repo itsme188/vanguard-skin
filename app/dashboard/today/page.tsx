@@ -5,6 +5,9 @@ import Link from "next/link";
 import { getAlerts } from "@/lib/queries/security-levels";
 import { getLevelsNearPrice } from "@/lib/queries/briefing-levels";
 import { getAccountByName } from "@/lib/queries/accounts";
+import { getPortfolioTotals } from "@/lib/queries/dashboard";
+import { getEventsByWeek } from "@/lib/queries/calendar";
+import { getCurrentMonday } from "@/lib/calendar/date-utils";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import type { LevelAlert, CalendarEvent } from "@/lib/types";
 import { NearbyLevelsCard } from "../components/NearbyLevelsCard";
@@ -12,6 +15,7 @@ import { OpenChatButton } from "../components/OpenChatButton";
 import { Money, Pct, Shares } from "@/lib/privacy/components";
 import { TodayReleases } from "../components/TodayReleases";
 import { EarningsHub } from "./EarningsHub";
+import { WeekAheadView } from "./WeekAheadView";
 
 interface EnrichedAlert extends LevelAlert {
   symbol: string | null;
@@ -72,7 +76,20 @@ function qualityChip(days: number, source: string | null): { label: string; clas
   return { label: `${days}d old`, className: "text-down bg-down/20" };
 }
 
-export default async function TodayPage() {
+interface TodayPageProps {
+  searchParams: Promise<{ view?: string }>;
+}
+
+export default async function TodayPage({ searchParams }: TodayPageProps) {
+  const { view } = await searchParams;
+
+  // ── Sub-view dispatch: ?view=week-ahead absorbs the old Calendar tab ──
+  if (view === "week-ahead") {
+    const weekOf = getCurrentMonday();
+    const events = getEventsByWeek(db, weekOf);
+    return <WeekAheadView events={events} weekOf={weekOf} />;
+  }
+
   // ── Pending alerts (enriched in a single JOIN, same shape as /api/alerts) ──
   const alertRows = getAlerts(db, { response: "pending", limit: 20 });
   const alerts: EnrichedAlert[] = alertRows.map((a) => {
@@ -178,6 +195,9 @@ export default async function TodayPage() {
     )
     .all(today) as CalendarEvent[];
 
+  // ── Portfolio totals for the hero (Overview absorption — IA Phase 3) ──
+  const portfolio = getPortfolioTotals(db);
+
   const overallDaysOld = latestPriceDate ? daysAgo(latestPriceDate) : null;
   const overallSource = holdings.find((h) => h.price_date === latestPriceDate)?.price_source ?? null;
   const overallQuality =
@@ -185,15 +205,55 @@ export default async function TodayPage() {
 
   return (
     <div className="space-y-6">
-      <header className="flex items-baseline justify-between">
-        <h1 className="font-serif text-2xl text-gold tracking-tight">Today</h1>
-        {overallQuality && (
-          <span className={`text-[11px] font-mono rounded px-2 py-0.5 ${overallQuality.className}`}>
-            {overallQuality.label}
-            {latestPriceDate && ` · ${fmtShortDate(latestPriceDate)}`}
-          </span>
-        )}
+      <header className="flex items-baseline justify-between flex-wrap gap-2">
+        <div>
+          <p className="text-[11px] uppercase tracking-widest text-ink-faint mb-1">
+            {new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
+          </p>
+          <h1 className="font-serif text-2xl text-gold tracking-tight">Today</h1>
+        </div>
+        <div className="flex items-center gap-2">
+          {overallQuality && (
+            <span className={`text-[11px] font-mono rounded px-2 py-0.5 ${overallQuality.className}`}>
+              {overallQuality.label}
+              {latestPriceDate && ` · ${fmtShortDate(latestPriceDate)}`}
+            </span>
+          )}
+          <Link
+            href="/dashboard/today?view=week-ahead"
+            className="text-[11px] uppercase tracking-widest text-ink-faint hover:text-gold border border-edge rounded-full px-3 py-1"
+          >
+            Week ahead →
+          </Link>
+        </div>
       </header>
+
+      {/* ── Portfolio hero (Overview absorption — IA Phase 3) ── */}
+      <section className="rounded-xl border border-edge bg-panel p-5 sm:p-6">
+        <p className="text-[11px] uppercase tracking-widest text-ink-faint mb-2">Portfolio</p>
+        <div className="flex items-baseline gap-3 flex-wrap">
+          <span
+            className="font-mono font-semibold tabular-nums text-ink"
+            style={{ fontSize: "clamp(28px, 5vw, 44px)", lineHeight: 1, letterSpacing: "-0.02em" }}
+          >
+            <Money value={portfolio.totalValue} />
+          </span>
+          {portfolio.totalChange !== 0 && (
+            <span
+              className={`text-[13px] font-mono tabular-nums rounded-full px-2.5 py-1 ${
+                portfolio.totalChange >= 0 ? "bg-up/10 text-up" : "bg-down/10 text-down"
+              }`}
+            >
+              {portfolio.totalChange >= 0 ? "▲" : "▼"} <Money value={Math.abs(portfolio.totalChange)} />{" "}
+              <span className="text-ink-faint">vs prior month</span>
+            </span>
+          )}
+        </div>
+        <p className="text-[13px] text-ink-faint mt-2">
+          {portfolio.accountCount} {portfolio.accountCount === 1 ? "account" : "accounts"}
+          {portfolio.latestDate && ` · as of ${fmtShortDate(portfolio.latestDate)}`}
+        </p>
+      </section>
 
       {/* ── Today's releases (macro + earnings with known release_time) ── */}
       {todayReleases.length > 0 && (
