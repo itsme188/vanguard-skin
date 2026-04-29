@@ -25,6 +25,8 @@ export interface AppSettings {
   autoConnectTws?: boolean;
   gmailAddress?: string;
   gmailAppPassword?: string;
+  resendApiKey?: string;
+  resendFromDomain?: string;
   briefingEmailTo?: string;
   fredApiKey?: string;
   edgarContactEmail?: string;
@@ -104,6 +106,8 @@ export function getSanitizedSettings(): Record<string, string | number | boolean
     twsPort: s.twsPort ?? 7496,
     gmailAddress: s.gmailAddress ?? "",
     gmailAppPassword: s.gmailAppPassword ? "****" : "",
+    resendApiKey: s.resendApiKey ? "***" + s.resendApiKey.slice(-4) : "",
+    resendFromDomain: s.resendFromDomain ?? "",
     briefingEmailTo: s.briefingEmailTo ?? "",
     fredApiKey: s.fredApiKey ? "***" + s.fredApiKey.slice(-4) : "",
     edgarContactEmail: s.edgarContactEmail ?? "",

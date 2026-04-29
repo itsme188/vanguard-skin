@@ -39,8 +39,10 @@ const SECTIONS = [
   {
     title: "Email Briefing",
     fields: [
-      { key: "gmailAddress", label: "Gmail Address", sensitive: false },
-      { key: "gmailAppPassword", label: "Gmail App Password", sensitive: true },
+      { key: "resendApiKey", label: "Resend API Key (outbound)", sensitive: true },
+      { key: "resendFromDomain", label: "Resend From Domain (e.g. myportfoliodesk.com)", sensitive: false },
+      { key: "gmailAddress", label: "Gmail Address (inbound IMAP)", sensitive: false },
+      { key: "gmailAppPassword", label: "Gmail App Password (inbound IMAP)", sensitive: true },
       { key: "briefingEmailTo", label: "Briefing Recipient", sensitive: false },
     ],
   },

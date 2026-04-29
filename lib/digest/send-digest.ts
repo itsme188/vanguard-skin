@@ -71,16 +71,6 @@ export async function sendDigestEmail(
     );
   }
 
-  const gmailAddress = process.env.GMAIL_ADDRESS;
-  const gmailAppPassword = process.env.GMAIL_APP_PASSWORD;
-
-  if (!gmailAddress || !gmailAppPassword) {
-    throw new DigestSendError(
-      "Missing GMAIL_ADDRESS or GMAIL_APP_PASSWORD env vars.",
-      500
-    );
-  }
-
   // Capture digest range boundaries BEFORE the slow fetch/process step.
   // Otherwise a concurrent manual trigger that completes during our
   // fetch+process window will update `last_digest_sent_at` to "now" and
@@ -144,12 +134,17 @@ export async function sendDigestEmail(
   const title = `Morning Research Digest — ${dateStr}`;
   const html = briefingToHtml(digest, title, opts.footerNote);
 
-  await sendEmail(
-    { gmailAddress, gmailAppPassword },
-    recipient,
-    `\u{1F4F0} ${title}`,
-    html
-  );
+  try {
+    await sendEmail({
+      to: recipient,
+      subject: `\u{1F4F0} ${title}`,
+      html,
+      fromLocalPart: "digest",
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new DigestSendError(`Send failed: ${msg}`, 500);
+  }
 
   if (!opts.skipMarkerUpdate) {
     setLastDigestSentAt(db, new Date().toISOString());

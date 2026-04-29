@@ -1,14 +1,18 @@
 /**
- * Minimal Gmail REST client for the Worker.
+ * Minimal Gmail REST client for the Worker — INBOUND ONLY.
  *
  * Why hand-rolled: googleapis isn't edge-compatible (uses Node core APIs).
  * We use OAuth refresh-token → access-token exchange against oauth2.googleapis.com,
  * then talk directly to gmail.googleapis.com. Access tokens live ~1h; we cache
  * them in CRON_KV with 55-min TTL.
  *
- * Scopes needed (set once during OAuth consent):
+ * Outbound used to live here too (sendMessage); replaced by ./resend.ts in
+ * 2026-04 because Gmail OAuth send is brittle (refresh token expires every
+ * 6 months for unverified apps) and Resend gives us a verified custom-domain
+ * sender with deliverability monitoring.
+ *
+ * Scope needed (set once during OAuth consent):
  *   - https://www.googleapis.com/auth/gmail.readonly  (newsletter fetch)
- *   - https://www.googleapis.com/auth/gmail.send      (outbound email)
  */
 
 const TOKEN_KV_KEY = "gmail-access-token";
@@ -181,46 +185,6 @@ function findPartData(parts: GmailMessagePart[], mimeType: string): string | nul
   return null;
 }
 
-// ── Send ────────────────────────────────────────────────────────────
-
-export async function sendMessage(
-  accessToken: string,
-  opts: { from: string; to: string; subject: string; html: string }
-): Promise<{ id: string }> {
-  const mime = buildMime(opts);
-  const raw = base64UrlEncode(mime);
-  const res = await fetch(
-    "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ raw }),
-    }
-  );
-  if (!res.ok) {
-    throw new Error(`Gmail send failed (${res.status}): ${await res.text()}`);
-  }
-  return (await res.json()) as { id: string };
-}
-
-function buildMime(opts: { from: string; to: string; subject: string; html: string }): string {
-  // RFC 2047 base64 encode the subject so unicode + emoji survive.
-  const encodedSubject = `=?UTF-8?B?${base64Encode(opts.subject)}?=`;
-  return [
-    `To: ${opts.to}`,
-    `From: ${opts.from}`,
-    `Subject: ${encodedSubject}`,
-    "MIME-Version: 1.0",
-    "Content-Type: text/html; charset=UTF-8",
-    "Content-Transfer-Encoding: 8bit",
-    "",
-    opts.html,
-  ].join("\r\n");
-}
-
 // ── Base64 / HTML helpers (Workers-compatible — no Buffer) ──────────
 
 function base64UrlDecode(s: string): string {
@@ -230,17 +194,6 @@ function base64UrlDecode(s: string): string {
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   return new TextDecoder("utf-8").decode(bytes);
-}
-
-function base64UrlEncode(s: string): string {
-  return base64Encode(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function base64Encode(s: string): string {
-  const bytes = new TextEncoder().encode(s);
-  let bin = "";
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin);
 }
 
 function stripHtml(html: string): string {

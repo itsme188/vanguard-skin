@@ -20,7 +20,7 @@
 
 import { generateText } from "ai";
 import { loadLatestSnapshot, type Snapshot } from "./state";
-import { sendMessage, getAccessToken } from "./gmail";
+import { sendEmail } from "./resend";
 import { getModelForFeature } from "./ai";
 import { briefingToHtml } from "./html";
 import type { FallbackEnv, FallbackResult } from "./fallback-digest";
@@ -35,8 +35,14 @@ export async function runFallbackBriefing(
   env: FallbackEnv,
   opts: { dryRun?: boolean } = {}
 ): Promise<FallbackResult> {
-  if (!env.BRIEFING_EMAIL_TO || !env.FROM_EMAIL) {
-    return { kind: "error", error: "BRIEFING_EMAIL_TO / FROM_EMAIL missing" };
+  if (!env.BRIEFING_EMAIL_TO) {
+    return { kind: "error", error: "BRIEFING_EMAIL_TO missing" };
+  }
+  if (!env.RESEND_API_KEY || !env.RESEND_FROM_DOMAIN) {
+    return {
+      kind: "error",
+      error: "RESEND_API_KEY / RESEND_FROM_DOMAIN missing",
+    };
   }
 
   const snapshot = await loadLatestSnapshot(env.ARCHIVE);
@@ -62,12 +68,11 @@ export async function runFallbackBriefing(
     return { kind: "success", processedCount: snapshot.calendarEvents.length };
   }
 
-  const accessToken = await getAccessToken(env);
-  const send = await sendMessage(accessToken, {
-    from: `"Vanguard Dashboard" <${env.FROM_EMAIL}>`,
+  const send = await sendEmail(env, {
     to: env.BRIEFING_EMAIL_TO,
     subject: `📊 ${title} — Weekly Portfolio Briefing`,
     html,
+    fromLocalPart: "briefing",
   });
   return {
     kind: "success",

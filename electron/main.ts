@@ -107,6 +107,8 @@ function startServer(): Promise<void> {
     if (settings.twsPort) env.TWS_PORT = String(settings.twsPort);
     if (settings.gmailAddress) env.GMAIL_ADDRESS = settings.gmailAddress;
     if (settings.gmailAppPassword) env.GMAIL_APP_PASSWORD = settings.gmailAppPassword;
+    if (settings.resendApiKey) env.RESEND_API_KEY = settings.resendApiKey;
+    if (settings.resendFromDomain) env.RESEND_FROM_DOMAIN = settings.resendFromDomain;
     if (settings.briefingEmailTo) env.BRIEFING_EMAIL_TO = settings.briefingEmailTo;
     if (settings.fredApiKey) env.FRED_API_KEY = settings.fredApiKey;
     if (settings.edgarContactEmail) env.EDGAR_CONTACT_EMAIL = settings.edgarContactEmail;
