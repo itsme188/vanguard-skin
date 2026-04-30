@@ -19,7 +19,7 @@ function fmtDayLabel(iso: string): string {
 
 function impactClass(impact: string | null): string {
   if (impact === "high") return "bg-down/10 text-down";
-  if (impact === "medium") return "bg-gold-glow text-gold";
+  if (impact === "medium") return "bg-blue/15 text-blue";
   return "bg-raised text-ink-faint";
 }
 
@@ -81,7 +81,7 @@ export function WeekAheadView({ events, weekOf }: WeekAheadViewProps) {
           </p>
         </section>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-5">
           {days.map((day) => (
             <DayCard key={day.date} day={day} />
           ))}
@@ -103,32 +103,32 @@ interface DayCardProps {
 function DayCard({ day }: DayCardProps) {
   return (
     <section
-      className={`rounded-xl border p-4 min-w-0 ${
-        day.isToday ? "border-gold bg-gold-glow" : "border-edge bg-panel"
+      className={`rounded-xl border p-5 sm:p-6 min-w-0 ${
+        day.isToday ? "border-blue bg-blue/8" : "border-edge bg-panel"
       }`}
     >
-      <div className="flex items-baseline justify-between mb-3 flex-wrap gap-1">
+      <div className="flex items-baseline justify-between mb-4 flex-wrap gap-1">
         <div className="min-w-0">
           <p
-            className={`text-[10px] uppercase tracking-widest ${
-              day.isToday ? "text-gold" : "text-ink-faint"
+            className={`text-[11px] uppercase tracking-widest mb-1 ${
+              day.isToday ? "text-blue" : "text-ink-faint"
             }`}
           >
             {day.label}
           </p>
-          <p className="font-serif text-lg text-ink leading-tight">{fmtDayLabel(day.date)}</p>
+          <p className="font-serif text-2xl text-ink leading-tight">{fmtDayLabel(day.date)}</p>
         </div>
         {day.isToday && (
-          <span className="text-[10px] uppercase tracking-widest text-gold border border-gold rounded-full px-2 py-0.5">
+          <span className="text-[11px] uppercase tracking-widest text-blue border border-blue rounded-full px-2.5 py-0.5">
             Today
           </span>
         )}
       </div>
 
       {day.events.length === 0 ? (
-        <p className="text-[12px] text-ink-faint italic">No events</p>
+        <p className="text-[13px] text-ink-faint italic">No events</p>
       ) : (
-        <ul className="space-y-2">
+        <ul className="space-y-2.5">
           {day.events.map((e) => (
             <EventRow key={e.id} event={e} />
           ))}
@@ -156,16 +156,16 @@ function EventRow({ event }: { event: CalendarEvent }) {
       : event.actual_value
     : null;
   const inner = (
-    <div className="rounded-lg bg-raised border border-edge p-2.5 hover:border-edge-strong transition-colors">
-      <div className="flex items-center gap-2 mb-1 flex-wrap">
+    <div className="rounded-lg bg-raised border border-edge p-3.5 hover:border-edge-strong transition-colors">
+      <div className="flex items-center gap-2 mb-1.5 flex-wrap">
         {time && (
-          <span className="text-[10px] font-mono text-ink-faint tabular-nums shrink-0">{time}</span>
+          <span className="text-[11px] font-mono text-ink-faint tabular-nums shrink-0">{time}</span>
         )}
         {symbol ? (
-          <span className="font-mono text-[12px] font-medium text-ink truncate">{symbol}</span>
+          <span className="font-mono text-[14px] font-medium text-ink truncate">{symbol}</span>
         ) : (
           <span
-            className={`text-[10px] uppercase tracking-widest rounded-full px-2 py-0.5 ${impactClass(
+            className={`text-[11px] uppercase tracking-widest rounded-full px-2 py-0.5 ${impactClass(
               event.expected_impact
             )}`}
           >
@@ -173,14 +173,14 @@ function EventRow({ event }: { event: CalendarEvent }) {
           </span>
         )}
         {actualDisplay && (
-          <span className="text-[10px] font-mono text-up bg-up/10 rounded px-1.5 py-0.5 ml-auto truncate max-w-[60%]">
+          <span className="text-[11px] font-mono text-up bg-up/10 rounded px-1.5 py-0.5 ml-auto truncate max-w-[60%]">
             <PrivateText>actual {actualDisplay}</PrivateText>
           </span>
         )}
       </div>
-      <p className="text-[12px] text-ink-dim leading-snug line-clamp-2">{event.title}</p>
+      <p className="text-[13px] text-ink-dim leading-snug line-clamp-2">{event.title}</p>
       {consensusDisplay && !actualDisplay && (
-        <p className="text-[11px] font-mono text-ink-faint mt-1 truncate">
+        <p className="text-[12px] font-mono text-ink-faint mt-1.5 truncate">
           <PrivateText>Cons: {consensusDisplay}</PrivateText>
         </p>
       )}
