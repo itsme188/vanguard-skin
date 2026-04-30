@@ -60,9 +60,12 @@
   --down: #a05a4f;
   --down-tint: rgba(160, 90, 79, 0.15);
 
-  /* Info accent — steel blue that fits cream */
-  --blue: #4a6fa5;
-  --blue-tint: rgba(74, 111, 165, 0.15);
+  /* Info accent — slate blue (deeper, cooler, more deliberate than the
+   * generic mid-blue we shipped at first; chosen 2026-04-29 to break up
+   * the tonal monotony of moss-brand + sage-up + sienna-down all reading
+   * as warm earth at the same value). Cool counterpoint to the cream. */
+  --blue: #3d556e;
+  --blue-tint: rgba(61, 85, 110, 0.15);
 
   /* Default scrollbar tinting (overridden in dark) */
   --scrollbar-thumb: #cdc7b4;
@@ -95,9 +98,11 @@
   --down: #ef4444;
   --down-tint: rgba(239, 68, 68, 0.15);
 
-  /* Info accent — true blue */
-  --blue: #60a5fa;
-  --blue-tint: rgba(96, 165, 250, 0.15);
+  /* Info accent — steel blue (muted sky, not vibrant Tailwind blue;
+   * matches the slate tone in light mode for a deliberate accent that
+   * isn't another shade of green or sienna). */
+  --blue: #7ba8d4;
+  --blue-tint: rgba(123, 168, 212, 0.15);
 
   --scrollbar-thumb: #1f1f1f;
   --scrollbar-thumb-hover: #444;
