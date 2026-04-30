@@ -204,7 +204,7 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
     overallDaysOld !== null ? qualityChip(overallDaysOld, overallSource) : null;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       <header className="flex items-baseline justify-between flex-wrap gap-2">
         <div>
           <p className="text-[11px] uppercase tracking-widest text-ink-faint mb-1">
@@ -228,32 +228,32 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
         </div>
       </header>
 
-      {/* ── Portfolio hero (Overview absorption — IA Phase 3) ── */}
-      <section className="rounded-xl border border-edge bg-panel p-5 sm:p-6">
-        <p className="text-[11px] uppercase tracking-widest text-ink-faint mb-2">Portfolio</p>
-        <div className="flex items-baseline gap-3 flex-wrap">
+      {/* ── Portfolio strip — locked 2026-04-30 (Phase 3.5): no card chrome,
+              hairline border-b only. Sits as a header band above the peer
+              cards instead of competing with them as a hero feature. ── */}
+      <div className="border-b border-edge pb-3 flex items-baseline gap-4 flex-wrap">
+        <p className="text-[11px] uppercase tracking-widest text-ink-faint">Portfolio</p>
+        <span
+          className="font-mono font-semibold tabular-nums text-ink"
+          style={{ fontSize: "clamp(22px, 3vw, 28px)", lineHeight: 1, letterSpacing: "-0.02em" }}
+        >
+          <Money value={portfolio.totalValue} />
+        </span>
+        {portfolio.totalChange !== 0 && (
           <span
-            className="font-mono font-semibold tabular-nums text-ink"
-            style={{ fontSize: "clamp(28px, 5vw, 44px)", lineHeight: 1, letterSpacing: "-0.02em" }}
+            className={`text-[12px] font-mono tabular-nums rounded-full px-2 py-0.5 ${
+              portfolio.totalChange >= 0 ? "bg-up/10 text-up" : "bg-down/10 text-down"
+            }`}
           >
-            <Money value={portfolio.totalValue} />
+            {portfolio.totalChange >= 0 ? "▲" : "▼"} <Money value={Math.abs(portfolio.totalChange)} />{" "}
+            <span className="text-ink-faint">vs prior month</span>
           </span>
-          {portfolio.totalChange !== 0 && (
-            <span
-              className={`text-[13px] font-mono tabular-nums rounded-full px-2.5 py-1 ${
-                portfolio.totalChange >= 0 ? "bg-up/10 text-up" : "bg-down/10 text-down"
-              }`}
-            >
-              {portfolio.totalChange >= 0 ? "▲" : "▼"} <Money value={Math.abs(portfolio.totalChange)} />{" "}
-              <span className="text-ink-faint">vs prior month</span>
-            </span>
-          )}
-        </div>
-        <p className="text-[13px] text-ink-faint mt-2">
+        )}
+        <span className="text-[12px] text-ink-faint ml-auto">
           {portfolio.accountCount} {portfolio.accountCount === 1 ? "account" : "accounts"}
           {portfolio.latestDate && ` · as of ${fmtShortDate(portfolio.latestDate)}`}
-        </p>
-      </section>
+        </span>
+      </div>
 
       {/* ── Today's releases (macro + earnings with known release_time) ── */}
       {todayReleases.length > 0 && (
@@ -266,9 +266,9 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
       <EarningsHub />
 
       {/* ── Alerts | Levels @ 5% — side-by-side only when both have content ── */}
-      <div className={nearbyLevels.length > 0 ? "grid grid-cols-1 md:grid-cols-2 gap-6" : ""}>
-      <section className="rounded-xl border border-edge bg-panel p-5 card-elev">
-        <div className="mb-3 flex items-baseline justify-between">
+      <div className={nearbyLevels.length > 0 ? "grid grid-cols-1 md:grid-cols-2 gap-4" : ""}>
+      <section className="rounded-xl bg-panel p-4 sm:p-5 card-elev">
+        <div className="mb-2 flex items-baseline justify-between">
           <h2 className="text-sm font-medium text-ink">Alerts</h2>
           <span className="text-[11px] text-ink-faint font-mono">
             {alerts.length} pending
@@ -280,7 +280,7 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
             No pending alerts. Levels are armed — you&rsquo;ll be notified when they trigger.
           </p>
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-3">
             {alertsToday.length > 0 && (
               <AlertGroup title="Triggered today" alerts={alertsToday} />
             )}
@@ -305,8 +305,8 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
       <OpenChatButton />
 
       {/* ── Holdings ── */}
-      <section className="rounded-xl border border-edge bg-panel p-5 card-elev">
-        <div className="mb-3 flex items-baseline justify-between">
+      <section className="rounded-xl bg-panel p-4 card-elev">
+        <div className="mb-2 flex items-baseline justify-between">
           <h2 className="text-sm font-medium text-ink">IBKR today</h2>
           <span className="text-[11px] text-ink-faint font-mono">
             {holdings.length} · today&rsquo;s move
@@ -322,9 +322,9 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
             No holdings found. Connect TWS or import IBKR activity files.
           </p>
         ) : (
-          <ul className="divide-y divide-edge -mx-5">
+          <ul className="divide-y divide-edge -mx-4">
             {holdings.map((h) => (
-              <li key={h.security_id} className="px-5 py-2.5">
+              <li key={h.security_id} className="px-4 py-2">
                 <Link
                   href={`/dashboard/security/${h.security_id}`}
                   className="flex items-center gap-3 group"
