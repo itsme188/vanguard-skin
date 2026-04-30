@@ -17,7 +17,9 @@ export type OptionId =
   | "amber"
   | "amber-slate"
   | "amber-moss"
-  | "amber-sienna";
+  | "amber-moss-double"
+  | "amber-moss-soft"
+  | "amber-moss-stripe";
 
 export interface OptionMeta {
   id: OptionId;
@@ -133,13 +135,39 @@ export const OPTIONS: OptionMeta[] = [
     ],
   },
   {
-    id: "amber-sienna",
-    name: "Amber · Sienna edges",
-    tagline: "Amber base. Cards framed in burnt sienna brown.",
+    id: "amber-moss-double",
+    name: "Amber · Moss double-border",
+    tagline: "Moss color. Two thin lines with a paper-stock gap between them.",
     description:
-      "The burnt sienna `#a05a4f` from the original Sage & Linen palette (currently the `--down` status color) as borders. Warm reddish-brown frames pair with the amber brand for an entirely warm-led identity — no cool tones in the chrome at all.",
+      "Same moss color, but rendered as a double border — a 1px outer stroke, a small ivory gap, a 1px inner ring. Reads like a framed print or quality stationery. Less sharp than a single solid line because the eye sees structure (two strokes) rather than a single continuous edge.",
     swatches: [
-      { hex: "#a05a4f", label: "Sienna edge" },
+      { hex: "#3a4a3f", label: "Moss (double)" },
+      { hex: "#b8860b", label: "Brand amber" },
+      { hex: "#ffffff", label: "White cards" },
+      { hex: "#fafaf3", label: "Canvas" },
+    ],
+  },
+  {
+    id: "amber-moss-soft",
+    name: "Amber · Moss soft edges",
+    tagline: "Moss color at 35% opacity + a stronger moss-tinted shadow.",
+    description:
+      "The border becomes a whisper — moss at low opacity barely defines the card edge, while a larger moss-tinted shadow does the depth work. Cards feel lifted and glowing rather than framed. Most ambient of the variants.",
+    swatches: [
+      { hex: "#3a4a3f", label: "Moss (35%)" },
+      { hex: "#b8860b", label: "Brand amber" },
+      { hex: "#ffffff", label: "White cards" },
+      { hex: "#fafaf3", label: "Canvas" },
+    ],
+  },
+  {
+    id: "amber-moss-stripe",
+    name: "Amber · Moss left-stripe",
+    tagline: "Pale tan elsewhere. A 3px moss accent on the left edge only.",
+    description:
+      "Borders are pale tan on three sides; the left edge gets a thick moss stripe. Magazine-sidebar / Stripe-dashboard aesthetic — color is concentrated as an accent, not a frame. Most architectural of the variants.",
+    swatches: [
+      { hex: "#3a4a3f", label: "Moss stripe" },
       { hex: "#b8860b", label: "Brand amber" },
       { hex: "#ffffff", label: "White cards" },
       { hex: "#fafaf3", label: "Canvas" },
