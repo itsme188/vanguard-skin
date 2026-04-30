@@ -1,122 +1,22 @@
 /**
- * Per-option token and typography scoping for the Today design preview.
+ * Today design preview — palette + shadow scoping.
  *
- * Each [data-preview="<id>"] block overrides specific CSS variables
- * and applies typography/structural tweaks that distinguish the four
- * directions. The shared TodayPreview component uses standard Tailwind
- * tokens (bg-panel, text-ink, etc.) which auto-resolve through the
- * cascade — no per-option component branching.
+ * Currently focused on amber-moss-glow-roomy as the confirmed palette
+ * and shadow direction. Layout variants (compact / strip) all share
+ * this same scope for color/shadow and only vary in component layout.
+ *
+ * History of dropped variants is in git — quiet/zones/newsprint/forest/
+ * sienna/amber edge experiments narrowed down through user iteration to
+ * this single direction.
  */
 
-/* ── A — Quiet ─────────────────────────────────────
- * Uniform ivory cards. No surface tints used. Color comes through
- * accent text and chips only. Keeps the production tokens as-is — this
- * is the "what we have now if we stop adding tints" baseline. */
-[data-preview="quiet"] {
-  /* Inherits :root entirely — kept as scope hook for layout overrides. */
-}
-
-/* ── B — Zones ─────────────────────────────────────
- * Three surface tones used systematically. More pigmented than the
- * earlier in-place attempt so the zones read as deliberate. */
-[data-preview="zones"] {
-  --panel-sage: #d4e3d0;     /* visibly green-tinted cream */
-  --panel-warm: #e8d2af;     /* visibly tan cream with sienna lean */
-}
-[data-preview="zones"] .preview-hero {
-  background-color: var(--panel-sage);
-}
-[data-preview="zones"] .preview-context {
-  background-color: var(--panel-warm);
-}
-
-/* ── C — Newsprint ─────────────────────────────────
- * Pure white panels on cool cream. Cards are paper. Color lives in
- * eyebrows, status chips, and accent glyphs. */
-[data-preview="newsprint"] {
-  --canvas: #f3f1e8;          /* cool cream, less yellow */
-  --panel: #ffffff;           /* true white */
-  --raised: #f0eee5;
-  --muted: #e7e2d2;
-  --edge: #d4cfbe;            /* visible hairline */
-  --edge-strong: #b8af96;
-  --gold: #2d3a30;            /* darker moss for chip contrast */
-  --gold-glow: rgba(45, 58, 48, 0.10);
-  --shadow-card: 0 1px 1px rgba(0, 0, 0, 0.04), 0 4px 10px rgba(0, 0, 0, 0.04);
-}
-/* Deeper accent + thicker eyebrow rule on newsprint — feels editorial */
-[data-preview="newsprint"] .preview-eyebrow {
-  color: var(--down);
-  font-weight: 600;
-  font-size: 11px;
-  letter-spacing: 0.18em;
-}
-[data-preview="newsprint"] .preview-eyebrow-brand {
-  color: var(--gold);
-  font-weight: 600;
-  font-size: 11px;
-  letter-spacing: 0.18em;
-}
-
-/* ── D — Forest ────────────────────────────────────
- * Punchier Sage & Linen. Brand moss goes deep forest. Adds rich amber
- * for warm pop. Same cream canvas family but more pigmented. The earth
- * tones speak louder without leaving home. */
-[data-preview="forest"] {
-  --canvas: #f1ead4;          /* more-pigmented warm cream */
-  --panel: #fffefa;           /* ivory */
-  --raised: #e7dfc4;
-  --muted: #ddd2af;
-  --edge: #d3c9ad;
-  --edge-strong: #a89c70;
-  --gold: #1f3a28;            /* deep forest brand */
-  --gold-glow: rgba(31, 58, 40, 0.10);
-  --up: #4a8c5a;              /* slightly more vivid sage */
-  --up-tint: rgba(74, 140, 90, 0.15);
-  --down: #b54a3a;            /* deeper sienna */
-  --down-tint: rgba(181, 74, 58, 0.15);
-  --blue: #c08c3b;            /* repurpose blue slot for amber accent */
-  --blue-tint: rgba(192, 140, 59, 0.15);
-}
-
-/* ── E — Sienna ────────────────────────────────────
- * Sienna leads. Inverts the palette — burnt sienna becomes brand,
- * moss recedes to status. Warm-led identity, browns front-and-center. */
-[data-preview="sienna"] {
-  --canvas: #f4ecd9;          /* pigmented warm cream */
-  --panel: #fffefa;           /* ivory cards */
-  --raised: #ebe1c8;
-  --muted: #ddd2af;
-  --edge: #d3c9ad;
-  --edge-strong: #a89c70;
-  --gold: #a05a4f;            /* sienna becomes brand */
-  --gold-glow: rgba(160, 90, 79, 0.10);
-  --up: #4d8556;              /* sage stays for status */
-  --up-tint: rgba(77, 133, 86, 0.15);
-  --down: #5a3a2e;            /* darker brown for negative — distinct from sienna brand */
-  --down-tint: rgba(90, 58, 46, 0.15);
-  --blue: #3a4a3f;            /* moss now in accent slot */
-  --blue-tint: rgba(58, 74, 63, 0.15);
-}
-
-/* ── F — Amber family ──────────────────────────────
- * Bloomberg-light. Vivid amber brand on white cards, energetic data
- * colors. The light counterpart to the existing dark Bloomberg-pro mode.
- *
- * Group selector applies the full Amber base to the variant family;
- * each variant's own block then only overrides --edge / --edge-strong
- * for the border-color experiment ("does chromatic framing make the
- * page feel more alive than pale tan borders?"). */
-[data-preview="amber"],
-[data-preview="amber-moss-glow"],
-[data-preview="amber-moss-glow-roomy"],
-[data-preview="amber-moss-glow-airy"],
-[data-preview="amber-moss-glow-rich"] {
+[data-preview="amber-moss-glow-roomy"] {
+  /* Base palette — Amber light (Bloomberg-light counterpart to dark mode). */
   --canvas: #fafaf3;          /* near-white warm */
   --panel: #ffffff;           /* pure white cards */
   --raised: #f4f3ea;
   --muted: #e9e5d3;
-  --edge: #d8d3bf;            /* pale tan default — variants override */
+  --edge: #d8d3bf;
   --edge-strong: #aaa085;
   --gold: #b8860b;            /* vivid amber brand */
   --gold-glow: rgba(184, 134, 11, 0.12);
@@ -126,64 +26,21 @@
   --down-tint: rgba(200, 49, 28, 0.15);
   --blue: #1a3b8a;            /* deep navy accent */
   --blue-tint: rgba(26, 59, 138, 0.15);
-  --ink: #0a0a0a;             /* truer black for newsroom contrast */
+  --ink: #0a0a0a;
   --ink-dim: #2a2a26;
   --ink-faint: #54574c;
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.06), 0 6px 16px rgba(0, 0, 0, 0.05);
-}
 
-/* Amber · Moss glow (baseline) — current iteration reference.
- * Ring 20% + close drop 70% (Y=6, blur=18) + ambient 45% (Y=14, blur=36).
- * Cards grounded with visible moss color. Use this as the comparison
- * point for the three variants below. */
-[data-preview="amber-moss-glow"] {
-  --shadow-card:
-    0 0 0 1px rgba(58, 74, 63, 0.20),
-    0 6px 18px rgba(58, 74, 63, 0.70),
-    0 14px 36px rgba(58, 74, 63, 0.45);
-}
-[data-preview="amber-moss-glow"] .preview-card {
-  border: 0;
-}
-
-/* Amber · Moss glow — roomy (user's confirmed direction).
- * Close drop Y=8 blur=24 at 65%, ambient halo Y=28 blur=64 at 40%.
- * Reference for the two extension variants below. */
-[data-preview="amber-moss-glow-roomy"] {
+  /* Card shadow — confirmed direction: roomy reach, moss-tinted, grounded.
+   * Ring 20% + close drop 65% (Y=8, blur=24) + ambient 40% (Y=28, blur=64).
+   * Cards breathe; shadow extends well past card edges; cards still sit
+   * grounded rather than levitating. */
   --shadow-card:
     0 0 0 1px rgba(58, 74, 63, 0.20),
     0 8px 24px rgba(58, 74, 63, 0.65),
     0 28px 64px rgba(58, 74, 63, 0.40);
 }
+
+/* Cards on this page have no border — the shadow does all the edge work. */
 [data-preview="amber-moss-glow-roomy"] .preview-card {
-  border: 0;
-}
-
-/* Amber · Moss glow — airy (even more reach).
- * Pushes breathing room further. Close drop Y 8->10, blur 24->32.
- * Ambient halo Y 28->40, blur 64->88 (significantly wider). Opacities
- * held proportional so the bigger shadow stays soft, not muddy:
- * close 65%->60%, ambient 40%->38%. */
-[data-preview="amber-moss-glow-airy"] {
-  --shadow-card:
-    0 0 0 1px rgba(58, 74, 63, 0.20),
-    0 10px 32px rgba(58, 74, 63, 0.60),
-    0 40px 88px rgba(58, 74, 63, 0.38);
-}
-[data-preview="amber-moss-glow-airy"] .preview-card {
-  border: 0;
-}
-
-/* Amber · Moss glow — rich (same reach, more color).
- * Same Y-offsets and blur values as roomy — physical extent unchanged.
- * Opacities pushed: ring 20%->30%, close 65%->80%, ambient 40%->55%.
- * The wider shadow carries more moss pigment than the baseline. */
-[data-preview="amber-moss-glow-rich"] {
-  --shadow-card:
-    0 0 0 1px rgba(58, 74, 63, 0.30),
-    0 8px 24px rgba(58, 74, 63, 0.80),
-    0 28px 64px rgba(58, 74, 63, 0.55);
-}
-[data-preview="amber-moss-glow-rich"] .preview-card {
   border: 0;
 }
