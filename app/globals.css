@@ -67,6 +67,20 @@
   --blue: #3d556e;
   --blue-tint: rgba(61, 85, 110, 0.15);
 
+  /* Tinted card surfaces — variations on the panel for variety without
+   * leaving the Sage & Linen palette. User feedback 2026-04-29 evening:
+   * "more of the greens that I like and the browns that I like" — give
+   * feature cards (Hero / brand surfaces) a moss undertone, and reserve
+   * a parchment undertone for warm context. Both stay near panel
+   * lightness so cards still lift; the tint is barely-there pigment. */
+  --panel-sage: #e9efe5;     /* cream + moss undertone (brand surfaces) */
+  --panel-warm: #f1ead8;     /* cream + parchment undertone (context) */
+
+  /* Card elevation — moss-tinted shadow stays cohesive with brand instead
+   * of harsh-modern pure-black. Two layers: 1px-soft for the card edge,
+   * 6-16px-soft for the floating effect on warm cream. */
+  --shadow-card: 0 1px 2px rgba(58, 74, 63, 0.07), 0 6px 16px rgba(58, 74, 63, 0.05);
+
   /* Default scrollbar tinting (overridden in dark) */
   --scrollbar-thumb: #cdc7b4;
   --scrollbar-thumb-hover: #a89b80;
@@ -104,6 +118,14 @@
   --blue: #7ba8d4;
   --blue-tint: rgba(123, 168, 212, 0.15);
 
+  /* Tinted card surfaces — barely-there variations for brand/warm cards. */
+  --panel-sage: #0e1410;     /* near-black + green hint */
+  --panel-warm: #110f0a;     /* near-black + warm hint */
+
+  /* Card elevation — soft black, less needed on dark canvas but a hint
+   * of depth still helps cards float. */
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.5), 0 6px 16px rgba(0, 0, 0, 0.3);
+
   --scrollbar-thumb: #1f1f1f;
   --scrollbar-thumb-hover: #444;
 }
@@ -112,6 +134,8 @@
   /* Surfaces */
   --color-canvas: var(--canvas);
   --color-panel: var(--panel);
+  --color-panel-sage: var(--panel-sage);
+  --color-panel-warm: var(--panel-warm);
   --color-raised: var(--raised);
   --color-muted: var(--muted);
 
@@ -146,6 +170,14 @@
   /* Compat with default Tailwind */
   --color-background: var(--canvas);
   --color-foreground: var(--ink);
+}
+
+/* Card elevation — lifts panels off the canvas. Opt-in via `card-elev`
+ * class so inline `bg-panel` uses (chips, popovers, toolbars) don't get
+ * unwanted shadows. Tinted toward moss in light mode for cohesion with
+ * the brand; soft-black in dark mode. */
+.card-elev {
+  box-shadow: var(--shadow-card);
 }
 
 /* iPhone safe area for bottom nav / home indicator */

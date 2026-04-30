@@ -149,7 +149,7 @@ export function EarningsHub() {
   const watchCount = enriched.filter((e) => e.status === "watchlist").length;
 
   return (
-    <section className="rounded-xl border border-edge bg-panel overflow-hidden">
+    <section className="rounded-xl border border-edge bg-panel overflow-hidden card-elev">
       {/* Section header — uppercase mono micro-label, tracking, dim subtitle */}
       <div className="flex items-baseline justify-between flex-wrap gap-2 px-5 py-3 border-b border-edge bg-raised">
         <div className="flex items-baseline gap-3">
