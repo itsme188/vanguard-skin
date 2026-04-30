@@ -15,10 +15,10 @@ export type OptionId =
   | "forest"
   | "sienna"
   | "amber"
-  | "amber-slate"
-  | "amber-moss"
-  | "amber-slate-frame"
-  | "amber-moss-frame";
+  | "amber-slate-thin"
+  | "amber-slate-glow"
+  | "amber-moss-thin"
+  | "amber-moss-glow";
 
 export interface OptionMeta {
   id: OptionId;
@@ -108,52 +108,52 @@ export const OPTIONS: OptionMeta[] = [
     ],
   },
   {
-    id: "amber-slate",
-    name: "Amber · Slate edges",
-    tagline: "Amber base. Cards framed in the slate blue you picked earlier.",
+    id: "amber-slate-thin",
+    name: "Amber · Slate thin border + saturated shadow",
+    tagline: "3px slate border + heavily slate-tinted depth shadow.",
     description:
-      "Same slate blue (`#3d556e`) you approved as the 4th-color accent in light mode — now applied at full strength on every card border. Cool counterpoint to the warm amber brand. Cohesive with the rest of the app since slate is already in the production palette.",
+      "Border thinned from the chunky 6px down to 3px so it reads as a visible accent rather than a frame. Shadow saturation pushed hard — close drop at 55% opacity slate, ambient halo at 35%, plus a tight 1px ring inside. The slate color is now everywhere your eye goes: the thin border line, the colored close shadow under the card, and the colored ambient halo around it.",
     swatches: [
-      { hex: "#3d556e", label: "Slate edge" },
+      { hex: "#3d556e", label: "Slate border" },
       { hex: "#b8860b", label: "Brand amber" },
       { hex: "#ffffff", label: "White cards" },
       { hex: "#fafaf3", label: "Canvas" },
     ],
   },
   {
-    id: "amber-moss",
-    name: "Amber · Moss edges",
-    tagline: "Amber base. Cards framed in the original moss green.",
+    id: "amber-slate-glow",
+    name: "Amber · Slate glow (no border)",
+    tagline: "No border at all. The slate shadow does all the edge work.",
     description:
-      "The deep moss `#3a4a3f` from the original Sage & Linen brand color, now used as a structural element. Earthy and confident — the green you started with returns as the frame around every card while amber leads accents.",
+      "Removes the border entirely. The shadow takes over: a 1px slate ring acts as the card outline, then a heavily-saturated slate close drop + ambient halo create the depth. Cards look like they're floating in slate atmosphere — no hard line, just colored air around them. Most ambient version.",
     swatches: [
-      { hex: "#3a4a3f", label: "Moss edge" },
+      { hex: "#3d556e", label: "Slate halo" },
       { hex: "#b8860b", label: "Brand amber" },
       { hex: "#ffffff", label: "White cards" },
       { hex: "#fafaf3", label: "Canvas" },
     ],
   },
   {
-    id: "amber-moss-frame",
-    name: "Amber · Moss frame + depth",
-    tagline: "6px solid moss border + bigger moss-tinted shadow.",
+    id: "amber-moss-thin",
+    name: "Amber · Moss thin border + saturated shadow",
+    tagline: "3px moss border + heavily moss-tinted depth shadow.",
     description:
-      "Combines the depth you liked in the soft-edges variant with a chunky moss frame. The border is full-strength color (no opacity tricks) at 6px thickness so the moss is impossible to miss; the shadow underneath is bigger and moss-tinted so cards still float. Color + 3D at full volume.",
+      "Same approach as the slate-thin variant but in moss `#3a4a3f`. Visible accent border + heavily saturated moss shadow (55% close, 35% halo). Picks up where moss-edges and moss-frame left off — finds the middle weight where both color and depth are simultaneously unmistakable.",
     swatches: [
-      { hex: "#3a4a3f", label: "Moss frame" },
+      { hex: "#3a4a3f", label: "Moss border" },
       { hex: "#b8860b", label: "Brand amber" },
       { hex: "#ffffff", label: "White cards" },
       { hex: "#fafaf3", label: "Canvas" },
     ],
   },
   {
-    id: "amber-slate-frame",
-    name: "Amber · Slate frame + depth",
-    tagline: "6px solid slate border + bigger slate-tinted shadow.",
+    id: "amber-moss-glow",
+    name: "Amber · Moss glow (no border)",
+    tagline: "No border. Moss shadow does all the edge work.",
     description:
-      "Same approach as the moss frame, in slate. Chunky 6px slate framing on every card paired with a bigger slate-tinted shadow for depth. Cool counterpoint to the amber brand. Pick this vs the moss frame to choose your color anchor.",
+      "Same as slate-glow but in moss. No border at all; the moss-tinted shadow with its 1px ring + close drop + ambient halo defines and floats every card. Compare side-by-side with moss-thin to decide whether the page wants a hard border line at all.",
     swatches: [
-      { hex: "#3d556e", label: "Slate frame" },
+      { hex: "#3a4a3f", label: "Moss halo" },
       { hex: "#b8860b", label: "Brand amber" },
       { hex: "#ffffff", label: "White cards" },
       { hex: "#fafaf3", label: "Canvas" },
