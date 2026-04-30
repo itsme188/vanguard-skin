@@ -1,0 +1,136 @@
+/**
+ * Per-option token and typography scoping for the Today design preview.
+ *
+ * Each [data-preview="<id>"] block overrides specific CSS variables
+ * and applies typography/structural tweaks that distinguish the four
+ * directions. The shared TodayPreview component uses standard Tailwind
+ * tokens (bg-panel, text-ink, etc.) which auto-resolve through the
+ * cascade — no per-option component branching.
+ */
+
+/* ── A — Quiet ─────────────────────────────────────
+ * Uniform ivory cards. No surface tints used. Color comes through
+ * accent text and chips only. Keeps the production tokens as-is — this
+ * is the "what we have now if we stop adding tints" baseline. */
+[data-preview="quiet"] {
+  /* Inherits :root entirely — kept as scope hook for layout overrides. */
+}
+
+/* ── B — Zones ─────────────────────────────────────
+ * Three surface tones used systematically. More pigmented than the
+ * earlier in-place attempt so the zones read as deliberate. */
+[data-preview="zones"] {
+  --panel-sage: #d4e3d0;     /* visibly green-tinted cream */
+  --panel-warm: #e8d2af;     /* visibly tan cream with sienna lean */
+}
+[data-preview="zones"] .preview-hero {
+  background-color: var(--panel-sage);
+}
+[data-preview="zones"] .preview-context {
+  background-color: var(--panel-warm);
+}
+
+/* ── C — Newsprint ─────────────────────────────────
+ * Pure white panels on cool cream. Cards are paper. Color lives in
+ * eyebrows, status chips, and accent glyphs. */
+[data-preview="newsprint"] {
+  --canvas: #f3f1e8;          /* cool cream, less yellow */
+  --panel: #ffffff;           /* true white */
+  --raised: #f0eee5;
+  --muted: #e7e2d2;
+  --edge: #d4cfbe;            /* visible hairline */
+  --edge-strong: #b8af96;
+  --gold: #2d3a30;            /* darker moss for chip contrast */
+  --gold-glow: rgba(45, 58, 48, 0.10);
+  --shadow-card: 0 1px 1px rgba(0, 0, 0, 0.04), 0 4px 10px rgba(0, 0, 0, 0.04);
+}
+/* Deeper accent + thicker eyebrow rule on newsprint — feels editorial */
+[data-preview="newsprint"] .preview-eyebrow {
+  color: var(--down);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+}
+[data-preview="newsprint"] .preview-eyebrow-brand {
+  color: var(--gold);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+}
+
+/* ── D — Editorial ─────────────────────────────────
+ * Magazine page. Bigger serif headlines. Cards mostly disappear —
+ * just dividers between sections. Vertical rhythm leads. */
+[data-preview="editorial"] {
+  --canvas: #f1ead4;          /* warm magazine paper */
+  --panel: #f1ead4;           /* same as canvas — no card boundaries */
+  --raised: #e7dfc4;
+  --muted: #ddd2af;
+  --edge: #c8bd97;
+  --shadow-card: none;        /* flat — long-form reading aesthetic */
+}
+[data-preview="editorial"] .preview-card {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--edge);
+  border-radius: 0;
+  padding-left: 0;
+  padding-right: 0;
+  box-shadow: none;
+}
+[data-preview="editorial"] .preview-card.preview-hero {
+  border-bottom-width: 2px;
+  border-bottom-color: var(--gold);
+  padding-bottom: 28px;
+  margin-bottom: 8px;
+}
+[data-preview="editorial"] .preview-section-title {
+  font-family: var(--font-serif);
+  font-size: 22px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+[data-preview="editorial"] .preview-hero h1 {
+  font-family: var(--font-serif);
+  font-size: clamp(40px, 6vw, 56px);
+  letter-spacing: -0.025em;
+  line-height: 1.05;
+  font-weight: 400;
+}
+[data-preview="editorial"] .preview-eyebrow,
+[data-preview="editorial"] .preview-eyebrow-brand {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-weight: 400;
+  font-size: 13px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink-faint);
+}
+[data-preview="editorial"] .preview-event-row {
+  border-radius: 0;
+  border: none;
+  border-top: 1px solid var(--edge);
+  background: transparent;
+}
+[data-preview="editorial"] .preview-event-row:first-child {
+  border-top: none;
+}
+[data-preview="editorial"] .preview-week-grid {
+  grid-template-columns: 1fr;
+  gap: 0;
+}
+[data-preview="editorial"] .preview-day-card {
+  border: none;
+  border-bottom: 1px solid var(--edge);
+  border-radius: 0;
+  padding: 24px 0;
+  box-shadow: none;
+  background: transparent;
+}
+[data-preview="editorial"] .preview-day-card[data-today="true"] {
+  border-left: 3px solid var(--gold);
+  padding-left: 16px;
+  background: transparent;
+}
