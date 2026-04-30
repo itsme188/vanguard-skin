@@ -58,79 +58,67 @@
   letter-spacing: 0.18em;
 }
 
-/* ── D — Editorial ─────────────────────────────────
- * Magazine page. Bigger serif headlines. Cards mostly disappear —
- * just dividers between sections. Vertical rhythm leads. */
-[data-preview="editorial"] {
-  --canvas: #f1ead4;          /* warm magazine paper */
-  --panel: #f1ead4;           /* same as canvas — no card boundaries */
+/* ── D — Forest ────────────────────────────────────
+ * Punchier Sage & Linen. Brand moss goes deep forest. Adds rich amber
+ * for warm pop. Same cream canvas family but more pigmented. The earth
+ * tones speak louder without leaving home. */
+[data-preview="forest"] {
+  --canvas: #f1ead4;          /* more-pigmented warm cream */
+  --panel: #fffefa;           /* ivory */
   --raised: #e7dfc4;
   --muted: #ddd2af;
-  --edge: #c8bd97;
-  --shadow-card: none;        /* flat — long-form reading aesthetic */
+  --edge: #d3c9ad;
+  --edge-strong: #a89c70;
+  --gold: #1f3a28;            /* deep forest brand */
+  --gold-glow: rgba(31, 58, 40, 0.10);
+  --up: #4a8c5a;              /* slightly more vivid sage */
+  --up-tint: rgba(74, 140, 90, 0.15);
+  --down: #b54a3a;            /* deeper sienna */
+  --down-tint: rgba(181, 74, 58, 0.15);
+  --blue: #c08c3b;            /* repurpose blue slot for amber accent */
+  --blue-tint: rgba(192, 140, 59, 0.15);
 }
-[data-preview="editorial"] .preview-card {
-  background: transparent;
-  border: none;
-  border-bottom: 1px solid var(--edge);
-  border-radius: 0;
-  padding-left: 0;
-  padding-right: 0;
-  box-shadow: none;
+
+/* ── E — Sienna ────────────────────────────────────
+ * Sienna leads. Inverts the palette — burnt sienna becomes brand,
+ * moss recedes to status. Warm-led identity, browns front-and-center. */
+[data-preview="sienna"] {
+  --canvas: #f4ecd9;          /* pigmented warm cream */
+  --panel: #fffefa;           /* ivory cards */
+  --raised: #ebe1c8;
+  --muted: #ddd2af;
+  --edge: #d3c9ad;
+  --edge-strong: #a89c70;
+  --gold: #a05a4f;            /* sienna becomes brand */
+  --gold-glow: rgba(160, 90, 79, 0.10);
+  --up: #4d8556;              /* sage stays for status */
+  --up-tint: rgba(77, 133, 86, 0.15);
+  --down: #5a3a2e;            /* darker brown for negative — distinct from sienna brand */
+  --down-tint: rgba(90, 58, 46, 0.15);
+  --blue: #3a4a3f;            /* moss now in accent slot */
+  --blue-tint: rgba(58, 74, 63, 0.15);
 }
-[data-preview="editorial"] .preview-card.preview-hero {
-  border-bottom-width: 2px;
-  border-bottom-color: var(--gold);
-  padding-bottom: 28px;
-  margin-bottom: 8px;
-}
-[data-preview="editorial"] .preview-section-title {
-  font-family: var(--font-serif);
-  font-size: 22px;
-  font-weight: 400;
-  letter-spacing: -0.01em;
-  color: var(--ink);
-}
-[data-preview="editorial"] .preview-hero h1 {
-  font-family: var(--font-serif);
-  font-size: clamp(40px, 6vw, 56px);
-  letter-spacing: -0.025em;
-  line-height: 1.05;
-  font-weight: 400;
-}
-[data-preview="editorial"] .preview-eyebrow,
-[data-preview="editorial"] .preview-eyebrow-brand {
-  font-family: var(--font-serif);
-  font-style: italic;
-  font-weight: 400;
-  font-size: 13px;
-  letter-spacing: 0;
-  text-transform: none;
-  color: var(--ink-faint);
-}
-[data-preview="editorial"] .preview-event-row {
-  border-radius: 0;
-  border: none;
-  border-top: 1px solid var(--edge);
-  background: transparent;
-}
-[data-preview="editorial"] .preview-event-row:first-child {
-  border-top: none;
-}
-[data-preview="editorial"] .preview-week-grid {
-  grid-template-columns: 1fr;
-  gap: 0;
-}
-[data-preview="editorial"] .preview-day-card {
-  border: none;
-  border-bottom: 1px solid var(--edge);
-  border-radius: 0;
-  padding: 24px 0;
-  box-shadow: none;
-  background: transparent;
-}
-[data-preview="editorial"] .preview-day-card[data-today="true"] {
-  border-left: 3px solid var(--gold);
-  padding-left: 16px;
-  background: transparent;
+
+/* ── F — Amber ─────────────────────────────────────
+ * Bloomberg-light. Vivid amber brand on white cards, energetic data
+ * colors. The light counterpart to the existing dark Bloomberg-pro mode. */
+[data-preview="amber"] {
+  --canvas: #fafaf3;          /* near-white warm */
+  --panel: #ffffff;           /* pure white cards */
+  --raised: #f4f3ea;
+  --muted: #e9e5d3;
+  --edge: #d8d3bf;
+  --edge-strong: #aaa085;
+  --gold: #b8860b;            /* vivid amber brand */
+  --gold-glow: rgba(184, 134, 11, 0.12);
+  --up: #0d9456;              /* emerald — energetic */
+  --up-tint: rgba(13, 148, 86, 0.15);
+  --down: #c8311c;            /* ruby */
+  --down-tint: rgba(200, 49, 28, 0.15);
+  --blue: #1a3b8a;            /* deep navy accent */
+  --blue-tint: rgba(26, 59, 138, 0.15);
+  --ink: #0a0a0a;             /* truer black for newsroom contrast */
+  --ink-dim: #2a2a26;
+  --ink-faint: #54574c;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.06), 0 6px 16px rgba(0, 0, 0, 0.05);
 }
