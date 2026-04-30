@@ -110,9 +110,8 @@
 [data-preview="amber"],
 [data-preview="amber-slate"],
 [data-preview="amber-moss"],
-[data-preview="amber-moss-double"],
-[data-preview="amber-moss-soft"],
-[data-preview="amber-moss-stripe"] {
+[data-preview="amber-slate-frame"],
+[data-preview="amber-moss-frame"] {
   --canvas: #fafaf3;          /* near-white warm */
   --panel: #ffffff;           /* pure white cards */
   --raised: #f4f3ea;
@@ -145,36 +144,29 @@
   --edge-strong: #283526;
 }
 
-/* Amber · Moss double-border — paper-stock framing.
- * Outer 1px border via --edge, inner ring via inset box-shadow that
- * fakes a gap by stacking ivory + moss insets. The auto-applied
- * shadow rule on .rounded-xl.bg-panel reads --shadow-card. */
-[data-preview="amber-moss-double"] {
+/* Amber · Moss frame + depth — full-strength moss border at 2px stroke
+ * paired with a bigger moss-tinted shadow. Color is unmistakable; cards
+ * still float. The .preview-card rule overrides Tailwind's default 1px
+ * `border` width per scope. */
+[data-preview="amber-moss-frame"] {
   --edge: #3a4a3f;
   --edge-strong: #283526;
   --shadow-card:
-    inset 0 0 0 4px #ffffff,                  /* ivory gap */
-    inset 0 0 0 5px #3a4a3f,                  /* inner ring */
-    0 1px 2px rgba(0, 0, 0, 0.06),            /* soft drop */
-    0 6px 16px rgba(0, 0, 0, 0.05);
-}
-
-/* Amber · Moss soft — translucent border, larger moss-tinted shadow.
- * Border barely visible; depth carries the structural weight. */
-[data-preview="amber-moss-soft"] {
-  --edge: rgba(58, 74, 63, 0.35);             /* moss at 35% opacity */
-  --edge-strong: rgba(58, 74, 63, 0.6);
-  --shadow-card:
-    0 2px 8px rgba(58, 74, 63, 0.10),
+    0 2px 8px rgba(58, 74, 63, 0.12),
     0 16px 40px rgba(58, 74, 63, 0.10);
 }
-
-/* Amber · Moss stripe — full-strength moss on left edge only.
- * Other three sides keep the pale-tan baseline border. */
-[data-preview="amber-moss-stripe"] {
-  --edge: #d8d3bf;                            /* pale tan default */
-  --edge-strong: #aaa085;
+[data-preview="amber-moss-frame"] .preview-card {
+  border-width: 2px;
 }
-[data-preview="amber-moss-stripe"] .preview-card {
-  border-left: 3px solid #3a4a3f;
+
+/* Amber · Slate frame + depth — same as moss-frame, in slate. */
+[data-preview="amber-slate-frame"] {
+  --edge: #3d556e;
+  --edge-strong: #2a3d50;
+  --shadow-card:
+    0 2px 8px rgba(61, 85, 110, 0.12),
+    0 16px 40px rgba(61, 85, 110, 0.10);
+}
+[data-preview="amber-slate-frame"] .preview-card {
+  border-width: 2px;
 }

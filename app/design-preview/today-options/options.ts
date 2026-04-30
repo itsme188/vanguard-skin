@@ -17,9 +17,8 @@ export type OptionId =
   | "amber"
   | "amber-slate"
   | "amber-moss"
-  | "amber-moss-double"
-  | "amber-moss-soft"
-  | "amber-moss-stripe";
+  | "amber-slate-frame"
+  | "amber-moss-frame";
 
 export interface OptionMeta {
   id: OptionId;
@@ -135,39 +134,26 @@ export const OPTIONS: OptionMeta[] = [
     ],
   },
   {
-    id: "amber-moss-double",
-    name: "Amber · Moss double-border",
-    tagline: "Moss color. Two thin lines with a paper-stock gap between them.",
+    id: "amber-moss-frame",
+    name: "Amber · Moss frame + depth",
+    tagline: "2px solid moss border at full strength + bigger moss-tinted shadow.",
     description:
-      "Same moss color, but rendered as a double border — a 1px outer stroke, a small ivory gap, a 1px inner ring. Reads like a framed print or quality stationery. Less sharp than a single solid line because the eye sees structure (two strokes) rather than a single continuous edge.",
+      "Combines the depth you liked in the soft-edges variant with a clearly visible moss frame. The border is full-strength color (no opacity tricks) at 2px thickness so the moss is unmistakable; the shadow underneath is bigger and moss-tinted so cards still float. Color + 3D, no compromise.",
     swatches: [
-      { hex: "#3a4a3f", label: "Moss (double)" },
+      { hex: "#3a4a3f", label: "Moss frame" },
       { hex: "#b8860b", label: "Brand amber" },
       { hex: "#ffffff", label: "White cards" },
       { hex: "#fafaf3", label: "Canvas" },
     ],
   },
   {
-    id: "amber-moss-soft",
-    name: "Amber · Moss soft edges",
-    tagline: "Moss color at 35% opacity + a stronger moss-tinted shadow.",
+    id: "amber-slate-frame",
+    name: "Amber · Slate frame + depth",
+    tagline: "2px solid slate border at full strength + bigger slate-tinted shadow.",
     description:
-      "The border becomes a whisper — moss at low opacity barely defines the card edge, while a larger moss-tinted shadow does the depth work. Cards feel lifted and glowing rather than framed. Most ambient of the variants.",
+      "Same approach as the moss frame, in slate. Bold visible blue framing on every card paired with a bigger slate-tinted shadow for depth. Cool counterpoint to the amber brand. Pick this vs the moss frame to choose your color anchor.",
     swatches: [
-      { hex: "#3a4a3f", label: "Moss (35%)" },
-      { hex: "#b8860b", label: "Brand amber" },
-      { hex: "#ffffff", label: "White cards" },
-      { hex: "#fafaf3", label: "Canvas" },
-    ],
-  },
-  {
-    id: "amber-moss-stripe",
-    name: "Amber · Moss left-stripe",
-    tagline: "Pale tan elsewhere. A 3px moss accent on the left edge only.",
-    description:
-      "Borders are pale tan on three sides; the left edge gets a thick moss stripe. Magazine-sidebar / Stripe-dashboard aesthetic — color is concentrated as an accent, not a frame. Most architectural of the variants.",
-    swatches: [
-      { hex: "#3a4a3f", label: "Moss stripe" },
+      { hex: "#3d556e", label: "Slate frame" },
       { hex: "#b8860b", label: "Brand amber" },
       { hex: "#ffffff", label: "White cards" },
       { hex: "#fafaf3", label: "Canvas" },
