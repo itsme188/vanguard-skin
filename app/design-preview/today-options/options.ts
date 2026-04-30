@@ -15,9 +15,9 @@ export type OptionId =
   | "forest"
   | "sienna"
   | "amber"
-  | "amber-amber"
-  | "amber-navy"
-  | "amber-forest";
+  | "amber-slate"
+  | "amber-moss"
+  | "amber-sienna";
 
 export interface OptionMeta {
   id: OptionId;
@@ -107,39 +107,39 @@ export const OPTIONS: OptionMeta[] = [
     ],
   },
   {
-    id: "amber-amber",
-    name: "Amber · Amber edges",
-    tagline: "Same Amber base. Cards framed in muted amber.",
+    id: "amber-slate",
+    name: "Amber · Slate edges",
+    tagline: "Amber base. Cards framed in the slate blue you picked earlier.",
     description:
-      "Borders pick up the brand color. Cards become amber-framed paper — the brand color is everywhere your eye lands instead of just on headlines. Most cohesive of the variants; risk is monotony if every card looks the same.",
+      "Same slate blue (`#3d556e`) you approved as the 4th-color accent in light mode — now applied at full strength on every card border. Cool counterpoint to the warm amber brand. Cohesive with the rest of the app since slate is already in the production palette.",
     swatches: [
-      { hex: "#b8860b", label: "Brand amber" },
-      { hex: "#d4a020", label: "Edge amber" },
-      { hex: "#ffffff", label: "White cards" },
-      { hex: "#fafaf3", label: "Canvas" },
-    ],
-  },
-  {
-    id: "amber-navy",
-    name: "Amber · Navy edges",
-    tagline: "Amber base. Cards framed in deep navy.",
-    description:
-      "Cool counterpoint. The amber brand still leads in headlines and chips, but every card is rimmed in deep navy — the high-contrast pairing that makes financial data feel structured and intentional. Borders define; brand attracts.",
-    swatches: [
-      { hex: "#1a3b8a", label: "Edge navy" },
+      { hex: "#3d556e", label: "Slate edge" },
       { hex: "#b8860b", label: "Brand amber" },
       { hex: "#ffffff", label: "White cards" },
       { hex: "#fafaf3", label: "Canvas" },
     ],
   },
   {
-    id: "amber-forest",
-    name: "Amber · Forest edges",
-    tagline: "Amber base. Cards framed in deep forest green.",
+    id: "amber-moss",
+    name: "Amber · Moss edges",
+    tagline: "Amber base. Cards framed in the original moss green.",
     description:
-      "Earthy contrast. Forest-green borders bring back the moss palette as a structural element while amber leads accents. Distinctive, warm but grounded — feels older-world, more deliberate than the navy variant.",
+      "The deep moss `#3a4a3f` from the original Sage & Linen brand color, now used as a structural element. Earthy and confident — the green you started with returns as the frame around every card while amber leads accents.",
     swatches: [
-      { hex: "#2d4a32", label: "Edge forest" },
+      { hex: "#3a4a3f", label: "Moss edge" },
+      { hex: "#b8860b", label: "Brand amber" },
+      { hex: "#ffffff", label: "White cards" },
+      { hex: "#fafaf3", label: "Canvas" },
+    ],
+  },
+  {
+    id: "amber-sienna",
+    name: "Amber · Sienna edges",
+    tagline: "Amber base. Cards framed in burnt sienna brown.",
+    description:
+      "The burnt sienna `#a05a4f` from the original Sage & Linen palette (currently the `--down` status color) as borders. Warm reddish-brown frames pair with the amber brand for an entirely warm-led identity — no cool tones in the chrome at all.",
+    swatches: [
+      { hex: "#a05a4f", label: "Sienna edge" },
       { hex: "#b8860b", label: "Brand amber" },
       { hex: "#ffffff", label: "White cards" },
       { hex: "#fafaf3", label: "Canvas" },
