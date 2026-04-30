@@ -259,11 +259,14 @@ html {
   outline-offset: 2px;
 }
 
-/* Reader typography — optimized for long-form reading */
+/* Reader typography — optimized for long-form reading.
+ * Phase 4 reader-app spec: ≥17px body, ≥1.6 line-height, ≥640px max width.
+ * Whitespace-pre-wrap is set on the wrapper element; we keep paragraph
+ * margins for the split-by-paragraph fallback path. */
 .prose-reader {
   font-family: var(--font-sans);
-  font-size: 15px;
-  line-height: 1.8;
+  font-size: 18px;
+  line-height: 1.7;
   color: var(--color-ink-dim);
   max-width: 65ch;
 }
@@ -274,11 +277,12 @@ html {
   margin-bottom: 0;
 }
 
-/* Newsletter HTML rendering — rich content with images, tables, charts */
+/* Newsletter HTML rendering — rich content with images, tables, charts.
+ * Same reader-app spec applies. Tables and code stay at their own scale. */
 .prose-newsletter {
   font-family: var(--font-sans);
-  font-size: 15px;
-  line-height: 1.8;
+  font-size: 18px;
+  line-height: 1.7;
   color: var(--color-ink-dim);
   max-width: 72ch;
   overflow-wrap: break-word;
