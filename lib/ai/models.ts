@@ -33,26 +33,27 @@ export const FEATURE_MODELS: Record<FeatureKey, string> = {
   // Large trade reviews (>20 trades) use Sonnet to avoid Opus timeout risk.
   tradeReviewMainLarge: `anthropic/${SONNET_MODEL}`,
 
-  // Structured / lower-stakes work. Phase 2 experiments route extraction and
-  // one-sentence generation to Workers AI. Rollback = flip back to
-  // `anthropic/${SONNET_MODEL}` if quality regresses.
+  // Structured / lower-stakes work. Some entries route to Workers AI to test
+  // cheaper alternatives. Rollback = flip back to `anthropic/${SONNET_MODEL}`
+  // if quality regresses.
   //
   // Two Workers AI quirks we've hit:
   //
-  // 1. Kimi K2.x is a *reasoning* model — emits reasoning_content that
-  //    consumes the max_tokens budget before any visible content. Use only
-  //    where the caller's maxOutputTokens is >= 1024 AND latency-tolerant
-  //    (reasoning adds 5-20s).
+  // 1. Kimi K2.x is a *reasoning* model — reasoning_content shares the
+  //    max_tokens budget. Empirically, even maxOutputTokens=2048 was
+  //    insufficient for prompts that ask for structured JSON over
+  //    multi-thousand-token input (newsletter extraction): reasoning
+  //    consumed the entire budget, finish_reason=length, no visible
+  //    content. Safe only for short prompts with short structured output.
   //
   // 2. Llama 3.3 via the compat endpoint: if the response *looks* like valid
   //    JSON, Cloudflare auto-parses `message.content` into an object rather
   //    than a string. AI SDK's OpenAI-compatible provider chokes on that
   //    (expects content to be a string). Avoid Llama for any call whose
-  //    prompt asks for raw JSON output — use Sonnet on Anthropic, or Kimi
-  //    (whose reasoning_content bypass keeps message.content as string).
+  //    prompt asks for raw JSON output — use Sonnet on Anthropic instead.
   tradeReviewQA: `anthropic/${SONNET_MODEL}`,
   alertSuggestion: "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-  newsletterLevelExtraction: "workers-ai/@cf/moonshotai/kimi-k2.6",
+  newsletterLevelExtraction: `anthropic/${SONNET_MODEL}`,
   newsletterProcessing: `anthropic/${SONNET_MODEL}`,
   factorClassification: `anthropic/${SONNET_MODEL}`,
   macroEnrichment: `anthropic/${SONNET_MODEL}`,

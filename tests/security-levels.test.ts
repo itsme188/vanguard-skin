@@ -42,7 +42,11 @@ function seedSecurity(symbol: string, name = `${symbol} Corp`): number {
   return result.lastInsertRowid as number;
 }
 
-function seedPrice(securityId: number, price: number, date = "2026-04-20"): void {
+function seedPrice(
+  securityId: number,
+  price: number,
+  date = new Date().toISOString().slice(0, 10)
+): void {
   db.prepare(
     "INSERT INTO prices (security_id, date, close_price, source) VALUES (?, ?, ?, 'manual')"
   ).run(securityId, date, price);
