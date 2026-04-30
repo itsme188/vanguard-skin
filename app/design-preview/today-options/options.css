@@ -173,12 +173,18 @@
   border: 0;
 }
 
-/* Amber · Moss glow (no border) — same approach in moss. */
+/* Amber · Moss glow (no border) — saturated + grounded.
+ * Per user feedback after picking this variant: more color, less
+ * floaty. Close drop bumped 55%->70% opacity with slightly heavier
+ * 6px Y-offset (cards sit a touch lower). Ambient halo bumped
+ * 35%->45% opacity but pulled IN — Y-offset 24->14, blur 56->36.
+ * Same moss pigment, packed closer to the card edge instead of
+ * extending into a diffuse cloud. */
 [data-preview="amber-moss-glow"] {
   --shadow-card:
     0 0 0 1px rgba(58, 74, 63, 0.20),
-    0 4px 16px rgba(58, 74, 63, 0.55),
-    0 24px 56px rgba(58, 74, 63, 0.35);
+    0 6px 18px rgba(58, 74, 63, 0.70),
+    0 14px 36px rgba(58, 74, 63, 0.45);
 }
 [data-preview="amber-moss-glow"] .preview-card {
   border: 0;
