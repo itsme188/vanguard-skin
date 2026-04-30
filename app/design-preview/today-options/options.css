@@ -37,7 +37,7 @@
    * shadow soup. Ring kept at 20% to preserve crisp card edges. */
   --shadow-card:
     0 0 0 1px rgba(58, 74, 63, 0.20),
-    0 8px 24px rgba(58, 74, 63, 0.45),
+    0 8px 24px rgba(58, 74, 63, 0.40),
     0 28px 64px rgba(58, 74, 63, 0.30);
 }
 
