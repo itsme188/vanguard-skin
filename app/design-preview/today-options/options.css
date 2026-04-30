@@ -31,13 +31,14 @@
   --ink-faint: #54574c;
 
   /* Card shadow — confirmed direction: roomy reach, moss-tinted, grounded.
-   * Ring 20% + close drop 65% (Y=8, blur=24) + ambient 40% (Y=28, blur=64).
-   * Cards breathe; shadow extends well past card edges; cards still sit
-   * grounded rather than levitating. */
+   * Ring 20% + close drop 50% (Y=8, blur=24) + ambient 30% (Y=28, blur=64).
+   * Saturation dialed down from 65/40 (per user feedback after the bigger
+   * section gaps landed) — moss color still visible, just less ambient
+   * shadow soup. Ring kept at 20% to preserve crisp card edges. */
   --shadow-card:
     0 0 0 1px rgba(58, 74, 63, 0.20),
-    0 8px 24px rgba(58, 74, 63, 0.65),
-    0 28px 64px rgba(58, 74, 63, 0.40);
+    0 8px 24px rgba(58, 74, 63, 0.50),
+    0 28px 64px rgba(58, 74, 63, 0.30);
 }
 
 /* Cards on this page have no border — the shadow does all the edge work. */
