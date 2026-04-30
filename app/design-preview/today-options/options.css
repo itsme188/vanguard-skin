@@ -108,9 +108,9 @@
  * for the border-color experiment ("does chromatic framing make the
  * page feel more alive than pale tan borders?"). */
 [data-preview="amber"],
-[data-preview="amber-amber"],
-[data-preview="amber-navy"],
-[data-preview="amber-forest"] {
+[data-preview="amber-slate"],
+[data-preview="amber-moss"],
+[data-preview="amber-sienna"] {
   --canvas: #fafaf3;          /* near-white warm */
   --panel: #ffffff;           /* pure white cards */
   --raised: #f4f3ea;
@@ -131,20 +131,20 @@
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.06), 0 6px 16px rgba(0, 0, 0, 0.05);
 }
 
-/* Amber · Amber edges — borders pick up the brand color. */
-[data-preview="amber-amber"] {
-  --edge: #d4a020;            /* muted amber, visible but not garish */
-  --edge-strong: #b8860b;     /* pure brand at full strength */
+/* Amber · Slate edges — slate `#3d556e` you approved at commit 43239d1. */
+[data-preview="amber-slate"] {
+  --edge: #3d556e;            /* the in-palette slate blue */
+  --edge-strong: #2a3d50;
 }
 
-/* Amber · Navy edges — high-contrast structural framing. */
-[data-preview="amber-navy"] {
-  --edge: #1a3b8a;            /* deep navy at full strength */
-  --edge-strong: #0e2358;
+/* Amber · Moss edges — original Sage & Linen brand moss `#3a4a3f`. */
+[data-preview="amber-moss"] {
+  --edge: #3a4a3f;            /* the original brand moss */
+  --edge-strong: #283526;
 }
 
-/* Amber · Forest edges — earthy counterpoint to amber brand. */
-[data-preview="amber-forest"] {
-  --edge: #2d4a32;            /* deep forest */
-  --edge-strong: #1a3020;
+/* Amber · Sienna edges — original Sage & Linen down sienna `#a05a4f`. */
+[data-preview="amber-sienna"] {
+  --edge: #a05a4f;            /* burnt sienna */
+  --edge-strong: #7a4036;
 }
