@@ -22,7 +22,7 @@ export interface BenchmarkFetchResult {
 
 // ─── Known benchmarks ───────────────────────────────────────────
 
-export const BENCHMARK_SYMBOLS = ["SPY", "QQQ", "DIA", "VTI"] as const;
+export const BENCHMARK_SYMBOLS = ["SPY", "QQQ", "DIA", "VTI", "MTUM", "SPMO", "USMV"] as const;
 export type BenchmarkSymbol = (typeof BENCHMARK_SYMBOLS)[number];
 
 export const BENCHMARK_LABELS: Record<string, string> = {
@@ -30,6 +30,9 @@ export const BENCHMARK_LABELS: Record<string, string> = {
   QQQ: "Nasdaq 100",
   DIA: "Dow Jones",
   VTI: "Total Market",
+  MTUM: "MSCI Momentum",
+  SPMO: "S&P 500 Momentum",
+  USMV: "Min Volatility",
 };
 
 // ─── Internals ──────────────────────────────────────────────────

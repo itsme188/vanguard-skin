@@ -3,6 +3,7 @@
 import { useState, useEffect, type ReactNode } from "react";
 import type { PortfolioGreeks, PositionGreeks } from "@/lib/compute/options-greeks";
 import { PrivateText } from "@/lib/privacy/components";
+import { EmptySection } from "./EmptySection";
 
 /**
  * Portfolio-level Greeks summary + per-position Greeks table.
@@ -25,10 +26,19 @@ export function OptionsGreeksCard({ scope }: { scope?: string }) {
       .finally(() => setLoading(false));
   }, [scope]);
 
-  if (loading || !data) return null;
+  if (loading) return null;
+  if (!data) {
+    return (
+      <EmptySection
+        title="Options Greeks"
+        reason="No option positions in this scope."
+        hint="Greeks (delta, gamma, theta, vega) appear once you hold call or put options. Open an options trade in IBKR or Vanguard to see this section populate."
+      />
+    );
+  }
 
   return (
-    <div className="bg-raised border border-edge rounded-2xl p-6 space-y-4">
+    <div className="bg-panel rounded-xl p-4 sm:p-5 card-elev space-y-4">
       <h3 className="text-sm font-medium text-ink">Options Greeks</h3>
 
       {/* Portfolio-level summary */}

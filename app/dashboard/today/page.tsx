@@ -14,6 +14,8 @@ import { NearbyLevelsCard } from "../components/NearbyLevelsCard";
 import { OpenChatButton } from "../components/OpenChatButton";
 import { Money, Pct, Shares } from "@/lib/privacy/components";
 import { TodayReleases } from "../components/TodayReleases";
+import { MomentumPulse } from "../components/MomentumPulse";
+import { computeMomentumPulse } from "@/lib/compute/momentum-spread";
 import { EarningsHub } from "./EarningsHub";
 import { WeekAheadView } from "./WeekAheadView";
 
@@ -195,6 +197,9 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
     )
     .all(today) as CalendarEvent[];
 
+  // ── Momentum factor pulse (renders only on non-neutral status) ────
+  const momentumPulse = computeMomentumPulse(db);
+
   // ── Portfolio totals for the hero (Overview absorption — IA Phase 3) ──
   const portfolio = getPortfolioTotals(db);
 
@@ -261,6 +266,9 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
           <TodayReleases releases={todayReleases} />
         </div>
       )}
+
+      {/* ── Momentum pulse (conditional — non-neutral only) ── */}
+      <MomentumPulse pulse={momentumPulse} />
 
       {/* ── Week-ahead Earnings Hub (full width — primary attention magnet) ── */}
       <EarningsHub />
