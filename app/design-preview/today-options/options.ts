@@ -136,9 +136,9 @@ export const OPTIONS: OptionMeta[] = [
   {
     id: "amber-moss-frame",
     name: "Amber · Moss frame + depth",
-    tagline: "2px solid moss border at full strength + bigger moss-tinted shadow.",
+    tagline: "6px solid moss border + bigger moss-tinted shadow.",
     description:
-      "Combines the depth you liked in the soft-edges variant with a clearly visible moss frame. The border is full-strength color (no opacity tricks) at 2px thickness so the moss is unmistakable; the shadow underneath is bigger and moss-tinted so cards still float. Color + 3D, no compromise.",
+      "Combines the depth you liked in the soft-edges variant with a chunky moss frame. The border is full-strength color (no opacity tricks) at 6px thickness so the moss is impossible to miss; the shadow underneath is bigger and moss-tinted so cards still float. Color + 3D at full volume.",
     swatches: [
       { hex: "#3a4a3f", label: "Moss frame" },
       { hex: "#b8860b", label: "Brand amber" },
@@ -149,9 +149,9 @@ export const OPTIONS: OptionMeta[] = [
   {
     id: "amber-slate-frame",
     name: "Amber · Slate frame + depth",
-    tagline: "2px solid slate border at full strength + bigger slate-tinted shadow.",
+    tagline: "6px solid slate border + bigger slate-tinted shadow.",
     description:
-      "Same approach as the moss frame, in slate. Bold visible blue framing on every card paired with a bigger slate-tinted shadow for depth. Cool counterpoint to the amber brand. Pick this vs the moss frame to choose your color anchor.",
+      "Same approach as the moss frame, in slate. Chunky 6px slate framing on every card paired with a bigger slate-tinted shadow for depth. Cool counterpoint to the amber brand. Pick this vs the moss frame to choose your color anchor.",
     swatches: [
       { hex: "#3d556e", label: "Slate frame" },
       { hex: "#b8860b", label: "Brand amber" },

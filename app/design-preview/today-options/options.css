@@ -156,7 +156,7 @@
     0 16px 40px rgba(58, 74, 63, 0.10);
 }
 [data-preview="amber-moss-frame"] .preview-card {
-  border-width: 2px;
+  border-width: 6px;
 }
 
 /* Amber · Slate frame + depth — same as moss-frame, in slate. */
@@ -168,5 +168,5 @@
     0 16px 40px rgba(61, 85, 110, 0.10);
 }
 [data-preview="amber-slate-frame"] .preview-card {
-  border-width: 2px;
+  border-width: 6px;
 }
