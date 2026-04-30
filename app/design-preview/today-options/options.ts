@@ -8,7 +8,13 @@
  * on the landing page.
  */
 
-export type OptionId = "quiet" | "zones" | "newsprint" | "editorial";
+export type OptionId =
+  | "quiet"
+  | "zones"
+  | "newsprint"
+  | "forest"
+  | "sienna"
+  | "amber";
 
 export interface OptionMeta {
   id: OptionId;
@@ -59,16 +65,42 @@ export const OPTIONS: OptionMeta[] = [
     ],
   },
   {
-    id: "editorial",
-    name: "Editorial",
-    tagline: "Magazine page. Bigger type. Cards bleed into canvas.",
+    id: "forest",
+    name: "Forest",
+    tagline: "Deeper greens. Richer brand. Same cream paper.",
     description:
-      "Less Bloomberg, more Financial Times. Serif headlines. Bigger body type. Card boundaries soften — most are just dividers. Vertical rhythm leads the eye. Reads like the morning briefing email rendered as a page.",
+      "Punchier Sage & Linen. The brand moss goes from quiet `#3a4a3f` to deep forest `#1f3a28` — same family, real depth. Adds a rich amber accent (`#c08c3b`) for moments of warmth. Cream canvas slightly more pigmented. The earth tones stay; they just speak louder.",
     swatches: [
-      { hex: "#f1ead4", label: "Warm paper" },
-      { hex: "#3a4a3f", label: "Moss (headlines)" },
-      { hex: "#1f211c", label: "Ink (body)" },
-      { hex: "#a05a4f", label: "Sienna" },
+      { hex: "#1f3a28", label: "Deep forest" },
+      { hex: "#c08c3b", label: "Amber accent" },
+      { hex: "#fffefa", label: "Ivory" },
+      { hex: "#f1ead4", label: "Warm cream" },
+    ],
+  },
+  {
+    id: "sienna",
+    name: "Sienna",
+    tagline: "Burnt-sienna brand. Browns lead. Moss recedes.",
+    description:
+      "Inverts the palette weight. Sienna `#a05a4f` becomes the brand color — the warm reddish-brown leads headlines, eyebrows, brand surfaces. Moss steps back to a quieter status role. Distinctive, warm, less green-dominant. A different identity built from the same pigments.",
+    swatches: [
+      { hex: "#a05a4f", label: "Burnt sienna" },
+      { hex: "#fffefa", label: "Ivory cards" },
+      { hex: "#f4ecd9", label: "Warm cream" },
+      { hex: "#5a7a5c", label: "Sage (data)" },
+    ],
+  },
+  {
+    id: "amber",
+    name: "Amber",
+    tagline: "Bloomberg-light. Vivid amber brand. White cards.",
+    description:
+      "What the dark Bloomberg-pro mode looks like flipped to light. Brand becomes vivid amber `#b8860b`. Cards are pure white on a near-white cream. Status colors push toward true emerald + ruby for energetic data. High-contrast, energetic, financial-terminal-meets-newsroom.",
+    swatches: [
+      { hex: "#b8860b", label: "Vivid amber" },
+      { hex: "#ffffff", label: "White cards" },
+      { hex: "#0d9456", label: "Emerald" },
+      { hex: "#c8311c", label: "Ruby" },
     ],
   },
 ];
