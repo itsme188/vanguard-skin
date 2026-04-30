@@ -11,8 +11,7 @@ import { WelcomeOverlay } from "./components/WelcomeOverlay";
 import { MobileBottomNav } from "./components/MobileBottomNav";
 import { MobileNavDrawer } from "./components/MobileNavDrawer";
 import { DigestCatchup } from "./components/DigestCatchup";
-import { AlertsBell } from "./components/AlertsBell";
-import { ReviewBell } from "./components/ReviewBell";
+import { NotificationBell } from "./components/NotificationBell";
 import { PrivacyToggle } from "./components/PrivacyToggle";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { NotesAmbient } from "./components/NotesAmbient";
@@ -50,8 +49,7 @@ export default function DashboardLayout({
               <div className="hidden md:flex"><DataConfidenceIndicator /></div>
               <SearchButton />
               <TwsStatus />
-              <ReviewBell />
-              <AlertsBell />
+              <NotificationBell />
               <ChatToggleButton />
               <ThemeToggle />
               <PrivacyToggle />
