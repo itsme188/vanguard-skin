@@ -229,8 +229,8 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
       </header>
 
       {/* ── Portfolio hero (Overview absorption — IA Phase 3) ── */}
-      <section className="rounded-xl border border-edge bg-panel-sage p-5 sm:p-6 card-elev">
-        <p className="text-[11px] uppercase tracking-widest text-gold mb-2">Portfolio</p>
+      <section className="rounded-xl border border-edge bg-panel p-5 sm:p-6">
+        <p className="text-[11px] uppercase tracking-widest text-ink-faint mb-2">Portfolio</p>
         <div className="flex items-baseline gap-3 flex-wrap">
           <span
             className="font-mono font-semibold tabular-nums text-ink"

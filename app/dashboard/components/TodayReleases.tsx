@@ -28,7 +28,7 @@ function fmtTime(release_time: string): string {
 
 export function TodayReleases({ releases }: { releases: CalendarEvent[] }) {
   return (
-    <section className="rounded-xl border border-edge bg-panel-warm p-5">
+    <section className="rounded-xl border border-edge bg-panel p-5">
       <div className="mb-3 flex items-baseline justify-between">
         <h2 className="text-sm font-medium text-ink">Today&rsquo;s releases</h2>
         <Link
