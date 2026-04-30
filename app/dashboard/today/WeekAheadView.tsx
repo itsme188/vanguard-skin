@@ -74,7 +74,7 @@ export function WeekAheadView({ events, weekOf }: WeekAheadViewProps) {
       </header>
 
       {totalEvents === 0 ? (
-        <section className="rounded-xl border border-edge bg-panel p-5">
+        <section className="rounded-xl border border-edge bg-panel p-5 card-elev">
           <p className="text-[14px] text-ink-faint">
             No events scheduled this week. Calendar sync may not have run yet — check Charts ›
             Calendar (or trigger via the Sunday briefing).
@@ -103,7 +103,7 @@ interface DayCardProps {
 function DayCard({ day }: DayCardProps) {
   return (
     <section
-      className={`rounded-xl border p-5 sm:p-6 min-w-0 ${
+      className={`rounded-xl border p-5 sm:p-6 min-w-0 card-elev ${
         day.isToday ? "border-blue bg-blue/8" : "border-edge bg-panel"
       }`}
     >
