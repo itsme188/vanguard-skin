@@ -51,11 +51,14 @@ export function MobileNavDrawer() {
         />
       )}
 
-      {/* Drawer panel */}
+      {/* Drawer panel — explicit background-color in addition to bg-panel
+          because the Tailwind utility wasn't rendering opaque on iOS Safari
+          (page content was bleeding through between nav items). */}
       <nav
         className={`fixed top-0 left-0 h-full w-64 z-50 bg-panel border-r border-edge shadow-2xl transform transition-transform duration-300 ease-in-out md:hidden ${
           open ? "translate-x-0" : "-translate-x-full"
         }`}
+        style={{ backgroundColor: "var(--panel)" }}
         role="dialog"
         aria-label="Navigation menu"
         aria-hidden={!open}
