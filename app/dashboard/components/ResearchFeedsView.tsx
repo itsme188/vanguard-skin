@@ -251,53 +251,27 @@ export function ResearchFeedsView({ initialArticles, sources, initialSymbolMap }
 
   return (
     <div className="space-y-5">
-      {/* Controls bar */}
+      {/* Controls bar — single source dropdown (native select) on every
+          viewport. The earlier desktop pill cluster surfaced the full
+          source list at the page top, which the user flagged as a "jumble"
+          on 2026-04-30. The select hides individual sources behind one
+          click on the All label. */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        {isMobile ? (
-          <select
-            value={sourceFilter ?? ""}
-            onChange={(e) => handleFilterChange(e.target.value ? Number(e.target.value) : null)}
-            className="px-3 py-1.5 rounded-md bg-raised border border-edge text-sm text-ink w-full"
-          >
-            <option value="">All Sources</option>
-            {currentSources
-              .filter((s) => s.is_active && s.article_count && s.article_count > 0)
-              .map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name} ({s.article_count})
-                </option>
-              ))}
-          </select>
-        ) : (
-          <div className="flex items-center gap-2 overflow-x-auto">
-            <button
-              onClick={() => handleFilterChange(null)}
-              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                sourceFilter === null
-                  ? "bg-panel text-ink shadow-sm border border-edge"
-                  : "text-ink-dim hover:text-ink hover:bg-raised"
-              }`}
-            >
-              All
-            </button>
-            {currentSources
-              .filter((s) => s.is_active && s.article_count && s.article_count > 0)
-              .map((s) => (
-                <button
-                  key={s.id}
-                  onClick={() => handleFilterChange(s.id)}
-                  className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                    sourceFilter === s.id
-                      ? "bg-panel text-ink shadow-sm border border-edge"
-                      : "text-ink-dim hover:text-ink hover:bg-raised"
-                  }`}
-                >
-                  {s.name}
-                  <span className="ml-1 text-ink-faint">({s.article_count})</span>
-                </button>
-              ))}
-          </div>
-        )}
+        <select
+          value={sourceFilter ?? ""}
+          onChange={(e) => handleFilterChange(e.target.value ? Number(e.target.value) : null)}
+          className="px-3 py-1.5 rounded-md bg-raised border border-edge text-sm text-ink w-full sm:w-auto sm:min-w-[200px] focus:outline-none focus:border-gold"
+          aria-label="Filter by source"
+        >
+          <option value="">All Sources</option>
+          {currentSources
+            .filter((s) => s.is_active && s.article_count && s.article_count > 0)
+            .map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name} ({s.article_count})
+              </option>
+            ))}
+        </select>
 
         <div className="flex items-center gap-2">
           {/* Search: full input on desktop, icon toggle on mobile */}
@@ -458,19 +432,19 @@ function ArticleCard({
           <SentimentBadge sentiment={article.sentiment} />
         </div>
 
-        {/* Headline */}
-        <h3 className={`text-lg font-semibold leading-snug text-ink mb-2 ${expanded ? "" : "group-hover:text-gold transition-colors"}`}>
+        {/* Headline — reader-app scale (~21px / line-height tight) */}
+        <h3 className={`text-xl font-semibold leading-snug text-ink mb-2 ${expanded ? "" : "group-hover:text-gold transition-colors"}`}>
           {article.subject}
         </h3>
 
-        {/* AI Summary */}
+        {/* AI Summary — reader-app body (17px / 1.7 line-height) */}
         {article.summary && (
-          <p className="text-[15px] leading-[1.7] text-ink-dim mb-3">{article.summary}</p>
+          <p className="text-[17px] leading-[1.7] text-ink-dim mb-3">{article.summary}</p>
         )}
 
         {/* Portfolio relevance */}
         {article.portfolio_relevance && (
-          <p className={`text-[15px] leading-[1.7] text-gold/80 mb-3 pl-3 border-l-2 ${border}`}>
+          <p className={`text-[17px] leading-[1.7] text-gold/80 mb-3 pl-3 border-l-2 ${border}`}>
             {article.portfolio_relevance}
           </p>
         )}

@@ -15,6 +15,7 @@ import { AlertsBell } from "./components/AlertsBell";
 import { ReviewBell } from "./components/ReviewBell";
 import { PrivacyToggle } from "./components/PrivacyToggle";
 import { ThemeToggle } from "./components/ThemeToggle";
+import { NotesAmbient } from "./components/NotesAmbient";
 import { PrivacyProvider } from "@/lib/privacy/context";
 
 export default function DashboardLayout({
@@ -80,6 +81,9 @@ export default function DashboardLayout({
 
         {/* Mobile bottom navigation (phone only) */}
         <MobileBottomNav />
+
+        {/* Ambient notes overlay (Cmd+; from any tab) */}
+        <NotesAmbient />
       </div>
      </PrivacyProvider>
     </ToastProvider>
