@@ -99,15 +99,23 @@
   --blue-tint: rgba(58, 74, 63, 0.15);
 }
 
-/* ── F — Amber ─────────────────────────────────────
+/* ── F — Amber family ──────────────────────────────
  * Bloomberg-light. Vivid amber brand on white cards, energetic data
- * colors. The light counterpart to the existing dark Bloomberg-pro mode. */
-[data-preview="amber"] {
+ * colors. The light counterpart to the existing dark Bloomberg-pro mode.
+ *
+ * Group selector applies the full Amber base to the variant family;
+ * each variant's own block then only overrides --edge / --edge-strong
+ * for the border-color experiment ("does chromatic framing make the
+ * page feel more alive than pale tan borders?"). */
+[data-preview="amber"],
+[data-preview="amber-amber"],
+[data-preview="amber-navy"],
+[data-preview="amber-forest"] {
   --canvas: #fafaf3;          /* near-white warm */
   --panel: #ffffff;           /* pure white cards */
   --raised: #f4f3ea;
   --muted: #e9e5d3;
-  --edge: #d8d3bf;
+  --edge: #d8d3bf;            /* pale tan default — variants override */
   --edge-strong: #aaa085;
   --gold: #b8860b;            /* vivid amber brand */
   --gold-glow: rgba(184, 134, 11, 0.12);
@@ -121,4 +129,22 @@
   --ink-dim: #2a2a26;
   --ink-faint: #54574c;
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.06), 0 6px 16px rgba(0, 0, 0, 0.05);
+}
+
+/* Amber · Amber edges — borders pick up the brand color. */
+[data-preview="amber-amber"] {
+  --edge: #d4a020;            /* muted amber, visible but not garish */
+  --edge-strong: #b8860b;     /* pure brand at full strength */
+}
+
+/* Amber · Navy edges — high-contrast structural framing. */
+[data-preview="amber-navy"] {
+  --edge: #1a3b8a;            /* deep navy at full strength */
+  --edge-strong: #0e2358;
+}
+
+/* Amber · Forest edges — earthy counterpoint to amber brand. */
+[data-preview="amber-forest"] {
+  --edge: #2d4a32;            /* deep forest */
+  --edge-strong: #1a3020;
 }
