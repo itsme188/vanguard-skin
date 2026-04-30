@@ -1,24 +1,27 @@
 /**
- * Four cohesive design directions for the Today page.
+ * Today design preview — current focus is layout/density variations on
+ * top of the confirmed amber-moss-glow-roomy palette + shadow direction.
  *
- * Each option overrides design tokens within a `[data-preview="<id>"]`
- * scope so the shared TodayPreview component renders four distinct
- * visual treatments without code duplication. Token overrides live in
- * `options.css`; this file is just the metadata + descriptions shown
- * on the landing page.
+ * Each option overrides design tokens within a `[data-preview="<scope>"]`
+ * scope (see options.css). The `layout` field controls the actual
+ * TodayPreview component shape (density of padding/spacing + whether
+ * the page leads with a Hero card or a slim portfolio strip).
  */
 
 export type OptionId =
-  | "quiet"
-  | "zones"
-  | "newsprint"
-  | "forest"
-  | "sienna"
-  | "amber"
-  | "amber-moss-glow"
   | "amber-moss-glow-roomy"
-  | "amber-moss-glow-airy"
-  | "amber-moss-glow-rich";
+  | "amber-roomy-compact"
+  | "amber-roomy-strip";
+
+export type LayoutDensity = "default" | "compact";
+export type LayoutHeader = "hero" | "strip";
+
+export interface OptionLayout {
+  /** Which `[data-preview="..."]` scope to apply for palette + shadow tokens. */
+  paletteScope: string;
+  density: LayoutDensity;
+  header: LayoutHeader;
+}
 
 export interface OptionMeta {
   id: OptionId;
@@ -26,138 +29,63 @@ export interface OptionMeta {
   tagline: string;
   description: string;
   swatches: { hex: string; label: string }[];
+  layout: OptionLayout;
 }
 
 export const OPTIONS: OptionMeta[] = [
   {
-    id: "quiet",
-    name: "Quiet",
-    tagline: "Uniform ivory cards. Color through accents only.",
-    description:
-      "Every card sits on the same panel-ivory. The page is calm; the data is the color. Moss eyebrows, sage gain numbers, sienna loss numbers, slate metadata. Cohesion through discipline — no surface zones.",
-    swatches: [
-      { hex: "#fffefa", label: "Panel" },
-      { hex: "#f7f4ed", label: "Canvas" },
-      { hex: "#3a4a3f", label: "Moss accent" },
-      { hex: "#3d556e", label: "Slate accent" },
-    ],
-  },
-  {
-    id: "zones",
-    name: "Zones",
-    tagline: "Brand surfaces in sage. Context surfaces in warm tan. Data in ivory.",
-    description:
-      "Three surface tones used systematically. Hero and brand-anchor cards in pigmented sage. Macro/context cards in pigmented warm tan. Data cards in ivory. Each surface tells you what kind of content it holds.",
-    swatches: [
-      { hex: "#d4e3d0", label: "Sage (brand)" },
-      { hex: "#e8d2af", label: "Warm tan (context)" },
-      { hex: "#fffefa", label: "Ivory (data)" },
-      { hex: "#3a4a3f", label: "Moss" },
-    ],
-  },
-  {
-    id: "newsprint",
-    name: "Newsprint",
-    tagline: "Pure white cards on cool cream. Color lives in chips.",
-    description:
-      "Cards become pure white paper sitting on a cooler, slightly grey-tinted cream. Color is concentrated in eyebrows, status chips, and dividers. Like a quality finance newspaper — black ink, white paper, occasional accent of red/green/blue. Maximum clarity.",
-    swatches: [
-      { hex: "#ffffff", label: "White (panel)" },
-      { hex: "#f3f1e8", label: "Cool cream" },
-      { hex: "#2d3a30", label: "Deep moss" },
-      { hex: "#a05a4f", label: "Sienna" },
-    ],
-  },
-  {
-    id: "forest",
-    name: "Forest",
-    tagline: "Deeper greens. Richer brand. Same cream paper.",
-    description:
-      "Punchier Sage & Linen. The brand moss goes from quiet `#3a4a3f` to deep forest `#1f3a28` — same family, real depth. Adds a rich amber accent (`#c08c3b`) for moments of warmth. Cream canvas slightly more pigmented. The earth tones stay; they just speak louder.",
-    swatches: [
-      { hex: "#1f3a28", label: "Deep forest" },
-      { hex: "#c08c3b", label: "Amber accent" },
-      { hex: "#fffefa", label: "Ivory" },
-      { hex: "#f1ead4", label: "Warm cream" },
-    ],
-  },
-  {
-    id: "sienna",
-    name: "Sienna",
-    tagline: "Burnt-sienna brand. Browns lead. Moss recedes.",
-    description:
-      "Inverts the palette weight. Sienna `#a05a4f` becomes the brand color — the warm reddish-brown leads headlines, eyebrows, brand surfaces. Moss steps back to a quieter status role. Distinctive, warm, less green-dominant. A different identity built from the same pigments.",
-    swatches: [
-      { hex: "#a05a4f", label: "Burnt sienna" },
-      { hex: "#fffefa", label: "Ivory cards" },
-      { hex: "#f4ecd9", label: "Warm cream" },
-      { hex: "#5a7a5c", label: "Sage (data)" },
-    ],
-  },
-  {
-    id: "amber",
-    name: "Amber",
-    tagline: "Bloomberg-light. Vivid amber brand. White cards.",
-    description:
-      "What the dark Bloomberg-pro mode looks like flipped to light. Brand becomes vivid amber `#b8860b`. Cards are pure white on a near-white cream. Status colors push toward true emerald + ruby for energetic data. High-contrast, energetic, financial-terminal-meets-newsroom. Pale tan borders.",
-    swatches: [
-      { hex: "#b8860b", label: "Vivid amber" },
-      { hex: "#ffffff", label: "White cards" },
-      { hex: "#0d9456", label: "Emerald" },
-      { hex: "#c8311c", label: "Ruby" },
-    ],
-  },
-  {
-    id: "amber-moss-glow",
-    name: "Amber · Moss glow (current baseline)",
-    tagline: "No border. Moss shadow grounded with current saturation. Reference point.",
-    description:
-      "Where we landed last iteration: 1px moss ring + close drop at 70% opacity (Y=6, blur=18) + ambient halo at 45% (Y=14, blur=36). Use this as the reference to compare the three new variants against.",
-    swatches: [
-      { hex: "#3a4a3f", label: "Moss" },
-      { hex: "#b8860b", label: "Brand amber" },
-      { hex: "#ffffff", label: "White cards" },
-      { hex: "#fafaf3", label: "Canvas" },
-    ],
-  },
-  {
     id: "amber-moss-glow-roomy",
-    name: "Amber · Moss glow — roomy (your pick)",
-    tagline: "Wide-reach shadow, soft. The direction you confirmed.",
+    name: "Roomy (current pick)",
+    tagline: "Confirmed direction. Hero card up top, default density.",
     description:
-      "What you confirmed last round. Close drop Y=8 blur=24 at 65%, ambient halo Y=28 blur=64 at 40%. Cards breathe; shadow extends well past the card edges. Reference point for the two new variants.",
+      "What you committed to last round. Amber base, no border, moss-tinted shadow extending past the cards. Default padding inside cards. Hero portfolio card sits above secondary cards. Use this as the reference for the two layout variants below.",
     swatches: [
-      { hex: "#3a4a3f", label: "Moss" },
+      { hex: "#3a4a3f", label: "Moss shadow" },
       { hex: "#b8860b", label: "Brand amber" },
       { hex: "#ffffff", label: "White cards" },
       { hex: "#fafaf3", label: "Canvas" },
     ],
+    layout: {
+      paletteScope: "amber-moss-glow-roomy",
+      density: "default",
+      header: "hero",
+    },
   },
   {
-    id: "amber-moss-glow-airy",
-    name: "Amber · Moss glow — airy (even more reach)",
-    tagline: "Pushes breathing room further. Cards float in even more space.",
+    id: "amber-roomy-compact",
+    name: "Roomy · Compact density",
+    tagline: "Same Hero. Tighter padding inside every card. Same fonts.",
     description:
-      "Roomy + more reach. Close drop Y=10 blur=32, ambient halo Y=40 blur=88 — significantly bigger physical extent than the roomy baseline. Opacities held proportional to keep the wider shadow soft (close 60%, ambient 38%). The 'how big can the breathing room get' direction.",
+      "Same arrangement and Hero card, but card padding goes from 20-24px to 12-14px and row gaps tighten. Font sizes are unchanged. Less wasted space; you don't have to lean forward as much. Smallest delta from your current pick — answers 'is the density problem solved by tightening alone?'",
     swatches: [
-      { hex: "#3a4a3f", label: "Moss (airy)" },
+      { hex: "#3a4a3f", label: "Moss shadow" },
       { hex: "#b8860b", label: "Brand amber" },
       { hex: "#ffffff", label: "White cards" },
       { hex: "#fafaf3", label: "Canvas" },
     ],
+    layout: {
+      paletteScope: "amber-moss-glow-roomy",
+      density: "compact",
+      header: "hero",
+    },
   },
   {
-    id: "amber-moss-glow-rich",
-    name: "Amber · Moss glow — rich (same reach, more color)",
-    tagline: "Roomy's physical extent, but with louder moss saturation.",
+    id: "amber-roomy-strip",
+    name: "Roomy · Strip header (no Hero)",
+    tagline: "Portfolio total moves to a slim header strip. All other cards equal-weight.",
     description:
-      "Same Y-offsets and blur values as the roomy baseline (the breathing room you liked) — but opacities pushed up. Ring 20%→30%, close drop 65%→80%, ambient halo 40%→55%. The wider shadow now carries more moss pigment. Combines your two earlier preferences (more color AND more breathing room).",
+      "Drops the Hero card entirely. Portfolio total / change / accounts move to a slim horizontal strip at the top of the page (no card chrome — just a row with a hairline bottom border). Below it, every card is peer-weight: TodayReleases, Alerts, Levels, Holdings, Week-Ahead all sit at the same visual altitude. Card density is also tightened. Matches the 'scan this page, no single Hero' mental model — your portfolio total stays visible without dominating.",
     swatches: [
-      { hex: "#3a4a3f", label: "Moss (rich)" },
+      { hex: "#3a4a3f", label: "Moss shadow" },
       { hex: "#b8860b", label: "Brand amber" },
       { hex: "#ffffff", label: "White cards" },
       { hex: "#fafaf3", label: "Canvas" },
     ],
+    layout: {
+      paletteScope: "amber-moss-glow-roomy",
+      density: "compact",
+      header: "strip",
+    },
   },
 ];
 

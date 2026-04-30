@@ -20,16 +20,16 @@ export default async function OptionPage({ params }: PageProps) {
   if (!meta) notFound();
 
   return (
-    <div data-preview={meta.id} className="min-h-screen bg-canvas text-ink">
+    <div data-preview={meta.layout.paletteScope} className="min-h-screen bg-canvas text-ink">
       <div className="max-w-[1600px] mx-auto px-4 md:px-6 pb-20">
         <PreviewNav current={meta.id} />
         <div className="py-3">
           <p className="text-[10px] uppercase tracking-widest text-ink-faint">
-            Design preview · Option {meta.name}
+            Design preview · {meta.name}
           </p>
           <p className="text-[13px] text-ink-dim mt-0.5 italic">{meta.tagline}</p>
         </div>
-        <TodayPreview />
+        <TodayPreview density={meta.layout.density} header={meta.layout.header} />
       </div>
     </div>
   );
