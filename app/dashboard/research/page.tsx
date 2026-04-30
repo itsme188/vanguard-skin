@@ -108,7 +108,7 @@ export default async function ResearchPage({ searchParams }: PageProps) {
             {view === "feeds"
               ? "Newsletter digests and market research from Gmail"
               : view === "reviews"
-                ? "Monthly AI trade analysis and behavioral patterns"
+                ? "Monthly AI trade analysis — moving to Analysis tab in Phase 5"
                 : view === "documents"
                   ? "Uploaded research PDFs — searchable from chat"
                   : "Investment journal, earnings notes, and trade theses"}
