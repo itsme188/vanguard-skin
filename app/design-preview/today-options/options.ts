@@ -15,10 +15,10 @@ export type OptionId =
   | "forest"
   | "sienna"
   | "amber"
-  | "amber-slate-thin"
-  | "amber-slate-glow"
-  | "amber-moss-thin"
-  | "amber-moss-glow";
+  | "amber-moss-glow"
+  | "amber-moss-glow-saturated"
+  | "amber-moss-glow-roomy"
+  | "amber-moss-glow-balanced";
 
 export interface OptionMeta {
   id: OptionId;
@@ -108,52 +108,52 @@ export const OPTIONS: OptionMeta[] = [
     ],
   },
   {
-    id: "amber-slate-thin",
-    name: "Amber · Slate thin border + saturated shadow",
-    tagline: "3px slate border + heavily slate-tinted depth shadow.",
-    description:
-      "Border thinned from the chunky 6px down to 3px so it reads as a visible accent rather than a frame. Shadow saturation pushed hard — close drop at 55% opacity slate, ambient halo at 35%, plus a tight 1px ring inside. The slate color is now everywhere your eye goes: the thin border line, the colored close shadow under the card, and the colored ambient halo around it.",
-    swatches: [
-      { hex: "#3d556e", label: "Slate border" },
-      { hex: "#b8860b", label: "Brand amber" },
-      { hex: "#ffffff", label: "White cards" },
-      { hex: "#fafaf3", label: "Canvas" },
-    ],
-  },
-  {
-    id: "amber-slate-glow",
-    name: "Amber · Slate glow (no border)",
-    tagline: "No border at all. The slate shadow does all the edge work.",
-    description:
-      "Removes the border entirely. The shadow takes over: a 1px slate ring acts as the card outline, then a heavily-saturated slate close drop + ambient halo create the depth. Cards look like they're floating in slate atmosphere — no hard line, just colored air around them. Most ambient version.",
-    swatches: [
-      { hex: "#3d556e", label: "Slate halo" },
-      { hex: "#b8860b", label: "Brand amber" },
-      { hex: "#ffffff", label: "White cards" },
-      { hex: "#fafaf3", label: "Canvas" },
-    ],
-  },
-  {
-    id: "amber-moss-thin",
-    name: "Amber · Moss thin border + saturated shadow",
-    tagline: "3px moss border + heavily moss-tinted depth shadow.",
-    description:
-      "Same approach as the slate-thin variant but in moss `#3a4a3f`. Visible accent border + heavily saturated moss shadow (55% close, 35% halo). Picks up where moss-edges and moss-frame left off — finds the middle weight where both color and depth are simultaneously unmistakable.",
-    swatches: [
-      { hex: "#3a4a3f", label: "Moss border" },
-      { hex: "#b8860b", label: "Brand amber" },
-      { hex: "#ffffff", label: "White cards" },
-      { hex: "#fafaf3", label: "Canvas" },
-    ],
-  },
-  {
     id: "amber-moss-glow",
-    name: "Amber · Moss glow (no border)",
-    tagline: "No border. Moss shadow does all the edge work.",
+    name: "Amber · Moss glow (current baseline)",
+    tagline: "No border. Moss shadow grounded with current saturation. Reference point.",
     description:
-      "Same as slate-glow but in moss. No border at all; the moss-tinted shadow with its 1px ring + close drop + ambient halo defines and floats every card. Compare side-by-side with moss-thin to decide whether the page wants a hard border line at all.",
+      "Where we landed last iteration: 1px moss ring + close drop at 70% opacity (Y=6, blur=18) + ambient halo at 45% (Y=14, blur=36). Use this as the reference to compare the three new variants against.",
     swatches: [
-      { hex: "#3a4a3f", label: "Moss halo" },
+      { hex: "#3a4a3f", label: "Moss" },
+      { hex: "#b8860b", label: "Brand amber" },
+      { hex: "#ffffff", label: "White cards" },
+      { hex: "#fafaf3", label: "Canvas" },
+    ],
+  },
+  {
+    id: "amber-moss-glow-saturated",
+    name: "Amber · Moss glow — more color",
+    tagline: "Same physical extent, much more moss saturation.",
+    description:
+      "Pushes color hard while keeping the grounded shape. Ring 20%→30%, close drop 70%→85%, ambient halo 45%→60%. Same Y-offsets and blur values as the baseline so cards still sit grounded — just more moss pigment in every layer. The 'how saturated can it go before it's too much' direction.",
+    swatches: [
+      { hex: "#3a4a3f", label: "Moss (saturated)" },
+      { hex: "#b8860b", label: "Brand amber" },
+      { hex: "#ffffff", label: "White cards" },
+      { hex: "#fafaf3", label: "Canvas" },
+    ],
+  },
+  {
+    id: "amber-moss-glow-roomy",
+    name: "Amber · Moss glow — more breathing room",
+    tagline: "Shadow extends farther from the card. Cards have room around them.",
+    description:
+      "Pushes the shadow's physical reach back out. Close drop Y 6→8 + blur 18→24, ambient halo Y 14→28 + blur 36→64. Color saturation slightly reduced (70%→65%, 45%→40%) so the wider blur reads soft instead of muddy. Cards have more space around them; the moss color fills more of the page. The 'longer shadow' direction.",
+    swatches: [
+      { hex: "#3a4a3f", label: "Moss (roomy)" },
+      { hex: "#b8860b", label: "Brand amber" },
+      { hex: "#ffffff", label: "White cards" },
+      { hex: "#fafaf3", label: "Canvas" },
+    ],
+  },
+  {
+    id: "amber-moss-glow-balanced",
+    name: "Amber · Moss glow — my best guess",
+    tagline: "A touch more color + a touch more breathing room than the baseline.",
+    description:
+      "What I'd recommend: ring 20%→25%, close drop 70%→78% (more visible color), ambient halo opacity 45%→52% + Y 14→18 + blur 36→44 (slightly more reach without going floaty). Splits the difference between the saturated and roomy directions — both color and breathing room get a small bump from the baseline.",
+    swatches: [
+      { hex: "#3a4a3f", label: "Moss (balanced)" },
       { hex: "#b8860b", label: "Brand amber" },
       { hex: "#ffffff", label: "White cards" },
       { hex: "#fafaf3", label: "Canvas" },
