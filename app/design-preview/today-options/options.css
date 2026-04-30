@@ -110,7 +110,9 @@
 [data-preview="amber"],
 [data-preview="amber-slate"],
 [data-preview="amber-moss"],
-[data-preview="amber-sienna"] {
+[data-preview="amber-moss-double"],
+[data-preview="amber-moss-soft"],
+[data-preview="amber-moss-stripe"] {
   --canvas: #fafaf3;          /* near-white warm */
   --panel: #ffffff;           /* pure white cards */
   --raised: #f4f3ea;
@@ -143,8 +145,36 @@
   --edge-strong: #283526;
 }
 
-/* Amber · Sienna edges — original Sage & Linen down sienna `#a05a4f`. */
-[data-preview="amber-sienna"] {
-  --edge: #a05a4f;            /* burnt sienna */
-  --edge-strong: #7a4036;
+/* Amber · Moss double-border — paper-stock framing.
+ * Outer 1px border via --edge, inner ring via inset box-shadow that
+ * fakes a gap by stacking ivory + moss insets. The auto-applied
+ * shadow rule on .rounded-xl.bg-panel reads --shadow-card. */
+[data-preview="amber-moss-double"] {
+  --edge: #3a4a3f;
+  --edge-strong: #283526;
+  --shadow-card:
+    inset 0 0 0 4px #ffffff,                  /* ivory gap */
+    inset 0 0 0 5px #3a4a3f,                  /* inner ring */
+    0 1px 2px rgba(0, 0, 0, 0.06),            /* soft drop */
+    0 6px 16px rgba(0, 0, 0, 0.05);
+}
+
+/* Amber · Moss soft — translucent border, larger moss-tinted shadow.
+ * Border barely visible; depth carries the structural weight. */
+[data-preview="amber-moss-soft"] {
+  --edge: rgba(58, 74, 63, 0.35);             /* moss at 35% opacity */
+  --edge-strong: rgba(58, 74, 63, 0.6);
+  --shadow-card:
+    0 2px 8px rgba(58, 74, 63, 0.10),
+    0 16px 40px rgba(58, 74, 63, 0.10);
+}
+
+/* Amber · Moss stripe — full-strength moss on left edge only.
+ * Other three sides keep the pale-tan baseline border. */
+[data-preview="amber-moss-stripe"] {
+  --edge: #d8d3bf;                            /* pale tan default */
+  --edge-strong: #aaa085;
+}
+[data-preview="amber-moss-stripe"] .preview-card {
+  border-left: 3px solid #3a4a3f;
 }
