@@ -108,10 +108,10 @@
  * for the border-color experiment ("does chromatic framing make the
  * page feel more alive than pale tan borders?"). */
 [data-preview="amber"],
-[data-preview="amber-slate-thin"],
-[data-preview="amber-slate-glow"],
-[data-preview="amber-moss-thin"],
-[data-preview="amber-moss-glow"] {
+[data-preview="amber-moss-glow"],
+[data-preview="amber-moss-glow-saturated"],
+[data-preview="amber-moss-glow-roomy"],
+[data-preview="amber-moss-glow-balanced"] {
   --canvas: #fafaf3;          /* near-white warm */
   --panel: #ffffff;           /* pure white cards */
   --raised: #f4f3ea;
@@ -132,54 +132,10 @@
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.06), 0 6px 16px rgba(0, 0, 0, 0.05);
 }
 
-/* Amber · Slate thin + saturated shadow.
- * 3px slate border (visible accent, not chunky frame) + 3-layer
- * saturated slate shadow: tight ring (15%) + close drop (55%) +
- * ambient halo (35%). Color reads everywhere your eye goes. */
-[data-preview="amber-slate-thin"] {
-  --edge: #3d556e;
-  --edge-strong: #2a3d50;
-  --shadow-card:
-    0 4px 16px rgba(61, 85, 110, 0.55),
-    0 24px 56px rgba(61, 85, 110, 0.35);
-}
-[data-preview="amber-slate-thin"] .preview-card {
-  border-width: 3px;
-}
-
-/* Amber · Moss thin + saturated shadow — same as slate-thin in moss. */
-[data-preview="amber-moss-thin"] {
-  --edge: #3a4a3f;
-  --edge-strong: #283526;
-  --shadow-card:
-    0 4px 16px rgba(58, 74, 63, 0.55),
-    0 24px 56px rgba(58, 74, 63, 0.35);
-}
-[data-preview="amber-moss-thin"] .preview-card {
-  border-width: 3px;
-}
-
-/* Amber · Slate glow (no border).
- * Border removed entirely; a 1px slate ring inside the box-shadow
- * stack acts as the card outline, then heavily-saturated close drop
- * + ambient halo create the floating-in-color-atmosphere look. */
-[data-preview="amber-slate-glow"] {
-  --shadow-card:
-    0 0 0 1px rgba(61, 85, 110, 0.20),
-    0 4px 16px rgba(61, 85, 110, 0.55),
-    0 24px 56px rgba(61, 85, 110, 0.35);
-}
-[data-preview="amber-slate-glow"] .preview-card {
-  border: 0;
-}
-
-/* Amber · Moss glow (no border) — saturated + grounded.
- * Per user feedback after picking this variant: more color, less
- * floaty. Close drop bumped 55%->70% opacity with slightly heavier
- * 6px Y-offset (cards sit a touch lower). Ambient halo bumped
- * 35%->45% opacity but pulled IN — Y-offset 24->14, blur 56->36.
- * Same moss pigment, packed closer to the card edge instead of
- * extending into a diffuse cloud. */
+/* Amber · Moss glow (baseline) — current iteration reference.
+ * Ring 20% + close drop 70% (Y=6, blur=18) + ambient 45% (Y=14, blur=36).
+ * Cards grounded with visible moss color. Use this as the comparison
+ * point for the three variants below. */
 [data-preview="amber-moss-glow"] {
   --shadow-card:
     0 0 0 1px rgba(58, 74, 63, 0.20),
@@ -187,5 +143,48 @@
     0 14px 36px rgba(58, 74, 63, 0.45);
 }
 [data-preview="amber-moss-glow"] .preview-card {
+  border: 0;
+}
+
+/* Amber · Moss glow — more color.
+ * Same physical extent (Y/blur unchanged); only opacities pushed.
+ * Ring 20%->30%, close 70%->85%, ambient 45%->60%.
+ * "How saturated can the moss go before it's too much" direction. */
+[data-preview="amber-moss-glow-saturated"] {
+  --shadow-card:
+    0 0 0 1px rgba(58, 74, 63, 0.30),
+    0 6px 18px rgba(58, 74, 63, 0.85),
+    0 14px 36px rgba(58, 74, 63, 0.60);
+}
+[data-preview="amber-moss-glow-saturated"] .preview-card {
+  border: 0;
+}
+
+/* Amber · Moss glow — more breathing room.
+ * Shadow physical extent pushed back out. Close drop Y=8 blur=24
+ * (slightly bigger), ambient halo Y=28 blur=64 (much bigger reach).
+ * Opacities slightly REDUCED so the wider blur reads soft, not muddy:
+ * close 70%->65%, ambient 45%->40%. Cards have room around them. */
+[data-preview="amber-moss-glow-roomy"] {
+  --shadow-card:
+    0 0 0 1px rgba(58, 74, 63, 0.20),
+    0 8px 24px rgba(58, 74, 63, 0.65),
+    0 28px 64px rgba(58, 74, 63, 0.40);
+}
+[data-preview="amber-moss-glow-roomy"] .preview-card {
+  border: 0;
+}
+
+/* Amber · Moss glow — balanced (my best guess).
+ * Modest bump in BOTH directions from the baseline. Ring 20%->25%,
+ * close 70%->78% (more color), ambient 45%->52% with Y=18 blur=44
+ * (more reach without going floaty). The middle path. */
+[data-preview="amber-moss-glow-balanced"] {
+  --shadow-card:
+    0 0 0 1px rgba(58, 74, 63, 0.25),
+    0 6px 20px rgba(58, 74, 63, 0.78),
+    0 18px 44px rgba(58, 74, 63, 0.52);
+}
+[data-preview="amber-moss-glow-balanced"] .preview-card {
   border: 0;
 }
