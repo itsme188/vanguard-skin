@@ -16,9 +16,9 @@ export type OptionId =
   | "sienna"
   | "amber"
   | "amber-moss-glow"
-  | "amber-moss-glow-saturated"
   | "amber-moss-glow-roomy"
-  | "amber-moss-glow-balanced";
+  | "amber-moss-glow-airy"
+  | "amber-moss-glow-rich";
 
 export interface OptionMeta {
   id: OptionId;
@@ -121,39 +121,39 @@ export const OPTIONS: OptionMeta[] = [
     ],
   },
   {
-    id: "amber-moss-glow-saturated",
-    name: "Amber · Moss glow — more color",
-    tagline: "Same physical extent, much more moss saturation.",
-    description:
-      "Pushes color hard while keeping the grounded shape. Ring 20%→30%, close drop 70%→85%, ambient halo 45%→60%. Same Y-offsets and blur values as the baseline so cards still sit grounded — just more moss pigment in every layer. The 'how saturated can it go before it's too much' direction.",
-    swatches: [
-      { hex: "#3a4a3f", label: "Moss (saturated)" },
-      { hex: "#b8860b", label: "Brand amber" },
-      { hex: "#ffffff", label: "White cards" },
-      { hex: "#fafaf3", label: "Canvas" },
-    ],
-  },
-  {
     id: "amber-moss-glow-roomy",
-    name: "Amber · Moss glow — more breathing room",
-    tagline: "Shadow extends farther from the card. Cards have room around them.",
+    name: "Amber · Moss glow — roomy (your pick)",
+    tagline: "Wide-reach shadow, soft. The direction you confirmed.",
     description:
-      "Pushes the shadow's physical reach back out. Close drop Y 6→8 + blur 18→24, ambient halo Y 14→28 + blur 36→64. Color saturation slightly reduced (70%→65%, 45%→40%) so the wider blur reads soft instead of muddy. Cards have more space around them; the moss color fills more of the page. The 'longer shadow' direction.",
+      "What you confirmed last round. Close drop Y=8 blur=24 at 65%, ambient halo Y=28 blur=64 at 40%. Cards breathe; shadow extends well past the card edges. Reference point for the two new variants.",
     swatches: [
-      { hex: "#3a4a3f", label: "Moss (roomy)" },
+      { hex: "#3a4a3f", label: "Moss" },
       { hex: "#b8860b", label: "Brand amber" },
       { hex: "#ffffff", label: "White cards" },
       { hex: "#fafaf3", label: "Canvas" },
     ],
   },
   {
-    id: "amber-moss-glow-balanced",
-    name: "Amber · Moss glow — my best guess",
-    tagline: "A touch more color + a touch more breathing room than the baseline.",
+    id: "amber-moss-glow-airy",
+    name: "Amber · Moss glow — airy (even more reach)",
+    tagline: "Pushes breathing room further. Cards float in even more space.",
     description:
-      "What I'd recommend: ring 20%→25%, close drop 70%→78% (more visible color), ambient halo opacity 45%→52% + Y 14→18 + blur 36→44 (slightly more reach without going floaty). Splits the difference between the saturated and roomy directions — both color and breathing room get a small bump from the baseline.",
+      "Roomy + more reach. Close drop Y=10 blur=32, ambient halo Y=40 blur=88 — significantly bigger physical extent than the roomy baseline. Opacities held proportional to keep the wider shadow soft (close 60%, ambient 38%). The 'how big can the breathing room get' direction.",
     swatches: [
-      { hex: "#3a4a3f", label: "Moss (balanced)" },
+      { hex: "#3a4a3f", label: "Moss (airy)" },
+      { hex: "#b8860b", label: "Brand amber" },
+      { hex: "#ffffff", label: "White cards" },
+      { hex: "#fafaf3", label: "Canvas" },
+    ],
+  },
+  {
+    id: "amber-moss-glow-rich",
+    name: "Amber · Moss glow — rich (same reach, more color)",
+    tagline: "Roomy's physical extent, but with louder moss saturation.",
+    description:
+      "Same Y-offsets and blur values as the roomy baseline (the breathing room you liked) — but opacities pushed up. Ring 20%→30%, close drop 65%→80%, ambient halo 40%→55%. The wider shadow now carries more moss pigment. Combines your two earlier preferences (more color AND more breathing room).",
+    swatches: [
+      { hex: "#3a4a3f", label: "Moss (rich)" },
       { hex: "#b8860b", label: "Brand amber" },
       { hex: "#ffffff", label: "White cards" },
       { hex: "#fafaf3", label: "Canvas" },

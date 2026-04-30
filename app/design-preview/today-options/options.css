@@ -109,9 +109,9 @@
  * page feel more alive than pale tan borders?"). */
 [data-preview="amber"],
 [data-preview="amber-moss-glow"],
-[data-preview="amber-moss-glow-saturated"],
 [data-preview="amber-moss-glow-roomy"],
-[data-preview="amber-moss-glow-balanced"] {
+[data-preview="amber-moss-glow-airy"],
+[data-preview="amber-moss-glow-rich"] {
   --canvas: #fafaf3;          /* near-white warm */
   --panel: #ffffff;           /* pure white cards */
   --raised: #f4f3ea;
@@ -146,25 +146,9 @@
   border: 0;
 }
 
-/* Amber · Moss glow — more color.
- * Same physical extent (Y/blur unchanged); only opacities pushed.
- * Ring 20%->30%, close 70%->85%, ambient 45%->60%.
- * "How saturated can the moss go before it's too much" direction. */
-[data-preview="amber-moss-glow-saturated"] {
-  --shadow-card:
-    0 0 0 1px rgba(58, 74, 63, 0.30),
-    0 6px 18px rgba(58, 74, 63, 0.85),
-    0 14px 36px rgba(58, 74, 63, 0.60);
-}
-[data-preview="amber-moss-glow-saturated"] .preview-card {
-  border: 0;
-}
-
-/* Amber · Moss glow — more breathing room.
- * Shadow physical extent pushed back out. Close drop Y=8 blur=24
- * (slightly bigger), ambient halo Y=28 blur=64 (much bigger reach).
- * Opacities slightly REDUCED so the wider blur reads soft, not muddy:
- * close 70%->65%, ambient 45%->40%. Cards have room around them. */
+/* Amber · Moss glow — roomy (user's confirmed direction).
+ * Close drop Y=8 blur=24 at 65%, ambient halo Y=28 blur=64 at 40%.
+ * Reference for the two extension variants below. */
 [data-preview="amber-moss-glow-roomy"] {
   --shadow-card:
     0 0 0 1px rgba(58, 74, 63, 0.20),
@@ -175,16 +159,31 @@
   border: 0;
 }
 
-/* Amber · Moss glow — balanced (my best guess).
- * Modest bump in BOTH directions from the baseline. Ring 20%->25%,
- * close 70%->78% (more color), ambient 45%->52% with Y=18 blur=44
- * (more reach without going floaty). The middle path. */
-[data-preview="amber-moss-glow-balanced"] {
+/* Amber · Moss glow — airy (even more reach).
+ * Pushes breathing room further. Close drop Y 8->10, blur 24->32.
+ * Ambient halo Y 28->40, blur 64->88 (significantly wider). Opacities
+ * held proportional so the bigger shadow stays soft, not muddy:
+ * close 65%->60%, ambient 40%->38%. */
+[data-preview="amber-moss-glow-airy"] {
   --shadow-card:
-    0 0 0 1px rgba(58, 74, 63, 0.25),
-    0 6px 20px rgba(58, 74, 63, 0.78),
-    0 18px 44px rgba(58, 74, 63, 0.52);
+    0 0 0 1px rgba(58, 74, 63, 0.20),
+    0 10px 32px rgba(58, 74, 63, 0.60),
+    0 40px 88px rgba(58, 74, 63, 0.38);
 }
-[data-preview="amber-moss-glow-balanced"] .preview-card {
+[data-preview="amber-moss-glow-airy"] .preview-card {
+  border: 0;
+}
+
+/* Amber · Moss glow — rich (same reach, more color).
+ * Same Y-offsets and blur values as roomy — physical extent unchanged.
+ * Opacities pushed: ring 20%->30%, close 65%->80%, ambient 40%->55%.
+ * The wider shadow carries more moss pigment than the baseline. */
+[data-preview="amber-moss-glow-rich"] {
+  --shadow-card:
+    0 0 0 1px rgba(58, 74, 63, 0.30),
+    0 8px 24px rgba(58, 74, 63, 0.80),
+    0 28px 64px rgba(58, 74, 63, 0.55);
+}
+[data-preview="amber-moss-glow-rich"] .preview-card {
   border: 0;
 }
