@@ -108,10 +108,10 @@
  * for the border-color experiment ("does chromatic framing make the
  * page feel more alive than pale tan borders?"). */
 [data-preview="amber"],
-[data-preview="amber-slate"],
-[data-preview="amber-moss"],
-[data-preview="amber-slate-frame"],
-[data-preview="amber-moss-frame"] {
+[data-preview="amber-slate-thin"],
+[data-preview="amber-slate-glow"],
+[data-preview="amber-moss-thin"],
+[data-preview="amber-moss-glow"] {
   --canvas: #fafaf3;          /* near-white warm */
   --panel: #ffffff;           /* pure white cards */
   --raised: #f4f3ea;
@@ -132,41 +132,54 @@
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.06), 0 6px 16px rgba(0, 0, 0, 0.05);
 }
 
-/* Amber · Slate edges — slate `#3d556e` you approved at commit 43239d1. */
-[data-preview="amber-slate"] {
-  --edge: #3d556e;            /* the in-palette slate blue */
-  --edge-strong: #2a3d50;
-}
-
-/* Amber · Moss edges — original Sage & Linen brand moss `#3a4a3f`. */
-[data-preview="amber-moss"] {
-  --edge: #3a4a3f;            /* the original brand moss */
-  --edge-strong: #283526;
-}
-
-/* Amber · Moss frame + depth — 6px solid moss border + saturated
- * moss-tinted shadow. Earlier 10-12% opacity was so light the shadow
- * read as plain gray; bumped to 40%/25% so the moss tint is actually
- * visible as a colored halo around each card. */
-[data-preview="amber-moss-frame"] {
-  --edge: #3a4a3f;
-  --edge-strong: #283526;
-  --shadow-card:
-    0 4px 12px rgba(58, 74, 63, 0.40),
-    0 16px 40px rgba(58, 74, 63, 0.25);
-}
-[data-preview="amber-moss-frame"] .preview-card {
-  border-width: 6px;
-}
-
-/* Amber · Slate frame + depth — same as moss-frame, in slate. */
-[data-preview="amber-slate-frame"] {
+/* Amber · Slate thin + saturated shadow.
+ * 3px slate border (visible accent, not chunky frame) + 3-layer
+ * saturated slate shadow: tight ring (15%) + close drop (55%) +
+ * ambient halo (35%). Color reads everywhere your eye goes. */
+[data-preview="amber-slate-thin"] {
   --edge: #3d556e;
   --edge-strong: #2a3d50;
   --shadow-card:
-    0 4px 12px rgba(61, 85, 110, 0.40),
-    0 16px 40px rgba(61, 85, 110, 0.25);
+    0 4px 16px rgba(61, 85, 110, 0.55),
+    0 24px 56px rgba(61, 85, 110, 0.35);
 }
-[data-preview="amber-slate-frame"] .preview-card {
-  border-width: 6px;
+[data-preview="amber-slate-thin"] .preview-card {
+  border-width: 3px;
+}
+
+/* Amber · Moss thin + saturated shadow — same as slate-thin in moss. */
+[data-preview="amber-moss-thin"] {
+  --edge: #3a4a3f;
+  --edge-strong: #283526;
+  --shadow-card:
+    0 4px 16px rgba(58, 74, 63, 0.55),
+    0 24px 56px rgba(58, 74, 63, 0.35);
+}
+[data-preview="amber-moss-thin"] .preview-card {
+  border-width: 3px;
+}
+
+/* Amber · Slate glow (no border).
+ * Border removed entirely; a 1px slate ring inside the box-shadow
+ * stack acts as the card outline, then heavily-saturated close drop
+ * + ambient halo create the floating-in-color-atmosphere look. */
+[data-preview="amber-slate-glow"] {
+  --shadow-card:
+    0 0 0 1px rgba(61, 85, 110, 0.20),
+    0 4px 16px rgba(61, 85, 110, 0.55),
+    0 24px 56px rgba(61, 85, 110, 0.35);
+}
+[data-preview="amber-slate-glow"] .preview-card {
+  border: 0;
+}
+
+/* Amber · Moss glow (no border) — same approach in moss. */
+[data-preview="amber-moss-glow"] {
+  --shadow-card:
+    0 0 0 1px rgba(58, 74, 63, 0.20),
+    0 4px 16px rgba(58, 74, 63, 0.55),
+    0 24px 56px rgba(58, 74, 63, 0.35);
+}
+[data-preview="amber-moss-glow"] .preview-card {
+  border: 0;
 }
