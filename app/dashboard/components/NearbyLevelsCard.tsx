@@ -18,8 +18,8 @@ export function NearbyLevelsCard({ levels }: { levels: LevelNearPrice[] }) {
   const overflow = levels.length - visible.length;
 
   return (
-    <section className="rounded-xl border border-edge bg-panel p-5 card-elev">
-      <div className="mb-3 flex items-baseline justify-between">
+    <section className="rounded-xl bg-panel p-4 sm:p-5 card-elev">
+      <div className="mb-2 flex items-baseline justify-between">
         <div>
           <h2 className="text-sm font-medium text-ink">Levels within 5% of current price</h2>
           <p className="text-[11px] text-ink-faint mt-0.5">

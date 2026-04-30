@@ -11,77 +11,79 @@
  * etc.) auto-adapt without code changes.
  *
  * Token VALUES flip per theme:
- *   :root                       → light "Sage & Linen + IBM Plex"
- *   [data-theme="dark"]         → dark "Bloomberg-pro + Plex Mono"
+ *   :root                       → light "Amber" (Bloomberg-light + IBM Plex)
+ *   [data-theme="dark"]         → dark "Bloomberg-pro" (soft black + Plex Mono)
  *
  * Anti-FOUC: a small script in app/layout.tsx reads localStorage["vgs:theme"]
  * and sets <html data-theme> before React hydrates.
  *
- * Note: "gold" is a semantic name, not a literal color. In light mode it is
- * the moss-green brand (#3a4a3f); in dark mode it is the Bloomberg amber
- * (#ffb84d). Both contrast >10:1 on their respective canvases.
+ * Note: "gold" is a semantic name. In light mode it is now the Amber brand
+ * (#b8860b — vivid, Bloomberg-aligned); in dark mode it stays Bloomberg amber
+ * (#ffb84d). Both contrast >7:1 on their respective canvases.
+ *
+ * History: light mode shipped briefly as "Sage & Linen" (deep moss brand,
+ * sage/sienna status) on 2026-04-29; pivoted to Amber on 2026-04-30 after
+ * design exploration locked the Bloomberg-light direction. Card shadow keeps
+ * a moss tint (cohesive grounding on warm canvas) even in the new palette —
+ * the only "Sage residue" left, intentional.
  */
 
 :root {
-  /* Surfaces */
-  --canvas: #f7f4ed;        /* warm cream */
-  --panel: #fffefa;         /* ivory white */
-  --raised: #f3efe5;
-  --muted: #ece4d3;         /* parchment */
+  /* Surfaces — Amber: warm-cream canvas, pure-white cards lift via shadow */
+  --canvas: #fafaf3;
+  --panel: #ffffff;
+  --raised: #f4f3ea;
+  --muted: #e9e5d3;
 
-  /* Borders */
-  --edge: #e2dfd4;          /* linen */
-  --edge-strong: #cdc7b4;
+  /* Borders — kept as token aliases even though cards go borderless app-wide
+   * (the .rounded-xl.bg-panel rule below sets border: 0). Inline rules,
+   * dividers, table grids, and "today" highlight outlines still reference these. */
+  --edge: #d8d3bf;
+  --edge-strong: #aaa085;
 
-  /* Text hierarchy.
-   * ink     — 16:1, headlines
-   * ink-dim — 8.7:1 (AAA), body text
-   * ink-faint — 7.0:1, metadata / micro-labels / column headers.
-   *
-   * Two iterations of bumps on 2026-04-29:
-   *   #7a7c70 (3.7:1, original) → too light, captions unreadable
-   *   #65685c (5.7:1, first bump) → still too light at 10px uppercase
-   *     (EarningsHub "WHEN / POS / TICKER" column headers)
-   *   #54574c (7.0:1, current) — close to body, but mono micro-labels at
-   *     10-11px need every bit of contrast they can get; the wishlist's
-   *     "what does this do" + reader-app rules both push toward readable
-   *     over fashionable. */
-  --ink: #1f211c;
-  --ink-dim: #3d4036;
+  /* Text hierarchy on warm canvas.
+   * ink     — 21:1, headlines
+   * ink-dim — 14:1, body text
+   * ink-faint — 7.0:1, metadata / micro-labels / column headers (matches the
+   *   Sage & Linen iteration's bottom rung; mono micro-labels at 10-11px need
+   *   every bit of contrast they can get). */
+  --ink: #0a0a0a;
+  --ink-dim: #2a2a26;
   --ink-faint: #54574c;
 
-  /* Brand — deep moss (the "gold" slot, semantic name preserved) */
-  --gold: #3a4a3f;
-  --gold-glow: rgba(58, 74, 63, 0.09);
+  /* Brand — Amber (#b8860b is the canonical "dark goldenrod"; reads as a
+   * deliberate Bloomberg-style accent against cream, not a yellow highlighter) */
+  --gold: #b8860b;
+  --gold-glow: rgba(184, 134, 11, 0.12);
 
-  /* Status — muted sage / burned sienna */
-  --up: #5a7a5c;
-  --up-tint: rgba(90, 122, 92, 0.15);
-  --down: #a05a4f;
-  --down-tint: rgba(160, 90, 79, 0.15);
+  /* Status — emerald / ruby. Matches dark mode's semantic green/red but at
+   * deeper saturation so they hold up against pure-white cards. */
+  --up: #0d9456;
+  --up-tint: rgba(13, 148, 86, 0.15);
+  --down: #c8311c;
+  --down-tint: rgba(200, 49, 28, 0.15);
 
-  /* Info accent — slate blue (deeper, cooler, more deliberate than the
-   * generic mid-blue we shipped at first; chosen 2026-04-29 to break up
-   * the tonal monotony of moss-brand + sage-up + sienna-down all reading
-   * as warm earth at the same value). Cool counterpoint to the cream. */
-  --blue: #3d556e;
-  --blue-tint: rgba(61, 85, 110, 0.15);
+  /* Info accent — deep navy. Cool counterpoint to amber/emerald/ruby; reserved
+   * for "today" outlines, info tags, and links. */
+  --blue: #1a3b8a;
+  --blue-tint: rgba(26, 59, 138, 0.15);
 
-  /* Tinted card surfaces — variations on the panel for variety without
-   * leaving the Sage & Linen palette. User feedback 2026-04-29 evening:
-   * "more of the greens that I like and the browns that I like" — give
-   * feature cards (Hero / brand surfaces) a moss undertone, and reserve
-   * a parchment undertone for warm context. Both stay near panel
-   * lightness so cards still lift; the tint is real pigment now (clearly
-   * visible chroma, not a barely-there hint — second-iteration value
-   * after user feedback that the first attempt was too subtle). */
-  --panel-sage: #dde6dc;     /* cream + moss undertone (brand surfaces) */
-  --panel-warm: #ebd5b8;     /* warm tan + sienna lean (context surfaces) */
+  /* Tinted card surfaces — variations on the panel for the rare cases that
+   * need a brand or warm-context undertone. Amber palette retunes these so
+   * a panel-sage card on the cream canvas stays in palette without dragging
+   * the rest of the page back to Sage & Linen. */
+  --panel-sage: #eef0e8;     /* cream + faint moss undertone */
+  --panel-warm: #f6ecdc;     /* cream + faint amber undertone */
 
-  /* Card elevation — moss-tinted shadow stays cohesive with brand instead
-   * of harsh-modern pure-black. Two layers: 1px-soft for the card edge,
-   * 6-16px-soft for the floating effect on warm cream. */
-  --shadow-card: 0 1px 2px rgba(58, 74, 63, 0.07), 0 6px 16px rgba(58, 74, 63, 0.05);
+  /* Card elevation — locked 2026-04-30: ring 20% + close drop 40% (Y=8, blur=24)
+   * + ambient 30% (Y=28, blur=64). Moss-tinted rgba(58, 74, 63, …) — kept after
+   * the Sage→Amber pivot because the moss reads as a believable cast shadow on
+   * the warm canvas; pure-black would feel harsh against #fafaf3. The shadow
+   * does ALL the edge work (cards are borderless via the rule below). */
+  --shadow-card:
+    0 0 0 1px rgba(58, 74, 63, 0.20),
+    0 8px 24px rgba(58, 74, 63, 0.40),
+    0 28px 64px rgba(58, 74, 63, 0.30);
 
   /* Default scrollbar tinting (overridden in dark) */
   --scrollbar-thumb: #cdc7b4;
@@ -174,12 +176,10 @@
   --color-foreground: var(--ink);
 }
 
-/* Card elevation — lifts panels off the canvas. Tinted toward moss in
- * light mode for cohesion with the brand; soft-black in dark mode.
- *
- * Auto-applied to the canonical card pattern (rounded-xl + any of the
- * panel surface tokens). Inline chips (rounded-md / rounded-full) and
- * modals (already have shadow-2xl which dominates) are unaffected.
+/* Card elevation — lifts panels off the canvas. Auto-applied to the canonical
+ * card pattern (rounded-xl + any of the panel surface tokens). Inline chips
+ * (rounded-md / rounded-full) and modals (already have shadow-2xl which
+ * dominates) are unaffected.
  *
  * The .card-elev class remains as explicit opt-in for cards that don't
  * follow the rounded-xl convention (e.g., overflow-hidden table wrappers
@@ -189,6 +189,21 @@
 .rounded-xl.bg-panel-warm,
 .card-elev {
   box-shadow: var(--shadow-card);
+}
+
+/* Borderless cards in LIGHT mode — locked 2026-04-30 (Phase 3.5):
+ * the 3-layer moss-tinted shadow does ALL the edge work, including the 1px
+ * ring layer that replaces the legacy `border border-edge`. This rule
+ * overrides Tailwind's `.border` utility (specificity 0,3,0 > 0,1,0).
+ *
+ * Dark mode INTENTIONALLY keeps borders — its shadow has no ring layer and
+ * its panel/canvas brightness delta (#0d0d0d on #0a0a0a) is too subtle to
+ * carry the edge alone. */
+:root:not([data-theme="dark"]) .rounded-xl.bg-panel,
+:root:not([data-theme="dark"]) .rounded-xl.bg-panel-sage,
+:root:not([data-theme="dark"]) .rounded-xl.bg-panel-warm,
+:root:not([data-theme="dark"]) .card-elev {
+  border: 0;
 }
 
 /* iPhone safe area for bottom nav / home indicator */
