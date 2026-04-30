@@ -68,10 +68,15 @@ export function TodayPreview({
     density === "compact" ? "p-3" :
     density === "medium" ? "p-4" :
     "p-5";
+  // Section gap chosen so each card's shadow has clean canvas to land on,
+  // not overlap into the next card. The moss shadow has Y-offset 28px;
+  // gap >= 32px (space-y-8) keeps the shadow drop landing in the gap
+  // before reaching the card below — fixes the "lower cards pop less"
+  // perceptual issue caused by shadow compounding.
   const sectionGap =
-    density === "compact" ? "space-y-3" :
-    density === "medium" ? "space-y-4" :
-    "space-y-6";
+    density === "compact" ? "space-y-5" :
+    density === "medium" ? "space-y-8" :
+    "space-y-10";
   const titleGap =
     density === "compact" ? "mb-2" :
     density === "medium" ? "mb-2" :
