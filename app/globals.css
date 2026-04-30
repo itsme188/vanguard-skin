@@ -72,9 +72,11 @@
    * "more of the greens that I like and the browns that I like" — give
    * feature cards (Hero / brand surfaces) a moss undertone, and reserve
    * a parchment undertone for warm context. Both stay near panel
-   * lightness so cards still lift; the tint is barely-there pigment. */
-  --panel-sage: #e9efe5;     /* cream + moss undertone (brand surfaces) */
-  --panel-warm: #f1ead8;     /* cream + parchment undertone (context) */
+   * lightness so cards still lift; the tint is real pigment now (clearly
+   * visible chroma, not a barely-there hint — second-iteration value
+   * after user feedback that the first attempt was too subtle). */
+  --panel-sage: #dde6dc;     /* cream + moss undertone (brand surfaces) */
+  --panel-warm: #ebd5b8;     /* warm tan + sienna lean (context surfaces) */
 
   /* Card elevation — moss-tinted shadow stays cohesive with brand instead
    * of harsh-modern pure-black. Two layers: 1px-soft for the card edge,
@@ -172,10 +174,19 @@
   --color-foreground: var(--ink);
 }
 
-/* Card elevation — lifts panels off the canvas. Opt-in via `card-elev`
- * class so inline `bg-panel` uses (chips, popovers, toolbars) don't get
- * unwanted shadows. Tinted toward moss in light mode for cohesion with
- * the brand; soft-black in dark mode. */
+/* Card elevation — lifts panels off the canvas. Tinted toward moss in
+ * light mode for cohesion with the brand; soft-black in dark mode.
+ *
+ * Auto-applied to the canonical card pattern (rounded-xl + any of the
+ * panel surface tokens). Inline chips (rounded-md / rounded-full) and
+ * modals (already have shadow-2xl which dominates) are unaffected.
+ *
+ * The .card-elev class remains as explicit opt-in for cards that don't
+ * follow the rounded-xl convention (e.g., overflow-hidden table wrappers
+ * with rounded corners on a different element). */
+.rounded-xl.bg-panel,
+.rounded-xl.bg-panel-sage,
+.rounded-xl.bg-panel-warm,
 .card-elev {
   box-shadow: var(--shadow-card);
 }
