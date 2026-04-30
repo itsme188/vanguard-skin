@@ -97,7 +97,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
 
   if (loading) {
     return (
-      <div className="bg-raised border border-edge rounded-2xl p-6">
+      <div className="bg-panel rounded-xl p-4 sm:p-5 card-elev">
         <h3 className="text-sm font-medium text-ink mb-4">Scenario Modeling</h3>
         <div className="text-sm text-ink-faint animate-pulse">Computing scenarios...</div>
       </div>
@@ -106,7 +106,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
 
   if (error || !scenarios || scenarios.length === 0) {
     return (
-      <div className="bg-raised border border-edge rounded-2xl p-6">
+      <div className="bg-panel rounded-xl p-4 sm:p-5 card-elev">
         <h3 className="text-sm font-medium text-ink mb-4">Scenario Modeling</h3>
         <div className="text-sm text-ink-faint">
           {error ?? "No position data available for scenario analysis."}
@@ -123,7 +123,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
     : scenarios;
 
   return (
-    <div className="bg-raised border border-edge rounded-2xl p-6 space-y-4">
+    <div className="bg-panel rounded-xl p-4 sm:p-5 card-elev space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-medium text-ink">Scenario Modeling</h3>
         <span className="text-xs text-ink-faint">
@@ -131,10 +131,31 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
         </span>
       </div>
 
-      <p className="text-xs text-ink-faint">
-        Estimated portfolio impact under hypothetical market scenarios. Uses position-level beta
-        estimates based on security type, sector, and style.
-      </p>
+      <details className="text-xs text-ink-faint group">
+        <summary className="cursor-pointer hover:text-ink transition-colors list-none">
+          Estimated portfolio impact under hypothetical market scenarios. Uses position-level beta
+          estimates based on security type, sector, and style.
+          <span className="ml-1 text-ink-dim group-open:hidden">Show beta multipliers ↓</span>
+          <span className="ml-1 text-ink-dim hidden group-open:inline">Hide multipliers ↑</span>
+        </summary>
+        <div className="mt-3 p-3 bg-panel border border-edge rounded-lg space-y-1.5 font-mono text-[11px]">
+          <p className="text-ink-faint not-italic">Beta multipliers applied to each position:</p>
+          <ul className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-0.5">
+            <li>Bonds / money market: <span className="text-ink">×0.10</span></li>
+            <li>Options: <span className="text-ink">×2.00</span></li>
+            <li>High-beta sectors (Tech, Cons. Disc., Comm. Services): <span className="text-ink">×1.15</span></li>
+            <li>Low-beta sectors (Utilities, Staples, Healthcare, RE): <span className="text-ink">×0.85</span></li>
+            <li>Style — Growth: <span className="text-ink">×1.10</span></li>
+            <li>Style — Value: <span className="text-ink">×0.90</span></li>
+            <li>Size — Small Cap: <span className="text-ink">×1.15</span></li>
+            <li>Size — Mid Cap: <span className="text-ink">×1.05</span></li>
+            <li>Bond duration (rate scenarios): <span className="text-ink">per-bond, fallback 5y</span></li>
+          </ul>
+          <p className="text-[10px] text-ink-faint not-italic pt-1">
+            Multipliers compose (e.g. a small-cap tech growth stock = 1.0 × 1.15 × 1.10 × 1.15).
+          </p>
+        </div>
+      </details>
 
       {/* ── Scenario cards ── */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">

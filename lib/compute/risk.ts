@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { getDailyValuationsCombined, getDailyValuationsByAccount } from "@/lib/queries/daily-valuations";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
+import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -42,7 +43,7 @@ export interface RiskOptions {
   startDate?: string;
   endDate?: string;
   accountId?: number;
-  riskFreeRate?: number; // annualized, default 0.045 (4.5%)
+  riskFreeRate?: number; // annualized; if omitted, reads FRED DGS3MO from settings cache
 }
 
 export interface PositionRisk {
@@ -71,7 +72,6 @@ export interface PositionRiskResult {
 // ─── Constants ──────────────────────────────────────────────────
 
 const TRADING_DAYS_PER_YEAR = 252;
-const DEFAULT_RISK_FREE_RATE = 0.045;
 
 // ─── Core computation ───────────────────────────────────────────
 
@@ -79,7 +79,9 @@ export function computeRiskMetrics(
   db: Database.Database,
   options?: RiskOptions
 ): PortfolioRiskMetrics {
-  const riskFreeRate = options?.riskFreeRate ?? DEFAULT_RISK_FREE_RATE;
+  // Risk-free rate flows from FRED's DGS3MO via the settings cache; falls
+  // back to 0.045 if never fetched. See lib/queries/risk-free-rate.ts.
+  const riskFreeRate = options?.riskFreeRate ?? getRiskFreeRate(db);
 
   // 1. Get daily valuations
   const valuations = options?.accountId
