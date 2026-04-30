@@ -209,13 +209,13 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
     overallDaysOld !== null ? qualityChip(overallDaysOld, overallSource) : null;
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-5 md:space-y-8">
       <header className="flex items-baseline justify-between flex-wrap gap-2">
         <div>
           <p className="text-[11px] uppercase tracking-widest text-ink-faint mb-1">
             {new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
           </p>
-          <h1 className="font-serif text-2xl text-gold tracking-tight">Today</h1>
+          <h1 className="hidden md:block font-serif text-2xl text-gold tracking-tight">Today</h1>
         </div>
         <div className="flex items-center gap-2">
           {overallQuality && (
