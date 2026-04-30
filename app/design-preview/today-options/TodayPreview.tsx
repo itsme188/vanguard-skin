@@ -40,7 +40,7 @@ function fmtTime(t: string | null): string {
   return `${h12}:${String(m).padStart(2, "0")} ${period}`;
 }
 
-export type TodayDensity = "default" | "compact";
+export type TodayDensity = "default" | "medium" | "compact";
 export type TodayHeader = "hero" | "strip";
 
 export interface TodayPreviewProps {
@@ -56,17 +56,54 @@ export function TodayPreview({
   const olderAlerts = MOCK_ALERTS.filter((a) => !a.triggeredToday);
 
   // Density-driven className constants — all spacing/padding flows from here.
-  const cardPad = density === "compact" ? "p-3 sm:p-4" : "p-5 sm:p-6";
-  const cardPadTight = density === "compact" ? "p-3" : "p-5";
-  const sectionGap = density === "compact" ? "space-y-3" : "space-y-6";
-  const titleGap = density === "compact" ? "mb-2" : "mb-3";
-  const rowPad = density === "compact" ? "py-1.5" : "py-2.5";
-  const rowSpacing = density === "compact" ? "space-y-1.5" : "space-y-2";
-  const eventPad = density === "compact" ? "p-2.5" : "p-3";
-  const dayCardPad = density === "compact" ? "p-3 sm:p-4" : "p-5 sm:p-6";
-  const dayHeaderGap = density === "compact" ? "mb-2" : "mb-4";
-  const eventTilePad = density === "compact" ? "p-2.5" : "p-3.5";
-  const heroPad = density === "compact" ? "p-4 sm:p-5" : "p-5 sm:p-6";
+  // Three tiers:
+  //   default — roomy padding (Bloomberg-light spec) for first-time visitors
+  //   medium  — halfway tier: card padding 16-20px, gaps proportionally tightened
+  //   compact — Bloomberg/TradingView density: 12-14px padding, tight rows
+  const cardPad =
+    density === "compact" ? "p-3 sm:p-4" :
+    density === "medium" ? "p-4 sm:p-5" :
+    "p-5 sm:p-6";
+  const cardPadTight =
+    density === "compact" ? "p-3" :
+    density === "medium" ? "p-4" :
+    "p-5";
+  const sectionGap =
+    density === "compact" ? "space-y-3" :
+    density === "medium" ? "space-y-4" :
+    "space-y-6";
+  const titleGap =
+    density === "compact" ? "mb-2" :
+    density === "medium" ? "mb-2" :
+    "mb-3";
+  const rowPad =
+    density === "compact" ? "py-1.5" :
+    density === "medium" ? "py-2" :
+    "py-2.5";
+  const rowSpacing =
+    density === "compact" ? "space-y-1.5" :
+    density === "medium" ? "space-y-2" :
+    "space-y-2";
+  const eventPad =
+    density === "compact" ? "p-2.5" :
+    density === "medium" ? "p-3" :
+    "p-3";
+  const dayCardPad =
+    density === "compact" ? "p-3 sm:p-4" :
+    density === "medium" ? "p-4 sm:p-5" :
+    "p-5 sm:p-6";
+  const dayHeaderGap =
+    density === "compact" ? "mb-2" :
+    density === "medium" ? "mb-3" :
+    "mb-4";
+  const eventTilePad =
+    density === "compact" ? "p-2.5" :
+    density === "medium" ? "p-3" :
+    "p-3.5";
+  const heroPad =
+    density === "compact" ? "p-4 sm:p-5" :
+    density === "medium" ? "p-4 sm:p-5" :
+    "p-5 sm:p-6";
 
   // Group week-ahead by weekday for the 5-col grid
   const weekDays = ["Mon", "Tue", "Wed", "Thu", "Fri"] as const;
@@ -176,7 +213,7 @@ export function TodayPreview({
       </section>
 
       {/* ── Alerts | Levels grid ── */}
-      <div className={`grid grid-cols-1 md:grid-cols-2 ${density === "compact" ? "gap-3" : "gap-6"}`}>
+      <div className={`grid grid-cols-1 md:grid-cols-2 ${density === "compact" ? "gap-3" : density === "medium" ? "gap-4" : "gap-6"}`}>
         <section className={`preview-card rounded-xl border border-edge bg-panel ${cardPad}`}>
           <div className={`${titleGap} flex items-baseline justify-between`}>
             <h2 className="preview-section-title text-sm font-medium text-ink">Alerts</h2>
@@ -184,7 +221,7 @@ export function TodayPreview({
               {MOCK_ALERTS.length} pending
             </span>
           </div>
-          <div className={density === "compact" ? "space-y-2" : "space-y-4"}>
+          <div className={density === "compact" ? "space-y-2" : density === "medium" ? "space-y-3" : "space-y-4"}>
             {todayAlerts.length > 0 && (
               <div>
                 <h3 className={`text-[11px] uppercase tracking-widest text-ink-dim ${density === "compact" ? "mb-1.5" : "mb-2"}`}>
@@ -285,13 +322,13 @@ export function TodayPreview({
             {MOCK_HOLDINGS.length} · today&rsquo;s move
           </span>
         </div>
-        <ul className={`divide-y divide-edge ${density === "compact" ? "-mx-3" : "-mx-5"}`}>
+        <ul className={`divide-y divide-edge ${density === "compact" ? "-mx-3" : density === "medium" ? "-mx-4" : "-mx-5"}`}>
           {MOCK_HOLDINGS.map((h) => {
             const todayGain = (h.price - h.priorClose) * h.quantity;
             const todayPct = ((h.price - h.priorClose) / h.priorClose) * 100;
             const gainSign = todayGain >= 0 ? "text-up" : "text-down";
             return (
-              <li key={h.symbol} className={`${density === "compact" ? "px-3" : "px-5"} ${rowPad} flex items-center gap-3`}>
+              <li key={h.symbol} className={`${density === "compact" ? "px-3" : density === "medium" ? "px-4" : "px-5"} ${rowPad} flex items-center gap-3`}>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-baseline gap-2">
                     <span className="font-mono text-[14px] font-medium text-ink">
@@ -323,7 +360,7 @@ export function TodayPreview({
       </section>
 
       {/* ── Week-ahead embedded ── */}
-      <section className={density === "compact" ? "space-y-2" : "space-y-4"}>
+      <section className={density === "compact" ? "space-y-2" : density === "medium" ? "space-y-3" : "space-y-4"}>
         <div className="flex items-baseline justify-between">
           <h2 className="preview-section-title font-serif text-2xl text-gold tracking-tight">
             Week ahead
@@ -332,7 +369,7 @@ export function TodayPreview({
             {MOCK_WEEK_AHEAD.length} events
           </span>
         </div>
-        <div className={`preview-week-grid grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 ${density === "compact" ? "gap-3" : "gap-5"}`}>
+        <div className={`preview-week-grid grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 ${density === "compact" ? "gap-3" : density === "medium" ? "gap-4" : "gap-5"}`}>
           {weekByDay.map((day) => (
             <div
               key={day.weekday}
@@ -358,7 +395,7 @@ export function TodayPreview({
                   </span>
                 )}
               </div>
-              <ul className={density === "compact" ? "space-y-1.5" : "space-y-2.5"}>
+              <ul className={density === "compact" ? "space-y-1.5" : density === "medium" ? "space-y-2" : "space-y-2.5"}>
                 {day.events.length === 0 ? (
                   <li className="text-[13px] text-ink-faint italic">No events</li>
                 ) : (
