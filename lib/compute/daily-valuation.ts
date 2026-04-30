@@ -114,7 +114,9 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
 
         if (pricedCount === 0) continue;
 
-        const cashBalance = 0; // Cash tracking could be added later
+        // Phase 1 placeholder. Phase 2 (below) infers cash from monthly snapshot
+        // anchors and overwrites these rows in place — see lines 148-205.
+        const cashBalance = 0;
         const totalValue = cashBalance + holdingsValue;
 
         // Holdings staleness: how old is the holdings snapshot relative to valuation date?

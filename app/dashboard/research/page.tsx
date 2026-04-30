@@ -1,14 +1,12 @@
 export const dynamic = "force-dynamic";
 
 import { db } from "@/lib/db";
+import { redirect } from "next/navigation";
 import { getNotesFiltered, getEarningsTimeline } from "@/lib/queries/notes";
 import { getTranscriptsSummary } from "@/lib/queries/transcripts";
-import { getTradeReviews } from "@/lib/queries/trade-reviews";
-import { getAvailableReviewPeriods } from "@/lib/compute/trade-roundtrips";
 import { getRecentArticles, getResearchSources, getSymbolSecurityMap } from "@/lib/queries/research";
 import type { NoteType } from "@/lib/types";
 import { NotesView } from "../components/NotesView";
-import { TradeReviewView } from "../components/TradeReviewView";
 import { ResearchFeedsView } from "../components/ResearchFeedsView";
 import { ResearchViewToggle } from "../components/ResearchViewToggle";
 import { ResearchDocumentsView } from "../components/ResearchDocumentsView";
@@ -25,6 +23,12 @@ interface PageProps {
 
 export default async function ResearchPage({ searchParams }: PageProps) {
   const params = await searchParams;
+
+  // Phase 5: Trade Reviews relocated to Analysis. Preserve saved bookmarks.
+  if (params.view === "reviews" || params.view === "trade-reviews") {
+    redirect("/dashboard/analysis?view=trade-reviews");
+  }
+
   const view = params.view ?? "notes";
   const noteType = (params.type as NoteType) || undefined;
   const securityId = params.security_id ?? params.security;
@@ -57,33 +61,6 @@ export default async function ResearchPage({ searchParams }: PageProps) {
     throw new Error("Failed to load research data. The database may be unavailable.");
   }
 
-  // Load trade review data when viewing reviews
-  let reviews: Awaited<ReturnType<typeof getTradeReviews>> = [];
-  let reviewPeriods: Awaited<ReturnType<typeof getAvailableReviewPeriods>> = [];
-  let accounts: { id: number; name: string }[] = [];
-  let defaultAccountId: number | null = null;
-
-  if (view === "reviews") {
-    try {
-      accounts = db
-        .prepare("SELECT id, name FROM accounts ORDER BY name")
-        .all() as { id: number; name: string }[];
-
-      // Default to IBKR if it exists (short-term trading account)
-      const ibkr = accounts.find(
-        (a) => a.name.toLowerCase().includes("ibkr")
-      );
-      defaultAccountId = ibkr?.id ?? accounts[0]?.id ?? null;
-
-      if (defaultAccountId) {
-        reviews = getTradeReviews(db, defaultAccountId);
-        reviewPeriods = getAvailableReviewPeriods(db, defaultAccountId);
-      }
-    } catch {
-      // Non-blocking — trade reviews are optional
-    }
-  }
-
   // Load feeds data when viewing feeds
   let feedArticles: Awaited<ReturnType<typeof getRecentArticles>> = [];
   let feedSources: Awaited<ReturnType<typeof getResearchSources>> = [];
@@ -107,11 +84,9 @@ export default async function ResearchPage({ searchParams }: PageProps) {
           <p className="text-sm text-ink-faint mt-0.5">
             {view === "feeds"
               ? "Newsletter digests and market research from Gmail"
-              : view === "reviews"
-                ? "Monthly AI trade analysis — moving to Analysis tab in Phase 5"
-                : view === "documents"
-                  ? "Uploaded research PDFs — searchable from chat"
-                  : "Investment journal, earnings notes, and trade theses"}
+              : view === "documents"
+                ? "Uploaded research PDFs — searchable from chat"
+                : "Investment journal, earnings notes, and trade theses"}
           </p>
         </div>
         <ResearchViewToggle currentView={view} />
@@ -124,13 +99,6 @@ export default async function ResearchPage({ searchParams }: PageProps) {
           initialArticles={feedArticles}
           sources={feedSources}
           initialSymbolMap={feedSymbolMap}
-        />
-      ) : view === "reviews" ? (
-        <TradeReviewView
-          initialReviews={reviews}
-          accounts={accounts}
-          initialPeriods={reviewPeriods}
-          defaultAccountId={defaultAccountId}
         />
       ) : (
         <NotesView

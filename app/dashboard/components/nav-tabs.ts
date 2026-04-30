@@ -11,8 +11,10 @@ export const tabs: Tab[] = [
     name: "Analysis",
     href: "/dashboard/analysis",
     subviews: [
+      { name: "Performance", href: "/dashboard/analysis?view=performance", matchParam: { key: "view", value: "performance" } },
       { name: "Classification", href: "/dashboard/analysis", matchParam: { key: "mode", value: null } },
       { name: "Factor Exposure", href: "/dashboard/analysis?mode=factors", matchParam: { key: "mode", value: "factors" } },
+      { name: "Trade Reviews", href: "/dashboard/analysis?view=trade-reviews", matchParam: { key: "view", value: "trade-reviews" } },
     ],
   },
   {
