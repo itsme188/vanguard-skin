@@ -48,10 +48,10 @@ export default function DashboardLayout({
             <div className="flex items-center gap-3 md:gap-4">
               <div className="hidden md:flex"><DataConfidenceIndicator /></div>
               <SearchButton />
-              <TwsStatus />
+              <div className="hidden md:flex"><TwsStatus /></div>
               <NotificationBell />
               <ChatToggleButton />
-              <ThemeToggle />
+              <div className="hidden md:inline-flex"><ThemeToggle /></div>
               <PrivacyToggle />
               <SettingsModal />
               <span className="hidden md:inline"><AppVersion /></span>
