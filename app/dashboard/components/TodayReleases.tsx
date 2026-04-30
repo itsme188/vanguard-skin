@@ -28,8 +28,8 @@ function fmtTime(release_time: string): string {
 
 export function TodayReleases({ releases }: { releases: CalendarEvent[] }) {
   return (
-    <section className="rounded-xl border border-edge bg-panel p-5">
-      <div className="mb-3 flex items-baseline justify-between">
+    <section className="rounded-xl bg-panel p-4">
+      <div className="mb-2 flex items-baseline justify-between">
         <h2 className="text-sm font-medium text-ink">Today&rsquo;s releases</h2>
         <Link
           href="/dashboard/calendar"
@@ -38,12 +38,12 @@ export function TodayReleases({ releases }: { releases: CalendarEvent[] }) {
           calendar &rarr;
         </Link>
       </div>
-      <ul className="divide-y divide-edge -mx-5">
+      <ul className="divide-y divide-edge -mx-4">
         {releases.map((event) => {
           const snapshot = parseReactionSnapshot(event.reaction_snapshot);
           const enriched = !!event.enriched_at;
           return (
-            <li key={event.id} className="px-5 py-2.5 space-y-1">
+            <li key={event.id} className="px-4 py-2 space-y-1">
               <div className="flex items-baseline justify-between gap-2">
                 <span className="text-[14px] text-ink font-medium min-w-0 truncate">
                   {event.symbol && event.security_id != null && (

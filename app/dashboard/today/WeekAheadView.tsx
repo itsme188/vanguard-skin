@@ -54,7 +54,7 @@ export function WeekAheadView({ events, weekOf }: WeekAheadViewProps) {
   const totalEvents = days.reduce((sum, d) => sum + d.events.length, 0);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       <header className="flex items-baseline justify-between flex-wrap gap-2">
         <div>
           <p className="text-[11px] uppercase tracking-widest text-ink-faint mb-1">Week ahead</p>
@@ -74,14 +74,14 @@ export function WeekAheadView({ events, weekOf }: WeekAheadViewProps) {
       </header>
 
       {totalEvents === 0 ? (
-        <section className="rounded-xl border border-edge bg-panel p-5 card-elev">
+        <section className="rounded-xl bg-panel p-4 sm:p-5 card-elev">
           <p className="text-[14px] text-ink-faint">
             No events scheduled this week. Calendar sync may not have run yet — check Charts ›
             Calendar (or trigger via the Sunday briefing).
           </p>
         </section>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
           {days.map((day) => (
             <DayCard key={day.date} day={day} />
           ))}
@@ -103,11 +103,11 @@ interface DayCardProps {
 function DayCard({ day }: DayCardProps) {
   return (
     <section
-      className={`rounded-xl border p-5 sm:p-6 min-w-0 card-elev ${
-        day.isToday ? "border-blue bg-blue/8" : "border-edge bg-panel"
+      className={`rounded-xl p-4 sm:p-5 min-w-0 card-elev ${
+        day.isToday ? "bg-blue/8" : "bg-panel"
       }`}
     >
-      <div className="flex items-baseline justify-between mb-4 flex-wrap gap-1">
+      <div className="flex items-baseline justify-between mb-3 flex-wrap gap-1">
         <div className="min-w-0">
           <p
             className={`text-[11px] uppercase tracking-widest mb-1 ${
@@ -128,7 +128,7 @@ function DayCard({ day }: DayCardProps) {
       {day.events.length === 0 ? (
         <p className="text-[13px] text-ink-faint italic">No events</p>
       ) : (
-        <ul className="space-y-2.5">
+        <ul className="space-y-2">
           {day.events.map((e) => (
             <EventRow key={e.id} event={e} />
           ))}
@@ -156,7 +156,7 @@ function EventRow({ event }: { event: CalendarEvent }) {
       : event.actual_value
     : null;
   const inner = (
-    <div className="rounded-lg bg-raised border border-edge p-3.5 hover:border-edge-strong transition-colors">
+    <div className="rounded-lg bg-raised border border-edge p-3 hover:border-edge-strong transition-colors">
       <div className="flex items-center gap-2 mb-1.5 flex-wrap">
         {time && (
           <span className="text-[11px] font-mono text-ink-faint tabular-nums shrink-0">{time}</span>
