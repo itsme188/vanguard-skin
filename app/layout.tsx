@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { IBM_Plex_Sans, IBM_Plex_Mono, Instrument_Serif } from "next/font/google";
+import { IBM_Plex_Sans, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
 
 const plexSans = IBM_Plex_Sans({
@@ -12,16 +12,6 @@ const plexMono = IBM_Plex_Mono({
   variable: "--font-plex-mono",
   subsets: ["latin"],
   weight: ["400", "500", "600"],
-});
-
-// Instrument Serif kept as a transitional font for legacy `font-serif` headlines
-// in tabs not yet re-skinned (Phases 3-7 sweep these per tab). Remove from
-// app/layout.tsx + globals.css `--font-serif` token in Phase 8 cleanup once no
-// `font-serif` references remain in production code.
-const instrumentSerif = Instrument_Serif({
-  variable: "--font-instrument-serif",
-  weight: "400",
-  subsets: ["latin"],
 });
 
 export const metadata: Metadata = {
@@ -57,7 +47,7 @@ export default function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
       </head>
       <body
-        className={`${plexSans.variable} ${plexMono.variable} ${instrumentSerif.variable} antialiased`}
+        className={`${plexSans.variable} ${plexMono.variable} antialiased`}
       >
         {children}
       </body>

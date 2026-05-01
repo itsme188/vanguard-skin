@@ -341,7 +341,7 @@ function AlertsPageInner() {
     <div className="space-y-5">
       <header className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="font-serif text-2xl text-ink">Alerts</h1>
+          <h1 className="text-2xl text-ink font-medium">Alerts</h1>
           <p className="text-[11px] text-ink-faint mt-0.5">
             Triggered levels and newsletter-extracted suggestions in one inbox.{" "}
             <Link

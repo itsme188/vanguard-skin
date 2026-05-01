@@ -25,7 +25,7 @@ export default function LevelPerformancePage() {
     <div className="space-y-6 md:max-w-5xl md:mx-auto">
       <header className="flex items-baseline justify-between">
         <div>
-          <h1 className="font-serif text-2xl text-gold">Source Performance</h1>
+          <h1 className="text-2xl text-gold font-medium">Source Performance</h1>
           <p className="text-sm text-ink-faint mt-1">
             Hit-rate and forward P&amp;L by level source. Scores fill in as
             alerts accumulate — the first few weeks will look sparse.
