@@ -390,6 +390,17 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // focus-chat-input: dispatched by ChatDrawer when Cmd+J fires on the
+  // persistent rail (≥1280px). The rail is already visible there so toggling
+  // would be wrong — we focus the textarea instead.
+  useEffect(() => {
+    function handleFocus() {
+      inputRef.current?.focus();
+    }
+    window.addEventListener("focus-chat-input", handleFocus);
+    return () => window.removeEventListener("focus-chat-input", handleFocus);
+  }, []);
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!inputText.trim() || isStreaming) return;
@@ -491,7 +502,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
         {messages.length === 0 && (
           <div className="flex items-center justify-center h-full">
             <div className="text-center max-w-md">
-              <div className="text-3xl text-ink-faint mb-4 font-serif italic">
+              <div className="text-3xl text-ink-faint mb-4 italic font-light">
                 Analyst
               </div>
               <h3 className="text-ink font-medium mb-2">

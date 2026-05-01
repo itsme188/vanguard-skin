@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { Money, Shares } from "@/lib/privacy/components";
+import { EmptySection } from "./EmptySection";
 
 interface ExpiringOption {
   securityId: number;
@@ -58,7 +59,16 @@ export function ExpirationCalendar() {
       .finally(() => setLoading(false));
   }, []);
 
-  if (loading || options.length === 0) return null;
+  if (loading) return null;
+  if (options.length === 0) {
+    return (
+      <EmptySection
+        title="Option Expirations"
+        reason="No options expiring within 90 days."
+        hint="Shows the next 90 days of option expirations once you hold dated calls or puts. LEAP options >90 days out are excluded by design."
+      />
+    );
+  }
 
   // Group by expiration date
   const byDate = new Map<string, ExpiringOption[]>();
@@ -69,7 +79,7 @@ export function ExpirationCalendar() {
   }
 
   return (
-    <div className="bg-raised border border-edge rounded-2xl p-6 space-y-4">
+    <div className="bg-panel rounded-xl p-4 sm:p-5 card-elev space-y-4">
       <h3 className="text-sm font-medium text-ink">Option Expirations</h3>
 
       <div className="space-y-3">

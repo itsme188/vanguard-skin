@@ -1,28 +1,39 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
-import { Instrument_Serif } from "next/font/google";
+import { IBM_Plex_Sans, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const plexSans = IBM_Plex_Sans({
+  variable: "--font-plex-sans",
   subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+const plexMono = IBM_Plex_Mono({
+  variable: "--font-plex-mono",
   subsets: ["latin"],
-});
-
-const instrumentSerif = Instrument_Serif({
-  variable: "--font-instrument-serif",
-  weight: "400",
-  subsets: ["latin"],
+  weight: ["400", "500", "600"],
 });
 
 export const metadata: Metadata = {
-  title: "Vanguard Skin",
+  title: "Portfolio Desk",
   description: "Local-first portfolio dashboard",
 };
+
+// Anti-FOUC: read theme preference from localStorage and set <html data-theme>
+// before React hydrates so the first paint matches the user's choice. Defaults
+// to "light" if nothing is stored. Must run synchronously in <head>.
+const themeInitScript = `
+try {
+  var t = localStorage.getItem('vgs:theme');
+  if (t !== 'light' && t !== 'dark') t = 'light';
+  document.documentElement.setAttribute('data-theme', t);
+} catch (e) {
+  document.documentElement.setAttribute('data-theme', 'light');
+}
+if (navigator.userAgent.includes('Electron')) {
+  document.documentElement.classList.add('electron');
+}
+`;
 
 export default function RootLayout({
   children,
@@ -33,12 +44,10 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning>
       <head>
         <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-        <script dangerouslySetInnerHTML={{ __html:
-          `if(navigator.userAgent.includes('Electron'))document.documentElement.classList.add('electron')`
-        }} />
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
       </head>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} ${instrumentSerif.variable} antialiased`}
+        className={`${plexSans.variable} ${plexMono.variable} antialiased`}
       >
         {children}
       </body>
