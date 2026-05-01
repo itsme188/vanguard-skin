@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { PrivateText } from "@/lib/privacy/components";
+import { EmptySection } from "./EmptySection";
 
 interface Strategy {
   type: string;
@@ -33,10 +34,19 @@ export function OptionsStrategies() {
       .finally(() => setLoading(false));
   }, []);
 
-  if (loading || strategies.length === 0) return null;
+  if (loading) return null;
+  if (strategies.length === 0) {
+    return (
+      <EmptySection
+        title="Detected Strategies"
+        reason="No multi-leg option strategies detected."
+        hint="Strategies (covered calls, vertical spreads, iron condors, etc.) require ≥2 option legs on the same underlying. Single-leg trades show in the Options Greeks card above."
+      />
+    );
+  }
 
   return (
-    <div className="bg-raised border border-edge rounded-2xl p-6 space-y-4">
+    <div className="bg-panel rounded-xl p-4 sm:p-5 card-elev space-y-4">
       <h3 className="text-sm font-medium text-ink">Detected Strategies</h3>
 
       <div className="space-y-3">

@@ -25,7 +25,7 @@ export default function LevelPerformancePage() {
     <div className="space-y-6 md:max-w-5xl md:mx-auto">
       <header className="flex items-baseline justify-between">
         <div>
-          <h1 className="font-serif text-2xl text-gold">Source Performance</h1>
+          <h1 className="text-2xl text-gold font-medium">Source Performance</h1>
           <p className="text-sm text-ink-faint mt-1">
             Hit-rate and forward P&amp;L by level source. Scores fill in as
             alerts accumulate — the first few weeks will look sparse.
@@ -67,7 +67,8 @@ export default function LevelPerformancePage() {
             </p>
           </div>
         ) : (
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[720px] text-sm">
             <thead>
               <tr className="border-b border-edge text-[11px] uppercase tracking-wider text-ink-faint">
                 <th className="text-left px-4 py-2 font-medium">Source</th>
@@ -128,6 +129,7 @@ export default function LevelPerformancePage() {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </section>
     </div>

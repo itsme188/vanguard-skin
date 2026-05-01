@@ -2,6 +2,7 @@
 
 import { useState, useEffect, type ReactNode } from "react";
 import { Pct, PrivateText } from "@/lib/privacy/components";
+import { EmptySection } from "./EmptySection";
 
 interface BondHolding {
   symbol: string;
@@ -44,11 +45,19 @@ export function FixedIncomeCard({ scope }: { scope?: string }) {
       .finally(() => setLoading(false));
   }, [scope]);
 
-  if (loading) return null; // Don't show loading state — card is optional
-  if (!data) return null; // No bonds in portfolio
+  if (loading) return null;
+  if (!data) {
+    return (
+      <EmptySection
+        title="Fixed Income Exposure"
+        reason="No bond positions in this scope."
+        hint="Bond duration, credit quality, and rate-sensitivity metrics appear once you hold treasuries, corporates, or municipals. Bond ETFs (AGG, BND, etc.) classify as ETFs by default — see Bond duration backfill in Stream D4 for held bonds with missing duration data."
+      />
+    );
+  }
 
   return (
-    <div className="bg-raised border border-edge rounded-2xl p-6 space-y-4">
+    <div className="bg-panel rounded-xl p-4 sm:p-5 card-elev space-y-4">
       <h3 className="text-sm font-medium text-ink">Fixed Income Exposure</h3>
 
       {/* Summary metrics */}

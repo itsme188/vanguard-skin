@@ -22,7 +22,7 @@ This is primarily a TypeScript project with some Python utilities. Use TypeScrip
 - **App Router** — Server components for data loading, client components for interactivity
 - **SQLite** — Single `data/vanguard.db` file, WAL mode, foreign keys enforced
 - **Migrations** — Numbered `.sql` files in `lib/db/migrations/`, tracked in `schema_migrations` table
-- **Tab-based UI** — Overview | Accounts | Holdings | Analysis | Charts | Calendar | Research | Import
+- **Tab-based UI (post-redesign 2026-04-30)** — Today | Accounts | Analysis | Research | Charts | Import (6 desktop tabs after IA collapse). Cut from top nav: Overview (absorbed into Today), Holdings (absorbed into Accounts cross-account section + Cmd+K ticker-jump), Calendar (absorbed into Today week-ahead block), Levels Review (merged into unified Alerts inbox). Header bell unified to `<NotificationBell>` (fired alerts + pending newsletter-extracted levels in one stream). Theme toggle in header (light Amber / dark Bloomberg-pro), persists via `vgs:theme` localStorage. Fonts: IBM Plex Sans + Mono only (Instrument Serif removed in Phase 8). NotesAmbient overlay accessible from any tab via Cmd+; (FAB + localStorage drafts).
 - **Chat drawer** — Slide-out right panel (Cmd+J), accessible from any tab, persists conversation
 - **Security Detail** — `/dashboard/security/[id]` hub page per security (chart, positions, lots, notes, events, factors, trade grades)
 - **Watchlist** — Track securities not yet owned, with price targets and thesis
@@ -267,20 +267,22 @@ When working with external APIs (TWS/IBKR, Gmail, FRED), check the correct API c
 
 ## Tab Structure
 
-- 9 tabs: Today, Overview, Accounts, Holdings, Analysis, Charts, Calendar, Research, Import
-- **Chat** is a slide-out drawer (ChatDrawer.tsx) in the layout, toggled via header button or Cmd+J
-- **Reconciliation** merged into Accounts tab as collapsible section
+- **6 desktop tabs (post-redesign 2026-04-30):** Today | Accounts | Analysis | Research | Charts | Import. Cuts from the prior 9: Overview → absorbed into Today; Holdings → absorbed into Accounts cross-account section (`/dashboard/accounts?id=all#holdings`) + Cmd+K ticker-jump; Calendar → absorbed into Today week-ahead block. Old routes redirect (`/dashboard/overview`, `/dashboard/holdings`, `/dashboard/calendar`, `/dashboard/levels/review`) — kept as 5-line redirect stubs to cover external bookmarks (iPhone home-screen shortcuts).
+- **Chat** is persistent right rail on desktop ≥1280px + full-screen overlay on mobile (ChatDrawer.tsx). Toggle via header button or Cmd+J.
+- **Cmd+K** is global ticker-jump — typing a symbol routes to `/dashboard/security/[id]` (replaces the prior global-search role).
+- **Alerts** inbox is unified (`/dashboard/alerts`): fired alerts + pending newsletter-extracted levels in one auto-promoted stream. Header bell `<NotificationBell>` shows combined count; old separate `AlertsBell` + `ReviewBell` deleted.
+- **NotesAmbient** overlay (`Cmd+;` or floating FAB) is accessible from any tab; saves to localStorage drafts and posts to Notes.
+- **Reconciliation** merged into Accounts tab as collapsible section.
 - **Notes** renamed to **Research** (redirect from /dashboard/notes)
 - **Research** tab has 3 views: Notes (default) | Feeds | Documents (newsletter articles + uploaded PDFs). Trade Reviews relocated to Analysis sub-view in Phase 5.
 - **Analysis** tab has 4 sub-views: Performance (TWR + XIRR + period selector) | Classification (default) | Factor Exposure | Trade Reviews. Use `?view=performance` / `?view=trade-reviews` for the Phase-5 sub-views; `?mode=factors` for the Factor Exposure view (kept the legacy `mode` param for backward compat).
-- **Holdings** tab shows cross-account positions with P&L and allocation %
 - Old routes (/dashboard/notes, /dashboard/reconciliation, /dashboard/chat) redirect to new locations
 - **Tab-subview dropdowns (desktop)**: tabs with `subviews` in `nav-tabs.ts` (currently Research + Analysis) render a caret ▾ next to the label; clicking opens `TabDropdown.tsx` — a menu of subviews with keyboard nav (ArrowDown opens, Arrow keys/Home/End cycle, Enter selects, Escape/outside-click close). Menu uses `position:fixed` + `getBoundingClientRect()` to escape the parent `<nav>`'s `overflow-x-auto` clip (absolute positioning gets silently cut off). Mobile keeps the in-page pill toggle (`ResearchViewToggle`, `AnalysisView` mode toggle — both gated `md:hidden`). `TabDropdown` reads `useSearchParams()` so it's wrapped in `<Suspense>` inside `TabNav.tsx` with a plain-`<Link>` fallback — required to keep static pre-rendering working for dashboard pages without `force-dynamic`.
 
 ## Mobile Responsive
 
-- **Bottom nav** (`MobileBottomNav.tsx`): 5 icons — Home, Research, Chat (gold center), Calendar, Analysis. `md:hidden electron:hidden`.
-- **Desktop tabs** hidden on mobile (`hidden md:flex` on TabNav `<nav>`). Maintenance tabs (Accounts, Holdings, Charts, Import) only in desktop nav.
+- **Bottom nav** (`MobileBottomNav.tsx`): 5 icons — Today, Research, Chat (gold center), Notes, Analysis. `md:hidden electron:hidden`. Notes maps to `/dashboard/research?view=notes` (Notes is a sub-view of Research, promoted to a first-class mobile destination).
+- **Desktop tabs** hidden on mobile (`hidden md:flex` on TabNav `<nav>`). Maintenance tabs (Accounts, Charts, Import) only in desktop nav.
 - **Chat**: full-screen overlay on mobile (`fixed inset-0`, slide-up via `translate-y`), 480px side drawer on desktop. Uses `useIsMobile` hook + `toggle-mobile-chat` DOM event.
 - **Header**: simplified on mobile — only Title + Search + Settings. DataConfidenceIndicator, TwsStatus, ChatDrawer toggle, AppVersion hidden via `hidden md:flex`.
 - **ChatDrawer rendered at layout root** (not inside header) so mobile full-screen overlay works. Do NOT wrap in `hidden md:flex`.

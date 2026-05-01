@@ -2,12 +2,17 @@ export const dynamic = "force-dynamic";
 
 import { db } from "@/lib/db";
 import { getAllAccounts } from "@/lib/queries/accounts";
-import { getHoldingsByAccount } from "@/lib/queries/holdings";
+import {
+  getAllHoldings,
+  getHoldingsByAccount,
+} from "@/lib/queries/holdings";
 import { getTransactionsByAccount } from "@/lib/queries/transactions";
 import { getSnapshotsByAccount } from "@/lib/queries/monthly-snapshots";
 import { getDailyValuationsByAccount } from "@/lib/queries/daily-valuations";
 import { getReconciliationCheckpoints } from "@/lib/queries/reconciliation";
 import { AccountDetail } from "../components/AccountDetail";
+import { AccountSelector } from "../components/AccountSelector";
+import { AllHoldingsTable } from "../components/AllHoldingsTable";
 import { EmptyState } from "../components/EmptyState";
 
 export default async function AccountsPage(props: {
@@ -33,6 +38,45 @@ export default async function AccountsPage(props: {
     );
   }
 
+  const isAll = searchParams.id === "all";
+
+  if (isAll) {
+    let holdings;
+    try {
+      holdings = getAllHoldings(db);
+    } catch {
+      throw new Error("Failed to load holdings. The database may be unavailable.");
+    }
+
+    return (
+      <div className="space-y-6">
+        <AccountSelector accounts={accounts} selected="all" />
+        <section id="holdings" className="space-y-4 scroll-mt-24">
+          <div>
+            <h2 className="text-lg font-medium text-ink">Holdings</h2>
+            <p className="text-sm text-ink-faint mt-0.5">
+              {holdings.length} positions across all accounts
+            </p>
+          </div>
+          {holdings.length === 0 ? (
+            <EmptyState
+              icon={
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+                  <path d="M3.75 3v11.25A2.25 2.25 0 006 16.5h2.25M3.75 3h-1.5m1.5 0h16.5m0 0h1.5m-1.5 0v11.25A2.25 2.25 0 0118 16.5h-2.25m-7.5 0h7.5m-7.5 0l-1 3m8.5-3l1 3m0 0l.5 1.5m-.5-1.5h-9.5m0 0l-.5 1.5" />
+                </svg>
+              }
+              title="No holdings yet"
+              description="Import your Vanguard statements or sync positions from TWS to see your holdings."
+              action={{ label: "Import Files", href: "/dashboard/import" }}
+            />
+          ) : (
+            <AllHoldingsTable holdings={holdings} />
+          )}
+        </section>
+      </div>
+    );
+  }
+
   const selectedId = searchParams.id
     ? parseInt(searchParams.id, 10)
     : accounts[0].id;
@@ -53,14 +97,16 @@ export default async function AccountsPage(props: {
   }
 
   return (
-    <AccountDetail
-      accounts={accounts}
-      selectedAccount={selectedAccount}
-      holdings={holdings}
-      transactions={transactions}
-      snapshots={snapshots}
-      dailyValuations={dailyValuations}
-      reconciliationCheckpoints={reconciliationCheckpoints}
-    />
+    <div className="space-y-6">
+      <AccountSelector accounts={accounts} selected={selectedAccount.id} />
+      <AccountDetail
+        selectedAccount={selectedAccount}
+        holdings={holdings}
+        transactions={transactions}
+        snapshots={snapshots}
+        dailyValuations={dailyValuations}
+        reconciliationCheckpoints={reconciliationCheckpoints}
+      />
+    </div>
   );
 }
