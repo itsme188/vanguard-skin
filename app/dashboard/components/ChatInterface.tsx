@@ -502,7 +502,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
         {messages.length === 0 && (
           <div className="flex items-center justify-center h-full">
             <div className="text-center max-w-md">
-              <div className="text-3xl text-ink-faint mb-4 font-serif italic">
+              <div className="text-3xl text-ink-faint mb-4 italic font-light">
                 Analyst
               </div>
               <h3 className="text-ink font-medium mb-2">

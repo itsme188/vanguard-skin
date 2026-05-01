@@ -1,6 +1,6 @@
 # Canonical CSV Format Guide
 
-The Vanguard Skin dashboard accepts 4 standardized CSV formats for importing financial data. These are designed for preprocessing raw brokerage documents (PDFs, proprietary CSVs) into a consistent format using Claude Code or the batch script.
+The Portfolio Desk dashboard accepts 4 standardized CSV formats for importing financial data. These are designed for preprocessing raw brokerage documents (PDFs, proprietary CSVs) into a consistent format using Claude Code or the batch script.
 
 ## Overview
 

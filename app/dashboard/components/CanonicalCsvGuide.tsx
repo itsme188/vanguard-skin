@@ -118,7 +118,7 @@ function buildPromptBlock(spec: FormatSpec): string {
     .filter((c) => !c.required)
     .map((c) => c.name);
 
-  return `Convert the attached data into this CSV format for the Vanguard Skin dashboard.
+  return `Convert the attached data into this CSV format for the Portfolio Desk dashboard.
 
 CSV Type: ${spec.label}
 Header: ${spec.header}
@@ -141,7 +141,7 @@ Output ONLY the CSV (header + data rows). No markdown, no explanation.`;
 }
 
 function buildAllFormatsPrompt(): string {
-  return `Convert the attached financial data into standardized CSV files for the Vanguard Skin dashboard.
+  return `Convert the attached financial data into standardized CSV files for the Portfolio Desk dashboard.
 Produce separate CSV files for each data type found. Output each file with a filename comment line.
 
 ${FORMATS.map(
