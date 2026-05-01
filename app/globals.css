@@ -164,12 +164,9 @@
   --color-blue: var(--blue);
   --color-blue-tint: var(--blue-tint);
 
-  /* Fonts — IBM Plex Sans + Mono load in app/layout.tsx.
-   * Instrument Serif kept transitionally for legacy `font-serif` headlines
-   * (sweep per tab in Phases 3-7; remove in Phase 8 cleanup). */
+  /* Fonts — IBM Plex Sans + Mono load in app/layout.tsx. */
   --font-sans: var(--font-plex-sans);
   --font-mono: var(--font-plex-mono);
-  --font-serif: var(--font-instrument-serif);
 
   /* Compat with default Tailwind */
   --color-background: var(--canvas);

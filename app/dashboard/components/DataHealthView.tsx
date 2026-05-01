@@ -125,7 +125,7 @@ export function DataHealthView() {
     <div className="space-y-6">
       {/* Header */}
       <div>
-        <h2 className="text-xl font-serif text-gold">Data Health</h2>
+        <h2 className="text-xl text-gold font-medium">Data Health</h2>
         <p className="text-sm text-ink-dim mt-1">
           Overview of data completeness, freshness, and accuracy
         </p>

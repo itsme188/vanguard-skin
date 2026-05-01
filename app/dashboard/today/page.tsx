@@ -215,7 +215,7 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
           <p className="text-[11px] uppercase tracking-widest text-ink-faint mb-1">
             {new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
           </p>
-          <h1 className="hidden md:block font-serif text-2xl text-gold tracking-tight">Today</h1>
+          <h1 className="hidden md:block text-2xl text-gold tracking-tight font-medium">Today</h1>
         </div>
         <div className="flex items-center gap-2">
           {overallQuality && (

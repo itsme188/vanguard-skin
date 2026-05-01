@@ -58,7 +58,7 @@ export function WeekAheadView({ events, weekOf }: WeekAheadViewProps) {
       <header className="flex items-baseline justify-between flex-wrap gap-2">
         <div>
           <p className="text-[11px] uppercase tracking-widest text-ink-faint mb-1">Week ahead</p>
-          <h1 className="font-serif text-2xl text-gold tracking-tight">{formatWeekRange(weekOf)}</h1>
+          <h1 className="text-2xl text-gold tracking-tight font-medium">{formatWeekRange(weekOf)}</h1>
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[11px] text-ink-faint font-mono">
@@ -116,7 +116,7 @@ function DayCard({ day }: DayCardProps) {
           >
             {day.label}
           </p>
-          <p className="font-serif text-2xl text-ink leading-tight">{fmtDayLabel(day.date)}</p>
+          <p className="text-2xl text-ink leading-tight font-medium">{fmtDayLabel(day.date)}</p>
         </div>
         {day.isToday && (
           <span className="text-[11px] uppercase tracking-widest text-blue border border-blue rounded-full px-2.5 py-0.5">

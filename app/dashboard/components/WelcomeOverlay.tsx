@@ -39,7 +39,7 @@ export function WelcomeOverlay() {
       <div className="relative w-full max-w-md rounded-xl border border-edge bg-panel shadow-2xl p-8 space-y-6">
         {/* Header */}
         <div className="text-center space-y-2">
-          <h1 className="font-serif text-3xl text-gold tracking-tight">
+          <h1 className="text-3xl text-gold tracking-tight font-medium">
             Vanguard Dashboard
           </h1>
           <p className="text-sm text-ink-dim">
