@@ -23,6 +23,7 @@ import { getSymbolStatus, type SymbolStatus } from "@/lib/queries/briefing-symbo
 import { getCurrentMonday, addDays } from "@/lib/calendar/date-utils";
 import { formatFinnhubFigure } from "@/lib/format/finnhub-figure";
 import type { CalendarEvent } from "@/lib/types";
+import { PrivateText } from "@/lib/privacy/components";
 import { SymbolLink } from "../components/SymbolLink";
 import { EarningsHubAddForm } from "./EarningsHubAddForm";
 import { EarningsHubRefreshButton } from "./EarningsHubRefreshButton";
@@ -335,7 +336,7 @@ function NumCell({ value }: { value: string | null }) {
       className={`font-mono tabular-nums truncate ${value ? "text-ink-dim" : "text-ink-faint"}`}
       style={{ fontSize: "13px" }}
     >
-      {value ?? "—"}
+      {value ? <PrivateText>{value}</PrivateText> : "—"}
     </span>
   );
 }
@@ -375,7 +376,8 @@ function MobileCard({ event }: { event: EnrichedRow }) {
         <span className="text-ink-faint">
           Cons{" "}
           <span className="text-ink-dim">
-            {cons.eps ?? "—"} · {cons.revenue ?? "—"}
+            {cons.eps ? <PrivateText>{cons.eps}</PrivateText> : "—"} ·{" "}
+            {cons.revenue ? <PrivateText>{cons.revenue}</PrivateText> : "—"}
           </span>
         </span>
         {isPostRelease ? (
@@ -384,7 +386,8 @@ function MobileCard({ event }: { event: EnrichedRow }) {
             <span className="text-ink-faint">
               Act{" "}
               <span className="text-ink-dim">
-                {act.eps ?? "—"} · {act.revenue ?? "—"}
+                {act.eps ? <PrivateText>{act.eps}</PrivateText> : "—"} ·{" "}
+                {act.revenue ? <PrivateText>{act.revenue}</PrivateText> : "—"}
               </span>
             </span>
             {delta && (
