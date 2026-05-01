@@ -171,7 +171,10 @@ export function NotificationBell() {
       </Link>
 
       {hovering && totalCount > 0 && (
-        <div className="hidden md:block absolute right-0 top-full mt-2 w-80 rounded-lg border border-edge bg-panel shadow-xl z-50">
+        <div
+          className="hidden md:block absolute right-0 top-full mt-2 w-80 rounded-lg border border-edge bg-panel shadow-xl z-50"
+          style={{ backgroundColor: "var(--panel)" }}
+        >
           <div className="px-3 py-2 border-b border-edge flex items-center justify-between">
             <span className="text-[11px] font-medium text-ink-dim">
               {tooltip}

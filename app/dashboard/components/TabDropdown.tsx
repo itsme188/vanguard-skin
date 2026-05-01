@@ -145,10 +145,10 @@ export function TabDropdown({ tab, isActive }: Props) {
           aria-haspopup="menu"
           aria-expanded={open}
           className={`relative pr-3 pl-0.5 py-2.5 text-xs transition-colors ${
-            isActive ? "text-gold" : "text-ink-faint hover:text-ink-dim"
+            open ? "text-gold" : isActive ? "text-gold" : "text-ink-faint hover:text-ink-dim"
           }`}
         >
-          <span aria-hidden className={`inline-block transition-transform ${open ? "rotate-180" : ""}`}>▾</span>
+          <span aria-hidden style={{ letterSpacing: "0.1em" }}>•••</span>
           {isActive && (
             <span className="absolute bottom-0 left-0.5 right-3 h-0.5 bg-gold rounded-full" />
           )}
@@ -160,7 +160,12 @@ export function TabDropdown({ tab, isActive }: Props) {
           ref={menuRef}
           role="menu"
           aria-label={`${tab.name} sub-views`}
-          style={{ position: "fixed", top: menuPos.top, left: menuPos.left }}
+          style={{
+            position: "fixed",
+            top: menuPos.top,
+            left: menuPos.left,
+            backgroundColor: "var(--panel)",
+          }}
           className="z-50 min-w-[180px] rounded-lg border border-edge-strong bg-panel shadow-xl py-1"
         >
           {subviews.map((sv, i) => {
