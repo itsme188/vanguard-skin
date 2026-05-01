@@ -1,10 +1,58 @@
 # Vanguard Skin — TODO
 
-> **In-repo shortlist.** Updated 2026-04-25 (session-end reconciliation; data-integrity burndown from 9-tab parallel audit shipped in `b60d71e`).
+> **In-repo shortlist.** Updated 2026-04-30 (post-redesign merge — `a800884` on `main`; user roadmap capture session).
 >
 > - v2 build log (Mar–Apr 2026): [archive/TODO-v2-complete-2026-03-30.md](archive/TODO-v2-complete-2026-03-30.md)
 > - Master roadmap (off-repo, session-driven): `~/.claude/plans/last-session-session-summary-eventual-ripple.md`
 > - Live topic index: the Claude memory at `MEMORY.md` (per-project auto-memory)
+
+---
+
+## Open roadmap (themed)
+
+> Consolidates open items as of 2026-04-30 night. The chronological session log below is the audit trail — entries here cross-reference it where useful.
+
+### Bugs / Quality
+
+- **Trade-vs-settlement date mismatch** (2026-04-30) — sold PSTG 3/30; cash didn't reflect until April. April Vanguard statement not yet imported. Decide how to represent in-flight trades: (a) visual chip on the position until next statement reconciles, (b) reconcile only against settled cash, (c) accept the drift as small + self-correcting. Cross-cuts with the IBKR April gap below.
+- **Earnings transcripts panel — visual mess + mostly broken** (2026-04-30) — transcripts under Security Detail / Notes feed render poorly AND most API Ninjas pulls come back empty or broken. Audit which surface renders transcripts, fix layout, then investigate the upstream gap (API Ninjas free-tier? current-quarter blackout? a parser bug?).
+- **Eli email landed in junk** (2026-04-30) — Resend deliverability follow-up for at least one recipient. The 2026-04-29 smoke test was clean for `isaac@wolfsonfamily.com` + `esafier@woodlotcapital.com` (`dkim=pass`, `spf=pass`), so this is either a different recipient or a regression on ongoing sends. Investigate: warming state on the `myportfoliodesk.com` IP, list-unsubscribe header presence, subject-line patterns flagging Bayesian filters.
+- **EarningsHub privacy leak** (carried from Phase 3.5) — Cons. Rev / Act. Rev / Act EPS columns leak dollar amounts under `vgs:privacyMode=on`. ~20 min standalone — wrap in `<Money>` / `<PrivateText>`. Path: `app/dashboard/today/EarningsHub.tsx`.
+- **Chat message renderer privacy leak** (2026-04-30 — surfaced by browser-agent during README screenshot capture) — sibling to EarningsHub leak. The persistent right-rail chat (≥1280px viewport) loads the latest DB conversation on mount and renders raw message text. Dollar amounts and share counts inside chat history are NOT wrapped in `<Money>` / `<Shares>` privacy primitives, so privacy-mode users see "$22K of MV", "+632 deltas", "$80K-ish of INTC exposure" in the rail even with the eye-icon toggle on. Fix: wrap user + assistant message bodies through a privacy-aware Markdown renderer (or post-process numeric tokens before render). Same risk applies to chat exported to clipboard / screenshot.
+- **IBKR April 2026 transactions gap** (carried) — waiting on the April monthly statement; will import normally when it arrives.
+
+### Earnings emails
+
+- **Per-ticker BMO/AMC time overrides** (2026-04-30) — user reports AAPL preview sent before 4:30 ET when AAPL reports at 4:30. Confirmed times: AAPL=16:30, AMZN=16:01, GOOGL=16:01, META=16:05, MSFT=16:05. Today's logic in `lib/calendar/release-times.ts` routes through `earningsHourToReleaseTime(BMO|AMC|DMH)` only. Add a new `EARNINGS_RELEASE_TIMES: Record<string, string>` symbol→time map, consult it BEFORE the BMO/AMC default. **Must mirror in `workers/cron/src/fallback-earnings.ts`** so cloud fallback doesn't regress to 16:15 — same class of bug as `WORKER_DIGEST_MODE` (see `memory/project_worker_digest_mode.md`).
+- **Per-event preview/recap one-off skip** (2026-04-30) — current toggles are global enable + per-symbol mute (in `EarningsEmailsSection`). Add an in-app "skip this one" affordance on EarningsHub rows for events the user doesn't want noise from without permanently muting the symbol. Default stays on-send. Likely an additional column on `earnings_emails` or a separate `earnings_email_skips` table keyed on `(event_id, phase)`.
+- **Morning digest synthesis** (2026-04-30) — replace N per-source summaries with one cross-source digest grouped by company / topic. Today: each newsletter gets its own block. Goal: single coalesced view (per-company section when multiple sources mention the same name; per-topic section for macro themes). Touches `lib/digest/send-digest.ts` prompt + likely a new pre-Claude bucketing pass.
+
+### Page-level rework
+
+- **Analysis page deep dive — continued** (2026-04-30) — Phase 5 closed the structural gaps but user wants to keep iterating: factors UX, classification pie chart polish, factor exposure surfacing. Coordinate with the ChatGPT collaboration thread (see Reminders).
+- **Notes area rework — expanded context** (2026-04-30, Phase 4 follow-up) — journal should be reserved for **market & trading psychology** (how I feel about the market, how I'm trading), with a separate destination for **non-earnings stock-specific thoughts** (position notes, thesis updates, "why I'm watching this" jots). Earnings stays earnings. Likely a new note type (`stock_thought`?) or per-security notes panel. Open question parked from Phase 4: should NotesAmbient's "Save to Notes" route the user to a full notes page for the just-saved entry?
+
+### New features
+
+- **Stock-to-stock read-throughs** (2026-04-30) — when stock A reports or has news, surface implications for held stocks B/C/D. Likely surfaces: a new chat tool (`query_implied_reads`), a Today post-earnings sidebar block, or an "Implied reads" panel on the reporter's Security Detail page. Needs scoping in a design doc — model choice, how to source the relationships (sector/factor cosine? co-mention frequency in newsletters? user-curated pairs?), and what triggers the read-through computation.
+- **Slack integration** (2026-04-30) — scope TBD. Three directions: outbound (briefing/digest/alerts → channel), inbound (Slack threads as a research feed peer to Gmail), or both. Captured only this session; revisit when ready.
+- **Background / server-side refresh policy** (2026-04-30) — audit what should run on a daily/weekly cadence and which side runs it. Current schedules (Mac launchd / Worker cron): Sunday 3pm ET briefing, weekday 8:45 ET digest, BMO+AMC earnings sweeps every 15min, calendar enrich every 15min, R2 state snapshot 2am, nightly QA 2am. Open candidates: factor-analysis cache, portfolio risk metrics roll-up, benchmark refresh on weekends, security-level scans without TWS, source performance attribution roll-up. Mac runs require TWS uptime; Worker runs require R2 snapshot freshness.
+
+### Existing carries (still open, pre-2026-04-30)
+
+- **Level source performance attribution (Theme D)** — wait until ~30 alerts have fired.
+- **Caret affordance dislike** — pick alternative for `TabDropdown.tsx` (only remaining offender after Phase 6 de-careted ReconciliationSection). Memory: `feedback_no_carets.md`.
+- **In-app config UI for `FEATURE_MODELS`** — let user swap models without editing `lib/ai/models.ts`. Multi-session (settings table override layer + resolver change + Settings UI). User noted "applies to other areas as well" — audit env-var/code-only configs at start.
+- **`bg-panel` opaque-rendering investigation** — 30-min Tailwind v4 follow-up from the iPhone drawer fix.
+- **Wire `scripts/refresh-risk-free-rate.ts` into launchd** — Phase 5 D2 follow-up. Until done, rate stays at fallback 0.045.
+- **Run `scripts/backfill-bond-durations.ts` against live DB** — Phase 5 D4 follow-up. Affects scenario rate-shock numbers.
+- **Verify Phase 5 visual rendering on iPhone over Mesh** — never visually tested.
+- **`~/.npm/_cacache` root ownership fix** — needs interactive `sudo chown -R Yitzi:staff ~/.npm`.
+- **Polish — Security Detail Transactions sort URL params** — ~10 min table-header swap.
+
+### Reminders (no code action)
+
+- **Continue factor-analysis collaboration with ChatGPT** — give it the freshly refreshed GitHub link after this session's README + screenshot + CHANGELOG sweep so its context matches the post-redesign reality.
 
 ---
 

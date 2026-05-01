@@ -1,15 +1,15 @@
 # Vanguard Skin
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.1.0-blue)](https://github.com/itsme188/vanguard-skin/releases)
+[![Version](https://img.shields.io/badge/version-2.2.0-blue)](https://github.com/itsme188/vanguard-skin/releases)
 [![Next.js 16](https://img.shields.io/badge/Next.js-16-black)](https://nextjs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-blue)](https://typescriptlang.org)
-[![Tests: 1100 passing](https://img.shields.io/badge/tests-1100_passing-brightgreen)](#testing)
+[![Tests: 1387 passing](https://img.shields.io/badge/tests-1387_passing-brightgreen)](#testing)
 [![Electron](https://img.shields.io/badge/Electron-Desktop-9B59B6)](https://www.electronjs.org/)
 
-A local-first portfolio dashboard for tracking Vanguard and Interactive Brokers investments. Import brokerage statements, sync live positions via TWS, and run the whole thing through an AI-powered workspace — chat grounded in your real data, weekly Opus-4.7 research briefings, automatic support/resistance detection with Claude-written narratives, scenario modeling, and level alerts pushed to your phone. Available as a web app or native macOS desktop app. Your data never leaves your Mac except for the AI calls you choose to make.
+A local-first portfolio dashboard for tracking Vanguard and Interactive Brokers investments. Import brokerage statements, sync live positions via TWS, and run the whole thing through an AI-powered workspace — chat grounded in your real data, weekly Opus-4.7 research briefings, automatic support/resistance detection with Claude-written narratives, scenario modeling, level alerts pushed to your phone, and pre-/post-earnings briefings emailed for held names. Six-tab IA on a dual-theme palette (Amber/Bloomberg-light + Bloomberg-pro-dark) in IBM Plex. Available as a web app or native macOS desktop app. Your data never leaves your Mac except for the AI calls you choose to make.
 
-![Vanguard Skin Dashboard](docs/screenshots/overview.png)
+![Portfolio Desk — Today view](docs/screenshots/today.png)
 
 ---
 
@@ -18,8 +18,8 @@ A local-first portfolio dashboard for tracking Vanguard and Interactive Brokers 
 <table>
 <tr>
 <td width="33%" valign="top">
-<h3>Portfolio Overview</h3>
-Combined equity curves across all accounts with daily resolution. Performance metrics (TWR, XIRR) for YTD, 1Y, 3Y, 5Y, and custom date ranges. Benchmark comparison against SPY, QQQ, and VTI with dollar and percent toggle. Data confidence score across 5 dimensions (freshness, holdings recency, cash accuracy, enrichment, valuation coverage).
+<h3>Today landing view</h3>
+Single-screen morning glance: portfolio strip, week-ahead releases (macro + earnings, with reaction snapshots after the print), Earnings Hub for held names with preview/recap status chips, pending alerts split into "Triggered today" vs "Older pending", nearby price levels, and IBKR holdings sorted by today's $-move. Same surface drives mobile via Cloudflare Mesh.
 </td>
 <td width="33%" valign="top">
 <h3>Multi-Source Import</h3>
@@ -47,80 +47,98 @@ Monthly AI trade analysis. Round-trip reconstruction from tax lots, letter grade
 <tr>
 <td width="33%" valign="top">
 <h3>Risk & Factor Analysis</h3>
-Max drawdown, portfolio volatility, Sharpe ratio, and Herfindahl concentration. Per-position risk contribution with correlation matrices. Quantitative factor exposure (size, style, value, growth, momentum, quality) via market-beta regression against SPY. Options Greeks (Black-Scholes delta, gamma, theta, vega, IV) and strategy detection (covered calls, spreads, collars).
+Max drawdown, portfolio volatility, Sharpe ratio (FRED-sourced 3-month T-bill risk-free rate), and Herfindahl concentration. Per-position risk contribution with correlation matrices. Quantitative factor exposure (size, style, value, growth, momentum, quality) via market-beta regression with per-scope benchmark defaults (Vanguard→VTI, IBKR→QQQ, Roth→SPY). Options Greeks (Black-Scholes delta, gamma, theta, vega, IV) and strategy detection (covered calls, spreads, collars). TTM dividends + interest + fees + net income roll-up.
 </td>
 <td width="33%" valign="top">
 <h3>Scenario Modeling</h3>
-Nine preset scenarios (market crash, rate shocks, rally, sector rotation, stagflation) plus custom what-if analysis. Position-level impact estimates based on factor exposures and historical sensitivities. Fixed-income stress testing by duration band and credit quality.
+Nine preset scenarios (market crash, rate shocks, rally, sector rotation, stagflation) plus custom what-if analysis. Position-level impact estimates based on factor exposures and historical sensitivities. Fixed-income stress testing by duration band and credit quality. Sector beta multipliers exposed via tooltipped details panel.
 </td>
 <td width="33%" valign="top">
-<h3>Research Calendar</h3>
-Earnings dates and company events via IBKR Wall Street Horizon. Macro events (FOMC, CPI, jobs, GDP, PCE) from FRED with Claude-verified reschedules. Per-held-stock earnings from Finnhub. Weekly Opus-4.7 briefings that read full-text from preferred sources and surface expiring options + macro + earnings, delivered by email Sunday afternoon.
+<h3>Calendar Living Record</h3>
+Earnings dates and company events via IBKR Wall Street Horizon. Macro events (FOMC, CPI, jobs, GDP, PCE) from FRED with Claude-verified reschedules. Per-held-stock earnings from Finnhub. Post-release enrichment captures actual values + SPY/QQQ/sector ETF reaction snapshots in a +2h window after print, surfacing chips like "actual 3.2% · SPY −0.41%" on every event row. Cloud fallback (Yahoo Finance) covers Mac-off windows.
 </td>
 </tr>
 <tr>
 <td width="33%" valign="top">
-<h3>Security Levels & Alerts</h3>
-Per-security price levels — static or resolved from moving averages (SMA/EMA 9/21/50/200). Alerts fire automatically during auto-refresh; Claude writes a one-sentence recommendation per alert. Newsletter ingestion auto-extracts ticker + price mentions and stages them for review. Auto-detected support/resistance from pivot clustering, each with a Haiku-written narrative explaining the level.
+<h3>Unified Alerts & Levels</h3>
+Single auto-promoted inbox at <code>/dashboard/alerts</code> merging fired price-level alerts and newsletter-extracted levels pending review. Per-security levels — static or resolved from moving averages (SMA/EMA 9/21/50/200) — fire automatically during auto-refresh; Claude writes a one-sentence recommendation per alert. Auto-detected support/resistance from pivot clustering, each with a Haiku-written narrative.
 </td>
 <td width="33%" valign="top">
 <h3>Research Feeds + Documents</h3>
-Gmail newsletter ingestion via OAuth 2.0 with per-source custom AI processing prompts. Sentiment analysis, ticker extraction, security linking, and two-layer mention verification (word-boundary gate + Haiku semantic pass). Upload analyst reports / research notes as PDFs — Claude extracts structured metadata, SQLite FTS5 powers lexical search, and the chat agent can query them via tool.
+Gmail newsletter ingestion via OAuth 2.0 with per-source custom AI processing prompts. Sentiment analysis, ticker extraction, security linking, and two-layer mention verification (word-boundary gate + Haiku semantic pass). Upload analyst reports / research notes as PDFs — Claude extracts structured metadata, SQLite FTS5 (body + tags) powers lexical search, and the chat agent can query them via tool. Cmd+; opens an ambient Notes overlay from any tab.
 </td>
 <td width="33%" valign="top">
 <h3>Security Detail Hub</h3>
-Per-security Bloomberg-style terminal page — candlestick chart with auto-suggested support/resistance, cross-account positions, tax lots, realized sales, AI trade grades, transactions (stock + option), notes, calendar events, factor exposure, earnings transcripts, corporate actions, and research mentions. Every symbol in the app links here. Click any chart price to add a level in-place.
+Per-security Bloomberg-style terminal page — candlestick chart with auto-suggested support/resistance, KPI strip (Open / Day Range / 52w Range / Volume / ATR-14), cross-account positions, tax lots, realized sales, AI trade grades, transactions (stock + option), notes, calendar events, factor exposure, earnings transcripts, corporate actions, and research mentions. Every symbol in the app links here. Click any chart price to add a level in-place.
+</td>
+</tr>
+<tr>
+<td width="33%" valign="top">
+<h3>Earnings Briefings</h3>
+Pre- and post-earnings emails for held names: deterministic 6-row scoreboard (EPS / Revenue / Guidance / stock @ T+2h / SPY / QQQ) drawn from <code>consensus_estimate</code> + <code>actual_value</code> + reaction snapshot, then AI-generated line-by-line bogeys table + prose. Issuer-family aware (GOOG/GOOGL, BRK A/B, FOX/FOXA) so dual-class positions roll up correctly. Multi-symbol bogeys PDF upload fans out per-event via <code>issuerSiblings()</code>. Earnings Hub on Today view shows held/watchlist chips + preview/recap-sent status.
+</td>
+<td width="33%" valign="top">
+<h3>Hybrid Cron Infrastructure</h3>
+Cloudflare Worker calls your Mac for the daily digest, weekly briefing, and per-event earnings emails. On Mac failure it falls back to sending the email itself: lean composition from R2 state snapshot (schemaVersion 2: holdings, securities, accounts, earnings audit, settings) plus Claude through AI Gateway plus Resend REST. KV-keyed dedup markers (mac-sent / cloud-sent / mac-running) prevent duplicate sends. Outbound on Resend (<code>myportfoliodesk.com</code>); Gmail kept for inbound newsletter ingestion only.
+</td>
+<td width="33%" valign="top">
+<h3>AI Gateway + Model Routing</h3>
+Every Claude call flows through Cloudflare AI Gateway with per-feature <code>cf-aig-metadata</code> for cost tracking. <code>FEATURE_MODELS</code> map in <code>lib/ai/models.ts</code> lets you swap models per feature (Opus / Sonnet / Haiku / Llama 3.3 70B for alert suggestions / future Kimi K2 etc.) by changing one line. Transparent fallback to direct provider URLs when Cloudflare env vars are missing.
 </td>
 </tr>
 </table>
 
 ### Also includes
 
-- **Privacy toggle** — one-click mask of all dollar / percent / share values (symbols + dates stay visible) for screen-sharing and photos
-- **Mobile Today view** — phone-first single-column summary: pending alerts, nearby levels, chat launcher, holdings — delivered over Cloudflare Mesh to your iPhone
+- **Dual-theme palette** — Amber (Bloomberg-light) light mode and Bloomberg-pro soft-black dark mode, IBM Plex Sans + Mono throughout. Header sun/moon toggle persists via <code>vgs:theme</code> localStorage.
+- **Privacy toggle** — one-click mask of all portfolio-derived dollar / percent / share values (public market data like SPY price, MTUM % stays visible). Persists via <code>vgs:privacyMode</code>.
+- **Cmd+K global ticker-jump** — type any held or watchlist symbol to navigate straight to its Security Detail page. Ticker rendered in gold mono.
+- **Mobile Today view** — phone-first single-column summary delivered over Cloudflare Mesh to your iPhone at <code>100.96.0.1:3099</code>. Bottom nav: Today / Research / Chat / Notes / Analysis.
+- **Persistent chat right rail** at viewport ≥1280px (always-visible 480px panel); slide-in drawer on desktop 768–1279px; full-screen overlay on mobile.
+- **NotesAmbient overlay** — Cmd+; or floating FAB opens a quick-jot panel from any tab, drafts persist to localStorage, "Save to Notes" posts a journal note.
 - **Pushover mobile push** — level alerts to your phone with deep-link back to the security
-- **Global search** with Command Palette (Cmd+K) across securities, notes, and transactions
 - **Watchlist** for tracking securities not yet owned, with price targets and investment thesis
 - **Cost basis reconciliation** comparing broker-reported vs. computed cost basis
 - **Corporate actions** (stock splits, reverse splits) with full historical adjustment across all tables
 - **Data Health dashboard** showing price coverage, data freshness, gaps, and cross-source discrepancies
 - **Sortable column headers** across Holdings, Transactions, Tax Lots, Alerts, Levels, and Watchlist — sort state lives in the URL per table
 - **Daily research digest** emailed on weekdays at 8:45 AM ET summarizing overnight newsletter activity
-- **Hybrid cron infrastructure** — Cloudflare Worker calls your Mac for daily digest / weekly briefing; on Mac failure it falls back to sending the email itself via Gmail REST and Claude through AI Gateway
+- **R2 disaster-recovery archival** — all imported Vanguard PDFs auto-upload to Cloudflare R2 (S3-compatible via <code>aws4fetch</code>). Parsed data still lives in SQLite; R2 is insurance.
 
 ---
 
-## What's new in v2.1
+## What's new in v2.2 (Holistic Redesign — 2026-04-30)
 
-- **Terminal-style Security Detail redesign** — Bloomberg-adjacent dark "market data module" (chart + levels + big amber price hero) that stays dark even when the surrounding app eventually flips to a light-paper theme. Solves the chart's current-price-vs-resistance color collision with an amber-only priceLine.
-- **Auto-suggested support/resistance** on every chart — pivot clustering with confidence grading, each level accompanied by a Claude-written one-sentence narrative. Click Accept to add it as a tracked level.
-- **AI Gateway routing** — every Claude call flows through Cloudflare AI Gateway with per-feature `cf-aig-metadata` for cost tracking. Swap models (Opus / Sonnet / Haiku / Llama 3.3 / Kimi K2.6) by changing one line in `FEATURE_MODELS`. Falls back transparently when Cloudflare env vars are missing.
-- **Workers AI downroute** — alert-suggestion recommendations run on Llama 3.3 70B, newsletter level extraction on Kimi K2.6, both via Cloudflare Workers AI.
-- **R2 disaster-recovery archival** — all imported Vanguard PDFs auto-upload to Cloudflare R2 via `aws4fetch` (S3-compatible). Parsed data still lives in SQLite; R2 is insurance.
-- **Research PDF knowledge base** — upload analyst reports; Claude extracts structured metadata; FTS5 virtual table powers lexical search; `query_research_documents` chat tool surfaces them during Q&A.
-- **EDGAR 10-K / 10-Q section extraction** — chat tool summarizes Item 1A Risk Factors and MD&A from the latest filing, cached per `(symbol, accession, section)`.
-- **Analyst coverage** — recommendation-trend aggregated via Finnhub, surfaced in the chat tool palette.
-- **Chat history persistence** — conversations stored in SQLite with inline delete from the sidebar.
-- **Chart click-to-add-level** — tap any price on the candlestick to add a Support/Resistance level at that cursor position.
+- **Amber (Bloomberg-light) + Bloomberg-pro dark themes** with IBM Plex font system, sun/moon theme toggle in the header. Replaces the prior Midnight Portfolio palette.
+- **9 → 6 tab IA**: Today | Accounts | Analysis | Research | Charts | Import. Cut tabs (Overview, Holdings, Calendar, Levels Review) absorbed into Today, the unified Accounts cross-account view, and the unified Alerts inbox. Old routes still redirect.
+- **Unified Alerts inbox** at <code>/dashboard/alerts</code> — single <code>NotificationBell</code> in the header replaces the prior split AlertsBell + ReviewBell.
+- **NotesAmbient overlay** (Cmd+;), persistent chat right rail at xl, Cmd+K repurposed as global ticker-jump.
+- **Cloudflare Worker fallback** for briefing / digest / earnings emails (KV-keyed dedup markers, R2 state snapshot at schemaVersion 2, Yahoo Finance for free real-time bars in cloud calendar enrichment).
+- **Earnings preview/recap email pipeline** + Earnings Hub on Today view + multi-symbol bogeys PDF extraction with issuer-family fan-out.
+- **Calendar Living Record** — post-release enrichment with reaction snapshots; Mac launchd + 15-min Worker cron.
+- **Outbound email migrated to Resend** (<code>myportfoliodesk.com</code> verified; DKIM + SPF + DMARC aligned). Gmail kept inbound-only for newsletter ingestion.
+- **App rename**: "Vanguard Skin" → "Portfolio Desk" in chrome (repo name preserved).
+
+See [CHANGELOG.md](CHANGELOG.md) for full version history.
 
 ---
 
 ## Screenshots
 
 <details>
-<summary>Account Details</summary>
+<summary>Today (default landing)</summary>
+
+![Today](docs/screenshots/today.png)
+</details>
+
+<details>
+<summary>Accounts (cross-account holdings via <code>?id=all</code>)</summary>
 
 ![Accounts](docs/screenshots/accounts.png)
 </details>
 
 <details>
-<summary>Holdings</summary>
-
-![Holdings](docs/screenshots/holdings.png)
-</details>
-
-<details>
-<summary>Analysis</summary>
+<summary>Analysis (Classification + Factors + Performance + Trade Reviews)</summary>
 
 ![Analysis](docs/screenshots/analysis.png)
 </details>
@@ -129,12 +147,6 @@ Per-security Bloomberg-style terminal page — candlestick chart with auto-sugge
 <summary>Charts</summary>
 
 ![Charts](docs/screenshots/charts.png)
-</details>
-
-<details>
-<summary>Calendar</summary>
-
-![Calendar](docs/screenshots/calendar.png)
 </details>
 
 <details>
@@ -162,9 +174,15 @@ Per-security Bloomberg-style terminal page — candlestick chart with auto-sugge
 </details>
 
 <details>
-<summary>AI Chat</summary>
+<summary>AI Chat (persistent right rail at xl viewports)</summary>
 
 ![Chat](docs/screenshots/chat.png)
+</details>
+
+<details>
+<summary>Unified Alerts inbox</summary>
+
+![Alerts](docs/screenshots/alerts.png)
 </details>
 
 <details>
@@ -182,17 +200,19 @@ Per-security Bloomberg-style terminal page — candlestick chart with auto-sugge
 | Framework | Next.js 16 (App Router), React 19 |
 | Language | TypeScript 5 |
 | Database | SQLite via better-sqlite3 (WAL mode, foreign keys ON, FTS5) |
-| Styling | Tailwind CSS 4 |
+| Styling | Tailwind CSS 4 with dual-theme token system (Amber light / Bloomberg-pro dark) |
+| Typography | IBM Plex Sans + IBM Plex Mono |
 | Charts | Recharts (portfolio), LightweightCharts v5 (candlestick) |
 | AI | Claude via AI SDK v6 + Cloudflare AI Gateway (Opus 4.7 for heavy reasoning, Sonnet 4.6 for classification, Haiku 4.5 for gates) |
-| Alternate models | Llama 3.3 70B + Kimi K2.6 via Cloudflare Workers AI |
+| Alternate models | Llama 3.3 70B via Cloudflare Workers AI (alert suggestions) |
 | Broker API | IBKR TWS via `@stoqey/ib` (IBApiNext) |
-| Email | Gmail API (OAuth 2.0) for research feeds + outbound briefings |
+| Outbound email | Resend SMTP from `myportfoliodesk.com` (briefing / digest / earnings) |
+| Inbound email | Gmail (IMAP for Vital Knowledge; OAuth REST for newsletter ingestion + Worker fallback) |
 | Mobile push | Pushover |
-| Object storage | Cloudflare R2 (via `aws4fetch`, S3-compatible) |
-| Cloud cron | Cloudflare Workers with KV-based dedup markers |
+| Object storage | Cloudflare R2 (via `aws4fetch`, S3-compatible) — PDF archival + state snapshots |
+| Cloud cron | Cloudflare Workers with KV-based dedup markers (briefing / digest / earnings preview / earnings recap / calendar enrich) |
 | Desktop | Electron 41 + electron-builder (code-signed + notarized macOS DMG) |
-| Testing | Vitest (1100 tests across 86 files, in-memory SQLite) |
+| Testing | Vitest (1387 tests across 130+ files, in-memory SQLite) |
 
 ---
 
@@ -284,14 +304,20 @@ Copy `.env.local.example` to `.env.local` and configure:
 | `EDGAR_CONTACT_EMAIL` | SEC EDGAR API fair-access email |
 | `API_NINJAS_API_KEY` | Earnings transcripts ([api-ninjas.com](https://api-ninjas.com/)) |
 
-**Optional — Email Briefings:**
+**Optional — Outbound Email (Resend):**
 | Variable | Description |
 |----------|-------------|
-| `GMAIL_ADDRESS` | Gmail address for sending weekly briefings and daily digests |
-| `GMAIL_APP_PASSWORD` | Gmail App Password ([setup guide](https://support.google.com/accounts/answer/185833)) |
-| `BRIEFING_EMAIL_TO` | Briefing email recipient |
+| `RESEND_API_KEY` | Resend API key for sending briefings, digests, and earnings emails |
+| `RESEND_FROM_DOMAIN` | Verified sending domain (e.g. `myportfoliodesk.com`) |
+| `BRIEFING_EMAIL_TO` | Default recipient for the weekly briefing and daily digest |
 
-**Optional — Research Feeds (Gmail newsletter ingestion):**
+**Optional — Inbound Email (Vital Knowledge IMAP):**
+| Variable | Description |
+|----------|-------------|
+| `GMAIL_ADDRESS` | Gmail address used for Vital Knowledge IMAP newsletter fetch |
+| `GMAIL_APP_PASSWORD` | Gmail App Password ([setup guide](https://support.google.com/accounts/answer/185833)) |
+
+**Optional — Research Feeds (Gmail newsletter ingestion via OAuth):**
 | Variable | Description |
 |----------|-------------|
 | `GOOGLE_CLIENT_ID` | Google Cloud OAuth client ID |
@@ -392,11 +418,12 @@ Without these, the app builds unsigned (works locally but triggers Gatekeeper wa
 
 ```
 app/                        Next.js App Router pages + API routes
-  dashboard/                Main dashboard (8 tabs + Security Detail hub + Data Health)
-    components/             85 React components
+  dashboard/                Main dashboard (6 tabs + Security Detail hub + Data Health + unified Alerts inbox)
+    components/             100+ React components
     security/[id]/          Per-security detail hub with Terminal-style market-data panel
-    today/                  Mobile-first single-column summary view
-  api/                      68 API endpoints across ~25 domains
+    today/                  Default landing — single-column on mobile, multi-block on desktop
+    alerts/                 Unified inbox: fired alerts + pending newsletter-extracted levels
+  api/                      80+ API endpoints across ~30 domains
 lib/
   db.ts                     SQLite singleton (WAL mode, foreign keys ON)
   db/migrations/            40 numbered SQL migrations
@@ -414,8 +441,8 @@ lib/
   research-documents/       PDF upload + Claude extraction + FTS5 search
   storage/                  R2 S3-compatible disaster-recovery archival
 electron/                   Electron main process, tray, IPC, settings store
-workers/cron/               Cloudflare Worker — primary daily-digest + weekly-briefing trigger with cloud fallback
-tests/                      1100 tests across 86 files (Vitest, in-memory SQLite)
+workers/cron/               Cloudflare Worker — primary trigger for daily digest, weekly briefing, earnings preview/recap, calendar enrichment, with cloud fallback
+tests/                      1387 tests across 130+ files (Vitest, in-memory SQLite)
 scripts/                    Utility scripts (seed, import, OAuth setup, backfills, Co-Work preprocessing)
 ```
 
@@ -436,7 +463,7 @@ npx vitest
 npx vitest run tests/compute/tax-lots.test.ts
 ```
 
-1100 tests across 86 test files covering the import pipeline, tax-lot computation, TWR/XIRR calculations, daily valuations, risk metrics, benchmark analytics, trade round-trips, options Greeks, scenario modeling, factor analysis, chat tools, research document extraction, level detection, alert firing, Pushover integration, corporate-action adjustments, and API-component contract shapes.
+1387 tests across 130+ test files covering the import pipeline, tax-lot computation, TWR/XIRR calculations, daily valuations, risk metrics, benchmark analytics, trade round-trips, options Greeks, scenario modeling, factor analysis, chat tools, research document extraction, level detection, alert firing, Pushover integration, corporate-action adjustments, calendar release-time resolution, post-release enrichment + reaction snapshots, earnings preview/recap composer, briefing current-prices + issuer-family + macro exposure, Worker cron primary/fallback paths with KV dedup, and API-component contract shapes.
 
 ---
 
