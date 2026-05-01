@@ -143,7 +143,10 @@ export function DataConfidenceIndicator() {
       </button>
 
       {showPopover && (
-        <div className="absolute right-0 top-full mt-2 z-50 w-96 rounded-xl border border-edge bg-panel shadow-xl p-4 space-y-3">
+        <div
+          className="absolute right-0 top-full mt-2 z-50 w-96 rounded-xl border border-edge bg-panel shadow-xl p-4 space-y-3"
+          style={{ backgroundColor: "var(--panel)" }}
+        >
           {/* Header */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">

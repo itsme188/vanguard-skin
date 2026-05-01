@@ -436,7 +436,10 @@ function TwsPanel({
       <div className="fixed inset-0 z-40" onClick={onClose} />
 
       {/* Panel */}
-      <div className="absolute right-0 top-full mt-2 z-50 w-80 rounded-xl border border-edge bg-panel shadow-xl p-4 space-y-4">
+      <div
+        className="absolute right-0 top-full mt-2 z-50 w-80 rounded-xl border border-edge bg-panel shadow-xl p-4 space-y-4"
+        style={{ backgroundColor: "var(--panel)" }}
+      >
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-medium text-ink">TWS Connection</h3>
           <button
