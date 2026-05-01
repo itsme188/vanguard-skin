@@ -2,9 +2,11 @@
 
 import Link from "next/link";
 
+// Trade Reviews relocates to Analysis sub-view in Phase 5; the legacy
+// `?view=reviews` route still renders, so saved bookmarks and the in-page
+// trade-reviews UI keep working until Phase 5 ships the redirect.
 const VIEWS = [
   { key: "notes", label: "Notes", href: "/dashboard/research" },
-  { key: "reviews", label: "Trade Reviews", href: "/dashboard/research?view=reviews" },
   { key: "feeds", label: "Feeds", href: "/dashboard/research?view=feeds" },
   { key: "documents", label: "Documents", href: "/dashboard/research?view=documents" },
 ];

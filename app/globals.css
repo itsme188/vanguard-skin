@@ -3,6 +3,206 @@
 /* Electron desktop app — activated when ELECTRON=true sets .electron on <html> */
 @custom-variant electron (.electron &);
 
+/* Dual-theme token system.
+ *
+ * Token NAMES are preserved from the legacy "Midnight Portfolio" palette
+ * (canvas/panel/raised/muted/edge/ink/gold/up/down/blue) so existing components
+ * that use Tailwind utility classes (bg-canvas, text-ink, text-gold, bg-up/20,
+ * etc.) auto-adapt without code changes.
+ *
+ * Token VALUES flip per theme:
+ *   :root                       → light "Amber" (Bloomberg-light + IBM Plex)
+ *   [data-theme="dark"]         → dark "Bloomberg-pro" (soft black + Plex Mono)
+ *
+ * Anti-FOUC: a small script in app/layout.tsx reads localStorage["vgs:theme"]
+ * and sets <html data-theme> before React hydrates.
+ *
+ * Note: "gold" is a semantic name. In light mode it is now the Amber brand
+ * (#b8860b — vivid, Bloomberg-aligned); in dark mode it stays Bloomberg amber
+ * (#ffb84d). Both contrast >7:1 on their respective canvases.
+ *
+ * History: light mode shipped briefly as "Sage & Linen" (deep moss brand,
+ * sage/sienna status) on 2026-04-29; pivoted to Amber on 2026-04-30 after
+ * design exploration locked the Bloomberg-light direction. Card shadow keeps
+ * a moss tint (cohesive grounding on warm canvas) even in the new palette —
+ * the only "Sage residue" left, intentional.
+ */
+
+:root {
+  /* Surfaces — Amber: warm-cream canvas, pure-white cards lift via shadow */
+  --canvas: #fafaf3;
+  --panel: #ffffff;
+  --raised: #f4f3ea;
+  --muted: #e9e5d3;
+
+  /* Borders — kept as token aliases even though cards go borderless app-wide
+   * (the .rounded-xl.bg-panel rule below sets border: 0). Inline rules,
+   * dividers, table grids, and "today" highlight outlines still reference these. */
+  --edge: #d8d3bf;
+  --edge-strong: #aaa085;
+
+  /* Text hierarchy on warm canvas.
+   * ink     — 21:1, headlines
+   * ink-dim — 14:1, body text
+   * ink-faint — 7.0:1, metadata / micro-labels / column headers (matches the
+   *   Sage & Linen iteration's bottom rung; mono micro-labels at 10-11px need
+   *   every bit of contrast they can get). */
+  --ink: #0a0a0a;
+  --ink-dim: #2a2a26;
+  --ink-faint: #54574c;
+
+  /* Brand — Amber (#b8860b is the canonical "dark goldenrod"; reads as a
+   * deliberate Bloomberg-style accent against cream, not a yellow highlighter) */
+  --gold: #b8860b;
+  --gold-glow: rgba(184, 134, 11, 0.12);
+
+  /* Status — emerald / ruby. Matches dark mode's semantic green/red but at
+   * deeper saturation so they hold up against pure-white cards. */
+  --up: #0d9456;
+  --up-tint: rgba(13, 148, 86, 0.15);
+  --down: #c8311c;
+  --down-tint: rgba(200, 49, 28, 0.15);
+
+  /* Info accent — deep navy. Cool counterpoint to amber/emerald/ruby; reserved
+   * for "today" outlines, info tags, and links. */
+  --blue: #1a3b8a;
+  --blue-tint: rgba(26, 59, 138, 0.15);
+
+  /* Tinted card surfaces — variations on the panel for the rare cases that
+   * need a brand or warm-context undertone. Amber palette retunes these so
+   * a panel-sage card on the cream canvas stays in palette without dragging
+   * the rest of the page back to Sage & Linen. */
+  --panel-sage: #eef0e8;     /* cream + faint moss undertone */
+  --panel-warm: #f6ecdc;     /* cream + faint amber undertone */
+
+  /* Card elevation — locked 2026-04-30: ring 20% + close drop 40% (Y=8, blur=24)
+   * + ambient 30% (Y=28, blur=64). Moss-tinted rgba(58, 74, 63, …) — kept after
+   * the Sage→Amber pivot because the moss reads as a believable cast shadow on
+   * the warm canvas; pure-black would feel harsh against #fafaf3. The shadow
+   * does ALL the edge work (cards are borderless via the rule below). */
+  --shadow-card:
+    0 0 0 1px rgba(58, 74, 63, 0.20),
+    0 8px 24px rgba(58, 74, 63, 0.40),
+    0 28px 64px rgba(58, 74, 63, 0.30);
+
+  /* Default scrollbar tinting (overridden in dark) */
+  --scrollbar-thumb: #cdc7b4;
+  --scrollbar-thumb-hover: #a89b80;
+}
+
+[data-theme="dark"] {
+  /* Surfaces — soft black, NOT pure #000 (eye-strain reduction) */
+  --canvas: #0a0a0a;
+  --panel: #0d0d0d;
+  --raised: #111111;
+  --muted: #1f1f1f;
+
+  /* Borders — hairline */
+  --edge: #1f1f1f;
+  --edge-strong: #2a2a2a;
+
+  /* Text — body bumped to #d4d4d4 (~12:1) per holistic-redesign decision */
+  --ink: #e5e5e5;
+  --ink-dim: #d4d4d4;       /* body */
+  --ink-faint: #888888;     /* metadata */
+
+  /* Brand — Bloomberg amber (the only warm color in dark mode) */
+  --gold: #ffb84d;
+  --gold-glow: rgba(255, 184, 77, 0.09);
+
+  /* Status — pure semantic green/red */
+  --up: #22c55e;
+  --up-tint: rgba(34, 197, 94, 0.15);
+  --down: #ef4444;
+  --down-tint: rgba(239, 68, 68, 0.15);
+
+  /* Info accent — steel blue (muted sky, not vibrant Tailwind blue;
+   * matches the slate tone in light mode for a deliberate accent that
+   * isn't another shade of green or sienna). */
+  --blue: #7ba8d4;
+  --blue-tint: rgba(123, 168, 212, 0.15);
+
+  /* Tinted card surfaces — barely-there variations for brand/warm cards. */
+  --panel-sage: #0e1410;     /* near-black + green hint */
+  --panel-warm: #110f0a;     /* near-black + warm hint */
+
+  /* Card elevation — soft black, less needed on dark canvas but a hint
+   * of depth still helps cards float. */
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.5), 0 6px 16px rgba(0, 0, 0, 0.3);
+
+  --scrollbar-thumb: #1f1f1f;
+  --scrollbar-thumb-hover: #444;
+}
+
+@theme inline {
+  /* Surfaces */
+  --color-canvas: var(--canvas);
+  --color-panel: var(--panel);
+  --color-panel-sage: var(--panel-sage);
+  --color-panel-warm: var(--panel-warm);
+  --color-raised: var(--raised);
+  --color-muted: var(--muted);
+
+  /* Borders */
+  --color-edge: var(--edge);
+  --color-edge-strong: var(--edge-strong);
+
+  /* Text hierarchy */
+  --color-ink: var(--ink);
+  --color-ink-dim: var(--ink-dim);
+  --color-ink-faint: var(--ink-faint);
+
+  /* Brand */
+  --color-gold: var(--gold);
+  --color-gold-glow: var(--gold-glow);
+
+  /* Status */
+  --color-up: var(--up);
+  --color-up-tint: var(--up-tint);
+  --color-down: var(--down);
+  --color-down-tint: var(--down-tint);
+  --color-blue: var(--blue);
+  --color-blue-tint: var(--blue-tint);
+
+  /* Fonts — IBM Plex Sans + Mono load in app/layout.tsx. */
+  --font-sans: var(--font-plex-sans);
+  --font-mono: var(--font-plex-mono);
+
+  /* Compat with default Tailwind */
+  --color-background: var(--canvas);
+  --color-foreground: var(--ink);
+}
+
+/* Card elevation — lifts panels off the canvas. Auto-applied to the canonical
+ * card pattern (rounded-xl + any of the panel surface tokens). Inline chips
+ * (rounded-md / rounded-full) and modals (already have shadow-2xl which
+ * dominates) are unaffected.
+ *
+ * The .card-elev class remains as explicit opt-in for cards that don't
+ * follow the rounded-xl convention (e.g., overflow-hidden table wrappers
+ * with rounded corners on a different element). */
+.rounded-xl.bg-panel,
+.rounded-xl.bg-panel-sage,
+.rounded-xl.bg-panel-warm,
+.card-elev {
+  box-shadow: var(--shadow-card);
+}
+
+/* Borderless cards in LIGHT mode — locked 2026-04-30 (Phase 3.5):
+ * the 3-layer moss-tinted shadow does ALL the edge work, including the 1px
+ * ring layer that replaces the legacy `border border-edge`. This rule
+ * overrides Tailwind's `.border` utility (specificity 0,3,0 > 0,1,0).
+ *
+ * Dark mode INTENTIONALLY keeps borders — its shadow has no ring layer and
+ * its panel/canvas brightness delta (#0d0d0d on #0a0a0a) is too subtle to
+ * carry the edge alone. */
+:root:not([data-theme="dark"]) .rounded-xl.bg-panel,
+:root:not([data-theme="dark"]) .rounded-xl.bg-panel-sage,
+:root:not([data-theme="dark"]) .rounded-xl.bg-panel-warm,
+:root:not([data-theme="dark"]) .card-elev {
+  border: 0;
+}
+
 /* iPhone safe area for bottom nav / home indicator */
 .pb-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }
 
@@ -16,47 +216,10 @@
   -webkit-app-region: no-drag;
 }
 
-@theme inline {
-  /* Surfaces — layered elevation system */
-  --color-canvas: #080B12;
-  --color-panel: #0E1118;
-  --color-raised: #151A24;
-  --color-muted: #1B2230;
-
-  /* Borders */
-  --color-edge: #1E2534;
-  --color-edge-strong: #2A3244;
-
-  /* Text hierarchy */
-  --color-ink: #E2E6F0;
-  --color-ink-dim: #8891A6;
-  --color-ink-faint: #4E5668;
-
-  /* Brand accent — warm gold */
-  --color-gold: #C9A44E;
-  --color-gold-glow: #C9A44E18;
-
-  /* Status colors */
-  --color-up: #34D399;
-  --color-up-tint: #34D39918;
-  --color-down: #F87171;
-  --color-down-tint: #F8717118;
-  --color-blue: #60A5FA;
-  --color-blue-tint: #60A5FA18;
-
-  /* Fonts */
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-  --font-serif: var(--font-instrument-serif);
-
-  /* Compat with default Tailwind */
-  --color-background: #080B12;
-  --color-foreground: #E2E6F0;
-}
-
 body {
   background: var(--color-canvas);
   color: var(--color-ink);
+  font-family: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
 }
 
 /* Tabular numbers for financial data */
@@ -79,12 +242,12 @@ html {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--color-edge-strong);
+  background: var(--scrollbar-thumb);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-ink-faint);
+  background: var(--scrollbar-thumb-hover);
 }
 
 /* Focus ring — consistent gold outline on keyboard focus */
@@ -93,11 +256,14 @@ html {
   outline-offset: 2px;
 }
 
-/* Reader typography — optimized for long-form reading */
+/* Reader typography — optimized for long-form reading.
+ * Phase 4 reader-app spec: ≥17px body, ≥1.6 line-height, ≥640px max width.
+ * Whitespace-pre-wrap is set on the wrapper element; we keep paragraph
+ * margins for the split-by-paragraph fallback path. */
 .prose-reader {
   font-family: var(--font-sans);
-  font-size: 15px;
-  line-height: 1.8;
+  font-size: 18px;
+  line-height: 1.7;
   color: var(--color-ink-dim);
   max-width: 65ch;
 }
@@ -108,11 +274,12 @@ html {
   margin-bottom: 0;
 }
 
-/* Newsletter HTML rendering — rich content with images, tables, charts */
+/* Newsletter HTML rendering — rich content with images, tables, charts.
+ * Same reader-app spec applies. Tables and code stay at their own scale. */
 .prose-newsletter {
   font-family: var(--font-sans);
-  font-size: 15px;
-  line-height: 1.8;
+  font-size: 18px;
+  line-height: 1.7;
   color: var(--color-ink-dim);
   max-width: 72ch;
   overflow-wrap: break-word;

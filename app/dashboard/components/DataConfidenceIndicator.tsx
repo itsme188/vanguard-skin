@@ -131,9 +131,6 @@ export function DataConfidenceIndicator() {
 
   const config = LEVEL_CONFIG[confidence.overallLevel];
 
-  // Build one-line summary
-  const summary = buildSummary(confidence);
-
   return (
     <div className="relative" ref={popoverRef}>
       <button
@@ -143,7 +140,6 @@ export function DataConfidenceIndicator() {
       >
         <span className={`w-2 h-2 rounded-full ${config.color}`} />
         <span>{confidence.overallScore}%</span>
-        <span className="hidden lg:inline">{summary}</span>
       </button>
 
       {showPopover && (
@@ -288,30 +284,4 @@ function ActionRow({
       )}
     </div>
   );
-}
-
-function buildSummary(c: DataConfidence): string {
-  const parts: string[] = [];
-
-  // Price status
-  if (c.priceFreshness.score >= 90) {
-    parts.push("prices fresh");
-  } else if (c.priceFreshness.stalestDays != null) {
-    parts.push(`${c.priceFreshness.stalestSymbol} ${c.priceFreshness.stalestDays}d stale`);
-  }
-
-  // Holdings status — show per-account
-  const ibkr = c.holdingsRecency.perAccount.find(a => a.name.toLowerCase().includes("ibkr"));
-  const vanguard = c.holdingsRecency.perAccount.find(a =>
-    a.name.toLowerCase().includes("vanguard") && !a.name.toLowerCase().includes("roth")
-  );
-
-  if (ibkr?.daysOld != null && ibkr.daysOld <= 1) {
-    parts.push("IBKR live");
-  }
-  if (vanguard?.daysOld != null && vanguard.daysOld > 7) {
-    parts.push(`Vanguard ${vanguard.daysOld}d old`);
-  }
-
-  return parts.length > 0 ? `— ${parts.join(", ")}` : "";
 }

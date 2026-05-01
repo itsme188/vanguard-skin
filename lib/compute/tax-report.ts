@@ -271,7 +271,7 @@ export function generateTXF(report: TaxReportResult): string {
 
   // TXF header
   lines.push("V042"); // TXF version 042
-  lines.push(`AVanguard Skin Portfolio Dashboard`);
+  lines.push(`APortfolio Desk`);
   lines.push(`D${toMMDDYYYY(`${report.year}-12-31`)}`);
   lines.push("^"); // end of header
 

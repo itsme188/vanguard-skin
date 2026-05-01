@@ -20,7 +20,10 @@ interface SearchResult {
 }
 
 export async function GET(request: NextRequest) {
-  const q = new URL(request.url).searchParams.get("q")?.trim();
+  const url = new URL(request.url);
+  const q = url.searchParams.get("q")?.trim();
+  // type=security narrows to ticker-jump results only (Cmd+K palette).
+  const typeFilter = url.searchParams.get("type");
   if (!q || q.length < 1) {
     return NextResponse.json({ results: [] });
   }
@@ -58,6 +61,11 @@ export async function GET(request: NextRequest) {
           .join(" · "),
         href: `/dashboard/security/${s.id}`,
       });
+    }
+
+    // Ticker-jump (Cmd+K) only wants securities — short-circuit here.
+    if (typeFilter === "security") {
+      return NextResponse.json({ results });
     }
 
     // ── Notes (content) ─────────────────────────────────────────

@@ -10,8 +10,13 @@ import {
   getFactorCoverage,
   type AllocationDimension,
 } from "@/lib/queries/analysis";
+import { getTradeReviews } from "@/lib/queries/trade-reviews";
+import { getAvailableReviewPeriods } from "@/lib/compute/trade-roundtrips";
 import { FACTOR_COLUMNS } from "@/lib/factors";
 import { AnalysisView, type AnalysisMode } from "../components/AnalysisView";
+import { TradeReviewView } from "../components/TradeReviewView";
+import { PerformanceView } from "../components/PerformanceView";
+import { IncomeYieldSection } from "../components/IncomeYieldSection";
 import Link from "next/link";
 
 interface PageProps {
@@ -19,6 +24,7 @@ interface PageProps {
     dimension?: string;
     scope?: string;
     mode?: string;
+    view?: string;
   }>;
 }
 
@@ -60,6 +66,40 @@ function resolveAccountIds(scope: AccountScope): number[] | undefined {
 
 export default async function AnalysisPage({ searchParams }: PageProps) {
   const params = await searchParams;
+
+  // ── Sub-view dispatch: ?view=trade-reviews | performance ──
+  if (params.view === "trade-reviews") {
+    const accounts = db
+      .prepare("SELECT id, name FROM accounts ORDER BY name")
+      .all() as { id: number; name: string }[];
+    const ibkr = accounts.find((a) => a.name.toLowerCase().includes("ibkr"));
+    const defaultAccountId = ibkr?.id ?? accounts[0]?.id ?? null;
+    const reviews = defaultAccountId ? getTradeReviews(db, defaultAccountId) : [];
+    const reviewPeriods = defaultAccountId
+      ? getAvailableReviewPeriods(db, defaultAccountId)
+      : [];
+
+    return (
+      <div className="space-y-6">
+        <div>
+          <h2 className="text-lg font-medium text-ink">Trade Reviews</h2>
+          <p className="text-sm text-ink-faint mt-0.5">
+            Monthly AI trade analysis — relocated from Research in Phase 5.
+          </p>
+        </div>
+        <TradeReviewView
+          initialReviews={reviews}
+          accounts={accounts}
+          initialPeriods={reviewPeriods}
+          defaultAccountId={defaultAccountId}
+        />
+      </div>
+    );
+  }
+
+  if (params.view === "performance") {
+    return <PerformanceView scope={params.scope} />;
+  }
 
   const mode: AnalysisMode =
     params.mode === "factors" ? "factors" : "classification";
@@ -122,6 +162,9 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
         factorHeatmap={factorHeatmap}
         factorCoverage={factorCoverage}
       />
+
+      {/* Income / yield — lower-priority placement per Phase 5 IA decision */}
+      <IncomeYieldSection scope={scope} />
     </div>
   );
 }

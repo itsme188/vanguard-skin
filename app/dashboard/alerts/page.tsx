@@ -1,17 +1,18 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { Suspense, useEffect, useMemo, useState, useCallback } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import type { LevelAlert, AlertResponse } from "@/lib/types";
-import { Money, Shares } from "@/lib/privacy/components";
+import type { LevelAlert, AlertResponse, LevelReviewStatus } from "@/lib/types";
+import { Money, Pct, Shares } from "@/lib/privacy/components";
 import { useToast } from "../components/Toast";
 import { SortPicker } from "../components/SortPicker";
 import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
 
-type AlertSortField = "triggered_at" | "symbol" | "level_price" | "source_author";
+type StreamSortField = "recency" | "symbol" | "level_price" | "source_author";
 
 const SORT_OPTIONS = [
-  { field: "triggered_at" as const, label: "Triggered" },
+  { field: "recency" as const, label: "Recency" },
   { field: "symbol" as const, label: "Symbol" },
   { field: "level_price" as const, label: "Price" },
   { field: "source_author" as const, label: "Source" },
@@ -31,61 +32,130 @@ interface EnrichedAlert extends LevelAlert {
   } | null;
 }
 
-function triggeredTodayIso(triggeredAt: string): boolean {
-  const t = new Date(triggeredAt);
-  if (isNaN(t.getTime())) return false;
-  const now = new Date();
-  return t.toDateString() === now.toDateString();
+interface PendingLevel {
+  id: number;
+  security_id: number;
+  symbol: string;
+  security_name: string | null;
+  level_type: string;
+  price: number;
+  price_source: string;
+  direction: string | null;
+  action_hint: string | null;
+  source_author: string | null;
+  thesis: string | null;
+  timeframe: string | null;
+  source_article_id: number | null;
+  current_price: number | null;
+  created_at: string;
 }
 
-function formatPriceSourceLabel(source: string): string {
-  // sma_50 → SMA 50, ema_9 → EMA 9
-  const m = /^(sma|ema)_(\d+)$/.exec(source);
-  if (!m) return source;
-  return `${m[1].toUpperCase()} ${m[2]}`;
-}
+type StreamFilter = "pending" | "review" | "acted" | "ignored" | "dismissed" | "all";
 
-const FILTER_OPTIONS: Array<{ label: string; value: AlertResponse | "all" }> = [
+const FILTER_OPTIONS: Array<{ label: string; value: StreamFilter }> = [
   { label: "Pending", value: "pending" },
+  { label: "Review", value: "review" },
   { label: "Acted", value: "acted" },
   { label: "Ignored", value: "ignored" },
   { label: "Dismissed", value: "dismissed" },
   { label: "All", value: "all" },
 ];
 
+function isToday(iso: string): boolean {
+  const t = new Date(iso);
+  if (isNaN(t.getTime())) return false;
+  const now = new Date();
+  return t.toDateString() === now.toDateString();
+}
+
+function formatPriceSourceLabel(source: string): string {
+  const m = /^(sma|ema)_(\d+)$/.exec(source);
+  if (!m) return source;
+  return `${m[1].toUpperCase()} ${m[2]}`;
+}
+
+function distancePct(level: number, current: number | null): number | null {
+  if (current == null) return null;
+  return ((current - level) / level) * 100;
+}
+
+type StreamItem =
+  | { kind: "alert"; recencyAt: string; alert: EnrichedAlert }
+  | { kind: "review"; recencyAt: string; level: PendingLevel };
+
 export default function AlertsPage() {
+  // useSearchParams below would CSR-bail this entire route at build time
+  // without a Suspense boundary. Wrap the inner client logic to localize.
+  return (
+    <Suspense fallback={<p className="text-[11px] text-ink-faint italic py-6 text-center">Loading…</p>}>
+      <AlertsPageInner />
+    </Suspense>
+  );
+}
+
+function AlertsPageInner() {
   const { toast } = useToast();
+  const searchParams = useSearchParams();
+  const router = useRouter();
+
+  // Filter is reflected in the URL so /dashboard/levels/review can deep-link
+  // to ?view=review. Treat ?view=review as filter=review on first render.
+  const initialFilter: StreamFilter =
+    searchParams.get("view") === "review" ? "review" : "pending";
+
+  const [filter, setFilter] = useState<StreamFilter>(initialFilter);
   const [alerts, setAlerts] = useState<EnrichedAlert[]>([]);
-  const [filter, setFilter] = useState<AlertResponse | "all">("pending");
+  const [reviewLevels, setReviewLevels] = useState<PendingLevel[]>([]);
+  const [pendingAlertCount, setPendingAlertCount] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [pendingCount, setPendingCount] = useState(0);
   const [detecting, setDetecting] = useState(false);
   const [suggesting, setSuggesting] = useState(false);
+  const [approvingAll, setApprovingAll] = useState(false);
   const [actionStatus, setActionStatus] = useState<string | null>(null);
-  const { sort, setSort } = useSortParam<AlertSortField>("alerts", "triggered_at", "desc");
+  const { sort, setSort } = useSortParam<StreamSortField>("alerts", "recency", "desc");
 
-  const sortedAlerts = useMemo(() => {
-    if (!sort.field) return alerts;
-    const field = sort.field;
-    const getValue = (a: EnrichedAlert): unknown => {
-      if (field === "triggered_at") return a.triggered_at;
-      if (field === "symbol") return a.symbol;
-      if (field === "level_price") return a.level?.price ?? null;
-      if (field === "source_author") return a.level?.source_author ?? null;
-      return null;
-    };
-    return [...alerts].sort((a, b) => compareValues(getValue(a), getValue(b), sort.dir));
-  }, [alerts, sort]);
+  // When the user toggles a filter pill we drop ?view=review from the URL
+  // (it was only meaningful as an entry hint).
+  function selectFilter(next: StreamFilter) {
+    setFilter(next);
+    if (searchParams.get("view")) {
+      const params = new URLSearchParams(searchParams.toString());
+      params.delete("view");
+      const qs = params.toString();
+      router.replace(qs ? `?${qs}` : "?");
+    }
+  }
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const q = filter === "all" ? "" : `?response=${filter}`;
-      const res = await fetch(`/api/alerts${q}`);
-      const json = await res.json();
-      if (json.success) {
-        setAlerts(json.alerts);
-        setPendingCount(json.pendingCount);
+      // Fetch alerts (filtered by response if the filter maps to a response
+      // state) and review levels in parallel.
+      const alertsResponseParam =
+        filter === "pending"
+          ? "pending"
+          : filter === "acted" || filter === "ignored" || filter === "dismissed"
+            ? filter
+            : null;
+      const alertsUrl = alertsResponseParam
+        ? `/api/alerts?response=${alertsResponseParam}`
+        : "/api/alerts";
+
+      const [alertsRes, reviewRes] = await Promise.all([
+        fetch(alertsUrl),
+        fetch("/api/levels/review"),
+      ]);
+      const [alertsJson, reviewJson] = await Promise.all([
+        alertsRes.json(),
+        reviewRes.json(),
+      ]);
+
+      if (alertsJson?.success) {
+        setAlerts(alertsJson.alerts as EnrichedAlert[]);
+        setPendingAlertCount(alertsJson.pendingCount as number);
+      }
+      if (reviewJson?.success) {
+        setReviewLevels(reviewJson.levels as PendingLevel[]);
       }
     } finally {
       setLoading(false);
@@ -105,15 +175,52 @@ export default function AlertsPage() {
     if (res.ok) {
       const kind: "success" | "info" = response === "acted" ? "success" : "info";
       toast(`Alert marked ${response}`, kind);
-      // Tell AlertsBell (and anything else watching) to re-fetch its pending count.
-      // Without this the bell relies on its 60s poll or a window-focus event,
-      // so ignoring every pending alert in the inbox leaves the bell stuck on
-      // the stale count for up to a minute ("phantom pending alert").
       window.dispatchEvent(new CustomEvent("alerts-updated"));
     } else {
       toast("Failed to update alert", "error");
     }
     refresh();
+  }
+
+  async function decideReview(id: number, status: LevelReviewStatus) {
+    const res = await fetch("/api/levels/review", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, status }),
+    });
+    if (!res.ok) {
+      toast("Failed to update level", "error");
+      return;
+    }
+    toast(
+      status === "auto_approved" ? "Level approved — now armed" : "Level rejected",
+      status === "auto_approved" ? "success" : "info"
+    );
+    // Optimistic: drop the row immediately.
+    setReviewLevels((prev) => prev.filter((l) => l.id !== id));
+    window.dispatchEvent(new CustomEvent("reviews-updated"));
+  }
+
+  async function approveAll() {
+    if (reviewLevels.length === 0) return;
+    setApprovingAll(true);
+    try {
+      const ids = reviewLevels.map((l) => l.id);
+      await Promise.all(
+        ids.map((id) =>
+          fetch("/api/levels/review", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id, status: "auto_approved" }),
+          })
+        )
+      );
+      toast(`${ids.length} level${ids.length === 1 ? "" : "s"} approved`, "success");
+      setReviewLevels([]);
+      window.dispatchEvent(new CustomEvent("reviews-updated"));
+    } finally {
+      setApprovingAll(false);
+    }
   }
 
   async function runDetect() {
@@ -172,8 +279,8 @@ export default function AlertsPage() {
     }
   }
 
-  // Auto-fill suggestions for any pending alerts that don't have one yet.
-  // Runs once per page visit, fire-and-forget — user still has "Suggest" buttons if it fails.
+  // Auto-fill suggestions for any pending alerts that don't have one yet —
+  // fire-and-forget, runs once per visit. Stays silent if the API errors.
   useEffect(() => {
     const needsSuggestion = alerts.some(
       (a) => a.user_response === "pending" && !a.suggested_action
@@ -184,22 +291,78 @@ export default function AlertsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [alerts.length]);
 
+  // Build the stream of items for the current filter.
+  const streamItems = useMemo<StreamItem[]>(() => {
+    if (filter === "review") {
+      return reviewLevels.map((l) => ({ kind: "review", recencyAt: l.created_at, level: l }));
+    }
+    if (filter === "acted" || filter === "ignored" || filter === "dismissed") {
+      return alerts.map((a) => ({ kind: "alert", recencyAt: a.triggered_at, alert: a }));
+    }
+    // 'pending' or 'all' — merged stream
+    const items: StreamItem[] = [
+      ...alerts.map<StreamItem>((a) => ({ kind: "alert", recencyAt: a.triggered_at, alert: a })),
+      ...reviewLevels.map<StreamItem>((l) => ({
+        kind: "review",
+        recencyAt: l.created_at,
+        level: l,
+      })),
+    ];
+    return items;
+  }, [filter, alerts, reviewLevels]);
+
+  const sortedItems = useMemo<StreamItem[]>(() => {
+    if (!sort.field) return streamItems;
+    const field = sort.field;
+    const getValue = (it: StreamItem): unknown => {
+      if (field === "recency") return it.recencyAt;
+      if (field === "symbol") {
+        return it.kind === "alert" ? it.alert.symbol : it.level.symbol;
+      }
+      if (field === "level_price") {
+        return it.kind === "alert" ? it.alert.level?.price ?? null : it.level.price;
+      }
+      if (field === "source_author") {
+        return it.kind === "alert"
+          ? it.alert.level?.source_author ?? null
+          : it.level.source_author ?? null;
+      }
+      return null;
+    };
+    return [...streamItems].sort((a, b) => compareValues(getValue(a), getValue(b), sort.dir));
+  }, [streamItems, sort]);
+
+  const reviewCount = reviewLevels.length;
+  const isPending = filter === "pending";
+  const isReview = filter === "review";
+  const totalPending = pendingAlertCount + reviewCount;
+
   return (
     <div className="space-y-5">
       <header className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="font-serif text-2xl text-ink">Alerts</h1>
+          <h1 className="text-2xl text-ink font-medium">Alerts</h1>
           <p className="text-[11px] text-ink-faint mt-0.5">
-            Price level triggers across your holdings, watchlist, and flagged names.{" "}
-            <a
+            Triggered levels and newsletter-extracted suggestions in one inbox.{" "}
+            <Link
               href="/dashboard/levels/performance"
               className="text-gold hover:text-gold/80"
             >
               Source performance →
-            </a>
+            </Link>
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {reviewCount > 0 && (
+            <button
+              onClick={approveAll}
+              disabled={approvingAll}
+              className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gold/30 bg-gold/10 text-gold hover:bg-gold/20 disabled:opacity-50"
+              title="Approve every pending newsletter level so the scanner can arm them"
+            >
+              Approve all ({reviewCount})
+            </button>
+          )}
           <button
             onClick={() => runSuggest()}
             disabled={suggesting}
@@ -216,22 +379,28 @@ export default function AlertsPage() {
             {detecting ? "Scanning..." : "Scan now"}
           </button>
           <div className="flex gap-1 p-1 rounded-lg border border-edge bg-panel">
-            {FILTER_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
-                onClick={() => setFilter(opt.value)}
-                className={`px-2.5 py-1 text-[11px] rounded transition-colors ${
-                  filter === opt.value
-                    ? "bg-gold/15 text-gold"
-                    : "text-ink-faint hover:text-ink"
-                }`}
-              >
-                {opt.label}
-                {opt.value === "pending" && pendingCount > 0 && (
-                  <span className="ml-1.5 font-mono">{pendingCount}</span>
-                )}
-              </button>
-            ))}
+            {FILTER_OPTIONS.map((opt) => {
+              const badge =
+                opt.value === "pending"
+                  ? totalPending
+                  : opt.value === "review"
+                    ? reviewCount
+                    : 0;
+              return (
+                <button
+                  key={opt.value}
+                  onClick={() => selectFilter(opt.value)}
+                  className={`px-2.5 py-1 text-[11px] rounded transition-colors ${
+                    filter === opt.value
+                      ? "bg-gold/15 text-gold"
+                      : "text-ink-faint hover:text-ink"
+                  }`}
+                >
+                  {opt.label}
+                  {badge > 0 && <span className="ml-1.5 font-mono">{badge}</span>}
+                </button>
+              );
+            })}
           </div>
         </div>
       </header>
@@ -249,49 +418,82 @@ export default function AlertsPage() {
         </div>
       )}
 
-      {alerts.length > 1 && (
+      {sortedItems.length > 1 && (
         <SortPicker options={SORT_OPTIONS} sort={sort} onSort={setSort} />
       )}
 
-      {loading && alerts.length === 0 ? (
+      {loading && sortedItems.length === 0 ? (
         <p className="text-[11px] text-ink-faint italic py-6 text-center">Loading...</p>
-      ) : alerts.length === 0 ? (
-        <div className="rounded-xl border border-edge bg-panel p-10 text-center">
-          <p className="text-sm text-ink-dim">No {filter !== "all" ? filter : ""} alerts.</p>
-          <p className="text-[11px] text-ink-faint mt-2">
-            Alerts fire when a price crosses a level you've set. Add levels on any{" "}
-            <Link href="/dashboard/holdings" className="text-gold underline">
-              security detail page
-            </Link>.
-          </p>
-        </div>
-      ) : filter === "pending" ? (
-        <GroupedPendingAlerts alerts={sortedAlerts} onRespond={respond} />
+      ) : sortedItems.length === 0 ? (
+        <EmptyState filter={filter} />
+      ) : isPending ? (
+        <SplitPendingStream items={sortedItems} onRespond={respond} onDecideReview={decideReview} />
+      ) : isReview ? (
+        <ReviewGroupedByAuthor levels={reviewLevels} onDecide={decideReview} disabled={approvingAll} />
       ) : (
         <ul className="space-y-2">
-          {sortedAlerts.map((a) => (
-            <AlertRow key={a.id} alert={a} onRespond={respond} />
-          ))}
+          {sortedItems.map((it) =>
+            it.kind === "alert" ? (
+              <AlertRow key={`a-${it.alert.id}`} alert={it.alert} onRespond={respond} />
+            ) : (
+              <ReviewRow
+                key={`r-${it.level.id}`}
+                level={it.level}
+                onDecide={decideReview}
+                disabled={approvingAll}
+              />
+            )
+          )}
         </ul>
       )}
     </div>
   );
 }
 
-function GroupedPendingAlerts({
-  alerts,
+function EmptyState({ filter }: { filter: StreamFilter }) {
+  if (filter === "review") {
+    return (
+      <div className="rounded-xl border border-edge bg-panel p-10 text-center">
+        <p className="text-sm text-ink-dim">Nothing to review.</p>
+        <p className="text-[11px] text-ink-faint mt-2">
+          When the research sync extracts new levels, they appear here for your approval before
+          the scan arms them.
+        </p>
+      </div>
+    );
+  }
+  const label = filter === "all" ? "" : filter;
+  return (
+    <div className="rounded-xl border border-edge bg-panel p-10 text-center">
+      <p className="text-sm text-ink-dim">No {label} alerts.</p>
+      <p className="text-[11px] text-ink-faint mt-2">
+        Alerts fire when a price crosses a level you&apos;ve set. Add levels on any{" "}
+        <Link href="/dashboard/accounts?id=all#holdings" className="text-gold underline">
+          security detail page
+        </Link>
+        .
+      </p>
+    </div>
+  );
+}
+
+function SplitPendingStream({
+  items,
   onRespond,
+  onDecideReview,
 }: {
-  alerts: EnrichedAlert[];
+  items: StreamItem[];
   onRespond: (id: number, response: AlertResponse, note?: string) => void;
+  onDecideReview: (id: number, status: LevelReviewStatus) => void;
 }) {
-  // Split pending alerts so "Triggered today" — the ones the user most likely
-  // wants to act on before market close — surface above everything older.
-  const today: EnrichedAlert[] = [];
-  const older: EnrichedAlert[] = [];
-  for (const a of alerts) {
-    if (triggeredTodayIso(a.triggered_at)) today.push(a);
-    else older.push(a);
+  // Surface today's activity above older items so the user can act before
+  // market close. Both fired alerts (triggered_at = today) and review levels
+  // (created_at = today) bubble up.
+  const today: StreamItem[] = [];
+  const older: StreamItem[] = [];
+  for (const it of items) {
+    if (isToday(it.recencyAt)) today.push(it);
+    else older.push(it);
   }
 
   return (
@@ -299,27 +501,83 @@ function GroupedPendingAlerts({
       {today.length > 0 && (
         <section>
           <h2 className="text-[11px] font-medium text-gold uppercase tracking-wider mb-2">
-            Triggered today <span className="text-ink-faint font-mono ml-1">{today.length}</span>
+            Today&apos;s activity{" "}
+            <span className="text-ink-faint font-mono ml-1">{today.length}</span>
           </h2>
           <ul className="space-y-2">
-            {today.map((a) => (
-              <AlertRow key={a.id} alert={a} onRespond={onRespond} />
-            ))}
+            {today.map((it) =>
+              it.kind === "alert" ? (
+                <AlertRow key={`a-${it.alert.id}`} alert={it.alert} onRespond={onRespond} />
+              ) : (
+                <ReviewRow
+                  key={`r-${it.level.id}`}
+                  level={it.level}
+                  onDecide={onDecideReview}
+                />
+              )
+            )}
           </ul>
         </section>
       )}
       {older.length > 0 && (
         <section>
           <h2 className="text-[11px] font-medium text-ink-dim uppercase tracking-wider mb-2">
-            Older pending <span className="text-ink-faint font-mono ml-1">{older.length}</span>
+            Older pending{" "}
+            <span className="text-ink-faint font-mono ml-1">{older.length}</span>
           </h2>
           <ul className="space-y-2">
-            {older.map((a) => (
-              <AlertRow key={a.id} alert={a} onRespond={onRespond} />
-            ))}
+            {older.map((it) =>
+              it.kind === "alert" ? (
+                <AlertRow key={`a-${it.alert.id}`} alert={it.alert} onRespond={onRespond} />
+              ) : (
+                <ReviewRow
+                  key={`r-${it.level.id}`}
+                  level={it.level}
+                  onDecide={onDecideReview}
+                />
+              )
+            )}
           </ul>
         </section>
       )}
+    </div>
+  );
+}
+
+function ReviewGroupedByAuthor({
+  levels,
+  onDecide,
+  disabled,
+}: {
+  levels: PendingLevel[];
+  onDecide: (id: number, status: LevelReviewStatus) => void;
+  disabled: boolean;
+}) {
+  // When the user explicitly filters to "Review", group by source_author so
+  // they can triage one author at a time (carries over the prior UX from
+  // /dashboard/levels/review).
+  const grouped = new Map<string, PendingLevel[]>();
+  for (const l of levels) {
+    const key = l.source_author ?? "Unknown";
+    const arr = grouped.get(key) ?? [];
+    arr.push(l);
+    grouped.set(key, arr);
+  }
+  return (
+    <div className="space-y-5">
+      {Array.from(grouped.entries()).map(([author, rows]) => (
+        <section key={author}>
+          <h2 className="text-[11px] uppercase tracking-wider text-ink-dim mb-2">
+            {author}
+            <span className="ml-1.5 text-ink-faint font-mono">{rows.length}</span>
+          </h2>
+          <ul className="space-y-2">
+            {rows.map((l) => (
+              <ReviewRow key={l.id} level={l} onDecide={onDecide} disabled={disabled} />
+            ))}
+          </ul>
+        </section>
+      ))}
     </div>
   );
 }
@@ -341,7 +599,11 @@ function AlertRow({
     minute: "2-digit",
   });
 
-  let context: { held?: Array<{ account: string; quantity: number }>; onWatchlist?: boolean; watchlistGroup?: string | null } = {};
+  let context: {
+    held?: Array<{ account: string; quantity: number }>;
+    onWatchlist?: boolean;
+    watchlistGroup?: string | null;
+  } = {};
   try {
     if (alert.position_context) context = JSON.parse(alert.position_context);
   } catch {
@@ -361,6 +623,12 @@ function AlertRow({
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div className="flex-1 min-w-0">
           <div className="flex items-baseline gap-2 flex-wrap">
+            <span
+              className="inline-block px-1.5 py-0.5 rounded text-[9px] bg-gold/15 text-gold uppercase tracking-wider"
+              title="Fired alert — a level you set was crossed"
+            >
+              Alert
+            </span>
             {alert.symbol && (
               <Link
                 href={`/dashboard/security/${alert.security_id}`}
@@ -371,11 +639,12 @@ function AlertRow({
             )}
             {alert.level && (
               <span className="text-[11px] text-ink-dim">
-                {alert.level.level_type.replace("_", " ")} @ <Money value={alert.level.price} precise />
+                {alert.level.level_type.replace("_", " ")} @{" "}
+                <Money value={alert.level.price} precise />
                 {alert.level.price_source && alert.level.price_source !== "static" && (
                   <span
                     className="ml-1.5 inline-block px-1 py-0.5 rounded text-[9px] bg-raised text-ink-faint uppercase tracking-wider"
-                    title="This level references a moving average — the trigger price shown is the MA value at the moment of the cross, not a fixed number."
+                    title="This level references a moving average — the trigger price is the MA value at the moment of the cross, not a fixed number."
                   >
                     {formatPriceSourceLabel(alert.level.price_source)}
                   </span>
@@ -412,7 +681,8 @@ function AlertRow({
               {context.held && context.held.length > 0 && context.onWatchlist && " · "}
               {context.onWatchlist && (
                 <span>
-                  On watchlist{context.watchlistGroup && context.watchlistGroup !== "default"
+                  On watchlist
+                  {context.watchlistGroup && context.watchlistGroup !== "default"
                     ? ` (${context.watchlistGroup.replace(/_/g, " ")})`
                     : ""}
                 </span>
@@ -484,13 +754,101 @@ function AlertRow({
             Log
           </button>
           <button
-            onClick={() => { setNoteOpen(false); setNote(""); }}
+            onClick={() => {
+              setNoteOpen(false);
+              setNote("");
+            }}
             className="text-ink-faint hover:text-ink text-xs"
           >
             Cancel
           </button>
         </div>
       )}
+    </li>
+  );
+}
+
+function ReviewRow({
+  level,
+  onDecide,
+  disabled,
+}: {
+  level: PendingLevel;
+  onDecide: (id: number, status: LevelReviewStatus) => void;
+  disabled?: boolean;
+}) {
+  const distVal = distancePct(level.price, level.current_price);
+  const when = new Date(level.created_at).toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+
+  return (
+    <li className="rounded-xl border border-edge bg-panel p-4">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-baseline gap-2 flex-wrap">
+            <span
+              className="inline-block px-1.5 py-0.5 rounded text-[9px] bg-amber-500/20 text-amber-500 uppercase tracking-wider"
+              title="Newsletter-extracted level awaiting your approval before it arms"
+            >
+              Review
+            </span>
+            <Link
+              href={`/dashboard/security/${level.security_id}`}
+              className="font-mono text-sm font-medium text-ink hover:text-gold"
+            >
+              {level.symbol}
+            </Link>
+            <span className="text-[11px] text-ink-dim uppercase">
+              {level.level_type.replace("_", " ")}
+            </span>
+            <span className="text-sm font-mono text-ink">
+              @ <Money value={level.price} precise />
+            </span>
+            {level.price_source && level.price_source !== "static" && (
+              <span className="text-[9px] px-1 py-0.5 rounded bg-raised text-ink-faint uppercase tracking-wider">
+                {formatPriceSourceLabel(level.price_source)}
+              </span>
+            )}
+            {distVal !== null && (
+              <span className="text-[11px] text-ink-faint font-mono">
+                <Pct value={distVal} digits={1} signed /> vs{" "}
+                <Money value={level.current_price} precise />
+              </span>
+            )}
+            <span className="text-[10px] text-ink-faint">{when}</span>
+          </div>
+          {level.source_author && (
+            <p className="text-[11px] text-ink-dim mt-1">
+              <span className="text-ink-faint">Source: </span>
+              {level.source_author}
+              {level.thesis && <> — {level.thesis}</>}
+            </p>
+          )}
+          {level.timeframe && (
+            <p className="text-[10px] text-ink-faint mt-1">Timeframe: {level.timeframe}</p>
+          )}
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => onDecide(level.id, "auto_approved")}
+            disabled={disabled}
+            className="px-3 py-1 text-[11px] rounded bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 disabled:opacity-50"
+          >
+            Approve
+          </button>
+          <button
+            onClick={() => onDecide(level.id, "rejected")}
+            disabled={disabled}
+            className="px-3 py-1 text-[11px] rounded text-ink-faint hover:text-ink-dim disabled:opacity-50"
+          >
+            Reject
+          </button>
+        </div>
+      </div>
     </li>
   );
 }

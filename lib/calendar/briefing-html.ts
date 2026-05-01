@@ -53,8 +53,9 @@ export function briefingToHtml(
           <h1 style="margin:0; font-size:20px; color:${COLORS.gold}; font-weight:600;">Vanguard Dashboard</h1>
           <p style="margin:6px 0 0; font-size:13px; color:${COLORS.dimText};">${title}</p>
         </td></tr>
-        <!-- Body -->
-        <tr><td style="padding:24px; background-color:${COLORS.panel}; border-left:1px solid ${COLORS.border}; border-right:1px solid ${COLORS.border}; border-bottom:1px solid ${COLORS.border}; border-radius:0 0 12px 12px; color:${COLORS.text}; font-size:14px; line-height:1.65;">
+        <!-- Body — reader-app spacing (16px / 1.7 line-height). Paragraphs
+             and list items inherit; headers + tables keep their own scale. -->
+        <tr><td style="padding:28px 24px; background-color:${COLORS.panel}; border-left:1px solid ${COLORS.border}; border-right:1px solid ${COLORS.border}; border-bottom:1px solid ${COLORS.border}; border-radius:0 0 12px 12px; color:${COLORS.text}; font-size:16px; line-height:1.7;">
           ${bodyHtml}
         </td></tr>
         <!-- Footer -->
@@ -200,7 +201,7 @@ function convertMarkdown(md: string): string {
     if (line.startsWith("> ")) {
       if (inList) { output.push("</ul>"); inList = false; }
       const text = inlineFormat(line.slice(2));
-      output.push(`<p style="margin:8px 0; padding:8px 12px; border-left:3px solid ${COLORS.gold}; color:${COLORS.dimText}; font-size:13px; line-height:1.5;">${text}</p>`);
+      output.push(`<p style="margin:14px 0; padding:10px 14px; border-left:3px solid ${COLORS.gold}; color:${COLORS.dimText}; font-size:14px; line-height:1.65;">${text}</p>`);
       continue;
     }
 
@@ -211,9 +212,9 @@ function convertMarkdown(md: string): string {
       const match = bulletMatch ?? numberedMatch!;
       const indent = match[1].length;
       const text = inlineFormat(match[2]);
-      if (!inList) { output.push(`<ul style="margin:8px 0; padding-left:20px;">`); inList = true; }
+      if (!inList) { output.push(`<ul style="margin:12px 0; padding-left:22px;">`); inList = true; }
       const marginLeft = indent > 2 ? "margin-left:16px;" : "";
-      output.push(`<li style="margin:4px 0; color:${COLORS.text}; ${marginLeft}">${text}</li>`);
+      output.push(`<li style="margin:8px 0; color:${COLORS.text}; ${marginLeft}">${text}</li>`);
       continue;
     }
 
@@ -233,8 +234,8 @@ function convertMarkdown(md: string): string {
       continue;
     }
 
-    // Regular paragraph
-    output.push(`<p style="margin:8px 0; color:${COLORS.text};">${inlineFormat(line)}</p>`);
+    // Regular paragraph — extra vertical room for reader-app cadence.
+    output.push(`<p style="margin:12px 0; color:${COLORS.text};">${inlineFormat(line)}</p>`);
   }
 
   if (inList) output.push("</ul>");

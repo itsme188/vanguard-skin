@@ -1,9 +1,13 @@
 /**
- * Earnings Hub — Bloomberg-terminal-style data desk for the Today page.
+ * Earnings Hub — terminal-style data desk for the Today page.
+ *
+ * Color palette flows through CSS tokens — adapts to the active theme:
+ *   light → cream surfaces, deep moss brand, sage green / burned sienna for gain/loss
+ *   dark  → soft black surfaces, amber brand, semantic green / red
  *
  * Desktop (md+): wide grid with explicit columns —
  *   DATE / TIME · POS · TICKER · CONS EPS · ACT EPS · CONS REV · ACT REV · Δ · BOG · EMAIL
- *   No truncation. Hex-spec gain/loss colors. Day-of-week separators.
+ *   No truncation. Day-of-week separators.
  *
  * Mobile: stacked card per event, two visual rows —
  *   Row 1: ticker · status · time · email chips
@@ -83,6 +87,13 @@ function epsDelta(consensus: string | null, actual: string | null): { label: str
   return { label: `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`, sign };
 }
 
+function deltaToneClass(delta: { sign: 1 | -1 | 0 } | null): string {
+  if (delta == null) return "text-ink-faint";
+  if (delta.sign === 1) return "text-up";
+  if (delta.sign === -1) return "text-down";
+  return "text-ink-dim";
+}
+
 export function EarningsHub() {
   const weekOf = getCurrentMonday();
   const weekEnd = addDays(weekOf, 6);
@@ -138,47 +149,32 @@ export function EarningsHub() {
   const watchCount = enriched.filter((e) => e.status === "watchlist").length;
 
   return (
-    <section
-      className="rounded-xl border overflow-hidden"
-      style={{ backgroundColor: "#0d0d0d", borderColor: "#1f1f1f" }}
-    >
+    <section className="rounded-xl border border-edge bg-panel overflow-hidden card-elev">
       {/* Section header — uppercase mono micro-label, tracking, dim subtitle */}
-      <div
-        className="flex items-baseline justify-between flex-wrap gap-2 px-5 py-3 border-b"
-        style={{ borderColor: "#1f1f1f", backgroundColor: "#0a0a0a" }}
-      >
+      <div className="flex items-baseline justify-between flex-wrap gap-2 px-5 py-3 border-b border-edge bg-raised">
         <div className="flex items-baseline gap-3">
           <h2
-            className="font-mono uppercase"
-            style={{
-              fontSize: "12px",
-              letterSpacing: "0.2em",
-              color: "#ddd",
-              fontWeight: 600,
-            }}
+            className="font-mono uppercase font-semibold text-ink"
+            style={{ fontSize: "12px", letterSpacing: "0.2em" }}
           >
             Earnings This Week
           </h2>
           <span
-            className="font-mono"
-            style={{ fontSize: "11px", color: "#888", letterSpacing: "0.1em" }}
+            className="font-mono text-ink-faint"
+            style={{ fontSize: "11px", letterSpacing: "0.1em" }}
           >
             {weekOf} → {weekEnd}
           </span>
         </div>
         <div className="flex items-baseline gap-2 font-mono" style={{ fontSize: "11px" }}>
-          <span style={{ color: "#888" }}>{events.length} events</span>
-          {heldCount > 0 && (
-            <span style={{ color: "#10b981" }}>· {heldCount} held</span>
-          )}
-          {watchCount > 0 && (
-            <span style={{ color: "#ffb84d" }}>· {watchCount} watchlist</span>
-          )}
+          <span className="text-ink-faint">{events.length} events</span>
+          {heldCount > 0 && <span className="text-up">· {heldCount} held</span>}
+          {watchCount > 0 && <span className="text-gold">· {watchCount} watchlist</span>}
         </div>
       </div>
 
       {events.length === 0 ? (
-        <p className="px-5 py-6 text-[14px]" style={{ color: "#888" }}>
+        <p className="px-5 py-6 text-[14px] text-ink-faint">
           No earnings events this week. Click <span className="text-gold">↻ Refresh from Finnhub</span> below
           or add one manually.
         </p>
@@ -188,15 +184,12 @@ export function EarningsHub() {
           <div className="hidden md:block">
             {/* Column headers */}
             <div
-              className="grid items-baseline px-5 py-2 border-b font-mono uppercase"
+              className="grid items-baseline px-5 py-2 border-b border-edge font-mono uppercase bg-raised text-ink-faint"
               style={{
                 gridTemplateColumns: "84px 64px 92px 1fr 1fr 1fr 1fr 64px 80px 96px",
                 gap: "16px",
                 fontSize: "10px",
                 letterSpacing: "0.22em",
-                color: "#666",
-                borderColor: "#1f1f1f",
-                backgroundColor: "#0a0a0a",
               }}
             >
               <span>When</span>
@@ -214,19 +207,14 @@ export function EarningsHub() {
               const dayLabel = fmtDayLong(day);
               return (
                 <div key={day}>
-                  {/* Day separator — stretches the full width, gold-tinted micro-label */}
+                  {/* Day separator — gold-tinted brand micro-label */}
                   <div
-                    className="px-5 py-2 flex items-baseline gap-3 border-b font-mono uppercase"
-                    style={{
-                      borderColor: "#1f1f1f",
-                      backgroundColor: "#0a0a0a",
-                      fontSize: "11px",
-                      letterSpacing: "0.18em",
-                    }}
+                    className="px-5 py-2 flex items-baseline gap-3 border-b border-edge bg-raised font-mono uppercase"
+                    style={{ fontSize: "11px", letterSpacing: "0.18em" }}
                   >
-                    <span style={{ color: "#ffb84d", fontWeight: 600 }}>{dayLabel.weekday}</span>
-                    <span style={{ color: "#666" }}>· {dayLabel.date}</span>
-                    <span style={{ color: "#666", marginLeft: "auto", fontSize: "10px" }}>
+                    <span className="text-gold font-semibold">{dayLabel.weekday}</span>
+                    <span className="text-ink-faint">· {dayLabel.date}</span>
+                    <span className="text-ink-faint ml-auto" style={{ fontSize: "10px" }}>
                       {byDay.get(day)!.length} event{byDay.get(day)!.length === 1 ? "" : "s"}
                     </span>
                   </div>
@@ -239,21 +227,17 @@ export function EarningsHub() {
           </div>
 
           {/* Mobile: stacked card per event, day separators inline */}
-          <div className="block md:hidden divide-y" style={{ borderColor: "#1f1f1f" }}>
+          <div className="block md:hidden divide-y divide-edge">
             {days.map((day) => {
               const dayLabel = fmtDayLong(day);
               return (
                 <div key={day}>
                   <div
-                    className="px-5 py-2 font-mono uppercase flex items-baseline gap-2"
-                    style={{
-                      backgroundColor: "#0a0a0a",
-                      fontSize: "11px",
-                      letterSpacing: "0.18em",
-                    }}
+                    className="px-5 py-2 bg-raised font-mono uppercase flex items-baseline gap-2"
+                    style={{ fontSize: "11px", letterSpacing: "0.18em" }}
                   >
-                    <span style={{ color: "#ffb84d", fontWeight: 600 }}>{dayLabel.weekday}</span>
-                    <span style={{ color: "#666" }}>· {dayLabel.date}</span>
+                    <span className="text-gold font-semibold">{dayLabel.weekday}</span>
+                    <span className="text-ink-faint">· {dayLabel.date}</span>
                   </div>
                   {byDay.get(day)!.map((e) => (
                     <MobileCard key={e.id} event={e} />
@@ -266,10 +250,7 @@ export function EarningsHub() {
       )}
 
       {/* Footer toolbar — secondary action row */}
-      <div
-        className="flex flex-col gap-2 px-5 py-3 border-t"
-        style={{ borderColor: "#1f1f1f", backgroundColor: "#0a0a0a" }}
-      >
+      <div className="flex flex-col gap-2 px-5 py-3 border-t border-edge bg-raised">
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <EarningsHubAddForm weekOf={weekOf} />
           <EarningsHubRefreshButton weekOf={weekOf} />
@@ -292,26 +273,17 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
   const delta = isPostRelease
     ? epsDelta(event.consensus_estimate, event.actual_value)
     : null;
-  const deltaColor =
-    delta == null
-      ? "#444"
-      : delta.sign === 1
-        ? "#10b981"
-        : delta.sign === -1
-          ? "#ef4444"
-          : "#888";
 
   return (
     <div
-      className="grid items-baseline px-5 py-2.5 border-b transition-colors hover:bg-[#161616]"
+      className="grid items-baseline px-5 py-2.5 border-b border-edge transition-colors hover:bg-muted"
       style={{
         gridTemplateColumns: "84px 64px 92px 1fr 1fr 1fr 1fr 64px 80px 96px",
         gap: "16px",
-        borderColor: "#161616",
         fontSize: "13px",
       }}
     >
-      <span className="font-mono" style={{ color: "#888", fontSize: "11px" }}>
+      <span className="font-mono text-ink-faint" style={{ fontSize: "11px" }}>
         {slot}
       </span>
       <span
@@ -320,20 +292,20 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
       >
         {statusChipLabel(event.status)}
       </span>
-      <span className="font-mono font-medium" style={{ fontSize: "14px", color: "#ddd" }}>
+      <span className="font-mono font-medium text-ink" style={{ fontSize: "14px" }}>
         {event.symbol && event.security_id != null ? (
           <SymbolLink securityId={event.security_id} symbol={event.symbol} />
         ) : (
           event.symbol ?? "—"
         )}
       </span>
-      <NumCell value={cons.eps} dim="#666" />
-      <NumCell value={act.eps} dim="#444" />
-      <NumCell value={cons.revenue} dim="#666" />
-      <NumCell value={act.revenue} dim="#444" />
+      <NumCell value={cons.eps} />
+      <NumCell value={act.eps} />
+      <NumCell value={cons.revenue} />
+      <NumCell value={act.revenue} />
       <span
-        className="font-mono tabular-nums"
-        style={{ fontSize: "12px", color: deltaColor, textAlign: "right" }}
+        className={`font-mono tabular-nums ${deltaToneClass(delta)}`}
+        style={{ fontSize: "12px", textAlign: "right" }}
       >
         {delta?.label ?? "—"}
       </span>
@@ -357,11 +329,11 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
   );
 }
 
-function NumCell({ value, dim }: { value: string | null; dim: string }) {
+function NumCell({ value }: { value: string | null }) {
   return (
     <span
-      className="font-mono tabular-nums truncate"
-      style={{ fontSize: "13px", color: value ? "#ddd" : dim }}
+      className={`font-mono tabular-nums truncate ${value ? "text-ink-dim" : "text-ink-faint"}`}
+      style={{ fontSize: "13px" }}
     >
       {value ?? "—"}
     </span>
@@ -378,19 +350,11 @@ function MobileCard({ event }: { event: EnrichedRow }) {
   const delta = isPostRelease
     ? epsDelta(event.consensus_estimate, event.actual_value)
     : null;
-  const deltaColor =
-    delta == null
-      ? "#444"
-      : delta.sign === 1
-        ? "#10b981"
-        : delta.sign === -1
-          ? "#ef4444"
-          : "#888";
 
   return (
-    <div className="px-5 py-3 border-b" style={{ borderColor: "#161616" }}>
+    <div className="px-5 py-3 border-b border-edge">
       <div className="flex items-baseline gap-2 flex-wrap mb-1.5">
-        <span className="font-mono font-medium" style={{ fontSize: "16px", color: "#ddd" }}>
+        <span className="font-mono font-medium text-ink" style={{ fontSize: "16px" }}>
           {event.symbol && event.security_id != null ? (
             <SymbolLink securityId={event.security_id} symbol={event.symbol} />
           ) : (
@@ -403,28 +367,28 @@ function MobileCard({ event }: { event: EnrichedRow }) {
         >
           {statusChipLabel(event.status)}
         </span>
-        <span className="font-mono ml-auto" style={{ fontSize: "11px", color: "#888" }}>
+        <span className="font-mono ml-auto text-ink-faint" style={{ fontSize: "11px" }}>
           {slot}
         </span>
       </div>
       <div className="flex items-baseline gap-3 flex-wrap font-mono tabular-nums" style={{ fontSize: "13px" }}>
-        <span style={{ color: "#666" }}>
+        <span className="text-ink-faint">
           Cons{" "}
-          <span style={{ color: "#ddd" }}>
+          <span className="text-ink-dim">
             {cons.eps ?? "—"} · {cons.revenue ?? "—"}
           </span>
         </span>
         {isPostRelease ? (
           <>
-            <span style={{ color: "#444" }}>→</span>
-            <span style={{ color: "#666" }}>
+            <span className="text-ink-faint">→</span>
+            <span className="text-ink-faint">
               Act{" "}
-              <span style={{ color: "#ddd" }}>
+              <span className="text-ink-dim">
                 {act.eps ?? "—"} · {act.revenue ?? "—"}
               </span>
             </span>
             {delta && (
-              <span style={{ color: deltaColor, fontWeight: 600 }}>{delta.label}</span>
+              <span className={`font-semibold ${deltaToneClass(delta)}`}>{delta.label}</span>
             )}
           </>
         ) : null}

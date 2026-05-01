@@ -3,41 +3,16 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 
-type SearchResultType =
-  | "security"
-  | "note"
-  | "transaction"
-  | "research_article"
-  | "research_document"
-  | "level"
-  | "alert";
-
-interface SearchResult {
-  type: SearchResultType;
+// Cmd+K is now a global ticker-jump (IA Phase 2). Symbol-first by design;
+// company-name search still works because /api/search?type=security ranks
+// symbol-prefix matches above name matches. Reconsider broadening only if
+// the user complains about a missed name search.
+type SearchResult = {
+  type: "security";
   id: number;
-  title: string;
-  subtitle: string;
-  href: string;
-}
-
-const TYPE_ICONS: Record<SearchResultType, string> = {
-  security: "\u{1F4C8}",          // chart icon
-  note: "\u{1F4DD}",              // memo icon
-  transaction: "\u{1F4B1}",       // currency icon
-  research_article: "\u{1F4F0}",  // newspaper icon
-  research_document: "\u{1F4D1}", // bookmark tabs icon
-  level: "\u{1F4CC}",             // pin icon
-  alert: "\u{1F514}",             // bell icon
-};
-
-const TYPE_LABELS: Record<SearchResultType, string> = {
-  security: "security",
-  note: "note",
-  transaction: "txn",
-  research_article: "article",
-  research_document: "document",
-  level: "level",
-  alert: "alert",
+  title: string;     // symbol
+  subtitle: string;  // name · type · sector
+  href: string;      // /dashboard/security/[id]
 };
 
 export function CommandPalette() {
@@ -85,7 +60,7 @@ export function CommandPalette() {
       setLoading(true);
       try {
         const res = await fetch(
-          `/api/search?q=${encodeURIComponent(query.trim())}`
+          `/api/search?q=${encodeURIComponent(query.trim())}&type=security`
         );
         const data = await res.json();
         setResults(data.results ?? []);
@@ -157,9 +132,10 @@ export function CommandPalette() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyNav}
-            placeholder="Search securities, notes, articles, documents, levels, alerts..."
-            className="flex-1 bg-transparent text-sm text-ink placeholder:text-ink-faint outline-none"
+            placeholder="Jump to ticker (AAPL, NVDA, ...)"
+            className="flex-1 bg-transparent text-sm text-ink placeholder:text-ink-faint outline-none uppercase"
             autoComplete="off"
+            autoCapitalize="characters"
             spellCheck={false}
           />
           {loading && (
@@ -175,29 +151,26 @@ export function CommandPalette() {
           <div className="max-h-[320px] overflow-y-auto py-1">
             {results.map((result, i) => (
               <button
-                key={`${result.type}-${result.id}`}
+                key={`security-${result.id}`}
                 onClick={() => navigate(result.href)}
                 onMouseEnter={() => setSelectedIndex(i)}
-                className={`w-full text-left px-4 py-2.5 flex items-start gap-3 transition-colors ${
+                className={`w-full text-left px-4 py-2.5 flex items-baseline gap-3 transition-colors ${
                   i === selectedIndex
                     ? "bg-raised"
                     : "hover:bg-raised/50"
                 }`}
               >
-                <span className="text-sm mt-0.5 shrink-0">
-                  {TYPE_ICONS[result.type] ?? ""}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm font-medium text-ink truncate">
-                    {result.title}
-                  </div>
-                  <div className="text-xs text-ink-faint truncate">
-                    {result.subtitle}
-                  </div>
+                <div className="font-mono text-sm font-medium text-gold shrink-0 w-16">
+                  {result.title}
                 </div>
-                <span className="text-[10px] text-ink-faint bg-muted px-1.5 py-0.5 rounded shrink-0 mt-0.5">
-                  {TYPE_LABELS[result.type]}
-                </span>
+                <div className="text-xs text-ink-faint truncate flex-1">
+                  {result.subtitle}
+                </div>
+                {i === selectedIndex && (
+                  <kbd className="text-[10px] text-ink-faint font-mono bg-muted px-1.5 py-0.5 rounded shrink-0">
+                    ↵
+                  </kbd>
+                )}
               </button>
             ))}
           </div>
@@ -206,14 +179,14 @@ export function CommandPalette() {
         {/* Empty state */}
         {query.trim() && !loading && results.length === 0 && (
           <div className="px-4 py-6 text-center text-sm text-ink-faint">
-            No results for &ldquo;{query}&rdquo;
+            No ticker matches &ldquo;{query}&rdquo;
           </div>
         )}
 
         {/* Hint when empty */}
         {!query.trim() && (
           <div className="px-4 py-4 text-xs text-ink-faint">
-            Type to search across securities, notes, transactions, research articles + documents, levels, and alerts.
+            Type a ticker symbol (or company name fragment) and press <kbd className="font-mono bg-muted px-1 py-0.5 rounded text-[10px]">↵</kbd> to jump to its security detail page.
           </div>
         )}
       </div>

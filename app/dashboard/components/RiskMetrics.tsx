@@ -95,7 +95,7 @@ export function RiskMetrics({ scope }: { scope?: string }) {
 
   if (loading) {
     return (
-      <div className="bg-raised border border-edge rounded-2xl p-6">
+      <div className="bg-panel rounded-xl p-4 sm:p-5 card-elev">
         <h3 className="text-sm font-medium text-ink mb-4">Risk Decomposition</h3>
         <div className="text-sm text-ink-faint animate-pulse">Computing risk metrics...</div>
       </div>
@@ -104,7 +104,7 @@ export function RiskMetrics({ scope }: { scope?: string }) {
 
   if (error || !metrics) {
     return (
-      <div className="bg-raised border border-edge rounded-2xl p-6">
+      <div className="bg-panel rounded-xl p-4 sm:p-5 card-elev">
         <h3 className="text-sm font-medium text-ink mb-4">Risk Decomposition</h3>
         <div className="text-sm text-ink-faint">{error ?? "No data available"}</div>
       </div>
@@ -113,7 +113,7 @@ export function RiskMetrics({ scope }: { scope?: string }) {
 
   if (metrics.dataPoints < 5) {
     return (
-      <div className="bg-raised border border-edge rounded-2xl p-6">
+      <div className="bg-panel rounded-xl p-4 sm:p-5 card-elev">
         <h3 className="text-sm font-medium text-ink mb-4">Risk Decomposition</h3>
         <div className="text-sm text-ink-faint">
           Insufficient daily valuations ({metrics.dataPoints} points). Import more data or sync from TWS.
@@ -135,7 +135,7 @@ export function RiskMetrics({ scope }: { scope?: string }) {
   }
 
   return (
-    <div className="bg-raised border border-edge rounded-2xl p-6 space-y-6">
+    <div className="bg-panel rounded-xl p-4 sm:p-5 card-elev space-y-6">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-medium text-ink">Risk Decomposition</h3>
         <span className="text-xs text-ink-faint font-mono">

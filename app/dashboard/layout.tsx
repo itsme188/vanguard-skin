@@ -11,9 +11,10 @@ import { WelcomeOverlay } from "./components/WelcomeOverlay";
 import { MobileBottomNav } from "./components/MobileBottomNav";
 import { MobileNavDrawer } from "./components/MobileNavDrawer";
 import { DigestCatchup } from "./components/DigestCatchup";
-import { AlertsBell } from "./components/AlertsBell";
-import { ReviewBell } from "./components/ReviewBell";
+import { NotificationBell } from "./components/NotificationBell";
 import { PrivacyToggle } from "./components/PrivacyToggle";
+import { ThemeToggle } from "./components/ThemeToggle";
+import { NotesAmbient } from "./components/NotesAmbient";
 import { PrivacyProvider } from "@/lib/privacy/context";
 
 export default function DashboardLayout({
@@ -24,7 +25,13 @@ export default function DashboardLayout({
   return (
     <ToastProvider>
      <PrivacyProvider>
-      <div className="min-h-screen bg-canvas">
+      {/*
+        xl:pr-[480px] reserves the right rail for the persistent chat panel
+        (≥1280px viewport). Chat panel is fixed-positioned, so this is a
+        layout-level reservation, not a flex/grid container — header sticky
+        positioning still works inside.
+      */}
+      <div className="min-h-screen bg-canvas xl:pr-[480px]">
         <a href="#main-content" className="skip-link">
           Skip to main content
         </a>
@@ -34,17 +41,17 @@ export default function DashboardLayout({
           <div className="max-w-[1600px] mx-auto px-4 md:px-6 electron:pl-20 flex items-center justify-between h-14">
             <div className="flex items-center gap-2">
               <MobileNavDrawer />
-              <h1 className="font-serif text-lg md:text-xl text-gold tracking-tight">
-                Vanguard Skin
+              <h1 className="text-lg md:text-xl text-gold tracking-tight font-medium">
+                Portfolio Desk
               </h1>
             </div>
             <div className="flex items-center gap-3 md:gap-4">
               <div className="hidden md:flex"><DataConfidenceIndicator /></div>
               <SearchButton />
-              <TwsStatus />
-              <ReviewBell />
-              <AlertsBell />
+              <div className="hidden md:flex"><TwsStatus /></div>
+              <NotificationBell />
               <ChatToggleButton />
+              <div className="hidden md:inline-flex"><ThemeToggle /></div>
               <PrivacyToggle />
               <SettingsModal />
               <span className="hidden md:inline"><AppVersion /></span>
@@ -72,6 +79,9 @@ export default function DashboardLayout({
 
         {/* Mobile bottom navigation (phone only) */}
         <MobileBottomNav />
+
+        {/* Ambient notes overlay (Cmd+; from any tab) */}
+        <NotesAmbient />
       </div>
      </PrivacyProvider>
     </ToastProvider>

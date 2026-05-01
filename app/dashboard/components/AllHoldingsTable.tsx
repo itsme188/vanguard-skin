@@ -6,22 +6,9 @@ import { ScrollFade } from "./ScrollFade";
 import { SortableHeader } from "./SortableHeader";
 import { Money, Pct, Shares } from "@/lib/privacy/components";
 import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
+import type { AllHoldingsRow } from "@/lib/queries/holdings";
 
-export interface AllHoldingsRow {
-  account_id: number;
-  account_name: string;
-  security_id: number;
-  symbol: string;
-  security_name: string | null;
-  security_type: string | null;
-  multiplier: number;
-  quantity: number;
-  cost_basis: number | null;
-  as_of_date: string;
-  current_price: number | null;
-  current_value: number | null;
-  unrealized_gain: number | null;
-}
+export type { AllHoldingsRow };
 
 type Field =
   | "symbol"

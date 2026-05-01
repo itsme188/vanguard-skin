@@ -5,6 +5,22 @@ import type { FactorAnalysisResult, FactorTilt } from "@/lib/compute/factors";
 import { Pct } from "@/lib/privacy/components";
 import { usePrivacy } from "@/lib/privacy/context";
 
+// Per-scope default benchmark (locked Phase 5 IA decision):
+// Vanguard portfolios are broad-market, IBKR is active/tech-heavy, Roth is balanced.
+const DEFAULT_BENCHMARK_BY_SCOPE: Record<string, string> = {
+  vanguard: "VTI",
+  ibkr: "QQQ",
+  roth: "SPY",
+  all: "SPY",
+};
+
+const BENCHMARK_OPTIONS: { value: string; label: string }[] = [
+  { value: "SPY", label: "SPY · S&P 500" },
+  { value: "QQQ", label: "QQQ · Nasdaq 100" },
+  { value: "VTI", label: "VTI · Total Market" },
+  { value: "DIA", label: "DIA · Dow Jones" },
+];
+
 // ─── Formatters ──────────────────────────────────────────────────
 
 function formatPct(value: number, decimals = 1): string {
@@ -30,11 +46,21 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
   const [data, setData] = useState<FactorAnalysisResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [benchmark, setBenchmark] = useState<string>(
+    DEFAULT_BENCHMARK_BY_SCOPE[scope ?? "all"] ?? "SPY",
+  );
+
+  // Reset benchmark to scope default when scope flips
+  useEffect(() => {
+    setBenchmark(DEFAULT_BENCHMARK_BY_SCOPE[scope ?? "all"] ?? "SPY");
+  }, [scope]);
 
   useEffect(() => {
     setLoading(true);
-    const params = scope && scope !== "all" ? `?scope=${scope}` : "";
-    fetch(`/api/compute/factors${params}`)
+    const params = new URLSearchParams();
+    if (scope && scope !== "all") params.set("scope", scope);
+    params.set("benchmark", benchmark);
+    fetch(`/api/compute/factors?${params.toString()}`)
       .then((r) => r.json())
       .then((json) => {
         if (json.success) setData(json.data);
@@ -42,11 +68,11 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
       })
       .catch(() => setError("Failed to fetch factor analysis"))
       .finally(() => setLoading(false));
-  }, [scope]);
+  }, [scope, benchmark]);
 
   if (loading) {
     return (
-      <div className="bg-raised border border-edge rounded-2xl p-6">
+      <div className="bg-panel rounded-xl p-4 sm:p-5 card-elev">
         <h3 className="text-sm font-medium text-ink mb-4">Quantitative Factor Analysis</h3>
         <div className="text-sm text-ink-faint animate-pulse">Computing factor exposures...</div>
       </div>
@@ -55,7 +81,7 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
 
   if (error || !data) {
     return (
-      <div className="bg-raised border border-edge rounded-2xl p-6">
+      <div className="bg-panel rounded-xl p-4 sm:p-5 card-elev">
         <h3 className="text-sm font-medium text-ink mb-4">Quantitative Factor Analysis</h3>
         <div className="text-sm text-ink-faint">{error ?? "No data available"}</div>
       </div>
@@ -67,7 +93,7 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
 
   if (!reg && !hasTilts) {
     return (
-      <div className="bg-raised border border-edge rounded-2xl p-6">
+      <div className="bg-panel rounded-xl p-4 sm:p-5 card-elev">
         <h3 className="text-sm font-medium text-ink mb-4">Quantitative Factor Analysis</h3>
         <div className="text-sm text-ink-faint">
           Insufficient data. Sync benchmark prices and classify securities to see factor analysis.
@@ -77,14 +103,30 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
   }
 
   return (
-    <div className="bg-raised border border-edge rounded-2xl p-6 space-y-6">
-      <h3 className="text-sm font-medium text-ink">Quantitative Factor Analysis</h3>
+    <div className="bg-panel rounded-xl p-4 sm:p-5 card-elev space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+        <h3 className="text-sm font-medium text-ink">Quantitative Factor Analysis</h3>
+        <label className="flex items-center gap-2 text-[11px] text-ink-faint uppercase tracking-widest">
+          Benchmark
+          <select
+            value={benchmark}
+            onChange={(e) => setBenchmark(e.target.value)}
+            className="bg-panel border border-edge rounded px-2 py-1 text-[12px] text-ink font-mono uppercase tracking-normal"
+          >
+            {BENCHMARK_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
 
       {/* ── Market regression ── */}
       {reg && (
         <div>
           <h4 className="text-xs text-ink-faint uppercase tracking-widest mb-3">
-            Market Regression (vs SPY)
+            Market Regression (vs {benchmark})
           </h4>
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
             <MetricCell

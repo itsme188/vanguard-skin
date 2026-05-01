@@ -55,7 +55,7 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
 
   if (loading) {
     return (
-      <div className="bg-raised border border-edge rounded-2xl p-6">
+      <div className="bg-panel rounded-xl p-4 sm:p-5 card-elev">
         <h3 className="text-sm font-medium text-ink mb-4">Position-Level Risk</h3>
         <div className="text-sm text-ink-faint animate-pulse">Computing position risk...</div>
       </div>
@@ -64,7 +64,7 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
 
   if (error || !data || data.positions.length === 0) {
     return (
-      <div className="bg-raised border border-edge rounded-2xl p-6">
+      <div className="bg-panel rounded-xl p-4 sm:p-5 card-elev">
         <h3 className="text-sm font-medium text-ink mb-4">Position-Level Risk</h3>
         <div className="text-sm text-ink-faint">
           {error ?? "No position data available. Import holdings and prices to see position-level risk."}
@@ -92,7 +92,7 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
   }
 
   return (
-    <div className="bg-raised border border-edge rounded-2xl p-6 space-y-6">
+    <div className="bg-panel rounded-xl p-4 sm:p-5 card-elev space-y-6">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-medium text-ink">Position-Level Risk</h3>
         {data.portfolioVol != null && (

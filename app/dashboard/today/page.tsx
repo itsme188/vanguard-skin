@@ -5,13 +5,19 @@ import Link from "next/link";
 import { getAlerts } from "@/lib/queries/security-levels";
 import { getLevelsNearPrice } from "@/lib/queries/briefing-levels";
 import { getAccountByName } from "@/lib/queries/accounts";
+import { getPortfolioTotals } from "@/lib/queries/dashboard";
+import { getEventsByWeek } from "@/lib/queries/calendar";
+import { getCurrentMonday } from "@/lib/calendar/date-utils";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import type { LevelAlert, CalendarEvent } from "@/lib/types";
 import { NearbyLevelsCard } from "../components/NearbyLevelsCard";
 import { OpenChatButton } from "../components/OpenChatButton";
 import { Money, Pct, Shares } from "@/lib/privacy/components";
 import { TodayReleases } from "../components/TodayReleases";
+import { MomentumPulse } from "../components/MomentumPulse";
+import { computeMomentumPulse } from "@/lib/compute/momentum-spread";
 import { EarningsHub } from "./EarningsHub";
+import { WeekAheadView } from "./WeekAheadView";
 
 interface EnrichedAlert extends LevelAlert {
   symbol: string | null;
@@ -72,7 +78,20 @@ function qualityChip(days: number, source: string | null): { label: string; clas
   return { label: `${days}d old`, className: "text-down bg-down/20" };
 }
 
-export default async function TodayPage() {
+interface TodayPageProps {
+  searchParams: Promise<{ view?: string }>;
+}
+
+export default async function TodayPage({ searchParams }: TodayPageProps) {
+  const { view } = await searchParams;
+
+  // ── Sub-view dispatch: ?view=week-ahead absorbs the old Calendar tab ──
+  if (view === "week-ahead") {
+    const weekOf = getCurrentMonday();
+    const events = getEventsByWeek(db, weekOf);
+    return <WeekAheadView events={events} weekOf={weekOf} />;
+  }
+
   // ── Pending alerts (enriched in a single JOIN, same shape as /api/alerts) ──
   const alertRows = getAlerts(db, { response: "pending", limit: 20 });
   const alerts: EnrichedAlert[] = alertRows.map((a) => {
@@ -178,22 +197,68 @@ export default async function TodayPage() {
     )
     .all(today) as CalendarEvent[];
 
+  // ── Momentum factor pulse (renders only on non-neutral status) ────
+  const momentumPulse = computeMomentumPulse(db);
+
+  // ── Portfolio totals for the hero (Overview absorption — IA Phase 3) ──
+  const portfolio = getPortfolioTotals(db);
+
   const overallDaysOld = latestPriceDate ? daysAgo(latestPriceDate) : null;
   const overallSource = holdings.find((h) => h.price_date === latestPriceDate)?.price_source ?? null;
   const overallQuality =
     overallDaysOld !== null ? qualityChip(overallDaysOld, overallSource) : null;
 
   return (
-    <div className="space-y-6">
-      <header className="flex items-baseline justify-between">
-        <h1 className="font-serif text-2xl text-gold tracking-tight">Today</h1>
-        {overallQuality && (
-          <span className={`text-[11px] font-mono rounded px-2 py-0.5 ${overallQuality.className}`}>
-            {overallQuality.label}
-            {latestPriceDate && ` · ${fmtShortDate(latestPriceDate)}`}
+    <div className="space-y-5 md:space-y-8">
+      <header className="flex items-baseline justify-between flex-wrap gap-2">
+        <div>
+          <p className="text-[11px] uppercase tracking-widest text-ink-faint mb-1">
+            {new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
+          </p>
+          <h1 className="hidden md:block text-2xl text-gold tracking-tight font-medium">Today</h1>
+        </div>
+        <div className="flex items-center gap-2">
+          {overallQuality && (
+            <span className={`text-[11px] font-mono rounded px-2 py-0.5 ${overallQuality.className}`}>
+              {overallQuality.label}
+              {latestPriceDate && ` · ${fmtShortDate(latestPriceDate)}`}
+            </span>
+          )}
+          <Link
+            href="/dashboard/today?view=week-ahead"
+            className="text-[11px] uppercase tracking-widest text-ink-faint hover:text-gold border border-edge rounded-full px-3 py-1"
+          >
+            Week ahead →
+          </Link>
+        </div>
+      </header>
+
+      {/* ── Portfolio strip — locked 2026-04-30 (Phase 3.5): no card chrome,
+              hairline border-b only. Sits as a header band above the peer
+              cards instead of competing with them as a hero feature. ── */}
+      <div className="border-b border-edge pb-3 flex items-baseline gap-4 flex-wrap">
+        <p className="text-[11px] uppercase tracking-widest text-ink-faint">Portfolio</p>
+        <span
+          className="font-mono font-semibold tabular-nums text-ink"
+          style={{ fontSize: "clamp(22px, 3vw, 28px)", lineHeight: 1, letterSpacing: "-0.02em" }}
+        >
+          <Money value={portfolio.totalValue} />
+        </span>
+        {portfolio.totalChange !== 0 && (
+          <span
+            className={`text-[12px] font-mono tabular-nums rounded-full px-2 py-0.5 ${
+              portfolio.totalChange >= 0 ? "bg-up/10 text-up" : "bg-down/10 text-down"
+            }`}
+          >
+            {portfolio.totalChange >= 0 ? "▲" : "▼"} <Money value={Math.abs(portfolio.totalChange)} />{" "}
+            <span className="text-ink-faint">vs prior month</span>
           </span>
         )}
-      </header>
+        <span className="text-[12px] text-ink-faint ml-auto">
+          {portfolio.accountCount} {portfolio.accountCount === 1 ? "account" : "accounts"}
+          {portfolio.latestDate && ` · as of ${fmtShortDate(portfolio.latestDate)}`}
+        </span>
+      </div>
 
       {/* ── Today's releases (macro + earnings with known release_time) ── */}
       {todayReleases.length > 0 && (
@@ -202,13 +267,16 @@ export default async function TodayPage() {
         </div>
       )}
 
+      {/* ── Momentum pulse (conditional — non-neutral only) ── */}
+      <MomentumPulse pulse={momentumPulse} />
+
       {/* ── Week-ahead Earnings Hub (full width — primary attention magnet) ── */}
       <EarningsHub />
 
       {/* ── Alerts | Levels @ 5% — side-by-side only when both have content ── */}
-      <div className={nearbyLevels.length > 0 ? "grid grid-cols-1 md:grid-cols-2 gap-6" : ""}>
-      <section className="rounded-xl border border-edge bg-panel p-5">
-        <div className="mb-3 flex items-baseline justify-between">
+      <div className={nearbyLevels.length > 0 ? "grid grid-cols-1 md:grid-cols-2 gap-4" : ""}>
+      <section className="rounded-xl bg-panel p-4 sm:p-5 card-elev">
+        <div className="mb-2 flex items-baseline justify-between">
           <h2 className="text-sm font-medium text-ink">Alerts</h2>
           <span className="text-[11px] text-ink-faint font-mono">
             {alerts.length} pending
@@ -220,7 +288,7 @@ export default async function TodayPage() {
             No pending alerts. Levels are armed — you&rsquo;ll be notified when they trigger.
           </p>
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-3">
             {alertsToday.length > 0 && (
               <AlertGroup title="Triggered today" alerts={alertsToday} />
             )}
@@ -245,8 +313,8 @@ export default async function TodayPage() {
       <OpenChatButton />
 
       {/* ── Holdings ── */}
-      <section className="rounded-xl border border-edge bg-panel p-5">
-        <div className="mb-3 flex items-baseline justify-between">
+      <section className="rounded-xl bg-panel p-4 card-elev">
+        <div className="mb-2 flex items-baseline justify-between">
           <h2 className="text-sm font-medium text-ink">IBKR today</h2>
           <span className="text-[11px] text-ink-faint font-mono">
             {holdings.length} · today&rsquo;s move
@@ -262,9 +330,9 @@ export default async function TodayPage() {
             No holdings found. Connect TWS or import IBKR activity files.
           </p>
         ) : (
-          <ul className="divide-y divide-edge -mx-5">
+          <ul className="divide-y divide-edge -mx-4">
             {holdings.map((h) => (
-              <li key={h.security_id} className="px-5 py-2.5">
+              <li key={h.security_id} className="px-4 py-2">
                 <Link
                   href={`/dashboard/security/${h.security_id}`}
                   className="flex items-center gap-3 group"

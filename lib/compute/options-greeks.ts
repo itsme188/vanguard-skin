@@ -12,6 +12,7 @@
  */
 
 import type Database from "better-sqlite3";
+import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -302,8 +303,6 @@ export function impliedVolatility(
 
 // ─── Portfolio Greeks Computation ───────────────────────────────
 
-const DEFAULT_RISK_FREE_RATE = 0.045;
-
 interface OptionHoldingRow {
   security_id: number;
   symbol: string;
@@ -324,7 +323,9 @@ export function computePortfolioGreeks(
   db: Database.Database,
   options?: { accountId?: number; riskFreeRate?: number }
 ): PortfolioGreeks {
-  const r = options?.riskFreeRate ?? DEFAULT_RISK_FREE_RATE;
+  // Risk-free rate flows from FRED's DGS3MO via the settings cache; falls
+  // back to 0.045 if never fetched. See lib/queries/risk-free-rate.ts.
+  const r = options?.riskFreeRate ?? getRiskFreeRate(db);
   const today = new Date().toISOString().slice(0, 10);
 
   const accountFilter = options?.accountId
