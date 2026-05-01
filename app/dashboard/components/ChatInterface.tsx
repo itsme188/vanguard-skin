@@ -7,6 +7,8 @@ import type { UIMessage } from "ai";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { QuickActionChips } from "./QuickActionChips";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { PrivateText } from "@/lib/privacy/components";
+import { usePrivacy } from "@/lib/privacy/context";
 import { getQuickActions } from "@/lib/chat/quick-actions";
 import { getPageContext } from "@/lib/chat/page-context";
 import type { ChatScope } from "@/lib/types";
@@ -109,6 +111,17 @@ function CopyButton({ message }: { message: UIMessage }) {
 
 // ─── Message rendering ───────────────────────────────────────────
 
+// Wraps MarkdownMessage with privacy masking. Direct PrivateText wrap is
+// invalid HTML because PrivateText renders a <span> and MarkdownMessage
+// outputs block elements (<p>, <h1>, <table>).
+function PrivateMarkdown({ content }: { content: string }) {
+  const { isPrivate } = usePrivacy();
+  if (isPrivate) {
+    return <div className="text-ink-dim">•••</div>;
+  }
+  return <MarkdownMessage content={content} />;
+}
+
 function renderAssistantParts(parts: UIMessage["parts"]) {
   if (parts.length === 0) {
     return <span className="text-ink-faint animate-pulse">Thinking...</span>;
@@ -117,7 +130,7 @@ function renderAssistantParts(parts: UIMessage["parts"]) {
   return parts.map((part, i) => {
     if (part.type === "text") {
       return part.text ? (
-        <MarkdownMessage key={i} content={part.text} />
+        <PrivateMarkdown key={i} content={part.text} />
       ) : null;
     }
 
@@ -144,12 +157,13 @@ function renderAssistantParts(parts: UIMessage["parts"]) {
 }
 
 function renderUserParts(parts: UIMessage["parts"]) {
+  const text = parts
+    .filter((p): p is Extract<typeof p, { type: "text" }> => p.type === "text")
+    .map((p) => p.text)
+    .join("");
   return (
     <div className="whitespace-pre-wrap">
-      {parts
-        .filter((p): p is Extract<typeof p, { type: "text" }> => p.type === "text")
-        .map((p) => p.text)
-        .join("")}
+      <PrivateText>{text}</PrivateText>
     </div>
   );
 }
