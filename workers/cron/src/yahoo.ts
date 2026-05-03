@@ -54,9 +54,13 @@ async function fetchYahooBars(
   fromSec: number,
   toSec: number,
 ): Promise<TimedClose[]> {
+  // includePrePost=true is required for earnings releases that land outside
+  // regular session (pre-market 04:00–09:30 ET or after-hours 16:00–20:00 ET).
+  // Without it, a 16:15 ET earnings release returns zero post-window bars and
+  // the reaction snapshot drops to NULL.
   const url =
     `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}` +
-    `?interval=1m&period1=${fromSec}&period2=${toSec}`;
+    `?interval=1m&period1=${fromSec}&period2=${toSec}&includePrePost=true`;
 
   // Yahoo rate-limits default User-Agents much more aggressively than
   // browser UAs. A plain "Mozilla/5.0" is enough to avoid the python-
