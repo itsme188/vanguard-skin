@@ -18,6 +18,7 @@ import { MomentumPulse } from "../components/MomentumPulse";
 import { computeMomentumPulse } from "@/lib/compute/momentum-spread";
 import { EarningsHub } from "./EarningsHub";
 import { WeekAheadView } from "./WeekAheadView";
+import { IbkrRefreshButton } from "./IbkrRefreshButton";
 
 interface EnrichedAlert extends LevelAlert {
   symbol: string | null;
@@ -314,11 +315,16 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
 
       {/* ── Holdings ── */}
       <section className="rounded-xl bg-panel p-4 card-elev">
-        <div className="mb-2 flex items-baseline justify-between">
+        <div className="mb-2 flex items-baseline justify-between gap-3 flex-wrap">
           <h2 className="text-sm font-medium text-ink">IBKR today</h2>
-          <span className="text-[11px] text-ink-faint font-mono">
-            {holdings.length} · today&rsquo;s move
-          </span>
+          <div className="flex items-baseline gap-3">
+            <span className="text-[11px] text-ink-faint font-mono">
+              {holdings.length} · today&rsquo;s move
+            </span>
+            {ibkrAccount && holdings.length > 0 && (
+              <IbkrRefreshButton latestPriceDate={latestPriceDate} />
+            )}
+          </div>
         </div>
 
         {!ibkrAccount ? (
