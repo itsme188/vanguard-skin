@@ -30,6 +30,7 @@ import { EarningsHubRefreshButton } from "./EarningsHubRefreshButton";
 import { EarningsRowChips } from "./EarningsRowChips";
 import { BogeysUploadButton } from "./BogeysUploadButton";
 import { BogeysEditButton } from "./BogeysEditButton";
+import { getSkippedPhasesForEvents } from "@/lib/queries/earnings-skips";
 
 interface EmailAuditRow {
   event_id: number;
@@ -40,6 +41,8 @@ type EnrichedRow = CalendarEvent & {
   status: SymbolStatus;
   previewSent: boolean;
   recapSent: boolean;
+  previewSkipped: boolean;
+  recapSkipped: boolean;
   hasBogeys: boolean;
 };
 
@@ -129,11 +132,15 @@ export function EarningsHub() {
     for (const r of rows) bogeysSet.add(r.event_id);
   }
 
+  const skipMap = getSkippedPhasesForEvents(db, events.map((e) => e.id));
+
   const enriched: EnrichedRow[] = events.map((e) => ({
     ...e,
     status: e.symbol ? (statusMap[e.symbol.toUpperCase()] ?? "neither") : "neither",
     previewSent: previewSet.has(e.id),
     recapSent: recapSet.has(e.id),
+    previewSkipped: skipMap[e.id]?.preview ?? false,
+    recapSkipped: skipMap[e.id]?.recap ?? false,
     hasBogeys: bogeysSet.has(e.id),
   }));
 
@@ -324,6 +331,8 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
           eventId={event.id}
           previewSent={event.previewSent}
           recapSent={event.recapSent}
+          previewSkipped={event.previewSkipped}
+          recapSkipped={event.recapSkipped}
         />
       </span>
     </div>
@@ -408,6 +417,8 @@ function MobileCard({ event }: { event: EnrichedRow }) {
           eventId={event.id}
           previewSent={event.previewSent}
           recapSent={event.recapSent}
+          previewSkipped={event.previewSkipped}
+          recapSkipped={event.recapSkipped}
         />
       </div>
     </div>
