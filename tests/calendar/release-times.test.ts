@@ -6,6 +6,7 @@
 import { describe, it, expect } from "vitest";
 import {
   RELEASE_TIMES_ET,
+  SYMBOL_RELEASE_TIMES_ET,
   earningsHourToReleaseTime,
   resolveReleaseTime,
 } from "@/lib/calendar/release-times";
@@ -147,5 +148,88 @@ describe("resolveReleaseTime", () => {
       raw_json: "{not valid json",
     });
     expect(rt).toBeNull();
+  });
+});
+
+describe("SYMBOL_RELEASE_TIMES_ET", () => {
+  it("includes the AAPL/AMZN/GOOGL/META/MSFT cohort with their actual release minutes", () => {
+    expect(SYMBOL_RELEASE_TIMES_ET.AAPL).toBe("16:30");
+    expect(SYMBOL_RELEASE_TIMES_ET.AMZN).toBe("16:01");
+    expect(SYMBOL_RELEASE_TIMES_ET.GOOGL).toBe("16:01");
+    expect(SYMBOL_RELEASE_TIMES_ET.GOOG).toBe("16:01"); // dual-class
+    expect(SYMBOL_RELEASE_TIMES_ET.META).toBe("16:05");
+    expect(SYMBOL_RELEASE_TIMES_ET.MSFT).toBe("16:05");
+  });
+
+  it("uses HH:MM format for every entry", () => {
+    for (const [key, value] of Object.entries(SYMBOL_RELEASE_TIMES_ET)) {
+      expect(value, `bad format for ${key}`).toMatch(/^\d{2}:\d{2}$/);
+    }
+  });
+});
+
+describe("earningsHourToReleaseTime — per-symbol overrides", () => {
+  it("AAPL AMC release maps to 16:30, not the 16:15 default", () => {
+    expect(earningsHourToReleaseTime("amc", "AAPL")).toBe("16:30");
+  });
+
+  it("symbol overrides win over BMO/AMC even when hour disagrees", () => {
+    // Defensive: even if Finnhub mislabels MSFT as BMO, the symbol map wins.
+    expect(earningsHourToReleaseTime("bmo", "MSFT")).toBe("16:05");
+  });
+
+  it("falls through to BMO/AMC defaults when symbol has no override", () => {
+    expect(earningsHourToReleaseTime("bmo", "TSLA")).toBe("08:00");
+    expect(earningsHourToReleaseTime("amc", "NVDA")).toBe("16:15");
+  });
+
+  it("symbol matching is case-insensitive", () => {
+    expect(earningsHourToReleaseTime("amc", "aapl")).toBe("16:30");
+    expect(earningsHourToReleaseTime("amc", "  AAPL  ")).toBe("16:30");
+  });
+
+  it("preserves null/undefined symbol fallback", () => {
+    expect(earningsHourToReleaseTime("amc", null)).toBe("16:15");
+    expect(earningsHourToReleaseTime("amc", undefined)).toBe("16:15");
+  });
+});
+
+describe("resolveReleaseTime — per-symbol earnings overrides", () => {
+  it("AAPL earnings AMC resolves to 16:30 via the symbol map", () => {
+    const rt = resolveReleaseTime({
+      event_type: "earnings",
+      event_time: "AMC",
+      raw_json: null,
+      symbol: "AAPL",
+    });
+    expect(rt).toBe("16:30");
+  });
+
+  it("AMZN earnings via raw_json hour = amc resolves to 16:01", () => {
+    const rt = resolveReleaseTime({
+      event_type: "earnings",
+      event_time: null,
+      raw_json: JSON.stringify({ entry: { hour: "amc" } }),
+      symbol: "AMZN",
+    });
+    expect(rt).toBe("16:01");
+  });
+
+  it("explicit HH:MM event_time still wins over the symbol map (manual override)", () => {
+    const rt = resolveReleaseTime({
+      event_type: "earnings",
+      event_time: "17:00",
+      raw_json: null,
+      symbol: "AAPL",
+    });
+    expect(rt).toBe("17:00");
+  });
+
+  it("untouched event_type behavior is unchanged when symbol absent", () => {
+    expect(resolveReleaseTime({
+      event_type: "earnings",
+      event_time: "AMC",
+      raw_json: null,
+    })).toBe("16:15");
   });
 });
