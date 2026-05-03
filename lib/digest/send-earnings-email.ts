@@ -17,6 +17,9 @@ import {
 import { getCachedTranscript } from "@/lib/queries/transcripts";
 import { getNotesForFamily, type NoteWithContext } from "@/lib/queries/notes";
 import { getBogeysForEvent, type EarningsBogey } from "@/lib/queries/earnings-bogeys";
+import { getReadThroughsForTargets } from "@/lib/queries/read-through-pairs";
+import { addDays } from "@/lib/calendar/date-utils";
+import type { ReactionSnapshot } from "@/lib/calendar/reaction-snapshot";
 import type { CalendarEvent, EarningsTranscript } from "@/lib/types";
 
 // Preferred newsletter sources for pre-earnings color. Same list as
@@ -269,6 +272,31 @@ interface PreviewContext {
   recentPressReleases: string | null;
   priorTranscript: EarningsTranscript | null;
   bogeys: EarningsBogey[];
+  readThroughs: ReadThroughEntry[];
+}
+
+/**
+ * One per (reporter symbol → this target) where the reporter has already
+ * printed within the 14-day window AND has both an actual_value and a
+ * reaction_snapshot captured. Built from `read_through_pairs` joined to
+ * `calendar_events`. Drives the "## Read-throughs" preview-prompt block.
+ *
+ * Reporters lacking actual or reaction are silently dropped — the rendered
+ * bullet is only useful when both data points exist (per design doc §4
+ * edge cases).
+ */
+export interface ReadThroughEntry {
+  reporter: string;
+  reporterEventDate: string;
+  hypothesis: string | null;
+  weight: number;
+  consensusEps: number | null;
+  consensusRev: number | null;
+  actualEps: number | null;
+  actualRev: number | null;
+  reactionStockPct: number | null;
+  reactionSpyPct: number | null;
+  reactionQqqPct: number | null;
 }
 
 interface RecapContext extends PreviewContext {
@@ -302,6 +330,7 @@ function buildPreviewContext(
   const recentPressReleases = formatPressReleases(db, family, 30, 8);
   const priorTranscript = findPriorTranscript(db, symbol, event.event_date);
   const bogeys = getBogeysForEvent(db, event.id);
+  const readThroughs = buildReadThroughEntries(db, family, event.event_date);
 
   return {
     symbol,
@@ -318,7 +347,123 @@ function buildPreviewContext(
     recentPressReleases,
     priorTranscript,
     bogeys,
+    readThroughs,
   };
+}
+
+/**
+ * Build read-through entries for a target's preview prompt.
+ *
+ * For every pair where a member of `family` is the target symbol, find the
+ * most recent `calendar_events` row for that pair's reporter symbol whose
+ * event_date sits inside [eventDate − 14d, eventDate]. Both `actual_value`
+ * AND `reaction_snapshot` must be populated — without the reaction, the
+ * read-through bullet would render with empty post-print color and add
+ * noise rather than signal.
+ *
+ * Sorted by pair weight desc so high-conviction reporters lead the prompt.
+ * Deduped per reporter (a single reporter never appears twice even if it
+ * targets multiple sibling-class members of the family).
+ */
+export function buildReadThroughEntries(
+  db: Database.Database,
+  family: readonly string[],
+  eventDate: string,
+): ReadThroughEntry[] {
+  const familyUpper = Array.from(new Set(family.map((s) => s.toUpperCase())));
+  const pairs = getReadThroughsForTargets(db, familyUpper);
+  if (pairs.length === 0) return [];
+
+  // Per-reporter metadata. If a single reporter targets multiple family
+  // members (dual-class siblings), keep the highest-weight pair's hypothesis.
+  const reporterMeta = new Map<
+    string,
+    { hypothesis: string | null; weight: number }
+  >();
+  for (const p of pairs) {
+    const sym = p.reporter_symbol.toUpperCase();
+    const existing = reporterMeta.get(sym);
+    if (!existing || p.weight > existing.weight) {
+      reporterMeta.set(sym, { hypothesis: p.hypothesis, weight: p.weight });
+    }
+  }
+
+  const reporters = Array.from(reporterMeta.keys());
+  if (reporters.length === 0) return [];
+
+  const fromDate = addDays(eventDate, -14);
+  const placeholders = reporters.map(() => "?").join(",");
+  const reporterEvents = db
+    .prepare(
+      `SELECT *
+       FROM calendar_events
+       WHERE event_type = 'earnings'
+         AND UPPER(symbol) IN (${placeholders})
+         AND event_date BETWEEN ? AND ?
+         AND actual_value IS NOT NULL
+         AND reaction_snapshot IS NOT NULL
+       ORDER BY event_date DESC`,
+    )
+    .all(...reporters, fromDate, eventDate) as CalendarEvent[];
+
+  // Dedup: keep the most-recent print per reporter symbol.
+  const seen = new Set<string>();
+  const entries: ReadThroughEntry[] = [];
+  for (const ev of reporterEvents) {
+    const sym = (ev.symbol ?? "").toUpperCase();
+    if (!sym || seen.has(sym)) continue;
+    const meta = reporterMeta.get(sym);
+    if (!meta) continue; // Belt-and-braces — should not happen given the IN clause.
+    seen.add(sym);
+
+    const cons = parseFinnhubFigure(ev.consensus_estimate ?? ev.consensus_value);
+    const act = parseFinnhubFigure(ev.actual_value);
+
+    // Sanity guard against bogus Finnhub actuals.
+    //
+    // Finnhub's day-of-release earnings actual is unreliable for some large
+    // names (e.g. GOOGL Q1 2026: stored EPS 5.11 against consensus 2.70 —
+    // confirmed bogus, the live re-fetch returned 2.62). Including such a
+    // bullet would feed Sonnet "+89% beat" garbage and corrupt the prompt
+    // reasoning. Skip the reporter when the divergence is implausible:
+    //   - EPS: stored magnitude ≥ 2× consensus magnitude (and consensus > 0)
+    //   - Revenue: stored ≥ 1.4× consensus OR ≤ 0.7× consensus
+    // Keep the reporter when either field is null — partial data is OK,
+    // but a multi-x divergence is almost always a bad scrape.
+    if (!isPlausibleEarnings(cons.eps, act.eps, cons.revenue, act.revenue)) {
+      continue;
+    }
+
+    let stockPct: number | null = null;
+    let spyPct: number | null = null;
+    let qqqPct: number | null = null;
+    try {
+      const rs = JSON.parse(ev.reaction_snapshot!) as ReactionSnapshot;
+      stockPct = rs.symbol?.delta_pct ?? null;
+      spyPct = rs.spy?.delta_pct ?? null;
+      qqqPct = rs.qqq?.delta_pct ?? null;
+    } catch {
+      // Malformed reaction_snapshot JSON — skip gracefully.
+    }
+
+    entries.push({
+      reporter: sym,
+      reporterEventDate: ev.event_date,
+      hypothesis: meta.hypothesis,
+      weight: meta.weight,
+      consensusEps: cons.eps,
+      consensusRev: cons.revenue,
+      actualEps: act.eps,
+      actualRev: act.revenue,
+      reactionStockPct: stockPct,
+      reactionSpyPct: spyPct,
+      reactionQqqPct: qqqPct,
+    });
+  }
+
+  // Per design doc §4: sort by weight desc.
+  entries.sort((a, b) => b.weight - a.weight);
+  return entries;
 }
 
 function buildRecapContext(
@@ -720,6 +865,7 @@ export function renderPreviewPrompt(ctx: PreviewContext): string {
   const userNotesBlock = renderUserNotesBlock(ctx);
   const bogeysBlock = renderBogeysBlock(ctx);
   const newslettersBlock = renderNewslettersBlock(ctx, "preview");
+  const readThroughsBlock = renderReadThroughsBlock(ctx);
   const analystBlock = renderAnalystBlock(ctx);
   const pressBlock = ctx.recentPressReleases
     ? `\n## Recent Press Releases (last 30 days)\n${ctx.recentPressReleases}\n`
@@ -740,6 +886,7 @@ ${bogeysBlock}
 ${consensusBlock}
 ${positionsBlock}
 ${newslettersBlock}
+${readThroughsBlock}
 ${analystBlock}
 ${pressBlock}
 ${priorCallBlock}
@@ -938,6 +1085,111 @@ function renderAnalystBlock(ctx: PreviewContext): string {
 // suffixed with "…" so the AI knows there's more (and can ask the user to
 // elaborate via web_search if needed).
 const NOTE_CHAR_CAP = 1500;
+
+// Narrow input — only the two fields the block needs. Lets tests pass a
+// minimal object instead of constructing a full PreviewContext.
+export function renderReadThroughsBlock(ctx: {
+  symbol: string;
+  readThroughs: ReadThroughEntry[];
+}): string {
+  if (ctx.readThroughs.length === 0) return "";
+  const lines = ctx.readThroughs.map((rt) => {
+    const consensusBits: string[] = [];
+    if (rt.consensusEps != null) consensusBits.push(`EPS $${rt.consensusEps.toFixed(2)}`);
+    if (rt.consensusRev != null) consensusBits.push(`Rev ${formatLargeUSD(rt.consensusRev)}`);
+
+    const actualBits: string[] = [];
+    if (rt.actualEps != null) actualBits.push(`EPS $${rt.actualEps.toFixed(2)}`);
+    if (rt.actualRev != null) actualBits.push(`Rev ${formatLargeUSD(rt.actualRev)}`);
+
+    const beats: string[] = [];
+    const epsDelta = beatEpsText(rt.consensusEps, rt.actualEps);
+    if (epsDelta) beats.push(`EPS ${epsDelta}`);
+    const revDelta = beatRevPctText(rt.consensusRev, rt.actualRev);
+    if (revDelta) beats.push(`Rev ${revDelta}`);
+
+    const reactionBits: string[] = [];
+    if (rt.reactionStockPct != null) {
+      reactionBits.push(`${rt.reporter} ${signedPct1dp(rt.reactionStockPct)}`);
+    }
+    if (rt.reactionSpyPct != null) reactionBits.push(`SPY ${signedPct1dp(rt.reactionSpyPct)}`);
+    if (rt.reactionQqqPct != null) reactionBits.push(`QQQ ${signedPct1dp(rt.reactionQqqPct)}`);
+
+    const segments: string[] = [];
+    if (consensusBits.length > 0) segments.push(`Consensus: ${consensusBits.join(" · ")}.`);
+    if (actualBits.length > 0) {
+      const tail = beats.length > 0 ? ` (${beats.join(", ")})` : "";
+      segments.push(`Actual: ${actualBits.join(" · ")}${tail}.`);
+    }
+    if (reactionBits.length > 0) {
+      segments.push(`Reaction @ T+2h: ${reactionBits.join(" · ")}.`);
+    }
+
+    const hypothesisLine = rt.hypothesis ? `\n  *Hypothesis:* ${rt.hypothesis}` : "";
+
+    return `- **${rt.reporter}** reported ${rt.reporterEventDate}. ${segments.join(" ")}${hypothesisLine}`;
+  });
+
+  return `\n## Read-throughs from this earnings season\n\nReporters from your tracked read-through pairs that already printed in the last 14 days. Each bullet pairs the reporter's beat/miss with the post-print market reaction so you can ground ${ctx.symbol}'s upcoming bull/bear case in *what actually happened* in the cluster — not a generic claim that "peers are setting up well." Don't over-extrapolate; one cluster member's surprise doesn't guarantee another's.\n\n${lines.join("\n\n")}\n`;
+}
+
+function signedPct1dp(v: number): string {
+  const sign = v >= 0 ? "+" : "";
+  return `${sign}${v.toFixed(1)}%`;
+}
+
+// EPS dollar-delta — percentage math is misleading at small/zero/negative
+// scale ("+25%" of $0.04 reads as a giant beat when it's a penny). Penny
+// delta is what every trader actually quotes pre-/post-print.
+function beatEpsText(consensus: number | null, actual: number | null): string | null {
+  if (consensus == null || actual == null) return null;
+  const delta = actual - consensus;
+  const sign = delta >= 0 ? "+" : "";
+  return `${sign}$${delta.toFixed(2)}`;
+}
+
+// Revenue beat as a percentage — both values are large positives, so pct
+// math is well-defined and what the Street quotes ("rev beat by 1.1%").
+function beatRevPctText(consensus: number | null, actual: number | null): string | null {
+  if (consensus == null || actual == null || consensus <= 0) return null;
+  const pct = ((actual - consensus) / consensus) * 100;
+  const sign = pct >= 0 ? "+" : "";
+  return `${sign}${pct.toFixed(1)}%`;
+}
+
+/**
+ * Reject a Finnhub-sourced earnings row whose actual diverges from
+ * consensus by an implausible amount. The thresholds are loose enough to
+ * preserve genuine outsize beats/misses (e.g. PWR Q1 2026 EPS +28% over
+ * consensus is real) but tight enough to catch known scrape failures
+ * (GOOGL Q1 2026 stored EPS 5.11 vs consensus 2.70 — 89% above, confirmed
+ * bogus). Exported for direct unit testing.
+ */
+export function isPlausibleEarnings(
+  consensusEps: number | null,
+  actualEps: number | null,
+  consensusRev: number | null,
+  actualRev: number | null,
+): boolean {
+  if (consensusEps != null && actualEps != null && consensusEps > 0) {
+    // Magnitude check guards both directions. Calibrated so that PWR's
+    // genuine +28% EPS beat (Q1 2026, ratio 1.28) survives, while GOOGL's
+    // bogus 5.11-vs-2.70 case (ratio 1.89) gets rejected. Real >70% beats
+    // from a single quarterly print are essentially unheard-of for the
+    // mega-cap names this loop iterates on; if a small-cap real-world case
+    // ever trips this, we'll lower the threshold and add a fixture.
+    const ratio = Math.abs(actualEps) / Math.abs(consensusEps);
+    if (ratio >= 1.7 || ratio <= 0.5) return false;
+  }
+  if (consensusRev != null && actualRev != null && consensusRev > 0) {
+    // Revenue is structurally more stable than EPS — a 40% beat or 30%
+    // miss on revenue from a single quarter is a near-certain scrape
+    // failure for any name big enough to have a Finnhub consensus.
+    const ratio = actualRev / consensusRev;
+    if (ratio >= 1.4 || ratio <= 0.7) return false;
+  }
+  return true;
+}
 
 function renderUserNotesBlock(ctx: PreviewContext): string {
   if (ctx.userNotes.length === 0) return "";
