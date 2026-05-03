@@ -4,6 +4,7 @@ import { parseWshEvents } from "@/lib/calendar/parse-wsh";
 import { fetchMacroEvents } from "@/lib/calendar/macro-events";
 import { fetchFinnhubEarningsForSymbols } from "@/lib/calendar/finnhub";
 import { getHeldStockSymbols } from "@/lib/queries/briefing-symbols";
+import { getReadThroughReporterSymbols } from "@/lib/queries/read-through-pairs";
 import { upsertCalendarEvents, deleteEventsForWeek } from "@/lib/mutations/calendar";
 import { getIbApi, disconnectTws } from "@/lib/tws/client";
 import { addDays, validateWeekOf } from "@/lib/calendar/date-utils";
@@ -159,10 +160,23 @@ export async function syncCalendarForWeek(
 
   if (includeFinnhub) {
     if (process.env.FINNHUB_API_KEY) {
-      const symbols = getHeldStockSymbols(db);
+      // Read-through reporters (e.g. PRTO, RDDT) are typically non-held but their
+      // prints feed the upcoming-preview prompt for held targets. Merge before sync
+      // so the enrichment runner picks them up automatically. Deduped + uppercase
+      // to keep the Finnhub call count tight on names that overlap held + reporter.
+      const heldSymbols = getHeldStockSymbols(db);
+      const reporterSymbols = getReadThroughReporterSymbols(db);
+      const symbols = Array.from(
+        new Set(
+          [...heldSymbols, ...reporterSymbols].map((s) => s.toUpperCase()),
+        ),
+      ).sort();
+      const reporterOnly = symbols.length - heldSymbols.length;
+      const reporterSuffix =
+        reporterOnly > 0 ? ` (+ ${reporterOnly} read-through reporter${reporterOnly === 1 ? "" : "s"})` : "";
       send({
         phase: "finnhub_fetch",
-        message: `Scanning ${symbols.length} held stock${symbols.length === 1 ? "" : "s"} via Finnhub...`,
+        message: `Scanning ${symbols.length} symbol${symbols.length === 1 ? "" : "s"} via Finnhub${reporterSuffix}...`,
       });
       try {
         const finnhubInputs = await fetchFinnhubEarningsForSymbols(
