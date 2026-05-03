@@ -1,75 +1,139 @@
 /**
- * Convert briefing markdown to styled HTML suitable for email clients.
- * Uses inline styles only (no CSS classes) for maximum email client compatibility.
+ * Convert briefing markdown to styled HTML — light "Amber" theme matching
+ * the post-2026-04-30 app redesign, modeled on the research-feeds reader
+ * (.prose-reader / .prose-newsletter in app/globals.css).
  *
- * Handles the subset of markdown Claude produces in briefings:
- * ##/### headers, **bold**, *italic*, - bullet lists, paragraphs, ---
+ * Used by the Sunday weekly briefing, daily digest, earnings preview, and
+ * earnings recap emails — all four flow through this single renderer.
+ *
+ * Uses inline styles only (no CSS classes, no @media, no var(--*)) so
+ * Outlook desktop / Gmail / Apple Mail render identically. Font stack starts
+ * with IBM Plex Sans for users who have it installed locally and falls
+ * through to the recipient's system UI font (Outlook → Segoe UI, Apple Mail
+ * → SF Pro, Gmail Android → Roboto). No webfont fetch — Outlook never breaks.
+ *
+ * Reader-app spec (matches Research Feeds article-expanded view):
+ *   - Cream canvas (#fafaf3) as the body bg — no white card, feels like
+ *     reading on warm paper, exactly like the research-feed reader.
+ *   - 18px / 1.7 line-height in ink-dim (#2a2a26) — slightly softer than
+ *     full black, easier on the eyes for long-form reading.
+ *   - 65ch line-length cap (≈680px wrapper) for ideal reading rhythm.
+ *   - Section headers in full ink black with hairline edge underline.
+ *   - Hero title in 28px amber gold (the brand color).
+ *
+ * Markdown subset handled (matches Claude's briefing output):
+ *   ##/### headers, **bold**, *italic*, - bullet lists, paragraphs, ---,
+ *   >blockquote, `inline code`, [link](url), GitHub-flavored tables.
+ *
+ * Quote handling — IMPORTANT:
+ *   The HTML attribute syntax is `style="..."`. Inside that double-quoted
+ *   string, font-family names that contain spaces MUST use SINGLE quotes
+ *   ('IBM Plex Sans'), never double quotes — otherwise the browser sees
+ *   the inner double quote as the end of the style attribute and silently
+ *   drops every property after it. This bug ate ~30 minutes of "why isn't
+ *   the color landing" 2026-05-03; never reintroduce.
  */
 
 const COLORS = {
-  bg: "#080B12",
-  panel: "#0F1219",
-  border: "#1E2534",
-  text: "#E2E6F0",
-  dimText: "#8B95A8",
-  gold: "#C9A44E",
-  heading: "#F0F2F7",
+  // Outer background — cream canvas, matches app's --canvas
+  canvas: "#fafaf3",
+
+  // Hairline borders
+  edge: "#e5e3d8",
+
+  // Type — three-tier hierarchy from app's --ink scale
+  ink: "#0a0a0a",        // headings + bold inline
+  inkDim: "#2a2a26",     // body — slightly softer than full black, matches .prose-reader
+  inkFaint: "#54574c",   // metadata, footer
+
+  // Brand
+  gold: "#b8860b",
+  goldGlow: "#fff4d6",   // flat fill (no rgba) so Outlook renders consistently
 };
 
-// Tables use a light palette regardless of the surrounding dark email so they
-// print cleanly to paper and remain handwriting-friendly. The user explicitly
-// flagged on 2026-04-28 that a dark-background scoreboard is unprintable.
-// Empty/fillable cells stay white with a clear gray border so handwriting is
-// visible against them. Borders are intentionally darker than typical email
-// table borders so they show up at default printer fidelity (≥600 DPI grayscale).
+// Light scoreboard tables — locked 2026-04-28 for fill-by-hand printability.
+// Empty / em-dash cells get extra vertical padding so the user has room to
+// write a value in pen during a live earnings call.
 const TABLE_COLORS = {
-  headerBg: "#F4EFE0",       // light warm gold tint — keeps brand association
-  headerText: "#3A2E0F",     // dark warm — high contrast on the gold tint
-  bodyBg: "#FFFFFF",
-  bodyText: "#1A1A1A",
+  headerBg: "#f4efe0",
+  headerText: "#3a2e0f",
+  bodyBg: "#ffffff",
+  bodyText: "#1a1a1a",
   border: "#777777",
-  labelText: "#1A1A1A",      // metric-label column (first cell of each row)
+  labelText: "#1a1a1a",
 };
+
+// Font stack: Plex first for users who have it (the user does on his Mac);
+// then platform system fonts for everyone else. Outlook Windows → Segoe UI,
+// Apple Mail → SF Pro, Gmail Android → Roboto. No webfont request, so the
+// user's brother on Outlook never breaks.
+const FONT_BODY =
+  "'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
+const FONT_MONO =
+  "'IBM Plex Mono', 'SF Mono', Menlo, Consolas, 'Courier New', monospace";
 
 export function briefingToHtml(
   markdown: string,
   title: string,
-  footerNote?: string
+  footerNote?: string,
 ): string {
   const bodyHtml = convertMarkdown(markdown);
   const footerNoteHtml = footerNote
-    ? `<p style="margin:6px 0 0; font-size:11px; color:${COLORS.dimText}; font-style:italic;">${escapeHtml(footerNote)}</p>`
+    ? `<p style="margin:10px 0 0; font-family:${FONT_BODY}; font-size:13px; line-height:1.5; color:${COLORS.inkFaint}; font-style:italic;">${escapeHtml(footerNote)}</p>`
     : "";
 
   return `<!DOCTYPE html>
 <html>
-<head><meta charset="utf-8"></head>
-<body style="margin:0; padding:0; background-color:${COLORS.bg}; font-family:system-ui,-apple-system,sans-serif;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:${COLORS.bg};">
-    <tr><td align="center" style="padding:24px 16px;">
-      <table width="600" cellpadding="0" cellspacing="0" style="max-width:600px; width:100%;">
-        <!-- Header -->
-        <tr><td style="padding:20px 24px; background-color:${COLORS.panel}; border:1px solid ${COLORS.border}; border-radius:12px 12px 0 0;">
-          <h1 style="margin:0; font-size:20px; color:${COLORS.gold}; font-weight:600;">Vanguard Dashboard</h1>
-          <p style="margin:6px 0 0; font-size:13px; color:${COLORS.dimText};">${title}</p>
-        </td></tr>
-        <!-- Body — reader-app spacing (16px / 1.7 line-height). Paragraphs
-             and list items inherit; headers + tables keep their own scale. -->
-        <tr><td style="padding:28px 24px; background-color:${COLORS.panel}; border-left:1px solid ${COLORS.border}; border-right:1px solid ${COLORS.border}; border-bottom:1px solid ${COLORS.border}; border-radius:0 0 12px 12px; color:${COLORS.text}; font-size:16px; line-height:1.7;">
-          ${bodyHtml}
-        </td></tr>
-        <!-- Footer -->
-        <tr><td style="padding:16px 24px; text-align:center;">
-          <p style="margin:0; font-size:11px; color:${COLORS.dimText};">
-            Generated by Vanguard Dashboard &middot; Automated weekly briefing
-          </p>
-          ${footerNoteHtml}
-        </td></tr>
-      </table>
-    </td></tr>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="supported-color-schemes" content="light">
+  <title>${escapeHtml(title)}</title>
+</head>
+<body style="margin:0; padding:0; background-color:${COLORS.canvas}; font-family:${FONT_BODY}; -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:${COLORS.canvas};">
+    <tr>
+      <td align="center" style="padding:48px 20px 56px;">
+        <table role="presentation" width="680" cellpadding="0" cellspacing="0" border="0" style="max-width:680px; width:100%;">
+          <!-- Source line — single tiny meta strip, the only chrome above body -->
+          <tr>
+            <td style="padding:0 0 32px;">
+              <p style="margin:0; font-family:${FONT_BODY}; font-size:11px; font-weight:600; color:${COLORS.gold}; letter-spacing:0.16em; text-transform:uppercase;">Portfolio Desk</p>
+            </td>
+          </tr>
+          <!-- Body — body's own # H1 carries the title, no chrome H1 -->
+          <tr>
+            <td style="font-family:${FONT_BODY}; font-size:18px; line-height:1.7; color:${COLORS.inkDim};">
+              ${bodyHtml}
+            </td>
+          </tr>
+          <!-- Footer — date moves here so it doesn't add chrome on top -->
+          <tr>
+            <td style="padding:64px 0 0;">
+              <div style="border-top:1px solid ${COLORS.edge}; padding-top:28px;">
+                <p style="margin:0; font-family:${FONT_BODY}; font-size:12px; color:${COLORS.inkFaint}; line-height:1.6;">
+                  Portfolio Desk &middot; Generated ${formatDate(new Date())}
+                </p>
+                ${footerNoteHtml}
+              </div>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
   </table>
 </body>
 </html>`;
+}
+
+function formatDate(d: Date): string {
+  return d.toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
 }
 
 function escapeHtml(s: string): string {
@@ -80,12 +144,7 @@ function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
-// Markdown table detection. Header row is `| h1 | h2 |`, immediately followed
-// by a separator line `|---|---|` (with optional `:` alignment markers we
-// ignore for now). Body rows continue until a non-table line. Tables render
-// to email-safe `<table>` HTML with inline styles + tabular-nums so numbers
-// align under each other when printed for fill-by-hand. Empty/em-dash cells
-// get extra vertical padding so the user has room to write a value in pen.
+// ── Markdown table ──────────────────────────────────────────────────
 const tableRowRe = /^\|(.+)\|\s*$/;
 const tableSeparatorRe = /^\|(\s*:?-+:?\s*\|)+\s*$/;
 
@@ -102,7 +161,7 @@ function renderTable(headers: string[], rows: string[][]): string {
   const headerCells = headers
     .map(
       (h) =>
-        `<th style="border:1px solid ${TABLE_COLORS.border}; padding:8px 10px; background-color:${TABLE_COLORS.headerBg}; color:${TABLE_COLORS.headerText}; font-size:11px; font-weight:600; text-align:left; text-transform:uppercase; letter-spacing:0.06em; white-space:nowrap;">${inlineFormat(h)}</th>`,
+        `<th style="border:1px solid ${TABLE_COLORS.border}; padding:8px 10px; background-color:${TABLE_COLORS.headerBg}; color:${TABLE_COLORS.headerText}; font-family:${FONT_BODY}; font-size:11px; font-weight:600; text-align:left; text-transform:uppercase; letter-spacing:0.06em; white-space:nowrap;">${inlineFormat(h)}</th>`,
     )
     .join("");
 
@@ -111,14 +170,13 @@ function renderTable(headers: string[], rows: string[][]): string {
       const cells = row
         .map((c, idx) => {
           const fillable = isFillableCell(c);
-          // First column is metric label — always left-aligned, no fill padding.
           const isLabel = idx === 0;
-          const content = fillable && !isLabel
-            ? "&nbsp;"
-            : inlineFormat(c) || "&nbsp;";
+          const content = fillable && !isLabel ? "&nbsp;" : inlineFormat(c) || "&nbsp;";
           const padding = !isLabel && fillable ? "14px 10px" : "8px 10px";
           const align = !isLabel ? "text-align:right;" : "";
-          const numAlign = !isLabel ? "font-variant-numeric:tabular-nums;" : "";
+          const numAlign = !isLabel
+            ? `font-variant-numeric:tabular-nums; font-family:${FONT_MONO};`
+            : `font-family:${FONT_BODY};`;
           const cellColor = isLabel ? TABLE_COLORS.labelText : TABLE_COLORS.bodyText;
           const fontWeight = isLabel ? "font-weight:500;" : "";
           return `<td style="border:1px solid ${TABLE_COLORS.border}; padding:${padding}; background-color:${TABLE_COLORS.bodyBg}; color:${cellColor}; font-size:13px; ${fontWeight} ${align} ${numAlign}">${content}</td>`;
@@ -128,97 +186,103 @@ function renderTable(headers: string[], rows: string[][]): string {
     })
     .join("");
 
-  return `<table cellpadding="0" cellspacing="0" style="border-collapse:collapse; margin:14px 0; width:100%; border:1px solid ${TABLE_COLORS.border}; background-color:${TABLE_COLORS.bodyBg};">
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse; margin:20px 0; width:100%; border:1px solid ${TABLE_COLORS.border}; background-color:${TABLE_COLORS.bodyBg};">
 <thead><tr>${headerCells}</tr></thead>
 <tbody>${bodyRows}</tbody>
 </table>`;
 }
 
+// ── Markdown body ───────────────────────────────────────────────────
 function convertMarkdown(md: string): string {
   const lines = md.split("\n");
   const output: string[] = [];
   let inList = false;
 
   for (let i = 0; i < lines.length; i++) {
-    let line = lines[i];
+    const line = lines[i];
 
-    // Markdown table block: header row + separator row + 1+ data rows.
-    // Detect by lookahead so we don't mistake a single |-bracketed sentence
-    // for the start of a table.
     if (
       tableRowRe.test(line.trim()) &&
       i + 1 < lines.length &&
       tableSeparatorRe.test(lines[i + 1].trim())
     ) {
-      if (inList) {
-        output.push("</ul>");
-        inList = false;
-      }
+      if (inList) { output.push("</ul>"); inList = false; }
       const headerCells = parseTableRow(line);
       let j = i + 2;
       const dataRows: string[][] = [];
       while (j < lines.length && tableRowRe.test(lines[j].trim())) {
         const cells = parseTableRow(lines[j]);
-        // Skip stray separator rows (e.g. mid-table dividers).
-        if (!tableSeparatorRe.test(lines[j].trim())) {
-          dataRows.push(cells);
-        }
+        if (!tableSeparatorRe.test(lines[j].trim())) dataRows.push(cells);
         j++;
       }
       output.push(renderTable(headerCells, dataRows));
-      i = j - 1; // outer for will increment past the last consumed row
+      i = j - 1;
       continue;
     }
 
-    // Horizontal rule
+    // Horizontal rule — soft hairline divider
     if (/^---+$/.test(line.trim())) {
       if (inList) { output.push("</ul>"); inList = false; }
-      output.push(`<hr style="border:none; border-top:1px solid ${COLORS.border}; margin:16px 0;">`);
+      output.push(
+        `<hr style="border:none; border-top:1px solid ${COLORS.edge}; margin:44px 0;">`,
+      );
       continue;
     }
 
-    // Headers
+    // Headers — research-feed-style: ink full-black, 600
     if (line.startsWith("### ")) {
       if (inList) { output.push("</ul>"); inList = false; }
       const text = inlineFormat(line.slice(4));
-      output.push(`<h3 style="margin:20px 0 8px; font-size:15px; color:${COLORS.heading}; font-weight:600;">${text}</h3>`);
+      output.push(
+        `<h3 style="margin:36px 0 14px; font-family:${FONT_BODY}; font-size:18px; font-weight:600; color:${COLORS.ink}; line-height:1.4;">${text}</h3>`,
+      );
       continue;
     }
     if (line.startsWith("## ")) {
       if (inList) { output.push("</ul>"); inList = false; }
       const text = inlineFormat(line.slice(3));
-      output.push(`<h2 style="margin:24px 0 10px; font-size:17px; color:${COLORS.gold}; font-weight:600; border-bottom:1px solid ${COLORS.border}; padding-bottom:6px;">${text}</h2>`);
+      output.push(
+        `<h2 style="margin:52px 0 18px; padding-bottom:12px; font-family:${FONT_BODY}; font-size:22px; font-weight:600; color:${COLORS.ink}; border-bottom:1px solid ${COLORS.edge}; line-height:1.3; letter-spacing:-0.005em;">${text}</h2>`,
+      );
       continue;
     }
     if (line.startsWith("# ")) {
       if (inList) { output.push("</ul>"); inList = false; }
       const text = inlineFormat(line.slice(2));
-      output.push(`<h1 style="margin:0 0 16px; font-size:20px; color:${COLORS.heading}; font-weight:700;">${text}</h1>`);
+      output.push(
+        `<h1 style="margin:0 0 22px; font-family:${FONT_BODY}; font-size:28px; font-weight:600; color:${COLORS.gold}; letter-spacing:-0.01em;">${text}</h1>`,
+      );
       continue;
     }
 
-    // Blockquote
+    // Blockquote — soft warm tint, italic, gold rule
     if (line.startsWith("> ")) {
       if (inList) { output.push("</ul>"); inList = false; }
       const text = inlineFormat(line.slice(2));
-      output.push(`<p style="margin:14px 0; padding:10px 14px; border-left:3px solid ${COLORS.gold}; color:${COLORS.dimText}; font-size:14px; line-height:1.65;">${text}</p>`);
+      output.push(
+        `<blockquote style="margin:28px 0; padding:16px 22px; border-left:3px solid ${COLORS.gold}; background-color:${COLORS.goldGlow}; color:${COLORS.inkDim}; font-family:${FONT_BODY}; font-size:17px; line-height:1.7; font-style:italic;">${text}</blockquote>`,
+      );
       continue;
     }
 
-    // Bullet list items (-, *, or numbered)
+    // Bullet / numbered lists
     const bulletMatch = line.match(/^(\s*)[-*]\s+(.+)/);
     const numberedMatch = line.match(/^(\s*)\d+\.\s+(.+)/);
     if (bulletMatch || numberedMatch) {
       const match = bulletMatch ?? numberedMatch!;
       const indent = match[1].length;
       const text = inlineFormat(match[2]);
-      if (!inList) { output.push(`<ul style="margin:12px 0; padding-left:22px;">`); inList = true; }
-      const marginLeft = indent > 2 ? "margin-left:16px;" : "";
-      output.push(`<li style="margin:8px 0; color:${COLORS.text}; ${marginLeft}">${text}</li>`);
+      if (!inList) {
+        output.push(`<ul style="margin:18px 0; padding-left:28px; list-style-type:disc;">`);
+        inList = true;
+      }
+      const marginLeft = indent > 2 ? "margin-left:20px;" : "";
+      output.push(
+        `<li style="margin:14px 0; color:${COLORS.inkDim}; font-family:${FONT_BODY}; font-size:18px; line-height:1.7; ${marginLeft}">${text}</li>`,
+      );
       continue;
     }
 
-    // Close list if non-list line
     if (inList && line.trim() === "") {
       output.push("</ul>");
       inList = false;
@@ -229,41 +293,37 @@ function convertMarkdown(md: string): string {
       inList = false;
     }
 
-    // Empty line = paragraph break
-    if (line.trim() === "") {
-      continue;
-    }
+    if (line.trim() === "") continue;
 
-    // Regular paragraph — extra vertical room for reader-app cadence.
-    output.push(`<p style="margin:12px 0; color:${COLORS.text};">${inlineFormat(line)}</p>`);
+    // Body paragraph — reader cadence, 18px / 1.7 with airy 22px margins (matches .prose-reader)
+    output.push(
+      `<p style="margin:22px 0; font-family:${FONT_BODY}; font-size:18px; line-height:1.7; color:${COLORS.inkDim};">${inlineFormat(line)}</p>`,
+    );
   }
 
   if (inList) output.push("</ul>");
-
   return output.join("\n");
 }
 
-/** Convert inline markdown (bold, italic, links) to HTML.
+/** Inline markdown — bold, italic, code, links.
  *
- * Bold + code do NOT pin a text color — they inherit from the parent cell /
- * paragraph. Without this, a `<strong style="color:white">` inside a
- * light-bg table cell renders white-on-white. The dark-mode prose cells
- * already have white text from the surrounding `<p>` color, so inheritance
- * is safe in both contexts.
+ * Bold pins ink black for emphasis against the dim body color. Code inherits
+ * for table-cell contexts. Links use the brand gold with a 2px underline-offset
+ * for clean reading.
  */
 function inlineFormat(text: string): string {
-  // Links: [text](url) — must run before bold/italic to avoid [**text**](url) issues
+  // Links first — must run before bold/italic so [**foo**](url) works
   text = text.replace(
     /\[([^\]]+)\]\(([^)]+)\)/g,
-    `<a href="$2" style="color:${COLORS.gold}; text-decoration:underline;">$1</a>`
+    `<a href="$2" style="color:${COLORS.gold}; text-decoration:underline; text-underline-offset:2px;">$1</a>`,
   );
-  // Bold: **text** or __text__ — inherit color from parent
-  text = text.replace(/\*\*(.+?)\*\*/g, `<strong>$1</strong>`);
-  text = text.replace(/__(.+?)__/g, `<strong>$1</strong>`);
-  // Italic: *text* or _text_
+  text = text.replace(/\*\*(.+?)\*\*/g, `<strong style="color:${COLORS.ink};">$1</strong>`);
+  text = text.replace(/__(.+?)__/g, `<strong style="color:${COLORS.ink};">$1</strong>`);
   text = text.replace(/\*(.+?)\*/g, "<em>$1</em>");
   text = text.replace(/_(.+?)_/g, "<em>$1</em>");
-  // Inline code — neutral semi-transparent backdrop works in both light and dark contexts
-  text = text.replace(/`(.+?)`/g, `<code style="background:rgba(127,127,127,0.18); padding:1px 5px; border-radius:3px; font-size:13px; font-family:ui-monospace,Menlo,Consolas,monospace;">$1</code>`);
+  text = text.replace(
+    /`(.+?)`/g,
+    `<code style="background:${COLORS.goldGlow}; color:${COLORS.inkDim}; padding:1px 6px; border-radius:3px; font-family:${FONT_MONO}; font-size:15px;">$1</code>`,
+  );
   return text;
 }
