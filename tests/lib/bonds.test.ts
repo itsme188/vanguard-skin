@@ -36,7 +36,7 @@ describe("extractMaturityDate", () => {
 
   it("returns null for incomplete patterns", () => {
     expect(extractMaturityDate("T-Bill (due 10/23)")).toBeNull();
-    expect(extractMaturityDate("T-Bill due 10/23/25")).toBeNull();
+    expect(extractMaturityDate("T-Bill due 10/23")).toBeNull();
   });
 
   it("returns null for invalid dates", () => {
@@ -48,6 +48,76 @@ describe("extractMaturityDate", () => {
 
   it("extracts from CUSIP-style names", () => {
     expect(extractMaturityDate("912797QG5 T-Bill (due 10/23/25)")).toBe("2025-10-23");
+  });
+
+  // Real Vanguard PDF / IBKR / canonical CSV fixtures from production DB (2026-05-03).
+  describe("production fixtures — bare DUE format", () => {
+    it("Vanguard T-Bill: 'U S TREASURY BILL DUE 04/14/26 DTD 12/16/25'", () => {
+      expect(extractMaturityDate("U S TREASURY BILL DUE 04/14/26 DTD 12/16/25")).toBe(
+        "2026-04-14",
+      );
+    });
+
+    it("Vanguard T-Note with coupon: 'U S TREASURY NOTE CPN 4.125% DUE 11/15/32 DTD 11/15/22 FC 05/15/23'", () => {
+      expect(
+        extractMaturityDate(
+          "U S TREASURY NOTE CPN 4.125% DUE 11/15/32 DTD 11/15/22 FC 05/15/23",
+        ),
+      ).toBe("2032-11-15");
+    });
+
+    it("Vanguard T-Bond with multiple date tokens picks DUE: 'U S TREASURY BOND CPN 3.000% DUE 02/15/48 DTD 02/15/18 FC 08/15/18'", () => {
+      expect(
+        extractMaturityDate(
+          "U S TREASURY BOND CPN 3.000% DUE 02/15/48 DTD 02/15/18 FC 08/15/18 91282CMM -",
+        ),
+      ).toBe("2048-02-15");
+    });
+
+    it("trailing 'U S TREASURY BILL' duplicate suffix doesn't confuse: 'U S TREASURY BILL DUE 11/28/25 DTD 11/29/24 U S TREASURY BILL'", () => {
+      expect(
+        extractMaturityDate(
+          "U S TREASURY BILL DUE 11/28/25 DTD 11/29/24 U S TREASURY BILL",
+        ),
+      ).toBe("2025-11-28");
+    });
+  });
+
+  describe("production fixtures — MTD ISO format", () => {
+    it("IBKR T-Bill: 'U S TREASURY BILL CPN 0.00000  MTD 2024-08-20 DTD 2024-04-23'", () => {
+      // Note the double-space between '0.00000' and 'MTD' — \s+ handles it.
+      expect(
+        extractMaturityDate(
+          "U S TREASURY BILL CPN 0.00000  MTD 2024-08-20 DTD 2024-04-23",
+        ),
+      ).toBe("2024-08-20");
+    });
+  });
+
+  describe("production fixtures — two-date treasury fallback", () => {
+    it("T-Note no DUE keyword: 'U S TREASURY NOTE 4.625 02/15/35 02/15/25'", () => {
+      expect(extractMaturityDate("U S TREASURY NOTE 4.625 02/15/35 02/15/25")).toBe(
+        "2035-02-15",
+      );
+    });
+
+    it("T-Bond no DUE keyword: 'U S TREASURY BOND 4.75 05/15/55 05/15/25'", () => {
+      expect(extractMaturityDate("U S TREASURY BOND 4.75 05/15/55 05/15/25")).toBe(
+        "2055-05-15",
+      );
+    });
+
+    it("T-Bond integer coupon: 'U S TREASURY BOND 3 02/15/48 02/15/18'", () => {
+      expect(extractMaturityDate("U S TREASURY BOND 3 02/15/48 02/15/18")).toBe(
+        "2048-02-15",
+      );
+    });
+
+    it("requires TREASURY anchor — equity name with two date-like tokens returns null", () => {
+      expect(
+        extractMaturityDate("Acme Corp ex-div 12/31/25 announce 11/15/25"),
+      ).toBeNull();
+    });
   });
 });
 
