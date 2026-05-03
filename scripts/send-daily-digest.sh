@@ -23,6 +23,14 @@ if [ -z "$SECRET" ]; then
   exit 2
 fi
 
+# Refresh FRED 3-month T-bill (DGS3MO) cache before the digest runs.
+# Used by Sharpe ratio + Black-Scholes drift; piggy-backs on the same
+# launchd window so we don't spawn a separate plist. Fire-and-forget on
+# failure — a FRED outage must not block digest delivery.
+echo "$(date '+%Y-%m-%d %H:%M:%S') — Refreshing risk-free rate cache"
+(cd /Users/Yitzi/code/vanguard-skin && npx tsx scripts/refresh-risk-free-rate.ts) || \
+  echo "$(date '+%Y-%m-%d %H:%M:%S') — risk-free-rate refresh failed (continuing)"
+
 for i in $(seq 1 $MAX_RETRIES); do
   echo "$(date '+%Y-%m-%d %H:%M:%S') — Attempt $i of $MAX_RETRIES"
   RESPONSE=$(curl -sS --max-time 300 -X POST \
