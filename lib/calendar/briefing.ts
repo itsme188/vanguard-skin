@@ -308,7 +308,7 @@ function buildPrompt(p: PromptInput): string {
 
   const otherEventsSection =
     p.otherEvents.length > 0
-      ? `\n## Macro & Other Events This Week\n**HARD RULE — exposure lists are data, not narrative.** Each macro event below has a **Holdings exposure** field. That field is the authoritative roster of the user's holdings exposed to that release. When you write the holdings-exposure paragraph for that event, the symbols you list MUST equal the symbols in the Holdings exposure field — same set, no additions, no drops, no substitutions, no "plus other industrials". You may render them in any order and add brief context per name, but every symbol in the field must appear in your output, and no symbol that is NOT in the field may appear (no ETFs/baskets, no companies you happen to recall as relevant). If you find yourself writing "basically every industrial in the book" or adding a familiar name, STOP and copy the field verbatim. The user's portfolio classifications are intentionally narrower than your training prior in some cases (e.g., PWR is classified as Consumer in this DB) — trust the data over your memory.\n\n${p.otherEvents
+      ? `\n## Macro & Other Events This Week\n**HARD RULES for §6 — non-negotiable:**\n\n1. **Verbatim cluster.** Each macro event below that has a "REQUIRED §6 cluster" field MUST have that exact line pasted into your §6 paragraph for that event. The cluster is data, not narrative. Do not edit it, do not drop symbols, do not add symbols (no "plus other industrials", no ETF baskets, no companies you happen to recall as relevant, no "VIS basket" / "VPU basket" type substitutions).\n\n2. **No multi-event lumping.** Even when two events share the same Holdings exposure list (e.g., the labor-market events JOLTS, ADP, Claims, NFP all have the same 11-name list), you must write a separate paragraph for each event with its own pasted cluster line. You may say "same exposure as JOLTS — see below" in the prose, but the cluster line still appears under each event.\n\n3. **Order.** Place the cluster line at the END of each event's paragraph, after your prose context. Prose context comes first (what's priced in, what would surprise, why this matters), then the verbatim cluster.\n\n4. **Trust the data over your memory.** The user's portfolio classifications are intentionally narrower than your training prior in some cases (e.g., PWR is classified as Consumer in this DB, not Industrial). The deterministic field is correct; your memory is not.\n\n5. **Events without a cluster.** Some events have no exposure mapping (e.g., Trade Balance, Durable Goods). For those, write the prose paragraph without a cluster line — do not invent one.\n\n${p.otherEvents
           .map((e, i) =>
             formatEventForPrompt(
               e,
@@ -846,8 +846,17 @@ function formatEventForPrompt(
     );
   }
   if (macroExposure && macroExposure.symbols.length > 0) {
+    const symbolsCsv = macroExposure.symbols.join(", ");
     parts.push(
-      `   - Holdings exposure (${macroExposure.basis}): ${macroExposure.symbols.join(", ")}`,
+      `   - Holdings exposure (${macroExposure.basis}): ${symbolsCsv}`,
+    );
+    // Pre-rendered §6 cluster — Opus must paste verbatim, no edits.
+    // Earlier directive-only attempts (f02517c) had Opus drop names + add
+    // training-prior names ("PWR, VIS basket") despite HARD RULE language.
+    // By rendering the cluster deterministically and instructing Opus to
+    // paste it, the verbatim guarantee no longer relies on Opus's restraint.
+    parts.push(
+      `   - **REQUIRED §6 cluster (paste this exact line into the §6 paragraph for this event — do not edit, drop, or add symbols):** \`**Holdings exposed:** ${symbolsCsv}\``,
     );
   }
   return parts.join("\n");
