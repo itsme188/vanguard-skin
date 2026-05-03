@@ -178,23 +178,23 @@ describe("buildMacroExposures", () => {
 });
 
 describe("§6 prompt directive — exposure-list verbatim rule", () => {
-  // Regression: 4/27 live regen of the briefing showed Opus still dropping
-  // XMTR + PRIM + CLH + GFL from the ISM Manufacturing exposure paragraph,
-  // even though all four were in the deterministic Holdings exposure field
-  // fed to the prompt. The original directive ("Use this list verbatim — do
-  // NOT enumerate exposure from prose, do NOT add or drop names") wasn't
-  // strong enough. Strengthened 2026-04-27 with imperative HARD RULE
-  // language that explicitly forbids ETF additions, prose hand-waves, and
-  // memory-driven substitutions. This test guards against a future edit
-  // that softens the directive.
-  it("contains the strengthened HARD RULE directive in briefing.ts", () => {
+  // Regression: 4/27 live regen showed Opus dropping XMTR+PRIM+CLH+GFL from
+  // ISM Manufacturing despite the f02517c HARD RULE directive. 5/03 escalated
+  // to TS-rendered "REQUIRED §6 cluster" pasted verbatim — directive now
+  // points to that field. This test guards against a future edit that softens
+  // the directive or removes the deterministic-cluster injection.
+  it("contains the verbatim-cluster directive + non-lumping rule + paste-this-line cluster injection", () => {
     const briefingSource = readFileSync(
       join(process.cwd(), "lib/calendar/briefing.ts"),
       "utf8",
     );
-    expect(briefingSource).toContain("HARD RULE");
-    expect(briefingSource).toContain("exposure lists are data, not narrative");
-    expect(briefingSource).toContain("MUST equal the symbols in the Holdings exposure field");
-    expect(briefingSource).toContain("trust the data over your memory");
+    // Directive language
+    expect(briefingSource).toContain("HARD RULES for §6");
+    expect(briefingSource).toContain("Verbatim cluster");
+    expect(briefingSource).toContain("No multi-event lumping");
+    expect(briefingSource).toContain("Trust the data over your memory");
+    // Per-event deterministic cluster injection
+    expect(briefingSource).toContain("REQUIRED §6 cluster");
+    expect(briefingSource).toContain("paste this exact line");
   });
 });
