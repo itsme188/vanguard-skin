@@ -111,7 +111,13 @@ export function CommandPalette() {
       />
 
       {/* Palette */}
-      <div className="fixed top-[12%] md:top-[20%] left-1/2 -translate-x-1/2 w-[calc(100%-2rem)] md:w-[560px] max-w-[90vw] z-[61] rounded-xl border border-edge bg-canvas shadow-2xl overflow-hidden">
+      {/* Inline backgroundColor mirrors the 790d317 fix: the parent backdrop has
+         backdrop-blur-sm, which on iOS Safari can let the bg-canvas Tailwind
+         class render translucent. Defense-in-depth via CSS var fallback. */}
+      <div
+        style={{ backgroundColor: "var(--canvas)" }}
+        className="fixed top-[12%] md:top-[20%] left-1/2 -translate-x-1/2 w-[calc(100%-2rem)] md:w-[560px] max-w-[90vw] z-[61] rounded-xl border border-edge bg-canvas shadow-2xl overflow-hidden"
+      >
         {/* Search input */}
         <div className="flex items-center gap-3 px-4 py-3 border-b border-edge">
           <svg

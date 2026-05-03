@@ -91,10 +91,14 @@ export function AddLevelPopover({
 
   // Position the popover so it doesn't fall off the right / bottom of the chart.
   // The parent chart container uses position: relative.
+  // Inline backgroundColor mirrors the 790d317 fix — bg-panel can degrade to
+  // translucent under iOS Safari's backdrop-filter parents; CSS-var fallback
+  // keeps the popover legible when tapped on the security-detail chart.
   const style: React.CSSProperties = {
     left: x,
     top: y,
     transform: "translate(-50%, 8px)",
+    backgroundColor: "var(--panel)",
   };
 
   return (
