@@ -4,7 +4,7 @@ import type {
   CalendarBriefing,
   CalendarEventSource,
 } from "@/lib/types";
-import { resolveReleaseTime } from "@/lib/calendar/release-times";
+import { resolveReleaseTime, SYMBOL_RELEASE_TIMES_ET } from "@/lib/calendar/release-times";
 
 // ─── Result types ─────────────────────────────────────────────────
 
@@ -85,6 +85,7 @@ export function upsertCalendarEvents(
         event_type: e.event_type,
         event_time: e.event_time ?? null,
         raw_json: e.raw_json ?? null,
+        symbol: e.symbol ?? null,
       });
       stmt.run(
         e.source,
@@ -195,7 +196,7 @@ export function insertCalendarEvent(
   const symbol = input.symbol.trim().toUpperCase();
   const eventType = input.event_type ?? "earnings";
   const eventTime = input.event_time ?? "AMC";
-  const releaseTime = input.release_time ?? deriveReleaseTime(eventTime);
+  const releaseTime = input.release_time ?? deriveReleaseTime(eventTime, symbol);
   const sourceKey = `manual:${symbol}:${input.event_date}:${eventType}`;
   const title = `${symbol} earnings (Manual entry)`;
 
@@ -305,14 +306,22 @@ export function deleteCalendarEvent(
     .run(id).changes > 0;
 }
 
-function deriveReleaseTime(eventTime: string | null | undefined): string | null {
+function deriveReleaseTime(
+  eventTime: string | null | undefined,
+  symbol?: string | null,
+): string | null {
   if (!eventTime) return null;
   const t = eventTime.trim().toUpperCase();
-  if (t === "BMO") return "08:00";
-  if (t === "AMC") return "16:15";
-  if (t === "TAS") return null; // "during trading" — no specific release time
   // If the caller passed "HH:MM" through event_time, treat that as the release_time too.
   if (/^\d{1,2}:\d{2}$/.test(eventTime)) return eventTime;
+  if (t === "TAS") return null; // "during trading" — no specific release time
+  // Per-symbol overrides win over BMO/AMC defaults (e.g. AAPL=16:30 not 16:15).
+  if (symbol) {
+    const override = SYMBOL_RELEASE_TIMES_ET[symbol.trim().toUpperCase()];
+    if (override) return override;
+  }
+  if (t === "BMO") return "08:00";
+  if (t === "AMC") return "16:15";
   return null;
 }
 
