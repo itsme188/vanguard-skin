@@ -6,6 +6,7 @@ import type { ResearchArticle, ResearchSource } from "@/lib/queries/research";
 import { trimEmailFooter } from "@/lib/gmail/sanitize";
 import { ManageSourcesModal } from "./ManageSourcesModal";
 import { SendDigestPanel } from "./SendDigestPanel";
+import { DigestEmailViewer } from "./DigestEmailViewer";
 import { useIsMobile } from "@/lib/hooks/useIsMobile";
 
 interface Props {
@@ -115,6 +116,7 @@ export function ResearchFeedsView({ initialArticles, sources, initialSymbolMap }
   const [syncStatus, setSyncStatus] = useState<string | null>(null);
   const [manageOpen, setManageOpen] = useState(false);
   const [sendOpen, setSendOpen] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [expandedText, setExpandedText] = useState<string | null>(null);
@@ -319,6 +321,17 @@ export function ResearchFeedsView({ initialArticles, sources, initialSymbolMap }
             <span className="hidden sm:inline">Sync Feeds</span>
           </button>
           <button
+            onClick={() => setPreviewOpen(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium border border-edge text-ink-dim hover:text-ink hover:bg-raised transition-colors"
+            title="Preview digest (toggle by publication / by company)"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+            </svg>
+            <span className="hidden sm:inline">Preview</span>
+          </button>
+          <button
             onClick={() => setSendOpen(!sendOpen)}
             className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium border transition-colors ${
               sendOpen
@@ -334,6 +347,7 @@ export function ResearchFeedsView({ initialArticles, sources, initialSymbolMap }
           </button>
         </div>
       </div>
+      <DigestEmailViewer open={previewOpen} onClose={() => setPreviewOpen(false)} />
 
       {/* Mobile search input (expands below controls when magnifying glass is tapped) */}
       {searchOpen && isMobile && (
