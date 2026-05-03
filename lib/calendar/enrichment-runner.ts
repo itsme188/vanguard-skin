@@ -433,11 +433,14 @@ export function findEmailCandidates(
          FROM calendar_events ce
          LEFT JOIN earnings_emails ee
            ON ee.event_id = ce.id AND ee.phase = 'preview'
+         LEFT JOIN earnings_email_skips es
+           ON es.event_id = ce.id AND es.phase = 'preview'
         WHERE ce.event_type = 'earnings'
           AND ce.release_time IS NOT NULL
           AND ce.symbol IS NOT NULL
           AND ce.event_date BETWEEN ? AND ?
-          AND ee.id IS NULL`,
+          AND ee.id IS NULL
+          AND es.id IS NULL`,
     )
     .all(todayStr, tomorrowStr) as PreviewCandidateRow[];
 
@@ -459,11 +462,14 @@ export function findEmailCandidates(
          FROM calendar_events ce
          LEFT JOIN earnings_emails ee
            ON ee.event_id = ce.id AND ee.phase = 'recap'
+         LEFT JOIN earnings_email_skips es
+           ON es.event_id = ce.id AND es.phase = 'recap'
         WHERE ce.event_type = 'earnings'
           AND ce.enriched_at IS NOT NULL
           AND datetime(ce.enriched_at) >= datetime(?)
           AND ce.symbol IS NOT NULL
-          AND ee.id IS NULL`,
+          AND ee.id IS NULL
+          AND es.id IS NULL`,
     )
     .all(recapCutoff) as RecapCandidateRow[];
 
