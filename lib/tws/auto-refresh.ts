@@ -24,6 +24,7 @@ import {
 } from "./sync-state";
 import { syncPortfolio } from "./positions";
 import { enrichSecurities } from "./contracts";
+import { purgeExpiredOptionHoldings } from "../mutations/expired-options";
 import { fetchSnapshotPrices } from "./snapshot";
 import { fetchBenchmarkPrices } from "./benchmark";
 import { computeDailyValuations } from "../compute/daily-valuation";
@@ -81,6 +82,20 @@ export async function runAutoRefresh(
         errors.push(msg);
         console.error("[auto-refresh] Position sync error:", msg);
       }
+    }
+
+    // ── Step 1.5: Purge expired option holdings ─────────────────
+    // Statement-sourced rows linger after expiry because new snapshots don't
+    // delete-and-replace; sweeping here keeps briefings + rollups accurate.
+    try {
+      const purged = purgeExpiredOptionHoldings(db);
+      if (purged > 0) {
+        console.log(`[auto-refresh] Purged ${purged} expired option holdings`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Expired-option purge failed";
+      errors.push(msg);
+      console.error("[auto-refresh] Expired-option purge error:", msg);
     }
 
     // ── Step 2: Enrich Securities (full only) ───────────────────
