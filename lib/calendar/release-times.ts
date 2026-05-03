@@ -40,7 +40,30 @@ export const RELEASE_TIMES_ET: Record<string, string> = {
 };
 
 /**
+ * Per-symbol release-time overrides for the handful of names whose actual
+ * release time differs materially from the BMO/AMC defaults below. These
+ * supersede the generic BMO/AMC mapping when a symbol is supplied.
+ *
+ * Add new entries here whenever a name reports outside the 08:00 / 16:15
+ * defaults — the preview-window cron uses release_time to decide when to
+ * fire the email, so getting these right prevents pre-release sends.
+ *
+ * Symbol keys are uppercase and dual-class siblings should be added together
+ * (e.g. GOOG + GOOGL).
+ */
+export const SYMBOL_RELEASE_TIMES_ET: Record<string, string> = {
+  AAPL: "16:30",
+  AMZN: "16:01",
+  GOOGL: "16:01",
+  GOOG: "16:01",
+  META: "16:05",
+  MSFT: "16:05",
+};
+
+/**
  * Convert Finnhub's `hour` field to an HH:MM ET release time.
+ *
+ * Per-symbol overrides in `SYMBOL_RELEASE_TIMES_ET` win when supplied.
  *
  * BMO (before-market-open) → 08:00 ET — most companies report in the
  *   07:00–08:30 window before futures start to move on open.
@@ -52,7 +75,12 @@ export const RELEASE_TIMES_ET: Record<string, string> = {
  */
 export function earningsHourToReleaseTime(
   hour: "bmo" | "amc" | "dmh" | null | undefined,
+  symbol?: string | null,
 ): string {
+  if (symbol) {
+    const override = SYMBOL_RELEASE_TIMES_ET[symbol.trim().toUpperCase()];
+    if (override) return override;
+  }
   switch (hour) {
     case "bmo":
       return "08:00";
@@ -80,14 +108,16 @@ function normalizeEarningsHour(value: unknown): "bmo" | "amc" | "dmh" | null {
  *
  * Priority:
  *   1. If `event_time` is already "HH:MM", use it.
- *   2. If event_type is in RELEASE_TIMES_ET, use the lookup.
- *   3. If earnings event, parse BMO/AMC/DMH from raw_json.entry.hour.
- *   4. Otherwise return null — event is skipped by the enrichment runner.
+ *   2. If earnings + symbol has a per-symbol override, use it (wins over BMO/AMC).
+ *   3. If event_type is in RELEASE_TIMES_ET, use the lookup.
+ *   4. If earnings event, parse BMO/AMC/DMH from raw_json.entry.hour.
+ *   5. Otherwise return null — event is skipped by the enrichment runner.
  */
 export function resolveReleaseTime(row: {
   event_type: string;
   event_time: string | null;
   raw_json: string | null;
+  symbol?: string | null;
 }): string | null {
   if (row.event_time && /^\d{2}:\d{2}$/.test(row.event_time)) {
     return row.event_time;
@@ -96,7 +126,7 @@ export function resolveReleaseTime(row: {
   if (row.event_type === "earnings") {
     const fromEventTime = normalizeEarningsHour(row.event_time);
     if (fromEventTime || row.event_time?.trim().toLowerCase() === "unknown") {
-      return earningsHourToReleaseTime(fromEventTime);
+      return earningsHourToReleaseTime(fromEventTime, row.symbol);
     }
   }
 
@@ -109,7 +139,10 @@ export function resolveReleaseTime(row: {
         entry?: { hour?: unknown };
       };
       if (Object.prototype.hasOwnProperty.call(parsed.entry ?? {}, "hour")) {
-        return earningsHourToReleaseTime(normalizeEarningsHour(parsed.entry?.hour));
+        return earningsHourToReleaseTime(
+          normalizeEarningsHour(parsed.entry?.hour),
+          row.symbol,
+        );
       }
     } catch {
       // Malformed JSON — fall through to null.
