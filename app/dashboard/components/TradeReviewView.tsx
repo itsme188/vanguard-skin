@@ -22,6 +22,7 @@ interface TradeReviewWithAccount extends TradeReview {
 interface GroupedTradeResponse {
   saleTransactionId: number | null;
   symbol: string;
+  securityType: string | null;
   exitDate: string;
   grade: string | null;
   assessment: string | null;
@@ -841,7 +842,11 @@ function GroupedTradeCards({
                         value={trade.totalQuantity}
                         digits={trade.totalQuantity >= 1 ? 0 : 3}
                       />{" "}
-                      shares
+                      {trade.securityType?.toLowerCase() === "option"
+                        ? trade.totalQuantity === 1
+                          ? "contract"
+                          : "contracts"
+                        : "shares"}
                     </span>
                     {trade.lots.length > 1 && (
                       <span>{trade.lots.length} lots</span>
@@ -911,7 +916,12 @@ function GroupedTradeCards({
                               @<Money value={lot.entryPrice} precise />
                             </span>
                             <span className="text-ink-faint">
-                              <Shares value={lot.exitQuantity} /> shares
+                              <Shares value={lot.exitQuantity} />{" "}
+                              {trade.securityType?.toLowerCase() === "option"
+                                ? lot.exitQuantity === 1
+                                  ? "contract"
+                                  : "contracts"
+                                : "shares"}
                             </span>
                             <span className="text-ink-faint">
                               {lot.holdingDays}d

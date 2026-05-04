@@ -455,11 +455,25 @@ function formatStrike(strike: number): string {
 
 function formatExpiry(expiry?: string): string {
   if (!expiry) return "";
-  // "2026-06-19" → "Jun 19"
-  const d = new Date(expiry + "T12:00:00Z");
   const months = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun",
     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
   ];
-  return `${months[d.getUTCMonth()]} ${d.getUTCDate()}`;
+  // Accept ISO ("2026-06-19") or YYYYMMDD ("20260619"). A handful of TWS-enriched
+  // option rows wrote YYYYMMDD into expiration_date instead of ISO, which made
+  // the original ISO-only parse return Invalid Date and surface "undefined NaN"
+  // in strategy descriptions.
+  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(expiry);
+  if (iso) {
+    const m = parseInt(iso[2], 10) - 1;
+    const d = parseInt(iso[3], 10);
+    if (m >= 0 && m < 12 && d >= 1 && d <= 31) return `${months[m]} ${d}`;
+  }
+  const compact = /^(\d{4})(\d{2})(\d{2})$/.exec(expiry);
+  if (compact) {
+    const m = parseInt(compact[2], 10) - 1;
+    const d = parseInt(compact[3], 10);
+    if (m >= 0 && m < 12 && d >= 1 && d <= 31) return `${months[m]} ${d}`;
+  }
+  return "";
 }

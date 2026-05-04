@@ -215,9 +215,10 @@ function computeTilts(
     let classified = 0;
 
     for (const row of rows) {
-      const label = getter(row) ?? "Unclassified";
+      const raw = getter(row);
+      const label = raw && raw.trim() !== "" ? raw : "Unclassified";
       bucketMap.set(label, (bucketMap.get(label) ?? 0) + row.market_value);
-      if (getter(row)) classified += row.market_value;
+      if (raw && raw.trim() !== "") classified += row.market_value;
     }
 
     // Don't return tilt if <30% of portfolio is classified
