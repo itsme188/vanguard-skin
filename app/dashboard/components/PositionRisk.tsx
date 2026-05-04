@@ -120,7 +120,7 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
               <tr key={pos.securityId} className="border-b border-edge/30 last:border-0">
                 <td className="py-2 pr-4">
                   <div className="font-mono font-medium text-ink">{pos.symbol}</div>
-                  {pos.securityName && (
+                  {pos.securityName && pos.securityName !== pos.symbol && (
                     <div className="text-xs text-ink-faint truncate max-w-[180px]">
                       {pos.securityName}
                     </div>

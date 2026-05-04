@@ -58,7 +58,10 @@ export function formatFinnhubFigure(s: string | null | undefined): FormattedFinn
     };
   }
   return {
-    eps: parsed.eps != null ? `$${parsed.eps.toFixed(2)}` : null,
+    eps:
+      parsed.eps != null
+        ? `${parsed.eps < 0 ? "-" : ""}$${Math.abs(parsed.eps).toFixed(2)}`
+        : null,
     revenue: parsed.revenue != null ? formatLargeUSD(parsed.revenue) : null,
     fallback: null,
   };

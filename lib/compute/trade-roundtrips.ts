@@ -10,6 +10,7 @@ export interface RoundTrip {
   securityId: number;
   symbol: string;
   securityName: string | null;
+  securityType?: string | null;
   entryDate: string;
   entryPrice: number;
   entryQuantity: number;
@@ -91,6 +92,7 @@ export function getRoundTrips(
         tl.security_id,
         s.symbol,
         s.name AS security_name,
+        s.security_type,
         tl.acquisition_date AS entry_date,
         tl.acquisition_price AS entry_price,
         tls.quantity_sold AS entry_quantity,
@@ -117,6 +119,7 @@ export function getRoundTrips(
     security_id: number;
     symbol: string;
     security_name: string | null;
+    security_type: string | null;
     entry_date: string;
     entry_price: number;
     entry_quantity: number;
@@ -136,6 +139,7 @@ export function getRoundTrips(
     securityId: r.security_id,
     symbol: r.symbol,
     securityName: r.security_name,
+    securityType: r.security_type,
     entryDate: r.entry_date,
     entryPrice: r.entry_price,
     entryQuantity: r.entry_quantity,
@@ -326,6 +330,7 @@ export function computeGroupedTrades(roundTrips: RoundTrip[]): GroupedTrade[] {
       securityId: lots[0].securityId,
       symbol: lots[0].symbol,
       securityName: lots[0].securityName,
+      securityType: lots[0].securityType,
       lots,
       totalQuantity: totalQty,
       sellTransactionQty: sellTxQty,

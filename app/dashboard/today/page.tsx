@@ -348,9 +348,11 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
                       <span className="font-mono text-[14px] font-medium text-ink group-hover:text-gold">
                         {h.symbol}
                       </span>
-                      <span className="text-[11px] text-ink-faint truncate">
-                        {h.security_name}
-                      </span>
+                      {h.security_name && h.security_name !== h.symbol ? (
+                        <span className="text-[11px] text-ink-faint truncate">
+                          {h.security_name}
+                        </span>
+                      ) : null}
                     </div>
                     <div className="text-[12px] text-ink-faint font-mono mt-0.5 flex items-center gap-2">
                       <span>

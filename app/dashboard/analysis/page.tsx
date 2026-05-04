@@ -37,7 +37,7 @@ const FACTOR_DIMENSIONS: AllocationDimension[] = [...FACTOR_COLUMNS];
 
 const ALL_DIMENSIONS = [...CLASSIFICATION_DIMENSIONS, ...FACTOR_DIMENSIONS];
 
-const VALID_SCOPES = ["vanguard", "ibkr", "all"] as const;
+const VALID_SCOPES = ["vanguard", "ibkr", "roth", "all"] as const;
 type AccountScope = (typeof VALID_SCOPES)[number];
 
 function resolveAccountIds(scope: AccountScope): number[] | undefined {
@@ -49,7 +49,10 @@ function resolveAccountIds(scope: AccountScope): number[] | undefined {
 
   if (scope === "vanguard") {
     const ids = rows
-      .filter((r) => r.name.toLowerCase().includes("vanguard"))
+      .filter((r) => {
+        const n = r.name.toLowerCase();
+        return n.includes("vanguard") && !n.includes("roth");
+      })
       .map((r) => r.id);
     return ids.length > 0 ? ids : undefined;
   }
@@ -57,6 +60,13 @@ function resolveAccountIds(scope: AccountScope): number[] | undefined {
   if (scope === "ibkr") {
     const ids = rows
       .filter((r) => r.name.toLowerCase().includes("ibkr"))
+      .map((r) => r.id);
+    return ids.length > 0 ? ids : undefined;
+  }
+
+  if (scope === "roth") {
+    const ids = rows
+      .filter((r) => r.name.toLowerCase().includes("roth"))
       .map((r) => r.id);
     return ids.length > 0 ? ids : undefined;
   }
