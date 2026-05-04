@@ -194,22 +194,47 @@ export function saveTradeRoundtrips(
     )
     .get() as { cnt: number };
 
+  // Detect whether migration 047 has run (adds `assessment` column).
+  // Post-migration writers populate cleanly-named columns:
+  //   assessment       ← AI's `assessment`
+  //   what_went_well   ← AI's `what_worked`
+  //   what_went_wrong  ← AI's `what_didnt`
+  // Pre-migration (in-memory test DBs without the migration runner) keeps the
+  // legacy scrambled mapping so existing tests / code paths still work.
+  const hasAssessmentCol = db
+    .prepare(
+      "SELECT COUNT(*) as cnt FROM pragma_table_info('trade_roundtrips') WHERE name = 'assessment'"
+    )
+    .get() as { cnt: number };
+
+  const useNewCols = hasAssessmentCol.cnt > 0;
+
+  const gradeCols = useNewCols
+    ? "grade, assessment, what_went_well, what_went_wrong"
+    : "grade, entry_thesis, exit_assessment, what_went_well, what_went_wrong";
+
+  // 15 base placeholders + grade columns + optional sale_transaction_id
+  const baseCount = 15;
+  const gradeCount = useNewCols ? 4 : 5;
+  const totalCount = baseCount + gradeCount + (hasSaleTxCol.cnt > 0 ? 1 : 0);
+  const placeholders = Array(totalCount).fill("?").join(", ");
+
   const insertSql = hasSaleTxCol.cnt > 0
     ? `INSERT INTO trade_roundtrips (
         review_id, account_id, security_id, symbol,
         entry_date, entry_price, entry_quantity, entry_cost,
         exit_date, exit_price, exit_quantity, exit_proceeds,
         holding_days, realized_pnl, return_pct,
-        grade, entry_thesis, exit_assessment, what_went_well, what_went_wrong,
+        ${gradeCols},
         sale_transaction_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (${placeholders})`
     : `INSERT INTO trade_roundtrips (
         review_id, account_id, security_id, symbol,
         entry_date, entry_price, entry_quantity, entry_cost,
         exit_date, exit_price, exit_quantity, exit_proceeds,
         holding_days, realized_pnl, return_pct,
-        grade, entry_thesis, exit_assessment, what_went_well, what_went_wrong
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        ${gradeCols}
+      ) VALUES (${placeholders})`;
 
   const stmt = db.prepare(insertSql);
 
@@ -238,7 +263,14 @@ export function saveTradeRoundtrips(
         );
       }
 
-      const params: unknown[] = [
+      const assessmentVal =
+        matched?.assessment ?? matched?.entry_thesis ?? null;
+      const whatWorkedVal =
+        matched?.what_worked ?? matched?.exit_assessment ?? null;
+      const whatDidntVal =
+        matched?.what_didnt ?? matched?.what_went_well ?? null;
+
+      const baseParams: unknown[] = [
         reviewId,
         rt.accountId,
         rt.securityId,
@@ -254,12 +286,24 @@ export function saveTradeRoundtrips(
         rt.holdingDays,
         rt.realizedPnl,
         rt.returnPct,
-        matched?.grade ?? null,
-        matched?.assessment ?? matched?.entry_thesis ?? null,
-        matched?.what_worked ?? matched?.exit_assessment ?? null,
-        matched?.what_didnt ?? matched?.what_went_well ?? null,
-        matched?.what_went_wrong ?? null,
       ];
+
+      const params: unknown[] = useNewCols
+        ? [
+            ...baseParams,
+            matched?.grade ?? null,
+            assessmentVal,        // → assessment
+            whatWorkedVal,        // → what_went_well (semantically correct)
+            whatDidntVal,         // → what_went_wrong (semantically correct)
+          ]
+        : [
+            ...baseParams,
+            matched?.grade ?? null,
+            assessmentVal,        // → entry_thesis (legacy)
+            whatWorkedVal,        // → exit_assessment (legacy)
+            whatDidntVal,         // → what_went_well (legacy scramble — kept for in-memory test DBs)
+            matched?.what_went_wrong ?? null, // → what_went_wrong (always NULL pre-mig)
+          ];
 
       if (hasSaleTxCol.cnt > 0) {
         params.push(rt.saleTransactionId);

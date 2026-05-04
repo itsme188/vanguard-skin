@@ -218,20 +218,35 @@ export function TradeReviewView({
         body: JSON.stringify(body),
       });
       if (!res.ok) {
-        setGenerateMsg(`Error: ${res.statusText}`);
+        // Read JSON error body when present — `res.statusText` ("Internal
+        // Server Error") swallows the actual reason.
+        const errorBody = (await res
+          .json()
+          .catch(() => null)) as { error?: string } | null;
+        setGenerateMsg(`Error: ${errorBody?.error ?? res.statusText}`);
+        setGenerating(false);
         return;
       }
+
+      // Track Phase-1 question receipt and Phase-2 completion in local
+      // variables — reading `questions.length` from the closure is stale
+      // because state updates inside the SSE callback don't propagate back
+      // into this function's scope.
+      let questionsReceived = false;
+      let completed = false;
 
       await readSseStream(res, (data) => {
         if (data.progress) setGenerateMsg(data.progress.message);
         if (data.questions) {
           // Phase 1 complete — show Q&A
+          questionsReceived = true;
           setQuestions(data.questions);
           setPendingGenerate({ periodStart, periodEnd });
           setGenerating(false);
           setGenerateMsg(null);
         }
         if (data.complete) {
+          completed = true;
           setGenerateMsg(
             `Review complete — ${data.data.tradeCount} trade(s), ${(data.data.winRate * 100).toFixed(0)}% win rate`
           );
@@ -239,8 +254,8 @@ export function TradeReviewView({
         if (data.error) setGenerateMsg(`Error: ${data.error}`);
       });
 
-      // If we didn't get questions (direct complete), refresh
-      if (questions.length === 0) {
+      // Refresh only if we ran a complete generation (not a Phase-1 stop).
+      if (completed && !questionsReceived) {
         await refreshReviews();
       }
     } catch (err) {
@@ -248,7 +263,10 @@ export function TradeReviewView({
         `Error: ${err instanceof Error ? err.message : "Unknown"}`
       );
     } finally {
-      if (questions.length === 0) setGenerating(false);
+      // setGenerating(false) was already called inside the SSE callback when
+      // questions arrived (Phase 1). Always force-clear here so the spinner
+      // doesn't get stuck if the stream errored before either branch fired.
+      setGenerating(false);
     }
   };
 
@@ -791,7 +809,9 @@ function GroupedTradeCards({
 }: {
   groupedTrades: GroupedTradeResponse[];
 }) {
-  const [expandedTrade, setExpandedTrade] = useState<number | null>(null);
+  // Use saleTransactionId (or symbol+exitDate fallback) as the stable key
+  // for the expand-state — array index would jump if order ever changes.
+  const [expandedTrade, setExpandedTrade] = useState<string | null>(null);
 
   if (groupedTrades.length === 0) {
     return (
@@ -804,23 +824,31 @@ function GroupedTradeCards({
   return (
     <div className="space-y-3">
       {groupedTrades.map((trade, idx) => {
-        const pnlColor = trade.totalPnl >= 0 ? "text-up" : "text-down";
+        const isGain = trade.totalPnl >= 0;
+        const pnlColor = isGain ? "text-up" : "text-down";
+        // Use literal opacity classes so Tailwind's JIT picks them up;
+        // dynamic `${pnlColor}/70` would build a string the scanner can't see.
+        const pnlMutedColor = isGain ? "text-up/70" : "text-down/70";
         const returnPctValue =
           trade.avgEntryPrice > 0
             ? ((trade.exitPrice - trade.avgEntryPrice) /
                 trade.avgEntryPrice) *
               100
             : 0;
-        const isExpanded = expandedTrade === idx;
+        const tradeKey =
+          trade.saleTransactionId != null
+            ? `tx:${trade.saleTransactionId}`
+            : `${trade.symbol}:${trade.exitDate}:${idx}`;
+        const isExpanded = expandedTrade === tradeKey;
 
         return (
           <div
-            key={idx}
+            key={tradeKey}
             className="rounded-lg border border-edge bg-raised/30 overflow-hidden"
           >
             {/* Trade header */}
             <button
-              onClick={() => setExpandedTrade(isExpanded ? null : idx)}
+              onClick={() => setExpandedTrade(isExpanded ? null : tradeKey)}
               className="w-full text-left px-4 py-3 hover:bg-raised/50 transition-colors"
             >
               <div className="flex items-center gap-3">
@@ -835,12 +863,16 @@ function GroupedTradeCards({
                       signed
                       className={`font-mono text-sm ${pnlColor}`}
                     />
-                    <span className={`font-mono text-xs ${pnlColor}/70`}>
+                    <span className={`font-mono text-xs ${pnlMutedColor}`}>
                       (<Pct value={returnPctValue} digits={1} signed />)
                     </span>
                   </div>
                   <div className="flex gap-3 text-[11px] text-ink-faint mt-0.5">
-                    <span>{trade.maxHoldingDays}d hold</span>
+                    <span
+                      title="FIFO holding period — time between the oldest matched tax lot's acquisition and the sale. For actively traded names this may overstate how long the trader actually held the position."
+                    >
+                      {trade.maxHoldingDays}d hold
+                    </span>
                     <span>
                       <Shares
                         value={trade.totalQuantity}

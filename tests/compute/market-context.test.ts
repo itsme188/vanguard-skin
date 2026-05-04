@@ -369,8 +369,10 @@ describe("market-context", () => {
       const [ctx] = getMarketContext(db, [trade], 1);
 
       expect(ctx.stockContext).not.toBeNull();
-      expect(ctx.stockContext!.periodHigh).toBe(170); // 150 + 20
-      expect(ctx.stockContext!.periodLow).toBe(151); // 150 + 1
+      // periodHigh = 170 (matches both the highest close 151+19=170 AND exit price 170)
+      expect(ctx.stockContext!.periodHigh).toBe(170);
+      // periodLow = 150 (entry price is folded in and is lower than any close)
+      expect(ctx.stockContext!.periodLow).toBe(150);
     });
 
     it("uses ohlcv_bars when available with sufficient coverage", () => {
@@ -393,6 +395,97 @@ describe("market-context", () => {
       expect(ctx.stockContext).not.toBeNull();
       expect(ctx.stockContext!.periodHigh).toBe(165); // 155 + 10
       expect(ctx.stockContext!.periodLow).toBe(146); // 145 + 1
+    });
+
+    it("merges prices into period range when ohlcv_bars stop short of exit (INTC regression)", () => {
+      // Reproduces 2026-04 INTC: ohlcv_bars synced through mid-month, but
+      // daily-snapshot prices extend to the trade's exit date with a much
+      // higher close. Pre-fix, the period high was stuck at the bars' max
+      // (~$70.33) even though the trade exited at $87.76 with subsequent
+      // closes near $94.
+      const securityId = 3; // INTC
+
+      // 12 ohlcv bars, 2026-04-08 through 2026-04-23 (max high 70.33 on 4/17)
+      const bars = [
+        ["2026-04-08", 59.17, 54.78, 58.95],
+        ["2026-04-09", 62.07, 58.39, 61.72],
+        ["2026-04-10", 63.39, 60.75, 62.38],
+        ["2026-04-13", 65.65, 62.18, 65.18],
+        ["2026-04-14", 65.22, 62.08, 63.81],
+        ["2026-04-15", 65.84, 62.87, 64.94],
+        ["2026-04-16", 68.61, 64.27, 68.50],
+        ["2026-04-17", 70.33, 67.73, 68.50],
+        ["2026-04-20", 69.19, 64.47, 65.70],
+        ["2026-04-21", 67.67, 65.64, 66.26],
+        ["2026-04-22", 68.77, 64.98, 65.27],
+        ["2026-04-23", 68.28, 65.42, 66.78],
+      ] as const;
+      for (const [date, high, low, close] of bars) {
+        db.prepare(
+          `INSERT INTO ohlcv_bars (security_id, bar_date, bar_size, open, high, low, close)
+           VALUES (?, ?, '1 day', ?, ?, ?, ?)`
+        ).run(securityId, date, low, high, low, close);
+      }
+
+      // Daily-snapshot prices extend through the exit date
+      const prices = [
+        ["2026-04-21", 66.37],
+        ["2026-04-22", 67.40],
+        ["2026-04-23", 80.18], // diverges from bar close — still capped by bar's high
+        ["2026-04-24", 82.54],
+        ["2026-04-26", 66.78],
+        ["2026-04-27", 84.70],
+        ["2026-04-28", 85.75],
+        ["2026-04-29", 94.60],
+      ] as const;
+      for (const [date, close] of prices) {
+        db.prepare(
+          `INSERT INTO prices (security_id, date, close_price) VALUES (?, ?, ?)`
+        ).run(securityId, date, close);
+      }
+
+      const trade = makeGroupedTrade({
+        securityId,
+        symbol: "INTC",
+        earliestEntryDate: "2026-04-08",
+        exitDate: "2026-04-29",
+        avgEntryPrice: 44.57,
+        exitPrice: 87.76,
+      });
+      const [ctx] = getMarketContext(db, [trade], 1);
+
+      expect(ctx.stockContext).not.toBeNull();
+      // Period high should reflect the trade's exit price (87.76) since it's
+      // higher than any bar high. Folded entry/exit guarantees this.
+      expect(ctx.stockContext!.periodHigh).toBeGreaterThanOrEqual(87.76);
+      // Period low should reflect the entry price (44.57) — lower than every
+      // bar low and every price close in the range.
+      expect(ctx.stockContext!.periodLow).toBeCloseTo(44.57, 2);
+    });
+
+    it("folds entry/exit prices into the period range even when bars exist", () => {
+      // Trade exits well above the highest available daily bar high.
+      for (let i = 1; i <= 8; i++) {
+        const day = String(i).padStart(2, "0");
+        db.exec(
+          `INSERT INTO ohlcv_bars (security_id, bar_date, bar_size, open, high, low, close)
+           VALUES (1, '2024-05-${day}', '1 day', 100, 105, 95, 100)`
+        );
+      }
+
+      const trade = makeGroupedTrade({
+        earliestEntryDate: "2024-05-01",
+        exitDate: "2024-05-12", // beyond the last bar — only entry/exit anchor
+        avgEntryPrice: 90,       // below every bar low
+        exitPrice: 130,          // above every bar high
+      });
+      const [ctx] = getMarketContext(db, [trade], 1);
+
+      expect(ctx.stockContext).not.toBeNull();
+      expect(ctx.stockContext!.periodHigh).toBe(130); // exit price wins
+      expect(ctx.stockContext!.periodHighDate).toBe("2024-05-12");
+      expect(ctx.stockContext!.periodLow).toBe(90); // entry price wins
+      expect(ctx.stockContext!.periodLowDate).toBe("2024-05-01");
     });
   });
 
