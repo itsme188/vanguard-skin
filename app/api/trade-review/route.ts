@@ -72,15 +72,39 @@ export async function GET(request: Request) {
       );
       const totalPnl = lots.reduce((s, l) => s + l.realized_pnl, 0);
 
+      // After migration 047, columns mean what their names say:
+      //   assessment      — AI's overall trade assessment
+      //   what_went_well  — AI's "what worked"
+      //   what_went_wrong — AI's "what didn't work"
+      // For DBs without the migration (in-memory tests), the property
+      // `assessment` is absent on the row object, and the legacy scrambled
+      // mapping is used: entry_thesis = assessment, exit_assessment =
+      // what_worked, what_went_well = what_didnt.
+      const lot0 = lots[0];
+      // Cast to a loose record so TS doesn't narrow the else branch to never
+      // when the migration-aware property check is true.
+      const lot0Loose = lot0 as unknown as Record<string, unknown>;
+      const isPostMigration =
+        Object.prototype.hasOwnProperty.call(lot0Loose, "assessment");
+      const assessmentVal = isPostMigration
+        ? ((lot0Loose.assessment as string | null) ?? null)
+        : ((lot0Loose.entry_thesis as string | null) ?? null);
+      const whatWorkedVal = isPostMigration
+        ? ((lot0Loose.what_went_well as string | null) ?? null)
+        : ((lot0Loose.exit_assessment as string | null) ?? null);
+      const whatDidntVal = isPostMigration
+        ? ((lot0Loose.what_went_wrong as string | null) ?? null)
+        : ((lot0Loose.what_went_well as string | null) ?? null);
+
       return {
-        saleTransactionId: lots[0].sale_transaction_id ?? null,
-        symbol: lots[0].symbol,
-        securityType: lots[0].security_type ?? null,
-        exitDate: lots[0].exit_date,
-        grade: lots[0].grade,
-        assessment: lots[0].entry_thesis, // stored as entry_thesis in DB
-        whatWorked: lots[0].exit_assessment, // stored as exit_assessment in DB
-        whatDidnt: lots[0].what_went_well, // stored as what_went_well in DB
+        saleTransactionId: lot0.sale_transaction_id ?? null,
+        symbol: lot0.symbol,
+        securityType: lot0.security_type ?? null,
+        exitDate: lot0.exit_date,
+        grade: lot0.grade,
+        assessment: assessmentVal,
+        whatWorked: whatWorkedVal,
+        whatDidnt: whatDidntVal,
         totalPnl,
         avgEntryPrice: totalQty > 0 ? totalCost / totalQty : 0,
         exitPrice: lots[0].exit_price,

@@ -189,6 +189,17 @@ export async function prepareTradeReview(
     );
   }
 
+  // Surface partial exclusions so the user knows when the dropdown's count
+  // doesn't match the number of trades actually reviewed.
+  const excludedCount = allGrouped.length - groupedTrades.length;
+  if (excludedCount > 0) {
+    options?.onProgress?.(
+      `Note: ${excludedCount} of ${allGrouped.length} trade(s) excluded — positions pre-date imported transaction history`,
+      1,
+      totalSteps
+    );
+  }
+
   const summary = computeGroupedSummary(groupedTrades);
 
   // Get account name for profile lookup
@@ -337,10 +348,18 @@ export async function generateTradeReview(
   const featureKey: FeatureKey =
     tradeCount > SONNET_TRADE_THRESHOLD ? "tradeReviewMainLarge" : "tradeReviewMain";
   const modelSpec = FEATURE_MODELS[featureKey];
-  // Scale max_tokens with trade count — each grade needs ~150 tokens
+  // Scale max_tokens with trade count.
+  // Each trade_grade entry (with assessment + what_worked + what_didnt) is
+  // realistically 300-500 output tokens. review_markdown alone is typically
+  // 2000-5000 tokens. Patterns/strengths/weaknesses add ~1500.
+  // The previous formula (4000 + tradeCount * 200, capped at 32k) was too
+  // tight for big months — Vanguard with 30+ trades hit the cap mid-output,
+  // truncating review_markdown to empty and triggering the NOT NULL
+  // constraint on save. Bump baseline + per-trade scale, raise cap to Sonnet's
+  // 64k output limit.
   const maxTokens = Math.min(
-    Math.max(8000, 4000 + tradeCount * 200),
-    32000
+    Math.max(12000, 5000 + tradeCount * 400),
+    64000
   );
 
   options?.onProgress?.(
@@ -356,6 +375,23 @@ export async function generateTradeReview(
     system,
     prompt: user,
   });
+
+  // Validate the AI's response before save. A truncated tool call (model hit
+  // its output token limit mid-stream) typically arrives with `review_markdown`
+  // missing or empty. Fail with a clear message instead of letting the SQLite
+  // NOT NULL constraint surface as the symptom.
+  if (
+    !result.review_markdown ||
+    typeof result.review_markdown !== "string" ||
+    result.review_markdown.trim() === ""
+  ) {
+    throw new Error(
+      `AI returned an incomplete response — the review summary was empty. ` +
+      `This usually means the model hit its output token limit. ` +
+      `Try regenerating; if it persists, the period may have too many trades ` +
+      `to summarize in one pass (current: ${tradeCount} trades, budget: ${maxTokens} tokens).`
+    );
+  }
 
   // Step 5: Save to database
   options?.onProgress?.("Saving review to database...", 5, totalSteps);

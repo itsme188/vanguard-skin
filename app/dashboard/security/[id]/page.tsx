@@ -486,44 +486,83 @@ export default async function SecurityDetailPage(props: {
               </tbody>
             </table>
           </div>
-          {tradeGrades.some(tg => tg.entry_thesis) && (
-            <div style={{ borderTop: "1px solid #1f1f1f", padding: "14px 20px", display: "flex", flexDirection: "column", gap: "12px" }}>
-              {tradeGrades.filter(tg => tg.entry_thesis || tg.exit_assessment).map((tg, i) => {
-                const gradeColor = (g: string | null) => {
-                  if (g === "A" || g === "B") return "#22c55e";
-                  if (g === "C") return "#ffb84d";
-                  if (g === "D" || g === "F") return "#ef4444";
-                  return "#666";
-                };
-                return (
-                  <div key={i} style={{ fontFamily: "Geist, system-ui, sans-serif", fontSize: "14px", lineHeight: 1.55 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
-                      {tg.grade && (
-                        <TerminalTag color={gradeColor(tg.grade)} size="xs">
-                          {tg.grade}
-                        </TerminalTag>
+          {(() => {
+            // Resolve the AI's three text fields (assessment / what_worked /
+            // what_didnt) preferring post-migration columns and falling back
+            // to legacy. See migration 047 for the column-name history.
+            type GradeRow = (typeof tradeGrades)[number];
+            const resolveAssessment = (tg: GradeRow): string | null =>
+              tg.assessment ?? tg.entry_thesis;
+            const resolveWhatWorked = (tg: GradeRow): string | null =>
+              tg.assessment != null ? tg.what_went_well : tg.exit_assessment;
+            const resolveWhatDidnt = (tg: GradeRow): string | null =>
+              tg.assessment != null ? tg.what_went_wrong : tg.what_went_well;
+
+            const visible = tradeGrades.filter(
+              (tg) =>
+                resolveAssessment(tg) ||
+                resolveWhatWorked(tg) ||
+                resolveWhatDidnt(tg)
+            );
+            if (visible.length === 0) return null;
+
+            const gradeColor = (g: string | null) => {
+              if (g === "A" || g === "B") return "#22c55e";
+              if (g === "C") return "#ffb84d";
+              if (g === "D" || g === "F") return "#ef4444";
+              return "#666";
+            };
+            const labelStyle = {
+              color: "#666",
+              fontFamily: "var(--font-mono), monospace",
+              fontSize: "12px",
+              letterSpacing: "0.14em",
+              textTransform: "uppercase" as const,
+              marginRight: "0.5em",
+            };
+
+            return (
+              <div style={{ borderTop: "1px solid #1f1f1f", padding: "14px 20px", display: "flex", flexDirection: "column", gap: "12px" }}>
+                {visible.map((tg, i) => {
+                  const assessment = resolveAssessment(tg);
+                  const whatWorked = resolveWhatWorked(tg);
+                  const whatDidnt = resolveWhatDidnt(tg);
+                  return (
+                    <div key={i} style={{ fontFamily: "Geist, system-ui, sans-serif", fontSize: "14px", lineHeight: 1.55 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+                        {tg.grade && (
+                          <TerminalTag color={gradeColor(tg.grade)} size="xs">
+                            {tg.grade}
+                          </TerminalTag>
+                        )}
+                        <span style={{ color: "#666", fontFamily: "var(--font-mono), monospace", fontSize: "11px", letterSpacing: "0.14em", textTransform: "uppercase" }}>
+                          {tg.entry_date} → {tg.exit_date}
+                        </span>
+                      </div>
+                      {assessment && (
+                        <p style={{ color: "#bbb", marginBottom: "3px" }}>
+                          <span style={labelStyle}>Assessment</span>
+                          {assessment}
+                        </p>
                       )}
-                      <span style={{ color: "#666", fontFamily: "var(--font-mono), monospace", fontSize: "11px", letterSpacing: "0.14em", textTransform: "uppercase" }}>
-                        {tg.entry_date} → {tg.exit_date}
-                      </span>
+                      {whatWorked && (
+                        <p style={{ color: "#9bd49b", marginBottom: "3px" }}>
+                          <span style={labelStyle}>Worked</span>
+                          {whatWorked}
+                        </p>
+                      )}
+                      {whatDidnt && (
+                        <p style={{ color: "#e09b9b" }}>
+                          <span style={labelStyle}>Didn&apos;t</span>
+                          {whatDidnt}
+                        </p>
+                      )}
                     </div>
-                    {tg.entry_thesis && (
-                      <p style={{ color: "#bbb", marginBottom: "3px" }}>
-                        <span style={{ color: "#666", fontFamily: "var(--font-mono), monospace", fontSize: "12px", letterSpacing: "0.14em", textTransform: "uppercase", marginRight: "0.5em" }}>Entry</span>
-                        {tg.entry_thesis}
-                      </p>
-                    )}
-                    {tg.exit_assessment && (
-                      <p style={{ color: "#bbb" }}>
-                        <span style={{ color: "#666", fontFamily: "var(--font-mono), monospace", fontSize: "12px", letterSpacing: "0.14em", textTransform: "uppercase", marginRight: "0.5em" }}>Exit</span>
-                        {tg.exit_assessment}
-                      </p>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
+                  );
+                })}
+              </div>
+            );
+          })()}
         </TerminalSection>
       )}
 
