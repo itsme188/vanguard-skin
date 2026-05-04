@@ -243,11 +243,27 @@ export function commitImport(
       }
     }
 
-    // 4. Insert holdings (skip duplicates via source_key)
+    // 4. Upsert holdings. UNIQUE(account_id, security_id, as_of_date) means only
+    //    one row per (account, security, date). Statement holdings (source_key
+    //    prefixes 'ibkr:pos:', 'canonical:hold:', 'vanguard:...') are the
+    //    end-of-day authority and must overwrite earlier TWS intra-day rows for
+    //    the same date (source_key prefix 'tws-'). Re-imports of the same
+    //    statement match on UNIQUE source_key and are no-ops.
+    //
+    //    Pre-2026-05-04 this used INSERT OR IGNORE, which silently dropped the
+    //    statement holdings whenever TWS had already written an intra-day row.
+    //    For IBKR April: 18 of 19 statement holdings were lost this way (only 1
+    //    new option position survived because TWS hadn't seen it yet).
     const insertHolding = db.prepare(`
-      INSERT OR IGNORE INTO holdings
+      INSERT INTO holdings
         (account_id, security_id, quantity, cost_basis, as_of_date, import_batch_id, source_key)
       VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(account_id, security_id, as_of_date) DO UPDATE SET
+        quantity = excluded.quantity,
+        cost_basis = excluded.cost_basis,
+        import_batch_id = excluded.import_batch_id,
+        source_key = excluded.source_key
+      WHERE holdings.source_key LIKE 'tws-%'
     `);
 
     for (const h of parsed.holdings) {

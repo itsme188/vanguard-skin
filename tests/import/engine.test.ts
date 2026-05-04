@@ -581,6 +581,168 @@ describe("import engine", () => {
     });
   });
 
+  describe("statement-wins-over-tws upserts (regression for 2026-05-04 IBKR April bug)", () => {
+    it("statement holdings overwrite earlier TWS-source rows on conflict", () => {
+      // Pre-2026-05-04: holdings UPSERT used INSERT OR IGNORE, so a TWS intra-day
+      // row written before the statement import (e.g., AMZN 100 at noon) would
+      // silently block the statement's end-of-day row (AMZN 160). On April 2026
+      // import, 18 of 19 IBKR statement holdings were lost this way.
+      db.prepare(
+        "INSERT OR IGNORE INTO accounts (id, name) VALUES (3, 'IBKR')"
+      ).run();
+      db.prepare(
+        "INSERT INTO securities (id, symbol, security_type) VALUES (1000, 'AMZN', 'Stock')"
+      ).run();
+
+      // 1) TWS sync writes intra-day (e.g., 100 shares at noon)
+      db.prepare(
+        `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+         VALUES (3, 1000, 100, 26000, '2026-04-30', 'tws-3-1000-2026-04-30')`
+      ).run();
+
+      // 2) Simulate statement import writing the EOD row (160 shares)
+      const insertHolding = db.prepare(`
+        INSERT INTO holdings
+          (account_id, security_id, quantity, cost_basis, as_of_date, import_batch_id, source_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(account_id, security_id, as_of_date) DO UPDATE SET
+          quantity = excluded.quantity,
+          cost_basis = excluded.cost_basis,
+          import_batch_id = excluded.import_batch_id,
+          source_key = excluded.source_key
+        WHERE holdings.source_key LIKE 'tws-%'
+      `);
+      insertHolding.run(3, 1000, 160, 41659.8, "2026-04-30", null, "ibkr:pos:2026-04-30:AMZN");
+
+      const row = db
+        .prepare(
+          `SELECT quantity, cost_basis, source_key
+             FROM holdings
+            WHERE account_id = 3 AND security_id = 1000 AND as_of_date = '2026-04-30'`
+        )
+        .get() as { quantity: number; cost_basis: number; source_key: string };
+
+      expect(row.quantity).toBe(160);
+      expect(row.cost_basis).toBe(41659.8);
+      expect(row.source_key).toBe("ibkr:pos:2026-04-30:AMZN");
+    });
+
+    it("statement holdings re-import is idempotent (statement-vs-statement preserved)", () => {
+      // Re-importing the same statement should NOT clobber the existing
+      // statement row. The WHERE source_key LIKE 'tws-%' clause means only
+      // TWS rows get overwritten; statement rows are preserved.
+      db.prepare(
+        "INSERT OR IGNORE INTO accounts (id, name) VALUES (3, 'IBKR')"
+      ).run();
+      db.prepare(
+        "INSERT INTO securities (id, symbol, security_type) VALUES (1000, 'AMZN', 'Stock')"
+      ).run();
+
+      const insertHolding = db.prepare(`
+        INSERT INTO holdings
+          (account_id, security_id, quantity, cost_basis, as_of_date, import_batch_id, source_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(account_id, security_id, as_of_date) DO UPDATE SET
+          quantity = excluded.quantity,
+          cost_basis = excluded.cost_basis,
+          import_batch_id = excluded.import_batch_id,
+          source_key = excluded.source_key
+        WHERE holdings.source_key LIKE 'tws-%'
+      `);
+      // First statement import
+      insertHolding.run(3, 1000, 160, 41659.8, "2026-04-30", null, "ibkr:pos:2026-04-30:AMZN");
+      // Pretend a tampered re-import tries to overwrite with different values
+      insertHolding.run(3, 1000, 999, 99999, "2026-04-30", null, "ibkr:pos:2026-04-30:AMZN");
+
+      const row = db
+        .prepare(
+          `SELECT quantity, cost_basis FROM holdings
+            WHERE account_id = 3 AND security_id = 1000 AND as_of_date = '2026-04-30'`
+        )
+        .get() as { quantity: number; cost_basis: number };
+
+      // Original statement values preserved (UPDATE only fires for tws-* source_keys)
+      expect(row.quantity).toBe(160);
+      expect(row.cost_basis).toBe(41659.8);
+    });
+
+    it("statement snapshot overwrites earlier tws-source snapshot row", () => {
+      // Same pattern as holdings — engine.ts snapshot upsert uses
+      // ON CONFLICT DO UPDATE WHERE source IN ('tws','manual').
+      db.prepare(
+        "INSERT OR IGNORE INTO accounts (id, name) VALUES (3, 'IBKR')"
+      ).run();
+
+      // 1) TWS writes a sparse snapshot (just total_value, no period summary)
+      db.prepare(
+        `INSERT INTO monthly_snapshots
+           (account_id, month_end_date, total_value, source)
+         VALUES (3, '2026-04-30', 448941.47, 'tws')`
+      ).run();
+
+      // 2) Statement import writes the rich snapshot
+      const insertSnapshot = db.prepare(`
+        INSERT INTO monthly_snapshots
+          (account_id, month_end_date, total_value, source, starting_value,
+           mark_to_market, deposits_withdrawals, dividends, interest,
+           commissions, fees, other_pnl, twr, investment_gain, import_batch_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(account_id, month_end_date) DO UPDATE SET
+          total_value = excluded.total_value,
+          source = excluded.source,
+          starting_value = excluded.starting_value,
+          mark_to_market = excluded.mark_to_market,
+          deposits_withdrawals = excluded.deposits_withdrawals,
+          dividends = excluded.dividends,
+          interest = excluded.interest,
+          commissions = excluded.commissions,
+          fees = excluded.fees,
+          other_pnl = excluded.other_pnl,
+          twr = excluded.twr,
+          investment_gain = excluded.investment_gain,
+          import_batch_id = excluded.import_batch_id
+        WHERE monthly_snapshots.source IN ('tws', 'manual')
+      `);
+      insertSnapshot.run(
+        3,
+        "2026-04-30",
+        449764.24,
+        "ibkr-activity",
+        525103.95,
+        24709.98,
+        -100000,
+        179.7,
+        656.94,
+        -323.97,
+        -131.36,
+        null,
+        5.239,
+        null,
+        null
+      );
+
+      const row = db
+        .prepare(
+          `SELECT source, total_value, starting_value, deposits_withdrawals, twr
+             FROM monthly_snapshots
+            WHERE account_id = 3 AND month_end_date = '2026-04-30'`
+        )
+        .get() as {
+          source: string;
+          total_value: number;
+          starting_value: number;
+          deposits_withdrawals: number;
+          twr: number;
+        };
+
+      expect(row.source).toBe("ibkr-activity");
+      expect(row.total_value).toBe(449764.24);
+      expect(row.starting_value).toBe(525103.95);
+      expect(row.deposits_withdrawals).toBe(-100000);
+      expect(row.twr).toBe(5.239);
+    });
+  });
+
   describe("multi-format import", () => {
     it("imports multiple file types into the same database", async () => {
       // Import IBKR activity (transactions + snapshot)
