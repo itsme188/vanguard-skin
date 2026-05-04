@@ -296,7 +296,8 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
           onClick={() => setShowBuilder(!showBuilder)}
           className="text-xs text-gold hover:brightness-125 transition-colors"
         >
-          {showBuilder ? "Hide" : "Build"} Custom Scenario {showBuilder ? "▲" : "▼"}
+          {showBuilder ? "Hide" : "Build"} Custom Scenario{" "}
+          <span aria-hidden style={{ letterSpacing: "0.1em" }}>•••</span>
         </button>
 
         {showBuilder && (

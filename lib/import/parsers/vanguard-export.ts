@@ -139,7 +139,14 @@ export function parseVanguardExport(
     if (!acctNum || isNaN(shares)) continue;
 
     const accountName = ACCOUNT_NUMBER_MAP[acctNum] || `Vanguard ${acctNum}`;
-    const effectiveSymbol = (!symbol || symbol === "null") ? `CUSIP:${name?.slice(0, 20)}` : symbol;
+    // Vanguard's "Investment Name" can be missing a Symbol for restricted /
+    // OTC / Treasury rows. Fall back to a cleaned-up name slice rather than a
+    // "CUSIP:"-prefixed placeholder — the prefix lied about what the value was
+    // (rarely an actual CUSIP) and surfaced verbatim in the holdings UI.
+    const effectiveSymbol =
+      !symbol || symbol === "null"
+        ? (name?.slice(0, 30).trim() || "UNKNOWN")
+        : symbol;
 
     holdings.push({
       accountName,

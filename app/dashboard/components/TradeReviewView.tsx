@@ -597,8 +597,12 @@ function ReviewCard({
               profit factor
             </span>
           )}
-          <span className="text-ink-faint ml-auto">
-            {isExpanded ? "▲" : "▼"}
+          <span
+            aria-hidden
+            className={`ml-auto transition-colors ${isExpanded ? "text-gold" : "text-ink-faint"}`}
+            style={{ letterSpacing: "0.1em" }}
+          >
+            •••
           </span>
         </div>
       </button>
@@ -856,8 +860,12 @@ function GroupedTradeCards({
                     </span>
                   </div>
                 </div>
-                <span className="text-xs text-ink-faint">
-                  {isExpanded ? "▲" : "▼"}
+                <span
+                  aria-hidden
+                  className={`text-xs transition-colors ${isExpanded ? "text-gold" : "text-ink-faint"}`}
+                  style={{ letterSpacing: "0.1em" }}
+                >
+                  •••
                 </span>
               </div>
 

@@ -20,13 +20,14 @@ interface ExpiringOption {
  * Options expiration calendar — shows upcoming option expirations
  * with countdown badges. Only renders if there are expiring options.
  */
-export function ExpirationCalendar() {
+export function ExpirationCalendar({ scope }: { scope?: string }) {
   const [options, setOptions] = useState<ExpiringOption[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     // Fetch options expiring in the next 90 days
-    fetch("/api/compute/options-greeks")
+    const qs = scope ? `?scope=${encodeURIComponent(scope)}` : "";
+    fetch(`/api/compute/options-greeks${qs}`)
       .then((r) => r.json())
       .then((json) => {
         if (json.success && json.data.positions?.length > 0) {
@@ -52,12 +53,14 @@ export function ExpirationCalendar() {
               quantity: p.quantity,
               accountName: "",
             }));
-          if (expiring.length > 0) setOptions(expiring);
+          setOptions(expiring.length > 0 ? expiring : []);
+        } else {
+          setOptions([]);
         }
       })
-      .catch(() => {})
+      .catch(() => setOptions([]))
       .finally(() => setLoading(false));
-  }, []);
+  }, [scope]);
 
   if (loading) return null;
   if (options.length === 0) {

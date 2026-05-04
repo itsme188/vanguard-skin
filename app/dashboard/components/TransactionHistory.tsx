@@ -108,11 +108,20 @@ export function TransactionHistory({
                   </span>
                 </td>
                 <td className="px-4 py-3 font-mono text-ink">
-                  {txn.security_id != null && txn.symbol ? (
-                    <SymbolLink securityId={txn.security_id} symbol={txn.symbol} />
-                  ) : (
-                    txn.symbol ?? "\u2014"
-                  )}
+                  <div>
+                    {txn.security_id != null && txn.symbol ? (
+                      <SymbolLink securityId={txn.security_id} symbol={txn.symbol} />
+                    ) : (
+                      txn.symbol ?? "\u2014"
+                    )}
+                  </div>
+                  <span
+                    className={`md:hidden mt-1 inline-block text-[10px] font-medium px-1.5 py-0.5 rounded ${
+                      TYPE_STYLES[txn.type] ?? "bg-raised text-ink-dim"
+                    }`}
+                  >
+                    {txn.type}
+                  </span>
                 </td>
                 <td className="hidden md:table-cell px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
                   <Shares value={txn.quantity} digits={4} />

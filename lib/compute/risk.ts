@@ -32,6 +32,7 @@ export interface PortfolioRiskMetrics {
   currentDrawdown: CurrentDrawdownInfo | null;
   volatility: number | null; // annualized
   sharpeRatio: number | null; // null if < 30 days of data
+  riskFreeRate: number; // annualized decimal (e.g. 0.0368 = 3.68%)
   herfindahl: number | null; // 0-1 (1 = single position)
   top5Concentration: number; // 0-1
   top5Positions: PositionWeight[];
@@ -111,6 +112,7 @@ export function computeRiskMetrics(
     currentDrawdown,
     volatility,
     sharpeRatio,
+    riskFreeRate,
     herfindahl,
     top5Concentration,
     top5Positions,

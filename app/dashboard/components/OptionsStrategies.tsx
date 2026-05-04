@@ -20,19 +20,21 @@ interface Strategy {
  * Fetches from the same options-greeks endpoint that also returns strategies.
  * Only renders if strategies are detected.
  */
-export function OptionsStrategies() {
+export function OptionsStrategies({ scope }: { scope?: string }) {
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/compute/options-strategies")
+    const qs = scope ? `?scope=${encodeURIComponent(scope)}` : "";
+    fetch(`/api/compute/options-strategies${qs}`)
       .then((r) => r.json())
       .then((json) => {
         if (json.success && json.data?.length > 0) setStrategies(json.data);
+        else setStrategies([]);
       })
-      .catch(() => {})
+      .catch(() => setStrategies([]))
       .finally(() => setLoading(false));
-  }, []);
+  }, [scope]);
 
   if (loading) return null;
   if (strategies.length === 0) {
