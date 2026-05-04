@@ -11,6 +11,18 @@ import { resolveDescriptionToSymbol } from "../resolve-description";
 
 type CanonicalType = "transactions" | "holdings" | "prices" | "snapshots";
 
+// Reject comma-bearing numerics. The native parseFloat silently truncates them
+// (parseFloat with "1,234.56" returns 1), which would corrupt comma-grouped
+// amounts from a Co-Work session. Returning NaN here lets the existing isNaN()
+// guards + validate.ts skip-with-warning behavior take over.
+function parseStrictNumber(s: string | undefined): number {
+  if (!s) return NaN;
+  const trimmed = s.trim();
+  if (!trimmed) return NaN;
+  if (trimmed.includes(",")) return NaN;
+  return parseFloat(trimmed);
+}
+
 function detectCanonicalType(firstLine: string): CanonicalType {
   if (firstLine.startsWith("account,trade_date,settlement_date,type,symbol"))
     return "transactions";
@@ -81,10 +93,10 @@ export function parseCanonicalCsv(
           type: (row.type || "").toUpperCase().trim(),
           symbol,
           securityName: row.security_name?.trim() || undefined,
-          quantity: row.quantity ? parseFloat(row.quantity) : undefined,
-          pricePerShare: row.price ? parseFloat(row.price) : undefined,
-          amount: row.amount ? parseFloat(row.amount) : undefined,
-          fees: row.fees ? parseFloat(row.fees) : undefined,
+          quantity: row.quantity ? parseStrictNumber(row.quantity) : undefined,
+          pricePerShare: row.price ? parseStrictNumber(row.price) : undefined,
+          amount: row.amount ? parseStrictNumber(row.amount) : undefined,
+          fees: row.fees ? parseStrictNumber(row.fees) : undefined,
           notes: row.notes?.trim() || undefined,
           sourceKey: `canonical:txn:${row.account?.trim()}:${symbol}:${row.trade_date.trim()}:${(row.type || "").trim()}`,
         });
@@ -124,16 +136,16 @@ export function parseCanonicalCsv(
           }
         }
         if (!symbol || !row.as_of_date) continue;
-        const quantity = parseFloat(row.quantity);
+        const quantity = parseStrictNumber(row.quantity);
         if (isNaN(quantity)) continue;
         holdings.push({
           accountName: row.account?.trim() || "Unknown",
           symbol,
           securityName: row.security_name?.trim() || undefined,
           quantity,
-          costBasis: row.cost_basis ? parseFloat(row.cost_basis) : undefined,
+          costBasis: row.cost_basis ? parseStrictNumber(row.cost_basis) : undefined,
           marketValue: row.market_value
-            ? parseFloat(row.market_value)
+            ? parseStrictNumber(row.market_value)
             : undefined,
           asOfDate: row.as_of_date.trim(),
           sourceKey: `canonical:hold:${row.account?.trim()}:${symbol}:${row.as_of_date.trim()}`,
@@ -151,7 +163,7 @@ export function parseCanonicalCsv(
       case "prices": {
         const symbol = row.symbol?.trim();
         if (!symbol || !row.date || !row.close_price) continue;
-        const closePrice = parseFloat(row.close_price);
+        const closePrice = parseStrictNumber(row.close_price);
         if (isNaN(closePrice)) continue;
         prices.push({
           symbol,
@@ -167,7 +179,7 @@ export function parseCanonicalCsv(
 
       case "snapshots": {
         if (!row.account || !row.month_end_date || !row.total_value) continue;
-        const totalValue = parseFloat(row.total_value);
+        const totalValue = parseStrictNumber(row.total_value);
         if (isNaN(totalValue)) continue;
         snapshots.push({
           accountName: row.account.trim(),
@@ -175,21 +187,21 @@ export function parseCanonicalCsv(
           totalValue,
           source: "canonical",
           startingValue: row.starting_value
-            ? parseFloat(row.starting_value)
+            ? parseStrictNumber(row.starting_value)
             : undefined,
           depositsWithdrawals: row.deposits_withdrawals
-            ? parseFloat(row.deposits_withdrawals)
+            ? parseStrictNumber(row.deposits_withdrawals)
             : undefined,
-          dividends: row.dividends ? parseFloat(row.dividends) : undefined,
-          interest: row.interest ? parseFloat(row.interest) : undefined,
+          dividends: row.dividends ? parseStrictNumber(row.dividends) : undefined,
+          interest: row.interest ? parseStrictNumber(row.interest) : undefined,
           commissions: row.commissions
-            ? parseFloat(row.commissions)
+            ? parseStrictNumber(row.commissions)
             : undefined,
-          fees: row.fees ? parseFloat(row.fees) : undefined,
+          fees: row.fees ? parseStrictNumber(row.fees) : undefined,
           investmentGain: row.investment_gain
-            ? parseFloat(row.investment_gain)
+            ? parseStrictNumber(row.investment_gain)
             : undefined,
-          twr: row.twr ? parseFloat(row.twr) : undefined,
+          twr: row.twr ? parseStrictNumber(row.twr) : undefined,
         });
         break;
       }

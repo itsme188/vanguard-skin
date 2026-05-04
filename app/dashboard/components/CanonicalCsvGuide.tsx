@@ -39,6 +39,7 @@ const FORMATS: FormatSpec[] = [
       "For REINVESTMENT rows: populate both `quantity` + `price` (shares received at the reinvestment price) AND `amount` (total value reinvested)",
       "For TRANSFER rows (VMFXX money-market sweeps): `amount` is SIGNED. 'Sweep Into Settlement Fund' is positive (cash going in), 'Sweep Out Of Settlement Fund' is negative (cash coming out). Never leave all TRANSFER amounts positive — the sign tracks direction.",
       "Options must use OCC format: AAPL  260320C00150000 (symbol padded to 6 chars, YYMMDD, C/P, strike x1000 padded to 8 digits)",
+      "Numbers: NO comma thousands separators (1234.56 ✓, 1,234.56 ✗). NO currency symbols ($, %, etc). Use `.` for decimals only. Negative numbers use a leading minus sign (-250.00). Commas inside numeric cells will silently truncate or skip the row.",
       "All dates: YYYY-MM-DD format",
     ],
     example:
@@ -159,6 +160,7 @@ General rules:
 - Transaction types must be UPPERCASE (BUY, SELL, DIVIDEND, REINVESTMENT, etc.)
 - Security types: Stock, Bond, ETF, Option, Mutual Fund
 - Options: use OCC format (e.g., AAPL  260320C00150000)
+- Numbers: NO comma thousands separators (1234.56 ✓, 1,234.56 ✗), NO currency symbols, use \`.\` for decimals only. Negative numbers use a leading minus sign.
 - Output ONLY the CSV files. No markdown fences, no explanation.`;
 }
 
