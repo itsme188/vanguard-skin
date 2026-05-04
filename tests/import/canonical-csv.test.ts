@@ -117,6 +117,23 @@ IBKR,2025-03-03,,SELL,AAPL,Apple Inc,Stock,5,155,775,0,`;
     );
   });
 
+  it("rejects comma-bearing amounts (defends against parseFloat silent-truncation)", () => {
+    // parseFloat("1,234.56") returns 1 — pre-fix this silently corrupted any
+    // comma-grouped amount a Co-Work session might emit. parseStrictNumber()
+    // now returns NaN for any comma-bearing cell so validate.ts can warn-and-skip
+    // instead of committing wrong numbers.
+    const csv = `${header}
+IBKR,2025-04-15,,BUY,AAPL,Apple Inc,Stock,10,150.25,"1,502.50",0,bad amount
+IBKR,2025-04-16,,BUY,MSFT,Microsoft,Stock,5,400.00,2000.00,0,clean amount`;
+
+    const result = parseCanonicalCsv(csv, "txn.csv");
+    expect(result.transactions).toHaveLength(2);
+    // Bad row keeps NaN amount so downstream validate.ts catches it.
+    expect(result.transactions[0].amount).toBeNaN();
+    // Clean row parses normally.
+    expect(result.transactions[1].amount).toBe(2000);
+  });
+
   it("preserves signed amounts on VMFXX sweep TRANSFERs", () => {
     // Sweep Into Settlement Fund is positive; Sweep Out Of is negative.
     // Regression: a prior Co-Work prompt stripped the sign so all
@@ -178,6 +195,19 @@ IBKR,2025-06-30,VTI,Vanguard,ETF,50,,`;
     const result = parseCanonicalCsv(csv, "holdings.csv");
     expect(result.holdings).toHaveLength(1);
     expect(result.holdings[0].symbol).toBe("VTI");
+  });
+
+  it("skips holdings rows with comma-bearing quantity", () => {
+    // parseFloat("1,234") returns 1 — would silently corrupt the quantity.
+    // parseStrictNumber() returns NaN, so the existing isNaN guard skips the row.
+    const csv = `${header}
+IBKR,2025-06-30,SPY,SPDR S&P 500 ETF,ETF,"1,250",,
+IBKR,2025-06-30,VTI,Vanguard,ETF,50,,`;
+
+    const result = parseCanonicalCsv(csv, "holdings.csv");
+    expect(result.holdings).toHaveLength(1);
+    expect(result.holdings[0].symbol).toBe("VTI");
+    expect(result.holdings[0].quantity).toBe(50);
   });
 
   it("generates correct source keys", () => {
