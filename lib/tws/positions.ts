@@ -11,15 +11,29 @@ import type { PositionSyncProgress, PositionSyncResult } from "./types";
 // ── Type mappings ────────────────────────────────────────────────
 
 function twsSecTypeToDbType(secType: string | undefined): string {
+  // Project convention: securities.security_type is capitalized
+  // (Stock / Option / Bond / Mutual Fund / Future / Forex). Lowercase values
+  // also work via LOWER()-based comparisons but break direct string equality
+  // and surface as inconsistent in queries (memory: feedback_case_sensitivity).
   switch (secType) {
-    case SecType.STK: return "stock";
-    case SecType.OPT: return "option";
-    case SecType.BOND: return "bond";
-    case SecType.FUND: return "mutual_fund";
-    case SecType.FUT: return "future";
-    case SecType.CASH: return "forex";
-    default: return "stock";
+    case SecType.STK: return "Stock";
+    case SecType.OPT: return "Option";
+    case SecType.BOND: return "Bond";
+    case SecType.FUND: return "Mutual Fund";
+    case SecType.FUT: return "Future";
+    case SecType.CASH: return "Forex";
+    default: return "Stock";
   }
+}
+
+/** TWS sends contract expiration as YYYYMMDD (e.g. "20260605"); the rest of
+ *  our DB stores ISO YYYY-MM-DD. Normalize at the boundary so downstream
+ *  code (formatExpiry, scope queries, sort comparisons) sees one format. */
+function normalizeExpiry(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const compact = /^(\d{4})(\d{2})(\d{2})$/.exec(value);
+  if (compact) return `${compact[1]}-${compact[2]}-${compact[3]}`;
+  return value; // already ISO or unrecognized — let through
 }
 
 function twsSecTypeToAssetClass(secType: string | undefined): string {
@@ -259,14 +273,23 @@ export async function syncPortfolio(
       // Build option-specific params
       const isOption = contract.secType === SecType.OPT;
 
+      // Only seed `name` when it provides information beyond the symbol
+      // itself (options: localSymbol carries strike/expiry; stocks: localSymbol
+      // == ticker, which echoes the symbol cell and trips the duplicate-symbol
+      // guard in Today / PositionRisk). enrichSecurities() backfills the real
+      // company name from contractDetails.longName.
+      const localSymbol = contract.localSymbol;
+      const initialName =
+        localSymbol && localSymbol !== symbol ? localSymbol : undefined;
+
       const securityId = upsertSecurity(db, {
         symbol,
-        name: contract.localSymbol || undefined,
+        name: initialName,
         securityType: dbType,
         assetClass,
         underlyingSymbol: isOption ? contract.symbol : undefined,
         strikePrice: isOption ? contract.strike : undefined,
-        expirationDate: isOption ? contract.lastTradeDateOrContractMonth : undefined,
+        expirationDate: isOption ? normalizeExpiry(contract.lastTradeDateOrContractMonth) : undefined,
         optionType: isOption
           ? (contract.right === OptionType.Put ? "PUT" : "CALL")
           : undefined,

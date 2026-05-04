@@ -21,7 +21,7 @@ describe("upsertSecurity", () => {
       .get(id) as any;
     expect(row.symbol).toBe("VTI");
     expect(row.name).toBe("Vanguard Total Market");
-    expect(row.security_type).toBe("etf");
+    expect(row.security_type).toBe("ETF");
     expect(row.asset_class).toBe("US Equity");
   });
 
@@ -55,7 +55,7 @@ describe("upsertSecurity", () => {
       .prepare("SELECT * FROM securities WHERE id = ?")
       .get(id2) as any;
     expect(row2.name).toBe("Vanguard Total Bond");
-    expect(row2.security_type).toBe("bond");
+    expect(row2.security_type).toBe("Bond");
   });
 
   it("does not overwrite existing metadata with null", () => {
@@ -67,7 +67,7 @@ describe("upsertSecurity", () => {
       .prepare("SELECT * FROM securities WHERE symbol = 'AAPL'")
       .get() as any;
     expect(row.name).toBe("Apple Inc");
-    expect(row.security_type).toBe("stock");
+    expect(row.security_type).toBe("Stock");
     expect(row.asset_class).toBe("US Equity");
   });
 
@@ -87,7 +87,7 @@ describe("upsertSecurity", () => {
     const row = db
       .prepare("SELECT * FROM securities WHERE id = ?")
       .get(id) as any;
-    expect(row.security_type).toBe("option");
+    expect(row.security_type).toBe("Option");
     expect(row.underlying_symbol).toBe("AAPL");
     expect(row.strike_price).toBe(150);
     expect(row.expiration_date).toBe("2025-03-21");
@@ -151,7 +151,7 @@ describe("upsertSecurity", () => {
     const row = db
       .prepare("SELECT * FROM securities WHERE id = ?")
       .get(stockId) as any;
-    expect(row.security_type).toBe("stock");
+    expect(row.security_type).toBe("Stock");
     expect(row.multiplier).toBeNull();
     expect(row.option_type).toBeNull();
     expect(row.name).toBe("Intel Corp"); // Name preserved
@@ -176,7 +176,7 @@ describe("upsertSecurity", () => {
     const row = db
       .prepare("SELECT * FROM securities WHERE id = ?")
       .get(optionId) as any;
-    expect(row.security_type).toBe("option");
+    expect(row.security_type).toBe("Option");
     expect(row.multiplier).toBe(100);
   });
 });

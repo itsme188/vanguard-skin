@@ -247,7 +247,7 @@ describe("TWS portfolio sync", () => {
     ).get() as any;
 
     expect(sec.symbol).toBe("INTC  260320P00045000");
-    expect(sec.security_type).toBe("option");
+    expect(sec.security_type).toBe("Option");
     expect(sec.option_type).toBe("PUT");
     expect(sec.strike_price).toBe(45);
   });
@@ -317,7 +317,7 @@ describe("TWS portfolio sync", () => {
     ).get() as any;
 
     expect(sec.ib_con_id).toBe(76792991);
-    expect(sec.security_type).toBe("stock");
+    expect(sec.security_type).toBe("Stock");
   });
 });
 
