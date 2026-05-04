@@ -6,8 +6,12 @@ export function detectSourceType(content: string, filename: string): SourceType 
     return "vanguard-pdf";
   }
 
-  const lines = content.split("\n").slice(0, 5).map((l) => l.trim());
+  const lines = content.split("\n").slice(0, 10).map((l) => l.trim());
   const firstLine = lines[0] ?? "";
+  // First non-comment, non-blank line — used for canonical-csv detection so that
+  // Co-Work output preceded by `# filename.csv` headers still gets routed correctly.
+  const firstContentLine =
+    lines.find((l) => l !== "" && !l.startsWith("#")) ?? "";
 
   // IBKR activity: starts with "Statement,Header,Field Name,Field Value"
   // Some newer IBKR exports have an account ID line before the header
@@ -54,17 +58,19 @@ export function detectSourceType(content: string, filename: string): SourceType 
     return "factor-csv";
   }
 
-  // Canonical CSV: 4 standardized formats produced by Claude Code preprocessing
-  if (firstLine.startsWith("account,trade_date,settlement_date,type,symbol")) {
+  // Canonical CSV: 4 standardized formats produced by Claude Code preprocessing.
+  // Tolerate leading `# filename.csv` comment lines (Co-Work emits these to label
+  // multi-CSV chat responses) by checking against firstContentLine.
+  if (firstContentLine.startsWith("account,trade_date,settlement_date,type,symbol")) {
     return "canonical-csv";
   }
-  if (firstLine.startsWith("account,as_of_date,symbol,security_name")) {
+  if (firstContentLine.startsWith("account,as_of_date,symbol,security_name")) {
     return "canonical-csv";
   }
-  if (firstLine === "symbol,date,close_price") {
+  if (firstContentLine === "symbol,date,close_price") {
     return "canonical-csv";
   }
-  if (firstLine.startsWith("account,month_end_date,total_value")) {
+  if (firstContentLine.startsWith("account,month_end_date,total_value")) {
     return "canonical-csv";
   }
 

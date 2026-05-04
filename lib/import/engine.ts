@@ -352,13 +352,38 @@ export function commitImport(
       }
     }
 
-    // 6. Insert monthly snapshots (skip duplicates via UNIQUE(account_id, month_end_date))
+    // 6. Upsert monthly snapshots. UNIQUE(account_id, month_end_date) means there
+    //    can only be one row per (account, month). Statement data (source ∈
+    //    {ibkr-activity, canonical, vanguard-pdf, …}) is authoritative for
+    //    month-end values and must overwrite any earlier 'tws' or 'manual' row
+    //    that the live-sync wrote as a real-time approximation. Re-imports of
+    //    the same statement are no-ops (excluded values match exactly).
+    //
+    //    Pre-2026-05-04 this used INSERT OR IGNORE, which silently dropped the
+    //    statement row whenever TWS had already written a placeholder — the IBKR
+    //    April snapshot had `total_value=$448,941` (stale TWS value) instead of
+    //    the statement's $449,764 with full starting_value/twr/deposits/etc.
     const insertSnapshot = db.prepare(`
-      INSERT OR IGNORE INTO monthly_snapshots
+      INSERT INTO monthly_snapshots
         (account_id, month_end_date, total_value, source, starting_value,
          mark_to_market, deposits_withdrawals, dividends, interest,
          commissions, fees, other_pnl, twr, investment_gain, import_batch_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(account_id, month_end_date) DO UPDATE SET
+        total_value = excluded.total_value,
+        source = excluded.source,
+        starting_value = excluded.starting_value,
+        mark_to_market = excluded.mark_to_market,
+        deposits_withdrawals = excluded.deposits_withdrawals,
+        dividends = excluded.dividends,
+        interest = excluded.interest,
+        commissions = excluded.commissions,
+        fees = excluded.fees,
+        other_pnl = excluded.other_pnl,
+        twr = excluded.twr,
+        investment_gain = excluded.investment_gain,
+        import_batch_id = excluded.import_batch_id
+      WHERE monthly_snapshots.source IN ('tws', 'manual')
     `);
 
     for (const s of parsed.snapshots) {

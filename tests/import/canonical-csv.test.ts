@@ -86,8 +86,10 @@ IBKR,2025-01-10,,buy,MSFT,Microsoft,Stock,5,400,2000,1,`;
 IBKR,2025-03-01,,BUY,VTI,Vanguard Total Stock,ETF,20,242,4840,0,`;
 
     const result = parseCanonicalCsv(csv, "txn.csv");
+    // Source key format: canonical:txn:{acct}:{sym}:{date}:{type}:{cents}
+    // where cents = Math.round(amount * 100). 4840 → 484000.
     expect(result.transactions[0].sourceKey).toBe(
-      "canonical:txn:IBKR:VTI:2025-03-01:BUY"
+      "canonical:txn:IBKR:VTI:2025-03-01:BUY:484000"
     );
   });
 
@@ -115,6 +117,55 @@ IBKR,2025-03-03,,SELL,AAPL,Apple Inc,Stock,5,155,775,0,`;
     expect(result.securities.find((s) => s.symbol === "AAPL")?.name).toBe(
       "Apple Inc"
     );
+  });
+
+  it("strips leading `# filename.csv` comment lines (Co-Work emits these)", () => {
+    // Pre-2026-05-04: Co-Work's all-formats prompt asked for a "filename comment line"
+    // which produced `# transactions.csv` as the first line — defeating header detection.
+    // Parser now strips leading comment + blank lines before papaparse.
+    const csv = `# transactions.csv
+
+${header}
+IBKR,2025-04-15,,BUY,AAPL,Apple Inc,Stock,10,150,1500,0,`;
+
+    const result = parseCanonicalCsv(csv, "txn.csv");
+    expect(result.sourceType).toBe("canonical-csv");
+    expect(result.transactions).toHaveLength(1);
+    expect(result.transactions[0].symbol).toBe("AAPL");
+  });
+
+  it("auto-normalizes negative quantities to abs (with warning)", () => {
+    // Pre-2026-05-04: validator silently dropped negative-quantity rows. Co-Work
+    // sometimes emits negative qty on sells (Vanguard PDF convention); now the parser
+    // normalizes to abs and pushes a warning so the user sees it.
+    const csv = `${header}
+Vanguard Taxable,2026-04-13,,SELL,RSP,Invesco S&P 500 EW,ETF,-400,196.17,78466.98,1.62,
+Vanguard Taxable,2026-04-10,,SELL,ACN,Accenture,Stock,-35.256,182.65,6439.20,0,`;
+
+    const result = parseCanonicalCsv(csv, "txn.csv");
+    expect(result.transactions).toHaveLength(2);
+    expect(result.transactions[0].quantity).toBe(400);
+    expect(result.transactions[1].quantity).toBe(35.256);
+    // Warnings should mention both rows so the user notices the normalization.
+    expect(result.warnings.some((w) => w.includes("RSP") && w.includes("normalized"))).toBe(true);
+    expect(result.warnings.some((w) => w.includes("ACN") && w.includes("normalized"))).toBe(true);
+  });
+
+  it("source_key includes amount-as-cents so split fills don't collide", () => {
+    // Regression: 2026-04-13 had two RSP SELL fills (400 shares @ $78,466.98 and 100
+    // shares @ $19,664.09) on the same day. Pre-fix source_key omitted amount and the
+    // second row was silently lost to UNIQUE constraint. Now both keys differ.
+    const csv = `${header}
+Vanguard Taxable,2026-04-13,,SELL,RSP,Invesco S&P 500 EW,ETF,400,196.1715,78466.98,1.62,
+Vanguard Taxable,2026-04-13,,SELL,RSP,Invesco S&P 500 EW,ETF,100,196.6450,19664.09,0.41,`;
+
+    const result = parseCanonicalCsv(csv, "txn.csv");
+    expect(result.transactions).toHaveLength(2);
+    const keys = result.transactions.map((t) => t.sourceKey);
+    expect(new Set(keys).size).toBe(2);
+    // Cents are integer Math.round(amount * 100): 7846698 and 1966409
+    expect(keys[0]).toBe("canonical:txn:Vanguard Taxable:RSP:2026-04-13:SELL:7846698");
+    expect(keys[1]).toBe("canonical:txn:Vanguard Taxable:RSP:2026-04-13:SELL:1966409");
   });
 
   it("rejects comma-bearing amounts (defends against parseFloat silent-truncation)", () => {
