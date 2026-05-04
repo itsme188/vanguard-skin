@@ -85,10 +85,16 @@ export function isValidDate(dateStr: string): boolean {
   );
 }
 
-/** Check that a number is finite and non-negative. */
+/**
+ * Check that a quantity is finite. Negative quantities are accepted because
+ * canonical-csv parser normalizes Co-Work-emitted negatives to abs (see warning
+ * in parser); other sources may legitimately use signed quantity. Pre-2026-05-04
+ * this required `>= 0` and silently dropped 20+ April sells/closes; that was a
+ * critical silent-data-loss bug.
+ */
 export function isValidQuantity(qty: number | null | undefined): boolean {
   if (qty == null) return true; // optional field
-  return Number.isFinite(qty) && qty >= 0;
+  return Number.isFinite(qty);
 }
 
 /** Check that a price is finite and non-negative (allowing zero for expired options). */

@@ -15,10 +15,14 @@ The Portfolio Desk dashboard accepts 4 standardized CSV formats for importing fi
 
 - **Dates**: Always `YYYY-MM-DD` format
 - **Transaction types**: Must be UPPERCASE (see full list below)
+- **Quantity sign**: ALWAYS POSITIVE. The type field (BUY/SELL/SELL_TO_CLOSE/EXERCISED/REDEMPTION/etc.) carries direction. Never emit a negative quantity. (Pre-2026-05-04 the parser silently dropped negative-quantity rows; the canonical-csv parser now auto-normalizes to abs() with a warning, but emit positive in the first place.)
+- **Cash-only rows**: WITHDRAWAL, DEPOSIT, FEE, COMMISSION, and standalone INTEREST rows that have no associated security MUST use symbol `CASH`. Blank-symbol rows are dropped.
+- **Source-key uniqueness**: The parser builds dedup keys as `canonical:txn:{account}:{symbol}:{trade_date}:{type}:{cents}` where cents = `round(amount * 100)`. Same-day, same-symbol, same-type fills with different amounts (e.g., a 400-share SELL at $78,466.98 + a 100-share SELL at $19,664.09) get distinct keys and both land. Pre-2026-05-04 the formula omitted cents and split fills silently collided.
 - **Security types**: `Stock`, `Bond`, `ETF`, `Option`, `Mutual Fund`
 - **Options**: Use OCC format — symbol padded to 6 chars + `YYMMDD` + `C`/`P` + strike x1000 padded to 8 digits (e.g., `AAPL  260320C00150000`)
 - **Numbers**: No currency symbols, no commas in numbers, use `.` for decimals
-- **Account names**: Must match exactly what's in the dashboard (e.g., `Vanguard Taxable`, `IBKR`, `Vanguard IRA`)
+- **Account names**: Must match exactly what's in the dashboard. Common Vanguard PDF aliases: `Individual brokerage account` / `Vanguard Individual Brokerage` → `Vanguard Taxable`. `Vanguard Roth IRA` is verbatim. `IBKR` is verbatim.
+- **No leading comment lines**: The file must start with the header row directly. Do NOT prefix with `# filename.csv` or markdown fences. (The parser does strip leading `#` lines defensively, but it's better to emit clean CSV.)
 - **Encoding**: UTF-8
 - **Deduplication**: Re-importing the same file is safe — deterministic source keys prevent duplicate records
 
@@ -36,11 +40,11 @@ account,trade_date,settlement_date,type,symbol,security_name,security_type,quant
 | account | Yes | string | Account name (e.g., "Vanguard Taxable") |
 | trade_date | Yes | date | Trade execution date (YYYY-MM-DD) |
 | settlement_date | No | date | Settlement date (YYYY-MM-DD) |
-| type | Yes | string | Transaction type (UPPERCASE, see list below) |
-| symbol | Yes | string | Ticker symbol (OCC format for options) |
+| type | Yes | string | Transaction type (UPPERCASE, see list below). Carries direction — BUY adds to position, SELL/SELL_TO_CLOSE/EXERCISED/REDEMPTION removes |
+| symbol | Yes | string | Ticker symbol (OCC format for options). Use `CASH` for cash-only rows (WITHDRAWAL, DEPOSIT, FEE, COMMISSION, INTEREST without a security) |
 | security_name | No | string | Full security name |
 | security_type | No | string | Stock, Bond, ETF, Option, Mutual Fund |
-| quantity | No | number | Shares/units (positive for buys, positive for sells) |
+| quantity | No | number | Shares/units — ALWAYS POSITIVE. The type field carries direction. |
 | price | No | number | Price per share ($) |
 | amount | No | number | Total dollar amount (positive = inflow, negative = outflow) |
 | fees | No | number | Fees and commissions ($) |

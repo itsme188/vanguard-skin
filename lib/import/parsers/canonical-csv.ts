@@ -34,14 +34,37 @@ function detectCanonicalType(firstLine: string): CanonicalType {
   throw new Error("Not a canonical CSV format");
 }
 
+// Strip leading `#` comment lines and blank lines so Co-Work output that prefixes
+// each CSV with a filename comment (e.g. `# transactions.csv`) still parses.
+function stripLeadingComments(content: string): string {
+  const lines = content.split("\n");
+  let i = 0;
+  while (i < lines.length) {
+    const t = lines[i].trim();
+    if (t === "" || t.startsWith("#")) i++;
+    else break;
+  }
+  return i === 0 ? content : lines.slice(i).join("\n");
+}
+
+// Round to integer cents to dodge float-formatting differences between JS and SQLite.
+// Used in source_key so two same-day same-symbol same-type fills with different amounts
+// don't collide (e.g., 400 RSP @ $78,466.98 + 100 RSP @ $19,664.09 on the same day).
+function amountCents(amt: string | undefined): string {
+  const n = parseStrictNumber(amt);
+  if (!Number.isFinite(n)) return "0";
+  return String(Math.round(n * 100));
+}
+
 export function parseCanonicalCsv(
   content: string,
   filename: string
 ): ParsedImportResult {
-  const firstLine = content.split("\n")[0]?.trim() ?? "";
+  const stripped = stripLeadingComments(content);
+  const firstLine = stripped.split("\n")[0]?.trim() ?? "";
   const csvType = detectCanonicalType(firstLine);
 
-  const parsed = Papa.parse<Record<string, string>>(content, {
+  const parsed = Papa.parse<Record<string, string>>(stripped, {
     header: true,
     skipEmptyLines: true,
   });
@@ -86,6 +109,17 @@ export function parseCanonicalCsv(
           }
         }
         if (!symbol || !row.trade_date) continue;
+        // Canonical convention: quantity is always positive, type carries direction
+        // (BUY adds, SELL/SELL_TO_CLOSE/EXERCISED/etc. removes). If a Co-Work session
+        // emits negative quantity, normalize to abs and warn so the user sees it.
+        const rawQty = row.quantity ? parseStrictNumber(row.quantity) : undefined;
+        let normalizedQty = rawQty;
+        if (rawQty != null && Number.isFinite(rawQty) && rawQty < 0) {
+          normalizedQty = Math.abs(rawQty);
+          warnings.push(
+            `Transaction ${symbol} ${row.trade_date.trim()} ${row.type}: negative quantity ${rawQty} normalized to ${normalizedQty} (canonical convention: type carries direction)`
+          );
+        }
         transactions.push({
           accountName: row.account?.trim() || "Unknown",
           tradeDate: row.trade_date.trim(),
@@ -93,12 +127,14 @@ export function parseCanonicalCsv(
           type: (row.type || "").toUpperCase().trim(),
           symbol,
           securityName: row.security_name?.trim() || undefined,
-          quantity: row.quantity ? parseStrictNumber(row.quantity) : undefined,
+          quantity: normalizedQty,
           pricePerShare: row.price ? parseStrictNumber(row.price) : undefined,
           amount: row.amount ? parseStrictNumber(row.amount) : undefined,
           fees: row.fees ? parseStrictNumber(row.fees) : undefined,
           notes: row.notes?.trim() || undefined,
-          sourceKey: `canonical:txn:${row.account?.trim()}:${symbol}:${row.trade_date.trim()}:${(row.type || "").trim()}`,
+          // Source key includes integer-cents amount so split fills (same day, same
+          // symbol, same type, different amounts) don't collide.
+          sourceKey: `canonical:txn:${row.account?.trim()}:${symbol}:${row.trade_date.trim()}:${(row.type || "").trim()}:${amountCents(row.amount)}`,
         });
         if (!securitiesMap.has(symbol)) {
           securitiesMap.set(symbol, {
