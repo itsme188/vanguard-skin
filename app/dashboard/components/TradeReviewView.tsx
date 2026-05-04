@@ -374,7 +374,7 @@ export function TradeReviewView({
               );
               return (
                 <option key={p.periodStart} value={p.periodStart}>
-                  {formatMonthLabel(p.periodStart)} ({p.tradeCount} trades)
+                  {formatMonthLabelShort(p.periodStart)} · {p.tradeCount} trades
                   {hasReview ? " ✓" : ""}
                 </option>
               );
@@ -1086,6 +1086,11 @@ function PatternSection({
 function formatMonthLabel(periodStart: string): string {
   const d = new Date(periodStart + "T00:00:00");
   return d.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+}
+
+function formatMonthLabelShort(periodStart: string): string {
+  const d = new Date(periodStart + "T00:00:00");
+  return d.toLocaleDateString("en-US", { month: "short", year: "numeric" });
 }
 
 function safeParseJson<T>(json: string | null): T | null {

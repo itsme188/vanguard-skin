@@ -6,6 +6,7 @@ import { ScrollFade } from "./ScrollFade";
 import {
   FACTOR_COLUMNS,
   FACTOR_LABELS,
+  FACTOR_LABELS_SHORT,
   FACTOR_SORT_RANK,
   getFactorColor,
   type FactorColumn,
@@ -128,7 +129,9 @@ export function FactorHeatmap({ rows }: FactorHeatmapProps) {
                   title={`Sort by ${FACTOR_LABELS[col]}`}
                   onClick={() => handleSort(col)}
                 >
-                  {FACTOR_LABELS[col]}{sortIndicator(col)}
+                  <span className="md:hidden">{FACTOR_LABELS_SHORT[col]}</span>
+                  <span className="hidden md:inline">{FACTOR_LABELS[col]}</span>
+                  {sortIndicator(col)}
                 </th>
               ))}
             </tr>

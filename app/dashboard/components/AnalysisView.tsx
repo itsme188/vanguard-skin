@@ -472,14 +472,14 @@ export function AnalysisView({
             {concentration.top_positions.length > 0 && (
               <div>
                 <h4 className="text-xs font-medium text-ink-faint uppercase mb-2">Top 10 Positions</h4>
-                <ResponsiveContainer width="100%" height={200}>
+                <ResponsiveContainer width="100%" height={Math.max(200, concentration.top_positions.length * 24)}>
                   <BarChart
                     data={concentration.top_positions}
                     layout="vertical"
-                    margin={{ left: 60, right: 20 }}
+                    margin={{ top: 8, left: 60, right: 20, bottom: 4 }}
                   >
                     <XAxis type="number" tickFormatter={pctTickFormatter} tick={{ fill: "#94A3B8", fontSize: 11 }} />
-                    <YAxis type="category" dataKey="symbol" tick={{ fill: "#E5E7EB", fontSize: 11 }} width={55} />
+                    <YAxis type="category" dataKey="symbol" tick={{ fill: "#E5E7EB", fontSize: 11 }} width={70} interval={0} />
                     <Tooltip
                       formatter={(value: number | string | undefined) => [pctTooltipFormatter(value), "Weight"]}
                       contentStyle={{

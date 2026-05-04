@@ -29,6 +29,19 @@ export const FACTOR_LABELS: Record<FactorColumn, string> = {
   regulatory_risk: "Regulatory Risk",
 };
 
+/** Short labels for mobile / cramped contexts (≤8 chars). */
+export const FACTOR_LABELS_SHORT: Record<FactorColumn, string> = {
+  interest_rate_sensitive: "Rates",
+  growth_vs_value: "Growth",
+  cyclical: "Cycle",
+  international_exposure: "Int'l",
+  geopolitical_onshoring: "Onshore",
+  tariff_exposure: "Tariff",
+  ai_exposure: "AI",
+  crypto_adjacent: "Crypto",
+  regulatory_risk: "Reg",
+};
+
 /** Standard factor levels ordered from least to most exposure */
 export const STANDARD_LEVELS = ["No", "Low", "Moderate", "High", "Very High"] as const;
 
