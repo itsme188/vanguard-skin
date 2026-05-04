@@ -187,10 +187,21 @@ function getStockPriceContext(
   entryPrice: number,
   exitPrice: number
 ): StockPriceContext | null {
-  // Try ohlcv_bars first (has high/low data)
+  // Build a unified per-date {high, low} map from BOTH `ohlcv_bars` and
+  // `prices`. The two tables are written by independent pipelines and drift
+  // apart — e.g. TWS daily-bar sync may stall mid-month while daily-snapshot
+  // prices keep being written. Preferring whichever covers a given date
+  // closes the gap.
+  //
+  // We also fold in the trade's actual entry and exit prices: those are real
+  // market-traded prices for this security on those dates, so they belong in
+  // the period range. (Without this, `periodHigh` could be lower than the
+  // exit price, which the AI then narrates as a "gap-through.")
+  const byDate = new Map<string, { high: number; low: number }>();
+
   const ohlcv = db
     .prepare(
-      `SELECT bar_date, high, low, close
+      `SELECT bar_date, high, low
        FROM ohlcv_bars
        WHERE security_id = ? AND bar_date >= ? AND bar_date <= ? AND bar_size = '1 day'
        ORDER BY bar_date`
@@ -199,51 +210,12 @@ function getStockPriceContext(
     bar_date: string;
     high: number;
     low: number;
-    close: number;
   }>;
 
-  // Data quality gate: need >= 5 data points AND >= 25% coverage of holding period
-  const holdingDays = Math.max(
-    1,
-    (new Date(endDate).getTime() - new Date(startDate).getTime()) /
-      (24 * 3600 * 1000)
-  );
-  const minDataPoints = 5;
-  const minCoverage = 0.25;
-  const approxTradingDays = holdingDays * (5 / 7);
-
-  if (
-    ohlcv.length >= minDataPoints &&
-    ohlcv.length / approxTradingDays >= minCoverage
-  ) {
-    let periodHigh = -Infinity,
-      periodHighDate = "";
-    let periodLow = Infinity,
-      periodLowDate = "";
-
-    for (const bar of ohlcv) {
-      if (bar.high > periodHigh) {
-        periodHigh = bar.high;
-        periodHighDate = bar.bar_date;
-      }
-      if (bar.low < periodLow) {
-        periodLow = bar.low;
-        periodLowDate = bar.bar_date;
-      }
-    }
-
-    return {
-      periodHigh,
-      periodHighDate,
-      periodLow,
-      periodLowDate,
-      entryPrice,
-      exitPrice,
-      stockReturn: entryPrice > 0 ? (exitPrice - entryPrice) / entryPrice : 0,
-    };
+  for (const bar of ohlcv) {
+    byDate.set(bar.bar_date, { high: bar.high, low: bar.low });
   }
 
-  // Fallback: prices table (close only — use close as proxy for high/low)
   const prices = db
     .prepare(
       `SELECT date, close_price
@@ -256,38 +228,72 @@ function getStockPriceContext(
     close_price: number;
   }>;
 
-  if (
-    prices.length >= minDataPoints &&
-    prices.length / approxTradingDays >= minCoverage
-  ) {
-    let periodHigh = -Infinity,
-      periodHighDate = "";
-    let periodLow = Infinity,
-      periodLowDate = "";
-
-    for (const p of prices) {
-      if (p.close_price > periodHigh) {
-        periodHigh = p.close_price;
-        periodHighDate = p.date;
-      }
-      if (p.close_price < periodLow) {
-        periodLow = p.close_price;
-        periodLowDate = p.date;
-      }
+  for (const p of prices) {
+    // Don't overwrite existing OHLC bars (richer data) — only fill gaps.
+    if (!byDate.has(p.date)) {
+      byDate.set(p.date, { high: p.close_price, low: p.close_price });
     }
-
-    return {
-      periodHigh,
-      periodHighDate,
-      periodLow,
-      periodLowDate,
-      entryPrice,
-      exitPrice,
-      stockReturn: entryPrice > 0 ? (exitPrice - entryPrice) / entryPrice : 0,
-    };
   }
 
-  return null;
+  // Always fold the trade's own entry + exit prices into the range. These
+  // are guaranteed-real prices for the security on those dates.
+  const foldPrice = (date: string, price: number) => {
+    if (!Number.isFinite(price) || price <= 0) return;
+    const existing = byDate.get(date);
+    if (existing) {
+      byDate.set(date, {
+        high: Math.max(existing.high, price),
+        low: Math.min(existing.low, price),
+      });
+    } else {
+      byDate.set(date, { high: price, low: price });
+    }
+  };
+  foldPrice(startDate, entryPrice);
+  foldPrice(endDate, exitPrice);
+
+  // Data quality gate: need >= 5 data points AND >= 25% coverage of holding period
+  const holdingDays = Math.max(
+    1,
+    (new Date(endDate).getTime() - new Date(startDate).getTime()) /
+      (24 * 3600 * 1000)
+  );
+  const minDataPoints = 5;
+  const minCoverage = 0.25;
+  const approxTradingDays = holdingDays * (5 / 7);
+
+  if (
+    byDate.size < minDataPoints ||
+    byDate.size / approxTradingDays < minCoverage
+  ) {
+    return null;
+  }
+
+  let periodHigh = -Infinity;
+  let periodHighDate = "";
+  let periodLow = Infinity;
+  let periodLowDate = "";
+
+  for (const [date, hl] of byDate) {
+    if (hl.high > periodHigh) {
+      periodHigh = hl.high;
+      periodHighDate = date;
+    }
+    if (hl.low < periodLow) {
+      periodLow = hl.low;
+      periodLowDate = date;
+    }
+  }
+
+  return {
+    periodHigh,
+    periodHighDate,
+    periodLow,
+    periodLowDate,
+    entryPrice,
+    exitPrice,
+    stockReturn: entryPrice > 0 ? (exitPrice - entryPrice) / entryPrice : 0,
+  };
 }
 
 function getBenchmarkReturn(

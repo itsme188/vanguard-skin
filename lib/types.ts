@@ -299,6 +299,10 @@ export interface TradeRoundtrip {
   realized_pnl: number;
   return_pct: number;
   grade: string | null;
+  assessment: string | null;
+  // Legacy columns — kept readable for back-compat with rows written before
+  // migration 047. New writes go to `assessment` / `what_went_well` /
+  // `what_went_wrong`.
   entry_thesis: string | null;
   exit_assessment: string | null;
   what_went_well: string | null;
