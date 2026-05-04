@@ -576,8 +576,8 @@ export function AnalysisView({
 
       {/* ── Options Greeks & Strategies ── */}
       <OptionsGreeksCard scope={currentScope} />
-      <OptionsStrategies />
-      <ExpirationCalendar />
+      <OptionsStrategies scope={currentScope} />
+      <ExpirationCalendar scope={currentScope} />
 
       {/* ── Fixed Income Exposure ── */}
       <FixedIncomeCard scope={currentScope} />

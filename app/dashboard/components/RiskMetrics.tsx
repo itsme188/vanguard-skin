@@ -30,7 +30,7 @@ function formatMoney(value: number): string {
 
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr + "T00:00:00");
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "2-digit" });
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
 // ─── Colors ─────────────────────────────────────────────────────
@@ -191,7 +191,7 @@ export function RiskMetrics({ scope }: { scope?: string }) {
         <MetricCard
           label="Sharpe Ratio"
           value={metrics.sharpeRatio != null ? metrics.sharpeRatio.toFixed(2) : "\u2014"}
-          sublabel="Risk-free: 4.5%"
+          sublabel={`Risk-free: ${(metrics.riskFreeRate * 100).toFixed(2)}%`}
           color={
             metrics.sharpeRatio == null
               ? "neutral"
