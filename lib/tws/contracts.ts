@@ -11,6 +11,7 @@ interface SecurityRow {
   id: number;
   symbol: string;
   security_type: string | null;
+  name: string | null;
 }
 
 /**
@@ -97,7 +98,7 @@ export async function enrichSecurities(
     const placeholders = securityIds.map(() => "?").join(",");
     securities = db
       .prepare(
-        `SELECT id, symbol, security_type FROM securities WHERE id IN (${placeholders})`,
+        `SELECT id, symbol, security_type, name FROM securities WHERE id IN (${placeholders})`,
       )
       .all(...securityIds) as SecurityRow[];
   } else {
@@ -107,12 +108,16 @@ export async function enrichSecurities(
     //   - Cash positions (AUD, etc.)
     //   - Non-OCC option symbols (Vanguard format with spaces like "ARKK 270115 P 100.00")
     //     → migration 022 merges these into OCC counterparts
+    //
+    // Selection criteria reaches both unenriched (ib_con_id IS NULL) AND rows
+    // whose `name` is missing/=symbol so we can backfill company names from
+    // contractDetails.longName for IBKR-imported holdings.
     securities = db
       .prepare(
-        `SELECT DISTINCT s.id, s.symbol, s.security_type
+        `SELECT DISTINCT s.id, s.symbol, s.security_type, s.name
          FROM securities s
          JOIN holdings h ON h.security_id = s.id
-         WHERE s.ib_con_id IS NULL
+         WHERE (s.ib_con_id IS NULL OR s.name IS NULL OR s.name = s.symbol)
            AND s.symbol NOT LIKE 'CUSIP:%'
            AND LOWER(s.security_type) NOT IN ('cash', 'money_market', 'money market')
            AND (
@@ -125,12 +130,18 @@ export async function enrichSecurities(
       .all() as SecurityRow[];
   }
 
+  // `name` is set when the existing value is missing or just echoes the
+  // symbol (i.e. was never enriched). Existing real names take precedence.
   const updateSecurity = db.prepare(`
     UPDATE securities
     SET sector = COALESCE(?, sector),
         industry = COALESCE(?, industry),
         exchange = COALESCE(?, exchange),
-        ib_con_id = COALESCE(?, ib_con_id)
+        ib_con_id = COALESCE(?, ib_con_id),
+        name = CASE
+                 WHEN ? IS NOT NULL AND (name IS NULL OR name = symbol) THEN ?
+                 ELSE name
+               END
     WHERE id = ?
   `);
 
@@ -159,8 +170,9 @@ export async function enrichSecurities(
         const industry = detail.category ?? null;
         const exchange = detail.contract?.primaryExch ?? null;
         const conId = detail.contract?.conId ?? null;
+        const longName = detail.longName?.trim() || null;
 
-        updateSecurity.run(sector, industry, exchange, conId, sec.id);
+        updateSecurity.run(sector, industry, exchange, conId, longName, longName, sec.id);
 
         results.push({
           symbol: sec.symbol,

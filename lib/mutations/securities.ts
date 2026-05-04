@@ -36,6 +36,31 @@ export function upsertSecurity(
       ? { symbol: symbolOrParams, name, securityType, assetClass }
       : symbolOrParams;
 
+  // Defense-in-depth normalization. Some writers (notably TWS contractDetails)
+  // historically supplied YYYYMMDD expirations and lowercase security types,
+  // breaking date comparisons + downstream rendering. Caught at boundary.
+  if (p.expirationDate && /^\d{8}$/.test(p.expirationDate)) {
+    p.expirationDate = `${p.expirationDate.slice(0, 4)}-${p.expirationDate.slice(4, 6)}-${p.expirationDate.slice(6, 8)}`;
+  }
+  if (p.maturityDate && /^\d{8}$/.test(p.maturityDate)) {
+    p.maturityDate = `${p.maturityDate.slice(0, 4)}-${p.maturityDate.slice(4, 6)}-${p.maturityDate.slice(6, 8)}`;
+  }
+  if (p.securityType) {
+    const normalized: Record<string, string> = {
+      stock: "Stock",
+      option: "Option",
+      bond: "Bond",
+      etf: "ETF",
+      mutual_fund: "Mutual Fund",
+      "mutual fund": "Mutual Fund",
+      future: "Future",
+      forex: "Forex",
+      cash: "Cash",
+    };
+    const lower = p.securityType.toLowerCase();
+    if (normalized[lower]) p.securityType = normalized[lower];
+  }
+
   // Safety check: don't let option metadata clobber an existing stock security
   // (or vice versa) on the same symbol. This prevents the "INTC stock becomes
   // INTC option" bug when Claude returns bare tickers for options.
