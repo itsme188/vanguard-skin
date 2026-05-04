@@ -185,13 +185,21 @@ export function RiskMetrics({ scope }: { scope?: string }) {
         <MetricCard
           label="Volatility"
           value={<Pct value={metrics.volatility != null ? metrics.volatility * 100 : null} digits={2} />}
-          sublabel="Annualized"
+          sublabel={
+            metrics.volatility == null && metrics.dataPoints < 30
+              ? `${metrics.dataPoints}/30 days \u00b7 need ${30 - metrics.dataPoints} more`
+              : "Annualized"
+          }
           color="neutral"
         />
         <MetricCard
           label="Sharpe Ratio"
           value={metrics.sharpeRatio != null ? metrics.sharpeRatio.toFixed(2) : "\u2014"}
-          sublabel={`Risk-free: ${(metrics.riskFreeRate * 100).toFixed(2)}%`}
+          sublabel={
+            metrics.sharpeRatio == null && metrics.dataPoints < 30
+              ? `${metrics.dataPoints}/30 days \u00b7 need ${30 - metrics.dataPoints} more`
+              : `Risk-free: ${(metrics.riskFreeRate * 100).toFixed(2)}%`
+          }
           color={
             metrics.sharpeRatio == null
               ? "neutral"
