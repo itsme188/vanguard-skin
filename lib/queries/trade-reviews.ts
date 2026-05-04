@@ -77,14 +77,16 @@ export function getTradeReviewByPeriod(
 export function getTradeRoundtrips(
   db: Database.Database,
   reviewId: number
-): TradeRoundtrip[] {
+): (TradeRoundtrip & { security_type: string | null })[] {
   return db
     .prepare(
-      `SELECT * FROM trade_roundtrips
-       WHERE review_id = ?
-       ORDER BY exit_date, symbol`
+      `SELECT trt.*, s.security_type
+       FROM trade_roundtrips trt
+       LEFT JOIN securities s ON s.id = trt.security_id
+       WHERE trt.review_id = ?
+       ORDER BY trt.exit_date, trt.symbol`
     )
-    .all(reviewId) as TradeRoundtrip[];
+    .all(reviewId) as (TradeRoundtrip & { security_type: string | null })[];
 }
 
 /**

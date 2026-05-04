@@ -13,6 +13,7 @@ import { getAvailableReviewPeriods } from "@/lib/compute/trade-roundtrips";
 interface GroupedTradeResponse {
   saleTransactionId: number | null;
   symbol: string;
+  securityType: string | null;
   exitDate: string;
   grade: string | null;
   assessment: string | null;
@@ -74,6 +75,7 @@ export async function GET(request: Request) {
       return {
         saleTransactionId: lots[0].sale_transaction_id ?? null,
         symbol: lots[0].symbol,
+        securityType: lots[0].security_type ?? null,
         exitDate: lots[0].exit_date,
         grade: lots[0].grade,
         assessment: lots[0].entry_thesis, // stored as entry_thesis in DB

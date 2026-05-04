@@ -55,9 +55,10 @@ function getDimensionLabel(dim: AllocationDimension): string {
 }
 
 const SCOPE_OPTIONS = [
+  { label: "All", value: "all" },
   { label: "Vanguard", value: "vanguard" },
   { label: "IBKR", value: "ibkr" },
-  { label: "All", value: "all" },
+  { label: "Roth", value: "roth" },
 ];
 
 const CHART_COLORS = [

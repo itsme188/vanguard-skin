@@ -64,3 +64,14 @@ scripts/capture-screenshots.mjs
 *.tsbuildinfo
 next-env.d.ts
 .claude/scheduled_tasks.lock
+
+# playwright + manual screenshot artifacts at repo root
+# (often contain real portfolio data — README screenshots live elsewhere)
+.playwright-mcp/
+/sweep-*.png
+/verify-*.png
+/phase5-*.png
+/dark-*.png
+/addlevel-*.png
+/cmdk-*.png
+/skip-*.png
