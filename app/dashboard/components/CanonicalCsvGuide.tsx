@@ -23,27 +23,31 @@ const FORMATS: FormatSpec[] = [
       { name: "account", required: true, description: "Account name (e.g., 'Vanguard Taxable', 'IBKR')" },
       { name: "trade_date", required: true, description: "Trade date (YYYY-MM-DD)" },
       { name: "settlement_date", required: false, description: "Settlement date (YYYY-MM-DD)" },
-      { name: "type", required: true, description: "Transaction type, UPPERCASE" },
-      { name: "symbol", required: true, description: "Ticker symbol (OCC format for options)" },
+      { name: "type", required: true, description: "Transaction type, UPPERCASE — carries direction (BUY adds, SELL removes)" },
+      { name: "symbol", required: true, description: "Ticker symbol (OCC format for options; use 'CASH' for WITHDRAWAL/DEPOSIT/FEE/COMMISSION/INTEREST rows that have no security)" },
       { name: "security_name", required: false, description: "Full security name" },
       { name: "security_type", required: false, description: "Stock, Bond, ETF, Option, Mutual Fund" },
-      { name: "quantity", required: false, description: "Number of shares/units" },
+      { name: "quantity", required: false, description: "Number of shares/units — ALWAYS POSITIVE (the type field carries direction)" },
       { name: "price", required: false, description: "Price per share" },
-      { name: "amount", required: false, description: "Total dollar amount" },
+      { name: "amount", required: false, description: "Total dollar amount (signed — see TRANSFER + cash-flow rules below)" },
       { name: "fees", required: false, description: "Fees/commissions" },
       { name: "notes", required: false, description: "Free-text notes" },
     ],
     constraints: [
-      "Transaction types (UPPERCASE): BUY, SELL, DIVIDEND, REINVESTMENT, INTEREST, TAX_WITHHELD, TRANSFER, TRANSFER_IN, TRANSFER_OUT, DEPOSIT, WITHDRAWAL, FEE, COMMISSION, BUY_TO_OPEN, SELL_TO_CLOSE, SELL_TO_OPEN, BUY_TO_CLOSE, EXERCISED, ASSIGNED, EXPIRED, REDEMPTION, CORPORATE_ACTION, SPINOFF, MERGER, SPLIT",
+      "Transaction types (UPPERCASE): BUY, SELL, DIVIDEND, REINVESTMENT, INTEREST, TAX_WITHHELD, TRANSFER, TRANSFER_IN, TRANSFER_OUT, DEPOSIT, WITHDRAWAL, FEE, COMMISSION, BUY_TO_OPEN, SELL_TO_CLOSE, SELL_TO_OPEN, BUY_TO_CLOSE, BUY_TO_COVER, EXERCISED, ASSIGNED, EXPIRED, REDEMPTION, CORPORATE_ACTION, SPINOFF, MERGER, SPLIT",
+      "QUANTITY IS ALWAYS POSITIVE. The type field (BUY/SELL/SELL_TO_CLOSE/EXERCISED/REDEMPTION/etc.) carries direction. Never emit a negative quantity. Sold 100 RSP → quantity=100, type=SELL.",
+      "Account names must match the dashboard exactly. Use these mappings: 'Individual brokerage account' or 'Vanguard Individual Brokerage' → 'Vanguard Taxable'. 'Vanguard Roth IRA' is verbatim. 'IBKR' is verbatim.",
+      "Cash-only rows (WITHDRAWAL, DEPOSIT, FEE, COMMISSION, INTEREST without a security) MUST use symbol 'CASH'. Blank symbol will be silently dropped.",
       "For DIVIDEND / INTEREST / TAX_WITHHELD income rows: leave `quantity` and `price` empty, put the income amount in the `amount` column (never in `fees`)",
       "For REINVESTMENT rows: populate both `quantity` + `price` (shares received at the reinvestment price) AND `amount` (total value reinvested)",
       "For TRANSFER rows (VMFXX money-market sweeps): `amount` is SIGNED. 'Sweep Into Settlement Fund' is positive (cash going in), 'Sweep Out Of Settlement Fund' is negative (cash coming out). Never leave all TRANSFER amounts positive — the sign tracks direction.",
       "Options must use OCC format: AAPL  260320C00150000 (symbol padded to 6 chars, YYMMDD, C/P, strike x1000 padded to 8 digits)",
       "Numbers: NO comma thousands separators (1234.56 ✓, 1,234.56 ✗). NO currency symbols ($, %, etc). Use `.` for decimals only. Negative numbers use a leading minus sign (-250.00). Commas inside numeric cells will silently truncate or skip the row.",
       "All dates: YYYY-MM-DD format",
+      "Output the CSV directly with the header row first — do NOT prefix with comment lines like `# transactions.csv` or markdown fences. The file must start with the header row.",
     ],
     example:
-      "Vanguard Taxable,2025-06-15,,BUY,AAPL,Apple Inc,Stock,10,150.25,1502.50,0,\nVanguard Taxable,2025-06-20,,DIVIDEND,AAPL,Apple Inc,Stock,,,25.00,,Q2 dividend\nVanguard Taxable,2025-06-30,,INTEREST,VMFXX,Vanguard Federal Money Market Fund,Mutual Fund,,,12.45,,\nVanguard Taxable,2025-06-20,,REINVESTMENT,VTI,Vanguard Total Stock Market ETF,ETF,0.098,255.10,25.00,,Reinvested Q2 dividend\nVanguard Taxable,2025-07-15,,TAX_WITHHELD,VXUS,Vanguard Total International Stock ETF,ETF,,,-3.50,,Foreign withholding\nVanguard Taxable,2025-06-10,,TRANSFER,VMFXX,Vanguard Federal Money Market Fund,Mutual Fund,,,1000.00,,Sweep Into Settlement Fund\nVanguard Taxable,2025-06-12,,TRANSFER,VMFXX,Vanguard Federal Money Market Fund,Mutual Fund,,,-250.00,,Sweep Out Of Settlement Fund",
+      "Vanguard Taxable,2025-06-15,,BUY,AAPL,Apple Inc,Stock,10,150.25,1502.50,0,\nVanguard Taxable,2025-06-22,,SELL,AAPL,Apple Inc,Stock,10,155.50,1554.95,0.05,Closed position\nVanguard Taxable,2025-06-22,,SELL,AAPL,Apple Inc,Stock,5,156.10,780.45,0.05,Second fill same day\nVanguard Taxable,2025-06-20,,DIVIDEND,AAPL,Apple Inc,Stock,,,25.00,,Q2 dividend\nVanguard Taxable,2025-06-30,,INTEREST,VMFXX,Vanguard Federal Money Market Fund,Mutual Fund,,,12.45,,\nVanguard Taxable,2025-06-20,,REINVESTMENT,VTI,Vanguard Total Stock Market ETF,ETF,0.098,255.10,25.00,,Reinvested Q2 dividend\nVanguard Taxable,2025-07-15,,TAX_WITHHELD,VXUS,Vanguard Total International Stock ETF,ETF,,,-3.50,,Foreign withholding\nVanguard Taxable,2025-06-10,,TRANSFER,VMFXX,Vanguard Federal Money Market Fund,Mutual Fund,,,1000.00,,Sweep Into Settlement Fund\nVanguard Taxable,2025-06-12,,TRANSFER,VMFXX,Vanguard Federal Money Market Fund,Mutual Fund,,,-250.00,,Sweep Out Of Settlement Fund\nVanguard Taxable,2025-07-05,,WITHDRAWAL,CASH,,,,,-5000.00,,Wire transfer to checking\nVanguard Taxable,2025-07-08,,FEE,CASH,,,,,-3.50,,Margin interest",
   },
   {
     key: "holdings",
@@ -63,6 +67,9 @@ const FORMATS: FormatSpec[] = [
     constraints: [
       "One row per (account, symbol) per as_of_date",
       "Options must use OCC format for the symbol",
+      "Account names must match the dashboard exactly: 'Individual brokerage account' → 'Vanguard Taxable', 'Vanguard Roth IRA' verbatim, 'IBKR' verbatim",
+      "Numbers: no commas, no currency symbols, decimals only with `.`. Quantity is the number of shares held (always positive).",
+      "Output the CSV directly — do NOT prefix with `# filename.csv` comment lines or markdown fences.",
     ],
     example:
       "Vanguard Taxable,2025-06-30,AAPL,Apple Inc,Stock,100,15025.00,19500.00\nVanguard Taxable,2025-06-30,VTI,Vanguard Total Stock Market ETF,ETF,50,11250.00,12100.00",
@@ -143,7 +150,8 @@ Output ONLY the CSV (header + data rows). No markdown, no explanation.`;
 
 function buildAllFormatsPrompt(): string {
   return `Convert the attached financial data into standardized CSV files for the Portfolio Desk dashboard.
-Produce separate CSV files for each data type found. Output each file with a filename comment line.
+Produce separate CSV files for each data type found. Save each as a separate file (do not merge).
+DO NOT prefix any file with a comment line like \`# transactions.csv\` — the file must start with the header row directly.
 
 ${FORMATS.map(
   (spec) => `--- ${spec.label.toUpperCase()} ---
@@ -158,10 +166,13 @@ ${spec.example}`
 General rules:
 - All dates: YYYY-MM-DD
 - Transaction types must be UPPERCASE (BUY, SELL, DIVIDEND, REINVESTMENT, etc.)
+- Quantity is ALWAYS POSITIVE — the type field carries direction (BUY adds, SELL/SELL_TO_CLOSE/EXERCISED/REDEMPTION removes). Never emit a negative quantity.
+- Account names must match the dashboard exactly. Aliases: 'Individual brokerage account' / 'Vanguard Individual Brokerage' → 'Vanguard Taxable'. 'Vanguard Roth IRA' verbatim. 'IBKR' verbatim.
+- Cash-only transaction rows (WITHDRAWAL, DEPOSIT, FEE, COMMISSION, INTEREST without a security) MUST use symbol 'CASH'. Blank symbol drops the row.
 - Security types: Stock, Bond, ETF, Option, Mutual Fund
 - Options: use OCC format (e.g., AAPL  260320C00150000)
 - Numbers: NO comma thousands separators (1234.56 ✓, 1,234.56 ✗), NO currency symbols, use \`.\` for decimals only. Negative numbers use a leading minus sign.
-- Output ONLY the CSV files. No markdown fences, no explanation.`;
+- Output ONLY the CSV files (header + data rows). NO markdown fences, NO comment lines, NO explanation prose.`;
 }
 
 // ── Component ───────────────────────────────────────────────────────

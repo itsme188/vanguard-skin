@@ -40,14 +40,18 @@ describe("isValidQuantity", () => {
     expect(isValidQuantity(undefined)).toBe(true);
   });
 
-  it("accepts non-negative numbers", () => {
+  it("accepts any finite number (including negatives — canonical-csv parser normalizes)", () => {
     expect(isValidQuantity(0)).toBe(true);
     expect(isValidQuantity(100)).toBe(true);
     expect(isValidQuantity(0.5)).toBe(true);
+    // Negatives accepted: canonical-csv parser auto-normalizes to abs and warns.
+    // Other source paths (IBKR-activity) may use signed quantities legitimately.
+    // Pre-2026-05-04 this rejected negatives and silently dropped 20+ rows on April import.
+    expect(isValidQuantity(-1)).toBe(true);
+    expect(isValidQuantity(-35.256)).toBe(true);
   });
 
-  it("rejects negative, NaN, Infinity", () => {
-    expect(isValidQuantity(-1)).toBe(false);
+  it("rejects NaN, Infinity (non-finite)", () => {
     expect(isValidQuantity(NaN)).toBe(false);
     expect(isValidQuantity(Infinity)).toBe(false);
     expect(isValidQuantity(-Infinity)).toBe(false);

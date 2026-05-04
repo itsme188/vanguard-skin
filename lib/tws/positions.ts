@@ -351,10 +351,21 @@ export async function syncPortfolio(
 
     try {
       // Insert as a monthly_snapshots anchor — the cash inference in
-      // computeDailyValuations will pick this up automatically.
+      // computeDailyValuations will pick this up automatically. Statement-sourced
+      // rows (ibkr-activity, canonical, vanguard-pdf) are authoritative for
+      // month-end values, so this TWS upsert only writes when no statement row
+      // exists for this date OR when the existing row is itself a TWS/manual
+      // placeholder. Pre-2026-05-04 this used OR REPLACE and a 30-min TWS sync
+      // could silently clobber the rich IBKR statement snapshot (starting_value,
+      // twr, deposits, etc.) with a sparse TWS-only row.
       db.prepare(
-        `INSERT OR REPLACE INTO monthly_snapshots (account_id, month_end_date, total_value, cash_value, source)
-         VALUES (?, ?, ?, ?, 'tws')`
+        `INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, cash_value, source)
+         VALUES (?, ?, ?, ?, 'tws')
+         ON CONFLICT(account_id, month_end_date) DO UPDATE SET
+           total_value = excluded.total_value,
+           cash_value = excluded.cash_value,
+           source = excluded.source
+         WHERE monthly_snapshots.source IN ('tws', 'manual')`
       ).run(accountId, today, netLiquidation, cashBalance);
       snapshotInserted = true;
     } catch (err) {
