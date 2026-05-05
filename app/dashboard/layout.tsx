@@ -26,12 +26,14 @@ export default function DashboardLayout({
     <ToastProvider>
      <PrivacyProvider>
       {/*
-        xl:pr-[480px] reserves the right rail for the persistent chat panel
-        (≥1280px viewport). Chat panel is fixed-positioned, so this is a
-        layout-level reservation, not a flex/grid container — header sticky
-        positioning still works inside.
+        .chat-rail-reserve reserves the right rail for the persistent chat
+        panel (≥1280px viewport). The reservation reads --chat-rail-width
+        which the chat collapse toggle (ChatDrawer) flips between 480px
+        (open) and 0px (collapsed). Chat panel is fixed-positioned, so this
+        is a layout-level reservation, not a flex/grid container — header
+        sticky positioning still works inside.
       */}
-      <div className="min-h-screen bg-canvas xl:pr-[480px]">
+      <div className="min-h-screen bg-canvas chat-rail-reserve">
         <a href="#main-content" className="skip-link">
           Skip to main content
         </a>

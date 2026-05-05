@@ -4,7 +4,7 @@ import type Database from "better-sqlite3";
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
 import { sendEmail } from "@/lib/email";
 import { getRawAnthropicClient } from "@/lib/ai/provider";
-import { SONNET_MODEL } from "@/lib/claude-models";
+import { resolveFeatureModel } from "@/lib/ai/models";
 import { formatLargeUSD } from "@/lib/format";
 import { parseFinnhubFigure } from "@/lib/format/finnhub-figure";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
@@ -107,6 +107,19 @@ async function sendEarningsEmail(
     throw new EarningsEmailError(
       `Event ${eventId} has no symbol.`,
       400,
+    );
+  }
+
+  // Defensive guard: never compose a recap when actuals haven't landed.
+  // The cron sweep gates this in findEmailCandidates SQL, but manual /
+  // driver-script callers (POST /api/earnings/email, scripts/fire-earnings-emails.ts)
+  // could otherwise bypass that gate and produce a recap with no real numbers.
+  // Better no email than a wrong one — the user can re-fire once enrichment
+  // completes (manual override via POST /api/earnings/actuals also unblocks).
+  if (phase === "recap" && !event.actual_value) {
+    throw new EarningsEmailError(
+      `Event ${eventId} (${event.symbol}) has no actual_value yet — recap deferred until enrichment lands or POST /api/earnings/actuals overrides.`,
+      409,
     );
   }
 
@@ -497,12 +510,32 @@ function getCrossAccountPositions(
   // latter catches option holdings whose s.symbol is OCC format
   // (e.g., "TER   280121C00180000") but underlying_symbol is "TER".
   // Without this branch, every option leg on an event symbol gets dropped.
+  //
+  // Cost basis fallback: TWS auto-refresh writes intra-day positions with
+  // cost_basis = NULL because TWS doesn't expose that field. Statement
+  // imports write the same (account, security) pair with cost_basis populated
+  // on the period-end date. Pre-fix the query keyed off MAX(as_of_date) per
+  // (account, security) and silently dropped cost_basis whenever a TWS row
+  // existed on a later date than the most recent statement — the AI then
+  // saw "cost basis ?" and hallucinated ("around your cost basis" for PRIM
+  // when the user was up 115%). Now we coalesce the latest non-null
+  // cost_basis from any prior row of the same (account, security) into the
+  // returned row, while still picking quantity / as_of_date from MAX-date.
   const rows = db
     .prepare(
       `SELECT a.id AS account_id, a.name AS account_name, s.symbol,
               s.security_type, s.underlying_symbol, s.option_type,
               s.strike_price, s.expiration_date, s.multiplier,
-              h.quantity, h.cost_basis, h.as_of_date,
+              h.quantity,
+              COALESCE(
+                h.cost_basis,
+                (SELECT h3.cost_basis FROM holdings h3
+                  WHERE h3.account_id = h.account_id
+                    AND h3.security_id = h.security_id
+                    AND h3.cost_basis IS NOT NULL
+                  ORDER BY h3.as_of_date DESC LIMIT 1)
+              ) AS cost_basis,
+              h.as_of_date,
               (SELECT close_price FROM prices p
                  WHERE p.security_id = s.id
                  ORDER BY p.date DESC LIMIT 1) AS latest_price
@@ -811,10 +844,30 @@ export function renderHeadlineTable(
   symbol: string,
   phase: "preview" | "recap",
 ): string {
-  const cons = parseFinnhubFigure(event.consensus_estimate);
-  const actual = phase === "recap"
-    ? parseFinnhubFigure(event.actual_value ?? event.consensus_value)
+  // Consensus precedence: consensus_value (at-release, set by enrichment) wins
+  // over consensus_estimate (Finnhub-sync-time). Apply identically to BOTH
+  // columns so the Δ math is anchored on the same baseline. Pre-fix the cons
+  // column read consensus_estimate and the actual fallback read consensus_value
+  // — when these diverged the user's printable Δ column was wrong.
+  const consSource = event.consensus_value ?? event.consensus_estimate;
+  const cons = parseFinnhubFigure(consSource);
+  const rawActual = phase === "recap"
+    ? parseFinnhubFigure(event.actual_value)
     : { eps: null, revenue: null };
+
+  // Site-wide Finnhub-drift defense. Bogus scrape values (e.g. GOOGL Q1 2026
+  // stored EPS 5.11 vs consensus 2.70 — confirmed wrong by live re-fetch)
+  // would otherwise hit the scoreboard as if real. When flagged, blank the
+  // affected actual cells; the table picks up an explicit "data flagged —
+  // verify before relying" sub-line below the rows. Read-throughs already
+  // guard at line 433; scoreboard now shares the rule.
+  const plausible = isPlausibleEarnings(
+    cons.eps,
+    rawActual.eps,
+    cons.revenue,
+    rawActual.revenue,
+  );
+  const actual = plausible ? rawActual : { eps: null, revenue: null };
 
   const epsConsensus = cons.eps != null ? cons.eps.toFixed(2) : "—";
   const epsActual = actual.eps != null ? actual.eps.toFixed(2) : "—";
@@ -845,13 +898,21 @@ export function renderHeadlineTable(
     `| **QQQ @ T+2h** | — | ${qqqReaction} | — |`,
   ].join("\n");
 
+  // Surface a flagged-actuals warning beneath the scoreboard so the user (and
+  // the AI) sees that what's missing isn't an enrichment gap, it's a quality
+  // gate. Only renders on a recap — preview never has actuals to flag.
+  const flaggedNote =
+    phase === "recap" && !plausible
+      ? "\n\n*⚠ Reported actuals were flagged as implausible vs consensus (likely Finnhub scrape error). Cells blanked to avoid misleading; verify via press release before relying on them.*"
+      : "";
+
   return `## ${symbol} scoreboard — ${phaseLabel}
 
 | Metric | Consensus | Actual | Δ |
 |---|---|---|---|
 ${rows}
 
-*Empty cells in a preview are intentional — print this, fill them in live during the call. Recap fills them automatically. \`—\` in the actual column on a recap means data wasn't available at send time (e.g. TWS disconnected, transcript not posted).*`;
+*Empty cells in a preview are intentional — print this, fill them in live during the call. Recap fills them automatically. \`—\` in the actual column on a recap means data wasn't available at send time (e.g. TWS disconnected, transcript not posted).*${flaggedNote}`;
 }
 
 // ── Prompt rendering (pure for testability) ────────────────────────
@@ -1270,10 +1331,18 @@ async function callClaude(
   phase: "preview" | "recap",
 ): Promise<string> {
   const featureKey = phase === "preview" ? "earningsPreview" : "earningsRecap";
+  const { provider, modelId } = resolveFeatureModel(featureKey);
+  if (provider !== "anthropic") {
+    throw new EarningsEmailError(
+      `Earnings ${phase} requires the Anthropic provider for native web_search; FEATURE_MODELS["${featureKey}"] resolves to ${provider}/${modelId}. Update lib/ai/models.ts.`,
+      500,
+    );
+  }
   const client = getRawAnthropicClient(featureKey);
   const response = await client.messages.create({
-    model: SONNET_MODEL,
+    model: modelId,
     max_tokens: 4096,
+    system: SYSTEM_PROMPT,
     tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }],
     messages: [{ role: "user", content: prompt }],
   });
@@ -1287,7 +1356,47 @@ async function callClaude(
       500,
     );
   }
-  return text;
+  return stripModelPreamble(text);
+}
+
+// System prompt — anchors output discipline. Lives outside the per-phase
+// user prompt because (1) it's identical for preview and recap, (2) it's
+// the right Anthropic-API place for "how to behave" instructions, and (3)
+// it survives prompt-cache better than re-injecting these rules each call.
+const SYSTEM_PROMPT = `You produce structured earnings briefings for a single portfolio manager. Your output is rendered directly into an HTML email — there is no editor between you and the recipient.
+
+OUTPUT DISCIPLINE — strict rules:
+
+1. **Start immediately with the first \`## Section header\` the user prompt requests.** Do not preamble. Never write "Good", "Now I have enough", "Let me synthesize", "Here is the briefing", "Based on the context above", or any meta-commentary describing what you are about to do. The first character of your output must be \`#\` (the start of a markdown header).
+
+2. **Do not narrate your process.** Do not say "I'll start by analyzing…" or "Looking at the data…". Just produce the briefing.
+
+3. **Do not write closing commentary.** Do not end with "Hope this helps" or "Let me know if you want more detail". Stop after the \`## Sources\` section.
+
+4. **Em-dash continuations stay on the same line.** Never break a sentence with a blank line followed by "— …". The HTML renderer treats blank lines as paragraph separators, so a leading-em-dash line becomes a fragmented paragraph that reads broken. Either keep the continuation on the same line or rewrite as a complete sentence.
+
+5. **If the data is genuinely missing — actuals not captured, no consensus available, no analyst notes — say so explicitly in the prose.** Do not fabricate numbers. Do not infer actuals from consensus. The user reads this as ground truth and acts on it.`;
+
+// Strip residual self-talk from the model output even when the system prompt
+// is followed. Belt-and-suspenders: the system prompt is the primary defense,
+// this is the failsafe for when Sonnet leaks a "Good, now I have enough…"
+// line despite instructions. We trim leading lines that don't start with a
+// markdown structure marker (#, |, -, *, >) and aren't blank, until we hit
+// one that does.
+function stripModelPreamble(text: string): string {
+  const lines = text.split("\n");
+  let firstReal = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed === "") continue;
+    // Markdown structure markers: header, table, list, blockquote, hr,
+    // code fence. Anything else at the start is preamble.
+    if (/^(#|\||[-*+]\s|>\s|---|```)/.test(trimmed)) {
+      firstReal = i;
+      break;
+    }
+  }
+  return lines.slice(firstReal).join("\n").trim();
 }
 
 // ── Date helpers ───────────────────────────────────────────────────
