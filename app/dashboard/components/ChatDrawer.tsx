@@ -10,31 +10,80 @@ import { useIsLargeDesktop } from "@/lib/hooks/useIsLargeDesktop";
 //   - mobile (<768px): full-screen overlay, slide-up. Opens via toggle-mobile-chat
 //     event (mobile bottom-nav Chat slot, Cmd+J shortcut).
 //   - desktop drawer (768–1279px): right-side drawer with backdrop + Cmd+J toggle.
-//   - large desktop (≥1280px): persistent right-rail. Always-visible. Cmd+J
-//     focuses the chat input via the focus-chat-input event. The dashboard
-//     layout reserves matching `xl:pr-[480px]` so content doesn't underlap.
+//   - large desktop (≥1280px): persistent right-rail. Toggleable between
+//     "open" (480px reserved on the right) and "collapsed" (rail slides
+//     off-screen, layout reservation drops to 0). Persisted in
+//     localStorage["vgs:chatRail"] + mirrored to <html data-chat-rail="..."> by
+//     the anti-FOUC script in app/layout.tsx, so first paint matches the
+//     user's last choice. Cmd+J expands when collapsed; focuses input when open.
 const RAIL_WIDTH = 480;
+const COLLAPSE_STORAGE_KEY = "vgs:chatRail";
 
 export function ChatDrawer() {
   const [open, setOpen] = useState(false);
+  // collapsed is meaningful only on large desktop. Read by the panel translate
+  // and the header CSS attribute. Default to whatever the FOUC script wrote
+  // (read on first client mount to avoid hydration mismatch).
+  const [collapsed, setCollapsed] = useState(false);
   const isMobile = useIsMobile();
   const isLargeDesktop = useIsLargeDesktop();
   const pathname = usePathname();
 
-  // At xl, the rail is conceptually always open — we don't actually flip the
-  // open state, but the panel renders with translate-x-0 unconditionally.
-  const railVisible = isLargeDesktop || open;
+  // Read collapse state once on mount. The anti-FOUC script in app/layout.tsx
+  // already wrote the data attribute, so the first paint is correct — this
+  // just syncs React state for the toggle controls.
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(COLLAPSE_STORAGE_KEY);
+      setCollapsed(stored === "collapsed");
+    } catch {
+      // localStorage unavailable (private browsing) — stay in default open state
+    }
+  }, []);
+
+  // Persist collapse state + sync the data attribute when it flips. The
+  // attribute drives the layout reservation (chat-rail-reserve) and the
+  // EarningsHub responsive override in globals.css.
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        COLLAPSE_STORAGE_KEY,
+        collapsed ? "collapsed" : "open",
+      );
+      document.documentElement.setAttribute(
+        "data-chat-rail",
+        collapsed ? "collapsed" : "open",
+      );
+    } catch {
+      // ignored — see above
+    }
+  }, [collapsed]);
+
+  // At xl, the rail is conceptually always available — visible when the user
+  // hasn't collapsed it. The panel slides off-screen when collapsed.
+  const railVisible = isLargeDesktop ? !collapsed : open;
 
   const toggle = useCallback(() => {
     if (isLargeDesktop) {
-      // Rail is already visible — focus input instead of toggling.
-      window.dispatchEvent(new CustomEvent("focus-chat-input"));
+      // On large desktop, the toggle flips collapsed state. When expanding,
+      // also focus the chat input so the user can start typing immediately.
+      setCollapsed((v) => {
+        const next = !v;
+        if (!next) {
+          // Defer focus until the panel has finished sliding back in
+          setTimeout(() => {
+            window.dispatchEvent(new CustomEvent("focus-chat-input"));
+          }, 220);
+        }
+        return next;
+      });
       return;
     }
     setOpen((v) => !v);
   }, [isLargeDesktop]);
 
-  // Broadcast open-state for the header ChatToggleButton to mirror.
+  // Broadcast open-state for the header ChatToggleButton to mirror its
+  // active styling. railVisible already accounts for collapse on large desktop.
   useEffect(() => {
     window.dispatchEvent(
       new CustomEvent("chat-state-change", { detail: { open: railVisible } }),
@@ -69,7 +118,9 @@ export function ChatDrawer() {
   const panelClass = isMobile
     ? `inset-0 ${open ? "translate-y-0" : "translate-y-full"}`
     : isLargeDesktop
-      ? `top-0 electron:top-7 right-0 h-full electron:h-[calc(100%-1.75rem)] border-l border-edge translate-x-0`
+      ? `top-0 electron:top-7 right-0 h-full electron:h-[calc(100%-1.75rem)] border-l border-edge ${
+          collapsed ? "translate-x-full" : "translate-x-0"
+        }`
       : `top-0 electron:top-7 right-0 h-full electron:h-[calc(100%-1.75rem)] border-l border-edge shadow-2xl ${
           open ? "translate-x-0" : "translate-x-full"
         }`;
@@ -129,7 +180,33 @@ export function ChatDrawer() {
                 {"⌘"}J
               </kbd>
             )}
-            {/* Close button — hidden on the persistent rail. */}
+            {/* Collapse button — only on the persistent large-desktop rail.
+                Slides the rail off-screen + frees the layout reservation so
+                content (esp. EarningsHub) gets full width. The header
+                ChatToggleButton picks up at xl when collapsed for re-expand. */}
+            {isLargeDesktop && (
+              <button
+                onClick={() => setCollapsed(true)}
+                className="text-ink-faint hover:text-ink transition-colors p-1 rounded-md hover:bg-raised"
+                aria-label="Collapse chat rail"
+                title="Collapse chat (Cmd+J)"
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <polyline points="9 18 15 12 9 6" />
+                </svg>
+              </button>
+            )}
+            {/* Close button — drawer mode only (768–1279px). */}
             {!isLargeDesktop && (
               <button
                 onClick={() => setOpen(false)}

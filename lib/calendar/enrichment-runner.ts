@@ -455,6 +455,15 @@ export function findEmailCandidates(
   }
 
   // ── Recap candidates ────────────────────────────────────────────
+  // Gate: actual_value MUST be populated. enriched_at gets set the moment
+  // the enrichment runner *attempts* a row — which can succeed for the
+  // reaction snapshot while the actual_value capture (FRED / Finnhub /
+  // Claude) returns null. Pre-fix the recap fired on enriched_at alone
+  // and the AI had no actuals to report; the recap prompt's web_search
+  // fallback isn't reliable enough to fill that gap, so the email landed
+  // with estimates dressed up as actuals. Now: defer until actuals land.
+  // The 4h window starts at enriched_at, so a late actual (Finnhub backfill,
+  // manual override) still gets a recap on the next sweep tick.
   const recapCutoff = new Date(nowMs - RECAP_WINDOW_MAX_MS).toISOString().replace("T", " ").slice(0, 19);
   const recapRows = db
     .prepare(
@@ -466,6 +475,7 @@ export function findEmailCandidates(
            ON es.event_id = ce.id AND es.phase = 'recap'
         WHERE ce.event_type = 'earnings'
           AND ce.enriched_at IS NOT NULL
+          AND ce.actual_value IS NOT NULL
           AND datetime(ce.enriched_at) >= datetime(?)
           AND ce.symbol IS NOT NULL
           AND ee.id IS NULL

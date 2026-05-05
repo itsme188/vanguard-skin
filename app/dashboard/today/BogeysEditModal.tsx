@@ -231,8 +231,18 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
         </div>
 
         <div className="px-5 py-4 space-y-5">
-          {/* Existing bogeys list */}
-          {existing.length > 0 && (
+          {/* Existing bogeys — render an explicit empty state so users
+              don't mistake the modal for partially loaded. */}
+          {existing.length === 0 ? (
+            <section>
+              <h3 className="text-[11px] uppercase tracking-widest text-ink-dim mb-2">
+                Existing bogeys
+              </h3>
+              <p className="text-[12px] text-ink-faint italic">
+                None yet. Use the manual-entry form below or the multi-symbol PDF upload on the Today page to add bogeys for this event.
+              </p>
+            </section>
+          ) : (
             <section>
               <h3 className="text-[11px] uppercase tracking-widest text-ink-dim mb-2">
                 Existing bogeys ({existing.length})
@@ -359,7 +369,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
                   type="text"
                   value={form.revenue_consensus}
                   onChange={(e) => setForm({ ...form, revenue_consensus: e.target.value })}
-                  placeholder="$3.85B / 3.85B / 3,850,000,000"
+                  placeholder="$3.85B or 3.85B"
                   className="w-full bg-raised border border-edge rounded px-2 py-1.5 text-[14px] font-mono text-ink focus:outline-none focus:border-gold"
                 />
               </Field>

@@ -188,8 +188,12 @@ export function EarningsHub() {
         </p>
       ) : (
         <>
-          {/* Desktop: explicit-column grid table */}
-          <div className="hidden md:block">
+          {/* Desktop: explicit-column grid table.
+              earnings-hub-desktop is the responsive hook in globals.css —
+              when the chat rail is open and viewport is below 2xl, the
+              desktop grid is force-hidden and the mobile card layout takes
+              over (avoids the 4×~20px column-collapse bug at 1280px). */}
+          <div className="hidden md:block earnings-hub-desktop">
             {/* Column headers */}
             <div
               className="grid items-baseline px-5 py-2 border-b border-edge font-mono uppercase bg-raised text-ink-faint"
@@ -234,8 +238,10 @@ export function EarningsHub() {
             })}
           </div>
 
-          {/* Mobile: stacked card per event, day separators inline */}
-          <div className="block md:hidden divide-y divide-edge">
+          {/* Mobile: stacked card per event, day separators inline.
+              earnings-hub-mobile is the responsive hook in globals.css —
+              promoted to block at md+ when the chat rail squeezes content. */}
+          <div className="block md:hidden divide-y divide-edge earnings-hub-mobile">
             {days.map((day) => {
               const dayLabel = fmtDayLong(day);
               return (
@@ -281,6 +287,11 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
   const delta = isPostRelease
     ? epsDelta(event.consensus_estimate, event.actual_value)
     : null;
+  // When a pre-release event has no consensus at all (Finnhub hasn't
+  // published estimates), the four numeric cells used to render as a row of
+  // em-dashes which read as broken. Show a single italic hint spanning the
+  // four data columns instead.
+  const consensusMissing = !cons.eps && !cons.revenue && !isPostRelease;
 
   return (
     <div
@@ -307,10 +318,21 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
           event.symbol ?? "—"
         )}
       </span>
-      <NumCell value={cons.eps} />
-      <NumCell value={act.eps} />
-      <NumCell value={cons.revenue} />
-      <NumCell value={act.revenue} />
+      {consensusMissing ? (
+        <span
+          className="text-ink-faint italic"
+          style={{ gridColumn: "span 4 / span 4", fontSize: "12px" }}
+        >
+          Consensus not yet published
+        </span>
+      ) : (
+        <>
+          <NumCell value={cons.eps} />
+          <NumCell value={act.eps} />
+          <NumCell value={cons.revenue} />
+          <NumCell value={act.revenue} />
+        </>
+      )}
       <span
         className={`font-mono tabular-nums ${deltaToneClass(delta)}`}
         style={{ fontSize: "12px", textAlign: "right" }}
@@ -360,6 +382,7 @@ function MobileCard({ event }: { event: EnrichedRow }) {
   const delta = isPostRelease
     ? epsDelta(event.consensus_estimate, event.actual_value)
     : null;
+  const consensusMissing = !cons.eps && !cons.revenue && !isPostRelease;
 
   return (
     <div className="px-5 py-3 border-b border-edge">
@@ -382,13 +405,19 @@ function MobileCard({ event }: { event: EnrichedRow }) {
         </span>
       </div>
       <div className="flex items-baseline gap-3 flex-wrap font-mono tabular-nums" style={{ fontSize: "13px" }}>
-        <span className="text-ink-faint">
-          Cons{" "}
-          <span className="text-ink-dim">
-            {cons.eps ? <PrivateText>{cons.eps}</PrivateText> : "—"} ·{" "}
-            {cons.revenue ? <PrivateText>{cons.revenue}</PrivateText> : "—"}
+        {consensusMissing ? (
+          <span className="text-ink-faint italic" style={{ fontSize: "12px" }}>
+            Consensus not yet published
           </span>
-        </span>
+        ) : (
+          <span className="text-ink-faint">
+            Cons{" "}
+            <span className="text-ink-dim">
+              {cons.eps ? <PrivateText>{cons.eps}</PrivateText> : "—"} ·{" "}
+              {cons.revenue ? <PrivateText>{cons.revenue}</PrivateText> : "—"}
+            </span>
+          </span>
+        )}
         {isPostRelease ? (
           <>
             <span className="text-ink-faint">→</span>
