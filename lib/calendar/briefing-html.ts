@@ -295,6 +295,26 @@ function convertMarkdown(md: string): string {
 
     if (line.trim() === "") continue;
 
+    // Em-dash continuation: a line that begins with "— " (or "—") after a
+    // blank line is almost always a clause continuation the AI fragmented
+    // across paragraphs. Merge it back into the previous <p> instead of
+    // emitting an orphan paragraph that reads as a broken sentence. This
+    // is the renderer-side belt for the system-prompt "no em-dash blank
+    // continuations" rule.
+    const trimmedForDash = line.trim();
+    if (
+      output.length > 0 &&
+      /^[—–]/.test(trimmedForDash) &&
+      output[output.length - 1].startsWith("<p ") &&
+      output[output.length - 1].endsWith("</p>")
+    ) {
+      const prev = output[output.length - 1];
+      const closeIdx = prev.lastIndexOf("</p>");
+      output[output.length - 1] =
+        prev.slice(0, closeIdx) + " " + inlineFormat(trimmedForDash) + "</p>";
+      continue;
+    }
+
     // Body paragraph — reader cadence, 18px / 1.7 with airy 22px margins (matches .prose-reader)
     output.push(
       `<p style="margin:22px 0; font-family:${FONT_BODY}; font-size:18px; line-height:1.7; color:${COLORS.inkDim};">${inlineFormat(line)}</p>`,

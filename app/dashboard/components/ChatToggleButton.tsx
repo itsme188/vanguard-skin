@@ -33,8 +33,13 @@ export function ChatToggleButton() {
   return (
     <button
       onClick={toggle}
-      // Hidden on xl — the chat right rail is always-visible there (no toggle needed).
-      className={`hidden md:flex xl:hidden items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+      // Visibility logic:
+      //   <md (mobile): hidden — MobileBottomNav handles chat
+      //   md–lg (768–1279px): visible — the only way to open chat besides Cmd+J
+      //   xl+ (≥1280px): visible only when rail is collapsed
+      //     (chat-toggle-rail-aware in globals.css hides this when
+      //      <html data-chat-rail="open">; shows when "collapsed")
+      className={`hidden md:flex chat-toggle-rail-aware items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
         open
           ? "bg-gold/10 text-gold border border-gold/30"
           : "text-ink-faint hover:text-ink-dim hover:bg-raised border border-transparent"

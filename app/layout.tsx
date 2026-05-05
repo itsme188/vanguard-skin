@@ -22,13 +22,23 @@ export const metadata: Metadata = {
 // Anti-FOUC: read theme preference from localStorage and set <html data-theme>
 // before React hydrates so the first paint matches the user's choice. Defaults
 // to "light" if nothing is stored. Must run synchronously in <head>.
+//
+// Same pattern for the chat right-rail (xl:≥1280px persistent layout): read
+// vgs:chatRail and set <html data-chat-rail="open"|"collapsed">. CSS rules in
+// globals.css drive the layout reservation (--chat-rail-width) and the
+// EarningsHub responsive override (force mobile card layout below 1536px when
+// the rail is open and squeezing the content column).
 const themeInitScript = `
 try {
   var t = localStorage.getItem('vgs:theme');
   if (t !== 'light' && t !== 'dark') t = 'light';
   document.documentElement.setAttribute('data-theme', t);
+  var c = localStorage.getItem('vgs:chatRail');
+  if (c !== 'collapsed') c = 'open';
+  document.documentElement.setAttribute('data-chat-rail', c);
 } catch (e) {
   document.documentElement.setAttribute('data-theme', 'light');
+  document.documentElement.setAttribute('data-chat-rail', 'open');
 }
 if (navigator.userAgent.includes('Electron')) {
   document.documentElement.classList.add('electron');

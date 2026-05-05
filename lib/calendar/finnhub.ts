@@ -94,7 +94,20 @@ export async function fetchFinnhubEarningsForSymbols(
   }
   if (symbols.length === 0) return [];
 
-  const hits: EarningsCalendarEntry[] = [];
+  // Each hit retains the QUERIED symbol — the symbol the user holds and the
+  // app reasons about — alongside the Finnhub response. Pre-fix we trusted
+  // entry.symbol, which Finnhub sometimes returns with a foreign-exchange
+  // suffix (e.g. asking for "GFL" returns "GFL.TO" — the Toronto listing).
+  // The .TO row then never surfaces in the EarningsHub as held because
+  // getSymbolStatus matches on the user's "GFL" and we stored "GFL.TO".
+  // Using the queried symbol throughout keeps everything consistent without
+  // a brittle suffix-stripping heuristic that could fold genuine foreign
+  // holdings into US listings.
+  interface HitWithQuery {
+    queried: string;
+    entry: EarningsCalendarEntry;
+  }
+  const hits: HitWithQuery[] = [];
 
   // Phase A: calendar sweep — 1 req per symbol
   for (let i = 0; i < symbols.length; i++) {
@@ -105,7 +118,9 @@ export async function fetchFinnhubEarningsForSymbols(
     try {
       const data = await fetchJson<EarningsCalendarResponse>(url);
       if (data.earningsCalendar && data.earningsCalendar.length > 0) {
-        hits.push(...data.earningsCalendar);
+        for (const entry of data.earningsCalendar) {
+          hits.push({ queried: symbol, entry });
+        }
       }
     } catch (err) {
       // One symbol's failure shouldn't abort the whole scan.
@@ -117,27 +132,31 @@ export async function fetchFinnhubEarningsForSymbols(
     await sleep(PACING_MS);
   }
 
-  // Phase B: surprise history for each hit
+  // Phase B: surprise history for each hit. Keyed by the QUERIED symbol so
+  // that Finnhub's foreign-exchange suffix doesn't fragment the lookup.
   const historyMap = new Map<string, EarningsSurpriseEntry[]>();
-  for (const entry of hits) {
+  for (const hit of hits) {
     const url =
       `https://finnhub.io/api/v1/stock/earnings` +
-      `?symbol=${encodeURIComponent(entry.symbol)}&limit=4&token=${apiKey}`;
+      `?symbol=${encodeURIComponent(hit.queried)}&limit=4&token=${apiKey}`;
     try {
       const rows = await fetchJson<EarningsSurpriseEntry[]>(url);
-      if (Array.isArray(rows)) historyMap.set(entry.symbol, rows);
+      if (Array.isArray(rows)) historyMap.set(hit.queried, rows);
     } catch (err) {
       console.warn(
-        `[finnhub] history fetch failed for ${entry.symbol}: ${err instanceof Error ? err.message : err}`
+        `[finnhub] history fetch failed for ${hit.queried}: ${err instanceof Error ? err.message : err}`
       );
     }
     await sleep(PACING_MS);
   }
 
   // Assemble CalendarEventInput[] with rich raw_json for the briefing prompt.
-  return hits.map((entry) => {
-    const history = historyMap.get(entry.symbol) ?? [];
-    const securityId = getSecurityIdForSymbol(db, entry.symbol);
+  return hits.map(({ queried, entry }) => {
+    // Use the queried symbol as the canonical identifier. The original
+    // Finnhub-returned symbol is preserved in raw_json for debugging.
+    const symbol = queried;
+    const history = historyMap.get(symbol) ?? [];
+    const securityId = getSecurityIdForSymbol(db, symbol);
 
     const hourLabel = formatHour(entry.hour);
     const consensusParts: string[] = [];
@@ -150,8 +169,8 @@ export async function fetchFinnhubEarningsForSymbols(
     const consensus = consensusParts.join(" · ") || null;
 
     const title = hourLabel
-      ? `${entry.symbol} earnings (${hourLabel})`
-      : `${entry.symbol} earnings`;
+      ? `${symbol} earnings (${hourLabel})`
+      : `${symbol} earnings`;
 
     const descriptionLines: string[] = [];
     if (entry.quarter && entry.year) {
@@ -179,12 +198,14 @@ export async function fetchFinnhubEarningsForSymbols(
       title,
       description,
       security_id: securityId,
-      symbol: entry.symbol,
+      symbol,
       expected_impact: securityId ? "high" : "medium", // held → high for the user
       consensus_estimate: consensus,
       previous_value: null,
-      raw_json: JSON.stringify({ entry, history }),
-      source_key: `finnhub:${entry.symbol}:${entry.date}`,
+      // raw_json keeps the original Finnhub-returned symbol for debugging
+      // (useful when a foreign-suffix divergence ever surfaces again).
+      raw_json: JSON.stringify({ entry, history, finnhub_symbol: entry.symbol }),
+      source_key: `finnhub:${symbol}:${entry.date}`,
       week_of: weekOf,
     };
   });

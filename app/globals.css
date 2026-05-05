@@ -231,6 +231,73 @@ html {
   scroll-behavior: smooth;
 }
 
+/* Chat right-rail layout reservation (xl:≥1280px).
+ *
+ * The persistent chat panel is fixed-positioned at 480px wide on the right
+ * edge. The dashboard layout reserves matching padding so content doesn't
+ * underlap. Pre-2026-05-05 this reservation was always-on at xl with no
+ * way to free it up — at exactly 1280px (the Mac default windowed width)
+ * content shrunk to ~750px and the EarningsHub 10-column grid collapsed.
+ *
+ * --chat-rail-width is the source of truth, read by:
+ *   - .chat-rail-reserve below (layout reservation)
+ *   - ChatDrawer's panel translate-x (slide off-screen when collapsed)
+ *
+ * Default is open (480px). When the user clicks the collapse chevron,
+ * ChatDrawer writes vgs:chatRail="collapsed" + sets data-chat-rail="collapsed"
+ * on <html> → CSS-cascade flips the variable to 0px and the panel slides off.
+ */
+:root {
+  --chat-rail-width: 480px;
+}
+html[data-chat-rail="collapsed"] {
+  --chat-rail-width: 0px;
+}
+
+/* Apply reservation only at xl+ (≥1280px) — below xl the rail is a
+ * floating drawer and doesn't need a layout reservation. */
+@media (min-width: 1280px) {
+  .chat-rail-reserve {
+    padding-right: var(--chat-rail-width);
+    transition: padding-right 200ms ease-in-out;
+  }
+}
+
+/* Header chat-toggle button visibility on large desktop.
+ *
+ * Below xl, the button is the only way to open chat besides Cmd+J.
+ * At xl+, the button only appears when the rail is collapsed — when the
+ * rail is open it would be redundant (and the rail's collapse chevron
+ * provides the inverse action). Toggles instantly when ChatDrawer flips
+ * the data-chat-rail attribute, no page reload required.
+ */
+@media (min-width: 1280px) {
+  html[data-chat-rail="open"] .chat-toggle-rail-aware {
+    display: none !important;
+  }
+}
+
+/* EarningsHub responsive layout override.
+ *
+ * The desktop 10-column grid needs ~1100px of content width to fit cleanly.
+ * When the chat rail is OPEN at xl (1280px–1535px), the available content
+ * column is only ~750px and the four 1fr (consensus/actual EPS/Rev) columns
+ * collapse to ~20px each — every numerical cell renders as "$..." truncated.
+ *
+ * Force the mobile card layout in that range when the rail is open. The grid
+ * comes back at 2xl (≥1536px) where there's enough room even with the rail,
+ * or anywhere the rail is collapsed. Using attribute selectors so the layout
+ * adapts instantly when the user toggles collapse without page reload.
+ */
+@media (min-width: 768px) and (max-width: 1535px) {
+  html[data-chat-rail="open"] .earnings-hub-desktop {
+    display: none !important;
+  }
+  html[data-chat-rail="open"] .earnings-hub-mobile {
+    display: block !important;
+  }
+}
+
 /* Refined scrollbar */
 ::-webkit-scrollbar {
   width: 6px;
