@@ -371,16 +371,59 @@ export async function generateTradeReview(
   // Empirically, Opus 4.7 in structured-output mode sometimes returns an empty
   // `review_markdown` even with token budget to spare — the failure is not
   // strictly a truncation, but a model-side decision that produced no content
-  // for the most important field. Retry once with an emphatic system-prompt
-  // addendum before failing.
+  // for the most important field. We try three strategies in order:
+  //   1. Primary model with the standard prompt.
+  //   2. Same model + emphatic system-prompt addendum reminding it the field
+  //      is required and trade_grades may be skipped first.
+  //   3. Fall back to the *other* model (Opus → Sonnet, or vice versa). This
+  //      handles cases where one model has a content-specific quirk on this
+  //      particular input — the alternative usually succeeds.
   const isReviewMarkdownEmpty = (md: unknown): boolean =>
     !md || typeof md !== "string" || md.trim().length < 100;
 
+  // Always dump the prompt + model output to a debug file so we can inspect
+  // what's actually going to the model. Lives outside git.
+  const debugLog = async (
+    label: string,
+    payload: Record<string, unknown>
+  ) => {
+    try {
+      const fs = await import("node:fs/promises");
+      const path = await import("node:path");
+      const dir = path.join(process.cwd(), "data", "trade-review-debug");
+      await fs.mkdir(dir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const file = path.join(
+        dir,
+        `${stamp}-${params.accountId}-${params.periodStart}-${label}.json`
+      );
+      await fs.writeFile(
+        file,
+        JSON.stringify(
+          { ...payload, periodStart: params.periodStart, accountId: params.accountId },
+          null,
+          2
+        ),
+        "utf8"
+      );
+    } catch {
+      // Non-fatal — diagnostics shouldn't block the user
+    }
+  };
+
   let result: TradeReviewStructured;
   let usage: { inputTokens?: number; outputTokens?: number } | undefined;
-  const callModel = async (extraSystem = "") => {
+  let modelUsedSpec = modelSpec;
+
+  const callModel = async (
+    key: FeatureKey,
+    extraSystem = ""
+  ): Promise<{
+    object: TradeReviewStructured;
+    usage: { inputTokens?: number; outputTokens?: number } | undefined;
+  }> => {
     const response = await generateObject({
-      model: getModelForFeature(featureKey),
+      model: getModelForFeature(key),
       maxOutputTokens: maxTokens,
       schema: REVIEW_SCHEMA,
       system: extraSystem ? `${system}\n\n${extraSystem}` : system,
@@ -389,17 +432,28 @@ export async function generateTradeReview(
     return { object: response.object, usage: response.usage };
   };
 
-  const firstAttempt = await callModel();
+  // Attempt 1: primary model with standard prompt
+  const firstAttempt = await callModel(featureKey);
   result = firstAttempt.object;
   usage = firstAttempt.usage;
 
+  // Attempt 2: same model with emphatic addendum
   if (isReviewMarkdownEmpty(result.review_markdown)) {
+    await debugLog("attempt1-empty", {
+      modelSpec,
+      maxTokens,
+      systemPreview: system.slice(0, 500),
+      userPreview: user.slice(0, 1000),
+      result: firstAttempt.object,
+      usage: firstAttempt.usage,
+    });
     options?.onProgress?.(
       "Initial response had an empty review summary — retrying with stronger prompt...",
       4,
       totalSteps
     );
     const retry = await callModel(
+      featureKey,
       "RETRY NOTICE: Your previous attempt returned an EMPTY review_markdown. " +
       "This is a hard failure. You MUST produce a complete markdown review " +
       "(at least 1500 characters) covering the monthly overview, per-trade " +
@@ -410,18 +464,61 @@ export async function generateTradeReview(
     if (!isReviewMarkdownEmpty(retry.object.review_markdown)) {
       result = retry.object;
       usage = retry.usage;
+    } else {
+      await debugLog("attempt2-empty", {
+        modelSpec,
+        maxTokens,
+        result: retry.object,
+        usage: retry.usage,
+      });
     }
   }
 
-  // Final guard. If the retry also failed, surface a clear error so the user
-  // knows the model genuinely refused, not the SQLite NOT NULL constraint.
+  // Attempt 3: fall back to the other model. Models exhibit different
+  // structured-output behaviors; when one consistently refuses on a specific
+  // input, the alternative usually succeeds.
+  if (isReviewMarkdownEmpty(result.review_markdown)) {
+    const fallbackKey: FeatureKey =
+      featureKey === "tradeReviewMain"
+        ? "tradeReviewMainLarge"
+        : "tradeReviewMain";
+    const fallbackSpec = FEATURE_MODELS[fallbackKey];
+    options?.onProgress?.(
+      `Primary model (${modelSpec}) returned empty markdown twice — falling back to ${fallbackSpec}...`,
+      4,
+      totalSteps
+    );
+    try {
+      const fallback = await callModel(fallbackKey);
+      if (!isReviewMarkdownEmpty(fallback.object.review_markdown)) {
+        result = fallback.object;
+        usage = fallback.usage;
+        modelUsedSpec = fallbackSpec;
+      } else {
+        await debugLog("attempt3-fallback-empty", {
+          modelSpec: fallbackSpec,
+          maxTokens,
+          result: fallback.object,
+          usage: fallback.usage,
+        });
+      }
+    } catch (err) {
+      await debugLog("attempt3-fallback-threw", {
+        modelSpec: fallbackSpec,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // Final guard. If all three attempts failed, surface a clear error.
   if (isReviewMarkdownEmpty(result.review_markdown)) {
     throw new Error(
-      `AI returned an empty review summary on both the initial attempt and ` +
-      `the retry. The model is misbehaving on this specific input — try ` +
-      `(a) regenerating once more, (b) splitting the period if many trades, ` +
-      `or (c) reporting the prompt for diagnosis ` +
-      `(${tradeCount} trades, ${maxTokens} token budget, model ${modelSpec}).`
+      `AI returned an empty review summary across 3 attempts (Opus retry + ` +
+      `Sonnet fallback). The model is misbehaving on this specific input — ` +
+      `${tradeCount} trades, ${maxTokens} token budget. Debug dumps written ` +
+      `to data/trade-review-debug/ — share with the dev team. Try (a) splitting ` +
+      `the period if many trades, (b) removing trader-note Q&A answers if any, ` +
+      `or (c) checking that no trade has unusual characters in symbol/notes.`
     );
   }
 
@@ -454,7 +551,7 @@ export async function generateTradeReview(
     cumulativePatterns: result.cumulative_patterns
       ? JSON.stringify(result.cumulative_patterns)
       : null,
-    model: modelSpec,
+    model: modelUsedSpec,
     promptTokens: usage?.inputTokens ?? null,
     completionTokens: usage?.outputTokens ?? null,
   });
