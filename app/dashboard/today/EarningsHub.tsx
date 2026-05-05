@@ -21,7 +21,8 @@ import { db } from "@/lib/db";
 import { getEarningsForWeekDeduped } from "@/lib/queries/calendar";
 import { getSymbolStatus, type SymbolStatus } from "@/lib/queries/briefing-symbols";
 import { getCurrentMonday, addDays } from "@/lib/calendar/date-utils";
-import { formatFinnhubFigure } from "@/lib/format/finnhub-figure";
+import { formatFinnhubFigure, parseFinnhubFigure } from "@/lib/format/finnhub-figure";
+import { isPlausibleEarnings } from "@/lib/digest/send-earnings-email";
 import type { CalendarEvent } from "@/lib/types";
 import { PrivateText } from "@/lib/privacy/components";
 import { SymbolLink } from "../components/SymbolLink";
@@ -97,6 +98,25 @@ function deltaToneClass(delta: { sign: 1 | -1 | 0 } | null): string {
   if (delta.sign === -1) return "text-down";
   return "text-ink-dim";
 }
+
+/**
+ * Run the same plausibility guard the email scoreboard uses, so a bogus
+ * Finnhub actual (e.g. the GOOGL Q1 2026 5.11-vs-2.70 EPS scrape failure)
+ * doesn't render verbatim on the Today view. Pre-release rows (no actual)
+ * always pass — the guard is consensus-vs-actual.
+ */
+export function actualsAreImplausible(
+  consensus: string | null,
+  actual: string | null,
+): boolean {
+  if (!actual) return false;
+  const c = parseFinnhubFigure(consensus);
+  const a = parseFinnhubFigure(actual);
+  return !isPlausibleEarnings(c.eps, a.eps, c.revenue, a.revenue);
+}
+
+const IMPLAUSIBLE_TOOLTIP =
+  "Reported actuals flagged as implausible vs. consensus — see email scoreboard for details.";
 
 export function EarningsHub() {
   const weekOf = getCurrentMonday();
@@ -281,12 +301,16 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
   const slot = fmtSlot(event.event_time, event.release_time);
   const cons = formatFinnhubFigure(event.consensus_estimate);
   const isPostRelease = !!event.enriched_at && !!event.actual_value;
-  const act = isPostRelease
+  const implausible =
+    isPostRelease && actualsAreImplausible(event.consensus_estimate, event.actual_value);
+  const actRaw = isPostRelease
     ? formatFinnhubFigure(event.actual_value)
     : { eps: null, revenue: null, fallback: null };
-  const delta = isPostRelease
-    ? epsDelta(event.consensus_estimate, event.actual_value)
-    : null;
+  const act = implausible ? { eps: null, revenue: null, fallback: null } : actRaw;
+  const delta =
+    isPostRelease && !implausible
+      ? epsDelta(event.consensus_estimate, event.actual_value)
+      : null;
   // When a pre-release event has no consensus at all (Finnhub hasn't
   // published estimates), the four numeric cells used to render as a row of
   // em-dashes which read as broken. Show a single italic hint spanning the
@@ -333,12 +357,22 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
           <NumCell value={act.revenue} />
         </>
       )}
-      <span
-        className={`font-mono tabular-nums ${deltaToneClass(delta)}`}
-        style={{ fontSize: "12px", textAlign: "right" }}
-      >
-        {delta?.label ?? "—"}
-      </span>
+      {implausible ? (
+        <span
+          className="font-mono text-gold cursor-help"
+          title={IMPLAUSIBLE_TOOLTIP}
+          style={{ fontSize: "12px", textAlign: "right" }}
+        >
+          ⚠
+        </span>
+      ) : (
+        <span
+          className={`font-mono tabular-nums ${deltaToneClass(delta)}`}
+          style={{ fontSize: "12px", textAlign: "right" }}
+        >
+          {delta?.label ?? "—"}
+        </span>
+      )}
       <span style={{ textAlign: "center" }}>
         {event.symbol && (
           <BogeysEditButton
@@ -376,12 +410,16 @@ function MobileCard({ event }: { event: EnrichedRow }) {
   const slot = fmtSlot(event.event_time, event.release_time);
   const cons = formatFinnhubFigure(event.consensus_estimate);
   const isPostRelease = !!event.enriched_at && !!event.actual_value;
-  const act = isPostRelease
+  const implausible =
+    isPostRelease && actualsAreImplausible(event.consensus_estimate, event.actual_value);
+  const actRaw = isPostRelease
     ? formatFinnhubFigure(event.actual_value)
     : { eps: null, revenue: null, fallback: null };
-  const delta = isPostRelease
-    ? epsDelta(event.consensus_estimate, event.actual_value)
-    : null;
+  const act = implausible ? { eps: null, revenue: null, fallback: null } : actRaw;
+  const delta =
+    isPostRelease && !implausible
+      ? epsDelta(event.consensus_estimate, event.actual_value)
+      : null;
   const consensusMissing = !cons.eps && !cons.revenue && !isPostRelease;
 
   return (
@@ -419,19 +457,32 @@ function MobileCard({ event }: { event: EnrichedRow }) {
           </span>
         )}
         {isPostRelease ? (
-          <>
-            <span className="text-ink-faint">→</span>
-            <span className="text-ink-faint">
-              Act{" "}
-              <span className="text-ink-dim">
-                {act.eps ? <PrivateText>{act.eps}</PrivateText> : "—"} ·{" "}
-                {act.revenue ? <PrivateText>{act.revenue}</PrivateText> : "—"}
+          implausible ? (
+            <>
+              <span className="text-ink-faint">→</span>
+              <span
+                className="text-gold italic cursor-help"
+                title={IMPLAUSIBLE_TOOLTIP}
+                style={{ fontSize: "12px" }}
+              >
+                ⚠ Reported actuals flagged as implausible
               </span>
-            </span>
-            {delta && (
-              <span className={`font-semibold ${deltaToneClass(delta)}`}>{delta.label}</span>
-            )}
-          </>
+            </>
+          ) : (
+            <>
+              <span className="text-ink-faint">→</span>
+              <span className="text-ink-faint">
+                Act{" "}
+                <span className="text-ink-dim">
+                  {act.eps ? <PrivateText>{act.eps}</PrivateText> : "—"} ·{" "}
+                  {act.revenue ? <PrivateText>{act.revenue}</PrivateText> : "—"}
+                </span>
+              </span>
+              {delta && (
+                <span className={`font-semibold ${deltaToneClass(delta)}`}>{delta.label}</span>
+              )}
+            </>
+          )
         ) : null}
       </div>
       <div className="flex items-center gap-2 mt-2">
