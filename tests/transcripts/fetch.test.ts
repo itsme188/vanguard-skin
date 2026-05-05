@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { upsertTranscript } from "@/lib/mutations/transcripts";
-import { getTranscriptForChat } from "@/lib/transcripts/fetch";
+import {
+  deriveFilingReportingQuarter,
+  fetchTranscript,
+  getTranscriptForChat,
+} from "@/lib/transcripts/fetch";
+import { getEarnings8KFilings } from "@/lib/apis/edgar";
 
 // Mock external fetchers so tests stay offline. The cache-hit tests don't
 // reach these; only the legacy-invalidation test does (test #4), and it
@@ -18,10 +23,13 @@ vi.mock("@/lib/apis/motley-fool", () => ({
 }));
 
 vi.mock("@/lib/apis/edgar", () => ({
+  // Default mock: a single Q1 2026 filing (Apr-Jun → Q1 2026 per
+  // deriveFilingReportingQuarter). Tests that need a different shape
+  // override via vi.mocked(...).mockResolvedValueOnce(...).
   getEarnings8KFilings: vi.fn(async () => [
     {
       accessionNumber: "refresh-accession",
-      filingDate: "2026-01-31",
+      filingDate: "2026-04-25",
       filingUrl: "https://example.test/filing",
       pressReleaseText: "refreshed ".repeat(2000),
     },
@@ -153,5 +161,102 @@ describe("getTranscriptForChat — excerpt vs full text", () => {
       .prepare("SELECT COUNT(*) as c FROM earnings_transcripts")
       .get() as { c: number };
     expect(stillCached.c).toBe(1);
+  });
+});
+
+describe("deriveFilingReportingQuarter", () => {
+  it("maps Jan-Mar filings to Q4 of prior year", () => {
+    expect(deriveFilingReportingQuarter("2026-01-31")).toEqual({ year: 2025, quarter: 4 });
+    expect(deriveFilingReportingQuarter("2026-03-12")).toEqual({ year: 2025, quarter: 4 });
+  });
+
+  it("maps Apr-Jun filings to Q1 of same year", () => {
+    expect(deriveFilingReportingQuarter("2026-04-15")).toEqual({ year: 2026, quarter: 1 });
+    expect(deriveFilingReportingQuarter("2026-06-30")).toEqual({ year: 2026, quarter: 1 });
+  });
+
+  it("maps Jul-Sep to Q2 and Oct-Dec to Q3", () => {
+    expect(deriveFilingReportingQuarter("2026-08-04")).toEqual({ year: 2026, quarter: 2 });
+    expect(deriveFilingReportingQuarter("2026-11-15")).toEqual({ year: 2026, quarter: 3 });
+  });
+});
+
+describe("fetchTranscript — EDGAR quarter-match guard", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = makeDb();
+    vi.clearAllMocks();
+  });
+
+  it("rejects an EDGAR filing whose reporting quarter doesn't match the request", async () => {
+    // User requests Q1 2026; EDGAR only returns a Q4 2025 filing (Jan 2026
+    // file date). Pre-fix this would silently cache the Q4 body under
+    // year=2026 q=1 labels. Now it returns null.
+    vi.mocked(getEarnings8KFilings).mockResolvedValueOnce([
+      {
+        accessionNumber: "wrong-quarter",
+        filingDate: "2026-02-03", // → Q4 2025
+        filingUrl: "https://example.test/wrong",
+        pressReleaseText: "this is Q4 content",
+      },
+    ]);
+
+    const result = await fetchTranscript(db, "TER", 2026, 1);
+
+    expect(result).toBeNull();
+    const cached = db
+      .prepare("SELECT COUNT(*) AS c FROM earnings_transcripts")
+      .get() as { c: number };
+    expect(cached.c).toBe(0);
+  });
+
+  it("caches an EDGAR filing whose reporting quarter matches the request", async () => {
+    // User requests Q1 2026; EDGAR returns a filing dated 2026-04-22 → Q1.
+    vi.mocked(getEarnings8KFilings).mockResolvedValueOnce([
+      {
+        accessionNumber: "right-quarter",
+        filingDate: "2026-04-22", // → Q1 2026
+        filingUrl: "https://example.test/right",
+        pressReleaseText: "this is Q1 2026 content",
+      },
+    ]);
+
+    const result = await fetchTranscript(db, "TER", 2026, 1);
+
+    expect(result).not.toBeNull();
+    expect(result!.transcript.year).toBe(2026);
+    expect(result!.transcript.quarter).toBe(1);
+    expect(result!.transcript.accession_number).toBe("right-quarter");
+    expect(result!.transcript.transcript).toContain("Q1 2026 content");
+  });
+
+  it("picks the matching filing from a list of multiple candidates", async () => {
+    // EDGAR returns 3 filings; user requests Q1 2026. Only one matches.
+    vi.mocked(getEarnings8KFilings).mockResolvedValueOnce([
+      {
+        accessionNumber: "q4-2025",
+        filingDate: "2026-02-03",
+        filingUrl: "https://example.test/q4",
+        pressReleaseText: "Q4 2025 content",
+      },
+      {
+        accessionNumber: "q1-2026",
+        filingDate: "2026-04-25",
+        filingUrl: "https://example.test/q1",
+        pressReleaseText: "Q1 2026 content",
+      },
+      {
+        accessionNumber: "q3-2025",
+        filingDate: "2025-11-04",
+        filingUrl: "https://example.test/q3",
+        pressReleaseText: "Q3 2025 content",
+      },
+    ]);
+
+    const result = await fetchTranscript(db, "TER", 2026, 1);
+
+    expect(result).not.toBeNull();
+    expect(result!.transcript.accession_number).toBe("q1-2026");
+    expect(result!.transcript.transcript).toContain("Q1 2026 content");
   });
 });
