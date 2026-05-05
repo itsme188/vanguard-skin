@@ -26,7 +26,11 @@ function createTestDb(): Database.Database {
       symbol TEXT NOT NULL UNIQUE,
       name TEXT,
       security_type TEXT DEFAULT 'Stock',
-      multiplier REAL DEFAULT 1
+      multiplier REAL DEFAULT 1,
+      underlying_symbol TEXT,
+      strike_price REAL,
+      expiration_date TEXT,
+      option_type TEXT
     );
 
     CREATE TABLE transactions (
@@ -547,6 +551,94 @@ describe("market-context", () => {
       const [ctx] = getMarketContext(db, [trade], 1);
 
       expect(ctx.positionPctOfPortfolio).toBeNull();
+    });
+  });
+
+  // ─── Option Origin (exercise / assignment) ────────────────────
+
+  describe("option origin", () => {
+    it("surfaces RSP-style long-call exercise on the underlying trade (regression)", () => {
+      // Reproduces the user's 2026-04 RSP case:
+              //   3/30 BUY_TO_OPEN 5 long calls $190 strike, exp 4/10 @ $3.50 premium
+              //   4/10 EXERCISED 5 contracts → 500 shares assigned at $190 strike
+              //   4/13 SELL 400 shares @ $196.17
+      // Insert option security + transactions
+      db.prepare(
+        `INSERT INTO securities
+         (id, symbol, name, security_type, underlying_symbol, strike_price, expiration_date, option_type, multiplier)
+         VALUES (?, ?, ?, 'Option', 'RSP', 190, '2026-04-10', 'CALL', 100)`
+      ).run(100, "RSP   260410C00190000", "RSP 4/10 $190 CALL");
+
+      db.prepare(
+        `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, price_per_share)
+         VALUES (1, 100, '2026-03-30', 'BUY_TO_OPEN', 5, 3.50)`
+      ).run();
+      db.prepare(
+        `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, price_per_share)
+         VALUES (1, 100, '2026-04-10', 'EXERCISED', 5, 0)`
+      ).run();
+
+      // The grouped trade is the 4/13 RSP stock sell. RSP must exist as the
+      // underlying — securityId 1 is AAPL in the fixture, so use a fresh id.
+      db.prepare(
+        `INSERT INTO securities (id, symbol, name, security_type) VALUES (?, ?, ?, 'Stock')`
+      ).run(50, "RSP", "Invesco S&P 500 Equal Weight");
+
+      const trade = makeGroupedTrade({
+        securityId: 50,
+        symbol: "RSP",
+        earliestEntryDate: "2026-03-20",
+        exitDate: "2026-04-13",
+      });
+      const [ctx] = getMarketContext(db, [trade], 1);
+
+      expect(ctx.optionOrigin).not.toBeNull();
+      expect(ctx.optionOrigin!).toHaveLength(1);
+      const ev = ctx.optionOrigin![0];
+      expect(ev.eventType).toBe("EXERCISED");
+      expect(ev.eventDate).toBe("2026-04-10");
+      expect(ev.optionType).toBe("CALL");
+      expect(ev.contracts).toBe(5);
+      expect(ev.strikePrice).toBe(190);
+      expect(ev.expirationDate).toBe("2026-04-10");
+      expect(ev.openPremiumPerContract).toBe(3.5);
+      expect(ev.openDate).toBe("2026-03-30");
+      expect(ev.openType).toBe("BUY_TO_OPEN");
+    });
+
+    it("returns null when there are no option events on the underlying", () => {
+      const trade = makeGroupedTrade({ totalQuantity: 10 });
+      const [ctx] = getMarketContext(db, [trade], 1);
+      expect(ctx.optionOrigin).toBeNull();
+    });
+
+    it("formatted output includes the OPTION-DRIVEN ACTIVITY block when events exist", () => {
+      db.prepare(
+        `INSERT INTO securities
+         (id, symbol, name, security_type, underlying_symbol, strike_price, expiration_date, option_type, multiplier)
+         VALUES (?, ?, ?, 'Option', 'AAPL', 200, '2024-06-21', 'CALL', 100)`
+      ).run(101, "AAPL  240621C00200000", "AAPL 6/21 $200 CALL");
+      db.prepare(
+        `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, price_per_share)
+         VALUES (1, 101, '2024-05-01', 'BUY_TO_OPEN', 3, 5.00)`
+      ).run();
+      db.prepare(
+        `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, price_per_share)
+         VALUES (1, 101, '2024-06-21', 'EXERCISED', 3, 0)`
+      ).run();
+
+      const trade = makeGroupedTrade({
+        earliestEntryDate: "2024-05-15",
+        exitDate: "2024-06-25",
+      });
+      const contexts = getMarketContext(db, [trade], 1);
+      const formatted = formatMarketContext(contexts, [trade]);
+
+      expect(formatted).toContain("OPTION-DRIVEN ACTIVITY");
+      expect(formatted).toContain("EXERCISED long calls");
+      expect(formatted).toContain("$200.00 strike");
+      expect(formatted).toContain("BUY_TO_OPEN");
+      expect(formatted).toContain("$5.00/contract");
     });
   });
 

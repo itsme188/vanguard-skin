@@ -9,6 +9,31 @@ interface TradeMarketContext {
   positionPctOfPortfolio: number | null; // at entry, as decimal
   remainingPosition: RemainingPositionContext | null;
   concurrentActivity: ConcurrentActivity | null;
+  optionOrigin: OptionOriginEvent[] | null;
+}
+
+/**
+ * Option-exercise / assignment / expiration events on the trade's underlying
+ * within a window around the trade. Surfaces option-driven share movement
+ * that would otherwise be invisible to the AI (which only sees stock buys
+ * and stock sells in the trade table).
+ *
+ * Example: user buys 5 long calls 3/30, calls expire ITM 4/10 → 500 shares
+ * assigned at strike → user sells those shares 4/13. The trade table shows
+ * "BUY 500 RSP @$190 on 4/10, SELL 400 RSP @$196 on 4/13" with no hint
+ * that the buy was forced by the option exercise.
+ */
+interface OptionOriginEvent {
+  eventType: "EXERCISED" | "ASSIGNED" | "EXPIRED";
+  eventDate: string;
+  optionType: "CALL" | "PUT";
+  contracts: number;
+  strikePrice: number;
+  expirationDate: string;
+  // Premium paid/received when the option was opened (per contract, not per share)
+  openPremiumPerContract: number | null;
+  openDate: string | null;
+  openType: string | null; // BUY_TO_OPEN | SELL_TO_OPEN
 }
 
 interface StockPriceContext {
@@ -79,6 +104,13 @@ export function getMarketContext(
     concurrentActivity: getConcurrentActivity(
       db,
       accountId,
+      trade.exitDate
+    ),
+    optionOrigin: getOptionOriginEvents(
+      db,
+      accountId,
+      trade.symbol,
+      trade.earliestEntryDate,
       trade.exitDate
     ),
   }));
@@ -168,6 +200,38 @@ export function formatMarketContext(
       lines.push(`- Concurrent buys (±7d): ${buyList}`);
       lines.push(
         `- Total deployed nearby: $${ca.totalBuyAmount.toLocaleString("en-US", { maximumFractionDigits: 0 })}`
+      );
+    }
+
+    if (ctx.optionOrigin && ctx.optionOrigin.length > 0) {
+      // Surface option-driven share movement so the AI doesn't narrate the
+      // trade as a plain stock buy/sell when shares actually came from an
+      // exercise or were called away via assignment.
+      lines.push(`- ⚠️ OPTION-DRIVEN ACTIVITY on ${ctx.symbol}:`);
+      for (const ev of ctx.optionOrigin) {
+        const sharesPerContract = 100; // standard equity option
+        const sharesAffected = ev.contracts * sharesPerContract;
+        const isLong = ev.eventType === "EXERCISED";
+        const directionWord =
+          ev.eventType === "EXERCISED"
+            ? ev.optionType === "CALL"
+              ? `EXERCISED long calls → bought ${sharesAffected} shares at $${ev.strikePrice.toFixed(2)} strike`
+              : `EXERCISED long puts → sold ${sharesAffected} shares at $${ev.strikePrice.toFixed(2)} strike`
+            : ev.eventType === "ASSIGNED"
+              ? ev.optionType === "CALL"
+                ? `ASSIGNED on short calls → ${sharesAffected} shares called away at $${ev.strikePrice.toFixed(2)} strike`
+                : `ASSIGNED on short puts → bought ${sharesAffected} shares at $${ev.strikePrice.toFixed(2)} strike (forced)`
+              : `EXPIRED ${isLong ? "long" : "short"} ${ev.optionType.toLowerCase()} options worthless (no share movement)`;
+        const premiumStr =
+          ev.openPremiumPerContract != null && ev.openDate
+            ? ` (originally opened ${ev.openDate} via ${ev.openType}, premium $${ev.openPremiumPerContract.toFixed(2)}/contract = $${(ev.openPremiumPerContract * ev.contracts * sharesPerContract).toLocaleString("en-US", { maximumFractionDigits: 0 })} total)`
+            : "";
+        lines.push(
+          `  • ${ev.eventDate}: ${ev.contracts} contract(s) of ${ev.optionType} $${ev.strikePrice.toFixed(2)} (exp ${ev.expirationDate}) — ${directionWord}${premiumStr}`
+        );
+      }
+      lines.push(
+        `  ⇒ When narrating this trade, frame it as the option-driven sequence (option opened → exercise/assignment → share movement), NOT as an isolated stock buy/sell. The user's mental model is the option play; FIFO tax-lot accounting may match shares against earlier same-symbol lots, but the economic substance is the option flow.`
       );
     }
 
@@ -491,9 +555,96 @@ function formatQty(qty: number): string {
   return qty >= 1 ? String(Math.round(qty)) : qty.toPrecision(3);
 }
 
+/**
+ * Find option-exercise / assignment / expiration events on a stock's
+ * underlying within a window around a given grouped trade. Lets the
+ * trade-review prompt surface option-driven share movement that would
+ * otherwise be invisible in the stock-only trade table.
+ *
+ * Window: 30 days before earliest entry → 7 days after exit. Wider than
+ * strictly needed because LEAP options can sit open for months — a long
+ * call expiring ITM with shares assigned weeks before the user-visible
+ * "trade" still informs the trade's narrative.
+ */
+function getOptionOriginEvents(
+  db: Database.Database,
+  accountId: number,
+  underlyingSymbol: string,
+  earliestEntryDate: string,
+  exitDate: string
+): OptionOriginEvent[] | null {
+  const rows = db
+    .prepare(
+      `SELECT
+         t.trade_date AS event_date,
+         UPPER(t.type) AS event_type,
+         ABS(t.quantity) AS contracts,
+         UPPER(s.option_type) AS option_type,
+         s.strike_price,
+         s.expiration_date,
+         t.security_id AS option_security_id
+       FROM transactions t
+       JOIN securities s ON s.id = t.security_id
+       WHERE t.account_id = ?
+         AND s.underlying_symbol = ?
+         AND LOWER(t.type) IN ('exercised', 'assigned', 'expired')
+         AND LOWER(s.security_type) = 'option'
+         AND s.option_type IS NOT NULL
+         AND s.strike_price IS NOT NULL
+         AND s.expiration_date IS NOT NULL
+         AND t.trade_date >= date(?, '-30 days')
+         AND t.trade_date <= date(?, '+7 days')
+       ORDER BY t.trade_date`
+    )
+    .all(accountId, underlyingSymbol, earliestEntryDate, exitDate) as Array<{
+    event_date: string;
+    event_type: "EXERCISED" | "ASSIGNED" | "EXPIRED";
+    contracts: number;
+    option_type: "CALL" | "PUT";
+    strike_price: number;
+    expiration_date: string;
+    option_security_id: number;
+  }>;
+
+  if (rows.length === 0) return null;
+
+  // For each event, find the original BUY_TO_OPEN / SELL_TO_OPEN to surface
+  // the premium paid/received and the open date. This lets the AI narrate
+  // the full option play (e.g. "user paid $1,755 for 5 long calls, exercised
+  // ITM 11 days later, sold the 500 assigned shares at +$3,000 net of premium").
+  const openStmt = db.prepare(
+    `SELECT trade_date, UPPER(type) AS open_type, price_per_share
+     FROM transactions
+     WHERE account_id = ?
+       AND security_id = ?
+       AND LOWER(type) IN ('buy_to_open', 'sell_to_open')
+     ORDER BY trade_date ASC
+     LIMIT 1`
+  );
+
+  return rows.map((r) => {
+    const opener = openStmt.get(accountId, r.option_security_id) as
+      | { trade_date: string; open_type: string; price_per_share: number | null }
+      | undefined;
+    return {
+      eventType: r.event_type,
+      eventDate: r.event_date,
+      optionType: r.option_type,
+      contracts: r.contracts,
+      strikePrice: r.strike_price,
+      expirationDate: r.expiration_date,
+      openPremiumPerContract:
+        opener?.price_per_share != null ? opener.price_per_share : null,
+      openDate: opener?.trade_date ?? null,
+      openType: opener?.open_type ?? null,
+    };
+  });
+}
+
 export type {
   TradeMarketContext,
   StockPriceContext,
   RemainingPositionContext,
   ConcurrentActivity,
+  OptionOriginEvent,
 };
