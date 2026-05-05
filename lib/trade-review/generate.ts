@@ -368,28 +368,60 @@ export async function generateTradeReview(
     totalSteps
   );
 
-  const { object: result, usage } = await generateObject({
-    model: getModelForFeature(featureKey),
-    maxOutputTokens: maxTokens,
-    schema: REVIEW_SCHEMA,
-    system,
-    prompt: user,
-  });
+  // Empirically, Opus 4.7 in structured-output mode sometimes returns an empty
+  // `review_markdown` even with token budget to spare — the failure is not
+  // strictly a truncation, but a model-side decision that produced no content
+  // for the most important field. Retry once with an emphatic system-prompt
+  // addendum before failing.
+  const isReviewMarkdownEmpty = (md: unknown): boolean =>
+    !md || typeof md !== "string" || md.trim().length < 100;
 
-  // Validate the AI's response before save. A truncated tool call (model hit
-  // its output token limit mid-stream) typically arrives with `review_markdown`
-  // missing or empty. Fail with a clear message instead of letting the SQLite
-  // NOT NULL constraint surface as the symptom.
-  if (
-    !result.review_markdown ||
-    typeof result.review_markdown !== "string" ||
-    result.review_markdown.trim() === ""
-  ) {
+  let result: TradeReviewStructured;
+  let usage: { inputTokens?: number; outputTokens?: number } | undefined;
+  const callModel = async (extraSystem = "") => {
+    const response = await generateObject({
+      model: getModelForFeature(featureKey),
+      maxOutputTokens: maxTokens,
+      schema: REVIEW_SCHEMA,
+      system: extraSystem ? `${system}\n\n${extraSystem}` : system,
+      prompt: user,
+    });
+    return { object: response.object, usage: response.usage };
+  };
+
+  const firstAttempt = await callModel();
+  result = firstAttempt.object;
+  usage = firstAttempt.usage;
+
+  if (isReviewMarkdownEmpty(result.review_markdown)) {
+    options?.onProgress?.(
+      "Initial response had an empty review summary — retrying with stronger prompt...",
+      4,
+      totalSteps
+    );
+    const retry = await callModel(
+      "RETRY NOTICE: Your previous attempt returned an EMPTY review_markdown. " +
+      "This is a hard failure. You MUST produce a complete markdown review " +
+      "(at least 1500 characters) covering the monthly overview, per-trade " +
+      "analysis, observed patterns, and three concrete recommendations. " +
+      "If trade_grades takes too long, write fewer of them — but review_markdown " +
+      "MUST be substantive."
+    );
+    if (!isReviewMarkdownEmpty(retry.object.review_markdown)) {
+      result = retry.object;
+      usage = retry.usage;
+    }
+  }
+
+  // Final guard. If the retry also failed, surface a clear error so the user
+  // knows the model genuinely refused, not the SQLite NOT NULL constraint.
+  if (isReviewMarkdownEmpty(result.review_markdown)) {
     throw new Error(
-      `AI returned an incomplete response — the review summary was empty. ` +
-      `This usually means the model hit its output token limit. ` +
-      `Try regenerating; if it persists, the period may have too many trades ` +
-      `to summarize in one pass (current: ${tradeCount} trades, budget: ${maxTokens} tokens).`
+      `AI returned an empty review summary on both the initial attempt and ` +
+      `the retry. The model is misbehaving on this specific input — try ` +
+      `(a) regenerating once more, (b) splitting the period if many trades, ` +
+      `or (c) reporting the prompt for diagnosis ` +
+      `(${tradeCount} trades, ${maxTokens} token budget, model ${modelSpec}).`
     );
   }
 

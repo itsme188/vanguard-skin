@@ -57,11 +57,8 @@ MONTHLY SUMMARY MUST INCLUDE:
 3. Patterns observed this month (positive and negative)
 4. Three specific recommendations grounded in what the data shows
 
-OUTPUT ORDER (write fields in this order in your tool call):
-1. review_markdown FIRST — this is the most important artifact. If output gets truncated, we want the summary saved, not the per-trade grades.
-2. trade_grades (one per trade) — keep each grade's assessment / what_worked / what_didnt concise (1-2 sentences each); do NOT pad.
-3. patterns_identified, strengths, weaknesses, cumulative_patterns last.
-For periods with 30+ trades, prioritize the markdown over exhaustive per-trade detail.
+REVIEW_MARKDOWN IS THE PRIMARY DELIVERABLE:
+The review_markdown field is the most important output and MUST be a substantive markdown report (at least 1500 characters, typically 2000-5000) covering: monthly overview, per-trade analysis (one paragraph per trade with specific data), patterns, and three concrete recommendations. Do NOT return an empty or short review_markdown — that's a hard failure. Per-trade trade_grades are secondary; keep each grade's assessment / what_worked / what_didnt concise (1-2 sentences each).
 
 CRITICAL RULES:
 - Be analytical and constructive. Write as a knowledgeable colleague, not an authority figure.
