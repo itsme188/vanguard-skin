@@ -14,7 +14,9 @@ import { RecentAlertsPanel } from "../../components/RecentAlertsPanel";
 import { TransactionsSection } from "../../components/TransactionsSection";
 import { ResearchMentionsSection } from "../../components/ResearchMentionsSection";
 import { TerminalSection, TerminalTH, TerminalTD, TerminalTag } from "../../components/TerminalSection";
+import { TranscriptsRefreshButton } from "./TranscriptsRefreshButton";
 import { Money, Pct, Shares } from "@/lib/privacy/components";
+import type { EarningsTranscript } from "@/lib/types";
 import {
   FACTOR_COLUMNS,
   FACTOR_LABELS,
@@ -59,6 +61,107 @@ function holdingPeriodLabel(acquisitionDate: string): string {
     (Date.now() - new Date(acquisitionDate).getTime()) / (1000 * 60 * 60 * 24)
   );
   return days > 365 ? "LT" : "ST";
+}
+
+const TRANSCRIPTS_VISIBLE = 8;
+
+function TranscriptRow({
+  transcript: t,
+  showTopBorder,
+}: {
+  transcript: EarningsTranscript;
+  showTopBorder: boolean;
+}) {
+  const sentimentColor = t.sentiment_label === "positive"
+    ? "#22c55e"
+    : t.sentiment_label === "negative"
+      ? "#ef4444"
+      : "#888";
+  return (
+    <div
+      style={{
+        padding: "14px 20px",
+        borderTop: showTopBorder ? "1px solid #161616" : undefined,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "6px" }}>
+        <span
+          style={{
+            fontFamily: "var(--font-mono), monospace",
+            fontSize: "14px",
+            fontWeight: 600,
+            color: "#eee",
+            letterSpacing: "0.02em",
+          }}
+        >
+          Q{t.quarter} {t.year}
+        </span>
+        {t.sentiment_label && (
+          <TerminalTag color={sentimentColor} variant="outline" size="xs">
+            {t.sentiment_label}
+          </TerminalTag>
+        )}
+        <span
+          style={{
+            fontFamily: "var(--font-mono), monospace",
+            fontSize: "11px",
+            letterSpacing: "0.14em",
+            textTransform: "uppercase",
+            color: "#666",
+            marginLeft: "auto",
+          }}
+        >
+          {t.source}
+        </span>
+      </div>
+      {t.summary && (
+        <p
+          className="line-clamp-2"
+          style={{
+            fontFamily: "Geist, system-ui, sans-serif",
+            fontSize: "14px",
+            lineHeight: 1.55,
+            color: "#bbb",
+          }}
+        >
+          {t.summary}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function TranscriptList({ transcripts }: { transcripts: EarningsTranscript[] }) {
+  const visible = transcripts.slice(0, TRANSCRIPTS_VISIBLE);
+  const hidden = transcripts.slice(TRANSCRIPTS_VISIBLE);
+  return (
+    <div>
+      {visible.map((t, idx) => (
+        <TranscriptRow key={t.id} transcript={t} showTopBorder={idx > 0} />
+      ))}
+      {hidden.length > 0 && (
+        <details>
+          <summary
+            style={{
+              padding: "10px 20px",
+              borderTop: "1px solid #161616",
+              cursor: "pointer",
+              fontFamily: "var(--font-mono), monospace",
+              fontSize: "11px",
+              letterSpacing: "0.18em",
+              textTransform: "uppercase",
+              color: "#888",
+            }}
+          >
+            Show {hidden.length} older
+          </summary>
+          {hidden.map((t) => (
+            <TranscriptRow key={t.id} transcript={t} showTopBorder />
+          ))}
+        </details>
+      )}
+    </div>
+  );
 }
 
 export default async function SecurityDetailPage(props: {
@@ -837,73 +940,31 @@ export default async function SecurityDetailPage(props: {
         </TerminalSection>
       )}
 
-      {/* Transcripts */}
-      {transcripts.length > 0 && (
-        <TerminalSection title={`Earnings Transcripts · ${transcripts.length}`}>
-          <div>
-            {transcripts.slice(0, 4).map((t, idx) => {
-              const sentimentColor = t.sentiment_label === "positive"
-                ? "#22c55e"
-                : t.sentiment_label === "negative"
-                  ? "#ef4444"
-                  : "#888";
-              return (
-                <div
-                  key={t.id}
-                  style={{
-                    padding: "14px 20px",
-                    borderTop: idx === 0 ? undefined : "1px solid #161616",
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "6px" }}>
-                    <span
-                      style={{
-                        fontFamily: "var(--font-mono), monospace",
-                        fontSize: "14px",
-                        fontWeight: 600,
-                        color: "#eee",
-                        letterSpacing: "0.02em",
-                      }}
-                    >
-                      Q{t.quarter} {t.year}
-                    </span>
-                    {t.sentiment_label && (
-                      <TerminalTag color={sentimentColor} variant="outline" size="xs">
-                        {t.sentiment_label}
-                      </TerminalTag>
-                    )}
-                    <span
-                      style={{
-                        fontFamily: "var(--font-mono), monospace",
-                        fontSize: "11px",
-                        letterSpacing: "0.14em",
-                        textTransform: "uppercase",
-                        color: "#666",
-                        marginLeft: "auto",
-                      }}
-                    >
-                      {t.source}
-                    </span>
-                  </div>
-                  {t.summary && (
-                    <p
-                      className="line-clamp-2"
-                      style={{
-                        fontFamily: "Geist, system-ui, sans-serif",
-                        fontSize: "14px",
-                        lineHeight: 1.55,
-                        color: "#bbb",
-                      }}
-                    >
-                      {t.summary}
-                    </p>
-                  )}
-                </div>
-              );
-            })}
+      {/* Transcripts. Always rendered — when the cache is empty we show an
+          intentional empty state with the refresh button instead of silently
+          hiding the section. The first 8 are visible by default; if more
+          are cached, a native `<details>` reveals the rest. */}
+      <TerminalSection
+        title={
+          transcripts.length > 0
+            ? `Earnings Transcripts · ${transcripts.length}`
+            : "Earnings Transcripts"
+        }
+        action={<TranscriptsRefreshButton ticker={security.symbol} />}
+      >
+        {transcripts.length === 0 ? (
+          <div style={{ padding: "20px", color: "#888", fontSize: "13px", lineHeight: 1.6 }}>
+            <p>No earnings transcripts cached for {security.symbol}.</p>
+            <p style={{ marginTop: "8px", fontSize: "12px", color: "#666" }}>
+              Click <span style={{ color: "#bbb" }}>↻ refresh</span> to fetch the most recent
+              quarter. Sources tried in order: API Ninjas (paid) → Motley Fool → SEC EDGAR 8-K
+              (free, fiscal-quarter matched).
+            </p>
           </div>
-        </TerminalSection>
-      )}
+        ) : (
+          <TranscriptList transcripts={transcripts} />
+        )}
+      </TerminalSection>
 
       {/* Empty state — no positions, no data */}
       {positions.length === 0 &&

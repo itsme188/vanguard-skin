@@ -142,6 +142,35 @@ export function getMostRecentQuarter(date: Date = new Date()): {
   return { year, quarter: 3 }; // Q3
 }
 
+/**
+ * Derive the calendar quarter being reported in an earnings 8-K from its
+ * filing date. Companies on calendar fiscal years file Q1 8-Ks in Apr-Jun,
+ * Q2 in Jul-Sep, Q3 in Oct-Dec, and Q4 in Jan-Mar of the following year.
+ *
+ * **Different from `getMostRecentQuarter`** which is a defensive "what
+ * quarter is being talked about as of today's date" default. This function
+ * answers "what quarter does THIS specific filing report on?" — needed for
+ * the EDGAR fallback to refuse caching a Q4 filing under a Q1 label when
+ * the user requested Q1 and only Q4 was available.
+ *
+ * Limitation: tickers on non-calendar fiscal years (AAPL, ORCL, ADBE, etc.)
+ * will under-match. That's the safe failure mode — the EDGAR fallback
+ * returns null instead of caching mismatched content.
+ */
+export function deriveFilingReportingQuarter(filingDate: string): {
+  year: number;
+  quarter: number;
+} {
+  // Parse YYYY-MM-DD as UTC noon to dodge DST + timezone edge cases.
+  const d = new Date(filingDate + "T12:00:00Z");
+  const m = d.getUTCMonth() + 1;
+  const y = d.getUTCFullYear();
+  if (m <= 3) return { year: y - 1, quarter: 4 };
+  if (m <= 6) return { year: y, quarter: 1 };
+  if (m <= 9) return { year: y, quarter: 2 };
+  return { year: y, quarter: 3 };
+}
+
 // ─── Resolve Security ID ────────────────────────────────────────
 
 function resolveSecurityId(
@@ -258,32 +287,40 @@ export async function fetchTranscript(
   // 4. Fall back to EDGAR 8-K press release.
   // Request full text so cached rows have the complete body; the chat-tool
   // layer decides whether to return an excerpt or the full thing to the
-  // model.
+  // model. Critically: filter the returned filings against the requested
+  // (year, quarter). The previous implementation took filings[0] (most
+  // recent) regardless of which quarter it reported on — when a user
+  // requested Q1 2026 and EDGAR only had Q4 2025 cached, the Q4 8-K body
+  // would silently get cached under "year=2026, quarter=1" labels. Now we
+  // refuse the mismatch and return null so the caller knows nothing
+  // matched.
   try {
     const filings = await getEarnings8KFilings(upperTicker, {
       limit: 4,
       fullText: true,
     });
-    if (filings.length > 0) {
-      // Find the filing closest to our target quarter
-      const filing = filings[0]; // Most recent
+    const matchingFiling = filings.find((f) => {
+      const q = deriveFilingReportingQuarter(f.filingDate);
+      return q.year === year && q.quarter === quarter;
+    });
+    if (matchingFiling) {
       const transcript = upsertTranscript(db, {
         security_id: securityId,
         ticker: upperTicker,
         year,
         quarter,
-        call_date: filing.filingDate,
+        call_date: matchingFiling.filingDate,
         source: "edgar_8k",
-        transcript: filing.pressReleaseText,
-        summary: generateSummary(filing.pressReleaseText),
-        guidance: extractGuidance(filing.pressReleaseText),
-        risk_factors: extractRiskFactors(filing.pressReleaseText),
+        transcript: matchingFiling.pressReleaseText,
+        summary: generateSummary(matchingFiling.pressReleaseText),
+        guidance: extractGuidance(matchingFiling.pressReleaseText),
+        risk_factors: extractRiskFactors(matchingFiling.pressReleaseText),
         sentiment_score: null,
         sentiment_label: null,
         participants: null,
-        accession_number: filing.accessionNumber,
-        filing_url: filing.filingUrl,
-        source_key: `edgar_8k:${filing.accessionNumber}`,
+        accession_number: matchingFiling.accessionNumber,
+        filing_url: matchingFiling.filingUrl,
+        source_key: `edgar_8k:${matchingFiling.accessionNumber}`,
       });
       return { transcript, fromCache: false };
     }
@@ -347,7 +384,15 @@ export async function getTranscriptForChat(
     const t = result.transcript;
     db.prepare("DELETE FROM earnings_transcripts WHERE id = ?").run(t.id);
     const refreshed = await fetchTranscript(db, ticker, year, quarter);
-    if (refreshed) result = refreshed;
+    if (refreshed) {
+      result = refreshed;
+    } else {
+      // Re-fetch failed (network error, quarter-match rejection, no source).
+      // Don't surface the deleted in-memory legacy body as fresh — that
+      // would be a "full text" claim against the very content we just
+      // invalidated. Caller sees null and can decide.
+      return null;
+    }
   }
 
   const t = result.transcript;
