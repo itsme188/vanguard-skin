@@ -25,6 +25,7 @@ import {
 import { syncPortfolio } from "./positions";
 import { enrichSecurities } from "./contracts";
 import { purgeExpiredOptionHoldings } from "../mutations/expired-options";
+import { purgeClosedOptionHoldings } from "../mutations/closed-positions";
 import { fetchSnapshotPrices } from "./snapshot";
 import { fetchBenchmarkPrices } from "./benchmark";
 import { computeDailyValuations } from "../compute/daily-valuation";
@@ -96,6 +97,24 @@ export async function runAutoRefresh(
       const msg = err instanceof Error ? err.message : "Expired-option purge failed";
       errors.push(msg);
       console.error("[auto-refresh] Expired-option purge error:", msg);
+    }
+
+    // ── Step 1.6: Purge closed-but-not-expired option holdings ──
+    // Sister to 1.5: handles long calls/puts that were sold via
+    // SELL_TO_CLOSE (or short positions bought back) before expiry. TWS
+    // auto-refresh writes only ACTIVE positions, so without this sweep a
+    // closed option lingers at its last statement quantity until expiry
+    // (months later) and shows up in earnings recap "Your position" blocks
+    // for a position you no longer hold.
+    try {
+      const purged = purgeClosedOptionHoldings(db);
+      if (purged > 0) {
+        console.log(`[auto-refresh] Purged ${purged} closed option holdings`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Closed-option purge failed";
+      errors.push(msg);
+      console.error("[auto-refresh] Closed-option purge error:", msg);
     }
 
     // ── Step 2: Enrich Securities (full only) ───────────────────
