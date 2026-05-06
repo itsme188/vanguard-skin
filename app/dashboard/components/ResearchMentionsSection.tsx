@@ -3,7 +3,8 @@
 import { useState } from "react";
 import Link from "next/link";
 import type { ResearchMention } from "@/lib/queries/research";
-import { TerminalSection } from "./TerminalSection";
+import { Section } from "./Section";
+import { Chip, type ChipTone } from "./Chip";
 
 interface ArticleDetail {
   id: number;
@@ -20,10 +21,6 @@ interface ArticleDetail {
  * matched the ticker inside anchor-text / asset paths (e.g.
  * "net/assets/images/resources//section1."). Dropping these surfaces only
  * the mentions that actually refer to the company.
- *
- * Heuristic: URL-path shape (no whitespace + '/' or '_'), or contains
- * known asset/protocol markers. Errs on the side of dropping — the user
- * would rather see fewer mentions they can trust.
  */
 function isUrlFragmentContext(ctx: string | null): boolean {
   if (!ctx) return false;
@@ -36,12 +33,7 @@ function isUrlFragmentContext(ctx: string | null): boolean {
 /**
  * True when the ticker appears only as a substring of a larger word in
  * the mention context / subject (e.g. "HOOD" inside "likelihood",
- * "NET" inside "internet"). Extractor is currently substring-match, so
- * common-word tickers generate loud false positives until the better
- * gating ships. We leave mentions with null context alone — we can't
- * prove either way without fetching the article body.
- *
- * The \b anchor uses ASCII word chars, which works for all US tickers.
+ * "NET" inside "internet").
  */
 function lacksWordBoundaryMatch(
   ticker: string,
@@ -54,6 +46,12 @@ function lacksWordBoundaryMatch(
   if (re.test(ctx)) return false;
   if (re.test(subject)) return false;
   return true;
+}
+
+function sentimentTone(s: string | null): ChipTone {
+  if (s === "bullish" || s === "positive") return "up";
+  if (s === "bearish" || s === "negative") return "down";
+  return "neutral";
 }
 
 export function ResearchMentionsSection({
@@ -77,31 +75,24 @@ export function ResearchMentionsSection({
       : undefined;
 
   return (
-    <TerminalSection
+    <Section
       title={`Research Mentions · ${filtered.length}`}
       subtitle={subtitle}
       action={
         <Link
           href="/dashboard/research?view=feeds"
-          style={{
-            fontFamily: "var(--font-mono), monospace",
-            fontSize: "10px",
-            letterSpacing: "0.22em",
-            textTransform: "uppercase",
-            color: "#ffb84d",
-          }}
-          className="hover:underline"
+          className="text-xs font-medium text-blue hover:brightness-110 transition-colors"
         >
           All feeds →
         </Link>
       }
     >
-      <div className="divide-y" style={{ borderColor: "#161616" }}>
+      <div className="divide-y divide-edge">
         {filtered.map((m) => (
           <MentionRow key={m.article_id} mention={m} />
         ))}
       </div>
-    </TerminalSection>
+    </Section>
   );
 }
 
@@ -134,8 +125,7 @@ function MentionRow({ mention }: { mention: ResearchMention }) {
   }
 
   // Context lines under 15 chars are rarely useful (often single words like
-  // a proper-noun match). Hide them from the row, but keep the mention
-  // itself — the user can still click through to the full article.
+  // a proper-noun match). Hide them from the row.
   const showContext =
     mention.mention_context != null &&
     mention.mention_context.trim().length >= 15;
@@ -149,24 +139,19 @@ function MentionRow({ mention }: { mention: ResearchMention }) {
         aria-expanded={expanded}
       >
         <div className="flex items-center gap-2 mb-1 flex-wrap">
-          <span className="text-[11px] font-semibold text-gold uppercase tracking-wide">
+          <span
+            className="font-mono uppercase font-semibold text-gold"
+            style={{ fontSize: "11px", letterSpacing: "0.05em" }}
+          >
             {mention.source_name}
           </span>
           <span className="text-xs text-ink-faint font-mono">
             {mention.received_at.slice(0, 10)}
           </span>
           {mention.sentiment && (
-            <span
-              className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${
-                mention.sentiment === "bullish"
-                  ? "bg-up/20 text-up"
-                  : mention.sentiment === "bearish"
-                    ? "bg-down/20 text-down"
-                    : "bg-raised text-ink-dim"
-              }`}
-            >
+            <Chip tone={sentimentTone(mention.sentiment)} size="xs">
               {mention.sentiment}
-            </span>
+            </Chip>
           )}
           <span className="ml-auto text-[11px] text-ink-faint group-hover:text-ink-dim transition-colors">
             {expanded ? "collapse ▴" : "read ▾"}
@@ -209,8 +194,8 @@ function ArticleBody({ article }: { article: ArticleDetail }) {
       {article.raw_html ? (
         <div
           className="prose-newsletter"
-          // Same pattern as ResearchFeedsView:495 — newsletter HTML is
-          // user-configured sources only, no scripts injected.
+          // Same pattern as ResearchFeedsView — newsletter HTML is from
+          // user-configured sources only; sanitized at write-time.
           dangerouslySetInnerHTML={{ __html: article.raw_html }}
         />
       ) : (

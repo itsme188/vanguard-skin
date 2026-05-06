@@ -3,7 +3,8 @@ import type {
   ResearchDocumentSummary,
   ResearchDocumentType,
 } from "@/lib/queries/research-documents";
-import { TerminalSection } from "./TerminalSection";
+import { Section } from "./Section";
+import { Chip } from "./Chip";
 
 const DOC_TYPE_LABELS: Record<ResearchDocumentType, string> = {
   analyst_report: "Analyst Report",
@@ -40,19 +41,12 @@ export function ResearchDocumentsPanel({
   if (!symbol || documents.length === 0) return null;
 
   return (
-    <TerminalSection
+    <Section
       title={`Research Documents · ${documents.length}`}
       action={
         <Link
           href={`/dashboard/research?view=documents`}
-          style={{
-            fontFamily: "var(--font-mono), monospace",
-            fontSize: "11px",
-            letterSpacing: "0.22em",
-            textTransform: "uppercase",
-            color: "#ffb84d",
-          }}
-          className="hover:underline"
+          className="text-xs font-medium text-blue hover:brightness-110 transition-colors"
         >
           View all →
         </Link>
@@ -64,57 +58,48 @@ export function ResearchDocumentsPanel({
           return (
             <div
               key={doc.id}
-              style={{
-                padding: "14px 20px",
-                borderTop: idx === 0 ? undefined : "1px solid #161616",
-              }}
+              className={`px-5 py-3.5 ${idx === 0 ? "" : "border-t border-edge"}`}
             >
-              <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "6px", flexWrap: "wrap" }}>
+              <div className="flex items-center gap-2.5 mb-1.5 flex-wrap">
                 {doc.source && (
-                  <span style={{ fontFamily: "var(--font-mono), monospace", fontSize: "11px", fontWeight: 600, color: "#ffb84d", letterSpacing: "0.18em", textTransform: "uppercase" }}>
+                  <span
+                    className="font-mono uppercase font-semibold text-gold"
+                    style={{ fontSize: "11px", letterSpacing: "0.18em" }}
+                  >
                     {doc.source}
                   </span>
                 )}
                 {doc.publication_date && (
-                  <span style={{ fontFamily: "var(--font-mono), monospace", fontSize: "12px", color: "#666", letterSpacing: "0.08em" }}>
+                  <span
+                    className="font-mono text-ink-faint"
+                    style={{ fontSize: "12px", letterSpacing: "0.08em" }}
+                  >
                     {doc.publication_date}
                   </span>
                 )}
                 {doc.document_type && (
-                  <span style={{ fontFamily: "var(--font-mono), monospace", fontSize: "11px", letterSpacing: "0.14em", textTransform: "uppercase", color: "#888", border: "1px solid #333", padding: "2px 6px", borderRadius: "2px" }}>
+                  <Chip tone="neutral" size="xs" uppercase>
                     {DOC_TYPE_LABELS[doc.document_type]}
-                  </span>
+                  </Chip>
                 )}
               </div>
-              <p style={{ fontFamily: "Geist, system-ui, sans-serif", fontSize: "16px", fontWeight: 500, color: "#eee", marginBottom: doc.summary ? "4px" : 0 }}>
+              <p className={`text-base font-medium text-ink ${doc.summary ? "mb-1" : ""}`}>
                 {doc.title}
               </p>
               {doc.summary && (
-                <p className="line-clamp-2" style={{ fontFamily: "Geist, system-ui, sans-serif", fontSize: "14px", color: "#aaa", lineHeight: 1.55 }}>
+                <p className="line-clamp-2 text-sm leading-snug text-ink-dim">
                   {doc.summary}
                 </p>
               )}
               {tags.length > 0 && (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "8px" }}>
+                <div className="flex flex-wrap gap-1.5 mt-2">
                   {tags.slice(0, 6).map((t) => (
-                    <span
-                      key={t}
-                      style={{
-                        fontFamily: "var(--font-mono), monospace",
-                        fontSize: "11px",
-                        color: "#ffb84d",
-                        border: "1px solid rgba(255, 184, 77, 0.25)",
-                        background: "rgba(255, 184, 77, 0.05)",
-                        padding: "2px 6px",
-                        borderRadius: "2px",
-                        letterSpacing: "0.06em",
-                      }}
-                    >
+                    <Chip key={t} tone="gold" size="xs">
                       {t}
-                    </span>
+                    </Chip>
                   ))}
                   {tags.length > 6 && (
-                    <span style={{ fontSize: "11px", color: "#666" }}>+{tags.length - 6}</span>
+                    <span className="text-xs text-ink-faint self-center">+{tags.length - 6}</span>
                   )}
                 </div>
               )}
@@ -122,6 +107,6 @@ export function ResearchDocumentsPanel({
           );
         })}
       </div>
-    </TerminalSection>
+    </Section>
   );
 }
