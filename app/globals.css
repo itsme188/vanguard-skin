@@ -369,8 +369,11 @@ html[data-chat-rail="collapsed"] {
 .prose-newsletter h1 { font-size: 1.4em; }
 .prose-newsletter h2 { font-size: 1.25em; }
 .prose-newsletter h3 { font-size: 1.1em; }
+.prose-newsletter p:empty {
+  display: none;
+}
 .prose-newsletter img {
-  max-width: 100%;
+  max-width: min(100%, 600px);
   height: auto;
   border-radius: 6px;
   margin: 1.2em 0;
@@ -378,7 +381,7 @@ html[data-chat-rail="collapsed"] {
 .prose-newsletter table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 14px;
   margin: 1em 0;
 }
 .prose-newsletter td, .prose-newsletter th {
@@ -428,7 +431,7 @@ html[data-chat-rail="collapsed"] {
 .prose-newsletter hr {
   border: none;
   border-top: 1px solid var(--color-edge);
-  margin: 1.5em 0;
+  margin: 0.75em 0;
 }
 
 /* Apply focus ring to all interactive elements by default */
