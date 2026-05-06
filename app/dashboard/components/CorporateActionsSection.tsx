@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { TerminalSection } from "./TerminalSection";
+import { Section } from "./Section";
 
 interface CorporateAction {
   id: number;
@@ -97,24 +97,12 @@ export function CorporateActionsSection({
   }
 
   return (
-    <TerminalSection
+    <Section
       title="Corporate Actions"
       action={
         <button
           onClick={() => setShowForm(!showForm)}
-          style={{
-            padding: "5px 11px",
-            background: "transparent",
-            border: "1px solid #333",
-            color: "#ffb84d",
-            fontFamily: "var(--font-mono), monospace",
-            fontSize: "11px",
-            fontWeight: 600,
-            letterSpacing: "0.2em",
-            textTransform: "uppercase",
-            borderRadius: "2px",
-            cursor: "pointer",
-          }}
+          className="px-3 py-1 rounded-lg border border-edge text-xs font-medium text-ink hover:bg-raised transition-colors"
         >
           {showForm ? "Cancel" : "+ Add"}
         </button>
@@ -242,6 +230,6 @@ export function CorporateActionsSection({
           </div>
         )
       )}
-    </TerminalSection>
+    </Section>
   );
 }

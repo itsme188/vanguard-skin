@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import type { LevelAlert, AlertResponse } from "@/lib/types";
 import { Money } from "@/lib/privacy/components";
-import { TerminalSection } from "./TerminalSection";
+import { Section } from "./Section";
+import { Chip, type ChipTone } from "./Chip";
 
 // Same enriched shape that /api/alerts returns (matches alerts page type).
 interface EnrichedAlert extends LevelAlert {
@@ -20,11 +21,11 @@ interface EnrichedAlert extends LevelAlert {
   } | null;
 }
 
-const RESPONSE_STYLES: Record<AlertResponse, { label: string; color: string }> = {
-  pending: { label: "Pending", color: "#ffb84d" },
-  acted: { label: "Acted", color: "#22c55e" },
-  ignored: { label: "Ignored", color: "#666" },
-  dismissed: { label: "Dismissed", color: "#666" },
+const RESPONSE_TONE: Record<AlertResponse, { label: string; tone: ChipTone }> = {
+  pending: { label: "Pending", tone: "gold" },
+  acted: { label: "Acted", tone: "up" },
+  ignored: { label: "Ignored", tone: "neutral" },
+  dismissed: { label: "Dismissed", tone: "neutral" },
 };
 
 function formatPriceSourceLabel(source: string): string {
@@ -65,7 +66,7 @@ export function RecentAlertsPanel({ securityId }: { securityId: number }) {
   if (alerts.length === 0) return null; // Hide the section entirely when there's no history.
 
   return (
-    <TerminalSection
+    <Section
       title="Recent Alerts"
       subtitle={`Last ${alerts.length} level crossing${alerts.length === 1 ? "" : "s"} · past responses as context`}
     >
@@ -76,74 +77,51 @@ export function RecentAlertsPanel({ securityId }: { securityId: number }) {
             day: "numeric",
             year: "numeric",
           });
-          const respStyle = RESPONSE_STYLES[a.user_response];
+          const resp = RESPONSE_TONE[a.user_response];
           return (
             <div
               key={a.id}
-              style={{
-                padding: "12px 20px",
-                borderTop: idx === 0 ? undefined : "1px solid #161616",
-                display: "flex",
-                alignItems: "baseline",
-                gap: "14px",
-                fontFamily: "Geist, system-ui, sans-serif",
-                fontSize: "14px",
-              }}
+              className={`px-5 py-3 flex items-baseline gap-3.5 text-sm ${idx === 0 ? "" : "border-t border-edge"}`}
             >
-              <span style={{ fontFamily: "var(--font-mono), monospace", fontSize: "12px", color: "#666", width: "100px", flexShrink: 0, letterSpacing: "0.08em" }}>
+              <span
+                className="font-mono text-ink-faint flex-shrink-0"
+                style={{ fontSize: "12px", letterSpacing: "0.08em", width: "100px" }}
+              >
                 {when}
               </span>
-              <span style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "baseline", gap: "10px", flexWrap: "wrap" }}>
+              <span className="flex-1 min-w-0 flex items-baseline gap-2.5 flex-wrap">
                 {a.level && (
                   <>
-                    <span style={{ color: "#bbb", fontFamily: "var(--font-mono), monospace", fontSize: "11px", letterSpacing: "0.18em", textTransform: "uppercase" }}>
+                    <span
+                      className="font-mono uppercase text-ink-dim"
+                      style={{ fontSize: "11px", letterSpacing: "0.18em" }}
+                    >
                       {a.level.level_type.replace("_", " ")}
                     </span>
-                    <span style={{ color: "#ddd", fontFamily: "var(--font-mono), monospace", fontVariantNumeric: "tabular-nums" }}>
+                    <span className="font-mono text-ink tabular-nums">
                       @ <Money value={a.level.price} precise />
                     </span>
                     {a.level.price_source && a.level.price_source !== "static" && (
-                      <span
-                        style={{
-                          fontFamily: "var(--font-mono), monospace",
-                          fontSize: "10px",
-                          letterSpacing: "0.2em",
-                          textTransform: "uppercase",
-                          color: "#888",
-                          border: "1px solid #333",
-                          padding: "2px 5px",
-                          borderRadius: "2px",
-                        }}
-                      >
+                      <Chip tone="neutral" size="xs" uppercase>
                         {formatPriceSourceLabel(a.level.price_source)}
-                      </span>
+                      </Chip>
                     )}
                   </>
                 )}
-                <span style={{ color: "#888", fontFamily: "var(--font-mono), monospace", fontVariantNumeric: "tabular-nums" }}>
+                <span className="font-mono text-ink-dim tabular-nums">
                   hit <Money value={a.triggered_price} precise />
                 </span>
                 {a.level?.source_author && (
-                  <span style={{ color: "#666", fontSize: "13px" }}>— {a.level.source_author}</span>
+                  <span className="text-ink-faint">— {a.level.source_author}</span>
                 )}
               </span>
-              <span
-                style={{
-                  flexShrink: 0,
-                  color: respStyle.color,
-                  fontFamily: "var(--font-mono), monospace",
-                  fontSize: "11px",
-                  letterSpacing: "0.2em",
-                  textTransform: "uppercase",
-                  fontWeight: 600,
-                }}
-              >
-                {respStyle.label}
+              <span className="flex-shrink-0">
+                <Chip tone={resp.tone} size="xs" uppercase>{resp.label}</Chip>
               </span>
             </div>
           );
         })}
       </div>
-    </TerminalSection>
+    </Section>
   );
 }
