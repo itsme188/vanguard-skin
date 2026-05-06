@@ -8,6 +8,7 @@ import { ManageSourcesModal } from "./ManageSourcesModal";
 import { SendDigestPanel } from "./SendDigestPanel";
 import { DigestEmailViewer } from "./DigestEmailViewer";
 import { useIsMobile } from "@/lib/hooks/useIsMobile";
+import { useResearchSync } from "@/lib/hooks/useResearchSync";
 
 interface Props {
   initialArticles: ResearchArticle[];
@@ -141,6 +142,22 @@ export function ResearchFeedsView({ initialArticles, sources, initialSymbolMap }
     },
     [sourceFilter, searchQuery]
   );
+
+  // Auto-sync on mount + on app refocus after 10+ min idle. Debounced
+  // to once per 5 min across the whole session via localStorage. Doesn't
+  // interfere with the manual sync button — that path uses its own
+  // verbose progress UI; this hook just keeps the feed fresh quietly.
+  useResearchSync({
+    onSyncStart: () => {
+      setSyncing(true);
+      setSyncStatus("Refreshing in background…");
+    },
+    onSyncDone: () => {
+      setSyncing(false);
+      setSyncStatus(null);
+      void refreshArticles();
+    },
+  });
 
   const handleSync = useCallback(async () => {
     setSyncing(true);
