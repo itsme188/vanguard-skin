@@ -13,11 +13,25 @@ interface EmailContentResponse {
   fullHtml: string;
 }
 
+/**
+ * In-app preview shape used by the "Generate" button on EarningsRowChips.
+ * No sentAt/sentTo — this is a fresh compose, not a sent-email recall.
+ */
+export interface InlineEmailData {
+  title: string;
+  fullHtml: string;
+  symbol: string;
+  eventDate: string | null;
+  phase: "preview" | "recap";
+}
+
 interface EarningsEmailViewerProps {
   eventId: number;
   phase: "preview" | "recap";
   open: boolean;
   onClose: () => void;
+  /** When provided, renders this content directly and skips the API fetch. */
+  inlineData?: InlineEmailData | null;
 }
 
 /**
@@ -33,6 +47,7 @@ export function EarningsEmailViewer({
   phase,
   open,
   onClose,
+  inlineData,
 }: EarningsEmailViewerProps) {
   const [data, setData] = useState<EmailContentResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -40,6 +55,22 @@ export function EarningsEmailViewer({
 
   useEffect(() => {
     if (!open) return;
+    // When inlineData is provided, skip the fetch — the parent already
+    // composed the content (e.g. via /api/earnings/recap-modal).
+    if (inlineData) {
+      setData({
+        title: inlineData.title,
+        sentAt: "",
+        sentTo: "",
+        eventDate: inlineData.eventDate ?? "",
+        symbol: inlineData.symbol,
+        phase: inlineData.phase,
+        fullHtml: inlineData.fullHtml,
+      });
+      setError(null);
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     setLoading(true);
     setError(null);
@@ -66,7 +97,7 @@ export function EarningsEmailViewer({
     return () => {
       cancelled = true;
     };
-  }, [open, eventId, phase]);
+  }, [open, eventId, phase, inlineData]);
 
   // Escape key closes the modal.
   useEffect(() => {
@@ -99,9 +130,14 @@ export function EarningsEmailViewer({
             <h2 className="text-sm font-medium text-ink truncate">
               {data?.title ?? "Earnings email"}
             </h2>
-            {data && (
+            {data && data.sentAt && data.sentTo && (
               <p className="text-[11px] text-ink-faint font-mono mt-0.5 truncate">
                 Sent {formatSentAt(data.sentAt)} ET to {data.sentTo}
+              </p>
+            )}
+            {data && !data.sentAt && (
+              <p className="text-[11px] text-ink-faint font-mono mt-0.5 truncate">
+                Live preview — not sent
               </p>
             )}
           </div>
