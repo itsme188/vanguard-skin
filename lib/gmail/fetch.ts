@@ -1,7 +1,7 @@
 import type { gmail_v1 } from "googleapis";
 import type Database from "better-sqlite3";
 import { stripHtml } from "../vital-knowledge";
-import { sanitizeNewsletterHtml } from "./sanitize";
+import { sanitizeNewsletterHtml, normalizeNewsletterHtml } from "./sanitize";
 import { extractSourceUrl } from "./extract-url";
 
 /**
@@ -114,7 +114,10 @@ export async function backfillArticleHtml(
 
       const { html } = extractBody(msg.data.payload);
       if (html) {
-        updateHtml.run(sanitizeNewsletterHtml(html).slice(0, 200_000), article.id);
+        updateHtml.run(
+          normalizeNewsletterHtml(sanitizeNewsletterHtml(html)).slice(0, 200_000),
+          article.id,
+        );
         updated++;
       }
     } catch {
@@ -213,7 +216,7 @@ async function getMessageDetail(
     subject,
     sender,
     body: text.slice(0, 50_000), // Cap at 50K chars
-    html: html ? sanitizeNewsletterHtml(html).slice(0, 200_000) : null,
+    html: html ? normalizeNewsletterHtml(sanitizeNewsletterHtml(html)).slice(0, 200_000) : null,
   };
 }
 
