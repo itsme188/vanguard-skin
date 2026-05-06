@@ -80,6 +80,89 @@ export async function sendEarningsRecap(
   return sendEarningsEmail(db, eventId, "recap", opts);
 }
 
+/**
+ * Composer-only path: build context, render prompt, run Claude, assemble
+ * markdown + HTML. Does NOT send email and does NOT write the audit row.
+ *
+ * Shared between the email-send path (`sendEarningsEmail`) and the in-app
+ * preview path (`/api/earnings/recap-modal`) so the rendered output is
+ * byte-identical between "what the email looks like" and "what the user
+ * sees on the dashboard before sending".
+ */
+export interface ComposeEarningsResult {
+  symbol: string;
+  title: string;
+  markdown: string;
+  aiMarkdown: string;
+  html: string;
+  promptHash: string;
+}
+
+export async function composeEarningsEmail(
+  db: Database.Database,
+  eventId: number,
+  phase: "preview" | "recap",
+  opts: { footerNote?: string } = {},
+): Promise<ComposeEarningsResult> {
+  const event = getEventByIdRow(db, eventId);
+  if (!event) {
+    throw new EarningsEmailError(`Event ${eventId} not found.`, 404);
+  }
+  if (event.event_type !== "earnings") {
+    throw new EarningsEmailError(
+      `Event ${eventId} is not an earnings event (event_type=${event.event_type}).`,
+      400,
+    );
+  }
+  if (!event.symbol) {
+    throw new EarningsEmailError(`Event ${eventId} has no symbol.`, 400);
+  }
+
+  // Defensive guard: never compose a recap when actuals haven't landed.
+  // Better no output than wrong numbers — the caller can re-run once
+  // enrichment completes (manual override via POST /api/earnings/actuals
+  // also unblocks).
+  if (phase === "recap" && !event.actual_value) {
+    throw new EarningsEmailError(
+      `Event ${eventId} (${event.symbol}) has no actual_value yet — recap deferred until enrichment lands or POST /api/earnings/actuals overrides.`,
+      409,
+    );
+  }
+
+  const symbol = event.symbol.toUpperCase();
+  const ctx =
+    phase === "preview"
+      ? buildPreviewContext(db, event)
+      : buildRecapContext(db, event);
+  const prompt =
+    phase === "preview"
+      ? renderPreviewPrompt(ctx)
+      : renderRecapPrompt(ctx as RecapContext);
+
+  const headlineTable = renderHeadlineTable(ctx.event, ctx.symbol, phase);
+  const aiMarkdown = await callClaude(prompt, phase);
+  // Headline scoreboard is rendered deterministically from structured
+  // fields (consensus_estimate, actual_value, reaction_snapshot) — printable
+  // + same shape across preview + recap. AI takes over after for line-by-line
+  // + prose.
+  const markdown = `${headlineTable}\n\n${aiMarkdown}`;
+
+  const dateStr = formatDateLong(event.event_date);
+  const releaseTimeStr = event.release_time ? ` ${event.release_time} ET` : "";
+  const phaseLabel = phase === "preview" ? "Earnings Preview" : "Earnings Recap";
+  const title = `${symbol} ${phaseLabel} — ${dateStr}${releaseTimeStr}`;
+  const html = briefingToHtml(markdown, title, opts.footerNote);
+
+  return {
+    symbol,
+    title,
+    markdown,
+    aiMarkdown,
+    html,
+    promptHash: hashPrompt(prompt),
+  };
+}
+
 async function sendEarningsEmail(
   db: Database.Database,
   eventId: number,
@@ -93,67 +176,17 @@ async function sendEarningsEmail(
       400,
     );
   }
-  const event = getEventByIdRow(db, eventId);
-  if (!event) {
-    throw new EarningsEmailError(`Event ${eventId} not found.`, 404);
-  }
-  if (event.event_type !== "earnings") {
-    throw new EarningsEmailError(
-      `Event ${eventId} is not an earnings event (event_type=${event.event_type}).`,
-      400,
-    );
-  }
-  if (!event.symbol) {
-    throw new EarningsEmailError(
-      `Event ${eventId} has no symbol.`,
-      400,
-    );
-  }
 
-  // Defensive guard: never compose a recap when actuals haven't landed.
-  // The cron sweep gates this in findEmailCandidates SQL, but manual /
-  // driver-script callers (POST /api/earnings/email, scripts/fire-earnings-emails.ts)
-  // could otherwise bypass that gate and produce a recap with no real numbers.
-  // Better no email than a wrong one — the user can re-fire once enrichment
-  // completes (manual override via POST /api/earnings/actuals also unblocks).
-  if (phase === "recap" && !event.actual_value) {
-    throw new EarningsEmailError(
-      `Event ${eventId} (${event.symbol}) has no actual_value yet — recap deferred until enrichment lands or POST /api/earnings/actuals overrides.`,
-      409,
-    );
-  }
+  const composed = await composeEarningsEmail(db, eventId, phase, {
+    footerNote: opts.footerNote,
+  });
 
-  const symbol = event.symbol.toUpperCase();
-  const ctx = phase === "preview"
-    ? buildPreviewContext(db, event)
-    : buildRecapContext(db, event);
-  const prompt = phase === "preview"
-    ? renderPreviewPrompt(ctx)
-    : renderRecapPrompt(ctx as RecapContext);
-
-  const headlineTable = renderHeadlineTable(ctx.event, ctx.symbol, phase);
-  const aiMarkdown = await callClaude(prompt, phase);
-  // Headline scoreboard is rendered deterministically from structured fields
-  // (consensus_estimate, actual_value, reaction_snapshot) — printable + same
-  // shape across preview + recap. AI takes over after for line-by-line +
-  // prose. Preview cells in the rightmost two columns are left blank so the
-  // user can fill in by hand during the call.
-  const markdown = `${headlineTable}\n\n${aiMarkdown}`;
-
-  const dateStr = formatDateLong(event.event_date);
-  const releaseTimeStr = event.release_time
-    ? ` ${event.release_time} ET`
-    : "";
   const phaseEmoji = phase === "preview" ? "\u{1F50D}" : "\u{1F4CA}";
-  const phaseLabel = phase === "preview" ? "Earnings Preview" : "Earnings Recap";
-  const title = `${symbol} ${phaseLabel} — ${dateStr}${releaseTimeStr}`;
-  const html = briefingToHtml(markdown, title, opts.footerNote);
-
   try {
     await sendEmail({
       to: recipient,
-      subject: `${phaseEmoji} ${title}`,
-      html,
+      subject: `${phaseEmoji} ${composed.title}`,
+      html: composed.html,
       fromLocalPart: "earnings",
     });
   } catch (err) {
@@ -162,26 +195,24 @@ async function sendEarningsEmail(
   }
 
   // Audit row for the EarningsHub UI status chips + Phase-3 cron dedup.
-  // UNIQUE(event_id, phase) — re-fires of the same event/phase update in
-  // place rather than INSERT-fail. We treat re-fire as a refresh, not a
-  // separate audit event; the latest sent_at + ai_output_md wins.
+  // UNIQUE(event_id, phase) — re-fires update in place rather than fail.
   recordEarningsEmailAudit(db, {
     eventId,
     phase,
     recipient,
-    aiInputHash: hashPrompt(prompt),
-    aiOutputMd: aiMarkdown,
+    aiInputHash: composed.promptHash,
+    aiOutputMd: composed.aiMarkdown,
     error: null,
   });
 
   return {
     success: true,
     eventId,
-    symbol,
+    symbol: composed.symbol,
     phase,
     sentTo: recipient,
-    title,
-    modelOutputChars: markdown.length,
+    title: composed.title,
+    modelOutputChars: composed.markdown.length,
   };
 }
 
@@ -1041,11 +1072,17 @@ Rows: every segment, KPI, and guidance line ${ctx.symbol} reported — fill from
 
 2. **\`## The reaction\`** — stock move vs. SPY/QQQ/sector. If a transcript or call quotes are available via web_search, lead with the one or two quotes that explain the move. If not, note "transcript not yet posted — recap will update if a follow-up runs."
 
-3. **\`## Sell-side first takes\`** — web_search for analyst notes published in the last few hours. Quote the headline, flag price-target changes, name the firm. If nothing is out yet, say so.
+3. **\`## Guidance\`** — **MANDATORY section.** Public companies almost always update guidance with their print: full-year (FY26) revenue, EPS, margin, capex; next-quarter (Q2) revenue and EPS; sometimes segment-level guides (e.g., "Cloud revenue growth"). **Use web_search aggressively** if the press release context above doesn't contain it — search for \`"${ctx.symbol}" guidance Q2\` or \`"${ctx.symbol}" full year outlook ${new Date().getFullYear()}\`. Structure the section as:
+   - **Full year:** prior guide → new guide, change in $ or pp, what it implies (raise/maintain/cut)
+   - **Next quarter:** new guide vs Street consensus
+   - **Segment / KPI guides:** anything specific the company called out (e.g., "Cloud revenue growth low-20s%", "GMV +12-14%")
+   - If guidance was NOT updated (rare), explicitly say "No updated guidance issued — prior guide stands" and quote the still-active prior guide. Never silently omit this section.
 
-4. **\`## Position implications\`** — given the user's combined position (use §Positions verbatim), what's the immediate P&L impact at the reaction-snapshot price? Any hedging / IV-crush dynamics for option holdings? Should the thesis change?
+4. **\`## Sell-side first takes\`** — web_search for analyst notes published in the last few hours. Quote the headline, flag price-target changes, name the firm. If nothing is out yet, say so.
 
-5. **\`## Sources\`** — newsletter articles cited + web URLs.
+5. **\`## Position implications\`** — given the user's combined position (use §Positions verbatim), what's the immediate P&L impact at the reaction-snapshot price? Any hedging / IV-crush dynamics for option holdings? Should the thesis change?
+
+6. **\`## Sources\`** — newsletter articles cited + web URLs.
 
 **Number formatting (strict):** Quote large monetary values in compact form — \`$4.34B\` for billions (2dp), \`$245M\` for millions (1dp), \`$0.91\` for EPS-scale dollars (2dp), \`12.3M units\` for unit counts (1dp). Never write out full digits with commas like \`4,345,870,107\` or \`$11,000,000,000\` — they're hard to read on a phone and impossible to print legibly. Percentages stay as \`±N.N%\` (1dp). Apply this rule everywhere: tables, prose, quoted figures.
 

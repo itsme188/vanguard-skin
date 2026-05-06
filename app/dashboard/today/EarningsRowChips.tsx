@@ -2,7 +2,10 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { EarningsEmailViewer } from "../components/EarningsEmailViewer";
+import {
+  EarningsEmailViewer,
+  type InlineEmailData,
+} from "../components/EarningsEmailViewer";
 
 interface EarningsRowChipsProps {
   eventId: number;
@@ -32,6 +35,52 @@ export function EarningsRowChips({
   recapSkipped,
 }: EarningsRowChipsProps) {
   const [openPhase, setOpenPhase] = useState<Phase | null>(null);
+  const [inlineData, setInlineData] = useState<InlineEmailData | null>(null);
+  const [generating, setGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
+
+  // Show "Generate" only when the recap hasn't fired and isn't skipped —
+  // otherwise the user already has a path to view it (the sent ✓-chip)
+  // or has explicitly muted it.
+  const showGenerate = !recapSent && !recapSkipped;
+
+  async function generateRecap() {
+    if (generating) return;
+    setGenerating(true);
+    setGenerateError(null);
+    try {
+      const res = await fetch("/api/earnings/recap-modal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ eventId, runEnrichmentFirst: true }),
+      });
+      const json = (await res.json().catch(() => ({}))) as {
+        success?: boolean;
+        html?: string;
+        title?: string;
+        symbol?: string;
+        eventDate?: string | null;
+        error?: string;
+      };
+      if (!res.ok || !json.success) {
+        throw new Error(json.error ?? `HTTP ${res.status}`);
+      }
+      setInlineData({
+        title: json.title!,
+        fullHtml: json.html!,
+        symbol: json.symbol!,
+        eventDate: json.eventDate ?? null,
+        phase: "recap",
+      });
+      setOpenPhase("recap");
+    } catch (err) {
+      setGenerateError(
+        err instanceof Error ? err.message : "Generate failed",
+      );
+    } finally {
+      setGenerating(false);
+    }
+  }
 
   return (
     <span className="flex items-center gap-1 shrink-0">
@@ -40,21 +89,52 @@ export function EarningsRowChips({
         phase="preview"
         sent={previewSent}
         skipped={previewSkipped}
-        onView={() => setOpenPhase("preview")}
+        onView={() => {
+          setInlineData(null);
+          setOpenPhase("preview");
+        }}
       />
       <PhaseChip
         eventId={eventId}
         phase="recap"
         sent={recapSent}
         skipped={recapSkipped}
-        onView={() => setOpenPhase("recap")}
+        onView={() => {
+          setInlineData(null);
+          setOpenPhase("recap");
+        }}
       />
+      {showGenerate && (
+        <button
+          type="button"
+          onClick={generateRecap}
+          disabled={generating}
+          className="text-[10px] font-mono px-1.5 py-0.5 rounded text-gold bg-gold/15 hover:bg-gold/25 disabled:opacity-50 cursor-pointer"
+          title="Compose a fresh recap now (runs enrichment + AI; ~30-60s)"
+        >
+          {generating ? "…" : "gen"}
+        </button>
+      )}
+      {generateError && (
+        <span
+          className="text-[10px] font-mono text-down truncate max-w-[12ch]"
+          title={generateError}
+        >
+          ✗ {generateError}
+        </span>
+      )}
       {openPhase && (
         <EarningsEmailViewer
           eventId={eventId}
           phase={openPhase}
           open={true}
-          onClose={() => setOpenPhase(null)}
+          onClose={() => {
+            setOpenPhase(null);
+            setInlineData(null);
+          }}
+          inlineData={
+            openPhase === "recap" && inlineData ? inlineData : null
+          }
         />
       )}
     </span>
