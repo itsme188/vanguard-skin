@@ -15,6 +15,7 @@ import {
   resolveSectorEtf,
   type ReactionSnapshot,
 } from "./reaction-snapshot";
+import { captureReactionFromYahoo } from "../../workers/cron/src/yahoo";
 
 // Macro releases (FRED/FOMC/nonfred): data is typically published within
 // minutes of release, and the reaction window is the immediate 2-hour
@@ -217,7 +218,7 @@ export async function runEnrichment(
 
       // Reaction snapshot — only attempt when TWS is available.
       let reaction: ReactionSnapshot | null = null;
-      if (opts.tws && event.release_time) {
+      if (event.release_time) {
         const releaseInstant = composeReleaseInstant(
           event.event_date,
           event.release_time,
@@ -234,15 +235,38 @@ export async function runEnrichment(
           } else {
             sectorEtf = resolveSectorEtf(event.event_type, null);
           }
-          reaction = await captureReactionFromTws(
-            opts.tws,
-            releaseInstant,
-            sectorEtf,
-            {
-              pacingMs: opts.pacingMs,
-              eventSymbol: event.event_type === "earnings" ? event.symbol : null,
-            },
-          );
+          const eventSymbol =
+            event.event_type === "earnings" ? event.symbol : null;
+
+          // Prefer TWS — superior intraday TRADES bars, no upstream rate limit.
+          if (opts.tws) {
+            reaction = await captureReactionFromTws(
+              opts.tws,
+              releaseInstant,
+              sectorEtf,
+              { pacingMs: opts.pacingMs, eventSymbol },
+            );
+          }
+
+          // Fall back to Yahoo when TWS is unavailable OR returned null
+          // (TWS contractDetails timeout, no matching bars, etc.). Same
+          // module the Worker cloud-fallback uses, so the resulting JSON
+          // shape is identical (source: "yahoo"). Best-effort — never
+          // let a Yahoo failure abort enrichment.
+          if (!reaction) {
+            try {
+              reaction = await captureReactionFromYahoo(
+                releaseInstant,
+                sectorEtf,
+                { pacingMs: opts.pacingMs, eventSymbol },
+              );
+            } catch (err) {
+              console.warn(
+                `[enrichment] Yahoo fallback failed for event ${event.id}:`,
+                err,
+              );
+            }
+          }
         }
       }
 
