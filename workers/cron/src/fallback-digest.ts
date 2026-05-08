@@ -47,10 +47,12 @@ export interface FallbackEnv {
 }
 
 export interface FallbackResult {
-  kind: "success" | "no_snapshot" | "no_articles" | "error";
+  kind: "success" | "no_snapshot" | "no_articles" | "skipped" | "error";
   sentMessageId?: string;
   processedCount?: number;
+  reason?: string;
   error?: string;
+  htmlLength?: number;
 }
 
 interface ProcessedArticle {
