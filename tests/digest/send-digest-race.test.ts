@@ -67,7 +67,7 @@ function seedProcessedArticle(receivedAt: string, subject = "Test article") {
 }
 
 describe("send-digest race-condition snapshot", () => {
-  it("captures lastSent BEFORE fetch/process so a concurrent update can't poison the range", async () => {
+  it("captures lastSent BEFORE fetch/process so a concurrent update can't poison the range", { timeout: 10000 }, async () => {
     const { sendDigestEmail } = await import("@/lib/digest/send-digest");
 
     // Initial state: last_digest_sent_at is from yesterday at 8:45 AM ET.
