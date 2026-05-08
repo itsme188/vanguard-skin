@@ -7,6 +7,7 @@ import { addDays, getCurrentMonday } from "@/lib/calendar/date-utils";
 import { syncPortfolio } from "@/lib/tws/positions";
 import { setLastBriefingSentAt } from "@/lib/digest/daily-digest";
 import { syncCalendarForWeek } from "@/lib/calendar/sync";
+import { getRecipientsFor } from "@/lib/queries/email-recipients";
 
 export class BriefingSendError extends Error {
   constructor(
@@ -39,7 +40,11 @@ export async function sendBriefingEmail(
   opts: SendBriefingOpts = {}
 ): Promise<SendBriefingResult> {
   const weekOf = opts.weekOf || getCurrentMonday();
-  const recipient = opts.recipient || process.env.BRIEFING_EMAIL_TO;
+  const overrides = getRecipientsFor(db, "briefing");
+  const recipient =
+    opts.recipient ??
+    (overrides ? overrides.join(", ") : null) ??
+    process.env.BRIEFING_EMAIL_TO;
 
   if (!recipient) {
     throw new BriefingSendError(

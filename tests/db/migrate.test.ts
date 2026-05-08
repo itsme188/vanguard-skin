@@ -99,4 +99,44 @@ describe("migration system", () => {
       .get("ACME") as { count: number };
     expect(row.count).toBe(2);
   });
+
+  it("048_security_betas creates security_betas table with UNIQUE constraint", () => {
+    runMigrations(db);
+    const tbl = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='security_betas'",
+      )
+      .get();
+    expect(tbl).toBeTruthy();
+
+    // Verify columns exist
+    const cols = db
+      .prepare("PRAGMA table_info(security_betas)")
+      .all() as { name: string }[];
+    const names = cols.map((c) => c.name);
+    expect(names).toContain("id");
+    expect(names).toContain("security_id");
+    expect(names).toContain("lookback_days");
+    expect(names).toContain("beta");
+    expect(names).toContain("computed_at");
+
+    // Insert a test security first
+    db.prepare("INSERT INTO securities (symbol, name, security_type) VALUES (?, ?, ?)")
+      .run("TEST", "Test Security", "Stock");
+    const security = db
+      .prepare("SELECT id FROM securities WHERE symbol = ?")
+      .get("TEST") as { id: number };
+
+    // Insert a beta row
+    db.prepare(
+      "INSERT INTO security_betas (security_id, lookback_days, beta, computed_at) VALUES (?, ?, ?, datetime('now'))",
+    ).run(security.id, 60, 1.25);
+
+    // Verify UNIQUE constraint fires on duplicate
+    expect(() => {
+      db.prepare(
+        "INSERT INTO security_betas (security_id, lookback_days, beta, computed_at) VALUES (?, ?, ?, datetime('now'))",
+      ).run(security.id, 60, 1.5);
+    }).toThrow();
+  });
 });

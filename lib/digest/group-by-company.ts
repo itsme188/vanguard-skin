@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import { getRecentArticles } from "@/lib/queries/research";
 import { formatTriggeredAlertsSection } from "./daily-digest";
 
-interface ArticleLike {
+export interface ArticleLike {
   id: number;
   source_name: string;
   subject: string;
@@ -18,7 +18,13 @@ interface ArticleLike {
 const NO_SYMBOL_BUCKET = "(no symbol)";
 
 export interface CompanyBucket {
+  /** Ticker symbol, or "(no symbol)" for the macro / no-ticker bucket. */
   symbol: string;
+  /**
+   * Display name for the company (e.g. "NVIDIA Corp"). Null when unknown or
+   * when the bucket represents the macro / no-ticker group.
+   */
+  companyName: string | null;
   articles: ArticleLike[];
 }
 
@@ -49,13 +55,13 @@ export function bucketByCompany(articles: ArticleLike[]): CompanyBucket[] {
   const result: CompanyBucket[] = [];
   for (const [symbol, bucketArticles] of buckets.entries()) {
     if (symbol === NO_SYMBOL_BUCKET) continue;
-    result.push({ symbol, articles: bucketArticles });
+    result.push({ symbol, companyName: null, articles: bucketArticles });
   }
   result.sort((a, b) => b.articles.length - a.articles.length || a.symbol.localeCompare(b.symbol));
 
   const noSym = buckets.get(NO_SYMBOL_BUCKET);
   if (noSym && noSym.length > 0) {
-    result.push({ symbol: NO_SYMBOL_BUCKET, articles: noSym });
+    result.push({ symbol: NO_SYMBOL_BUCKET, companyName: null, articles: noSym });
   }
 
   return result;

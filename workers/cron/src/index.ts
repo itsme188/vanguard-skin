@@ -10,8 +10,8 @@
  * logged only — the cloud fallback is a stub.
  *
  * Exposes two HTTP endpoints for the Mac side + smoke testing:
- *   GET  /internal/marker?type={briefing|digest}   (X-Cron-Secret required)
- *   POST /internal/trigger?type={briefing|digest}  (X-Cron-Secret required)
+ *   GET  /internal/marker?type={briefing|digest|evening}   (X-Cron-Secret required)
+ *   POST /internal/trigger?type={briefing|digest|evening}  (X-Cron-Secret required)
  */
 
 import {
@@ -25,12 +25,14 @@ import {
 } from "./dedup";
 import {
   getCurrentETHour,
+  getCurrentETMinute,
   getCurrentETDayOfWeek,
   todayET,
 } from "./dst";
 import { callPrimary, type PrimaryResult } from "./primary";
 import { runFallbackDigest, type FallbackResult } from "./fallback-digest";
 import { runFallbackBriefing } from "./fallback-briefing";
+import { runFallbackEvening } from "./fallback-evening";
 import {
   runCalendarEnrich,
   runCloudFallback,
@@ -54,6 +56,10 @@ export interface Env {
   // Vars (wrangler.toml [vars])
   EXPECTED_HOUR_BRIEFING: string;
   EXPECTED_HOUR_DIGEST: string;
+  // Evening email — Mon-Thu 7pm ET, Fri 5:30pm ET
+  EXPECTED_HOUR_EVENING_MON_THU: string;
+  EXPECTED_HOUR_EVENING_FRI: string;
+  EXPECTED_MINUTE_EVENING_FRI: string;
   PRIMARY_TIMEOUT_MS: string;
   // Secrets (`wrangler secret put`)
   CRON_SHARED_SECRET: string;
@@ -74,17 +80,31 @@ export interface Env {
   FINNHUB_API_KEY?: string;
 }
 
-function parseJobFromClock(env: Env): { type: JobType; expectedHour: number } | null {
+export function parseJobFromClock(env: Env): { type: JobType; expectedHour: number } | null {
   const hour = getCurrentETHour();
+  const minute = getCurrentETMinute();
   const dow = getCurrentETDayOfWeek();
   const briefingHour = parseInt(env.EXPECTED_HOUR_BRIEFING, 10);
   const digestHour = parseInt(env.EXPECTED_HOUR_DIGEST, 10);
+  const eveningMonThuHour = parseInt(env.EXPECTED_HOUR_EVENING_MON_THU, 10);
+  const eveningFriHour = parseInt(env.EXPECTED_HOUR_EVENING_FRI, 10);
+  const eveningFriMinute = parseInt(env.EXPECTED_MINUTE_EVENING_FRI, 10);
 
   if (hour === briefingHour && dow === 0) {
     return { type: "briefing", expectedHour: briefingHour };
   }
   if (hour === digestHour && dow >= 1 && dow <= 5) {
     return { type: "digest", expectedHour: digestHour };
+  }
+  // Evening — Mon-Thu 19:00 ET, Fri 17:30 ET.
+  // Winter day-shift note: Mon-Thu 7pm EST = 00:00 UTC NEXT day (Tue-Fri UTC).
+  // parseJobFromClock reads ET wall-clock via Intl, so the cron firing at
+  // 00:00 UTC on (say) Tuesday still maps to ET Monday 19:00 — caught here.
+  if (hour === eveningMonThuHour && minute === 0 && dow >= 1 && dow <= 4) {
+    return { type: "evening", expectedHour: eveningMonThuHour };
+  }
+  if (hour === eveningFriHour && minute === eveningFriMinute && dow === 5) {
+    return { type: "evening", expectedHour: eveningFriHour };
   }
   return null;
 }
@@ -149,9 +169,13 @@ async function runJob(type: JobType, env: Env, opts: RunJobOpts = {}): Promise<R
   // Primary failed (timeout / network / 5xx) or was skipped — run fallback.
   let fallback: FallbackResult;
   try {
-    fallback = type === "briefing"
-      ? await runFallbackBriefing(env, { dryRun: opts.dryRun })
-      : await runFallbackDigest(env, { dryRun: opts.dryRun });
+    if (type === "briefing") {
+      fallback = await runFallbackBriefing(env, { dryRun: opts.dryRun });
+    } else if (type === "evening") {
+      fallback = await runFallbackEvening(env, { dryRun: opts.dryRun });
+    } else {
+      fallback = await runFallbackDigest(env, { dryRun: opts.dryRun });
+    }
   } catch (err) {
     console.error(`[runJob ${type}] fallback threw:`, err);
     fallback = {
@@ -236,22 +260,22 @@ export default {
 
     if (request.method === "GET" && url.pathname === "/internal/marker") {
       const typeParam = url.searchParams.get("type");
-      if (typeParam !== "briefing" && typeParam !== "digest") {
-        return Response.json({ error: "type must be briefing or digest" }, { status: 400 });
+      if (typeParam !== "briefing" && typeParam !== "digest" && typeParam !== "evening") {
+        return Response.json({ error: "type must be briefing, digest, or evening" }, { status: 400 });
       }
       const status = await getMarkerStatus(env.CRON_KV, typeParam);
       return Response.json(status);
     }
 
     // Mac calls this at the start (action=set) and end (action=clear) of
-    // /api/cron/{briefing,digest}. Worker re-checks markers before firing
+    // /api/cron/{briefing,digest,evening}. Worker re-checks markers before firing
     // fallback so a slow-but-successful Mac primary doesn't trigger a
     // duplicate fallback email.
     if (request.method === "POST" && url.pathname === "/internal/running-marker") {
       const typeParam = url.searchParams.get("type");
       const action = url.searchParams.get("action");
-      if (typeParam !== "briefing" && typeParam !== "digest") {
-        return Response.json({ error: "type must be briefing or digest" }, { status: 400 });
+      if (typeParam !== "briefing" && typeParam !== "digest" && typeParam !== "evening") {
+        return Response.json({ error: "type must be briefing, digest, or evening" }, { status: 400 });
       }
       if (action !== "set" && action !== "clear") {
         return Response.json({ error: "action must be set or clear" }, { status: 400 });
@@ -280,9 +304,9 @@ export default {
         const result = await runEarningsFallback(env, { dryRun });
         return Response.json(result);
       }
-      if (typeParam !== "briefing" && typeParam !== "digest") {
+      if (typeParam !== "briefing" && typeParam !== "digest" && typeParam !== "evening") {
         return Response.json(
-          { error: "type must be briefing, digest, calendar-enrich, or earnings-fallback" },
+          { error: "type must be briefing, digest, evening, calendar-enrich, or earnings-fallback" },
           { status: 400 },
         );
       }

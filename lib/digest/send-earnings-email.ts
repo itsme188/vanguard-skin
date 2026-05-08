@@ -5,6 +5,7 @@ import { briefingToHtml } from "@/lib/calendar/briefing-html";
 import { sendEmail } from "@/lib/email";
 import { getRawAnthropicClient } from "@/lib/ai/provider";
 import { resolveFeatureModel } from "@/lib/ai/models";
+import { stripModelPreamble } from "@/lib/ai/strip-preamble";
 import { formatLargeUSD } from "@/lib/format";
 import { parseFinnhubFigure } from "@/lib/format/finnhub-figure";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
@@ -1420,21 +1421,6 @@ OUTPUT DISCIPLINE — strict rules:
 // line despite instructions. We trim leading lines that don't start with a
 // markdown structure marker (#, |, -, *, >) and aren't blank, until we hit
 // one that does.
-function stripModelPreamble(text: string): string {
-  const lines = text.split("\n");
-  let firstReal = 0;
-  for (let i = 0; i < lines.length; i++) {
-    const trimmed = lines[i].trim();
-    if (trimmed === "") continue;
-    // Markdown structure markers: header, table, list, blockquote, hr,
-    // code fence. Anything else at the start is preamble.
-    if (/^(#|\||[-*+]\s|>\s|---|```)/.test(trimmed)) {
-      firstReal = i;
-      break;
-    }
-  }
-  return lines.slice(firstReal).join("\n").trim();
-}
 
 // ── Date helpers ───────────────────────────────────────────────────
 
