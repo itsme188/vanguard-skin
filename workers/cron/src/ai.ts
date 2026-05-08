@@ -15,7 +15,8 @@ import type { LanguageModel } from "ai";
 
 export type WorkerFeature =
   | "fallbackBriefing"
-  | "fallbackNewsletterProcessing";
+  | "fallbackNewsletterProcessing"
+  | "fallbackEvening";
 
 export interface AIEnv {
   ANTHROPIC_API_KEY?: string;
@@ -28,6 +29,9 @@ export const MODEL_FOR_FEATURE: Record<WorkerFeature, string> = {
   fallbackBriefing: "claude-opus-4-7",
   // Sonnet 4.6 — same as Mac's newsletterProcessing.
   fallbackNewsletterProcessing: "claude-sonnet-4-6",
+  // Sonnet 4.6 — evening email synthesis. Sonnet is sufficient; saves cost
+  // since this runs nightly vs. the Sunday-only briefing.
+  fallbackEvening: "claude-sonnet-4-6",
 };
 
 export function getModelForFeature(env: AIEnv, feature: WorkerFeature): LanguageModel {

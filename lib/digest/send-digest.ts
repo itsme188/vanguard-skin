@@ -5,12 +5,14 @@ import { processUnprocessedArticles } from "@/lib/gmail/process";
 import {
   generateDailyDigest,
   generateDigestSince,
+  generateDigestSinceAdaptive,
   getLastDigestSentAt,
   setLastDigestSentAt,
 } from "@/lib/digest/daily-digest";
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
 import { sendEmail } from "@/lib/email";
 import { syncPortfolio } from "@/lib/tws/positions";
+import { getRecipientsFor } from "@/lib/queries/email-recipients";
 
 export class DigestSendError extends Error {
   constructor(
@@ -62,7 +64,11 @@ export async function sendDigestEmail(
   db: Database.Database,
   opts: SendDigestOpts = {}
 ): Promise<SendDigestResult> {
-  const recipient = opts.recipient || process.env.BRIEFING_EMAIL_TO;
+  const overrides = getRecipientsFor(db, "digest");
+  const recipient =
+    opts.recipient ??
+    (overrides ? overrides.join(", ") : null) ??
+    process.env.BRIEFING_EMAIL_TO;
 
   if (!recipient) {
     throw new DigestSendError(
@@ -114,8 +120,8 @@ export async function sendDigestEmail(
   backfillSourceUrls(db);
 
   const digest = sinceSnapshot !== null
-    ? generateDigestSince(db, sinceSnapshot)
-    : generateDailyDigest(db);
+    ? await generateDigestSinceAdaptive(db, sinceSnapshot, { includeAnomalies: false })
+    : await generateDigestSinceAdaptive(db, new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10), { includeAnomalies: false });
 
   if (!digest) {
     return {

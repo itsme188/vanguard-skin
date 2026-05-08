@@ -47,10 +47,12 @@ export interface FallbackEnv {
 }
 
 export interface FallbackResult {
-  kind: "success" | "no_snapshot" | "no_articles" | "error";
+  kind: "success" | "no_snapshot" | "no_articles" | "skipped" | "error";
   sentMessageId?: string;
   processedCount?: number;
+  reason?: string;
   error?: string;
+  htmlLength?: number;
 }
 
 interface ProcessedArticle {
@@ -68,9 +70,6 @@ export async function runFallbackDigest(
   env: FallbackEnv,
   opts: { dryRun?: boolean } = {}
 ): Promise<FallbackResult> {
-  if (!env.BRIEFING_EMAIL_TO) {
-    return { kind: "error", error: "BRIEFING_EMAIL_TO missing" };
-  }
   if (!env.RESEND_API_KEY || !env.RESEND_FROM_DOMAIN) {
     return {
       kind: "error",
@@ -80,6 +79,22 @@ export async function runFallbackDigest(
 
   const snapshot = await loadLatestSnapshot(env.ARCHIVE);
   if (!snapshot) return { kind: "no_snapshot" };
+
+  // ── Recipient resolution ─────────────────────────────────────────────────
+  const rawRecipients = snapshot.settings.digest_email_recipients;
+  let recipient: string;
+  if (rawRecipients && rawRecipients.trim().length > 0) {
+    // Normalize comma-separated: trim each, rejoin with ", "
+    recipient = rawRecipients
+      .split(",")
+      .map((r) => r.trim())
+      .filter((r) => r.length > 0)
+      .join(", ");
+  } else if (env.BRIEFING_EMAIL_TO) {
+    recipient = env.BRIEFING_EMAIL_TO;
+  } else {
+    return { kind: "error", error: "recipient missing: no digest_email_recipients in snapshot and BRIEFING_EMAIL_TO is unset" };
+  }
 
   const accessToken = await getAccessToken(env);
   const heldSymbolsContext = snapshot.heldSymbols.join(", ");
@@ -139,7 +154,7 @@ export async function runFallbackDigest(
   }
 
   const send = await sendEmail(env, {
-    to: env.BRIEFING_EMAIL_TO,
+    to: recipient,
     subject: `📰 ${title}`,
     html,
     fromLocalPart: "digest",

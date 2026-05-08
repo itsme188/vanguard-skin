@@ -1,5 +1,8 @@
 import type Database from "better-sqlite3";
 import { getRecentArticles } from "@/lib/queries/research";
+import { bucketByCompany } from "@/lib/digest/group-by-company";
+import { synthesize, SynthesisEmptyError } from "@/lib/digest/synthesize";
+import { computeAnomalies, formatVanguardAnomaliesBlock } from "@/lib/digest/anomalies";
 
 // ── Alerts block ────────────────────────────────────────────────────
 
@@ -209,4 +212,262 @@ function parseJsonArray(json: string | null): string[] {
   } catch {
     return [];
   }
+}
+
+// ── Adaptive digest ─────────────────────────────────────────────────────────
+
+/** Minimum article count to attempt cross-source synthesis. */
+const SYNTHESIS_MIN_ARTICLES = 5;
+
+/**
+ * Persist a fallback event to a 30-entry ring buffer in the `settings` table.
+ * Used for telemetry; errors are silently swallowed so they never block delivery.
+ */
+function recordSynthesisFallback(
+  db: Database.Database,
+  reason: string,
+  articleCount: number,
+): void {
+  try {
+    const KEY = "synthesis_fallbacks_last_30d";
+    const existing = db
+      .prepare("SELECT value FROM settings WHERE key = ?")
+      .get(KEY) as { value: string } | undefined;
+
+    const ring: Array<{ date: string; reason: string; articleCount: number }> =
+      existing ? JSON.parse(existing.value) : [];
+
+    const today = new Date().toISOString().slice(0, 10);
+    ring.push({ date: today, reason, articleCount });
+
+    // Keep last 30 entries
+    const trimmed = ring.slice(-30);
+
+    db.prepare(
+      `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+    ).run(KEY, JSON.stringify(trimmed));
+  } catch {
+    // Never let telemetry block email delivery
+  }
+}
+
+/**
+ * Query distinct held stock/ETF symbols from the portfolio.
+ */
+function getHeldSymbols(db: Database.Database): string[] {
+  interface SymRow { symbol: string }
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT s.symbol
+         FROM holdings h
+         JOIN securities s ON s.id = h.security_id
+        WHERE LOWER(s.security_type) IN ('stock', 'etf', 'common stock')`
+    )
+    .all() as SymRow[];
+  return rows.map((r) => r.symbol);
+}
+
+/**
+ * Query distinct watchlist symbols.
+ */
+function getWatchlistSymbols(db: Database.Database): string[] {
+  interface SymRow { symbol: string }
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT s.symbol
+         FROM watchlist w
+         JOIN securities s ON s.id = w.security_id
+        WHERE w.is_active = 1`
+    )
+    .all() as SymRow[];
+  return rows.map((r) => r.symbol);
+}
+
+/**
+ * Enrich bucket companyName from the securities table.
+ * bucketByCompany always returns companyName: null — we fill it here so
+ * synthesize() can produce richer section headers.
+ */
+function enrichBucketCompanyNames(
+  db: Database.Database,
+  buckets: ReturnType<typeof bucketByCompany>,
+): ReturnType<typeof bucketByCompany> {
+  // Build a symbol → name map in one query
+  const symbols = buckets
+    .map((b) => b.symbol)
+    .filter((s) => s !== "(no symbol)");
+
+  if (symbols.length === 0) return buckets;
+
+  const placeholders = symbols.map(() => "?").join(",");
+  interface NameRow { symbol: string; name: string | null }
+  const nameRows = db
+    .prepare(
+      `SELECT symbol, name FROM securities WHERE symbol IN (${placeholders})`
+    )
+    .all(...symbols) as NameRow[];
+
+  const nameMap = new Map(nameRows.map((r) => [r.symbol, r.name]));
+
+  return buckets.map((bucket) => ({
+    ...bucket,
+    companyName: nameMap.get(bucket.symbol) ?? null,
+  }));
+}
+
+/**
+ * Render the per-source body for the fallback / <5 articles path.
+ * Matches the existing `generateDigestSince` article loop exactly.
+ */
+function renderPerSourceBody(
+  articles: ReturnType<typeof getRecentArticles>,
+): string[] {
+  const lines: string[] = [];
+  for (const article of articles) {
+    const sentiment = article.sentiment ?? "neutral";
+    lines.push(`## ${article.source_name.toUpperCase()} · *${sentiment}*`);
+
+    const articleUrl = article.source_url || article.website_url;
+    if (articleUrl) {
+      lines.push(`### [${article.subject}](${articleUrl})`);
+    } else {
+      lines.push(`### ${article.subject}`);
+    }
+    lines.push("");
+
+    if (article.summary) {
+      lines.push(article.summary);
+      lines.push("");
+    }
+
+    if (article.portfolio_relevance) {
+      lines.push(`> **Portfolio relevance**: ${article.portfolio_relevance}`);
+      lines.push("");
+    }
+
+    const themes = parseJsonArray(article.key_themes);
+    if (themes.length > 0) {
+      lines.push(`*${themes.join(" · ")}*`);
+      lines.push("");
+    }
+
+    lines.push("---");
+    lines.push("");
+  }
+  return lines;
+}
+
+/**
+ * Adaptive composer: uses cross-source synthesis when ≥5 articles are
+ * available, falls back to the existing per-source layout otherwise (or on
+ * synthesis error).
+ *
+ * @param opts.includeAnomalies - When true, prepends the Vanguard anomaly
+ *   block (if non-empty). Morning digest passes false; evening passes true.
+ */
+export async function generateDigestSinceAdaptive(
+  db: Database.Database,
+  sinceDate: string,
+  opts: { includeAnomalies?: boolean } = {},
+): Promise<string | null> {
+  const articles = getRecentArticles(db, {
+    startDate: sinceDate,
+    processedOnly: true,
+    limit: 30,
+  });
+
+  const alertsBlock = formatTriggeredAlertsSection(db, sinceDate);
+
+  // Return null only when there is genuinely nothing to say
+  if (articles.length === 0 && !alertsBlock) return null;
+
+  const now = new Date();
+  const dateStr = now.toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
+
+  const countLine =
+    articles.length === 0
+      ? "No new research articles, but price levels fired — see below."
+      : `${articles.length} article${articles.length === 1 ? "" : "s"} from ${countSources(articles)} source${countSources(articles) === 1 ? "" : "s"}`;
+
+  const lines: string[] = [
+    `# Research Digest`,
+    `### ${dateStr}`,
+    "",
+    countLine,
+    "",
+    "---",
+    "",
+  ];
+
+  // Optional anomaly block
+  if (opts.includeAnomalies) {
+    const anomalyBlock = formatVanguardAnomaliesBlock(db);
+    if (anomalyBlock) {
+      lines.push(anomalyBlock);
+      lines.push("---");
+      lines.push("");
+    }
+  }
+
+  // Alerts block
+  if (alertsBlock) {
+    lines.push(alertsBlock);
+  }
+
+  // ── Adaptive body ─────────────────────────────────────────────────────────
+
+  if (articles.length >= SYNTHESIS_MIN_ARTICLES) {
+    const heldSymbols = getHeldSymbols(db);
+    const watchlist = getWatchlistSymbols(db);
+    const anomalyFlags = opts.includeAnomalies ? computeAnomalies(db) : [];
+    const anomalies = anomalyFlags.map((a) => ({
+      symbol: a.symbol,
+      companyName: a.companyName,
+    }));
+
+    const rawBuckets = bucketByCompany(articles);
+    const buckets = enrichBucketCompanyNames(db, rawBuckets);
+
+    try {
+      const synth = await synthesize({ buckets, heldSymbols, watchlist, anomalies });
+      lines.push(synth);
+      lines.push("");
+      lines.push("---");
+      lines.push("");
+
+      // Concise per-source tail: one link line per article
+      lines.push("**Sources**");
+      lines.push("");
+      for (const article of articles) {
+        const url = article.source_url || article.website_url;
+        if (url) {
+          lines.push(`- **${article.source_name}**: [${article.subject}](${url})`);
+        } else {
+          lines.push(`- **${article.source_name}**: ${article.subject}`);
+        }
+      }
+      lines.push("");
+    } catch (err) {
+      if (err instanceof SynthesisEmptyError) {
+        console.warn(`[digest] synthesis fell back to per-source: ${(err as Error).message}`);
+        recordSynthesisFallback(db, (err as Error).message, articles.length);
+      } else {
+        console.warn(`[digest] synthesis error (network/rate-limit), fell back to per-source: ${(err as Error).message}`);
+        recordSynthesisFallback(db, `generic: ${(err as Error).message}`, articles.length);
+      }
+      // Per-source fallback
+      lines.push(...renderPerSourceBody(articles));
+    }
+  } else {
+    // < SYNTHESIS_MIN_ARTICLES — per-source layout
+    lines.push(...renderPerSourceBody(articles));
+  }
+
+  return lines.join("\n").trim();
 }
