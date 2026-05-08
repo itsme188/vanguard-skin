@@ -1,4 +1,5 @@
 import nodemailer from "nodemailer";
+import { randomUUID } from "node:crypto";
 
 const FROM_NAME = "Portfolio Desk";
 
@@ -36,6 +37,15 @@ export async function sendEmail(opts: SendEmailOptions): Promise<void> {
   const localPart = opts.fromLocalPart ?? "noreply";
   const fromAddress = `${localPart}@${domain}`;
 
+  // Determine Reply-To: opts.replyTo > env var > default
+  const replyToAddress =
+    opts.replyTo ??
+    process.env.REPLY_TO_ADDRESS ??
+    `replies@${domain}`;
+
+  // Generate unique Message-ID
+  const messageId = `<${randomUUID()}@${domain}>`;
+
   const transporter = nodemailer.createTransport({
     host: "smtp.resend.com",
     port: 465,
@@ -46,11 +56,16 @@ export async function sendEmail(opts: SendEmailOptions): Promise<void> {
   await transporter.sendMail({
     from: `"${FROM_NAME}" <${fromAddress}>`,
     to: Array.isArray(opts.to) ? opts.to.join(", ") : opts.to,
-    replyTo: opts.replyTo,
+    replyTo: replyToAddress,
     subject: opts.subject,
     html: opts.html,
     text:
       opts.text ??
       opts.html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim(),
+    headers: {
+      "List-Unsubscribe": `<mailto:unsubscribe@${domain}?subject=unsubscribe>`,
+      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+      "Message-ID": messageId,
+    },
   });
 }

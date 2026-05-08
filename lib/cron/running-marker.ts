@@ -17,7 +17,7 @@
 const DEFAULT_TIMEOUT_MS = 3000;
 
 async function callRunningMarkerEndpoint(
-  type: "briefing" | "digest",
+  type: "briefing" | "digest" | "evening",
   action: "set" | "clear",
   opts?: { timeoutMs?: number },
 ): Promise<void> {
@@ -53,10 +53,10 @@ async function callRunningMarkerEndpoint(
   }
 }
 
-export function setRunningMarker(type: "briefing" | "digest"): Promise<void> {
+export function setRunningMarker(type: "briefing" | "digest" | "evening"): Promise<void> {
   return callRunningMarkerEndpoint(type, "set");
 }
 
-export function clearRunningMarker(type: "briefing" | "digest"): Promise<void> {
+export function clearRunningMarker(type: "briefing" | "digest" | "evening"): Promise<void> {
   return callRunningMarkerEndpoint(type, "clear");
 }
