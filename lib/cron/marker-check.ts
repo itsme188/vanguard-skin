@@ -26,7 +26,7 @@ export interface MarkerCheckResult {
 const DEFAULT_TIMEOUT_MS = 3000;
 
 export async function checkCloudMarker(
-  type: "briefing" | "digest",
+  type: "briefing" | "digest" | "evening",
   opts?: { timeoutMs?: number }
 ): Promise<MarkerCheckResult | null> {
   const url = process.env.WORKER_MARKER_URL;
