@@ -15,5 +15,9 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 #  `sudo chown -R $USER:staff ~/.npm`, but the cron must work regardless.)
 export npm_config_cache="${TMPDIR:-/tmp}/vanguard-skin-npm-cache"
 
+echo "$(date '+%Y-%m-%d %H:%M:%S') — refreshing Vanguard betas"
+(cd /Users/Yitzi/code/vanguard-skin && npx tsx scripts/refresh-vanguard-betas.ts) || \
+  echo "$(date '+%Y-%m-%d %H:%M:%S') — beta refresh failed (continuing)"
+
 echo "$(date '+%Y-%m-%d %H:%M:%S') — starting state snapshot"
 npx -y tsx scripts/snapshot-state-to-r2.ts
