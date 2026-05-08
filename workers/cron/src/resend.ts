@@ -32,13 +32,26 @@ export async function sendEmail(
   }
 
   const fromAddress = `${opts.fromLocalPart}@${env.RESEND_FROM_DOMAIN}`;
+
+  // Generate unique Message-ID matching <uuid@domain> format
+  const messageId = `<${crypto.randomUUID()}@${env.RESEND_FROM_DOMAIN}>`;
+
+  // Determine Reply-To: opts.replyTo > default
+  const replyToAddress =
+    opts.replyTo ?? `replies@${env.RESEND_FROM_DOMAIN}`;
+
   const body: Record<string, unknown> = {
     from: `${FROM_NAME} <${fromAddress}>`,
     to: [opts.to],
     subject: opts.subject,
     html: opts.html,
+    reply_to: replyToAddress,
+    headers: {
+      "List-Unsubscribe": `<mailto:unsubscribe@${env.RESEND_FROM_DOMAIN}?subject=unsubscribe>`,
+      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+      "Message-ID": messageId,
+    },
   };
-  if (opts.replyTo) body.reply_to = opts.replyTo;
 
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
