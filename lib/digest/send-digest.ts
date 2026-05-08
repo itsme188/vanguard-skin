@@ -12,6 +12,7 @@ import {
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
 import { sendEmail } from "@/lib/email";
 import { syncPortfolio } from "@/lib/tws/positions";
+import { getRecipientsFor } from "@/lib/queries/email-recipients";
 
 export class DigestSendError extends Error {
   constructor(
@@ -63,7 +64,11 @@ export async function sendDigestEmail(
   db: Database.Database,
   opts: SendDigestOpts = {}
 ): Promise<SendDigestResult> {
-  const recipient = opts.recipient || process.env.BRIEFING_EMAIL_TO;
+  const overrides = getRecipientsFor(db, "digest");
+  const recipient =
+    opts.recipient ??
+    (overrides ? overrides.join(", ") : null) ??
+    process.env.BRIEFING_EMAIL_TO;
 
   if (!recipient) {
     throw new DigestSendError(
