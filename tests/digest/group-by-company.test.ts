@@ -92,7 +92,7 @@ describe("bucketByCompany", () => {
       website_url: null,
     };
     const buckets = bucketByCompany([a]);
-    expect(buckets).toEqual([{ symbol: "(no symbol)", articles: [a] }]);
+    expect(buckets).toEqual([{ symbol: "(no symbol)", companyName: null, articles: [a] }]);
   });
 });
 
