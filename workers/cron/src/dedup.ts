@@ -30,7 +30,7 @@
 
 import { todayET } from "./dst";
 
-export type JobType = "briefing" | "digest";
+export type JobType = "briefing" | "digest" | "evening";
 export type SentBy = "mac" | "cloud";
 
 const SENT_TTL_SECONDS = 30 * 3600; // 30h

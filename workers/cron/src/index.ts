@@ -10,8 +10,8 @@
  * logged only — the cloud fallback is a stub.
  *
  * Exposes two HTTP endpoints for the Mac side + smoke testing:
- *   GET  /internal/marker?type={briefing|digest}   (X-Cron-Secret required)
- *   POST /internal/trigger?type={briefing|digest}  (X-Cron-Secret required)
+ *   GET  /internal/marker?type={briefing|digest|evening}   (X-Cron-Secret required)
+ *   POST /internal/trigger?type={briefing|digest|evening}  (X-Cron-Secret required)
  */
 
 import {
@@ -236,22 +236,22 @@ export default {
 
     if (request.method === "GET" && url.pathname === "/internal/marker") {
       const typeParam = url.searchParams.get("type");
-      if (typeParam !== "briefing" && typeParam !== "digest") {
-        return Response.json({ error: "type must be briefing or digest" }, { status: 400 });
+      if (typeParam !== "briefing" && typeParam !== "digest" && typeParam !== "evening") {
+        return Response.json({ error: "type must be briefing, digest, or evening" }, { status: 400 });
       }
       const status = await getMarkerStatus(env.CRON_KV, typeParam);
       return Response.json(status);
     }
 
     // Mac calls this at the start (action=set) and end (action=clear) of
-    // /api/cron/{briefing,digest}. Worker re-checks markers before firing
+    // /api/cron/{briefing,digest,evening}. Worker re-checks markers before firing
     // fallback so a slow-but-successful Mac primary doesn't trigger a
     // duplicate fallback email.
     if (request.method === "POST" && url.pathname === "/internal/running-marker") {
       const typeParam = url.searchParams.get("type");
       const action = url.searchParams.get("action");
-      if (typeParam !== "briefing" && typeParam !== "digest") {
-        return Response.json({ error: "type must be briefing or digest" }, { status: 400 });
+      if (typeParam !== "briefing" && typeParam !== "digest" && typeParam !== "evening") {
+        return Response.json({ error: "type must be briefing, digest, or evening" }, { status: 400 });
       }
       if (action !== "set" && action !== "clear") {
         return Response.json({ error: "action must be set or clear" }, { status: 400 });
@@ -280,9 +280,9 @@ export default {
         const result = await runEarningsFallback(env, { dryRun });
         return Response.json(result);
       }
-      if (typeParam !== "briefing" && typeParam !== "digest") {
+      if (typeParam !== "briefing" && typeParam !== "digest" && typeParam !== "evening") {
         return Response.json(
-          { error: "type must be briefing, digest, calendar-enrich, or earnings-fallback" },
+          { error: "type must be briefing, digest, evening, calendar-enrich, or earnings-fallback" },
           { status: 400 },
         );
       }
