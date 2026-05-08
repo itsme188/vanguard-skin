@@ -25,6 +25,7 @@ import {
 } from "./dedup";
 import {
   getCurrentETHour,
+  getCurrentETMinute,
   getCurrentETDayOfWeek,
   todayET,
 } from "./dst";
@@ -55,6 +56,10 @@ export interface Env {
   // Vars (wrangler.toml [vars])
   EXPECTED_HOUR_BRIEFING: string;
   EXPECTED_HOUR_DIGEST: string;
+  // Evening email — Mon-Thu 7pm ET, Fri 5:30pm ET
+  EXPECTED_HOUR_EVENING_MON_THU: string;
+  EXPECTED_HOUR_EVENING_FRI: string;
+  EXPECTED_MINUTE_EVENING_FRI: string;
   PRIMARY_TIMEOUT_MS: string;
   // Secrets (`wrangler secret put`)
   CRON_SHARED_SECRET: string;
@@ -75,17 +80,31 @@ export interface Env {
   FINNHUB_API_KEY?: string;
 }
 
-function parseJobFromClock(env: Env): { type: JobType; expectedHour: number } | null {
+export function parseJobFromClock(env: Env): { type: JobType; expectedHour: number } | null {
   const hour = getCurrentETHour();
+  const minute = getCurrentETMinute();
   const dow = getCurrentETDayOfWeek();
   const briefingHour = parseInt(env.EXPECTED_HOUR_BRIEFING, 10);
   const digestHour = parseInt(env.EXPECTED_HOUR_DIGEST, 10);
+  const eveningMonThuHour = parseInt(env.EXPECTED_HOUR_EVENING_MON_THU, 10);
+  const eveningFriHour = parseInt(env.EXPECTED_HOUR_EVENING_FRI, 10);
+  const eveningFriMinute = parseInt(env.EXPECTED_MINUTE_EVENING_FRI, 10);
 
   if (hour === briefingHour && dow === 0) {
     return { type: "briefing", expectedHour: briefingHour };
   }
   if (hour === digestHour && dow >= 1 && dow <= 5) {
     return { type: "digest", expectedHour: digestHour };
+  }
+  // Evening — Mon-Thu 19:00 ET, Fri 17:30 ET.
+  // Winter day-shift note: Mon-Thu 7pm EST = 00:00 UTC NEXT day (Tue-Fri UTC).
+  // parseJobFromClock reads ET wall-clock via Intl, so the cron firing at
+  // 00:00 UTC on (say) Tuesday still maps to ET Monday 19:00 — caught here.
+  if (hour === eveningMonThuHour && dow >= 1 && dow <= 4) {
+    return { type: "evening", expectedHour: eveningMonThuHour };
+  }
+  if (hour === eveningFriHour && minute === eveningFriMinute && dow === 5) {
+    return { type: "evening", expectedHour: eveningFriHour };
   }
   return null;
 }
