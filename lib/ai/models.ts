@@ -26,6 +26,11 @@ import type { FeatureKey } from "@/lib/ai/feature-keys";
 export const FEATURE_MODELS: Record<FeatureKey, string> = {
   // Reasoning-heavy features — stay on Opus.
   chat: `anthropic/${OPUS_MODEL}`,
+
+  // Cross-source synthesis for morning + evening digests. Sonnet 4.6 is
+  // strong on structured-narrative work and ~5x cheaper than Opus.
+  dailyDigestSynthesis: `anthropic/${SONNET_MODEL}`,
+
   briefing: `anthropic/${OPUS_MODEL}`,
   tradeReviewMain: `anthropic/${OPUS_MODEL}`,
   pdfParsing: `anthropic/${OPUS_MODEL}`,
