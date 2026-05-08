@@ -3,36 +3,30 @@ main = "src/index.ts"
 compatibility_date = "2026-01-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Two UTC slots per target local time — only one fires for real each day;
-# the scheduled() handler gates via Intl.DateTimeFormat("America/New_York").
-# Summer (EDT, UTC-4): 3pm ET = 19:00 UTC, 8:45am ET = 12:45 UTC.
-# Winter (EST, UTC-5): 3pm ET = 20:00 UTC, 8:45am ET = 13:45 UTC.
+# Single */15 cron — Cloudflare's free plan caps at 5 cron triggers, and we
+# need to cover briefing (Sun 3pm ET), digest (Mon-Fri 8:45am ET), evening
+# (Mon-Thu 7pm ET, Fri 5:30pm ET), and calendar-enrich (every 15 min during
+# market hours). All target times fall on 15-minute boundaries, so a single
+# */15 cron suffices and the scheduled() handler dispatches per ET wall-clock:
 #
-# Calendar enrichment: every 15 min, self-gated in scheduled() to Mon-Fri
-# 09:30-18:00 ET (covers both BMO 08:00 releases by T+2h and AMC 16:15
-# releases by T+2h = 18:15).
+#   - Sun 15:00 ET            → weekly briefing
+#   - Mon-Fri 08:45 ET        → daily digest
+#   - Mon-Thu 19:00 ET        → evening email
+#   - Fri 17:30 ET            → evening email
+#   - any tick, Mon-Fri        → calendar-enrich (self-gates 09:30-18:00 ET)
+#                                + earnings-fallback (self-gates 05:00-20:00 ET)
 #
-# Evening email (Mon-Thu 7pm ET, Fri 5:30pm ET):
-# Summer (EDT, UTC-4): Mon-Thu 7pm ET = 23:00 UTC same day → "0 23 * * MON-THU"
-#                       Fri 5:30pm ET = 21:30 UTC same day → "30 21 * * FRI"
-# Winter (EST, UTC-5): Mon-Thu 7pm ET = 00:00 UTC NEXT day → "0 0 * * TUE-FRI"
-#                       Fri 5:30pm ET = 22:30 UTC same day → "30 22 * * FRI"
+# This pattern was already in use for calendar-enrich; consolidation
+# extends it to all jobs. parseJobFromClock() reads ET wall-clock (not UTC)
+# so DST handling is automatic — no day-shift quirks to maintain.
 #
-# Day-shift quirk for winter Mon-Thu: 7pm EST rolls past midnight UTC, so
-# a Monday 7pm ET firing maps to "Tuesday 00:00 UTC" — hence TUE-FRI in that
-# slot. The JS dispatcher reads the ET wall-clock (not UTC), so it correctly
-# sees Monday/Tuesday/Wednesday/Thursday even when UTC is a day ahead.
+# Reverted from 9 specific timed crons (briefing × 2 + digest × 2 + evening × 4
+# + calendar-enrich × 1) on 2026-05-08 because the 9-trigger deploy hit the
+# free-plan limit. Behavior is identical: every cron tick wakes the same
+# scheduled() handler which dispatches based on ET wall-clock.
 [triggers]
 crons = [
-  "0 19 * * SUN",       # Sunday 3pm ET (summer) — weekly briefing
-  "0 20 * * SUN",       # Sunday 3pm ET (winter) — weekly briefing
-  "45 12 * * MON-FRI",  # Weekdays 8:45am ET (summer) — daily digest
-  "45 13 * * MON-FRI",  # Weekdays 8:45am ET (winter) — daily digest
-  "*/15 * * * *",       # Every 15 min — calendar enrich (self-gates in JS)
-  "0 23 * * MON-THU",   # Mon-Thu 7pm ET (summer/EDT) — evening email
-  "0 0 * * TUE-FRI",    # Mon-Thu 7pm ET (winter/EST, day-shift) — evening email
-  "30 21 * * FRI",      # Fri 5:30pm ET (summer/EDT) — evening email
-  "30 22 * * FRI",      # Fri 5:30pm ET (winter/EST) — evening email
+  "*/15 * * * *",       # Every 15 min, self-gated by parseJobFromClock + shouldRunCalendarEnrich + shouldRunEarningsFallback
 ]
 
 # KV namespace — created via `wrangler kv namespace create CRON_KV`.
