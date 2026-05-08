@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useElectron } from "@/lib/hooks/useElectron";
 import { EarningsEmailsSection } from "./EarningsEmailsSection";
+import { EmailRecipientsSection } from "./EmailRecipientsSection";
 
 /**
  * Settings source abstraction — either Electron IPC (packaged app) or the
@@ -347,6 +348,15 @@ export function SettingsModal() {
                   </div>
                 </div>
               ))}
+
+              {/* Email recipients section — DB-backed per-email-type
+                  recipient overrides. Changes apply immediately to the
+                  next cron sweep without an app restart. */}
+              {!unavailableReason && (
+                <div className="pt-2 border-t border-edge">
+                  <EmailRecipientsSection />
+                </div>
+              )}
 
               {/* Earnings-emails section — uses its own DB-backed
                   endpoint instead of the Electron settings file so changes
