@@ -31,6 +31,7 @@ import {
 import { callPrimary, type PrimaryResult } from "./primary";
 import { runFallbackDigest, type FallbackResult } from "./fallback-digest";
 import { runFallbackBriefing } from "./fallback-briefing";
+import { runFallbackEvening } from "./fallback-evening";
 import {
   runCalendarEnrich,
   runCloudFallback,
@@ -149,9 +150,13 @@ async function runJob(type: JobType, env: Env, opts: RunJobOpts = {}): Promise<R
   // Primary failed (timeout / network / 5xx) or was skipped — run fallback.
   let fallback: FallbackResult;
   try {
-    fallback = type === "briefing"
-      ? await runFallbackBriefing(env, { dryRun: opts.dryRun })
-      : await runFallbackDigest(env, { dryRun: opts.dryRun });
+    if (type === "briefing") {
+      fallback = await runFallbackBriefing(env, { dryRun: opts.dryRun });
+    } else if (type === "evening") {
+      fallback = await runFallbackEvening(env, { dryRun: opts.dryRun });
+    } else {
+      fallback = await runFallbackDigest(env, { dryRun: opts.dryRun });
+    }
   } catch (err) {
     console.error(`[runJob ${type}] fallback threw:`, err);
     fallback = {

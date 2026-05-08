@@ -110,19 +110,29 @@ export interface EarningsEmailRow {
 }
 
 /**
- * Snapshot schema is forward-compatible: schemaVersion 1 (briefing/digest only)
- * and schemaVersion 2 (adds earnings cloud-fallback context). All earnings
- * fields are optional + default to [] / { enabled: true, mutedSymbols: [] }
- * when reading an older snapshot.
+ * Snapshot schema is forward-compatible:
+ *   v1 — briefing/digest only
+ *   v2 — adds earnings cloud-fallback context (holdings, securities, etc.)
+ *   v3 — adds vanguardHoldings + securityBetas for evening-email fallback
+ *        + recipient override fields in settings
+ *
+ * All v2/v3 fields are optional for back-compat with older snapshots; the
+ * fallback gracefully degrades when these are missing.
  */
 export interface Snapshot {
-  schemaVersion: 1 | 2;
+  schemaVersion: 1 | 2 | 3;
   snapshotDate: string;
   generatedAt: string;
   heldSymbols: string[];
   settings: {
     last_digest_sent_at: string | null;
     last_briefing_sent_at: string | null;
+    // v3 additions — recipient overrides (null until Phase 6 UI surfaces them)
+    evening_email_recipients?: string | null;
+    digest_email_recipients?: string | null;
+    briefing_email_recipients?: string | null;
+    // v3 additions — synthesis-fallback observability
+    synthesis_fallbacks_last_30d?: string | null;
   };
   calendarEvents: CalendarEventRow[];
   researchSources: ResearchSource[];
@@ -138,6 +148,9 @@ export interface Snapshot {
     enabled: boolean;
     mutedSymbols: string[];
   };
+  // v3 — evening-email fallback fields. Optional for back-compat with v1/v2.
+  vanguardHoldings?: Array<{ symbol: string; securityId: number; accountId: number }>;
+  securityBetas?: Array<{ securityId: number; lookbackDays: number; beta: number; computedAt: string }>;
 }
 
 /** Fetch the most recent snapshot (within 7d). Returns null if none exist. */
