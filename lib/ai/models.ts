@@ -57,7 +57,7 @@ export const FEATURE_MODELS: Record<FeatureKey, string> = {
   //    (expects content to be a string). Avoid Llama for any call whose
   //    prompt asks for raw JSON output — use Sonnet on Anthropic instead.
   tradeReviewQA: `anthropic/${SONNET_MODEL}`,
-  alertSuggestion: "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+  alertSuggestion: "workers-ai/@cf/meta/llama-4-scout-17b-16e-instruct",
   newsletterLevelExtraction: `anthropic/${SONNET_MODEL}`,
   newsletterProcessing: `anthropic/${SONNET_MODEL}`,
   factorClassification: `anthropic/${SONNET_MODEL}`,
