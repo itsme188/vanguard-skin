@@ -38,13 +38,19 @@ const CALENDAR_LOOKAHEAD_DAYS = 7;
 const SNAPSHOT_RETENTION_DAYS = 7;
 
 interface Snapshot {
-  schemaVersion: 2;
+  schemaVersion: 3;
   snapshotDate: string;
   generatedAt: string;
   heldSymbols: string[];
   settings: {
     last_digest_sent_at: string | null;
     last_briefing_sent_at: string | null;
+    // v3 additions — recipient overrides (null until Phase 6 UI surfaces them)
+    evening_email_recipients: string | null;
+    digest_email_recipients: string | null;
+    briefing_email_recipients: string | null;
+    // v3 additions — observability ring buffer for synthesis fallbacks
+    synthesis_fallbacks_last_30d: string | null;
   };
   calendarEvents: Record<string, unknown>[];
   researchSources: Record<string, unknown>[];
@@ -65,6 +71,14 @@ interface Snapshot {
     enabled: boolean;
     mutedSymbols: string[];
   };
+  // v3 additions
+  // Vanguard (non-Roth) stock/ETF/mutual-fund holdings for the evening-email
+  // fallback. Restricted to security types the evening digest cares about
+  // (excludes options, bonds, etc).
+  vanguardHoldings: Array<{ symbol: string; securityId: number; accountId: number }>;
+  // Cached beta coefficients. Worker reads these to rank holdings by
+  // systematic risk without running a full regression in the cloud.
+  securityBetas: Array<{ securityId: number; lookbackDays: number; beta: number; computedAt: string }>;
 }
 
 function today(): string {
@@ -110,6 +124,59 @@ function getSettingValue(db: Database.Database, key: string): string | null {
     .prepare(`SELECT value FROM settings WHERE key = ?`)
     .get(key) as { value: string } | undefined;
   return row?.value ?? null;
+}
+
+/**
+ * Returns all Vanguard (non-Roth) held securities of type Stock / ETF /
+ * Mutual Fund — the set the evening digest cares about. Uses latest
+ * as_of_date per (account, security) to avoid stale holdings surfacing.
+ */
+function getVanguardHoldingsForSnapshot(
+  db: Database.Database
+): Array<{ symbol: string; securityId: number; accountId: number }> {
+  const rows = db
+    .prepare(
+      `SELECT s.symbol, h.security_id AS securityId, h.account_id AS accountId
+         FROM holdings h
+         JOIN securities s ON s.id = h.security_id
+         JOIN accounts a ON a.id = h.account_id
+        WHERE h.quantity > 0
+          AND LOWER(a.name) LIKE '%vanguard%'
+          AND LOWER(a.name) NOT LIKE '%roth%'
+          AND LOWER(COALESCE(s.security_type, '')) IN ('stock', 'common stock', 'etf', 'mutual fund')
+          AND s.symbol IS NOT NULL
+          AND s.symbol != ''
+          AND h.as_of_date = (
+            SELECT MAX(h2.as_of_date)
+              FROM holdings h2
+             WHERE h2.account_id = h.account_id
+               AND h2.security_id = h.security_id
+          )
+        ORDER BY s.symbol`
+    )
+    .all() as Array<{ symbol: string; securityId: number; accountId: number }>;
+  return rows;
+}
+
+/**
+ * Returns all cached beta rows from security_betas.
+ * The Worker uses these to rank holdings by systematic risk without
+ * running a full regression in the cloud.
+ */
+function getSecurityBetas(
+  db: Database.Database
+): Array<{ securityId: number; lookbackDays: number; beta: number; computedAt: string }> {
+  const rows = db
+    .prepare(
+      `SELECT security_id AS securityId,
+              lookback_days AS lookbackDays,
+              beta,
+              computed_at AS computedAt
+         FROM security_betas
+        ORDER BY security_id, lookback_days`
+    )
+    .all() as Array<{ securityId: number; lookbackDays: number; beta: number; computedAt: string }>;
+  return rows;
 }
 
 function buildSnapshot(db: Database.Database): Snapshot {
@@ -230,13 +297,19 @@ function buildSnapshot(db: Database.Database): Snapshot {
     .get() as { value: string } | undefined;
 
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     snapshotDate: today(),
     generatedAt: new Date().toISOString(),
     heldSymbols: getHeldStockSymbolsRO(db),
     settings: {
       last_digest_sent_at: getSettingValue(db, "last_digest_sent_at"),
       last_briefing_sent_at: getSettingValue(db, "last_briefing_sent_at"),
+      // v3 additions — recipient overrides (null until Phase 6 UI surfaces them)
+      evening_email_recipients: getSettingValue(db, "evening_email_recipients"),
+      digest_email_recipients: getSettingValue(db, "digest_email_recipients"),
+      briefing_email_recipients: getSettingValue(db, "briefing_email_recipients"),
+      // v3 additions — observability ring buffer for synthesis fallbacks
+      synthesis_fallbacks_last_30d: getSettingValue(db, "synthesis_fallbacks_last_30d"),
     },
     calendarEvents,
     researchSources,
@@ -252,6 +325,9 @@ function buildSnapshot(db: Database.Database): Snapshot {
         ? earningsMutedRow.value.split(",").map((s) => s.trim().toUpperCase()).filter((s) => s.length > 0)
         : [],
     },
+    // v3 additions
+    vanguardHoldings: getVanguardHoldingsForSnapshot(db),
+    securityBetas: getSecurityBetas(db),
   };
 }
 
@@ -285,7 +361,7 @@ async function main() {
   const uploadMs = Date.now() - t0;
 
   console.log(
-    `[snapshot] uploaded ${key} in ${uploadMs}ms — ` +
+    `[snapshot] uploaded ${key} (v${snapshot.schemaVersion}) in ${uploadMs}ms — ` +
       `${snapshot.heldSymbols.length} symbols, ` +
       `${snapshot.calendarEvents.length} events, ` +
       `${snapshot.researchSources.length} sources, ` +
@@ -293,7 +369,9 @@ async function main() {
       `${snapshot.deepReadArticles.length} deep-read, ` +
       `${snapshot.holdings.length} holdings, ` +
       `${snapshot.securities.length} securities, ` +
-      `${snapshot.earningsEmails.length} audit rows`
+      `${snapshot.earningsEmails.length} audit rows, ` +
+      `${snapshot.vanguardHoldings.length} vanguard-holdings, ` +
+      `${snapshot.securityBetas.length} betas`
   );
 
   const keepFromDate = daysAgo(SNAPSHOT_RETENTION_DAYS);
