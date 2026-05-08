@@ -100,7 +100,7 @@ export function parseJobFromClock(env: Env): { type: JobType; expectedHour: numb
   // Winter day-shift note: Mon-Thu 7pm EST = 00:00 UTC NEXT day (Tue-Fri UTC).
   // parseJobFromClock reads ET wall-clock via Intl, so the cron firing at
   // 00:00 UTC on (say) Tuesday still maps to ET Monday 19:00 — caught here.
-  if (hour === eveningMonThuHour && dow >= 1 && dow <= 4) {
+  if (hour === eveningMonThuHour && minute === 0 && dow >= 1 && dow <= 4) {
     return { type: "evening", expectedHour: eveningMonThuHour };
   }
   if (hour === eveningFriHour && minute === eveningFriMinute && dow === 5) {

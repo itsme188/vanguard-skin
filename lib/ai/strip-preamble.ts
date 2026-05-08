@@ -6,7 +6,8 @@
  * a line that starts with a markdown marker (header, table, list, blockquote, etc.),
  * then returns everything from that point onwards.
  *
- * If no marker is found, returns empty string.
+ * If no marker is found, returns the input unchanged (caller should validate
+ * downstream — e.g., synthesize.ts checks the first non-empty line for `#`).
  */
 export function stripModelPreamble(text: string): string {
   const lines = text.split("\n");
