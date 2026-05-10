@@ -17,6 +17,7 @@ import { AnalysisView, type AnalysisMode } from "../components/AnalysisView";
 import { TradeReviewView } from "../components/TradeReviewView";
 import { PerformanceView } from "../components/PerformanceView";
 import { IncomeYieldSection } from "../components/IncomeYieldSection";
+import { TrustStrip } from "../components/analysis/TrustStrip";
 import Link from "next/link";
 
 interface PageProps {
@@ -160,6 +161,8 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
           Tax Lots
         </Link>
       </div>
+
+      <TrustStrip scope={scope} />
 
       <AnalysisView
         allocation={allocation}
