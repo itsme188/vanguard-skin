@@ -2,8 +2,14 @@ import Link from "next/link";
 import { db } from "@/lib/db";
 import { computeTwr } from "@/lib/compute/twr";
 import { computeXirr } from "@/lib/compute/xirr";
+import { computeRiskMetrics } from "@/lib/compute/risk";
+import { reconcileTwrAgainstStatements } from "@/lib/compute/twr-reconcile";
+import { computePeriodAttribution } from "@/lib/compute/period-attribution";
 import { resolveScopeToSingleId } from "@/lib/queries/accounts";
+import { getDailyValuationsByAccount, getDailyValuationsCombined } from "@/lib/queries/daily-valuations";
 import { Money, Pct } from "@/lib/privacy/components";
+import { formatPercent } from "@/lib/format";
+import { PerformanceCurveChart, type PerformanceCurveData } from "./EquityCurveChart";
 
 type Period = "ytd" | "1y" | "3y" | "5y" | "all";
 
@@ -55,20 +61,25 @@ interface PerformanceViewProps {
   period?: string;
 }
 
+const BENCHMARK_SYMBOL = "SPY";
+
 export async function PerformanceView({ scope = "all", period }: PerformanceViewProps) {
   const activePeriod: Period = (PERIODS.find((p) => p.key === period)?.key ?? "ytd") as Period;
   const activeScope = SCOPES.find((s) => s.key === scope)?.key ?? "all";
   const accountId = activeScope === "all" ? undefined : resolveScopeToSingleId(db, activeScope);
 
   const startDate = startDateForPeriod(activePeriod);
+  const today = new Date().toISOString().slice(0, 10);
 
   let twrResult: ReturnType<typeof computeTwr> | null = null;
   let xirrResult: ReturnType<typeof computeXirr> | null = null;
+  let riskResult: ReturnType<typeof computeRiskMetrics> | null = null;
   let computeError: string | null = null;
 
   try {
     twrResult = computeTwr(db, { startDate, accountId });
     xirrResult = computeXirr(db, { startDate, accountId });
+    riskResult = computeRiskMetrics(db, { startDate, endDate: today, accountId });
   } catch (err) {
     computeError = err instanceof Error ? err.message : "Unable to compute performance";
   }
@@ -80,6 +91,91 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
     xirrResult && xirrResult.totalInvested > 0
       ? xirrResult.currentValue + xirrResult.totalWithdrawn - xirrResult.totalInvested
       : null;
+
+  // ── Reconciliation strip ────────────────────────────────────────
+  // Use latest month-end we have for the scope's primary account
+  let reconciliation: ReturnType<typeof reconcileTwrAgainstStatements> = null;
+  if (accountId !== undefined) {
+    try {
+      const latestSnap = db
+        .prepare(
+          `SELECT month_end_date FROM monthly_snapshots
+           WHERE account_id = ?
+             AND source IN ('ibkr-activity', 'canonical', 'vanguard-pdf')
+             AND twr IS NOT NULL
+           ORDER BY month_end_date DESC LIMIT 1`,
+        )
+        .get(accountId) as { month_end_date: string } | undefined;
+      if (latestSnap) {
+        reconciliation = reconcileTwrAgainstStatements(db, accountId, latestSnap.month_end_date);
+      }
+    } catch {
+      // Non-blocking — skip strip if reconciliation fails
+    }
+  }
+
+  // ── Equity curve data ───────────────────────────────────────────
+  const effectiveStart = startDate ?? "2000-01-01";
+  const dailyVals = accountId !== undefined
+    ? getDailyValuationsByAccount(db, accountId, { startDate: effectiveStart, endDate: today })
+    : getDailyValuationsCombined(db, { startDate: effectiveStart, endDate: today });
+
+  const benchmarkRows = db
+    .prepare(
+      `SELECT date, close_price FROM benchmark_prices
+       WHERE symbol = ? AND date BETWEEN ? AND ?
+       ORDER BY date ASC`,
+    )
+    .all(BENCHMARK_SYMBOL, effectiveStart, today) as { date: string; close_price: number }[];
+
+  // Normalize both series to 100 at their respective first data point
+  let equityCurveData: PerformanceCurveData[] = [];
+  if (dailyVals.length >= 2 && benchmarkRows.length >= 2) {
+    const portBase = dailyVals[0].total_value;
+    const benchBase = benchmarkRows[0].close_price;
+    const benchByDate = new Map(benchmarkRows.map((b) => [b.date, b.close_price]));
+
+    equityCurveData = dailyVals
+      .map((v) => {
+        const benchPrice = benchByDate.get(v.valuation_date);
+        if (benchPrice == null || portBase <= 0 || benchBase <= 0) return null;
+        return {
+          date: v.valuation_date,
+          portfolio: (v.total_value / portBase) * 100,
+          benchmark: (benchPrice / benchBase) * 100,
+        };
+      })
+      .filter((d): d is PerformanceCurveData => d !== null);
+  }
+
+  // ── Period attribution ──────────────────────────────────────────
+  // Use the first account in scope for attribution (position-level data).
+  // When scope=all, resolveScope returns undefined (meaning "no filter"), so
+  // we can't use it to pick an account. Instead, query directly for the first
+  // account by ID as a stable fallback.
+  const attrAccountId: number | undefined =
+    accountId ??
+    (() => {
+      const row = db
+        .prepare("SELECT id FROM accounts ORDER BY id LIMIT 1")
+        .get() as { id: number } | undefined;
+      return row?.id;
+    })();
+
+  let attribution: ReturnType<typeof computePeriodAttribution> | null = null;
+  if (attrAccountId !== undefined) {
+    try {
+      attribution = computePeriodAttribution(
+        db,
+        attrAccountId,
+        effectiveStart,
+        today,
+        BENCHMARK_SYMBOL,
+      );
+    } catch {
+      // Non-blocking
+    }
+  }
 
   const buildHref = (next: { period?: Period; scope?: string }) => {
     const params = new URLSearchParams({
@@ -138,7 +234,36 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
         </section>
       ) : (
         <>
-          {/* KPI strip */}
+          {/* Reconciliation strip */}
+          {reconciliation && (
+            <section
+              className={`rounded-xl p-3 px-4 text-sm flex items-center gap-2 ${
+                reconciliation.withinTolerance
+                  ? "bg-up/10 text-up border border-up/20"
+                  : "bg-down/10 text-down border border-down/20"
+              }`}
+            >
+              <span className="text-base">{reconciliation.withinTolerance ? "✓" : "⚠"}</span>
+              <span>
+                TWR reconciled to {reconciliation.source} statement through{" "}
+                <strong>{reconciliation.periodEnd}</strong>
+                {" · "}
+                {reconciliation.withinTolerance ? (
+                  <>
+                    <strong>{reconciliation.divergenceBp > 0 ? "+" : ""}{reconciliation.divergenceBp} bp</strong>{" "}
+                    within tolerance
+                  </>
+                ) : (
+                  <>
+                    <strong>{reconciliation.divergenceBp > 0 ? "+" : ""}{reconciliation.divergenceBp} bp</strong>{" "}
+                    — outside tolerance · review data integrity
+                  </>
+                )}
+              </span>
+            </section>
+          )}
+
+          {/* KPI strip — 4 cells: TWR · XIRR · Max Drawdown · Sharpe */}
           <section className="rounded-xl bg-panel p-4 sm:p-5 card-elev">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 sm:gap-6">
               <KpiCell
@@ -148,22 +273,27 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
                 title="Time-weighted return — manager-skill measure that strips out cash-flow timing."
               />
               <KpiCell
-                label="XIRR · annualized"
+                label="MWR (XIRR)"
                 value={xirrAnnualized}
                 kind="pct"
                 title="Money-weighted return — investor-experience measure that includes cash-flow timing."
               />
               <KpiCell
-                label="Total return"
-                value={totalReturnPct}
+                label="Max drawdown"
+                value={
+                  riskResult?.maxDrawdown != null
+                    ? -(riskResult.maxDrawdown.percent) // DrawdownInfo.percent is a decimal fraction (0-1); KpiCell with kind="pct"
+                    // multiplies by 100 internally. Negate for display sign (shows as e.g. -12.34%).
+                    : null
+                }
                 kind="pct"
-                title="Cumulative TWR over the selected period (not annualized)."
+                title="Largest peak-to-trough decline in portfolio value over the period."
               />
               <KpiCell
-                label="Cumulative gain"
-                value={cumulativeGain}
-                kind="money"
-                title="Net of deposits and withdrawals over the period."
+                label="Sharpe ratio"
+                value={riskResult?.sharpeRatio ?? null}
+                kind="ratio"
+                title={`Risk-adjusted return. Risk-free rate: ${formatPercent((riskResult?.riskFreeRate ?? 0.045) * 100, 2)}.`}
               />
             </div>
           </section>
@@ -229,6 +359,155 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
               </table>
             </section>
           )}
+
+          {/* Equity curve with benchmark overlay */}
+          {equityCurveData.length > 0 && (
+            <PerformanceCurveChart data={equityCurveData} benchmarkSymbol={BENCHMARK_SYMBOL} />
+          )}
+
+          {/* Period attribution */}
+          {attribution && (
+            <>
+              {/* Top contributors / detractors */}
+              {(attribution.topContributors.length > 0 || attribution.topDetractors.length > 0) && (
+                <section className="rounded-xl bg-panel p-4 sm:p-5 card-elev">
+                  <h3 className="text-sm font-medium text-ink mb-3">Period attribution</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                    {/* Contributors */}
+                    <div>
+                      <p className="text-[11px] uppercase tracking-widest text-ink-faint mb-2">
+                        Top contributors
+                      </p>
+                      {attribution.topContributors.length === 0 ? (
+                        <p className="text-sm text-ink-faint italic">None this period</p>
+                      ) : (
+                        <ul className="space-y-1.5">
+                          {attribution.topContributors.map((c) => (
+                            <li
+                              key={c.symbol}
+                              className="flex items-center justify-between text-sm"
+                            >
+                              <span className="font-mono text-ink">{c.symbol}</span>
+                              <span className="font-mono tabular-nums text-up">
+                                <Pct value={c.contribution * 100} digits={2} signed />
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                    {/* Detractors */}
+                    <div>
+                      <p className="text-[11px] uppercase tracking-widest text-ink-faint mb-2">
+                        Top detractors
+                      </p>
+                      {attribution.topDetractors.length === 0 ? (
+                        <p className="text-sm text-ink-faint italic">None this period</p>
+                      ) : (
+                        <ul className="space-y-1.5">
+                          {attribution.topDetractors.map((c) => (
+                            <li
+                              key={c.symbol}
+                              className="flex items-center justify-between text-sm"
+                            >
+                              <span className="font-mono text-ink">{c.symbol}</span>
+                              <span className="font-mono tabular-nums text-down">
+                                <Pct value={c.contribution * 100} digits={2} signed />
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+                </section>
+              )}
+
+              {/* Sector contribution */}
+              {attribution.sectorContribution.length > 0 && (
+                <section className="rounded-xl bg-panel p-4 sm:p-5 card-elev">
+                  <h3 className="text-sm font-medium text-ink mb-3">Sector contribution</h3>
+                  <ul className="space-y-2">
+                    {attribution.sectorContribution.map((s) => (
+                      <li key={s.sector} className="flex items-center gap-3 text-sm">
+                        <span className="text-ink-dim w-40 shrink-0">{s.sector}</span>
+                        {/* Bar */}
+                        <div className="flex-1 h-2 bg-raised rounded-full overflow-hidden">
+                          <div
+                            className={`h-full rounded-full ${s.contribution >= 0 ? "bg-up/60" : "bg-down/60"}`}
+                            style={{
+                              width: `${Math.min(
+                                100,
+                                (Math.abs(s.contribution) /
+                                  Math.max(
+                                    ...attribution!.sectorContribution.map((x) =>
+                                      Math.abs(x.contribution),
+                                    ),
+                                  )) *
+                                  100,
+                              )}%`,
+                            }}
+                          />
+                        </div>
+                        <span className={`font-mono tabular-nums text-xs w-16 text-right ${s.contribution >= 0 ? "text-up" : "text-down"}`}>
+                          <Pct value={s.contribution * 100} digits={2} signed />
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+
+              {/* Beta-vs-alpha decomposition */}
+              {(attribution.betaVsAlpha.betaContribution !== 0 ||
+                attribution.betaVsAlpha.alphaContribution !== 0) && (
+                <section className="rounded-xl bg-panel p-4 sm:p-5 card-elev">
+                  <h3 className="text-sm font-medium text-ink mb-4">
+                    Beta vs alpha decomposition{" "}
+                    <span className="text-ink-faint font-normal text-xs">
+                      vs {BENCHMARK_SYMBOL}
+                    </span>
+                  </h3>
+                  <div className="grid grid-cols-2 gap-6">
+                    <div>
+                      <p className="text-[11px] uppercase tracking-widest text-ink-faint mb-1">
+                        Beta contribution
+                      </p>
+                      <p
+                        className={`font-mono tabular-nums text-xl ${attribution.betaVsAlpha.betaContribution >= 0 ? "text-up" : "text-down"}`}
+                      >
+                        <Pct
+                          value={attribution.betaVsAlpha.betaContribution * 100}
+                          digits={2}
+                          signed
+                        />
+                      </p>
+                      <p className="text-[11px] text-ink-faint mt-0.5">
+                        Market exposure return
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[11px] uppercase tracking-widest text-ink-faint mb-1">
+                        Alpha
+                      </p>
+                      <p
+                        className={`font-mono tabular-nums text-xl ${attribution.betaVsAlpha.alphaContribution >= 0 ? "text-up" : "text-down"}`}
+                      >
+                        <Pct
+                          value={attribution.betaVsAlpha.alphaContribution * 100}
+                          digits={2}
+                          signed
+                        />
+                      </p>
+                      <p className="text-[11px] text-ink-faint mt-0.5">
+                        Idiosyncratic return above benchmark
+                      </p>
+                    </div>
+                  </div>
+                </section>
+              )}
+            </>
+          )}
         </>
       )}
     </div>
@@ -243,7 +522,7 @@ function KpiCell({
 }: {
   label: string;
   value: number | null;
-  kind: "pct" | "money";
+  kind: "pct" | "money" | "ratio";
   title?: string;
 }) {
   const className =
@@ -263,6 +542,8 @@ function KpiCell({
           "—"
         ) : kind === "pct" ? (
           <Pct value={value * 100} digits={2} signed />
+        ) : kind === "ratio" ? (
+          value.toFixed(2)
         ) : (
           <Money value={value} signed />
         )}
