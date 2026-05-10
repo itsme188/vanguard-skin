@@ -4,22 +4,10 @@ import { useState, useEffect, type ReactNode } from "react";
 import type { FactorAnalysisResult, FactorTilt } from "@/lib/compute/factors";
 import { Pct } from "@/lib/privacy/components";
 import { usePrivacy } from "@/lib/privacy/context";
-
-// Per-scope default benchmark (locked Phase 5 IA decision):
-// Vanguard portfolios are broad-market, IBKR is active/tech-heavy, Roth is balanced.
-const DEFAULT_BENCHMARK_BY_SCOPE: Record<string, string> = {
-  vanguard: "VTI",
-  ibkr: "QQQ",
-  roth: "SPY",
-  all: "SPY",
-};
-
-const BENCHMARK_OPTIONS: { value: string; label: string }[] = [
-  { value: "SPY", label: "SPY · S&P 500" },
-  { value: "QQQ", label: "QQQ · Nasdaq 100" },
-  { value: "VTI", label: "VTI · Total Market" },
-  { value: "DIA", label: "DIA · Dow Jones" },
-];
+import {
+  DEFAULT_BENCHMARK_BY_SCOPE,
+  BENCHMARK_OPTIONS,
+} from "@/lib/analysis/benchmarks";
 
 // ─── Formatters ──────────────────────────────────────────────────
 
