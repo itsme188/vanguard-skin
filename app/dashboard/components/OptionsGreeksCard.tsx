@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, type ReactNode } from "react";
-import type { PortfolioGreeks, PositionGreeks } from "@/lib/compute/options-greeks";
+import type { PortfolioGreeks, PositionGreeks, GreeksDiagnostic } from "@/lib/compute/options-greeks";
 import { PrivateText } from "@/lib/privacy/components";
 import { EmptySection } from "./EmptySection";
 
@@ -140,9 +140,34 @@ export function OptionsGreeksCard({ scope }: { scope?: string }) {
           </tbody>
         </table>
       </div>
+
+      {/* Diagnostics: positions that couldn't compute Greeks */}
+      {data.diagnostics && data.diagnostics.length > 0 && (
+        <details className="mt-3">
+          <summary className="text-xs text-ink-faint cursor-pointer">
+            {data.diagnostics.length} position{data.diagnostics.length === 1 ? "" : "s"} couldn&apos;t compute Greeks
+          </summary>
+          <div className="mt-2 space-y-1 text-xs text-ink-dim font-mono">
+            {data.diagnostics.map((d) => (
+              <div key={d.symbol}>
+                {d.symbol} · <span className="text-ink-faint">{REASON_LABELS[d.reason]}</span>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
     </div>
   );
 }
+
+// ─── Diagnostics label map ──────────────────────────────────────
+
+const REASON_LABELS: Record<GreeksDiagnostic["reason"], string> = {
+  no_underlying_price: "no underlying price",
+  expired: "already expired",
+  missing_iv: "couldn't solve for IV (using 30% vol fallback)",
+  missing_option_price: "no option price (using 30% vol fallback)",
+};
 
 // ─── Helpers ────────────────────────────────────────────────────
 
