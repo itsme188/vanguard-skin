@@ -1,8 +1,6 @@
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { useState } from "react";
-import { useToast } from "./Toast";
 import type {
   AllocationEntry,
   ConcentrationMetrics,
@@ -13,7 +11,6 @@ import type {
   FactorCoverage,
 } from "@/lib/queries/analysis";
 import { FACTOR_LABELS, type FactorColumn, FACTOR_COLUMNS } from "@/lib/factors";
-import { FactorHeatmap } from "./FactorHeatmap";
 import { RiskMetrics } from "./RiskMetrics";
 import { PositionRiskCard } from "./PositionRisk";
 import { FactorAnalysisCard } from "./FactorAnalysis";
@@ -22,10 +19,12 @@ import { FixedIncomeCard } from "./FixedIncomeCard";
 import { OptionsGreeksCard } from "./OptionsGreeksCard";
 import { OptionsStrategies } from "./OptionsStrategies";
 import { ExpirationCalendar } from "./ExpirationCalendar";
-import { Pct, PrivateText, usePrivateFormatter } from "@/lib/privacy/components";
+import { Pct, PrivateText } from "@/lib/privacy/components";
 import { usePrivacy } from "@/lib/privacy/context";
+import { FactorModeCard } from "./analysis/FactorModeCard";
+import { ClassificationCard } from "./analysis/ClassificationCard";
 import {
-  PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis,
+  PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
 } from "recharts";
 
 // ─── Constants ───────────────────────────────────────────────────
@@ -127,15 +126,7 @@ export function AnalysisView({
 }: AnalysisViewProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { toast } = useToast();
   const { isPrivate } = usePrivacy();
-  const [showCoverage, setShowCoverage] = useState(false);
-  const [classifyLoading, setClassifyLoading] = useState(false);
-  const [factorClassifyLoading, setFactorClassifyLoading] = useState(false);
-  const pctTickFormatter = usePrivateFormatter((v: number) => `${v.toFixed(0)}%`);
-  const pctTooltipFormatter = usePrivateFormatter(
-    (v: number | string | undefined) => `${Number(v).toFixed(1)}%`,
-  );
 
   function navigate(updates: Record<string, string>) {
     const params = new URLSearchParams(searchParams.toString());
@@ -144,52 +135,6 @@ export function AnalysisView({
       else params.delete(key);
     }
     router.push(`/dashboard/analysis?${params.toString()}`);
-  }
-
-  async function runAutoClassify() {
-    setClassifyLoading(true);
-    try {
-      const res = await fetch("/api/compute/classify", { method: "POST" });
-      const data = await res.json();
-      if (data.success) {
-        toast(
-          data.classified > 0
-            ? `Classified ${data.classified} securities (${data.skipped} already done)`
-            : `All ${data.skipped} securities already classified`,
-          "success"
-        );
-        router.refresh();
-      } else {
-        toast(`Classification failed: ${data.error}`, "error");
-      }
-    } catch {
-      toast("Failed to connect to server", "error");
-    } finally {
-      setClassifyLoading(false);
-    }
-  }
-
-  async function runFactorAutoClassify() {
-    setFactorClassifyLoading(true);
-    try {
-      const res = await fetch("/api/compute/classify-factors", { method: "POST" });
-      const data = await res.json();
-      if (data.success) {
-        toast(
-          `Classified ${data.classified} securities` +
-            (data.skipped > 0 ? ` (${data.skipped} skipped)` : "") +
-            (data.errors?.length > 0 ? ` · ${data.errors.length} errors` : ""),
-          "success"
-        );
-        router.refresh();
-      } else {
-        toast(`Factor classification failed: ${data.error}`, "error");
-      }
-    } catch {
-      toast("Failed to connect to server", "error");
-    } finally {
-      setFactorClassifyLoading(false);
-    }
   }
 
   const chartData = bucketAllocation(allocation);
@@ -390,182 +335,11 @@ export function AnalysisView({
         </div>
       </div>
 
-      {/* Factor-specific: heatmap + coverage */}
-      {isFactorMode && (
-        <>
-          {factorHeatmap && <FactorHeatmap rows={factorHeatmap} />}
-
-          {/* Factor Coverage + Auto-Classify */}
-          <div className="bg-panel border border-edge rounded-lg p-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-medium text-ink">
-                Factor Coverage
-                {factorCoverage && (
-                  <span className="text-ink-faint font-normal ml-2">
-                    {factorCoverage.withFactors} of {factorCoverage.totalHoldings} holdings ({factorCoverage.coveragePct}%)
-                  </span>
-                )}
-              </h3>
-              <button
-                onClick={runFactorAutoClassify}
-                disabled={factorClassifyLoading}
-                className="px-3 py-1 text-xs bg-gold/10 text-gold border border-gold/30 rounded hover:bg-gold/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-ring"
-              >
-                {factorClassifyLoading ? "Classifying..." : "Auto-Classify Factors"}
-              </button>
-            </div>
-            {factorCoverage && factorCoverage.bySource.length > 0 && (
-              <div className="flex gap-4 mt-3">
-                {factorCoverage.bySource.map((s) => (
-                  <span key={s.source} className="text-xs text-ink-faint">
-                    <span className="text-ink-dim font-mono">{s.count}</span>{" "}
-                    {s.source}
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-        </>
-      )}
-
-      {/* Classification-specific: concentration + coverage */}
-      {!isFactorMode && (
-        <>
-          {/* Concentration Metrics */}
-          <div className="bg-panel border border-edge rounded-lg p-4">
-            <h3 className="text-sm font-medium text-ink mb-4">Concentration Metrics</h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-              <MetricCard
-                label="Herfindahl Index (HHI)"
-                value={concentration.hhi.toFixed(4)}
-                description={
-                  concentration.hhi > 0.25
-                    ? "Highly concentrated"
-                    : concentration.hhi > 0.15
-                    ? "Moderately concentrated"
-                    : concentration.hhi > 0.06
-                    ? "Moderately diversified"
-                    : "Well diversified"
-                }
-                color={
-                  concentration.hhi > 0.25
-                    ? "text-down"
-                    : concentration.hhi > 0.15
-                    ? "text-gold"
-                    : "text-up"
-                }
-              />
-              <MetricCard
-                label="Effective Positions"
-                value={concentration.effective_positions.toFixed(1)}
-                description="1/HHI — equivalent equal-weighted positions"
-                color="text-blue"
-              />
-              <MetricCard
-                label="Classification Coverage"
-                value={`${coverage.coverage_pct}%`}
-                description={`${coverage.classified} of ${coverage.total} securities classified`}
-                color={coverage.coverage_pct > 90 ? "text-up" : coverage.coverage_pct > 70 ? "text-gold" : "text-down"}
-              />
-            </div>
-
-            {concentration.top_positions.length > 0 && (
-              <div>
-                <h4 className="text-xs font-medium text-ink-faint uppercase mb-2">Top 10 Positions</h4>
-                <ResponsiveContainer width="100%" height={Math.max(200, concentration.top_positions.length * 24)}>
-                  <BarChart
-                    data={concentration.top_positions}
-                    layout="vertical"
-                    margin={{ top: 8, left: 60, right: 20, bottom: 4 }}
-                  >
-                    <XAxis type="number" tickFormatter={pctTickFormatter} tick={{ fill: "#94A3B8", fontSize: 11 }} />
-                    <YAxis type="category" dataKey="symbol" tick={{ fill: "#E5E7EB", fontSize: 11 }} width={70} interval={0} />
-                    <Tooltip
-                      formatter={(value: number | string | undefined) => [pctTooltipFormatter(value), "Weight"]}
-                      contentStyle={{
-                        backgroundColor: "#0F1219",
-                        border: "1px solid #1E2533",
-                        borderRadius: "8px",
-                        color: "#E5E7EB",
-                      }}
-                      itemStyle={{ color: "#E5E7EB" }}
-                    />
-                    <Bar dataKey="weight_pct" fill="#C9A44E" radius={[0, 4, 4, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-
-            {concentration.warnings.length > 0 && (
-              <div className="mt-4 space-y-1">
-                {concentration.warnings.slice(0, 8).map((w, i) => (
-                  <p key={i} className="text-xs text-gold">
-                    {/\d/.test(w) ? <PrivateText>{w}</PrivateText> : w}
-                  </p>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Classification Coverage Detail */}
-          <div className="bg-panel border border-edge rounded-lg p-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-medium text-ink">Classification</h3>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={runAutoClassify}
-                  disabled={classifyLoading}
-                  className="px-3 py-1 text-xs bg-gold/10 text-gold border border-gold/30 rounded hover:bg-gold/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-ring"
-                >
-                  {classifyLoading ? "Classifying..." : "Auto-Classify"}
-                </button>
-                <button
-                  onClick={() => setShowCoverage(!showCoverage)}
-                  className="px-3 py-1 text-xs bg-panel text-ink-faint border border-edge rounded hover:text-ink-dim transition-colors"
-                >
-                  {showCoverage ? "Hide Details" : "Show Details"}
-                </button>
-              </div>
-            </div>
-
-            <div className="flex gap-4 mt-3">
-              {coverage.by_source.map((s) => (
-                <span key={s.source} className="text-xs text-ink-faint">
-                  <span className="text-ink-dim font-mono">{s.count}</span>{" "}
-                  {s.source}
-                </span>
-              ))}
-            </div>
-
-            {showCoverage && coverage.unclassified_securities.length > 0 && (
-              <div className="mt-4">
-                <h4 className="text-xs font-medium text-ink-faint uppercase mb-2">
-                  Unclassified Securities ({coverage.unclassified_securities.length})
-                </h4>
-                <div className="max-h-60 overflow-y-auto">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="border-b border-edge text-ink-faint">
-                        <th className="text-left py-1 pr-2">Symbol</th>
-                        <th className="text-left py-1 pr-2">Name</th>
-                        <th className="text-left py-1">Type</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {coverage.unclassified_securities.map((s) => (
-                        <tr key={s.id} className="border-b border-edge/30">
-                          <td className="py-1 pr-2 font-mono text-ink">{s.symbol}</td>
-                          <td className="py-1 pr-2 text-ink-faint truncate max-w-xs">{s.name ?? "—"}</td>
-                          <td className="py-1 text-ink-faint">{s.security_type ?? "—"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-          </div>
-        </>
+      {/* Mode-specific subcomponents */}
+      {isFactorMode ? (
+        <FactorModeCard factorHeatmap={factorHeatmap} factorCoverage={factorCoverage} />
+      ) : (
+        <ClassificationCard concentration={concentration} coverage={coverage} />
       )}
 
       {/* ── Quantitative Factor Analysis ── */}
@@ -585,28 +359,6 @@ export function AnalysisView({
       {/* ── Risk Decomposition ── */}
       <RiskMetrics scope={currentScope} />
       <PositionRiskCard scope={currentScope} />
-    </div>
-  );
-}
-
-// ─── MetricCard ──────────────────────────────────────────────────
-
-function MetricCard({
-  label,
-  value,
-  description,
-  color,
-}: {
-  label: string;
-  value: string;
-  description: string;
-  color: string;
-}) {
-  return (
-    <div className="bg-raised/50 rounded-lg p-3">
-      <p className="text-xs text-ink-faint uppercase">{label}</p>
-      <p className={`text-xl font-mono font-medium mt-1 ${color}`}>{value}</p>
-      <p className="text-xs text-ink-faint mt-1">{description}</p>
     </div>
   );
 }
