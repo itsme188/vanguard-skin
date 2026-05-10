@@ -17,6 +17,7 @@ describe("getAnalysisTrustState", () => {
     const state = getAnalysisTrustState(db);
     expect(state.factorCoverage.percentage).toBe(0);
     expect(state.factorCoverage.totalNames).toBe(0);
+    expect(state.performanceReconciledThru).toBeNull();
   });
 
   it("reports factor coverage percentage based on classified securities", () => {
@@ -55,6 +56,55 @@ describe("getAnalysisTrustState", () => {
     const state = getAnalysisTrustState(db);
     expect(state.stalePrices.count).toBe(1);
     expect(state.stalePrices.symbols).toEqual(["MSFT"]);
+  });
+
+  it("populates performanceReconciledThru when reconciliation passes", () => {
+    // Two snapshots so computeTwr can produce a single-month result for April
+    db.prepare(`INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, twr, source)
+                VALUES (3, '2026-03-31', 100000, 0.00, 'ibkr-activity')`).run();
+    db.prepare(`INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, twr, source)
+                VALUES (3, '2026-04-30', 105210, 5.21, 'ibkr-activity')`).run();
+    const state = getAnalysisTrustState(db, [3]);
+    expect(state.performanceReconciledThru).toBe("2026-04-30");
+  });
+
+  it("returns null performanceReconciledThru when one account reconcile returns null (unresolvable)", () => {
+    // account 3: passes reconciliation — two snapshots with ibkr-activity twr
+    db.prepare(`INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, twr, source)
+                VALUES (3, '2026-03-31', 100000, 0.00, 'ibkr-activity')`).run();
+    db.prepare(`INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, twr, source)
+                VALUES (3, '2026-04-30', 105210, 5.21, 'ibkr-activity')`).run();
+    // account 1: has a statement snapshot for March but NOT for April.
+    // getAnalysisTrustState queries for the LATEST statement snapshot per account.
+    // latestStmt for account 1 → '2026-03-31'. reconcileTwrAgainstStatements for March
+    // needs a prior snapshot (February) — none exists, so ibkr-activity pre-computed
+    // path is used (twr=0.00 → 0bp divergence → within tolerance).
+    // To force a null from reconcile: give account 1 a statement at a date where
+    // computeTwr also returns null. Use a single snapshot with twr IS NULL so
+    // reconcile's first guard (twr IS NOT NULL) finds nothing → null result.
+    // Since latestStmt query filters for twr IS NOT NULL, there's no latestStmt row
+    // for account 1 → the new !latestStmt branch fires → null + break.
+    db.prepare(`INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, twr, starting_value, source)
+                VALUES (1, '2026-04-30', 102000, NULL, NULL, 'vanguard-pdf')`).run();
+    // twr=NULL means latestStmt query (twr IS NOT NULL) finds nothing for account 1
+    // → !latestStmt branch → earliestReconciledMonth = null → break
+
+    // Scope to [1, 3]: account 1 has no statement with twr, forces null
+    const state = getAnalysisTrustState(db, [1, 3]);
+    expect(state.performanceReconciledThru).toBeNull();
+  });
+
+  it("returns null performanceReconciledThru when one account has no statement TWR", () => {
+    // account 3: passes reconciliation
+    db.prepare(`INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, twr, source)
+                VALUES (3, '2026-03-31', 100000, 0.00, 'ibkr-activity')`).run();
+    db.prepare(`INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, twr, source)
+                VALUES (3, '2026-04-30', 105210, 5.21, 'ibkr-activity')`).run();
+    // account 2: no statement snapshot at all → latestStmt is null → must force null
+
+    // Scope to [2, 3]: account 2 has no statement TWR, so "all accounts agree" is false
+    const state = getAnalysisTrustState(db, [2, 3]);
+    expect(state.performanceReconciledThru).toBeNull();
   });
 
   it("reports bond duration coverage (held bonds with non-null duration_years)", () => {
