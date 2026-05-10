@@ -19,8 +19,8 @@
 ## File Structure (P2)
 
 **Create:**
-- `lib/db/migrations/049_benchmark_compositions.sql`
-- `lib/db/migrations/050_construction_caps.sql` — seed `settings` rows for per-scope caps
+- `lib/db/migrations/049_construction_caps.sql` — seed `settings` rows for per-scope caps (needed by Slice B flags + Slice C solver)
+- `lib/db/migrations/050_benchmark_compositions.sql`
 - `lib/compute/exposure-delta.ts` — What-if engine, pure function over synthetic holdings view
 - `lib/compute/cash-deploy.ts` — gap detection + allocation solver
 - `lib/compute/scenario-recipes.ts` — 8 factor-anchored scenarios + per-bucket shock multipliers
