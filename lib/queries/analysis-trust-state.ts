@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { reconcileTwrAgainstStatements } from "@/lib/compute/twr-reconcile";
 
 export interface AnalysisTrustState {
   factorCoverage: {
@@ -109,10 +110,61 @@ export function getAnalysisTrustState(
     )
     .get(...params) as { total_bonds: number; with_duration: number };
 
+  // ── Performance reconciliation ───────────────────────────────────────
+  // Semantic: "all accounts agree with statements at least through this month."
+  // Take the EARLIEST of each account's most-recent reconciled month — anything
+  // past that, at least one account is unreconciled.
+  let earliestReconciledMonth: string | null = null;
+  const accountList = accountIds?.length
+    ? accountIds.map((id) => ({ id }))
+    : (db.prepare("SELECT id FROM accounts").all() as { id: number }[]);
+
+  for (const acct of accountList) {
+    const latestStmt = db
+      .prepare(
+        `
+      SELECT month_end_date FROM monthly_snapshots
+      WHERE account_id = ? AND source IN ('ibkr-activity', 'canonical', 'vanguard-pdf')
+        AND twr IS NOT NULL
+      ORDER BY month_end_date DESC LIMIT 1
+    `,
+      )
+      .get(acct.id) as { month_end_date: string } | undefined;
+
+    if (!latestStmt) {
+      // Account has no statement TWR to reconcile against.
+      // We can't claim "all accounts agree" when one is unresolvable.
+      // Strictness is intentional: new/TWS-only accounts force null until
+      // a statement import populates a TWR row.
+      earliestReconciledMonth = null;
+      break;
+    }
+
+    const r = reconcileTwrAgainstStatements(
+      db,
+      acct.id,
+      latestStmt.month_end_date,
+    );
+    if (r?.withinTolerance) {
+      if (
+        !earliestReconciledMonth ||
+        latestStmt.month_end_date < earliestReconciledMonth
+      ) {
+        earliestReconciledMonth = latestStmt.month_end_date;
+      }
+    } else {
+      // Reconciliation returned null (unresolvable — e.g. single snapshot,
+      // no prior-month V_start) OR is out of tolerance.
+      // Either case means we can't claim all accounts agree.
+      earliestReconciledMonth = null;
+      break;
+    }
+  }
+
   return {
     factorCoverage: { totalNames: total, classified, percentage, missingSymbols },
     lastClassification: lastClassRow.last,
-    performanceReconciledThru: null, // Slice D populates
+    performanceReconciledThru: earliestReconciledMonth,
     stalePrices: {
       count: staleRows.length,
       symbols: staleRows.map((r) => r.symbol),
