@@ -2,7 +2,12 @@
 
 import { useState, useEffect, useCallback } from "react";
 import type { ScenarioResult } from "@/lib/compute/scenarios";
+import { findRecipe } from "@/lib/compute/scenario-recipes";
 import { PrivateText } from "@/lib/privacy/components";
+
+function findRecipeMethodology(id: string): string | null {
+  return findRecipe(id)?.methodology ?? null;
+}
 
 // ─── Formatters ──────────────────────────────────────────────────
 
@@ -131,31 +136,12 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
         </span>
       </div>
 
-      <details className="text-xs text-ink-faint group">
-        <summary className="cursor-pointer hover:text-ink transition-colors list-none">
-          Estimated portfolio impact under hypothetical market scenarios. Uses position-level beta
-          estimates based on security type, sector, and style.
-          <span className="ml-1 text-ink-dim group-open:hidden">Show beta multipliers ↓</span>
-          <span className="ml-1 text-ink-dim hidden group-open:inline">Hide multipliers ↑</span>
-        </summary>
-        <div className="mt-3 p-3 bg-panel border border-edge rounded-lg space-y-1.5 font-mono text-[11px]">
-          <p className="text-ink-faint not-italic">Beta multipliers applied to each position:</p>
-          <ul className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-0.5">
-            <li>Bonds / money market: <span className="text-ink">×0.10</span></li>
-            <li>Options: <span className="text-ink">×2.00</span></li>
-            <li>High-beta sectors (Tech, Cons. Disc., Comm. Services): <span className="text-ink">×1.15</span></li>
-            <li>Low-beta sectors (Utilities, Staples, Healthcare, RE): <span className="text-ink">×0.85</span></li>
-            <li>Style — Growth: <span className="text-ink">×1.10</span></li>
-            <li>Style — Value: <span className="text-ink">×0.90</span></li>
-            <li>Size — Small Cap: <span className="text-ink">×1.15</span></li>
-            <li>Size — Mid Cap: <span className="text-ink">×1.05</span></li>
-            <li>Bond duration (rate scenarios): <span className="text-ink">per-bond, fallback 5y</span></li>
-          </ul>
-          <p className="text-[10px] text-ink-faint not-italic pt-1">
-            Multipliers compose (e.g. a small-cap tech growth stock = 1.0 × 1.15 × 1.10 × 1.15).
-          </p>
-        </div>
-      </details>
+      <p className="text-xs text-ink-faint">
+        Estimated portfolio impact under hypothetical shocks. Per-position P&amp;L is computed from
+        your factor classifications (interest_rate_sensitive, ai_exposure, tariff_exposure, etc.)
+        — each scenario surfaces its full methodology when expanded. Custom what-if scenarios
+        use the legacy beta heuristic.
+      </p>
 
       {/* ── Scenario cards ── */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -216,6 +202,18 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
               {/* ── Expanded detail ── */}
               {isExpanded && (
                 <div className="mt-4 pt-4 border-t border-edge space-y-3" onClick={(e) => e.stopPropagation()}>
+                  {/* Methodology — surface the recipe's per-factor math */}
+                  {findRecipeMethodology(result.scenario.id) && (
+                    <div className="bg-canvas border border-edge/60 rounded-lg p-3">
+                      <h4 className="text-[10px] text-ink-faint uppercase tracking-wider mb-1.5">
+                        Methodology
+                      </h4>
+                      <p className="text-xs text-ink-dim leading-relaxed">
+                        {findRecipeMethodology(result.scenario.id)}
+                      </p>
+                    </div>
+                  )}
+
                   {/* Biggest losers */}
                   {result.biggestLosers.length > 0 && (
                     <div>

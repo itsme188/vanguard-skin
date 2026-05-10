@@ -1,5 +1,11 @@
 import type Database from "better-sqlite3";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
+import {
+  SCENARIO_RECIPES,
+  findRecipe,
+  computeRecipeScenario,
+  recipeToScenarioDefinition,
+} from "./scenario-recipes";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -38,91 +44,17 @@ export interface ScenarioResult {
 }
 
 // ─── Predefined Scenarios ───────────────────────────────────────
+//
+// Phase 2 (2026-05-10): replaced 9 arbitrary preset scenarios with 8
+// factor-anchored recipes. Old presets — correction/bear/crash/rally/
+// rate100/rate200/tech_selloff/defensive_rotation/energy_spike — were
+// market-move + beta heuristics with no defensible methodology. Recipes
+// use security_factors classifications with per-bucket sensitivity
+// multipliers calibrated from historical analogs. See scenario-recipes.ts.
 
-export const PRESET_SCENARIOS: ScenarioDefinition[] = [
-  {
-    id: "correction",
-    name: "Market Correction",
-    description: "S&P 500 drops 10% — typical correction",
-    category: "crash",
-    marketMove: -0.10,
-  },
-  {
-    id: "bear",
-    name: "Bear Market",
-    description: "S&P 500 drops 20% — official bear market",
-    category: "crash",
-    marketMove: -0.20,
-  },
-  {
-    id: "crash",
-    name: "Severe Crash",
-    description: "S&P 500 drops 40% — 2008-level crash",
-    category: "crash",
-    marketMove: -0.40,
-  },
-  {
-    id: "rate100",
-    name: "Rate Shock +100bp",
-    description: "Interest rates rise 1% — bonds fall, growth stocks impacted",
-    category: "rate",
-    marketMove: -0.05,
-    rateMove: 100,
-  },
-  {
-    id: "rate200",
-    name: "Rate Shock +200bp",
-    description: "Interest rates rise 2% — significant bond losses, growth rotation",
-    category: "rate",
-    marketMove: -0.10,
-    rateMove: 200,
-  },
-  {
-    id: "rally",
-    name: "Bull Rally",
-    description: "S&P 500 rises 15% — strong bull market",
-    category: "crash",
-    marketMove: 0.15,
-  },
-  // ── Sector rotation scenarios ──
-  {
-    id: "tech_selloff",
-    name: "Tech Selloff",
-    description: "Tech -25%, Comms -20% — AI bubble bursts, defensives hold",
-    category: "sector",
-    marketMove: -0.03,
-    sectorMoves: {
-      Technology: -0.25,
-      "Communication Services": -0.20,
-    },
-  },
-  {
-    id: "defensive_rotation",
-    name: "Defensive Rotation",
-    description: "Flight to safety — utilities/staples up, growth down",
-    category: "sector",
-    marketMove: -0.05,
-    sectorMoves: {
-      Utilities: 0.10,
-      "Consumer Staples": 0.08,
-      Healthcare: 0.05,
-      Technology: -0.15,
-      "Consumer Discretionary": -0.12,
-    },
-  },
-  {
-    id: "energy_spike",
-    name: "Energy Spike",
-    description: "Oil shock — energy surges, transport/utilities hit",
-    category: "sector",
-    marketMove: -0.05,
-    sectorMoves: {
-      Energy: 0.20,
-      Utilities: -0.08,
-      Industrials: -0.10,
-    },
-  },
-];
+export const PRESET_SCENARIOS: ScenarioDefinition[] = SCENARIO_RECIPES.map(
+  recipeToScenarioDefinition
+);
 
 // ─── Computation ────────────────────────────────────────────────
 
@@ -138,6 +70,12 @@ export function computeScenario(
   scenario: ScenarioDefinition,
   options?: { accountId?: number }
 ): ScenarioResult {
+  // Factor-anchored recipes shipped in P2 — dispatch when scenario.id matches
+  // a recipe. Custom scenarios from POST /api/compute/scenarios still flow
+  // through the legacy beta-heuristic path below.
+  const recipe = findRecipe(scenario.id);
+  if (recipe) return computeRecipeScenario(db, recipe, options);
+
   const accountFilter = options?.accountId ? "AND h.account_id = ?" : "";
   const accountParams: number[] = options?.accountId ? [options.accountId] : [];
 
