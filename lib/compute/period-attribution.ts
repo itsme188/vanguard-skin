@@ -102,7 +102,7 @@ function computePerPositionContributions(
        LEFT JOIN prices pe ON pe.security_id = hs.security_id AND pe.date = ?
        WHERE hs.account_id = ? AND hs.as_of_date = ?
          AND LOWER(s.security_type) IN ('stock', 'etf', 'common stock', 'mutual fund')
-         AND hs.quantity > 0`,
+         AND hs.quantity > 0`, // Sector contribution analysis is long-only; short positions excluded by design.
     )
     .all(startDate, endDate, accountId, startDate) as Array<{
     symbol: string;

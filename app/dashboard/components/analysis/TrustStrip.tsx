@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import type { AnalysisTrustState } from "@/lib/queries/analysis-trust-state";
 import { TrustStripDrawer, type DrawerPanel } from "./TrustStripDrawer";
+import { PrivateText } from "@/lib/privacy/components";
 
 type Tone = "good" | "warn" | "bad" | "neutral";
 
@@ -24,7 +25,7 @@ function Cell({
   active,
 }: {
   label: string;
-  value: string;
+  value: React.ReactNode;
   tone: Tone;
   hint?: string;
   onClick: () => void;
@@ -135,7 +136,9 @@ export function TrustStrip({ scope }: TrustStripProps) {
       <div className="flex gap-2 flex-wrap mb-2">
         <Cell
           label="Factor coverage"
-          value={`${coveragePct}% (${factorCoverage.classified}/${factorCoverage.totalNames})`}
+          value={
+            <PrivateText>{`${coveragePct}% (${factorCoverage.classified}/${factorCoverage.totalNames})`}</PrivateText>
+          }
           tone={coverageTone}
           hint={
             factorCoverage.missingSymbols.length > 0
@@ -166,7 +169,7 @@ export function TrustStrip({ scope }: TrustStripProps) {
           value={
             stalePrices.count === 0
               ? "All fresh"
-              : `${stalePrices.count} stale`
+              : <PrivateText>{`${stalePrices.count} stale`}</PrivateText>
           }
           tone={staleTone}
           hint={
@@ -182,7 +185,7 @@ export function TrustStrip({ scope }: TrustStripProps) {
           value={
             bondDuration.totalBonds === 0
               ? "No bonds"
-              : `${bondDuration.withDuration}/${bondDuration.totalBonds}`
+              : <PrivateText>{`${bondDuration.withDuration}/${bondDuration.totalBonds}`}</PrivateText>
           }
           tone={bondCovTone}
           hint="Held bonds with duration_years populated"
