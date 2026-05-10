@@ -17,6 +17,9 @@ import type { MonthlySnapshot } from "@/lib/types";
 import type { DailyValuation } from "@/lib/queries/daily-valuations";
 import { usePrivateFormatter } from "@/lib/privacy/components";
 
+// Hex colors are intentionally hardcoded here — these must stay visible in both
+// light (Amber) and dark (Bloomberg-pro) themes. #60A5FA (blue-400) and #34D399
+// (emerald-400) don't map to a single Tailwind token that works cross-theme.
 const ACCOUNT_COLORS: Record<string, string> = {
   "Vanguard Taxable": "#C9A44E",
   "Vanguard Roth IRA": "#60A5FA",
@@ -213,7 +216,100 @@ function addTrailingDailyData(
   }
 }
 
-// ─── Component ──────────────────────────────────────────────────
+// ─── Performance benchmark overlay chart ────────────────────────
+
+export interface PerformanceCurveData {
+  date: string;
+  portfolio: number; // normalized to 100 at period start
+  benchmark: number; // normalized to 100 at period start
+}
+
+function shortDate(iso: string): string {
+  const [, m, d] = iso.split("-");
+  const months = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+  ];
+  return `${months[parseInt(m, 10) - 1]} ${parseInt(d, 10)}`;
+}
+
+export function PerformanceCurveChart({
+  data,
+  benchmarkSymbol,
+}: {
+  data: PerformanceCurveData[];
+  benchmarkSymbol: string;
+}) {
+  // Portfolio values are portfolio-derived — mask under privacy mode
+  const fmt = usePrivateFormatter((v: number) => `${v.toFixed(1)}`);
+
+  if (data.length === 0) {
+    return (
+      <div className="bg-panel rounded-xl p-4 text-sm text-ink-faint">
+        No equity curve data available for this period.
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-panel rounded-xl p-4 card-elev">
+      <h3 className="text-sm font-medium text-ink mb-3">
+        Equity curve{" "}
+        <span className="text-ink-faint font-normal">(indexed to 100)</span>
+      </h3>
+      <ResponsiveContainer width="100%" height={280}>
+        <LineChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+          <XAxis
+            dataKey="date"
+            tickFormatter={shortDate}
+            minTickGap={40}
+            tick={{ fontSize: 11, fill: "var(--ink-faint)" }}
+          />
+          <YAxis
+            tickFormatter={fmt}
+            tick={{ fontSize: 11, fill: "var(--ink-faint)" }}
+            width={42}
+          />
+          <Tooltip
+            formatter={(value: unknown) => [fmt(Number(value)), ""]}
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            labelFormatter={(label: any) => shortDate(String(label))}
+            contentStyle={{
+              background: "var(--panel)",
+              border: "1px solid var(--edge)",
+              borderRadius: 8,
+              fontSize: 12,
+            }}
+          />
+          <Legend
+            wrapperStyle={{ fontSize: 12 }}
+            formatter={(name) => (
+              <span style={{ color: "var(--ink-dim)" }}>{name}</span>
+            )}
+          />
+          <Line
+            type="monotone"
+            dataKey="portfolio"
+            stroke="#C9A44E"
+            strokeWidth={2}
+            dot={false}
+            name="Portfolio"
+          />
+          <Line
+            type="monotone"
+            dataKey="benchmark"
+            stroke="#60A5FA"
+            strokeWidth={2}
+            dot={false}
+            name={benchmarkSymbol}
+          />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+// ─── Per-account historical curve ────────────────────────────────
 
 export function EquityCurveChart({
   snapshots,
