@@ -13,6 +13,7 @@
 
 import type Database from "better-sqlite3";
 import type { FactorColumn } from "@/lib/factors";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import type { ScenarioDefinition, ScenarioResult, PositionImpact } from "./scenarios";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 
@@ -230,13 +231,7 @@ export function computeRecipeScenario(
       WITH latest_holdings AS (
         SELECT h.security_id, SUM(h.quantity) AS total_qty
         FROM holdings h
-        WHERE h.as_of_date = (
-          SELECT MAX(h2.as_of_date) FROM holdings h2
-          WHERE h2.account_id = h.account_id
-            AND h2.security_id = h.security_id
-        )
-        AND h.quantity != 0
-        ${accountFilter}
+        WHERE ${latestHoldingsPredicate({ accountFilter })}
         GROUP BY h.security_id
       ),
       latest_prices AS (
