@@ -18,6 +18,7 @@ import { TradeReviewView } from "../components/TradeReviewView";
 import { PerformanceView } from "../components/PerformanceView";
 import { IncomeYieldSection } from "../components/IncomeYieldSection";
 import { TrustStrip } from "../components/analysis/TrustStrip";
+import { WorkspacePanel } from "../components/analysis/WorkspacePanel";
 import Link from "next/link";
 
 interface PageProps {
@@ -112,6 +113,53 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
     return <PerformanceView scope={params.scope} />;
   }
 
+  const scope: AccountScope =
+    VALID_SCOPES.includes(params.scope as AccountScope)
+      ? (params.scope as AccountScope)
+      : "vanguard";
+
+  // P2 (2026-05-10): Workspace is the new default landing. Legacy classification
+  // / factor diagnostics still accessible via `?mode=classification` or
+  // `?mode=factors` — those query strings keep old iPhone bookmarks working.
+  const hasExplicitMode = params.mode === "classification" || params.mode === "factors";
+
+  if (!hasExplicitMode) {
+    // ── New default: Workspace above + diagnostics summary below ─────────
+    return (
+      <div className="space-y-6">
+        <div className="flex items-start justify-between">
+          <div>
+            <h2 className="text-lg font-medium text-ink">Analysis</h2>
+            <p className="text-sm text-ink-faint mt-0.5">
+              Portfolio construction workspace — deploy cash, model what-ifs, watch macro themes.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Link
+              href={`/dashboard/analysis?mode=classification&scope=${scope}`}
+              className="px-3 py-1.5 text-xs font-medium rounded-lg border border-edge text-ink-dim hover:text-ink hover:border-ink-faint transition-colors"
+            >
+              Diagnostics ↓
+            </Link>
+            <Link
+              href="/dashboard/tax-lots"
+              className="px-3 py-1.5 text-xs font-medium rounded-lg border border-edge text-ink-dim hover:text-ink hover:border-ink-faint transition-colors"
+            >
+              Tax Lots
+            </Link>
+          </div>
+        </div>
+
+        <TrustStrip scope={scope} />
+
+        <WorkspacePanel scope={scope} />
+
+        <IncomeYieldSection scope={scope} />
+      </div>
+    );
+  }
+
+  // ── Legacy diagnostics layout (preserved for iPhone bookmarks + intentional drill-down) ──
   const mode: AnalysisMode =
     params.mode === "factors" ? "factors" : "classification";
 
@@ -123,11 +171,6 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
       ? (params.dimension as AllocationDimension)
       : defaultDimension;
 
-  const scope: AccountScope =
-    VALID_SCOPES.includes(params.scope as AccountScope)
-      ? (params.scope as AccountScope)
-      : "vanguard";
-
   let accountIds, allocation, concentration, coverage, dataCoverage, factorHeatmap, factorCoverage;
   try {
     accountIds = resolveAccountIds(scope);
@@ -136,7 +179,6 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
     coverage = getClassificationCoverage(db, accountIds);
     dataCoverage = getAnalysisDataCoverage(db, accountIds);
 
-    // Factor-specific data (only when in factor mode)
     factorHeatmap = mode === "factors" ? getFactorHeatmap(db, accountIds) : undefined;
     factorCoverage = mode === "factors" ? getFactorCoverage(db, accountIds) : undefined;
   } catch {
@@ -147,19 +189,27 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
     <div className="space-y-6">
       <div className="flex items-start justify-between">
         <div>
-          <h2 className="text-lg font-medium text-ink">Analysis</h2>
+          <h2 className="text-lg font-medium text-ink">Analysis · Diagnostics</h2>
           <p className="text-sm text-ink-faint mt-0.5">
             {mode === "factors"
               ? "Thematic factor exposure analysis across your portfolio"
               : "Portfolio factor analysis, allocation breakdown, and concentration metrics"}
           </p>
         </div>
-        <Link
-          href="/dashboard/tax-lots"
-          className="px-3 py-1.5 text-xs font-medium rounded-lg border border-edge text-ink-dim hover:text-ink hover:border-ink-faint transition-colors"
-        >
-          Tax Lots
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link
+            href={`/dashboard/analysis?scope=${scope}`}
+            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-edge text-ink-dim hover:text-ink hover:border-ink-faint transition-colors"
+          >
+            ← Workspace
+          </Link>
+          <Link
+            href="/dashboard/tax-lots"
+            className="px-3 py-1.5 text-xs font-medium rounded-lg border border-edge text-ink-dim hover:text-ink hover:border-ink-faint transition-colors"
+          >
+            Tax Lots
+          </Link>
+        </div>
       </div>
 
       <TrustStrip scope={scope} />
@@ -176,7 +226,6 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
         factorCoverage={factorCoverage}
       />
 
-      {/* Income / yield — lower-priority placement per Phase 5 IA decision */}
       <IncomeYieldSection scope={scope} />
     </div>
   );
