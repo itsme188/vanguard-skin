@@ -39,12 +39,20 @@ export interface PositionGreeks {
   greeks: OptionGreeks | null; // null if can't compute (expired, no price, etc.)
 }
 
+export interface GreeksDiagnostic {
+  symbol: string;
+  underlying: string;
+  reason: "no_underlying_price" | "expired" | "missing_iv" | "missing_option_price";
+  daysToExpiry: number | null;
+}
+
 export interface PortfolioGreeks {
   totalDelta: number; // net delta exposure in share-equivalents
   totalGamma: number; // net gamma in share-equivalents per $1 move
   totalTheta: number; // daily $ P&L from time decay
   totalVega: number; // $ P&L per 1% IV move
   positions: PositionGreeks[];
+  diagnostics: GreeksDiagnostic[];
 }
 
 // ─── Math: Cumulative Normal Distribution ───────────────────────
@@ -362,13 +370,17 @@ export function computePortfolioGreeks(
          AND s.underlying_symbol IS NOT NULL
          AND h.as_of_date = (
            SELECT MAX(h2.as_of_date) FROM holdings h2
-           WHERE h2.as_of_date <= ?
+           WHERE h2.account_id = h.account_id
+             AND h2.security_id = h.security_id
+             AND h2.as_of_date <= ?
          )
+         AND h.quantity != 0
          ${accountFilter}`
     )
     .all(...params) as OptionHoldingRow[];
 
   const positions: PositionGreeks[] = [];
+  const diagnostics: GreeksDiagnostic[] = [];
   let totalDelta = 0;
   let totalGamma = 0;
   let totalTheta = 0;
@@ -395,7 +407,24 @@ export function computePortfolioGreeks(
       greeks: null,
     };
 
-    if (!S || S <= 0 || daysToExpiry < 0) {
+    if (!S || S <= 0) {
+      diagnostics.push({
+        symbol: row.symbol,
+        underlying: row.underlying_symbol,
+        reason: "no_underlying_price",
+        daysToExpiry,
+      });
+      positions.push(position);
+      continue;
+    }
+
+    if (daysToExpiry <= 0) {
+      diagnostics.push({
+        symbol: row.symbol,
+        underlying: row.underlying_symbol,
+        reason: "expired",
+        daysToExpiry,
+      });
       positions.push(position);
       continue;
     }
@@ -404,18 +433,26 @@ export function computePortfolioGreeks(
     let iv: number | null = null;
     let sigmaForGreeks = 0.3; // fallback: 30% vol
 
-    if (row.option_price && row.option_price > 0) {
+    if (!row.option_price || row.option_price <= 0) {
+      diagnostics.push({
+        symbol: row.symbol,
+        underlying: row.underlying_symbol,
+        reason: "missing_option_price",
+        daysToExpiry,
+      });
+    } else {
       iv = impliedVolatility(row.option_price, S, row.strike_price, T, r, optType);
       if (iv !== null) {
         sigmaForGreeks = iv;
+      } else {
+        diagnostics.push({
+          symbol: row.symbol,
+          underlying: row.underlying_symbol,
+          reason: "missing_iv",
+          daysToExpiry,
+        });
+        // sigmaForGreeks stays at 0.3 fallback — Greeks still computed
       }
-    }
-
-    if (T <= 0) {
-      // Expired — no meaningful Greeks
-      position.greeks = { delta: 0, gamma: 0, theta: 0, vega: 0, iv: null };
-      positions.push(position);
-      continue;
     }
 
     const d = delta(S, row.strike_price, T, r, sigmaForGreeks, optType);
@@ -442,6 +479,7 @@ export function computePortfolioGreeks(
     totalTheta,
     totalVega,
     positions,
+    diagnostics,
   };
 }
 
