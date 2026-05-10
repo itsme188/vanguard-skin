@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { AnalysisTrustState } from "@/lib/queries/analysis-trust-state";
+import { PrivateText } from "@/lib/privacy/components";
 
 export type DrawerPanel =
   | "factorCoverage"
@@ -56,10 +57,10 @@ function FactorCoverageContent({
     <div className="space-y-4">
       <div className="flex items-baseline gap-2">
         <span className="text-2xl font-bold text-ink">
-          {Math.round(factorCoverage.percentage * 100)}%
+          <PrivateText>{`${Math.round(factorCoverage.percentage * 100)}%`}</PrivateText>
         </span>
         <span className="text-sm text-ink-faint">
-          ({factorCoverage.classified} of {factorCoverage.totalNames} securities classified)
+          (<PrivateText>{`${factorCoverage.classified} of ${factorCoverage.totalNames}`}</PrivateText> securities classified)
         </span>
       </div>
 
@@ -160,7 +161,9 @@ function StalePricesContent({
       ) : (
         <>
           <div className="flex items-baseline gap-2">
-            <span className="text-2xl font-bold text-down">{stalePrices.count}</span>
+            <span className="text-2xl font-bold text-down">
+              <PrivateText>{String(stalePrices.count)}</PrivateText>
+            </span>
             <span className="text-sm text-ink-faint">
               {stalePrices.count === 1 ? "security" : "securities"} with prices older than 4 days
             </span>
@@ -189,17 +192,20 @@ function StalePricesContent({
   );
 }
 
-function PerformanceContent() {
+function PerformanceContent({ state }: { state: AnalysisTrustState }) {
+  const { performanceReconciledThru } = state;
   return (
     <div className="space-y-3">
       <p className="text-sm text-ink">
-        Performance reconciliation data will be populated in Slice D once the TWR reconciliation module ships.
+        {performanceReconciledThru
+          ? `TWR reconciled to statements through ${performanceReconciledThru}.`
+          : "One or more accounts have not yet been reconciled to statements. Open Performance to investigate."}
       </p>
       <a
         href="/dashboard/analysis?view=performance"
         className="inline-block text-sm text-amber-400 hover:text-amber-300 underline underline-offset-2"
       >
-        View Performance sub-view
+        Open Performance →
       </a>
     </div>
   );
@@ -215,7 +221,7 @@ function BondDurationContent({ state }: { state: AnalysisTrustState }) {
         <>
           <div className="flex items-baseline gap-2">
             <span className="text-2xl font-bold text-ink">
-              {bondDuration.withDuration}/{bondDuration.totalBonds}
+              <PrivateText>{`${bondDuration.withDuration}/${bondDuration.totalBonds}`}</PrivateText>
             </span>
             <span className="text-sm text-ink-faint">bonds with duration data</span>
           </div>
@@ -300,7 +306,7 @@ export function TrustStripDrawer({ panel, state, onClose, onRefresh }: Props) {
             <FactorCoverageContent state={state} onRefresh={onRefresh} onClose={onClose} />
           )}
           {panel === "lastClassify" && <LastClassifyContent state={state} />}
-          {panel === "performance" && <PerformanceContent />}
+          {panel === "performance" && <PerformanceContent state={state} />}
           {panel === "stalePrices" && <StalePricesContent state={state} onClose={onClose} />}
           {panel === "bondDuration" && <BondDurationContent state={state} />}
         </div>
