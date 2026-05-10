@@ -27,33 +27,11 @@ export function ExpirationCalendar({ scope }: { scope?: string }) {
   useEffect(() => {
     // Fetch options expiring in the next 90 days
     const qs = scope ? `?scope=${encodeURIComponent(scope)}` : "";
-    fetch(`/api/compute/options-greeks${qs}`)
+    fetch(`/api/compute/options-expirations${qs}`)
       .then((r) => r.json())
       .then((json) => {
-        if (json.success && json.data.positions?.length > 0) {
-          const expiring = json.data.positions
-            .filter((p: { daysToExpiry: number | null }) => p.daysToExpiry != null && p.daysToExpiry >= 0 && p.daysToExpiry <= 90)
-            .sort((a: { daysToExpiry: number }, b: { daysToExpiry: number }) => a.daysToExpiry - b.daysToExpiry)
-            .map((p: {
-              symbol: string;
-              underlying: string;
-              optionType: string;
-              strike: number;
-              expiration: string;
-              daysToExpiry: number;
-              quantity: number;
-            }) => ({
-              securityId: 0,
-              symbol: p.symbol,
-              underlying: p.underlying,
-              optionType: p.optionType as "CALL" | "PUT",
-              strike: p.strike,
-              expiration: p.expiration,
-              daysToExpiry: p.daysToExpiry,
-              quantity: p.quantity,
-              accountName: "",
-            }));
-          setOptions(expiring.length > 0 ? expiring : []);
+        if (json.success && Array.isArray(json.data)) {
+          setOptions(json.data);
         } else {
           setOptions([]);
         }
