@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { reconcileTwrAgainstStatements } from "@/lib/compute/twr-reconcile";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
 export interface AnalysisTrustState {
   factorCoverage: {
@@ -31,10 +32,7 @@ export function getAnalysisTrustState(
       `
     WITH latest AS (
       SELECT h.security_id FROM holdings h
-      WHERE h.as_of_date = (
-        SELECT MAX(h2.as_of_date) FROM holdings h2
-        WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id
-      ) AND h.quantity != 0 ${accountFilter}
+      WHERE ${latestHoldingsPredicate({ accountFilter })}
       GROUP BY h.security_id
     )
     SELECT
@@ -67,10 +65,7 @@ export function getAnalysisTrustState(
       `
     WITH latest AS (
       SELECT h.security_id FROM holdings h
-      WHERE h.as_of_date = (
-        SELECT MAX(h2.as_of_date) FROM holdings h2
-        WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id
-      ) AND h.quantity != 0 ${accountFilter}
+      WHERE ${latestHoldingsPredicate({ accountFilter })}
       GROUP BY h.security_id
     ),
     latest_prices AS (
@@ -94,10 +89,7 @@ export function getAnalysisTrustState(
       `
     WITH latest AS (
       SELECT h.security_id FROM holdings h
-      WHERE h.as_of_date = (
-        SELECT MAX(h2.as_of_date) FROM holdings h2
-        WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id
-      ) AND h.quantity != 0 ${accountFilter}
+      WHERE ${latestHoldingsPredicate({ accountFilter })}
       GROUP BY h.security_id
     )
     SELECT

@@ -13,6 +13,7 @@
 
 import type Database from "better-sqlite3";
 import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -368,14 +369,7 @@ export function computePortfolioGreeks(
          AND s.expiration_date IS NOT NULL
          AND s.option_type IS NOT NULL
          AND s.underlying_symbol IS NOT NULL
-         AND h.as_of_date = (
-           SELECT MAX(h2.as_of_date) FROM holdings h2
-           WHERE h2.account_id = h.account_id
-             AND h2.security_id = h.security_id
-             AND h2.as_of_date <= ?
-         )
-         AND h.quantity != 0
-         ${accountFilter}`
+         AND ${latestHoldingsPredicate({ cutoff: true, accountFilter })}`
     )
     .all(...params) as OptionHoldingRow[];
 
