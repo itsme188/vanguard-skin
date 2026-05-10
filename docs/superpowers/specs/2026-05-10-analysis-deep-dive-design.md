@@ -117,22 +117,29 @@ Survives WHERE h.as_of_date = MAX:
   Roth options:                   0 of 0
 ```
 
-**Fix:** replace the global subquery with the canonical per-(account, security) `LATEST_HOLDINGS_CTE` pattern already used in `lib/queries/analysis.ts`:
+**Fix:** replace the global subquery with a per-(account, security) latest-as-of-date CTE:
 
 ```sql
 WITH latest_holdings AS (
-  SELECT * FROM holdings h
+  SELECT h.*
+  FROM holdings h
   WHERE h.as_of_date = (
     SELECT MAX(h2.as_of_date) FROM holdings h2
     WHERE h2.account_id = h.account_id
       AND h2.security_id = h.security_id
   )
+  AND h.quantity != 0
 )
 ```
 
+**Two important deltas from the existing `LATEST_HOLDINGS_CTE`** in `lib/queries/analysis.ts:68-77`:
+
+1. **Tighter join key.** The existing CTE keys MAX on `(h2.account_id)` only — fine for read-only allocation queries where stale per-security rows wash out via SUM. The Greeks query needs per-(account, security) latest because options held continuously across statement dates would otherwise drop when one security's row is older than the account's most recent refresh date. We don't extend `LATEST_HOLDINGS_CTE` itself (it'd alter behavior for 7 existing call sites); we introduce a Greeks-specific variant inline.
+2. **Quantity filter.** Existing CTE has `AND h.quantity > 0`, which would silently drop short option positions (sell-to-open calls/puts with negative quantity). Greeks fix uses `h.quantity != 0` — short Greeks (negative delta on short calls, etc.) must surface.
+
 **Plus:** add a diagnostic surface inside the Greeks card listing positions that *did* surface but couldn't compute Greeks, with reason: missing underlying price · expired · missing strike data · missing IV. Turns blank-row failures into actionable problem statements.
 
-**Files:** `lib/compute/options-greeks.ts` (query rewrite + diagnostic return type), `app/dashboard/components/OptionsGreeksCard.tsx` (render diagnostic block), regression test in `tests/compute/options-greeks.test.ts` with multi-account fixture.
+**Files:** `lib/compute/options-greeks.ts` (query rewrite + diagnostic return type), `app/dashboard/components/OptionsGreeksCard.tsx` (render diagnostic block), regression test in `tests/compute/options-greeks.test.ts` with multi-account fixture covering both stale-statement and short-quantity cases.
 
 ### 1.2 — Options Expirations fix
 
