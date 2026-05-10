@@ -337,6 +337,7 @@ function computeFlags(after: ExposureSnapshot, caps: ConstructionCaps): Exposure
     });
   }
   for (const [sector, weight] of Object.entries(after.sectorWeights)) {
+    if (sector === "Unknown") continue; // skip — concentration in unclassified positions is a data-quality issue, not a portfolio-construction risk
     if (weight > caps.sector_max) {
       flags.push({
         severity: "warn",

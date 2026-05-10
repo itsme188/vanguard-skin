@@ -1,8 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { Money, Pct } from "@/lib/privacy/components";
+import { FACTOR_COLUMNS, FACTOR_LABELS, type FactorColumn } from "@/lib/factors";
 import type { ExposureDelta, HypotheticalLeg } from "@/lib/compute/exposure-delta";
+
+const MATERIAL_DELTA_PCT = 0.005; // 0.5pp threshold for sector + factor rows
 
 interface Props {
   scope: string;
@@ -153,13 +156,21 @@ export function WhatIfCalculator({ scope }: Props) {
   );
 }
 
-function DeltaTable({ delta }: { delta: ExposureDelta }) {
-  const rows: Array<{
-    label: string;
-    before: string | React.ReactNode;
-    after: string | React.ReactNode;
-    diff?: string;
-  }> = [
+interface Row {
+  label: string;
+  before: string | React.ReactNode;
+  after: string | React.ReactNode;
+  diff?: string;
+  indent?: boolean;
+}
+
+interface Section {
+  title: string;
+  rows: Row[];
+}
+
+function buildHeadlineRows(delta: ExposureDelta): Row[] {
+  return [
     {
       label: "Total Value",
       before: <Money value={delta.before.totalValue} />,
@@ -173,17 +184,80 @@ function DeltaTable({ delta }: { delta: ExposureDelta }) {
       diff: signed(delta.after.beta - delta.before.beta, 2),
     },
   ];
+}
 
-  // Top concentrations diff (compare top symbol)
-  if (delta.after.topConcentrations.length > 0) {
-    const top = delta.after.topConcentrations[0];
-    const matching = delta.before.topConcentrations.find((c) => c.symbol === top.symbol);
-    rows.push({
-      label: `Top: ${top.symbol}`,
-      before: <Pct value={(matching?.weightPct ?? 0) * 100} digits={1} />,
-      after: <Pct value={top.weightPct * 100} digits={1} />,
-    });
+function buildConcentrationRows(delta: ExposureDelta): Row[] {
+  const topSymbols = delta.after.topConcentrations.slice(0, 3).map((c) => c.symbol);
+  return topSymbols.map((symbol) => {
+    const after = delta.after.topConcentrations.find((c) => c.symbol === symbol)!.weightPct;
+    const before = delta.before.topConcentrations.find((c) => c.symbol === symbol)?.weightPct ?? 0;
+    return {
+      label: symbol,
+      before: <Pct value={before * 100} digits={1} />,
+      after: <Pct value={after * 100} digits={1} />,
+      diff: signedPp(after - before),
+      indent: true,
+    };
+  });
+}
+
+function buildSectorRows(delta: ExposureDelta): Row[] {
+  const allSectors = new Set<string>([
+    ...Object.keys(delta.before.sectorWeights),
+    ...Object.keys(delta.after.sectorWeights),
+  ]);
+  return Array.from(allSectors)
+    .map((sector) => {
+      const before = delta.before.sectorWeights[sector] ?? 0;
+      const after = delta.after.sectorWeights[sector] ?? 0;
+      return { sector, before, after, diff: after - before };
+    })
+    .filter((r) => Math.abs(r.diff) >= MATERIAL_DELTA_PCT)
+    .sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff))
+    .map(({ sector, before, after, diff }) => ({
+      label: sector,
+      before: <Pct value={before * 100} digits={1} />,
+      after: <Pct value={after * 100} digits={1} />,
+      diff: signedPp(diff),
+      indent: true,
+    }));
+}
+
+function buildFactorRows(delta: ExposureDelta): Row[] {
+  const rows: Row[] = [];
+  for (const factor of FACTOR_COLUMNS) {
+    const beforeBuckets = delta.before.factorTilts[factor] ?? {};
+    const afterBuckets = delta.after.factorTilts[factor] ?? {};
+    const allBuckets = new Set<string>([...Object.keys(beforeBuckets), ...Object.keys(afterBuckets)]);
+    const moves = Array.from(allBuckets)
+      .map((bucket) => {
+        const before = beforeBuckets[bucket] ?? 0;
+        const after = afterBuckets[bucket] ?? 0;
+        return { bucket, before, after, diff: after - before };
+      })
+      .filter((r) => Math.abs(r.diff) >= MATERIAL_DELTA_PCT)
+      .sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+    if (moves.length === 0) continue;
+    for (const m of moves) {
+      rows.push({
+        label: `${FACTOR_LABELS[factor as FactorColumn]} · ${m.bucket}`,
+        before: <Pct value={m.before * 100} digits={1} />,
+        after: <Pct value={m.after * 100} digits={1} />,
+        diff: signedPp(m.diff),
+        indent: true,
+      });
+    }
   }
+  return rows;
+}
+
+function DeltaTable({ delta }: { delta: ExposureDelta }) {
+  const sections: Section[] = [
+    { title: "Headline", rows: buildHeadlineRows(delta) },
+    { title: "Top 3 concentrations", rows: buildConcentrationRows(delta) },
+    { title: "Sector weights · material moves", rows: buildSectorRows(delta) },
+    { title: "Factor tilts · material moves", rows: buildFactorRows(delta) },
+  ].filter((s) => s.rows.length > 0);
 
   return (
     <div className="bg-canvas border border-edge rounded-lg overflow-hidden">
@@ -197,13 +271,24 @@ function DeltaTable({ delta }: { delta: ExposureDelta }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => (
-            <tr key={r.label} className="border-b border-edge/40">
-              <td className="py-2 px-3 text-ink">{r.label}</td>
-              <td className="text-right py-2 px-3 font-mono text-ink-dim">{r.before}</td>
-              <td className="text-right py-2 px-3 font-mono text-ink">{r.after}</td>
-              <td className="text-right py-2 px-3 font-mono text-ink-faint">{r.diff ?? "—"}</td>
-            </tr>
+          {sections.map((section, sIdx) => (
+            <Fragment key={section.title}>
+              {sIdx > 0 && (
+                <tr className="bg-canvas">
+                  <td colSpan={4} className="py-1.5 px-3 text-[11px] uppercase tracking-wide text-ink-faint border-t border-edge">
+                    {section.title}
+                  </td>
+                </tr>
+              )}
+              {section.rows.map((r) => (
+                <tr key={r.label} className="border-b border-edge/40">
+                  <td className={`py-2 px-3 text-ink ${r.indent ? "pl-6" : ""}`}>{r.label}</td>
+                  <td className="text-right py-2 px-3 font-mono text-ink-dim">{r.before}</td>
+                  <td className="text-right py-2 px-3 font-mono text-ink">{r.after}</td>
+                  <td className="text-right py-2 px-3 font-mono text-ink-faint">{r.diff ?? "—"}</td>
+                </tr>
+              ))}
+            </Fragment>
           ))}
         </tbody>
       </table>
@@ -214,6 +299,12 @@ function DeltaTable({ delta }: { delta: ExposureDelta }) {
 function signed(n: number, digits: number): string {
   const v = n.toFixed(digits);
   return n >= 0 ? `+${v}` : v;
+}
+
+function signedPp(n: number): string {
+  const pp = n * 100;
+  const v = pp.toFixed(1);
+  return pp >= 0 ? `+${v}pp` : `${v}pp`;
 }
 
 function formatDeltaUsd(n: number): string {
