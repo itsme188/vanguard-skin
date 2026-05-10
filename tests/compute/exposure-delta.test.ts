@@ -90,6 +90,19 @@ describe("computeExposureDelta", () => {
     expect(sectorFlag).toBeDefined();
   });
 
+  it("does NOT trigger a sector flag for the Unknown bucket (data-quality issue, not concentration risk)", () => {
+    // Add an unclassified position big enough that Unknown becomes the dominant sector at IBKR scope.
+    // IBKR scope: only 5 MSFT shares ($2000) — Tech 100%. Add 100 shares of NOSECTOR @ $200 = $20k.
+    const today = new Date().toISOString().slice(0, 10);
+    db.prepare(`INSERT INTO securities (id, symbol, security_type, sector) VALUES (5, 'NOSECTOR', 'Stock', NULL)`).run();
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (5, ?, 200, 'tws')`).run(today);
+    db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (3, 5, ?, 100, 'tws-nosector')`).run(today);
+    const result = computeExposureDelta(db, "ibkr", [3], []);
+    // Unknown sector dominates after the unclassified leg lands; no sector flag should fire for it.
+    const unknownFlag = result.flags.find((f) => f.metric === "sector:Unknown");
+    expect(unknownFlag).toBeUndefined();
+  });
+
   it("triggers a beta-out-of-range flag", () => {
     // Vanguard scope blended beta: 0.6*0.6 + 0.4*1.2 = 0.36 + 0.48 = 0.84.
     // Vanguard cap is [0.7, 1.1] so 0.84 is in range. Buy lots of low-beta JNJ to push below 0.7.
