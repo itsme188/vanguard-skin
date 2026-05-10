@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
 export interface ExpiringOption {
   securityId: number;
@@ -54,13 +55,7 @@ export function getExpiringOptions(
       AND s.expiration_date IS NOT NULL
       AND s.expiration_date >= ?
       AND CAST(julianday(s.expiration_date) - julianday(?) AS INTEGER) <= ?
-      AND h.quantity != 0
-      AND h.as_of_date = (
-        SELECT MAX(h2.as_of_date) FROM holdings h2
-        WHERE h2.account_id = h.account_id
-          AND h2.security_id = h.security_id
-      )
-      ${accountFilter}
+      AND ${latestHoldingsPredicate({ accountFilter })}
     ORDER BY s.expiration_date ASC, s.symbol ASC
   `).all(...params) as ExpiringOption[];
 

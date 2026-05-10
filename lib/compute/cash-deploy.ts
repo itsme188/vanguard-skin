@@ -13,6 +13,7 @@
 
 import type Database from "better-sqlite3";
 import { getBenchmarkSectorMap } from "@/lib/queries/benchmark-compositions";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { getDefaultBenchmark } from "@/lib/analysis/benchmarks";
 import { computeExposureDelta, type ExposureDelta } from "./exposure-delta";
 import { marketValue } from "@/lib/valuation";
@@ -69,15 +70,8 @@ function loadCurrentHoldings(
     .prepare(
       `
       WITH latest_holdings AS (
-        SELECT h.*
-        FROM holdings h
-        WHERE h.as_of_date = (
-          SELECT MAX(h2.as_of_date) FROM holdings h2
-          WHERE h2.account_id = h.account_id
-            AND h2.security_id = h.security_id
-        )
-        AND h.quantity != 0
-        ${accountFilter}
+        SELECT h.* FROM holdings h
+        WHERE ${latestHoldingsPredicate({ accountFilter })}
       ),
       latest_prices AS (
         SELECT p.security_id, p.close_price
