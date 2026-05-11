@@ -30,6 +30,10 @@ import { fetchSnapshotPrices } from "./snapshot";
 import { fetchBenchmarkPrices } from "./benchmark";
 import { computeDailyValuations } from "../compute/daily-valuation";
 import { detectAndFireAlerts } from "../alerts/detect";
+import {
+  postMacRecentScanMarker,
+  reconcileCloudFiredLevels,
+} from "../alerts/reconcile-cloud-fired";
 import { generateSuggestionsForPendingAlerts } from "../alerts/generate-suggestion";
 
 export type RefreshLevel = "full" | "quick";
@@ -231,11 +235,37 @@ export async function runAutoRefresh(
     // Step 6: Detect crossed levels + fire alerts (after prices + valuations are fresh)
     setSyncPhase("alerts");
     try {
+      // Drain any cloud-fired level markers FIRST — these are alerts the
+      // Worker already fired via Pushover while Mac was asleep. Inserting
+      // them now ensures the inbox catches up before Mac's own scan runs,
+      // and triggerLevel's hasAlertToday guard then dedups against them.
+      const cronSecret = process.env.CRON_SHARED_SECRET;
+      if (cronSecret) {
+        try {
+          const cloudReconcile = await reconcileCloudFiredLevels(db, cronSecret);
+          if (cloudReconcile.reconciled > 0) {
+            console.log(
+              `[auto-refresh] Cloud-fired levels reconciled: ${cloudReconcile.reconciled}, ` +
+                `${cloudReconcile.skipped_already_alerted} already-alerted, ` +
+                `${cloudReconcile.skipped_level_missing} level-missing`,
+            );
+          }
+        } catch (err) {
+          console.warn("[auto-refresh] Cloud-fired level reconcile failed:", err);
+        }
+      }
+
       const detect = detectAndFireAlerts(db);
       alertsFired = detect.fired;
       console.log(
         `[auto-refresh] Alerts: ${detect.fired} fired, ${detect.deduped} deduped, ${detect.scanned} scanned`,
       );
+
+      // Post mac-recent-scan marker to the Worker so it skips its cloud
+      // scan on the next tick. Fire-and-forget; never blocks the pipeline.
+      if (cronSecret) {
+        void postMacRecentScanMarker(cronSecret);
+      }
 
       // Generate suggestions in parallel — awaited but tolerant of Claude errors.
       // A handful of Sonnet calls resolve in ~3-5s total (Promise.all).
