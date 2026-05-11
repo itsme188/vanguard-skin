@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { upsertNarrative } from "@/lib/queries/analysis-narratives";
@@ -6,6 +6,20 @@ import {
   generateNarrative,
   NARRATIVE_SURFACES,
 } from "@/lib/compute/analysis-narratives";
+
+// Mock the `ai` package's generateText so tests don't burn real Sonnet calls
+// when ANTHROPIC_API_KEY is loaded into the env (e.g. via .env.local). Without
+// this mock the "forceRegen bypasses cache" test would race the 5s vitest
+// timeout against a real network round-trip.
+vi.mock("ai", async () => {
+  const actual = await vi.importActual<typeof import("ai")>("ai");
+  return {
+    ...actual,
+    generateText: vi.fn().mockRejectedValue(
+      new Error("generateText mocked off in tests")
+    ),
+  };
+});
 
 describe("generateNarrative", () => {
   let db: Database.Database;
