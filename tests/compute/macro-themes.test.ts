@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { MacroThemesSchema, type MacroThemeAi } from "@/lib/compute/macro-themes";
+import Database from "better-sqlite3";
+import { runMigrations } from "@/lib/db/migrate";
+import { MacroThemesSchema, type MacroThemeAi, buildMacroSignalBlob } from "@/lib/compute/macro-themes";
 
 describe("MacroThemesSchema", () => {
   it("accepts a well-formed 3-theme array", () => {
@@ -31,5 +33,61 @@ describe("MacroThemesSchema", () => {
   it("rejects an unknown factor_label", () => {
     const bad = [{ name: "X", factor_label: "weather_exposure", direction: "risk-on", summary: "x".repeat(20) }];
     expect(() => MacroThemesSchema.parse(bad)).toThrow();
+  });
+});
+
+describe("buildMacroSignalBlob", () => {
+  function seed() {
+    const db = new Database(":memory:");
+    runMigrations(db);
+    db.prepare("INSERT OR IGNORE INTO research_sources (id, name, sender_email, is_active) VALUES (1, 'Test', 't@test.com', 1)").run();
+    for (let i = 0; i < 3; i++) {
+      db.prepare(
+        `INSERT INTO research_articles
+           (id, source_id, subject, sender, raw_text, received_at, processed_at, sentiment, mentioned_symbols)
+         VALUES (?, 1, ?, 't@test.com', ?, datetime('now', '-${i} days'), datetime('now'), ?, ?)`
+      ).run(i + 1, `Article ${i}`, `Body ${i} mentioning AAPL and NVDA and tariffs`,
+            i % 2 === 0 ? "negative" : "positive",
+            JSON.stringify(["AAPL", "NVDA"]));
+    }
+    db.prepare(
+      `INSERT INTO calendar_events
+         (id, event_date, event_type, source, source_key, week_of, title, symbol, actual_value, reaction_snapshot, enriched_at)
+       VALUES (1, date('now', '-2 days'), 'macro', 'fred', 'fred:CPIAUCSL:2026-05-08', date('now','-2 days'), 'CPI Release', 'CPI', '0.3%',
+         '{"spy":{"close":580,"change":-0.012}}', datetime('now','-2 days'))`
+    ).run();
+    return db;
+  }
+
+  it("aggregates last 7d of articles + enriched events", () => {
+    const db = seed();
+    const blob = buildMacroSignalBlob(db, "all", "2026-05-04");
+    expect(blob.articleCount).toBe(3);
+    expect(blob.enrichedEventCount).toBe(1);
+    expect(blob.totalSignalCount).toBe(4);
+    expect(blob.articles[0].mentioned_symbols).toContain("AAPL");
+    expect(blob.enrichedEvents[0].symbol).toBe("CPI");
+  });
+
+  it("respects 7-day cutoff and ignores older articles", () => {
+    const db = seed();
+    db.prepare(
+      `INSERT INTO research_articles (id, source_id, subject, sender, raw_text, received_at, processed_at, sentiment, mentioned_symbols)
+       VALUES (99, 1, 'old', 't@test.com', 'old', datetime('now','-30 days'), datetime('now'), 'neutral', '[]')`
+    ).run();
+    const blob = buildMacroSignalBlob(db, "all", "2026-05-04");
+    expect(blob.articleCount).toBe(3);
+  });
+
+  it("flags under-threshold input when < 2 articles + 0 enriched events", () => {
+    const db = new Database(":memory:");
+    runMigrations(db);
+    db.prepare("INSERT OR IGNORE INTO research_sources (id, name, sender_email, is_active) VALUES (1, 'T', 't@t.com', 1)").run();
+    db.prepare(
+      `INSERT INTO research_articles (id, source_id, subject, sender, raw_text, received_at, processed_at, sentiment, mentioned_symbols)
+       VALUES (1, 1, 's', 't@t.com', 'b', datetime('now'), datetime('now'), 'neutral', '[]')`
+    ).run();
+    const blob = buildMacroSignalBlob(db, "all", "2026-05-04");
+    expect(blob.underThreshold).toBe(true);
   });
 });
