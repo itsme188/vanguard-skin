@@ -49,6 +49,10 @@ import {
   type EarningsPhase,
 } from "./earnings-markers";
 import { runLevelScan, shouldRunLevelScan } from "./level-scan";
+import {
+  runNewsletterFetch,
+  shouldRunNewsletterFetch,
+} from "./newsletter-fetch";
 
 export interface Env {
   // Bindings
@@ -248,6 +252,21 @@ export default {
       );
     }
 
+    // Newsletter fetch — hourly during ET 06:00-20:59. Closes the "Mac
+    // asleep → newsletters pile up unprocessed" gap. Sibling to the level
+    // scan above: Worker fetches + Claude-analyzes, writes per-article
+    // payloads to KV, Mac reconciles on wake via /api/research/reconcile-cloud-fetched.
+    if (shouldRunNewsletterFetch()) {
+      ctx.waitUntil(
+        (async () => {
+          const result = await runNewsletterFetch(env);
+          if (result.kind !== "no_articles" && result.kind !== "skipped") {
+            console.log(`[cron ${event.cron}] newsletter-fetch result:`, JSON.stringify(result));
+          }
+        })()
+      );
+    }
+
     const job = parseJobFromClock(env);
     if (!job) {
       if (!shouldRunCalendarEnrich()) {
@@ -353,11 +372,60 @@ export default {
       return Response.json({ ok: true });
     }
 
+    // Cloud-fetched newsletters — Mac polls on wake, inserts each payload
+    // into research_articles (INSERT OR IGNORE on gmail_message_id), applies
+    // the D3 portfolio-relevance gate against local research_sources.allow_off_topic,
+    // then DELETEs per gmail_message_id. Sibling shape to /internal/cloud-fired-levels.
+    if (request.method === "GET" && url.pathname === "/internal/cloud-fetched-newsletters") {
+      const list = await env.CRON_KV.list({ prefix: "cloud-fetched-newsletter-" });
+      const payloads: Record<string, unknown> = {};
+      await Promise.all(
+        list.keys.map(async (k) => {
+          const value = await env.CRON_KV.get(k.name);
+          if (value) {
+            const m = /^cloud-fetched-newsletter-(.+)$/.exec(k.name);
+            if (m) {
+              try {
+                payloads[m[1]] = JSON.parse(value);
+              } catch {
+                // skip malformed entries
+              }
+            }
+          }
+        }),
+      );
+      return Response.json({ payloads });
+    }
+
+    if (request.method === "DELETE" && url.pathname === "/internal/cloud-fetched-newsletters") {
+      const messageId = url.searchParams.get("messageId");
+      if (!messageId || messageId.length === 0) {
+        return Response.json({ error: "messageId is required" }, { status: 400 });
+      }
+      await env.CRON_KV.delete(`cloud-fetched-newsletter-${messageId}`);
+      return Response.json({ ok: true });
+    }
+
+    // Mac POSTs this after its fetchNewArticles completes (success or no-op,
+    // not on failure — Worker's next tick should still fire if Mac is dying).
+    // 60-min TTL keeps Worker idle while Mac is alive but lets Worker take
+    // over if Mac misses one full cycle.
+    if (request.method === "POST" && url.pathname === "/internal/mac-recent-newsletter-sync") {
+      await env.CRON_KV.put("mac-recent-newsletter-sync", new Date().toISOString(), {
+        expirationTtl: 60 * 60,
+      });
+      return Response.json({ ok: true });
+    }
+
     if (request.method === "POST" && url.pathname === "/internal/trigger") {
       const typeParam = url.searchParams.get("type");
       if (typeParam === "level-scan") {
         const dryRun = url.searchParams.get("dryRun") === "true";
         const result = await runLevelScan(env, { dryRun });
+        return Response.json(result);
+      }
+      if (typeParam === "newsletter-fetch") {
+        const result = await runNewsletterFetch(env);
         return Response.json(result);
       }
       if (typeParam === "calendar-enrich") {
