@@ -249,24 +249,19 @@ export async function generateMacroThemes(
     throw new Error(`AI returned malformed themes: ${msg}`);
   }
 
-  // Post-process: attach per-scope exposure bucket + top-3 contributors.
-  // The (factorResult as any) cast is intentional — computeFactorAnalysis
-  // returns { sizeTilt, styleTilt, sectorTilt, geographyTilt }, not a
-  // `tilts[]` array. The optional-chain + ?? [] ensures graceful degradation
-  // when the factor shape doesn't have the expected key.
+  // Post-process: attach per-scope exposure bucket + top-3 contributors from
+  // computeFactorAnalysis().tilts (per-factor weighted exposure across the 9
+  // FACTOR_COLUMNS). Shipped 2026-05-11 — replaces the prior defensive
+  // `(as any)?.tilts` cast that always degraded to "low" + empty contributors.
   const accountIds = resolveScope(db, opts.scope);
   const firstAccountId = accountIds?.[0];
   const factorResult = computeFactorAnalysis(db, { accountId: firstAccountId });
 
   const themes: MacroTheme[] = parsed.map((t) => {
-    const factorTilt =
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (factorResult as any)?.tilts?.find((tilt: any) => tilt.factor === t.factor_label) ?? null;
-    const exposureWeight = factorTilt?.exposurePct ? factorTilt.exposurePct / 100 : 0;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const top = factorTilt?.topContributors
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ? factorTilt.topContributors.slice(0, 3).map((c: any) => ({ symbol: c.symbol, weight: c.weight }))
+    const factorTilt = factorResult.tilts.find((tilt) => tilt.factor === t.factor_label) ?? null;
+    const exposureWeight = factorTilt ? factorTilt.exposurePct / 100 : 0;
+    const top = factorTilt
+      ? factorTilt.topContributors.slice(0, 3).map((c) => ({ symbol: c.symbol, weight: c.weight }))
       : [];
     return { ...t, exposure_bucket: bucketExposure(exposureWeight), top_contributors: top };
   });
