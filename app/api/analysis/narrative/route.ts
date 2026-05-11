@@ -43,6 +43,9 @@ export async function GET(req: NextRequest) {
   }
 }
 
+// Per-process rate limiter; OK for the single-server Electron deployment. If
+// this app ever scales horizontally, swap for a settings-table or Redis-backed
+// counter so all pods share the limit.
 const lastRegenAt = new Map<string, number>();
 const REGEN_WINDOW_MS = 24 * 60 * 60 * 1000;
 
@@ -61,6 +64,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       { success: false, error: "scope+surface required" },
       { status: 400 }
+    );
+  }
+  if (!(NARRATIVE_SURFACES as readonly string[]).includes(surface)) {
+    return NextResponse.json(
+      { success: false, error: "unknown surface" },
+      { status: 404 }
     );
   }
   const key = `${scope}::${surface}`;
