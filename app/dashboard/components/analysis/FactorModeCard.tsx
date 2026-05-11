@@ -4,14 +4,16 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useToast } from "../Toast";
 import { FactorHeatmap } from "../FactorHeatmap";
+import { NarrativeBlock } from "./NarrativeBlock";
 import type { FactorHeatmapRow, FactorCoverage } from "@/lib/queries/analysis";
 
 interface Props {
   factorHeatmap?: FactorHeatmapRow[];
   factorCoverage?: FactorCoverage;
+  scope?: string;
 }
 
-export function FactorModeCard({ factorHeatmap, factorCoverage }: Props) {
+export function FactorModeCard({ factorHeatmap, factorCoverage, scope }: Props) {
   const router = useRouter();
   const { toast } = useToast();
   const [factorClassifyLoading, setFactorClassifyLoading] = useState(false);
@@ -41,6 +43,7 @@ export function FactorModeCard({ factorHeatmap, factorCoverage }: Props) {
 
   return (
     <>
+      <NarrativeBlock scope={scope ?? "all"} surfaceKey="factor-heatmap" />
       {factorHeatmap && <FactorHeatmap rows={factorHeatmap} />}
 
       <div className="bg-panel border border-edge rounded-lg p-4">
