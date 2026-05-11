@@ -45,7 +45,16 @@ export interface RoundTripSummary {
 export interface ReviewPeriod {
   periodStart: string;
   periodEnd: string;
+  /** Total closed-trade count for the period (every distinct SELL transaction). */
   tradeCount: number;
+  /**
+   * Subset of `tradeCount` whose FIFO lot coverage is ≥`MIN_LOT_COVERAGE`
+   * (the threshold `generateTradeReview` applies before the AI sees anything).
+   * Trades below the threshold represent positions that span the import-history
+   * boundary and have incomplete cost basis. When `reviewableCount < tradeCount`,
+   * the dropdown should surface the gap so users know what to expect.
+   */
+  reviewableCount: number;
 }
 
 /**
@@ -260,6 +269,16 @@ export function detectNewTradeReviewPeriods(
 /**
  * Get all months that have closed trades for a given account,
  * whether or not they have an existing review.
+ *
+ * Returns both `tradeCount` (raw count of distinct SELL transactions) and
+ * `reviewableCount` (subset whose FIFO lot coverage is ≥`MIN_LOT_COVERAGE`).
+ * Coverage is computed in SQL via a per-sale CTE that compares matched lot
+ * quantity to the actual SELL transaction quantity — mirroring the runtime
+ * filter `filterFullyCoveredTrades` applies before the AI sees a review.
+ *
+ * When `reviewableCount < tradeCount`, the dropdown should surface the gap
+ * ("9 of 12 reviewable") so the user knows trades will be silently filtered
+ * out at generation time (positions that span import-history boundaries).
  */
 export function getAvailableReviewPeriods(
   db: Database.Database,
@@ -267,26 +286,45 @@ export function getAvailableReviewPeriods(
 ): ReviewPeriod[] {
   const rows = db
     .prepare(
-      `SELECT
-        strftime('%Y-%m-01', tls.sale_date) AS period_start,
-        date(strftime('%Y-%m-01', tls.sale_date), '+1 month', '-1 day') AS period_end,
-        COUNT(DISTINCT tls.sale_transaction_id) AS trade_count
-      FROM tax_lot_sales tls
-      JOIN tax_lots tl ON tl.id = tls.tax_lot_id
-      WHERE tl.account_id = ?
+      `WITH per_sale_coverage AS (
+        SELECT
+          tls.sale_transaction_id,
+          strftime('%Y-%m-01', tls.sale_date) AS period_start,
+          SUM(tls.quantity_sold) AS matched_qty,
+          MAX(ABS(t.quantity)) AS actual_qty
+        FROM tax_lot_sales tls
+        JOIN tax_lots tl ON tl.id = tls.tax_lot_id
+        JOIN transactions t ON t.id = tls.sale_transaction_id
+        WHERE tl.account_id = ?
+        GROUP BY tls.sale_transaction_id, period_start
+      )
+      SELECT
+        period_start,
+        date(period_start, '+1 month', '-1 day') AS period_end,
+        COUNT(*) AS trade_count,
+        SUM(
+          CASE
+            WHEN actual_qty IS NULL OR actual_qty = 0 THEN 1
+            WHEN matched_qty * 1.0 / actual_qty >= ? THEN 1
+            ELSE 0
+          END
+        ) AS reviewable_count
+      FROM per_sale_coverage
       GROUP BY period_start
       ORDER BY period_start DESC`
     )
-    .all(accountId) as Array<{
+    .all(accountId, MIN_LOT_COVERAGE) as Array<{
     period_start: string;
     period_end: string;
     trade_count: number;
+    reviewable_count: number;
   }>;
 
   return rows.map((r) => ({
     periodStart: r.period_start,
     periodEnd: r.period_end,
     tradeCount: r.trade_count,
+    reviewableCount: r.reviewable_count,
   }));
 }
 
@@ -351,8 +389,8 @@ export function computeGroupedTrades(roundTrips: RoundTrip[]): GroupedTrade[] {
   });
 }
 
-/** Minimum lot coverage ratio to include a trade in reviews (80%) */
-const MIN_LOT_COVERAGE = 0.9;
+/** Minimum lot coverage ratio to include a trade in reviews (90%) */
+export const MIN_LOT_COVERAGE = 0.9;
 
 /**
  * Filter grouped trades to only those with sufficient FIFO lot coverage.

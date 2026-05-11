@@ -607,6 +607,11 @@ describe("getAvailableReviewPeriods", () => {
     // Ordered DESC
     expect(periods[0].periodStart).toBe("2026-02-01");
     expect(periods[1].periodStart).toBe("2026-01-01");
+    // Full-coverage trades — every count is also reviewable
+    expect(periods[0].tradeCount).toBe(1);
+    expect(periods[0].reviewableCount).toBe(1);
+    expect(periods[1].tradeCount).toBe(1);
+    expect(periods[1].reviewableCount).toBe(1);
   });
 
   it("only returns periods for the specified account", () => {
@@ -632,6 +637,93 @@ describe("getAvailableReviewPeriods", () => {
     const periods = getAvailableReviewPeriods(db, 1);
     expect(periods).toHaveLength(1);
     expect(periods[0].tradeCount).toBe(1);
+    expect(periods[0].reviewableCount).toBe(1);
+  });
+
+  it("reviewableCount excludes trades below MIN_LOT_COVERAGE (Vanguard Taxable April case)", () => {
+    // Two trades in same month: one fully covered, one half-covered.
+    // Half-covered = SELL transaction for 100 shares but matched lot covers only 50.
+    // This mimics positions held before import history started.
+    addRoundTrip(db, {
+      accountId: 1,
+      securityId: 1,
+      acquisitionDate: "2026-04-05",
+      saleDate: "2026-04-15",
+      quantity: 100,
+      acquisitionPrice: 150,
+      salePrice: 160,
+    });
+
+    // Half-covered: actual SELL is 100 shares, but lot only covers 50.
+    const halfTxResult = db
+      .prepare(
+        `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, price_per_share, amount)
+         VALUES (?, ?, ?, 'SELL', ?, ?, ?)`
+      )
+      .run(1, 2, "2026-04-20", 100, 200, 20000);
+    const halfLotResult = db
+      .prepare(
+        `INSERT INTO tax_lots (account_id, security_id, acquisition_date, acquisition_price, quantity_acquired, quantity_remaining, cost_basis)
+         VALUES (?, ?, ?, ?, ?, 0, ?)`
+      )
+      .run(1, 2, "2026-04-05", 195, 50, 9750);
+    db.prepare(
+      `INSERT INTO tax_lot_sales (tax_lot_id, sale_transaction_id, sale_date, quantity_sold, sale_price, proceeds, cost_basis_allocated, realized_gain_loss, is_long_term, holding_period_days)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      halfLotResult.lastInsertRowid,
+      halfTxResult.lastInsertRowid,
+      "2026-04-20",
+      50, // matched 50 of actual 100 = 50% coverage, below 0.9 threshold
+      200,
+      10000, // proceeds = 50 * 200
+      9750, // cost_basis_allocated = 50 * 195
+      250, // realized_gain_loss = 10000 - 9750
+      0, // is_long_term
+      15 // holding_period_days
+    );
+
+    const periods = getAvailableReviewPeriods(db, 1);
+    expect(periods).toHaveLength(1);
+    expect(periods[0].tradeCount).toBe(2); // both SELLs counted
+    expect(periods[0].reviewableCount).toBe(1); // only the fully-covered one
+  });
+
+  it("treats null/zero actual_qty as fully reviewable (defensive default)", () => {
+    // Edge case: if transactions.quantity is somehow null or 0, we shouldn't
+    // silently drop the trade from the reviewable count — surface it instead.
+    const txResult = db
+      .prepare(
+        `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, price_per_share, amount)
+         VALUES (?, ?, ?, 'SELL', NULL, ?, ?)`
+      )
+      .run(1, 1, "2026-05-10", 160, 16000);
+    const lotResult = db
+      .prepare(
+        `INSERT INTO tax_lots (account_id, security_id, acquisition_date, acquisition_price, quantity_acquired, quantity_remaining, cost_basis)
+         VALUES (?, ?, ?, ?, ?, 0, ?)`
+      )
+      .run(1, 1, "2026-05-01", 150, 100, 15000);
+    db.prepare(
+      `INSERT INTO tax_lot_sales (tax_lot_id, sale_transaction_id, sale_date, quantity_sold, sale_price, proceeds, cost_basis_allocated, realized_gain_loss, is_long_term, holding_period_days)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      lotResult.lastInsertRowid,
+      txResult.lastInsertRowid,
+      "2026-05-10",
+      100,
+      160,
+      16000,
+      15000,
+      1000,
+      0,
+      9
+    );
+
+    const periods = getAvailableReviewPeriods(db, 1);
+    expect(periods).toHaveLength(1);
+    expect(periods[0].tradeCount).toBe(1);
+    expect(periods[0].reviewableCount).toBe(1); // null actual_qty → defensive default
   });
 });
 

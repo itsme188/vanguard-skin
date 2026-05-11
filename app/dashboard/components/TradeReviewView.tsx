@@ -13,6 +13,7 @@ interface ReviewPeriod {
   periodStart: string;
   periodEnd: string;
   tradeCount: number;
+  reviewableCount: number;
 }
 
 interface TradeReviewWithAccount extends TradeReview {
@@ -390,9 +391,13 @@ export function TradeReviewView({
                   r.account_id === selectedAccountId &&
                   r.period_start === p.periodStart
               );
+              const countLabel =
+                p.reviewableCount < p.tradeCount
+                  ? `${p.reviewableCount} of ${p.tradeCount} reviewable`
+                  : `${p.tradeCount} trades`;
               return (
                 <option key={p.periodStart} value={p.periodStart}>
-                  {formatMonthLabelShort(p.periodStart)} · {p.tradeCount} trades
+                  {formatMonthLabelShort(p.periodStart)} · {countLabel}
                   {hasReview ? " ✓" : ""}
                 </option>
               );
