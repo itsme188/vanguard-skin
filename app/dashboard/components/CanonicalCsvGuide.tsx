@@ -42,6 +42,7 @@ const FORMATS: FormatSpec[] = [
       "For REINVESTMENT rows: populate both `quantity` + `price` (shares received at the reinvestment price) AND `amount` (total value reinvested)",
       "For TRANSFER rows (VMFXX money-market sweeps): `amount` is SIGNED. 'Sweep Into Settlement Fund' is positive (cash going in), 'Sweep Out Of Settlement Fund' is negative (cash coming out). Never leave all TRANSFER amounts positive — the sign tracks direction.",
       "Options must use OCC format: AAPL  260320C00150000 (symbol padded to 6 chars, YYMMDD, C/P, strike x1000 padded to 8 digits)",
+      "Symbol conventions (consistency across statements is critical — each variant creates a duplicate security row): for bonds incl. US Treasuries, use the 9-character CUSIP as the symbol (e.g., `912810SA7`, never the descriptive name like `U S TREASURY BOND 3 2/15/48`); for dual-class equities, use the SLASH form (e.g., `BRK/B`, `LBRD/A`, `LSXM/K`), never `BRK B`, `BRK.B`, or `BRKB`.",
       "Numbers: NO comma thousands separators (1234.56 ✓, 1,234.56 ✗). NO currency symbols ($, %, etc). Use `.` for decimals only. Negative numbers use a leading minus sign (-250.00). Commas inside numeric cells will silently truncate or skip the row.",
       "All dates: YYYY-MM-DD format",
       "Output the CSV directly with the header row first — do NOT prefix with comment lines like `# transactions.csv` or markdown fences. The file must start with the header row.",
@@ -67,6 +68,7 @@ const FORMATS: FormatSpec[] = [
     constraints: [
       "One row per (account, symbol) per as_of_date",
       "Options must use OCC format for the symbol",
+      "Symbol conventions (consistency across statements is critical — each variant creates a duplicate security row): for bonds incl. US Treasuries, use the 9-character CUSIP as the symbol (e.g., `912810SA7`, never the descriptive name); for dual-class equities, use the SLASH form (e.g., `BRK/B`, `LBRD/A`), never `BRK B`, `BRK.B`, or `BRKB`.",
       "Account names must match the dashboard exactly: 'Individual brokerage account' → 'Vanguard Taxable', 'Vanguard Roth IRA' verbatim, 'IBKR' verbatim",
       "Numbers: no commas, no currency symbols, decimals only with `.`. Quantity is the number of shares held (always positive).",
       "Output the CSV directly — do NOT prefix with `# filename.csv` comment lines or markdown fences.",
@@ -171,6 +173,7 @@ General rules:
 - Cash-only transaction rows (WITHDRAWAL, DEPOSIT, FEE, COMMISSION, INTEREST without a security) MUST use symbol 'CASH'. Blank symbol drops the row.
 - Security types: Stock, Bond, ETF, Option, Mutual Fund
 - Options: use OCC format (e.g., AAPL  260320C00150000)
+- Symbol conventions (consistency across statements is critical — each variant creates a duplicate security row): for bonds incl. US Treasuries, use the 9-character CUSIP as the symbol (e.g., \`912810SA7\`, never the descriptive name like \`U S TREASURY BOND 3 2/15/48\`); for dual-class equities, use the SLASH form (e.g., \`BRK/B\`, \`LBRD/A\`, \`LSXM/K\`), never \`BRK B\`, \`BRK.B\`, or \`BRKB\`.
 - Numbers: NO comma thousands separators (1234.56 ✓, 1,234.56 ✗), NO currency symbols, use \`.\` for decimals only. Negative numbers use a leading minus sign.
 - Output ONLY the CSV files (header + data rows). NO markdown fences, NO comment lines, NO explanation prose.`;
 }
