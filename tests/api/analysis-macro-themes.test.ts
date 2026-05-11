@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { upsertMacroThemes } from "@/lib/queries/analysis-macro-themes";
 
 describe("/api/analysis/macro-themes", () => {
@@ -28,15 +28,32 @@ describe("/api/analysis/macro-themes", () => {
   });
 
   it("POST rate-limits to once per day per scope", async () => {
-    const { POST, __resetMacroRegenLimitForTests } = await import("@/app/api/analysis/macro-themes/route");
-    __resetMacroRegenLimitForTests();
-    const make = () => new Request("http://localhost/api/analysis/macro-themes", {
-      method: "POST",
-      body: JSON.stringify({ scope: "all" }),
-      headers: { "Content-Type": "application/json" },
-    });
-    await POST(make() as any);
-    const res2 = await POST(make() as any);
-    expect(res2.status).toBe(429);
+    // Mock generateMacroThemes so the first POST doesn't invoke a real Sonnet
+    // call when ANTHROPIC_API_KEY is loaded into the test env. The test only
+    // cares about the rate-limit semantics, not the AI output.
+    const macroThemes = await import("@/lib/compute/macro-themes");
+    const spy = vi
+      .spyOn(macroThemes, "generateMacroThemes")
+      .mockResolvedValue({
+        themes: [],
+        sourceSummary: null,
+        fromCache: false,
+        generatedAt: new Date().toISOString(),
+        underThreshold: true,
+      });
+    try {
+      const { POST, __resetMacroRegenLimitForTests } = await import("@/app/api/analysis/macro-themes/route");
+      __resetMacroRegenLimitForTests();
+      const make = () => new Request("http://localhost/api/analysis/macro-themes", {
+        method: "POST",
+        body: JSON.stringify({ scope: "all" }),
+        headers: { "Content-Type": "application/json" },
+      });
+      await POST(make() as any);
+      const res2 = await POST(make() as any);
+      expect(res2.status).toBe(429);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
