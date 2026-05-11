@@ -112,6 +112,7 @@ export function generateDigestSince(db: Database.Database, sinceDate: string): s
   const articles = getRecentArticles(db, {
     startDate: sinceDate,
     processedOnly: true,
+    relevantOnly: true,
     limit: 30,
   });
 
@@ -374,6 +375,7 @@ export async function generateDigestSinceAdaptive(
   const articles = getRecentArticles(db, {
     startDate: sinceDate,
     processedOnly: true,
+    relevantOnly: true,
     limit: 30,
   });
 

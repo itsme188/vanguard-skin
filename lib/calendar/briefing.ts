@@ -160,7 +160,7 @@ export async function generateWeeklyBriefing(
   options?.onProgress?.("Loading broader market signals...", 2, 4);
 
   // ── Broader market signals (summary level for other sources) ────
-  const allRecent = getRecentArticles(db, { processedOnly: true, limit: 40 });
+  const allRecent = getRecentArticles(db, { processedOnly: true, relevantOnly: true, limit: 40 });
   const otherSourceSummaries = allRecent
     .filter((a) => !PREFERRED_SOURCE_IDS.includes(a.source_id))
     .slice(0, BROADER_ARTICLE_LIMIT);

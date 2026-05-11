@@ -12,6 +12,7 @@ interface UnprocessedArticle {
   raw_text: string;
   source_name: string;
   processing_prompt: string | null;
+  allow_off_topic: number;
 }
 
 interface ProcessedResult {
@@ -21,6 +22,7 @@ interface ProcessedResult {
   sentiment_score: number;
   mentioned_symbols: string[];
   portfolio_relevance: string;
+  is_portfolio_relevant: boolean;
 }
 
 /**
@@ -34,7 +36,8 @@ export async function processUnprocessedArticles(
   const articles = db
     .prepare(
       `SELECT a.id, a.source_id, a.subject, a.sender, a.raw_text,
-              s.name as source_name, s.processing_prompt
+              s.name as source_name, s.processing_prompt,
+              COALESCE(s.allow_off_topic, 0) as allow_off_topic
        FROM research_articles a
        JOIN research_sources s ON a.source_id = s.id
        WHERE a.processed_at IS NULL
@@ -67,6 +70,21 @@ export async function processUnprocessedArticles(
     SET summary = ?, key_themes = ?, sentiment = ?, sentiment_score = ?,
         mentioned_symbols = ?, portfolio_relevance = ?, ai_model = ?,
         processed_at = datetime('now')
+    WHERE id = ?
+  `);
+
+  // D3: when Claude votes the article off-topic AND the source isn't opted
+  // out of the gate, flip is_relevant=0 + tag the excluded fields so the
+  // D5 audit UI can surface and un-filter it. The AI fields above still get
+  // written — unfiltering then shows fully-extracted content in the digest
+  // without re-processing cost. Source-level `allow_off_topic` is the
+  // escape hatch for general-purpose newsletters (Helene Meisler chart
+  // commentary, macro-only sources) where the vote would always be false.
+  const markOffTopic = db.prepare(`
+    UPDATE research_articles
+    SET is_relevant = 0,
+        excluded_category = 'off_topic',
+        excluded_reason = ?
     WHERE id = ?
   `);
 
@@ -106,6 +124,14 @@ export async function processUnprocessedArticles(
         FEATURE_MODELS.newsletterProcessing,
         article.id
       );
+
+      if (!result.is_portfolio_relevant && article.allow_off_topic !== 1) {
+        const reason =
+          result.portfolio_relevance && result.portfolio_relevance.trim().length > 0
+            ? result.portfolio_relevance.slice(0, 280)
+            : "Claude judged article off-topic";
+        markOffTopic.run(reason, article.id);
+      }
 
       for (const { symbol, context } of verified) {
         const sec = findSecurity.get(symbol) as { id: number } | undefined;
@@ -160,6 +186,11 @@ const ANALYSIS_SCHEMA = jsonSchema<ProcessedResult>({
       type: "string",
       description: "One sentence on how this article is relevant to the user's current portfolio holdings.",
     },
+    is_portfolio_relevant: {
+      type: "boolean",
+      description:
+        "TRUE when the article touches any held or watchlist ticker OR meaningfully shifts macro/sector context that already affects the portfolio (Fed policy, rates, broad indices, sector that the user holds). FALSE only for clearly off-topic content (single-stock pieces about names the user doesn't own and that don't read through to held names, crypto/coin-only commentary, lifestyle/non-finance). Default to TRUE when uncertain — prefer to under-filter.",
+    },
   },
   required: [
     "summary",
@@ -168,6 +199,7 @@ const ANALYSIS_SCHEMA = jsonSchema<ProcessedResult>({
     "sentiment_score",
     "mentioned_symbols",
     "portfolio_relevance",
+    "is_portfolio_relevant",
   ],
 });
 
@@ -197,7 +229,8 @@ Article text:
 ${text}`,
   });
 
-  // Normalize
+  // Normalize. is_portfolio_relevant defaults to true on a missing/null
+  // response — under-filter when uncertain, matches the prompt direction.
   return {
     summary: object.summary || "",
     key_themes: (object.key_themes || []).slice(0, 5),
@@ -207,6 +240,7 @@ ${text}`,
       s.toUpperCase().trim()
     ),
     portfolio_relevance: object.portfolio_relevance || "",
+    is_portfolio_relevant: object.is_portfolio_relevant !== false,
   };
 }
 

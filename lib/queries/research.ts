@@ -55,6 +55,13 @@ export function getRecentArticles(
     endDate?: string;
     search?: string;
     processedOnly?: boolean;
+    /**
+     * D4: when true, only return articles with is_relevant=1 (D2 short-circuit
+     * + D3 portfolio-relevance gate both flip this to 0). Default false so
+     * the Research → Feeds main listing and the chat tool still see filtered
+     * content — digest/briefing/trade-review callers opt in.
+     */
+    relevantOnly?: boolean;
     limit?: number;
   }
 ): ResearchArticle[] {
@@ -70,6 +77,9 @@ export function getRecentArticles(
       "a.id IN (SELECT article_id FROM research_article_securities WHERE security_id = ?)"
     );
     params.push(options.securityId);
+  }
+  if (options?.relevantOnly) {
+    conditions.push("COALESCE(a.is_relevant, 1) = 1");
   }
   // Both `received_at` (SQLite `datetime('now')` → "YYYY-MM-DD HH:MM:SS")
   // and caller-supplied timestamps (e.g. `new Date().toISOString()` →
@@ -153,6 +163,7 @@ export function getArticlesForSecurity(
        JOIN research_articles a ON ras.article_id = a.id
        JOIN research_sources s ON a.source_id = s.id
        WHERE ras.security_id = ? AND a.processed_at IS NOT NULL
+         AND COALESCE(a.is_relevant, 1) = 1
        ORDER BY a.received_at DESC
        LIMIT ?`
     )
@@ -215,6 +226,7 @@ export function getFullTextForSources(
        JOIN research_sources s ON a.source_id = s.id
        WHERE a.source_id IN (${placeholders})
          AND a.processed_at IS NOT NULL
+         AND COALESCE(a.is_relevant, 1) = 1
          AND a.received_at >= datetime('now', '-' || ? || ' hours')
        ORDER BY a.received_at DESC`
     )
@@ -226,6 +238,57 @@ export function getFullTextForSources(
       received_at: string;
       raw_text: string;
     }[];
+}
+
+/**
+ * D5 — Filtered audit list. Returns articles where the D1/D2 short-circuit
+ * OR the D3 portfolio-relevance gate flipped is_relevant=0. Surfaces the
+ * excluded_category + excluded_reason so the user can decide whether to
+ * un-filter (POST /api/research/articles/:id/unfilter).
+ */
+export interface FilteredArticle {
+  id: number;
+  source_id: number;
+  source_name: string;
+  subject: string;
+  sender: string;
+  received_at: string;
+  excluded_category: string;
+  excluded_reason: string | null;
+  summary: string | null;
+  /** processed_at = NULL for D1/D2 short-circuit (Claude never ran). */
+  processed_at: string | null;
+}
+
+export function getFilteredArticles(
+  db: Database.Database,
+  limit = 100,
+): FilteredArticle[] {
+  return db
+    .prepare(
+      `SELECT a.id, a.source_id, s.name as source_name, a.subject, a.sender,
+              a.received_at, a.excluded_category, a.excluded_reason, a.summary,
+              a.processed_at
+         FROM research_articles a
+         JOIN research_sources s ON a.source_id = s.id
+        WHERE a.is_relevant = 0
+        ORDER BY a.received_at DESC
+        LIMIT ?`,
+    )
+    .all(limit) as FilteredArticle[];
+}
+
+/**
+ * Lightweight count for the Feeds toolbar badge. Same predicate as
+ * getFilteredArticles — keep them in lockstep if the predicate ever changes.
+ */
+export function getFilteredArticleCount(db: Database.Database): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) as n FROM research_articles WHERE is_relevant = 0`,
+    )
+    .get() as { n: number };
+  return row.n;
 }
 
 export function getRecentArticleSummaries(
@@ -243,6 +306,7 @@ export function getRecentArticleSummaries(
        FROM research_articles a
        JOIN research_sources s ON a.source_id = s.id
        WHERE a.processed_at IS NOT NULL
+         AND COALESCE(a.is_relevant, 1) = 1
          AND a.received_at >= datetime('now', '-' || ? || ' hours')
        ORDER BY a.received_at DESC
        LIMIT ?`

@@ -183,6 +183,7 @@ export function generateDigestByCompanySince(
   const articles = getRecentArticles(db, {
     startDate: sinceDate,
     processedOnly: true,
+    relevantOnly: true,
     limit: 30,
   });
   const alertsBlock = formatTriggeredAlertsSection(db, sinceDate);

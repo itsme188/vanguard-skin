@@ -314,6 +314,7 @@ export async function generateTradeReview(
       startDate: params.periodStart,
       endDate: params.periodEnd,
       processedOnly: true,
+      relevantOnly: true,
       limit: 15,
     });
     if (periodArticles.length > 0) {
