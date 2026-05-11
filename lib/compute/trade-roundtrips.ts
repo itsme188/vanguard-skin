@@ -239,30 +239,50 @@ export function detectNewTradeReviewPeriods(
 ): ReviewPeriod[] {
   const rows = db
     .prepare(
-      `SELECT
-        strftime('%Y-%m-01', tls.sale_date) AS period_start,
-        date(strftime('%Y-%m-01', tls.sale_date), '+1 month', '-1 day') AS period_end,
-        COUNT(DISTINCT tls.sale_transaction_id) AS trade_count
-      FROM tax_lot_sales tls
-      JOIN tax_lots tl ON tl.id = tls.tax_lot_id
-      WHERE NOT EXISTS (
-        SELECT 1 FROM trade_reviews tr
-        WHERE tr.account_id = tl.account_id
-          AND tr.period_start = strftime('%Y-%m-01', tls.sale_date)
+      `WITH per_sale_coverage AS (
+        SELECT
+          tls.sale_transaction_id,
+          tl.account_id,
+          strftime('%Y-%m-01', tls.sale_date) AS period_start,
+          SUM(tls.quantity_sold) AS matched_qty,
+          MAX(ABS(t.quantity)) AS actual_qty
+        FROM tax_lot_sales tls
+        JOIN tax_lots tl ON tl.id = tls.tax_lot_id
+        JOIN transactions t ON t.id = tls.sale_transaction_id
+        WHERE NOT EXISTS (
+          SELECT 1 FROM trade_reviews tr
+          WHERE tr.account_id = tl.account_id
+            AND tr.period_start = strftime('%Y-%m-01', tls.sale_date)
+        )
+        GROUP BY tls.sale_transaction_id, tl.account_id, period_start
       )
+      SELECT
+        period_start,
+        date(period_start, '+1 month', '-1 day') AS period_end,
+        COUNT(*) AS trade_count,
+        SUM(
+          CASE
+            WHEN actual_qty IS NULL OR actual_qty = 0 THEN 1
+            WHEN matched_qty * 1.0 / actual_qty >= ? THEN 1
+            ELSE 0
+          END
+        ) AS reviewable_count
+      FROM per_sale_coverage
       GROUP BY period_start
       ORDER BY period_start DESC`
     )
-    .all() as Array<{
+    .all(MIN_LOT_COVERAGE) as Array<{
     period_start: string;
     period_end: string;
     trade_count: number;
+    reviewable_count: number;
   }>;
 
   return rows.map((r) => ({
     periodStart: r.period_start,
     periodEnd: r.period_end,
     tradeCount: r.trade_count,
+    reviewableCount: r.reviewable_count,
   }));
 }
 
