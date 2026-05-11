@@ -382,7 +382,7 @@ Write a markdown briefing structured as follows:
 
 5. **Price Levels in Play** — ONLY include if the data sections above show triggered or nearby levels. Two subsections:
    - Recent triggers (last 7 days): did the user's response make sense? Did price action validate or invalidate the level?
-   - This week's watch list: for each level within 5% of current price, say what a hit would mean and the action to consider. Ground each in the source author's thesis where cited. Skip this whole section if there are no triggered or nearby levels.
+   - This week's watch list: for each level within 5% of current price, say what a hit would mean and the action to consider. **HARD RULE — thesis verbatim.** Each level row above carries a stored thesis string in double-quotes (e.g., — "demand zone from Q3 earnings reaction"). Quote that string verbatim when describing the level's direction or implication. Do NOT infer "breakdown" vs "pullback" vs "support" vs "resistance" from the price-action context alone — the user's stored thesis is the authoritative read on direction. When a level has no stored thesis attached, say so explicitly ("no stored thesis — direction implied by level type") rather than inventing one. Skip this whole subsection if there are no triggered or nearby levels.
 
 6. **Macro & Other Events** — concise coverage of the remaining calendar. What's priced in, what would surprise, which holdings have exposure.
 
