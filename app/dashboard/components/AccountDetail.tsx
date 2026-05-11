@@ -9,6 +9,7 @@ import { HoldingsTable } from "./HoldingsTable";
 import { TransactionHistory } from "./TransactionHistory";
 import { EquityCurveChart } from "./EquityCurveChart";
 import { ReconciliationTable } from "./ReconciliationTable";
+import { SnapshotAge } from "./SnapshotAge";
 import type { ReconciliationCheckpoint } from "@/lib/queries/reconciliation";
 
 interface AccountDetailProps {
@@ -28,8 +29,20 @@ export function AccountDetail({
   dailyValuations,
   reconciliationCheckpoints,
 }: AccountDetailProps) {
+  // Vanguard accounts update only on statement import — the holdings table
+  // reflects the period-end of the last imported statement, not live data.
+  // Surfacing the snapshot age here makes that boundary explicit (vs IBKR
+  // which has a sibling refresh button that already shows live sync state).
+  const isVanguard = selectedAccount.name.toLowerCase().includes("vanguard");
+  const snapshotDate = holdings[0]?.as_of_date ?? null;
+
   return (
     <div className="space-y-6">
+      {isVanguard && snapshotDate && (
+        <div className="flex items-center justify-end -mb-3">
+          <SnapshotAge asOfDate={snapshotDate} alwaysShow />
+        </div>
+      )}
       {(snapshots.length > 0 || (dailyValuations && dailyValuations.length > 0)) && (
         <EquityCurveChart
           snapshots={snapshots}
