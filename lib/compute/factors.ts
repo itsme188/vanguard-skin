@@ -2,6 +2,8 @@ import type Database from "better-sqlite3";
 import { getDailyValuationsCombined, getDailyValuationsByAccount } from "@/lib/queries/daily-valuations";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
+import { getFactorHeatmap } from "@/lib/queries/analysis";
 
 // ─── Types ─────────────��────────────────────────────────────────
 
@@ -19,12 +21,31 @@ export interface FactorTilt {
   buckets: { label: string; weight: number }[];
 }
 
+/**
+ * Per-factor macro tilt, used by macro-themes + briefing email to surface
+ * "how exposed is the portfolio to factor X". Each factor column in
+ * `security_factors` (9 columns: rates / growth_vs_value / cyclical / ...)
+ * aggregates per-position weighted exposure into one row of this shape.
+ *
+ *   exposurePct      0-100. SUM(weight_pct * exposureMultiplier(value)).
+ *                    bucketed downstream into low/moderate/high/very-high
+ *                    via the macro-themes thresholds.
+ *   topContributors  highest weighted-exposure holdings, capped at 5 here
+ *                    (consumers typically slice 3). Weight is in pp (0-100).
+ */
+export interface FactorMacroTilt {
+  factor: FactorColumn;
+  exposurePct: number;
+  topContributors: Array<{ symbol: string; weight: number }>;
+}
+
 export interface FactorAnalysisResult {
   marketRegression: MarketRegression | null;
   sizeTilt: FactorTilt | null;
   styleTilt: FactorTilt | null;
   sectorTilt: FactorTilt | null;
   geographyTilt: FactorTilt | null;
+  tilts: FactorMacroTilt[];
 }
 
 export interface FactorOptions {
@@ -250,6 +271,83 @@ function computeTilts(
   };
 }
 
+// ─── Macro factor tilts (per-factor weighted exposure) ──────────────
+
+/**
+ * Map a factor cell value to a 0..1 exposure magnitude.
+ *
+ * Standard scale (rates/cyclical/tariff/ai/regulatory_risk/etc.):
+ *   No=0, Low=0.25, Moderate=0.5, High=0.75, Very High=1.0
+ *
+ * Non-standard scales (data sampled from live DB 2026-05-11):
+ *   growth_vs_value: only "Growth" / "Value" — both classified, direction is
+ *                    carried by `theme.direction` in macro-themes consumer.
+ *                    Both map to 1.0 ("classified into the growth/value axis").
+ *   crypto_adjacent: "Yes" → 1.0; "No" → 0; otherwise standard scale.
+ *   international_exposure: "International" → 1.0; otherwise standard scale.
+ *
+ * Unknown values + null → 0. Anything not explicitly mapped → 0 (silent zero
+ * is safer than throwing; classify-factors output is bounded but new values
+ * can appear if the AI taxonomy expands).
+ */
+function exposureMultiplier(value: string | null): number {
+  if (!value) return 0;
+  switch (value) {
+    case "No":
+    case "Unknown":
+      return 0;
+    case "Low":
+      return 0.25;
+    case "Moderate":
+      return 0.5;
+    case "High":
+      return 0.75;
+    case "Very High":
+      return 1.0;
+    // Non-standard categorical values
+    case "Growth":
+    case "Value":
+    case "Yes":
+    case "International":
+      return 1.0;
+    default:
+      return 0;
+  }
+}
+
+/**
+ * Per-factor weighted exposure across the portfolio, plus top-5 contributors.
+ *
+ * Reuses `getFactorHeatmap` (which already computes per-symbol weight_pct +
+ * applies options→underlying inheritance) so this stays cheap.
+ */
+export function computeMacroFactorTilts(
+  db: Database.Database,
+  options?: FactorOptions
+): FactorMacroTilt[] {
+  const accountIds = options?.accountId ? [options.accountId] : undefined;
+  const heatmap = getFactorHeatmap(db, accountIds);
+
+  return FACTOR_COLUMNS.map((factor) => {
+    const contributors = heatmap
+      .map((row) => {
+        const mult = exposureMultiplier(row[factor] as string | null);
+        return mult > 0
+          ? { symbol: row.symbol, weight: row.weight_pct * mult }
+          : null;
+      })
+      .filter((x): x is { symbol: string; weight: number } => x !== null)
+      .sort((a, b) => b.weight - a.weight);
+
+    const exposurePct = contributors.reduce((sum, c) => sum + c.weight, 0);
+    return {
+      factor,
+      exposurePct,
+      topContributors: contributors.slice(0, 5),
+    };
+  });
+}
+
 // ─── Main entry point ───────────────────��────────────────────────
 
 export function computeFactorAnalysis(
@@ -262,6 +360,7 @@ export function computeFactorAnalysis(
     options?.accountId,
     options?.asOfDate
   );
+  const tilts = computeMacroFactorTilts(db, options);
 
-  return { marketRegression, sizeTilt, styleTilt, sectorTilt, geographyTilt };
+  return { marketRegression, sizeTilt, styleTilt, sectorTilt, geographyTilt, tilts };
 }

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
-import { computeFactorAnalysis } from "@/lib/compute/factors";
+import { computeFactorAnalysis, computeMacroFactorTilts } from "@/lib/compute/factors";
 
 function createTestDb(): Database.Database {
   const db = new Database(":memory:");
@@ -24,7 +24,24 @@ function createTestDb(): Database.Database {
       market_cap_category TEXT,
       style TEXT,
       geography TEXT,
-      classification_source TEXT
+      classification_source TEXT,
+      underlying_symbol TEXT,
+      maturity_date TEXT
+    );
+
+    CREATE TABLE security_factors (
+      security_id INTEGER PRIMARY KEY REFERENCES securities(id),
+      interest_rate_sensitive TEXT,
+      growth_vs_value TEXT,
+      cyclical TEXT,
+      international_exposure TEXT,
+      geopolitical_onshoring TEXT,
+      tariff_exposure TEXT,
+      ai_exposure TEXT,
+      crypto_adjacent TEXT,
+      regulatory_risk TEXT,
+      factor_source TEXT DEFAULT 'csv_import',
+      updated_at TEXT DEFAULT (datetime('now'))
     );
 
     CREATE TABLE holdings (
@@ -194,5 +211,110 @@ describe("computeFactorAnalysis", () => {
     // With 0% classified, tilts should be null
     expect(result.sizeTilt).toBeNull();
     expect(result.styleTilt).toBeNull();
+  });
+});
+
+describe("computeMacroFactorTilts", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+  });
+
+  it("returns an entry per factor column with 0 exposure when no factors are classified", () => {
+    const tilts = computeMacroFactorTilts(db);
+    expect(tilts).toHaveLength(9);
+    for (const t of tilts) {
+      expect(t.exposurePct).toBe(0);
+      expect(t.topContributors).toHaveLength(0);
+    }
+    // Ensure all 9 expected factors are present (one row per FACTOR_COLUMNS entry).
+    const factors = tilts.map((t) => t.factor).sort();
+    expect(factors).toContain("interest_rate_sensitive");
+    expect(factors).toContain("ai_exposure");
+    expect(factors).toContain("crypto_adjacent");
+  });
+
+  it("aggregates weighted exposure using standard-scale multipliers", () => {
+    const today = recentDate(0);
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test')");
+
+    // 4 holdings, equal weight (25% each):
+    //   AAPL ai=Very High (1.0 * 25 = 25 pp)
+    //   NVDA ai=High      (0.75 * 25 = 18.75 pp)
+    //   T    ai=Moderate  (0.5 * 25 = 12.5 pp)
+    //   BND  ai=Low       (0.25 * 25 = 6.25 pp)
+    //   Total exposurePct = 62.5
+    for (const [id, sym, ai] of [
+      [1, "AAPL", "Very High"],
+      [2, "NVDA", "High"],
+      [3, "T", "Moderate"],
+      [4, "BND", "Low"],
+    ] as const) {
+      db.prepare("INSERT INTO securities (id, symbol, name) VALUES (?, ?, ?)").run(id, sym, sym);
+      db.prepare("INSERT INTO security_factors (security_id, ai_exposure) VALUES (?, ?)").run(id, ai);
+      db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, ?, ?, 25)").run(id, today);
+      db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (?, ?, 100)").run(id, today);
+    }
+
+    const tilts = computeMacroFactorTilts(db);
+    const ai = tilts.find((t) => t.factor === "ai_exposure")!;
+
+    // Weighted sum: 25 + 18.75 + 12.5 + 6.25 = 62.5
+    expect(ai.exposurePct).toBeCloseTo(62.5, 1);
+
+    // Top 4 contributors sorted by weighted exposure desc — AAPL first.
+    expect(ai.topContributors.slice(0, 2).map((c) => c.symbol)).toEqual(["AAPL", "NVDA"]);
+    expect(ai.topContributors[0].weight).toBeCloseTo(25, 1);
+
+    // No factors classified for any other column → those tilts remain at 0.
+    const rates = tilts.find((t) => t.factor === "interest_rate_sensitive")!;
+    expect(rates.exposurePct).toBe(0);
+  });
+
+  it("treats non-standard categorical values (Growth/Value, Yes, International) as full exposure", () => {
+    const today = recentDate(0);
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test')");
+
+    // 60% Growth, 40% Value — both fully classified → exposurePct = 100
+    db.prepare("INSERT INTO securities (id, symbol, name) VALUES (1, 'AAPL', 'Apple')").run();
+    db.prepare("INSERT INTO security_factors (security_id, growth_vs_value, crypto_adjacent, international_exposure) VALUES (1, 'Growth', 'Yes', 'International')").run();
+    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 1, ?, 60)").run(today);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (1, ?, 100)").run(today);
+
+    db.prepare("INSERT INTO securities (id, symbol, name) VALUES (2, 'BRK', 'Berkshire')").run();
+    db.prepare("INSERT INTO security_factors (security_id, growth_vs_value) VALUES (2, 'Value')").run();
+    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 2, ?, 40)").run(today);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (2, ?, 100)").run(today);
+
+    const tilts = computeMacroFactorTilts(db);
+    const growth = tilts.find((t) => t.factor === "growth_vs_value")!;
+    const crypto = tilts.find((t) => t.factor === "crypto_adjacent")!;
+    const intl = tilts.find((t) => t.factor === "international_exposure")!;
+
+    // Both Growth + Value fully classified — exposure aggregates over the full portfolio.
+    expect(growth.exposurePct).toBeCloseTo(100, 1);
+    // Only AAPL is crypto-adjacent=Yes → 60% exposurePct.
+    expect(crypto.exposurePct).toBeCloseTo(60, 1);
+    expect(crypto.topContributors).toHaveLength(1);
+    // International on AAPL only.
+    expect(intl.exposurePct).toBeCloseTo(60, 1);
+  });
+
+  it("ignores 'No' and 'Unknown' values (0 multiplier)", () => {
+    const today = recentDate(0);
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test')");
+
+    db.prepare("INSERT INTO securities (id, symbol, name) VALUES (1, 'CASH', 'Cash')").run();
+    db.prepare("INSERT INTO security_factors (security_id, crypto_adjacent, ai_exposure) VALUES (1, 'No', 'Unknown')").run();
+    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 1, ?, 100)").run(today);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (1, ?, 100)").run(today);
+
+    const tilts = computeMacroFactorTilts(db);
+    const crypto = tilts.find((t) => t.factor === "crypto_adjacent")!;
+    const ai = tilts.find((t) => t.factor === "ai_exposure")!;
+    expect(crypto.exposurePct).toBe(0);
+    expect(ai.exposurePct).toBe(0);
+    expect(crypto.topContributors).toHaveLength(0);
   });
 });
