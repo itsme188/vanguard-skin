@@ -12,6 +12,8 @@ URL="http://localhost:3099/api/cron/digest"
 MAX_RETRIES=3
 DELAY=120
 
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 if [ ! -f "$ENV_FILE" ]; then
   echo "$(date '+%Y-%m-%d %H:%M:%S') — ERROR: $ENV_FILE not found"
   exit 2
