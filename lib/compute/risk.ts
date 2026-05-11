@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { getDailyValuationsCombined, getDailyValuationsByAccount } from "@/lib/queries/daily-valuations";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -45,6 +46,14 @@ export interface RiskOptions {
   endDate?: string;
   accountId?: number;
   riskFreeRate?: number; // annualized; if omitted, reads FRED DGS3MO from settings cache
+  /**
+   * If set (YYYY-MM-DD), compute concentration metrics against holdings as
+   * of that date instead of today. The drawdown, volatility, and Sharpe ratio
+   * are unaffected (they operate on daily valuations time-series, not
+   * point-in-time holdings). This param affects only the Herfindahl and
+   * top-5 concentration computed by computeConcentration().
+   */
+  asOfDate?: string;
 }
 
 export interface PositionRisk {
@@ -105,7 +114,7 @@ export function computeRiskMetrics(
 
   // 3. Compute concentration from current holdings
   const { herfindahl, top5Concentration, top5Positions, positionCount } =
-    computeConcentration(db, options?.accountId);
+    computeConcentration(db, options?.accountId, options?.asOfDate);
 
   return {
     maxDrawdown,
@@ -233,22 +242,23 @@ function computeVolatility(
 
 function computeConcentration(
   db: Database.Database,
-  accountId?: number
+  accountId?: number,
+  asOfDate?: string
 ): {
   herfindahl: number | null;
   top5Concentration: number;
   top5Positions: PositionWeight[];
   positionCount: number;
 } {
-  const mvExpr = adjustedMarketValueSQL(
-    "h.quantity",
-    "p.close_price",
-    "s.security_type",
-    "COALESCE(s.multiplier, 1)"
-  );
-
   const accountFilter = accountId ? "AND h.account_id = ?" : "";
   const accountParams: number[] = accountId ? [accountId] : [];
+
+  const predicate = latestHoldingsPredicate({
+    keyBy: "account_security",
+    includeShorts: false,
+    asOfDate,
+    accountFilter, // accountFilter already includes "AND " prefix if set
+  });
 
   // Get latest holdings with current prices, compute market value
   const rows = db
@@ -258,12 +268,7 @@ function computeConcentration(
                 COALESCE(s.multiplier, 1) AS multiplier
          FROM holdings h
          JOIN securities s ON s.id = h.security_id
-         WHERE h.as_of_date = (
-           SELECT MAX(h2.as_of_date)
-           FROM holdings h2
-           WHERE h2.account_id = h.account_id
-         )
-         ${accountFilter}
+         WHERE ${predicate}
        ),
        latest_prices AS (
          SELECT security_id, close_price
@@ -324,14 +329,25 @@ function computeConcentration(
  * Compute per-position volatility, risk contribution, and pairwise
  * correlations for the top N positions. Uses daily close prices
  * from the prices table.
+ *
+ * Note: asOfDate is supported but only affects the current-position snapshot
+ * (e.g., top-N rank). The volatility, correlation, and risk contribution
+ * metrics are computed from price time-series (last 1 year), not point-in-time.
  */
 export function computePositionRisk(
   db: Database.Database,
-  options?: { accountId?: number; topN?: number }
+  options?: { accountId?: number; topN?: number; asOfDate?: string }
 ): PositionRiskResult {
   const topN = options?.topN ?? 10;
   const accountFilter = options?.accountId ? "AND h.account_id = ?" : "";
   const accountParams: number[] = options?.accountId ? [options.accountId] : [];
+
+  const predicate = latestHoldingsPredicate({
+    keyBy: "account_security",
+    includeShorts: false,
+    asOfDate: options?.asOfDate,
+    accountFilter, // accountFilter already includes "AND " prefix if set
+  });
 
   // 1. Get current positions with weights
   const positions = db
@@ -339,11 +355,7 @@ export function computePositionRisk(
       `WITH latest_holdings AS (
          SELECT h.security_id, SUM(h.quantity) AS total_qty
          FROM holdings h
-         WHERE h.as_of_date = (
-           SELECT MAX(h2.as_of_date) FROM holdings h2
-           WHERE h2.account_id = h.account_id
-         )
-         ${accountFilter}
+         WHERE ${predicate}
          GROUP BY h.security_id
        ),
        latest_prices AS (
