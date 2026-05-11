@@ -23,7 +23,7 @@ describe("send-briefing read-through to cache", () => {
     const db = new Database(":memory:");
     runMigrations(db);
     const themes = [{
-      name: "Tariff escalation", factor_label: "tariff_exposure", direction: "risk-off" as const,
+      name: "Tariff escalation", factor_label: "tariff_exposure" as const, direction: "risk-off" as const,
       summary: "Trade headlines pushed risk lower.", exposure_bucket: "high" as const,
       top_contributors: [{ symbol: "AAPL", weight: 0.04 }],
     }];
