@@ -131,3 +131,154 @@ export function buildMacroSignalBlob(
     articles, enrichedEvents: eventRows, alerts: alertRows,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Theme generation
+// ---------------------------------------------------------------------------
+
+import { generateText } from "ai";
+import { getModelForFeature } from "@/lib/ai/provider";
+import { resolveFeatureModel } from "@/lib/ai/models";
+import { resolveScope } from "@/lib/queries/accounts";
+import { getCachedMacroThemes, upsertMacroThemes } from "@/lib/queries/analysis-macro-themes";
+import { computeFactorAnalysis } from "@/lib/compute/factors";
+
+const SYSTEM_PROMPT = `You are a portfolio analyst identifying the macro themes that actually moved markets this week. Output ONLY valid JSON matching the schema. Never include prose outside the JSON array. 3-5 themes maximum. Each theme must map to one factor_label from the allowed list. Each summary is one sentence, 30-200 chars.`;
+
+const USER_PROMPT_TEMPLATE = `Given the past 7 days of news articles, enriched macro events (CPI/PCE/FOMC actuals + market reactions), and price-level alerts that fired, identify 3-5 macro themes that drove markets this week.
+
+For each theme:
+- name: short label (e.g., "Tariff escalation", "AI mania cooling")
+- factor_label: one of [interest_rate_sensitive, growth_vs_value, cyclical, international_exposure, geopolitical_onshoring, tariff_exposure, ai_exposure, crypto_adjacent, regulatory_risk]
+- direction: "risk-on" | "risk-off" | "neutral"
+- summary: one-sentence what it means (30-200 chars)
+
+Output JSON array only. Example:
+[{"name":"...","factor_label":"...","direction":"...","summary":"..."}]
+
+Inputs:
+{INPUTS_JSON}`;
+
+export interface GenerateMacroThemesOpts {
+  scope: string;
+  weekOf: string;
+  forceRegen?: boolean;
+}
+
+export interface MacroThemesResult {
+  themes: MacroTheme[];
+  sourceSummary: {
+    articles: Array<{ id: number; title: string }>;
+    events: Array<{ id: number; symbol: string | null; event_date: string }>;
+    alerts: Array<{ id: number; symbol: string }>;
+  } | null;
+  fromCache: boolean;
+  generatedAt: string;
+  underThreshold: boolean;
+}
+
+const EXPOSURE_THRESHOLDS = { low: 0.05, moderate: 0.15, high: 0.25 } as const;
+
+function bucketExposure(weight: number): ExposureBucket {
+  if (weight < EXPOSURE_THRESHOLDS.low) return "low";
+  if (weight < EXPOSURE_THRESHOLDS.moderate) return "moderate";
+  if (weight < EXPOSURE_THRESHOLDS.high) return "high";
+  return "very-high";
+}
+
+export async function generateMacroThemes(
+  db: Database.Database,
+  opts: GenerateMacroThemesOpts
+): Promise<MacroThemesResult> {
+  if (!opts.forceRegen) {
+    const cached = getCachedMacroThemes(db, opts.scope, opts.weekOf);
+    if (cached) {
+      const themes = JSON.parse(cached.themesJson) as MacroTheme[];
+      const sourceSummary = cached.sourceSummary ? JSON.parse(cached.sourceSummary) : null;
+      return { themes, sourceSummary, fromCache: true, generatedAt: cached.generatedAt, underThreshold: false };
+    }
+  }
+
+  const blob = buildMacroSignalBlob(db, opts.scope, opts.weekOf);
+
+  // Under-threshold → empty array + cache it so we don't re-call Sonnet
+  // on every page view this week.
+  if (blob.underThreshold) {
+    upsertMacroThemes(db, {
+      scope: opts.scope, weekOf: opts.weekOf, themesJson: "[]",
+      sourceSummary: JSON.stringify({ articles: [], events: [], alerts: [], note: "insufficient signal" }),
+      modelUsed: "(none — under threshold)",
+    });
+    return { themes: [], sourceSummary: null, fromCache: false, generatedAt: new Date().toISOString(), underThreshold: true };
+  }
+
+  const inputs = {
+    articles: blob.articles.map((a) => ({
+      id: a.id, subject: a.subject, sentiment: a.sentiment,
+      symbols: a.mentioned_symbols, excerpt: a.excerpt.slice(0, 800),
+    })),
+    enriched_events: blob.enrichedEvents,
+    alerts: blob.alerts,
+  };
+  const prompt = USER_PROMPT_TEMPLATE.replace("{INPUTS_JSON}", JSON.stringify(inputs, null, 2).slice(0, 16000));
+
+  const model = getModelForFeature("analysisMacroThemes");
+  let rawText: string;
+  try {
+    const result = await generateText({ model, system: SYSTEM_PROMPT, prompt });
+    rawText = result.text.trim();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Sonnet macro-themes generation failed: ${msg}`);
+  }
+
+  // Trim code-fence wrap if the model added one despite system-prompt instructions.
+  const jsonText = rawText.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
+
+  let parsed: MacroThemeAi[];
+  try {
+    const raw = JSON.parse(jsonText);
+    parsed = MacroThemesSchema.parse(raw);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`AI returned malformed themes: ${msg}`);
+  }
+
+  // Post-process: attach per-scope exposure bucket + top-3 contributors.
+  // The (factorResult as any) cast is intentional — computeFactorAnalysis
+  // returns { sizeTilt, styleTilt, sectorTilt, geographyTilt }, not a
+  // `tilts[]` array. The optional-chain + ?? [] ensures graceful degradation
+  // when the factor shape doesn't have the expected key.
+  const accountIds = resolveScope(db, opts.scope);
+  const firstAccountId = accountIds?.[0];
+  const factorResult = computeFactorAnalysis(db, { accountId: firstAccountId });
+
+  const themes: MacroTheme[] = parsed.map((t) => {
+    const factorTilt =
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (factorResult as any)?.tilts?.find((tilt: any) => tilt.factor === t.factor_label) ?? null;
+    const exposureWeight = factorTilt?.exposurePct ? factorTilt.exposurePct / 100 : 0;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const top = factorTilt?.topContributors
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ? factorTilt.topContributors.slice(0, 3).map((c: any) => ({ symbol: c.symbol, weight: c.weight }))
+      : [];
+    return { ...t, exposure_bucket: bucketExposure(exposureWeight), top_contributors: top };
+  });
+
+  const sourceSummary = {
+    articles: blob.articles.slice(0, 10).map((a) => ({ id: a.id, title: a.subject })),
+    events: blob.enrichedEvents.slice(0, 10).map((e) => ({ id: e.id, symbol: e.symbol, event_date: e.event_date })),
+    alerts: blob.alerts.slice(0, 10).map((a) => ({ id: a.id, symbol: a.symbol })),
+  };
+
+  const modelUsed = resolveFeatureModel("analysisMacroThemes").modelId;
+  upsertMacroThemes(db, {
+    scope: opts.scope, weekOf: opts.weekOf,
+    themesJson: JSON.stringify(themes),
+    sourceSummary: JSON.stringify(sourceSummary),
+    modelUsed,
+  });
+
+  return { themes, sourceSummary, fromCache: false, generatedAt: new Date().toISOString(), underThreshold: false };
+}
