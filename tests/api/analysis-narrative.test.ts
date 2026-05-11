@@ -79,4 +79,14 @@ describe("POST /api/analysis/narrative (force regen)", () => {
     expect(body2.error).toBe("rate-limited");
     expect(body2.retryAfter).toBeGreaterThan(0);
   });
+
+  it("returns 404 when surface is unknown (defensive parity with GET)", async () => {
+    const req = new Request("http://x/api/analysis/narrative", {
+      method: "POST",
+      body: JSON.stringify({ scope: "vanguard", surface: "bogus" }),
+      headers: { "Content-Type": "application/json" },
+    });
+    const res = await POST(req as never);
+    expect(res.status).toBe(404);
+  });
 });
