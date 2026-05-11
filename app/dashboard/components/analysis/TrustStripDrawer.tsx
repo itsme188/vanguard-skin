@@ -193,14 +193,61 @@ function StalePricesContent({
 }
 
 function PerformanceContent({ state }: { state: AnalysisTrustState }) {
-  const { performanceReconciledThru } = state;
+  const { performanceReconciledThru, perAccountReconciliation } = state;
+
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       <p className="text-sm text-ink">
         {performanceReconciledThru
           ? `TWR reconciled to statements through ${performanceReconciledThru}.`
-          : "One or more accounts have not yet been reconciled to statements. Open Performance to investigate."}
+          : "One or more accounts have not yet been reconciled to statements."}
       </p>
+
+      {perAccountReconciliation.length > 0 && (
+        <ul className="divide-y divide-edge rounded-lg bg-panel">
+          {perAccountReconciliation.map((row) => (
+            <li
+              key={row.accountId}
+              className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <span
+                  className={
+                    "inline-block h-2 w-2 rounded-full shrink-0 " +
+                    (row.withinTolerance === true
+                      ? "bg-up"
+                      : row.withinTolerance === false
+                      ? "bg-down"
+                      : "bg-ink-faint")
+                  }
+                  aria-hidden="true"
+                />
+                <span className="text-ink truncate">{row.accountName}</span>
+              </div>
+              <div className="flex items-center gap-3 shrink-0 text-xs">
+                <span className="text-ink-faint font-mono">
+                  {row.latestStmtMonth ?? "—"}
+                </span>
+                <span
+                  className={
+                    "font-mono tabular-nums w-16 text-right " +
+                    (row.withinTolerance === true
+                      ? "text-ink-dim"
+                      : row.withinTolerance === false
+                      ? "text-down"
+                      : "text-ink-faint")
+                  }
+                >
+                  {row.divergenceBp === null
+                    ? "n/a"
+                    : `${row.divergenceBp >= 0 ? "+" : ""}${row.divergenceBp}bp`}
+                </span>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
       <a
         href="/dashboard/analysis?view=performance"
         className="inline-block text-sm text-amber-400 hover:text-amber-300 underline underline-offset-2"

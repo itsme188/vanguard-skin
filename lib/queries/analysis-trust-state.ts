@@ -2,6 +2,14 @@ import type Database from "better-sqlite3";
 import { reconcileTwrAgainstStatements } from "@/lib/compute/twr-reconcile";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
+export interface PerAccountReconciliation {
+  accountId: number;
+  accountName: string;
+  latestStmtMonth: string | null;
+  divergenceBp: number | null;
+  withinTolerance: boolean | null; // null = not yet reconcilable (no statement or computeTwr returned null)
+}
+
 export interface AnalysisTrustState {
   factorCoverage: {
     totalNames: number;
@@ -11,6 +19,7 @@ export interface AnalysisTrustState {
   };
   lastClassification: string | null;
   performanceReconciledThru: string | null; // populated by Slice D
+  perAccountReconciliation: PerAccountReconciliation[];
   stalePrices: { count: number; symbols: string[] };
   bondDuration: { totalBonds: number; withDuration: number };
 }
@@ -103,13 +112,24 @@ export function getAnalysisTrustState(
     .get(...params) as { total_bonds: number; with_duration: number };
 
   // ── Performance reconciliation ───────────────────────────────────────
-  // Semantic: "all accounts agree with statements at least through this month."
-  // Take the EARLIEST of each account's most-recent reconciled month — anything
-  // past that, at least one account is unreconciled.
-  let earliestReconciledMonth: string | null = null;
+  // Semantic for the rollup field `performanceReconciledThru`: "all accounts agree
+  // with statements at least through this month." Take the EARLIEST of each
+  // account's most-recent reconciled month — anything past that, at least one
+  // account is unreconciled. Per-account detail flows out via `perAccountReconciliation`.
   const accountList = accountIds?.length
-    ? accountIds.map((id) => ({ id }))
-    : (db.prepare("SELECT id FROM accounts").all() as { id: number }[]);
+    ? (db
+        .prepare(
+          `SELECT id, name FROM accounts WHERE id IN (${accountIds.map(() => "?").join(",")})`,
+        )
+        .all(...accountIds) as { id: number; name: string }[])
+    : (db.prepare("SELECT id, name FROM accounts").all() as {
+        id: number;
+        name: string;
+      }[]);
+
+  const perAccount: PerAccountReconciliation[] = [];
+  let allWithinTolerance = true;
+  let earliestReconciledMonth: string | null = null;
 
   for (const acct of accountList) {
     const latestStmt = db
@@ -124,19 +144,28 @@ export function getAnalysisTrustState(
       .get(acct.id) as { month_end_date: string } | undefined;
 
     if (!latestStmt) {
-      // Account has no statement TWR to reconcile against.
-      // We can't claim "all accounts agree" when one is unresolvable.
-      // Strictness is intentional: new/TWS-only accounts force null until
-      // a statement import populates a TWR row.
-      earliestReconciledMonth = null;
-      break;
+      // Account has no statement TWR to reconcile against. New/TWS-only accounts
+      // force the rollup to null until a statement import populates a TWR row.
+      perAccount.push({
+        accountId: acct.id,
+        accountName: acct.name,
+        latestStmtMonth: null,
+        divergenceBp: null,
+        withinTolerance: null,
+      });
+      allWithinTolerance = false;
+      continue;
     }
 
-    const r = reconcileTwrAgainstStatements(
-      db,
-      acct.id,
-      latestStmt.month_end_date,
-    );
+    const r = reconcileTwrAgainstStatements(db, acct.id, latestStmt.month_end_date);
+    perAccount.push({
+      accountId: acct.id,
+      accountName: acct.name,
+      latestStmtMonth: latestStmt.month_end_date,
+      divergenceBp: r ? r.divergenceBp : null,
+      withinTolerance: r ? r.withinTolerance : null,
+    });
+
     if (r?.withinTolerance) {
       if (
         !earliestReconciledMonth ||
@@ -147,16 +176,15 @@ export function getAnalysisTrustState(
     } else {
       // Reconciliation returned null (unresolvable — e.g. single snapshot,
       // no prior-month V_start) OR is out of tolerance.
-      // Either case means we can't claim all accounts agree.
-      earliestReconciledMonth = null;
-      break;
+      allWithinTolerance = false;
     }
   }
 
   return {
     factorCoverage: { totalNames: total, classified, percentage, missingSymbols },
     lastClassification: lastClassRow.last,
-    performanceReconciledThru: earliestReconciledMonth,
+    performanceReconciledThru: allWithinTolerance ? earliestReconciledMonth : null,
+    perAccountReconciliation: perAccount,
     stalePrices: {
       count: staleRows.length,
       symbols: staleRows.map((r) => r.symbol),

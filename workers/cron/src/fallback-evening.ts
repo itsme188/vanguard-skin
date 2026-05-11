@@ -285,6 +285,26 @@ Write a concise markdown evening recap:
 Output markdown only. No preamble, no sign-off.`;
 }
 
+/**
+ * Mirrors the Mac-side validation in `lib/ai/strip-preamble.ts`. Worker is bundled
+ * separately and can't import from the Mac codebase — duplication is intentional.
+ */
+function stripModelPreamble(text: string): string {
+  const lines = text.split("\n");
+  let firstReal = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed === "") continue;
+    if (/^(#|\||[-*+]\s|>\s|---|```)/.test(trimmed)) {
+      firstReal = i;
+      break;
+    }
+  }
+  return lines.slice(firstReal).join("\n").trim();
+}
+
+const SYNTHESIS_MIN_CHARS = 200;
+
 async function synthesizeViaAI(
   env: FallbackEnv,
   articles: RecentArticleMeta[],
@@ -293,12 +313,35 @@ async function synthesizeViaAI(
   const buckets = bucketByCompany(articles);
   const prompt = buildSynthesisPrompt(buckets, snap);
   try {
-    const { text } = await generateText({
+    const result = await generateText({
       model: getModelForFeature(env, "fallbackEvening"),
       maxOutputTokens: 4096,
       prompt,
     });
-    return text?.trim() || null;
+
+    // Mirror Mac's strict validation in lib/digest/synthesize.ts:
+    //   1. Truncation guard, 2. preamble strip, 3. header check, 4. min length.
+    // On any failure return null so the caller falls back to per-source layout.
+    if (result.finishReason === "length") {
+      console.warn("[fallback-evening] synthesis truncated by max tokens");
+      return null;
+    }
+
+    const stripped = stripModelPreamble(result.text ?? "");
+    const firstNonEmpty = stripped.split("\n").find((line) => line.trim().length > 0);
+    if (!firstNonEmpty || !firstNonEmpty.trim().startsWith("#")) {
+      console.warn("[fallback-evening] synthesis has no markdown header");
+      return null;
+    }
+
+    if (stripped.length < SYNTHESIS_MIN_CHARS) {
+      console.warn(
+        `[fallback-evening] synthesis too short (${stripped.length} chars)`,
+      );
+      return null;
+    }
+
+    return stripped;
   } catch (err) {
     console.warn("[fallback-evening] synthesis failed:", err);
     return null;

@@ -22,6 +22,7 @@ import type { TradeRoundtrip } from "@/lib/types";
 import { getSecurityById } from "@/lib/queries/securities";
 import { getUpcomingEvents } from "@/lib/queries/calendar";
 import { getTranscriptsForSecurity } from "@/lib/queries/transcripts";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { getArticlesForSecurity, type ResearchMention } from "@/lib/queries/research";
 import { getLatestDailyBar, get52WeekRange, getOhlcvBars } from "@/lib/queries/ohlcv";
 import { computeATR, type OhlcBar } from "@/lib/chart/indicators";
@@ -182,14 +183,10 @@ export function getHoldingsBySecurity(
       LEFT JOIN prices p ON p.security_id = h.security_id
         AND p.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = h.security_id)
       WHERE h.security_id = ?
-        AND h.quantity > 0
-        AND h.as_of_date = (
-          SELECT MAX(h2.as_of_date) FROM holdings h2
-          WHERE h2.account_id = h.account_id AND h2.security_id = ?
-        )
+        AND ${latestHoldingsPredicate({ keyBy: "account_security", includeShorts: false })}
       ORDER BY a.name`
     )
-    .all(securityId, securityId) as SecurityPosition[];
+    .all(securityId) as SecurityPosition[];
 }
 
 /**

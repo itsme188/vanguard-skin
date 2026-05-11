@@ -178,9 +178,17 @@ describe("runFallbackEvening", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     (global.fetch as ReturnType<typeof vi.fn>).mockReset();
-    // Default: AI synthesis returns some text
+    // Default: AI synthesis returns valid markdown (≥200 chars, starts with #)
+    // to satisfy the strict validation ported from lib/digest/synthesize.ts.
     (generateText as ReturnType<typeof vi.fn>).mockResolvedValue({
-      text: "## Evening Recap\n\nSome synthesis content.",
+      text:
+        "## Evening Recap\n\n" +
+        "Across today's coverage, several themes connected. Multiple sources " +
+        "flagged macro pressure and earnings reactions in held names. " +
+        "Citations were consistent across the day's newsletter feeds, " +
+        "supporting a coherent narrative across sources.\n\n" +
+        "## Also covered\n\n" +
+        "A handful of single-source notes with thin coverage.",
     });
   });
 
@@ -312,6 +320,56 @@ describe("runFallbackEvening", () => {
 
     const result = await runFallbackEvening(env, { dryRun: true });
     expect(generateText).not.toHaveBeenCalled();
+    expect(result.kind).toBe("success");
+  });
+
+  // ── Synthesis validation parity with Mac-side ─────────────────────────────
+
+  it("synthesis with finishReason='length' → falls back to per-source, email still sends", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeV3Snapshot({ articleCount: 7 })
+    );
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: false });
+    (generateText as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      text: "## Evening Recap\n\nTruncated…",
+      finishReason: "length",
+    });
+
+    const result = await runFallbackEvening(env, { dryRun: true });
+    expect(result.kind).toBe("success");
+    expect(generateText).toHaveBeenCalled();
+  });
+
+  it("synthesis output without a leading # header → falls back to per-source", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeV3Snapshot({ articleCount: 7 })
+    );
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: false });
+    (generateText as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      text:
+        "Sure, here is the evening recap. Today across coverage we saw multiple themes connect. " +
+        "Sources broadly agreed on the day's macro tone. Held names received varied coverage " +
+        "depending on the venue. This is a long but header-less paragraph that should fail " +
+        "the strict validation port even though it exceeds the minimum character count.",
+    });
+
+    const result = await runFallbackEvening(env, { dryRun: true });
+    expect(result.kind).toBe("success");
+  });
+
+  it("synthesis output under 200 chars → falls back to per-source", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeV3Snapshot({ articleCount: 7 })
+    );
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: false });
+    (generateText as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      text: "## Short header\n\nToo short to be useful.",
+    });
+
+    const result = await runFallbackEvening(env, { dryRun: true });
     expect(result.kind).toBe("success");
   });
 
