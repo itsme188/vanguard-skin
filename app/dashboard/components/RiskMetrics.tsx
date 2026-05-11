@@ -15,6 +15,16 @@ import {
 import type { PortfolioRiskMetrics, PositionWeight } from "@/lib/compute/risk";
 import { Money, Pct, PrivateText, usePrivateFormatter } from "@/lib/privacy/components";
 import { NarrativeBlock } from "./analysis/NarrativeBlock";
+import { WeekOverWeekBadge } from "./analysis/WeekOverWeekBadge";
+
+// ─── W-o-W delta shape (mirrors computeRiskDelta in the API route) ─────
+
+interface RiskDelta {
+  maxDrawdown: { percent: number | null };
+  volatility: number | null;
+  sharpeRatio: number | null;
+  herfindahl: number | null;
+}
 
 // ─── Formatters ─────────────────────────────────────────────────
 
@@ -76,6 +86,7 @@ function MetricCard({
 
 export function RiskMetrics({ scope }: { scope?: string }) {
   const [metrics, setMetrics] = useState<PortfolioRiskMetrics | null>(null);
+  const [delta, setDelta] = useState<RiskDelta | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const concPctTickFormatter = usePrivateFormatter((v: number) => `${(v * 100).toFixed(0)}%`);
@@ -87,8 +98,12 @@ export function RiskMetrics({ scope }: { scope?: string }) {
     fetch(`/api/compute/risk${params}`)
       .then((r) => r.json())
       .then((json) => {
-        if (json.success) setMetrics(json.data);
-        else setError(json.error ?? "Failed to compute risk metrics");
+        if (json.success) {
+          setMetrics(json.data);
+          setDelta(json.delta ?? null);
+        } else {
+          setError(json.error ?? "Failed to compute risk metrics");
+        }
       })
       .catch(() => setError("Failed to fetch risk metrics"))
       .finally(() => setLoading(false));
@@ -151,11 +166,19 @@ export function RiskMetrics({ scope }: { scope?: string }) {
         <MetricCard
           label="Max Drawdown"
           value={
-            metrics.maxDrawdown ? (
-              <Pct value={-metrics.maxDrawdown.percent * 100} digits={2} signed />
-            ) : (
-              "\u2014"
-            )
+            <>
+              {metrics.maxDrawdown ? (
+                <Pct value={-metrics.maxDrawdown.percent * 100} digits={2} signed />
+              ) : (
+                "\u2014"
+              )}
+              <WeekOverWeekBadge
+                value={delta?.maxDrawdown.percent ?? null}
+                kind="neutral"
+                digits={2}
+                asPercent
+              />
+            </>
           }
           sublabel={
             metrics.maxDrawdown
@@ -187,7 +210,17 @@ export function RiskMetrics({ scope }: { scope?: string }) {
         />
         <MetricCard
           label="Volatility"
-          value={<Pct value={metrics.volatility != null ? metrics.volatility * 100 : null} digits={2} />}
+          value={
+            <>
+              <Pct value={metrics.volatility != null ? metrics.volatility * 100 : null} digits={2} />
+              <WeekOverWeekBadge
+                value={delta?.volatility ?? null}
+                kind="neutral"
+                digits={2}
+                asPercent
+              />
+            </>
+          }
           sublabel={
             metrics.volatility == null && metrics.dataPoints < 30
               ? `${metrics.dataPoints}/30 days \u00b7 need ${30 - metrics.dataPoints} more`
@@ -197,7 +230,16 @@ export function RiskMetrics({ scope }: { scope?: string }) {
         />
         <MetricCard
           label="Sharpe Ratio"
-          value={metrics.sharpeRatio != null ? metrics.sharpeRatio.toFixed(2) : "\u2014"}
+          value={
+            <>
+              {metrics.sharpeRatio != null ? metrics.sharpeRatio.toFixed(2) : "\u2014"}
+              <WeekOverWeekBadge
+                value={delta?.sharpeRatio ?? null}
+                kind="signed"
+                digits={2}
+              />
+            </>
+          }
           sublabel={
             metrics.sharpeRatio == null && metrics.dataPoints < 30
               ? `${metrics.dataPoints}/30 days \u00b7 need ${30 - metrics.dataPoints} more`
@@ -226,6 +268,11 @@ export function RiskMetrics({ scope }: { scope?: string }) {
                 <PrivateText className="font-mono text-ink">
                   {metrics.herfindahl != null ? metrics.herfindahl.toFixed(3) : "\u2014"}
                 </PrivateText>
+                <WeekOverWeekBadge
+                  value={delta?.herfindahl ?? null}
+                  kind="neutral"
+                  digits={3}
+                />
               </span>
               <span>
                 Top-5:{" "}
