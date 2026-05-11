@@ -2,7 +2,7 @@
 
 import { CashDeployCard } from "./CashDeployCard";
 import { WhatIfCalculator } from "./WhatIfCalculator";
-import { MacroOverlayPlaceholder } from "./MacroOverlayPlaceholder";
+import { MacroOverlayCard } from "./MacroOverlayCard";
 
 /**
  * Construction-mode workspace. Three cards above the diagnostics fold:
@@ -18,7 +18,7 @@ export function WorkspacePanel({ scope }: { scope: string }) {
       <CashDeployCard scope={scope} />
       <WhatIfCalculator scope={scope} />
       <div className="lg:col-span-2">
-        <MacroOverlayPlaceholder scope={scope} />
+        <MacroOverlayCard scope={scope} />
       </div>
     </div>
   );
