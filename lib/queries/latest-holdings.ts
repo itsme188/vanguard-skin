@@ -17,7 +17,7 @@
  * Caller wraps the predicate inside a CTE OR drops it directly into a WHERE.
  *
  * @example inline WHERE (compute/options-greeks)
- *   const sql = `SELECT ... FROM holdings h WHERE ${latestHoldingsPredicate({ accountFilter, cutoff: true })}`;
+ *   const sql = `SELECT ... FROM holdings h WHERE ${latestHoldingsPredicate({ accountFilter, asOfDate: today })}`;
  *
  * @example CTE wrap (compute/exposure-delta)
  *   const sql = `
@@ -28,18 +28,33 @@
  *     SELECT ...
  *   `;
  *
- * The cutoff:true flag adds an extra `AND h2.as_of_date <= ?` to the inner
- * subquery — the caller binds the date as the FIRST positional param of the
- * outer query (followed by accountFilter params, then any others).
+ * The asOfDate option, when set, adds BOTH:
+ *   - `AND h2.as_of_date <= '<date>'` to the inner subquery
+ *   - `AND h.as_of_date <= '<date>'`  to the outer predicate
+ * via SQL string literal substitution (NOT positional `?`). This is safe
+ * because callers pass `weekAgo(today)` or known statement dates — never
+ * user input. The string is validated against `/^\d{4}-\d{2}-\d{2}$/` and
+ * throws on mismatch, preventing injection on this rare path. The literal-
+ * substitution design avoids the dual-param footgun of the prior `cutoff:
+ * true` boolean (caller had to remember to bind the date as a positional
+ * param, doubly so once W-o-W call sites needed it in both the inner AND
+ * outer constraint).
  */
+
+const AS_OF_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 export interface LatestHoldingsOptions {
   /** Which composite key to use for the "latest" row. Default account_security. */
   keyBy?: "account" | "account_security";
   /** If true, filter quantity != 0 (shorts surface). If false, quantity > 0. Default true. */
   includeShorts?: boolean;
-  /** If true, adds `AND h2.as_of_date <= ?` to the inner subquery. Default false. */
-  cutoff?: boolean;
+  /**
+   * If set (YYYY-MM-DD), constrains both the inner subquery's MAX(as_of_date)
+   * lookup AND the outer predicate to dates on or before this value. Used by
+   * "as of N days ago" / W-o-W delta call sites. Validated against
+   * `/^\d{4}-\d{2}-\d{2}$/`; throws on malformed strings.
+   */
+  asOfDate?: string;
   /** Pre-built SQL fragment like `AND h.account_id IN (?,?,?)` or empty. */
   accountFilter?: string;
 }
@@ -47,19 +62,28 @@ export interface LatestHoldingsOptions {
 export function latestHoldingsPredicate(opts: LatestHoldingsOptions = {}): string {
   const keyBy = opts.keyBy ?? "account_security";
   const includeShorts = opts.includeShorts ?? true;
-  const cutoff = opts.cutoff ?? false;
+  const asOfDate = opts.asOfDate;
   const accountFilter = opts.accountFilter ?? "";
+
+  if (asOfDate !== undefined) {
+    if (!AS_OF_DATE_PATTERN.test(asOfDate)) {
+      throw new Error(
+        `latestHoldingsPredicate: asOfDate must match YYYY-MM-DD, got ${JSON.stringify(asOfDate)}`
+      );
+    }
+  }
 
   const innerKey =
     keyBy === "account_security"
       ? "WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id"
       : "WHERE h2.account_id = h.account_id";
-  const cutoffClause = cutoff ? "AND h2.as_of_date <= ?" : "";
+  const innerAsOfClause = asOfDate ? `AND h2.as_of_date <= '${asOfDate}'` : "";
+  const outerAsOfClause = asOfDate ? `AND h.as_of_date <= '${asOfDate}'` : "";
   const qtyClause = includeShorts ? "h.quantity != 0" : "h.quantity > 0";
 
   return `h.as_of_date = (
         SELECT MAX(h2.as_of_date) FROM holdings h2
         ${innerKey}
-        ${cutoffClause}
-      ) AND ${qtyClause} ${accountFilter}`;
+        ${innerAsOfClause}
+      ) ${outerAsOfClause} AND ${qtyClause} ${accountFilter}`;
 }
