@@ -117,7 +117,17 @@ export function NotesView({
         content: formContent.trim(),
         event_date: formDate,
       };
-      if (formSymbol) body.symbol = formSymbol;
+      // Only attach `symbol` when the dropdown is actually rendered for this
+      // note type — `formSymbol` state persists in React even when the
+      // dropdown unmounts (e.g. user picks Earnings + CRCL, switches back
+      // to Journal). Without this gate the residual symbol leaks into the
+      // POST body and the server tags the journal entry with CRCL.
+      if (
+        formSymbol &&
+        (formType === "earnings" || formType === "trade_thesis")
+      ) {
+        body.symbol = formSymbol;
+      }
       if (formSentiment) body.sentiment = formSentiment;
       if (formTags.trim()) {
         body.tags = formTags
@@ -135,10 +145,17 @@ export function NotesView({
       const data = await res.json();
       if (!data.success) throw new Error(data.error);
 
-      // Reset form
+      // Reset form — all stateful fields, not just the visible ones.
+      // `formSymbol` was previously missed here: a residual symbol from a
+      // prior Earnings/Trade-Thesis save would carry forward into the next
+      // note (visible if the user reopened the dropdown; ineffective if
+      // they didn't — but the value was still in state). Belt + suspenders
+      // with the gate above in case a future refactor accidentally drops
+      // the build-time guard.
       setFormContent("");
       setFormTags("");
       setFormSentiment("");
+      setFormSymbol("");
 
       // Refresh page data
       startTransition(() => {
