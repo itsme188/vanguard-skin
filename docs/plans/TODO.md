@@ -93,6 +93,19 @@
 
 - **Continue factor-analysis collaboration with ChatGPT** — give it the freshly refreshed GitHub link after this session's README + screenshot + CHANGELOG sweep so its context matches the post-redesign reality.
 
+### Closed this session (2026-05-11)
+
+- ✅ **P3 Narrative Layer** — see closeout in "Page-level rework" above (`cf84d9b` merge, 23 commits across 4 slices).
+- ✅ **Nightly QA snapshot refresh** (`b9f8ea7`) — auto-cron produced a stale `qa/qa-report.txt`; committed verbatim.
+- ✅ **CLAUDE.md latestHoldingsPredicate note** (`1b03f60`) — P2 "extract this helper" follow-up promoted to shipped state; added the asOfDate option + the 8+ consumer surfaces.
+
+### P3 follow-ups (open after 2026-05-11)
+
+- **GET /api/analysis/narrative cache-miss rate-limit** — cold-cache first-load triggers ≤4 concurrent Sonnet calls per `<AnalysisView>` mount. Sunday pre-gen covers steady state. Add a GET rate-limiter mirroring the POST one OR have GET return `null` on cache-miss and let the UI request explicit regen. ~30 min. Flagged by P3 final code-reviewer.
+- **FactorProfileSection block 3 — portfolio-share contribution** — placeholder + TODO in code. Needs latest market value for the security + scope-aware factor totals + delta math ("if I sold this, factor exposures shift by N pp"). Revisit when there's clear user signal.
+- **PositionRisk per-row W-o-W badges** — D4 deferred. API already ships `weekAgo: past`; integration just needs per-symbol delta computed client-side from `weekAgo.positions[]`. ~30 min when desired.
+- **`buildContextForSurface` multi-account fidelity** — single-id compute fns receive only the FIRST accountId of multi-account scopes; documented "NOTE" preamble asks Sonnet to caveat. Real fix is broader compute-fn refactor to accept `accountIds: number[]`. Park until narrative quality complaints emerge.
+
 ---
 
 ## Shipped since v2 (2026-03-30 → 2026-04-22)
