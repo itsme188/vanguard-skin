@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { extractMaturityDate } from "@/lib/bonds";
 
 export interface UpsertSecurityParams {
   symbol: string;
@@ -59,6 +60,18 @@ export function upsertSecurity(
     };
     const lower = p.securityType.toLowerCase();
     if (normalized[lower]) p.securityType = normalized[lower];
+  }
+
+  // Auto-derive maturity date from name for bonds when not explicitly provided.
+  // This ensures every bond import auto-populates maturity_date even when the
+  // caller (TWS, canonical CSV) doesn't set it — enabling duration computation.
+  if (
+    p.securityType?.toLowerCase() === "bond" &&
+    !p.maturityDate &&
+    p.name
+  ) {
+    const parsed = extractMaturityDate(p.name);
+    if (parsed) p.maturityDate = parsed;
   }
 
   // Safety check: don't let option metadata clobber an existing stock security
