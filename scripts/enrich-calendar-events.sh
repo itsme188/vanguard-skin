@@ -16,6 +16,8 @@
 ENV_FILE="/Users/Yitzi/code/vanguard-skin/.env.local"
 PROJECT_DIR="/Users/Yitzi/code/vanguard-skin"
 
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 if [ ! -f "$ENV_FILE" ]; then
   echo "$(date '+%Y-%m-%d %H:%M:%S') — ERROR: $ENV_FILE not found"
   exit 2
