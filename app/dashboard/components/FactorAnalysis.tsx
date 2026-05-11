@@ -8,6 +8,7 @@ import {
   DEFAULT_BENCHMARK_BY_SCOPE,
   BENCHMARK_OPTIONS,
 } from "@/lib/analysis/benchmarks";
+import { NarrativeBlock } from "./analysis/NarrativeBlock";
 
 // ─── Formatters ──────────────────────────────────────────────────
 
@@ -109,6 +110,8 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
           </select>
         </label>
       </div>
+
+      <NarrativeBlock scope={scope ?? "all"} surfaceKey="factor-analysis" />
 
       {/* ── Market regression ── */}
       {reg && (

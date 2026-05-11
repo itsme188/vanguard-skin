@@ -14,6 +14,7 @@ import {
 } from "recharts";
 import type { PortfolioRiskMetrics, PositionWeight } from "@/lib/compute/risk";
 import { Money, Pct, PrivateText, usePrivateFormatter } from "@/lib/privacy/components";
+import { NarrativeBlock } from "./analysis/NarrativeBlock";
 
 // ─── Formatters ─────────────────────────────────────────────────
 
@@ -142,6 +143,8 @@ export function RiskMetrics({ scope }: { scope?: string }) {
           {metrics.dataPoints} daily observations
         </span>
       </div>
+
+      <NarrativeBlock scope={scope ?? "all"} surfaceKey="risk-metrics" />
 
       {/* ── Metric Cards ── */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
