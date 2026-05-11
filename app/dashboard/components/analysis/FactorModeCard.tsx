@@ -5,7 +5,9 @@ import { useRouter } from "next/navigation";
 import { useToast } from "../Toast";
 import { FactorHeatmap } from "../FactorHeatmap";
 import { NarrativeBlock } from "./NarrativeBlock";
+import { DrillDownPanel } from "./DrillDownPanel";
 import type { FactorHeatmapRow, FactorCoverage } from "@/lib/queries/analysis";
+import type { DrillDownFilter } from "@/lib/queries/drill-down";
 
 interface Props {
   factorHeatmap?: FactorHeatmapRow[];
@@ -17,6 +19,7 @@ export function FactorModeCard({ factorHeatmap, factorCoverage, scope }: Props) 
   const router = useRouter();
   const { toast } = useToast();
   const [factorClassifyLoading, setFactorClassifyLoading] = useState(false);
+  const [drillFilter, setDrillFilter] = useState<DrillDownFilter | null>(null);
 
   async function runFactorAutoClassify() {
     setFactorClassifyLoading(true);
@@ -44,7 +47,14 @@ export function FactorModeCard({ factorHeatmap, factorCoverage, scope }: Props) 
   return (
     <>
       <NarrativeBlock scope={scope ?? "all"} surfaceKey="factor-heatmap" />
-      {factorHeatmap && <FactorHeatmap rows={factorHeatmap} />}
+      {factorHeatmap && (
+        <FactorHeatmap
+          rows={factorHeatmap}
+          onCellClick={(factor, bucket) =>
+            setDrillFilter({ kind: "factor", factor, bucket })
+          }
+        />
+      )}
 
       <div className="bg-panel border border-edge rounded-lg p-4">
         <div className="flex items-center justify-between">
@@ -75,6 +85,14 @@ export function FactorModeCard({ factorHeatmap, factorCoverage, scope }: Props) 
           </div>
         )}
       </div>
+
+      {/* P3 Slice C — factor cell click opens drill-down */}
+      <DrillDownPanel
+        open={drillFilter !== null}
+        onClose={() => setDrillFilter(null)}
+        scope={scope ?? "all"}
+        filter={drillFilter}
+      />
     </>
   );
 }
