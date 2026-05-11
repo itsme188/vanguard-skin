@@ -35,6 +35,7 @@ function fakeResult(overrides: Partial<FactorAnalysisResult> = {}): FactorAnalys
     styleTilt: null,
     sectorTilt: null,
     geographyTilt: null,
+    tilts: [],
     ...overrides,
   };
 }

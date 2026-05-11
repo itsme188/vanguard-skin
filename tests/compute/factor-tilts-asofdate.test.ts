@@ -23,7 +23,24 @@ function createTestDb(): Database.Database {
       market_cap_category TEXT,
       style TEXT,
       geography TEXT,
-      classification_source TEXT
+      classification_source TEXT,
+      underlying_symbol TEXT,
+      maturity_date TEXT
+    );
+
+    CREATE TABLE security_factors (
+      security_id INTEGER PRIMARY KEY REFERENCES securities(id),
+      interest_rate_sensitive TEXT,
+      growth_vs_value TEXT,
+      cyclical TEXT,
+      international_exposure TEXT,
+      geopolitical_onshoring TEXT,
+      tariff_exposure TEXT,
+      ai_exposure TEXT,
+      crypto_adjacent TEXT,
+      regulatory_risk TEXT,
+      factor_source TEXT DEFAULT 'csv_import',
+      updated_at TEXT DEFAULT (datetime('now'))
     );
 
     CREATE TABLE holdings (
