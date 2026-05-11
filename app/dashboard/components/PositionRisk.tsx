@@ -9,15 +9,28 @@ import type {
 import { Pct } from "@/lib/privacy/components";
 import { NarrativeBlock } from "./analysis/NarrativeBlock";
 import { DrillDownPanel } from "./analysis/DrillDownPanel";
+import { WeekOverWeekBadge } from "./analysis/WeekOverWeekBadge";
 import type { DrillDownFilter } from "@/lib/queries/drill-down";
 
-// TODO (P3 Slice D follow-up): W-o-W badges per row deferred — would need
-// per-symbol delta computed from response.weekAgo.positions[]. The API route
-// already ships `weekAgo` for this surface (with `delta: null` because per-row
-// deltas don't flatten into a single top-level object). To add later:
-// zip `data.positions[].symbol` against `weekAgo.positions[].symbol`, compute
-// (riskContribution_now - riskContribution_past) per match, and render a
-// <WeekOverWeekBadge value={…} kind="neutral" /> in the Risk Contrib cell.
+// ─── W-o-W delta helper ───────────────────────────────────────────
+
+/**
+ * Pure helper: compute the change in riskContribution for a position
+ * relative to the prior week's snapshot. Returns null when week-ago data
+ * is absent or the symbol didn't exist in the prior top-N list.
+ *
+ * Exported for unit testing.
+ */
+export function computeWeekOverWeekDelta(
+  current: { symbol: string; riskContribution: number | null },
+  past: Array<{ symbol: string; riskContribution: number | null }> | null | undefined
+): number | null {
+  if (!past || past.length === 0) return null;
+  if (current.riskContribution == null) return null;
+  const match = past.find((p) => p.symbol === current.symbol);
+  if (!match || match.riskContribution == null) return null;
+  return current.riskContribution - match.riskContribution;
+}
 
 // ─── Formatters ──────────────────────────────────────────────────
 
@@ -48,6 +61,7 @@ function corrBg(corr: number): string {
 
 export function PositionRiskCard({ scope }: { scope?: string }) {
   const [data, setData] = useState<PositionRiskResult | null>(null);
+  const [weekAgoPosns, setWeekAgoPosns] = useState<PositionRisk[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [drillFilter, setDrillFilter] = useState<DrillDownFilter | null>(null);
@@ -58,8 +72,12 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
     fetch(`/api/compute/position-risk?topN=10${scopeParam}`)
       .then((r) => r.json())
       .then((json) => {
-        if (json.success) setData(json.data);
-        else setError(json.error ?? "Failed to compute position risk");
+        if (json.success) {
+          setData(json.data);
+          setWeekAgoPosns(json.weekAgo?.positions ?? null);
+        } else {
+          setError(json.error ?? "Failed to compute position risk");
+        }
       })
       .catch(() => setError("Failed to fetch position risk"))
       .finally(() => setLoading(false));
@@ -186,6 +204,12 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
                         value={pos.riskContribution != null ? pos.riskContribution * 100 : null}
                         digits={1}
                         className="font-mono tabular-nums text-ink text-xs w-12 text-right"
+                      />
+                      <WeekOverWeekBadge
+                        value={computeWeekOverWeekDelta(pos, weekAgoPosns)}
+                        kind="neutral"
+                        asPercent={true}
+                        digits={1}
                       />
                     </div>
                   ) : (

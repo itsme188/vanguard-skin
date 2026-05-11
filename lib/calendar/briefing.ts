@@ -17,6 +17,7 @@ import {
 import { getModelForFeature } from "@/lib/ai/provider";
 import { FEATURE_MODELS } from "@/lib/ai/models";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
+import { mondayOf } from "@/lib/calendar/date-utils";
 
 // Preferred weekend-reading sources — full raw_text is sent to the model.
 // ids correspond to research_sources.id. Keep aligned with DB; wrong ids
@@ -192,6 +193,27 @@ export async function generateWeeklyBriefing(
     )
     .all(priorWeekStart, priorWeekEnd) as CalendarEvent[];
 
+  // Macro context: read cached themes for "all" scope. Workspace card and
+  // briefing email read from the same cache so they stay in sync. Failure
+  // here MUST NOT block the email — just skip the section.
+  //
+  // Scope hardcoded to "all" because the briefing email goes to a single
+  // recipient who owns every account; per-scope briefings would be a future
+  // feature. The Workspace card reads per-scope (matches the current page).
+  let macroContextMd: string | null = null;
+  try {
+    const { getCachedMacroThemes } = await import("@/lib/queries/analysis-macro-themes");
+    const { renderMacroThemesMarkdown } = await import("@/lib/digest/macro-themes-markdown");
+    const cached = getCachedMacroThemes(db, "all", mondayOf(weekOf));
+    if (cached) {
+      const themes = JSON.parse(cached.themesJson);
+      macroContextMd = renderMacroThemesMarkdown(themes);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[send-briefing] macro-context section skipped: ${msg}`);
+  }
+
   const prompt = buildPrompt({
     weekOf,
     holdingsList,
@@ -208,6 +230,7 @@ export async function generateWeeklyBriefing(
     breadthContext,
     imapFallback,
     releasedLastWeek,
+    macroContextMd,
   });
 
   const { text } = await generateText({
@@ -250,6 +273,7 @@ interface PromptInput {
   breadthContext: string;
   imapFallback: string;
   releasedLastWeek: CalendarEvent[];
+  macroContextMd?: string | null;
 }
 
 function buildPrompt(p: PromptInput): string {
@@ -338,7 +362,7 @@ function buildPrompt(p: PromptInput): string {
     : "";
 
   return `You are a financial research analyst preparing a weekly market briefing for a single portfolio manager. Generate a comprehensive briefing for the week of ${weekTitle}.
-
+${p.macroContextMd ? `\n${p.macroContextMd}\n` : ""}
 ## Portfolio Holdings (for context on which events directly affect the portfolio)
 ${p.holdingsList}
 ${currentPricesSection}${portfolioEarningsSection}${wshSection}${optionsSection}${triggeredLevelsSection}${nearbyLevelsSection}${otherEventsSection}${releasedLastWeekSection}${weekendSection}${breadthSection}

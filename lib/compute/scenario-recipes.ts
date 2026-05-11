@@ -73,6 +73,11 @@ export interface ScenarioRecipe {
   factorMultipliers?: Partial<Record<FactorColumn, number>>;
   sectorOverrides?: Record<string, number>;
   methodology: string;
+  /**
+   * Set by matchScenariosToThemes when this recipe's primaryFactor matches an
+   * active macro theme's factor_label. UI renders a "live now" pill.
+   */
+  liveNowReason?: string;
 }
 
 export const SCENARIO_RECIPES: ScenarioRecipe[] = [
@@ -374,11 +379,35 @@ export function recipeToScenarioDefinition(recipe: ScenarioRecipe): ScenarioDefi
     category: legacyCategory,
     marketMove: recipe.shockMagnitude,
     sectorMoves: recipe.sectorOverrides,
+    primaryFactor: recipe.primaryFactor,
   };
 }
 
 export function findRecipe(id: string): ScenarioRecipe | undefined {
   return SCENARIO_RECIPES.find((r) => r.id === id);
+}
+
+/**
+ * Decorate each recipe with a `liveNowReason` string when its `primaryFactor`
+ * matches an active macro theme's `factor_label`.
+ *
+ * - Returns a NEW array (never mutates input).
+ * - When themes is empty every recipe gets `liveNowReason: undefined`.
+ * - Direction is not filtered: any active theme whose factor_label matches
+ *   makes the scenario "live" regardless of risk-on / risk-off direction.
+ */
+export function matchScenariosToThemes(
+  recipes: ScenarioRecipe[],
+  themes: Array<{ name: string; factor_label: string; direction: string; [key: string]: unknown }>
+): ScenarioRecipe[] {
+  if (themes.length === 0) {
+    return recipes.map((r) => ({ ...r, liveNowReason: undefined }));
+  }
+  return recipes.map((r) => {
+    const match = themes.find((t) => t.factor_label === r.primaryFactor);
+    if (!match) return { ...r, liveNowReason: undefined };
+    return { ...r, liveNowReason: match.name };
+  });
 }
 
 // Suppress unused-var lint on the SQL helper import (kept for parity with
