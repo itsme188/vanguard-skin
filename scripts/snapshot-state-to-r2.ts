@@ -38,7 +38,7 @@ const CALENDAR_LOOKAHEAD_DAYS = 7;
 const SNAPSHOT_RETENTION_DAYS = 7;
 
 interface Snapshot {
-  schemaVersion: 3;
+  schemaVersion: 4;
   snapshotDate: string;
   generatedAt: string;
   heldSymbols: string[];
@@ -79,6 +79,21 @@ interface Snapshot {
   // Cached beta coefficients. Worker reads these to rank holdings by
   // systematic risk without running a full regression in the cloud.
   securityBetas: Array<{ securityId: number; lookbackDays: number; beta: number; computedAt: string }>;
+  // v4 addition — active static price levels for cloud-side scan + Pushover
+  // fan-out when Mac is asleep. MA-based levels (sma_*, ema_*) are excluded
+  // because they require OHLCV bars to resolve effective_price; those stay
+  // Mac-only.
+  securityLevels: Array<{
+    id: number;
+    security_id: number;
+    symbol: string;
+    level_type: string;
+    price: number;
+    direction: string | null;
+    source: string;
+    source_author: string | null;
+    expires_at: string | null;
+  }>;
 }
 
 function today(): string {
@@ -296,8 +311,31 @@ function buildSnapshot(db: Database.Database): Snapshot {
     .prepare(`SELECT value FROM settings WHERE key = 'earnings_emails_muted_symbols'`)
     .get() as { value: string } | undefined;
 
+  const securityLevels = db
+    .prepare(
+      `SELECT sl.id, sl.security_id, s.symbol, sl.level_type, sl.price,
+              sl.direction, sl.source, sl.source_author, sl.expires_at
+         FROM security_levels sl
+         JOIN securities s ON s.id = sl.security_id
+         WHERE sl.is_active = 1
+           AND sl.review_status = 'auto_approved'
+           AND sl.price_source = 'static'
+           AND (sl.expires_at IS NULL OR sl.expires_at >= date('now'))`,
+    )
+    .all() as Array<{
+      id: number;
+      security_id: number;
+      symbol: string;
+      level_type: string;
+      price: number;
+      direction: string | null;
+      source: string;
+      source_author: string | null;
+      expires_at: string | null;
+    }>;
+
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     snapshotDate: today(),
     generatedAt: new Date().toISOString(),
     heldSymbols: getHeldStockSymbolsRO(db),
@@ -328,6 +366,8 @@ function buildSnapshot(db: Database.Database): Snapshot {
     // v3 additions
     vanguardHoldings: getVanguardHoldingsForSnapshot(db),
     securityBetas: getSecurityBetas(db),
+    // v4 — static price levels for cloud-side scan
+    securityLevels,
   };
 }
 
