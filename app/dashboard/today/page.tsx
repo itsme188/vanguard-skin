@@ -19,6 +19,7 @@ import { computeMomentumPulse } from "@/lib/compute/momentum-spread";
 import { EarningsHub } from "./EarningsHub";
 import { WeekAheadView } from "./WeekAheadView";
 import { IbkrRefreshButton } from "./IbkrRefreshButton";
+import { SnapshotAge } from "../components/SnapshotAge";
 
 interface EnrichedAlert extends LevelAlert {
   symbol: string | null;
@@ -204,6 +205,24 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
   // ── Portfolio totals for the hero (Overview absorption — IA Phase 3) ──
   const portfolio = getPortfolioTotals(db);
 
+  // ── Vanguard snapshot age — surfaces the statement-period staleness
+  //    boundary so a glance-at-phone view tells the user when Vanguard
+  //    holdings + cash were last refreshed. Picks the OLDER of the two
+  //    Vanguard accounts since both share the same statement cadence.
+  const vanguardAsOf = db
+    .prepare(
+      `SELECT MIN(latest) AS earliest
+         FROM (
+           SELECT MAX(h.as_of_date) AS latest
+           FROM holdings h
+           JOIN accounts a ON a.id = h.account_id
+           WHERE LOWER(a.name) LIKE '%vanguard%'
+           GROUP BY h.account_id
+         )`,
+    )
+    .get() as { earliest: string | null } | undefined;
+  const vanguardSnapshotDate = vanguardAsOf?.earliest ?? null;
+
   const overallDaysOld = latestPriceDate ? daysAgo(latestPriceDate) : null;
   const overallSource = holdings.find((h) => h.price_date === latestPriceDate)?.price_source ?? null;
   const overallQuality =
@@ -218,7 +237,10 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
           </p>
           <h1 className="hidden md:block text-2xl text-gold tracking-tight font-medium">Today</h1>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          {vanguardSnapshotDate && (
+            <SnapshotAge asOfDate={vanguardSnapshotDate} label="Vanguard" alwaysShow />
+          )}
           {overallQuality && (
             <span className={`text-[11px] font-mono rounded px-2 py-0.5 ${overallQuality.className}`}>
               {overallQuality.label}
