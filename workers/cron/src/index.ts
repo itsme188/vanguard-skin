@@ -48,6 +48,7 @@ import {
   writeEarningsMarker,
   type EarningsPhase,
 } from "./earnings-markers";
+import { runLevelScan, shouldRunLevelScan } from "./level-scan";
 
 export interface Env {
   // Bindings
@@ -78,6 +79,10 @@ export interface Env {
   CLOUD_ENRICH_ENABLED?: string;
   FRED_API_KEY?: string;
   FINNHUB_API_KEY?: string;
+  // Pushover for cloud-side level scan fan-out (Tier 4a).
+  PUSHOVER_APP_TOKEN?: string;
+  PUSHOVER_USER_KEY?: string;
+  PUSHOVER_LINK_BASE?: string;
 }
 
 export function parseJobFromClock(env: Env): { type: JobType; expectedHour: number } | null {
@@ -228,6 +233,21 @@ export default {
       );
     }
 
+    // Price-level scan — Mon-Fri 09:30-16:00 ET. Closes the "Pushover stops
+    // firing when Mac is asleep" gap. Self-gates via shouldRunLevelScan and
+    // pre-checks the mac-recent-scan KV marker to avoid duplicate firing
+    // when Mac is alive.
+    if (shouldRunLevelScan()) {
+      ctx.waitUntil(
+        (async () => {
+          const result = await runLevelScan(env);
+          if (result.fired > 0 || result.deduped > 0 || result.skipped > 0) {
+            console.log(`[cron ${event.cron}] level-scan result:`, JSON.stringify(result));
+          }
+        })()
+      );
+    }
+
     const job = parseJobFromClock(env);
     if (!job) {
       if (!shouldRunCalendarEnrich()) {
@@ -288,8 +308,58 @@ export default {
       return Response.json({ ok: true, action, type: typeParam });
     }
 
+    // Cloud-fired level markers — Mac polls on wake, inserts level_alerts
+    // for each fired payload, then DELETEs per levelId. Pushover already
+    // fired from the Worker — reconcile is audit/UI only.
+    if (request.method === "GET" && url.pathname === "/internal/cloud-fired-levels") {
+      const list = await env.CRON_KV.list({ prefix: "cloud-fired-level-" });
+      const payloads: Record<string, unknown> = {};
+      await Promise.all(
+        list.keys.map(async (k) => {
+          const value = await env.CRON_KV.get(k.name);
+          if (value) {
+            const m = /^cloud-fired-level-(\d+)$/.exec(k.name);
+            if (m) {
+              try {
+                payloads[m[1]] = JSON.parse(value);
+              } catch {
+                // skip malformed entries
+              }
+            }
+          }
+        }),
+      );
+      return Response.json({ payloads });
+    }
+
+    if (request.method === "DELETE" && url.pathname === "/internal/cloud-fired-levels") {
+      const levelIdStr = url.searchParams.get("levelId");
+      if (!levelIdStr || !/^\d+$/.test(levelIdStr)) {
+        return Response.json({ error: "levelId (numeric) is required" }, { status: 400 });
+      }
+      await env.CRON_KV.delete(`cloud-fired-level-${levelIdStr}`);
+      return Response.json({ ok: true });
+    }
+
+    // Mac sets this every time its auto-refresh pipeline completes
+    // detectAndFireAlerts. Worker pre-checks before firing a cloud scan,
+    // preventing duplicate firing during the overlap when Mac is alive.
+    // 90-min TTL — wider than the 30-min auto-refresh window so a brief
+    // Mac hiccup doesn't immediately tip into cloud-side firing.
+    if (request.method === "POST" && url.pathname === "/internal/mac-recent-scan") {
+      await env.CRON_KV.put("mac-recent-scan", new Date().toISOString(), {
+        expirationTtl: 90 * 60,
+      });
+      return Response.json({ ok: true });
+    }
+
     if (request.method === "POST" && url.pathname === "/internal/trigger") {
       const typeParam = url.searchParams.get("type");
+      if (typeParam === "level-scan") {
+        const dryRun = url.searchParams.get("dryRun") === "true";
+        const result = await runLevelScan(env, { dryRun });
+        return Response.json(result);
+      }
       if (typeParam === "calendar-enrich") {
         const fallbackOnly = url.searchParams.get("fallbackOnly") === "true";
         if (fallbackOnly) {

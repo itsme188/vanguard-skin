@@ -87,6 +87,32 @@ async function fetchYahooBars(
 }
 
 /**
+ * Fetch the most recent close price from Yahoo for a symbol.
+ *
+ * Used by the cloud-side level scan to compare against active price levels
+ * when Mac is asleep. Pulls a 15-minute window of 1-min bars and returns the
+ * last non-null close; returns null on empty/error so caller can fall through.
+ *
+ * Single fetch, no pacing — caller orchestrates per-symbol pacing for batches.
+ */
+export async function fetchYahooLastPrice(
+  symbol: string,
+): Promise<{ price: number; tMs: number } | null> {
+  const nowSec = Math.floor(Date.now() / 1000);
+  // 15 min lookback is enough to find a recent print during market hours and
+  // captures the last close + a buffer when called shortly after the bell.
+  const fromSec = nowSec - 15 * 60;
+  try {
+    const bars = await fetchYahooBars(symbol, fromSec, nowSec);
+    if (bars.length === 0) return null;
+    const last = bars[bars.length - 1];
+    return { price: last.close, tMs: last.tMs };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Fetch 1-min bars for SPY/QQQ/TLT (+ optional sector ETF) around a release
  * instant and compute per-benchmark reaction. Returns null if all three core
  * benchmarks produce no bars (data gap — off-hours release or Yahoo outage).
