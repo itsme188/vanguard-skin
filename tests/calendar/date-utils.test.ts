@@ -4,6 +4,8 @@ import {
   addDays,
   validateWeekOf,
   formatWeekRange,
+  mondayOf,
+  weekAgo,
 } from "@/lib/calendar/date-utils";
 
 // ── getCurrentMonday ─────────────────────────────────────────────
@@ -116,5 +118,37 @@ describe("formatWeekRange", () => {
     // "Apr 13 – Apr 19, 2026" — only one "2026"
     const yearMatches = result.match(/2026/g);
     expect(yearMatches).toHaveLength(1);
+  });
+});
+
+// ── mondayOf ─────────────────────────────────────────────────────
+
+describe("mondayOf", () => {
+  it("returns same date when input is already a Monday", () => {
+    expect(mondayOf("2026-05-04")).toBe("2026-05-04"); // Mon
+  });
+
+  it("rolls back from Sunday to the prior Monday", () => {
+    expect(mondayOf("2026-05-10")).toBe("2026-05-04"); // Sun → prior Mon
+  });
+
+  it("rolls back from Wednesday to Monday", () => {
+    expect(mondayOf("2026-05-06")).toBe("2026-05-04"); // Wed
+  });
+
+  it("handles year boundaries", () => {
+    expect(mondayOf("2026-01-01")).toBe("2025-12-29"); // Thu → prior Mon in prev year
+  });
+});
+
+// ── weekAgo ──────────────────────────────────────────────────────
+
+describe("weekAgo", () => {
+  it("subtracts exactly 7 days", () => {
+    expect(weekAgo("2026-05-10")).toBe("2026-05-03");
+  });
+
+  it("crosses month boundary correctly", () => {
+    expect(weekAgo("2026-05-03")).toBe("2026-04-26");
   });
 });

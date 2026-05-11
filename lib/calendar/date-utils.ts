@@ -81,6 +81,13 @@ export function mondayOf(dateStr: string): string {
   return formatDate(d);
 }
 
+/**
+ * Returns the YYYY-MM-DD date exactly 7 days before the input.
+ */
+export function weekAgo(dateStr: string): string {
+  return addDays(dateStr, -7);
+}
+
 /** Format a Date as YYYY-MM-DD using local date parts (avoids UTC shift). */
 function formatDate(d: Date): string {
   const y = d.getFullYear();
