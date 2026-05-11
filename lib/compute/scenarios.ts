@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import type { FactorColumn } from "@/lib/factors";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import {
   SCENARIO_RECIPES,
@@ -17,6 +18,8 @@ export interface ScenarioDefinition {
   marketMove: number; // e.g., -0.10 for -10%
   rateMove?: number; // basis points, e.g., 100 for +1%
   sectorMoves?: Record<string, number>; // sector name → move (e.g., { "Technology": -0.25 })
+  /** Factor this scenario primarily stresses — set from ScenarioRecipe for preset scenarios. */
+  primaryFactor?: FactorColumn;
 }
 
 export interface PositionImpact {
@@ -41,6 +44,8 @@ export interface ScenarioResult {
   positionImpacts: PositionImpact[];
   biggestLosers: PositionImpact[];
   biggestWinners: PositionImpact[];
+  /** Set when the scenario's primaryFactor matches an active macro theme's factor_label. */
+  liveNowReason?: string;
 }
 
 // ─── Predefined Scenarios ───────────────────────────────────────
