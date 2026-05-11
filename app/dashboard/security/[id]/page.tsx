@@ -16,14 +16,9 @@ import { ResearchMentionsSection } from "../../components/ResearchMentionsSectio
 import { Section } from "../../components/Section";
 import { Chip, type ChipTone } from "../../components/Chip";
 import { TranscriptsRefreshButton } from "./TranscriptsRefreshButton";
+import { FactorProfileSection } from "./FactorProfileSection";
 import { Money, Pct, Shares } from "@/lib/privacy/components";
 import type { EarningsTranscript } from "@/lib/types";
-import {
-  FACTOR_COLUMNS,
-  FACTOR_LABELS,
-  getFactorColor,
-  type FactorColumn,
-} from "@/lib/factors";
 
 function gainClass(value: number | null): string {
   if (value == null) return "text-ink-dim";
@@ -298,6 +293,12 @@ export default async function SecurityDetailPage(props: {
           </div>
         </Section>
       )}
+
+      {/* Factor Profile — qualitative chips + quantitative regression vs SPY +
+          (deferred) portfolio-share contribution. Slotted below the
+          hero/chart/option-contract and above the per-position detail rows
+          per the P3 Slice B spec. */}
+      <FactorProfileSection securityId={securityId} factors={factors} />
 
       {/* Alerts history for this security (auto-hides if empty). */}
       <RecentAlertsPanel securityId={securityId} />
@@ -748,32 +749,9 @@ export default async function SecurityDetailPage(props: {
       {/* Corporate Actions */}
       <CorporateActionsSection securityId={security.id} symbol={security.symbol} />
 
-      {/* Factor Exposure */}
-      {factors && (
-        <Section title="Factor Exposure">
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-x-8 gap-y-3 px-5 py-4">
-            {FACTOR_COLUMNS.map((col) => {
-              const value = factors[col as keyof typeof factors] as string | null;
-              if (!value || value === "Unknown") return null;
-              return (
-                <div key={col} className="flex items-center gap-2">
-                  <div
-                    className="w-2 h-2 shrink-0 rounded-sm"
-                    style={{ background: getFactorColor(value) }}
-                  />
-                  <span
-                    className="font-mono uppercase text-ink-faint"
-                    style={{ fontSize: "11px", letterSpacing: "0.18em" }}
-                  >
-                    {FACTOR_LABELS[col as FactorColumn]}
-                  </span>
-                  <span className="text-sm text-ink font-medium ml-auto">{value}</span>
-                </div>
-              );
-            })}
-          </div>
-        </Section>
-      )}
+      {/* Factor Exposure — now superseded by <FactorProfileSection> above
+          (see Slice B / B4). Kept removed to avoid showing the same data
+          twice on the page. */}
 
       {/* Transcripts. Always rendered — when the cache is empty we show an
           intentional empty state with the refresh button instead of silently
