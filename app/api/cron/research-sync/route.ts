@@ -4,6 +4,10 @@ import { isGmailConfigured, getGmailClient } from "@/lib/gmail/auth";
 import { fetchNewArticles } from "@/lib/gmail/fetch";
 import { processUnprocessedArticles } from "@/lib/gmail/process";
 import { extractLevelsFromNewArticles } from "@/lib/alerts/extract-newsletter-levels";
+import {
+  reconcileCloudFetchedNewsletters,
+  postMacRecentNewsletterSyncMarker,
+} from "@/lib/research/reconcile-cloud-fetched";
 
 /**
  * POST /api/cron/research-sync — Cron-authenticated background research sync.
@@ -41,8 +45,24 @@ export async function POST(request: Request) {
   }
 
   try {
+    // Drain Worker cloud-fetched newsletter KV entries FIRST so the local
+    // fetch below dedups (UNIQUE gmail_message_id). Failures here don't
+    // abort the whole sync — next tick retries.
+    let cloudReconciled = 0;
+    let cloudSkipped = 0;
+    try {
+      const reconcileResult = await reconcileCloudFetchedNewsletters(db, expected);
+      cloudReconciled = reconcileResult.reconciled;
+      cloudSkipped = reconcileResult.skipped_already_in_db;
+    } catch (err) {
+      console.error("[cron/research-sync] cloud reconcile failed:", err);
+    }
+
     const gmail = getGmailClient();
     const fetchResult = await fetchNewArticles(db, gmail);
+    // Fire-and-forget — never block on Worker RTT.
+    void postMacRecentNewsletterSyncMarker(expected);
+
     const processResult = await processUnprocessedArticles(db);
 
     let levelsInserted = 0;
@@ -57,6 +77,8 @@ export async function POST(request: Request) {
 
     return Response.json({
       success: true,
+      cloudReconciled,
+      cloudSkipped,
       fetched: fetchResult.fetched,
       sources: fetchResult.sources,
       processed: processResult.processed,
