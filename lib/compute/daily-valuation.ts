@@ -69,6 +69,14 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
     // Use the most recent overall holdings snapshot for this account, not
     // per-security MAX. This prevents "ghost holdings" — securities from older
     // snapshots that no longer appear in the latest statement (i.e., sold).
+    //
+    // NOTE: This site cannot use `latestHoldingsPredicate` because the
+    // `as_of_date <= ?` constraint must accept a positional bind (the prepared
+    // statement is reused across many target dates inside `computeDailyValuations`).
+    // The helper's `asOfDate` option does literal SQL substitution (validated
+    // against /^\d{4}-\d{2}-\d{2}$/) and would require re-preparing the
+    // statement on every date — losing the prepared-statement optimization
+    // this hot loop depends on. Intentionally inline.
     const getHoldings = db.prepare(
       `SELECT h.security_id, h.quantity, s.security_type, COALESCE(s.multiplier, 1) AS multiplier, h.as_of_date
        FROM holdings h

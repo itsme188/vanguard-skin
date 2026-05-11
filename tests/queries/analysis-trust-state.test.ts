@@ -94,6 +94,35 @@ describe("getAnalysisTrustState", () => {
     expect(state.performanceReconciledThru).toBeNull();
   });
 
+  it("returns per-account reconciliation rows covering every scoped account", () => {
+    // account 3: two snapshots → reconciles within tolerance.
+    db.prepare(`INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, twr, source)
+                VALUES (3, '2026-03-31', 100000, 0.00, 'ibkr-activity')`).run();
+    db.prepare(`INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, twr, source)
+                VALUES (3, '2026-04-30', 105210, 5.21, 'ibkr-activity')`).run();
+    // account 1: no statement TWR at all → must surface as withinTolerance=null
+    // account 2: no rows touched → also withinTolerance=null
+
+    const state = getAnalysisTrustState(db, [1, 2, 3]);
+
+    expect(state.perAccountReconciliation).toHaveLength(3);
+    const byId = new Map(state.perAccountReconciliation.map((r) => [r.accountId, r]));
+
+    const acct3 = byId.get(3)!;
+    expect(acct3.accountName).toBeTruthy();
+    expect(acct3.latestStmtMonth).toBe("2026-04-30");
+    expect(acct3.withinTolerance).toBe(true);
+    expect(acct3.divergenceBp).not.toBeNull();
+
+    expect(byId.get(1)!.latestStmtMonth).toBeNull();
+    expect(byId.get(1)!.withinTolerance).toBeNull();
+    expect(byId.get(2)!.latestStmtMonth).toBeNull();
+    expect(byId.get(2)!.withinTolerance).toBeNull();
+
+    // Rollup field stays null because two accounts are unreconciled.
+    expect(state.performanceReconciledThru).toBeNull();
+  });
+
   it("returns null performanceReconciledThru when one account has no statement TWR", () => {
     // account 3: passes reconciliation
     db.prepare(`INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, twr, source)

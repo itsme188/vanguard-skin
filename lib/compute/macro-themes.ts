@@ -148,7 +148,7 @@ import { resolveScope } from "@/lib/queries/accounts";
 import { getCachedMacroThemes, upsertMacroThemes } from "@/lib/queries/analysis-macro-themes";
 import { computeFactorAnalysis } from "@/lib/compute/factors";
 
-const SYSTEM_PROMPT = `You are a portfolio analyst identifying the macro themes that actually moved markets this week. Output ONLY valid JSON matching the schema. Never include prose outside the JSON array. 3-5 themes maximum. Each theme must map to one factor_label from the allowed list. Each summary is one sentence, 30-200 chars.`;
+const SYSTEM_PROMPT = `You are a portfolio analyst identifying the macro themes that actually moved markets this week. Output ONLY valid JSON matching the schema. Never include prose outside the JSON array. 3-5 themes maximum. Each theme must map to one factor_label from the allowed list. Each summary is one sentence, 30-200 chars. Prefer fewer broader themes over many narrow ones — split only when the underlying drivers are independent.`;
 
 const USER_PROMPT_TEMPLATE = `Given the past 7 days of news articles, enriched macro events (CPI/PCE/FOMC actuals + market reactions), and price-level alerts that fired, identify 3-5 macro themes that drove markets this week.
 

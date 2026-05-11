@@ -6,6 +6,7 @@
 import type Database from "better-sqlite3";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -64,16 +65,16 @@ export interface AnalysisDataCoverage {
 }
 
 // ─── Latest holdings CTE (reused across queries) ────────────────
+// Intentionally keyBy="account" + includeShorts=false: these allocation
+// queries fold per-security rows under outer SUM(), so stale snapshots from
+// older Vanguard statements wash out against fresher IBKR rows. See
+// CLAUDE.md "Per-(account, security) latest-holdings CTE pattern".
 
 const LATEST_HOLDINGS_CTE = `
   latest_holdings AS (
     SELECT h.*
     FROM holdings h
-    WHERE h.as_of_date = (
-      SELECT MAX(h2.as_of_date) FROM holdings h2
-      WHERE h2.account_id = h.account_id
-    )
-    AND h.quantity > 0
+    WHERE ${latestHoldingsPredicate({ keyBy: "account", includeShorts: false })}
   ),
   latest_prices AS (
     SELECT p.security_id, p.close_price
