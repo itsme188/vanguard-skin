@@ -11,6 +11,14 @@ import { NarrativeBlock } from "./analysis/NarrativeBlock";
 import { DrillDownPanel } from "./analysis/DrillDownPanel";
 import type { DrillDownFilter } from "@/lib/queries/drill-down";
 
+// TODO (P3 Slice D follow-up): W-o-W badges per row deferred — would need
+// per-symbol delta computed from response.weekAgo.positions[]. The API route
+// already ships `weekAgo` for this surface (with `delta: null` because per-row
+// deltas don't flatten into a single top-level object). To add later:
+// zip `data.positions[].symbol` against `weekAgo.positions[].symbol`, compute
+// (riskContribution_now - riskContribution_past) per match, and render a
+// <WeekOverWeekBadge value={…} kind="neutral" /> in the Risk Contrib cell.
+
 // ─── Formatters ──────────────────────────────────────────────────
 
 function formatCorr(value: number): string {

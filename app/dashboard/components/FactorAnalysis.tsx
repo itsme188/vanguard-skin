@@ -10,7 +10,18 @@ import {
 } from "@/lib/analysis/benchmarks";
 import { NarrativeBlock } from "./analysis/NarrativeBlock";
 import { DrillDownPanel } from "./analysis/DrillDownPanel";
+import { WeekOverWeekBadge } from "./analysis/WeekOverWeekBadge";
 import type { DrillDownFilter } from "@/lib/queries/drill-down";
+
+// ─── W-o-W delta shape (mirrors computeFactorDelta in the API route) ─────
+
+interface FactorDelta {
+  marketRegression: {
+    beta: number | null;
+    alpha: number | null;
+    rSquared: number | null;
+  };
+}
 
 // ─── Formatters ──────────────────────────────────────────────────
 
@@ -35,6 +46,7 @@ const TILT_COLORS = [
 
 export function FactorAnalysisCard({ scope }: { scope?: string }) {
   const [data, setData] = useState<FactorAnalysisResult | null>(null);
+  const [delta, setDelta] = useState<FactorDelta | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [benchmark, setBenchmark] = useState<string>(
@@ -55,8 +67,12 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
     fetch(`/api/compute/factors?${params.toString()}`)
       .then((r) => r.json())
       .then((json) => {
-        if (json.success) setData(json.data);
-        else setError(json.error ?? "Failed to compute factors");
+        if (json.success) {
+          setData(json.data);
+          setDelta(json.delta ?? null);
+        } else {
+          setError(json.error ?? "Failed to compute factors");
+        }
       })
       .catch(() => setError("Failed to fetch factor analysis"))
       .finally(() => setLoading(false));
@@ -125,7 +141,16 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
             <MetricCell
               label="Beta"
-              value={formatBeta(reg.beta)}
+              value={
+                <>
+                  {formatBeta(reg.beta)}
+                  <WeekOverWeekBadge
+                    value={delta?.marketRegression.beta ?? null}
+                    kind="neutral"
+                    digits={2}
+                  />
+                </>
+              }
               hint={
                 reg.beta > 1.1
                   ? "Aggressive"
@@ -139,13 +164,33 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
             />
             <MetricCell
               label="Alpha"
-              value={<Pct value={reg.alpha * 100} digits={2} signed />}
+              value={
+                <>
+                  <Pct value={reg.alpha * 100} digits={2} signed />
+                  <WeekOverWeekBadge
+                    value={delta?.marketRegression.alpha ?? null}
+                    kind="signed"
+                    digits={2}
+                    asPercent
+                  />
+                </>
+              }
               hint="Annualized excess return"
               color={reg.alpha >= 0 ? "up" : "down"}
             />
             <MetricCell
               label="R²"
-              value={<Pct value={reg.rSquared * 100} digits={1} />}
+              value={
+                <>
+                  <Pct value={reg.rSquared * 100} digits={1} />
+                  <WeekOverWeekBadge
+                    value={delta?.marketRegression.rSquared ?? null}
+                    kind="neutral"
+                    digits={1}
+                    asPercent
+                  />
+                </>
+              }
               hint={
                 reg.rSquared > 0.8
                   ? "High market dependence"
