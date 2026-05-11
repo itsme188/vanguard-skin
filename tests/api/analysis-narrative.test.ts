@@ -1,0 +1,82 @@
+import { describe, it, expect, beforeEach, vi } from "vitest";
+
+// Mock the compute module so tests don't actually call Sonnet.
+vi.mock("@/lib/compute/analysis-narratives", () => ({
+  NARRATIVE_SURFACES: [
+    "factor-analysis",
+    "risk-metrics",
+    "position-risk",
+    "factor-heatmap",
+  ],
+  generateNarrative: vi.fn().mockResolvedValue({
+    narrativeMd: "Mocked narrative prose.",
+    fromCache: false,
+    generatedAt: "2026-05-10T22:00:00Z",
+  }),
+}));
+
+import {
+  GET,
+  POST,
+  __resetRateLimitForTests,
+} from "@/app/api/analysis/narrative/route";
+
+describe("GET /api/analysis/narrative", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetRateLimitForTests();
+  });
+
+  it("returns 200 + narrativeMd shape on cache miss", async () => {
+    const req = new Request(
+      "http://x/api/analysis/narrative?scope=vanguard&surface=factor-analysis"
+    );
+    const res = await GET(req as never);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.narrativeMd).toBe("Mocked narrative prose.");
+  });
+
+  it("returns 400 when scope is missing", async () => {
+    const req = new Request(
+      "http://x/api/analysis/narrative?surface=factor-analysis"
+    );
+    const res = await GET(req as never);
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 404 when surface is unknown", async () => {
+    const req = new Request(
+      "http://x/api/analysis/narrative?scope=vanguard&surface=bogus"
+    );
+    const res = await GET(req as never);
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("POST /api/analysis/narrative (force regen)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetRateLimitForTests();
+  });
+
+  it("first regen returns 200; second regen within 24h returns 429", async () => {
+    const makeReq = () =>
+      new Request("http://x/api/analysis/narrative", {
+        method: "POST",
+        body: JSON.stringify({
+          scope: "vanguard",
+          surface: "factor-analysis",
+        }),
+        headers: { "Content-Type": "application/json" },
+      });
+    const r1 = await POST(makeReq() as never);
+    expect(r1.status).toBe(200);
+    const r2 = await POST(makeReq() as never);
+    expect(r2.status).toBe(429);
+    const body2 = await r2.json();
+    expect(body2.error).toBe("rate-limited");
+    expect(body2.retryAfter).toBeGreaterThan(0);
+  });
+});
