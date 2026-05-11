@@ -38,6 +38,7 @@ export async function processUnprocessedArticles(
        FROM research_articles a
        JOIN research_sources s ON a.source_id = s.id
        WHERE a.processed_at IS NULL
+         AND COALESCE(a.is_relevant, 1) = 1
        ORDER BY a.received_at DESC
        LIMIT 20`
     )

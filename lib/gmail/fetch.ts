@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import { stripHtml } from "../vital-knowledge";
 import { sanitizeNewsletterHtml, normalizeNewsletterHtml } from "./sanitize";
 import { extractSourceUrl } from "./extract-url";
+import { checkShortCircuit } from "./short-circuit";
 
 /**
  * Fetch new newsletter articles from Gmail for all active research sources.
@@ -29,10 +30,20 @@ export async function fetchNewArticles(
 
   if (sources.length === 0) return { fetched: 0, sources: [] };
 
+  // is_relevant defaults to 1 (DB default), so omitting it for the happy
+  // path keeps existing behavior. The short-circuit branch below uses a
+  // dedicated insert that flips is_relevant=0 + tags excluded_category/reason
+  // so the D5 audit UI (future slice) can surface filtered rows.
   const insertArticle = db.prepare(`
     INSERT OR IGNORE INTO research_articles
       (source_id, gmail_message_id, gmail_thread_id, received_at, subject, sender, raw_text, raw_html, source_url)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertExcluded = db.prepare(`
+    INSERT OR IGNORE INTO research_articles
+      (source_id, gmail_message_id, gmail_thread_id, received_at, subject, sender, raw_text, raw_html, source_url,
+       is_relevant, excluded_category, excluded_reason)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
   `);
 
   let totalFetched = 0;
@@ -49,17 +60,37 @@ export async function fetchNewArticles(
         if (!detail) continue;
 
         const sourceUrl = extractSourceUrl(detail.html, detail.body);
-        const result = insertArticle.run(
-          source.id,
-          detail.messageId,
-          detail.threadId,
-          detail.receivedAt,
-          detail.subject,
-          detail.sender,
-          detail.body,
-          detail.html,
-          sourceUrl
-        );
+
+        // Pre-Claude short-circuit. Inserts the row as `is_relevant=0` so
+        // processUnprocessedArticles + digest queries can filter it out
+        // cheaply. Body content is still persisted so the D5 audit UI can
+        // surface the full email if the user wants to flip it back.
+        const sc = checkShortCircuit(detail.subject);
+        const result = sc.excluded
+          ? insertExcluded.run(
+              source.id,
+              detail.messageId,
+              detail.threadId,
+              detail.receivedAt,
+              detail.subject,
+              detail.sender,
+              detail.body,
+              detail.html,
+              sourceUrl,
+              sc.category,
+              sc.reason,
+            )
+          : insertArticle.run(
+              source.id,
+              detail.messageId,
+              detail.threadId,
+              detail.receivedAt,
+              detail.subject,
+              detail.sender,
+              detail.body,
+              detail.html,
+              sourceUrl,
+            );
 
         if (result.changes > 0) sourceFetched++;
       }
