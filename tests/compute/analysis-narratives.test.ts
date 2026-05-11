@@ -50,4 +50,25 @@ describe("generateNarrative", () => {
       "factor-heatmap",
     ]);
   });
+
+  it("forceRegen=true should bypass cache (re-throws since AI not mocked)", async () => {
+    upsertNarrative(db, {
+      scope: "vanguard",
+      surfaceKey: "factor-analysis",
+      weekOf: "2026-05-04",
+      narrativeMd: "Cached prose.",
+      modelUsed: "anthropic/claude-sonnet-4-6",
+    });
+    // forceRegen skips the cache → tries to call Sonnet → no API key in test env
+    // → throws. We just want to confirm the cache was bypassed (i.e. the call
+    // did NOT short-circuit at the cache hit).
+    await expect(
+      generateNarrative(db, {
+        scope: "vanguard",
+        surfaceKey: "factor-analysis",
+        weekOf: "2026-05-04",
+        forceRegen: true,
+      })
+    ).rejects.toThrow(); // any error type — point is, it didn't return cached
+  });
 });
