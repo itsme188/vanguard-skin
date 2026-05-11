@@ -6,6 +6,7 @@
  */
 
 import type Database from "better-sqlite3";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -87,10 +88,8 @@ export function reconcileCostBasis(
        FROM holdings h
        JOIN securities s ON s.id = h.security_id
        JOIN accounts a ON a.id = h.account_id
-       WHERE h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id)
-         AND h.quantity != 0
+       WHERE ${latestHoldingsPredicate({ keyBy: "account", includeShorts: true, accountFilter })}
          AND LOWER(s.security_type) NOT IN ('mutual fund', 'money market', 'fund', 'money_market')
-         ${accountFilter}
        ORDER BY a.name, s.symbol`
     )
     .all(...params) as Array<{

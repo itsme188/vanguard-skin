@@ -175,7 +175,10 @@ describe("send-evening fromLocalPart", () => {
   it("calls sendEmail with fromLocalPart='evening'", async () => {
     const { sendEveningEmail } = await import("@/lib/digest/send-evening");
 
-    seedProcessedArticle("2026-05-08 14:00:00");
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    setLastDigestSentAt(db, twoHoursAgo);
+    const nowStr = new Date().toISOString().replace("T", " ").slice(0, 19);
+    seedProcessedArticle(nowStr);
     await sendEveningEmail(db);
 
     expect(mockSendEmail).toHaveBeenCalledOnce();
@@ -190,7 +193,10 @@ describe("send-evening subject", () => {
   it("sends an email whose subject contains 'Evening Recap'", async () => {
     const { sendEveningEmail } = await import("@/lib/digest/send-evening");
 
-    seedProcessedArticle("2026-05-08 14:00:00");
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    setLastDigestSentAt(db, twoHoursAgo);
+    const nowStr = new Date().toISOString().replace("T", " ").slice(0, 19);
+    seedProcessedArticle(nowStr);
     await sendEveningEmail(db);
 
     expect(mockSendEmail).toHaveBeenCalledOnce();
@@ -206,7 +212,10 @@ describe("send-evening error handling", () => {
   it("throws EveningSendError with status 500 when sendEmail rejects", async () => {
     const { sendEveningEmail, EveningSendError } = await import("@/lib/digest/send-evening");
 
-    seedProcessedArticle("2026-05-08 14:00:00");
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    setLastDigestSentAt(db, twoHoursAgo);
+    const nowStr = new Date().toISOString().replace("T", " ").slice(0, 19);
+    seedProcessedArticle(nowStr);
     mockSendEmail.mockRejectedValueOnce(new Error("SMTP connection refused"));
 
     await expect(sendEveningEmail(db)).rejects.toSatisfy(
