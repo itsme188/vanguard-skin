@@ -9,6 +9,8 @@ import {
   BENCHMARK_OPTIONS,
 } from "@/lib/analysis/benchmarks";
 import { NarrativeBlock } from "./analysis/NarrativeBlock";
+import { DrillDownPanel } from "./analysis/DrillDownPanel";
+import type { DrillDownFilter } from "@/lib/queries/drill-down";
 
 // ─── Formatters ──────────────────────────────────────────────────
 
@@ -38,6 +40,7 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
   const [benchmark, setBenchmark] = useState<string>(
     DEFAULT_BENCHMARK_BY_SCOPE[scope ?? "all"] ?? "SPY",
   );
+  const [drillFilter, setDrillFilter] = useState<DrillDownFilter | null>(null);
 
   // Reset benchmark to scope default when scope flips
   useEffect(() => {
@@ -178,10 +181,27 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
             {data.sizeTilt && <TiltBar tilt={data.sizeTilt} />}
             {data.styleTilt && <TiltBar tilt={data.styleTilt} />}
             {data.geographyTilt && <TiltBar tilt={data.geographyTilt} />}
-            {data.sectorTilt && <TiltBar tilt={data.sectorTilt} />}
+            {data.sectorTilt && (
+              <TiltBar
+                tilt={data.sectorTilt}
+                onBucketClick={(label) => {
+                  // "Other" rollups don't map to a single sector — skip.
+                  if (!label || label === "Other") return;
+                  setDrillFilter({ kind: "sector", sector: label });
+                }}
+              />
+            )}
           </div>
         </div>
       )}
+
+      {/* P3 Slice C — sector tilt bucket click opens drill-down */}
+      <DrillDownPanel
+        open={drillFilter !== null}
+        onClose={() => setDrillFilter(null)}
+        scope={scope ?? "all"}
+        filter={drillFilter}
+      />
     </div>
   );
 }
@@ -223,7 +243,19 @@ function MetricCell({
   );
 }
 
-function TiltBar({ tilt }: { tilt: FactorTilt }) {
+function TiltBar({
+  tilt,
+  onBucketClick,
+}: {
+  tilt: FactorTilt;
+  /**
+   * P3 Slice C — caller wires this to open the DrillDownPanel filtered to the
+   * clicked bucket. Currently only the sector tilt is drillable (the drill-down
+   * query only supports `sector`); other tilts pass no callback and remain
+   * static.
+   */
+  onBucketClick?: (label: string) => void;
+}) {
   // Filter out tiny allocations for cleaner display
   const significant = tilt.buckets.filter((b) => b.weight >= 0.01);
   const other = tilt.buckets
@@ -243,35 +275,46 @@ function TiltBar({ tilt }: { tilt: FactorTilt }) {
 
       {/* Stacked bar */}
       <div className="flex h-3 rounded-full overflow-hidden bg-edge mb-1.5">
-        {display.map((bucket, i) => (
-          <div
-            key={bucket.label}
-            className="h-full transition-all"
-            style={{
-              width: `${bucket.weight * 100}%`,
-              backgroundColor: TILT_COLORS[i % TILT_COLORS.length],
-            }}
-            title={
-              isPrivate
-                ? `${bucket.label}: •••`
-                : `${bucket.label}: ${(bucket.weight * 100).toFixed(1)}%`
-            }
-          />
-        ))}
+        {display.map((bucket, i) => {
+          const drillable = !!onBucketClick && bucket.label !== "Other";
+          return (
+            <div
+              key={bucket.label}
+              className={`h-full transition-all ${drillable ? "cursor-pointer hover:opacity-80" : ""}`}
+              style={{
+                width: `${bucket.weight * 100}%`,
+                backgroundColor: TILT_COLORS[i % TILT_COLORS.length],
+              }}
+              title={
+                isPrivate
+                  ? `${bucket.label}: •••`
+                  : `${bucket.label}: ${(bucket.weight * 100).toFixed(1)}%`
+              }
+              onClick={drillable ? () => onBucketClick!(bucket.label) : undefined}
+            />
+          );
+        })}
       </div>
 
       {/* Legend */}
       <div className="flex flex-wrap gap-x-3 gap-y-0.5">
-        {display.map((bucket, i) => (
-          <span key={bucket.label} className="flex items-center gap-1 text-[10px] text-ink-faint">
+        {display.map((bucket, i) => {
+          const drillable = !!onBucketClick && bucket.label !== "Other";
+          return (
             <span
-              className="w-2 h-2 rounded-sm flex-shrink-0"
-              style={{ backgroundColor: TILT_COLORS[i % TILT_COLORS.length] }}
-            />
-            {bucket.label}
-            <Pct value={bucket.weight * 100} digits={0} className="font-mono text-ink-dim" />
-          </span>
-        ))}
+              key={bucket.label}
+              className={`flex items-center gap-1 text-[10px] text-ink-faint ${drillable ? "cursor-pointer hover:text-ink-dim" : ""}`}
+              onClick={drillable ? () => onBucketClick!(bucket.label) : undefined}
+            >
+              <span
+                className="w-2 h-2 rounded-sm flex-shrink-0"
+                style={{ backgroundColor: TILT_COLORS[i % TILT_COLORS.length] }}
+              />
+              {bucket.label}
+              <Pct value={bucket.weight * 100} digits={0} className="font-mono text-ink-dim" />
+            </span>
+          );
+        })}
       </div>
     </div>
   );

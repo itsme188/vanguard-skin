@@ -8,6 +8,8 @@ import type {
 } from "@/lib/compute/risk";
 import { Pct } from "@/lib/privacy/components";
 import { NarrativeBlock } from "./analysis/NarrativeBlock";
+import { DrillDownPanel } from "./analysis/DrillDownPanel";
+import type { DrillDownFilter } from "@/lib/queries/drill-down";
 
 // ─── Formatters ──────────────────────────────────────────────────
 
@@ -40,6 +42,7 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
   const [data, setData] = useState<PositionRiskResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [drillFilter, setDrillFilter] = useState<DrillDownFilter | null>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -94,14 +97,28 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
 
   return (
     <div className="bg-panel rounded-xl p-4 sm:p-5 card-elev space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
         <h3 className="text-sm font-medium text-ink">Position-Level Risk</h3>
-        {data.portfolioVol != null && (
-          <span className="text-xs text-ink-faint">
-            Portfolio Vol:{" "}
-            <Pct value={data.portfolioVol * 100} digits={1} className="font-mono text-ink" />
-          </span>
-        )}
+        <div className="flex items-center gap-3 flex-wrap">
+          {data.portfolioVol != null && (
+            <span className="text-xs text-ink-faint">
+              Portfolio Vol:{" "}
+              <Pct value={data.portfolioVol * 100} digits={1} className="font-mono text-ink" />
+            </span>
+          )}
+          {/* P3 Slice C — drill-down trigger. Single button (not per-row click)
+              because the filter is identical regardless of which row is clicked
+              — clearer affordance than making rows look interactive for the
+              same outcome. */}
+          <button
+            type="button"
+            onClick={() => setDrillFilter({ kind: "risk", topN: 10 })}
+            className="text-xs text-gold hover:underline focus-ring rounded px-1"
+            aria-label="Open top 10 by risk in drill-down panel"
+          >
+            View top 10 by risk →
+          </button>
+        </div>
       </div>
 
       <NarrativeBlock scope={scope ?? "all"} surfaceKey="position-risk" />
@@ -257,6 +274,14 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
           </div>
         </div>
       )}
+
+      {/* P3 Slice C — drill-down panel for top-N risk */}
+      <DrillDownPanel
+        open={drillFilter !== null}
+        onClose={() => setDrillFilter(null)}
+        scope={scope ?? "all"}
+        filter={drillFilter}
+      />
     </div>
   );
 }
