@@ -111,6 +111,29 @@ export async function sendBriefingEmail(
     console.warn(`[send-briefing] narrative pre-generation skipped: ${msg}`);
   }
 
+  // Macro themes pre-generation. 4 scopes × 1/wk = 4 Sonnet calls, run in
+  // parallel. Cached per (scope, week_of). Failures here MUST NOT block the
+  // briefing. Cost: ~$0.85/month at Sunday cadence.
+  try {
+    const { generateMacroThemes } = await import("@/lib/compute/macro-themes");
+    const SCOPES_FOR_MACRO = ["all", "vanguard", "ibkr", "roth"] as const;
+    const macroWeek = mondayOf(weekOf);
+    const macroResults = await Promise.allSettled(
+      SCOPES_FOR_MACRO.map((scope) =>
+        generateMacroThemes(db, { scope, weekOf: macroWeek })
+      )
+    );
+    const macroFailed = macroResults.filter((r) => r.status === "rejected").length;
+    if (macroFailed > 0) {
+      console.warn(
+        `[send-briefing] ${macroFailed} of ${macroResults.length} macro-theme pre-generations failed`
+      );
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[send-briefing] macro-themes pre-generation skipped: ${msg}`);
+  }
+
   // Per-security regression cache backfill. Sunday cadence is appropriate;
   // daily TWS auto-refresh would burn 180+ OLS computes per run with little
   // benefit (price data only changes once a day for most names).
