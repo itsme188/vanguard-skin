@@ -8,9 +8,14 @@ import {
 import {
   buildReadThroughEntries,
   renderReadThroughsBlock,
+  renderPreviewPrompt,
+  renderRecapPrompt,
   isPlausibleEarnings,
   type ReadThroughEntry,
+  type EarningsPreviewContext,
+  type EarningsRecapContext,
 } from "@/lib/digest/send-earnings-email";
+import type { CalendarEvent } from "@/lib/types";
 
 let db: Database.Database;
 
@@ -400,6 +405,124 @@ describe("renderReadThroughsBlock", () => {
     };
     const out = renderReadThroughsBlock({ symbol: "FOO", readThroughs: [entry] });
     expect(out).not.toContain("*Hypothesis:*");
+  });
+});
+
+// ── Prompt-integration regressions (read-throughs slot into both flows) ──
+
+function makeMinimalPreviewCtx(
+  overrides: Partial<EarningsPreviewContext> = {},
+): EarningsPreviewContext {
+  const event: CalendarEvent = {
+    id: 1,
+    source: "finnhub",
+    source_key: "finnhub:APP:2026-05-12",
+    event_type: "earnings",
+    event_date: "2026-05-12",
+    event_time: "AMC",
+    release_time: "16:01",
+    title: "APP earnings",
+    description: null,
+    expected_impact: null,
+    actual_value: null,
+    consensus_estimate: "EPS $2.10 · Rev $1.10B",
+    consensus_value: null,
+    previous_value: null,
+    reaction_snapshot: null,
+    enriched_at: null,
+    symbol: "APP",
+    security_id: null,
+    ib_con_id: null,
+    week_of: "2026-05-11",
+    raw_json: null,
+    fetched_at: "2026-05-04 00:00:00",
+    created_at: "2026-05-04 00:00:00",
+  };
+
+  return {
+    symbol: "APP",
+    family: ["APP"],
+    event,
+    positions: [],
+    combinedShares: 0,
+    combinedContracts: 0,
+    userNotes: [],
+    recentArticles: [],
+    recommendationTrend: null,
+    priceTarget: null,
+    ratingChanges: null,
+    recentPressReleases: null,
+    priorTranscript: null,
+    bogeys: [],
+    readThroughs: [],
+    ...overrides,
+  };
+}
+
+const READ_THROUGH_FIXTURE: ReadThroughEntry = {
+  reporter: "META",
+  reporterEventDate: "2026-04-30",
+  hypothesis: "ad-platform read-through",
+  weight: 0.85,
+  consensusEps: 5.0,
+  consensusRev: 38_000_000_000,
+  actualEps: 5.4,
+  actualRev: 38_800_000_000,
+  reactionStockPct: 4.2,
+  reactionSpyPct: 0.3,
+  reactionQqqPct: 0.8,
+};
+
+describe("renderPreviewPrompt — read-throughs integration", () => {
+  it("renders the read-throughs section when entries exist", () => {
+    const ctx = makeMinimalPreviewCtx({ readThroughs: [READ_THROUGH_FIXTURE] });
+    const out = renderPreviewPrompt(ctx);
+    expect(out).toContain("## Read-throughs from this earnings season");
+    expect(out).toContain("**META** reported 2026-04-30");
+    expect(out).toContain("ad-platform read-through");
+  });
+
+  it("omits the section silently when readThroughs is empty", () => {
+    const ctx = makeMinimalPreviewCtx({ readThroughs: [] });
+    const out = renderPreviewPrompt(ctx);
+    expect(out).not.toContain("## Read-throughs");
+  });
+});
+
+describe("renderRecapPrompt — read-throughs integration (sibling of preview)", () => {
+  function makeRecapCtx(
+    readThroughs: ReadThroughEntry[],
+  ): EarningsRecapContext {
+    const base = makeMinimalPreviewCtx({ readThroughs });
+    return {
+      ...base,
+      reactionSnapshotMarkdown: "Stock +1.2%, SPY +0.3%, QQQ +0.5% (T+2h)",
+      freshPressReleases: null,
+    };
+  }
+
+  it("renders the read-throughs section when entries exist (recap mirror of preview)", () => {
+    const out = renderRecapPrompt(makeRecapCtx([READ_THROUGH_FIXTURE]));
+    expect(out).toContain("## Read-throughs from this earnings season");
+    expect(out).toContain("**META** reported 2026-04-30");
+    expect(out).toContain("ad-platform read-through");
+    expect(out).toContain("EPS +$0.40"); // beat math present
+  });
+
+  it("omits the section silently when readThroughs is empty", () => {
+    const out = renderRecapPrompt(makeRecapCtx([]));
+    expect(out).not.toContain("## Read-throughs");
+  });
+
+  it("slots the section between newsletters and analyst (positionally consistent with preview)", () => {
+    const out = renderRecapPrompt(makeRecapCtx([READ_THROUGH_FIXTURE]));
+    const readThroughIdx = out.indexOf("## Read-throughs");
+    // Both blocks may render as empty strings when there's no data, so we
+    // check that read-throughs appears BEFORE the "Your task" output-spec
+    // section (which comes after all context blocks).
+    const taskIdx = out.indexOf("## Your task");
+    expect(readThroughIdx).toBeGreaterThan(0);
+    expect(taskIdx).toBeGreaterThan(readThroughIdx);
   });
 });
 

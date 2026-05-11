@@ -1031,6 +1031,12 @@ export function renderRecapPrompt(ctx: RecapContext): string {
   const userNotesBlock = renderUserNotesBlock(ctx);
   const bogeysBlock = renderBogeysBlock(ctx);
   const newslettersBlock = renderNewslettersBlock(ctx, "recap");
+  // Read-throughs: same data + helper as preview (RecapContext extends
+  // PreviewContext, buildRecapContext inherits `readThroughs`). On the
+  // recap side they anchor the print in the cluster context the reader
+  // already saw at preview time — "the META/GOOGL prints we framed for
+  // you earlier reported $X · reaction Y%; here's how this one stacks up."
+  const readThroughsBlock = renderReadThroughsBlock(ctx);
   const analystBlock = renderAnalystBlock(ctx);
   const pressBlock = ctx.freshPressReleases
     ? `\n## Press releases since release\n${ctx.freshPressReleases}\n`
@@ -1052,6 +1058,7 @@ ${actualBlock}
 ${reactionBlock}
 ${positionsBlock}
 ${newslettersBlock}
+${readThroughsBlock}
 ${analystBlock}
 ${pressBlock}
 ${priorCallBlock}
