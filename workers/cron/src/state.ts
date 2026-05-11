@@ -110,17 +110,38 @@ export interface EarningsEmailRow {
 }
 
 /**
+ * Active static price level — Worker-side cloud scan target.
+ *
+ * Only `price_source = 'static'` levels are mirrored to v4 snapshots; MA-based
+ * levels (sma_*, ema_*) require OHLCV bars to resolve effective_price and stay
+ * Mac-only for now. ~90% coverage of typical user levels at current volumes.
+ */
+export interface SecurityLevelRow {
+  id: number;
+  security_id: number;
+  symbol: string;
+  level_type: string;
+  price: number;
+  direction: string | null;
+  source: string;
+  source_author: string | null;
+  expires_at: string | null;
+}
+
+/**
  * Snapshot schema is forward-compatible:
  *   v1 — briefing/digest only
  *   v2 — adds earnings cloud-fallback context (holdings, securities, etc.)
  *   v3 — adds vanguardHoldings + securityBetas for evening-email fallback
  *        + recipient override fields in settings
+ *   v4 — adds securityLevels (static price levels) for cloud-side scan +
+ *        Pushover fan-out when Mac is asleep
  *
- * All v2/v3 fields are optional for back-compat with older snapshots; the
+ * All v2/v3/v4 fields are optional for back-compat with older snapshots; the
  * fallback gracefully degrades when these are missing.
  */
 export interface Snapshot {
-  schemaVersion: 1 | 2 | 3;
+  schemaVersion: 1 | 2 | 3 | 4;
   snapshotDate: string;
   generatedAt: string;
   heldSymbols: string[];
@@ -151,6 +172,8 @@ export interface Snapshot {
   // v3 — evening-email fallback fields. Optional for back-compat with v1/v2.
   vanguardHoldings?: Array<{ symbol: string; securityId: number; accountId: number }>;
   securityBetas?: Array<{ securityId: number; lookbackDays: number; beta: number; computedAt: string }>;
+  // v4 — cloud-side level scan. Static levels only; MA-based levels stay Mac-only.
+  securityLevels?: SecurityLevelRow[];
 }
 
 /** Fetch the most recent snapshot (within 7d). Returns null if none exist. */
