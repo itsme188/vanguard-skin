@@ -23,9 +23,15 @@ function getFactorRank(value: string | null): number {
 
 interface FactorHeatmapProps {
   rows: FactorHeatmapRow[];
+  /**
+   * P3 Slice C trigger — called when the user clicks a populated factor cell.
+   * Caller pipes (factor, bucket) into a DrillDownPanel filter. Empty cells
+   * (no factor value) are not clickable.
+   */
+  onCellClick?: (factor: FactorColumn, bucket: string) => void;
 }
 
-export function FactorHeatmap({ rows }: FactorHeatmapProps) {
+export function FactorHeatmap({ rows, onCellClick }: FactorHeatmapProps) {
   const [hoveredCell, setHoveredCell] = useState<{ row: number; col: number } | null>(null);
   const [sortColumn, setSortColumn] = useState<SortColumn | null>(null);
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
@@ -159,13 +165,17 @@ export function FactorHeatmap({ rows }: FactorHeatmapProps) {
                   const color = getFactorColor(value);
                   const isHovered =
                     hoveredCell?.row === rowIdx && hoveredCell?.col === colIdx;
+                  const clickable = !!(onCellClick && value);
 
                   return (
                     <td
                       key={col}
-                      className={`text-center py-1.5 px-1 relative ${colIdx >= 3 ? "hidden md:table-cell" : ""}`}
+                      className={`text-center py-1.5 px-1 relative ${colIdx >= 3 ? "hidden md:table-cell" : ""} ${clickable ? "cursor-pointer" : ""}`}
                       onMouseEnter={() => setHoveredCell({ row: rowIdx, col: colIdx })}
                       onMouseLeave={() => setHoveredCell(null)}
+                      onClick={() => {
+                        if (clickable && value) onCellClick!(col, value);
+                      }}
                     >
                       {value ? (
                         <span
