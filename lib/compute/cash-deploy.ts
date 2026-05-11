@@ -26,6 +26,7 @@ export interface SectorGap {
   targetWeight: number;
   gapPp: number; // signed percentage-point gap: negative = underweight (deploy target)
   dollarGap: number; // signed dollar amount to fully close gap
+  gapClosureScore: number; // |gapPp|, optionally boosted by theme-aware logic
 }
 
 export interface CashDeployPick {
@@ -180,6 +181,7 @@ function computeSectorGaps(
         targetWeight,
         gapPp,
         dollarGap,
+        gapClosureScore: Math.abs(gapPp),
       });
     }
   }
@@ -189,19 +191,9 @@ function computeSectorGaps(
   return gaps;
 }
 
-function gapClosureScore(
-  candidate: WatchlistCandidate,
-  gaps: SectorGap[]
-): { score: number; sectorTarget: string; rationale: string } | null {
-  const sector = candidate.sector ?? "Unknown";
-  const matchingGap = gaps.find((g) => g.sector === sector && g.gapPp < 0);
-  if (!matchingGap) {
-    return null;
-  }
-  // Score: magnitude of the gap (more underweight = better target).
-  const score = Math.abs(matchingGap.gapPp);
-  const rationale = `Underweight ${sector} by ${matchingGap.gapPp.toFixed(1)}pp vs benchmark`;
-  return { score, sectorTarget: sector, rationale };
+
+export interface SuggestAllocationOptions {
+  activeThemes?: import("./macro-themes").MacroTheme[];
 }
 
 /**
@@ -213,7 +205,8 @@ export function suggestAllocation(
   db: Database.Database,
   scope: string,
   accountIds: number[] | undefined,
-  cashAmount: number
+  cashAmount: number,
+  opts: SuggestAllocationOptions = {}
 ): CashDeploySuggestion {
   const benchmarkSymbol = getDefaultBenchmark(scope);
   const benchmarkMap = getBenchmarkSectorMap(db, benchmarkSymbol);
@@ -246,13 +239,19 @@ export function suggestAllocation(
     );
   }
 
-  const gaps = computeSectorGaps(current, benchmarkMap, cashAmount);
+  const rawGaps = computeSectorGaps(current, benchmarkMap, cashAmount);
+  // Apply theme-aware boost to gapClosureScore before ranking candidates.
+  const gaps = applyThemeAwareBoost(rawGaps, opts.activeThemes ?? []);
 
-  // Rank watchlist candidates by gap closure
+  // Rank watchlist candidates by boosted gap closure score
   const ranked = watchlist
     .map((c) => {
-      const score = gapClosureScore(c, gaps);
-      return score ? { ...c, ...score } : null;
+      const sector = c.sector ?? "Unknown";
+      const matchingGap = gaps.find((g) => g.sector === sector && g.gapPp < 0);
+      if (!matchingGap) return null;
+      const score = matchingGap.gapClosureScore;
+      const rationale = `Underweight ${sector} by ${matchingGap.gapPp.toFixed(1)}pp vs benchmark`;
+      return { ...c, score, sectorTarget: sector, rationale };
     })
     .filter((x): x is WatchlistCandidate & { score: number; sectorTarget: string; rationale: string } => x !== null)
     .sort((a, b) => b.score - a.score);
@@ -330,4 +329,49 @@ export function suggestAllocation(
 function formatCash(n: number): string {
   if (n >= 1000) return `$${(n / 1000).toFixed(1)}k`;
   return `$${n.toFixed(0)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Theme-aware gap boost
+// ---------------------------------------------------------------------------
+
+import type { MacroTheme } from "./macro-themes";
+
+const DEFENSIVE_SECTORS = new Set([
+  "Utilities", "Consumer Staples", "Healthcare", "Real Estate",
+]);
+const AGGRESSIVE_SECTORS = new Set([
+  "Technology", "Consumer Discretionary", "Communication Services",
+]);
+const BOOST_MULTIPLIER = 1.15;
+
+/**
+ * Recomputes `gapClosureScore` on each SectorGap based on the net direction of
+ * active macro themes:
+ *   - risk-off net → defensive sectors boosted 1.15×
+ *   - risk-on  net → aggressive sectors boosted 1.15×
+ *   - neutral / empty → |gapPp| unchanged
+ */
+export function applyThemeAwareBoost(
+  gaps: SectorGap[],
+  themes: MacroTheme[]
+): SectorGap[] {
+  if (themes.length === 0) {
+    return gaps.map((g) => ({ ...g, gapClosureScore: Math.abs(g.gapPp) }));
+  }
+  const netDirection = themes.reduce((d, t) => {
+    if (t.direction === "risk-off") return d - 1;
+    if (t.direction === "risk-on") return d + 1;
+    return d;
+  }, 0);
+  if (netDirection === 0) {
+    return gaps.map((g) => ({ ...g, gapClosureScore: Math.abs(g.gapPp) }));
+  }
+  return gaps.map((g) => {
+    const base = Math.abs(g.gapPp);
+    let boost = 1;
+    if (netDirection < 0 && DEFENSIVE_SECTORS.has(g.sector)) boost = BOOST_MULTIPLIER;
+    if (netDirection > 0 && AGGRESSIVE_SECTORS.has(g.sector)) boost = BOOST_MULTIPLIER;
+    return { ...g, gapClosureScore: base * boost };
+  });
 }
