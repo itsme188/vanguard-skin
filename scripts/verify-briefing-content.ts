@@ -20,6 +20,7 @@
  */
 import Database from "better-sqlite3";
 import { buildMacroExposures } from "@/lib/calendar/briefing";
+import { buildSelfAdmissionRegex } from "@/lib/calendar/briefing-self-admission";
 import { getEventsByWeek, getBriefingByWeek } from "@/lib/queries/calendar";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 
@@ -366,8 +367,11 @@ if (priceHits.length === 0) {
 }
 
 // ── Check 4: A5 self-admission scan ────────────────────────────────
+// Regex shared with the auto-regen path in `lib/calendar/briefing.ts`
+// (single source of truth) — keep `briefing-self-admission.ts` as the
+// only place patterns are defined so a tightening here lands in both.
 console.log("\n─── A5 Self-admission scan ───");
-const selfAdmitRe = /(data\s+(looks\s+corrupted|appears\s+wrong|seems\s+off|isn['']?t\s+available|seems\s+(?:incomplete|missing))|brief\s+looks|i\s+(?:cannot|can'?t|don'?t|do\s+not)\s+have\s+(?:current|live|the\s+actual|access\s+to)|unable\s+to\s+(?:access|verify|confirm)|without\s+access\s+to|i\s+don'?t\s+have\s+access|cannot\s+verify)/gi;
+const selfAdmitRe = buildSelfAdmissionRegex();
 const admissions: string[] = [];
 let am: RegExpExecArray | null;
 while ((am = selfAdmitRe.exec(content)) !== null) {
