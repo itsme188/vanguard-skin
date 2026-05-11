@@ -62,13 +62,20 @@ export async function generateWeeklyBriefing(
   options?.onProgress?.("Building portfolio + events context...", 0, 4);
 
   // ── Portfolio holdings (cross-account) ─────────────────────────
+  // `!= 0` (not `> 0`) so shorts surface in the symbol list. `net_qty` is
+  // the cross-account sum so Opus knows the net direction without us
+  // expanding into per-account legs — keeps the prompt compact while
+  // closing A7 (the long-only filter previously hid e.g. shorted MSFT
+  // entirely from the briefing's portfolio context).
   const holdings = db
     .prepare(
-      `SELECT DISTINCT s.symbol, s.name, s.security_type, s.sector
+      `SELECT s.symbol, s.name, s.security_type, s.sector,
+              SUM(h.quantity) AS net_qty
        FROM holdings h
        JOIN securities s ON s.id = h.security_id
-       WHERE h.quantity > 0
+       WHERE h.quantity != 0
          AND h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id)
+       GROUP BY s.id
        ORDER BY s.symbol`
     )
     .all() as {
@@ -76,6 +83,7 @@ export async function generateWeeklyBriefing(
       name: string | null;
       security_type: string | null;
       sector: string | null;
+      net_qty: number;
     }[];
 
   // ── Event partitioning: portfolio earnings (Finnhub) vs macro ──
@@ -129,16 +137,9 @@ export async function generateWeeklyBriefing(
   const levelsTriggered = getLevelsTriggeredInWindow(db, 7);
   const levelsNearby = getLevelsNearPrice(db, 0.05);
 
-  // Build holdings list with inline current prices.
-  const holdingsList = holdings
-    .map((h) => {
-      const p = currentPrices.get(h.symbol);
-      const priceSuffix = p
-        ? ` — last $${p.close.toFixed(2)} (${p.date})`
-        : ` — no recent price`;
-      return `${h.symbol} (${h.name ?? "unknown"}, ${h.sector ?? "N/A"})${priceSuffix}`;
-    })
-    .join("\n");
+  // Build holdings list with inline current prices via the exported
+  // pure helper (testable in isolation).
+  const holdingsList = formatHoldingsList(holdings, currentPrices);
 
   // Standalone current-prices block — covers option underlyings + earnings
   // symbols not already in the holdings list (e.g., a LEAP whose underlying
@@ -556,6 +557,12 @@ function querySymbolsBySectors(
   db: Database.Database,
   sectors: string[],
 ): string[] {
+  // NOTE: `quantity > 0` is intentional here (not `!= 0`). The macro §6
+  // cluster narrates "user holdings in this sector" as positive exposure
+  // ("you hold MSFT, AAPL, GOOG in tech"). Including shorts would
+  // mislead Opus into framing anti-correlated positions as same-direction
+  // sector bets. The main-holdings query at the top of this file does
+  // surface shorts (A7) — this sector-cluster context is the exception.
   if (sectors.length === 0) {
     // Broad / all-equity case
     const rows = db
@@ -590,6 +597,43 @@ function querySymbolsBySectors(
     )
     .all(...sectors) as { symbol: string }[];
   return rows.map((r) => r.symbol);
+}
+
+// ── Main-holdings list formatter (A7 short-aware) ───────────────────
+
+export interface BriefingHolding {
+  symbol: string;
+  name: string | null;
+  security_type: string | null;
+  sector: string | null;
+  /** Cross-account net quantity (positive = long, negative = short). */
+  net_qty: number;
+}
+
+/**
+ * Render the portfolio-holdings symbol list that feeds Opus's portfolio
+ * context. Long-only positions stay in the compact original shape so the
+ * prompt doesn't bloat for the 99% case; net-short positions get an
+ * explicit "NET SHORT n" marker so Opus does not narrate them as "you
+ * hold X" (the original `quantity > 0` filter hid shorts entirely — A7).
+ */
+export function formatHoldingsList(
+  holdings: BriefingHolding[],
+  currentPrices: Map<string, { close: number; date: string }>,
+): string {
+  return holdings
+    .map((h) => {
+      const p = currentPrices.get(h.symbol);
+      const priceSuffix = p
+        ? ` — last $${p.close.toFixed(2)} (${p.date})`
+        : ` — no recent price`;
+      const directionSuffix =
+        h.net_qty < 0
+          ? ` — NET SHORT ${Math.abs(h.net_qty)} (cross-account net)`
+          : "";
+      return `${h.symbol} (${h.name ?? "unknown"}, ${h.sector ?? "N/A"})${directionSuffix}${priceSuffix}`;
+    })
+    .join("\n");
 }
 
 // ── Combined-position helpers (issuer family per earnings event) ────
