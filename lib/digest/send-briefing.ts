@@ -3,11 +3,12 @@ import { getBriefingByWeek, isBriefingStale } from "@/lib/queries/calendar";
 import { generateWeeklyBriefing } from "@/lib/calendar/briefing";
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
 import { sendEmail } from "@/lib/email";
-import { addDays, getCurrentMonday } from "@/lib/calendar/date-utils";
+import { addDays, getCurrentMonday, mondayOf } from "@/lib/calendar/date-utils";
 import { syncPortfolio } from "@/lib/tws/positions";
 import { setLastBriefingSentAt } from "@/lib/digest/daily-digest";
 import { syncCalendarForWeek } from "@/lib/calendar/sync";
 import { getRecipientsFor } from "@/lib/queries/email-recipients";
+import { generateNarrative, NARRATIVE_SURFACES } from "@/lib/compute/analysis-narratives";
 
 export class BriefingSendError extends Error {
   constructor(
@@ -82,6 +83,32 @@ export async function sendBriefingEmail(
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`[send-briefing] calendar sync (${w}) failed: ${msg}`);
     }
+  }
+
+  // Narrative pre-generation. 4 scopes × 4 surfaces = 16 Sonnet calls,
+  // run in parallel. Cached per (scope, surface, week_of) so the next
+  // briefing-pipeline invocation is a no-op. Failures here MUST NOT block
+  // the briefing — narratives are nice-to-have, the email is the critical
+  // path. Cost: ~$0.32/month at Sunday cadence.
+  try {
+    const SCOPES_FOR_NARRATIVES = ["all", "vanguard", "ibkr", "roth"] as const;
+    const narrativeWeek = mondayOf(weekOf);
+    const results = await Promise.allSettled(
+      SCOPES_FOR_NARRATIVES.flatMap((scope) =>
+        NARRATIVE_SURFACES.map((surface) =>
+          generateNarrative(db, { scope, surfaceKey: surface, weekOf: narrativeWeek })
+        )
+      )
+    );
+    const failed = results.filter((r) => r.status === "rejected").length;
+    if (failed > 0) {
+      console.warn(
+        `[send-briefing] ${failed} of ${results.length} narrative pre-generations failed (cached entries from prior weeks remain available)`
+      );
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[send-briefing] narrative pre-generation skipped: ${msg}`);
   }
 
   let briefing = getBriefingByWeek(db, weekOf);
