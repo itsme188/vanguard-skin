@@ -15,6 +15,7 @@ import type Database from "better-sqlite3";
 import { generateText } from "ai";
 import { getModelForFeature } from "@/lib/ai/provider";
 import { resolveFeatureModel } from "@/lib/ai/models";
+import { resolveScope } from "@/lib/queries/accounts";
 import {
   getCachedNarrative,
   upsertNarrative,
@@ -67,51 +68,6 @@ const SURFACE_PROMPTS: Record<NarrativeSurface, string> = {
     "Read the heatmap of factor exposures across positions. In 2-3 sentences, call out the most concentrated factor bucket and any surprising holes (e.g., zero crypto exposure, no defensive plays). Avoid specific dollar amounts.",
 };
 
-// ─── Scope resolution ────────────────────────────────────────────────────────
-
-/**
- * Resolve a scope string to an array of account IDs (or undefined for "all").
- *
- * Mirrors the pattern in app/dashboard/analysis/page.tsx::resolveAccountIds.
- * Disjoint scopes: vanguard excludes "roth" so all = vanguard + roth + ibkr.
- */
-function resolveAccountIds(
-  db: Database.Database,
-  scope: string
-): number[] | undefined {
-  if (scope === "all") return undefined;
-
-  const rows = db
-    .prepare("SELECT id, name FROM accounts")
-    .all() as Array<{ id: number; name: string }>;
-
-  if (scope === "vanguard") {
-    const ids = rows
-      .filter((r) => {
-        const n = r.name.toLowerCase();
-        return n.includes("vanguard") && !n.includes("roth");
-      })
-      .map((r) => r.id);
-    return ids.length > 0 ? ids : undefined;
-  }
-
-  if (scope === "ibkr") {
-    const ids = rows
-      .filter((r) => r.name.toLowerCase().includes("ibkr"))
-      .map((r) => r.id);
-    return ids.length > 0 ? ids : undefined;
-  }
-
-  if (scope === "roth") {
-    const ids = rows
-      .filter((r) => r.name.toLowerCase().includes("roth"))
-      .map((r) => r.id);
-    return ids.length > 0 ? ids : undefined;
-  }
-
-  return undefined;
-}
-
 // ─── Per-surface context builder ─────────────────────────────────────────────
 
 /**
@@ -121,36 +77,45 @@ function resolveAccountIds(
  * Multi-account scope handling: computeFactorAnalysis / computeRiskMetrics /
  * computePositionRisk each take a SINGLE accountId. For multi-account scopes
  * (vanguard/ibkr/roth/all) we pass the FIRST resolved id (or undefined for
- * "all"). This is a lossy first pass — narrative quality only suffers, not
- * correctness. getFactorHeatmap takes the full array directly.
+ * "all") AND prepend a NOTE so Sonnet hedges portfolio-wide claims. The
+ * factor-heatmap path takes the full array directly via getFactorHeatmap, so
+ * no preamble is needed there.
  */
-export function buildContextForSurface(
+function buildContextForSurface(
   db: Database.Database,
   scope: string,
   surface: NarrativeSurface
 ): string {
-  const accountIds = resolveAccountIds(db, scope);
+  const accountIds = resolveScope(db, scope);
   const firstAccountId = accountIds && accountIds.length > 0 ? accountIds[0] : undefined;
 
   const emptyMessage =
     "(no data available for this surface yet — likely a fresh portfolio without classifications)";
 
+  // Single-id compute fns lose data when scope spans multiple accounts.
+  // Heatmap path takes the full array, so it's exempt.
+  const isSingleIdSurface = surface !== "factor-heatmap";
+  const multiAccountPreamble =
+    isSingleIdSurface && accountIds && accountIds.length > 1
+      ? `NOTE: This scope has multiple accounts (${accountIds.length} total). The data below reflects only the primary account; cross-account aggregation isn't available yet for this surface. Hedge any portfolio-wide claims accordingly.\n\n`
+      : "";
+
   if (surface === "factor-analysis") {
     const result = computeFactorAnalysis(db, { accountId: firstAccountId });
     if (!result) return emptyMessage;
-    return JSON.stringify(result, null, 2);
+    return multiAccountPreamble + JSON.stringify(result, null, 2);
   }
 
   if (surface === "risk-metrics") {
     const result = computeRiskMetrics(db, { accountId: firstAccountId });
     if (!result) return emptyMessage;
-    return JSON.stringify(result, null, 2);
+    return multiAccountPreamble + JSON.stringify(result, null, 2);
   }
 
   if (surface === "position-risk") {
     const result = computePositionRisk(db, { accountId: firstAccountId, topN: 5 });
     if (!result) return emptyMessage;
-    return JSON.stringify(result, null, 2);
+    return multiAccountPreamble + JSON.stringify(result, null, 2);
   }
 
   if (surface === "factor-heatmap") {
@@ -190,18 +155,47 @@ export async function generateNarrative(
   // 3. Build per-surface context.
   const context = buildContextForSurface(db, opts.scope, surface);
 
-  // 4. Call Sonnet via AI Gateway.
+  // 4. Call Sonnet via AI Gateway. Wrap in try/catch so the caller can
+  // distinguish AI errors (network / rate-limit / auth) from validation
+  // errors (unknown surface / truncated output / dollar leak).
   const model = getModelForFeature("analysisFactorNarrative");
   const surfacePrompt = SURFACE_PROMPTS[surface];
   const prompt = `${surfacePrompt}\n\nData (JSON):\n${context}`;
 
-  const result = await generateText({
-    model,
-    system: SYSTEM_PROMPT,
-    prompt,
-  });
+  let rawText: string;
+  try {
+    const result = await generateText({
+      model,
+      system: SYSTEM_PROMPT,
+      prompt,
+    });
+    rawText = result.text;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `Sonnet narrative generation failed for ${opts.scope}/${opts.surfaceKey}: ${msg}`
+    );
+  }
 
-  const narrativeMd = result.text.trim();
+  const narrativeMd = rawText.trim();
+
+  // 4a. Defense-in-depth: dollar-amount post-filter. The system prompt is
+  // the primary guard against $-leaks; this catches any model that ignored
+  // the instruction. Matches `$5`, `$ 5`, `$5,000`, `$5.50`.
+  const dollarLeak = /\$\s*\d/.test(narrativeMd);
+  if (dollarLeak) {
+    throw new Error(
+      "Generated narrative leaked specific dollar amounts; AI ignored system prompt"
+    );
+  }
+
+  // 4b. Min-length sanity. A truncated/empty model response shouldn't
+  // poison the week's cache — better to throw and let the caller retry.
+  if (narrativeMd.length < 40) {
+    throw new Error(
+      "Generated narrative too short — likely truncated AI response"
+    );
+  }
 
   // 5. UPSERT — modelUsed pulled from resolveFeatureModel(...).modelId so
   // future model swaps in FEATURE_MODELS stay a one-line change.
