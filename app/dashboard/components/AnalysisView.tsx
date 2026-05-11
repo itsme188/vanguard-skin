@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type {
   AllocationEntry,
@@ -23,9 +24,27 @@ import { Pct, PrivateText } from "@/lib/privacy/components";
 import { usePrivacy } from "@/lib/privacy/context";
 import { FactorModeCard } from "./analysis/FactorModeCard";
 import { ClassificationCard } from "./analysis/ClassificationCard";
+import { DrillDownPanel } from "./analysis/DrillDownPanel";
+import type {
+  DrillDownFilter,
+  ClassificationDimension,
+} from "@/lib/queries/drill-down";
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
 } from "recharts";
+
+// Dimensions supported by the drill-down query. AllocationDimension is a
+// superset (includes `account`, `symbol`, `credit_rating`) — clicks on
+// unsupported buckets are silently no-op'd.
+const DRILL_SUPPORTED_DIMENSIONS: ReadonlySet<string> = new Set([
+  "sector",
+  "fund_category",
+  "geography",
+  "market_cap_category",
+  "style",
+  "asset_class",
+  "security_type",
+]);
 
 // ─── Constants ───────────────────────────────────────────────────
 
@@ -127,6 +146,31 @@ export function AnalysisView({
   const router = useRouter();
   const searchParams = useSearchParams();
   const { isPrivate } = usePrivacy();
+  const [drillFilter, setDrillFilter] = useState<DrillDownFilter | null>(null);
+  const isFactorMode = currentMode === "factors";
+
+  // Classification trigger — pie slice or breakdown table row.
+  // "Other (N)" buckets don't map to a single classification value, skip them.
+  // Factor mode dimensions are factor columns; route to the factor filter.
+  // Unsupported dimensions (account, symbol, credit_rating) → no-op.
+  function handleClassificationDrill(bucket: string) {
+    if (!bucket || bucket.startsWith("Other (")) return;
+    if (isFactorMode) {
+      if (!FACTOR_COLUMNS.includes(currentDimension as FactorColumn)) return;
+      setDrillFilter({
+        kind: "factor",
+        factor: currentDimension as FactorColumn,
+        bucket,
+      });
+      return;
+    }
+    if (!DRILL_SUPPORTED_DIMENSIONS.has(currentDimension)) return;
+    setDrillFilter({
+      kind: "classification",
+      dimension: currentDimension as ClassificationDimension,
+      bucket,
+    });
+  }
 
   function navigate(updates: Record<string, string>) {
     const params = new URLSearchParams(searchParams.toString());
@@ -140,7 +184,6 @@ export function AnalysisView({
   const chartData = bucketAllocation(allocation);
   const totalValue = allocation.reduce((s, r) => s + r.total_market_value, 0);
 
-  const isFactorMode = currentMode === "factors";
   const dimensionPills = isFactorMode ? FACTOR_ORDER : CLASSIFICATION_ORDER;
 
   return (
@@ -245,6 +288,10 @@ export function AnalysisView({
                   innerRadius={80}
                   outerRadius={140}
                   paddingAngle={1}
+                  onClick={(data: { group_name?: string } | undefined) => {
+                    if (data?.group_name) handleClassificationDrill(data.group_name);
+                  }}
+                  style={{ cursor: "pointer" }}
                 >
                   {chartData.map((entry, i) => (
                     <Cell key={entry.group_name || `cell-${i}`} fill={getSliceColor(i, entry.group_name)} />
@@ -307,7 +354,12 @@ export function AnalysisView({
               </thead>
               <tbody>
                 {allocation.map((row, i) => (
-                  <tr key={row.group_name} className="border-b border-edge/50 hover:bg-raised/50">
+                  <tr
+                    key={row.group_name}
+                    className="border-b border-edge/50 hover:bg-raised/50 cursor-pointer"
+                    onClick={() => handleClassificationDrill(row.group_name)}
+                    title="Click to drill down"
+                  >
                     <td className="py-2 pr-4 flex items-center gap-2">
                       <span
                         className="w-2.5 h-2.5 rounded-full flex-shrink-0"
@@ -359,6 +411,14 @@ export function AnalysisView({
       {/* ── Risk Decomposition ── */}
       <RiskMetrics scope={currentScope} />
       <PositionRiskCard scope={currentScope} />
+
+      {/* P3 Slice C — drill-down panel for classification pie / breakdown clicks */}
+      <DrillDownPanel
+        open={drillFilter !== null}
+        onClose={() => setDrillFilter(null)}
+        scope={currentScope}
+        filter={drillFilter}
+      />
     </div>
   );
 }
