@@ -340,10 +340,13 @@ export function computePortfolioGreeks(
   const accountFilter = options?.accountId
     ? "AND h.account_id = ?"
     : "";
-  const params: (string | number)[] = [today];
+  const params: (string | number)[] = [];
   if (options?.accountId) params.push(options.accountId);
 
-  // Get option positions from latest holdings with underlying prices
+  // Get option positions from latest holdings with underlying prices.
+  // asOfDate=today scopes "latest" to today-or-earlier (vs picking up a stray
+  // future-dated row) — literal-substituted, no positional bind. See
+  // lib/queries/latest-holdings.ts for the safety contract.
   const rows = db
     .prepare(
       `SELECT
@@ -369,7 +372,7 @@ export function computePortfolioGreeks(
          AND s.expiration_date IS NOT NULL
          AND s.option_type IS NOT NULL
          AND s.underlying_symbol IS NOT NULL
-         AND ${latestHoldingsPredicate({ cutoff: true, accountFilter })}`
+         AND ${latestHoldingsPredicate({ asOfDate: today, accountFilter })}`
     )
     .all(...params) as OptionHoldingRow[];
 
