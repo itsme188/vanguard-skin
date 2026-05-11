@@ -611,6 +611,7 @@ function getNewsletterContext(
            AND a.source_id IN (${sourcePlaceholders})
            AND datetime(a.received_at) >= datetime('now', '-7 days')
            AND a.processed_at IS NOT NULL
+           AND COALESCE(a.is_relevant, 1) = 1
          GROUP BY a.id
          ORDER BY a.received_at DESC
          LIMIT 6`,
@@ -634,6 +635,7 @@ function getNewsletterContext(
            WHERE UPPER(s.symbol) IN (${placeholders})
              AND datetime(a.received_at) >= datetime('now', '-30 days')
              AND a.processed_at IS NOT NULL
+             AND COALESCE(a.is_relevant, 1) = 1
            GROUP BY a.id
            ORDER BY a.received_at DESC
            LIMIT 6`,

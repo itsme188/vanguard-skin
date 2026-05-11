@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from "react";
 import Link from "next/link";
-import type { ResearchArticle, ResearchSource } from "@/lib/queries/research";
+import type { ResearchArticle, ResearchSource, FilteredArticle } from "@/lib/queries/research";
 import { trimEmailFooter } from "@/lib/gmail/sanitize";
 import { ManageSourcesModal } from "./ManageSourcesModal";
 import { SendDigestPanel } from "./SendDigestPanel";
@@ -14,6 +14,9 @@ interface Props {
   initialArticles: ResearchArticle[];
   sources: ResearchSource[];
   initialSymbolMap: Record<string, number>;
+  /** D5 — articles flipped to is_relevant=0 by D1/D2 short-circuit or D3 gate. */
+  initialFilteredArticles: FilteredArticle[];
+  initialFilteredCount: number;
 }
 
 // ── Sentiment helpers ────────────────────────────────────────────────
@@ -106,7 +109,13 @@ function ThemePills({ themesJson }: { themesJson: string | null }) {
 
 // ── Main view ────────────────────────────────────────────────────────
 
-export function ResearchFeedsView({ initialArticles, sources, initialSymbolMap }: Props) {
+export function ResearchFeedsView({
+  initialArticles,
+  sources,
+  initialSymbolMap,
+  initialFilteredArticles,
+  initialFilteredCount,
+}: Props) {
   const isMobile = useIsMobile();
   const [articles, setArticles] = useState(initialArticles);
   const [symbolMap, setSymbolMap] = useState<Record<string, number>>(initialSymbolMap);
@@ -123,6 +132,33 @@ export function ResearchFeedsView({ initialArticles, sources, initialSymbolMap }
   const [expandedText, setExpandedText] = useState<string | null>(null);
   const [expandedHtml, setExpandedHtml] = useState<string | null>(null);
   const [loadingExpand, setLoadingExpand] = useState(false);
+  // D5 — filtered articles state lives alongside the main feed; toggling the
+  // "Filtered" pill swaps render branches but reuses the rest of the chrome.
+  const [viewMode, setViewMode] = useState<"all" | "filtered">("all");
+  const [filteredArticles, setFilteredArticles] = useState<FilteredArticle[]>(initialFilteredArticles);
+  const [filteredCount, setFilteredCount] = useState(initialFilteredCount);
+
+  const handleUnfilter = useCallback(async (articleId: number) => {
+    // Optimistic removal — flicker would be worse than a race-loss on failure.
+    setFilteredArticles((prev) => prev.filter((a) => a.id !== articleId));
+    setFilteredCount((n) => Math.max(0, n - 1));
+    try {
+      const res = await fetch(`/api/research/articles/${articleId}/unfilter`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        // Rollback: refetch the full filtered list to recover correct state.
+        const reload = await fetch("/api/research/articles?filtered=1&limit=100");
+        const data = await reload.json();
+        if (data.success) {
+          setFilteredArticles(data.data ?? []);
+          setFilteredCount((data.data ?? []).length);
+        }
+      }
+    } catch {
+      /* network blip — UI stays optimistic, next page load resyncs */
+    }
+  }, []);
 
   const refreshArticles = useCallback(
     async (overrides?: { sourceId?: number | null; search?: string }) => {
@@ -366,6 +402,45 @@ export function ResearchFeedsView({ initialArticles, sources, initialSymbolMap }
       </div>
       <DigestEmailViewer open={previewOpen} onClose={() => setPreviewOpen(false)} />
 
+      {/* D5 — filtered/all toggle. Hidden when there's nothing to audit so
+          the toolbar stays calm on quiet days. Desktop-only for now; the
+          mobile audit path is a known follow-up (not lost — tracked in
+          MEMORY/TODO under D5 mobile deferral). */}
+      {(filteredCount > 0 || viewMode === "filtered") && (
+        <div className="hidden md:flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setViewMode("all")}
+            className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+              viewMode === "all"
+                ? "bg-raised border-edge-strong text-ink"
+                : "border-edge text-ink-dim hover:text-ink hover:bg-raised"
+            }`}
+          >
+            All articles
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode("filtered")}
+            className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+              viewMode === "filtered"
+                ? "bg-gold/15 border-gold/40 text-gold"
+                : "border-edge text-ink-dim hover:text-ink hover:bg-raised"
+            }`}
+            title="Articles flipped to is_relevant=0 by the D1/D2 short-circuit or D3 portfolio-relevance gate"
+          >
+            Filtered
+            <span
+              className={`inline-flex items-center justify-center min-w-[1.25rem] px-1.5 rounded-full text-[10px] font-mono ${
+                viewMode === "filtered" ? "bg-gold/20 text-gold" : "bg-raised text-ink-faint"
+              }`}
+            >
+              {filteredCount}
+            </span>
+          </button>
+        </div>
+      )}
+
       {/* Mobile search input (expands below controls when magnifying glass is tapped) */}
       {searchOpen && isMobile && (
         <input
@@ -389,7 +464,12 @@ export function ResearchFeedsView({ initialArticles, sources, initialSymbolMap }
       )}
 
       {/* Articles — reader layout */}
-      {articles.length === 0 ? (
+      {viewMode === "filtered" ? (
+        <FilteredArticlesList
+          articles={filteredArticles}
+          onUnfilter={handleUnfilter}
+        />
+      ) : articles.length === 0 ? (
         <div className="rounded-xl border border-edge bg-panel p-10 text-center max-w-2xl mx-auto">
           <p className="text-ink-dim">No articles yet.</p>
           <p className="text-ink-faint text-sm mt-1">
@@ -522,5 +602,115 @@ function ArticleCard({
         </div>
       )}
     </article>
+  );
+}
+
+// ── Filtered audit list (D5) ────────────────────────────────────────
+
+const FILTERED_CATEGORY_LABEL: Record<string, string> = {
+  receipt: "Payment receipts",
+  welcome: "Welcome / onboarding",
+  gift: "Gift subscriptions",
+  admin: "Admin mail",
+  off_topic: "Off-topic (Claude judgment)",
+};
+
+function FilteredArticlesList({
+  articles,
+  onUnfilter,
+}: {
+  articles: FilteredArticle[];
+  onUnfilter: (id: number) => void;
+}) {
+  if (articles.length === 0) {
+    return (
+      <div className="rounded-xl border border-edge bg-panel p-10 text-center max-w-2xl mx-auto">
+        <p className="text-ink-dim">Nothing filtered right now.</p>
+        <p className="text-ink-faint text-sm mt-1">
+          The D1/D2 regex and the D3 portfolio-relevance gate land articles
+          here when they fire. Use Unfilter to override.
+        </p>
+      </div>
+    );
+  }
+
+  // Group by category so the user can scan one bucket at a time. The map
+  // preserves insertion order, so categories surface in the order their
+  // first article appeared (most recent first by query order).
+  const buckets = new Map<string, FilteredArticle[]>();
+  for (const a of articles) {
+    const key = a.excluded_category || "other";
+    const list = buckets.get(key) ?? [];
+    list.push(a);
+    buckets.set(key, list);
+  }
+
+  return (
+    <div className="max-w-3xl mx-auto space-y-6">
+      {Array.from(buckets.entries()).map(([category, items]) => (
+        <section key={category}>
+          <h3 className="text-xs font-semibold text-gold uppercase tracking-wider mb-3">
+            {FILTERED_CATEGORY_LABEL[category] ?? category} · {items.length}
+          </h3>
+          <div className="divide-y divide-edge/50">
+            {items.map((article) => (
+              <FilteredArticleRow
+                key={article.id}
+                article={article}
+                onUnfilter={onUnfilter}
+              />
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function FilteredArticleRow({
+  article,
+  onUnfilter,
+}: {
+  article: FilteredArticle;
+  onUnfilter: (id: number) => void;
+}) {
+  const dateStr = new Date(article.received_at).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+  const senderShort = article.sender.replace(/<.*>/, "").trim() || article.sender;
+
+  return (
+    <div className="py-4 flex items-start gap-4">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2.5 mb-1">
+          <span className="text-xs font-semibold text-ink-faint uppercase tracking-wider">
+            {article.source_name}
+          </span>
+          <span className="text-xs text-ink-faint">{dateStr}</span>
+          {article.processed_at == null && (
+            <span className="text-[10px] uppercase tracking-wider text-ink-faint border border-edge rounded px-1.5 py-0.5">
+              pre-AI
+            </span>
+          )}
+        </div>
+        <h4 className="text-sm font-medium text-ink leading-snug">{article.subject}</h4>
+        <p className="text-xs text-ink-faint mt-1">{senderShort}</p>
+        {article.excluded_reason && (
+          <p className="mt-2 text-xs text-ink-dim italic">
+            {article.excluded_reason}
+          </p>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={() => onUnfilter(article.id)}
+        className="shrink-0 px-3 py-1.5 rounded-md text-xs font-medium border border-edge text-ink-dim hover:text-ink hover:bg-raised transition-colors"
+        title="Move back into the digest stream"
+      >
+        Unfilter
+      </button>
+    </div>
   );
 }

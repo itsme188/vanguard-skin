@@ -4,7 +4,13 @@ import { db } from "@/lib/db";
 import { redirect } from "next/navigation";
 import { getNotesFiltered, getEarningsTimeline } from "@/lib/queries/notes";
 import { getTranscriptsSummary } from "@/lib/queries/transcripts";
-import { getRecentArticles, getResearchSources, getSymbolSecurityMap } from "@/lib/queries/research";
+import {
+  getRecentArticles,
+  getResearchSources,
+  getSymbolSecurityMap,
+  getFilteredArticles,
+  getFilteredArticleCount,
+} from "@/lib/queries/research";
 import type { NoteType } from "@/lib/types";
 import { NotesView } from "../components/NotesView";
 import { ResearchFeedsView } from "../components/ResearchFeedsView";
@@ -65,12 +71,16 @@ export default async function ResearchPage({ searchParams }: PageProps) {
   let feedArticles: Awaited<ReturnType<typeof getRecentArticles>> = [];
   let feedSources: Awaited<ReturnType<typeof getResearchSources>> = [];
   let feedSymbolMap: Record<string, number> = {};
+  let filteredArticles: Awaited<ReturnType<typeof getFilteredArticles>> = [];
+  let filteredCount = 0;
 
   if (view === "feeds") {
     try {
       feedArticles = getRecentArticles(db, { processedOnly: true, limit: 50 });
       feedSources = getResearchSources(db);
       feedSymbolMap = getSymbolSecurityMap(db, feedArticles.map((a) => a.id));
+      filteredArticles = getFilteredArticles(db, 100);
+      filteredCount = getFilteredArticleCount(db);
     } catch {
       // Non-blocking — feeds table may not exist yet (pre-migration)
     }
@@ -99,6 +109,8 @@ export default async function ResearchPage({ searchParams }: PageProps) {
           initialArticles={feedArticles}
           sources={feedSources}
           initialSymbolMap={feedSymbolMap}
+          initialFilteredArticles={filteredArticles}
+          initialFilteredCount={filteredCount}
         />
       ) : (
         <NotesView
