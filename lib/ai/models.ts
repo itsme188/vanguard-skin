@@ -61,6 +61,7 @@ export const FEATURE_MODELS: Record<FeatureKey, string> = {
   newsletterLevelExtraction: `anthropic/${SONNET_MODEL}`,
   newsletterProcessing: `anthropic/${SONNET_MODEL}`,
   factorClassification: `anthropic/${SONNET_MODEL}`,
+  analysisFactorNarrative: `anthropic/${SONNET_MODEL}`,
   macroEnrichment: `anthropic/${SONNET_MODEL}`,
 
   // Must stay on Anthropic — uses Claude-native web_search tool.
