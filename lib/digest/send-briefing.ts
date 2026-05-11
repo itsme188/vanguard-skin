@@ -111,6 +111,23 @@ export async function sendBriefingEmail(
     console.warn(`[send-briefing] narrative pre-generation skipped: ${msg}`);
   }
 
+  // Per-security regression cache backfill. Sunday cadence is appropriate;
+  // daily TWS auto-refresh would burn 180+ OLS computes per run with little
+  // benefit (price data only changes once a day for most names).
+  // Best-effort — failures must NOT block the email.
+  try {
+    const { backfillSecurityRegressions } = await import(
+      "@/lib/compute/security-regression-backfill"
+    );
+    const summary = backfillSecurityRegressions(db);
+    console.log(
+      `[send-briefing] regression backfill: processed=${summary.processed} succeeded=${summary.succeeded} skipped=${summary.skipped} failed=${summary.failed}`
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[send-briefing] regression backfill skipped: ${msg}`);
+  }
+
   let briefing = getBriefingByWeek(db, weekOf);
   let generated = false;
   const stale = briefing ? isBriefingStale(db, weekOf) : false;
