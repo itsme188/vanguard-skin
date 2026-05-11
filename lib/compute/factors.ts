@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { getDailyValuationsCombined, getDailyValuationsByAccount } from "@/lib/queries/daily-valuations";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
 // ─── Types ─────────────��────────────────────────────────────────
 
@@ -29,6 +30,12 @@ export interface FactorAnalysisResult {
 export interface FactorOptions {
   accountId?: number;
   benchmarkSymbol?: string; // default "SPY"
+  /**
+   * If set (YYYY-MM-DD), compute tilts against holdings as of that date
+   * instead of today. The market regression is unaffected (it operates on
+   * daily valuations time-series). See latestHoldingsPredicate for details.
+   */
+  asOfDate?: string;
 }
 
 // ─── Constants ──────────────────��───────────────────────────────
@@ -151,21 +158,25 @@ function computeMarketRegression(
 
 function computeTilts(
   db: Database.Database,
-  accountId?: number
+  accountId?: number,
+  asOfDate?: string
 ): { sizeTilt: FactorTilt | null; styleTilt: FactorTilt | null; sectorTilt: FactorTilt | null; geographyTilt: FactorTilt | null } {
   const accountFilter = accountId ? "AND h.account_id = ?" : "";
   const accountParams: number[] = accountId ? [accountId] : [];
+
+  const predicate = latestHoldingsPredicate({
+    keyBy: "account_security",
+    includeShorts: false,
+    asOfDate,
+    accountFilter, // accountFilter already includes "AND " prefix if set
+  });
 
   const rows = db
     .prepare(
       `WITH latest_holdings AS (
          SELECT h.security_id, SUM(h.quantity) AS total_qty
          FROM holdings h
-         WHERE h.as_of_date = (
-           SELECT MAX(h2.as_of_date) FROM holdings h2
-           WHERE h2.account_id = h.account_id
-         )
-         ${accountFilter}
+         WHERE ${predicate}
          GROUP BY h.security_id
        ),
        latest_prices AS (
@@ -248,7 +259,8 @@ export function computeFactorAnalysis(
   const marketRegression = computeMarketRegression(db, options);
   const { sizeTilt, styleTilt, sectorTilt, geographyTilt } = computeTilts(
     db,
-    options?.accountId
+    options?.accountId,
+    options?.asOfDate
   );
 
   return { marketRegression, sizeTilt, styleTilt, sectorTilt, geographyTilt };
