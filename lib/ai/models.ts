@@ -62,6 +62,10 @@ export const FEATURE_MODELS: Record<FeatureKey, string> = {
   newsletterProcessing: `anthropic/${SONNET_MODEL}`,
   factorClassification: `anthropic/${SONNET_MODEL}`,
   analysisFactorNarrative: `anthropic/${SONNET_MODEL}`,
+  // Weekly macro-themes generation for the Analysis Workspace + Sunday
+  // briefing. Sonnet 4.6 via AI Gateway, pre-gen at Sunday cadence, cache
+  // until next Sunday. ~$0.85/month at 4 scopes × 1/wk.
+  analysisMacroThemes: `anthropic/${SONNET_MODEL}`,
   macroEnrichment: `anthropic/${SONNET_MODEL}`,
 
   // Must stay on Anthropic — uses Claude-native web_search tool.
