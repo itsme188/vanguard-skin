@@ -166,8 +166,18 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                     {CATEGORY_ICONS[result.scenario.category] ?? ""}
                   </span>
                   <div>
-                    <div className="text-sm font-medium text-ink">
-                      {result.scenario.name}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <div className="text-sm font-medium text-ink">
+                        {result.scenario.name}
+                      </div>
+                      {result.liveNowReason && (
+                        <span
+                          className="text-[10px] px-1.5 py-0.5 rounded border bg-amber/20 text-amber border-amber/40 uppercase tracking-wide"
+                          title={`Live theme: ${result.liveNowReason}`}
+                        >
+                          live now
+                        </span>
+                      )}
                     </div>
                     <div className="text-[10px] text-ink-faint">
                       {result.scenario.description}
