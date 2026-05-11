@@ -7,6 +7,7 @@ import type {
   PositionRiskResult,
 } from "@/lib/compute/risk";
 import { Pct } from "@/lib/privacy/components";
+import { NarrativeBlock } from "./analysis/NarrativeBlock";
 
 // ─── Formatters ──────────────────────────────────────────────────
 
@@ -102,6 +103,8 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
           </span>
         )}
       </div>
+
+      <NarrativeBlock scope={scope ?? "all"} surfaceKey="position-risk" />
 
       {/* ── Position table ── */}
       <div className="overflow-x-auto">

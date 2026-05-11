@@ -337,7 +337,7 @@ export function AnalysisView({
 
       {/* Mode-specific subcomponents */}
       {isFactorMode ? (
-        <FactorModeCard factorHeatmap={factorHeatmap} factorCoverage={factorCoverage} />
+        <FactorModeCard factorHeatmap={factorHeatmap} factorCoverage={factorCoverage} scope={currentScope} />
       ) : (
         <ClassificationCard concentration={concentration} coverage={coverage} />
       )}
