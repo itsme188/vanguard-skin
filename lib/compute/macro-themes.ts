@@ -80,6 +80,11 @@ export interface MacroSignalBlob {
   alerts: AlertSignal[];
 }
 
+// Signals (articles, enriched events, level alerts) are portfolio-wide —
+// scope-specific filtering happens later in the post-process step when we
+// attach exposure_bucket + top_contributors from computeFactorAnalysis. The
+// _scope param is accepted for interface symmetry with future scope-aware
+// expansion (e.g., narrowing alerts to held-only in the scope).
 export function buildMacroSignalBlob(
   db: Database.Database,
   _scope: string,
