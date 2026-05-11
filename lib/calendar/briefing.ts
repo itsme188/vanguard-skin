@@ -18,6 +18,10 @@ import { getModelForFeature } from "@/lib/ai/provider";
 import { FEATURE_MODELS } from "@/lib/ai/models";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { mondayOf } from "@/lib/calendar/date-utils";
+import {
+  findSelfAdmissions,
+  buildSelfAdmissionAddendum,
+} from "@/lib/calendar/briefing-self-admission";
 
 // Preferred weekend-reading sources — full raw_text is sent to the model.
 // ids correspond to research_sources.id. Keep aligned with DB; wrong ids
@@ -234,10 +238,15 @@ export async function generateWeeklyBriefing(
     macroContextMd,
   });
 
-  const { text } = await generateText({
+  const text = await generateBriefingTextWithRegen({
     model: getModelForFeature("briefing"),
-    maxOutputTokens: 8192,
     prompt,
+    onRegen: (matches) =>
+      options?.onProgress?.(
+        `Self-admission detected (${matches.length}) — regenerating...`,
+        3,
+        4,
+      ),
   });
 
   const content = text.trim() || "Failed to generate briefing.";
@@ -254,6 +263,51 @@ export async function generateWeeklyBriefing(
   options?.onProgress?.("Briefing complete", 4, 4);
 
   return { content, eventCount: events.length };
+}
+
+// ── A5 auto-regen on self-admission ────────────────────────────────
+
+/**
+ * Generate briefing text with a 1-shot retry when the first draft contains
+ * self-admission phrases ("data looks corrupted", "I can't verify", etc.).
+ * The retry appends a forcing addendum that quotes the matched phrases so
+ * the model knows specifically what to undo. Capped at exactly one retry —
+ * the verify-briefing-content.ts post-gen scan remains as the failsafe for
+ * the rare case where both attempts leak.
+ *
+ * Extracted from `generateWeeklyBriefing` so the regen logic is testable
+ * in isolation (without seeding the full briefing DB state).
+ */
+export async function generateBriefingTextWithRegen(args: {
+  // Loose typed so tests can pass a mock-model string without importing
+  // AI-SDK types. The real call passes a `LanguageModel` instance.
+  model: Parameters<typeof generateText>[0]["model"];
+  prompt: string;
+  maxOutputTokens?: number;
+  /** Optional hook so callers can surface "regenerating..." progress. */
+  onRegen?: (matches: string[]) => void;
+}): Promise<string> {
+  const maxOutputTokens = args.maxOutputTokens ?? 8192;
+  const firstAttempt = await generateText({
+    model: args.model,
+    maxOutputTokens,
+    prompt: args.prompt,
+  });
+
+  const matches = findSelfAdmissions(firstAttempt.text);
+  if (matches.length === 0) return firstAttempt.text;
+
+  console.warn(
+    `[briefing] self-admission detected on first draft (${matches.join(", ")}) — regenerating once`,
+  );
+  args.onRegen?.(matches);
+
+  const retry = await generateText({
+    model: args.model,
+    maxOutputTokens,
+    prompt: args.prompt + buildSelfAdmissionAddendum(matches),
+  });
+  return retry.text;
 }
 
 // ── Prompt assembly ────────────────────────────────────────────────
