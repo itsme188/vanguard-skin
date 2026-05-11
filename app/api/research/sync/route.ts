@@ -3,6 +3,10 @@ import { isGmailConfigured, getGmailClient } from "@/lib/gmail/auth";
 import { fetchNewArticles, backfillArticleHtml, backfillSourceUrls } from "@/lib/gmail/fetch";
 import { processUnprocessedArticles } from "@/lib/gmail/process";
 import { extractLevelsFromNewArticles } from "@/lib/alerts/extract-newsletter-levels";
+import {
+  reconcileCloudFetchedNewsletters,
+  postMacRecentNewsletterSyncMarker,
+} from "@/lib/research/reconcile-cloud-fetched";
 
 /**
  * POST /api/research/sync — Fetch and process newsletter articles from Gmail.
@@ -27,6 +31,29 @@ export async function POST() {
       };
 
       try {
+        // Phase 0: Drain any cloud-fetched newsletter payloads first so the
+        // local fetchNewArticles dedups (gmail_message_id UNIQUE) against
+        // them and we don't burn Claude tokens on the same message twice.
+        const cronSecret = process.env.CRON_SHARED_SECRET ?? "";
+        if (cronSecret) {
+          try {
+            send({ phase: "reconcile-cloud", status: "started" });
+            const reconcileResult = await reconcileCloudFetchedNewsletters(db, cronSecret);
+            send({
+              phase: "reconcile-cloud",
+              status: "done",
+              reconciled: reconcileResult.reconciled,
+              skipped: reconcileResult.skipped_already_in_db,
+            });
+          } catch (err) {
+            send({
+              phase: "reconcile-cloud",
+              status: "error",
+              message: err instanceof Error ? err.message : "Cloud reconcile failed",
+            });
+          }
+        }
+
         // Phase 1: Fetch new articles from Gmail
         send({ phase: "fetch", status: "started" });
         const gmail = getGmailClient();
@@ -37,6 +64,12 @@ export async function POST() {
           fetched: fetchResult.fetched,
           sources: fetchResult.sources,
         });
+
+        // Post the recency marker fire-and-forget so the Worker skips its
+        // next tick. Don't await on errors — never block the sync stream.
+        if (cronSecret) {
+          void postMacRecentNewsletterSyncMarker(cronSecret);
+        }
 
         // Phase 2: AI-process unprocessed articles
         if (fetchResult.fetched > 0 || true) {
