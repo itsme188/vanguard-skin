@@ -196,6 +196,10 @@ export async function generateWeeklyBriefing(
   // Macro context: read cached themes for "all" scope. Workspace card and
   // briefing email read from the same cache so they stay in sync. Failure
   // here MUST NOT block the email — just skip the section.
+  //
+  // Scope hardcoded to "all" because the briefing email goes to a single
+  // recipient who owns every account; per-scope briefings would be a future
+  // feature. The Workspace card reads per-scope (matches the current page).
   let macroContextMd: string | null = null;
   try {
     const { getCachedMacroThemes } = await import("@/lib/queries/analysis-macro-themes");
