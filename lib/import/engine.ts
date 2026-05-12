@@ -20,6 +20,8 @@ import {
   completeImportBatch,
   deleteImportBatch,
 } from "@/lib/mutations/import-batches";
+import { purgeExpiredOptionHoldings } from "@/lib/mutations/expired-options";
+import { purgeMaturedBondHoldings } from "@/lib/mutations/matured-bonds";
 
 // ── Parse (detect + parse, no DB writes) ────────────────────────────
 
@@ -536,6 +538,45 @@ export function commitImport(
       unmatchedFactors: unmatchedFactors.length > 0 ? unmatchedFactors : undefined,
     };
   })();
+
+  // Post-commit hygiene: holdings-snapshot imports (Vanguard / IBKR positions)
+  // need to sweep stale expired options + matured bonds because statement
+  // snapshots never zero-out rows that simply disappear. Transaction-style
+  // sources (canonical-csv transactions, monthly-values, factor-csv, etc.)
+  // don't carry a full positions snapshot and shouldn't trigger the sweep.
+  // Each purge runs in its own try/catch — a failed sweep should NOT mask the
+  // successful import.
+  const HOLDINGS_SNAPSHOT_SOURCES: SourceType[] = [
+    "vanguard-pdf",
+    "vanguard-export",
+    "vanguard-holdings",
+    "ibkr-holdings",
+    "ibkr-activity", // ibkr-activity statements include a positions block
+  ];
+  if (HOLDINGS_SNAPSHOT_SOURCES.includes(parsed.sourceType)) {
+    try {
+      const purged = purgeExpiredOptionHoldings(db);
+      if (purged > 0) {
+        console.log(`[commit] Purged ${purged} expired option holdings`);
+      }
+    } catch (err) {
+      console.error(
+        "[commit] Expired-option purge error:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+    try {
+      const purged = purgeMaturedBondHoldings(db);
+      if (purged > 0) {
+        console.log(`[commit] Purged ${purged} matured bond holdings`);
+      }
+    } catch (err) {
+      console.error(
+        "[commit] Matured-bond purge error:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
 
   return result;
 }

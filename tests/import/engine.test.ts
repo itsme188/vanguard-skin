@@ -798,4 +798,91 @@ describe("import engine", () => {
       );
     });
   });
+
+  describe("post-commit purge for holdings-snapshot imports", () => {
+    it("purges pre-existing expired options when a Vanguard PDF lands", async () => {
+      // Seed an account + an expired option in holdings BEFORE the import.
+      // Simulates the real scenario: previous month's option position
+      // disappeared from this month's Vanguard snapshot.
+      const accountId = (
+        db.prepare("INSERT INTO accounts (name) VALUES ('vanguard taxable') RETURNING id").get() as { id: number }
+      ).id;
+      const expiredSecId = (
+        db.prepare(
+          `INSERT INTO securities (symbol, security_type, expiration_date)
+           VALUES ('AAPL  240119C00200000', 'option', '2024-01-19') RETURNING id`,
+        ).get() as { id: number }
+      ).id;
+      db.prepare(
+        `INSERT INTO holdings (account_id, security_id, quantity, as_of_date)
+         VALUES (?, ?, 5, '2024-01-15')`,
+      ).run(accountId, expiredSecId);
+
+      // Sanity: row is there before import.
+      const before = db.prepare("SELECT COUNT(*) as c FROM holdings").get() as { c: number };
+      expect(before.c).toBe(1);
+
+      // Import a Vanguard holdings CSV (a holdings-snapshot source type).
+      const parsed = await parseImport(vanguardHoldingsCsv, "vanguard-holdings.csv");
+      commitImport(db, parsed);
+
+      // Post-commit hook should have purged the pre-existing expired option.
+      const expiredStill = db
+        .prepare("SELECT COUNT(*) as c FROM holdings WHERE security_id = ?")
+        .get(expiredSecId) as { c: number };
+      expect(expiredStill.c).toBe(0);
+    });
+
+    it("purges pre-existing matured bonds when an ibkr-activity statement lands", async () => {
+      const accountId = (
+        db.prepare("INSERT INTO accounts (name) VALUES ('ibkr') RETURNING id").get() as { id: number }
+      ).id;
+      const maturedBondId = (
+        db.prepare(
+          `INSERT INTO securities (symbol, security_type, maturity_date)
+           VALUES ('912797TH0', 'bond', '2026-04-14') RETURNING id`,
+        ).get() as { id: number }
+      ).id;
+      db.prepare(
+        `INSERT INTO holdings (account_id, security_id, quantity, as_of_date)
+         VALUES (?, ?, 1000, '2026-04-30')`,
+      ).run(accountId, maturedBondId);
+
+      const before = db.prepare("SELECT COUNT(*) as c FROM holdings").get() as { c: number };
+      expect(before.c).toBe(1);
+
+      const parsed = await parseImport(ibkrActivityCsv, "IBKR 2026-04 activity.csv");
+      commitImport(db, parsed);
+
+      const maturedStill = db
+        .prepare("SELECT COUNT(*) as c FROM holdings WHERE security_id = ?")
+        .get(maturedBondId) as { c: number };
+      expect(maturedStill.c).toBe(0);
+    });
+
+    it("does NOT purge when a transaction-only source type (monthly-values) imports", async () => {
+      const accountId = (
+        db.prepare("INSERT INTO accounts (name) VALUES ('any') RETURNING id").get() as { id: number }
+      ).id;
+      const expiredSecId = (
+        db.prepare(
+          `INSERT INTO securities (symbol, security_type, expiration_date)
+           VALUES ('XYZ  240119C00050000', 'option', '2024-01-19') RETURNING id`,
+        ).get() as { id: number }
+      ).id;
+      db.prepare(
+        `INSERT INTO holdings (account_id, security_id, quantity, as_of_date)
+         VALUES (?, ?, 1, '2024-01-15')`,
+      ).run(accountId, expiredSecId);
+
+      const parsed = await parseImport(monthlyValuesCsv, "monthly-values.csv");
+      commitImport(db, parsed);
+
+      // monthly-values is NOT in HOLDINGS_SNAPSHOT_SOURCES — purge should not run.
+      const expiredStill = db
+        .prepare("SELECT COUNT(*) as c FROM holdings WHERE security_id = ?")
+        .get(expiredSecId) as { c: number };
+      expect(expiredStill.c).toBe(1);
+    });
+  });
 });
