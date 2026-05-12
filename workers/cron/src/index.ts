@@ -260,9 +260,7 @@ export default {
       ctx.waitUntil(
         (async () => {
           const result = await runNewsletterFetch(env);
-          if (result.kind !== "no_articles" && result.kind !== "skipped") {
-            console.log(`[cron ${event.cron}] newsletter-fetch result:`, JSON.stringify(result));
-          }
+          console.log(`[cron ${event.cron}] newsletter-fetch result:`, JSON.stringify(result));
         })()
       );
     }
