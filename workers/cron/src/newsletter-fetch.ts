@@ -200,7 +200,14 @@ export async function runNewsletterFetch(
     (s) => s.is_active === 1 && s.sender_email,
   );
 
+  console.log(
+    `[newsletter-fetch] starting sources=${activeSources.length} ` +
+      `snapshotArticles=${alreadyProcessedIds.size - pendingKvList.keys.length} ` +
+      `kvPending=${pendingKvList.keys.length}`,
+  );
+
   let totalFetched = 0;
+  let totalCandidatesDeduped = 0;
   for (const source of activeSources) {
     if (totalFetched >= MAX_ARTICLES_PER_RUN) break;
 
@@ -213,16 +220,30 @@ export async function runNewsletterFetch(
       continue;
     }
 
+    if (messages.length === 0) continue;
+    const dedupedCount = messages.filter((m) => alreadyProcessedIds.has(m.id)).length;
+    totalCandidatesDeduped += dedupedCount;
+    console.log(
+      `[newsletter-fetch] source=${source.name} listed=${messages.length} ` +
+        `deduped=${dedupedCount} candidates=${messages.length - dedupedCount}`,
+    );
+
     for (const m of messages) {
       if (totalFetched >= MAX_ARTICLES_PER_RUN) break;
       if (alreadyProcessedIds.has(m.id)) continue;
 
       try {
         const detail = d.extractMessage(await d.getMessage(accessToken, m.id));
-        if (!detail) continue;
+        if (!detail) {
+          console.log(`[newsletter-fetch] ${source.name} msg=${m.id} extractMessage returned null`);
+          continue;
+        }
 
         const result = await d.analyzeArticle(env, source, detail, heldSymbolsContext);
-        if (!result) continue;
+        if (!result) {
+          console.log(`[newsletter-fetch] ${source.name} msg=${m.id} analyzeArticle returned null`);
+          continue;
+        }
 
         const payload: NewsletterPayload = {
           source_id: source.id,
@@ -257,6 +278,9 @@ export async function runNewsletterFetch(
     }
   }
 
+  console.log(
+    `[newsletter-fetch] done fetched=${totalFetched} dedupedAcrossSources=${totalCandidatesDeduped}`,
+  );
   if (totalFetched === 0) return { kind: "no_articles" };
   return { kind: "success", fetched: totalFetched };
 }
