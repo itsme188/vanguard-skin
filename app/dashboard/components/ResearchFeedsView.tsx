@@ -403,11 +403,11 @@ export function ResearchFeedsView({
       <DigestEmailViewer open={previewOpen} onClose={() => setPreviewOpen(false)} />
 
       {/* D5 — filtered/all toggle. Hidden when there's nothing to audit so
-          the toolbar stays calm on quiet days. Desktop-only for now; the
-          mobile audit path is a known follow-up (not lost — tracked in
-          MEMORY/TODO under D5 mobile deferral). */}
+          the toolbar stays calm on quiet days. Visible on both desktop and
+          mobile — the audit surface is one tap away wherever you happen to
+          be reading. */}
       {(filteredCount > 0 || viewMode === "filtered") && (
-        <div className="hidden md:flex items-center gap-2">
+        <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={() => setViewMode("all")}
