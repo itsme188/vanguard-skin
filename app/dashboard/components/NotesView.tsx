@@ -238,7 +238,17 @@ export function NotesView({
         <div className="flex items-center gap-3 flex-wrap">
           <select
             value={formType}
-            onChange={(e) => setFormType(e.target.value as NoteType)}
+            onChange={(e) => {
+              const next = e.target.value as NoteType;
+              setFormType(next);
+              // Third reset point (belt-and-suspenders-and-belt): clearing
+              // formSymbol on type-switch prevents a residual ticker from
+              // an Earnings/Trade-Thesis draft from leaking into a
+              // subsequent Journal entry's hidden state. The build-time
+              // gate in handleCreate already prevents the leak from
+              // reaching the API; this just removes the latent state.
+              if (next === "journal") setFormSymbol("");
+            }}
             className="bg-raised border border-edge rounded-lg px-3 py-1.5 text-sm text-ink focus:outline-none focus:border-gold"
           >
             <option value="journal">Journal</option>
