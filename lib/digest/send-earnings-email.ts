@@ -6,6 +6,10 @@ import { sendEmail } from "@/lib/email";
 import { getRawAnthropicClient } from "@/lib/ai/provider";
 import { resolveFeatureModel } from "@/lib/ai/models";
 import { stripModelPreamble } from "@/lib/ai/strip-preamble";
+import {
+  formatPositionPresence,
+  formatCombinedExposurePresence,
+} from "@/lib/digest/presence-only-position";
 import { formatLargeUSD } from "@/lib/format";
 import { parseFinnhubFigure } from "@/lib/format/finnhub-figure";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
@@ -307,8 +311,14 @@ interface PreviewContext {
   family: readonly string[];
   event: CalendarEvent;
   positions: PositionEntry[];
-  combinedShares: number;
-  combinedContracts: number;
+  // Long/short breakdowns (signed totals are NOT exposed to the prompt; see
+  // formatCombinedExposurePresence). Stock shares + option contracts split by
+  // direction so the summary line can say "500 long shares + 3 long option
+  // contract(s)" without leaking notional dollar exposure.
+  longShares: number;
+  shortShares: number;
+  longContracts: number;
+  shortContracts: number;
   userNotes: NoteWithContext[];
   recentArticles: NewsletterEntry[];
   recommendationTrend: string | null;
@@ -357,13 +367,18 @@ function buildPreviewContext(
   const family = issuerSiblings(symbol);
 
   const positions = getCrossAccountPositions(db, family);
-  let combinedShares = 0;
-  let combinedContracts = 0;
+  let longShares = 0;
+  let shortShares = 0;
+  let longContracts = 0;
+  let shortContracts = 0;
   for (const p of positions) {
-    if (p.security_type.toLowerCase() === "option") {
-      combinedContracts += p.quantity;
+    const isOption = p.security_type.toLowerCase() === "option";
+    if (isOption) {
+      if (p.quantity > 0) longContracts += p.quantity;
+      else shortContracts += Math.abs(p.quantity);
     } else {
-      combinedShares += p.quantity;
+      if (p.quantity > 0) longShares += p.quantity;
+      else shortShares += Math.abs(p.quantity);
     }
   }
 
@@ -382,8 +397,10 @@ function buildPreviewContext(
     family,
     event,
     positions,
-    combinedShares,
-    combinedContracts,
+    longShares,
+    shortShares,
+    longContracts,
+    shortContracts,
     userNotes,
     recentArticles,
     recommendationTrend,
@@ -1090,7 +1107,7 @@ Rows: every segment, KPI, and guidance line ${ctx.symbol} reported — fill from
 
 4. **\`## Sell-side first takes\`** — web_search for analyst notes published in the last few hours. Quote the headline, flag price-target changes, name the firm. If nothing is out yet, say so.
 
-5. **\`## Position implications\`** — given the user's combined position (use §Positions verbatim), what's the immediate P&L impact at the reaction-snapshot price? Any hedging / IV-crush dynamics for option holdings? Should the thesis change?
+5. **\`## Position implications\`** — given the user's combined position (use §Positions verbatim), what's the immediate **percentage** P&L impact at the reaction-snapshot price? Express in percent terms only — do NOT multiply position counts by underlying prices to derive dollar exposure. Any hedging / IV-crush dynamics for option holdings? Should the thesis change?
 
 6. **\`## Sources\`** — newsletter articles cited + web URLs.
 
@@ -1109,45 +1126,40 @@ function renderPositionsBlock(ctx: PreviewContext): string {
 }
 
 function formatPositionLine(p: PositionEntry): string {
-  const last = p.latest_price != null ? `$${p.latest_price.toFixed(2)}` : "?";
-  const cost = p.cost_basis != null ? `$${p.cost_basis.toFixed(2)}` : "?";
-  if (p.security_type.toLowerCase() === "option") {
-    const right = p.option_type ? p.option_type.toUpperCase().charAt(0) : "?";
-    const strike = p.strike_price != null ? `$${p.strike_price.toFixed(2)}` : "?";
-    const expiry = p.expiration_date ?? "?";
-    const mult = p.multiplier ?? 100;
-    const contracts = p.quantity;
-    const notionalShares = contracts * mult;
-    const blendedPer = p.cost_basis != null && contracts > 0
-      ? `$${(p.cost_basis / contracts).toFixed(2)}`
-      : "?";
-    return `- **${p.underlying_symbol ?? "?"} ${expiry} ${right}${strike}** option (${p.symbol.trim()}) in ${p.account_name}: ${contracts} contract(s) — ${notionalShares} shares notional × ${mult}, total cost ${cost} (~${blendedPer}/contract), underlying last ${last} (as of ${p.as_of_date})`;
-  }
-  const blendedPer = p.cost_basis != null && p.quantity > 0
-    ? `$${(p.cost_basis / p.quantity).toFixed(2)}`
-    : "?";
-  return `- **${p.symbol}** in ${p.account_name}: ${p.quantity} sh, cost basis ${cost} (~${blendedPer}/sh), last price ${last} (as of ${p.as_of_date})`;
+  // Presence-only: no exact $ amounts in prompts shared with cc recipients.
+  // Relative % return is kept (per 2026-05-12 design decision) for long
+  // positions; short positions omit % (sign convention varies across import
+  // paths). Strike + expiry stay visible — they're public market data.
+  const presence = formatPositionPresence({
+    symbol: p.symbol,
+    accountName: p.account_name,
+    quantity: p.quantity,
+    securityType: p.security_type,
+    optionMeta:
+      p.security_type.toLowerCase() === "option"
+        ? {
+            underlyingSymbol: p.underlying_symbol,
+            strikePrice: p.strike_price,
+            expirationDate: p.expiration_date,
+            optionType: p.option_type,
+            multiplier: p.multiplier,
+          }
+        : null,
+    costBasis: p.cost_basis,
+    latestPrice: p.latest_price,
+  });
+  return `- ${presence}`;
 }
 
 function formatPositionSummary(ctx: PreviewContext): string {
-  const parts: string[] = [];
-  if (ctx.combinedShares > 0) {
-    parts.push(`${ctx.combinedShares.toFixed(0)} shares`);
-  }
-  if (ctx.combinedContracts > 0) {
-    // Approximate notional in shares for context — uses 100x multiplier as
-    // the dominant case, but the per-line entries already give the exact mult.
-    const optionEntries = ctx.positions.filter(
-      (p) => p.security_type.toLowerCase() === "option",
-    );
-    const notional = optionEntries.reduce(
-      (s, p) => s + p.quantity * (p.multiplier ?? 100),
-      0,
-    );
-    parts.push(`${ctx.combinedContracts.toFixed(0)} option contract(s) (~${notional.toFixed(0)} shares notional)`);
-  }
-  const exposure = parts.length > 0 ? parts.join(" + ") : "no live exposure";
-  return `**Combined exposure:** ${exposure} across ${ctx.positions.length} account-position(s). Stocks and options are listed separately above; do NOT add raw share counts and contract counts together when sizing — instead reason about delta-weighted exposure and the asymmetry of each leg.`;
+  const exposure = formatCombinedExposurePresence({
+    positionCount: ctx.positions.length,
+    longShares: ctx.longShares,
+    shortShares: ctx.shortShares,
+    longContracts: ctx.longContracts,
+    shortContracts: ctx.shortContracts,
+  });
+  return `**Combined exposure:** ${exposure} across ${ctx.positions.length} account-position(s). Each line above carries a percentage return suffix when computable — reason about asymmetry and direction in percentage terms; do not multiply contract counts by underlying prices to derive dollar exposure.`;
 }
 
 function renderNewslettersBlock(

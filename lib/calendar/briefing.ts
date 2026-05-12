@@ -440,7 +440,7 @@ Write a markdown briefing structured as follows:
 
 6. **Macro & Other Events** — concise coverage of the remaining calendar. What's priced in, what would surprise, which holdings have exposure.
 
-7. **Portfolio Implications** — a tight closing section. Which holdings have the most event-driven risk this week. **When ranking "largest position" or "biggest exposure," use the User's combined position rosters from §3 — they include cross-class siblings (e.g., GOOG common counts toward GOOGL earnings exposure). State your sizing basis explicitly (notional market value, option intrinsic, etc.); do not hand-wave.** Key levels or thresholds (tie back to the Price Levels section). Suggested positioning considerations (stay the course, reduce exposure, hedge, etc.).
+7. **Portfolio Implications** — a tight closing section. Which holdings have the most event-driven risk this week. **When ranking "largest position" or "biggest exposure," use the User's combined position rosters from §3 — they include cross-class siblings (e.g., GOOG common counts toward GOOGL earnings exposure).** Express sizing **qualitatively** ("concentrated stock position," "leveraged call exposure," "small starter," etc.) or in **percentage** terms ("~5% of holdings on this name" if a clean read is available) — do NOT multiply share counts by close prices to derive notional dollar exposure (the briefing is shared with cc recipients and should not echo exact position dollar size). Key levels or thresholds (tie back to the Price Levels section). Suggested positioning considerations (stay the course, reduce exposure, hedge, etc.).
 
 Format as clean markdown. Use \`##\` for section headers, \`###\` for sub-sections, **bold** for key figures, and bullet points where helpful. Aim for a substantive briefing in the 2,500–3,500 word range — dense with actionable information, not filler.`;
 }
@@ -784,14 +784,18 @@ export function buildCombinedPositionsForEvents(
 }
 
 export function formatCombinedPosition(cp: CombinedPosition): string {
+  // Presence-only rendering: never include the position's mkt val in $ —
+  // outbound emails are shared with cc recipients per 2026-05-12 design
+  // decision. Strike + expiry + qty + direction stay visible (public-market
+  // metadata + ownership disclosure); what stays hidden is the dollar
+  // exposure derivable from qty × price. Briefing CombinedPosition lacks
+  // cost_basis, so relative-% returns are not available here (only the
+  // earnings emails carry that data) — emit ownership-only.
   const parts: string[] = [];
   for (const s of cp.stockPositions) {
-    const mktVal =
-      s.latestClose != null ? Math.round(s.quantity * s.latestClose) : null;
-    const valSuffix =
-      mktVal != null ? `, ~$${mktVal.toLocaleString()} mkt val` : "";
+    const side = s.quantity < 0 ? "short " : "";
     parts.push(
-      `${formatQty(s.quantity)} sh ${s.symbol} (${s.account}${valSuffix})`,
+      `${formatQty(s.quantity)} sh ${side}${s.symbol} (${s.account})`,
     );
   }
   for (const o of cp.optionPositions) {
