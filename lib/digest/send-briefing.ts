@@ -5,6 +5,7 @@ import { briefingToHtml } from "@/lib/calendar/briefing-html";
 import { sendEmail } from "@/lib/email";
 import { addDays, getCurrentMonday, mondayOf } from "@/lib/calendar/date-utils";
 import { syncPortfolio } from "@/lib/tws/positions";
+import { runAutoRefresh } from "@/lib/tws/auto-refresh";
 import { setLastBriefingSentAt } from "@/lib/digest/daily-digest";
 import { syncCalendarForWeek } from "@/lib/calendar/sync";
 import { getRecipientsFor } from "@/lib/queries/email-recipients";
@@ -54,12 +55,71 @@ export async function sendBriefingEmail(
     );
   }
 
+  // Step 1: positions sync — quick TWS call to refresh intra-day quantities.
+  // Doesn't refresh prices (that's Step 2 below).
   let twsSynced = false;
   try {
     await syncPortfolio(db);
     twsSynced = true;
   } catch {
     console.log("[send-briefing] TWS sync skipped (not connected or no IBKR account)");
+  }
+
+  // Step 2: price + valuation refresh. Pre-2026-05-12 the briefing path
+  // skipped this and Sunday 5/11 went out with Thursday close prices because
+  // the prices table hadn't been touched since Friday close (TWS not
+  // connected when no auto-refresh ran). runAutoRefresh(db, "quick") runs
+  // snapshot prices + valuations recompute (~2-3 min). Best-effort — on
+  // failure we proceed with whatever prices are already in the table and
+  // log how stale they are.
+  if (twsSynced) {
+    try {
+      const refresh = await runAutoRefresh(db, "quick");
+      if (refresh === null) {
+        console.log(
+          "[send-briefing] price/valuation refresh skipped — another sync was already in progress",
+        );
+      } else if (refresh.errors.length > 0) {
+        console.warn(
+          `[send-briefing] price/valuation refresh had errors: ${refresh.errors.join("; ")}`,
+        );
+      } else {
+        console.log(
+          `[send-briefing] price/valuation refresh: ${refresh.pricesUpdated} prices, valuations=${refresh.valuationsRecomputed}`,
+        );
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[send-briefing] price/valuation refresh failed: ${msg}`);
+    }
+  }
+
+  // Price-freshness breadcrumb: surfaces in launchd logs so future "stale
+  // briefing prices" investigations don't need to instrument from scratch.
+  // Reads the most-recent prices.date across the holdings universe — a
+  // single timestamp summary, not per-symbol.
+  try {
+    const row = db
+      .prepare(
+        `SELECT MAX(p.date) AS latest_date,
+                CAST(julianday('now') - julianday(MAX(p.date)) AS INTEGER) AS days_old
+           FROM prices p
+           JOIN securities s ON s.id = p.security_id
+          WHERE s.id IN (
+            SELECT DISTINCT security_id FROM holdings WHERE quantity != 0
+          )`,
+      )
+      .get() as { latest_date: string | null; days_old: number | null } | undefined;
+    if (row?.latest_date) {
+      console.log(
+        `[send-briefing] Latest price as_of_date: ${row.latest_date} (${row.days_old ?? "?"}d old)`,
+      );
+    } else {
+      console.log("[send-briefing] No prices in DB for current holdings");
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[send-briefing] price-freshness probe failed: ${msg}`);
   }
 
   // Calendar sync. Until 2026-04-27 the briefing path skipped this,
