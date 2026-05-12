@@ -67,8 +67,7 @@ export function getAllHoldings(db: Database.Database): AllHoldingsRow[] {
         SELECT MAX(h2.as_of_date) FROM holdings h2
         WHERE h2.account_id = h.account_id
       )
-      AND (s.maturity_date IS NULL OR s.maturity_date >= date('now')
-           OR LOWER(s.security_type) = 'bond')
+      AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
     ORDER BY current_value DESC NULLS LAST
   `;
 
