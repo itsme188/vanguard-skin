@@ -199,7 +199,7 @@ describe("buildCombinedPositionsForEvents", () => {
 });
 
 describe("formatCombinedPosition", () => {
-  it("formats a stock+option combined position with mkt val for shares", () => {
+  it("formats a stock+option combined position WITHOUT mkt val ($-amount stripped per 2026-05-12)", () => {
     const cp: CombinedPosition = {
       family: ["GOOG", "GOOGL"],
       stockPositions: [
@@ -219,7 +219,8 @@ describe("formatCombinedPosition", () => {
     };
     const out = formatCombinedPosition(cp);
     expect(out).toContain("65.50 sh GOOG");
-    expect(out).toContain("$22,487 mkt val");
+    expect(out).not.toContain("mkt val");
+    expect(out).not.toMatch(/\$\d{1,3}(,\d{3})+/); // no comma-grouped $ values
     expect(out).toContain("1 long GOOGL 2027-01-15 $220 CALL (Vanguard)");
     expect(out).toContain(" + ");
   });
@@ -235,6 +236,23 @@ describe("formatCombinedPosition", () => {
     const out = formatCombinedPosition(cp);
     expect(out).toContain("105 sh AMZN");
     expect(out).not.toContain("105.00");
+  });
+
+  it("renders SHORT stock with 'short' prefix", () => {
+    const cp: CombinedPosition = {
+      family: ["META"],
+      stockPositions: [
+        { symbol: "META", quantity: -200, account: "IBKR", latestClose: 400 },
+      ],
+      optionPositions: [],
+    };
+    const out = formatCombinedPosition(cp);
+    // formatQty preserves the sign on stocks; the helper also adds "short"
+    // prefix. We assert presence of both signals — exact format is "−200 sh
+    // short META" or similar; what matters is "short" appears AND no $ leaks.
+    expect(out).toContain("short");
+    expect(out).toContain("META");
+    expect(out).not.toContain("mkt val");
   });
 
   it("renders SHORT options correctly", () => {
@@ -257,16 +275,18 @@ describe("formatCombinedPosition", () => {
     expect(out).toContain("2 short MSFT");
   });
 
-  it("omits mkt val when the latestClose is null", () => {
+  it("does not emit mkt val even when latestClose is populated (privacy boundary)", () => {
     const cp: CombinedPosition = {
       family: ["XYZ"],
       stockPositions: [
-        { symbol: "XYZ", quantity: 10, account: "IBKR", latestClose: null },
+        { symbol: "XYZ", quantity: 10, account: "IBKR", latestClose: 12345.67 },
       ],
       optionPositions: [],
     };
     const out = formatCombinedPosition(cp);
     expect(out).toContain("10 sh XYZ");
     expect(out).not.toContain("mkt val");
+    expect(out).not.toContain("$12,345");
+    expect(out).not.toContain("$123,456");
   });
 });
