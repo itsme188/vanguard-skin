@@ -245,4 +245,58 @@ describe("synthesize", () => {
     expect(capturedPrompt).toContain("TSM");
     expect(capturedPrompt).toContain("GOOG");
   });
+
+  // -------------------------------------------------------------------------
+  // 7. Coverage-characterization rules in the system prompt (regression for
+  //    2026-05-12 APP "only mentioned indirectly by TMTB" confabulation)
+  // -------------------------------------------------------------------------
+  it("instructs Sonnet to NOT characterize coverage as 'indirect'/'in passing'", async () => {
+    let capturedSystem = "";
+    (generateText as ReturnType<typeof vi.fn>).mockImplementation(
+      async (args: { prompt?: string; system?: string; messages?: unknown }) => {
+        capturedSystem = args.system ?? "";
+        return { text: VALID_SYNTHESIS, finishReason: "stop" };
+      },
+    );
+
+    await synthesize({
+      buckets: [makeBucket("APP", "AppLovin", [makeArticle(1, "TMTB")])],
+      heldSymbols: ["APP"],
+      watchlist: [],
+      anomalies: [],
+    });
+
+    // The new HARD rule block must appear in the system prompt, with the
+    // specific forbidden phrasings called out so future contributors can't
+    // silently drop the guardrail.
+    expect(capturedSystem).toContain("COVERAGE-CHARACTERIZATION RULES");
+    expect(capturedSystem).toContain("only mentioned indirectly");
+    expect(capturedSystem).toContain("mentioned in passing");
+    expect(capturedSystem).toContain(
+      "Do NOT label any source as having mentioned a symbol",
+    );
+  });
+
+  it("instructs Sonnet to give held tickers their own section, not 'Also covered'", async () => {
+    let capturedSystem = "";
+    (generateText as ReturnType<typeof vi.fn>).mockImplementation(
+      async (args: { prompt?: string; system?: string; messages?: unknown }) => {
+        capturedSystem = args.system ?? "";
+        return { text: VALID_SYNTHESIS, finishReason: "stop" };
+      },
+    );
+
+    await synthesize({
+      buckets: [makeBucket("APP", "AppLovin", [makeArticle(1, "TMTB")])],
+      heldSymbols: ["APP"],
+      watchlist: [],
+      anomalies: [],
+    });
+
+    expect(capturedSystem).toContain("HELD-TICKER PRIORITIZATION");
+    expect(capturedSystem).toContain(
+      "Every held ticker",
+    );
+    expect(capturedSystem).toContain("MUST get its own");
+  });
 });
