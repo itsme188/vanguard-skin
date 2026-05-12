@@ -53,7 +53,15 @@ CRITICAL OUTPUT RULES:
 - Connect threads ACROSS sources where they exist. If only one source mentions something, say so ("Only Vital Knowledge flagged X today").
 - Skip companies/topics with thin coverage (1 article, no portfolio relevance) — weave them into a closing "## Also covered" line at the end.
 - 60-150 words per section. Skip if no meaningful synthesis is possible.
-- DO NOT include P&L numbers, position sizes, or anything that would reveal what the user owns. Write as if for an analyst peer.`;
+- DO NOT include P&L numbers, position sizes, or anything that would reveal what the user owns. Write as if for an analyst peer.
+
+COVERAGE-CHARACTERIZATION RULES (HARD):
+- Do NOT label any source as having mentioned a symbol "indirectly", "only briefly", "in passing", "tangentially", "without focus", or any synonym. You cannot reliably tell from the bucket's article summaries whether a symbol was the lead topic or one of many tickers in a long list. If a symbol appears in a source's bucket entry, that source covered it — narrate WHAT the source said about it (drawn from the summary you were given), not HOW PROMINENTLY it said it.
+- If you have nothing concrete to say beyond "Source X mentioned this", either (a) write a substantive section anchored on the summary text you were given, or (b) move the symbol to "## Also covered" with the citation but no characterization of coverage-depth.
+- Specifically forbidden phrasings: "only mentioned indirectly", "mentioned in passing", "no real focus on", "appeared only as a footnote", "briefly noted", "not the focus of any source".
+
+HELD-TICKER PRIORITIZATION:
+- Every held ticker (in the "Held tickers" list above the buckets) that has ANY coverage in today's buckets MUST get its own \`##\` section, however brief. Do NOT relegate held tickers to "## Also covered" — even single-article coverage of a held name warrants a focused section with the citation and what was said. The user's portfolio context makes held-name coverage load-bearing.`;
 
 // ─── Prompt builders ──────────────────────────────────────────────────────────
 
