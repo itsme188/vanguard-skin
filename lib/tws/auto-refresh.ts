@@ -26,6 +26,7 @@ import { syncPortfolio } from "./positions";
 import { enrichSecurities } from "./contracts";
 import { purgeExpiredOptionHoldings } from "../mutations/expired-options";
 import { purgeClosedOptionHoldings } from "../mutations/closed-positions";
+import { purgeMaturedBondHoldings } from "../mutations/matured-bonds";
 import { fetchSnapshotPrices } from "./snapshot";
 import { fetchBenchmarkPrices } from "./benchmark";
 import { computeDailyValuations } from "../compute/daily-valuation";
@@ -119,6 +120,21 @@ export async function runAutoRefresh(
       const msg = err instanceof Error ? err.message : "Closed-option purge failed";
       errors.push(msg);
       console.error("[auto-refresh] Closed-option purge error:", msg);
+    }
+
+    // ── Step 1.7: Purge matured bond holdings ───────────────────
+    // Sibling to 1.5/1.6: statement imports never zero-out matured T-bills /
+    // bonds when the next snapshot drops them, so they linger in scenario
+    // rate-shocks + fixed-income analytics until manually cleared.
+    try {
+      const purged = purgeMaturedBondHoldings(db);
+      if (purged > 0) {
+        console.log(`[auto-refresh] Purged ${purged} matured bond holdings`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Matured-bond purge failed";
+      errors.push(msg);
+      console.error("[auto-refresh] Matured-bond purge error:", msg);
     }
 
     // ── Step 2: Enrich Securities (full only) ───────────────────
