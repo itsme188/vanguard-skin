@@ -26,6 +26,14 @@ interface AppSettings {
   apiNinjasKey?: string;
   pushoverAppToken?: string;
   pushoverUserKey?: string;
+  /**
+   * Base URL for the "Open in dashboard" deep link inside Pushover notifications.
+   * When phone is on the Cloudflare One mesh, default to `http://100.96.0.1:3099`
+   * (same target as MESH_HOSTNAME). Falls back to localhost if unset — which
+   * only works on the Mac itself and produces a "Safari can't connect"
+   * dead-end when tapped from the phone (observed 2026-05-14 mid-travel).
+   */
+  pushoverLinkBase?: string;
   // Cloudflare AI Gateway — when both accountId + gatewayId are set, every
   // Claude / OpenAI / Workers AI call routes through Cloudflare for
   // observability, caching, and per-feature cost tracking.
@@ -121,6 +129,7 @@ export function bootstrapFromEnvLocal(): void {
   if (envMap.API_NINJAS_API_KEY) updates.apiNinjasKey = envMap.API_NINJAS_API_KEY;
   if (envMap.PUSHOVER_APP_TOKEN) updates.pushoverAppToken = envMap.PUSHOVER_APP_TOKEN;
   if (envMap.PUSHOVER_USER_KEY) updates.pushoverUserKey = envMap.PUSHOVER_USER_KEY;
+  if (envMap.PUSHOVER_LINK_BASE) updates.pushoverLinkBase = envMap.PUSHOVER_LINK_BASE;
   if (envMap.CLOUDFLARE_ACCOUNT_ID) updates.cloudflareAccountId = envMap.CLOUDFLARE_ACCOUNT_ID;
   if (envMap.CLOUDFLARE_GATEWAY_ID) updates.cloudflareGatewayId = envMap.CLOUDFLARE_GATEWAY_ID;
   if (envMap.CLOUDFLARE_GATEWAY_TOKEN) updates.cloudflareGatewayToken = envMap.CLOUDFLARE_GATEWAY_TOKEN;
@@ -148,6 +157,7 @@ export function getSanitizedSettings(): Record<string, string | number | boolean
     apiNinjasKey: s.apiNinjasKey ? "***" + s.apiNinjasKey.slice(-4) : "",
     pushoverAppToken: s.pushoverAppToken ? "***" + s.pushoverAppToken.slice(-4) : "",
     pushoverUserKey: s.pushoverUserKey ? "***" + s.pushoverUserKey.slice(-4) : "",
+    pushoverLinkBase: s.pushoverLinkBase ?? "",
     cloudflareAccountId: s.cloudflareAccountId ?? "",
     cloudflareGatewayId: s.cloudflareGatewayId ?? "",
     cloudflareGatewayToken: s.cloudflareGatewayToken ? "***" + s.cloudflareGatewayToken.slice(-4) : "",
