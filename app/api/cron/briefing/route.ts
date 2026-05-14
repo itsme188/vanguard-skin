@@ -8,6 +8,7 @@ import { checkCloudMarker } from "@/lib/cron/marker-check";
 import {
   setRunningMarker,
   clearRunningMarker,
+  confirmMacSent,
 } from "@/lib/cron/running-marker";
 
 /**
@@ -62,6 +63,13 @@ export async function POST(request: Request) {
       recipient: body.to as string | undefined,
       force: body.force === true,
     });
+    // Tell the Worker we actually shipped a briefing today, so its catch-up
+    // retry sweep won't fire a duplicate. Skip the confirmation when the
+    // route short-circuited (e.g. cloud already sent, or no content) — both
+    // paths set skipped:true.
+    if (result && (result as { success?: boolean }).success && !(result as { skipped?: boolean }).skipped) {
+      void confirmMacSent("briefing");
+    }
     return Response.json(result);
   } catch (err) {
     if (err instanceof BriefingSendError) {

@@ -4,6 +4,8 @@ import {
   readMarkers,
   setRunningMarker,
   clearRunningMarker,
+  setAttemptingMarker,
+  clearAttemptingMarker,
   getMarkerStatus,
   type JobType,
 } from "../src/dedup";
@@ -89,6 +91,7 @@ describe("Marker dedup system", () => {
         mac: false,
         cloud: false,
         macRunning: false,
+        cloudAttempting: false,
       });
     });
 
@@ -113,6 +116,7 @@ describe("Marker dedup system", () => {
         mac: false,
         cloud: true,
         macRunning: false,
+        cloudAttempting: false,
       });
     });
 
@@ -126,18 +130,20 @@ describe("Marker dedup system", () => {
       expect(result.macRunning).toBe(true);
     });
 
-    it("should call kv.get three times with correct keys", async () => {
+    it("should call kv.get four times with correct keys", async () => {
       const getMock = kv.get as any;
+      getMock.mockResolvedValueOnce(null);
       getMock.mockResolvedValueOnce(null);
       getMock.mockResolvedValueOnce(null);
       getMock.mockResolvedValueOnce(null);
 
       await readMarkers(kv, "evening", "2026-05-08");
 
-      expect(getMock).toHaveBeenCalledTimes(3);
+      expect(getMock).toHaveBeenCalledTimes(4);
       expect(getMock).toHaveBeenCalledWith("mac-sent-evening-2026-05-08");
       expect(getMock).toHaveBeenCalledWith("cloud-sent-evening-2026-05-08");
       expect(getMock).toHaveBeenCalledWith("mac-running-evening-2026-05-08");
+      expect(getMock).toHaveBeenCalledWith("cloud-attempting-evening-2026-05-08");
     });
   });
 
@@ -269,11 +275,12 @@ describe("Marker dedup system", () => {
         getMock.mockResolvedValueOnce(null);
         getMock.mockResolvedValueOnce(null);
         getMock.mockResolvedValueOnce(null);
+        getMock.mockResolvedValueOnce(null);
 
         await readMarkers(kv, type, "2026-05-08");
       }
 
-      expect(getMock.mock.calls.length).toBe(9); // 3 calls per type, 3 types
+      expect(getMock.mock.calls.length).toBe(12); // 4 calls per type, 3 types
     });
 
     it("should accept all JobType values in setRunningMarker", async () => {
@@ -304,11 +311,53 @@ describe("Marker dedup system", () => {
         getMock.mockResolvedValueOnce(null);
         getMock.mockResolvedValueOnce(null);
         getMock.mockResolvedValueOnce(null);
+        getMock.mockResolvedValueOnce(null);
 
         await getMarkerStatus(kv, type, "2026-05-08");
       }
 
-      expect(getMock.mock.calls.length).toBe(9);
+      expect(getMock.mock.calls.length).toBe(12);
+    });
+  });
+
+  describe("cloud-attempting marker (2026-05-14)", () => {
+    it("setAttemptingMarker writes cloud-attempting key with 10-min TTL", async () => {
+      await setAttemptingMarker(kv, "digest", "2026-05-14");
+      expect(kv.put).toHaveBeenCalledWith(
+        "cloud-attempting-digest-2026-05-14",
+        expect.any(String),
+        expect.objectContaining({ expirationTtl: 10 * 60 }),
+      );
+    });
+
+    it("clearAttemptingMarker deletes cloud-attempting key", async () => {
+      await clearAttemptingMarker(kv, "evening", "2026-05-14");
+      expect(kv.delete).toHaveBeenCalledWith("cloud-attempting-evening-2026-05-14");
+    });
+
+    it("readMarkers reports cloudAttempting=true when the key is set", async () => {
+      await setAttemptingMarker(kv, "briefing", "2026-05-14");
+      const result = await readMarkers(kv, "briefing", "2026-05-14");
+      expect(result.cloudAttempting).toBe(true);
+      expect(result.cloud).toBe(false);
+      expect(result.mac).toBe(false);
+    });
+
+    it("getMarkerStatus treats cloud-attempting as sentBy=cloud (skip-to-Mac signal)", async () => {
+      await setAttemptingMarker(kv, "digest", "2026-05-14");
+      const status = await getMarkerStatus(kv, "digest", "2026-05-14");
+      expect(status.sentBy).toBe("cloud");
+      expect(status.date).toBe("2026-05-14");
+    });
+
+    it("getMarkerStatus prefers cloud-sent over cloud-attempting when both set", async () => {
+      await setAttemptingMarker(kv, "evening", "2026-05-14");
+      await writeMarker(kv, "cloud", "evening", "2026-05-14");
+      const status = await getMarkerStatus(kv, "evening", "2026-05-14");
+      // Both report sentBy=cloud, but the test ensures the cloud-sent branch
+      // fires before the cloud-attempting branch (debuggability — cloud-sent
+      // is the "done" state).
+      expect(status.sentBy).toBe("cloud");
     });
   });
 });

@@ -8,6 +8,7 @@ import { checkCloudMarker } from "@/lib/cron/marker-check";
 import {
   setRunningMarker,
   clearRunningMarker,
+  confirmMacSent,
 } from "@/lib/cron/running-marker";
 
 export const dynamic = "force-dynamic";
@@ -62,6 +63,13 @@ export async function POST(request: Request) {
       recipient: body.recipient as string | undefined,
       footerNote: body.footerNote as string | undefined,
     });
+    // Tell the Worker we shipped tonight's evening recap so its catch-up
+    // retry sweep won't double-send. Only when an email actually went out.
+    if (result && (result as { success?: boolean }).success && !(result as { skipped?: boolean }).skipped) {
+      void confirmMacSent("evening").catch((err) => {
+        console.warn("[cron/evening] confirmMacSent failed:", err);
+      });
+    }
     return Response.json(result);
   } catch (err) {
     if (err instanceof EveningSendError) {

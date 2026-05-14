@@ -9,6 +9,7 @@ import { checkCloudMarker } from "@/lib/cron/marker-check";
 import {
   setRunningMarker,
   clearRunningMarker,
+  confirmMacSent,
 } from "@/lib/cron/running-marker";
 
 /**
@@ -55,6 +56,12 @@ export async function POST(request: Request) {
       mode: body.mode as DigestMode | undefined,
       sinceDate: body.sinceDate as string | undefined,
     });
+    // Tell the Worker we shipped today's digest so its catch-up retry sweep
+    // won't double-send hours later. Only when the route actually sent — a
+    // skipped:true response means no email left the building.
+    if (result && (result as { success?: boolean }).success && !(result as { skipped?: boolean }).skipped) {
+      void confirmMacSent("digest");
+    }
     return Response.json(result);
   } catch (err) {
     if (err instanceof DigestSendError) {

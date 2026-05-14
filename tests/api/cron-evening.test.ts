@@ -30,6 +30,7 @@ const hoisted = vi.hoisted(() => ({
   checkCloudMarker: vi.fn(async () => null),
   setRunningMarker: vi.fn(async () => {}),
   clearRunningMarker: vi.fn(async () => {}),
+  confirmMacSent: vi.fn(async () => {}),
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -50,6 +51,7 @@ vi.mock("@/lib/cron/marker-check", () => ({
 vi.mock("@/lib/cron/running-marker", () => ({
   setRunningMarker: hoisted.setRunningMarker,
   clearRunningMarker: hoisted.clearRunningMarker,
+  confirmMacSent: hoisted.confirmMacSent,
 }));
 
 // Import the route handler AFTER mocks are set up

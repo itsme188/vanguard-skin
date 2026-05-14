@@ -60,3 +60,49 @@ export function setRunningMarker(type: "briefing" | "digest" | "evening"): Promi
 export function clearRunningMarker(type: "briefing" | "digest" | "evening"): Promise<void> {
   return callRunningMarkerEndpoint(type, "clear");
 }
+
+/**
+ * Tell the Worker the Mac just successfully shipped {type} for today.
+ *
+ * The Worker writes a 30h `mac-sent-{type}-{YYYY-MM-DD}` KV marker so its
+ * catch-up retry sweep (added 2026-05-14) won't fire a duplicate hours later.
+ *
+ * Without this, the Worker can't tell "Mac successfully sent via launchd" from
+ * "nothing shipped yet" — the only thing that writes `mac-sent` from the
+ * Worker side is a successful Worker → Mac primary call, which is rare in the
+ * Mesh CGNAT setup where the Worker's primary call almost always fails fast
+ * with CF 1016. Mac confirming directly closes that gap.
+ *
+ * Fire-and-forget — never block email delivery on Worker RTT.
+ */
+export async function confirmMacSent(
+  type: "briefing" | "digest" | "evening",
+): Promise<void> {
+  const url = process.env.WORKER_MARKER_URL;
+  const secret = process.env.CRON_SHARED_SECRET;
+  if (!url || !secret) return;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+
+  try {
+    const target = `${url.replace(/\/$/, "")}/internal/mac-sent?type=${type}`;
+    const res = await fetch(target, {
+      method: "POST",
+      headers: { "X-Cron-Secret": secret },
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      console.warn(
+        `[mac-sent] worker returned ${res.status} for ${type}; ignoring`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[mac-sent] worker unreachable for ${type}; ignoring:`,
+      err instanceof Error ? err.message : err,
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+}

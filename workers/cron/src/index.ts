@@ -19,6 +19,8 @@ import {
   writeMarker,
   setRunningMarker,
   clearRunningMarker,
+  setAttemptingMarker,
+  clearAttemptingMarker,
   getMarkerStatus,
   type JobType,
   type SentBy,
@@ -124,7 +126,11 @@ interface RunJobOpts {
 }
 
 interface RunJobResult {
-  skipped?: "already_sent" | "already_sent_by_cloud" | "mac_still_running";
+  skipped?:
+    | "already_sent"
+    | "already_sent_by_cloud"
+    | "mac_still_running"
+    | "cloud_attempt_in_flight";
   primary?: PrimaryResult;
   fallback?: FallbackResult;
   sentBy?: SentBy;
@@ -136,6 +142,12 @@ async function runJob(type: JobType, env: Env, opts: RunJobOpts = {}): Promise<R
 
   if (markers.mac && !opts.dryRun) return { skipped: "already_sent" };
   if (markers.cloud && !opts.dryRun) return { skipped: "already_sent_by_cloud" };
+  // A concurrent invocation is already inside the fallback path. Bail out so
+  // 4 consecutive ticks at hh:00/15/30/45 don't all enter fallback and ship
+  // 4 emails before the first one finishes its 5-min run.
+  if (markers.cloudAttempting && !opts.dryRun) {
+    return { skipped: "cloud_attempt_in_flight" };
+  }
 
   // Optionally skip primary entirely — for exercising the fallback path in tests.
   let primary: PrimaryResult | undefined;
@@ -169,11 +181,20 @@ async function runJob(type: JobType, env: Env, opts: RunJobOpts = {}): Promise<R
       const reMarkers = await readMarkers(env.CRON_KV, type, date);
       if (reMarkers.mac) return { primary, sentBy: "mac", skipped: "already_sent" };
       if (reMarkers.cloud) return { primary, skipped: "already_sent_by_cloud" };
+      if (reMarkers.cloudAttempting) {
+        return { primary, skipped: "cloud_attempt_in_flight" };
+      }
       if (reMarkers.macRunning) {
         return { primary, skipped: "mac_still_running" };
       }
     }
   }
+
+  // Claim the fallback BEFORE the heavy Gmail+Claude+Resend work. The 10-min
+  // TTL on this marker auto-expires if the invocation dies mid-fallback, so
+  // a killed run lets the next tick retry. Skipping when dryRun keeps tests
+  // hermetic.
+  if (!opts.dryRun) await setAttemptingMarker(env.CRON_KV, type, date);
 
   // Primary failed (timeout / network / 5xx) or was skipped — run fallback.
   let fallback: FallbackResult;
@@ -194,37 +215,137 @@ async function runJob(type: JobType, env: Env, opts: RunJobOpts = {}): Promise<R
   }
 
   if (fallback.kind === "success") {
-    if (!opts.dryRun) await writeMarker(env.CRON_KV, "cloud", type, date);
+    if (!opts.dryRun) {
+      // Write cloud-sent first, then clear cloud-attempting. Order matters:
+      // if the invocation dies between these two, the next tick still sees
+      // cloud-sent and skips. Reverse order would leave an idle 10-min window
+      // where neither marker is set.
+      await writeMarker(env.CRON_KV, "cloud", type, date);
+      await clearAttemptingMarker(env.CRON_KV, type, date);
+    }
     return { primary, fallback, sentBy: "cloud" };
   }
 
+  // Fallback didn't ship. Clear the attempting marker so the next tick can
+  // retry immediately instead of waiting 10 min for the TTL to expire.
+  if (!opts.dryRun) await clearAttemptingMarker(env.CRON_KV, type, date);
   return { primary, fallback };
+}
+
+// ── Catch-up retry ──────────────────────────────────────────────────────────
+//
+// If the scheduled-window dispatch failed silently (Worker killed mid-fallback,
+// transient Anthropic outage, Gmail OAuth blip, …), the user lost the email
+// for the day. This sweep re-tries each email type once its scheduled window
+// has clearly passed without a marker, so the cron is self-healing.
+//
+// Bound the window so we don't ship "morning digest" at 4pm — only catch up
+// within a few hours of the original window.
+
+interface CatchUpJob {
+  type: JobType;
+  /** ET hour after which catch-up is allowed (must be after the original window). */
+  afterHour: number;
+  /** ET hour before which catch-up is allowed (don't ship hours late). */
+  beforeHour: number;
+  /** Day-of-week filter — same semantics as parseJobFromClock. */
+  dows: number[];
+}
+
+export function catchUpCandidates(): CatchUpJob[] {
+  return [
+    // Digest scheduled Mon-Fri 8:00-8:45 ET. Catch up between 9:30 ET (first
+    // calendar-enrich tick after the digest window) and 12:00 ET noon.
+    { type: "digest", afterHour: 9, beforeHour: 12, dows: [1, 2, 3, 4, 5] },
+    // Evening Mon-Thu 19:00 ET. Catch up 20:00-22:00 ET same day. Fri 17:30 ET
+    // catch-up is handled by the same window via dow=5 + afterHour=18.
+    { type: "evening", afterHour: 20, beforeHour: 23, dows: [1, 2, 3, 4] },
+    { type: "evening", afterHour: 18, beforeHour: 22, dows: [5] },
+    // Briefing Sun 15:00 ET. Catch up 17:00-22:00 ET Sun.
+    { type: "briefing", afterHour: 17, beforeHour: 22, dows: [0] },
+  ];
+}
+
+async function runCatchUp(env: Env): Promise<{ ran: JobType[]; skipped: JobType[] }> {
+  const hour = getCurrentETHour();
+  const dow = getCurrentETDayOfWeek();
+  const date = todayET();
+  const ran: JobType[] = [];
+  const skipped: JobType[] = [];
+
+  for (const cand of catchUpCandidates()) {
+    if (!cand.dows.includes(dow)) continue;
+    if (hour < cand.afterHour || hour >= cand.beforeHour) continue;
+
+    const markers = await readMarkers(env.CRON_KV, cand.type, date);
+    if (markers.mac || markers.cloud || markers.cloudAttempting || markers.macRunning) {
+      skipped.push(cand.type);
+      continue;
+    }
+
+    console.log(
+      `[catch-up] ${cand.type} appears missed (ET ${hour}, dow ${dow}, no markers) — dispatching fallback retry`,
+    );
+    const result = await runJob(cand.type, env);
+    console.log(`[catch-up] ${cand.type} result:`, JSON.stringify(result));
+    ran.push(cand.type);
+  }
+
+  return { ran, skipped };
 }
 
 export default {
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    // Calendar-enrich trigger (every 15 min) is dispatched separately — it
-    // fires far more often than the briefing/digest triggers, so we check
-    // its window first and only fall through to the hourly-job dispatcher
-    // when calendar-enrich doesn't claim the tick.
+    // PRIORITY 1: the briefing/digest/evening dispatch is the highest-stakes
+    // job (user-visible email). Run it FIRST and AWAIT it — not via
+    // ctx.waitUntil — so the invocation's wall-clock and subrequest budget
+    // are dedicated to completing the email and writing the marker before
+    // siblings start competing for resources. Pre-2026-05-14 this ran in
+    // parallel via ctx.waitUntil and (we suspect) the invocation died with
+    // the marker write still pending, producing 5/13's silent miss.
+    const job = parseJobFromClock(env);
+    if (job) {
+      console.log(`[cron ${event.cron}] running ${job.type} at ET ${job.expectedHour}:00 (${todayET()})`);
+      try {
+        const result = await runJob(job.type, env);
+        console.log(`[cron] result:`, JSON.stringify(result));
+      } catch (err) {
+        console.error(`[cron ${event.cron}] runJob threw:`, err);
+      }
+    } else if (!shouldRunCalendarEnrich()) {
+      console.log(
+        `[cron ${event.cron}] wrong-hour slot — ET ${getCurrentETHour()}:00, dow=${getCurrentETDayOfWeek()} — no scheduled email job`,
+      );
+    }
+
+    // PRIORITY 2: the catch-up sweep — re-tries a digest/evening/briefing
+    // that should have been sent by now but has no marker. Awaited (not
+    // waitUntil) for the same reason as the primary dispatch above: we
+    // want the marker write to land before the invocation can be killed.
+    try {
+      const catchUp = await runCatchUp(env);
+      if (catchUp.ran.length > 0) {
+        console.log(`[catch-up] ran:`, JSON.stringify(catchUp));
+      }
+    } catch (err) {
+      console.error(`[catch-up] threw:`, err);
+    }
+
+    // PRIORITY 3: dispatch the periodic non-email jobs. These are lower
+    // stakes (data enrichment, push notifications) and tolerate getting
+    // killed mid-flight — they'll re-try on the next 15-min tick. Using
+    // ctx.waitUntil lets them run concurrently after the email job has
+    // already finished.
     if (shouldRunCalendarEnrich()) {
       ctx.waitUntil(
         (async () => {
           console.log(`[cron ${event.cron}] running calendar-enrich at ${todayET()}`);
           const result = await runCalendarEnrich(env);
           console.log(`[cron calendar-enrich] result:`, JSON.stringify(result));
-        })()
+        })(),
       );
-      // Continue below — the briefing/digest hour check is independent.
     }
 
-    // Earnings cloud-fallback sweep — runs alongside calendar-enrich on the
-    // same 15-min cadence. Mac is primary; this only fires when Mac hasn't
-    // touched a candidate (no audit row in snapshot, no mac-sent marker, no
-    // mac-running marker, no cloud-sent marker). Self-gates via
-    // shouldRunEarningsFallback (Mon-Fri 05:00-20:00 ET) — wider than the
-    // calendar-enrich gate to cover BMO previews at 06:00 AND the 18:15+
-    // AMC recap window which the calendar-enrich 18:00 cutoff would miss.
     if (shouldRunEarningsFallback()) {
       ctx.waitUntil(
         (async () => {
@@ -233,14 +354,10 @@ export default {
           if (result.swept > 0) {
             console.log(`[cron earnings-fallback] result:`, JSON.stringify(result));
           }
-        })()
+        })(),
       );
     }
 
-    // Price-level scan — Mon-Fri 09:30-16:00 ET. Closes the "Pushover stops
-    // firing when Mac is asleep" gap. Self-gates via shouldRunLevelScan and
-    // pre-checks the mac-recent-scan KV marker to avoid duplicate firing
-    // when Mac is alive.
     if (shouldRunLevelScan()) {
       ctx.waitUntil(
         (async () => {
@@ -248,40 +365,18 @@ export default {
           if (result.fired > 0 || result.deduped > 0 || result.skipped > 0) {
             console.log(`[cron ${event.cron}] level-scan result:`, JSON.stringify(result));
           }
-        })()
+        })(),
       );
     }
 
-    // Newsletter fetch — hourly during ET 06:00-20:59. Closes the "Mac
-    // asleep → newsletters pile up unprocessed" gap. Sibling to the level
-    // scan above: Worker fetches + Claude-analyzes, writes per-article
-    // payloads to KV, Mac reconciles on wake via /api/research/reconcile-cloud-fetched.
     if (shouldRunNewsletterFetch()) {
       ctx.waitUntil(
         (async () => {
           const result = await runNewsletterFetch(env);
           console.log(`[cron ${event.cron}] newsletter-fetch result:`, JSON.stringify(result));
-        })()
+        })(),
       );
     }
-
-    const job = parseJobFromClock(env);
-    if (!job) {
-      if (!shouldRunCalendarEnrich()) {
-        console.log(
-          `[cron ${event.cron}] wrong-hour slot — ET ${getCurrentETHour()}:00, dow=${getCurrentETDayOfWeek()} — skipping.`
-        );
-      }
-      return;
-    }
-
-    ctx.waitUntil(
-      (async () => {
-        console.log(`[cron ${event.cron}] running ${job.type} at ET ${job.expectedHour}:00 (${todayET()})`);
-        const result = await runJob(job.type, env);
-        console.log(`[cron] result:`, JSON.stringify(result));
-      })()
-    );
   },
 
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -302,6 +397,28 @@ export default {
       }
       const status = await getMarkerStatus(env.CRON_KV, typeParam);
       return Response.json(status);
+    }
+
+    // Mac POSTs this after its launchd-driven /api/cron/{type} successfully
+    // ships an email. Worker's catch-up retry then sees mac-sent and skips
+    // — without this, a successful Mac launchd send would still trigger a
+    // Worker catch-up retry duplicate at 9:30 ET (no mac-sent marker exists
+    // because the Worker→Mac primary path is what normally writes it, and
+    // primary fails fast with CF 1016 when Mac is on Cloudflare Mesh CGNAT).
+    if (request.method === "POST" && url.pathname === "/internal/mac-sent") {
+      const typeParam = url.searchParams.get("type");
+      if (typeParam !== "briefing" && typeParam !== "digest" && typeParam !== "evening") {
+        return Response.json({ error: "type must be briefing, digest, or evening" }, { status: 400 });
+      }
+      // Mac may want to confirm a send for a different date than today (e.g.
+      // sending a "yesterday catchup" briefing). Accept ?date but default to
+      // today ET — same convention as todayET() everywhere else.
+      const dateParam = url.searchParams.get("date") ?? todayET();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
+        return Response.json({ error: "date must be YYYY-MM-DD" }, { status: 400 });
+      }
+      await writeMarker(env.CRON_KV, "mac", typeParam, dateParam);
+      return Response.json({ ok: true, type: typeParam, date: dateParam });
     }
 
     // Mac calls this at the start (action=set) and end (action=clear) of
