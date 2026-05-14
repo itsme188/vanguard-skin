@@ -29,6 +29,13 @@ crons = [
   "*/15 * * * *",       # Every 15 min, self-gated by parseJobFromClock + shouldRunCalendarEnrich + shouldRunEarningsFallback
 ]
 
+# 7 days of log retention so we can diagnose silent fallback failures after
+# the fact. Without this, scheduled() failures leave no trail — exactly the
+# situation that hid the 5/13 missed digest + evening from view.
+[observability]
+enabled = true
+head_sampling_rate = 1.0
+
 # KV namespace — created via `wrangler kv namespace create CRON_KV`.
 # Paste the returned id into the `id` field below, then `wrangler deploy`.
 [[kv_namespaces]]

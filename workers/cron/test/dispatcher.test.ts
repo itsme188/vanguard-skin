@@ -22,7 +22,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // We actually export parseJobFromClock from index.ts for testability. If it's
 // not exported yet, the tests below will fail at compile time and serve as the
 // failing-test phase of TDD.
-import { parseJobFromClock } from "../src/index";
+import { parseJobFromClock, catchUpCandidates } from "../src/index";
 
 // Minimal mock env
 function makeEnv(overrides: Record<string, string> = {}): any {
@@ -193,5 +193,59 @@ describe("parseJobFromClock — env var override", () => {
     const job = parseJobFromClock(makeEnv({ EXPECTED_HOUR_EVENING_MON_THU: "20" }));
     // 19 !== 20 → should NOT match
     expect(job).toBeNull();
+  });
+});
+
+// ── Catch-up sweep candidates (2026-05-14) ────────────────────────────────
+//
+// The catch-up table is a pure data structure. We only verify its shape +
+// non-overlap with the normal dispatch windows. The KV-and-marker integration
+// of runCatchUp() itself is covered by the runJob unit tests.
+
+describe("catchUpCandidates — declarative table", () => {
+  it("digest catch-up runs Mon-Fri only", () => {
+    const digest = catchUpCandidates().find((c) => c.type === "digest");
+    expect(digest).toBeDefined();
+    expect(digest!.dows).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it("digest catch-up starts AFTER the digest dispatch window (8:45 ET)", () => {
+    const digest = catchUpCandidates().find((c) => c.type === "digest");
+    // Dispatch fires at hour=8. Catch-up must start at hour >= 9.
+    expect(digest!.afterHour).toBeGreaterThan(8);
+  });
+
+  it("digest catch-up ends before evening (so an unsent morning doesn't fire at 5pm)", () => {
+    const digest = catchUpCandidates().find((c) => c.type === "digest");
+    expect(digest!.beforeHour).toBeLessThanOrEqual(13);
+  });
+
+  it("evening catch-up Mon-Thu starts after 19:00 ET dispatch window", () => {
+    const monThu = catchUpCandidates().find(
+      (c) => c.type === "evening" && c.dows.includes(1) && !c.dows.includes(5),
+    );
+    expect(monThu).toBeDefined();
+    expect(monThu!.afterHour).toBeGreaterThan(19);
+  });
+
+  it("evening catch-up Fri starts after 17:30 ET dispatch window", () => {
+    const fri = catchUpCandidates().find(
+      (c) => c.type === "evening" && c.dows.includes(5) && !c.dows.includes(1),
+    );
+    expect(fri).toBeDefined();
+    expect(fri!.afterHour).toBeGreaterThanOrEqual(18);
+  });
+
+  it("briefing catch-up runs Sunday only after 15:00 ET dispatch", () => {
+    const briefing = catchUpCandidates().find((c) => c.type === "briefing");
+    expect(briefing).toBeDefined();
+    expect(briefing!.dows).toEqual([0]);
+    expect(briefing!.afterHour).toBeGreaterThan(15);
+  });
+
+  it("all catch-up windows have afterHour < beforeHour (non-empty range)", () => {
+    for (const cand of catchUpCandidates()) {
+      expect(cand.afterHour).toBeLessThan(cand.beforeHour);
+    }
   });
 });
