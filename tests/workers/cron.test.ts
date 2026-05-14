@@ -129,14 +129,14 @@ describe("cron worker — marker dedup", () => {
   it("readMarkers returns all false when KV is empty", async () => {
     const kv = makeKv();
     const result = await readMarkers(kv, "briefing", "2026-04-23");
-    expect(result).toEqual({ mac: false, cloud: false, macRunning: false });
+    expect(result).toEqual({ mac: false, cloud: false, macRunning: false, cloudAttempting: false });
   });
 
   it("writeMarker + readMarkers round-trips", async () => {
     const kv = makeKv();
     await writeMarker(kv, "mac", "digest", "2026-04-23");
     const result = await readMarkers(kv, "digest", "2026-04-23");
-    expect(result).toEqual({ mac: true, cloud: false, macRunning: false });
+    expect(result).toEqual({ mac: true, cloud: false, macRunning: false, cloudAttempting: false });
   });
 
   it("getMarkerStatus prefers cloud over mac when both are set", async () => {
