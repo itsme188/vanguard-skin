@@ -229,4 +229,40 @@ describe("Worker Resend email sender", () => {
     expect(body.reply_to).toBe("replies@myportfoliodesk.com");
     expect(body.headers).toBeDefined();
   });
+
+  it("splits comma-separated `to` into an array of single addresses", async () => {
+    // BRIEFING_EMAIL_TO is commonly "a@x.com, b@y.com" — Mac's nodemailer
+    // accepts this natively but Resend REST 422s on a single string with a
+    // comma inside. Caused 6 silent days of missed digests on 2026-05-20.
+    await sendEmail(env, {
+      to: "isaac@wolfsonfamily.com, esafier@woodlotcapital.com",
+      subject: "Test",
+      html: "<p>x</p>",
+      fromLocalPart: "digest",
+    });
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string) as Record<
+      string,
+      unknown
+    >;
+    expect(body.to).toEqual([
+      "isaac@wolfsonfamily.com",
+      "esafier@woodlotcapital.com",
+    ]);
+  });
+
+  it("trims whitespace and drops empty entries when splitting `to`", async () => {
+    await sendEmail(env, {
+      to: "  a@x.com  ,, b@y.com ,",
+      subject: "Test",
+      html: "<p>x</p>",
+      fromLocalPart: "briefing",
+    });
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string) as Record<
+      string,
+      unknown
+    >;
+    expect(body.to).toEqual(["a@x.com", "b@y.com"]);
+  });
 });
