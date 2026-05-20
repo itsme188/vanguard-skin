@@ -30,7 +30,14 @@ import { getModelForFeature } from "./ai";
 import { briefingToHtml } from "./html";
 import { todayET } from "./dst";
 
-const MAX_ARTICLES_PER_RUN = 15;
+// Workers Free plan caps each invocation at 50 subrequests. The digest does
+// 1 list call per source + 2 calls per processed article (getMessage + Claude).
+// 28 active sources × 1 list + 10 articles × 2 = 48 — leaves headroom for
+// recipient resolution + Resend send. Bumping either constant risks the
+// "Too many subrequests by single Worker invocation" failure that produced
+// the silent miss on 2026-05-20.
+const MAX_ARTICLES_PER_RUN = 10;
+const MAX_MESSAGES_PER_SOURCE = 1;
 
 export interface FallbackEnv {
   CRON_KV: KVNamespace;
@@ -113,14 +120,23 @@ export async function runFallbackDigest(
     (s) => s.is_active === 1 && s.sender_email
   );
 
+  // Track upstream failures separately from "nothing new to process" so a
+  // total wipeout (API outage, billing hold, subrequest cap) bubbles up as
+  // kind:"error" instead of silently looking identical to a quiet news day.
+  let listErrors = 0;
+  let articleErrors = 0;
+  let lastError: string | null = null;
+
   for (const source of activeSources) {
     if (newProcessed.length >= MAX_ARTICLES_PER_RUN) break;
 
     const query = `from:${source.sender_email} newer_than:1d`;
     let list: { id: string }[];
     try {
-      list = await listMessages(accessToken, query, 5);
+      list = await listMessages(accessToken, query, MAX_MESSAGES_PER_SOURCE);
     } catch (err) {
+      listErrors++;
+      lastError = err instanceof Error ? err.message : String(err);
       console.warn(`[fallback-digest] list for ${source.name} failed:`, err);
       continue;
     }
@@ -135,6 +151,8 @@ export async function runFallbackDigest(
         const processed = await processArticle(env, source, detail, heldSymbolsContext);
         if (processed) newProcessed.push(processed);
       } catch (err) {
+        articleErrors++;
+        lastError = err instanceof Error ? err.message : String(err);
         console.warn(`[fallback-digest] article ${m.id} failed:`, err);
       }
     }
@@ -143,7 +161,16 @@ export async function runFallbackDigest(
   // Combine: newly-processed on top (fresh today), then snapshot meta as context.
   const snapshotRecent = filterTodayArticles(snapshot.recentArticlesMeta);
   const digest = composeDigestMarkdown(newProcessed, snapshotRecent);
-  if (!digest) return { kind: "no_articles", processedCount: newProcessed.length };
+  if (!digest) {
+    if (articleErrors > 0 || listErrors > 0) {
+      return {
+        kind: "error",
+        error: `digest produced no content: listErrors=${listErrors}, articleErrors=${articleErrors}, lastError=${lastError ?? "unknown"}`,
+        processedCount: 0,
+      };
+    }
+    return { kind: "no_articles", processedCount: newProcessed.length };
+  }
 
   const title = `Morning Research Digest — ${todayET()}`;
   const footer = `(fallback delivery, state snapshot ${snapshot.snapshotDate}) — Mac was offline.`;
