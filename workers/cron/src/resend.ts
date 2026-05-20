@@ -40,9 +40,20 @@ export async function sendEmail(
   const replyToAddress =
     opts.replyTo ?? `replies@${env.RESEND_FROM_DOMAIN}`;
 
+  // Resend REST expects `to` as an array of single addresses ("a@b.com" or
+  // "Name <a@b.com>"), NOT a single comma-joined string. Callers may pass
+  // comma-separated values like "a@x.com, b@y.com" from BRIEFING_EMAIL_TO —
+  // Mac's nodemailer handles those natively, but Resend REST 422s with
+  // "Invalid `to` field". Split here so all Worker fallbacks (digest +
+  // briefing + evening) work with multi-recipient configs.
+  const toList = opts.to
+    .split(",")
+    .map((addr) => addr.trim())
+    .filter((addr) => addr.length > 0);
+
   const body: Record<string, unknown> = {
     from: `${FROM_NAME} <${fromAddress}>`,
-    to: [opts.to],
+    to: toList,
     subject: opts.subject,
     html: opts.html,
     reply_to: replyToAddress,
