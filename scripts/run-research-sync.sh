@@ -21,16 +21,15 @@ if [ ! -f "$ENV_FILE" ]; then
 fi
 
 # ── Self-gate: Mon-Fri 09:00-19:00 ET ────────────────────────────────
-# `date` defaults to local time. The Mac runs in America/New_York, so
-# this is ET directly. If we ever travel/relocate, the launchd self-gate
-# would shift; that's intentionally simple — the calendar-enrich plist
-# uses the same local-time pattern.
-DOW=$(date +%u)        # 1=Mon ... 7=Sun
-HOUR=$(date +%H)       # 00-23
-if [ "$DOW" -gt 5 ]; then
+# Reads ET wall-clock via scripts/lib/et-gate.sh — robust to the Mac
+# moving between timezones (Israel, etc.). 10h-wide window; the helper's
+# default 10-min window doesn't apply since we cycle every 90 min and
+# want every tick inside business hours to fire.
+source /Users/Yitzi/code/vanguard-skin/scripts/lib/et-gate.sh
+if [ "$ET_DOW" -gt 5 ]; then
   exit 0  # weekend — no newsletter traffic worth processing live
 fi
-if [ "$HOUR" -lt 9 ] || [ "$HOUR" -ge 19 ]; then
+if [ "$ET_MIN_OF_DAY" -lt $((9 * 60)) ] || [ "$ET_MIN_OF_DAY" -ge $((19 * 60)) ]; then
   exit 0  # outside 09:00-19:00 ET window
 fi
 
