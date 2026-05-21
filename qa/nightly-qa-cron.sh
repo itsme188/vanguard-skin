@@ -17,19 +17,25 @@ set -uo pipefail
 PROJECT_DIR="/Users/Yitzi/code/vanguard-skin"
 QA_DIR="$PROJECT_DIR/qa"
 PORT=3099
-TODAY=$(date '+%Y-%m-%d')
+# Report filename uses ET date so the cron cycle and report name align
+# even when the Mac travels to a non-ET timezone.
+TODAY=$(TZ=America/New_York date '+%Y-%m-%d')
 LOG_DIR="$QA_DIR/logs"
 REPORT_DIR="$QA_DIR/reports"
 MAX_FIX_ATTEMPTS=2
 
 mkdir -p "$LOG_DIR" "$REPORT_DIR"
 
+# --- Ensure PATH includes Homebrew and node ---
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+# Self-gate: daily at 02:00 ET (10-min window). Plist now runs every 5 min.
+source /Users/Yitzi/code/vanguard-skin/scripts/lib/et-gate.sh
+in_et_window "1,2,3,4,5,6,7" 2 0 || exit 0
+
 echo "=== Nightly QA — $TODAY ==="
 echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
 echo ""
-
-# --- Ensure PATH includes Homebrew and node ---
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 # --- Check prerequisites ---
 

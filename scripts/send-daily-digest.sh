@@ -1,11 +1,14 @@
 #!/bin/bash
 # Retry sending daily digest email with backoff.
-# Called by com.vanguard-skin.daily-digest.plist on weekdays at 9am local.
+# Called by com.vanguard-skin.daily-digest.plist every 5 min (StartInterval=300).
+# Self-gates to Mon-Fri 08:45-08:55 ET via scripts/lib/et-gate.sh — outside
+# that window, exits 0 in ~50ms.
 #
 # Hits /api/cron/digest (not /api/digest/email) so KV-marker dedup with the
 # Cloudflare Worker (Phase 4) fires. If the Worker already delivered today's
 # digest (cloud fallback), the Mac route returns 200 {skipped:true} and no
-# duplicate is sent.
+# duplicate is sent. Marker dedup also handles the case where 2 ticks land
+# in the same 10-min window.
 
 ENV_FILE="/Users/Yitzi/code/vanguard-skin/.env.local"
 URL="http://localhost:3099/api/cron/digest"
@@ -13,6 +16,10 @@ MAX_RETRIES=3
 DELAY=120
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+# Self-gate: Mon-Fri at 08:45 ET (10-min window).
+source /Users/Yitzi/code/vanguard-skin/scripts/lib/et-gate.sh
+in_et_window "1,2,3,4,5" 8 45 || exit 0
 
 if [ ! -f "$ENV_FILE" ]; then
   echo "$(date '+%Y-%m-%d %H:%M:%S') — ERROR: $ENV_FILE not found"

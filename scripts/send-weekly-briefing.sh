@@ -1,6 +1,8 @@
 #!/bin/bash
 # Retry sending weekly briefing email with backoff.
-# Called by com.vanguard-skin.weekly-email.plist on Sundays at 3pm local.
+# Called by com.vanguard-skin.weekly-email.plist every 5 min (StartInterval=300).
+# Self-gates to Sun 15:00-15:10 ET via scripts/lib/et-gate.sh — outside that
+# window, exits 0 in ~50ms.
 #
 # Hits /api/cron/briefing (not /api/calendar/email) so KV-marker dedup with
 # the Cloudflare Worker (Phase 4) fires. If the Worker already delivered
@@ -11,7 +13,13 @@ ENV_FILE="/Users/Yitzi/code/vanguard-skin/.env.local"
 URL="http://localhost:3099/api/cron/briefing"
 MAX_RETRIES=3
 DELAY=120
-WEEK_OF="$(date -v+1d +%Y-%m-%d)" # tomorrow (Monday) when fired Sunday 3pm
+# WEEK_OF is tomorrow (Monday) computed in ET — when fired Sunday 15:00 ET,
+# `date -v+1d` returns the right Monday regardless of the Mac's local zone.
+WEEK_OF="$(TZ=America/New_York date -v+1d +%Y-%m-%d)"
+
+# Self-gate: Sunday at 15:00 ET (10-min window).
+source /Users/Yitzi/code/vanguard-skin/scripts/lib/et-gate.sh
+in_et_window "7" 15 0 || exit 0
 
 if [ ! -f "$ENV_FILE" ]; then
   echo "$(date '+%Y-%m-%d %H:%M:%S') — ERROR: $ENV_FILE not found"

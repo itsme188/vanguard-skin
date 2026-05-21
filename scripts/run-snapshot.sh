@@ -1,14 +1,20 @@
 #!/bin/bash
 # Wrapper for com.vanguard-skin.state-snapshot.plist.
-# cd into the project root so relative paths (data/vanguard.db, .env.local)
-# resolve correctly, then run the TypeScript snapshot script via tsx.
+# Plist runs every 5 min (StartInterval=300). Self-gates to daily 02:00 ET
+# (10-min window) via scripts/lib/et-gate.sh — outside that window, exits
+# 0 in ~50ms. cd into the project root so relative paths (data/vanguard.db,
+# .env.local) resolve correctly, then run the TypeScript snapshot via tsx.
 
 set -euo pipefail
 
-cd /Users/Yitzi/code/vanguard-skin
-
 # Prefer Homebrew node on Apple Silicon; fall back to whatever's on PATH.
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+# Self-gate before doing anything else.
+source /Users/Yitzi/code/vanguard-skin/scripts/lib/et-gate.sh
+in_et_window "1,2,3,4,5,6,7" 2 0 || exit 0
+
+cd /Users/Yitzi/code/vanguard-skin
 
 # Isolate npm cache so a root-owned ~/.npm cache entry can't block cron.
 # (Happens once on some machines from pre-2021 npm; proper fix is

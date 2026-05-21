@@ -13,13 +13,13 @@
   <string>/Users/Yitzi/Library/Logs/vanguard-evening-email.log</string>
   <key>StandardOutPath</key>
   <string>/Users/Yitzi/Library/Logs/vanguard-evening-email.log</string>
-  <key>StartCalendarInterval</key>
-  <array>
-    <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>1</integer></dict>
-    <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>2</integer></dict>
-    <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>3</integer></dict>
-    <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>4</integer></dict>
-    <dict><key>Hour</key><integer>17</integer><key>Minute</key><integer>30</integer><key>Weekday</key><integer>5</integer></dict>
-  </array>
+  <!-- Fire every 5 min. Wrapper self-gates to Mon-Thu 19:00-19:10 ET OR
+       Fri 17:30-17:40 ET via scripts/lib/et-gate.sh — exits cheaply outside
+       window. We can't use StartCalendarInterval because launchd reads
+       system local time, which is wrong when the Mac travels. -->
+  <key>StartInterval</key>
+  <integer>300</integer>
+  <key>RunAtLoad</key>
+  <false/>
 </dict>
 </plist>

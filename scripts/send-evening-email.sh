@@ -1,6 +1,8 @@
 #!/bin/bash
 # Retry sending evening email with backoff.
-# Called by com.vanguard-skin.evening-email.plist Mon-Thu at 19:00 / Fri at 17:30 local.
+# Called by com.vanguard-skin.evening-email.plist every 5 min (StartInterval=300).
+# Self-gates to Mon-Thu 19:00-19:10 ET OR Fri 17:30-17:40 ET via
+# scripts/lib/et-gate.sh — outside those windows, exits 0 in ~50ms.
 #
 # Hits /api/cron/evening (not /api/digest/email) so KV-marker dedup with the
 # Cloudflare Worker (Phase 4) fires. If the Worker already delivered evening's
@@ -11,6 +13,10 @@ ENV_FILE="/Users/Yitzi/code/vanguard-skin/.env.local"
 URL="http://localhost:3099/api/cron/evening"
 MAX_RETRIES=3
 DELAY=120
+
+# Self-gate: Mon-Thu 19:00 ET OR Fri 17:30 ET (10-min windows).
+source /Users/Yitzi/code/vanguard-skin/scripts/lib/et-gate.sh
+in_et_window "1,2,3,4" 19 0 || in_et_window "5" 17 30 || exit 0
 
 if [ ! -f "$ENV_FILE" ]; then
   echo "$(date '+%Y-%m-%d %H:%M:%S') — ERROR: $ENV_FILE not found"
