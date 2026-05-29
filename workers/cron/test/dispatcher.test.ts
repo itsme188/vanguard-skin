@@ -29,6 +29,7 @@ function makeEnv(overrides: Record<string, string> = {}): any {
   return {
     EXPECTED_HOUR_BRIEFING: "15",
     EXPECTED_HOUR_DIGEST: "8",
+    EXPECTED_MINUTE_DIGEST: "45",
     EXPECTED_HOUR_EVENING_MON_THU: "19",
     EXPECTED_HOUR_EVENING_FRI: "17",
     EXPECTED_MINUTE_EVENING_FRI: "30",
@@ -49,13 +50,32 @@ describe("parseJobFromClock — existing jobs", () => {
     expect(job?.expectedHour).toBe(15);
   });
 
-  it("Monday 8am ET → digest", () => {
+  it("Monday 8:45am ET → digest", () => {
     // Monday 2026-05-11 08:45 ET (EDT) = 2026-05-11 12:45 UTC
     vi.setSystemTime(new Date("2026-05-11T12:45:00Z"));
     const job = parseJobFromClock(makeEnv());
     expect(job).not.toBeNull();
     expect(job?.type).toBe("digest");
     expect(job?.expectedHour).toBe(8);
+  });
+
+  // Minute-gate regression: the Worker must NOT fire the digest at the top of
+  // the 8 o'clock hour. Pre-fix it gated on hour only, so while the Mac was
+  // asleep (traveling) the fallback shipped at 8:00 — ~45 min early.
+  it("Monday 8:00am ET → null (must wait for the 8:45 tick)", () => {
+    // 2026-05-11 08:00 ET (EDT) = 12:00 UTC
+    vi.setSystemTime(new Date("2026-05-11T12:00:00Z"));
+    expect(parseJobFromClock(makeEnv())).toBeNull();
+  });
+
+  it("Monday 8:15am ET → null", () => {
+    vi.setSystemTime(new Date("2026-05-11T12:15:00Z"));
+    expect(parseJobFromClock(makeEnv())).toBeNull();
+  });
+
+  it("Monday 8:30am ET → null", () => {
+    vi.setSystemTime(new Date("2026-05-11T12:30:00Z"));
+    expect(parseJobFromClock(makeEnv())).toBeNull();
   });
 
   it("Saturday → null (no weekend digest)", () => {
@@ -69,6 +89,16 @@ describe("parseJobFromClock — existing jobs", () => {
     vi.setSystemTime(new Date("2026-05-10T12:45:00Z")); // 8:45am ET
     const job = parseJobFromClock(makeEnv());
     expect(job).toBeNull();
+  });
+
+  // Briefing now also fires at 15:00 ET on Monday, so runJob's holiday-shift
+  // gate can defer the Sunday briefing onto a holiday Monday. parseJobFromClock
+  // is the time-slot detector; the send-day decision lives in runJob.
+  it("Monday 3pm ET → briefing slot (holiday-shift candidate)", () => {
+    // Memorial Day Monday 2026-05-25 15:00 ET (EDT) = 19:00 UTC
+    vi.setSystemTime(new Date("2026-05-25T19:00:00Z"));
+    const job = parseJobFromClock(makeEnv());
+    expect(job?.type).toBe("briefing");
   });
 });
 
@@ -236,10 +266,10 @@ describe("catchUpCandidates — declarative table", () => {
     expect(fri!.afterHour).toBeGreaterThanOrEqual(18);
   });
 
-  it("briefing catch-up runs Sunday only after 15:00 ET dispatch", () => {
+  it("briefing catch-up runs Sunday AND Monday after 15:00 ET (Monday = holiday-shift)", () => {
     const briefing = catchUpCandidates().find((c) => c.type === "briefing");
     expect(briefing).toBeDefined();
-    expect(briefing!.dows).toEqual([0]);
+    expect(briefing!.dows).toEqual([0, 1]);
     expect(briefing!.afterHour).toBeGreaterThan(15);
   });
 

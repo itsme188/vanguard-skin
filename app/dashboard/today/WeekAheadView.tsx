@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { CalendarEvent } from "@/lib/types";
-import { addDays, formatWeekRange } from "@/lib/calendar/date-utils";
+import { addDays, formatWeekRange, todayET } from "@/lib/calendar/date-utils";
 import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
 import { PrivateText } from "@/lib/privacy/components";
 
@@ -34,7 +34,7 @@ function fmtTime(t: string | null): string | null {
 }
 
 export function WeekAheadView({ events, weekOf }: WeekAheadViewProps) {
-  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayIso = todayET();
   const days = WEEKDAYS.map((label, idx) => {
     const date = addDays(weekOf, idx);
     return {

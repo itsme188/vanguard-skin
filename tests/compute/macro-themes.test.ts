@@ -46,7 +46,7 @@ describe("buildMacroSignalBlob", () => {
       db.prepare(
         `INSERT INTO research_articles
            (id, source_id, subject, sender, raw_text, received_at, processed_at, sentiment, mentioned_symbols)
-         VALUES (?, 1, ?, 't@test.com', ?, datetime('now', '-${i} days'), datetime('now'), ?, ?)`
+         VALUES (?, 1, ?, 't@test.com', ?, datetime('2026-05-04', '-${i} days'), datetime('now'), ?, ?)`
       ).run(i + 1, `Article ${i}`, `Body ${i} mentioning AAPL and NVDA and tariffs`,
             i % 2 === 0 ? "negative" : "positive",
             JSON.stringify(["AAPL", "NVDA"]));
@@ -54,8 +54,8 @@ describe("buildMacroSignalBlob", () => {
     db.prepare(
       `INSERT INTO calendar_events
          (id, event_date, event_type, source, source_key, week_of, title, symbol, actual_value, reaction_snapshot, enriched_at)
-       VALUES (1, date('now', '-2 days'), 'macro', 'fred', 'fred:CPIAUCSL:2026-05-08', date('now','-2 days'), 'CPI Release', 'CPI', '0.3%',
-         '{"spy":{"close":580,"change":-0.012}}', datetime('now','-2 days'))`
+       VALUES (1, date('2026-05-04', '-2 days'), 'macro', 'fred', 'fred:CPIAUCSL:2026-05-08', date('2026-05-04','-2 days'), 'CPI Release', 'CPI', '0.3%',
+         '{"spy":{"close":580,"change":-0.012}}', datetime('2026-05-04','-2 days'))`
     ).run();
     return db;
   }
@@ -74,7 +74,7 @@ describe("buildMacroSignalBlob", () => {
     const db = seed();
     db.prepare(
       `INSERT INTO research_articles (id, source_id, subject, sender, raw_text, received_at, processed_at, sentiment, mentioned_symbols)
-       VALUES (99, 1, 'old', 't@test.com', 'old', datetime('now','-30 days'), datetime('now'), 'neutral', '[]')`
+       VALUES (99, 1, 'old', 't@test.com', 'old', datetime('2026-05-04','-30 days'), datetime('now'), 'neutral', '[]')`
     ).run();
     const blob = buildMacroSignalBlob(db, "all", "2026-05-04");
     expect(blob.articleCount).toBe(3);

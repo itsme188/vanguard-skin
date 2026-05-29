@@ -8,6 +8,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { todayET } from "@/lib/calendar/date-utils";
 
 interface Props {
   weekOf: string;
@@ -121,5 +122,7 @@ export function EarningsHubAddForm({ weekOf: _weekOf }: Props) {
 }
 
 function today(): string {
-  return new Date().toISOString().slice(0, 10);
+  // ET-anchored: the date picker defaults to the ET market day, not the
+  // browser's local day (matters for non-ET users / late-night edits).
+  return todayET();
 }

@@ -5,7 +5,7 @@ import {
   updateCalendarEvent,
   deleteCalendarEvent,
 } from "@/lib/mutations/calendar";
-import { mondayOf } from "@/lib/calendar/date-utils";
+import { mondayOf, addDays } from "@/lib/calendar/date-utils";
 import { getSecurityIdForSymbol } from "@/lib/queries/briefing-symbols";
 
 export const dynamic = "force-dynamic";
@@ -30,9 +30,9 @@ export async function GET(request: Request) {
   let effectiveEnd = endDate;
   if (weekOf && !startDate && !endDate) {
     effectiveStart = weekOf;
-    const end = new Date(weekOf + "T00:00:00");
-    end.setDate(end.getDate() + 6);
-    effectiveEnd = end.toISOString().slice(0, 10);
+    // addDays does noon-anchored arithmetic so the week end never drops a day
+    // when the server's local TZ is behind UTC (e.g. a Mac traveling east).
+    effectiveEnd = addDays(weekOf, 6);
   }
 
   const events = getUpcomingEvents(db, {

@@ -51,7 +51,8 @@ bucket_name = "vanguard-skin-statements"
 # Non-secret env vars. Secrets (see README) go via `wrangler secret put`.
 [vars]
 EXPECTED_HOUR_BRIEFING = "15"        # 3pm ET
-EXPECTED_HOUR_DIGEST = "8"           # 8:45am ET (Worker gates on hour only)
+EXPECTED_HOUR_DIGEST = "8"           # 8:45am ET
+EXPECTED_MINUTE_DIGEST = "45"        # fire at the 8:45 */15 tick, matching the Mac's launchd target (was hour-only → fired at 8:00, ~45min early while the Mac was asleep traveling)
 # Evening email — Mon-Thu 7pm ET (hour=19), Fri 5:30pm ET (hour=17, minute=30)
 EXPECTED_HOUR_EVENING_MON_THU = "19"
 EXPECTED_HOUR_EVENING_FRI = "17"

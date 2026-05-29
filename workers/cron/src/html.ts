@@ -90,6 +90,7 @@ export function briefingToHtml(
 
 function formatDate(d: Date): string {
   return d.toLocaleDateString("en-US", {
+    timeZone: "America/New_York", // Worker runs in UTC — render the ET market day
     weekday: "long",
     month: "long",
     day: "numeric",

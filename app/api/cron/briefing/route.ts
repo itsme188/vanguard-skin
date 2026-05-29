@@ -10,6 +10,8 @@ import {
   clearRunningMarker,
   confirmMacSent,
 } from "@/lib/cron/running-marker";
+import { shouldSendBriefingToday } from "@/lib/calendar/market-holidays";
+import { todayET } from "@/lib/calendar/date-utils";
 
 /**
  * POST /api/cron/briefing — Cron-authenticated weekly briefing trigger.
@@ -40,6 +42,19 @@ export async function POST(request: Request) {
   }
 
   const body = await request.json().catch(() => ({}));
+
+  // Holiday-shift gate (automated path only). The launchd wrapper fires this
+  // route on BOTH Sunday AND Monday at 15:00 ET; shouldSendBriefingToday picks
+  // the right day: normally Sunday, but deferred to Monday when the upcoming
+  // Monday is a market holiday (so the week-ahead covers the real trading week).
+  // An explicit weekOf/force (manual trigger) bypasses the gate.
+  if (!body.force && !body.weekOf) {
+    const etToday = todayET();
+    if (!shouldSendBriefingToday(etToday)) {
+      console.log(`[cron/briefing] ${etToday} is not the briefing send-day (holiday shift) — skipping.`);
+      return Response.json({ success: true, skipped: true, reason: "not_briefing_day", date: etToday });
+    }
+  }
 
   // Worker-side dedup: if the cloud fallback already delivered today's email,
   // don't regenerate. Opt-in — returns null when WORKER_MARKER_URL is unset.
