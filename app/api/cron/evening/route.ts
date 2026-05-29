@@ -10,6 +10,8 @@ import {
   clearRunningMarker,
   confirmMacSent,
 } from "@/lib/cron/running-marker";
+import { isMarketHoliday } from "@/lib/calendar/market-holidays";
+import { todayET } from "@/lib/calendar/date-utils";
 
 export const dynamic = "force-dynamic";
 
@@ -39,6 +41,13 @@ export async function POST(request: Request) {
   }
 
   const body = await request.json().catch(() => ({}));
+
+  // Market-holiday gate: no evening recap on full NYSE closures. Logged, not silent.
+  const etToday = todayET();
+  if (isMarketHoliday(etToday)) {
+    console.log(`[cron/evening] ${etToday} is a market holiday — skipping evening recap.`);
+    return Response.json({ success: true, skipped: true, reason: "market_holiday", date: etToday });
+  }
 
   // Worker-side dedup: if the cloud fallback already delivered today's email,
   // don't regenerate. Gracefully no-ops when WORKER_MARKER_URL is unset.

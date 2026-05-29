@@ -13,13 +13,16 @@ ENV_FILE="/Users/Yitzi/code/vanguard-skin/.env.local"
 URL="http://localhost:3099/api/cron/briefing"
 MAX_RETRIES=3
 DELAY=120
-# WEEK_OF is tomorrow (Monday) computed in ET — when fired Sunday 15:00 ET,
-# `date -v+1d` returns the right Monday regardless of the Mac's local zone.
-WEEK_OF="$(TZ=America/New_York date -v+1d +%Y-%m-%d)"
 
-# Self-gate: Sunday at 15:00 ET (10-min window).
+# Self-gate: 15:00 ET (10-min window) on BOTH Sunday and Monday. The route's
+# shouldSendBriefingToday() decides which one actually sends — normally Sunday,
+# but deferred to Monday when the upcoming Monday is a market holiday (so the
+# week-ahead covers the real trading week). A normal-Monday tick is skipped by
+# the route. We deliberately send NO weekOf so the route computes it via the
+# ET-anchored getCurrentMonday() and its holiday-shift gate applies (passing
+# weekOf would bypass the gate).
 source /Users/Yitzi/code/vanguard-skin/scripts/lib/et-gate.sh
-in_et_window "7" 15 0 || exit 0
+in_et_window "7" 15 0 || in_et_window "1" 15 0 || exit 0
 
 if [ ! -f "$ENV_FILE" ]; then
   echo "$(date '+%Y-%m-%d %H:%M:%S') — ERROR: $ENV_FILE not found"
@@ -37,7 +40,7 @@ for i in $(seq 1 $MAX_RETRIES); do
   RESPONSE=$(curl -sS --max-time 300 -X POST \
     -H "Content-Type: application/json" \
     -H "X-Cron-Secret: $SECRET" \
-    -d "{\"weekOf\":\"$WEEK_OF\"}" \
+    -d "{}" \
     "$URL" 2>&1)
   EXIT_CODE=$?
 

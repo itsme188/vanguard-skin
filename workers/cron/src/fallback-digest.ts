@@ -264,6 +264,7 @@ function composeDigestMarkdown(
   if (totalCount === 0) return null;
 
   const dateStr = new Date().toLocaleDateString("en-US", {
+    timeZone: "America/New_York", // Worker runs in UTC — render the ET market day
     weekday: "long",
     month: "long",
     day: "numeric",

@@ -13,6 +13,7 @@ import type Database from "better-sqlite3";
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface AnomalyFlag {
+  securityId: number;
   symbol: string;
   companyName: string | null;
   actualPct: number;    // today's % move
@@ -149,6 +150,7 @@ export function computeAnomalies(db: Database.Database): AnomalyFlag[] {
       Math.sign(actualPct) !== Math.sign(expectedPct);
 
     flags.push({
+      securityId: row.security_id,
       symbol: row.symbol,
       companyName: row.name,
       actualPct,

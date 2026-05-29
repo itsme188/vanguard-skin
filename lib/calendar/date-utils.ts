@@ -5,17 +5,60 @@
  * instead of local reimplementations to avoid week-targeting inconsistencies.
  */
 
+const ET_ZONE = "America/New_York";
+
+/**
+ * The given instant's calendar date in ET (America/New_York), as YYYY-MM-DD.
+ *
+ * Single source of truth for "what day is it" anywhere a date is shown to the
+ * user or used to target a week. The portfolio is ET-centric (markets, statement
+ * dates, calendar events), so "today" must be the ET day regardless of where the
+ * Mac physically sits (user travels) or that a Cloudflare Worker runs in UTC.
+ * Mirrors `workers/cron/src/dst.ts::todayET`.
+ */
+export function todayET(now = new Date()): string {
+  // en-CA yields YYYY-MM-DD
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: ET_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+}
+
+/** Day of week of the given instant in ET. 0=Sun, 1=Mon, ..., 6=Sat. */
+function etDayOfWeek(now: Date): number {
+  const wd = new Intl.DateTimeFormat("en-US", {
+    timeZone: ET_ZONE,
+    weekday: "short",
+  }).format(now);
+  const map: Record<string, number> = {
+    Sun: 0,
+    Mon: 1,
+    Tue: 2,
+    Wed: 3,
+    Thu: 4,
+    Fri: 5,
+    Sat: 6,
+  };
+  return map[wd] ?? now.getDay();
+}
+
 /**
  * Get the "current" Monday for calendar display:
  * - Mon–Fri: returns this week's Monday
  * - Sat–Sun: returns NEXT Monday (business week is over)
+ *
+ * ET-anchored: the day-of-week and base date are computed in America/New_York,
+ * so a traveling Mac (foreign local TZ) or a UTC Worker never targets the wrong
+ * week. This is the fix for the "Earnings this week shows last week" bug.
  */
 export function getCurrentMonday(now = new Date()): string {
-  const day = now.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+  const day = etDayOfWeek(now); // 0=Sun, 1=Mon, ..., 6=Sat (ET)
   const diff = day === 0 ? 1 : day === 6 ? 2 : 1 - day;
-  const monday = new Date(now);
-  monday.setDate(now.getDate() + diff);
-  return formatDate(monday);
+  // addDays does noon-anchored local arithmetic on a correct YYYY-MM-DD string,
+  // so adding whole days never crosses a calendar boundary in the local zone.
+  return addDays(todayET(now), diff);
 }
 
 /**

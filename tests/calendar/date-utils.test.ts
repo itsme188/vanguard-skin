@@ -6,6 +6,7 @@ import {
   formatWeekRange,
   mondayOf,
   weekAgo,
+  todayET,
 } from "@/lib/calendar/date-utils";
 
 // ── getCurrentMonday ─────────────────────────────────────────────
@@ -44,6 +45,35 @@ describe("getCurrentMonday", () => {
   it("handles year boundary (Sunday Dec 29 → Monday Dec 30)", () => {
     const sun = new Date("2024-12-29T10:00:00"); // Sunday
     expect(getCurrentMonday(sun)).toBe("2024-12-30");
+  });
+
+  // ── ET-anchoring: the instant must be interpreted in America/New_York,
+  //    NOT the runtime's local zone or UTC. This is the regression guard for
+  //    the traveling-Mac / UTC-Worker week-targeting bug (Earnings Hub showing
+  //    last week). 2026-04-18T02:00:00Z is Saturday in UTC but still FRIDAY
+  //    Apr 17 in ET (EDT = UTC-4 → 22:00 Fri), so the ET Monday is Apr 13.
+  it("interprets the instant in ET, not UTC (Sat-UTC that is still Fri-ET)", () => {
+    const instant = new Date("2026-04-18T02:00:00Z");
+    expect(getCurrentMonday(instant)).toBe("2026-04-13");
+  });
+
+  it("interprets the instant in ET for a Sun-UTC that is still Sat-ET", () => {
+    // 2026-04-19T02:00:00Z = Sat Apr 18 22:00 ET → Saturday → NEXT Monday Apr 20
+    const instant = new Date("2026-04-19T02:00:00Z");
+    expect(getCurrentMonday(instant)).toBe("2026-04-20");
+  });
+});
+
+// ── todayET ──────────────────────────────────────────────────────
+
+describe("todayET", () => {
+  it("returns the ET calendar date for a late-UTC instant that is the prior ET day", () => {
+    // 2026-05-26T02:00:00Z = May 25 22:00 ET → ET date is 2026-05-25
+    expect(todayET(new Date("2026-05-26T02:00:00Z"))).toBe("2026-05-25");
+  });
+
+  it("returns YYYY-MM-DD format", () => {
+    expect(todayET(new Date("2026-05-25T16:00:00Z"))).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 });
 

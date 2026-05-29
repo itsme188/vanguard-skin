@@ -129,6 +129,7 @@ export function briefingToHtml(
 
 function formatDate(d: Date): string {
   return d.toLocaleDateString("en-US", {
+    timeZone: "America/New_York", // anchor to ET so a traveling Mac (foreign local TZ) doesn't stamp tomorrow's date
     weekday: "long",
     month: "long",
     day: "numeric",

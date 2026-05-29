@@ -35,6 +35,7 @@ import { callPrimary, type PrimaryResult } from "./primary";
 import { runFallbackDigest, type FallbackResult } from "./fallback-digest";
 import { runFallbackBriefing } from "./fallback-briefing";
 import { runFallbackEvening } from "./fallback-evening";
+import { isMarketHoliday, shouldSendBriefingToday } from "./market-holidays";
 import {
   runCalendarEnrich,
   runCloudFallback,
@@ -63,6 +64,7 @@ export interface Env {
   // Vars (wrangler.toml [vars])
   EXPECTED_HOUR_BRIEFING: string;
   EXPECTED_HOUR_DIGEST: string;
+  EXPECTED_MINUTE_DIGEST?: string;
   // Evening email — Mon-Thu 7pm ET, Fri 5:30pm ET
   EXPECTED_HOUR_EVENING_MON_THU: string;
   EXPECTED_HOUR_EVENING_FRI: string;
@@ -97,14 +99,22 @@ export function parseJobFromClock(env: Env): { type: JobType; expectedHour: numb
   const dow = getCurrentETDayOfWeek();
   const briefingHour = parseInt(env.EXPECTED_HOUR_BRIEFING, 10);
   const digestHour = parseInt(env.EXPECTED_HOUR_DIGEST, 10);
+  // Minute gate for the digest so the Worker fallback fires at the SAME 8:45
+  // */15 tick the Mac targets — not the 8:00 top-of-hour tick. Defaults to 45
+  // when unset. The cron lands on :00/:15/:30/:45, so minute===45 hits 8:45.
+  const digestMinute = parseInt(env.EXPECTED_MINUTE_DIGEST ?? "45", 10);
   const eveningMonThuHour = parseInt(env.EXPECTED_HOUR_EVENING_MON_THU, 10);
   const eveningFriHour = parseInt(env.EXPECTED_HOUR_EVENING_FRI, 10);
   const eveningFriMinute = parseInt(env.EXPECTED_MINUTE_EVENING_FRI, 10);
 
-  if (hour === briefingHour && dow === 0) {
+  // Briefing fires at 15:00 ET on BOTH Sunday and Monday; runJob's
+  // shouldSendBriefingToday gate picks the right day (normally Sunday, deferred
+  // to Monday when the upcoming Monday is a market holiday). A normal Monday
+  // tick is gated out, so this never double-sends.
+  if (hour === briefingHour && (dow === 0 || dow === 1)) {
     return { type: "briefing", expectedHour: briefingHour };
   }
-  if (hour === digestHour && dow >= 1 && dow <= 5) {
+  if (hour === digestHour && minute === digestMinute && dow >= 1 && dow <= 5) {
     return { type: "digest", expectedHour: digestHour };
   }
   // Evening — Mon-Thu 19:00 ET, Fri 17:30 ET.
@@ -123,6 +133,7 @@ export function parseJobFromClock(env: Env): { type: JobType; expectedHour: numb
 interface RunJobOpts {
   dryRun?: boolean;
   fallbackOnly?: boolean; // skip primary, go straight to fallback (smoke test)
+  force?: boolean; // bypass the holiday/briefing-day gate (manual /internal/trigger)
 }
 
 interface RunJobResult {
@@ -130,7 +141,9 @@ interface RunJobResult {
     | "already_sent"
     | "already_sent_by_cloud"
     | "mac_still_running"
-    | "cloud_attempt_in_flight";
+    | "cloud_attempt_in_flight"
+    | "market_holiday"
+    | "not_briefing_day";
   primary?: PrimaryResult;
   fallback?: FallbackResult;
   sentBy?: SentBy;
@@ -138,6 +151,22 @@ interface RunJobResult {
 
 async function runJob(type: JobType, env: Env, opts: RunJobOpts = {}): Promise<RunJobResult> {
   const date = todayET();
+
+  // Holiday gating (mirrors the Mac cron routes). Skip BEFORE calling the Mac
+  // or touching markers so a closed day produces no email and no marker churn.
+  // Bypassed by the manual /internal/trigger endpoint (opts.force) — an explicit
+  // smoke-test or hand-trigger should run regardless of the calendar.
+  if (!opts.force) {
+    if ((type === "digest" || type === "evening") && isMarketHoliday(date)) {
+      console.log(`[runJob ${type}] ${date} is a market holiday — skipping.`);
+      return { skipped: "market_holiday" };
+    }
+    if (type === "briefing" && !shouldSendBriefingToday(date)) {
+      console.log(`[runJob briefing] ${date} is not the briefing send-day (holiday shift) — skipping.`);
+      return { skipped: "not_briefing_day" };
+    }
+  }
+
   const markers = await readMarkers(env.CRON_KV, type, date);
 
   if (markers.mac && !opts.dryRun) return { skipped: "already_sent" };
@@ -261,8 +290,10 @@ export function catchUpCandidates(): CatchUpJob[] {
     // catch-up is handled by the same window via dow=5 + afterHour=18.
     { type: "evening", afterHour: 20, beforeHour: 23, dows: [1, 2, 3, 4] },
     { type: "evening", afterHour: 18, beforeHour: 22, dows: [5] },
-    // Briefing Sun 15:00 ET. Catch up 17:00-22:00 ET Sun.
-    { type: "briefing", afterHour: 17, beforeHour: 22, dows: [0] },
+    // Briefing Sun 15:00 ET (or deferred to a holiday Monday). Catch up
+    // 17:00-22:00 ET on Sun AND Mon; runJob's shouldSendBriefingToday gate
+    // prevents a normal-Monday catch-up from firing.
+    { type: "briefing", afterHour: 17, beforeHour: 22, dows: [0, 1] },
   ];
 }
 
@@ -565,7 +596,11 @@ export default {
       }
       const dryRun = url.searchParams.get("dryRun") === "true";
       const fallbackOnly = url.searchParams.get("fallbackOnly") === "true";
-      const result = await runJob(typeParam, env, { dryRun, fallbackOnly });
+      // Manual triggers bypass the holiday/briefing-day gate by default (smoke
+      // tests + hand-triggers should run regardless of the calendar). Pass
+      // force=false to exercise the gate itself.
+      const force = url.searchParams.get("force") !== "false";
+      const result = await runJob(typeParam, env, { dryRun, fallbackOnly, force });
       return Response.json(result);
     }
 

@@ -84,11 +84,18 @@ describe("POST /api/cron/evening", () => {
   beforeEach(() => {
     process.env = { ...OLD_ENV, CRON_SHARED_SECRET: "test-secret" };
     vi.clearAllMocks();
+    // Freeze to a fixed NON-holiday weekday (Tue 2026-05-26, 11:00 ET) so the
+    // route's market-holiday gate is deterministic regardless of the real date
+    // the suite runs on. (Without this, running on e.g. Jul 3 2026 would flip
+    // every assertion to skipped:market_holiday.)
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-26T15:00:00Z"));
     // Default: no cloud marker, no DB needed for most tests
     hoisted.checkCloudMarker.mockResolvedValue(null);
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     process.env = OLD_ENV;
   });
 
@@ -114,6 +121,21 @@ describe("POST /api/cron/evening", () => {
     const req = makeRequest({ secret: "any" });
     const res = await POST(req);
     expect(res.status).toBe(500);
+  });
+
+  // ── Market-holiday gate ─────────────────────────────────────────
+  it("returns 200 + skipped:market_holiday on a full NYSE closure", async () => {
+    // Memorial Day 2026 (Mon May 25) 11:00 ET = 15:00 UTC
+    vi.setSystemTime(new Date("2026-05-25T15:00:00Z"));
+    const req = makeRequest({ secret: "test-secret" });
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.skipped).toBe(true);
+    expect(body.reason).toBe("market_holiday");
+    // Must short-circuit BEFORE doing any send work.
+    expect(hoisted.sendEveningEmail).not.toHaveBeenCalled();
+    expect(hoisted.checkCloudMarker).not.toHaveBeenCalled();
   });
 
   // ── Cloud marker dedup ──────────────────────────────────────────

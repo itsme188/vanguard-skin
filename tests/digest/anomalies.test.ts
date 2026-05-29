@@ -114,6 +114,11 @@ describe("computeAnomalies", () => {
     expect(symbols).toContain("TER");
     expect(symbols).not.toContain("NVDA");
     expect(symbols).not.toContain("SPY");
+
+    // securityId is exposed so the Today-tab SignificantMovesCard can link each
+    // flag to its Security Detail page via <SymbolLink>.
+    const goog = flags.find((f) => f.symbol === "GOOG");
+    expect(goog?.securityId).toBe(googId);
   });
 
   it("skips BRK.B when no cached beta exists", () => {

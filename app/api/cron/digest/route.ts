@@ -11,6 +11,8 @@ import {
   clearRunningMarker,
   confirmMacSent,
 } from "@/lib/cron/running-marker";
+import { isMarketHoliday } from "@/lib/calendar/market-holidays";
+import { todayET } from "@/lib/calendar/date-utils";
 
 /**
  * POST /api/cron/digest — Cron-authenticated daily digest trigger.
@@ -35,6 +37,16 @@ export async function POST(request: Request) {
   }
 
   const body = await request.json().catch(() => ({}));
+
+  // Market-holiday gate: no daily digest on full NYSE closures (markets shut →
+  // no new trading-day context). Weekends are already excluded by the cron's
+  // Mon-Fri schedule, so a weekday closure is the only case here. Logged (not
+  // silent) per the cloud-silent-failure lessons.
+  const etToday = todayET();
+  if (isMarketHoliday(etToday)) {
+    console.log(`[cron/digest] ${etToday} is a market holiday — skipping daily digest.`);
+    return Response.json({ success: true, skipped: true, reason: "market_holiday", date: etToday });
+  }
 
   const marker = await checkCloudMarker("digest");
   if (marker?.sentBy === "cloud") {

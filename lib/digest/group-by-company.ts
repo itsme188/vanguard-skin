@@ -190,6 +190,7 @@ export function generateDigestByCompanySince(
   if (articles.length === 0 && !alertsBlock) return null;
 
   const dateStr = new Date().toLocaleDateString("en-US", {
+    timeZone: "America/New_York",
     weekday: "long",
     month: "long",
     day: "numeric",

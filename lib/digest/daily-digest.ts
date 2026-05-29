@@ -127,6 +127,7 @@ export function generateDigestSince(db: Database.Database, sinceDate: string): s
   const now = new Date();
 
   const dateStr = now.toLocaleDateString("en-US", {
+    timeZone: "America/New_York",
     weekday: "long",
     month: "long",
     day: "numeric",
@@ -386,6 +387,7 @@ export async function generateDigestSinceAdaptive(
 
   const now = new Date();
   const dateStr = now.toLocaleDateString("en-US", {
+    timeZone: "America/New_York",
     weekday: "long",
     month: "long",
     day: "numeric",

@@ -2,6 +2,7 @@ import { db } from "@/lib/db";
 import { getUpcomingEvents } from "@/lib/queries/calendar";
 import Link from "next/link";
 import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
+import { todayET, addDays } from "@/lib/calendar/date-utils";
 
 // ── Event type icons (duplicated from EventCard for server component) ──
 
@@ -32,11 +33,9 @@ const IMPACT_COLORS: Record<string, string> = {
  * the next upcoming calendar events.
  */
 export function UpcomingEventsCard() {
-  const today = new Date().toISOString().slice(0, 10);
-  // Show events for the next 14 days
-  const end = new Date();
-  end.setDate(end.getDate() + 14);
-  const endDate = end.toISOString().slice(0, 10);
+  const today = todayET();
+  // Show events for the next 14 days (ET-anchored)
+  const endDate = addDays(today, 14);
 
   let events;
   try {
@@ -139,12 +138,10 @@ export function UpcomingEventsCard() {
 
 function formatCompactDate(dateStr: string): string {
   const d = new Date(dateStr + "T00:00:00");
-  const today = new Date();
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
+  const today = todayET();
 
-  if (dateStr === today.toISOString().slice(0, 10)) return "Today";
-  if (dateStr === tomorrow.toISOString().slice(0, 10)) return "Tomorrow";
+  if (dateStr === today) return "Today";
+  if (dateStr === addDays(today, 1)) return "Tomorrow";
 
   return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 }
