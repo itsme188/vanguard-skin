@@ -118,6 +118,7 @@ export async function sendEveningEmail(
   }
 
   const dateStr = new Date().toLocaleDateString("en-US", {
+    timeZone: "America/New_York",
     weekday: "long",
     month: "long",
     day: "numeric",

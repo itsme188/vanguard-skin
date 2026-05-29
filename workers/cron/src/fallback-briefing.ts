@@ -23,6 +23,7 @@ import { loadLatestSnapshot, type Snapshot } from "./state";
 import { sendEmail } from "./resend";
 import { getModelForFeature } from "./ai";
 import { briefingToHtml } from "./html";
+import { todayET, getCurrentETDayOfWeek } from "./dst";
 import type { FallbackEnv, FallbackResult } from "./fallback-digest";
 
 // Must match Mac's lib/calendar/briefing.ts constants.
@@ -61,7 +62,7 @@ export async function runFallbackBriefing(
     return { kind: "error", error: "recipient missing: no briefing_email_recipients in snapshot and BRIEFING_EMAIL_TO is unset" };
   }
 
-  const weekOf = nextMonday();
+  const weekOf = briefingWeekOf();
   const prompt = buildPrompt(snapshot, weekOf);
 
   const { text } = await generateText({
@@ -210,12 +211,18 @@ function formatWeekTitle(weekOf: string): string {
   });
 }
 
-function nextMonday(now: Date = new Date()): string {
-  // Briefing fires Sunday 3pm ET for *next* Monday's week.
-  const d = new Date(now);
-  // Shift to UTC day, then find next Monday.
-  const day = d.getUTCDay(); // 0 = Sunday
-  const daysUntilMonday = day === 0 ? 1 : (8 - day) % 7 || 7;
-  d.setUTCDate(d.getUTCDate() + daysUntilMonday);
+function briefingWeekOf(now: Date = new Date()): string {
+  // The week the briefing covers, matching the Mac's getCurrentMonday():
+  //  - Sunday → NEXT Monday (the upcoming trading week)
+  //  - Monday-Friday → THIS Monday (used when the briefing is deferred to a
+  //    holiday Monday — it must cover the week that's starting, not next week)
+  //  - Saturday → next Monday
+  // Computed in ET, not UTC: a late-Sunday-ET catch-up tick (22:00 ET = 02:00
+  // UTC Mon) reads as Monday in UTC and would jump a week with getUTCDay().
+  const day = getCurrentETDayOfWeek(now); // 0 = Sunday ET
+  const diff = day === 0 ? 1 : day === 6 ? 2 : 1 - day;
+  // Anchor the ET date at noon-UTC and add whole days; slice(0,10) stays stable.
+  const d = new Date(`${todayET(now)}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + diff);
   return d.toISOString().slice(0, 10);
 }

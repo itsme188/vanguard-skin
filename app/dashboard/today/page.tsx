@@ -7,11 +7,12 @@ import { getLevelsNearPrice } from "@/lib/queries/briefing-levels";
 import { getAccountByName } from "@/lib/queries/accounts";
 import { getPortfolioTotals } from "@/lib/queries/dashboard";
 import { getEventsByWeek } from "@/lib/queries/calendar";
-import { getCurrentMonday } from "@/lib/calendar/date-utils";
+import { getCurrentMonday, todayET } from "@/lib/calendar/date-utils";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import type { LevelAlert, CalendarEvent } from "@/lib/types";
 import { NearbyLevelsCard } from "../components/NearbyLevelsCard";
 import { OpenChatButton } from "../components/OpenChatButton";
+import { SignificantMovesCard } from "./SignificantMovesCard";
 import { Money, Pct, Shares } from "@/lib/privacy/components";
 import { TodayReleases } from "../components/TodayReleases";
 import { MomentumPulse } from "../components/MomentumPulse";
@@ -189,7 +190,9 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
   }
 
   // ── Today's calendar releases (with release_time set) ─────────────
-  const today = new Date().toISOString().slice(0, 10);
+  // ET-anchored: calendar event_date is an ET market date, so "today" must be
+  // the ET day regardless of server/Mac local TZ (traveling) or UTC.
+  const today = todayET();
   const todayReleases = db
     .prepare(
       `SELECT * FROM calendar_events
@@ -233,7 +236,7 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
       <header className="flex items-baseline justify-between flex-wrap gap-2">
         <div>
           <p className="text-[11px] uppercase tracking-widest text-ink-faint mb-1">
-            {new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
+            {new Date().toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "long", month: "long", day: "numeric" })}
           </p>
           <h1 className="hidden md:block text-2xl text-gold tracking-tight font-medium">Today</h1>
         </div>
@@ -331,6 +334,9 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
       {/* ── Levels near price ── */}
       <NearbyLevelsCard levels={nearbyLevels} />
       </div>
+
+      {/* ── Significant moves in Vanguard holdings vs. beta-expected ── */}
+      <SignificantMovesCard />
 
       {/* ── Chat ── */}
       <OpenChatButton />
