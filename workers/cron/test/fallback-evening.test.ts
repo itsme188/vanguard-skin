@@ -178,6 +178,9 @@ describe("runFallbackEvening", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     (global.fetch as ReturnType<typeof vi.fn>).mockReset();
+    // clearAllMocks keeps implementations — re-establish sendEmail's success
+    // default so a prior test's mockRejectedValue can't leak into later tests.
+    (sendEmail as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "mock-email-id" });
     // Default: AI synthesis returns valid markdown (≥200 chars, starts with #)
     // to satisfy the strict validation ported from lib/digest/synthesize.ts.
     (generateText as ReturnType<typeof vi.fn>).mockResolvedValue({
@@ -226,6 +229,33 @@ describe("runFallbackEvening", () => {
     const result = await runFallbackEvening(env);
     expect(result.kind).toBe("error");
     expect(result.error).toMatch(/snapshot/i);
+  });
+
+  // ── Upstream-failure observability (silent-swallow guard) ──────────────────
+
+  it("returns kind:error with stage context when snapshot load throws", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("R2 unreachable")
+    );
+    const result = await runFallbackEvening(env);
+    expect(result.kind).toBe("error");
+    expect(result.error).toMatch(/snapshot load failed/i);
+    expect(result.error).toMatch(/R2 unreachable/);
+  });
+
+  it("returns kind:error with stage context when Resend send throws", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeV2Snapshot(6) // ≥5 articles → produces body content, reaches sendEmail
+    );
+    (sendEmail as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("422 invalid to field")
+    );
+    const result = await runFallbackEvening(env); // NOT dryRun — must reach send
+    expect(result.kind).toBe("error");
+    expect(result.error).toMatch(/resend send failed/i);
+    expect(result.error).toMatch(/422 invalid to field/);
   });
 
   it("schemaVersion 2 snapshot works but omits anomaly block (no vanguardHoldings/betas)", async () => {

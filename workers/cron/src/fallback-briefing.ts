@@ -43,7 +43,15 @@ export async function runFallbackBriefing(
     };
   }
 
-  const snapshot = await loadLatestSnapshot(env.ARCHIVE);
+  let snapshot: Snapshot | null;
+  try {
+    snapshot = await loadLatestSnapshot(env.ARCHIVE);
+  } catch (err) {
+    return {
+      kind: "error",
+      error: `snapshot load failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
   if (!snapshot) return { kind: "no_snapshot" };
 
   // ── Recipient resolution ─────────────────────────────────────────────────
@@ -65,11 +73,23 @@ export async function runFallbackBriefing(
   const weekOf = briefingWeekOf();
   const prompt = buildPrompt(snapshot, weekOf);
 
-  const { text } = await generateText({
-    model: getModelForFeature(env, "fallbackBriefing"),
-    maxOutputTokens: 8192,
-    prompt,
-  });
+  let text: string;
+  try {
+    const result = await generateText({
+      model: getModelForFeature(env, "fallbackBriefing"),
+      maxOutputTokens: 8192,
+      prompt,
+    });
+    text = result.text;
+  } catch (err) {
+    // The credit-exhaustion / rate-limit analog. Surface loudly as kind:"error"
+    // instead of letting it throw raw through runJob's catch-all (which loses
+    // the stage context). This is the branch that hid the 5/20 outage.
+    return {
+      kind: "error",
+      error: `briefing generation failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
 
   const content = text.trim();
   if (!content) return { kind: "error", error: "Opus returned empty briefing" };
@@ -82,12 +102,20 @@ export async function runFallbackBriefing(
     return { kind: "success", processedCount: snapshot.calendarEvents.length };
   }
 
-  const send = await sendEmail(env, {
-    to: recipient,
-    subject: `📊 ${title} — Weekly Portfolio Briefing`,
-    html,
-    fromLocalPart: "briefing",
-  });
+  let send: Awaited<ReturnType<typeof sendEmail>>;
+  try {
+    send = await sendEmail(env, {
+      to: recipient,
+      subject: `📊 ${title} — Weekly Portfolio Briefing`,
+      html,
+      fromLocalPart: "briefing",
+    });
+  } catch (err) {
+    return {
+      kind: "error",
+      error: `resend send failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
   return {
     kind: "success",
     sentMessageId: send.id,
