@@ -140,10 +140,12 @@ function makeSnapshot(briefingRecipients?: string | null): Snapshot {
 describe("runFallbackBriefing", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // AI synthesis returns some text
+    // clearAllMocks wipes call history but NOT implementations — re-establish
+    // the success defaults so a prior test's mockRejectedValue can't leak.
     (generateText as ReturnType<typeof vi.fn>).mockResolvedValue({
       text: "## Week Overview\n\nSome briefing content.",
     });
+    (sendEmail as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "mock-email-id" });
   });
 
   // ── Recipient resolution ─────────────────────────────────────────────────
@@ -256,6 +258,50 @@ describe("runFallbackBriefing", () => {
     const result = await runFallbackBriefing(env);
 
     expect(result.kind).toBe("no_snapshot");
+  });
+
+  // ── Upstream-failure observability (silent-swallow guard) ──────────────────
+
+  it("returns kind:error with stage context when snapshot load throws", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("R2 unreachable")
+    );
+    const result = await runFallbackBriefing(env);
+
+    expect(result.kind).toBe("error");
+    expect(result.error).toMatch(/snapshot load failed/i);
+    expect(result.error).toMatch(/R2 unreachable/);
+  });
+
+  it("returns kind:error with stage context when Claude generation throws (credit exhaustion analog)", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeSnapshot("user@example.com")
+    );
+    (generateText as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("402 insufficient credits")
+    );
+    const result = await runFallbackBriefing(env);
+
+    expect(result.kind).toBe("error");
+    expect(result.error).toMatch(/briefing generation failed/i);
+    expect(result.error).toMatch(/402 insufficient credits/);
+  });
+
+  it("returns kind:error with stage context when Resend send throws", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeSnapshot("user@example.com")
+    );
+    (sendEmail as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("422 invalid to field")
+    );
+    const result = await runFallbackBriefing(env);
+
+    expect(result.kind).toBe("error");
+    expect(result.error).toMatch(/resend send failed/i);
+    expect(result.error).toMatch(/422 invalid to field/);
   });
 
   // ── Success cases ────────────────────────────────────────────────────────
