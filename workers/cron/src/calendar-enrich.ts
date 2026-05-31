@@ -162,6 +162,9 @@ export interface FallbackRunSummary {
   failures?: number;
   deferred?: number;
   error?: string;
+  /** Last per-candidate failure message — set when failures > 0 so a partial
+   *  (or total) failure surfaces a diagnosable reason, not just a count. */
+  lastError?: string;
 }
 
 export interface EnrichRunEnv {
@@ -262,6 +265,7 @@ export async function runCloudFallback(
 
   let failures = 0;
   let deferred = 0;
+  let lastError: string | null = null;
 
   for (const cand of candidates) {
     try {
@@ -302,11 +306,18 @@ export async function runCloudFallback(
       });
     } catch (err) {
       failures += 1;
+      lastError = err instanceof Error ? err.message : String(err);
       console.error(`[cloud-enrich] candidate ${cand.id} failed:`, err);
     }
   }
 
-  return { kind: "success", candidatesProcessed: candidates.length, failures, deferred };
+  return {
+    kind: "success",
+    candidatesProcessed: candidates.length,
+    failures,
+    deferred,
+    lastError: lastError ?? undefined,
+  };
 }
 
 // ── Top-level runner ────────────────────────────────────────────────
@@ -359,6 +370,14 @@ export async function runCalendarEnrich(
   }
 
   const fallback = await runCloudFallback(env, { pacingMs: opts.pacingMs });
+  if (fallback.failures && fallback.failures > 0) {
+    // Partial (or total) candidate failure is masked by kind:"success" whenever
+    // any candidate processed — elevate it so it doesn't hide in an info log.
+    console.error(
+      `[calendar-enrich] cloud fallback had ${fallback.failures} candidate failure(s)` +
+        (fallback.lastError ? `: ${fallback.lastError}` : ""),
+    );
+  }
   if (fallback.kind === "success" && fallback.candidatesProcessed && fallback.candidatesProcessed > 0) {
     // Writes the per-slot success marker AND deletes the fail journal.
     await env.CRON_KV.put(

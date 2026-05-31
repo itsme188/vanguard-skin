@@ -395,7 +395,15 @@ export async function runFallbackEvening(
   }
 
   // ── Load snapshot ────────────────────────────────────────────────────────
-  const snap = await loadLatestSnapshot(env.ARCHIVE);
+  let snap: Snapshot | null;
+  try {
+    snap = await loadLatestSnapshot(env.ARCHIVE);
+  } catch (err) {
+    return {
+      kind: "error",
+      error: `snapshot load failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
   if (!snap) {
     return { kind: "error", error: "snapshot missing" };
   }
@@ -475,12 +483,20 @@ export async function runFallbackEvening(
     return { kind: "success", htmlLength: html.length };
   }
 
-  const send = await sendEmail(env, {
-    to: recipient,
-    subject: `📊 ${title}`,
-    html,
-    fromLocalPart: "evening",
-  });
+  let send: Awaited<ReturnType<typeof sendEmail>>;
+  try {
+    send = await sendEmail(env, {
+      to: recipient,
+      subject: `📊 ${title}`,
+      html,
+      fromLocalPart: "evening",
+    });
+  } catch (err) {
+    return {
+      kind: "error",
+      error: `resend send failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
 
   return { kind: "success", sentMessageId: send.id };
 }

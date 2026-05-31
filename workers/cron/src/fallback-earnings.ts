@@ -99,6 +99,8 @@ export interface EarningsFallbackResult {
   sent: number;
   skipped: number;
   failed: number;
+  /** Last per-candidate failure message — surfaced so an all-fail run is diagnosable. */
+  lastError?: string;
   details: Array<{
     eventId: number;
     symbol: string;
@@ -180,12 +182,13 @@ export async function runEarningsFallback(
       });
     } catch (err) {
       result.failed++;
+      result.lastError = err instanceof Error ? err.message : String(err);
       result.details.push({
         eventId: cand.eventId,
         symbol: cand.symbol,
         phase: cand.phase,
         status: "failed",
-        reason: err instanceof Error ? err.message : String(err),
+        reason: result.lastError,
       });
     }
   }

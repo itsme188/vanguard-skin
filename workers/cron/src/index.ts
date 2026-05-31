@@ -382,7 +382,14 @@ export default {
         (async () => {
           console.log(`[cron ${event.cron}] running earnings-fallback at ${todayET()}`);
           const result = await runEarningsFallback(env);
-          if (result.swept > 0) {
+          if (result.failed > 0 && result.sent === 0) {
+            // Every candidate failed and nothing shipped — elevate so it can't
+            // hide behind a routine info log (the 5/20 silent-failure lesson).
+            console.error(
+              `[cron earnings-fallback] ALL ${result.failed} candidate(s) failed, 0 sent:`,
+              JSON.stringify(result),
+            );
+          } else if (result.swept > 0 || result.failed > 0) {
             console.log(`[cron earnings-fallback] result:`, JSON.stringify(result));
           }
         })(),
