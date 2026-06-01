@@ -47,8 +47,8 @@ function seedPrice(securityId: number, date: string, closePrice: number): void {
   ).run(securityId, date, closePrice);
 }
 
-function seedBeta(securityId: number, beta: number): void {
-  upsertBeta(db, { securityId, lookbackDays: 60, beta });
+function seedBeta(securityId: number, beta: number, residualStd?: number): void {
+  upsertBeta(db, { securityId, lookbackDays: 60, beta, residualStd });
 }
 
 // ─── SPY setup helper ─────────────────────────────────────────────────────────
@@ -78,47 +78,86 @@ describe("computeAnomalies", () => {
     expect(computeAnomalies(db)).toEqual([]);
   });
 
-  it("flags GOOG (-3.4%) and TER (+5.1%) but NOT NVDA (+1.0%) against SPY +0.75%", () => {
-    // SPY: +0.75%
-    seedSpy(530, 530 * 1.0075); // prior=530, today=533.975
+  it("does NOT flag an ordinary 1% wiggle on a flat market day", () => {
+    seedSpy(530, 530 * 1.001); // SPY +0.1% (flat)
     const acctId = seedAccount("Vanguard Brokerage");
 
-    // GOOG: -3.4%, beta 1.6 → expectedPct = 0.75 * 1.6 = 1.2%, threshold = max(2.4%, 1%) = 2.4%
-    // |actualPct| = 3.4% > 2.4% ✓ flagged
-    const googId = seedSecurity("GOOG");
-    seedHolding(acctId, googId);
-    seedPrice(googId, "2026-05-07", 170);
-    seedPrice(googId, "2026-05-08", 170 * (1 - 0.034)); // -3.4%
-    seedBeta(googId, 1.6);
+    const id = seedSecurity("ACME");
+    seedHolding(acctId, id);
+    seedPrice(id, "2026-05-07", 100);
+    seedPrice(id, "2026-05-08", 101.0); // +1.0%
+    seedBeta(id, 1.2, 1.5);
 
-    // TER: +5.1%, beta 2.0 → expectedPct = 0.75 * 2.0 = 1.5%, threshold = max(3.0%, 1%) = 3.0%
-    // |actualPct| = 5.1% > 3.0% ✓ flagged
-    const terId = seedSecurity("TER");
-    seedHolding(acctId, terId);
-    seedPrice(terId, "2026-05-07", 100);
-    seedPrice(terId, "2026-05-08", 105.1); // +5.1%
-    seedBeta(terId, 2.0);
+    expect(computeAnomalies(db).map((f) => f.symbol)).not.toContain("ACME");
+  });
 
-    // NVDA: +1.0%, beta 1.1 → expectedPct = 0.75 * 1.1 = 0.825%, threshold = max(1.65%, 1%) = 1.65%
-    // |actualPct| = 1.0% < 1.65% ✗ NOT flagged
-    const nvdaId = seedSecurity("NVDA");
-    seedHolding(acctId, nvdaId);
-    seedPrice(nvdaId, "2026-05-07", 100);
-    seedPrice(nvdaId, "2026-05-08", 101.0); // +1.0%
-    seedBeta(nvdaId, 1.1);
+  it("flags a quiet fund that jumps 3% on a flat day (large z for a low-vol name)", () => {
+    seedSpy(530, 530 * 1.001);
+    const acctId = seedAccount("Vanguard Brokerage");
+
+    const id = seedSecurity("QFND");
+    seedHolding(acctId, id);
+    seedPrice(id, "2026-05-07", 100);
+    seedPrice(id, "2026-05-08", 103.2); // +3.2%
+    seedBeta(id, 0.3, 0.5);
+
+    expect(computeAnomalies(db).map((f) => f.symbol)).toContain("QFND");
+  });
+
+  it("does NOT flag a volatile name moving 3% (within its own normal noise)", () => {
+    seedSpy(530, 530 * 1.001);
+    const acctId = seedAccount("Vanguard Brokerage");
+
+    const id = seedSecurity("VOLA");
+    seedHolding(acctId, id);
+    seedPrice(id, "2026-05-07", 100);
+    seedPrice(id, "2026-05-08", 103.1); // +3.1%
+    seedBeta(id, 1.5, 2.5);
+
+    expect(computeAnomalies(db).map((f) => f.symbol)).not.toContain("VOLA");
+  });
+
+  it("degraded mode: with null residual_std, enforces only the 3% floor", () => {
+    seedSpy(530, 530 * 1.001);
+    const acctId = seedAccount("Vanguard Brokerage");
+
+    const big = seedSecurity("BIG");
+    seedHolding(acctId, big);
+    seedPrice(big, "2026-05-07", 100);
+    seedPrice(big, "2026-05-08", 103.5); // +3.5%
+    seedBeta(big, 1.0); // residualStd omitted → NULL
+
+    const small = seedSecurity("SML");
+    seedHolding(acctId, small);
+    seedPrice(small, "2026-05-07", 100);
+    seedPrice(small, "2026-05-08", 102.0); // +2.0%
+    seedBeta(small, 1.0); // residualStd omitted → NULL
+
+    const symbols = computeAnomalies(db).map((f) => f.symbol);
+    expect(symbols).toContain("BIG");
+    expect(symbols).not.toContain("SML");
+  });
+
+  it("exposes zScore and sorts by it descending", () => {
+    seedSpy(530, 530 * 1.001);
+    const acctId = seedAccount("Vanguard Brokerage");
+
+    const hi = seedSecurity("HIGHZ");
+    seedHolding(acctId, hi);
+    seedPrice(hi, "2026-05-07", 100);
+    seedPrice(hi, "2026-05-08", 104.0);
+    seedBeta(hi, 0.5, 0.5);
+
+    const lo = seedSecurity("LOWZ");
+    seedHolding(acctId, lo);
+    seedPrice(lo, "2026-05-07", 100);
+    seedPrice(lo, "2026-05-08", 103.1);
+    seedBeta(lo, 0.5, 1.2);
 
     const flags = computeAnomalies(db);
-
-    const symbols = flags.map((f) => f.symbol);
-    expect(symbols).toContain("GOOG");
-    expect(symbols).toContain("TER");
-    expect(symbols).not.toContain("NVDA");
-    expect(symbols).not.toContain("SPY");
-
-    // securityId is exposed so the Today-tab SignificantMovesCard can link each
-    // flag to its Security Detail page via <SymbolLink>.
-    const goog = flags.find((f) => f.symbol === "GOOG");
-    expect(goog?.securityId).toBe(googId);
+    expect(flags[0].symbol).toBe("HIGHZ");
+    expect(flags[0].zScore).not.toBeNull();
+    expect(flags[0].zScore! > flags[1].zScore!).toBe(true);
   });
 
   it("skips BRK.B when no cached beta exists", () => {
@@ -136,44 +175,43 @@ describe("computeAnomalies", () => {
     expect(flags.map((f) => f.symbol)).not.toContain("BRK.B");
   });
 
-  it("sorts by ratio desc — TER (higher ratio) comes before GOOG", () => {
-    // SPY +0.75%
+  it("sorts by z-score desc — HIGHZ (low residualStd) ranks above TER (higher residualStd)", () => {
+    // SPY +0.75% — both names clear the 3% floor, but HIGHZ has a much larger z
     seedSpy(530, 530 * 1.0075);
     const acctId = seedAccount("Vanguard Brokerage");
 
-    // GOOG: -3.4%, beta 1.6 → threshold = max(2*1.2%, 1%) = 2.4% → ratio = 3.4/2.4 ≈ 1.417
+    // GOOG: -3.4%, beta 1.6, residualStd 0.5 → z = |(-3.4 - 1.2)| / 0.5 = 11.2
     const googId = seedSecurity("GOOG");
     seedHolding(acctId, googId);
     seedPrice(googId, "2026-05-07", 170);
     seedPrice(googId, "2026-05-08", 170 * 0.966); // -3.4%
-    seedBeta(googId, 1.6);
+    seedBeta(googId, 1.6, 0.5); // tight residual → high z
 
-    // TER: +5.1%, beta 2.0 → threshold = max(2*1.5%, 1%) = 3.0% → ratio = 5.1/3.0 = 1.7
+    // TER: +5.1%, beta 2.0, residualStd 2.0 → z = |(5.1 - 1.5)| / 2.0 = 1.8 ... below 2.0
+    // Use residualStd 1.0 so z = |(5.1 - 1.5)| / 1.0 = 3.6 — still flags, but lower z than GOOG
     const terId = seedSecurity("TER");
     seedHolding(acctId, terId);
     seedPrice(terId, "2026-05-07", 100);
     seedPrice(terId, "2026-05-08", 105.1); // +5.1%
-    seedBeta(terId, 2.0);
+    seedBeta(terId, 2.0, 1.0);
 
     const flags = computeAnomalies(db);
     expect(flags.length).toBeGreaterThanOrEqual(2);
-    expect(flags[0].symbol).toBe("TER"); // higher ratio first
-    expect(flags[1].symbol).toBe("GOOG");
+    expect(flags[0].symbol).toBe("GOOG"); // higher z first (z ≈ 11.2 vs 3.6)
+    expect(flags[1].symbol).toBe("TER");
   });
 
-  it("applies 1% absolute floor: flat market (SPY +0.1%), beta-1 stock +0.5% is NOT flagged", () => {
+  it("applies 3% absolute floor: a stock with +0.5% move is NOT flagged regardless of beta", () => {
     // SPY +0.1%
     seedSpy(530, 530 * 1.001);
     const acctId = seedAccount("Vanguard Brokerage");
 
-    // AAPL: +0.5%, beta 1.0 → expectedPct = 0.1 * 1.0 = 0.1%
-    // threshold = max(2 * 0.1%, 1%) = max(0.2%, 1%) = 1.0%
-    // |actualPct| = 0.5% < 1.0% ✗ NOT flagged
+    // AAPL: +0.5% — well below 3% floor → NOT flagged
     const aaplId = seedSecurity("AAPL");
     seedHolding(acctId, aaplId);
     seedPrice(aaplId, "2026-05-07", 200);
     seedPrice(aaplId, "2026-05-08", 201); // +0.5%
-    seedBeta(aaplId, 1.0);
+    seedBeta(aaplId, 1.0, 0.5);
 
     const flags = computeAnomalies(db);
     expect(flags.map((f) => f.symbol)).not.toContain("AAPL");
@@ -184,13 +222,13 @@ describe("computeAnomalies", () => {
     seedSpy(530, 530 * 1.0075);
     const acctId = seedAccount("Vanguard Brokerage");
 
-    // MSFT: -2.0%, beta 1.2 → expectedPct = +0.9%, threshold = max(1.8%, 1%) = 1.8%
-    // |actual| = 2.0% > 1.8% ✓ flagged; actual is negative but expected is positive → flipped
+    // MSFT: -4.0%, beta 1.2 → expectedPct = +0.9% → flipped; -4% clears 3% floor
+    // residualStd 0.8 → z = |(-4.0 - 0.9)| / 0.8 = 6.125 → flags
     const msftId = seedSecurity("MSFT");
     seedHolding(acctId, msftId);
     seedPrice(msftId, "2026-05-07", 400);
-    seedPrice(msftId, "2026-05-08", 392); // -2.0%
-    seedBeta(msftId, 1.2);
+    seedPrice(msftId, "2026-05-08", 384); // -4.0%
+    seedBeta(msftId, 1.2, 0.8);
 
     const flags = computeAnomalies(db);
     const msftFlag = flags.find((f) => f.symbol === "MSFT");
@@ -203,13 +241,13 @@ describe("computeAnomalies", () => {
     seedSpy(530, 530 * 1.0005);
     const acctId = seedAccount("Vanguard Brokerage");
 
-    // AMZN: -1.5%, beta 1.0 → expectedPct = 0.05%, threshold = max(0.1%, 1%) = 1.0%
-    // |actual| = 1.5% > 1.0% ✓ flagged; expected is +0.05% (very small) so flipped should be false
+    // AMZN: -3.5%, beta 1.0 → expectedPct = 0.05% (very small) → flipped should be false
+    // residualStd 0.8 → z = |(-3.5 - 0.05)| / 0.8 = 4.44 → flags
     const amznId = seedSecurity("AMZN");
     seedHolding(acctId, amznId);
     seedPrice(amznId, "2026-05-07", 200);
-    seedPrice(amznId, "2026-05-08", 197); // -1.5%
-    seedBeta(amznId, 1.0);
+    seedPrice(amznId, "2026-05-08", 193); // -3.5%
+    seedBeta(amznId, 1.0, 0.8);
 
     const flags = computeAnomalies(db);
     const amznFlag = flags.find((f) => f.symbol === "AMZN");
@@ -226,7 +264,7 @@ describe("computeAnomalies", () => {
     seedHolding(rothId, googId);
     seedPrice(googId, "2026-05-07", 170);
     seedPrice(googId, "2026-05-08", 170 * 0.966); // -3.4%
-    seedBeta(googId, 1.6);
+    seedBeta(googId, 1.6, 0.5);
 
     // IBKR account — should be excluded
     const ibkrId = seedAccount("IBKR Pro");
@@ -234,25 +272,26 @@ describe("computeAnomalies", () => {
     seedHolding(ibkrId, aaaplId);
     seedPrice(aaaplId, "2026-05-07", 200);
     seedPrice(aaaplId, "2026-05-08", 200 * 0.96); // -4%
-    seedBeta(aaaplId, 1.2);
+    seedBeta(aaaplId, 1.2, 0.8);
 
     const flags = computeAnomalies(db);
     expect(flags).toHaveLength(0);
   });
 
-  it("computes correct spyPct, actualPct, expectedPct, thresholdPct, ratio on a known scenario", () => {
+  it("computes correct spyPct, actualPct, expectedPct, residualPct, zScore on a known scenario", () => {
     // SPY: prior=400, today=397 → spyPct = (397-400)/400 * 100 = -0.75%
     seedSpy(400, 397);
     const acctId = seedAccount("Vanguard Taxable");
 
     // GOOG: prior=100, today=96.6 → actualPct = -3.4%
-    // beta=1.6, expectedPct = -0.75 * 1.6 = -1.2%, threshold = max(2.4%, 1%) = 2.4%
-    // ratio = 3.4 / 2.4 ≈ 1.4167
+    // beta=1.6, expectedPct = -0.75 * 1.6 = -1.2%
+    // residualPct = -3.4 - (-1.2) = -2.2%
+    // residualStd=0.5 → zScore = |-2.2| / 0.5 = 4.4
     const googId = seedSecurity("GOOG");
     seedHolding(acctId, googId);
     seedPrice(googId, "2026-05-07", 100);
     seedPrice(googId, "2026-05-08", 96.6); // -3.4%
-    seedBeta(googId, 1.6);
+    seedBeta(googId, 1.6, 0.5);
 
     const flags = computeAnomalies(db);
     const goog = flags.find((f) => f.symbol === "GOOG");
@@ -262,8 +301,8 @@ describe("computeAnomalies", () => {
     expect(goog!.actualPct).toBeCloseTo(-3.4, 4);
     expect(goog!.beta).toBeCloseTo(1.6, 4);
     expect(goog!.expectedPct).toBeCloseTo(-1.2, 4);
-    expect(goog!.thresholdPct).toBeCloseTo(2.4, 4);
-    expect(goog!.ratio).toBeCloseTo(3.4 / 2.4, 4);
+    expect(goog!.residualPct).toBeCloseTo(-2.2, 4);
+    expect(goog!.zScore).toBeCloseTo(4.4, 2);
     expect(goog!.directionFlipped).toBe(false); // both negative, same direction
   });
 
@@ -283,7 +322,7 @@ describe("computeAnomalies", () => {
     seedPrice(googId, "2026-05-07", 170);
     seedPrice(googId, "2026-05-08", 170 * (1 - 0.034)); // real -3.4%
     seedPrice(googId, "2026-05-10", 100); // phantom Sunday — must NOT be used
-    seedBeta(googId, 1.6);
+    seedBeta(googId, 1.6, 0.5); // residualStd so z-gate passes
 
     const goog = computeAnomalies(db).find((f) => f.symbol === "GOOG");
     expect(goog).toBeDefined();
@@ -295,12 +334,12 @@ describe("computeAnomalies", () => {
     seedSpy(530, 530 * 1.0075); // 5/07 → 5/08
     const acctId = seedAccount("Vanguard Brokerage");
 
-    // FRESH name on the pinned pair → flagged.
+    // FRESH name on the pinned pair → flagged (3% floor + z-gate pass with residualStd=0.5).
     const terId = seedSecurity("TER");
     seedHolding(acctId, terId);
     seedPrice(terId, "2026-05-07", 100);
     seedPrice(terId, "2026-05-08", 105.1); // +5.1%
-    seedBeta(terId, 2.0);
+    seedBeta(terId, 2.0, 0.5); // residualStd provided so z-gate applies
 
     // STALE name: latest close is weeks old, no 5/08 close → must be omitted,
     // not reported as a +30% "today" move.
@@ -308,7 +347,7 @@ describe("computeAnomalies", () => {
     seedHolding(acctId, vmfId);
     seedPrice(vmfId, "2026-04-29", 100);
     seedPrice(vmfId, "2026-04-30", 130);
-    seedBeta(vmfId, 1.0);
+    seedBeta(vmfId, 1.0, 0.5);
 
     const symbols = computeAnomalies(db).map((f) => f.symbol);
     expect(symbols).toContain("TER");
@@ -327,7 +366,7 @@ describe("computeAnomalies", () => {
     seedHolding(acctId, googId);
     seedPrice(googId, "2026-05-06", 170);
     seedPrice(googId, "2026-05-08", 150);
-    seedBeta(googId, 1.6);
+    seedBeta(googId, 1.6, 0.5);
 
     expect(computeAnomalies(db)).toEqual([]);
   });
@@ -341,16 +380,16 @@ describe("formatVanguardAnomaliesBlock", () => {
     expect(formatVanguardAnomaliesBlock(db)).toBe("");
   });
 
-  it("returns empty string when all securities are within threshold", () => {
+  it("returns empty string when all securities are within the 3% floor", () => {
     seedSpy(530, 530 * 1.001); // SPY +0.1%
     const acctId = seedAccount("Vanguard Brokerage");
 
-    // AAPL +0.3%, beta 1.0, threshold = max(0.2%, 1%) = 1.0% — NOT flagged
+    // AAPL +0.3% — well below 3% floor → NOT flagged
     const aaplId = seedSecurity("AAPL");
     seedHolding(acctId, aaplId);
     seedPrice(aaplId, "2026-05-07", 200);
     seedPrice(aaplId, "2026-05-08", 200.6);
-    seedBeta(aaplId, 1.0);
+    seedBeta(aaplId, 1.0, 0.5);
 
     expect(formatVanguardAnomaliesBlock(db)).toBe("");
   });
@@ -360,12 +399,13 @@ describe("formatVanguardAnomaliesBlock", () => {
     seedSpy(400, 397);
     const acctId = seedAccount("Vanguard Taxable");
 
-    // GOOG: -3.4%, beta 1.6, expectedPct = -1.2%, threshold = 2.4%, ratio ≈ 1.42
+    // GOOG: -3.4%, beta 1.6, residualStd 0.5
+    // expectedPct = -1.2%, residualPct = -2.2, z = 4.4
     const googId = seedSecurity("GOOG");
     seedHolding(acctId, googId);
     seedPrice(googId, "2026-05-07", 100);
     seedPrice(googId, "2026-05-08", 96.6);
-    seedBeta(googId, 1.6);
+    seedBeta(googId, 1.6, 0.5);
 
     const md = formatVanguardAnomaliesBlock(db);
     expect(md).toContain("## Significant Moves in Vanguard Holdings (vs. expected)");
@@ -373,8 +413,8 @@ describe("formatVanguardAnomaliesBlock", () => {
     expect(md).toContain("-3.4%");
     // SPY was -0.75%, rounds to -0.8% at 1 decimal — check for the negative sign
     expect(md).toMatch(/SPY -0\.\d+%/);
-    // ratio line
-    expect(md).toMatch(/\d+\.\d+× expected/);
+    // z-score line (e.g. "4.4σ move.")
+    expect(md).toMatch(/\d+\.\d+σ move\./);
   });
 
   it("uses + sign for positive percentages", () => {
@@ -382,13 +422,13 @@ describe("formatVanguardAnomaliesBlock", () => {
     seedSpy(530, 535.3); // (535.3 - 530) / 530 * 100 = 1.0%
     const acctId = seedAccount("Vanguard Brokerage");
 
-    // TER: +5.1%, beta 2.0 → expectedPct = 1.0 * 2.0 = 2.0%, threshold = max(4.0%, 1%) = 4.0%
-    // |actual| = 5.1% > 4.0% ✓ flagged
+    // TER: +5.1%, beta 2.0, residualStd 0.5
+    // expectedPct = 1.0 * 2.0 = 2.0%, residualPct = 3.1, z = 3.1/0.5 = 6.2 → flags
     const terId = seedSecurity("TER");
     seedHolding(acctId, terId);
     seedPrice(terId, "2026-05-07", 100);
     seedPrice(terId, "2026-05-08", 105.1); // +5.1%
-    seedBeta(terId, 2.0);
+    seedBeta(terId, 2.0, 0.5);
 
     const md = formatVanguardAnomaliesBlock(db);
     // Positive actual — explicit + sign
@@ -404,43 +444,58 @@ describe("formatVanguardAnomaliesBlock", () => {
     seedSpy(530, 530 * 1.0075);
     const acctId = seedAccount("Vanguard Brokerage");
 
-    // MSFT: -2.0%, beta 1.2 → flipped (expected positive, actual negative)
+    // MSFT: -4.0%, beta 1.2 → flipped (expected positive, actual negative)
+    // residualStd 0.8 → z = |(-4.0 - 0.9)| / 0.8 = 6.125 → flags
     const msftId = seedSecurity("MSFT");
     seedHolding(acctId, msftId);
     seedPrice(msftId, "2026-05-07", 400);
-    seedPrice(msftId, "2026-05-08", 392); // -2.0%
-    seedBeta(msftId, 1.2);
+    seedPrice(msftId, "2026-05-08", 384); // -4.0%
+    seedBeta(msftId, 1.2, 0.8);
 
     const md = formatVanguardAnomaliesBlock(db);
     expect(md).toContain("Direction flipped.");
   });
 
-  it("caps at top 5 and appends '(N more flagged)' footer", () => {
-    // SPY -0.1% (tiny, so 1% floor means almost anything flagged)
+  it("shows all flagged securities (no cap)", () => {
+    // SPY -0.1% (tiny) — 8 securities each moving -5% with residualStd 0.5
+    // All clear 3% floor; z = |(−5 − (−0.1)) | / 0.5 = 9.8 → all flag
     seedSpy(530, 530 * 0.999);
     const acctId = seedAccount("Vanguard Brokerage");
 
-    // Seed 8 securities each moving -5% with beta 1.0
-    // threshold = max(2*0.1%, 1%) = 1.0%, |actual| = 5% >> 1% → all 8 flagged
     const symbols = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF", "GGG", "HHH"];
     for (let i = 0; i < symbols.length; i++) {
       const secId = seedSecurity(symbols[i]);
       seedHolding(acctId, secId);
-      // Vary moves slightly so sort order is deterministic
       const move = 1 - (0.05 + i * 0.001); // -5.0%, -5.1%, ... -5.7%
       seedPrice(secId, "2026-05-07", 100);
       seedPrice(secId, "2026-05-08", 100 * move);
-      seedBeta(secId, 1.0);
+      seedBeta(secId, 1.0, 0.5);
     }
 
     const md = formatVanguardAnomaliesBlock(db);
 
-    // Count bullet lines
+    // ALL 8 should appear — no cap in the new implementation
     const bulletCount = (md.match(/^- \*\*/gm) ?? []).length;
-    expect(bulletCount).toBe(5);
+    expect(bulletCount).toBe(8);
 
-    // "3 more flagged" footer
-    expect(md).toContain("(3 more flagged");
+    // No "N more flagged" footer
+    expect(md).not.toContain("more flagged");
+  });
+
+  it("degraded mode: null residual_std renders the signed-actual fallback reason", () => {
+    seedSpy(530, 530 * 0.999); // SPY -0.1%
+    const acctId = seedAccount("Vanguard Brokerage");
+
+    const secId = seedSecurity("NODV");
+    seedHolding(acctId, secId);
+    seedPrice(secId, "2026-05-07", 100);
+    seedPrice(secId, "2026-05-08", 96.5); // -3.5%
+    seedBeta(secId, 1.0); // residualStd omitted → NULL
+
+    const md = formatVanguardAnomaliesBlock(db);
+    expect(md).toContain("**NODV**");
+    // In degraded mode the reason is the signed actual, e.g. "-3.5% move."
+    expect(md).toMatch(/-3\.5% move\./);
   });
 
   it("does NOT contain dollar amounts", () => {
@@ -451,7 +506,7 @@ describe("formatVanguardAnomaliesBlock", () => {
     seedHolding(acctId, terId);
     seedPrice(terId, "2026-05-07", 100);
     seedPrice(terId, "2026-05-08", 105.1);
-    seedBeta(terId, 2.0);
+    seedBeta(terId, 2.0, 0.5);
 
     const md = formatVanguardAnomaliesBlock(db);
     expect(/\$\d/.test(md)).toBe(false);
@@ -465,7 +520,7 @@ describe("formatVanguardAnomaliesBlock", () => {
     seedHolding(acctId, terId);
     seedPrice(terId, "2026-05-07", 100);
     seedPrice(terId, "2026-05-08", 105.1);
-    seedBeta(terId, 2.0);
+    seedBeta(terId, 2.0, 0.5);
 
     const md = formatVanguardAnomaliesBlock(db);
     expect(/\d+ shares/.test(md)).toBe(false);
@@ -479,7 +534,7 @@ describe("formatVanguardAnomaliesBlock", () => {
     seedHolding(acctId, terId);
     seedPrice(terId, "2026-05-07", 100);
     seedPrice(terId, "2026-05-08", 105.1);
-    seedBeta(terId, 2.0);
+    seedBeta(terId, 2.0, 0.5);
 
     const md = formatVanguardAnomaliesBlock(db);
     expect(/% of (?:portfolio|account)/i.test(md)).toBe(false);
@@ -493,7 +548,7 @@ describe("formatVanguardAnomaliesBlock", () => {
     seedHolding(acctId, terId);
     seedPrice(terId, "2026-05-07", 100);
     seedPrice(terId, "2026-05-08", 105.1);
-    seedBeta(terId, 2.0);
+    seedBeta(terId, 2.0, 0.5);
 
     const md = formatVanguardAnomaliesBlock(db);
     expect(md.endsWith("\n")).toBe(true);
