@@ -43,22 +43,33 @@ interface PriceRow {
 
 // ─── OLS beta helper ──────────────────────────────────────────────
 
+interface BetaResult {
+  beta: number;
+  /** Residual std-dev of the regression, in PERCENT units (decimal x 100). */
+  residualStdPct: number;
+}
+
 /**
- * Compute beta = cov(stock_returns, spy_returns) / var(spy_returns)
- * using log daily returns on the aligned date pairs.
+ * Compute beta = cov(stock_returns, spy_returns) / var(spy_returns) using log
+ * daily returns on the aligned date pairs, plus the residual standard deviation
+ * (idiosyncratic daily volatility) of that regression.
+ *
+ * residual_i = (sLog_i - meanS) - beta x (bLog_i - meanB)
+ * residualStd = sqrt( sum residual_i^2 / (n - 2) )   [n-2 = regression dof]
+ * Returned in PERCENT units so the anomaly engine compares it directly to
+ * simple-percent daily moves.
  *
  * Returns null when there are insufficient aligned data points.
  */
 function computeBeta(
   stockPrices: Map<string, number>,
   spyPrices: Map<string, number>
-): number | null {
-  // Collect dates present in both series, sorted ascending
+): BetaResult | null {
   const dates = [...stockPrices.keys()]
     .filter((d) => spyPrices.has(d))
     .sort();
 
-  if (dates.length < MIN_DATA_POINTS + 1) return null; // need at least MIN_DATA_POINTS return pairs
+  if (dates.length < MIN_DATA_POINTS + 1) return null;
 
   const stockReturns: number[] = [];
   const spyReturns: number[] = [];
@@ -96,7 +107,19 @@ function computeBeta(
 
   if (varB === 0) return null;
 
-  return covSB / varB;
+  const beta = covSB / varB;
+
+  // Residual (idiosyncratic) std-dev around the regression line.
+  let residSumSq = 0;
+  for (let i = 0; i < n; i++) {
+    const resid = (stockReturns[i] - meanS) - beta * (spyReturns[i] - meanB);
+    residSumSq += resid * resid;
+  }
+  const dof = n - 2;
+  const residualStd = dof > 0 ? Math.sqrt(residSumSq / dof) : 0; // decimal log-return
+  const residualStdPct = residualStd * 100;
+
+  return { beta, residualStdPct };
 }
 
 // ─── Main refresh function ────────────────────────────────────────
@@ -200,15 +223,20 @@ export async function refreshVanguardBetas(
         stockPrices.set(row.date, row.close_price);
       }
 
-      const beta = computeBeta(stockPrices, spyPrices);
+      const regression = computeBeta(stockPrices, spyPrices);
 
-      if (beta === null) {
+      if (regression === null) {
         // Insufficient aligned data after matching with SPY dates
         result.skipped.push(sec.symbol);
         continue;
       }
 
-      upsertBeta(db, { securityId: sec.id, lookbackDays: LOOKBACK_DAYS, beta });
+      upsertBeta(db, {
+        securityId: sec.id,
+        lookbackDays: LOOKBACK_DAYS,
+        beta: regression.beta,
+        residualStd: regression.residualStdPct,
+      });
       result.computed++;
     } catch (err) {
       result.errors.push({
