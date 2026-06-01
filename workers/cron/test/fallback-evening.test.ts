@@ -16,6 +16,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import type { FallbackEnv } from "../src/fallback-digest";
 import type { Snapshot } from "../src/state";
+import { evaluateAnomalies } from "../src/fallback-evening";
 
 // ── Dependency mocks ─────────────────────────────────────────────────────────
 
@@ -484,5 +485,78 @@ describe("runFallbackEvening", () => {
     const result = await runFallbackEvening(env);
     // 0 articles → per-source path → empty digest → skipped
     expect(result.kind).toBe("skipped");
+  });
+});
+
+describe("evaluateAnomalies (Worker two-gate parity)", () => {
+  const closes = (m: Record<string, { prior: number; today: number }>) =>
+    new Map(Object.entries(m));
+
+  it("does not flag a 1% wiggle on a flat day (fails 3% floor)", () => {
+    const flags = evaluateAnomalies(
+      [{ symbol: "ACME", securityId: 1, accountId: 1 }],
+      [{ securityId: 1, lookbackDays: 60, beta: 1.2, residualStd: 1.5, computedAt: "2026-05-08" }],
+      closes({ SPY: { prior: 530, today: 530 * 1.001 }, ACME: { prior: 100, today: 101.0 } }),
+    );
+    expect((flags ?? []).map((f) => f.symbol)).not.toContain("ACME");
+  });
+
+  it("flags a quiet fund up 3.2% on a flat day (high z)", () => {
+    const flags = evaluateAnomalies(
+      [{ symbol: "QFND", securityId: 1, accountId: 1 }],
+      [{ securityId: 1, lookbackDays: 60, beta: 0.3, residualStd: 0.5, computedAt: "2026-05-08" }],
+      closes({ SPY: { prior: 530, today: 530 * 1.001 }, QFND: { prior: 100, today: 103.2 } }),
+    );
+    expect((flags ?? []).map((f) => f.symbol)).toContain("QFND");
+  });
+
+  it("does not flag a volatile name up 3.1% (z < 2)", () => {
+    const flags = evaluateAnomalies(
+      [{ symbol: "VOLA", securityId: 1, accountId: 1 }],
+      [{ securityId: 1, lookbackDays: 60, beta: 1.5, residualStd: 2.5, computedAt: "2026-05-08" }],
+      closes({ SPY: { prior: 530, today: 530 * 1.001 }, VOLA: { prior: 100, today: 103.1 } }),
+    );
+    expect((flags ?? []).map((f) => f.symbol)).not.toContain("VOLA");
+  });
+
+  it("degraded mode: missing residualStd enforces only the 3% floor", () => {
+    const flags = evaluateAnomalies(
+      [
+        { symbol: "BIG", securityId: 1, accountId: 1 },
+        { symbol: "SML", securityId: 2, accountId: 1 },
+      ],
+      [
+        { securityId: 1, lookbackDays: 60, beta: 1.0, computedAt: "2026-05-08" }, // no residualStd
+        { securityId: 2, lookbackDays: 60, beta: 1.0, computedAt: "2026-05-08" },
+      ],
+      closes({
+        SPY: { prior: 530, today: 530 * 1.001 },
+        BIG: { prior: 100, today: 103.5 },
+        SML: { prior: 100, today: 102.0 },
+      }),
+    );
+    const syms = (flags ?? []).map((f) => f.symbol);
+    expect(syms).toContain("BIG");
+    expect(syms).not.toContain("SML");
+  });
+
+  it("sorts by zScore desc and exposes null zScore in degraded mode", () => {
+    const flags = evaluateAnomalies(
+      [
+        { symbol: "HIGHZ", securityId: 1, accountId: 1 },
+        { symbol: "LOWZ", securityId: 2, accountId: 1 },
+      ],
+      [
+        { securityId: 1, lookbackDays: 60, beta: 0.5, residualStd: 0.5, computedAt: "2026-05-08" },
+        { securityId: 2, lookbackDays: 60, beta: 0.5, residualStd: 1.2, computedAt: "2026-05-08" },
+      ],
+      closes({
+        SPY: { prior: 530, today: 530 * 1.001 },
+        HIGHZ: { prior: 100, today: 104.0 },
+        LOWZ: { prior: 100, today: 103.1 },
+      }),
+    );
+    expect((flags ?? [])[0].symbol).toBe("HIGHZ");
+    expect((flags ?? [])[0].zScore).not.toBeNull();
   });
 });
