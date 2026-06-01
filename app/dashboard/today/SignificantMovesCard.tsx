@@ -34,7 +34,7 @@ export function SignificantMovesCard() {
       <EmptySection
         title={TITLE}
         reason="No Vanguard holdings moved significantly more than their beta predicted today."
-        hint="A name is flagged when its daily move exceeds max(2× its beta-implied move, 1%) versus SPY. Needs cached betas and two consecutive closes."
+        hint="A name is flagged when its daily move is at least 3% AND at least 2 standard deviations beyond that stock's own normal day-to-day noise (after adjusting for SPY). Needs cached betas, a residual volatility, and two consecutive closes."
       />
     );
   }
@@ -72,7 +72,11 @@ export function SignificantMovesCard() {
                 </div>
                 <div className="text-right shrink-0 flex items-center gap-2">
                   <Chip tone={f.directionFlipped ? "warn" : up ? "up" : "down"}>
-                    {f.directionFlipped ? "Direction flipped" : `${f.ratio.toFixed(1)}× expected`}
+                    {f.directionFlipped
+                      ? "Direction flipped"
+                      : f.zScore != null
+                        ? `${f.zScore.toFixed(1)}σ`
+                        : signedPct(f.actualPct)}
                   </Chip>
                   <span
                     className={`text-[14px] font-mono tabular-nums ${up ? "text-up" : "text-down"}`}
