@@ -81,6 +81,56 @@ export function getDailyValuationsCombined(
 }
 
 /**
+ * Get aggregated daily valuations across a SUBSET of accounts within a date
+ * range. Returns one row per date with summed values (account_id = 0, like the
+ * combined variant). This is the correct way to build a portfolio time-series
+ * for a multi-account scope: SUM across the account set FIRST, then any
+ * volatility/drawdown/Sharpe math operates on the combined series — per-account
+ * stats can't be averaged back into a portfolio figure (diversification).
+ *
+ * Empty/undefined `accountIds` falls through to the all-accounts combined view.
+ */
+export function getDailyValuationsForAccounts(
+  db: Database.Database,
+  accountIds: number[],
+  options?: {
+    startDate?: string;
+    endDate?: string;
+  }
+): DailyValuation[] {
+  if (!accountIds || accountIds.length === 0) {
+    return getDailyValuationsCombined(db, options);
+  }
+
+  const conditions: string[] = [
+    `account_id IN (${accountIds.map(() => "?").join(",")})`,
+  ];
+  const params: (string | number)[] = [...accountIds];
+
+  if (options?.startDate) {
+    conditions.push("valuation_date >= ?");
+    params.push(options.startDate);
+  }
+  if (options?.endDate) {
+    conditions.push("valuation_date <= ?");
+    params.push(options.endDate);
+  }
+
+  return db
+    .prepare(
+      `SELECT valuation_date, 0 AS account_id,
+              SUM(cash_balance) AS cash_balance,
+              SUM(holdings_value) AS holdings_value,
+              SUM(total_value) AS total_value
+       FROM daily_valuations
+       WHERE ${conditions.join(" AND ")}
+       GROUP BY valuation_date
+       ORDER BY valuation_date ASC`
+    )
+    .all(...params) as DailyValuation[];
+}
+
+/**
  * Get daily valuations pivoted by account name — same shape as getPortfolioChartData().
  * Returns { date, "Vanguard Taxable": X, "IBKR": Y, ... } for use in CombinedPortfolioChart.
  */
