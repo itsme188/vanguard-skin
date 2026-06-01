@@ -1,8 +1,9 @@
 import type Database from "better-sqlite3";
-import { getDailyValuationsCombined, getDailyValuationsByAccount } from "@/lib/queries/daily-valuations";
+import { getDailyValuationsCombined, getDailyValuationsForAccounts } from "@/lib/queries/daily-valuations";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { normalizeAccountIds } from "@/lib/compute/factors";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -45,6 +46,12 @@ export interface RiskOptions {
   startDate?: string;
   endDate?: string;
   accountId?: number;
+  /**
+   * Multi-account scope. When set, valuations are summed across this account
+   * set and concentration filters to it. Takes precedence over `accountId`.
+   * Undefined/empty → whole portfolio.
+   */
+  accountIds?: number[];
   riskFreeRate?: number; // annualized; if omitted, reads FRED DGS3MO from settings cache
   /**
    * If set (YYYY-MM-DD), compute concentration metrics against holdings as
@@ -92,17 +99,19 @@ export function computeRiskMetrics(
   // Risk-free rate flows from FRED's DGS3MO via the settings cache; falls
   // back to 0.045 if never fetched. See lib/queries/risk-free-rate.ts.
   const riskFreeRate = options?.riskFreeRate ?? getRiskFreeRate(db);
+  const accountIds = normalizeAccountIds(options);
 
-  // 1. Get daily valuations
-  const valuations = options?.accountId
-    ? getDailyValuationsByAccount(db, options.accountId, {
-        startDate: options?.startDate,
-        endDate: options?.endDate,
-      })
-    : getDailyValuationsCombined(db, {
-        startDate: options?.startDate,
-        endDate: options?.endDate,
-      });
+  // 1. Get daily valuations (summed across the scoped accounts)
+  const valuations =
+    accountIds && accountIds.length > 0
+      ? getDailyValuationsForAccounts(db, accountIds, {
+          startDate: options?.startDate,
+          endDate: options?.endDate,
+        })
+      : getDailyValuationsCombined(db, {
+          startDate: options?.startDate,
+          endDate: options?.endDate,
+        });
 
   // 2. Compute drawdown and return metrics from valuations
   const maxDrawdown = computeMaxDrawdown(valuations.map(v => ({ date: v.valuation_date, value: v.total_value })));
@@ -114,7 +123,7 @@ export function computeRiskMetrics(
 
   // 3. Compute concentration from current holdings
   const { herfindahl, top5Concentration, top5Positions, positionCount } =
-    computeConcentration(db, options?.accountId, options?.asOfDate);
+    computeConcentration(db, accountIds, options?.asOfDate);
 
   return {
     maxDrawdown,
@@ -242,7 +251,7 @@ function computeVolatility(
 
 function computeConcentration(
   db: Database.Database,
-  accountId?: number,
+  accountIds?: number[],
   asOfDate?: string
 ): {
   herfindahl: number | null;
@@ -250,8 +259,11 @@ function computeConcentration(
   top5Positions: PositionWeight[];
   positionCount: number;
 } {
-  const accountFilter = accountId ? "AND h.account_id = ?" : "";
-  const accountParams: number[] = accountId ? [accountId] : [];
+  const accountFilter =
+    accountIds && accountIds.length > 0
+      ? `AND h.account_id IN (${accountIds.map(() => "?").join(",")})`
+      : "";
+  const accountParams: number[] = accountIds ?? [];
 
   const predicate = latestHoldingsPredicate({
     keyBy: "account_security",
@@ -336,11 +348,15 @@ function computeConcentration(
  */
 export function computePositionRisk(
   db: Database.Database,
-  options?: { accountId?: number; topN?: number; asOfDate?: string }
+  options?: { accountId?: number; accountIds?: number[]; topN?: number; asOfDate?: string }
 ): PositionRiskResult {
   const topN = options?.topN ?? 10;
-  const accountFilter = options?.accountId ? "AND h.account_id = ?" : "";
-  const accountParams: number[] = options?.accountId ? [options.accountId] : [];
+  const accountIds = normalizeAccountIds(options);
+  const accountFilter =
+    accountIds && accountIds.length > 0
+      ? `AND h.account_id IN (${accountIds.map(() => "?").join(",")})`
+      : "";
+  const accountParams: number[] = accountIds ?? [];
 
   const predicate = latestHoldingsPredicate({
     keyBy: "account_security",

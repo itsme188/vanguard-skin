@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
-import { computeFactorAnalysis, computeMacroFactorTilts } from "@/lib/compute/factors";
+import {
+  computeFactorAnalysis,
+  computeMacroFactorTilts,
+  computeSecurityFactorShare,
+  normalizeAccountIds,
+} from "@/lib/compute/factors";
 
 function createTestDb(): Database.Database {
   const db = new Database(":memory:");
@@ -316,5 +321,201 @@ describe("computeMacroFactorTilts", () => {
     expect(crypto.exposurePct).toBe(0);
     expect(ai.exposurePct).toBe(0);
     expect(crypto.topContributors).toHaveLength(0);
+  });
+});
+
+describe("computeSecurityFactorShare", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+  });
+
+  it("returns 50% share when two equal-weight names share one factor at the same level", () => {
+    const today = recentDate(0);
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test')");
+
+    for (const [id, sym] of [
+      [1, "AAPL"],
+      [2, "MSFT"],
+    ] as const) {
+      db.prepare("INSERT INTO securities (id, symbol, name) VALUES (?, ?, ?)").run(id, sym, sym);
+      db.prepare("INSERT INTO security_factors (security_id, ai_exposure) VALUES (?, 'High')").run(id);
+      db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, ?, ?, 50)").run(id, today);
+      db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (?, ?, 100)").run(id, today);
+    }
+
+    const entries = computeSecurityFactorShare(db, 1);
+    expect(entries).toHaveLength(1);
+    const ai = entries[0];
+    expect(ai.factor).toBe("ai_exposure");
+    expect(ai.value).toBe("High");
+    // contribution = weight_pct(50) * 0.75 = 37.5; bucket total = 75; share = 50%.
+    expect(ai.securityContribution).toBeCloseTo(37.5, 1);
+    expect(ai.bucketTotalExposure).toBeCloseTo(75, 1);
+    expect(ai.sharePct).toBeCloseTo(50, 1);
+    expect(ai.deltaPp).toBeCloseTo(37.5, 1);
+  });
+
+  it("weights share by both position size and exposure level", () => {
+    const today = recentDate(0);
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test')");
+
+    // AAPL ai=Very High, 80% weight → contribution 80
+    db.prepare("INSERT INTO securities (id, symbol, name) VALUES (1, 'AAPL', 'Apple')").run();
+    db.prepare("INSERT INTO security_factors (security_id, ai_exposure) VALUES (1, 'Very High')").run();
+    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 1, ?, 80)").run(today);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (1, ?, 100)").run(today);
+
+    // NVDA ai=High, 20% weight → contribution 0.75*20 = 15
+    db.prepare("INSERT INTO securities (id, symbol, name) VALUES (2, 'NVDA', 'Nvidia')").run();
+    db.prepare("INSERT INTO security_factors (security_id, ai_exposure) VALUES (2, 'High')").run();
+    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 2, ?, 20)").run(today);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (2, ?, 100)").run(today);
+
+    const ai = computeSecurityFactorShare(db, 1).find((e) => e.factor === "ai_exposure")!;
+    // bucket total = 80 + 15 = 95; AAPL share = 80/95 = 84.2%.
+    expect(ai.bucketTotalExposure).toBeCloseTo(95, 1);
+    expect(ai.sharePct).toBeCloseTo(84.21, 1);
+  });
+
+  it("returns only active (non-Unknown / non-No) factors, sorted by share desc", () => {
+    const today = recentDate(0);
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test')");
+
+    db.prepare("INSERT INTO securities (id, symbol, name) VALUES (1, 'AAPL', 'Apple')").run();
+    db.prepare(
+      "INSERT INTO security_factors (security_id, ai_exposure, crypto_adjacent, interest_rate_sensitive, tariff_exposure) VALUES (1, 'High', 'No', 'Unknown', 'Low')"
+    ).run();
+    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 1, ?, 100)").run(today);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (1, ?, 100)").run(today);
+
+    const entries = computeSecurityFactorShare(db, 1);
+    const factors = entries.map((e) => e.factor);
+    // ai_exposure (High) + tariff_exposure (Low) are active; crypto=No, rates=Unknown excluded.
+    expect(factors).toContain("ai_exposure");
+    expect(factors).toContain("tariff_exposure");
+    expect(factors).not.toContain("crypto_adjacent");
+    expect(factors).not.toContain("interest_rate_sensitive");
+    // Sole holder → 100% share of each active factor; no NaN/Infinity.
+    for (const e of entries) {
+      expect(e.sharePct).toBeCloseTo(100, 1);
+      expect(Number.isFinite(e.sharePct)).toBe(true);
+    }
+    // Sorted by sharePct desc (tie here, so just assert it's the active set of 2).
+    expect(entries).toHaveLength(2);
+  });
+
+  it("returns [] for a security that is not held", () => {
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test')");
+    db.prepare("INSERT INTO securities (id, symbol, name) VALUES (1, 'AAPL', 'Apple')").run();
+    db.prepare("INSERT INTO security_factors (security_id, ai_exposure) VALUES (1, 'High')").run();
+    // No holdings row.
+    expect(computeSecurityFactorShare(db, 1)).toEqual([]);
+  });
+
+  it("returns [] for an unknown security id", () => {
+    expect(computeSecurityFactorShare(db, 999)).toEqual([]);
+  });
+
+  it("uses par-adjusted (÷100) market value for bonds", () => {
+    const today = recentDate(0);
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test')");
+
+    // Stock: 100 sh × $100 = $10,000 market value, ai=High.
+    db.prepare("INSERT INTO securities (id, symbol, name) VALUES (1, 'AAPL', 'Apple')").run();
+    db.prepare("INSERT INTO security_factors (security_id, ai_exposure) VALUES (1, 'High')").run();
+    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 1, ?, 100)").run(today);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (1, ?, 100)").run(today);
+
+    // Bond: 10000 face × price 98.5 ÷ 100 = $9,850 market value, ai=High.
+    db.prepare("INSERT INTO securities (id, symbol, name, security_type) VALUES (2, 'TBOND', 'Treasury', 'Bond')").run();
+    db.prepare("INSERT INTO security_factors (security_id, ai_exposure) VALUES (2, 'High')").run();
+    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 2, ?, 10000)").run(today);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (2, ?, 98.5)").run(today);
+
+    const stockShare = computeSecurityFactorShare(db, 1).find((e) => e.factor === "ai_exposure")!;
+    const bondShare = computeSecurityFactorShare(db, 2).find((e) => e.factor === "ai_exposure")!;
+    // Total mkt value = 10000 + 9850 = 19850. Stock weight 50.38%, bond 49.62%.
+    // Same exposure level (High) so share ratio == weight ratio.
+    expect(stockShare.sharePct).toBeCloseTo((10000 / 19850) * 100, 1);
+    expect(bondShare.sharePct).toBeCloseTo((9850 / 19850) * 100, 1);
+  });
+
+  it("bucketTotalExposure ties out with computeMacroFactorTilts exposurePct", () => {
+    const today = recentDate(0);
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test')");
+
+    for (const [id, sym, ai] of [
+      [1, "AAPL", "Very High"],
+      [2, "NVDA", "High"],
+      [3, "T", "Moderate"],
+    ] as const) {
+      db.prepare("INSERT INTO securities (id, symbol, name) VALUES (?, ?, ?)").run(id, sym, sym);
+      db.prepare("INSERT INTO security_factors (security_id, ai_exposure) VALUES (?, ?)").run(id, ai);
+      db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, ?, ?, 30)").run(id, today);
+      db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (?, ?, 100)").run(id, today);
+    }
+
+    const tiltAi = computeMacroFactorTilts(db).find((t) => t.factor === "ai_exposure")!;
+    const shareAi = computeSecurityFactorShare(db, 1).find((e) => e.factor === "ai_exposure")!;
+    expect(shareAi.bucketTotalExposure).toBeCloseTo(tiltAi.exposurePct, 4);
+  });
+});
+
+describe("normalizeAccountIds", () => {
+  it("prefers accountIds when both are set", () => {
+    expect(normalizeAccountIds({ accountId: 1, accountIds: [2, 3] })).toEqual([2, 3]);
+  });
+  it("wraps a lone accountId into a single-element array", () => {
+    expect(normalizeAccountIds({ accountId: 5 })).toEqual([5]);
+  });
+  it("returns undefined when neither is set (= whole portfolio)", () => {
+    expect(normalizeAccountIds({})).toBeUndefined();
+    expect(normalizeAccountIds(undefined)).toBeUndefined();
+  });
+  it("treats an empty accountIds array as 'fall through to accountId'", () => {
+    expect(normalizeAccountIds({ accountId: 7, accountIds: [] })).toEqual([7]);
+    expect(normalizeAccountIds({ accountIds: [] })).toBeUndefined();
+  });
+});
+
+describe("computeFactorAnalysis multi-account scope", () => {
+  let db: Database.Database;
+  const today = new Date().toISOString().slice(0, 10);
+
+  beforeEach(() => {
+    db = createTestDb();
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'IBKR'), (2, 'Roth')");
+    // acct 1: AAPL ai=High. acct 2: NVDA ai=High (account-2-only name).
+    db.exec("INSERT INTO securities (id, symbol, name) VALUES (1, 'AAPL', 'Apple'), (2, 'NVDA', 'Nvidia')");
+    db.exec("INSERT INTO security_factors (security_id, ai_exposure) VALUES (1, 'High'), (2, 'High')");
+    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 1, ?, 100)").run(today);
+    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (2, 2, ?, 100)").run(today);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (1, ?, 100)").run(today);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (2, ?, 100)").run(today);
+  });
+
+  it("tilts reflect every account in the set, not just the first", () => {
+    const acct1 = computeFactorAnalysis(db, { accountId: 1 });
+    const both = computeFactorAnalysis(db, { accountIds: [1, 2] });
+
+    const acct1Ai = acct1.tilts.find((t) => t.factor === "ai_exposure")!;
+    const bothAi = both.tilts.find((t) => t.factor === "ai_exposure")!;
+
+    expect(acct1Ai.topContributors.map((c) => c.symbol)).toEqual(["AAPL"]);
+    expect(bothAi.topContributors.map((c) => c.symbol).sort()).toEqual(["AAPL", "NVDA"]);
+  });
+
+  it("accountIds undefined equals the all-accounts result", () => {
+    expect(computeFactorAnalysis(db, { accountIds: undefined })).toEqual(
+      computeFactorAnalysis(db)
+    );
+  });
+
+  it("back-compat: accountIds:[1] deep-equals accountId:1", () => {
+    expect(computeFactorAnalysis(db, { accountIds: [1] })).toEqual(
+      computeFactorAnalysis(db, { accountId: 1 })
+    );
   });
 });

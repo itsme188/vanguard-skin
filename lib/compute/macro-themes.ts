@@ -254,8 +254,7 @@ export async function generateMacroThemes(
   // FACTOR_COLUMNS). Shipped 2026-05-11 — replaces the prior defensive
   // `(as any)?.tilts` cast that always degraded to "low" + empty contributors.
   const accountIds = resolveScope(db, opts.scope);
-  const firstAccountId = accountIds?.[0];
-  const factorResult = computeFactorAnalysis(db, { accountId: firstAccountId });
+  const factorResult = computeFactorAnalysis(db, { accountIds });
 
   const themes: MacroTheme[] = parsed.map((t) => {
     const factorTilt = factorResult.tilts.find((tilt) => tilt.factor === t.factor_label) ?? null;

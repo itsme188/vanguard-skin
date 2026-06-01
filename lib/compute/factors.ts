@@ -1,9 +1,9 @@
 import type Database from "better-sqlite3";
-import { getDailyValuationsCombined, getDailyValuationsByAccount } from "@/lib/queries/daily-valuations";
+import { getDailyValuationsCombined, getDailyValuationsForAccounts } from "@/lib/queries/daily-valuations";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
-import { getFactorHeatmap } from "@/lib/queries/analysis";
+import { getFactorHeatmap, type FactorHeatmapRow } from "@/lib/queries/analysis";
 
 // ─── Types ─────────────��────────────────────────────────────────
 
@@ -50,6 +50,12 @@ export interface FactorAnalysisResult {
 
 export interface FactorOptions {
   accountId?: number;
+  /**
+   * Multi-account scope. When set, every sub-computation filters to this set
+   * of accounts (regression series summed across them, tilts/heatmap `IN (...)`).
+   * Takes precedence over `accountId`. Undefined/empty → whole portfolio.
+   */
+  accountIds?: number[];
   benchmarkSymbol?: string; // default "SPY"
   /**
    * If set (YYYY-MM-DD), compute tilts against holdings as of that date
@@ -63,6 +69,20 @@ export interface FactorOptions {
 
 const TRADING_DAYS_PER_YEAR = 252;
 
+/**
+ * Normalize the two scope inputs into one optional account-id array.
+ * `accountIds` wins; a lone `accountId` becomes a single-element set; neither
+ * → undefined (= whole portfolio). Shared by factors + risk.
+ */
+export function normalizeAccountIds(opts?: {
+  accountId?: number;
+  accountIds?: number[];
+}): number[] | undefined {
+  if (opts?.accountIds && opts.accountIds.length > 0) return opts.accountIds;
+  if (opts?.accountId !== undefined) return [opts.accountId];
+  return undefined;
+}
+
 // ─── Market Beta Regression ──────────────────────────���───────────
 
 /**
@@ -75,10 +95,12 @@ function computeMarketRegression(
 ): MarketRegression | null {
   const benchmarkSymbol = options?.benchmarkSymbol ?? "SPY";
 
-  // 1. Get portfolio daily valuations
-  const valuations = options?.accountId
-    ? getDailyValuationsByAccount(db, options.accountId)
-    : getDailyValuationsCombined(db);
+  // 1. Get portfolio daily valuations (summed across the scoped accounts)
+  const accountIds = normalizeAccountIds(options);
+  const valuations =
+    accountIds && accountIds.length > 0
+      ? getDailyValuationsForAccounts(db, accountIds)
+      : getDailyValuationsCombined(db);
 
   if (valuations.length < 30) return null;
 
@@ -179,11 +201,14 @@ function computeMarketRegression(
 
 function computeTilts(
   db: Database.Database,
-  accountId?: number,
+  accountIds?: number[],
   asOfDate?: string
 ): { sizeTilt: FactorTilt | null; styleTilt: FactorTilt | null; sectorTilt: FactorTilt | null; geographyTilt: FactorTilt | null } {
-  const accountFilter = accountId ? "AND h.account_id = ?" : "";
-  const accountParams: number[] = accountId ? [accountId] : [];
+  const accountFilter =
+    accountIds && accountIds.length > 0
+      ? `AND h.account_id IN (${accountIds.map(() => "?").join(",")})`
+      : "";
+  const accountParams: number[] = accountIds ?? [];
 
   const predicate = latestHoldingsPredicate({
     keyBy: "account_security",
@@ -316,6 +341,23 @@ function exposureMultiplier(value: string | null): number {
 }
 
 /**
+ * Total portfolio weighted exposure to one factor: Σ weight_pct × multiplier
+ * over every heatmap row. Single source of truth for "the bucket total" — used
+ * by both `computeMacroFactorTilts` (the per-factor tilt total) and
+ * `computeSecurityFactorShare` (the denominator of one security's share) so the
+ * two paths can't drift.
+ */
+function factorExposureTotal(
+  heatmap: FactorHeatmapRow[],
+  factor: FactorColumn
+): number {
+  return heatmap.reduce((sum, row) => {
+    const mult = exposureMultiplier(row[factor] as string | null);
+    return sum + (mult > 0 ? row.weight_pct * mult : 0);
+  }, 0);
+}
+
+/**
  * Per-factor weighted exposure across the portfolio, plus top-5 contributors.
  *
  * Reuses `getFactorHeatmap` (which already computes per-symbol weight_pct +
@@ -325,7 +367,7 @@ export function computeMacroFactorTilts(
   db: Database.Database,
   options?: FactorOptions
 ): FactorMacroTilt[] {
-  const accountIds = options?.accountId ? [options.accountId] : undefined;
+  const accountIds = normalizeAccountIds(options);
   const heatmap = getFactorHeatmap(db, accountIds);
 
   return FACTOR_COLUMNS.map((factor) => {
@@ -339,13 +381,99 @@ export function computeMacroFactorTilts(
       .filter((x): x is { symbol: string; weight: number } => x !== null)
       .sort((a, b) => b.weight - a.weight);
 
-    const exposurePct = contributors.reduce((sum, c) => sum + c.weight, 0);
     return {
       factor,
-      exposurePct,
+      exposurePct: factorExposureTotal(heatmap, factor),
       topContributors: contributors.slice(0, 5),
     };
   });
+}
+
+// ─── Per-security factor share (Security Detail · Block 3) ───────────
+
+/**
+ * How much of the WHOLE portfolio's exposure to a factor one security accounts
+ * for. Powers Block 3 of the Security Detail Factor Profile.
+ *
+ *   securityContribution  this security's weighted exposure (weight_pct × mult), in pp.
+ *   bucketTotalExposure   the portfolio-wide total for that factor (== the
+ *                         `exposurePct` from computeMacroFactorTilts, by shared helper).
+ *   sharePct              securityContribution / bucketTotalExposure × 100 (0..100).
+ *   deltaPp               first-order pp the bucket total drops if this position is
+ *                         fully sold (== securityContribution; matches how exposurePct
+ *                         is defined — ignores re-weighting of the remaining names).
+ */
+export interface FactorShareEntry {
+  factor: FactorColumn;
+  value: string;
+  securityContribution: number;
+  bucketTotalExposure: number;
+  sharePct: number;
+  deltaPp: number;
+}
+
+/**
+ * For each factor where `securityId` has an active (multiplier > 0)
+ * classification, compute its share of the portfolio's exposure to that factor.
+ *
+ * Built on `getFactorHeatmap` — no new latest-holdings SQL, so it inherits the
+ * canonical per-(account, security) CTE + options→underlying inheritance and
+ * ties out with the Analysis Factor Exposure view by construction.
+ *
+ * `accountIds` defaults to undefined (= whole portfolio); the Security Detail
+ * page has no scope selector and the question is inherently portfolio-wide.
+ * Returns [] when the security is unknown or not held in scope.
+ */
+export function computeSecurityFactorShare(
+  db: Database.Database,
+  securityId: number,
+  accountIds?: number[]
+): FactorShareEntry[] {
+  const sec = db
+    .prepare(`SELECT symbol, underlying_symbol FROM securities WHERE id = ?`)
+    .get(securityId) as
+    | { symbol: string; underlying_symbol: string | null }
+    | undefined;
+  if (!sec) return [];
+
+  const heatmap = getFactorHeatmap(db, accountIds);
+  if (heatmap.length === 0) return [];
+
+  // The heatmap is keyed by the security's OWN symbol (options included, with
+  // factors inherited from the underlying). Match own symbol first; fall back
+  // to the underlying symbol for the rare case an option isn't its own row.
+  const norm = (s: string) => s.trim().toUpperCase();
+  let row = heatmap.find((r) => norm(r.symbol) === norm(sec.symbol));
+  if (!row && sec.underlying_symbol) {
+    const underlying = sec.underlying_symbol;
+    row = heatmap.find((r) => norm(r.symbol) === norm(underlying));
+  }
+  if (!row) return [];
+
+  const entries: FactorShareEntry[] = [];
+  for (const factor of FACTOR_COLUMNS) {
+    const value = row[factor] as string | null;
+    const mult = exposureMultiplier(value);
+    if (mult <= 0) continue; // skips null / "Unknown" / "No"
+
+    const securityContribution = row.weight_pct * mult;
+    const bucketTotalExposure = factorExposureTotal(heatmap, factor);
+    const sharePct =
+      bucketTotalExposure > 0
+        ? (securityContribution / bucketTotalExposure) * 100
+        : 0;
+
+    entries.push({
+      factor,
+      value: value as string,
+      securityContribution,
+      bucketTotalExposure,
+      sharePct,
+      deltaPp: securityContribution,
+    });
+  }
+
+  return entries.sort((a, b) => b.sharePct - a.sharePct);
 }
 
 // ─── Main entry point ───────────────────��────────────────────────
@@ -354,10 +482,11 @@ export function computeFactorAnalysis(
   db: Database.Database,
   options?: FactorOptions
 ): FactorAnalysisResult {
+  const accountIds = normalizeAccountIds(options);
   const marketRegression = computeMarketRegression(db, options);
   const { sizeTilt, styleTilt, sectorTilt, geographyTilt } = computeTilts(
     db,
-    options?.accountId,
+    accountIds,
     options?.asOfDate
   );
   const tilts = computeMacroFactorTilts(db, options);

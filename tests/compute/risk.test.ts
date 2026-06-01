@@ -349,3 +349,96 @@ describe("computePositionRisk", () => {
     expect(result.positions[0].dataPoints).toBeLessThan(20);
   });
 });
+
+describe("multi-account scope (accountIds[])", () => {
+  let db: Database.Database;
+  const today = new Date().toISOString().slice(0, 10);
+
+  beforeEach(() => {
+    db = createTestDb();
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'IBKR'), (2, 'Roth')");
+    // acct 1: AAPL $10k. acct 2: MSFT $10k + NVDA $5k.
+    db.exec("INSERT INTO securities (id, symbol, name) VALUES (1, 'AAPL', 'Apple'), (2, 'MSFT', 'Microsoft'), (3, 'NVDA', 'Nvidia')");
+    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 1, ?, 100)").run(today);
+    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (2, 2, ?, 50)").run(today);
+    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (2, 3, ?, 10)").run(today);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (1, ?, 100)").run(today);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (2, ?, 200)").run(today);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (3, ?, 500)").run(today);
+  });
+
+  it("computeRiskMetrics concentration spans the full account set", () => {
+    const acct1 = computeRiskMetrics(db, { accountId: 1 });
+    const both = computeRiskMetrics(db, { accountIds: [1, 2] });
+
+    expect(acct1.positionCount).toBe(1); // only AAPL
+    expect(acct1.top5Positions.map((p) => p.symbol)).toEqual(["AAPL"]);
+
+    expect(both.positionCount).toBe(3); // AAPL + MSFT + NVDA
+    expect(both.top5Positions.map((p) => p.symbol).sort()).toEqual(["AAPL", "MSFT", "NVDA"]);
+  });
+
+  it("computeRiskMetrics sums the valuation series across the account set", () => {
+    const stmt = db.prepare(
+      "INSERT INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (?, ?, 0, ?, ?)"
+    );
+    for (let i = 0; i < 40; i++) {
+      const d = new Date("2025-01-02");
+      d.setDate(d.getDate() + i);
+      const date = d.toISOString().slice(0, 10);
+      stmt.run(1, date, 100 + i, 100 + i); // smooth ramp
+      stmt.run(2, date, 50 + Math.sin(i) * 20, 50 + Math.sin(i) * 20); // wavy
+    }
+
+    const acct1 = computeRiskMetrics(db, { accountId: 1 });
+    const both = computeRiskMetrics(db, { accountIds: [1, 2] });
+
+    // One summed row per date, not two.
+    expect(both.dataPoints).toBe(40);
+    expect(acct1.dataPoints).toBe(40);
+    // The combined (account-1 ramp + account-2 wave) series has different
+    // volatility than account 1 alone — proves it isn't dropping account 2.
+    expect(both.volatility).not.toEqual(acct1.volatility);
+  });
+
+  it("computePositionRisk ranks across the full account set", () => {
+    // 60 days of prices so vols compute.
+    const base = new Date();
+    for (let i = 0; i < 60; i++) {
+      const d = new Date(base);
+      d.setDate(d.getDate() - 59 + i);
+      const date = d.toISOString().slice(0, 10);
+      for (const [sid, p0] of [[1, 100], [2, 200], [3, 500]] as const) {
+        db.prepare("INSERT OR IGNORE INTO prices (security_id, date, close_price) VALUES (?, ?, ?)").run(
+          sid,
+          date,
+          p0 + Math.sin(i * 0.3) * (p0 * 0.05) + i * 0.1
+        );
+      }
+    }
+
+    const acct1 = computePositionRisk(db, { accountId: 1 });
+    const both = computePositionRisk(db, { accountIds: [1, 2] });
+
+    expect(acct1.positions.map((p) => p.symbol)).toEqual(["AAPL"]);
+    expect(both.positions.map((p) => p.symbol).sort()).toEqual(["AAPL", "MSFT", "NVDA"]);
+  });
+
+  it("back-compat: accountIds:[1] deep-equals accountId:1", () => {
+    const stmt = db.prepare(
+      "INSERT INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (?, ?, 0, ?, ?)"
+    );
+    for (let i = 0; i < 40; i++) {
+      const d = new Date("2025-01-02");
+      d.setDate(d.getDate() + i);
+      stmt.run(1, d.toISOString().slice(0, 10), 100 + i, 100 + i);
+    }
+
+    expect(computeRiskMetrics(db, { accountIds: [1] })).toEqual(
+      computeRiskMetrics(db, { accountId: 1 })
+    );
+    expect(computePositionRisk(db, { accountIds: [1] })).toEqual(
+      computePositionRisk(db, { accountId: 1 })
+    );
+  });
+});

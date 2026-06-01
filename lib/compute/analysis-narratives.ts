@@ -74,12 +74,11 @@ const SURFACE_PROMPTS: Record<NarrativeSurface, string> = {
  * Build a small JSON context blob for the surface. Targeted ~500-800 tokens
  * (under ~3000 chars per surface).
  *
- * Multi-account scope handling: computeFactorAnalysis / computeRiskMetrics /
- * computePositionRisk each take a SINGLE accountId. For multi-account scopes
- * (vanguard/ibkr/roth/all) we pass the FIRST resolved id (or undefined for
- * "all") AND prepend a NOTE so Sonnet hedges portfolio-wide claims. The
- * factor-heatmap path takes the full array directly via getFactorHeatmap, so
- * no preamble is needed there.
+ * Multi-account scope handling: every compute fn now takes the FULL resolved
+ * account set via `accountIds` (undefined = "all" = whole portfolio), so the
+ * context reflects every account in scope — not just the first. Valuations are
+ * summed across the set before drawdown/vol/Sharpe; tilts/concentration/
+ * heatmap filter with `IN (...)`. No per-account hedging preamble is needed.
  */
 function buildContextForSurface(
   db: Database.Database,
@@ -87,35 +86,26 @@ function buildContextForSurface(
   surface: NarrativeSurface
 ): string {
   const accountIds = resolveScope(db, scope);
-  const firstAccountId = accountIds && accountIds.length > 0 ? accountIds[0] : undefined;
 
   const emptyMessage =
     "(no data available for this surface yet — likely a fresh portfolio without classifications)";
 
-  // Single-id compute fns lose data when scope spans multiple accounts.
-  // Heatmap path takes the full array, so it's exempt.
-  const isSingleIdSurface = surface !== "factor-heatmap";
-  const multiAccountPreamble =
-    isSingleIdSurface && accountIds && accountIds.length > 1
-      ? `NOTE: This scope has multiple accounts (${accountIds.length} total). The data below reflects only the primary account; cross-account aggregation isn't available yet for this surface. Hedge any portfolio-wide claims accordingly.\n\n`
-      : "";
-
   if (surface === "factor-analysis") {
-    const result = computeFactorAnalysis(db, { accountId: firstAccountId });
+    const result = computeFactorAnalysis(db, { accountIds });
     if (!result) return emptyMessage;
-    return multiAccountPreamble + JSON.stringify(result, null, 2);
+    return JSON.stringify(result, null, 2);
   }
 
   if (surface === "risk-metrics") {
-    const result = computeRiskMetrics(db, { accountId: firstAccountId });
+    const result = computeRiskMetrics(db, { accountIds });
     if (!result) return emptyMessage;
-    return multiAccountPreamble + JSON.stringify(result, null, 2);
+    return JSON.stringify(result, null, 2);
   }
 
   if (surface === "position-risk") {
-    const result = computePositionRisk(db, { accountId: firstAccountId, topN: 5 });
+    const result = computePositionRisk(db, { accountIds, topN: 5 });
     if (!result) return emptyMessage;
-    return multiAccountPreamble + JSON.stringify(result, null, 2);
+    return JSON.stringify(result, null, 2);
   }
 
   if (surface === "factor-heatmap") {
