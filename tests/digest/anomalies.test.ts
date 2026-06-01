@@ -180,7 +180,7 @@ describe("computeAnomalies", () => {
     seedSpy(530, 530 * 1.0075);
     const acctId = seedAccount("Vanguard Brokerage");
 
-    // GOOG: -3.4%, beta 1.6, residualStd 0.5 → z = |(-3.4 - 1.2)| / 0.5 = 11.2
+    // GOOG: -3.4%, beta 1.6, residualStd 0.5 → z = |(-3.4 - 1.2)| / 0.5 = 9.2
     const googId = seedSecurity("GOOG");
     seedHolding(acctId, googId);
     seedPrice(googId, "2026-05-07", 170);
@@ -197,7 +197,7 @@ describe("computeAnomalies", () => {
 
     const flags = computeAnomalies(db);
     expect(flags.length).toBeGreaterThanOrEqual(2);
-    expect(flags[0].symbol).toBe("GOOG"); // higher z first (z ≈ 11.2 vs 3.6)
+    expect(flags[0].symbol).toBe("GOOG"); // higher z first (z ≈ 9.2 vs 3.6)
     expect(flags[1].symbol).toBe("TER");
   });
 
@@ -369,6 +369,24 @@ describe("computeAnomalies", () => {
     seedBeta(googId, 1.6, 0.5);
 
     expect(computeAnomalies(db)).toEqual([]);
+  });
+
+  it("residual_std exactly at epsilon (0.1) falls through to degraded mode (null zScore)", () => {
+    seedSpy(530, 530 * 1.001); // SPY +0.1%
+    const acctId = seedAccount("Vanguard Brokerage");
+
+    // EPS +3.5% with residualStd EXACTLY 0.1 → strict `> 0.1` guard fails →
+    // z-gate skipped → flagged on the 3% floor alone, zScore stays null.
+    const id = seedSecurity("EPS");
+    seedHolding(acctId, id);
+    seedPrice(id, "2026-05-07", 100);
+    seedPrice(id, "2026-05-08", 103.5); // +3.5%
+    seedBeta(id, 1.0, 0.1);
+
+    const flags = computeAnomalies(db);
+    const eps = flags.find((f) => f.symbol === "EPS");
+    expect(eps).toBeDefined();
+    expect(eps!.zScore).toBeNull();
   });
 });
 
