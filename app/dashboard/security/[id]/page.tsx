@@ -17,6 +17,7 @@ import { Section } from "../../components/Section";
 import { Chip, type ChipTone } from "../../components/Chip";
 import { TranscriptsRefreshButton } from "./TranscriptsRefreshButton";
 import { FactorProfileSection } from "./FactorProfileSection";
+import { computeSecurityFactorShare } from "@/lib/compute/factors";
 import { Money, Pct, Shares } from "@/lib/privacy/components";
 import type { EarningsTranscript } from "@/lib/types";
 
@@ -173,6 +174,10 @@ export default async function SecurityDetailPage(props: {
     ? getResearchDocumentsForSymbol(db, security.symbol, 10)
     : [];
 
+  // Block 3 of the Factor Profile — fast pure read over getFactorHeatmap, so
+  // compute server-side and pass as a prop (no client fetch needed).
+  const factorShare = computeSecurityFactorShare(db, securityId);
+
   const typeLabel = [
     security.security_type?.replace(/_/g, " "),
     security.sector,
@@ -298,7 +303,7 @@ export default async function SecurityDetailPage(props: {
           (deferred) portfolio-share contribution. Slotted below the
           hero/chart/option-contract and above the per-position detail rows
           per the P3 Slice B spec. */}
-      <FactorProfileSection securityId={securityId} factors={factors} />
+      <FactorProfileSection securityId={securityId} factors={factors} factorShare={factorShare} />
 
       {/* Alerts history for this security (auto-hides if empty). */}
       <RecentAlertsPanel securityId={securityId} />

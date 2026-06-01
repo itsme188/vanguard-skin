@@ -12,6 +12,21 @@ import {
   getFactorColor,
   type FactorColumn,
 } from "@/lib/factors";
+import { Pct } from "@/lib/privacy/components";
+
+/**
+ * One row of Block 3, mirrored from `lib/compute/factors.ts::FactorShareEntry`.
+ * Re-declared here (like `RegressionData` below) to keep the client/server
+ * boundary clean — `sharePct` / `deltaPp` are 0..100 (already percent units).
+ */
+export interface FactorShareEntry {
+  factor: FactorColumn;
+  value: string;
+  securityContribution: number;
+  bucketTotalExposure: number;
+  sharePct: number;
+  deltaPp: number;
+}
 
 /**
  * Subset of `security_factors` that this section renders. Only the 9 factor
@@ -51,8 +66,9 @@ interface ApiResponse {
  * Block 1 — Qualitative chips from `security_factors` (passed in as `factors`).
  * Block 2 — Quantitative regression vs SPY (fetched client-side, cache-first
  *   via `/api/security/[id]/regression`).
- * Block 3 — Portfolio-share contribution. DEFERRED (see TODO below) — needs
- *   scope-aware factor totals + delta math; out of scope for B4 v1.
+ * Block 3 — Portfolio-share contribution. Computed server-side via
+ *   `computeSecurityFactorShare` and passed in as `factorShare` (no client
+ *   fetch — it's a fast pure read over the factor heatmap).
  *
  * v1 hardcodes benchmark to SPY. The plan's open question on a benchmark
  * `<select>` picker is intentionally deferred per spec.
@@ -60,9 +76,11 @@ interface ApiResponse {
 export function FactorProfileSection({
   securityId,
   factors,
+  factorShare,
 }: {
   securityId: number;
   factors: FactorProfileFactors | null;
+  factorShare: FactorShareEntry[];
 }) {
   const [regression, setRegression] = useState<RegressionData | null>(null);
   const [regLoaded, setRegLoaded] = useState(false);
@@ -205,20 +223,56 @@ export function FactorProfileSection({
         )}
       </div>
 
-      {/* Block 3 — Portfolio-share contribution. DEFERRED.
-          TODO(P3 follow-up): compute `position_value × factor_weight ÷ Σ scope
-          factor exposure` per active factor for this security. Requires:
-            (a) latest market value of this security across owned accounts
-            (b) scope-aware factor totals per bucket (e.g. all accounts' AI
-                exposure value), reusing the analysis-page allocations CTE
-            (c) delta math: "selling this would reduce 'AI exposure: High'
-                bucket by N percentage points"
-          Scoped out of B4 v1 — substantive new query worth its own slice. */}
+      {/* Block 3 — Portfolio-share contribution.
+          Privacy note: sharePct/deltaPp are PORTFOLIO-DERIVED ("X% of MY
+          portfolio's exposure") → masked via <Pct> under privacy mode. The
+          factor label + classification chip are public qualitative data (same
+          as Block 1) so they stay visible. This differs from Block 2's
+          beta/vol, which are public market-data statistics and aren't masked. */}
       <div style={{ padding: "16px 20px" }}>
         <BlockLabel>Portfolio-share contribution</BlockLabel>
-        <p style={emptyTextStyle}>
-          (portfolio-share contribution coming in a follow-up)
-        </p>
+        {factorShare.length === 0 ? (
+          <p style={emptyTextStyle}>
+            (not held, or no active factor exposures to attribute)
+          </p>
+        ) : (
+          <div
+            style={{ display: "flex", flexDirection: "column", gap: "10px" }}
+          >
+            {factorShare.map((entry) => (
+              <div
+                key={entry.factor}
+                style={{
+                  display: "flex",
+                  alignItems: "baseline",
+                  flexWrap: "wrap",
+                  gap: "8px",
+                }}
+              >
+                <span
+                  style={{
+                    fontFamily: "var(--font-mono), monospace",
+                    fontSize: "10px",
+                    letterSpacing: "0.18em",
+                    textTransform: "uppercase",
+                    color: "#888",
+                    minWidth: "92px",
+                  }}
+                >
+                  {FACTOR_LABELS[entry.factor]}
+                </span>
+                <TerminalTag color={getFactorColor(entry.value)} size="xs">
+                  {entry.value}
+                </TerminalTag>
+                <span style={emptyTextStyle}>
+                  ~<Pct value={entry.sharePct} digits={0} /> of portfolio{" "}
+                  {FACTOR_LABELS[entry.factor]} · selling cuts the bucket ~
+                  <Pct value={entry.deltaPp} digits={1} />
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </TerminalSection>
   );
