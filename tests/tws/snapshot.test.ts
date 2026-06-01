@@ -13,6 +13,11 @@ import { fetchSnapshotPrices } from "@/lib/tws/snapshot";
 
 const mockedGetIbApi = vi.mocked(getIbApi);
 
+// A fixed TRADING day (Fri 2026-01-02). Passed as asOfDate so the new
+// market-closed guard in fetchSnapshotPrices is deterministic regardless of
+// when the suite runs (it would otherwise early-return on a weekend/holiday).
+const TRADING_DAY = "2026-01-02";
+
 function seedSecurity(
   db: Database.Database,
   symbol: string,
@@ -67,7 +72,7 @@ describe("fetchSnapshotPrices", () => {
 
   it("fetches and inserts current price via LAST tick", async () => {
     const secId = seedSecurity(db, "AAPL", { conId: 265598 });
-    const today = new Date().toISOString().slice(0, 10);
+    const today = TRADING_DAY;
 
     const mockApi = {
       setMarketDataType: vi.fn(),
@@ -77,7 +82,7 @@ describe("fetchSnapshotPrices", () => {
     };
     mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
 
-    const results = await fetchSnapshotPrices(db, { securityIds: [secId] });
+    const results = await fetchSnapshotPrices(db, { securityIds: [secId], asOfDate: TRADING_DAY });
 
     expect(results).toHaveLength(1);
     expect(results[0].symbol).toBe("AAPL");
@@ -104,7 +109,7 @@ describe("fetchSnapshotPrices", () => {
     };
     mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
 
-    const results = await fetchSnapshotPrices(db, { securityIds: [secId] });
+    const results = await fetchSnapshotPrices(db, { securityIds: [secId], asOfDate: TRADING_DAY });
     expect(results[0].price).toBe(420.00);
     expect(results[0].tickType).toBe("CLOSE");
   });
@@ -120,7 +125,7 @@ describe("fetchSnapshotPrices", () => {
     };
     mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
 
-    const results = await fetchSnapshotPrices(db, { securityIds: [secId] });
+    const results = await fetchSnapshotPrices(db, { securityIds: [secId], asOfDate: TRADING_DAY });
     expect(results[0].price).toBe(250.75);
     expect(results[0].tickType).toBe("DELAYED_LAST");
   });
@@ -136,7 +141,7 @@ describe("fetchSnapshotPrices", () => {
     };
     mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
 
-    const results = await fetchSnapshotPrices(db, { securityIds: [secId] });
+    const results = await fetchSnapshotPrices(db, { securityIds: [secId], asOfDate: TRADING_DAY });
     expect(results[0].price).toBe(72.30);
     expect(results[0].tickType).toBe("DELAYED_CLOSE");
   });
@@ -155,7 +160,7 @@ describe("fetchSnapshotPrices", () => {
     };
     mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
 
-    const results = await fetchSnapshotPrices(db, { securityIds: [secId] });
+    const results = await fetchSnapshotPrices(db, { securityIds: [secId], asOfDate: TRADING_DAY });
     expect(results[0].price).toBe(175.50);
     expect(results[0].tickType).toBe("LAST");
   });
@@ -172,6 +177,7 @@ describe("fetchSnapshotPrices", () => {
     const progressEvents: Array<{ status: string }> = [];
     const results = await fetchSnapshotPrices(db, {
       securityIds: [secId],
+      asOfDate: TRADING_DAY,
       onProgress: (p) => progressEvents.push({ status: p.status }),
     });
 
@@ -207,6 +213,7 @@ describe("fetchSnapshotPrices", () => {
 
     const results = await fetchSnapshotPrices(db, {
       securityIds: [secId1, secId2],
+      asOfDate: TRADING_DAY,
     });
 
     expect(results).toHaveLength(2);
@@ -222,7 +229,7 @@ describe("fetchSnapshotPrices", () => {
 
   it("overwrites existing price for same date (INSERT OR REPLACE)", async () => {
     const secId = seedSecurity(db, "TSLA", { conId: 800 });
-    const today = new Date().toISOString().slice(0, 10);
+    const today = TRADING_DAY;
 
     // Pre-insert a price from a different source
     db.prepare(
@@ -237,7 +244,7 @@ describe("fetchSnapshotPrices", () => {
     };
     mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
 
-    await fetchSnapshotPrices(db, { securityIds: [secId] });
+    await fetchSnapshotPrices(db, { securityIds: [secId], asOfDate: TRADING_DAY });
 
     const price = db
       .prepare("SELECT close_price, source FROM prices WHERE security_id = ? AND date = ?")
@@ -257,7 +264,7 @@ describe("fetchSnapshotPrices", () => {
     };
     mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
 
-    await fetchSnapshotPrices(db);
+    await fetchSnapshotPrices(db, { asOfDate: TRADING_DAY });
 
     // First call should set DELAYED_FROZEN (4), last call should reset to REALTIME (1)
     const calls = mockApi.setMarketDataType.mock.calls;
@@ -279,7 +286,7 @@ describe("fetchSnapshotPrices", () => {
     };
     mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
 
-    const results = await fetchSnapshotPrices(db, { securityIds: [secId] });
+    const results = await fetchSnapshotPrices(db, { securityIds: [secId], asOfDate: TRADING_DAY });
     expect(results[0].price).toBeNull();
     expect(results[0].tickType).toBe("NONE");
   });
@@ -296,7 +303,7 @@ describe("fetchSnapshotPrices", () => {
     };
     mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
 
-    const results = await fetchSnapshotPrices(db);
+    const results = await fetchSnapshotPrices(db, { asOfDate: TRADING_DAY });
 
     // Both should be fetched — snapshot now covers all held securities
     expect(results).toHaveLength(2);
@@ -318,6 +325,7 @@ describe("fetchSnapshotPrices", () => {
 
     const events: Array<{ symbol: string; status: string }> = [];
     await fetchSnapshotPrices(db, {
+      asOfDate: TRADING_DAY,
       onProgress: (p) => events.push({ symbol: p.symbol, status: p.status }),
     });
 
@@ -326,5 +334,30 @@ describe("fetchSnapshotPrices", () => {
     const doneEvents = events.filter((e) => e.status === "done");
     expect(fetchingEvents.length).toBe(2);
     expect(doneEvents.length).toBe(2);
+  });
+
+  it("writes nothing on a market-closed day (weekend) — no phantom rows", async () => {
+    const secId = seedSecurity(db, "AAPL", { conId: 1 });
+
+    const mockApi = {
+      setMarketDataType: vi.fn(),
+      getMarketDataSnapshot: vi.fn().mockResolvedValue(
+        mockMarketData([{ type: IBApiTickType.LAST, value: 195.5 }]),
+      ),
+    };
+    mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+
+    // 2026-01-03 is a Saturday → market closed → early return, no DB writes,
+    // no TWS request. This is the guard that stops phantom weekend rows like
+    // the 2026-05-31 (Sunday) prices behind the bad "Significant Moves" email.
+    const results = await fetchSnapshotPrices(db, {
+      securityIds: [secId],
+      asOfDate: "2026-01-03",
+    });
+
+    expect(results).toEqual([]);
+    const count = db.prepare("SELECT COUNT(*) as c FROM prices").get() as { c: number };
+    expect(count.c).toBe(0);
+    expect(mockApi.getMarketDataSnapshot).not.toHaveBeenCalled();
   });
 });

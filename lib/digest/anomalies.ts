@@ -9,6 +9,7 @@
  */
 
 import type Database from "better-sqlite3";
+import { isMarketClosed, nextTradingDay } from "@/lib/calendar/market-holidays";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -41,44 +42,107 @@ interface PricePairRow {
   prior_close: number;
 }
 
+interface TradingDayPair {
+  /** Latest trading day with an SPY close (YYYY-MM-DD). */
+  latest: string;
+  /** The trading day immediately before `latest` (consecutive). */
+  prior: string;
+}
+
+/**
+ * Resolve the (latest, prior) **consecutive trading-day** pair from SPY's price
+ * history. SPY is the market clock — always present, always the benchmark.
+ *
+ * Why this exists (2026-05-31): the prior implementation took each security's
+ * own `MAX(date)` close vs. the row before it. That had three defects that
+ * produced the wrong "Significant Moves" email on Fri 5/29:
+ *   1. A weekend/holiday-stamped TWS snapshot row (e.g. a phantom 2026-05-31
+ *      Sunday price, written because the snapshot writer had no trading-day
+ *      guard) became "today".
+ *   2. A security whose latest price was weeks old (mutual funds with no fresh
+ *      TWS data) reported a stale multi-week move as if it were today's.
+ *   3. Each security used its OWN date pair, so names weren't compared on the
+ *      same two days — and not against SPY's day either.
+ *
+ * Fix: derive ONE consecutive trading-day pair from SPY (filtering out any
+ * non-trading-day phantom rows) and compare every held name on those exact two
+ * dates. A security missing either date is omitted — better to under-report
+ * than to publish a move computed across a gap or a bad date.
+ *
+ * Returns null when SPY lacks a clean consecutive pair; callers then emit
+ * nothing.
+ */
+function resolveTradingDayPair(db: Database.Database): TradingDayPair | null {
+  const rows = db
+    .prepare(
+      `SELECT p.date AS date
+         FROM prices p
+         JOIN securities s ON s.id = p.security_id
+        WHERE UPPER(s.symbol) = 'SPY'
+        ORDER BY p.date DESC
+        LIMIT 10`
+    )
+    .all() as { date: string }[];
+
+  // Drop any non-trading-day rows (weekend/holiday phantoms) before picking
+  // the two most-recent sessions.
+  const tradingDays = rows.map((r) => r.date).filter((d) => !isMarketClosed(d));
+  if (tradingDays.length < 2) return null;
+
+  const latest = tradingDays[0];
+  const prior = tradingDays[1];
+
+  // Require the two most-recent SPY trading days to be CONSECUTIVE. A gap (SPY
+  // missed a session) means we can't compute a clean 1-day move, so bail rather
+  // than report a multi-day move as "today".
+  if (nextTradingDay(prior) !== latest) return null;
+
+  return { latest, prior };
+}
+
 // ─── Main computation ─────────────────────────────────────────────────────────
 
 /**
  * Compute anomaly flags for all securities held in Vanguard (non-Roth) accounts.
  *
  * Algorithm:
- * 1. Find SPY's two most recent prices; compute spyPct.
- * 2. Get all Vanguard-held securities with two most recent prices + cached beta.
- * 3. For each: compute actualPct, expectedPct, thresholdPct; flag if exceeded.
- * 4. Sort by ratio desc.
+ * 1. Resolve a single (latest, prior) consecutive trading-day pair from SPY.
+ * 2. Compute spyPct from SPY's closes on exactly those two dates.
+ * 3. For each Vanguard-held security, read its close on those SAME two dates
+ *    (skip the security if either is missing) + cached beta.
+ * 4. Compute actualPct, expectedPct, thresholdPct; flag if exceeded.
+ * 5. Sort by ratio desc.
  */
 export function computeAnomalies(db: Database.Database): AnomalyFlag[] {
-  // ── 1. SPY latest two closes ────────────────────────────────────────────────
+  // ── 1. Resolve the consecutive trading-day pair (SPY = market clock) ───────
+  const pair = resolveTradingDayPair(db);
+  if (!pair) return [];
+  const { latest, prior } = pair;
+
+  // ── 2. SPY closes on exactly those two dates ──────────────────────────────
   const spyPrices = db
     .prepare(
-      `SELECT p.close_price AS today_close,
-              (SELECT p2.close_price
-                 FROM prices p2
-                WHERE p2.security_id = p.security_id
-                  AND p2.date < p.date
-                ORDER BY p2.date DESC
-                LIMIT 1) AS prior_close
-         FROM prices p
-         JOIN securities s ON s.id = p.security_id
-        WHERE UPPER(s.symbol) = 'SPY'
-        ORDER BY p.date DESC
-        LIMIT 1`
+      `SELECT
+         (SELECT p.close_price FROM prices p JOIN securities s ON s.id = p.security_id
+           WHERE UPPER(s.symbol) = 'SPY' AND p.date = ?) AS today_close,
+         (SELECT p.close_price FROM prices p JOIN securities s ON s.id = p.security_id
+           WHERE UPPER(s.symbol) = 'SPY' AND p.date = ?) AS prior_close`
     )
-    .get() as PricePairRow | undefined;
+    .get(latest, prior) as PricePairRow | undefined;
 
-  if (!spyPrices || spyPrices.prior_close == null || spyPrices.prior_close === 0) {
+  if (
+    !spyPrices ||
+    spyPrices.today_close == null ||
+    spyPrices.prior_close == null ||
+    spyPrices.prior_close === 0
+  ) {
     return [];
   }
 
   const spyPct =
     ((spyPrices.today_close - spyPrices.prior_close) / spyPrices.prior_close) * 100;
 
-  // ── 2. Vanguard (non-Roth) account IDs ─────────────────────────────────────
+  // ── 3. Vanguard (non-Roth) account IDs ─────────────────────────────────────
   const vanguardAccounts = db
     .prepare(
       `SELECT id FROM accounts
@@ -92,38 +156,29 @@ export function computeAnomalies(db: Database.Database): AnomalyFlag[] {
   const accountIds = vanguardAccounts.map((a) => a.id);
   const placeholders = accountIds.map(() => "?").join(",");
 
-  // ── 3. Held securities with two most recent closes + cached beta ────────────
-  // We use a correlated subquery to get the second-most-recent close per security.
-  // The UNIQUE(security_id, date) constraint on `prices` means at most one row
-  // per (security, date), so DESC LIMIT 1 / LIMIT 1 OFFSET 1 gives today/prior.
+  // ── 4. Held securities, pinned to the SAME (latest, prior) dates ───────────
+  // Every name is compared on the identical trading-day pair as SPY. A security
+  // missing a close on either date (stale fund, gap) yields NULL and is dropped
+  // by the loop below — omission over a misleading number.
   const rows = db
     .prepare(
       `SELECT DISTINCT
               s.id AS security_id,
               s.symbol,
               s.name,
-              p.close_price AS today_close,
-              (SELECT p2.close_price
-                 FROM prices p2
-                WHERE p2.security_id = p.security_id
-                  AND p2.date < p.date
-                ORDER BY p2.date DESC
-                LIMIT 1) AS prior_close,
+              (SELECT close_price FROM prices
+                WHERE security_id = s.id AND date = ?) AS today_close,
+              (SELECT close_price FROM prices
+                WHERE security_id = s.id AND date = ?) AS prior_close,
               sb.beta
          FROM holdings h
          JOIN securities s ON s.id = h.security_id
-         JOIN accounts  a ON a.id  = h.account_id
-         -- Most recent price for each security
-         JOIN prices p ON p.security_id = s.id
-              AND p.date = (
-                SELECT MAX(p3.date) FROM prices p3 WHERE p3.security_id = s.id
-              )
          LEFT JOIN security_betas sb
                ON sb.security_id = s.id AND sb.lookback_days = 60
         WHERE h.account_id IN (${placeholders})
           AND UPPER(s.symbol) != 'SPY'`
     )
-    .all(...accountIds) as HeldSecurityRow[];
+    .all(latest, prior, ...accountIds) as HeldSecurityRow[];
 
   // ── 4. Compute flags ────────────────────────────────────────────────────────
   const flags: AnomalyFlag[] = [];

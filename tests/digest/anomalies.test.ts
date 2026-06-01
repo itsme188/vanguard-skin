@@ -266,6 +266,71 @@ describe("computeAnomalies", () => {
     expect(goog!.ratio).toBeCloseTo(3.4 / 2.4, 4);
     expect(goog!.directionFlipped).toBe(false); // both negative, same direction
   });
+
+  // ─── Trading-day pinning guards (2026-05-31 fix) ────────────────────────────
+
+  it("ignores a weekend-stamped phantom price row and uses the latest TRADING day", () => {
+    // SPY real pair 5/07 (Thu) → 5/08 (Fri), +0.75%. Plus a phantom Sunday 5/10
+    // row (a TWS snapshot written by a closed-market sync). It must be ignored.
+    const spyId = seedSecurity("SPY", "SPDR S&P 500 ETF");
+    seedPrice(spyId, "2026-05-07", 530);
+    seedPrice(spyId, "2026-05-08", 530 * 1.0075);
+    seedPrice(spyId, "2026-05-10", 999); // phantom Sunday — must be ignored
+    const acctId = seedAccount("Vanguard Brokerage");
+
+    const googId = seedSecurity("GOOG");
+    seedHolding(acctId, googId);
+    seedPrice(googId, "2026-05-07", 170);
+    seedPrice(googId, "2026-05-08", 170 * (1 - 0.034)); // real -3.4%
+    seedPrice(googId, "2026-05-10", 100); // phantom Sunday — must NOT be used
+    seedBeta(googId, 1.6);
+
+    const goog = computeAnomalies(db).find((f) => f.symbol === "GOOG");
+    expect(goog).toBeDefined();
+    // Move reflects 5/07→5/08 (-3.4%), NOT anything involving the 5/10 phantom.
+    expect(goog!.actualPct).toBeCloseTo(-3.4, 4);
+  });
+
+  it("skips a security with no price on the latest trading day (stale fund)", () => {
+    seedSpy(530, 530 * 1.0075); // 5/07 → 5/08
+    const acctId = seedAccount("Vanguard Brokerage");
+
+    // FRESH name on the pinned pair → flagged.
+    const terId = seedSecurity("TER");
+    seedHolding(acctId, terId);
+    seedPrice(terId, "2026-05-07", 100);
+    seedPrice(terId, "2026-05-08", 105.1); // +5.1%
+    seedBeta(terId, 2.0);
+
+    // STALE name: latest close is weeks old, no 5/08 close → must be omitted,
+    // not reported as a +30% "today" move.
+    const vmfId = seedSecurity("VMFXX");
+    seedHolding(acctId, vmfId);
+    seedPrice(vmfId, "2026-04-29", 100);
+    seedPrice(vmfId, "2026-04-30", 130);
+    seedBeta(vmfId, 1.0);
+
+    const symbols = computeAnomalies(db).map((f) => f.symbol);
+    expect(symbols).toContain("TER");
+    expect(symbols).not.toContain("VMFXX");
+  });
+
+  it("returns [] when SPY's two most recent trading days are not consecutive (gap)", () => {
+    // SPY has 5/06 (Wed) and 5/08 (Fri) but is MISSING 5/07 (Thu) — a gap. We
+    // must not report a 2-day move as "today".
+    const spyId = seedSecurity("SPY", "SPDR S&P 500 ETF");
+    seedPrice(spyId, "2026-05-06", 525);
+    seedPrice(spyId, "2026-05-08", 535);
+    const acctId = seedAccount("Vanguard Brokerage");
+
+    const googId = seedSecurity("GOOG");
+    seedHolding(acctId, googId);
+    seedPrice(googId, "2026-05-06", 170);
+    seedPrice(googId, "2026-05-08", 150);
+    seedBeta(googId, 1.6);
+
+    expect(computeAnomalies(db)).toEqual([]);
+  });
 });
 
 // ─── formatVanguardAnomaliesBlock tests ───────────────────────────────────────

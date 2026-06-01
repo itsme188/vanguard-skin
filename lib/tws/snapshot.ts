@@ -2,6 +2,8 @@ import type Database from "better-sqlite3";
 import { MarketDataType, SecType, IBApiTickType } from "@stoqey/ib";
 import { getIbApi } from "./client";
 import { mapSecurityType } from "./security-type-map";
+import { todayET } from "@/lib/calendar/date-utils";
+import { isMarketClosed } from "@/lib/calendar/market-holidays";
 import type { PriceFetchProgress, SnapshotPriceResult } from "./types";
 
 /**
@@ -38,6 +40,8 @@ export async function fetchSnapshotPrices(
   options?: {
     securityIds?: number[];
     onProgress?: (progress: PriceFetchProgress) => void;
+    /** ET market date to stamp + guard on. Defaults to todayET(); injectable for tests. */
+    asOfDate?: string;
   },
 ): Promise<SnapshotPriceResult[]> {
   const api = getIbApi();
@@ -45,7 +49,25 @@ export async function fetchSnapshotPrices(
     throw new Error("TWS not connected");
   }
 
-  // Enable delayed/frozen data so after-hours snapshots still return prices
+  // Date is the ET market day, NOT a runtime-local/UTC date. Root cause of the
+  // 2026-05-29 "Significant Moves" bug: a late-ET sync stamped a (Wednesday-
+  // frozen) snapshot under the wrong day via `new Date().toISOString()` in UTC,
+  // and weekend syncs wrote phantom non-trading-day rows (e.g. Sunday 5/31).
+  const today = options?.asOfDate ?? todayET();
+
+  // Never write prices on a market-closed day. The daily-close series these
+  // rows feed (anomaly engine + valuations) must contain ONLY real trading-day
+  // closes — a weekend/holiday snapshot is a stale frozen tick, not a close.
+  if (isMarketClosed(today)) {
+    return [];
+  }
+
+  // Enable delayed/frozen data so after-hours snapshots still return prices.
+  // (Kept intentionally: the 5/29 bug was the wrong DATE, not delayed values —
+  // the frozen close matched the real close to within 0.2%. Coverage across
+  // unsubscribed names is preserved; the engine compares same-date pairs so a
+  // correctly-dated frozen close is sound. Official-bar capture is the next
+  // accuracy increment if byte-perfect closes are ever needed.)
   api.setMarketDataType(MarketDataType.DELAYED_FROZEN);
 
   let securities: SecurityRow[];
@@ -70,7 +92,6 @@ export async function fetchSnapshotPrices(
       .all() as SecurityRow[];
   }
 
-  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
   const upsertPrice = db.prepare(`
     INSERT OR REPLACE INTO prices (security_id, date, close_price, source)
     VALUES (?, ?, ?, 'tws')
