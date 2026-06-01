@@ -73,47 +73,45 @@ async function fetchLast2Closes(symbol: string): Promise<Last2Closes | null> {
 
 // ── Anomaly computation (ported from lib/digest/anomalies.ts) ─────────────────
 
+// Mirror of lib/digest/anomalies.ts trigger constants. Kept in sync with the
+// Mac engine; values MUST match. See design doc 2026-06-01.
+const MIN_ABS_MOVE_PCT = 3.0;
+const MIN_RESIDUAL_Z = 2.0;
+const RESIDUAL_STD_EPSILON = 0.1;
+
 interface AnomalyFlag {
   symbol: string;
   actualPct: number;
   spyPct: number;
   beta: number;
   expectedPct: number;
-  thresholdPct: number;
-  ratio: number;
+  residualPct: number;
+  zScore: number | null;
   directionFlipped: boolean;
 }
 
 /**
- * Compute anomaly flags for Vanguard holdings using snapshot data + Yahoo closes.
- * Returns null on any Yahoo failure — caller should log and skip the block.
+ * Pure two-gate anomaly evaluation — mirrors lib/digest/anomalies.ts.
+ * `closesMap` must contain "SPY". Returns null when inputs are empty or SPY is
+ * missing/invalid. A name is flagged when |move| >= 3% AND (residualStd unusable
+ * OR zScore >= 2). Degraded mode (null/tiny residualStd) flags on the floor alone.
  */
-async function computeAnomaliesFromSnapshot(
+export function evaluateAnomalies(
   vanguardHoldings: NonNullable<Snapshot["vanguardHoldings"]>,
   securityBetas: NonNullable<Snapshot["securityBetas"]>,
-): Promise<AnomalyFlag[] | null> {
+  closesMap: Map<string, Last2Closes>,
+): AnomalyFlag[] | null {
   if (vanguardHoldings.length === 0 || securityBetas.length === 0) return null;
-
-  const symbols = [...new Set(vanguardHoldings.map((h) => h.symbol))];
-  const betaMap = new Map<number, number>(
-    securityBetas
-      .filter((b) => b.lookbackDays === 60)
-      .map((b) => [b.securityId, b.beta]),
-  );
-
-  // Fetch SPY + all Vanguard symbols
-  const allSymbols = ["SPY", ...symbols.filter((s) => s !== "SPY")];
-  const closesMap = new Map<string, Last2Closes>();
-
-  for (const sym of allSymbols) {
-    const closes = await fetchLast2Closes(sym);
-    if (closes) closesMap.set(sym, closes);
-  }
 
   const spyCloses = closesMap.get("SPY");
   if (!spyCloses || spyCloses.prior === 0) return null;
-
   const spyPct = ((spyCloses.today - spyCloses.prior) / spyCloses.prior) * 100;
+
+  const lookback60 = securityBetas.filter((b) => b.lookbackDays === 60);
+  const betaMap = new Map<number, number>(lookback60.map((b) => [b.securityId, b.beta]));
+  const residualStdMap = new Map<number, number | null>(
+    lookback60.map((b) => [b.securityId, b.residualStd ?? null]),
+  );
 
   const flags: AnomalyFlag[] = [];
 
@@ -127,18 +125,24 @@ async function computeAnomaliesFromSnapshot(
 
     const actualPct = ((closes.today - closes.prior) / closes.prior) * 100;
     const expectedPct = spyPct * beta;
-    const thresholdPct = Math.max(2 * Math.abs(expectedPct), 1.0);
+    const residualPct = actualPct - expectedPct;
 
-    if (Math.abs(actualPct) <= thresholdPct) continue;
+    if (Math.abs(actualPct) < MIN_ABS_MOVE_PCT) continue;
 
-    const ratio = Math.abs(actualPct) / thresholdPct;
+    let zScore: number | null = null;
+    const residualStd = residualStdMap.get(holding.securityId) ?? null;
+    if (residualStd != null && residualStd > RESIDUAL_STD_EPSILON) {
+      zScore = Math.abs(residualPct) / residualStd;
+      if (zScore < MIN_RESIDUAL_Z) continue;
+    }
+
     const directionFlipped =
       Math.abs(expectedPct) > 0.1 &&
       Math.sign(actualPct) !== 0 &&
       Math.sign(expectedPct) !== 0 &&
       Math.sign(actualPct) !== Math.sign(expectedPct);
 
-    flags.push({ symbol: holding.symbol, actualPct, spyPct, beta, expectedPct, thresholdPct, ratio, directionFlipped });
+    flags.push({ symbol: holding.symbol, actualPct, spyPct, beta, expectedPct, residualPct, zScore, directionFlipped });
   }
 
   // Dedup by symbol (multiple accounts may hold same security)
@@ -149,9 +153,32 @@ async function computeAnomaliesFromSnapshot(
     return true;
   });
 
-  // Sort by ratio desc (largest deviation first), cap at 5
-  deduped.sort((a, b) => b.ratio - a.ratio);
+  const sortKey = (f: AnomalyFlag): number =>
+    f.zScore ?? Math.abs(f.actualPct) / MIN_ABS_MOVE_PCT;
+  deduped.sort((a, b) => sortKey(b) - sortKey(a));
   return deduped;
+}
+
+/**
+ * Compute anomaly flags for Vanguard holdings using snapshot data + Yahoo closes.
+ * Returns null on any Yahoo failure — caller should log and skip the block.
+ */
+async function computeAnomaliesFromSnapshot(
+  vanguardHoldings: NonNullable<Snapshot["vanguardHoldings"]>,
+  securityBetas: NonNullable<Snapshot["securityBetas"]>,
+): Promise<AnomalyFlag[] | null> {
+  if (vanguardHoldings.length === 0 || securityBetas.length === 0) return null;
+
+  const symbols = [...new Set(vanguardHoldings.map((h) => h.symbol))];
+  const allSymbols = ["SPY", ...symbols.filter((s) => s !== "SPY")];
+  const closesMap = new Map<string, Last2Closes>();
+
+  for (const sym of allSymbols) {
+    const closes = await fetchLast2Closes(sym);
+    if (closes) closesMap.set(sym, closes);
+  }
+
+  return evaluateAnomalies(vanguardHoldings, securityBetas, closesMap);
 }
 
 function signedPct(value: number, decimals = 1): string {
@@ -163,30 +190,25 @@ function signedPct(value: number, decimals = 1): string {
 function formatAnomalyBlock(flags: AnomalyFlag[]): string {
   if (flags.length === 0) return "";
 
-  const MAX_DISPLAY = 5;
-  const displayed = flags.slice(0, MAX_DISPLAY);
-  const extras = flags.length - MAX_DISPLAY;
-
   const lines: string[] = [
     "## Significant Moves in Vanguard Holdings (vs. expected)",
     "",
   ];
 
-  for (const flag of displayed) {
+  for (const flag of flags) {
     const signedActual = signedPct(flag.actualPct);
     const signedExpected = signedPct(flag.expectedPct);
     const signedSpy = signedPct(flag.spyPct);
     const reason = flag.directionFlipped
       ? "Direction flipped."
-      : `${flag.ratio.toFixed(1)}× expected.`;
+      : flag.zScore != null
+        ? `${flag.zScore.toFixed(1)}σ move.`
+        : `${signedActual} move.`;
     lines.push(
       `- **${flag.symbol}** ${signedActual} — expected ${signedExpected} (beta ${flag.beta.toFixed(1)} × SPY ${signedSpy}). ${reason}`,
     );
   }
 
-  if (extras > 0) {
-    lines.push(`*(${extras} more flagged — see /dashboard/today)*`);
-  }
   lines.push("");
   return lines.join("\n");
 }
