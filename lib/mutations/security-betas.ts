@@ -4,23 +4,32 @@ export interface UpsertBetaInput {
   securityId: number;
   lookbackDays: number;
   beta: number;
+  /** Residual std-dev of the regression, in PERCENT units. Optional for
+   *  callers that only have beta (degraded mode); stored as NULL when absent. */
+  residualStd?: number | null;
 }
 
 /**
- * Insert or update a beta value for a given security and lookback window.
+ * Insert or update a beta value (and optional residual std-dev) for a given
+ * security and lookback window.
  *
  * The (security_id, lookback_days) pair is unique — updating via ON CONFLICT
- * ensures exactly one row exists per pair. `computed_at` is set to the current
- * time automatically.
+ * ensures exactly one row exists per pair. `computed_at` is set automatically.
  */
 export function upsertBeta(db: Database.Database, input: UpsertBetaInput): void {
   db.prepare(
-    `INSERT INTO security_betas (security_id, lookback_days, beta, computed_at)
-       VALUES (?, ?, ?, datetime('now'))
+    `INSERT INTO security_betas (security_id, lookback_days, beta, residual_std, computed_at)
+       VALUES (?, ?, ?, ?, datetime('now'))
      ON CONFLICT(security_id, lookback_days) DO UPDATE SET
        beta = excluded.beta,
+       residual_std = excluded.residual_std,
        computed_at = excluded.computed_at`,
-  ).run(input.securityId, input.lookbackDays, input.beta);
+  ).run(
+    input.securityId,
+    input.lookbackDays,
+    input.beta,
+    input.residualStd ?? null,
+  );
 }
 
 /**
