@@ -118,8 +118,9 @@ function resolveTradingDayPair(db: Database.Database): TradingDayPair | null {
  * 2. Compute spyPct from SPY's closes on exactly those two dates.
  * 3. For each Vanguard-held security, read its close on those SAME two dates
  *    (skip the security if either is missing) + cached beta.
- * 4. Compute actualPct, expectedPct, thresholdPct; flag if exceeded.
- * 5. Sort by ratio desc.
+ * 4. Compute actualPct, expectedPct, residualPct; flag only if |actualPct| >= 3%
+ *    AND (residual_std is unusable OR zScore >= 2).
+ * 5. Sort by zScore descending.
  */
 export function computeAnomalies(db: Database.Database): AnomalyFlag[] {
   // ── 1. Resolve the consecutive trading-day pair (SPY = market clock) ───────
@@ -256,8 +257,7 @@ function signedPct(value: number, decimals = 1): string {
  * Format the Vanguard anomalies block for inclusion in an email.
  *
  * Returns "" when there are no anomalies (caller should omit the section).
- * Caps at 5 bullets; appends "(N more flagged — see /dashboard/today)" when
- * there are more.
+ * Renders ALL flagged securities — no cap.
  *
  * Privacy: output contains only public market data — ticker, % move, beta.
  * No $ amounts, share counts, or position size language.
