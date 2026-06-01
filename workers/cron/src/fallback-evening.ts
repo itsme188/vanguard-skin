@@ -153,9 +153,11 @@ export function evaluateAnomalies(
     return true;
   });
 
+  // Symbol tie-break keeps the ordering deterministic and byte-identical to the
+  // Mac engine (lib/digest/anomalies.ts) on exact z-score ties.
   const sortKey = (f: AnomalyFlag): number =>
     f.zScore ?? Math.abs(f.actualPct) / MIN_ABS_MOVE_PCT;
-  deduped.sort((a, b) => sortKey(b) - sortKey(a));
+  deduped.sort((a, b) => sortKey(b) - sortKey(a) || a.symbol.localeCompare(b.symbol));
   return deduped;
 }
 

@@ -236,10 +236,12 @@ export function computeAnomalies(db: Database.Database): AnomalyFlag[] {
   }
 
   // Sort by z-score desc (most statistically extreme first). Degraded flags
-  // (null z) rank by how far they cleared the magnitude floor.
+  // (null z) rank by how far they cleared the magnitude floor. Symbol is the
+  // tie-break so the ordering is deterministic and byte-identical to the Worker
+  // engine (workers/cron/src/fallback-evening.ts) on exact z-score ties.
   const sortKey = (f: AnomalyFlag): number =>
     f.zScore ?? Math.abs(f.actualPct) / MIN_ABS_MOVE_PCT;
-  flags.sort((a, b) => sortKey(b) - sortKey(a));
+  flags.sort((a, b) => sortKey(b) - sortKey(a) || a.symbol.localeCompare(b.symbol));
 
   return flags;
 }
