@@ -38,7 +38,7 @@ const CALENDAR_LOOKAHEAD_DAYS = 7;
 const SNAPSHOT_RETENTION_DAYS = 7;
 
 interface Snapshot {
-  schemaVersion: 4;
+  schemaVersion: 5;
   snapshotDate: string;
   generatedAt: string;
   heldSymbols: string[];
@@ -93,6 +93,34 @@ interface Snapshot {
     source: string;
     source_author: string | null;
     expires_at: string | null;
+  }>;
+  // v5 additions — user thesis notes (security-linked, last 90d) + curated
+  // earnings bogeys (consensus + whisper) so the cloud earnings email carries
+  // the cheaply-mirrorable parts of the Mac composer's rich context. Worker
+  // reads these in fallback-earnings.ts; older Workers ignore the fields.
+  notes: Array<{
+    id: number;
+    note_type: string;
+    content: string;
+    event_date: string;
+    sentiment: string | null;
+    tags: string | null;
+    symbol: string | null;
+    underlying_symbol: string | null;
+  }>;
+  earningsBogeys: Array<{
+    id: number;
+    event_id: number;
+    source: string;
+    source_label: string | null;
+    eps_consensus: number | null;
+    eps_whisper: number | null;
+    revenue_consensus_usd: number | null;
+    revenue_whisper_usd: number | null;
+    segment_breakdown_json: string | null;
+    guidance_notes: string | null;
+    notes: string | null;
+    uploaded_at: string;
   }>;
 }
 
@@ -193,6 +221,57 @@ function getSecurityBetas(
     )
     .all() as Array<{ securityId: number; lookbackDays: number; beta: number; residualStd: number | null; computedAt: string }>;
   return rows;
+}
+
+const NOTE_CONTENT_CAP = 2_000;
+
+/**
+ * Security-linked user notes from the last 90 days. The Worker matches these
+ * to an earnings event's issuer family via symbol / underlying_symbol. Notes
+ * with no security_id (pure journal/macro) are excluded — they don't belong to
+ * any one earnings family. Content capped to keep the snapshot small.
+ */
+function getNotesForSnapshot(db: Database.Database): Snapshot["notes"] {
+  const rows = db
+    .prepare(
+      `SELECT n.id, n.note_type, n.content, n.event_date, n.sentiment, n.tags,
+              s.symbol, s.underlying_symbol
+         FROM notes n
+         JOIN securities s ON s.id = n.security_id
+        WHERE n.security_id IS NOT NULL
+          AND datetime(n.event_date) >= datetime('now', '-90 days')
+        ORDER BY n.event_date DESC, n.created_at DESC`,
+    )
+    .all() as Snapshot["notes"];
+  return rows.map((n) => ({
+    ...n,
+    content:
+      n.content && n.content.length > NOTE_CONTENT_CAP
+        ? n.content.slice(0, NOTE_CONTENT_CAP) + "…"
+        : n.content,
+  }));
+}
+
+/**
+ * Curated earnings bogeys for events inside the snapshot's calendar window, so
+ * each bogey's event_id matches a calendarEvents row the Worker already has.
+ */
+function getEarningsBogeysForSnapshot(
+  db: Database.Database,
+  startDate: string,
+  endDate: string,
+): Snapshot["earningsBogeys"] {
+  return db
+    .prepare(
+      `SELECT b.id, b.event_id, b.source, b.source_label, b.eps_consensus,
+              b.eps_whisper, b.revenue_consensus_usd, b.revenue_whisper_usd,
+              b.segment_breakdown_json, b.guidance_notes, b.notes, b.uploaded_at
+         FROM earnings_bogeys b
+         JOIN calendar_events e ON e.id = b.event_id
+        WHERE e.event_date >= ? AND e.event_date <= ?
+        ORDER BY b.uploaded_at DESC`,
+    )
+    .all(startDate, endDate) as Snapshot["earningsBogeys"];
 }
 
 function buildSnapshot(db: Database.Database): Snapshot {
@@ -336,7 +415,7 @@ function buildSnapshot(db: Database.Database): Snapshot {
     }>;
 
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     snapshotDate: today(),
     generatedAt: new Date().toISOString(),
     heldSymbols: getHeldStockSymbolsRO(db),
@@ -369,6 +448,13 @@ function buildSnapshot(db: Database.Database): Snapshot {
     securityBetas: getSecurityBetas(db),
     // v4 — static price levels for cloud-side scan
     securityLevels,
+    // v5 — earnings-email enrichment context
+    notes: getNotesForSnapshot(db),
+    earningsBogeys: getEarningsBogeysForSnapshot(
+      db,
+      daysAgo(1),
+      daysAhead(CALENDAR_LOOKAHEAD_DAYS),
+    ),
   };
 }
 
@@ -412,7 +498,9 @@ async function main() {
       `${snapshot.securities.length} securities, ` +
       `${snapshot.earningsEmails.length} audit rows, ` +
       `${snapshot.vanguardHoldings.length} vanguard-holdings, ` +
-      `${snapshot.securityBetas.length} betas`
+      `${snapshot.securityBetas.length} betas, ` +
+      `${snapshot.notes.length} notes, ` +
+      `${snapshot.earningsBogeys.length} bogeys`
   );
 
   const keepFromDate = daysAgo(SNAPSHOT_RETENTION_DAYS);
