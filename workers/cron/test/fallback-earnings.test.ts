@@ -150,3 +150,69 @@ describe("runEarningsFallback observability", () => {
     expect(result.lastError).toBeUndefined();
   });
 });
+
+describe("runEarningsFallback v5 context (notes + bogeys)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (sendEmail as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "mock-email-id" });
+  });
+
+  function htmlOfLastSend(): string {
+    const calls = (sendEmail as ReturnType<typeof vi.fn>).mock.calls;
+    return calls[calls.length - 1][1].html as string;
+  }
+
+  it("renders the user's prior notes + curated bogeys into the cloud email", async () => {
+    const snap = makeEarningsSnapshot();
+    (snap as unknown as Snapshot).schemaVersion = 5;
+    (snap as unknown as Snapshot).notes = [
+      {
+        id: 7,
+        note_type: "trade_thesis",
+        content: "Long AAPL into the print — Services margin is the swing factor.",
+        event_date: "2026-06-10",
+        sentiment: "bullish",
+        tags: "thesis",
+        symbol: "AAPL",
+        underlying_symbol: null,
+      },
+    ];
+    (snap as unknown as Snapshot).earningsBogeys = [
+      {
+        id: 3,
+        event_id: 1,
+        source: "pdf_upload",
+        source_label: "TMT Breakout 2026-06-14 weekly preview",
+        eps_consensus: 1.5,
+        eps_whisper: 1.58,
+        revenue_consensus_usd: 90_000_000_000,
+        revenue_whisper_usd: 92_000_000_000,
+        segment_breakdown_json: null,
+        guidance_notes: "Watch FY guide on Services",
+        notes: null,
+        uploaded_at: "2026-06-14 12:00:00",
+      },
+    ];
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snap);
+
+    const result = await runEarningsFallback(env, { now: previewWindowNow() });
+    expect(result.sent).toBe(1);
+
+    const html = htmlOfLastSend();
+    // Note content surfaces
+    expect(html).toContain("Services margin is the swing factor");
+    // Bogey source + whisper surface (the whole point — Finnhub lacks whispers)
+    expect(html).toContain("TMT Breakout 2026-06-14 weekly preview");
+    expect(html).toContain("1.58");
+  });
+
+  it("renders fine when notes/bogeys are absent (back-compat with v2 snapshot)", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeEarningsSnapshot(), // v2, no notes/earningsBogeys fields
+    );
+    const result = await runEarningsFallback(env, { now: previewWindowNow() });
+    expect(result.sent).toBe(1);
+  });
+});

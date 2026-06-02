@@ -25,7 +25,49 @@ import { sendEmail } from "./resend";
 import { getModelForFeature } from "./ai";
 import { briefingToHtml } from "./html";
 import { todayET } from "./dst";
-import type { FallbackEnv, FallbackResult } from "./fallback-digest";
+import {
+  fetchAndProcessNewArticles,
+  type FallbackEnv,
+  type FallbackResult,
+  type ProcessedArticle,
+} from "./fallback-digest";
+
+// Evening live-fetch cap, sized against the 50-subrequest Workers free-tier
+// ceiling AND the anomaly block's batched Yahoo calls:
+//   ≤29 source list + 6×(getMessage + Claude) + ≤2 Yahoo spark chunks
+//   + 1 synthesis + 1 Resend = ≤46 subrequests.
+// Lower than the digest's 10 because the evening ALSO spends Yahoo subrequests
+// on the anomaly block; the morning digest does not. Reliability (the email
+// ships) beats completeness (every afternoon article) for a fallback path.
+const MAX_ARTICLES_PER_RUN_EVENING = 6;
+
+/**
+ * Convert a freshly-fetched + Claude-processed article into the RecentArticleMeta
+ * shape the evening's per-source/synthesis renderers consume, so live-fetched
+ * mail flows through the same rendering path as snapshot articles. Synthetic
+ * negative ids can't collide with real snapshot ids.
+ */
+function processedToMeta(p: ProcessedArticle, idx: number): RecentArticleMeta {
+  return {
+    id: -1 - idx,
+    source_id: -1,
+    source_name: p.source_name,
+    gmail_message_id: p.gmail_message_id,
+    received_at: p.received_at,
+    subject: p.subject,
+    sender: "",
+    summary: p.summary || null,
+    key_themes: p.key_themes.length ? JSON.stringify(p.key_themes) : null,
+    sentiment: p.sentiment,
+    sentiment_score: null,
+    mentioned_symbols: null,
+    portfolio_relevance: p.portfolio_relevance || null,
+    source_url: p.source_url,
+    website_url: null,
+    processed_at: todayET(),
+    ai_model: null,
+  };
+}
 
 // ── Yahoo last-2-closes (lightweight, no reaction window needed) ──────────────
 
@@ -34,41 +76,62 @@ interface Last2Closes {
   today: number;
 }
 
-/** Fetch the two most recent daily closes for a symbol from Yahoo Finance. */
-async function fetchLast2Closes(symbol: string): Promise<Last2Closes | null> {
-  // Request last 5 trading days so weekends/holidays don't produce empty results
-  const toSec = Math.ceil(Date.now() / 1000);
-  const fromSec = toSec - 7 * 86400; // 7 days back
+// Chunk size for the multi-symbol spark request. 50 symbols keeps each request
+// URL comfortably bounded (~350 chars) and means even a 100-name book costs
+// only 2 subrequests — versus one chart request PER symbol, which at 71
+// Vanguard holdings was 72 subrequests, OVER the 50-subrequest Workers
+// free-tier ceiling, so the anomaly block silently never produced output and
+// (worse) left no budget for the evening's live Gmail fetch.
+const YAHOO_SPARK_CHUNK = 50;
 
-  const url =
-    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}` +
-    `?interval=1d&period1=${fromSec}&period2=${toSec}`;
+/**
+ * Fetch the two most recent daily closes for MANY symbols using Yahoo's
+ * multi-symbol `spark` endpoint, in ceil(N/50) requests. Returns a Map keyed by
+ * symbol; a symbol Yahoo omits or returns <2 closes for is simply absent
+ * (caller skips it). Never throws — a failed chunk contributes nothing, so a
+ * Yahoo outage degrades to "no anomaly block" rather than a failed email.
+ */
+export async function fetchLast2ClosesBatch(
+  symbols: string[],
+): Promise<Map<string, Last2Closes>> {
+  const out = new Map<string, Last2Closes>();
+  const unique = [...new Set(symbols.filter((s) => s && s.length > 0))];
 
-  const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
-  if (!res.ok) return null;
+  for (let i = 0; i < unique.length; i += YAHOO_SPARK_CHUNK) {
+    const chunk = unique.slice(i, i + YAHOO_SPARK_CHUNK);
+    const url =
+      `https://query1.finance.yahoo.com/v8/finance/spark` +
+      `?symbols=${chunk.map((s) => encodeURIComponent(s)).join(",")}` +
+      `&range=7d&interval=1d`;
 
-  const data = (await res.json()) as {
-    chart?: {
-      result?: Array<{
-        timestamp?: number[];
-        indicators?: { quote?: Array<{ close?: Array<number | null> }> };
-      }>;
-    };
-  };
+    try {
+      const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
+      if (!res.ok) continue;
 
-  const result = data.chart?.result?.[0];
-  if (!result) return null;
+      // Spark returns a flat object keyed by the requested symbol:
+      //   { "SPY": { timestamp: [...], close: [n, n, ...] }, "AAPL": {...} }
+      const data = (await res.json()) as Record<
+        string,
+        { close?: Array<number | null> } | undefined
+      >;
 
-  const closes = (result.indicators?.quote?.[0]?.close ?? []).filter(
-    (c): c is number => c != null
-  );
-  if (closes.length < 2) return null;
+      for (const sym of chunk) {
+        const closes = (data[sym]?.close ?? []).filter(
+          (c): c is number => c != null,
+        );
+        if (closes.length < 2) continue;
+        out.set(sym, {
+          prior: closes[closes.length - 2],
+          today: closes[closes.length - 1],
+        });
+      }
+    } catch (err) {
+      console.warn("[fallback-evening] Yahoo spark chunk failed:", err);
+      // contribute nothing for this chunk; the rest still resolve
+    }
+  }
 
-  // Last two valid closes
-  return {
-    prior: closes[closes.length - 2],
-    today: closes[closes.length - 1],
-  };
+  return out;
 }
 
 // ── Anomaly computation (ported from lib/digest/anomalies.ts) ─────────────────
@@ -173,12 +236,7 @@ async function computeAnomaliesFromSnapshot(
 
   const symbols = [...new Set(vanguardHoldings.map((h) => h.symbol))];
   const allSymbols = ["SPY", ...symbols.filter((s) => s !== "SPY")];
-  const closesMap = new Map<string, Last2Closes>();
-
-  for (const sym of allSymbols) {
-    const closes = await fetchLast2Closes(sym);
-    if (closes) closesMap.set(sym, closes);
-  }
+  const closesMap = await fetchLast2ClosesBatch(allSymbols);
 
   return evaluateAnomalies(vanguardHoldings, securityBetas, closesMap);
 }
@@ -451,10 +509,31 @@ export async function runFallbackEvening(
   // ── Since timestamp ──────────────────────────────────────────────────────
   const sinceSnapshot = snap.settings.last_digest_sent_at ?? defaultSince();
 
-  // ── Articles ─────────────────────────────────────────────────────────────
-  const articlesInWindow = filterSinceArticles(
+  // ── Articles: live-fetched (today) + snapshot (frozen at 2am) ────────────
+  // The snapshot froze at 2am, so the bulk of an evening recap — newsletters
+  // that landed during the day — is invisible to a snapshot-only reader. Live
+  // fetch today's mail (same path as the digest) and put it on top.
+  const fetchResult = await fetchAndProcessNewArticles(env, snap, {
+    maxArticles: MAX_ARTICLES_PER_RUN_EVENING,
+  });
+  const freshMeta = fetchResult.processed.map(processedToMeta);
+
+  const snapshotInWindow = filterSinceArticles(
     snap.recentArticlesMeta as RecentArticleMeta[],
     sinceSnapshot,
+  );
+
+  // fetchAndProcessNewArticles already dedups against snapshot gmail_message_ids,
+  // so fresh + snapshot are disjoint; fresh on top (most recent).
+  const articlesInWindow = [...freshMeta, ...snapshotInWindow];
+
+  // Observability: a "no content" skip is otherwise a black box. Record what the
+  // worker actually saw so a future "evening didn't send" is diagnosable.
+  console.log(
+    `[fallback-evening] snapshot v${snap.schemaVersion} (${snap.snapshotDate}, gen ${snap.generatedAt}); ` +
+      `since=${sinceSnapshot}; recentMeta=${snap.recentArticlesMeta.length}; ` +
+      `fresh=${freshMeta.length}; snapshotInWindow=${snapshotInWindow.length}; ` +
+      `listErrors=${fetchResult.listErrors}; articleErrors=${fetchResult.articleErrors}`,
   );
 
   // ── Anomaly block (schemaVersion 3 only) ─────────────────────────────────
@@ -494,6 +573,16 @@ export async function runFallbackEvening(
   const fullMd = sections.join("\n\n---\n\n").trim();
 
   if (!fullMd) {
+    // No content. Distinguish a genuinely quiet evening from an upstream
+    // wipeout (Gmail outage, subrequest cap, billing hold) — the same
+    // silent-swallow guard the digest carries, so a failed fetch doesn't read
+    // as "nothing happened today". (Sibling-fallback rule, CLAUDE.md 5/31.)
+    if (fetchResult.listErrors > 0 || fetchResult.articleErrors > 0) {
+      return {
+        kind: "error",
+        error: `evening produced no content: listErrors=${fetchResult.listErrors}, articleErrors=${fetchResult.articleErrors}, lastError=${fetchResult.lastError ?? "unknown"}`,
+      } as FallbackResult & { reason?: string };
+    }
     return { kind: "skipped", reason: "no content" } as FallbackResult & { reason: string };
   }
 

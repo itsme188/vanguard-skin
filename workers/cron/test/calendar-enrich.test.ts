@@ -27,7 +27,7 @@ vi.mock("../src/yahoo", () => ({
   captureReactionFromYahoo: vi.fn(async () => ({ source: "yahoo" })),
 }));
 
-import { runCloudFallback } from "../src/calendar-enrich";
+import { runCloudFallback, isBenignEnrichOutcome } from "../src/calendar-enrich";
 import { loadLatestSnapshot } from "../src/state";
 import { fetchActualForEventCloud } from "../src/enrich-actuals";
 import { composeReleaseInstant } from "../src/reaction-matcher";
@@ -151,5 +151,41 @@ describe("runCloudFallback observability", () => {
     });
 
     expect(summary.kind).toBe("no_candidates");
+  });
+});
+
+describe("isBenignEnrichOutcome (enrich-fail de-noise)", () => {
+  // The Mac primary is unreachable from Cloudflare's edge on EVERY tick (Mesh
+  // CGNAT IP → CF error 1016), so a primary failure alone is the normal idle
+  // state, not a real problem. The enrich-fail journal marker should only
+  // persist when the cloud fallback ALSO couldn't make clean progress.
+
+  it("treats no_candidates as benign (nothing in the window → not a failure)", () => {
+    expect(isBenignEnrichOutcome({ kind: "no_candidates" })).toBe(true);
+  });
+
+  it("treats a clean success (candidates processed, no failures) as benign", () => {
+    expect(
+      isBenignEnrichOutcome({ kind: "success", candidatesProcessed: 1, failures: 0 }),
+    ).toBe(true);
+  });
+
+  it("treats a success WITH candidate failures as a real failure", () => {
+    expect(
+      isBenignEnrichOutcome({
+        kind: "success",
+        candidatesProcessed: 2,
+        failures: 1,
+        lastError: "FRED 500",
+      }),
+    ).toBe(false);
+  });
+
+  it("treats snapshot_missing as a real failure", () => {
+    expect(isBenignEnrichOutcome({ kind: "snapshot_missing" })).toBe(false);
+  });
+
+  it("treats error as a real failure", () => {
+    expect(isBenignEnrichOutcome({ kind: "error", error: "archive_binding_missing" })).toBe(false);
   });
 });

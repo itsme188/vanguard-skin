@@ -129,6 +129,43 @@ export interface SecurityLevelRow {
 }
 
 /**
+ * A user thesis/journal note attached to a security — mirrored so the cloud
+ * earnings email can frame the briefing against the user's own prior view
+ * instead of disclosing "limited context". `underlying_symbol` lets the Worker
+ * match an option's note to its underlying's earnings family.
+ */
+export interface SnapshotNote {
+  id: number;
+  note_type: string;
+  content: string;
+  event_date: string;
+  sentiment: string | null;
+  tags: string | null;
+  symbol: string | null;
+  underlying_symbol: string | null;
+}
+
+/**
+ * A user-curated earnings bogey (consensus + whisper) for a specific
+ * calendar event — the only place whisper numbers reach the email (Finnhub
+ * doesn't carry them). Matched to a candidate by `event_id`.
+ */
+export interface SnapshotBogey {
+  id: number;
+  event_id: number;
+  source: string;
+  source_label: string | null;
+  eps_consensus: number | null;
+  eps_whisper: number | null;
+  revenue_consensus_usd: number | null;
+  revenue_whisper_usd: number | null;
+  segment_breakdown_json: string | null;
+  guidance_notes: string | null;
+  notes: string | null;
+  uploaded_at: string;
+}
+
+/**
  * Snapshot schema is forward-compatible:
  *   v1 — briefing/digest only
  *   v2 — adds earnings cloud-fallback context (holdings, securities, etc.)
@@ -136,12 +173,15 @@ export interface SecurityLevelRow {
  *        + recipient override fields in settings
  *   v4 — adds securityLevels (static price levels) for cloud-side scan +
  *        Pushover fan-out when Mac is asleep
+ *   v5 — adds notes + earningsBogeys so the cloud earnings email carries the
+ *        user's own thesis notes + curated consensus/whisper (closes part of
+ *        the "limited cloud context" gap)
  *
- * All v2/v3/v4 fields are optional for back-compat with older snapshots; the
+ * All v2/v3/v4/v5 fields are optional for back-compat with older snapshots; the
  * fallback gracefully degrades when these are missing.
  */
 export interface Snapshot {
-  schemaVersion: 1 | 2 | 3 | 4;
+  schemaVersion: 1 | 2 | 3 | 4 | 5;
   snapshotDate: string;
   generatedAt: string;
   heldSymbols: string[];
@@ -174,6 +214,9 @@ export interface Snapshot {
   securityBetas?: Array<{ securityId: number; lookbackDays: number; beta: number; residualStd?: number | null; computedAt: string }>;
   // v4 — cloud-side level scan. Static levels only; MA-based levels stay Mac-only.
   securityLevels?: SecurityLevelRow[];
+  // v5 — earnings-email enrichment. Optional for back-compat with v1–v4.
+  notes?: SnapshotNote[];
+  earningsBogeys?: SnapshotBogey[];
 }
 
 /** Fetch the most recent snapshot (within 7d). Returns null if none exist. */

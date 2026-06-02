@@ -327,6 +327,29 @@ export interface RunCalendarEnrichOpts {
   pacingMs?: number;
 }
 
+/**
+ * Decide whether a tick where the Mac primary failed is worth keeping the
+ * `enrich-fail-{slot}` journal marker.
+ *
+ * The Mac primary (Worker → Mesh CGNAT IP) is unreachable from Cloudflare's
+ * edge on EVERY tick — it fast-fails with CF error 1016. So a primary failure
+ * by itself is the normal idle state, not a problem. The journal marker should
+ * only persist when the cloud fallback ALSO couldn't make clean progress:
+ *   - a real error (missing archive binding, cloud disabled, etc.)
+ *   - a missing snapshot
+ *   - candidate-level failures during enrichment
+ * A benign `no_candidates` (nothing in the enrichment window) or a clean
+ * success with zero candidate-failures clears the journal — otherwise a whole
+ * quiet market day reads as a wall of `enrich-fail` markers (observed 6/02).
+ */
+export function isBenignEnrichOutcome(fallback: FallbackRunSummary): boolean {
+  if (fallback.kind === "no_candidates") return true;
+  if (fallback.kind === "success" && !(fallback.failures && fallback.failures > 0)) {
+    return true;
+  }
+  return false;
+}
+
 export async function runCalendarEnrich(
   env: EnrichRunEnv,
   opts: RunCalendarEnrichOpts = {},
@@ -387,6 +410,14 @@ export async function runCalendarEnrich(
     );
     await env.CRON_KV.delete(failSlotKey(date, hour, minute));
     return { primary, fallback, sentBy: "cloud" };
+  }
+
+  // No cloud send this tick. The Mac primary is unreachable from CF's edge by
+  // design (CF 1016) every tick, so clear the fail journal we wrote above unless
+  // the cloud fallback ALSO hit a real problem — a benign no_candidates idle
+  // tick must not read as a failure in the KV marker scan.
+  if (isBenignEnrichOutcome(fallback)) {
+    await env.CRON_KV.delete(failSlotKey(date, hour, minute));
   }
 
   return { primary, fallback, sentBy: "none" };

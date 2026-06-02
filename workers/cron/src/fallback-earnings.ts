@@ -37,6 +37,8 @@ import type {
   SecurityRow,
   AccountRow,
   EarningsEmailRow,
+  SnapshotNote,
+  SnapshotBogey,
 } from "./state";
 import { loadLatestSnapshot } from "./state";
 import { briefingToHtml } from "./html";
@@ -261,6 +263,14 @@ async function composeAndSend(
   const scoreboard = renderScoreboard(cand.event, cand.phase, snapshot, family);
   const positionsBlock = renderPositions(positions, cand.symbol, family);
 
+  // v5 — the user's own thesis notes + curated bogeys (consensus/whisper).
+  // These are the cheaply-mirrorable parts of the Mac's rich context, so the
+  // cloud email is no longer purely "numbers only".
+  const notes = resolveNotesForFamily(snapshot, family);
+  const bogeys = resolveBogeysForEvent(snapshot, cand.eventId);
+  const notesBlock = renderNotesBlock(notes, cand.symbol);
+  const bogeysBlock = renderBogeysBlock(bogeys);
+
   const release = cand.event.release_time
     ? ` ${cand.event.release_time} ET`
     : "";
@@ -269,8 +279,25 @@ async function composeAndSend(
   const dateLabel = formatDate(cand.event.event_date);
   const title = `${cand.symbol} ${phaseLabel} — ${dateLabel}${release}`;
 
-  const body = `${scoreboard}\n\n${positionsBlock}\n\n${renderNote(cand.phase)}`;
-  const footer = `Cloud fallback delivery (state snapshot ${snapshot.snapshotDate}) — Mac was offline. Newsletter bogies, analyst data, prior-call notes are NOT included; the Mac primary version has them.`;
+  // Bogeys (curated consensus/whisper) and the user's prior notes slot between
+  // the scoreboard and the limited-context note, mirroring the Mac composer's
+  // ordering. Empty blocks drop out.
+  const body = [
+    scoreboard,
+    positionsBlock,
+    bogeysBlock,
+    notesBlock,
+    renderNote(cand.phase, { hasNotes: notes.length > 0, hasBogeys: bogeys.length > 0 }),
+  ]
+    .filter((s) => s && s.trim().length > 0)
+    .join("\n\n");
+
+  const included: string[] = [];
+  if (bogeys.length > 0) included.push("your curated bogeys");
+  if (notes.length > 0) included.push("your prior notes");
+  const includedNote =
+    included.length > 0 ? ` ${included.join(" + ")} ARE included above.` : "";
+  const footer = `Cloud fallback delivery (state snapshot ${snapshot.snapshotDate}) — Mac was offline.${includedNote} Analyst recs, transcripts, and sell-side web-search are only in the Mac primary version.`;
   const html = briefingToHtml(body, title, footer);
 
   await sendEmail(env, {
@@ -419,11 +446,88 @@ function renderPositions(
   return `## Positions (cross-account, snapshot ${positions.length} row${positions.length === 1 ? "" : "s"})\n${lines.join("\n")}\n\n**Combined exposure:** ${summaryParts.join(" + ") || "none"} for ${symbol}.`;
 }
 
-function renderNote(phase: EarningsPhase): string {
+function renderNote(
+  phase: EarningsPhase,
+  ctx: { hasNotes: boolean; hasBogeys: boolean } = { hasNotes: false, hasBogeys: false },
+): string {
+  // Describe only what's STILL missing, so the note stays honest as the cloud
+  // path closes the gap. Bogeys + notes are now mirrored into the v5 snapshot;
+  // analyst recs, transcripts, and sell-side web-search remain Mac-only.
+  const have: string[] = [];
+  if (ctx.hasBogeys) have.push("your curated bogeys (consensus + whisper)");
+  if (ctx.hasNotes) have.push("your prior thesis notes");
+  const haveLine =
+    have.length > 0
+      ? `This fallback DOES include ${have.join(" and ")} (mirrored in the nightly snapshot). `
+      : "";
+
   if (phase === "preview") {
-    return `## Note — limited cloud context\n\nThe Mac primary path generates a richer preview with TMT Breakout / Vital Knowledge / Eliant / Purple Drink / Meisler bogies, analyst recommendation trend, prior-quarter transcript context, and any of your own thesis notes. None of that is in this fallback — it ran from the nightly R2 snapshot because the Mac was unreachable. Treat this as a numbers-only heads-up; the rich version will arrive once the Mac is back online (or skip — the next launchd tick will dedup against the cloud-sent marker).`;
+    return `## Note — cloud context\n\n${haveLine}Still Mac-only: analyst recommendation trend, prior-quarter transcript context, and sell-side first takes from web search. It ran from the nightly R2 snapshot because the Mac was unreachable — the fuller version will arrive once the Mac is back online (or skip; the next launchd tick dedups against the cloud-sent marker).`;
   }
-  return `## Note — limited cloud context\n\nThe Mac primary path generates a richer recap with sell-side first takes from web search, transcript quotes once Motley Fool posts, and ties back to your prior thesis notes. None of that is in this fallback — it ran from the nightly R2 snapshot because the Mac was unreachable. The numbers above are from Finnhub + Yahoo bars; the line-by-line bogies + analyst commentary live in the Mac version.`;
+  return `## Note — cloud context\n\n${haveLine}The numbers above are from Finnhub + Yahoo bars. Still Mac-only: sell-side first takes from web search, transcript quotes once Motley Fool posts, and analyst commentary.`;
+}
+
+// ── v5 context: notes + bogeys from snapshot ────────────────────────
+
+function resolveNotesForFamily(
+  snapshot: Snapshot,
+  family: readonly string[],
+): SnapshotNote[] {
+  const fam = new Set(family.map((s) => s.toUpperCase()));
+  return (snapshot.notes ?? []).filter(
+    (n) =>
+      (n.symbol != null && fam.has(n.symbol.toUpperCase())) ||
+      (n.underlying_symbol != null && fam.has(n.underlying_symbol.toUpperCase())),
+  );
+}
+
+function resolveBogeysForEvent(snapshot: Snapshot, eventId: number): SnapshotBogey[] {
+  return (snapshot.earningsBogeys ?? [])
+    .filter((b) => b.event_id === eventId)
+    // Most recently uploaded first — the Mac composer prefers the latest set.
+    .sort((a, b) => (a.uploaded_at < b.uploaded_at ? 1 : -1));
+}
+
+const NOTE_CHAR_CAP = 600;
+
+function renderNotesBlock(notes: SnapshotNote[], symbol: string): string {
+  if (notes.length === 0) return "";
+  const lines = notes.map((n) => {
+    const content =
+      n.content.length > NOTE_CHAR_CAP ? n.content.slice(0, NOTE_CHAR_CAP) + "…" : n.content;
+    const sym = n.symbol ?? symbol;
+    const sent = n.sentiment ? ` · ${n.sentiment}` : "";
+    const tags = n.tags ? ` · ${n.tags}` : "";
+    return `### [${n.event_date}] ${n.note_type} on ${sym}${sent}${tags}\n${content}`;
+  });
+  return `## Your prior notes on ${symbol} — read these FIRST\n\nYour own journal / earnings / trade-thesis notes on ${symbol} or a sibling-class security. Frame the event against this prior view.\n\n${lines.join("\n\n---\n\n")}`;
+}
+
+/** Compact USD for bogey figures (no Mac lib import). 92e9 → "$92.0B". */
+function formatBogeyUSD(n: number): string {
+  if (Math.abs(n) >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
+  if (Math.abs(n) >= 1e6) return `$${(n / 1e6).toFixed(1)}M`;
+  if (Math.abs(n) >= 1e3) return `$${Math.round(n).toLocaleString("en-US")}`;
+  return `$${n.toFixed(2)}`;
+}
+
+function renderBogeysBlock(bogeys: SnapshotBogey[]): string {
+  if (bogeys.length === 0) return "";
+  const lines = bogeys.map((b, i) => {
+    const label = b.source_label ?? `${b.source} (no label)`;
+    const fields: string[] = [];
+    if (b.eps_consensus != null) fields.push(`EPS consensus ${b.eps_consensus.toFixed(2)}`);
+    if (b.eps_whisper != null) fields.push(`EPS **whisper ${b.eps_whisper.toFixed(2)}**`);
+    if (b.revenue_consensus_usd != null)
+      fields.push(`Rev consensus ${formatBogeyUSD(b.revenue_consensus_usd)}`);
+    if (b.revenue_whisper_usd != null)
+      fields.push(`Rev **whisper ${formatBogeyUSD(b.revenue_whisper_usd)}**`);
+    const head = fields.length > 0 ? `\n${fields.join(" · ")}` : "";
+    const guidance = b.guidance_notes ? `\nGuidance: ${b.guidance_notes}` : "";
+    const notes = b.notes ? `\nNotes: ${b.notes}` : "";
+    return `### [${i + 1}] ${label} (uploaded ${b.uploaded_at})${head}${guidance}${notes}`;
+  });
+  return `## Bogeys (your curated consensus + whisper — preferred over Finnhub)\n\nWhisper numbers are the bar that matters — beat-the-whisper is the meaningful event. Most recent set first.\n\n${lines.join("\n\n---\n\n")}`;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────

@@ -62,7 +62,7 @@ export interface FallbackResult {
   htmlLength?: number;
 }
 
-interface ProcessedArticle {
+export interface ProcessedArticle {
   source_name: string;
   subject: string;
   received_at: string;
@@ -71,6 +71,90 @@ interface ProcessedArticle {
   sentiment: "bullish" | "bearish" | "neutral" | "mixed";
   key_themes: string[];
   portfolio_relevance: string;
+  /** Gmail message id of the source email — lets callers dedup a freshly
+   *  fetched article against snapshot meta. */
+  gmail_message_id: string | null;
+}
+
+export interface FetchAndProcessResult {
+  processed: ProcessedArticle[];
+  listErrors: number;
+  articleErrors: number;
+  lastError: string | null;
+}
+
+/**
+ * Live-fetch + Claude-process today's new newsletter articles from Gmail.
+ *
+ * Shared by the digest AND evening fallbacks: the R2 snapshot freezes at 2am,
+ * so any newsletter that lands during the day is invisible to a snapshot-only
+ * reader. Both emails need to see today's mail, so this is the one place that
+ * does the live Gmail list → getMessage → Claude-extract loop.
+ *
+ * Dedups against `snapshot.recentArticlesMeta` (by gmail_message_id), respects
+ * the per-source + total caps, and tracks list/article errors separately from
+ * "nothing new" so a total upstream wipeout (API outage, billing hold,
+ * subrequest cap) is diagnosable rather than indistinguishable from a quiet day.
+ */
+export async function fetchAndProcessNewArticles(
+  env: FallbackEnv,
+  snapshot: Snapshot,
+  opts: { maxArticles?: number } = {},
+): Promise<FetchAndProcessResult> {
+  const maxArticles = opts.maxArticles ?? MAX_ARTICLES_PER_RUN;
+  const accessToken = await getAccessToken(env);
+  const heldSymbolsContext = snapshot.heldSymbols.join(", ");
+
+  const alreadyProcessedIds = new Set(
+    snapshot.recentArticlesMeta
+      .map((a) => a.gmail_message_id)
+      .filter((id): id is string => id != null && id.length > 0),
+  );
+
+  const processed: ProcessedArticle[] = [];
+  const activeSources = snapshot.researchSources.filter(
+    (s) => s.is_active === 1 && s.sender_email,
+  );
+
+  let listErrors = 0;
+  let articleErrors = 0;
+  let lastError: string | null = null;
+
+  for (const source of activeSources) {
+    if (processed.length >= maxArticles) break;
+
+    const query = `from:${source.sender_email} newer_than:1d`;
+    let list: { id: string }[];
+    try {
+      list = await listMessages(accessToken, query, MAX_MESSAGES_PER_SOURCE);
+    } catch (err) {
+      listErrors++;
+      lastError = err instanceof Error ? err.message : String(err);
+      console.warn(`[fallback-fetch] list for ${source.name} failed:`, err);
+      continue;
+    }
+
+    for (const m of list) {
+      if (processed.length >= maxArticles) break;
+      if (alreadyProcessedIds.has(m.id)) continue;
+
+      try {
+        const detail = extractMessage(await getMessage(accessToken, m.id));
+        if (!detail) continue;
+        const article = await processArticle(env, source, detail, heldSymbolsContext);
+        if (article) {
+          article.gmail_message_id = m.id;
+          processed.push(article);
+        }
+      } catch (err) {
+        articleErrors++;
+        lastError = err instanceof Error ? err.message : String(err);
+        console.warn(`[fallback-fetch] article ${m.id} failed:`, err);
+      }
+    }
+  }
+
+  return { processed, listErrors, articleErrors, lastError };
 }
 
 export async function runFallbackDigest(
@@ -103,60 +187,10 @@ export async function runFallbackDigest(
     return { kind: "error", error: "recipient missing: no digest_email_recipients in snapshot and BRIEFING_EMAIL_TO is unset" };
   }
 
-  const accessToken = await getAccessToken(env);
-  const heldSymbolsContext = snapshot.heldSymbols.join(", ");
-
-  // Gmail query window: fetch anything received today (ET). If the Mac
-  // already processed some of these, they'll be in snapshot.recentArticlesMeta
-  // with processed_at set — we dedup by gmail_message_id below.
-  const alreadyProcessedIds = new Set(
-    snapshot.recentArticlesMeta
-      .map((a) => a.gmail_message_id)
-      .filter((id): id is string => id != null && id.length > 0)
-  );
-
-  const newProcessed: ProcessedArticle[] = [];
-  const activeSources = snapshot.researchSources.filter(
-    (s) => s.is_active === 1 && s.sender_email
-  );
-
-  // Track upstream failures separately from "nothing new to process" so a
-  // total wipeout (API outage, billing hold, subrequest cap) bubbles up as
-  // kind:"error" instead of silently looking identical to a quiet news day.
-  let listErrors = 0;
-  let articleErrors = 0;
-  let lastError: string | null = null;
-
-  for (const source of activeSources) {
-    if (newProcessed.length >= MAX_ARTICLES_PER_RUN) break;
-
-    const query = `from:${source.sender_email} newer_than:1d`;
-    let list: { id: string }[];
-    try {
-      list = await listMessages(accessToken, query, MAX_MESSAGES_PER_SOURCE);
-    } catch (err) {
-      listErrors++;
-      lastError = err instanceof Error ? err.message : String(err);
-      console.warn(`[fallback-digest] list for ${source.name} failed:`, err);
-      continue;
-    }
-
-    for (const m of list) {
-      if (newProcessed.length >= MAX_ARTICLES_PER_RUN) break;
-      if (alreadyProcessedIds.has(m.id)) continue;
-
-      try {
-        const detail = extractMessage(await getMessage(accessToken, m.id));
-        if (!detail) continue;
-        const processed = await processArticle(env, source, detail, heldSymbolsContext);
-        if (processed) newProcessed.push(processed);
-      } catch (err) {
-        articleErrors++;
-        lastError = err instanceof Error ? err.message : String(err);
-        console.warn(`[fallback-digest] article ${m.id} failed:`, err);
-      }
-    }
-  }
+  // Live-fetch today's newsletters (the snapshot froze at 2am; intraday mail
+  // isn't in recentArticlesMeta). Shared with the evening fallback.
+  const { processed: newProcessed, listErrors, articleErrors, lastError } =
+    await fetchAndProcessNewArticles(env, snapshot);
 
   // Combine: newly-processed on top (fresh today), then snapshot meta as context.
   const snapshotRecent = filterTodayArticles(snapshot.recentArticlesMeta);
@@ -239,6 +273,7 @@ ${text}`;
     source_name: source.name,
     subject: detail.subject,
     received_at: detail.receivedAt,
+    gmail_message_id: null, // set by the caller from the Gmail message id
     source_url: null,
     summary: object.summary || "",
     sentiment: object.sentiment || "neutral",

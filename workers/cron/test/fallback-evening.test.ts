@@ -16,7 +16,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import type { FallbackEnv } from "../src/fallback-digest";
 import type { Snapshot } from "../src/state";
-import { evaluateAnomalies } from "../src/fallback-evening";
+import { evaluateAnomalies, fetchLast2ClosesBatch } from "../src/fallback-evening";
 
 // ── Dependency mocks ─────────────────────────────────────────────────────────
 
@@ -60,7 +60,8 @@ global.fetch = vi.fn();
 import { runFallbackEvening } from "../src/fallback-evening";
 import { loadLatestSnapshot } from "../src/state";
 import { sendEmail } from "../src/resend";
-import { generateText } from "ai";
+import { generateText, generateObject } from "ai";
+import { listMessages, getMessage, extractMessage } from "../src/gmail";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -149,28 +150,6 @@ function makeV3Snapshot(opts: {
     vanguardHoldings: opts.vanguardHoldings ?? [],
     securityBetas: opts.securityBetas ?? [],
   };
-}
-
-/** Mock Yahoo to return SPY and GOOG with predictable last-2-closes */
-function mockYahooSuccess(fetchMock: ReturnType<typeof vi.fn>) {
-  // For each symbol we return two close bars
-  fetchMock.mockImplementation(async (url: string) => {
-    const symbol = url.includes("SPY") ? "SPY" : "GOOG";
-    const now = Math.floor(Date.now() / 1000);
-    const close1 = symbol === "SPY" ? 510 : 170;   // "today"
-    const close0 = symbol === "SPY" ? 500 : 165;   // "prior"
-    return {
-      ok: true,
-      json: async () => ({
-        chart: {
-          result: [{
-            timestamp: [now - 86400, now],
-            indicators: { quote: [{ close: [close0, close1] }] },
-          }],
-        },
-      }),
-    };
-  });
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -287,30 +266,26 @@ describe("runFallbackEvening", () => {
 
     // SPY: prior=500, today=510 → +2%
     // GOOG: prior=200, today=180 → -10%
-    (global.fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
-      const isSpy = (url as string).includes("SPY");
-      return {
-        ok: true,
-        json: async () => ({
-          chart: {
-            result: [{
-              timestamp: [1000000, 1000086400],
-              indicators: { quote: [{ close: [isSpy ? 500 : 200, isSpy ? 510 : 180] }] },
-            }],
-          },
-        }),
-      };
+    // Batched spark endpoint: one request, flat object keyed by symbol.
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        SPY: { timestamp: [1000000, 1000086400], close: [500, 510] },
+        GOOG: { timestamp: [1000000, 1000086400], close: [200, 180] },
+      }),
     });
 
     const result = await runFallbackEvening(env, { dryRun: true });
     expect(result.kind).toBe("success");
     expect((result as { htmlLength?: number }).htmlLength).toBeGreaterThan(0);
-    // The anomaly block should have been passed to AI or be in the markdown
-    // We verify Yahoo was called for SPY + GOOG
+    // Single batched spark request whose URL names both symbols (vs. one chart
+    // request per symbol that blew the subrequest budget).
     const fetchCalls = (global.fetch as ReturnType<typeof vi.fn>).mock.calls;
-    const calledSymbols = fetchCalls.map((c) => (c[0] as string).match(/chart\/([^?]+)/)?.[1]).filter(Boolean);
-    expect(calledSymbols).toContain("SPY");
-    expect(calledSymbols).toContain("GOOG");
+    expect(fetchCalls.length).toBe(1);
+    const url = fetchCalls[0][0] as string;
+    expect(url).toContain("/spark");
+    expect(url).toContain("SPY");
+    expect(url).toContain("GOOG");
   });
 
   it("Yahoo failure → anomaly block omitted, email still sends", async () => {
@@ -473,18 +448,119 @@ describe("runFallbackEvening", () => {
     expect(sendCall[1].subject).toMatch(/Evening Recap/);
   });
 
+  // ── Live Gmail fetch (the frozen-snapshot gap) ─────────────────────────────
+
+  it("live-fetches today's Gmail newsletters and includes them when the snapshot is empty", async () => {
+    const env = makeEnv();
+    // Snapshot froze at 2am with zero articles and no anomaly inputs — the old
+    // behavior would skip with "no content".
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeV3Snapshot({ articleCount: 0 })
+    );
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: false }); // no anomaly
+
+    // One newsletter arrived TODAY, after the snapshot froze.
+    (listMessages as ReturnType<typeof vi.fn>).mockResolvedValue([{ id: "fresh-1" }]);
+    (getMessage as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "fresh-1" });
+    (extractMessage as ReturnType<typeof vi.fn>).mockReturnValue({
+      receivedAt: "2026-06-02 14:30:00",
+      subject: "Afternoon PM Note",
+      sender: "pm@example.com",
+      body: "Fresh intraday commentary on held names.",
+    });
+    (generateObject as ReturnType<typeof vi.fn>).mockResolvedValue({
+      object: {
+        summary: "Fresh intraday take on the tape.",
+        key_themes: ["macro"],
+        sentiment: "bullish",
+        portfolio_relevance: "Relevant to AAPL",
+      },
+    });
+
+    const result = await runFallbackEvening(env); // not dryRun → reaches send
+    expect(result.kind).toBe("success"); // NOT skipped — the fresh article is content
+    const sendCall = (sendEmail as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(sendCall[1].html).toContain("Afternoon PM Note");
+  });
+
+  it("bubbles kind:error (not silent skip) when Gmail fetch errors and nothing else has content", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeV3Snapshot({ articleCount: 0 })
+    );
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: false }); // no anomaly
+    (listMessages as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("Gmail 500"));
+
+    const result = await runFallbackEvening(env);
+    expect(result.kind).toBe("error");
+    expect(result.error).toMatch(/Gmail 500/);
+  });
+
   // ── No-content guard ──────────────────────────────────────────────────────
 
-  it("returns skipped when there is no content (0 articles, AI returns empty)", async () => {
+  it("returns skipped when there is genuinely no content (no articles, no fetch, no anomaly)", async () => {
     const env = makeEnv();
     (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
       makeV3Snapshot({ articleCount: 0 })
     );
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: false });
+    (listMessages as ReturnType<typeof vi.fn>).mockResolvedValue([]); // nothing new in Gmail
 
     const result = await runFallbackEvening(env);
-    // 0 articles → per-source path → empty digest → skipped
+    // Truly quiet: no snapshot articles, no fresh mail, no anomaly → skipped.
     expect(result.kind).toBe("skipped");
+  });
+});
+
+describe("fetchLast2ClosesBatch (Yahoo spark, batched — subrequest budget)", () => {
+  beforeEach(() => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockReset();
+  });
+
+  it("parses a multi-symbol spark response into last-2-closes per symbol", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        SPY: { timestamp: [1, 2, 3], close: [500, 505, 510] },
+        AAPL: { timestamp: [1, 2, 3], close: [200, null, 210] }, // null close filtered
+      }),
+    });
+    const map = await fetchLast2ClosesBatch(["SPY", "AAPL"]);
+    expect(map.get("SPY")).toEqual({ prior: 505, today: 510 });
+    expect(map.get("AAPL")).toEqual({ prior: 200, today: 210 });
+  });
+
+  it("issues ONE request for a modest symbol set (collapses N subrequests → 1)", async () => {
+    const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ SPY: { close: [1, 2] }, AAPL: { close: [3, 4] }, MSFT: { close: [5, 6] } }),
+    });
+    await fetchLast2ClosesBatch(["SPY", "AAPL", "MSFT"]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns an empty map when Yahoo responds !ok (caller omits anomaly block)", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: false });
+    const map = await fetchLast2ClosesBatch(["SPY"]);
+    expect(map.size).toBe(0);
+  });
+
+  it("returns an empty map (not a throw) when fetch rejects", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("network"));
+    const map = await fetchLast2ClosesBatch(["SPY"]);
+    expect(map.size).toBe(0);
+  });
+
+  it("chunks large symbol sets so each request URL stays bounded", async () => {
+    const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({}) });
+    const symbols = Array.from({ length: 120 }, (_, i) => `SYM${i}`);
+    await fetchLast2ClosesBatch(symbols);
+    // 120 symbols at a 50-per-chunk cap → 3 requests, still far under the
+    // 50-subrequest Workers free-tier ceiling (vs. 120 with per-symbol fetch).
+    expect(fetchMock.mock.calls.length).toBeLessThanOrEqual(3);
+    expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(1);
   });
 });
 
