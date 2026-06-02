@@ -1,6 +1,6 @@
 # Vanguard Skin — TODO
 
-> **In-repo shortlist.** Updated 2026-06-01 (Significant Moves anomaly redesign — residual-zscore + 3% floor — and trading-day-gap guard shipped via PR #22, merge `f96b0fe`; Worker `e5841e97` + DMG deployed). Earlier same day: Block 3 portfolio-share + multi-account fidelity (`a54c42f`/`2c60b70`); backlog reconciliation — 7 stale "open" items verified already-done.
+> **In-repo shortlist.** Updated 2026-06-02 (closed-equity snapshot-diff reconcile shipped via PR #23, merge `58479c3` — phantom-holdings gap; IBKR Claude connector assessed → Tier 1 reconciliation done, Tiers 2/3 deferred to a new session). 2026-06-01: Significant Moves residual-zscore + 3% floor + trading-day-gap guard via PR #22 (merge `f96b0fe`, Worker `e5841e97`); Block 3 portfolio-share + multi-account fidelity (`a54c42f`/`2c60b70`).
 >
 > - v2 build log (Mar–Apr 2026): [archive/TODO-v2-complete-2026-03-30.md](archive/TODO-v2-complete-2026-03-30.md)
 > - Master roadmap (off-repo, session-driven): `~/.claude/plans/last-session-session-summary-eventual-ripple.md`
