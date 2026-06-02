@@ -171,7 +171,7 @@ export interface Snapshot {
   };
   // v3 — evening-email fallback fields. Optional for back-compat with v1/v2.
   vanguardHoldings?: Array<{ symbol: string; securityId: number; accountId: number }>;
-  securityBetas?: Array<{ securityId: number; lookbackDays: number; beta: number; computedAt: string }>;
+  securityBetas?: Array<{ securityId: number; lookbackDays: number; beta: number; residualStd?: number | null; computedAt: string }>;
   // v4 — cloud-side level scan. Static levels only; MA-based levels stay Mac-only.
   securityLevels?: SecurityLevelRow[];
 }
