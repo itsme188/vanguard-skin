@@ -27,6 +27,7 @@ import { enrichSecurities } from "./contracts";
 import { purgeExpiredOptionHoldings } from "../mutations/expired-options";
 import { purgeClosedOptionHoldings } from "../mutations/closed-positions";
 import { purgeMaturedBondHoldings } from "../mutations/matured-bonds";
+import { reconcileClosedEquityHoldings } from "../mutations/closed-equity";
 import { fetchSnapshotPrices } from "./snapshot";
 import { fetchBenchmarkPrices } from "./benchmark";
 import { computeDailyValuations } from "../compute/daily-valuation";
@@ -135,6 +136,24 @@ export async function runAutoRefresh(
       const msg = err instanceof Error ? err.message : "Matured-bond purge failed";
       errors.push(msg);
       console.error("[auto-refresh] Matured-bond purge error:", msg);
+    }
+
+    // ── Step 1.8: Reconcile closed equity holdings ──────────────
+    // Sibling to 1.5–1.7 but snapshot-diff (not attribute/txn) based: TWS sync
+    // writes only ACTIVE positions, and equities have no expiry/maturity and an
+    // often-incomplete local trade ledger, so a sold/covered stock or ETF
+    // lingers at its last quantity forever. Mark any equity absent from the
+    // latest holdings snapshot flat (zero-row), self-healing + guarded against
+    // partial snapshots. See lib/mutations/closed-equity.ts.
+    try {
+      const reconciled = reconcileClosedEquityHoldings(db);
+      if (reconciled > 0) {
+        console.log(`[auto-refresh] Reconciled ${reconciled} closed equity holdings`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Closed-equity reconcile failed";
+      errors.push(msg);
+      console.error("[auto-refresh] Closed-equity reconcile error:", msg);
     }
 
     // ── Step 2: Enrich Securities (full only) ───────────────────
