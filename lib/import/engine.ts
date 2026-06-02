@@ -22,6 +22,7 @@ import {
 } from "@/lib/mutations/import-batches";
 import { purgeExpiredOptionHoldings } from "@/lib/mutations/expired-options";
 import { purgeMaturedBondHoldings } from "@/lib/mutations/matured-bonds";
+import { reconcileClosedEquityHoldings } from "@/lib/mutations/closed-equity";
 
 // ── Parse (detect + parse, no DB writes) ────────────────────────────
 
@@ -573,6 +574,20 @@ export function commitImport(
     } catch (err) {
       console.error(
         "[commit] Matured-bond purge error:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+    try {
+      // Snapshot-diff: a stock/ETF absent from the just-imported holdings
+      // snapshot was sold/covered — mark it flat (zero-row). Guarded against a
+      // partial/under-extracted snapshot wiping the book. See closed-equity.ts.
+      const reconciled = reconcileClosedEquityHoldings(db);
+      if (reconciled > 0) {
+        console.log(`[commit] Reconciled ${reconciled} closed equity holdings`);
+      }
+    } catch (err) {
+      console.error(
+        "[commit] Closed-equity reconcile error:",
         err instanceof Error ? err.message : err,
       );
     }
