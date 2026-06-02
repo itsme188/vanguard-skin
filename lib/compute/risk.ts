@@ -4,6 +4,15 @@ import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { normalizeAccountIds } from "@/lib/compute/factors";
+import { calendarDaysBetween } from "@/lib/calendar/date-utils";
+
+// Drop per-position return pairs whose dates straddle a multi-week hole. The
+// prices table mixes sparse month-end statement anchors with dense daily TWS
+// rows, so an adjacent pair can span a months-long gap and inject a spurious
+// single-period return that inflates volatility/correlation (the same root
+// cause as the beta gap bug). 7 days tolerates weekends + holidays + a missed
+// day or two; larger is a discontinuity, not a real return.
+const MAX_RETURN_GAP_DAYS = 7;
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -455,6 +464,8 @@ export function computePositionRisk(
     const returns: number[] = [];
 
     for (let i = 1; i < sortedDates.length; i++) {
+      // Skip pairs spanning a price gap (statement-anchor / sync discontinuity).
+      if (calendarDaysBetween(sortedDates[i - 1], sortedDates[i]) > MAX_RETURN_GAP_DAYS) continue;
       const prev = prices.get(sortedDates[i - 1]);
       const curr = prices.get(sortedDates[i]);
       if (prev && curr && prev > 0 && curr > 0) {

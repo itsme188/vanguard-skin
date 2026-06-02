@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   getCurrentMonday,
   addDays,
+  calendarDaysBetween,
   validateWeekOf,
   formatWeekRange,
   mondayOf,
@@ -90,6 +91,27 @@ describe("addDays", () => {
 
   it("handles month boundary", () => {
     expect(addDays("2026-04-28", 5)).toBe("2026-05-03");
+  });
+});
+
+// ── calendarDaysBetween ──────────────────────────────────────────
+
+describe("calendarDaysBetween", () => {
+  it("returns 1 for consecutive days", () => {
+    expect(calendarDaysBetween("2026-04-13", "2026-04-14")).toBe(1);
+  });
+
+  it("returns 3 across a weekend (Fri→Mon)", () => {
+    expect(calendarDaysBetween("2026-04-10", "2026-04-13")).toBe(3);
+  });
+
+  it("is symmetric (absolute value)", () => {
+    expect(calendarDaysBetween("2026-04-14", "2026-04-13")).toBe(1);
+  });
+
+  it("measures the multi-month statement-anchor gap", () => {
+    // The exact NFLX gap that produced β=−14.
+    expect(calendarDaysBetween("2025-06-30", "2026-03-27")).toBe(270);
   });
 
   it("handles year boundary", () => {

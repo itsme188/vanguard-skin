@@ -15,12 +15,20 @@
 
 import type Database from "better-sqlite3";
 import { upsertBeta } from "@/lib/mutations/security-betas";
+import { calendarDaysBetween } from "@/lib/calendar/date-utils";
 
 // ─── Constants ────────────────────────────────────────────────────
 
 const LOOKBACK_DAYS = 60;
 const MIN_DATA_POINTS = 30; // skip securities with fewer aligned return pairs
 const BENCHMARK_SYMBOL = "SPY";
+// Drop return pairs whose dates are more than ~a week apart. The prices table
+// mixes sparse month-end statement anchors with dense daily TWS rows, so an
+// adjacent pair can straddle a multi-month hole (a real example: a 9-month gap
+// that also crossed Netflix's stock split → a spurious −91% "daily" return that
+// produced β=−14). 7 days tolerates weekends + holidays + a missed day or two;
+// anything larger is a discontinuity, not a single-period return.
+const MAX_RETURN_GAP_DAYS = 7;
 
 // ─── Types ────────────────────────────────────────────────────────
 
@@ -77,6 +85,9 @@ function computeBeta(
   for (let i = 1; i < dates.length; i++) {
     const prev = dates[i - 1];
     const curr = dates[i];
+
+    // Skip non-consecutive pairs (statement-anchor / sync-gap discontinuities).
+    if (calendarDaysBetween(prev, curr) > MAX_RETURN_GAP_DAYS) continue;
 
     const sPrev = stockPrices.get(prev)!;
     const sCurr = stockPrices.get(curr)!;
