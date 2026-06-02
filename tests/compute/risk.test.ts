@@ -297,6 +297,38 @@ describe("computePositionRisk", () => {
     expect(aapl!.annualizedVol!).toBeGreaterThan(msft!.annualizedVol!);
   });
 
+  it("ignores a return pair spanning a multi-month price gap", () => {
+    // Same root cause as the beta bug: an old statement anchor (2025-06-30)
+    // followed by a ~9-month hole then a dense daily block. The anchor→block
+    // step is not a real daily return; without a gap guard it dominates the
+    // volatility and inflates annualizedVol ~20×.
+    const today = new Date();
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test')");
+    db.exec("INSERT INTO securities (id, symbol, name) VALUES (1, 'GAPco', 'Gap Co')");
+    const asOf = today.toISOString().slice(0, 10);
+    db.exec(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 1, '${asOf}', 100)`);
+
+    const ins = db.prepare("INSERT OR IGNORE INTO prices (security_id, date, close_price) VALUES (?, ?, ?)");
+    // Old anchor far above the dense block → a giant negative "gap return".
+    ins.run(1, "2025-06-30", 800);
+    // Dense daily block: 40 days ending today, gentle moves → modest real vol.
+    for (let i = 0; i < 40; i++) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - 39 + i);
+      const date = d.toISOString().slice(0, 10);
+      ins.run(1, date, 100 + Math.sin(i) * 2 + i * 0.05);
+    }
+
+    const result = computePositionRisk(db);
+    const gapco = result.positions.find((p) => p.symbol === "GAPco");
+    expect(gapco).toBeDefined();
+    expect(gapco!.annualizedVol).not.toBeNull();
+    // Guard active → vol reflects only the dense block (~0.2–0.4). Without it the
+    // single −2.08 log gap return drives annualized vol above 3 (300%+).
+    expect(gapco!.annualizedVol!).toBeGreaterThan(0);
+    expect(gapco!.annualizedVol!).toBeLessThan(1.5);
+  });
+
   it("computes pairwise correlations", () => {
     const today = new Date();
     db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test')");

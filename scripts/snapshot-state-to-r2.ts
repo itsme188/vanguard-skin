@@ -78,7 +78,7 @@ interface Snapshot {
   vanguardHoldings: Array<{ symbol: string; securityId: number; accountId: number }>;
   // Cached beta coefficients. Worker reads these to rank holdings by
   // systematic risk without running a full regression in the cloud.
-  securityBetas: Array<{ securityId: number; lookbackDays: number; beta: number; computedAt: string }>;
+  securityBetas: Array<{ securityId: number; lookbackDays: number; beta: number; residualStd: number | null; computedAt: string }>;
   // v4 addition — active static price levels for cloud-side scan + Pushover
   // fan-out when Mac is asleep. MA-based levels (sma_*, ema_*) are excluded
   // because they require OHLCV bars to resolve effective_price; those stay
@@ -180,17 +180,18 @@ function getVanguardHoldingsForSnapshot(
  */
 function getSecurityBetas(
   db: Database.Database
-): Array<{ securityId: number; lookbackDays: number; beta: number; computedAt: string }> {
+): Array<{ securityId: number; lookbackDays: number; beta: number; residualStd: number | null; computedAt: string }> {
   const rows = db
     .prepare(
       `SELECT security_id AS securityId,
               lookback_days AS lookbackDays,
               beta,
+              residual_std AS residualStd,
               computed_at AS computedAt
          FROM security_betas
         ORDER BY security_id, lookback_days`
     )
-    .all() as Array<{ securityId: number; lookbackDays: number; beta: number; computedAt: string }>;
+    .all() as Array<{ securityId: number; lookbackDays: number; beta: number; residualStd: number | null; computedAt: string }>;
   return rows;
 }
 

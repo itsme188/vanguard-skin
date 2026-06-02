@@ -71,6 +71,22 @@ export function addDays(dateStr: string, days: number): string {
 }
 
 /**
+ * Whole calendar days between two YYYY-MM-DD strings (absolute value).
+ *
+ * Used by return-series computations to detect non-consecutive price rows: the
+ * `prices` table mixes sparse month-end statement anchors with dense daily TWS
+ * data, so adjacent rows are not always adjacent trading days. A pair whose gap
+ * exceeds a small threshold (weekend + holidays + a missed day or two) spans a
+ * statement-anchor discontinuity or sync outage and must NOT be treated as a
+ * single-period return — see the beta/position-risk gap guards.
+ */
+export function calendarDaysBetween(a: string, b: string): number {
+  const da = new Date(a + "T12:00:00"); // noon to avoid DST edge cases
+  const db = new Date(b + "T12:00:00");
+  return Math.abs(Math.round((db.getTime() - da.getTime()) / 86_400_000));
+}
+
+/**
  * Validate a weekOf parameter: must be YYYY-MM-DD and a Monday.
  * Returns null if valid, or an error message string if invalid.
  */

@@ -83,6 +83,53 @@ describe("refreshVanguardBetas", () => {
     expect(beta).toBeGreaterThan(0);
   });
 
+  it("ignores a return pair spanning a multi-month price gap (statement anchor → live data)", async () => {
+    // Reproduces the NFLX β=−14 bug: the prices table mixes an old month-end
+    // statement anchor (2025-06-30) with a dense daily TWS block (2026-04-01+),
+    // separated by a ~9-month hole. The anchor→dense-block step is NOT a real
+    // daily return — for a split it's even a huge negative one. Without a
+    // trading-day-gap guard, that single pair dominates the regression and
+    // pushes beta wildly off (here, strongly negative).
+    const acctId = getAccountId(db, "Vanguard Taxable");
+    db.prepare("INSERT INTO securities (symbol, name, security_type) VALUES ('GAPco', 'Gap Co', 'Stock')").run();
+    db.prepare("INSERT INTO securities (symbol, name, security_type) VALUES ('SPY', 'SPDR S&P 500 ETF', 'ETF')").run();
+    const gapId = (db.prepare("SELECT id FROM securities WHERE symbol = 'GAPco'").get() as { id: number }).id;
+    const spyId = (db.prepare("SELECT id FROM securities WHERE symbol = 'SPY'").get() as { id: number }).id;
+
+    const today = new Date().toISOString().slice(0, 10);
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (?, ?, ?, 100)"
+    ).run(acctId, gapId, today);
+
+    const px = db.prepare(
+      "INSERT OR IGNORE INTO prices (security_id, date, close_price, source) VALUES (?, ?, ?, ?)"
+    );
+    // Old statement anchors (a 9-month gap before the dense block). GAPco anchor
+    // is HIGHER than the dense block (a split-style drop → negative gap return);
+    // SPY anchor is LOWER (a positive gap return) → opposite signs → β goes negative.
+    px.run(gapId, "2025-06-30", 800, "canonical");
+    px.run(spyId, "2025-06-30", 350, "canonical");
+    // Dense daily block: GAPco tracks SPY 1:1 → the TRUE beta over real days is ~1.
+    const start = new Date("2026-04-01");
+    for (let i = 0; i < 40; i++) {
+      const d = new Date(start);
+      d.setDate(d.getDate() + i);
+      const ds = d.toISOString().slice(0, 10);
+      const p = 400 + i + Math.sin(i) * 3; // shared series → beta ≈ 1, var > 0
+      px.run(gapId, ds, p, "tws");
+      px.run(spyId, ds, p, "tws");
+    }
+
+    const result = await refreshVanguardBetas(db);
+    expect(result.errors).toHaveLength(0);
+    const beta = getCachedBeta(db, gapId, 60);
+    expect(beta).not.toBeNull();
+    // With the gap guard the regression uses only the dense block → β ≈ 1.
+    // Without it, the gap pair drags β far negative (~−5). Assert the sane band.
+    expect(beta!).toBeGreaterThan(0.5);
+    expect(beta!).toBeLessThan(1.5);
+  });
+
   it("skips securities with fewer than 30 days of price history", async () => {
     const acctId = getAccountId(db, "Vanguard Taxable");
 

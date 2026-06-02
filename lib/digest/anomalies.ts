@@ -11,6 +11,13 @@
 import type Database from "better-sqlite3";
 import { isMarketClosed, nextTradingDay } from "@/lib/calendar/market-holidays";
 
+// ─── Trigger constants ────────────────────────────────────────────────────────
+// A move is "out of the ordinary" only if it is BOTH large in raw terms AND
+// statistically rare for that specific security. See design doc 2026-06-01.
+const MIN_ABS_MOVE_PCT = 3.0;     // magnitude floor (percent)
+const MIN_RESIDUAL_Z = 2.0;       // std-devs of the stock's own residual noise
+const RESIDUAL_STD_EPSILON = 0.1; // percent; at/below this, skip the z-gate
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface AnomalyFlag {
@@ -21,8 +28,8 @@ export interface AnomalyFlag {
   spyPct: number;       // SPY's % move today
   beta: number;
   expectedPct: number;  // spyPct × beta
-  thresholdPct: number; // max(2 × |expectedPct|, 1.0)
-  ratio: number;        // |actualPct| / thresholdPct
+  residualPct: number;  // actualPct − expectedPct (move the market doesn't explain)
+  zScore: number | null; // |residualPct| / residualStd; null in degraded mode
   directionFlipped: boolean;
 }
 
@@ -35,6 +42,7 @@ interface HeldSecurityRow {
   today_close: number;
   prior_close: number;
   beta: number | null;
+  residual_std: number | null;
 }
 
 interface PricePairRow {
@@ -110,8 +118,9 @@ function resolveTradingDayPair(db: Database.Database): TradingDayPair | null {
  * 2. Compute spyPct from SPY's closes on exactly those two dates.
  * 3. For each Vanguard-held security, read its close on those SAME two dates
  *    (skip the security if either is missing) + cached beta.
- * 4. Compute actualPct, expectedPct, thresholdPct; flag if exceeded.
- * 5. Sort by ratio desc.
+ * 4. Compute actualPct, expectedPct, residualPct; flag only if |actualPct| >= 3%
+ *    AND (residual_std is unusable OR zScore >= 2).
+ * 5. Sort by zScore descending.
  */
 export function computeAnomalies(db: Database.Database): AnomalyFlag[] {
   // ── 1. Resolve the consecutive trading-day pair (SPY = market clock) ───────
@@ -170,7 +179,8 @@ export function computeAnomalies(db: Database.Database): AnomalyFlag[] {
                 WHERE security_id = s.id AND date = ?) AS today_close,
               (SELECT close_price FROM prices
                 WHERE security_id = s.id AND date = ?) AS prior_close,
-              sb.beta
+              sb.beta,
+              sb.residual_std
          FROM holdings h
          JOIN securities s ON s.id = h.security_id
          LEFT JOIN security_betas sb
@@ -191,11 +201,18 @@ export function computeAnomalies(db: Database.Database): AnomalyFlag[] {
 
     const actualPct = ((row.today_close - row.prior_close) / row.prior_close) * 100;
     const expectedPct = spyPct * row.beta;
-    const thresholdPct = Math.max(2 * Math.abs(expectedPct), 1.0);
+    const residualPct = actualPct - expectedPct;
 
-    if (Math.abs(actualPct) <= thresholdPct) continue;
+    // Gate 1: magnitude floor — always enforced.
+    if (Math.abs(actualPct) < MIN_ABS_MOVE_PCT) continue;
 
-    const ratio = Math.abs(actualPct) / thresholdPct;
+    // Gate 2: statistical rarity — enforced only when residual_std is usable.
+    // Degraded mode (null/tiny residual_std) falls through on the floor alone.
+    let zScore: number | null = null;
+    if (row.residual_std != null && row.residual_std > RESIDUAL_STD_EPSILON) {
+      zScore = Math.abs(residualPct) / row.residual_std;
+      if (zScore < MIN_RESIDUAL_Z) continue;
+    }
 
     // Direction flipped: opposite signs AND |expected| is meaningful (> 0.1%)
     const directionFlipped =
@@ -212,14 +229,19 @@ export function computeAnomalies(db: Database.Database): AnomalyFlag[] {
       spyPct,
       beta: row.beta,
       expectedPct,
-      thresholdPct,
-      ratio,
+      residualPct,
+      zScore,
       directionFlipped,
     });
   }
 
-  // Sort by ratio desc (largest deviation first)
-  flags.sort((a, b) => b.ratio - a.ratio);
+  // Sort by z-score desc (most statistically extreme first). Degraded flags
+  // (null z) rank by how far they cleared the magnitude floor. Symbol is the
+  // tie-break so the ordering is deterministic and byte-identical to the Worker
+  // engine (workers/cron/src/fallback-evening.ts) on exact z-score ties.
+  const sortKey = (f: AnomalyFlag): number =>
+    f.zScore ?? Math.abs(f.actualPct) / MIN_ABS_MOVE_PCT;
+  flags.sort((a, b) => sortKey(b) - sortKey(a) || a.symbol.localeCompare(b.symbol));
 
   return flags;
 }
@@ -237,45 +259,36 @@ function signedPct(value: number, decimals = 1): string {
  * Format the Vanguard anomalies block for inclusion in an email.
  *
  * Returns "" when there are no anomalies (caller should omit the section).
- * Caps at 5 bullets; appends "(N more flagged — see /dashboard/today)" when
- * there are more.
+ * Renders ALL flagged securities — no cap.
  *
  * Privacy: output contains only public market data — ticker, % move, beta.
  * No $ amounts, share counts, or position size language.
  */
 export function formatVanguardAnomaliesBlock(db: Database.Database): string {
-  const allFlags = computeAnomalies(db);
-  if (allFlags.length === 0) return "";
-
-  const MAX_DISPLAY = 5;
-  const displayed = allFlags.slice(0, MAX_DISPLAY);
-  const extras = allFlags.length - MAX_DISPLAY;
+  const flags = computeAnomalies(db);
+  if (flags.length === 0) return "";
 
   const lines: string[] = [
     "## Significant Moves in Vanguard Holdings (vs. expected)",
     "",
   ];
 
-  for (const flag of displayed) {
+  for (const flag of flags) {
     const signedActual = signedPct(flag.actualPct);
     const signedExpected = signedPct(flag.expectedPct);
     const signedSpy = signedPct(flag.spyPct);
     const reason = flag.directionFlipped
       ? "Direction flipped."
-      : `${flag.ratio.toFixed(1)}× expected.`;
+      : flag.zScore != null
+        ? `${flag.zScore.toFixed(1)}σ move.`
+        : `${signedActual} move.`;
 
     lines.push(
       `- **${flag.symbol}** ${signedActual} — expected ${signedExpected} (beta ${flag.beta.toFixed(1)} × SPY ${signedSpy}). ${reason}`
     );
   }
 
-  if (extras > 0) {
-    lines.push(
-      `*(${extras} more flagged — see /dashboard/today)*`
-    );
-  }
-
-  lines.push(""); // trailing newline via join("\n") + final ""
+  lines.push("");
 
   return lines.join("\n");
 }
