@@ -58,9 +58,8 @@ import {
 } from "./newsletter-fetch";
 import {
   ibkrConfigFromEnv,
-  getLiveSessionToken as getIbkrLst,
-  signedRequest as ibkrSignedRequest,
 } from "./ibkr-oauth";
+import { fetchLiveIbkrPositions, liveSymbolsForContext } from "./ibkr-positions";
 
 export interface Env {
   // Bindings
@@ -718,29 +717,21 @@ export default {
       const cfg = ibkrConfigFromEnv(env as unknown as Record<string, string | undefined>);
       if (!cfg) return Response.json({ error: "IBKR secrets not configured" }, { status: 400 });
       try {
-        const lst = await getIbkrLst(cfg);
-        await ibkrSignedRequest(cfg, lst.token, "POST", "/iserver/auth/ssodh/init", {
-          compete: "true",
-          publish: "true",
-        });
-        const acctsRes = await ibkrSignedRequest(cfg, lst.token, "GET", "/portfolio/accounts");
-        const accts = (await acctsRes.json()) as Array<{ accountId?: string }>;
-        const acctId = accts[0]?.accountId;
-        let positionCount: number | null = null;
-        const sample: Array<{ contractDesc?: unknown; position?: unknown }> = [];
-        if (acctId) {
-          const posRes = await ibkrSignedRequest(cfg, lst.token, "GET", `/portfolio/${acctId}/positions/0`);
-          const pos = (await posRes.json()) as Array<{ contractDesc?: unknown; position?: unknown }>;
-          if (Array.isArray(pos)) {
-            positionCount = pos.length;
-            for (const p of pos.slice(0, 5)) sample.push({ contractDesc: p.contractDesc, position: p.position });
-          }
-        }
+        // Exercise the EXACT path the composers use (fetch + map), not just the
+        // raw read — so this smoke test verifies the real Tier 3 delivery code,
+        // including OCC option parsing against live broker rows.
+        const positions = await fetchLiveIbkrPositions(cfg);
+        const sample = positions.slice(0, 6).map((p) => ({
+          symbol: p.symbol,
+          type: p.securityType,
+          underlying: p.underlyingSymbol,
+          qty: p.quantity,
+          costBasis: p.costBasis,
+        }));
         return Response.json({
           ok: true,
-          lstExpires: new Date(lst.expirationMs).toISOString(),
-          accountId: acctId,
-          positionCount,
+          positionCount: positions.length,
+          contextSymbols: liveSymbolsForContext(positions),
           sample,
         });
       } catch (err) {

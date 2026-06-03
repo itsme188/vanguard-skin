@@ -22,10 +22,18 @@ vi.mock("../src/resend", () => ({
   sendEmail: vi.fn(async () => ({ id: "mock-email-id" })),
 }));
 
+// Mock ONLY the network fetch in ibkr-positions; the pure transforms (merge,
+// family filter) stay real so the test exercises the actual combine logic.
+vi.mock("../src/ibkr-positions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/ibkr-positions")>();
+  return { ...actual, fetchLiveIbkrPositions: vi.fn() };
+});
+
 import { runEarningsFallback } from "../src/fallback-earnings";
 import { loadLatestSnapshot } from "../src/state";
 import { sendEmail } from "../src/resend";
 import { composeReleaseInstant } from "../src/reaction-matcher";
+import { fetchLiveIbkrPositions } from "../src/ibkr-positions";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -214,5 +222,88 @@ describe("runEarningsFallback v5 context (notes + bogeys)", () => {
     );
     const result = await runEarningsFallback(env, { now: previewWindowNow() });
     expect(result.sent).toBe(1);
+  });
+});
+
+describe("runEarningsFallback Tier 3 live-IBKR position refresh", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (sendEmail as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "mock-email-id" });
+  });
+
+  function htmlOfLastSend(): string {
+    const calls = (sendEmail as ReturnType<typeof vi.fn>).mock.calls;
+    return calls[calls.length - 1][1].html as string;
+  }
+
+  /** Snapshot carrying a STALE IBKR AAPL holding (999 sh) + DB join rows. */
+  function snapshotWithStaleIbkr(): Snapshot {
+    const snap = makeEarningsSnapshot();
+    (snap as unknown as Snapshot).accounts = [{ id: 3, name: "IBKR" }];
+    (snap as unknown as Snapshot).securities = [
+      {
+        id: 10,
+        symbol: "AAPL",
+        name: "Apple",
+        security_type: "stock",
+        asset_class: "STK",
+        sector: null,
+        underlying_symbol: null,
+        option_type: null,
+        strike_price: null,
+        expiration_date: null,
+        multiplier: null,
+      },
+    ];
+    (snap as unknown as Snapshot).holdings = [
+      { id: 1, account_id: 3, security_id: 10, quantity: 999, cost_basis: 99999, as_of_date: EVENT_DATE },
+    ];
+    return snap;
+  }
+
+  const IBKR_ENV: Partial<FallbackEnv> = {
+    IBKR_CONSUMER_KEY: "QAJVIHZHI",
+    IBKR_ACCESS_TOKEN: "tok",
+    IBKR_PREPEND: "deadbeef",
+    IBKR_DH_PRIME: "00cb",
+    IBKR_SIGNATURE_KEY_PKCS8: "cGtjczg=",
+  };
+
+  it("replaces the stale snapshot IBKR row with the live position", async () => {
+    const env = makeEnv(IBKR_ENV);
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotWithStaleIbkr());
+    (fetchLiveIbkrPositions as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { symbol: "AAPL", securityType: "Stock", underlyingSymbol: null, optionType: null, strikePrice: null, expirationDate: null, multiplier: null, quantity: 100, costBasis: 15000, mktPrice: 180 },
+    ]);
+
+    const result = await runEarningsFallback(env, { now: previewWindowNow() });
+    expect(result.sent).toBe(1);
+
+    const html = htmlOfLastSend();
+    expect(html).toContain("100 sh"); // live quantity
+    expect(html).not.toContain("999"); // stale snapshot row gone
+    expect(html).toContain("IBKR live"); // provenance disclosed
+  });
+
+  it("falls back to the stale snapshot position when the live fetch throws", async () => {
+    const env = makeEnv(IBKR_ENV);
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotWithStaleIbkr());
+    (fetchLiveIbkrPositions as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("IBKR down"));
+
+    const result = await runEarningsFallback(env, { now: previewWindowNow() });
+    expect(result.sent).toBe(1); // email still ships — best-effort
+
+    const html = htmlOfLastSend();
+    expect(html).toContain("999"); // degraded to snapshot
+    expect(html).not.toContain("IBKR live");
+  });
+
+  it("does not attempt a live fetch when IBKR is not configured", async () => {
+    const env = makeEnv(); // no IBKR_* vars
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotWithStaleIbkr());
+
+    const result = await runEarningsFallback(env, { now: previewWindowNow() });
+    expect(result.sent).toBe(1);
+    expect(fetchLiveIbkrPositions).not.toHaveBeenCalled();
   });
 });

@@ -25,6 +25,8 @@ import { getModelForFeature } from "./ai";
 import { briefingToHtml } from "./html";
 import { todayET, getCurrentETDayOfWeek } from "./dst";
 import type { FallbackEnv, FallbackResult } from "./fallback-digest";
+import { ibkrConfigFromEnv } from "./ibkr-oauth";
+import { fetchLiveIbkrPositions, liveSymbolsForContext } from "./ibkr-positions";
 
 // Must match Mac's lib/calendar/briefing.ts constants.
 const PREFERRED_SOURCE_IDS = [1, 18, 19, 28];
@@ -71,7 +73,16 @@ export async function runFallbackBriefing(
   }
 
   const weekOf = briefingWeekOf();
-  const prompt = buildPrompt(snapshot, weekOf);
+
+  // Tier 3 — refresh the holdings context with the CURRENT IBKR book. The
+  // snapshot's held-symbol list freezes at 2am and goes stale while the Mac is
+  // asleep (travel), so a recently-bought IBKR name would be missing from the
+  // briefing's portfolio context. Union (not replace): we can't tell a sold
+  // Vanguard name from a sold IBKR name without per-account symbol mapping, so
+  // we only ADD current IBKR symbols. Best-effort — any failure leaves the
+  // snapshot list untouched.
+  const heldSymbols = await mergeLiveIbkrSymbols(env, snapshot.heldSymbols);
+  const prompt = buildPrompt(snapshot, weekOf, heldSymbols);
 
   let text: string;
   try {
@@ -125,11 +136,34 @@ export async function runFallbackBriefing(
 
 // ── Prompt assembly ────────────────────────────────────────────────
 
-function buildPrompt(snapshot: Snapshot, weekOf: string): string {
+/**
+ * Best-effort: union the snapshot's held symbols with the current live IBKR
+ * book. Returns the snapshot list unchanged when IBKR isn't configured or the
+ * fetch fails — never throws.
+ */
+async function mergeLiveIbkrSymbols(
+  env: FallbackEnv,
+  snapshotHeld: string[],
+): Promise<string[]> {
+  const cfg = ibkrConfigFromEnv(env as unknown as Record<string, string | undefined>);
+  if (!cfg) return snapshotHeld;
+  try {
+    const positions = await fetchLiveIbkrPositions(cfg);
+    const merged = new Set(snapshotHeld.map((s) => s.toUpperCase()));
+    for (const sym of liveSymbolsForContext(positions)) merged.add(sym);
+    console.log(`[fallback-briefing] live IBKR symbols merged: ${liveSymbolsForContext(positions).length}`);
+    return [...merged];
+  } catch (err) {
+    console.warn("[fallback-briefing] live IBKR symbol refresh failed:", err);
+    return snapshotHeld;
+  }
+}
+
+function buildPrompt(snapshot: Snapshot, weekOf: string, heldSymbols: string[] = snapshot.heldSymbols): string {
   const weekTitle = formatWeekTitle(weekOf);
 
   const holdingsList =
-    snapshot.heldSymbols.join(", ") || "(no holdings snapshot available)";
+    heldSymbols.join(", ") || "(no holdings snapshot available)";
 
   // Partition events by category — same classification as Mac side.
   const portfolioEarnings = snapshot.calendarEvents.filter(
