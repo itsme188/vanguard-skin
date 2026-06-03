@@ -59,7 +59,7 @@ import {
 import {
   ibkrConfigFromEnv,
 } from "./ibkr-oauth";
-import { fetchLiveIbkrPositions, liveSymbolsForContext } from "./ibkr-positions";
+import { fetchLiveIbkrPositionsCached, liveSymbolsForContext } from "./ibkr-positions";
 
 export interface Env {
   // Bindings
@@ -717,10 +717,10 @@ export default {
       const cfg = ibkrConfigFromEnv(env as unknown as Record<string, string | undefined>);
       if (!cfg) return Response.json({ error: "IBKR secrets not configured" }, { status: 400 });
       try {
-        // Exercise the EXACT path the composers use (fetch + map), not just the
-        // raw read — so this smoke test verifies the real Tier 3 delivery code,
-        // including OCC option parsing against live broker rows.
-        const positions = await fetchLiveIbkrPositions(cfg);
+        // Exercise the EXACT path the composers use (cached fetch + map), not
+        // just the raw read — so this smoke test verifies the real Tier 3
+        // delivery code, including the KV LST cache + OCC option parsing.
+        const positions = await fetchLiveIbkrPositionsCached(env.CRON_KV, cfg);
         const sample = positions.slice(0, 6).map((p) => ({
           symbol: p.symbol,
           type: p.securityType,
@@ -728,11 +728,15 @@ export default {
           qty: p.quantity,
           costBasis: p.costBasis,
         }));
+        // Confirm the LST landed in the KV cache (verified live: ~24h TTL, epoch
+        // millis). Read-after-write is strongly consistent within the PoP.
+        const cachePresent = (await env.CRON_KV.get("ibkr-lst")) != null;
         return Response.json({
           ok: true,
           positionCount: positions.length,
           contextSymbols: liveSymbolsForContext(positions),
           sample,
+          cachePresent,
         });
       } catch (err) {
         return Response.json({ ok: false, error: (err as Error)?.message ?? String(err) }, { status: 502 });

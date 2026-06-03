@@ -26,7 +26,7 @@ import { briefingToHtml } from "./html";
 import { todayET, getCurrentETDayOfWeek } from "./dst";
 import type { FallbackEnv, FallbackResult } from "./fallback-digest";
 import { ibkrConfigFromEnv } from "./ibkr-oauth";
-import { fetchLiveIbkrPositions, liveSymbolsForContext } from "./ibkr-positions";
+import { fetchLiveIbkrPositionsCached, liveSymbolsForContext } from "./ibkr-positions";
 
 // Must match Mac's lib/calendar/briefing.ts constants.
 const PREFERRED_SOURCE_IDS = [1, 18, 19, 28];
@@ -148,7 +148,7 @@ async function mergeLiveIbkrSymbols(
   const cfg = ibkrConfigFromEnv(env as unknown as Record<string, string | undefined>);
   if (!cfg) return snapshotHeld;
   try {
-    const positions = await fetchLiveIbkrPositions(cfg);
+    const positions = await fetchLiveIbkrPositionsCached(env.CRON_KV, cfg);
     const merged = new Set(snapshotHeld.map((s) => s.toUpperCase()));
     for (const sym of liveSymbolsForContext(positions)) merged.add(sym);
     console.log(`[fallback-briefing] live IBKR symbols merged: ${liveSymbolsForContext(positions).length}`);
