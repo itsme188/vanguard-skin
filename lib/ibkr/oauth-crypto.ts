@@ -57,13 +57,19 @@ export function buildSignatureBaseString(
   return `${method.toUpperCase()}&${percentEncode(baseUrl)}&${percentEncode(normalized)}`;
 }
 
+// BigInt() calls (not `1n` literals) so this compiles under the project's
+// ES2017 tsconfig target (esnext lib provides BigInt; the literal syntax needs
+// target ES2020).
+const ZERO = BigInt(0);
+const ONE = BigInt(1);
+
 /** Modular exponentiation over BigInt. */
 function modPow(base: bigint, exp: bigint, mod: bigint): bigint {
-  let result = 1n;
+  let result = ONE;
   base %= mod;
-  while (exp > 0n) {
-    if (exp & 1n) result = (result * base) % mod;
-    exp >>= 1n;
+  while (exp > ZERO) {
+    if (exp & ONE) result = (result * base) % mod;
+    exp >>= ONE;
     base = (base * base) % mod;
   }
   return result;

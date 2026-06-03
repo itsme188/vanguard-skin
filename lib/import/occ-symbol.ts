@@ -37,6 +37,31 @@ export function isOCCFormat(symbol: string): boolean {
 }
 
 /**
+ * Parse an OCC-format symbol into its components (inverse of buildOCCSymbol).
+ * Returns null if the string isn't OCC format.
+ */
+export function parseOCCSymbol(symbol: string): {
+  underlying: string;
+  expirationDate: string; // YYYY-MM-DD
+  optionType: "CALL" | "PUT";
+  strike: number;
+} | null {
+  if (!isOCCFormat(symbol)) return null;
+  const underlying = symbol.slice(0, 6).trim();
+  const yy = symbol.slice(6, 8);
+  const mm = symbol.slice(8, 10);
+  const dd = symbol.slice(10, 12);
+  const cp = symbol.slice(12, 13);
+  const strikeRaw = symbol.slice(13, 21);
+  return {
+    underlying,
+    expirationDate: `20${yy}-${mm}-${dd}`,
+    optionType: cp === "C" ? "CALL" : "PUT",
+    strike: parseInt(strikeRaw, 10) / 1000,
+  };
+}
+
+/**
  * If an option has a bare ticker as symbol but full metadata available,
  * convert it to OCC format. Returns the corrected symbol.
  */
