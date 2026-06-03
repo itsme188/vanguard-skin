@@ -47,7 +47,7 @@ import { composeReleaseInstant } from "./reaction-matcher";
 import { captureReactionFromYahoo } from "./yahoo";
 import { ibkrConfigFromEnv } from "./ibkr-oauth";
 import {
-  fetchLiveIbkrPositions,
+  fetchLiveIbkrPositionsCached,
   combineFamilyPositions,
   type LiveIbkrPosition,
 } from "./ibkr-positions";
@@ -175,7 +175,7 @@ export async function runEarningsFallback(
     );
     if (ibkrCfg) {
       try {
-        liveIbkr = await fetchLiveIbkrPositions(ibkrCfg);
+        liveIbkr = await fetchLiveIbkrPositionsCached(env.CRON_KV, ibkrCfg);
         console.log(`[fallback-earnings] live IBKR refresh: ${liveIbkr.length} positions`);
       } catch (err) {
         console.warn("[fallback-earnings] live IBKR refresh failed, using snapshot:", err);

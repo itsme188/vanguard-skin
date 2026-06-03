@@ -17,6 +17,7 @@ import {
   getLiveSessionToken,
   signedRequest,
   type IbkrWorkerConfig,
+  type WorkerLiveSessionToken,
 } from "./ibkr-oauth";
 import type { PositionView } from "./fallback-earnings";
 
@@ -209,15 +210,21 @@ export function liveSymbolsForContext(positions: LiveIbkrPosition[]): string[] {
 // ── Network fetch (best-effort; proven live via /internal/ibkr-test) ─
 
 /**
- * Mint an LST, open the brokerage session, and read the current positions for
- * the first portfolio account. Best-effort: callers should swallow errors and
- * fall back to the snapshot. Returns mapped, non-zero positions.
+ * Mint (or reuse a passed) LST, open the brokerage session, and read the current
+ * positions for the first portfolio account. Best-effort: callers should swallow
+ * errors and fall back to the snapshot. Returns mapped, non-zero positions.
+ *
+ * Pass `opts.lst` to reuse a cached Live Session Token (see
+ * getCachedLiveSessionToken) and skip the rate-limited handshake; omit it to
+ * mint a fresh one (back-compat).
  */
 export async function fetchLiveIbkrPositions(
   cfg: IbkrWorkerConfig,
+  opts: { lst?: WorkerLiveSessionToken } = {},
 ): Promise<LiveIbkrPosition[]> {
-  const lst = await getLiveSessionToken(cfg);
+  const lst = opts.lst ?? (await getLiveSessionToken(cfg));
   // Brokerage session is required before /portfolio reads return live data.
+  // Re-asserted every run (cheap) so a reused LST still has a warm session.
   await signedRequest(cfg, lst.token, "POST", "/iserver/auth/ssodh/init", {
     compete: "true",
     publish: "true",
@@ -248,4 +255,93 @@ export async function fetchLiveIbkrPositions(
   }
 
   return raw.filter((p) => (p.position ?? 0) !== 0).map(mapLivePosition);
+}
+
+// ── LST session cache (KV-backed) ───────────────────────────────────
+//
+// The Live Session Token is valid ~24h. Caching it in KV avoids re-running the
+// DH+RSA handshake — and tripping IBKR's rate limit on /oauth/live_session_token
+// — on every briefing/earnings run. The cached token is strictly LESS sensitive
+// than the durable consumer key / access-token secret already in Worker env, and
+// KV is private to the Worker, so this widens no trust boundary.
+
+const LST_KV_KEY = "ibkr-lst";
+// Refresh a little before the stated 24h expiry so a run never races the edge.
+const LST_SAFETY_MARGIN_MS = 5 * 60 * 1000;
+
+interface CachedLst {
+  token: string;
+  expirationMs: number;
+}
+
+/**
+ * Return a Live Session Token, reusing a KV-cached one when present and not near
+ * expiry. Mints + caches on miss / near-expiry / malformed cache, or when
+ * `forceRefresh` is set (used to recover from a server-side-invalidated token).
+ */
+export async function getCachedLiveSessionToken(
+  kv: KVNamespace,
+  cfg: IbkrWorkerConfig,
+  opts: { forceRefresh?: boolean; now?: number } = {},
+): Promise<WorkerLiveSessionToken> {
+  const now = opts.now ?? Date.now();
+
+  if (!opts.forceRefresh) {
+    const raw = await kv.get(LST_KV_KEY);
+    if (raw) {
+      try {
+        const cached = JSON.parse(raw) as CachedLst;
+        if (cached.token && cached.expirationMs - now > LST_SAFETY_MARGIN_MS) {
+          return { token: cached.token, expirationMs: cached.expirationMs };
+        }
+      } catch {
+        // malformed — fall through to mint
+      }
+    }
+  }
+
+  const lst = await getLiveSessionToken(cfg);
+  // Expire the KV entry a touch before the token itself, floor 60s.
+  const ttlSeconds = Math.max(60, Math.floor((lst.expirationMs - now) / 1000) - 300);
+  await kv.put(
+    LST_KV_KEY,
+    JSON.stringify({ token: lst.token, expirationMs: lst.expirationMs } satisfies CachedLst),
+    { expirationTtl: ttlSeconds },
+  );
+  return lst;
+}
+
+/**
+ * Fetch positions using a KV-cached LST, transparently dropping the cache and
+ * re-minting ONCE if the cached token was invalidated server-side (401/403).
+ * Best-effort callers still wrap this in try/catch to fall back to the snapshot.
+ *
+ * `deps` is injectable for tests; in production it wires the real cache + reader.
+ */
+export async function fetchLiveIbkrPositionsCached(
+  kv: KVNamespace,
+  cfg: IbkrWorkerConfig,
+  deps: {
+    getLst?: (force: boolean) => Promise<WorkerLiveSessionToken>;
+    read?: (cfg: IbkrWorkerConfig, lst: WorkerLiveSessionToken) => Promise<LiveIbkrPosition[]>;
+  } = {},
+): Promise<LiveIbkrPosition[]> {
+  const getLst =
+    deps.getLst ?? ((force: boolean) => getCachedLiveSessionToken(kv, cfg, { forceRefresh: force }));
+  const read =
+    deps.read ?? ((c: IbkrWorkerConfig, lst: WorkerLiveSessionToken) => fetchLiveIbkrPositions(c, { lst }));
+
+  const lst = await getLst(false);
+  try {
+    return await read(cfg, lst);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/\b(401|403)\b/.test(msg)) {
+      // Cached LST likely invalidated server-side — drop it, mint fresh, retry once.
+      await kv.delete(LST_KV_KEY);
+      const fresh = await getLst(true);
+      return await read(cfg, fresh);
+    }
+    throw err;
+  }
 }
