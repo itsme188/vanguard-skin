@@ -125,6 +125,59 @@ Everything in Tier 2/3 depends on how the *app* authenticates to IBKR's Web API
 A 1–2 hour spike (read IBKR's current Web API auth docs + test a token flow) would
 de-risk Tier 2/3 before any build is scoped.
 
+## 5b. Spike resolution — 2026-06-02 (verdict: GO, both tiers feasible)
+
+The auth-feasibility spike resolved the §5 unknown. **First-Party OAuth 1.0a is the
+path, and it is retail-available + fully headless.** Verified against IBKR Campus +
+the `ibind` (Voyz) and `art1c0/ibkr-client` implementations.
+
+**What's true:**
+- **Retail eligibility:** First-party OAuth 1.0a (your own account) needs an **IBKR
+  Pro** account, fully open + funded, and is registered via the **Self-Service OAuth
+  page** in Account Management. **No third-party compliance approval** — that gate
+  applies only to vendors accessing *other* people's accounts. (IBKR Campus still says
+  "retail = CP Gateway"; in practice individuals self-register OAuth 1.0a live + paper
+  creds. Treat the campus page as conservative, not current.)
+- **Fully headless, no Gateway, no browser, no daily re-login.** Durable credentials,
+  generated ONCE in the Self-Service Portal and stored:
+  1. Consumer key (9-char, user-created)
+  2. Access token + access token secret (shown once, never again)
+  3. Private **signature** key (`private_signature.pem`)
+  4. Private **encryption** key (`private_encryption.pem`)
+  5. DH prime (from `dhparam.pem`; generator always = 2)
+- **Token lifecycle:** the access token is long-lived (until revoked). A **Live Session
+  Token (LST)** is derived from it and is valid **~24h**; the brokerage session opened
+  via `/iserver/auth/ssodh/init` is kept alive with a periodic **tickle** (~minutes).
+  An unattended server runs: (init/refresh LST when >24h old) → ssodh/init → tickle
+  loop → signed reads.
+
+**Tier 2 (Mac) — FEASIBLE, low risk.** Node has all crypto (RSA-SHA256, DH modexp,
+PKCS1v1.5 decrypt, HMAC). A TS OAuth 1.0a client (or shell out to `ibind`) gives
+TWS-independent positions / cost basis / balances / snapshot prices.
+
+**Tier 3 (Worker/cloud) — FEASIBLE (verdict flipped from RISKY).** The Worker can mint
+the LST and sign requests entirely in-runtime:
+- DH challenge `2^random mod prime` → **BigInt modexp** ✓
+- LST-request signature **RSA-SHA256** (RSASSA-PKCS1-v1_5/SHA-256) → **WebCrypto** ✓
+- LST derivation **HMAC** + per-request **HMAC-SHA256** → **WebCrypto** ✓
+- The one op WebCrypto lacks (**RSA PKCS1v1.5 decrypt** of the access-token-secret to
+  get the "prepend") is **not needed at runtime** — the prepend is a **constant**
+  (fixed access-token-secret + fixed encryption key), so precompute it once on the Mac
+  and store it as a Worker secret. Net: zero RSA-decrypt in the Worker.
+- LST is 24h, so the Worker re-mints at most once/day; can also cache the LST in KV so
+  concurrent cron ticks share it. This closes the biggest cloud-fallback gap (live IBKR
+  positions/prices in briefings + evening email when the Mac/TWS is asleep).
+
+**Hard prerequisite (user-only, one-time):** generate the OAuth 1.0a credentials in the
+IBKR **Self-Service Portal** (requires logging into IBKR Account Management; account
+must be **Pro**). The assistant cannot do this step. Nothing below can be tested
+end-to-end until these creds exist.
+
+**Residual risks (low):** (a) confirm the account is Pro, not Lite; (b) Web API read
+rate limits (generous for our cadence); (c) exact LST MAC algorithm (HMAC-SHA1 vs 256)
+and base-string encoding — pin against a reference impl during build; (d) IBKR could
+change the self-service availability (monitor).
+
 ## 6. Recommendation (no commitment)
 
 1. **Now, no build:** use the connector (Tier 1) to close the April gap and backfill
