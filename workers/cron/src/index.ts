@@ -56,6 +56,11 @@ import {
   runNewsletterFetch,
   shouldRunNewsletterFetch,
 } from "./newsletter-fetch";
+import {
+  ibkrConfigFromEnv,
+  getLiveSessionToken as getIbkrLst,
+  signedRequest as ibkrSignedRequest,
+} from "./ibkr-oauth";
 
 export interface Env {
   // Bindings
@@ -91,6 +96,15 @@ export interface Env {
   PUSHOVER_APP_TOKEN?: string;
   PUSHOVER_USER_KEY?: string;
   PUSHOVER_LINK_BASE?: string;
+  // IBKR first-party OAuth 1.0a (Tier 3) — headless cloud read of live positions.
+  IBKR_CONSUMER_KEY?: string;
+  IBKR_ACCESS_TOKEN?: string;
+  IBKR_PREPEND?: string;
+  IBKR_DH_PRIME?: string;
+  IBKR_DH_GENERATOR?: string;
+  IBKR_SIGNATURE_KEY_PKCS8?: string;
+  IBKR_BASE_URL?: string;
+  IBKR_REALM?: string;
 }
 
 export function parseJobFromClock(env: Env): { type: JobType; expectedHour: number } | null {
@@ -695,6 +709,43 @@ export default {
       }
       await env.CRON_KV.delete(`cloud-enriched-${eventIdStr}`);
       return Response.json({ ok: true });
+    }
+
+    // Tier 3 live smoke test — mint LST headlessly + read live IBKR positions
+    // from the Worker runtime (proves the WebCrypto OAuth path). X-Cron-Secret
+    // gated. Read-only.
+    if (request.method === "POST" && url.pathname === "/internal/ibkr-test") {
+      const cfg = ibkrConfigFromEnv(env as unknown as Record<string, string | undefined>);
+      if (!cfg) return Response.json({ error: "IBKR secrets not configured" }, { status: 400 });
+      try {
+        const lst = await getIbkrLst(cfg);
+        await ibkrSignedRequest(cfg, lst.token, "POST", "/iserver/auth/ssodh/init", {
+          compete: "true",
+          publish: "true",
+        });
+        const acctsRes = await ibkrSignedRequest(cfg, lst.token, "GET", "/portfolio/accounts");
+        const accts = (await acctsRes.json()) as Array<{ accountId?: string }>;
+        const acctId = accts[0]?.accountId;
+        let positionCount: number | null = null;
+        const sample: Array<{ contractDesc?: unknown; position?: unknown }> = [];
+        if (acctId) {
+          const posRes = await ibkrSignedRequest(cfg, lst.token, "GET", `/portfolio/${acctId}/positions/0`);
+          const pos = (await posRes.json()) as Array<{ contractDesc?: unknown; position?: unknown }>;
+          if (Array.isArray(pos)) {
+            positionCount = pos.length;
+            for (const p of pos.slice(0, 5)) sample.push({ contractDesc: p.contractDesc, position: p.position });
+          }
+        }
+        return Response.json({
+          ok: true,
+          lstExpires: new Date(lst.expirationMs).toISOString(),
+          accountId: acctId,
+          positionCount,
+          sample,
+        });
+      } catch (err) {
+        return Response.json({ ok: false, error: (err as Error)?.message ?? String(err) }, { status: 502 });
+      }
     }
 
     if (url.pathname === "/" || url.pathname === "/health") {
