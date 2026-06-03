@@ -41,10 +41,17 @@ vi.mock("../src/resend", () => ({
   sendEmail: vi.fn(async () => ({ id: "mock-email-id" })),
 }));
 
+// Mock ONLY the IBKR network fetch; pure transforms stay real.
+vi.mock("../src/ibkr-positions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/ibkr-positions")>();
+  return { ...actual, fetchLiveIbkrPositions: vi.fn() };
+});
+
 import { runFallbackBriefing } from "../src/fallback-briefing";
 import { loadLatestSnapshot } from "../src/state";
 import { sendEmail } from "../src/resend";
 import { generateText } from "ai";
+import { fetchLiveIbkrPositions } from "../src/ibkr-positions";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -146,6 +153,56 @@ describe("runFallbackBriefing", () => {
       text: "## Week Overview\n\nSome briefing content.",
     });
     (sendEmail as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "mock-email-id" });
+    (fetchLiveIbkrPositions as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+  });
+
+  // ── Tier 3: live IBKR holdings-context refresh ────────────────────────────
+
+  const IBKR_ENV: Partial<FallbackEnv> = {
+    IBKR_CONSUMER_KEY: "QAJVIHZHI",
+    IBKR_ACCESS_TOKEN: "tok",
+    IBKR_PREPEND: "deadbeef",
+    IBKR_DH_PRIME: "00cb",
+    IBKR_SIGNATURE_KEY_PKCS8: "cGtjczg=",
+  };
+
+  function promptOfLastGenerate(): string {
+    const calls = (generateText as ReturnType<typeof vi.fn>).mock.calls;
+    return calls[calls.length - 1][0].prompt as string;
+  }
+
+  it("merges current live IBKR symbols into the holdings context", async () => {
+    const env = makeEnv(IBKR_ENV);
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(makeSnapshot()); // held: AAPL
+    (fetchLiveIbkrPositions as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { symbol: "NVDA", securityType: "Stock", underlyingSymbol: null, optionType: null, strikePrice: null, expirationDate: null, multiplier: null, quantity: 30, costBasis: 3000, mktPrice: 120 },
+    ]);
+
+    await runFallbackBriefing(env);
+
+    const prompt = promptOfLastGenerate();
+    expect(prompt).toContain("AAPL"); // snapshot held kept
+    expect(prompt).toContain("NVDA"); // live IBKR name added
+  });
+
+  it("uses the snapshot held list verbatim when IBKR is not configured", async () => {
+    const env = makeEnv(); // no IBKR_*
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(makeSnapshot());
+
+    await runFallbackBriefing(env);
+
+    expect(fetchLiveIbkrPositions).not.toHaveBeenCalled();
+    expect(promptOfLastGenerate()).toContain("AAPL");
+  });
+
+  it("degrades to the snapshot list when the live IBKR fetch throws", async () => {
+    const env = makeEnv(IBKR_ENV);
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(makeSnapshot());
+    (fetchLiveIbkrPositions as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("IBKR down"));
+
+    const result = await runFallbackBriefing(env);
+    expect(result.kind).not.toBe("error"); // briefing still ships
+    expect(promptOfLastGenerate()).toContain("AAPL");
   });
 
   // ── Recipient resolution ─────────────────────────────────────────────────

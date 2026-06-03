@@ -45,6 +45,12 @@ import { briefingToHtml } from "./html";
 import { sendEmail } from "./resend";
 import { composeReleaseInstant } from "./reaction-matcher";
 import { captureReactionFromYahoo } from "./yahoo";
+import { ibkrConfigFromEnv } from "./ibkr-oauth";
+import {
+  fetchLiveIbkrPositions,
+  combineFamilyPositions,
+  type LiveIbkrPosition,
+} from "./ibkr-positions";
 import {
   earningsMarkerKey,
   earningsRunningKey,
@@ -94,6 +100,16 @@ export interface FallbackEnv {
   BRIEFING_EMAIL_TO?: string;
   RESEND_API_KEY?: string;
   RESEND_FROM_DOMAIN?: string;
+  // Tier 3: live IBKR position refresh. All optional — when unset, the composer
+  // degrades to the (possibly stale) snapshot positions.
+  IBKR_CONSUMER_KEY?: string;
+  IBKR_ACCESS_TOKEN?: string;
+  IBKR_PREPEND?: string;
+  IBKR_DH_PRIME?: string;
+  IBKR_SIGNATURE_KEY_PKCS8?: string;
+  IBKR_DH_GENERATOR?: string;
+  IBKR_BASE_URL?: string;
+  IBKR_REALM?: string;
 }
 
 export interface EarningsFallbackResult {
@@ -146,6 +162,27 @@ export async function runEarningsFallback(
 
   if (candidates.length === 0) return result;
 
+  // Tier 3 — live IBKR refresh. The snapshot's IBKR rows can be days stale while
+  // the Mac is asleep (travel), so an earnings email might show a position the
+  // user has since exited or resized. Pull the current book ONCE for the whole
+  // run (one LST mint, reused across candidates). Best-effort: any failure
+  // degrades to the snapshot positions. Never run on dry-run (no network).
+  let liveIbkr: LiveIbkrPosition[] | null = null;
+  const ibkrAccountName = resolveIbkrAccountName(snapshot);
+  if (!opts.dryRun) {
+    const ibkrCfg = ibkrConfigFromEnv(
+      env as unknown as Record<string, string | undefined>,
+    );
+    if (ibkrCfg) {
+      try {
+        liveIbkr = await fetchLiveIbkrPositions(ibkrCfg);
+        console.log(`[fallback-earnings] live IBKR refresh: ${liveIbkr.length} positions`);
+      } catch (err) {
+        console.warn("[fallback-earnings] live IBKR refresh failed, using snapshot:", err);
+      }
+    }
+  }
+
   for (const cand of candidates) {
     const markers = await readEarningsMarkers(env.CRON_KV, cand.phase, cand.eventId);
     if (markers.mac || markers.cloud || markers.macRunning) {
@@ -173,7 +210,7 @@ export async function runEarningsFallback(
     }
 
     try {
-      await composeAndSend(env, snapshot, cand);
+      await composeAndSend(env, snapshot, cand, liveIbkr, ibkrAccountName);
       await writeEarningsMarker(env.CRON_KV, "cloud", cand.phase, cand.eventId);
       result.sent++;
       result.details.push({
@@ -250,6 +287,8 @@ async function composeAndSend(
   env: FallbackEnv,
   snapshot: Snapshot,
   cand: SnapshotCandidate,
+  liveIbkr: LiveIbkrPosition[] | null,
+  ibkrAccountName: string,
 ): Promise<void> {
   if (!env.BRIEFING_EMAIL_TO) {
     throw new Error("BRIEFING_EMAIL_TO missing");
@@ -259,9 +298,13 @@ async function composeAndSend(
   }
 
   const family = issuerSiblings(cand.symbol);
-  const positions = resolvePositions(snapshot, family);
+  // Live IBKR (current book) replaces the snapshot's stale IBKR rows; Vanguard/
+  // Roth rows stay from the snapshot. When live is null, this is the snapshot
+  // verbatim (prior behavior).
+  const snapshotViews = resolvePositions(snapshot, family);
+  const positions = combineFamilyPositions(snapshotViews, liveIbkr, family, ibkrAccountName);
   const scoreboard = renderScoreboard(cand.event, cand.phase, snapshot, family);
-  const positionsBlock = renderPositions(positions, cand.symbol, family);
+  const positionsBlock = renderPositions(positions, cand.symbol, family, liveIbkr !== null);
 
   // v5 — the user's own thesis notes + curated bogeys (consensus/whisper).
   // These are the cheaply-mirrorable parts of the Mac's rich context, so the
@@ -310,7 +353,7 @@ async function composeAndSend(
 
 // ── Position resolution from snapshot ─────────────────────────────
 
-interface PositionView {
+export interface PositionView {
   account_name: string;
   symbol: string;
   security_type: string;
@@ -417,9 +460,11 @@ function renderPositions(
   positions: PositionView[],
   symbol: string,
   family: readonly string[],
+  ibkrLive = false,
 ): string {
   if (positions.length === 0) {
-    return `## Positions\nNo current ${family.join("/")} holdings in the snapshot.`;
+    const src = ibkrLive ? "(IBKR live + snapshot)" : "in the snapshot";
+    return `## Positions\nNo current ${family.join("/")} holdings ${src}.`;
   }
   const lines = positions.map((p) => {
     if (p.security_type.toLowerCase() === "option") {
@@ -443,7 +488,21 @@ function renderPositions(
   if (shares > 0) summaryParts.push(`${shares.toFixed(0)} shares`);
   if (contracts > 0) summaryParts.push(`${contracts.toFixed(0)} option contract(s)`);
 
-  return `## Positions (cross-account, snapshot ${positions.length} row${positions.length === 1 ? "" : "s"})\n${lines.join("\n")}\n\n**Combined exposure:** ${summaryParts.join(" + ") || "none"} for ${symbol}.`;
+  // Provenance: with a live IBKR read, the IBKR rows are current-as-of-send and
+  // only the Vanguard/Roth rows are snapshot-frozen — say so, since this email
+  // exists precisely because the Mac (and its snapshot) is stale.
+  const provenance = ibkrLive
+    ? `IBKR live, Vanguard/Roth from snapshot — ${positions.length} row${positions.length === 1 ? "" : "s"}`
+    : `snapshot ${positions.length} row${positions.length === 1 ? "" : "s"}`;
+  return `## Positions (cross-account, ${provenance})\n${lines.join("\n")}\n\n**Combined exposure:** ${summaryParts.join(" + ") || "none"} for ${symbol}.`;
+}
+
+/** The snapshot account whose name marks it as the IBKR brokerage (default "IBKR"). */
+function resolveIbkrAccountName(snapshot: Snapshot): string {
+  const acct = (snapshot.accounts ?? []).find((a) =>
+    a.name.toLowerCase().includes("ibkr"),
+  );
+  return acct?.name ?? "IBKR";
 }
 
 function renderNote(

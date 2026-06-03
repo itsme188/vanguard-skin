@@ -51,6 +51,16 @@ export interface FallbackEnv {
   BRIEFING_EMAIL_TO?: string;
   RESEND_API_KEY?: string;
   RESEND_FROM_DOMAIN?: string;
+  // Tier 3: live IBKR position refresh (briefing holdings context). All optional
+  // — unset means the composer uses the snapshot's held-symbol list verbatim.
+  IBKR_CONSUMER_KEY?: string;
+  IBKR_ACCESS_TOKEN?: string;
+  IBKR_PREPEND?: string;
+  IBKR_DH_PRIME?: string;
+  IBKR_SIGNATURE_KEY_PKCS8?: string;
+  IBKR_DH_GENERATOR?: string;
+  IBKR_BASE_URL?: string;
+  IBKR_REALM?: string;
 }
 
 export interface FallbackResult {
