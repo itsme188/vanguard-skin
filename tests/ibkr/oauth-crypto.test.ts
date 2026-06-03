@@ -60,12 +60,12 @@ describe("buildSignatureBaseString", () => {
 describe("dhModPow (Diffie-Hellman modexp)", () => {
   it("computes 2^10 mod 17 = 4", () => {
     // 1024 mod 17 = 4
-    expect(BigInt("0x" + dhModPow("2", "a", "11"))).toBe(4n); // 0x11 = 17, 0xa = 10
+    expect(BigInt("0x" + dhModPow("2", "a", "11"))).toBe(BigInt(4)); // 0x11 = 17, 0xa = 10
   });
   it("matches Node's modPow for large values", () => {
     const prime = BigInt("0x" + "f".repeat(64)); // arbitrary large odd-ish
-    const base = 2n;
-    const exp = 123456789n;
+    const base = BigInt(2);
+    const exp = BigInt(123456789);
     const expected = modPowRef(base, exp, prime);
     const got = BigInt("0x" + dhModPow("2", exp.toString(16), prime.toString(16)));
     expect(got).toBe(expected);
@@ -144,11 +144,13 @@ describe("RSA round-trips against the locally-generated keys", () => {
 
 // Local reference modPow for the test only.
 function modPowRef(base: bigint, exp: bigint, mod: bigint): bigint {
-  let result = 1n;
+  const ZERO = BigInt(0);
+  const ONE = BigInt(1);
+  let result = ONE;
   base %= mod;
-  while (exp > 0n) {
-    if (exp & 1n) result = (result * base) % mod;
-    exp >>= 1n;
+  while (exp > ZERO) {
+    if (exp & ONE) result = (result * base) % mod;
+    exp >>= ONE;
     base = (base * base) % mod;
   }
   return result;
