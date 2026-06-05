@@ -1,5 +1,29 @@
 import { describe, expect, it } from "vitest";
-import { formatLargeNumber, formatLargeUSD, parseLargeUSD } from "../../lib/format";
+import {
+  formatLargeNumber,
+  formatLargeUSD,
+  parseLargeUSD,
+  parseStoredTimestamp,
+} from "../../lib/format";
+
+describe("parseStoredTimestamp", () => {
+  it("parses a space-separated SQLite UTC timestamp as UTC, not local", () => {
+    // Regression: bare `new Date("2026-06-05 01:49:38")` parses as local time
+    // and rolls the date forward to the next day in evening US zones.
+    const d = parseStoredTimestamp("2026-06-05 01:49:38");
+    expect(d.getTime()).toBe(Date.UTC(2026, 5, 5, 1, 49, 38));
+  });
+
+  it("is idempotent for an explicit ISO-Z timestamp", () => {
+    const d = parseStoredTimestamp("2026-06-05T01:49:38Z");
+    expect(d.getTime()).toBe(Date.UTC(2026, 5, 5, 1, 49, 38));
+  });
+
+  it("respects an explicit UTC offset", () => {
+    const d = parseStoredTimestamp("2026-06-04T21:49:38-04:00");
+    expect(d.getTime()).toBe(Date.UTC(2026, 5, 5, 1, 49, 38));
+  });
+});
 
 describe("formatLargeUSD", () => {
   it("scales billions to 2 decimal places", () => {

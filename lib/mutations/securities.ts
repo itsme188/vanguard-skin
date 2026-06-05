@@ -74,6 +74,21 @@ export function upsertSecurity(
     if (parsed) p.maturityDate = parsed;
   }
 
+  // Default the contract multiplier for options. Listed equity/ETF options
+  // always carry a 100x multiplier, but the canonical CSV format has no
+  // multiplier column, so a freshly-imported option lands at NULL →
+  // COALESCE(multiplier, 1) → valued at 1/100th of reality, with the shortfall
+  // leaking into inferred cash. TWS enrichment sets it correctly; this covers
+  // every writer that doesn't. No listed equity option has a multiplier <= 1,
+  // so treating that as "missing" is safe (a genuine non-standard multiplier
+  // like an adjusted option's is always > 1 and is preserved).
+  if (
+    p.securityType?.toLowerCase() === "option" &&
+    (p.multiplier == null || p.multiplier <= 1)
+  ) {
+    p.multiplier = 100;
+  }
+
   // Safety check: don't let option metadata clobber an existing stock security
   // (or vice versa) on the same symbol. This prevents the "INTC stock becomes
   // INTC option" bug when Claude returns bare tickers for options.

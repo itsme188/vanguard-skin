@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { ImportBatch } from "@/lib/types";
+import { parseStoredTimestamp } from "@/lib/format";
 
 const SOURCE_LABELS: Record<string, string> = {
   "ibkr-activity": "IBKR Activity",
@@ -16,7 +17,9 @@ const SOURCE_LABELS: Record<string, string> = {
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
 function formatDate(dateStr: string): string {
-  const d = new Date(dateStr);
+  // created_at is SQLite datetime('now') — UTC with no tz marker. Parse as UTC
+  // (not local) so an evening import doesn't render as the next calendar day.
+  const d = parseStoredTimestamp(dateStr);
   const mon = MONTHS[d.getMonth()];
   const day = d.getDate();
   const year = d.getFullYear();
