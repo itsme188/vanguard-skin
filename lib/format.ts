@@ -18,6 +18,22 @@ export function formatUSD(value: number): string {
   return currencyFormatter.format(value);
 }
 
+/**
+ * Parse a SQLite `datetime('now')` value into a Date at the correct instant.
+ *
+ * SQLite stores these as UTC, space-separated, with no timezone marker
+ * (e.g. "2026-06-05 01:49:38"). A bare `new Date(thatString)` parses it as
+ * LOCAL time, which rolls the displayed date past midnight in the evening —
+ * an import done at 9:49 PM ET (01:49 UTC) renders as "tomorrow". This forces
+ * UTC interpretation so callers can format in the viewer's local zone
+ * correctly. Idempotent for values that already carry a T/Z/offset.
+ */
+export function parseStoredTimestamp(value: string): Date {
+  const hasTz = /[zZ]|[+-]\d{2}:?\d{2}$/.test(value);
+  const iso = hasTz ? value : value.trim().replace(" ", "T") + "Z";
+  return new Date(iso);
+}
+
 export function formatUSDPrecise(value: number): string {
   return currencyPreciseFormatter.format(value);
 }

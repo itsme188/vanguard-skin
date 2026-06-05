@@ -179,4 +179,47 @@ describe("upsertSecurity", () => {
     expect(row.security_type).toBe("Option");
     expect(row.multiplier).toBe(100);
   });
+
+  it("defaults option multiplier to 100 when not supplied (canonical CSV path)", () => {
+    // Canonical CSV has no multiplier column, so the parser supplies none.
+    const id = upsertSecurity(db, {
+      symbol: "AFRM  270115C00115000",
+      name: "Call Affirm Holdings Cl A Exp 01/15/27",
+      securityType: "option",
+      optionType: "CALL",
+      strikePrice: 115,
+      expirationDate: "2027-01-15",
+    });
+    const row = db.prepare("SELECT multiplier FROM securities WHERE id = ?").get(id) as any;
+    expect(row.multiplier).toBe(100);
+  });
+
+  it("corrects a bogus option multiplier <= 1 to 100", () => {
+    const id = upsertSecurity(db, {
+      symbol: "TER   280121C00180000",
+      name: "Call Teradyne Inc Exp 01/21/28",
+      securityType: "option",
+      multiplier: 1,
+    });
+    const row = db.prepare("SELECT multiplier FROM securities WHERE id = ?").get(id) as any;
+    expect(row.multiplier).toBe(100);
+  });
+
+  it("preserves an explicitly supplied non-standard option multiplier (> 1)", () => {
+    // Adjusted options can carry a real non-100 multiplier — don't clobber it.
+    const id = upsertSecurity(db, {
+      symbol: "XYZ   270115C00050000",
+      name: "Adjusted option",
+      securityType: "option",
+      multiplier: 50,
+    });
+    const row = db.prepare("SELECT multiplier FROM securities WHERE id = ?").get(id) as any;
+    expect(row.multiplier).toBe(50);
+  });
+
+  it("does not assign a multiplier to non-options", () => {
+    const id = upsertSecurity(db, "VTI", "Vanguard Total Market", "etf");
+    const row = db.prepare("SELECT multiplier FROM securities WHERE id = ?").get(id) as any;
+    expect(row.multiplier).toBeNull();
+  });
 });
