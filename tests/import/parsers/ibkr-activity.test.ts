@@ -48,6 +48,32 @@ describe("IBKR activity parser", () => {
     expect(result.snapshots[0].twr).toBeCloseTo(-6.426701465);
   });
 
+  it("ignores a secondary zeroed Change-in-NAV block (multi-currency statements)", () => {
+    // Regression: securities-lending / multi-currency statements append a SECOND
+    // zeroed "Change in NAV" block and a "0%" TWR after the real primary block.
+    // The parser must keep the FIRST block's values, not let the zero block
+    // overwrite ending value → 0 (which silently drops the whole snapshot).
+    const doubled = fixture
+      .replace(
+        "Change in NAV,Data,Ending Value,63000",
+        "Change in NAV,Data,Ending Value,63000\n" +
+          "Change in NAV,Header,Field Name,Field Value\n" +
+          "Change in NAV,Data,Starting Value,0\n" +
+          "Change in NAV,Data,Ending Value,0"
+      )
+      .replace(
+        "Net Asset Value,Data,14.545454545%",
+        "Net Asset Value,Data,14.545454545%\n" +
+          "Net Asset Value,Header,Time Weighted Rate of Return\n" +
+          "Net Asset Value,Data,0%"
+      );
+    const result = parseIbkrActivity(doubled, "IBKR 2026-05 activity.csv");
+    expect(result.snapshots).toHaveLength(1);
+    expect(result.snapshots[0].totalValue).toBe(63000);
+    expect(result.snapshots[0].startingValue).toBe(55000);
+    expect(result.snapshots[0].twr).toBeCloseTo(14.545454545);
+  });
+
   it("sets twr to undefined when NAV section has no TWR row", () => {
     // Remove the TWR lines from the fixture
     const noTwr = fixture
@@ -105,6 +131,37 @@ describe("IBKR activity parser", () => {
     expect(buy!.symbol).toBe("GOOG");
     expect(buy!.quantity).toBe(200);
     expect(buy!.amount).toBe(-27200);
+  });
+
+  it("parses trades when the optional 'Account' column is absent (single-account statements)", () => {
+    // Regression: IBKR omits the "Account" column on single-account statements,
+    // shifting every later Trades column by one. Hardcoded indices then read the
+    // timestamp into `symbol` and a quantity into `tradeDate`, and validation
+    // rejects every trade. Columns must be resolved by name from the header.
+    const noAccount = fixture
+      .split("\n")
+      .map((line) => {
+        if (line.startsWith("Trades,")) {
+          // The "Account" column is the 6th field (index 5), before the quoted
+          // Date/Time, so a plain split/splice/join is lossless here.
+          const parts = line.split(",");
+          parts.splice(5, 1);
+          return parts.join(",");
+        }
+        return line;
+      })
+      .join("\n");
+
+    const result = parseIbkrActivity(noAccount, "IBKR 2026-05 activity.csv");
+    const trades = result.transactions.filter((t) => t.type === "SELL" || t.type === "BUY");
+    expect(trades).toHaveLength(2);
+    const sell = trades.find((t) => t.type === "SELL");
+    expect(sell!.symbol).toBe("MSFT");
+    expect(sell!.quantity).toBe(50);
+    expect(sell!.amount).toBe(19350);
+    const buy = trades.find((t) => t.type === "BUY");
+    expect(buy!.symbol).toBe("GOOG");
+    expect(buy!.quantity).toBe(200);
   });
 
   it("extracts dividends", () => {
