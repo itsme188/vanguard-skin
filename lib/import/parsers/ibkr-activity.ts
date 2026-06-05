@@ -147,9 +147,19 @@ export function parseIbkrActivity(
   let depositsWithdrawals: number | undefined = undefined;
   let endingValue = 0;
   let twr: number | undefined = undefined;
+  // Some statements (multi-currency / securities-lending accounts) emit a SECOND
+  // zeroed "Change in NAV" block + a "0%" TWR after the real primary-account block
+  // (a base-currency/segment summary). The loop must capture ONLY the first block —
+  // otherwise the zero block overwrites the real ending value to 0 and the snapshot
+  // is silently dropped by the `endingValue !== 0` guard below.
+  let sawEndingValue = false;
 
   for (const row of rows) {
-    if (row.section === "Change in NAV" && row.discriminator === "Data") {
+    if (
+      row.section === "Change in NAV" &&
+      row.discriminator === "Data" &&
+      !sawEndingValue
+    ) {
       const fieldName = row.fields[0];
       const value = parseFloat(row.fields[1]);
       if (isNaN(value)) continue;
@@ -179,15 +189,18 @@ export function parseIbkrActivity(
           break;
         case "Ending Value":
           endingValue = value;
+          sawEndingValue = true; // first block complete — ignore any later blocks
           break;
       }
     }
 
-    // TWR from NAV section
+    // TWR from NAV section — first (primary-account) value wins; a later
+    // base-currency segment reports "0%" and must not overwrite it.
     if (
       row.section === "Net Asset Value" &&
       row.discriminator === "Data" &&
-      row.fields.length === 1
+      row.fields.length === 1 &&
+      twr === undefined
     ) {
       const pctMatch = row.fields[0].match(/(-?[\d.]+)%/);
       if (pctMatch) {
@@ -196,21 +209,41 @@ export function parseIbkrActivity(
     }
   }
 
-  // Parse Trades
+  // Parse Trades.
+  // Column positions are read by NAME from the Trades header row, not hardcoded:
+  // IBKR omits the "Account" column on single-account statements (present on
+  // consolidated/multi-currency ones), which shifts every later column by one.
+  // A hardcoded layout silently misaligns symbol↔date↔quantity and validation
+  // then rejects every trade. The `?? <legacy index>` fallbacks reproduce the
+  // old with-Account layout if a header is somehow missing.
+  const tradesHeader = rows.find(
+    (r) => r.section === "Trades" && r.discriminator === "Header"
+  );
+  const tCol: Record<string, number> = {};
+  tradesHeader?.fields.forEach((name, i) => {
+    tCol[name] = i;
+  });
+  const idxAsset = tCol["Asset Category"] ?? 1;
+  const idxSymbol = tCol["Symbol"] ?? 4;
+  const idxDateTime = tCol["Date/Time"] ?? 5;
+  const idxQty = tCol["Quantity"] ?? 6;
+  const idxPrice = tCol["T. Price"] ?? 7;
+  const idxProceeds = tCol["Proceeds"] ?? 9;
+  const idxComm = tCol["Comm/Fee"] ?? 10;
+
   for (const row of rows) {
     if (
       row.section === "Trades" &&
       row.discriminator === "Data" &&
       row.fields[0] === "Order"
     ) {
-      // fields: DataDiscriminator, Asset Category, Currency, Account, Symbol, Date/Time, Quantity, T. Price, C. Price, Proceeds, Comm/Fee, Basis, Realized P/L, MTM P/L, Code
-      const assetCategory = row.fields[1];
-      const symbol = row.fields[4];
-      const dateTime = row.fields[5];
-      const quantity = parseFloat(row.fields[6].replace(/,/g, ""));
-      const tradePrice = parseFloat(row.fields[7]);
-      const proceeds = parseFloat(row.fields[9]);
-      const commFee = parseFloat(row.fields[10]);
+      const assetCategory = row.fields[idxAsset];
+      const symbol = row.fields[idxSymbol];
+      const dateTime = row.fields[idxDateTime];
+      const quantity = parseFloat((row.fields[idxQty] ?? "").replace(/,/g, ""));
+      const tradePrice = parseFloat(row.fields[idxPrice]);
+      const proceeds = parseFloat(row.fields[idxProceeds]);
+      const commFee = parseFloat(row.fields[idxComm]);
       const tradeDate = parseDatetime(dateTime);
 
       if (isNaN(quantity) || !symbol) continue;
