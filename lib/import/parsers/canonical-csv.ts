@@ -76,6 +76,12 @@ export function parseCanonicalCsv(
   const prices: ParsedPrice[] = [];
   const snapshots: ParsedSnapshot[] = [];
   const securitiesMap = new Map<string, ParsedSecurity>();
+  // Tracks how many times each base transaction source_key has appeared in THIS
+  // file, so genuine same-key duplicates (e.g. two zero-amount share-gift
+  // journals on the same day for the same symbol — amount-cents is 0 for both,
+  // so :cents can't separate them) get a stable disambiguating suffix instead
+  // of one being silently dropped by INSERT OR IGNORE.
+  const txnKeyCounts = new Map<string, number>();
 
   for (const err of parsed.errors) {
     errors.push(`CSV parse error at row ${err.row}: ${err.message}`);
@@ -120,6 +126,18 @@ export function parseCanonicalCsv(
             `Transaction ${symbol} ${row.trade_date.trim()} ${row.type}: negative quantity ${rawQty} normalized to ${normalizedQty} (canonical convention: type carries direction)`
           );
         }
+        // Source key includes integer-cents amount so split fills (same day, same
+        // symbol, same type, different amounts) don't collide.
+        const baseSourceKey = `canonical:txn:${row.account?.trim()}:${symbol}:${row.trade_date.trim()}:${(row.type || "").trim()}:${amountCents(row.amount)}`;
+        // Disambiguate genuine duplicates that share an identical natural key AND
+        // amount — e.g. two zero-amount share-gift / sub-account journal transfers
+        // on the same day for the same symbol. The first keeps the bare key (so
+        // already-imported rows stay idempotent on re-import); the Nth gets a
+        // ":#N" suffix. Order-stable within a file, so re-import remains a no-op.
+        const seen = (txnKeyCounts.get(baseSourceKey) ?? 0) + 1;
+        txnKeyCounts.set(baseSourceKey, seen);
+        const sourceKey =
+          seen === 1 ? baseSourceKey : `${baseSourceKey}:#${seen}`;
         transactions.push({
           accountName: row.account?.trim() || "Unknown",
           tradeDate: row.trade_date.trim(),
@@ -132,9 +150,7 @@ export function parseCanonicalCsv(
           amount: row.amount ? parseStrictNumber(row.amount) : undefined,
           fees: row.fees ? parseStrictNumber(row.fees) : undefined,
           notes: row.notes?.trim() || undefined,
-          // Source key includes integer-cents amount so split fills (same day, same
-          // symbol, same type, different amounts) don't collide.
-          sourceKey: `canonical:txn:${row.account?.trim()}:${symbol}:${row.trade_date.trim()}:${(row.type || "").trim()}:${amountCents(row.amount)}`,
+          sourceKey,
         });
         if (!securitiesMap.has(symbol)) {
           securitiesMap.set(symbol, {

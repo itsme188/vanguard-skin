@@ -168,6 +168,35 @@ Vanguard Taxable,2026-04-13,,SELL,RSP,Invesco S&P 500 EW,ETF,100,196.6450,19664.
     expect(keys[1]).toBe("canonical:txn:Vanguard Taxable:RSP:2026-04-13:SELL:1966409");
   });
 
+  it("disambiguates duplicate zero-amount gift/journal transfers (same key + amount)", () => {
+    // Regression: gifting/journaling shares produces zero-amount TRANSFER rows.
+    // Two on the same day for the same symbol share an identical natural key AND
+    // amount (cents = 0 for both), so :cents can't separate them and the second
+    // was silently dropped by INSERT OR IGNORE. Now the first keeps the bare key
+    // (idempotent) and the second gets a ":#2" suffix — both survive.
+    const csv = `${header}
+Vanguard Taxable,2026-05-13,,TRANSFER_OUT,XMTR,Xometry Inc Cl A,Stock,100,,0,,Journal out (cash)
+Vanguard Taxable,2026-05-13,,TRANSFER_OUT,XMTR,Xometry Inc Cl A,Stock,100,,0,,Journal out to XXXX1494-1 (margin)`;
+
+    const result = parseCanonicalCsv(csv, "txn.csv");
+    expect(result.transactions).toHaveLength(2);
+    const keys = result.transactions.map((t) => t.sourceKey);
+    expect(new Set(keys).size).toBe(2);
+    expect(keys[0]).toBe("canonical:txn:Vanguard Taxable:XMTR:2026-05-13:TRANSFER_OUT:0");
+    expect(keys[1]).toBe("canonical:txn:Vanguard Taxable:XMTR:2026-05-13:TRANSFER_OUT:0:#2");
+  });
+
+  it("does not suffix non-duplicate keys (idempotency preserved)", () => {
+    // A lone transfer keeps the bare key so re-imports of existing data no-op.
+    const csv = `${header}
+Vanguard Taxable,2026-05-13,,TRANSFER_OUT,XMTR,Xometry Inc Cl A,Stock,100,,0,,Single gift`;
+    const result = parseCanonicalCsv(csv, "txn.csv");
+    expect(result.transactions).toHaveLength(1);
+    expect(result.transactions[0].sourceKey).toBe(
+      "canonical:txn:Vanguard Taxable:XMTR:2026-05-13:TRANSFER_OUT:0"
+    );
+  });
+
   it("rejects comma-bearing amounts (defends against parseFloat silent-truncation)", () => {
     // parseFloat("1,234.56") returns 1 — pre-fix this silently corrupted any
     // comma-grouped amount a Co-Work session might emit. parseStrictNumber()
