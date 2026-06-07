@@ -333,7 +333,8 @@ function bucketByCompany(
   return buckets;
 }
 
-function buildSynthesisPrompt(
+// Exported for testability (pins the synthesis prompt's coherence rules).
+export function buildSynthesisPrompt(
   buckets: Record<string, RecentArticleMeta[]>,
   snap: Snapshot,
 ): string {
@@ -363,6 +364,11 @@ Write a concise markdown evening recap:
 1. **Today's Key Themes** (2-3 sentences) — what mattered most across the day's research.
 2. **Company-by-Company** — for each relevant holding with significant coverage, one tight paragraph: what was said, what it means for the position.
 3. **Positioning Notes** — brief closing on any names where today's coverage changes the near-term thesis.
+
+TIMEFRAME & THREAD COHERENCE (follow strictly):
+- A company's coverage may span DIFFERENT trading days with OPPOSING moves. When it does, attribute each price move to its specific day ("rose Thursday as money rotated into financials; fell ~5% Friday in the broad selloff") instead of fusing them into one sentence. A name up one day and down the next is NOT a contradiction — name the days.
+- Keep a structural / longer-horizon thread (e.g. an IPO-underwriting fee catalyst, a pending deal) SEPARATE from a same-day tactical move (e.g. today's selloff). Use separate sentences; do not imply one caused the other unless a source says so.
+- Do not invent a sector or market driver a source did not state. If a name fell but no source attributes it to its sector, say it fell with the broad market — do not assert an unsourced reason.
 
 Output markdown only. No preamble, no sign-off.`;
 }

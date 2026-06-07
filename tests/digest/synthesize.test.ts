@@ -299,4 +299,32 @@ describe("synthesize", () => {
     );
     expect(capturedSystem).toContain("MUST get its own");
   });
+
+  // -------------------------------------------------------------------------
+  // 9. Timeframe / thread-coherence rules (regression for 2026-06-05 Goldman
+  //    Sachs passage: a single bucket spanning Thursday-up + Friday-down +
+  //    an IPO-fee catalyst got fused into one self-contradictory paragraph).
+  // -------------------------------------------------------------------------
+  it("instructs Sonnet to separate trading days and keep distinct threads apart", async () => {
+    let capturedSystem = "";
+    (generateText as ReturnType<typeof vi.fn>).mockImplementation(
+      async (args: { prompt?: string; system?: string; messages?: unknown }) => {
+        capturedSystem = args.system ?? "";
+        return { text: VALID_SYNTHESIS, finishReason: "stop" };
+      },
+    );
+
+    await synthesize({
+      buckets: [makeBucket("GS", "Goldman Sachs", [makeArticle(1, "Vital Knowledge")])],
+      heldSymbols: ["GS"],
+      watchlist: [],
+      anomalies: [],
+    });
+
+    // The new HARD rule block must appear so future contributors can't drop it.
+    expect(capturedSystem).toContain("TIMEFRAME & THREAD COHERENCE");
+    expect(capturedSystem).toContain("attribute each price move");
+    expect(capturedSystem).toContain("is NOT a contradiction");
+    expect(capturedSystem).toContain("do not assert an unsourced reason");
+  });
 });

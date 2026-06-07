@@ -61,7 +61,12 @@ COVERAGE-CHARACTERIZATION RULES (HARD):
 - Specifically forbidden phrasings: "only mentioned indirectly", "mentioned in passing", "no real focus on", "appeared only as a footnote", "briefly noted", "not the focus of any source".
 
 HELD-TICKER PRIORITIZATION:
-- Every held ticker (in the "Held tickers" list above the buckets) that has ANY coverage in today's buckets MUST get its own \`##\` section, however brief. Do NOT relegate held tickers to "## Also covered" — even single-article coverage of a held name warrants a focused section with the citation and what was said. The user's portfolio context makes held-name coverage load-bearing.`;
+- Every held ticker (in the "Held tickers" list above the buckets) that has ANY coverage in today's buckets MUST get its own \`##\` section, however brief. Do NOT relegate held tickers to "## Also covered" — even single-article coverage of a held name warrants a focused section with the citation and what was said. The user's portfolio context makes held-name coverage load-bearing.
+
+TIMEFRAME & THREAD COHERENCE (HARD):
+- A single company section may draw on articles from DIFFERENT trading days and with OPPOSING sentiment. When it does, attribute each price move or claim to its specific day ("rose Thursday as money rotated into financials; fell ~5% Friday in the broad selloff") instead of fusing them into one cause-and-effect sentence. A name being up one day and down the next is NOT a contradiction — name the days so the reader sees two sessions, not one muddled one.
+- Keep a structural / longer-horizon thread (e.g. an IPO-underwriting fee catalyst, a pending deal, a product cycle) SEPARATE from a same-day tactical move (e.g. today's selloff). Put them in separate sentences and do not imply one caused the other unless a source explicitly says so.
+- Do not invent a sector or market driver a source did not state. If a held name fell but no source attributes the move to its sector, say it fell with the broad market — do not assert an unsourced reason (e.g. "as the selloff hit brokers/banks") that no article supports.`;
 
 // ─── Prompt builders ──────────────────────────────────────────────────────────
 

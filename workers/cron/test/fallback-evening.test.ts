@@ -16,7 +16,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import type { FallbackEnv } from "../src/fallback-digest";
 import type { Snapshot } from "../src/state";
-import { evaluateAnomalies, fetchLast2ClosesBatch } from "../src/fallback-evening";
+import { evaluateAnomalies, fetchLast2ClosesBatch, buildSynthesisPrompt } from "../src/fallback-evening";
 
 // ── Dependency mocks ─────────────────────────────────────────────────────────
 
@@ -634,5 +634,21 @@ describe("evaluateAnomalies (Worker two-gate parity)", () => {
     );
     expect((flags ?? [])[0].symbol).toBe("HIGHZ");
     expect((flags ?? [])[0].zScore).not.toBeNull();
+  });
+});
+
+describe("buildSynthesisPrompt — timeframe/thread coherence", () => {
+  // Regression for 2026-06-05: a GS bucket spanning Thursday-up + Friday-down
+  // + an IPO-fee catalyst got fused into one self-contradictory paragraph in
+  // the cloud recap. The prompt must instruct the model to separate days and
+  // keep distinct threads apart. (Mac parity: lib/digest/synthesize.ts.)
+  it("instructs the model to attribute moves to days and not fuse threads", () => {
+    const snap = { heldSymbols: ["GS"] } as unknown as Snapshot;
+    const prompt = buildSynthesisPrompt({ GS: [] }, snap);
+
+    expect(prompt).toContain("TIMEFRAME & THREAD COHERENCE");
+    expect(prompt).toContain("attribute each price move");
+    expect(prompt).toContain("is NOT a contradiction");
+    expect(prompt).toContain("do not assert an unsourced reason");
   });
 });
