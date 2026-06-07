@@ -1,7 +1,7 @@
 #!/bin/bash
 # Retry sending weekly briefing email with backoff.
 # Called by com.vanguard-skin.weekly-email.plist every 5 min (StartInterval=300).
-# Self-gates to Sun 15:00-15:10 ET via scripts/lib/et-gate.sh — outside that
+# Self-gates to Sun 16:30-16:40 ET via scripts/lib/et-gate.sh — outside that
 # window, exits 0 in ~50ms.
 #
 # Hits /api/cron/briefing (not /api/calendar/email) so KV-marker dedup with
@@ -14,15 +14,17 @@ URL="http://localhost:3099/api/cron/briefing"
 MAX_RETRIES=3
 DELAY=120
 
-# Self-gate: 15:00 ET (10-min window) on BOTH Sunday and Monday. The route's
+# Self-gate: 16:30 ET (10-min window) on BOTH Sunday and Monday. The route's
 # shouldSendBriefingToday() decides which one actually sends — normally Sunday,
 # but deferred to Monday when the upcoming Monday is a market holiday (so the
 # week-ahead covers the real trading week). A normal-Monday tick is skipped by
 # the route. We deliberately send NO weekOf so the route computes it via the
 # ET-anchored getCurrentMonday() and its holiday-shift gate applies (passing
 # weekOf would bypass the gate).
+# Moved 15:00 → 16:30 ET on 2026-06-07: Eliant Capital (preferred weekend
+# source) publishes its weekly after 3pm ET, so a 3pm send missed it.
 source /Users/Yitzi/code/vanguard-skin/scripts/lib/et-gate.sh
-in_et_window "7" 15 0 || in_et_window "1" 15 0 || exit 0
+in_et_window "7" 16 30 || in_et_window "1" 16 30 || exit 0
 
 if [ ! -f "$ENV_FILE" ]; then
   echo "$(date '+%Y-%m-%d %H:%M:%S') — ERROR: $ENV_FILE not found"

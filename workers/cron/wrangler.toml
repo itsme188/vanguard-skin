@@ -4,12 +4,12 @@ compatibility_date = "2026-01-01"
 compatibility_flags = ["nodejs_compat"]
 
 # Single */15 cron — Cloudflare's free plan caps at 5 cron triggers, and we
-# need to cover briefing (Sun 3pm ET), digest (Mon-Fri 8:45am ET), evening
+# need to cover briefing (Sun 4:30pm ET), digest (Mon-Fri 8:45am ET), evening
 # (Mon-Thu 7pm ET, Fri 5:30pm ET), and calendar-enrich (every 15 min during
 # market hours). All target times fall on 15-minute boundaries, so a single
 # */15 cron suffices and the scheduled() handler dispatches per ET wall-clock:
 #
-#   - Sun 15:00 ET            → weekly briefing
+#   - Sun 16:30 ET            → weekly briefing
 #   - Mon-Fri 08:45 ET        → daily digest
 #   - Mon-Thu 19:00 ET        → evening email
 #   - Fri 17:30 ET            → evening email
@@ -50,7 +50,8 @@ bucket_name = "vanguard-skin-statements"
 
 # Non-secret env vars. Secrets (see README) go via `wrangler secret put`.
 [vars]
-EXPECTED_HOUR_BRIEFING = "15"        # 3pm ET
+EXPECTED_HOUR_BRIEFING = "16"        # 4:30pm ET
+EXPECTED_MINUTE_BRIEFING = "30"      # fire at the 16:30 */15 tick, matching the Mac's launchd target (hour-only gate would fire at 16:00, ~30min early while the Mac sleeps). Moved from 3pm 2026-06-07 so Eliant Capital's late-published weekly is captured.
 EXPECTED_HOUR_DIGEST = "8"           # 8:45am ET
 EXPECTED_MINUTE_DIGEST = "45"        # fire at the 8:45 */15 tick, matching the Mac's launchd target (was hour-only → fired at 8:00, ~45min early while the Mac was asleep traveling)
 # Evening email — Mon-Thu 7pm ET (hour=19), Fri 5:30pm ET (hour=17, minute=30)

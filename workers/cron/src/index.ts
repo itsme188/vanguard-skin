@@ -67,6 +67,7 @@ export interface Env {
   ARCHIVE: R2Bucket;
   // Vars (wrangler.toml [vars])
   EXPECTED_HOUR_BRIEFING: string;
+  EXPECTED_MINUTE_BRIEFING?: string;
   EXPECTED_HOUR_DIGEST: string;
   EXPECTED_MINUTE_DIGEST?: string;
   // Evening email — Mon-Thu 7pm ET, Fri 5:30pm ET
@@ -111,6 +112,10 @@ export function parseJobFromClock(env: Env): { type: JobType; expectedHour: numb
   const minute = getCurrentETMinute();
   const dow = getCurrentETDayOfWeek();
   const briefingHour = parseInt(env.EXPECTED_HOUR_BRIEFING, 10);
+  // Minute gate for the briefing, same reasoning as the digest below: with the
+  // send moved to 16:30 ET, an hour-only gate would fire the fallback at the
+  // 16:00 */15 tick (~30min early) while the Mac is asleep. Defaults to 30.
+  const briefingMinute = parseInt(env.EXPECTED_MINUTE_BRIEFING ?? "30", 10);
   const digestHour = parseInt(env.EXPECTED_HOUR_DIGEST, 10);
   // Minute gate for the digest so the Worker fallback fires at the SAME 8:45
   // */15 tick the Mac targets — not the 8:00 top-of-hour tick. Defaults to 45
@@ -120,11 +125,11 @@ export function parseJobFromClock(env: Env): { type: JobType; expectedHour: numb
   const eveningFriHour = parseInt(env.EXPECTED_HOUR_EVENING_FRI, 10);
   const eveningFriMinute = parseInt(env.EXPECTED_MINUTE_EVENING_FRI, 10);
 
-  // Briefing fires at 15:00 ET on BOTH Sunday and Monday; runJob's
+  // Briefing fires at 16:30 ET on BOTH Sunday and Monday; runJob's
   // shouldSendBriefingToday gate picks the right day (normally Sunday, deferred
   // to Monday when the upcoming Monday is a market holiday). A normal Monday
   // tick is gated out, so this never double-sends.
-  if (hour === briefingHour && (dow === 0 || dow === 1)) {
+  if (hour === briefingHour && minute === briefingMinute && (dow === 0 || dow === 1)) {
     return { type: "briefing", expectedHour: briefingHour };
   }
   if (hour === digestHour && minute === digestMinute && dow >= 1 && dow <= 5) {
@@ -303,7 +308,7 @@ export function catchUpCandidates(): CatchUpJob[] {
     // catch-up is handled by the same window via dow=5 + afterHour=18.
     { type: "evening", afterHour: 20, beforeHour: 23, dows: [1, 2, 3, 4] },
     { type: "evening", afterHour: 18, beforeHour: 22, dows: [5] },
-    // Briefing Sun 15:00 ET (or deferred to a holiday Monday). Catch up
+    // Briefing Sun 16:30 ET (or deferred to a holiday Monday). Catch up
     // 17:00-22:00 ET on Sun AND Mon; runJob's shouldSendBriefingToday gate
     // prevents a normal-Monday catch-up from firing.
     { type: "briefing", afterHour: 17, beforeHour: 22, dows: [0, 1] },
