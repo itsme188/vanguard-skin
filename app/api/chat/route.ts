@@ -16,6 +16,7 @@ import { getAnthropicApiKey } from "@/lib/env";
 import { getModelForFeature } from "@/lib/ai/provider";
 import { VALID_SCOPES, type ChatScope } from "@/lib/types";
 import { createConversation, saveMessage, updateConversationTitle } from "@/lib/mutations/chat";
+import { todayET } from "@/lib/calendar/date-utils";
 
 export async function POST(request: NextRequest) {
   try {
@@ -82,7 +83,8 @@ export async function POST(request: NextRequest) {
         : undefined;
       portfolioContext = getPortfolioSummaryForChat(db, accountName);
     }
-    const currentDate = new Date().toISOString().slice(0, 10);
+    // ET-anchored (repo rule): UTC toISOString() rolls to tomorrow after ~8pm ET.
+    const currentDate = todayET();
 
     // Compute IBKR dynamic trading context when scoped to IBKR
     const ibkrContext = scope === "ibkr"

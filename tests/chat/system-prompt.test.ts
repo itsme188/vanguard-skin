@@ -57,6 +57,23 @@ describe("buildSystemPrompt", () => {
     const prompt = buildSystemPrompt(fakeContext, today, undefined as any);
     expect(prompt).toContain("All Accounts");
   });
+
+  // Regression for 2026-06-05: the chat had no live-market tool and no rule
+  // against confabulating "what the market did today", so it hallucinated.
+  it("instructs every portfolio scope to use query_market_snapshot, not invent moves", () => {
+    for (const scope of ["all", "ibkr", "vanguard-taxable", "vanguard-roth-ira"] as const) {
+      const prompt = buildSystemPrompt(fakeContext, today, scope);
+      expect(prompt).toContain("Live Market Data");
+      expect(prompt).toContain("query_market_snapshot");
+      expect(prompt).toContain("CANNOT observe live or intraday market");
+    }
+  });
+
+  it("includes the live-market rule in macro mode (where market questions land)", () => {
+    const prompt = buildSystemPrompt("", today, "macro");
+    expect(prompt).toContain("query_market_snapshot");
+    expect(prompt).toContain("CANNOT observe live or intraday market");
+  });
 });
 
 // ─── Persona Differentiation ────────────────────────────────────
