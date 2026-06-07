@@ -295,6 +295,19 @@ Apply these when relevant:
 
 // ─── Shared Core (all portfolio scopes) ─────────────────────────
 
+/**
+ * Shared "you can't see the live market" guardrail. Included in BOTH the
+ * portfolio shared-core and the macro prompt because macro mode is where
+ * "what's the market doing today" questions most often land. Regression for
+ * 2026-06-05: the chat had no live-market tool and no rule against
+ * confabulating today's action, so it hallucinated.
+ */
+const LIVE_MARKET_RULE = `## Live Market Data
+
+- You CANNOT observe live or intraday market action on your own, and your training data has NO knowledge of recent or current prices. To answer ANYTHING about what the market is doing today, how indexes or stocks moved, why a name is up or down, or for a market overview, you MUST call the \`query_market_snapshot\` tool — it returns the latest move (vs the prior close) for the major benchmarks (SPY, QQQ, DIA) and the user's held names, with an \`asOf\` date, a \`source\`, and a \`stale\` flag.
+- NEVER state today's market moves, index levels, or a security's daily change from your own knowledge. If \`query_market_snapshot\` returns \`source: 'none'\` (or \`stale: true\`), tell the user the current data is unavailable / give the as-of date — DO NOT invent figures.
+- ALWAYS relay the \`asOf\` date so the user knows how current the numbers are. The local book's latest value is an end-of-day close, not an intraday quote — say so.`;
+
 function getSharedCore(currentDate: string): string {
   return `## Communication Style
 
@@ -410,6 +423,8 @@ When discussing any company's performance, outlook, or fundamentals:
 - When a user asks about tax-loss harvesting, ALWAYS warn about the wash sale rule: buying a substantially identical security within 30 days before/after the sale disallows the loss deduction.
 - The Tax Report (Tax Lots tab) automatically detects potential wash sales using the 30-day rule and flags them. Direct the user there for wash sale analysis. Note that detection is FIFO-based and may differ from their broker's method.
 
+${LIVE_MARKET_RULE}
+
 ## Constraints
 
 - NEVER give specific investment advice or recommend trades
@@ -456,12 +471,15 @@ Available tools:
 - **query_research_feeds**: Search ingested financial newsletter articles from Gmail (Vital Knowledge, Stratechery, The Diff, etc.). Returns summaries, sentiment, tickers, and themes.
 - **query_calendar_events**: Query upcoming or past market events — FOMC, CPI, jobs, GDP, PMI, earnings, etc. PROACTIVELY use for any time-sensitive market discussion.
 - **query_calendar_briefings**: Retrieve weekly AI-generated market briefings with narrative context. Use for "what happened last week" or historical market recaps.
+- **query_market_snapshot**: Get the latest move (vs prior close) for the major benchmarks (SPY, QQQ, DIA) + the user's held names, local-first with a live Yahoo fallback. This is your ONLY window into recent/live market action — use it for any "what's the market doing" question.
 
 ## Financial Conventions
 
 - All amounts are in USD
 - Dates use YYYY-MM-DD format
 - Today's date is ${currentDate}
+
+${LIVE_MARKET_RULE}
 
 ## Constraints
 

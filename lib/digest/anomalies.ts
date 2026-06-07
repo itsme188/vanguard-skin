@@ -50,7 +50,7 @@ interface PricePairRow {
   prior_close: number;
 }
 
-interface TradingDayPair {
+export interface TradingDayPair {
   /** Latest trading day with an SPY close (YYYY-MM-DD). */
   latest: string;
   /** The trading day immediately before `latest` (consecutive). */
@@ -80,7 +80,7 @@ interface TradingDayPair {
  * Returns null when SPY lacks a clean consecutive pair; callers then emit
  * nothing.
  */
-function resolveTradingDayPair(db: Database.Database): TradingDayPair | null {
+export function resolveTradingDayPair(db: Database.Database): TradingDayPair | null {
   const rows = db
     .prepare(
       `SELECT p.date AS date

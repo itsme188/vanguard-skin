@@ -38,6 +38,7 @@ import {
 } from "@/lib/queries/analyst-estimates";
 import { syncAnalystCoverage } from "@/lib/apis/analyst-estimates";
 import { getRecentReleaseReactions } from "@/lib/queries/level-performance";
+import { getMarketSnapshot, fetchYahooQuotes } from "@/lib/queries/market-snapshot";
 
 // ─── Tool Definitions ─────────────────────────────────────────────
 
@@ -805,6 +806,15 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
           description: "Max results. Default 10.",
         },
       },
+    },
+  },
+  {
+    name: "query_market_snapshot",
+    description:
+      "Get the latest market move (percent change vs the prior close) for the major benchmarks (SPY, QQQ, DIA) AND the user's held names. Call this WHENEVER the user asks what the market is doing today, how indexes/stocks moved, why something is up or down, or wants a market overview — you have NO other way to observe live or recent market action, so do not answer such questions without calling this tool. Local-first (the last close from the synced book); falls back to a live Yahoo quote when the local book is behind. The result carries an `asOf` date, a `stale` flag, a `source` ('local' | 'yahoo' | 'none'), and a `note` describing freshness. ALWAYS relay the `asOf`/freshness to the user, NEVER state moves more current than `asOf`, and if `source` is 'none' tell the user current data is unavailable rather than estimating.",
+    input_schema: {
+      type: "object" as const,
+      properties: {},
     },
   },
 ];
@@ -1639,6 +1649,11 @@ export async function executeTool(
         break;
       }
 
+      case "query_market_snapshot": {
+        rawResult = await getMarketSnapshot(db, { fetchQuotes: fetchYahooQuotes });
+        break;
+      }
+
       default:
         return { error: `Unknown tool: ${toolName}` };
     }
@@ -1684,4 +1699,5 @@ export const TOOL_LABELS: Record<string, string> = {
   query_levels: "Scanning price levels...",
   query_alerts: "Reviewing alert history...",
   query_release_reactions: "Looking up release reactions...",
+  query_market_snapshot: "Checking today's market moves...",
 };
