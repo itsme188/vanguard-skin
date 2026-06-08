@@ -45,6 +45,7 @@ import { briefingToHtml } from "./html";
 import { sendEmail } from "./resend";
 import { composeReleaseInstant } from "./reaction-matcher";
 import { captureReactionFromYahoo } from "./yahoo";
+import { formatPositionPresence } from "./presence-position";
 import { ibkrConfigFromEnv } from "./ibkr-oauth";
 import {
   fetchLiveIbkrPositionsCached,
@@ -364,6 +365,8 @@ export interface PositionView {
   multiplier: number | null;
   quantity: number;
   cost_basis: number | null;
+  /** Per-share latest price, when known (live IBKR rows carry it; snapshot rows don't). */
+  latest_price?: number | null;
 }
 
 function resolvePositions(
@@ -456,7 +459,7 @@ function renderScoreboard(
 *Cloud-fallback delivery — empty cells in a preview are intentional. \`—\` in the actual column on a recap means data wasn't available at send time.*`;
 }
 
-function renderPositions(
+export function renderPositions(
   positions: PositionView[],
   symbol: string,
   family: readonly string[],
@@ -466,27 +469,36 @@ function renderPositions(
     const src = ibkrLive ? "(IBKR live + snapshot)" : "in the snapshot";
     return `## Positions\nNo current ${family.join("/")} holdings ${src}.`;
   }
+  // Presence-only rendering: outbound emails are shared (cc), so NEVER echo an
+  // exact cost-basis $. formatPositionPresence discloses share/contract count +
+  // direction + a relative return % (when a price is known), with no $ exposure.
   const lines = positions.map((p) => {
-    if (p.security_type.toLowerCase() === "option") {
-      const right = p.option_type ? p.option_type.toUpperCase().charAt(0) : "?";
-      const strike = p.strike_price != null ? `$${p.strike_price.toFixed(2)}` : "?";
-      const expiry = p.expiration_date ?? "?";
-      const mult = p.multiplier ?? 100;
-      const cost = p.cost_basis != null ? `$${p.cost_basis.toFixed(2)}` : "?";
-      return `- **${p.underlying_symbol ?? "?"} ${expiry} ${right}${strike}** option (${p.symbol.trim()}) in ${p.account_name}: ${p.quantity} contract(s) — ${p.quantity * mult} shares notional × ${mult}, total cost ${cost}`;
-    }
-    const blended = p.cost_basis != null && p.quantity > 0
-      ? `$${(p.cost_basis / p.quantity).toFixed(2)}`
-      : "?";
-    const cost = p.cost_basis != null ? `$${p.cost_basis.toFixed(2)}` : "?";
-    return `- **${p.symbol}** in ${p.account_name}: ${p.quantity} sh, cost basis ${cost} (~${blended}/sh)`;
+    const isOption = p.security_type.toLowerCase() === "option";
+    const presence = formatPositionPresence({
+      symbol: p.symbol.trim(),
+      accountName: p.account_name,
+      quantity: p.quantity,
+      securityType: p.security_type,
+      optionMeta: isOption
+        ? {
+            underlyingSymbol: p.underlying_symbol,
+            strikePrice: p.strike_price,
+            expirationDate: p.expiration_date,
+            optionType: p.option_type,
+            multiplier: p.multiplier,
+          }
+        : null,
+      costBasis: p.cost_basis,
+      latestPrice: p.latest_price ?? null,
+    });
+    return `- ${presence}`;
   });
 
   const shares = positions.filter((p) => p.security_type.toLowerCase() !== "option").reduce((s, p) => s + p.quantity, 0);
   const contracts = positions.filter((p) => p.security_type.toLowerCase() === "option").reduce((s, p) => s + p.quantity, 0);
   const summaryParts: string[] = [];
-  if (shares > 0) summaryParts.push(`${shares.toFixed(0)} shares`);
-  if (contracts > 0) summaryParts.push(`${contracts.toFixed(0)} option contract(s)`);
+  if (shares !== 0) summaryParts.push(`${Math.abs(shares).toFixed(0)} shares`);
+  if (contracts !== 0) summaryParts.push(`${Math.abs(contracts).toFixed(0)} option contract(s)`);
 
   // Provenance: with a live IBKR read, the IBKR rows are current-as-of-send and
   // only the Vanguard/Roth rows are snapshot-frozen — say so, since this email
