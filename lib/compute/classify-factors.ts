@@ -9,6 +9,7 @@ import { generateText } from "ai";
 import { getModelForFeature } from "@/lib/ai/provider";
 import { FACTOR_COLUMNS, FACTOR_LABELS, type FactorColumn } from "@/lib/factors";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
+import { extractJsonArray } from "@/lib/ai/extract-json";
 
 export interface FactorClassifyResult {
   classified: number;
@@ -168,8 +169,9 @@ export async function classifyFactors(
         prompt,
       });
 
-      // Strip markdown code fences if present
-      const jsonText = text.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+      // Strip fences + isolate the JSON array (the model sometimes prepends a
+      // prose preamble like "I need to ..." before the array).
+      const jsonText = extractJsonArray(text);
 
       const results = JSON.parse(jsonText) as Array<Record<string, string>>;
 

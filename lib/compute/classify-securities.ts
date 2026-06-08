@@ -15,6 +15,7 @@ import type Database from "better-sqlite3";
 import { SECURITY_CLASSIFICATIONS } from "@/lib/data/security-classifications";
 import { generateText } from "ai";
 import { getModelForFeature } from "@/lib/ai/provider";
+import { extractJsonArray } from "@/lib/ai/extract-json";
 
 export interface ClassificationResult {
   /** Total securities processed */
@@ -207,7 +208,7 @@ export async function classifyUnresolvedWithClaude(
     const prompt = `Classify:\n${batch.map((s) => `- ${s.symbol} (type: ${s.security_type ?? "stock"})`).join("\n")}`;
     try {
       const { text } = await generateText({ model, maxOutputTokens: 4000, temperature: 0.2, system: AI_CLASSIFY_SYSTEM, prompt });
-      const json = text.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+      const json = extractJsonArray(text);
       const results = JSON.parse(json) as Array<Record<string, string>>;
       const idMap = new Map(batch.map((s) => [s.symbol, s.id]));
       for (const r of results) {
