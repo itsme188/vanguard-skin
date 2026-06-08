@@ -36,12 +36,9 @@ export function ClassificationCard({ concentration, coverage }: Props) {
       const res = await fetch("/api/compute/classify", { method: "POST" });
       const data = await res.json();
       if (data.success) {
-        toast(
-          data.classified > 0
-            ? `Classified ${data.classified} securities (${data.skipped} already done)`
-            : `All ${data.skipped} securities already classified`,
-          "success"
-        );
+        const parts = [`Classified ${data.classified}`, `${data.skipped} already done`];
+        if (data.unresolvedCount > 0) parts.push(`${data.unresolvedCount} couldn't be auto-classified`);
+        toast(parts.join(" · "), data.unresolvedCount > 0 ? "info" : "success");
         router.refresh();
       } else {
         toast(`Classification failed: ${data.error}`, "error");
