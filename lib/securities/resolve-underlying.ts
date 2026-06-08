@@ -15,18 +15,11 @@ export function resolveHeldUnderlying(
   const parsed = parseOCCSymbol(symbol);
   if (!parsed) return null;
   const occUnderlying = parsed.underlying.toUpperCase();
-  const exact = db
-    .prepare("SELECT 1 FROM securities WHERE UPPER(symbol) = ? LIMIT 1")
-    .get(occUnderlying);
-  if (exact) return occUnderlying;
+  const isHeld = db.prepare("SELECT 1 FROM securities WHERE UPPER(symbol) = ? LIMIT 1");
+  if (isHeld.get(occUnderlying)) return occUnderlying;
   for (const sib of issuerSiblings(occUnderlying).map((s) => s.toUpperCase())) {
     if (sib === occUnderlying) continue;
-    if (
-      db
-        .prepare("SELECT 1 FROM securities WHERE UPPER(symbol) = ? LIMIT 1")
-        .get(sib)
-    )
-      return sib;
+    if (isHeld.get(sib)) return sib;
   }
   return occUnderlying;
 }
