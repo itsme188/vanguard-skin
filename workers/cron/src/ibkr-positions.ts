@@ -166,6 +166,7 @@ export function livePositionViewsForFamily(
       multiplier: p.multiplier,
       quantity: p.quantity,
       cost_basis: p.costBasis,
+      latest_price: p.mktPrice,
     });
   }
   return out;

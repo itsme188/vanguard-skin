@@ -29,7 +29,7 @@ vi.mock("../src/ibkr-positions", async (importOriginal) => {
   return { ...actual, fetchLiveIbkrPositionsCached: vi.fn() };
 });
 
-import { runEarningsFallback } from "../src/fallback-earnings";
+import { runEarningsFallback, renderPositions, type PositionView } from "../src/fallback-earnings";
 import { loadLatestSnapshot } from "../src/state";
 import { sendEmail } from "../src/resend";
 import { composeReleaseInstant } from "../src/reaction-matcher";
@@ -222,6 +222,74 @@ describe("runEarningsFallback v5 context (notes + bogeys)", () => {
     );
     const result = await runEarningsFallback(env, { now: previewWindowNow() });
     expect(result.sent).toBe(1);
+  });
+});
+
+describe("renderPositions privacy (presence-only, no cost-basis leak)", () => {
+  it("never emits exact cost basis for a stock; shows presence + return % when priced", () => {
+    const views: PositionView[] = [
+      {
+        account_name: "IBKR",
+        symbol: "AAPL",
+        security_type: "stock",
+        underlying_symbol: null,
+        option_type: null,
+        strike_price: null,
+        expiration_date: null,
+        multiplier: null,
+        quantity: 100,
+        cost_basis: 18300, // $183/sh
+        latest_price: 205, // → +12.0%
+      },
+    ];
+    const out = renderPositions(views, "AAPL", ["AAPL"], true);
+    expect(out).not.toContain("18300");
+    expect(out).not.toContain("18,300");
+    expect(out).not.toMatch(/cost basis/i);
+    expect(out).toContain("100 sh AAPL");
+    expect(out).toContain("up ~"); // priced live row → return % present
+  });
+
+  it("never emits total cost for an option position", () => {
+    const views: PositionView[] = [
+      {
+        account_name: "IBKR",
+        symbol: "AAPL  260619C00145000",
+        security_type: "option",
+        underlying_symbol: "AAPL",
+        option_type: "CALL",
+        strike_price: 145,
+        expiration_date: "2026-06-19",
+        multiplier: 100,
+        quantity: 3,
+        cost_basis: 4200,
+        latest_price: 18,
+      },
+    ];
+    const out = renderPositions(views, "AAPL", ["AAPL"], true);
+    expect(out).not.toContain("4200");
+    expect(out).not.toMatch(/total cost/i);
+    expect(out).toContain("AAPL $145 call");
+  });
+
+  it("omits return % for snapshot rows without a price (no leak, honest)", () => {
+    const views: PositionView[] = [
+      {
+        account_name: "Vanguard Taxable",
+        symbol: "AAPL",
+        security_type: "stock",
+        underlying_symbol: null,
+        option_type: null,
+        strike_price: null,
+        expiration_date: null,
+        multiplier: null,
+        quantity: 50,
+        cost_basis: 9000,
+      },
+    ];
+    const out = renderPositions(views, "AAPL", ["AAPL"], false);
+    expect(out).not.toContain("9000");
+    expect(out).toContain("50 sh AAPL");
   });
 });
 
