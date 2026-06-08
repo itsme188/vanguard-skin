@@ -23,6 +23,7 @@ import {
 import { purgeExpiredOptionHoldings } from "@/lib/mutations/expired-options";
 import { purgeMaturedBondHoldings } from "@/lib/mutations/matured-bonds";
 import { reconcileClosedEquityHoldings } from "@/lib/mutations/closed-equity";
+import { normalizeSector } from "@/lib/securities/normalize-sector";
 
 // ── Parse (detect + parse, no DB writes) ────────────────────────────
 
@@ -460,7 +461,7 @@ export function commitImport(
       `);
 
       const updateSectorIndustry = db.prepare(`
-        UPDATE securities SET sector = ?, industry = ? WHERE id = ?
+        UPDATE securities SET sector = COALESCE(?, sector), industry = COALESCE(NULLIF(industry,''), ?) WHERE id = ?
       `);
 
       for (const f of parsed.factors) {
@@ -489,15 +490,11 @@ export function commitImport(
         );
         newFactors++;
 
-        // Override sector/industry from CSV
+        // Override sector/industry from CSV — normalize to GICS, preserve raw as industry fallback
         if (f.sector || f.industry) {
-          const current = db
-            .prepare("SELECT sector, industry FROM securities WHERE id = ?")
-            .get(sec.id) as { sector: string | null; industry: string | null };
-
           updateSectorIndustry.run(
-            f.sector ?? current.sector,
-            f.industry ?? current.industry,
+            normalizeSector(f.sector ?? null),
+            f.industry ?? f.sector ?? null,
             sec.id
           );
         }

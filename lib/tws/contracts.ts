@@ -4,6 +4,7 @@ import { getIbApi } from "./client";
 import { RateLimiter } from "./rate-limiter";
 import { mapSecurityType } from "./security-type-map";
 import type { EnrichResult } from "./types";
+import { normalizeSector } from "@/lib/securities/normalize-sector";
 
 const rateLimiter = new RateLimiter();
 
@@ -135,7 +136,7 @@ export async function enrichSecurities(
   const updateSecurity = db.prepare(`
     UPDATE securities
     SET sector = COALESCE(?, sector),
-        industry = COALESCE(?, industry),
+        industry = COALESCE(NULLIF(industry,''), ?),
         exchange = COALESCE(?, exchange),
         ib_con_id = COALESCE(?, ib_con_id),
         name = CASE
@@ -166,8 +167,9 @@ export async function enrichSecurities(
 
       if (details.length > 0) {
         const detail = details[0];
-        const sector = detail.industry ?? null;
-        const industry = detail.category ?? null;
+        const rawSector = detail.industry ?? null;
+        const sector = normalizeSector(rawSector);
+        const industry = detail.category ?? rawSector ?? null;
         const exchange = detail.contract?.primaryExch ?? null;
         const conId = detail.contract?.conId ?? null;
         const longName = detail.longName?.trim() || null;
