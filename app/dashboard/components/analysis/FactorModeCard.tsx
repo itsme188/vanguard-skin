@@ -27,12 +27,9 @@ export function FactorModeCard({ factorHeatmap, factorCoverage, scope }: Props) 
       const res = await fetch("/api/compute/classify-factors", { method: "POST" });
       const data = await res.json();
       if (data.success) {
-        toast(
-          `Classified ${data.classified} securities` +
-            (data.skipped > 0 ? ` (${data.skipped} skipped)` : "") +
-            (data.errors?.length > 0 ? ` · ${data.errors.length} errors` : ""),
-          "success"
-        );
+        const note = data.errors?.length > 0 ? ` · ${data.errors.length} batch error(s)` : "";
+        toast(`Classified ${data.classified} securities` + (data.skipped > 0 ? ` (${data.skipped} skipped)` : "") + note,
+          data.errors?.length > 0 ? "info" : "success");
         router.refresh();
       } else {
         toast(`Factor classification failed: ${data.error}`, "error");

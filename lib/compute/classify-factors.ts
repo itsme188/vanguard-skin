@@ -16,6 +16,11 @@ export interface FactorClassifyResult {
   errors: string[];
 }
 
+/** A run is a failure only when it classified nothing AND hit errors. */
+export function isFactorClassifySuccess(r: { classified: number; errors: string[] }): boolean {
+  return !(r.classified === 0 && r.errors.length > 0);
+}
+
 // Training examples extracted from the user's CSV — representative spread
 const TRAINING_EXAMPLES = [
   { symbol: "AAPL", sector: "Technology", industry: "Consumer Electronics", interest_rate_sensitive: "Low", growth_vs_value: "Growth", cyclical: "Moderate", international_exposure: "High", geopolitical_onshoring: "Moderate", tariff_exposure: "High", ai_exposure: "Moderate", crypto_adjacent: "No", regulatory_risk: "Low" },
