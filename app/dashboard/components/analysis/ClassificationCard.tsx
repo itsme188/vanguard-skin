@@ -98,17 +98,17 @@ export function ClassificationCard({ concentration, coverage }: Props) {
                 layout="vertical"
                 margin={{ top: 8, left: 60, right: 20, bottom: 4 }}
               >
-                <XAxis type="number" tickFormatter={pctTickFormatter} tick={{ fill: "#94A3B8", fontSize: 11 }} />
-                <YAxis type="category" dataKey="symbol" tick={{ fill: "#E5E7EB", fontSize: 11 }} width={70} interval={0} />
+                <XAxis type="number" tickFormatter={pctTickFormatter} tick={{ fill: "var(--color-ink-faint)", fontSize: 11 }} />
+                <YAxis type="category" dataKey="symbol" tick={{ fill: "var(--color-ink-dim)", fontSize: 11 }} width={70} interval={0} />
                 <Tooltip
                   formatter={(value: number | string | undefined) => [pctTooltipFormatter(value), "Weight"]}
                   contentStyle={{
-                    backgroundColor: "#0F1219",
-                    border: "1px solid #1E2533",
+                    backgroundColor: "var(--color-panel)",
+                    border: "1px solid var(--color-edge)",
                     borderRadius: "8px",
-                    color: "#E5E7EB",
+                    color: "var(--color-ink)",
                   }}
-                  itemStyle={{ color: "#E5E7EB" }}
+                  itemStyle={{ color: "var(--color-ink)" }}
                 />
                 <Bar dataKey="weight_pct" fill="#C9A44E" radius={[0, 4, 4, 0]} />
               </BarChart>
