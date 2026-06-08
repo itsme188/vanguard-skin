@@ -29,6 +29,7 @@ import { SymbolLink } from "../components/SymbolLink";
 import { EarningsHubAddForm } from "./EarningsHubAddForm";
 import { EarningsHubRefreshButton } from "./EarningsHubRefreshButton";
 import { EarningsRowChips } from "./EarningsRowChips";
+import { EarningsDateChip } from "./EarningsDateChip";
 import { BogeysUploadButton } from "./BogeysUploadButton";
 import { BogeysEditButton } from "./BogeysEditButton";
 import { getSkippedPhasesForEvents } from "@/lib/queries/earnings-skips";
@@ -341,6 +342,17 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
         ) : (
           event.symbol ?? "—"
         )}
+        {event.date_status && (
+          <span className="block mt-0.5">
+            <EarningsDateChip
+              symbol={event.symbol ?? ""}
+              eventDate={event.event_date}
+              releaseTime={event.release_time}
+              dateStatus={event.date_status}
+              dateConflictWith={event.date_conflict_with}
+            />
+          </span>
+        )}
       </span>
       {consensusMissing ? (
         <span
@@ -438,6 +450,15 @@ function MobileCard({ event }: { event: EnrichedRow }) {
         >
           {statusChipLabel(event.status)}
         </span>
+        {event.date_status && (
+          <EarningsDateChip
+            symbol={event.symbol ?? ""}
+            eventDate={event.event_date}
+            releaseTime={event.release_time}
+            dateStatus={event.date_status}
+            dateConflictWith={event.date_conflict_with}
+          />
+        )}
         <span className="font-mono ml-auto text-ink-faint" style={{ fontSize: "11px" }}>
           {slot}
         </span>
