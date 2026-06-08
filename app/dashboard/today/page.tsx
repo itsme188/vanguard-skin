@@ -198,11 +198,32 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
       `SELECT * FROM calendar_events
        WHERE event_date = ?
          AND release_time IS NOT NULL
+         AND COALESCE(superseded, 0) = 0
        ORDER BY release_time ASC`,
     )
     .all(today) as CalendarEvent[];
 
-  // ── Momentum factor pulse (renders only on non-neutral status) ────
+  // Fallback: when today has no releases, surface the next few upcoming ones so
+  // the left half of the Today header row is never empty (there's always a
+  // macro event or held-name earnings coming up within the week).
+  const upcomingReleases =
+    todayReleases.length === 0
+      ? (db
+          .prepare(
+            `SELECT * FROM calendar_events
+             WHERE event_date > ?
+               AND release_time IS NOT NULL
+               AND COALESCE(superseded, 0) = 0
+             ORDER BY event_date ASC, release_time ASC
+             LIMIT 4`,
+          )
+          .all(today) as CalendarEvent[])
+      : [];
+  const releases = todayReleases.length > 0 ? todayReleases : upcomingReleases;
+  const releasesMode: "today" | "upcoming" =
+    todayReleases.length > 0 ? "today" : "upcoming";
+
+  // ── Momentum factor pulse (renders for every state — see component) ──
   const momentumPulse = computeMomentumPulse(db);
 
   // ── Portfolio totals for the hero (Overview absorption — IA Phase 3) ──
@@ -286,15 +307,23 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
         </span>
       </div>
 
-      {/* ── Today's releases (macro + earnings with known release_time) ── */}
-      {todayReleases.length > 0 && (
-        <div className="md:max-w-3xl">
-          <TodayReleases releases={todayReleases} />
-        </div>
-      )}
-
-      {/* ── Momentum pulse (conditional — non-neutral only) ── */}
-      <MomentumPulse pulse={momentumPulse} />
+      {/* ── Today header row — releases (left) + momentum pulse (right) ──
+              Both halves always render so the row reads in order: the left
+              falls back to upcoming releases when today is empty; the right
+              renders for every momentum state (incl. neutral / no-data). ── */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
+        {releases.length > 0 ? (
+          <TodayReleases releases={releases} mode={releasesMode} />
+        ) : (
+          <section className="rounded-xl bg-panel p-4">
+            <h2 className="text-sm font-medium text-ink">Releases</h2>
+            <p className="mt-2 text-[13px] text-ink-faint">
+              No upcoming releases scheduled.
+            </p>
+          </section>
+        )}
+        <MomentumPulse pulse={momentumPulse} />
+      </div>
 
       {/* ── Week-ahead Earnings Hub (full width — primary attention magnet) ── */}
       <EarningsHub />
