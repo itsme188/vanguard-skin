@@ -16,6 +16,9 @@ vi.mock("@/lib/calendar/macro-events", () => ({
 vi.mock("@/lib/calendar/finnhub", () => ({
   fetchFinnhubEarningsForSymbols: vi.fn(),
 }));
+vi.mock("@/lib/calendar/nasdaq", () => ({
+  fetchNasdaqEarningsForSymbols: vi.fn(() => [] as CalendarEventInput[]),
+}));
 vi.mock("@/lib/queries/briefing-symbols", () => ({
   getHeldStockSymbols: vi.fn(() => [] as string[]),
 }));

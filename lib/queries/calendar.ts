@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import type { CalendarEvent, CalendarBriefing } from "@/lib/types";
 import { getSecurityIdForSymbolWithSiblings } from "@/lib/queries/briefing-symbols";
+import { addDays } from "@/lib/calendar/date-utils";
 
 // ─── Filter types ─────────────────────────────────────────────────
 
@@ -64,6 +65,7 @@ export function getEventsByWeek(
     .prepare(
       `SELECT * FROM calendar_events
        WHERE week_of = ?
+         AND COALESCE(superseded, 0) = 0
        ORDER BY event_date ASC, event_time ASC NULLS LAST, title ASC`
     )
     .all(weekOf) as CalendarEvent[];
@@ -114,11 +116,13 @@ export function getEarningsForWeekDeduped(
            FROM calendar_events
           WHERE week_of = ?
             AND event_type = 'earnings'
+            AND COALESCE(superseded, 0) = 0
        )
        SELECT id, source, event_type, event_date, event_time, title, description,
               security_id, symbol, ib_con_id, expected_impact, consensus_estimate,
               previous_value, raw_json, source_key, week_of, fetched_at, created_at,
-              release_time, actual_value, consensus_value, reaction_snapshot, enriched_at
+              release_time, actual_value, consensus_value, reaction_snapshot, enriched_at,
+              date_status, date_conflict_with
          FROM ranked
         WHERE rn = 1
         ORDER BY event_date ASC, release_time ASC NULLS LAST, symbol ASC`,
@@ -135,6 +139,28 @@ export function getEarningsForWeekDeduped(
     }
   }
   return events;
+}
+
+/**
+ * Count earnings rows whose Finnhub × Nasdaq dates disagree and await the
+ * user's IBKR-definitive confirmation, in the [today, today+14] window. Powers
+ * the NotificationBell nudge. Excludes superseded + already-resolved rows.
+ */
+export function countEarningsDateConflicts(
+  db: Database.Database,
+  today: string,
+): number {
+  const end = addDays(today, 14);
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS c FROM calendar_events
+       WHERE event_type = 'earnings'
+         AND date_status = 'conflict'
+         AND COALESCE(superseded, 0) = 0
+         AND event_date BETWEEN ? AND ?`,
+    )
+    .get(today, end) as { c: number };
+  return row.c;
 }
 
 export function getEventCountBySource(

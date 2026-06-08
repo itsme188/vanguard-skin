@@ -460,6 +460,7 @@ export function findEmailCandidates(
          LEFT JOIN earnings_email_skips es
            ON es.event_id = ce.id AND es.phase = 'preview'
         WHERE ce.event_type = 'earnings'
+          AND COALESCE(ce.superseded, 0) = 0
           AND ce.release_time IS NOT NULL
           AND ce.symbol IS NOT NULL
           AND ce.event_date BETWEEN ? AND ?
@@ -498,6 +499,7 @@ export function findEmailCandidates(
          LEFT JOIN earnings_email_skips es
            ON es.event_id = ce.id AND es.phase = 'recap'
         WHERE ce.event_type = 'earnings'
+          AND COALESCE(ce.superseded, 0) = 0
           AND ce.enriched_at IS NOT NULL
           AND ce.actual_value IS NOT NULL
           AND datetime(ce.enriched_at) >= datetime(?)

@@ -3,11 +3,13 @@ import { fetchWshEvents } from "@/lib/tws/wsh";
 import { parseWshEvents } from "@/lib/calendar/parse-wsh";
 import { fetchMacroEvents } from "@/lib/calendar/macro-events";
 import { fetchFinnhubEarningsForSymbols } from "@/lib/calendar/finnhub";
+import { fetchNasdaqEarningsForSymbols } from "@/lib/calendar/nasdaq";
+import { reconcileEarningsDates } from "@/lib/calendar/reconcile-earnings-dates";
 import { getHeldStockSymbols } from "@/lib/queries/briefing-symbols";
 import { getReadThroughReporterSymbols } from "@/lib/queries/read-through-pairs";
 import { upsertCalendarEvents, deleteEventsForWeek } from "@/lib/mutations/calendar";
 import { getIbApi, disconnectTws } from "@/lib/tws/client";
-import { addDays, validateWeekOf } from "@/lib/calendar/date-utils";
+import { addDays, validateWeekOf, todayET } from "@/lib/calendar/date-utils";
 
 /**
  * Pure (non-SSE) calendar sync for a week. Single source of truth for
@@ -38,6 +40,7 @@ export interface SyncCalendarOpts {
   includeWsh?: boolean;     // default true; auto-skipped if no TWS connection
   includeMacro?: boolean;   // default true
   includeFinnhub?: boolean; // default true; auto-skipped if no FINNHUB_API_KEY
+  includeNasdaq?: boolean;  // default true; cross-checks Finnhub earnings dates
 }
 
 export interface SyncCalendarResult {
@@ -50,6 +53,8 @@ export interface SyncCalendarResult {
   macroNew: number;
   finnhubEvents: number;
   finnhubNew: number;
+  nasdaqEvents: number;
+  nasdaqNew: number;
   totalSaved: number;
   newEvents: number;
   refreshedEvents: number;
@@ -81,6 +86,7 @@ export async function syncCalendarForWeek(
   const includeWsh = opts.includeWsh ?? true;
   const includeMacro = opts.includeMacro ?? true;
   const includeFinnhub = opts.includeFinnhub ?? true;
+  const includeNasdaq = opts.includeNasdaq ?? true;
   const send = opts.onProgress ?? (() => {});
   const errors: string[] = [];
 
@@ -90,6 +96,8 @@ export async function syncCalendarForWeek(
   let macroNew = 0;
   let finnhubEvents = 0;
   let finnhubNew = 0;
+  let nasdaqEvents = 0;
+  let nasdaqNew = 0;
 
   if (includeWsh) {
     const api = getIbApi();
@@ -212,8 +220,60 @@ export async function syncCalendarForWeek(
     }
   }
 
-  const totalSaved = wshEvents + macroEvents + finnhubEvents;
-  const newEvents = wshNew + macroNew + finnhubNew;
+  // ── Nasdaq cross-check (date authority alongside Finnhub) ──────────
+  // Same symbol set as Finnhub. Window reaches back 7 days before the week so a
+  // name that already reported (a corrected past date) can supersede a stale
+  // future Finnhub row. US-listed only — no GFL→GFL.TO drift. Graceful-degrades
+  // (returns fewer rows) if the unofficial endpoint is unavailable.
+  if (includeNasdaq) {
+    send({ phase: "nasdaq_fetch", message: "Cross-checking earnings dates via Nasdaq..." });
+    try {
+      const heldSymbols = getHeldStockSymbols(db);
+      const reporterSymbols = getReadThroughReporterSymbols(db);
+      const symbols = Array.from(
+        new Set([...heldSymbols, ...reporterSymbols].map((s) => s.toUpperCase())),
+      ).sort();
+      const nasdaqStart = addDays(startDate, -7);
+      const nasdaqInputs = await fetchNasdaqEarningsForSymbols(
+        db,
+        symbols,
+        nasdaqStart,
+        endDate,
+        weekOf,
+      );
+      if (nasdaqInputs.length > 0) {
+        deleteEventsForWeek(db, weekOf, "nasdaq");
+        const result = upsertCalendarEvents(db, nasdaqInputs);
+        nasdaqNew = result.inserted;
+      }
+      nasdaqEvents = nasdaqInputs.length;
+      send({
+        phase: "nasdaq_done",
+        message: `Nasdaq found ${nasdaqEvents} earning${nasdaqEvents !== 1 ? "s" : ""}${nasdaqNew < nasdaqEvents ? ` (${nasdaqNew} new)` : ""}`,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      errors.push(`nasdaq: ${msg}`);
+      send({ phase: "nasdaq_error", message: `Nasdaq scan failed: ${msg}` });
+    }
+  }
+
+  // ── Reconcile earnings dates (Finnhub × Nasdaq) ───────────────────
+  // Resolve a canonical date + trust status per name; supersede the losers so
+  // every reader shows exactly one row per reporting event. Pure DB work.
+  try {
+    const rec = reconcileEarningsDates(db, { today: todayET() });
+    send({
+      phase: "reconcile_done",
+      message: `Earnings dates reconciled: ${rec.confirmed} confirmed, ${rec.conflict} conflict, ${rec.single} single, ${rec.userConfirmed} you-confirmed`,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    errors.push(`reconcile: ${msg}`);
+  }
+
+  const totalSaved = wshEvents + macroEvents + finnhubEvents + nasdaqEvents;
+  const newEvents = wshNew + macroNew + finnhubNew + nasdaqNew;
 
   return {
     weekOf,
@@ -225,6 +285,8 @@ export async function syncCalendarForWeek(
     macroNew,
     finnhubEvents,
     finnhubNew,
+    nasdaqEvents,
+    nasdaqNew,
     totalSaved,
     newEvents,
     refreshedEvents: totalSaved - newEvents,

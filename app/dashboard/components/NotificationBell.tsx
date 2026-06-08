@@ -41,6 +41,7 @@ interface PreviewReview {
 export function NotificationBell() {
   const [firedCount, setFiredCount] = useState<number | null>(null);
   const [reviewCount, setReviewCount] = useState<number | null>(null);
+  const [conflictCount, setConflictCount] = useState<number | null>(null);
   const prevFiredRef = useRef<number | null>(null);
 
   const [hovering, setHovering] = useState(false);
@@ -50,16 +51,19 @@ export function NotificationBell() {
 
   const fetchCounts = useCallback(async () => {
     try {
-      const [alertsRes, reviewRes] = await Promise.all([
+      const [alertsRes, reviewRes, conflictRes] = await Promise.all([
         fetch("/api/alerts?countOnly=true"),
         fetch("/api/levels/review?countOnly=true"),
+        fetch("/api/earnings/conflicts?countOnly=true"),
       ]);
-      const [alertsJson, reviewJson] = await Promise.all([
+      const [alertsJson, reviewJson, conflictJson] = await Promise.all([
         alertsRes.json(),
         reviewRes.json(),
+        conflictRes.json(),
       ]);
       const nextFired = alertsJson?.success ? (alertsJson.pendingCount as number) : 0;
       const nextReview = reviewJson?.success ? (reviewJson.count as number) : 0;
+      const nextConflict = conflictJson?.success ? (conflictJson.count as number) : 0;
 
       const prevFired = prevFiredRef.current;
       if (prevFired !== null && nextFired > prevFired) {
@@ -79,6 +83,7 @@ export function NotificationBell() {
         if (cur !== nextReview) setPreviewLoaded(false);
         return nextReview;
       });
+      setConflictCount(nextConflict);
     } catch {
       // silent — bell never blocks the header
     }
@@ -101,7 +106,7 @@ export function NotificationBell() {
     };
   }, [fetchCounts]);
 
-  const totalCount = (firedCount ?? 0) + (reviewCount ?? 0);
+  const totalCount = (firedCount ?? 0) + (reviewCount ?? 0) + (conflictCount ?? 0);
 
   const onMouseEnter = useCallback(async () => {
     setHovering(true);
@@ -140,6 +145,7 @@ export function NotificationBell() {
     const parts: string[] = [];
     if ((firedCount ?? 0) > 0) parts.push(`${firedCount} fired`);
     if ((reviewCount ?? 0) > 0) parts.push(`${reviewCount} to review`);
+    if ((conflictCount ?? 0) > 0) parts.push(`${conflictCount} date conflict${conflictCount === 1 ? "" : "s"}`);
     return parts.length === 0 ? "No notifications" : parts.join(" · ");
   })();
 
@@ -277,6 +283,27 @@ export function NotificationBell() {
                   ))
                 )}
               </ul>
+            </div>
+          )}
+
+          {(conflictCount ?? 0) > 0 && (
+            <div>
+              <div className="px-3 py-1.5 bg-raised border-b border-edge border-t">
+                <span className="text-[9px] font-medium text-gold uppercase tracking-wider">
+                  Earnings date conflicts
+                </span>
+              </div>
+              <Link
+                href="/dashboard/today"
+                className="block px-3 py-2 hover:bg-raised"
+              >
+                <span className="text-[11px] text-ink">
+                  {conflictCount} name{conflictCount === 1 ? "" : "s"} with disagreeing sources
+                </span>
+                <p className="text-[10px] text-ink-faint mt-0.5">
+                  Confirm the date against IBKR on the Today view →
+                </p>
+              </Link>
             </div>
           )}
         </div>

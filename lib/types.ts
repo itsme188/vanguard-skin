@@ -187,7 +187,7 @@ export const VALID_SCOPES: ChatScope[] = ["all", "ibkr", "vanguard-taxable", "va
 
 // ── Calendar Events ──────────────────────────────────────────
 
-export type CalendarEventSource = "wsh" | "claude_macro" | "manual" | "apple_calendar" | "finnhub";
+export type CalendarEventSource = "wsh" | "claude_macro" | "manual" | "apple_calendar" | "finnhub" | "nasdaq";
 
 export type CalendarEventType =
   // Company events (from WSH)
@@ -235,6 +235,11 @@ export interface CalendarEvent {
   consensus_value: string | null;
   reaction_snapshot: string | null;
   enriched_at: string | null;
+  // Migration 057 — earnings date cross-check (Finnhub × Nasdaq). Nullable;
+  // unreconciled rows behave as before (date_status null, never superseded).
+  date_status?: "confirmed" | "conflict" | "single" | "user_confirmed" | null;
+  date_conflict_with?: string | null;
+  superseded?: number | null;
 }
 
 export interface CalendarBriefing {

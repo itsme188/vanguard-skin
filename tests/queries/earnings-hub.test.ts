@@ -5,7 +5,7 @@ import {
   getSymbolStatus,
   getHeldStockSymbols,
 } from "@/lib/queries/briefing-symbols";
-import { getEarningsForWeekDeduped } from "@/lib/queries/calendar";
+import { getEarningsForWeekDeduped, countEarningsDateConflicts } from "@/lib/queries/calendar";
 
 let db: Database.Database;
 
@@ -219,6 +219,43 @@ describe("getEarningsForWeekDeduped", () => {
 
   it("returns empty array when the week has no earnings events", () => {
     expect(getEarningsForWeekDeduped(db, "2026-05-04")).toEqual([]);
+  });
+
+  it("excludes superseded rows and surfaces date_status / date_conflict_with", () => {
+    // Canonical (Nasdaq) conflict row + a superseded (Finnhub) ghost.
+    const canonical = seedEarningsEvent({
+      symbol: "NVDA",
+      source: "nasdaq",
+      eventDate: "2026-04-29",
+      weekOf: "2026-04-27",
+    });
+    const ghost = seedEarningsEvent({
+      symbol: "NVDA",
+      source: "finnhub",
+      eventDate: "2026-04-30",
+      weekOf: "2026-04-27",
+    });
+    db.prepare("UPDATE calendar_events SET date_status='conflict', date_conflict_with='finnhub:2026-04-30' WHERE id=?").run(canonical);
+    db.prepare("UPDATE calendar_events SET superseded=1 WHERE id=?").run(ghost);
+
+    const events = getEarningsForWeekDeduped(db, "2026-04-27");
+    expect(events).toHaveLength(1);
+    expect(events[0].event_date).toBe("2026-04-29");
+    expect(events[0].date_status).toBe("conflict");
+    expect(events[0].date_conflict_with).toBe("finnhub:2026-04-30");
+  });
+
+  it("countEarningsDateConflicts counts only in-window, non-superseded conflicts", () => {
+    const mkConflict = (sym: string, date: string, superseded = 0) => {
+      const id = seedEarningsEvent({ symbol: sym, source: "nasdaq", eventDate: date, weekOf: "2026-06-08" });
+      db.prepare("UPDATE calendar_events SET date_status='conflict', superseded=? WHERE id=?").run(superseded, id);
+    };
+    mkConflict("NVDA", "2026-06-11"); // in window
+    mkConflict("AMD", "2026-06-13"); // in window
+    mkConflict("OLD", "2026-05-01"); // out of window (before today)
+    mkConflict("SUP", "2026-06-12", 1); // superseded → excluded
+
+    expect(countEarningsDateConflicts(db, "2026-06-08")).toBe(2);
   });
 
   it("getHeldStockSymbols still returns the all-accounts list for sanity", () => {
