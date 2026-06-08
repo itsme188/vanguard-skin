@@ -7,7 +7,8 @@
  *   2. enrichSecurities()      — TWS contract details for new securities (rate-limited)
  *   3. fetchSnapshotPrices()   — current prices for ALL held securities (~2 min)
  *   4. computeDailyValuations()— recompute with fresh prices (instant)
- *   5. fetchBenchmarkPrices()  — benchmark ETFs, incremental (parallel with 3-4)
+ *   5. fetchBenchmarkPrices()  — benchmark ETFs from TWS, incremental (full only)
+ *   5b. fetchBenchmarkClosesFromYahoo() — TWS-free benchmark top-off (both tiers)
  *
  * Each step catches its own errors and continues — partial success is fine.
  * Uses sync-state.ts for mutex and progress tracking.
@@ -30,6 +31,7 @@ import { purgeMaturedBondHoldings } from "../mutations/matured-bonds";
 import { reconcileClosedEquityHoldings } from "../mutations/closed-equity";
 import { fetchSnapshotPrices } from "./snapshot";
 import { fetchBenchmarkPrices } from "./benchmark";
+import { fetchBenchmarkClosesFromYahoo } from "../benchmark/yahoo-benchmarks";
 import { computeDailyValuations } from "../compute/daily-valuation";
 import { detectAndFireAlerts } from "../alerts/detect";
 import {
@@ -266,6 +268,26 @@ export async function runAutoRefresh(
       setSyncPhase("benchmarks");
     }
     await benchmarkPromise;
+
+    // ── Step 5b: Yahoo benchmark top-off (BOTH tiers, TWS-independent) ──
+    // The TWS benchmark fetch above runs full-only and needs TWS connected.
+    // This free Yahoo pull advances the latest benchmark closes on the quick
+    // tier too, so the Momentum Pulse tile stays fresh between full refreshes
+    // and over weekends (benchmark ETF closes are public market data — no
+    // reason to gate them on a brokerage session). Best-effort; never blocks.
+    try {
+      const yahoo = await fetchBenchmarkClosesFromYahoo(db);
+      const topped = yahoo.reduce((sum, r) => sum + r.inserted, 0);
+      if (topped > 0) {
+        benchmarksSynced += topped;
+        console.log(`[auto-refresh] Yahoo benchmark top-off: ${topped} closes`);
+      }
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Yahoo benchmark top-off failed";
+      errors.push(msg);
+      console.error("[auto-refresh] Yahoo benchmark top-off error:", msg);
+    }
 
     // Step 6: Detect crossed levels + fire alerts (after prices + valuations are fresh)
     setSyncPhase("alerts");

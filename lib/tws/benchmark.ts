@@ -20,20 +20,12 @@ export interface BenchmarkFetchResult {
   error?: string;
 }
 
-// ─── Known benchmarks ───────────────────────────────────────────
+// ─── Known benchmarks (single source: lib/benchmark/symbols) ─────
 
-export const BENCHMARK_SYMBOLS = ["SPY", "QQQ", "DIA", "VTI", "MTUM", "SPMO", "USMV"] as const;
-export type BenchmarkSymbol = (typeof BENCHMARK_SYMBOLS)[number];
+import { BENCHMARK_SYMBOLS, BENCHMARK_LABELS, type BenchmarkSymbol } from "../benchmark/symbols";
 
-export const BENCHMARK_LABELS: Record<string, string> = {
-  SPY: "S&P 500",
-  QQQ: "Nasdaq 100",
-  DIA: "Dow Jones",
-  VTI: "Total Market",
-  MTUM: "MSCI Momentum",
-  SPMO: "S&P 500 Momentum",
-  USMV: "Min Volatility",
-};
+export { BENCHMARK_SYMBOLS, BENCHMARK_LABELS };
+export type { BenchmarkSymbol };
 
 // ─── Internals ──────────────────────────────────────────────────
 

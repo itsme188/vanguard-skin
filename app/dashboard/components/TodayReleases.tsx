@@ -10,12 +10,13 @@ import {
 } from "./calendar/EnrichmentChips";
 
 /**
- * Mobile Today view — "Today's releases" block.
+ * Today view — "Today's releases" block (left half of the Today header row).
  *
- * Rendered when at least one calendar event lands on today's date with a
- * known release_time. Mixes macro (CPI, FOMC) and earnings together,
- * sorted by release_time ascending. Post-release rows carry the actual +
- * reaction summary; pre-release rows show consensus.
+ * `mode="today"` lists events landing on today's date; `mode="upcoming"` is the
+ * fallback shown when today has none — it lists the next few scheduled releases
+ * (with their date) so the column is never empty. Mixes macro (CPI, FOMC) and
+ * earnings together, sorted by date then release_time. Post-release rows carry
+ * the actual + reaction summary; pre-release rows show consensus.
  */
 
 function fmtTime(release_time: string): string {
@@ -26,11 +27,31 @@ function fmtTime(release_time: string): string {
   return `${h12}:${mm} ${suffix}`;
 }
 
-export function TodayReleases({ releases }: { releases: CalendarEvent[] }) {
+/** event_date is an ET market date (YYYY-MM-DD) → "Wed Jun 10". */
+function fmtDate(event_date: string): string {
+  const [y, m, d] = event_date.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+export function TodayReleases({
+  releases,
+  mode = "today",
+}: {
+  releases: CalendarEvent[];
+  mode?: "today" | "upcoming";
+}) {
+  const upcoming = mode === "upcoming";
   return (
     <section className="rounded-xl bg-panel p-4">
       <div className="mb-2 flex items-baseline justify-between">
-        <h2 className="text-sm font-medium text-ink">Today&rsquo;s releases</h2>
+        <h2 className="text-sm font-medium text-ink">
+          {upcoming ? "Next releases" : "Today’s releases"}
+        </h2>
         <Link
           href="/dashboard/calendar"
           className="text-[11px] text-ink-faint hover:text-ink font-mono"
@@ -56,6 +77,9 @@ export function TodayReleases({ releases }: { releases: CalendarEvent[] }) {
                   {event.title}
                 </span>
                 <span className="text-[11px] font-mono text-ink-faint shrink-0">
+                  {upcoming && event.event_date && (
+                    <span className="text-ink-dim">{fmtDate(event.event_date)} · </span>
+                  )}
                   {event.release_time ? fmtTime(event.release_time) : ""}
                 </span>
               </div>
