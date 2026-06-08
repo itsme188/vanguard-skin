@@ -18,8 +18,16 @@ export const GICS_SECTORS = [
 
 export type GicsSector = (typeof GICS_SECTORS)[number];
 
-/** Non-GICS labels that are meaningful and must pass through untouched. */
-const PASSTHROUGH = new Set(["Diversified", "Fixed Income"]);
+/**
+ * Non-GICS labels that are meaningful and must pass through untouched.
+ * TWS emits these (via `detail.industry`) for broad ETFs / bond funds — they're not
+ * GICS sectors but are semantically valid. Keyed lowercase for case-insensitive match
+ * (parity with ALIASES); the value is the canonical casing we return.
+ */
+const PASSTHROUGH: Record<string, string> = {
+  "diversified": "Diversified",
+  "fixed income": "Fixed Income",
+};
 
 /** lowercase-trimmed alias → canonical GICS label. */
 const ALIASES: Record<string, GicsSector> = {
@@ -52,7 +60,7 @@ export function normalizeSector(raw: string | null | undefined): string | null {
   if (raw == null) return null;
   const trimmed = raw.trim();
   if (trimmed === "") return null;
-  if (PASSTHROUGH.has(trimmed)) return trimmed;
-  const hit = ALIASES[trimmed.toLowerCase()];
-  return hit ?? null;
+  const lower = trimmed.toLowerCase();
+  if (PASSTHROUGH[lower]) return PASSTHROUGH[lower];
+  return ALIASES[lower] ?? null;
 }

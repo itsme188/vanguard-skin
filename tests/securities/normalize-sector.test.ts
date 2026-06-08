@@ -30,4 +30,10 @@ describe("normalizeSector", () => {
     expect(normalizeSector("Diversified")).toBe("Diversified");
     expect(normalizeSector("Fixed Income")).toBe("Fixed Income");
   });
+
+  it("passes through non-GICS labels case-insensitively, returning canonical casing", () => {
+    expect(normalizeSector("diversified")).toBe("Diversified");
+    expect(normalizeSector("FIXED INCOME")).toBe("Fixed Income");
+    expect(normalizeSector("  fixed income ")).toBe("Fixed Income");
+  });
 });
