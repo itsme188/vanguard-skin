@@ -103,6 +103,11 @@ export const FEATURE_MODELS: Record<FeatureKey, string> = {
   // Sonnet via Anthropic — native PDF content block handles tables + layout
   // reliably; Workers AI doesn't currently support binary PDF input.
   earningsBogeysExtraction: `anthropic/${SONNET_MODEL}`,
+
+  // Per-ETF GICS sector-weight look-through. Must stay on Anthropic — uses
+  // Claude-native web_search (Finnhub ETF data is premium-gated). Refreshed
+  // quarterly via scripts/refresh-etf-sector-weights.ts.
+  etfSectorWeights: `anthropic/${SONNET_MODEL}`,
 };
 
 export interface ResolvedModel {
