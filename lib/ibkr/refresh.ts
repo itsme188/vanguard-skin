@@ -20,6 +20,9 @@ import {
 } from "./web-api";
 import { mapPosition, type MappedPosition } from "./map-positions";
 import type { IbkrOAuthConfig } from "./oauth-client";
+import { getMarketDataSnapshot, type ParsedQuote } from "./market-data";
+import { getQuoteCandidateConids } from "../queries/security-quotes";
+import { upsertSecurityQuote } from "../mutations/security-quotes";
 
 const DB_ACCOUNT_NAME = "IBKR";
 
@@ -150,5 +153,91 @@ export async function refreshIbkrHoldingsFromWebApi(
 ): Promise<IbkrWriteResult | null> {
   if (!cfg) return null;
   const snapshot = await fetchIbkrPortfolio(cfg);
-  return writeIbkrHoldings(db, snapshot);
+  const result = writeIbkrHoldings(db, snapshot);
+
+  // Best-effort quote enrichment (IV / HV / 52wk range + watchlist price top-up).
+  // Never blocks the holdings refresh — mirrors the TWS path's non-fatal steps.
+  try {
+    const lst = await openSession(cfg);
+    const q = await fetchAndStoreQuotes(db, cfg, lst.token);
+    console.log(
+      `[ibkr] quote enrichment: ${q.securitiesUpdated} securities, ${q.pricesWritten} prices (${q.conidsRequested} conids)`,
+    );
+  } catch (err) {
+    console.warn("[ibkr] quote enrichment failed (non-fatal):", err);
+  }
+
+  return result;
+}
+
+// ─── Quote enrichment (IV / HV / 52-week range via /iserver/marketdata/snapshot) ───
+
+export type SnapshotFetcher = (
+  cfg: IbkrOAuthConfig,
+  lst: string,
+  conids: number[],
+) => Promise<ParsedQuote[]>;
+
+export interface QuoteRefreshResult {
+  conidsRequested: number;
+  securitiesUpdated: number;
+  pricesWritten: number;
+}
+
+/**
+ * Fetch IBKR market-data snapshots for held + watchlist securities and cache the
+ * IV / historic-vol / 52-week range in `security_quotes`. The snapshot's last
+ * price is ALSO written to `prices` (source 'tws') — the "free byproduct" price
+ * coverage, which uniquely reaches watchlist (non-held) names no other path
+ * prices. DI-shaped: `opts.fetchSnapshot` lets tests inject parsed quotes.
+ * Best-effort — the caller treats failures as non-fatal (like the TWS path).
+ */
+export async function fetchAndStoreQuotes(
+  db: Database.Database,
+  cfg: IbkrOAuthConfig,
+  lst: string,
+  opts: { asOfDate?: string; fetchSnapshot?: SnapshotFetcher } = {},
+): Promise<QuoteRefreshResult> {
+  const asOf = opts.asOfDate ?? todayET();
+  const fetchSnapshot: SnapshotFetcher =
+    opts.fetchSnapshot ?? ((c, l, conids) => getMarketDataSnapshot(c, l, conids));
+
+  const candidates = getQuoteCandidateConids(db);
+  if (candidates.length === 0) {
+    return { conidsRequested: 0, securitiesUpdated: 0, pricesWritten: 0 };
+  }
+
+  const securityIdByConid = new Map(candidates.map((c) => [c.conid, c.securityId]));
+  const conids = candidates.map((c) => c.conid);
+  const quotes = await fetchSnapshot(cfg, lst, conids);
+
+  const upsertPrice = db.prepare(
+    `INSERT OR REPLACE INTO prices (security_id, date, close_price, source) VALUES (?,?,?,'tws')`,
+  );
+
+  let securitiesUpdated = 0;
+  let pricesWritten = 0;
+  db.transaction(() => {
+    for (const q of quotes) {
+      if (q.conid == null) continue;
+      const securityId = securityIdByConid.get(q.conid);
+      if (securityId == null) continue; // not a candidate we asked for
+      upsertSecurityQuote(db, {
+        securityId,
+        asOfDate: asOf,
+        ivUnderlying: q.ivUnderlying,
+        hv30d: q.hv30d,
+        week52High: q.week52High,
+        week52Low: q.week52Low,
+        dividendYield: null, // deferred — not in the raw snapshot
+      });
+      securitiesUpdated++;
+      if (q.last != null && q.last > 0) {
+        upsertPrice.run(securityId, asOf, q.last);
+        pricesWritten++;
+      }
+    }
+  })();
+
+  return { conidsRequested: conids.length, securitiesUpdated, pricesWritten };
 }
