@@ -61,6 +61,7 @@ export const FEATURE_MODELS: Record<FeatureKey, string> = {
   newsletterLevelExtraction: `anthropic/${SONNET_MODEL}`,
   newsletterProcessing: `anthropic/${SONNET_MODEL}`,
   factorClassification: `anthropic/${SONNET_MODEL}`,
+  securityClassification: `anthropic/${SONNET_MODEL}`,
   analysisFactorNarrative: `anthropic/${SONNET_MODEL}`,
   // Weekly macro-themes generation for the Analysis Workspace + Sunday
   // briefing. Sonnet 4.6 via AI Gateway, pre-gen at Sunday cadence, cache
