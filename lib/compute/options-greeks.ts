@@ -23,6 +23,11 @@ export interface OptionGreeks {
   theta: number; // daily theta in dollars (negative = decay)
   vega: number; // per 1% IV move
   iv: number | null; // implied volatility (annualized, 0.30 = 30%)
+  // Where the vol used for the Greeks came from:
+  //   "computed" — solved from the option's market price (best)
+  //   "ibkr"     — underlying IV from the cached IBKR snapshot (no option price)
+  //   "default"  — blind 30% fallback (iv left null; neither source available)
+  ivSource?: "computed" | "ibkr" | "default";
 }
 
 export interface PositionGreeks {
@@ -323,6 +328,7 @@ interface OptionHoldingRow {
   quantity: number;
   option_price: number | null;
   underlying_price: number | null;
+  underlying_iv: number | null; // cached IBKR snapshot IV for the underlying
 }
 
 /**
@@ -364,7 +370,11 @@ export function computePortfolioGreeks(
         (SELECT p.close_price FROM prices p
          JOIN securities su ON su.id = p.security_id
          WHERE su.symbol = s.underlying_symbol
-         ORDER BY p.date DESC LIMIT 1) AS underlying_price
+         ORDER BY p.date DESC LIMIT 1) AS underlying_price,
+        (SELECT sq.iv_underlying FROM security_quotes sq
+         JOIN securities su2 ON su2.id = sq.security_id
+         WHERE su2.symbol = s.underlying_symbol
+         LIMIT 1) AS underlying_iv
        FROM holdings h
        JOIN securities s ON s.id = h.security_id
        WHERE LOWER(s.security_type) = 'option'
@@ -426,30 +436,42 @@ export function computePortfolioGreeks(
       continue;
     }
 
-    // Compute IV from market price, or use a default if no price
+    // Resolve the vol for the Greeks, in priority order:
+    //   1. IV solved from the option's own market price ("computed")
+    //   2. the underlying's cached IBKR snapshot IV ("ibkr") — when no option price
+    //   3. a blind 30% default ("default") — neither source available
     let iv: number | null = null;
-    let sigmaForGreeks = 0.3; // fallback: 30% vol
+    let sigmaForGreeks = 0.3;
+    let ivSource: "computed" | "ibkr" | "default" = "default";
+    const hasOptionPrice = !!row.option_price && row.option_price > 0;
 
-    if (!row.option_price || row.option_price <= 0) {
+    if (hasOptionPrice) {
+      const solved = impliedVolatility(row.option_price as number, S, row.strike_price, T, r, optType);
+      if (solved !== null) {
+        iv = solved;
+        sigmaForGreeks = solved;
+        ivSource = "computed";
+      }
+    }
+
+    if (ivSource === "default" && row.underlying_iv != null && row.underlying_iv > 0) {
+      // No usable computed IV — fall back to the underlying's IBKR snapshot IV,
+      // a real market figure that beats the blind 30%.
+      iv = row.underlying_iv;
+      sigmaForGreeks = row.underlying_iv;
+      ivSource = "ibkr";
+    }
+
+    if (ivSource === "default") {
+      // Still no real IV — record WHY (no price at all vs. price present but
+      // unsolvable) so the diagnostic block stays accurate.
       diagnostics.push({
         symbol: row.symbol,
         underlying: row.underlying_symbol,
-        reason: "missing_option_price",
+        reason: hasOptionPrice ? "missing_iv" : "missing_option_price",
         daysToExpiry,
       });
-    } else {
-      iv = impliedVolatility(row.option_price, S, row.strike_price, T, r, optType);
-      if (iv !== null) {
-        sigmaForGreeks = iv;
-      } else {
-        diagnostics.push({
-          symbol: row.symbol,
-          underlying: row.underlying_symbol,
-          reason: "missing_iv",
-          daysToExpiry,
-        });
-        // sigmaForGreeks stays at 0.3 fallback — Greeks still computed
-      }
+      // sigmaForGreeks stays at 0.3 — Greeks still computed, iv stays null.
     }
 
     const d = delta(S, row.strike_price, T, r, sigmaForGreeks, optType);
@@ -457,7 +479,7 @@ export function computePortfolioGreeks(
     const th = theta(S, row.strike_price, T, r, sigmaForGreeks, optType);
     const v = vega(S, row.strike_price, T, r, sigmaForGreeks);
 
-    position.greeks = { delta: d, gamma: g, theta: th, vega: v, iv };
+    position.greeks = { delta: d, gamma: g, theta: th, vega: v, iv, ivSource };
 
     // Aggregate to portfolio level
     // Multiply by quantity (signed) and multiplier for dollar-equivalent exposure

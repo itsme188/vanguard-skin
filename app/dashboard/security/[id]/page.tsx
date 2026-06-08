@@ -18,6 +18,8 @@ import { Chip, type ChipTone } from "../../components/Chip";
 import { TranscriptsRefreshButton } from "./TranscriptsRefreshButton";
 import { FactorProfileSection } from "./FactorProfileSection";
 import { computeSecurityFactorShare } from "@/lib/compute/factors";
+import { getSecurityQuote } from "@/lib/queries/security-quotes";
+import { QuoteStats } from "../../components/QuoteStats";
 import { Money, Pct, Shares } from "@/lib/privacy/components";
 import type { EarningsTranscript } from "@/lib/types";
 
@@ -178,6 +180,10 @@ export default async function SecurityDetailPage(props: {
   // compute server-side and pass as a prop (no client fetch needed).
   const factorShare = computeSecurityFactorShare(db, securityId);
 
+  // IBKR snapshot enrichment (IV / HV / 52-week range) — public market data,
+  // null until a quote has been captured by the IBKR refresh.
+  const quote = getSecurityQuote(db, securityId);
+
   const typeLabel = [
     security.security_type?.replace(/_/g, " "),
     security.sector,
@@ -227,6 +233,9 @@ export default async function SecurityDetailPage(props: {
           priceTargetHigh={watchlistItem?.price_target_high ?? null}
         />
       </div>
+
+      {/* IBKR market-data snapshot strip — 52wk range + IV/HV (public data) */}
+      <QuoteStats quote={quote} currentPrice={price?.close_price ?? null} />
 
       {/* Watchlist price targets */}
       {watched && watchlistItem && (watchlistItem.price_target_low || watchlistItem.price_target_high) && (
