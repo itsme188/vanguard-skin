@@ -16,6 +16,8 @@ import { getBenchmarkSectorMap } from "@/lib/queries/benchmark-compositions";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { getDefaultBenchmark } from "@/lib/analysis/benchmarks";
 import { computeExposureDelta, type ExposureDelta } from "./exposure-delta";
+import { explodeHoldingBySector } from "./explode-sector";
+import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import { marketValue } from "@/lib/valuation";
 
 export type CashDeployMode = "benchmark" | "factor_balance" | "heuristic";
@@ -104,14 +106,16 @@ function loadCurrentHoldings(
       price: number;
     }>;
 
+  const etfWeights = getEtfSectorWeights(db);
   const sectorValue = new Map<string, number>();
   let totalValue = 0;
   for (const r of rows) {
     const mv = marketValue(r.quantity, r.price, r.security_type, r.multiplier);
     if (mv <= 0) continue;
     totalValue += mv;
-    const sector = r.sector ?? "Unknown";
-    sectorValue.set(sector, (sectorValue.get(sector) ?? 0) + mv);
+    for (const part of explodeHoldingBySector(r.symbol, r.security_type, mv, etfWeights, r.sector)) {
+      sectorValue.set(part.sector, (sectorValue.get(part.sector) ?? 0) + part.value);
+    }
   }
 
   return { totalValue, sectorValue };
