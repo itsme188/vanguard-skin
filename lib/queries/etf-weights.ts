@@ -1,11 +1,19 @@
 import type Database from "better-sqlite3";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
 export function getHeldEtfSymbols(db: Database.Database): string[] {
-  const rows = db.prepare(`
-    SELECT DISTINCT s.symbol FROM securities s
-    JOIN holdings h ON h.security_id = s.id AND h.quantity != 0
-    WHERE LOWER(s.security_type) IN ('etf','mutual fund')
-  `).all() as Array<{ symbol: string }>;
+  // Use the canonical latest-holdings predicate (per-(account,security),
+  // quantity != 0) rather than a global holdings join, so stale/closed ETF
+  // rows don't surface. See lib/queries/latest-holdings.ts.
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT s.symbol
+       FROM holdings h
+       JOIN securities s ON s.id = h.security_id
+       WHERE ${latestHoldingsPredicate({})}
+         AND LOWER(s.security_type) IN ('etf','mutual fund')`
+    )
+    .all() as Array<{ symbol: string }>;
   return rows.map((r) => r.symbol);
 }
 
