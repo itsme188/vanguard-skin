@@ -13,6 +13,8 @@
 
 import type Database from "better-sqlite3";
 import { SECURITY_CLASSIFICATIONS } from "@/lib/data/security-classifications";
+import { generateText } from "ai";
+import { getModelForFeature } from "@/lib/ai/provider";
 
 export interface ClassificationResult {
   /** Total securities processed */
@@ -180,6 +182,45 @@ export function classifySecurities(db: Database.Database): ClassificationResult 
     skipped,
     unresolved,
   };
+}
+
+const AI_CLASSIFY_SYSTEM = `You classify securities. Return ONLY a JSON array, one object per input symbol, each:
+{"symbol":"...","fund_category":"...","geography":"US|International|Global|Emerging","market_cap_category":"Large|Mid|Small|null","style":"Growth|Value|Blend|null"}
+fund_category examples: "Large Blend", "Sector Equity", "Growth", "Diversified Bond". No prose, no code fences.`;
+
+export interface AiFallbackResult { classified: number; errors: string[]; }
+
+export async function classifyUnresolvedWithClaude(
+  db: Database.Database,
+  unresolved: Array<{ id: number; symbol: string; security_type: string | null }>
+): Promise<AiFallbackResult> {
+  if (unresolved.length === 0) return { classified: 0, errors: [] };
+  const model = getModelForFeature("securityClassification");
+  const update = db.prepare(`
+    UPDATE securities SET fund_category = ?, geography = ?, market_cap_category = ?, style = ?, classification_source = 'auto_ai'
+    WHERE id = ?`);
+  let classified = 0;
+  const errors: string[] = [];
+  const BATCH = 25;
+  for (let i = 0; i < unresolved.length; i += BATCH) {
+    const batch = unresolved.slice(i, i + BATCH);
+    const prompt = `Classify:\n${batch.map((s) => `- ${s.symbol} (type: ${s.security_type ?? "stock"})`).join("\n")}`;
+    try {
+      const { text } = await generateText({ model, maxOutputTokens: 4000, temperature: 0.2, system: AI_CLASSIFY_SYSTEM, prompt });
+      const json = text.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+      const results = JSON.parse(json) as Array<Record<string, string>>;
+      const idMap = new Map(batch.map((s) => [s.symbol, s.id]));
+      for (const r of results) {
+        const id = idMap.get(r.symbol);
+        if (!id) continue;
+        update.run(r.fund_category ?? null, r.geography ?? null, r.market_cap_category || null, r.style || null, id);
+        classified++;
+      }
+    } catch (err) {
+      errors.push(`Batch ${i / BATCH + 1}: ${err instanceof Error ? err.message : "unknown"}`);
+    }
+  }
+  return { classified, errors };
 }
 
 /**
