@@ -8,6 +8,7 @@ import type {
   ParsedSecurity,
 } from "../types";
 import { resolveDescriptionToSymbol } from "../resolve-description";
+import { parseOCCSymbol } from "@/lib/import/occ-symbol";
 
 type CanonicalType = "transactions" | "holdings" | "prices" | "snapshots";
 
@@ -153,10 +154,19 @@ export function parseCanonicalCsv(
           sourceKey,
         });
         if (!securitiesMap.has(symbol)) {
+          const occParsed = parseOCCSymbol(symbol);
           securitiesMap.set(symbol, {
             symbol,
             name: row.security_name?.trim(),
             securityType: row.security_type?.trim() || undefined,
+            ...(occParsed
+              ? {
+                  underlyingSymbol: occParsed.underlying,
+                  strikePrice: occParsed.strike,
+                  expirationDate: occParsed.expirationDate,
+                  optionType: occParsed.optionType,
+                }
+              : {}),
           });
         }
         break;
@@ -203,10 +213,19 @@ export function parseCanonicalCsv(
           sourceKey: `canonical:hold:${row.account?.trim()}:${symbol}:${row.as_of_date.trim()}`,
         });
         if (!securitiesMap.has(symbol)) {
+          const occParsed = parseOCCSymbol(symbol);
           securitiesMap.set(symbol, {
             symbol,
             name: row.security_name?.trim(),
             securityType: row.security_type?.trim() || undefined,
+            ...(occParsed
+              ? {
+                  underlyingSymbol: occParsed.underlying,
+                  strikePrice: occParsed.strike,
+                  expirationDate: occParsed.expirationDate,
+                  optionType: occParsed.optionType,
+                }
+              : {}),
           });
         }
         break;
