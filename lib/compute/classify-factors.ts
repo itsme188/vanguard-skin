@@ -8,6 +8,7 @@ import type Database from "better-sqlite3";
 import { generateText } from "ai";
 import { getModelForFeature } from "@/lib/ai/provider";
 import { FACTOR_COLUMNS, FACTOR_LABELS, type FactorColumn } from "@/lib/factors";
+import { normalizeSector } from "@/lib/securities/normalize-sector";
 
 export interface FactorClassifyResult {
   classified: number;
@@ -191,8 +192,8 @@ export async function classifyFactors(
         // Also update sector/industry on the securities table
         if (result.sector || result.industry) {
           db.prepare(
-            "UPDATE securities SET sector = COALESCE(?, sector), industry = COALESCE(?, industry) WHERE id = ?"
-          ).run(result.sector ?? null, result.industry ?? null, secId);
+            "UPDATE securities SET sector = COALESCE(?, sector), industry = COALESCE(NULLIF(industry,''), ?) WHERE id = ?"
+          ).run(normalizeSector(result.sector ?? null), result.industry ?? result.sector ?? null, secId);
         }
 
         classified++;
