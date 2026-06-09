@@ -25,6 +25,11 @@ import {
 } from "./sync-state";
 import { syncPortfolio } from "./positions";
 import { enrichSecurities } from "./contracts";
+import {
+  classifyOptionSectors,
+  getUnsectoredOptionUnderlyings,
+} from "../securities/classify-option-sectors";
+import { classifyFactors } from "../compute/classify-factors";
 import { purgeExpiredOptionHoldings } from "../mutations/expired-options";
 import { purgeClosedOptionHoldings } from "../mutations/closed-positions";
 import { purgeMaturedBondHoldings } from "../mutations/matured-bonds";
@@ -195,6 +200,54 @@ export async function runAutoRefresh(
         }
       } else {
         console.log("[auto-refresh] All securities already enriched, skipping");
+      }
+
+      // ── Step 2.5: Sector-classify new option underlyings (full only) ──
+      // New option positions on non-held underlyings arrive via the TWS sync
+      // with a blank sector and would otherwise sit in the cash-deploy
+      // "Unknown" bucket until someone reruns the one-off script. The SQL
+      // pre-check is free; the Claude call only fires when there is work.
+      try {
+        if (getUnsectoredOptionUnderlyings(db).length > 0) {
+          const sectorResult = await classifyOptionSectors(db);
+          if (sectorResult.classified > 0 || sectorResult.errors.length > 0) {
+            console.log(
+              `[auto-refresh] Option-sector classify: ${sectorResult.classified} classified` +
+                (sectorResult.errors.length > 0
+                  ? `, ${sectorResult.errors.length} batch errors`
+                  : ""),
+            );
+          }
+        }
+      } catch (err) {
+        const msg =
+          err instanceof Error ? err.message : "Option-sector classify failed";
+        errors.push(msg);
+        console.error("[auto-refresh] Option-sector classify error:", msg);
+      }
+
+      // ── Step 2.6: Factor-classify new securities (full only) ──────
+      // Factor classification was manual-only (button + script) — new
+      // positions silently degraded scenarios / heatmap / macro tilts until
+      // the user remembered to click Classify. classifyFactors is
+      // incremental by construction: it early-returns before any Claude
+      // call when every held name + option underlying already has a row.
+      try {
+        const factorResult = await classifyFactors(db);
+        if (factorResult.classified > 0 || factorResult.errors.length > 0) {
+          console.log(
+            `[auto-refresh] Factor classify: ${factorResult.classified} classified, ` +
+              `${factorResult.skipped} defaulted` +
+              (factorResult.errors.length > 0
+                ? `, ${factorResult.errors.length} batch errors`
+                : ""),
+          );
+        }
+      } catch (err) {
+        const msg =
+          err instanceof Error ? err.message : "Factor classify failed";
+        errors.push(msg);
+        console.error("[auto-refresh] Factor classify error:", msg);
       }
     }
 
