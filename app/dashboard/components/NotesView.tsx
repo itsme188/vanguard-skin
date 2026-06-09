@@ -23,11 +23,16 @@ interface NotesViewProps {
 
 // ─── Constants ───────────────────────────────────────────────────
 
+// "Stock Notes" is the broadened presentation of the trade_thesis note type
+// (2026-06-09 rework): position notes, thesis updates, "why I'm watching
+// this" — anything stock-specific that isn't earnings. Journal is reserved
+// for market & trading psychology. The DB value stays trade_thesis (schema
+// CHECK constraint; existing rows keep working).
 const TYPE_OPTIONS: { label: string; value: string }[] = [
   { label: "All", value: "" },
   { label: "Journal", value: "journal" },
   { label: "Earnings", value: "earnings" },
-  { label: "Trade Theses", value: "trade_thesis" },
+  { label: "Stock Notes", value: "trade_thesis" },
 ];
 
 const SENTIMENT_OPTIONS: { label: string; value: NoteSentiment }[] = [
@@ -73,7 +78,11 @@ export function NotesView({
     if (currentType) setFormType(currentType);
   }, [currentType]);
   const [formContent, setFormContent] = useState("");
-  const [formSymbol, setFormSymbol] = useState("");
+  // ?symbol= prefill — the Security Detail "+ Add note" link lands here with
+  // type+symbol preselected so a stock thought is one textarea away.
+  const [formSymbol, setFormSymbol] = useState(
+    () => searchParams.get("symbol")?.toUpperCase() ?? ""
+  );
   const [formDate, setFormDate] = useState(
     new Date().toISOString().slice(0, 10)
   );
@@ -253,7 +262,7 @@ export function NotesView({
           >
             <option value="journal">Journal</option>
             <option value="earnings">Earnings</option>
-            <option value="trade_thesis">Trade Thesis</option>
+            <option value="trade_thesis">Stock Note</option>
           </select>
 
           {(formType === "earnings" || formType === "trade_thesis") && (
@@ -305,10 +314,10 @@ export function NotesView({
           onChange={(e) => setFormContent(e.target.value)}
           placeholder={
             formType === "journal"
-              ? "Market thoughts, observations, self-critique..."
+              ? "Market & trading psychology — how you feel about the market, how you're trading..."
               : formType === "earnings"
                 ? "Earnings call notes, guidance thoughts..."
-                : "Trade thesis, rationale for this position..."
+                : "Position notes, thesis updates, why you're watching this name..."
           }
           rows={3}
           className="w-full bg-raised border border-edge rounded-lg px-3 py-2 text-sm text-ink placeholder:text-ink-faint resize-none focus:outline-none focus:border-gold"
