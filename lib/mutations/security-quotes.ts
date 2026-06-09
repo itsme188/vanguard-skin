@@ -32,7 +32,10 @@ export function upsertSecurityQuote(
        hv_30d         = excluded.hv_30d,
        week52_high    = excluded.week52_high,
        week52_low     = excluded.week52_low,
-       dividend_yield = excluded.dividend_yield,
+       -- Keep-last-known: the IBKR snapshot never carries yield, so quote
+       -- refreshes pass null — that must not clobber the Finnhub-sourced
+       -- value. An explicit non-null value still overwrites.
+       dividend_yield = COALESCE(excluded.dividend_yield, dividend_yield),
        updated_at     = datetime('now')`,
   ).run(
     q.securityId,

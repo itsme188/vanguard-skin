@@ -98,6 +98,62 @@ describe("fetchAndStoreQuotes", () => {
     expect(res.pricesWritten).toBe(0);
   });
 
+  it("fills dividend yield via the injected yield fetcher and preserves it across refreshes", async () => {
+    // IBKR's snapshot + fundamentals endpoints don't expose yield
+    // (probe-verified 2026-06-09) — Finnhub /stock/metric fills it instead,
+    // injected DI-style like fetchSnapshot.
+    const acct = getIbkrAccount();
+    const ko = seedSecurity("KO", 8894);
+    hold(acct, ko, 100);
+
+    const snapshotStub = async (): Promise<ParsedQuote[]> => [
+      { conid: 8894, last: 81.19, ivUnderlying: 0.2, hv30d: 0.18, week52High: 90, week52Low: 60 },
+    ];
+
+    let requestedSymbols: string[] = [];
+    const yieldStub = async (symbols: string[]) => {
+      requestedSymbols = symbols;
+      return { KO: 3.205 } as Record<string, number | null>;
+    };
+
+    await fetchAndStoreQuotes(db, CFG, "lst", {
+      asOfDate: "2026-06-09",
+      fetchSnapshot: snapshotStub,
+      fetchYields: yieldStub,
+    });
+    expect(requestedSymbols).toContain("KO");
+    expect(getSecurityQuote(db, ko)!.dividend_yield).toBeCloseTo(3.205, 3);
+
+    // Second refresh whose yield fetcher returns nothing (already-fresh
+    // candidate not selected / Finnhub down) must keep the known yield.
+    await fetchAndStoreQuotes(db, CFG, "lst", {
+      asOfDate: "2026-06-10",
+      fetchSnapshot: snapshotStub,
+      fetchYields: async () => ({}),
+    });
+    const q = getSecurityQuote(db, ko)!;
+    expect(q.as_of_date).toBe("2026-06-10");
+    expect(q.dividend_yield).toBeCloseTo(3.205, 3);
+  });
+
+  it("yield-fetcher failure is isolated — quotes still store", async () => {
+    const acct = getIbkrAccount();
+    const ko = seedSecurity("KO", 8894);
+    hold(acct, ko, 100);
+    const snapshotStub = async (): Promise<ParsedQuote[]> => [
+      { conid: 8894, last: 81.19, ivUnderlying: 0.2, hv30d: 0.18, week52High: 90, week52Low: 60 },
+    ];
+    const res = await fetchAndStoreQuotes(db, CFG, "lst", {
+      asOfDate: "2026-06-09",
+      fetchSnapshot: snapshotStub,
+      fetchYields: async () => {
+        throw new Error("finnhub down");
+      },
+    });
+    expect(res.securitiesUpdated).toBe(1);
+    expect(getSecurityQuote(db, ko)!.week52_high).toBe(90);
+  });
+
   it("stores the quote but skips the price write when last is null (warm-up gap)", async () => {
     const acct = getIbkrAccount();
     const aapl = seedSecurity("AAPL", 265598);
