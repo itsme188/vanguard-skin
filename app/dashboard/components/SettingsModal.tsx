@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useElectron } from "@/lib/hooks/useElectron";
+import { AiModelsSection } from "./AiModelsSection";
 import { EarningsEmailsSection } from "./EarningsEmailsSection";
 import { EmailRecipientsSection } from "./EmailRecipientsSection";
 
@@ -25,6 +26,7 @@ const SECTIONS = [
       { key: "anthropicApiKey", label: "Anthropic API Key", sensitive: true },
       { key: "fredApiKey", label: "FRED API Key", sensitive: true },
       { key: "apiNinjasKey", label: "API Ninjas Key", sensitive: true },
+      { key: "alphaVantageApiKey", label: "Alpha Vantage Key (transcripts)", sensitive: true },
     ],
   },
   {
@@ -364,6 +366,16 @@ export function SettingsModal() {
               {!unavailableReason && (
                 <div className="pt-2 border-t border-edge">
                   <EarningsEmailsSection />
+                </div>
+              )}
+
+              {/* AI model overrides — DB-backed per-feature model swaps
+                  (settings key feature_model_overrides). The resolver cache
+                  is invalidated on write, so changes apply to the next AI
+                  call without a restart. */}
+              {!unavailableReason && (
+                <div className="pt-2 border-t border-edge">
+                  <AiModelsSection />
                 </div>
               )}
 
