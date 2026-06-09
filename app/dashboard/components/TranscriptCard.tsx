@@ -7,6 +7,7 @@ const SOURCE_BADGES: Record<string, { label: string; className: string }> = {
   edgar_8k: { label: "8-K", className: "bg-gold/20 text-gold" },
   motley_fool: { label: "MF", className: "bg-blue/20 text-blue" },
   api_ninjas: { label: "API", className: "bg-up/20 text-up" },
+  alpha_vantage: { label: "AV", className: "bg-up/20 text-up" },
 };
 
 const SENTIMENT_STYLES: Record<string, string> = {

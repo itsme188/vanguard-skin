@@ -8,6 +8,11 @@ import {
   getTranscriptForChat,
 } from "@/lib/transcripts/fetch";
 import { getEarnings8KFilings } from "@/lib/apis/edgar";
+import {
+  isAlphaVantageConfigured,
+  getEarningsTranscript as getAlphaVantageTranscript,
+} from "@/lib/transcripts/alpha-vantage";
+import { getLatestTranscript as getMotleyFoolTranscript } from "@/lib/apis/motley-fool";
 
 // Mock external fetchers so tests stay offline. The cache-hit tests don't
 // reach these; only the legacy-invalidation test does (test #4), and it
@@ -18,6 +23,15 @@ vi.mock("@/lib/apis/api-ninjas", () => ({
   getEarningsTranscript: vi.fn(async () => null),
 }));
 
+// Alpha Vantage defaults to configured-but-empty so existing tests exercise
+// the EDGAR fallback unchanged; chain-order tests override per call.
+vi.mock("@/lib/transcripts/alpha-vantage", () => ({
+  isAlphaVantageConfigured: vi.fn(() => true),
+  getEarningsTranscript: vi.fn(async () => null),
+}));
+
+// Retired from the chain (2026-06-09) — mocked only to assert it is never
+// called. fetch.ts must not import it.
 vi.mock("@/lib/apis/motley-fool", () => ({
   getLatestTranscript: vi.fn(async () => null),
 }));
@@ -178,6 +192,105 @@ describe("deriveFilingReportingQuarter", () => {
   it("maps Jul-Sep to Q2 and Oct-Dec to Q3", () => {
     expect(deriveFilingReportingQuarter("2026-08-04")).toEqual({ year: 2026, quarter: 2 });
     expect(deriveFilingReportingQuarter("2026-11-15")).toEqual({ year: 2026, quarter: 3 });
+  });
+});
+
+describe("fetchTranscript — Alpha Vantage chain position", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = makeDb();
+    vi.clearAllMocks();
+  });
+
+  it("uses Alpha Vantage when it returns a transcript — EDGAR never reached", async () => {
+    vi.mocked(getAlphaVantageTranscript).mockResolvedValueOnce({
+      transcript: "Jane Doe (CEO): We had a strong quarter with revenue growth.",
+      participants: [{ name: "Jane Doe", title: "CEO" }],
+      overall_sentiment: 0.6,
+    });
+
+    const result = await fetchTranscript(db, "TER", 2026, 1);
+
+    expect(result).not.toBeNull();
+    expect(result!.fromCache).toBe(false);
+    expect(result!.transcript.source).toBe("alpha_vantage");
+    expect(result!.transcript.source_key).toBe("alpha_vantage:TER:2026:1");
+    expect(result!.transcript.sentiment_score).toBeCloseTo(0.6, 5);
+    expect(result!.transcript.sentiment_label).toBe("bullish");
+    expect(JSON.parse(result!.transcript.participants!)).toEqual([
+      { name: "Jane Doe", title: "CEO" },
+    ]);
+    expect(getAlphaVantageTranscript).toHaveBeenCalledWith("TER", 2026, 1);
+    expect(getEarnings8KFilings).not.toHaveBeenCalled();
+  });
+
+  it("falls through to EDGAR when Alpha Vantage returns null — AV tried first", async () => {
+    // Default AV mock returns null; default EDGAR mock returns a Q1 2026 filing.
+    const result = await fetchTranscript(db, "TER", 2026, 1);
+
+    expect(result).not.toBeNull();
+    expect(result!.transcript.source).toBe("edgar_8k");
+    expect(getAlphaVantageTranscript).toHaveBeenCalledTimes(1);
+    expect(getEarnings8KFilings).toHaveBeenCalledTimes(1);
+    expect(
+      vi.mocked(getAlphaVantageTranscript).mock.invocationCallOrder[0],
+    ).toBeLessThan(vi.mocked(getEarnings8KFilings).mock.invocationCallOrder[0]);
+  });
+
+  it("skips Alpha Vantage entirely when unconfigured", async () => {
+    vi.mocked(isAlphaVantageConfigured).mockReturnValueOnce(false);
+
+    const result = await fetchTranscript(db, "TER", 2026, 1);
+
+    expect(result).not.toBeNull();
+    expect(result!.transcript.source).toBe("edgar_8k");
+    expect(getAlphaVantageTranscript).not.toHaveBeenCalled();
+  });
+
+  it("never calls the retired Motley Fool scraper", async () => {
+    const result = await fetchTranscript(db, "TER", 2026, 1);
+
+    expect(result).not.toBeNull();
+    expect(getMotleyFoolTranscript).not.toHaveBeenCalled();
+  });
+
+  it("upgrades a cached edgar_8k row to a full Alpha Vantage transcript", async () => {
+    // An EDGAR press-release excerpt cached before AV was configured (or
+    // while AV was down) must not block the full transcript forever —
+    // cache-first would otherwise short-circuit step 2 for that quarter.
+    seedCached(db, "TER", 2026, 1, "edgar_8k", "press release excerpt only");
+    vi.mocked(getAlphaVantageTranscript).mockResolvedValueOnce({
+      transcript: "Jane Doe (CEO): Full call transcript with Q&A.",
+      participants: [{ name: "Jane Doe", title: "CEO" }],
+      overall_sentiment: 0.1,
+    });
+
+    const result = await fetchTranscript(db, "TER", 2026, 1);
+
+    expect(result).not.toBeNull();
+    expect(result!.transcript.source).toBe("alpha_vantage");
+    expect(result!.transcript.transcript).toContain("Full call transcript");
+  });
+
+  it("keeps serving the cached edgar_8k row when the AV upgrade comes back empty", async () => {
+    seedCached(db, "TER", 2026, 1, "edgar_8k", "press release excerpt only");
+    // Default AV mock returns null → upgrade attempt fails quietly.
+    const result = await fetchTranscript(db, "TER", 2026, 1);
+
+    expect(result).not.toBeNull();
+    expect(result!.transcript.source).toBe("edgar_8k");
+    expect(result!.fromCache).toBe(true);
+    // EDGAR must not be re-fetched — the cached row is already EDGAR content.
+    expect(getEarnings8KFilings).not.toHaveBeenCalled();
+  });
+
+  it("does not attempt an AV upgrade over a cached api_ninjas full transcript", async () => {
+    seedCached(db, "TER", 2026, 1, "api_ninjas", wordy(2000));
+    const result = await fetchTranscript(db, "TER", 2026, 1);
+
+    expect(result).not.toBeNull();
+    expect(result!.transcript.source).toBe("api_ninjas");
+    expect(getAlphaVantageTranscript).not.toHaveBeenCalled();
   });
 });
 

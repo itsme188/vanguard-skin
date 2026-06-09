@@ -24,7 +24,7 @@ export interface TranscriptSummaryEntry {
 
 /**
  * Get a cached transcript by ticker, year, and quarter.
- * Returns the best available source (api_ninjas > motley_fool > edgar_8k).
+ * Returns the best available source (api_ninjas > alpha_vantage > motley_fool > edgar_8k).
  */
 export function getCachedTranscript(
   db: Database.Database,
@@ -41,8 +41,9 @@ export function getCachedTranscript(
          ORDER BY
            CASE source
              WHEN 'api_ninjas' THEN 1
-             WHEN 'motley_fool' THEN 2
-             WHEN 'edgar_8k' THEN 3
+             WHEN 'alpha_vantage' THEN 2
+             WHEN 'motley_fool' THEN 3
+             WHEN 'edgar_8k' THEN 4
            END
          LIMIT 1`
       )
@@ -65,8 +66,9 @@ export function getLatestCachedTranscript(
          ORDER BY year DESC, quarter DESC,
            CASE source
              WHEN 'api_ninjas' THEN 1
-             WHEN 'motley_fool' THEN 2
-             WHEN 'edgar_8k' THEN 3
+             WHEN 'alpha_vantage' THEN 2
+             WHEN 'motley_fool' THEN 3
+             WHEN 'edgar_8k' THEN 4
            END
          LIMIT 1`
       )

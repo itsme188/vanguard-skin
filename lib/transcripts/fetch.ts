@@ -4,16 +4,20 @@
  * Orchestrates the layered fallback chain:
  *   1. Check SQLite cache → return if found
  *   2. If API Ninjas configured → try API Ninjas
- *   3. Try Motley Fool scraping
+ *   3. If Alpha Vantage configured → try Alpha Vantage (free tier)
  *   4. Fall back to EDGAR 8-K press release
  *   5. Cache result and return
+ *
+ * The Motley Fool scraper was retired from the chain 2026-06-09 (brittle —
+ * broke on HTML changes; replaced by Alpha Vantage's official endpoint).
+ * Cached motley_fool rows remain valid and are still served from step 1.
  *
  * All results are cached in the earnings_transcripts table with source_key
  * dedup, so subsequent requests for the same transcript are instant.
  */
 
 import type Database from "better-sqlite3";
-import type { EarningsTranscript } from "@/lib/types";
+import type { EarningsTranscript, TranscriptSource } from "@/lib/types";
 import {
   getCachedTranscript,
   getLatestCachedTranscript,
@@ -23,7 +27,10 @@ import {
   isApiNinjasConfigured,
   getEarningsTranscript as getApiNinjasTranscript,
 } from "@/lib/apis/api-ninjas";
-import { getLatestTranscript as getMotleyFoolTranscript } from "@/lib/apis/motley-fool";
+import {
+  isAlphaVantageConfigured,
+  getEarningsTranscript as getAlphaVantageTranscript,
+} from "@/lib/transcripts/alpha-vantage";
 import { getEarnings8KFilings } from "@/lib/apis/edgar";
 
 // ─── Types ──────────────────────────────────────────────────────
@@ -188,13 +195,56 @@ function resolveSecurityId(
 /**
  * Fetch an earnings transcript, checking cache first then external sources.
  *
- * Fallback chain: Cache → API Ninjas → Motley Fool → EDGAR 8-K
+ * Fallback chain: Cache → API Ninjas → Alpha Vantage → EDGAR 8-K
  *
  * @param db Database connection
  * @param ticker Stock ticker symbol
  * @param year Earnings year (defaults to most recent quarter)
  * @param quarter Quarter 1-4 (defaults to most recent quarter)
  */
+/**
+ * Fetch + cache an Alpha Vantage transcript. Shared by the chain's step 3
+ * and the cached-EDGAR upgrade path. Returns null when unconfigured or when
+ * AV has no transcript for the (fiscal) quarter.
+ */
+async function tryAlphaVantage(
+  db: Database.Database,
+  securityId: number | null,
+  upperTicker: string,
+  year: number,
+  quarter: number
+): Promise<EarningsTranscript | null> {
+  if (!isAlphaVantageConfigured()) return null;
+  const result = await getAlphaVantageTranscript(upperTicker, year, quarter);
+  if (!result || !result.transcript) return null;
+  return upsertTranscript(db, {
+    security_id: securityId,
+    ticker: upperTicker,
+    year,
+    quarter,
+    call_date: null, // Alpha Vantage response carries no call date
+    source: "alpha_vantage",
+    transcript: result.transcript,
+    summary: generateSummary(result.transcript),
+    guidance: extractGuidance(result.transcript),
+    risk_factors: extractRiskFactors(result.transcript),
+    sentiment_score: result.overall_sentiment,
+    sentiment_label:
+      result.overall_sentiment !== null
+        ? result.overall_sentiment > 0.2
+          ? "bullish"
+          : result.overall_sentiment < -0.2
+            ? "bearish"
+            : "neutral"
+        : null,
+    participants:
+      result.participants.length > 0
+        ? JSON.stringify(result.participants)
+        : null,
+    source_key: `alpha_vantage:${upperTicker}:${year}:${quarter}`,
+  });
+}
+
 export async function fetchTranscript(
   db: Database.Database,
   ticker: string,
@@ -213,6 +263,22 @@ export async function fetchTranscript(
   // 1. Check cache
   const cached = getCachedTranscript(db, upperTicker, year, quarter);
   if (cached) {
+    // EDGAR rows are press-release excerpts, not call transcripts. A quarter
+    // cached from EDGAR (before Alpha Vantage was configured, or while it was
+    // down) must not block the full transcript forever — try a one-shot
+    // upgrade. AV-null leaves the cached excerpt in place; the higher source
+    // priority in getCachedTranscript means a successful upgrade wins from
+    // then on.
+    if (cached.source === "edgar_8k") {
+      const upgraded = await tryAlphaVantage(
+        db,
+        cached.security_id ?? resolveSecurityId(db, upperTicker),
+        upperTicker,
+        year,
+        quarter
+      );
+      if (upgraded) return { transcript: upgraded, fromCache: false };
+    }
     return { transcript: cached, fromCache: true };
   }
 
@@ -256,32 +322,14 @@ export async function fetchTranscript(
     }
   }
 
-  // 3. Try Motley Fool scraping
-  try {
-    const result = await getMotleyFoolTranscript(upperTicker, { year, quarter });
-    if (result && result.transcript) {
-      const transcript = upsertTranscript(db, {
-        security_id: securityId,
-        ticker: upperTicker,
-        year: result.year || year,
-        quarter: result.quarter || quarter,
-        call_date: result.callDate || null,
-        source: "motley_fool",
-        transcript: result.transcript,
-        summary: generateSummary(result.transcript),
-        guidance: extractGuidance(result.transcript),
-        risk_factors: extractRiskFactors(result.transcript),
-        sentiment_score: null,
-        sentiment_label: null,
-        participants: result.participants.length > 0
-          ? JSON.stringify(result.participants)
-          : null,
-        source_key: `motley_fool:${upperTicker}:${result.year || year}:${result.quarter || quarter}`,
-      });
-      return { transcript, fromCache: false };
-    }
-  } catch {
-    // Fall through to EDGAR
+  // 3. Try Alpha Vantage (if configured — free tier, 25 req/day).
+  // The client passes year+quarter through as Alpha Vantage's FISCAL
+  // YYYYQN param; non-calendar-FY tickers may under-match and fall
+  // through to EDGAR (see lib/transcripts/alpha-vantage.ts header).
+  // The client never throws — null falls through to EDGAR.
+  {
+    const transcript = await tryAlphaVantage(db, securityId, upperTicker, year, quarter);
+    if (transcript) return { transcript, fromCache: false };
   }
 
   // 4. Fall back to EDGAR 8-K press release.
