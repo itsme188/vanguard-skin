@@ -31,6 +31,8 @@ export interface ResearchSource {
   max_age_days: number;
   processing_prompt: string | null;
   website_url: string | null;
+  /** 1 = bypass the D3 off-topic relevance filter (migration 055; NULL on pre-055 rows = filter on). */
+  allow_off_topic: number | null;
   created_at: string;
   article_count?: number;
 }
