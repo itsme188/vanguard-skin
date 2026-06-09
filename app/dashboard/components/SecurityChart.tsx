@@ -135,6 +135,10 @@ export function SecurityChart({
   const [activeIndicators, setActiveIndicators] = useState<Set<IndicatorKey>>(new Set());
   const [showMarkers, setShowMarkers] = useState(true);
   const [showSuggested, setShowSuggested] = useState(false);
+  // Level-overlay fetch failed — chart renders without level lines, which is
+  // indistinguishable from "no levels set" unless we say so. Self-heals on
+  // the 30s poll, at which point the hint clears.
+  const [levelsUnavailable, setLevelsUnavailable] = useState(false);
 
   // Click-to-add-level popover. Null when no level is being added.
   const [addPopover, setAddPopover] = useState<{
@@ -442,7 +446,12 @@ export function SecurityChart({
       try {
         const res = await fetch(`/api/levels?securityId=${securityId}&activeOnly=true`);
         const json = await res.json();
-        if (cancelled || !json.success) return;
+        if (cancelled) return;
+        if (!json.success) {
+          setLevelsUnavailable(true);
+          return;
+        }
+        setLevelsUnavailable(false);
 
         // Clear existing lines
         for (const line of priceLinesRef.current) {
@@ -483,7 +492,9 @@ export function SecurityChart({
           priceLinesRef.current.push(line);
         }
       } catch {
-        // network error — skip silently
+        // Network error — say so instead of rendering a level-less chart
+        // that looks identical to "no levels set". The poll retries.
+        if (!cancelled) setLevelsUnavailable(true);
       }
     }
 
@@ -876,6 +887,11 @@ export function SecurityChart({
       {(warning || error) && (
         <div className={`px-4 py-1.5 text-xs font-medium ${error ? "bg-down/20 text-down" : "bg-gold/20 text-gold"}`}>
           {error || warning}
+        </div>
+      )}
+      {!warning && !error && levelsUnavailable && (
+        <div className="px-4 py-1.5 text-xs font-medium bg-gold/20 text-gold">
+          Price-level overlays unavailable — the levels fetch failed; retrying automatically.
         </div>
       )}
 

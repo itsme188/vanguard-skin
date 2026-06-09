@@ -132,6 +132,9 @@ export function TradeReviewView({
     GroupedTradeResponse[]
   >([]);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  // Failed detail fetch — without this the expanded panel renders blank,
+  // indistinguishable from a review with no grouped trades.
+  const [detailError, setDetailError] = useState<string | null>(null);
 
   // Generate state
   const [generating, setGenerating] = useState(false);
@@ -165,12 +168,19 @@ export function TradeReviewView({
       }
       setLoadingDetail(true);
       setExpandedReviewId(reviewId);
+      setDetailError(null);
       try {
         const res = await fetch(`/api/trade-review?id=${reviewId}`);
         if (res.ok) {
           const json = await res.json();
           setDetailGroupedTrades(json.groupedTrades ?? []);
+        } else {
+          setDetailGroupedTrades([]);
+          setDetailError(`Couldn't load trade details (HTTP ${res.status}) — collapse and expand to retry.`);
         }
+      } catch {
+        setDetailGroupedTrades([]);
+        setDetailError("Couldn't load trade details — network error. Collapse and expand to retry.");
       } finally {
         setLoadingDetail(false);
       }
@@ -523,6 +533,9 @@ export function TradeReviewView({
               loadingDetail={
                 loadingDetail && expandedReviewId === review.id
               }
+              detailError={
+                expandedReviewId === review.id ? detailError : null
+              }
               onToggle={() => loadReviewDetail(review.id)}
               onRegenerate={() =>
                 handleGenerate(review.period_start, review.period_end)
@@ -560,6 +573,7 @@ function ReviewCard({
   isExpanded,
   groupedTrades,
   loadingDetail,
+  detailError,
   onToggle,
   onRegenerate,
 }: {
@@ -567,6 +581,7 @@ function ReviewCard({
   isExpanded: boolean;
   groupedTrades: GroupedTradeResponse[];
   loadingDetail: boolean;
+  detailError: string | null;
   onToggle: () => void;
   onRegenerate: () => void;
 }) {
@@ -637,6 +652,8 @@ function ReviewCard({
             <div className="p-5 text-sm text-ink-dim">
               Loading review details...
             </div>
+          ) : detailError ? (
+            <div className="p-5 text-sm text-down">{detailError}</div>
           ) : (
             <ReviewDetail
               review={review}

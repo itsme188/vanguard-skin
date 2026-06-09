@@ -177,10 +177,13 @@ export function ResearchFeedsView({
 
       const res = await fetch(`/api/research/articles?${params}`);
       const data = await res.json();
-      if (data.success) {
-        setArticles(data.data);
-        if (data.symbolMap) setSymbolMap(data.symbolMap);
+      if (!res.ok || !data.success) {
+        // Throw so callers can explain — a silently-stale list after a
+        // filter/search change looks like the filter simply doesn't work.
+        throw new Error(data.error ?? `Articles fetch failed (${res.status})`);
       }
+      setArticles(data.data);
+      if (data.symbolMap) setSymbolMap(data.symbolMap);
     },
     [sourceFilter, searchQuery]
   );
@@ -197,7 +200,11 @@ export function ResearchFeedsView({
     onSyncDone: () => {
       setSyncing(false);
       setSyncStatus(null);
-      void refreshArticles();
+      // Background freshness pass — a failure here just means the list keeps
+      // its current (valid) contents, so log rather than toast.
+      refreshArticles().catch((err) =>
+        console.warn("[research] background article refresh failed:", err)
+      );
     },
   });
 
@@ -263,9 +270,15 @@ export function ResearchFeedsView({
     async (id: number | null) => {
       setSourceFilter(id);
       setExpandedId(null);
-      try { await refreshArticles({ sourceId: id }); } catch { /* keep */ }
+      try {
+        await refreshArticles({ sourceId: id });
+      } catch {
+        // The list still shows the PREVIOUS filter's articles — say so, or
+        // the dropdown looks broken-but-silent.
+        toast("Couldn't load articles for that source — the list still shows the previous selection.", "error");
+      }
     },
-    [refreshArticles]
+    [refreshArticles, toast]
   );
 
   const handleSearch = useCallback(
@@ -273,9 +286,13 @@ export function ResearchFeedsView({
       setSearchQuery(query);
       if (query.length > 0 && query.length < 2) return;
       setExpandedId(null);
-      try { await refreshArticles({ search: query }); } catch { /* keep */ }
+      try {
+        await refreshArticles({ search: query });
+      } catch {
+        toast("Search failed — the list below is unchanged.", "error");
+      }
     },
-    [refreshArticles]
+    [refreshArticles, toast]
   );
 
   const handleSourcesChanged = useCallback(async () => {
@@ -284,8 +301,10 @@ export function ResearchFeedsView({
       const data = await res.json();
       if (data.success) setCurrentSources(data.data);
       await refreshArticles();
-    } catch { /* keep */ }
-  }, [refreshArticles]);
+    } catch {
+      toast("Sources changed, but the article list couldn't refresh — it may be stale until the next sync.", "info");
+    }
+  }, [refreshArticles, toast]);
 
   const handleExpand = useCallback(async (articleId: number) => {
     if (expandedId === articleId) {
