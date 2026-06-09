@@ -72,6 +72,7 @@ export interface Env {
   EXPECTED_MINUTE_DIGEST?: string;
   // Evening email — Mon-Thu 7pm ET, Fri 5:30pm ET
   EXPECTED_HOUR_EVENING_MON_THU: string;
+  EXPECTED_MINUTE_EVENING_MON_THU?: string;
   EXPECTED_HOUR_EVENING_FRI: string;
   EXPECTED_MINUTE_EVENING_FRI: string;
   PRIMARY_TIMEOUT_MS: string;
@@ -122,6 +123,14 @@ export function parseJobFromClock(env: Env): { type: JobType; expectedHour: numb
   // when unset. The cron lands on :00/:15/:30/:45, so minute===45 hits 8:45.
   const digestMinute = parseInt(env.EXPECTED_MINUTE_DIGEST ?? "45", 10);
   const eveningMonThuHour = parseInt(env.EXPECTED_HOUR_EVENING_MON_THU, 10);
+  // Mac-first tick offset (2026-06-09): the Worker's dispatch tick must sit
+  // ONE */15 tick AFTER the Mac's launchd window, not on it. Mesh primary
+  // always fast-fails (CF 1016), so on a shared tick the Worker claimed
+  // cloud-attempting within seconds and the awake Mac — whose et-gate tick
+  // lands anywhere in [target, target+10min] — lost the race every night
+  // (observed 6/3–6/9: every digest + evening shipped by cloud). Defaults to
+  // the safe post-window value so a missing var can't reintroduce the race.
+  const eveningMonThuMinute = parseInt(env.EXPECTED_MINUTE_EVENING_MON_THU ?? "15", 10);
   const eveningFriHour = parseInt(env.EXPECTED_HOUR_EVENING_FRI, 10);
   const eveningFriMinute = parseInt(env.EXPECTED_MINUTE_EVENING_FRI, 10);
 
@@ -139,7 +148,7 @@ export function parseJobFromClock(env: Env): { type: JobType; expectedHour: numb
   // Winter day-shift note: Mon-Thu 7pm EST = 00:00 UTC NEXT day (Tue-Fri UTC).
   // parseJobFromClock reads ET wall-clock via Intl, so the cron firing at
   // 00:00 UTC on (say) Tuesday still maps to ET Monday 19:00 — caught here.
-  if (hour === eveningMonThuHour && minute === 0 && dow >= 1 && dow <= 4) {
+  if (hour === eveningMonThuHour && minute === eveningMonThuMinute && dow >= 1 && dow <= 4) {
     return { type: "evening", expectedHour: eveningMonThuHour };
   }
   if (hour === eveningFriHour && minute === eveningFriMinute && dow === 5) {
@@ -301,11 +310,11 @@ interface CatchUpJob {
 
 export function catchUpCandidates(): CatchUpJob[] {
   return [
-    // Digest scheduled Mon-Fri 8:00-8:45 ET. Catch up between 9:30 ET (first
-    // calendar-enrich tick after the digest window) and 12:00 ET noon.
+    // Digest: Mac targets 8:45 ET, Worker fallback dispatches 9:00. Catch up
+    // from the 9:15 tick (the 9:00 invocation's own markers gate it) to noon.
     { type: "digest", afterHour: 9, beforeHour: 12, dows: [1, 2, 3, 4, 5] },
-    // Evening Mon-Thu 19:00 ET. Catch up 20:00-22:00 ET same day. Fri 17:30 ET
-    // catch-up is handled by the same window via dow=5 + afterHour=18.
+    // Evening: Mac targets Mon-Thu 19:00 ET (Worker fallback 19:15). Catch up
+    // 20:00-22:00 ET same day. Fri (Mac 17:30, Worker 17:45) via dow=5.
     { type: "evening", afterHour: 20, beforeHour: 23, dows: [1, 2, 3, 4] },
     { type: "evening", afterHour: 18, beforeHour: 22, dows: [5] },
     // Briefing Sun 16:30 ET (or deferred to a holiday Monday). Catch up
