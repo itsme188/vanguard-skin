@@ -57,6 +57,7 @@ export async function POST(req: NextRequest) {
     "fredApiKey",
     "edgarContactEmail",
     "apiNinjasKey",
+    "alphaVantageApiKey",
     "pushoverAppToken",
     "pushoverUserKey",
     "cloudflareAccountId",

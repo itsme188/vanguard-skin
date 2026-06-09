@@ -118,7 +118,7 @@ export interface TaxLotSale {
   created_at: string;
 }
 
-export type TranscriptSource = "edgar_8k" | "motley_fool" | "api_ninjas";
+export type TranscriptSource = "edgar_8k" | "motley_fool" | "api_ninjas" | "alpha_vantage";
 
 export interface EarningsTranscript {
   id: number;

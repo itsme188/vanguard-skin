@@ -31,6 +31,7 @@ export interface AppSettings {
   fredApiKey?: string;
   edgarContactEmail?: string;
   apiNinjasKey?: string;
+  alphaVantageApiKey?: string;
   pushoverAppToken?: string;
   pushoverUserKey?: string;
   cloudflareAccountId?: string;
@@ -112,6 +113,7 @@ export function getSanitizedSettings(): Record<string, string | number | boolean
     fredApiKey: s.fredApiKey ? "***" + s.fredApiKey.slice(-4) : "",
     edgarContactEmail: s.edgarContactEmail ?? "",
     apiNinjasKey: s.apiNinjasKey ? "***" + s.apiNinjasKey.slice(-4) : "",
+    alphaVantageApiKey: s.alphaVantageApiKey ? "***" + s.alphaVantageApiKey.slice(-4) : "",
     pushoverAppToken: s.pushoverAppToken ? "***" + s.pushoverAppToken.slice(-4) : "",
     pushoverUserKey: s.pushoverUserKey ? "***" + s.pushoverUserKey.slice(-4) : "",
     cloudflareAccountId: s.cloudflareAccountId ?? "",

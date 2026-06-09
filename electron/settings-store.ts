@@ -24,6 +24,8 @@ interface AppSettings {
   fredApiKey?: string;
   edgarContactEmail?: string;
   apiNinjasKey?: string;
+  /** Alpha Vantage key — earnings call transcripts (free tier, 25 req/day). */
+  alphaVantageApiKey?: string;
   pushoverAppToken?: string;
   pushoverUserKey?: string;
   /**
@@ -127,6 +129,7 @@ export function bootstrapFromEnvLocal(): void {
   if (envMap.FRED_API_KEY) updates.fredApiKey = envMap.FRED_API_KEY;
   if (envMap.EDGAR_CONTACT_EMAIL) updates.edgarContactEmail = envMap.EDGAR_CONTACT_EMAIL;
   if (envMap.API_NINJAS_API_KEY) updates.apiNinjasKey = envMap.API_NINJAS_API_KEY;
+  if (envMap.ALPHA_VANTAGE_API_KEY) updates.alphaVantageApiKey = envMap.ALPHA_VANTAGE_API_KEY;
   if (envMap.PUSHOVER_APP_TOKEN) updates.pushoverAppToken = envMap.PUSHOVER_APP_TOKEN;
   if (envMap.PUSHOVER_USER_KEY) updates.pushoverUserKey = envMap.PUSHOVER_USER_KEY;
   if (envMap.PUSHOVER_LINK_BASE) updates.pushoverLinkBase = envMap.PUSHOVER_LINK_BASE;
@@ -155,6 +158,7 @@ export function getSanitizedSettings(): Record<string, string | number | boolean
     fredApiKey: s.fredApiKey ? "***" + s.fredApiKey.slice(-4) : "",
     edgarContactEmail: s.edgarContactEmail ?? "",
     apiNinjasKey: s.apiNinjasKey ? "***" + s.apiNinjasKey.slice(-4) : "",
+    alphaVantageApiKey: s.alphaVantageApiKey ? "***" + s.alphaVantageApiKey.slice(-4) : "",
     pushoverAppToken: s.pushoverAppToken ? "***" + s.pushoverAppToken.slice(-4) : "",
     pushoverUserKey: s.pushoverUserKey ? "***" + s.pushoverUserKey.slice(-4) : "",
     pushoverLinkBase: s.pushoverLinkBase ?? "",
