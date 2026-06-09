@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { generateText } from "ai";
 import { getModelForFeature } from "@/lib/ai/provider";
-import { normalizeSector } from "@/lib/securities/normalize-sector";
+import { normalizeSector, GICS_SECTORS } from "@/lib/securities/normalize-sector";
 import { extractJsonArray } from "@/lib/ai/extract-json";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
@@ -57,7 +57,10 @@ export async function classifyOptionSectors(db: Database.Database): Promise<Opti
       const results = JSON.parse(extractJsonArray(text)) as Array<Record<string, string>>;
       for (const r of results) {
         const gics = normalizeSector(r.sector);
-        if (!gics || !r.symbol) continue; // drop non-GICS junk
+        // Strict: only write a canonical GICS-11 sector. normalizeSector also
+        // passes through non-GICS labels ("Diversified"/"Fixed Income") which must
+        // never become an option's sector.
+        if (!gics || !r.symbol || !GICS_SECTORS.includes(gics as (typeof GICS_SECTORS)[number])) continue;
         classified += writeSector.run(gics, String(r.symbol).toUpperCase()).changes;
       }
     } catch (err) {
