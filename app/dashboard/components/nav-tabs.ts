@@ -10,10 +10,15 @@ export const tabs: Tab[] = [
   {
     name: "Analysis",
     href: "/dashboard/analysis",
+    // Canonical ?view= scheme (2026-06-09): workspace | diagnostics |
+    // performance | trade-reviews. Legacy ?mode=factors / ?mode=classification
+    // still resolve to Diagnostics via lib/analysis/view-param.ts; the old
+    // Classification / Factor Exposure split is now the in-page mode toggle
+    // inside Diagnostics.
     subviews: [
+      { name: "Workspace", href: "/dashboard/analysis", matchParam: { key: "view", value: null } },
+      { name: "Diagnostics", href: "/dashboard/analysis?view=diagnostics", matchParam: { key: "view", value: "diagnostics" } },
       { name: "Performance", href: "/dashboard/analysis?view=performance", matchParam: { key: "view", value: "performance" } },
-      { name: "Classification", href: "/dashboard/analysis", matchParam: { key: "mode", value: null } },
-      { name: "Factor Exposure", href: "/dashboard/analysis?mode=factors", matchParam: { key: "mode", value: "factors" } },
       { name: "Trade Reviews", href: "/dashboard/analysis?view=trade-reviews", matchParam: { key: "view", value: "trade-reviews" } },
     ],
   },

@@ -3,6 +3,11 @@
 import { useState, useEffect, type ReactNode } from "react";
 import { Pct, PrivateText } from "@/lib/privacy/components";
 import { EmptySection } from "./EmptySection";
+import {
+  interpretDuration,
+  interpretPortfolioRateSensitivity,
+  toneClass,
+} from "@/lib/analysis/interpret";
 
 interface BondHolding {
   symbol: string;
@@ -79,9 +84,13 @@ export function FixedIncomeCard({ scope }: { scope?: string }) {
               : "N/A"
           }
           subtext={
-            data.weightedAvgDuration != null
-              ? durationRiskLabel(data.weightedAvgDuration)
-              : "No duration data"
+            data.weightedAvgDuration != null ? (
+              <span className={toneClass(interpretDuration(data.weightedAvgDuration).tone)}>
+                {interpretDuration(data.weightedAvgDuration).text}
+              </span>
+            ) : (
+              "No duration data"
+            )
           }
         />
         <MetricCell
@@ -96,7 +105,25 @@ export function FixedIncomeCard({ scope }: { scope?: string }) {
               ? `${(data.weightedAvgDuration * data.bondAllocationPct / 100).toFixed(2)} yr`
               : "N/A"
           }
-          subtext="portfolio duration contribution"
+          subtext={
+            data.weightedAvgDuration != null ? (
+              <span
+                className={toneClass(
+                  interpretPortfolioRateSensitivity(
+                    (data.weightedAvgDuration * data.bondAllocationPct) / 100,
+                  ).tone,
+                )}
+              >
+                {
+                  interpretPortfolioRateSensitivity(
+                    (data.weightedAvgDuration * data.bondAllocationPct) / 100,
+                  ).text
+                }
+              </span>
+            ) : (
+              "portfolio duration contribution"
+            )
+          }
         />
       </div>
 
@@ -209,13 +236,6 @@ function MetricCell({
       <div className="text-[10px] text-ink-faint">{subtext}</div>
     </div>
   );
-}
-
-function durationRiskLabel(duration: number): string {
-  if (duration < 2) return "Low rate risk";
-  if (duration < 5) return "Moderate rate risk";
-  if (duration < 10) return "High rate risk";
-  return "Very high rate risk";
 }
 
 function creditColor(rating: string): string {

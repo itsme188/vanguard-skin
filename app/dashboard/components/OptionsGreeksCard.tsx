@@ -4,6 +4,14 @@ import { useState, useEffect, type ReactNode } from "react";
 import type { PortfolioGreeks, PositionGreeks, GreeksDiagnostic } from "@/lib/compute/options-greeks";
 import { PrivateText } from "@/lib/privacy/components";
 import { EmptySection } from "./EmptySection";
+import {
+  interpretDelta,
+  interpretGamma,
+  interpretTheta,
+  interpretVega,
+  toneClass,
+  type Interpretation,
+} from "@/lib/analysis/interpret";
 
 /**
  * Portfolio-level Greeks summary + per-position Greeks table.
@@ -48,24 +56,28 @@ export function OptionsGreeksCard({ scope }: { scope?: string }) {
           value={<PrivateText>{formatNum(data.totalDelta)}</PrivateText>}
           description="Share-equivalents"
           color={(data.totalDelta ?? 0) > 0 ? "text-up" : (data.totalDelta ?? 0) < 0 ? "text-down" : "text-ink"}
+          interp={interpretDelta(data.totalDelta ?? 0)}
         />
         <MetricCell
           label="Net Gamma"
           value={<PrivateText>{formatNum(data.totalGamma)}</PrivateText>}
           description="Per $1 move"
           color="text-ink"
+          interp={interpretGamma(data.totalGamma ?? 0)}
         />
         <MetricCell
           label="Daily Theta"
           value={<PrivateText>{formatDollar(data.totalTheta)}</PrivateText>}
           description="Time decay / day"
           color="text-down"
+          interp={interpretTheta(data.totalTheta ?? 0)}
         />
         <MetricCell
           label="Net Vega"
           value={<PrivateText>{formatDollar(data.totalVega)}</PrivateText>}
           description="Per 1% IV move"
           color="text-blue"
+          interp={interpretVega(data.totalVega ?? 0)}
         />
       </div>
 
@@ -176,17 +188,26 @@ function MetricCell({
   value,
   description,
   color,
+  interp,
 }: {
   label: string;
   value: ReactNode;
   description: string;
   color: string;
+  interp?: Interpretation;
 }) {
   return (
     <div className="bg-raised/50 rounded-lg p-3">
       <p className="text-xs text-ink-faint uppercase">{label}</p>
       <p className={`text-xl font-mono font-medium mt-1 ${color}`}>{value}</p>
       <p className="text-xs text-ink-faint mt-1">{description}</p>
+      {interp && (
+        // Interpretation embeds portfolio-derived $ / share-equivalents —
+        // privacy-mask the whole line (matches the value above it).
+        <p className={`text-xs mt-1 ${toneClass(interp.tone)}`}>
+          <PrivateText>{interp.text}</PrivateText>
+        </p>
+      )}
     </div>
   );
 }

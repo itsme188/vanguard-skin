@@ -19,6 +19,8 @@ import { PerformanceView } from "../components/PerformanceView";
 import { IncomeYieldSection } from "../components/IncomeYieldSection";
 import { TrustStrip } from "../components/analysis/TrustStrip";
 import { WorkspacePanel } from "../components/analysis/WorkspacePanel";
+import { AnalysisViewToggle } from "../components/AnalysisViewToggle";
+import { resolveAnalysisView } from "@/lib/analysis/view-param";
 import Link from "next/link";
 
 interface PageProps {
@@ -79,8 +81,12 @@ function resolveAccountIds(scope: AccountScope): number[] | undefined {
 export default async function AnalysisPage({ searchParams }: PageProps) {
   const params = await searchParams;
 
-  // ── Sub-view dispatch: ?view=trade-reviews | performance ──
-  if (params.view === "trade-reviews") {
+  // ── Sub-view dispatch — canonical `?view=` scheme with legacy aliasing
+  // (?mode=factors / ?mode=classification / ?view=reviews) resolved by the
+  // single-source normalizer in lib/analysis/view-param.ts.
+  const resolved = resolveAnalysisView(params);
+
+  if (resolved.view === "trade-reviews") {
     const accounts = db
       .prepare("SELECT id, name FROM accounts ORDER BY name")
       .all() as { id: number; name: string }[];
@@ -93,11 +99,14 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
 
     return (
       <div className="space-y-6">
-        <div>
-          <h2 className="text-lg font-medium text-ink">Trade Reviews</h2>
-          <p className="text-sm text-ink-faint mt-0.5">
-            Monthly AI trade analysis — relocated from Research in Phase 5.
-          </p>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-medium text-ink">Trade Reviews</h2>
+            <p className="text-sm text-ink-faint mt-0.5">
+              Monthly AI trade analysis — relocated from Research in Phase 5.
+            </p>
+          </div>
+          <AnalysisViewToggle currentView="trade-reviews" scope={params.scope} />
         </div>
         <TradeReviewView
           initialReviews={reviews}
@@ -109,8 +118,15 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
     );
   }
 
-  if (params.view === "performance") {
-    return <PerformanceView scope={params.scope} />;
+  if (resolved.view === "performance") {
+    // md:space-y-0 — the pill toggle is md:hidden, so on desktop the wrapper
+    // must not introduce a margin above PerformanceView (no layout shift).
+    return (
+      <div className="space-y-6 md:space-y-0">
+        <AnalysisViewToggle currentView="performance" scope={params.scope} />
+        <PerformanceView scope={params.scope} />
+      </div>
+    );
   }
 
   const scope: AccountScope =
@@ -118,13 +134,8 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
       ? (params.scope as AccountScope)
       : "vanguard";
 
-  // P2 (2026-05-10): Workspace is the new default landing. Legacy classification
-  // / factor diagnostics still accessible via `?mode=classification` or
-  // `?mode=factors` — those query strings keep old iPhone bookmarks working.
-  const hasExplicitMode = params.mode === "classification" || params.mode === "factors";
-
-  if (!hasExplicitMode) {
-    // ── New default: Workspace above + diagnostics summary below ─────────
+  if (resolved.view === "workspace") {
+    // ── Default landing: Workspace ────────────────────────────────────────
     return (
       <div className="space-y-6">
         <div className="flex items-start justify-between">
@@ -136,7 +147,7 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
           </div>
           <div className="flex items-center gap-2">
             <Link
-              href={`/dashboard/analysis?mode=classification&scope=${scope}`}
+              href={`/dashboard/analysis?view=diagnostics&scope=${scope}`}
               className="px-3 py-1.5 text-xs font-medium rounded-lg border border-edge text-ink-dim hover:text-ink hover:border-ink-faint transition-colors"
             >
               Diagnostics ↓
@@ -150,18 +161,22 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
           </div>
         </div>
 
-        <TrustStrip scope={scope} />
+        <AnalysisViewToggle currentView="workspace" scope={params.scope} />
 
+        {/* Actionable tools lead; the TrustStrip data-quality readout sits
+            below the fold-line so construction work comes first. */}
         <WorkspacePanel scope={scope} />
+
+        <TrustStrip scope={scope} />
 
         <IncomeYieldSection scope={scope} />
       </div>
     );
   }
 
-  // ── Legacy diagnostics layout (preserved for iPhone bookmarks + intentional drill-down) ──
-  const mode: AnalysisMode =
-    params.mode === "factors" ? "factors" : "classification";
+  // ── Diagnostics (?view=diagnostics; legacy ?mode=classification|factors
+  // URLs alias here so old iPhone bookmarks keep working) ──
+  const mode: AnalysisMode = resolved.mode;
 
   const defaultDimension: AllocationDimension =
     mode === "factors" ? "tariff_exposure" : "fund_category";
@@ -211,6 +226,8 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
           </Link>
         </div>
       </div>
+
+      <AnalysisViewToggle currentView="diagnostics" scope={params.scope} />
 
       <TrustStrip scope={scope} />
 
