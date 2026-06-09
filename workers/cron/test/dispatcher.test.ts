@@ -32,11 +32,34 @@ function makeEnv(overrides: Record<string, string> = {}): any {
     EXPECTED_HOUR_DIGEST: "8",
     EXPECTED_MINUTE_DIGEST: "45",
     EXPECTED_HOUR_EVENING_MON_THU: "19",
+    // Explicit ":00" keeps the legacy-timing tests below meaningful — the
+    // CODE default is ":15" (Mac-first offset, see the deployed-shape block).
+    EXPECTED_MINUTE_EVENING_MON_THU: "0",
     EXPECTED_HOUR_EVENING_FRI: "17",
     EXPECTED_MINUTE_EVENING_FRI: "30",
     PRIMARY_TIMEOUT_MS: "300000",
     ...overrides,
   };
+}
+
+/**
+ * The deployed wrangler.toml shape after the 2026-06-09 Mac-first offset:
+ * every Worker dispatch sits ONE 15-min tick after the Mac's launchd window
+ * (Mac et-gate fires in [target, target+10min]), so an awake Mac always wins
+ * and the cloud fallback only ships when the Mac genuinely didn't. Pre-fix
+ * the Worker claimed the cloud-attempting marker within seconds of the
+ * shared tick and beat the awake Mac every single day (observed 6/3–6/9:
+ * every digest + evening email logged "already_sent_by_cloud").
+ */
+function deployedEnv(overrides: Record<string, string> = {}): any {
+  return makeEnv({
+    EXPECTED_HOUR_DIGEST: "9",
+    EXPECTED_MINUTE_DIGEST: "0",
+    EXPECTED_MINUTE_BRIEFING: "45",
+    EXPECTED_MINUTE_EVENING_MON_THU: "15",
+    EXPECTED_MINUTE_EVENING_FRI: "45",
+    ...overrides,
+  });
 }
 
 describe("parseJobFromClock — existing jobs", () => {
@@ -227,6 +250,53 @@ describe("parseJobFromClock — evening dispatch", () => {
     const job = parseJobFromClock(makeEnv());
     expect(job).not.toBeNull();
     expect(job?.type).toBe("evening");
+  });
+});
+
+describe("parseJobFromClock — Mac-first tick offset (deployed shape)", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("Monday 19:15 ET → evening (Worker yields the 19:00 tick to the Mac)", () => {
+    // Mon 2026-05-11 19:15 ET (EDT) = 23:15 UTC
+    vi.setSystemTime(new Date("2026-05-11T23:15:00Z"));
+    const job = parseJobFromClock(deployedEnv());
+    expect(job?.type).toBe("evening");
+    expect(job?.expectedHour).toBe(19);
+  });
+
+  it("Monday 19:00 ET → null under deployed env (Mac's tick)", () => {
+    vi.setSystemTime(new Date("2026-05-11T23:00:00Z"));
+    expect(parseJobFromClock(deployedEnv())).toBeNull();
+  });
+
+  it("EXPECTED_MINUTE_EVENING_MON_THU unset → defaults to :15 (safe value)", () => {
+    const env = deployedEnv();
+    delete env.EXPECTED_MINUTE_EVENING_MON_THU;
+    vi.setSystemTime(new Date("2026-05-11T23:15:00Z")); // Mon 19:15 ET
+    expect(parseJobFromClock(env)?.type).toBe("evening");
+    vi.setSystemTime(new Date("2026-05-11T23:00:00Z")); // Mon 19:00 ET
+    expect(parseJobFromClock(env)).toBeNull();
+  });
+
+  it("Monday 9:00 ET → digest; 8:45 → null (Mac's tick)", () => {
+    vi.setSystemTime(new Date("2026-05-11T13:00:00Z")); // Mon 9:00 ET (EDT)
+    expect(parseJobFromClock(deployedEnv())?.type).toBe("digest");
+    vi.setSystemTime(new Date("2026-05-11T12:45:00Z")); // Mon 8:45 ET
+    expect(parseJobFromClock(deployedEnv())).toBeNull();
+  });
+
+  it("Friday 17:45 ET → evening; 17:30 → null (Mac's tick)", () => {
+    vi.setSystemTime(new Date("2026-05-08T21:45:00Z")); // Fri 17:45 ET (EDT)
+    expect(parseJobFromClock(deployedEnv())?.type).toBe("evening");
+    vi.setSystemTime(new Date("2026-05-08T21:30:00Z")); // Fri 17:30 ET
+    expect(parseJobFromClock(deployedEnv())).toBeNull();
+  });
+
+  it("Sunday 16:45 ET → briefing; 16:30 → null (Mac's tick)", () => {
+    vi.setSystemTime(new Date("2026-05-10T20:45:00Z")); // Sun 16:45 ET (EDT)
+    expect(parseJobFromClock(deployedEnv())?.type).toBe("briefing");
+    vi.setSystemTime(new Date("2026-05-10T20:30:00Z")); // Sun 16:30 ET
+    expect(parseJobFromClock(deployedEnv())).toBeNull();
   });
 });
 

@@ -50,12 +50,24 @@ bucket_name = "vanguard-skin-statements"
 
 # Non-secret env vars. Secrets (see README) go via `wrangler secret put`.
 [vars]
-EXPECTED_HOUR_BRIEFING = "16"        # 4:30pm ET
-EXPECTED_MINUTE_BRIEFING = "30"      # fire at the 16:30 */15 tick, matching the Mac's launchd target (hour-only gate would fire at 16:00, ~30min early while the Mac sleeps). Moved from 3pm 2026-06-07 so Eliant Capital's late-published weekly is captured.
-EXPECTED_HOUR_DIGEST = "8"           # 8:45am ET
-EXPECTED_MINUTE_DIGEST = "45"        # fire at the 8:45 */15 tick, matching the Mac's launchd target (was hour-only → fired at 8:00, ~45min early while the Mac was asleep traveling)
-# Evening email — Mon-Thu 7pm ET (hour=19), Fri 5:30pm ET (hour=17, minute=30)
-EXPECTED_HOUR_EVENING_MON_THU = "19"
-EXPECTED_HOUR_EVENING_FRI = "17"
-EXPECTED_MINUTE_EVENING_FRI = "30"
+# Mac-first tick offset (2026-06-09): every Worker dispatch sits ONE */15
+# tick AFTER the Mac's launchd et-gate window ([target, target+10min]), not
+# ON it. Sharing the Mac's tick meant the Worker — whose cron fires within
+# seconds of the minute — claimed the cloud-attempting marker before the
+# Mac's randomly-placed tick ran, so the awake Mac lost the race every day
+# (observed 6/3–6/9: all digests + evenings logged "already_sent_by_cloud"
+# and shipped the thinner cloud composition). The Worker tick is now a true
+# fallback pass: by then an awake Mac has written mac-sent (skip) or is
+# mid-run (the mac-running re-check skips). Cost when the Mac is genuinely
+# off: emails arrive 15 min after the Mac's target. Briefing target 16:30 ET
+# (moved from 3pm 2026-06-07 so Eliant Capital's late weekly is captured).
+EXPECTED_HOUR_BRIEFING = "16"        # Mac targets 16:30 ET → Worker fallback at 16:45
+EXPECTED_MINUTE_BRIEFING = "45"
+EXPECTED_HOUR_DIGEST = "9"           # Mac targets 8:45 ET → Worker fallback at 9:00
+EXPECTED_MINUTE_DIGEST = "0"
+# Evening email — Mac targets Mon-Thu 7pm ET / Fri 5:30pm ET
+EXPECTED_HOUR_EVENING_MON_THU = "19" # Worker fallback at 19:15
+EXPECTED_MINUTE_EVENING_MON_THU = "15"
+EXPECTED_HOUR_EVENING_FRI = "17"     # Worker fallback at 17:45
+EXPECTED_MINUTE_EVENING_FRI = "45"
 PRIMARY_TIMEOUT_MS = "300000"        # 300s for Mac webhook. Bumped from 120s 2026-04-27: Mac's full pipeline (TWS sync + Gmail fetch + Sonnet processing + email send) routinely exceeds 120s when many articles arrive overnight, causing the Worker to fire its fallback even though the Mac email had already gone out — produced the 8:45→8:57 thinned-out duplicate.
