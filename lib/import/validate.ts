@@ -70,6 +70,8 @@ export function isGarbageSymbol(symbol: string | undefined): string | null {
   if (/^\d+$/.test(s)) return "purely numeric";
   // Contains colons (time-like)
   if (/\d:\d/.test(s)) return "contains time-like pattern";
+  // No alphanumeric characters at all ("-" from Vanguard corporate-action rows)
+  if (!/[A-Za-z0-9]/.test(s)) return "no alphanumeric characters";
   return null;
 }
 
@@ -111,7 +113,7 @@ export function isValidTransactionType(type: string): boolean {
 // ── Validation report ───────────────────────────────────────────────
 
 export interface SkippedRow {
-  category: "transaction" | "holding" | "price" | "snapshot";
+  category: "transaction" | "holding" | "price" | "snapshot" | "security";
   index: number;
   reason: string;
   symbol?: string;
@@ -253,17 +255,43 @@ export function validateParsedResult(
     }
   }
 
+  // ── Securities ──────────────────────────────────────────────────
+  // The securities array is upserted wholesale by the engine — without this
+  // pass, a parser misalignment that validation catches on the transaction
+  // side still commits orphan securities rows (127 timestamp-symbol rows
+  // landed in the live DB from the pre-f8fd2d8 May 2026 IBKR import).
+  const validSecurities: ParsedImportResult["securities"] = [];
+  for (let i = 0; i < parsed.securities.length; i++) {
+    const sec = parsed.securities[i];
+    const garbage =
+      isGarbageSymbol(sec.symbol) ??
+      (isDateLikeSymbol(sec.symbol) ? "date-like" : null);
+    if (garbage) {
+      skippedRows.push({
+        category: "security",
+        index: i,
+        reason: `Invalid symbol "${sec.symbol}" (${garbage}) — likely misaligned CSV data`,
+        symbol: sec.symbol,
+      });
+      continue;
+    }
+    validSecurities.push(sec);
+  }
+
   // ── Prices ──────────────────────────────────────────────────────
   const validPrices: ParsedPrice[] = [];
   for (let i = 0; i < parsed.prices.length; i++) {
     const p = parsed.prices[i];
     let skip = false;
 
-    if (isDateLikeSymbol(p.symbol)) {
+    const pGarbage =
+      isGarbageSymbol(p.symbol) ??
+      (isDateLikeSymbol(p.symbol) ? "date-like" : null);
+    if (pGarbage) {
       skippedRows.push({
         category: "price",
         index: i,
-        reason: `Symbol looks like a date: "${p.symbol}" — likely misaligned CSV data`,
+        reason: `Invalid symbol "${p.symbol}" (${pGarbage}) — likely misaligned CSV data`,
         symbol: p.symbol,
       });
       skip = true;
@@ -336,6 +364,7 @@ export function validateParsedResult(
     validatedResult: {
       ...parsed,
       transactions: validTransactions,
+      securities: validSecurities,
       holdings: validHoldings,
       prices: validPrices,
       snapshots: validSnapshots,

@@ -250,7 +250,11 @@ export function parseIbkrActivity(
 
       const isBuy = quantity > 0;
 
-      if (assetCategory === "Options") {
+      // Real statements label option trades "Equity and Index Options" —
+      // match by substring like the Open Positions section does, never by
+      // strict equality (a strict check sent every option trade down the
+      // stock branch in the April + May 2026 imports).
+      if (assetCategory.includes("Options")) {
         // Parse option symbol to extract metadata
         const optionInfo = parseIBKROptionSymbol(symbol);
         const effectiveSymbol = optionInfo?.occSymbol ?? symbol;

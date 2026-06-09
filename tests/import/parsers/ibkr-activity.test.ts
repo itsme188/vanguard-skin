@@ -164,6 +164,44 @@ describe("IBKR activity parser", () => {
     expect(buy!.quantity).toBe(200);
   });
 
+  it("routes 'Equity and Index Options' trades down the option branch", () => {
+    // Regression: real IBKR statements label option trades "Equity and Index
+    // Options", never "Options". A strict equality check sent every option
+    // trade down the stock branch: type BUY/SELL instead of *_TO_OPEN/_TO_CLOSE,
+    // raw IBKR symbol instead of OCC, and securityType "Equity and Index
+    // Options" written verbatim. April + May 2026 live imports were affected.
+    const withOptionTrades = fixture.replace(
+      'Trades,Data,Order,Stocks,USD,U99999999,MSFT,"2025-01-10, 10:30:00",-50,387.00,375.00,19350,-2.75,-18750,597.25,600,C',
+      'Trades,Data,Order,Stocks,USD,U99999999,MSFT,"2025-01-10, 10:30:00",-50,387.00,375.00,19350,-2.75,-18750,597.25,600,C\n' +
+        'Trades,Data,Order,Equity and Index Options,USD,U99999999,AMPL 15MAY26 8 C,"2025-01-12, 15:55:43",5,0.51,0.525,-255,-3.50,258.50,0,7.5,O;P\n' +
+        'Trades,Data,Order,Equity and Index Options,USD,U99999999,AMPL 15MAY26 8 C,"2025-01-13, 10:59:44",-5,0.01,0.0232,5,2.49,-258.50,-251.01,-6.6,C'
+    );
+
+    const result = parseIbkrActivity(withOptionTrades, "IBKR 2025-01 activity.csv");
+
+    const open = result.transactions.find((t) => t.type === "BUY_TO_OPEN");
+    expect(open).toBeTruthy();
+    expect(open!.symbol).toBe("AMPL  260515C00008000");
+    expect(open!.quantity).toBe(5);
+    expect(open!.amount).toBe(-255);
+
+    const close = result.transactions.find((t) => t.type === "SELL_TO_CLOSE");
+    expect(close).toBeTruthy();
+    expect(close!.symbol).toBe("AMPL  260515C00008000");
+
+    // The security carries option metadata, not a raw asset-category string
+    const sec = result.securities.find((s) => s.symbol === "AMPL  260515C00008000");
+    expect(sec).toBeTruthy();
+    expect(sec!.securityType).toBe("option");
+    expect(sec!.underlyingSymbol).toBe("AMPL");
+    expect(sec!.strikePrice).toBe(8);
+    expect(sec!.expirationDate).toBe("2026-05-15");
+    expect(sec!.multiplier).toBe(100);
+
+    // No raw-symbol stock security should be created for the option
+    expect(result.securities.find((s) => s.symbol === "AMPL 15MAY26 8 C")).toBeUndefined();
+  });
+
   it("extracts dividends", () => {
     const result = parseIbkrActivity(fixture, "IBKR 2025-01 activity.csv");
     const divs = result.transactions.filter((t) => t.type === "DIVIDEND");

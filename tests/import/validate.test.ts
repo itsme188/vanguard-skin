@@ -415,4 +415,56 @@ describe("validateParsedResult", () => {
       validatedResult.warnings.some((w) => w.includes("Parser warning")),
     ).toBe(true);
   });
+
+  it("excludes securities with garbage symbols (timestamp from misaligned CSV)", () => {
+    // Regression: pre-f8fd2d8 ibkr-activity parser misread Date/Time as the
+    // symbol; validation rejected the transactions but the securities array
+    // was committed unvalidated — 127 orphan rows landed in the live DB.
+    const parsed = makeParsedResult({
+      securities: [
+        { symbol: "2026-05-07, 16:36:07", securityType: "Stock" },
+        { symbol: "AAPL", securityType: "Stock" },
+      ],
+    });
+
+    const { skippedRows, validatedResult } = validateParsedResult(parsed);
+    expect(validatedResult.securities).toHaveLength(1);
+    expect(validatedResult.securities[0].symbol).toBe("AAPL");
+    expect(skippedRows).toHaveLength(1);
+    expect(skippedRows[0].category).toBe("security");
+    expect(skippedRows[0].reason).toContain("timestamp");
+  });
+
+  it("rejects symbols with no alphanumeric characters", () => {
+    // Vanguard corporate-action rows sometimes carry "-" as the symbol —
+    // a real "-" security (id 5025) polluted the notes dropdown for years.
+    expect(isGarbageSymbol("-")).toBeTruthy();
+    expect(isGarbageSymbol("--")).toBeTruthy();
+    expect(isGarbageSymbol("BRK/B")).toBeNull(); // real dual-class form
+  });
+
+  it("excludes date-like security symbols", () => {
+    const parsed = makeParsedResult({
+      securities: [{ symbol: "2026-05-07", securityType: "Stock" }],
+    });
+
+    const { validatedResult } = validateParsedResult(parsed);
+    expect(validatedResult.securities).toHaveLength(0);
+  });
+
+  it("excludes prices whose symbol is garbage (not just date-like)", () => {
+    // isDateLikeSymbol alone misses timestamps like "2026-05-07, 16:36:07"
+    // (the strict YYYY-MM-DD regex doesn't match them).
+    const parsed = makeParsedResult({
+      prices: [
+        { symbol: "2026-05-07, 16:36:07", date: "2026-05-07", closePrice: 10, source: "ibkr" },
+        { symbol: "AAPL", date: "2026-05-07", closePrice: 150, source: "ibkr" },
+      ],
+    });
+
+    const { skippedRows, validatedResult } = validateParsedResult(parsed);
+    expect(validatedResult.prices).toHaveLength(1);
+    expect(validatedResult.prices[0].symbol).toBe("AAPL");
+    expect(skippedRows).toHaveLength(1);
+  });
 });
