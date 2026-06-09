@@ -131,7 +131,20 @@ function closeOn(db: Database.Database, symbol: string, date: string): number | 
         LIMIT 1`,
     )
     .get(symbol, date) as { close: number } | undefined;
-  return row?.close ?? null;
+  if (row?.close != null) return row.close;
+
+  // Benchmark fallback — tracked-not-held index ETFs (DIA) live only in
+  // benchmark_prices (Yahoo top-off path), never in prices. Same precedent
+  // as findCrossedLevels' benchmark CTE.
+  const bench = db
+    .prepare(
+      `SELECT close_price AS close
+         FROM benchmark_prices
+        WHERE UPPER(symbol) = UPPER(?) AND date = ?
+        LIMIT 1`,
+    )
+    .get(symbol, date) as { close: number } | undefined;
+  return bench?.close ?? null;
 }
 
 function pct(latest: number, prior: number): number {

@@ -81,6 +81,25 @@ describe("getMarketSnapshot", () => {
     expect(gs?.pct).toBeCloseTo(-4.95, 1);
   });
 
+  it("serves benchmarks from benchmark_prices when absent from prices (DIA gap)", async () => {
+    seedFreshPair();
+    // DIA lives only in benchmark_prices (Yahoo top-off path) — there is no
+    // securities/prices row for it on the common fresh-local path.
+    db.prepare(
+      "INSERT INTO benchmark_prices (symbol, date, close_price, source) VALUES ('DIA', '2026-06-04', 500, 'yahoo')"
+    ).run();
+    db.prepare(
+      "INSERT INTO benchmark_prices (symbol, date, close_price, source) VALUES ('DIA', '2026-06-05', 510, 'yahoo')"
+    ).run();
+
+    const snap = await getMarketSnapshot(db, { today: "2026-06-05" });
+
+    expect(snap.source).toBe("local");
+    const dia = snap.moves.find((m) => m.symbol === "DIA");
+    expect(dia?.kind).toBe("benchmark");
+    expect(dia?.pct).toBeCloseTo(2.0, 1);
+  });
+
   it("falls back to Yahoo when the local book is stale", async () => {
     seedFreshPair(); // latest local = 2026-06-05
     const fetchQuotes: QuoteFetcher = async (symbols) => {
