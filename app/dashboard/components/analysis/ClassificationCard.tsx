@@ -14,6 +14,7 @@ import {
   Tooltip,
 } from "recharts";
 import type { ConcentrationMetrics, ClassificationCoverage } from "@/lib/queries/analysis";
+import { interpretHHI } from "@/lib/analysis/interpret";
 
 interface Props {
   concentration: ConcentrationMetrics;
@@ -63,15 +64,7 @@ export function ClassificationCard({ concentration, coverage }: Props) {
           <MetricCard
             label="Herfindahl Index (HHI)"
             value={concentration.hhi.toFixed(4)}
-            description={
-              concentration.hhi > 0.25
-                ? "Highly concentrated"
-                : concentration.hhi > 0.15
-                ? "Moderately concentrated"
-                : concentration.hhi > 0.06
-                ? "Moderately diversified"
-                : "Well diversified"
-            }
+            description={interpretHHI(concentration.hhi, concentration.effective_positions).text}
             color={
               concentration.hhi > 0.25
                 ? "text-down"

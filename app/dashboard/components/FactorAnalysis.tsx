@@ -11,6 +11,12 @@ import {
 import { NarrativeBlock } from "./analysis/NarrativeBlock";
 import { DrillDownPanel } from "./analysis/DrillDownPanel";
 import { WeekOverWeekBadge } from "./analysis/WeekOverWeekBadge";
+import {
+  interpretBeta,
+  interpretAlpha,
+  interpretR2,
+  interpretTrackingError,
+} from "@/lib/analysis/interpret";
 import type { DrillDownFilter } from "@/lib/queries/drill-down";
 
 // ─── W-o-W delta shape (mirrors computeFactorDelta in the API route) ─────
@@ -151,15 +157,7 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
                   />
                 </>
               }
-              hint={
-                reg.beta > 1.1
-                  ? "Aggressive"
-                  : reg.beta > 0.9
-                    ? "Market-like"
-                    : reg.beta > 0.5
-                      ? "Defensive"
-                      : "Low sensitivity"
-              }
+              hint={interpretBeta(reg.beta, benchmark).text}
               color={reg.beta > 1 ? "amber" : reg.beta > 0.7 ? "neutral" : "blue"}
             />
             <MetricCell
@@ -175,7 +173,7 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
                   />
                 </>
               }
-              hint="Annualized excess return"
+              hint={interpretAlpha(reg.alpha).text}
               color={reg.alpha >= 0 ? "up" : "down"}
             />
             <MetricCell
@@ -191,19 +189,13 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
                   />
                 </>
               }
-              hint={
-                reg.rSquared > 0.8
-                  ? "High market dependence"
-                  : reg.rSquared > 0.5
-                    ? "Moderate dependence"
-                    : "Low market dependence"
-              }
+              hint={interpretR2(reg.rSquared).text}
               color="neutral"
             />
             <MetricCell
               label="Tracking Error"
               value={<Pct value={reg.trackingError * 100} digits={2} signed />}
-              hint="Annualized active risk"
+              hint={interpretTrackingError(reg.trackingError).text}
               color="neutral"
             />
             <MetricCell

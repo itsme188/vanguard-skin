@@ -421,7 +421,7 @@ export function ImportFlow() {
         {/* Trade review prompt */}
         {state.newTradePeriods && state.newTradePeriods.length > 0 && (
           <a
-            href={`/dashboard/research?view=reviews`}
+            href={`/dashboard/analysis?view=trade-reviews`}
             className="block rounded-lg border border-gold/20 bg-gold/5 px-4 py-3 text-sm text-ink-dim hover:bg-gold/10 transition-colors"
           >
             <span className="text-gold font-medium">Trade reviews available</span>

@@ -174,6 +174,9 @@ export function AnalysisView({
 
   function navigate(updates: Record<string, string>) {
     const params = new URLSearchParams(searchParams.toString());
+    // AnalysisView only renders inside Diagnostics — keep URLs canonical
+    // (?view=diagnostics) even when the user arrived via a legacy ?mode= link.
+    params.set("view", "diagnostics");
     for (const [key, value] of Object.entries(updates)) {
       if (value) params.set(key, value);
       else params.delete(key);
@@ -203,8 +206,10 @@ export function AnalysisView({
       {/* Mode toggle + Account scope */}
       <div className="flex flex-col gap-3">
         <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-          {/* Mode toggle — mobile only; desktop uses the Analysis tab dropdown in TabNav */}
-          <div className="md:hidden flex items-center bg-canvas rounded-lg p-0.5 border border-edge" role="group" aria-label="Analysis mode">
+          {/* Mode toggle — all breakpoints. The Analysis tab dropdown now lists
+              the four sub-views (Workspace | Diagnostics | Performance | Trade
+              Reviews); classification vs factors is internal to Diagnostics. */}
+          <div className="flex items-center bg-canvas rounded-lg p-0.5 border border-edge" role="group" aria-label="Analysis mode">
             <button
               onClick={() => navigate({ mode: "classification", dimension: "fund_category" })}
               aria-pressed={!isFactorMode}
@@ -229,7 +234,7 @@ export function AnalysisView({
             </button>
           </div>
 
-          <div className="md:hidden h-5 w-px bg-edge" />
+          <div className="hidden sm:block h-5 w-px bg-edge" />
 
           {/* Account scope pills */}
           <div className="flex items-center gap-1.5" role="group" aria-label="Account scope">

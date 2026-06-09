@@ -16,6 +16,15 @@ import type { PortfolioRiskMetrics, PositionWeight } from "@/lib/compute/risk";
 import { Money, Pct, PrivateText, usePrivateFormatter } from "@/lib/privacy/components";
 import { NarrativeBlock } from "./analysis/NarrativeBlock";
 import { WeekOverWeekBadge } from "./analysis/WeekOverWeekBadge";
+import {
+  interpretSharpe,
+  interpretMaxDrawdown,
+  interpretCurrentDrawdown,
+  interpretVolatility,
+  interpretHHI,
+  toneClass,
+  type Interpretation,
+} from "@/lib/analysis/interpret";
 
 // ─── W-o-W delta shape (mirrors computeRiskDelta in the API route) ─────
 
@@ -59,11 +68,13 @@ function MetricCard({
   value,
   sublabel,
   color,
+  interp,
 }: {
   label: string;
   value: ReactNode;
   sublabel?: ReactNode;
   color?: "up" | "down" | "neutral";
+  interp?: Interpretation | null;
 }) {
   const colorClass =
     color === "up" ? "text-up" : color === "down" ? "text-down" : "text-ink";
@@ -77,6 +88,9 @@ function MetricCard({
       </div>
       {sublabel && (
         <div className="text-xs text-ink-faint mt-1">{sublabel}</div>
+      )}
+      {interp && (
+        <div className={`text-xs mt-1 ${toneClass(interp.tone)}`}>{interp.text}</div>
       )}
     </div>
   );
@@ -186,6 +200,7 @@ export function RiskMetrics({ scope }: { scope?: string }) {
               : undefined
           }
           color="down"
+          interp={metrics.maxDrawdown ? interpretMaxDrawdown(metrics.maxDrawdown.percent) : null}
         />
         <MetricCard
           label="Current Drawdown"
@@ -207,6 +222,7 @@ export function RiskMetrics({ scope }: { scope?: string }) {
             )
           }
           color={metrics.currentDrawdown ? "down" : "up"}
+          interp={interpretCurrentDrawdown(metrics.currentDrawdown?.percent ?? null)}
         />
         <MetricCard
           label="Volatility"
@@ -227,6 +243,7 @@ export function RiskMetrics({ scope }: { scope?: string }) {
               : "Annualized"
           }
           color="neutral"
+          interp={metrics.volatility != null ? interpretVolatility(metrics.volatility) : null}
         />
         <MetricCard
           label="Sharpe Ratio"
@@ -252,6 +269,7 @@ export function RiskMetrics({ scope }: { scope?: string }) {
                 ? "up"
                 : "down"
           }
+          interp={metrics.sharpeRatio != null ? interpretSharpe(metrics.sharpeRatio) : null}
         />
       </div>
 
@@ -284,6 +302,12 @@ export function RiskMetrics({ scope }: { scope?: string }) {
               </span>
             </div>
           </div>
+
+          {metrics.herfindahl != null && metrics.herfindahl > 0 && (
+            <p className={`text-xs mb-3 ${toneClass(interpretHHI(metrics.herfindahl).tone)}`}>
+              {interpretHHI(metrics.herfindahl).text}
+            </p>
+          )}
 
           <div className="h-40">
             <ResponsiveContainer width="100%" height="100%">

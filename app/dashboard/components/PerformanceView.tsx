@@ -9,6 +9,13 @@ import { resolveScopeToSingleId } from "@/lib/queries/accounts";
 import { getDailyValuationsByAccount, getDailyValuationsCombined } from "@/lib/queries/daily-valuations";
 import { Money, Pct } from "@/lib/privacy/components";
 import { formatPercent } from "@/lib/format";
+import {
+  interpretSharpe,
+  interpretMaxDrawdown,
+  interpretTwrVsXirr,
+  toneClass,
+  type Interpretation,
+} from "@/lib/analysis/interpret";
 import { PerformanceCurveChart, type PerformanceCurveData } from "./EquityCurveChart";
 import { PeriodAttributionSection } from "./PeriodAttributionSection";
 
@@ -278,6 +285,7 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
                 value={xirrAnnualized}
                 kind="pct"
                 title="Money-weighted return — investor-experience measure that includes cash-flow timing."
+                sub={interpretTwrVsXirr(annualizedTwr, xirrAnnualized)}
               />
               <KpiCell
                 label="Max drawdown"
@@ -289,12 +297,22 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
                 }
                 kind="pct"
                 title="Largest peak-to-trough decline in portfolio value over the period."
+                sub={
+                  riskResult?.maxDrawdown != null
+                    ? interpretMaxDrawdown(riskResult.maxDrawdown.percent)
+                    : null
+                }
               />
               <KpiCell
                 label="Sharpe ratio"
                 value={riskResult?.sharpeRatio ?? null}
                 kind="ratio"
                 title={`Risk-adjusted return. Risk-free rate: ${formatPercent((riskResult?.riskFreeRate ?? 0.045) * 100, 2)}.`}
+                sub={
+                  riskResult?.sharpeRatio != null
+                    ? interpretSharpe(riskResult.sharpeRatio)
+                    : null
+                }
               />
             </div>
           </section>
@@ -383,11 +401,13 @@ function KpiCell({
   value,
   kind,
   title,
+  sub,
 }: {
   label: string;
   value: number | null;
   kind: "pct" | "money" | "ratio";
   title?: string;
+  sub?: Interpretation | null;
 }) {
   const className =
     value === null
@@ -412,6 +432,9 @@ function KpiCell({
           <Money value={value} signed />
         )}
       </p>
+      {sub && (
+        <p className={`text-xs mt-1 ${toneClass(sub.tone)}`}>{sub.text}</p>
+      )}
     </div>
   );
 }
