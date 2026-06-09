@@ -41,3 +41,25 @@ db.transaction(() => {
 console.log(
   `Option underlying backfill: ${linked} linked, ${sectored} sectors derived, ${skipped} skipped (non-OCC).`
 );
+
+// Standalone re-derivation: any held option still blank-sector whose underlying
+// HAS a sector now (e.g. the underlying was classified after the link pass) gets
+// its GICS sector filled. Runs over ALL blank-sector options, not just the
+// newly-linked ones — captures underlyings classified in a later step.
+const reDerived = db
+  .prepare(
+    `UPDATE securities AS o SET sector = (
+       SELECT u.sector FROM securities u
+       WHERE UPPER(u.symbol) = UPPER(o.underlying_symbol) AND u.sector IS NOT NULL AND TRIM(u.sector) != ''
+       LIMIT 1
+     )
+     WHERE LOWER(o.security_type) = 'option'
+       AND (o.sector IS NULL OR TRIM(o.sector) = '')
+       AND o.underlying_symbol IS NOT NULL
+       AND EXISTS (
+         SELECT 1 FROM securities u2
+         WHERE UPPER(u2.symbol) = UPPER(o.underlying_symbol) AND u2.sector IS NOT NULL AND TRIM(u2.sector) != ''
+       )`
+  )
+  .run();
+console.log(`Re-derived sector for ${reDerived.changes} additional blank-sector options.`);
