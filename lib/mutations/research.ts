@@ -1,5 +1,24 @@
 import type Database from "better-sqlite3";
 
+/**
+ * Columns updateSource may touch. The PATCH route spreads the request body
+ * straight into `updates`, and the dynamic SET loop interpolates keys as
+ * column names — anything outside this allowlist is dropped, never
+ * interpolated into SQL.
+ */
+const UPDATABLE_SOURCE_COLUMNS = new Set([
+  "name",
+  "sender_email",
+  "sender_pattern",
+  "subject_pattern",
+  "is_active",
+  "fetch_frequency",
+  "max_age_days",
+  "processing_prompt",
+  "website_url",
+  "allow_off_topic",
+]);
+
 export function updateSource(
   db: Database.Database,
   id: number,
@@ -21,7 +40,7 @@ export function updateSource(
   const params: (string | number | null)[] = [];
 
   for (const [key, value] of Object.entries(updates)) {
-    if (value !== undefined) {
+    if (value !== undefined && UPDATABLE_SOURCE_COLUMNS.has(key)) {
       fields.push(`${key} = ?`);
       params.push(value);
     }
