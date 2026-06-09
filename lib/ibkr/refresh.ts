@@ -23,6 +23,11 @@ import type { IbkrOAuthConfig } from "./oauth-client";
 import { getMarketDataSnapshot, type ParsedQuote } from "./market-data";
 import { getQuoteCandidateConids } from "../queries/security-quotes";
 import { upsertSecurityQuote } from "../mutations/security-quotes";
+import {
+  fetchFinnhubDividendYields,
+  getYieldRefreshCandidates,
+  type YieldFetcher,
+} from "../quotes/finnhub-dividend-yield";
 
 const DB_ACCOUNT_NAME = "IBKR";
 
@@ -196,11 +201,12 @@ export async function fetchAndStoreQuotes(
   db: Database.Database,
   cfg: IbkrOAuthConfig,
   lst: string,
-  opts: { asOfDate?: string; fetchSnapshot?: SnapshotFetcher } = {},
+  opts: { asOfDate?: string; fetchSnapshot?: SnapshotFetcher; fetchYields?: YieldFetcher } = {},
 ): Promise<QuoteRefreshResult> {
   const asOf = opts.asOfDate ?? todayET();
   const fetchSnapshot: SnapshotFetcher =
     opts.fetchSnapshot ?? ((c, l, conids) => getMarketDataSnapshot(c, l, conids));
+  const fetchYields: YieldFetcher = opts.fetchYields ?? fetchFinnhubDividendYields;
 
   const candidates = getQuoteCandidateConids(db);
   if (candidates.length === 0) {
@@ -210,6 +216,27 @@ export async function fetchAndStoreQuotes(
   const securityIdByConid = new Map(candidates.map((c) => [c.conid, c.securityId]));
   const conids = candidates.map((c) => c.conid);
   const quotes = await fetchSnapshot(cfg, lst, conids);
+
+  // Dividend yield — not exposed by the IBKR session (probe-verified
+  // 2026-06-09); a small capped Finnhub batch fills/rotates it instead.
+  // Best-effort: a fetcher failure must never block the quote write, and the
+  // upsert's keep-last-known COALESCE preserves yields not in this batch.
+  const yieldBySecurityId = new Map<number, number>();
+  try {
+    const yieldCandidates = getYieldRefreshCandidates(db);
+    if (yieldCandidates.length > 0) {
+      const yields = await fetchYields(yieldCandidates.map((c) => c.symbol));
+      for (const c of yieldCandidates) {
+        const y = yields[c.symbol.toUpperCase()];
+        if (typeof y === "number") yieldBySecurityId.set(c.securityId, y);
+      }
+    }
+  } catch (err) {
+    console.warn(
+      "[ibkr-refresh] dividend-yield fetch failed (quotes unaffected):",
+      err instanceof Error ? err.message : err,
+    );
+  }
 
   const upsertPrice = db.prepare(
     `INSERT OR REPLACE INTO prices (security_id, date, close_price, source) VALUES (?,?,?,'tws')`,
@@ -229,7 +256,9 @@ export async function fetchAndStoreQuotes(
         hv30d: q.hv30d,
         week52High: q.week52High,
         week52Low: q.week52Low,
-        dividendYield: null, // deferred — not in the raw snapshot
+        // Finnhub batch when selected this run; null otherwise — the
+        // upsert's COALESCE keeps the last-known value.
+        dividendYield: yieldBySecurityId.get(securityId) ?? null,
       });
       securitiesUpdated++;
       if (q.last != null && q.last > 0) {

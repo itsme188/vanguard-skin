@@ -18,10 +18,10 @@ export function QuoteStats({
   currentPrice: number | null;
 }) {
   if (!quote) return null;
-  const { iv_underlying, hv_30d, week52_high, week52_low } = quote;
+  const { iv_underlying, hv_30d, week52_high, week52_low, dividend_yield } = quote;
   const hasRange = week52_high != null && week52_low != null && week52_high > week52_low;
   const hasVol = iv_underlying != null || hv_30d != null;
-  if (!hasRange && !hasVol) return null;
+  if (!hasRange && !hasVol && dividend_yield == null) return null;
 
   // Current price position within the 52-week band (0 = low, 1 = high).
   let pos: number | null = null;
@@ -61,6 +61,10 @@ export function QuoteStats({
       )}
       {hv_30d != null && (
         <Stat label="30d hist vol" value={formatPercent(hv_30d * 100)} />
+      )}
+      {/* dividend_yield is stored as a PERCENT (3.2 = 3.2%) — see migration 058 */}
+      {dividend_yield != null && dividend_yield > 0 && (
+        <Stat label="Div yield (TTM)" value={formatPercent(dividend_yield)} />
       )}
     </div>
   );
