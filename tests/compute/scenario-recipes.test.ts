@@ -138,6 +138,84 @@ describe("computeRecipeScenario", () => {
     expect(jnj.changePercent).toBeCloseTo(-0.10, 3);
   });
 
+  it("options inherit the underlying's factor exposure with delta-based elasticity", () => {
+    // Pre-rebuild, options had no security_factors rows (by design — they
+    // inherit) and the recipe query never COALESCE-joined the underlying, so
+    // 21% of the book contributed exactly $0 to every scenario.
+    const today = new Date();
+    const expiry = new Date(today.getTime() + 365 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+    const d = today.toISOString().slice(0, 10);
+    // NVDA call: S=1000, K=900, V=150/share, 1y out → Ω = Δ·S/V ≈ 4.9
+    db.prepare(
+      `INSERT INTO securities (id, symbol, security_type, underlying_symbol, strike_price, expiration_date, option_type, multiplier)
+       VALUES (20, 'NVDA  270609C00900000', 'Option', 'NVDA', 900, ?, 'CALL', 100)`
+    ).run(expiry);
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (20, ?, 150, 'tws')`).run(d);
+    db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 20, '2026-04-30', 2, 'h-nvdacall')`).run();
+
+    const result = computeRecipeScenario(db, findRecipe("ai_capex_pause")!);
+    const call = result.positionImpacts.find((p) => p.symbol.startsWith("NVDA  "))!;
+    const nvda = result.positionImpacts.find((p) => p.symbol === "NVDA")!;
+
+    // NVDA itself: Very High AI (1.40×) → -0.15 × 1.40 = -21%
+    expect(nvda.changePercent).toBeCloseTo(-0.21, 3);
+    // The call inherits NVDA's exposure, levered by elasticity (≈4.9×),
+    // clamped at -100% (a long option can't lose more than its value).
+    expect(call.changePercent).toBeLessThan(-0.5);
+    expect(call.changePercent).toBeGreaterThanOrEqual(-1);
+  });
+
+  it("a held PUT gains when the inherited shock is negative", () => {
+    const today = new Date();
+    const expiry = new Date(today.getTime() + 365 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+    const d = today.toISOString().slice(0, 10);
+    // NVDA put: S=1000, K=1100 (ITM put), V=160/share
+    db.prepare(
+      `INSERT INTO securities (id, symbol, security_type, underlying_symbol, strike_price, expiration_date, option_type, multiplier)
+       VALUES (21, 'NVDA  270609P01100000', 'Option', 'NVDA', 1100, ?, 'PUT', 100)`
+    ).run(expiry);
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (21, ?, 160, 'tws')`).run(d);
+    db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 21, '2026-04-30', 1, 'h-nvdaput')`).run();
+
+    const result = computeRecipeScenario(db, findRecipe("ai_capex_pause")!);
+    const put = result.positionImpacts.find((p) => p.symbol.startsWith("NVDA  270609P"))!;
+    expect(put.changePercent).toBeGreaterThan(0.1);
+  });
+
+  it("rate shock: a Value name with no rate sensitivity is flat, never a spurious gain", () => {
+    // Pre-rebuild growth_vs_value.Value = -0.5 produced a POSITIVE
+    // changePercent for No-rate-sensitivity Value names on a hike — value
+    // falls less than growth on hawkish surprises; it does not rally.
+    const today = new Date().toISOString().slice(0, 10);
+    db.prepare(`INSERT INTO securities (id, symbol, security_type, sector) VALUES (22, 'BRK B', 'Stock', 'Financials')`).run();
+    db.prepare(`
+      INSERT INTO security_factors (security_id, ai_exposure, growth_vs_value, tariff_exposure, interest_rate_sensitive, regulatory_risk, cyclical, crypto_adjacent, international_exposure, geopolitical_onshoring)
+      VALUES (22, 'No', 'Value', 'No', 'No', 'No', 'Low', 'No', 'Low', 'No')
+    `).run();
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (22, ?, 500, 'tws')`).run(today);
+    db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 22, '2026-04-30', 10, 'h-brkb')`).run();
+
+    const result = computeRecipeScenario(db, findRecipe("rate_shock_up_25bp")!);
+    const brk = result.positionImpacts.find((p) => p.symbol === "BRK B")!;
+    expect(brk.changePercent).toBeLessThanOrEqual(0);
+  });
+
+  it("sector overrides look through ETFs by cached sector weights", () => {
+    // ETF holding 50% Healthcare / 50% Technology: healthcare_reg_shock's
+    // Healthcare override (-10%) should hit half the position; the other
+    // half falls back to the factor path (no factor row → 0).
+    const today = new Date().toISOString().slice(0, 10);
+    db.prepare(`INSERT INTO securities (id, symbol, security_type, sector) VALUES (10, 'HLTHMIX', 'ETF', NULL)`).run();
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (10, ?, 100, 'tws')`).run(today);
+    db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 10, '2026-04-30', 100, 'h-mix')`).run();
+    db.prepare(`INSERT INTO etf_sector_weights (etf_symbol, sector, weight_pct, as_of_date, source) VALUES ('HLTHMIX', 'Healthcare', 50, ?, 'manual')`).run(today);
+    db.prepare(`INSERT INTO etf_sector_weights (etf_symbol, sector, weight_pct, as_of_date, source) VALUES ('HLTHMIX', 'Technology', 50, ?, 'manual')`).run(today);
+
+    const result = computeRecipeScenario(db, findRecipe("healthcare_reg_shock")!);
+    const mix = result.positionImpacts.find((p) => p.symbol === "HLTHMIX")!;
+    expect(mix.changePercent).toBeCloseTo(-0.05, 3);
+  });
+
   it("oil_shock_10dollar: Energy sector positive, defaulting falls back to cyclical bucket", () => {
     // No energy holdings in our portfolio; verify Tech NVDA gets cyclical=Moderate hit
     const result = computeRecipeScenario(db, findRecipe("oil_shock_10dollar")!);
