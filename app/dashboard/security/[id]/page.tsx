@@ -48,7 +48,11 @@ function noteTone(noteType: string | null): ChipTone {
 }
 
 function noteLabel(noteType: string | null): string {
-  if (noteType === "trade_thesis") return "Thesis";
+  // trade_thesis is presented as "Stock note" app-wide (2026-06-09 Notes
+  // rework): the DB value stays for compat, but the type's scope broadened
+  // from formal theses to any stock-specific thought — position notes,
+  // thesis updates, "why I'm watching this". Journal = market psychology.
+  if (noteType === "trade_thesis") return "Stock note";
   if (noteType === "earnings") return "Earnings";
   return "Journal";
 }
@@ -492,7 +496,7 @@ export default async function SecurityDetailPage(props: {
         <Section
           title={`AI Trade Grades · ${tradeGrades.length}`}
           action={
-            <Link href="/dashboard/research?view=reviews" className={ACTION_LINK_CLASS}>
+            <Link href="/dashboard/analysis?view=trade-reviews" className={ACTION_LINK_CLASS}>
               All reviews →
             </Link>
           }
@@ -622,11 +626,19 @@ export default async function SecurityDetailPage(props: {
       {/* Notes & Theses */}
       {notes.length > 0 && (
         <Section
-          title={`Notes & Theses · ${notes.length}`}
+          title={`Notes · ${notes.length}`}
           action={
-            <Link href={`/dashboard/research?security=${securityId}`} className={ACTION_LINK_CLASS}>
-              View all →
-            </Link>
+            <span className="flex items-center gap-4">
+              <Link
+                href={`/dashboard/research?view=notes&type=trade_thesis&symbol=${encodeURIComponent(security.symbol)}`}
+                className={ACTION_LINK_CLASS}
+              >
+                + Add note
+              </Link>
+              <Link href={`/dashboard/research?security=${securityId}`} className={ACTION_LINK_CLASS}>
+                View all →
+              </Link>
+            </span>
           }
         >
           <div>
