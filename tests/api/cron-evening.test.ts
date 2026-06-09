@@ -27,7 +27,9 @@ const hoisted = vi.hoisted(() => ({
       this.status = status;
     }
   },
-  checkCloudMarker: vi.fn(async () => null),
+  checkCloudMarker: vi.fn(
+    async (): Promise<{ sentBy: string; date: string } | null> => null
+  ),
   setRunningMarker: vi.fn(async () => {}),
   clearRunningMarker: vi.fn(async () => {}),
   confirmMacSent: vi.fn(async () => {}),

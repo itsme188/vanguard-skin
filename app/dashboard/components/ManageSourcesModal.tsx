@@ -82,6 +82,38 @@ export function ManageSourcesModal({
     [onSourcesChanged]
   );
 
+  const handleToggleOffTopic = useCallback(
+    async (sourceId: number, currentValue: number | null) => {
+      const newValue = currentValue === 1 ? 0 : 1;
+      setMutationError(null);
+      setSources((prev) =>
+        prev.map((s) => (s.id === sourceId ? { ...s, allow_off_topic: newValue } : s))
+      );
+      try {
+        const res = await fetch("/api/research/sources", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: sourceId, allow_off_topic: newValue }),
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok || data?.success === false) {
+          throw new Error(data?.error ?? `server returned ${res.status}`);
+        }
+        onSourcesChanged();
+      } catch (err) {
+        setSources((prev) =>
+          prev.map((s) =>
+            s.id === sourceId ? { ...s, allow_off_topic: currentValue } : s
+          )
+        );
+        setMutationError(
+          `Couldn't update the off-topic setting: ${err instanceof Error ? err.message : "network error"}. The toggle was reverted.`
+        );
+      }
+    },
+    [onSourcesChanged]
+  );
+
   const handleDelete = useCallback(
     async (sourceId: number) => {
       setMutationError(null);
@@ -255,6 +287,22 @@ export function ManageSourcesModal({
                           {s.article_count}
                         </span>
                       )}
+                      {/* Off-topic filter exemption (migration 055 allow_off_topic) */}
+                      <button
+                        onClick={() => handleToggleOffTopic(s.id, s.allow_off_topic ?? 0)}
+                        className={`text-[10px] font-medium px-1.5 py-0.5 rounded border transition-colors ${
+                          s.allow_off_topic === 1
+                            ? "border-gold/40 text-gold bg-gold/10"
+                            : "border-edge text-ink-faint hover:text-ink-dim"
+                        }`}
+                        title={
+                          s.allow_off_topic === 1
+                            ? "Off-topic exemption ON — everything from this source reaches digests, even articles the AI votes not portfolio-relevant. Click to re-enable filtering."
+                            : "Off-topic exemption OFF — articles the AI votes not portfolio-relevant are excluded from digests (visible under Research → Feeds → Filtered). Click to keep everything from this source."
+                        }
+                      >
+                        off-topic OK
+                      </button>
                       {/* Toggle */}
                       <button
                         onClick={() => handleToggle(s.id, s.is_active)}

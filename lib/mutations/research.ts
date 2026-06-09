@@ -13,6 +13,8 @@ export function updateSource(
     max_age_days?: number;
     processing_prompt?: string | null;
     website_url?: string | null;
+    /** 1 = bypass the D3 off-topic relevance filter for this source (migration 055). */
+    allow_off_topic?: number;
   }
 ): void {
   const fields: string[] = [];
