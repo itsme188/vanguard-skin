@@ -1,5 +1,6 @@
 import { HAIKU_MODEL, OPUS_MODEL, SONNET_MODEL } from "@/lib/claude-models";
 import type { FeatureKey } from "@/lib/ai/feature-keys";
+import { getCachedFeatureModelOverrides } from "@/lib/ai/override-source";
 
 /**
  * Policy plane for AI model selection.
@@ -134,9 +135,27 @@ export function parseModelSpec(spec: string): ResolvedModel {
 
 /**
  * Resolve a feature's logical model to its concrete (provider, modelId) pair.
- * Throws if the feature key isn't configured or the spec is malformed.
+ *
+ * User overrides (settings-table key `feature_model_overrides`, edited via
+ * Settings → AI Models) are consulted FIRST; FEATURE_MODELS is the fallback.
+ * The override read goes through lib/ai/override-source.ts — a 30s-TTL cache
+ * over a reader registered by lib/db.ts, so this stays cheap on hot paths and
+ * silently resolves to the defaults in contexts without the DB singleton
+ * (in-memory test DBs, Workers). A stored override that no longer parses
+ * (e.g. provider support removed) also falls back rather than breaking the
+ * feature.
+ *
+ * Throws if the feature key isn't configured or the default spec is malformed.
  */
 export function resolveFeatureModel(feature: FeatureKey): ResolvedModel {
+  const override = getCachedFeatureModelOverrides()[feature];
+  if (override) {
+    try {
+      return parseModelSpec(override);
+    } catch {
+      // Malformed/unsupported override — fall through to the code default.
+    }
+  }
   const spec = FEATURE_MODELS[feature];
   if (!spec) {
     throw new Error(`No model configured for feature "${feature}"`);

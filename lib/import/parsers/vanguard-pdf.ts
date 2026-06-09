@@ -16,8 +16,13 @@ import { buildOCCSymbol, isOCCFormat, ensureOCCSymbol } from "../occ-symbol";
  * client.messages.stream() with custom multi-attempt retry semantics that are
  * tighter than the AI SDK's equivalents. The client is still Gateway-routed
  * when CLOUDFLARE_* env vars are set — observability works the same.
+ *
+ * Resolved per-call (not a module-level const) so a Settings → AI Models
+ * override of `pdfParsing` applies without a restart — module-load
+ * resolution would freeze the model before lib/db.ts registers the
+ * override source.
  */
-const PDF_MODEL_ID = resolveFeatureModel("pdfParsing").modelId;
+const pdfModelId = () => resolveFeatureModel("pdfParsing").modelId;
 
 // ── Claude API response schema ──────────────────────────────────────
 
@@ -145,7 +150,7 @@ export async function callClaudeForPdfExtraction(
 
   // Use streaming to avoid 10-minute timeout on large PDFs
   const stream = client.messages.stream({
-    model: PDF_MODEL_ID,
+    model: pdfModelId(),
     max_tokens: 64000,
     temperature: 0,
     messages: [
@@ -533,7 +538,7 @@ async function callClaudeWithPdf<T>(pdfBuffer: Buffer, prompt: string): Promise<
   const base64Pdf = pdfBuffer.toString("base64");
 
   const stream = client.messages.stream({
-    model: PDF_MODEL_ID,
+    model: pdfModelId(),
     max_tokens: 64000,
     temperature: 0,
     messages: [
