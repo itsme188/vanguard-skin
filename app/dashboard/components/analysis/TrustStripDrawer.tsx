@@ -40,9 +40,20 @@ function FactorCoverageContent({
       const res = await fetch("/api/compute/classify-factors", { method: "POST" });
       const json = await res.json();
       if (json.success) {
-        setResult(`Classified ${json.classified} securities (${json.skipped} skipped, ${json.errors} errors).`);
+        // Keep the drawer open — closing immediately hides the outcome and a
+        // no-op run reads as a dead button.
+        if (json.classified === 0 && json.skipped === 0 && !json.errors?.length) {
+          setResult(
+            json.candidates === 0
+              ? "Nothing needed classification — the remaining symbols are options that inherit factors from underlyings that are already classified, or expired positions awaiting cleanup."
+              : "Claude returned no usable classifications for the candidates. Try again — if it persists, check the AI Gateway dashboard."
+          );
+        } else {
+          const created = json.underlyingsCreated > 0 ? `, ${json.underlyingsCreated} option underlying(s) added` : "";
+          const errs = json.errors?.length ? `, ${json.errors.length} batch error(s)` : "";
+          setResult(`Classified ${json.classified} securities (${json.skipped} skipped${created}${errs}).`);
+        }
         onRefresh();
-        onClose();
       } else {
         setResult(`Error: ${json.error}`);
       }
@@ -142,8 +153,12 @@ function StalePricesContent({
       });
       const json = await res.json();
       if (res.ok) {
-        setResult("Quick refresh triggered. Prices will update shortly.");
-        onClose();
+        // Keep the drawer open so the user sees this — the sync itself takes
+        // a minute or two and silently no-ops if neither TWS nor the IBKR
+        // Web API is reachable.
+        setResult(
+          "Quick refresh started — prices update in ~1-2 minutes when TWS (or the IBKR Web API fallback) is reachable. If TWS is closed and no fallback is configured, prices stay as-is."
+        );
       } else {
         setResult(`Error: ${json.error ?? "Failed to trigger refresh"}`);
       }

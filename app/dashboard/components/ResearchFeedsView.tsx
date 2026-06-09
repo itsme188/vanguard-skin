@@ -9,6 +9,7 @@ import { SendDigestPanel } from "./SendDigestPanel";
 import { DigestEmailViewer } from "./DigestEmailViewer";
 import { useIsMobile } from "@/lib/hooks/useIsMobile";
 import { useResearchSync } from "@/lib/hooks/useResearchSync";
+import { useToast } from "./Toast";
 
 interface Props {
   initialArticles: ResearchArticle[];
@@ -128,6 +129,7 @@ export function ResearchFeedsView({
   const [sendOpen, setSendOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const { toast } = useToast();
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [expandedText, setExpandedText] = useState<string | null>(null);
   const [expandedHtml, setExpandedHtml] = useState<string | null>(null);
@@ -147,7 +149,9 @@ export function ResearchFeedsView({
         method: "POST",
       });
       if (!res.ok) {
-        // Rollback: refetch the full filtered list to recover correct state.
+        // Rollback: refetch the full filtered list to recover correct state —
+        // and explain, or the reappearing row looks like a glitch.
+        toast(`Couldn't unfilter the article (server returned ${res.status}) — it stays in the filtered list.`, "error");
         const reload = await fetch("/api/research/articles?filtered=1&limit=100");
         const data = await reload.json();
         if (data.success) {
@@ -156,9 +160,11 @@ export function ResearchFeedsView({
         }
       }
     } catch {
-      /* network blip — UI stays optimistic, next page load resyncs */
+      // Network blip — the row already vanished optimistically, so say the
+      // server may not have gotten it rather than leaving a silent mismatch.
+      toast("Unfilter may not have reached the server — check the Filtered tab after the next sync.", "info");
     }
-  }, []);
+  }, [toast]);
 
   const refreshArticles = useCallback(
     async (overrides?: { sourceId?: number | null; search?: string }) => {

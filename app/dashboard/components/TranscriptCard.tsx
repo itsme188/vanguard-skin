@@ -39,6 +39,7 @@ export function TranscriptCard({
   const [showFullTranscript, setShowFullTranscript] = useState(false);
   const [fullText, setFullText] = useState<string | null>(null);
   const [loadingFull, setLoadingFull] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const source = SOURCE_BADGES[t.source] || {
     label: t.source,
@@ -51,6 +52,7 @@ export function TranscriptCard({
       return;
     }
     setLoadingFull(true);
+    setLoadError(null);
     try {
       const res = await fetch(
         `/api/transcripts?ticker=${t.ticker}&year=${t.year}&quarter=${t.quarter}`
@@ -59,9 +61,13 @@ export function TranscriptCard({
       if (data.success && data.data?.transcript) {
         setFullText(data.data.transcript);
         setShowFullTranscript(true);
+      } else {
+        setLoadError(
+          data.error ?? "No full transcript available for this quarter — the cached summary above is all the source provided."
+        );
       }
     } catch {
-      // Silent fail
+      setLoadError("Couldn't load the transcript: could not reach the server.");
     } finally {
       setLoadingFull(false);
     }
@@ -170,6 +176,7 @@ export function TranscriptCard({
             </button>
           )}
         </div>
+        {loadError && <p className="text-xs text-down mt-2">{loadError}</p>}
       </div>
 
       {/* Full transcript modal */}

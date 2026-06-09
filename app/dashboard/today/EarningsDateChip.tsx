@@ -40,6 +40,7 @@ export function EarningsDateChip({
 }: Props) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
   const [submitting, setSubmitting] = useState(false);
   const [customDate, setCustomDate] = useState("");
@@ -78,14 +79,24 @@ export function EarningsDateChip({
   async function confirm(date: string, time: "bmo" | "amc") {
     if (submitting) return;
     setSubmitting(true);
+    setConfirmError(null);
     try {
-      await fetch("/api/earnings/confirm-date", {
+      const res = await fetch("/api/earnings/confirm-date", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ symbol, confirmedDate: date, confirmedTime: time }),
       });
+      if (!res.ok) {
+        // Keep the popover open — closing on a rejected confirm makes the
+        // chip look resolved when the conflict is still live.
+        const body = await res.json().catch(() => null);
+        setConfirmError(`Confirm failed: ${body?.error ?? `server returned ${res.status}`}.`);
+        return;
+      }
       setOpen(false);
       startTransition(() => router.refresh());
+    } catch {
+      setConfirmError("Confirm failed: could not reach the server.");
     } finally {
       setSubmitting(false);
     }
@@ -152,6 +163,9 @@ export function EarningsDateChip({
                 ok
               </button>
             </div>
+            {confirmError && (
+              <p className="text-[10px] text-down pt-1">{confirmError}</p>
+            )}
           </div>
         </div>
       )}

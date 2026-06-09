@@ -48,6 +48,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [customResult, setCustomResult] = useState<ScenarioResult | null>(null);
   const [customLoading, setCustomLoading] = useState(false);
+  const [customError, setCustomError] = useState<string | null>(null);
   const [showBuilder, setShowBuilder] = useState(false);
 
   // Custom scenario form state
@@ -77,11 +78,14 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
       });
       const json = await res.json();
       if (json.success) {
+        setCustomError(null);
         setCustomResult(json.data);
         setExpanded("custom");
+      } else {
+        setCustomError(`Couldn't compute the scenario: ${json.error ?? "unknown error"}.`);
       }
     } catch {
-      // Silently fail
+      setCustomError("Couldn't compute the scenario: could not reach the server.");
     } finally {
       setCustomLoading(false);
     }
@@ -415,6 +419,9 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
             >
               {customLoading ? "Computing..." : "Compute Scenario"}
             </button>
+            {customError && (
+              <p className="text-xs text-down mt-2">{customError}</p>
+            )}
           </div>
         )}
       </div>

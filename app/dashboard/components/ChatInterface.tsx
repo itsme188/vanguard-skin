@@ -7,6 +7,7 @@ import type { UIMessage } from "ai";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { QuickActionChips } from "./QuickActionChips";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { useToast } from "./Toast";
 import { PrivateText } from "@/lib/privacy/components";
 import { usePrivacy } from "@/lib/privacy/context";
 import { getQuickActions } from "@/lib/chat/quick-actions";
@@ -300,6 +301,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
   const [loadedInitial, setLoadedInitial] = useState(false);
   const [deletePending, setDeletePending] = useState<ChatConversation | null>(null);
+  const { toast } = useToast();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -452,7 +454,12 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
       const res = await fetch(`/api/chat/conversations/${conv.id}`, {
         method: "DELETE",
       });
-      if (!res.ok) return;
+      if (!res.ok) {
+        // The dialog already closed — without this the conversation just
+        // stays in the list and the delete looks like it never happened.
+        toast(`Couldn't delete the conversation (server returned ${res.status}).`, "error");
+        return;
+      }
 
       // If the deleted conversation is currently loaded, reset to empty state
       if (conv.id === conversationId) {
@@ -462,9 +469,9 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
       }
       await fetchConversations();
     } catch {
-      // Silently fail
+      toast("Couldn't delete the conversation: could not reach the server.", "error");
     }
-  }, [deletePending, conversationId, fetchConversations, isStreaming, setMessages, stop]);
+  }, [deletePending, conversationId, fetchConversations, isStreaming, setMessages, stop, toast]);
 
   function handleQuickAction(prompt: string) {
     setInputText(prompt);

@@ -36,9 +36,14 @@ export function ClassificationCard({ concentration, coverage }: Props) {
       const res = await fetch("/api/compute/classify", { method: "POST" });
       const data = await res.json();
       if (data.success) {
-        const parts = [`Classified ${data.classified}`, `${data.skipped} already done`];
-        if (data.unresolvedCount > 0) parts.push(`${data.unresolvedCount} couldn't be auto-classified`);
-        toast(parts.join(" · "), data.unresolvedCount > 0 ? "info" : "success");
+        if (data.classified === 0 && !data.unresolvedCount) {
+          // Explain the no-op — "Classified 0" with no why reads as a broken button.
+          toast(`Nothing to classify — all ${data.skipped} held securities already have sector/fund classifications.`, "info");
+        } else {
+          const parts = [`Classified ${data.classified}`, `${data.skipped} already done`];
+          if (data.unresolvedCount > 0) parts.push(`${data.unresolvedCount} couldn't be auto-classified`);
+          toast(parts.join(" · "), data.unresolvedCount > 0 ? "info" : "success");
+        }
         router.refresh();
       } else {
         toast(`Classification failed: ${data.error}`, "error");

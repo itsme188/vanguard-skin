@@ -9,6 +9,7 @@ import type {
 } from "@/lib/queries/research-documents";
 import { Chip } from "./Chip";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { useToast } from "./Toast";
 
 interface DocumentListResponse {
   documents: ResearchDocumentSummary[];
@@ -310,10 +311,12 @@ function TagEditor({
   const [tags, setTags] = useState<string[]>(() => coerceTags(initialTags));
   const [input, setInput] = useState("");
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const commit = useCallback(
     async (next: string[]) => {
       setSaving(true);
+      setSaveError(null);
       try {
         const res = await fetch(`/api/research/documents/${docId}`, {
           method: "PATCH",
@@ -325,7 +328,11 @@ function TagEditor({
           const normalized: string[] = Array.isArray(data.tags) ? data.tags : [];
           setTags(normalized);
           onTagsChanged(normalized);
+        } else {
+          setSaveError(`Couldn't save tags (server returned ${res.status}).`);
         }
+      } catch {
+        setSaveError("Couldn't save tags: could not reach the server.");
       } finally {
         setSaving(false);
       }
@@ -384,6 +391,7 @@ function TagEditor({
           />
         </form>
       </div>
+      {saveError && <p className="text-[11px] text-down mt-1">{saveError}</p>}
     </div>
   );
 }
@@ -400,6 +408,7 @@ function DocumentRow({
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [showFullText, setShowFullText] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const { toast } = useToast();
 
   const symbols = parseSymbols(doc.mentioned_symbols);
   const rowTags = parseSymbols(doc.tags);
@@ -449,10 +458,18 @@ function DocumentRow({
 
   async function confirmDelete() {
     setConfirmingDelete(false);
-    const res = await fetch(`/api/research/documents/${doc.id}`, {
-      method: "DELETE",
-    });
-    if (res.ok) onDeleted();
+    try {
+      const res = await fetch(`/api/research/documents/${doc.id}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        onDeleted();
+      } else {
+        toast(`Couldn't delete "${doc.title}" (server returned ${res.status}).`, "error");
+      }
+    } catch {
+      toast(`Couldn't delete "${doc.title}": could not reach the server.`, "error");
+    }
   }
 
   function handleTagsChanged(newTags: string[]) {

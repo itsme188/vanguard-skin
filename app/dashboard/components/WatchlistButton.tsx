@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { useToast } from "./Toast";
 
 export function WatchlistButton({
   securityId,
@@ -17,6 +18,7 @@ export function WatchlistButton({
   const [watched, setWatched] = useState(initialWatched);
   const [loading, setLoading] = useState(false);
   const router = useRouter();
+  const { toast } = useToast();
 
   async function handleToggle() {
     setLoading(true);
@@ -29,21 +31,26 @@ export function WatchlistButton({
           (i: { security_id: number }) => i.security_id === securityId
         );
         if (item) {
-          await fetch(`/api/watchlist?id=${item.id}`, { method: "DELETE" });
+          const res = await fetch(`/api/watchlist?id=${item.id}`, { method: "DELETE" });
+          if (!res.ok) throw new Error(`server returned ${res.status}`);
         }
         setWatched(false);
       } else {
-        await fetch("/api/watchlist", {
+        const res = await fetch("/api/watchlist", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ securityId }),
         });
+        if (!res.ok) throw new Error(`server returned ${res.status}`);
         setWatched(true);
       }
       router.refresh();
-    } catch {
-      // Revert on error
-      setWatched(watched);
+    } catch (err) {
+      // The state only flips after the server confirms — say why it didn't
+      toast(
+        `Couldn't ${watched ? "remove from" : "add to"} watchlist: ${err instanceof Error ? err.message : "network error"}.`,
+        "error"
+      );
     } finally {
       setLoading(false);
     }

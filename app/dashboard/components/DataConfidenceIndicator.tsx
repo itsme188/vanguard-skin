@@ -24,6 +24,7 @@ export function DataConfidenceIndicator() {
   const [syncing, setSyncing] = useState(false);
   const [showPopover, setShowPopover] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [actionStatus, setActionStatus] = useState<string | null>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   // Ref mirrors `confidence` so the fetch callback can read the latest value
   // without depending on it (which would invalidate the callback on every state
@@ -187,22 +188,32 @@ export function DataConfidenceIndicator() {
                   onFix={async () => {
                     if (!action.autoFixable || !action.apiEndpoint) return;
                     setActionLoading(action.apiEndpoint);
+                    setActionStatus(null);
                     try {
-                      await fetch(action.apiEndpoint, {
+                      const res = await fetch(action.apiEndpoint, {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify(action.apiBody ?? {}),
                       });
-                      // Refresh confidence after action
-                      setTimeout(fetchConfidence, 2000);
+                      if (res.ok) {
+                        setActionStatus("Fix triggered — score refreshes as the sync completes (~1-2 min).");
+                        // Refresh confidence after action
+                        setTimeout(fetchConfidence, 2000);
+                      } else {
+                        const body = await res.json().catch(() => null);
+                        setActionStatus(`Fix failed: ${body?.error ?? `server returned ${res.status}`}.`);
+                      }
                     } catch {
-                      // Ignore — sync-status will show errors
+                      setActionStatus("Fix failed: could not reach the server.");
                     } finally {
                       setActionLoading(null);
                     }
                   }}
                 />
               ))}
+              {actionStatus && (
+                <p className="text-[10px] text-ink-faint pt-1">{actionStatus}</p>
+              )}
             </div>
           )}
         </div>

@@ -35,6 +35,9 @@ export function ManageSourcesModal({
   const [manualEmail, setManualEmail] = useState("");
   const [adding, setAdding] = useState(false);
   const [discoverError, setDiscoverError] = useState<string | null>(null);
+  // One shared error line for toggle/delete/add mutations — without it a
+  // failed write looks identical to a successful one (optimistic UI).
+  const [mutationError, setMutationError] = useState<string | null>(null);
 
   // Sync local sources when prop changes (e.g., modal reopens)
   useEffect(() => {
@@ -49,22 +52,30 @@ export function ManageSourcesModal({
     async (sourceId: number, currentActive: number) => {
       const newActive = currentActive ? 0 : 1;
       // Optimistic update
+      setMutationError(null);
       setSources((prev) =>
         prev.map((s) => (s.id === sourceId ? { ...s, is_active: newActive } : s))
       );
       try {
-        await fetch("/api/research/sources", {
+        const res = await fetch("/api/research/sources", {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ id: sourceId, is_active: newActive }),
         });
+        const data = await res.json().catch(() => null);
+        if (!res.ok || data?.success === false) {
+          throw new Error(data?.error ?? `server returned ${res.status}`);
+        }
         onSourcesChanged();
-      } catch {
-        // Revert on failure
+      } catch (err) {
+        // Revert on failure — and say so, or the flipped toggle lies
         setSources((prev) =>
           prev.map((s) =>
             s.id === sourceId ? { ...s, is_active: currentActive } : s
           )
+        );
+        setMutationError(
+          `Couldn't update the source: ${err instanceof Error ? err.message : "network error"}. The toggle was reverted.`
         );
       }
     },
@@ -73,19 +84,27 @@ export function ManageSourcesModal({
 
   const handleDelete = useCallback(
     async (sourceId: number) => {
+      setMutationError(null);
       setSources((prev) => prev.filter((s) => s.id !== sourceId));
       try {
-        await fetch("/api/research/sources", {
+        const res = await fetch("/api/research/sources", {
           method: "DELETE",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ id: sourceId }),
         });
+        const data = await res.json().catch(() => null);
+        if (!res.ok || data?.success === false) {
+          throw new Error(data?.error ?? `server returned ${res.status}`);
+        }
         onSourcesChanged();
-      } catch {
-        // Refetch on failure
-        const res = await fetch("/api/research/sources");
-        const data = await res.json();
-        if (data.success) setSources(data.data);
+      } catch (err) {
+        // Refetch on failure so the row reappears — and explain why
+        setMutationError(
+          `Couldn't delete the source: ${err instanceof Error ? err.message : "network error"}.`
+        );
+        const res = await fetch("/api/research/sources").catch(() => null);
+        const data = await res?.json().catch(() => null);
+        if (data?.success) setSources(data.data);
       }
     },
     [onSourcesChanged]
@@ -130,9 +149,11 @@ export function ManageSourcesModal({
           const srcData = await srcRes.json();
           if (srcData.success) setSources(srcData.data);
           onSourcesChanged();
+        } else {
+          setMutationError(`Couldn't add ${sender.email}: ${data.error ?? "unknown error"}.`);
         }
       } catch {
-        // Ignore
+        setMutationError(`Couldn't add ${sender.email}: could not reach the server.`);
       } finally {
         setAdding(false);
       }
@@ -162,9 +183,11 @@ export function ManageSourcesModal({
         const srcData = await srcRes.json();
         if (srcData.success) setSources(srcData.data);
         onSourcesChanged();
+      } else {
+        setMutationError(`Couldn't add the source: ${data.error ?? "unknown error"}.`);
       }
     } catch {
-      // Ignore
+      setMutationError("Couldn't add the source: could not reach the server.");
     } finally {
       setAdding(false);
     }
@@ -263,6 +286,10 @@ export function ManageSourcesModal({
               </div>
             )}
           </div>
+
+          {mutationError && (
+            <p className="text-xs text-down px-1">{mutationError}</p>
+          )}
 
           {/* Action buttons */}
           <div className="flex gap-2">

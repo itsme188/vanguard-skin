@@ -272,6 +272,10 @@ function AlertsPageInner() {
               : "No pending alerts needed a suggestion."
           );
         }
+      } else if (!json.success) {
+        setActionStatus(
+          `Suggestion failed: ${json.error ?? `server returned ${res.status}`}. Existing suggestions are unaffected.`
+        );
       }
       await refresh();
     } finally {
