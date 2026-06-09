@@ -16,6 +16,10 @@ import type { FactorColumn } from "@/lib/factors";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import type { ScenarioDefinition, ScenarioResult, PositionImpact } from "./scenarios";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
+import { explodeHoldingBySector } from "./explode-sector";
+import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
+import { delta } from "./options-greeks";
+import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
 
 // ─── Per-factor bucket sensitivities ─────────────────────────────────────
 //
@@ -31,7 +35,10 @@ export const FACTOR_SHOCK_SENSITIVITIES: Record<FactorColumn, BucketMultipliers>
     No: 0, Low: 0.10, Moderate: 0.50, High: 1.00, "Very High": 1.50,
   },
   growth_vs_value: {
-    Growth: 1.00, Value: -0.50, Blend: 0.25, Unknown: 0,
+    // Value is 0, not negative: on a hawkish surprise value FALLS LESS than
+    // growth — it does not rally. A negative multiplier made No-rate-
+    // sensitivity Value names spuriously GAIN on rate-shock scenarios.
+    Growth: 1.00, Value: 0, Blend: 0.25, Unknown: 0,
   },
   cyclical: {
     No: 0, Low: 0.25, Moderate: 0.50, High: 1.00, "Very High": 1.30,
@@ -91,8 +98,11 @@ export const SCENARIO_RECIPES: ScenarioRecipe[] = [
     factorMultipliers: { growth_vs_value: 0.50 },
     methodology:
       "Per-position P&L = position_value × interest_rate_sensitive_bucket × -0.025. " +
-      "Growth-leaning positions get an additional 0.5× growth_vs_value bucket multiplier. " +
-      "Bonds: duration × 25bp / 100. Calibrated to typical 25bp surprise day historical reaction.",
+      "Growth names get an additional 0.5× growth add-on; Value names take no add-on " +
+      "(they fall less than growth on a hike — they don't rally). " +
+      "Bonds: duration × 25bp / 100. Options: inherit the underlying's rate exposure, " +
+      "levered by delta elasticity (Ω = Δ·S/V, |Ω| ≤ 8, fallback 2.5× when unpriceable). " +
+      "Calibrated to typical 25bp surprise-day historical reaction.",
   },
   {
     id: "usd_strength_5pct",
@@ -206,11 +216,53 @@ interface RecipePositionRow {
   ai_exposure: string | null;
   crypto_adjacent: string | null;
   regulatory_risk: string | null;
+  // Option fields (null for non-options) — used for elasticity
+  strike_price: number | null;
+  expiration_date: string | null;
+  option_type: string | null;
+  own_price: number | null;
+  underlying_price: number | null;
+  underlying_iv: number | null;
 }
 
 function bucketMultiplier(factor: FactorColumn, bucket: string | null): number {
   if (!bucket) return 0;
   return FACTOR_SHOCK_SENSITIVITIES[factor][bucket] ?? 0;
+}
+
+/** Fallback when elasticity inputs are missing (no underlying price / IV /
+ *  option price). Sign carries the option's direction. */
+const DEFAULT_OPTION_ELASTICITY = 2.5;
+
+/** |Ω| clamp — deep-OTM short-dated options have huge theoretical elasticity
+ *  but gamma/vol effects dominate there; a linear-delta model shouldn't
+ *  extrapolate past this. */
+const MAX_OPTION_ELASTICITY = 8;
+
+/**
+ * Option elasticity Ω = Δ·S/V: the % move in the option per 1% move in the
+ * underlying (linear-delta approximation). Signed — puts carry negative Ω so
+ * a down-shock on the underlying produces a positive option move. Falls back
+ * to ±2.5 when pricing inputs are unavailable.
+ */
+function optionElasticity(pos: RecipePositionRow, riskFreeRate: number): number {
+  const isPut = (pos.option_type ?? "").toUpperCase().startsWith("P");
+  const fallback = (isPut ? -1 : 1) * DEFAULT_OPTION_ELASTICITY;
+
+  const S = pos.underlying_price;
+  const V = pos.own_price;
+  const K = pos.strike_price;
+  if (S == null || S <= 0 || V == null || V <= 0 || K == null || K <= 0 || !pos.expiration_date) {
+    return fallback;
+  }
+  const T = (new Date(pos.expiration_date).getTime() - Date.now()) / (365 * 24 * 3600 * 1000);
+  if (!Number.isFinite(T) || T <= 0) return fallback;
+
+  const sigma = pos.underlying_iv ?? 0.30;
+  const d = delta(S, K, T, riskFreeRate, sigma, isPut ? "PUT" : "CALL");
+  const omega = (d * S) / V;
+  if (!Number.isFinite(omega) || omega === 0) return fallback;
+  return Math.max(-MAX_OPTION_ELASTICITY, Math.min(MAX_OPTION_ELASTICITY, omega));
 }
 
 /**
@@ -251,17 +303,23 @@ export function computeRecipeScenario(
         s.symbol,
         s.name AS security_name,
         s.security_type,
-        s.sector,
+        COALESCE(s.sector, s_u.sector) AS sector,
         s.duration_years,
-        sf.interest_rate_sensitive,
-        sf.growth_vs_value,
-        sf.cyclical,
-        sf.international_exposure,
-        sf.geopolitical_onshoring,
-        sf.tariff_exposure,
-        sf.ai_exposure,
-        sf.crypto_adjacent,
-        sf.regulatory_risk,
+        s.strike_price,
+        s.expiration_date,
+        s.option_type,
+        lp.close_price AS own_price,
+        lp_u.close_price AS underlying_price,
+        q_u.iv_underlying AS underlying_iv,
+        COALESCE(sf.interest_rate_sensitive, sf_u.interest_rate_sensitive) AS interest_rate_sensitive,
+        COALESCE(sf.growth_vs_value, sf_u.growth_vs_value) AS growth_vs_value,
+        COALESCE(sf.cyclical, sf_u.cyclical) AS cyclical,
+        COALESCE(sf.international_exposure, sf_u.international_exposure) AS international_exposure,
+        COALESCE(sf.geopolitical_onshoring, sf_u.geopolitical_onshoring) AS geopolitical_onshoring,
+        COALESCE(sf.tariff_exposure, sf_u.tariff_exposure) AS tariff_exposure,
+        COALESCE(sf.ai_exposure, sf_u.ai_exposure) AS ai_exposure,
+        COALESCE(sf.crypto_adjacent, sf_u.crypto_adjacent) AS crypto_adjacent,
+        COALESCE(sf.regulatory_risk, sf_u.regulatory_risk) AS regulatory_risk,
         CASE
           WHEN LOWER(s.security_type) = 'bond'
             THEN lh.total_qty * COALESCE(lp.close_price, 0) / 100.0
@@ -271,6 +329,13 @@ export function computeRecipeScenario(
       JOIN securities s ON s.id = lh.security_id
       LEFT JOIN latest_prices lp ON lp.security_id = lh.security_id
       LEFT JOIN security_factors sf ON sf.security_id = s.id
+      -- Option → underlying inheritance (the same COALESCE rule every
+      -- factor-coverage surface applies — options have no factor rows of
+      -- their own by design and contributed exactly $0 to scenarios before).
+      LEFT JOIN securities s_u ON s_u.symbol = s.underlying_symbol
+      LEFT JOIN security_factors sf_u ON sf_u.security_id = s_u.id
+      LEFT JOIN latest_prices lp_u ON lp_u.security_id = s_u.id
+      LEFT JOIN security_quotes q_u ON q_u.security_id = s_u.id
       WHERE COALESCE(lp.close_price, 0) > 0
       ORDER BY market_value DESC
     `
@@ -279,8 +344,31 @@ export function computeRecipeScenario(
 
   const currentPortfolioValue = positions.reduce((s, p) => s + p.market_value, 0);
 
+  // ETF look-through weights for sector-override recipes (single source —
+  // same map cash-deploy and the allocation breakdown use).
+  const etfWeights = recipe.sectorOverrides
+    ? getEtfSectorWeights(db)
+    : new Map<string, Array<{ sector: string; weight_pct: number }>>();
+
+  const riskFreeRate = getRiskFreeRate(db);
+
   const impacts: PositionImpact[] = positions.map((pos) => {
     let changePercent: number;
+
+    // The factor-bucket path — the default when no override applies, and the
+    // fallback for ETF slices in sectors without an override.
+    const factorPathChange = (): number => {
+      const primaryMult = bucketMultiplier(recipe.primaryFactor, pos[recipe.primaryFactor]);
+      let total = primaryMult * recipe.shockMagnitude;
+      if (recipe.factorMultipliers) {
+        for (const [factor, weight] of Object.entries(recipe.factorMultipliers)) {
+          if (!weight) continue;
+          const mult = bucketMultiplier(factor as FactorColumn, pos[factor as FactorColumn]);
+          total += mult * weight * recipe.shockMagnitude;
+        }
+      }
+      return total;
+    };
 
     // Bond duration overrides recipe factor math for rate scenarios
     if (recipe.category === "rate" && pos.security_type.toLowerCase() === "bond") {
@@ -292,21 +380,39 @@ export function computeRecipeScenario(
       // a 25bp hike is roughly a -2.5% equity move).
       const rateBpsMove = -recipe.shockMagnitude * 1000; // recipe.shockMagnitude in [-0.5, 0.5] → bps
       changePercent = -duration * rateBpsMove / 10000;
-    } else if (recipe.sectorOverrides && pos.sector && pos.sector in recipe.sectorOverrides) {
-      changePercent = recipe.sectorOverrides[pos.sector];
-    } else {
-      // Primary factor contribution
-      const primaryMult = bucketMultiplier(recipe.primaryFactor, pos[recipe.primaryFactor]);
-      let total = primaryMult * recipe.shockMagnitude;
-      // Additional factor multipliers
-      if (recipe.factorMultipliers) {
-        for (const [factor, weight] of Object.entries(recipe.factorMultipliers)) {
-          if (!weight) continue;
-          const mult = bucketMultiplier(factor as FactorColumn, pos[factor as FactorColumn]);
-          total += mult * weight * recipe.shockMagnitude;
-        }
+    } else if (recipe.sectorOverrides) {
+      // Sector overrides apply per sector slice: a fund with cached weights
+      // takes the override on the matching share of its value, the factor
+      // path on the rest. Single-bucket positions behave exactly as before.
+      const parts = explodeHoldingBySector(
+        pos.symbol,
+        pos.security_type,
+        pos.market_value,
+        etfWeights,
+        pos.sector
+      );
+      const hasOverride = parts.some((p) => p.sector in recipe.sectorOverrides!);
+      if (hasOverride) {
+        const mv = pos.market_value || 1;
+        const fallback = factorPathChange();
+        changePercent = parts.reduce((sum, part) => {
+          const move = recipe.sectorOverrides![part.sector] ?? fallback;
+          return sum + (part.value / mv) * move;
+        }, 0);
+      } else {
+        changePercent = factorPathChange();
       }
-      changePercent = total;
+    } else {
+      changePercent = factorPathChange();
+    }
+
+    // Options: the factor/sector math above describes the UNDERLYING's move
+    // (factors are inherited via the COALESCE join). Lever it by elasticity
+    // Ω = Δ·S/V — signed, so a held put GAINS on a down-shock — and clamp at
+    // -100% (an option's price can't go below zero).
+    if (pos.security_type.toLowerCase() === "option") {
+      const omega = optionElasticity(pos, riskFreeRate);
+      changePercent = Math.max(-1, changePercent * omega);
     }
 
     const estimatedChange = pos.market_value * changePercent;

@@ -7,6 +7,8 @@ import type Database from "better-sqlite3";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { explodeHoldingBySector } from "@/lib/compute/explode-sector";
+import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -101,6 +103,13 @@ export function getAllocationByDimension(
   dimension: AllocationDimension,
   accountIds?: number[]
 ): AllocationEntry[] {
+  // Sector gets ETF look-through (explodeHoldingBySector single source, same
+  // as cash-deploy) so all sector surfaces agree — an ETF with cached
+  // etf_sector_weights distributes across sectors instead of falling into a
+  // single fund_category/Unknown bucket.
+  if (dimension === "sector") {
+    return getSectorAllocationWithLookThrough(db, accountIds);
+  }
   // Standard classification columns on the securities table
   const standardColumns: Partial<Record<AllocationDimension, string>> = {
     fund_category: "COALESCE(s.fund_category, 'Unclassified')",
@@ -168,6 +177,93 @@ export function getAllocationByDimension(
       ORDER BY total_market_value DESC`
     )
     .all(...params) as AllocationEntry[];
+}
+
+/**
+ * Sector allocation with ETF look-through. Pulls per-security rows, then
+ * splits each fund's market value across sectors via explodeHoldingBySector
+ * (single source — also used by cash-deploy). Funds without cached weights
+ * fall back to `sector ?? fund_category` (the pre-look-through COALESCE
+ * semantics); sectorless bonds bucket as Fixed Income.
+ *
+ * position_count attributes each position once, to its dominant sector, so
+ * counts still sum to the number of positions.
+ */
+function getSectorAllocationWithLookThrough(
+  db: Database.Database,
+  accountIds?: number[]
+): AllocationEntry[] {
+  const conditions = [
+    "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))",
+  ];
+  const params: (string | number)[] = [];
+  if (accountIds && accountIds.length > 0) {
+    conditions.push(`h.account_id IN (${accountIds.map(() => "?").join(",")})`);
+    params.push(...accountIds);
+  }
+
+  const rows = db
+    .prepare(
+      `WITH ${LATEST_HOLDINGS_CTE}
+      SELECT
+        s.symbol,
+        s.security_type,
+        s.sector,
+        s.fund_category,
+        CASE
+          WHEN lp.close_price IS NOT NULL
+            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier")}
+          WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
+            THEN h.cost_basis
+          ELSE 0
+        END AS mv
+      FROM latest_holdings h
+      JOIN accounts a ON a.id = h.account_id
+      JOIN securities s ON s.id = h.security_id
+      LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
+      WHERE ${conditions.join(" AND ")}`
+    )
+    .all(...params) as Array<{
+      symbol: string;
+      security_type: string | null;
+      sector: string | null;
+      fund_category: string | null;
+      mv: number;
+    }>;
+
+  const weights = getEtfSectorWeights(db);
+  const bySector = new Map<string, { value: number; count: number }>();
+  let total = 0;
+
+  for (const r of rows) {
+    total += r.mv;
+    const parts = explodeHoldingBySector(
+      r.symbol,
+      r.security_type,
+      r.mv,
+      weights,
+      r.sector ?? r.fund_category
+    );
+    // Dominant sector carries the position count; every part carries value.
+    let dominant = parts[0];
+    for (const part of parts) {
+      if (Math.abs(part.value) > Math.abs(dominant.value)) dominant = part;
+      const entry = bySector.get(part.sector) ?? { value: 0, count: 0 };
+      entry.value += part.value;
+      bySector.set(part.sector, entry);
+    }
+    const dom = bySector.get(dominant.sector)!;
+    dom.count += 1;
+  }
+
+  return [...bySector.entries()]
+    .map(([group_name, { value, count }]) => ({
+      group_name,
+      total_market_value: value,
+      percentage: total !== 0 ? (value * 100) / total : 0,
+      position_count: count,
+    }))
+    .sort((a, b) => b.total_market_value - a.total_market_value) as AllocationEntry[];
 }
 
 /**

@@ -33,7 +33,23 @@ function createTestDb(): Database.Database {
       market_cap_category TEXT,
       style TEXT,
       duration_years REAL,
-      credit_rating TEXT
+      credit_rating TEXT,
+      underlying_symbol TEXT,
+      strike_price REAL,
+      expiration_date TEXT,
+      option_type TEXT,
+      fund_category TEXT
+    );
+
+    CREATE TABLE security_quotes (
+      security_id INTEGER PRIMARY KEY,
+      as_of_date TEXT NOT NULL,
+      iv_underlying REAL,
+      hv_30d REAL,
+      week52_high REAL,
+      week52_low REAL,
+      dividend_yield REAL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
     CREATE TABLE security_factors (
@@ -197,6 +213,42 @@ describe("legacy custom-scenario path (non-recipe ids flow through beta heuristi
     const aapl = result.positionImpacts.find((p) => p.symbol === "AAPL")!;
     // AAPL gets the -25% sector hit × its estimated beta (heuristic path)
     expect(aapl.changePercent).toBeLessThan(-0.2);
+  });
+
+  it("sector moves look through ETFs by cached sector weights", () => {
+    // ETF with 50/50 Technology/Utilities weights: a -25% Technology move
+    // (marketMove -3% elsewhere) should hit half the position at -25% and
+    // half at -3% — not skip the ETF entirely because its own sector is NULL.
+    db.exec(`
+      CREATE TABLE etf_sector_weights (
+        etf_symbol TEXT NOT NULL,
+        sector TEXT NOT NULL,
+        weight_pct REAL NOT NULL,
+        as_of_date TEXT NOT NULL,
+        source TEXT NOT NULL,
+        PRIMARY KEY (etf_symbol, sector)
+      );
+    `);
+    const today = new Date().toISOString().slice(0, 10);
+    db.prepare(
+      "INSERT INTO securities (id, symbol, name, security_type) VALUES (10, 'MIXETF', 'Mixed ETF', 'etf')"
+    ).run();
+    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 10, ?, 100)").run(today);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (10, ?, 100)").run(today);
+    db.prepare("INSERT INTO etf_sector_weights VALUES ('MIXETF', 'Technology', 50, ?, 'manual')").run(today);
+    db.prepare("INSERT INTO etf_sector_weights VALUES ('MIXETF', 'Utilities', 50, ?, 'manual')").run(today);
+
+    const result = computeScenario(db, {
+      id: "custom-sector",
+      name: "Custom Sector",
+      description: "test",
+      category: "sector" as const,
+      marketMove: -0.03,
+      sectorMoves: { Technology: -0.25 },
+    });
+    const etf = result.positionImpacts.find((p) => p.symbol === "MIXETF")!;
+    // beta for a sectorless ETF is 1.0 → 0.5×(-0.25) + 0.5×(-0.03) = -0.14
+    expect(etf.changePercent).toBeCloseTo(-0.14, 3);
   });
 
   it("custom rate scenarios use duration for bonds", () => {

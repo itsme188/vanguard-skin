@@ -2,6 +2,8 @@ import type Database from "better-sqlite3";
 import type { FactorColumn } from "@/lib/factors";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { explodeHoldingBySector } from "./explode-sector";
+import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import {
   SCENARIO_RECIPES,
   findRecipe,
@@ -137,6 +139,10 @@ export function computeScenario(
 
   const currentPortfolioValue = positions.reduce((s, p) => s + p.market_value, 0);
 
+  // ETF look-through weights for sector scenarios (single source — same map
+  // cash-deploy and the allocation breakdown use).
+  const etfWeights = scenario.sectorMoves ? getEtfSectorWeights(db) : new Map<string, Array<{ sector: string; weight_pct: number }>>();
+
   // 2. Estimate beta for each position
   const positionImpacts: PositionImpact[] = positions.map((pos) => {
     const beta = estimateBeta(pos.security_type, pos.sector, pos.style, pos.market_cap_category);
@@ -152,9 +158,22 @@ export function computeScenario(
         scenario.marketMove,
         pos.duration_years
       );
-    } else if (scenario.sectorMoves && pos.sector && pos.sector in scenario.sectorMoves) {
-      // Sector rotation: use sector-specific move × beta
-      changePercent = scenario.sectorMoves[pos.sector] * beta;
+    } else if (scenario.sectorMoves) {
+      // Sector rotation: each sector slice of the position responds to its
+      // own move (look-through for ETFs/mutual funds with cached weights;
+      // single bucket otherwise), unmatched slices get the market move.
+      const parts = explodeHoldingBySector(
+        pos.symbol,
+        pos.security_type,
+        pos.market_value,
+        etfWeights,
+        pos.sector
+      );
+      const mv = pos.market_value || 1;
+      changePercent = parts.reduce((sum, part) => {
+        const move = scenario.sectorMoves![part.sector] ?? scenario.marketMove;
+        return sum + (part.value / mv) * move * beta;
+      }, 0);
     } else {
       // Market scenario (default): scale by beta
       changePercent = scenario.marketMove * beta;
