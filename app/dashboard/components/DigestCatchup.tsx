@@ -17,6 +17,7 @@ export function DigestCatchup() {
   const [show, setShow] = useState(false);
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
 
   useEffect(() => {
     // Only check on weekdays
@@ -82,11 +83,17 @@ export function DigestCatchup() {
       if (data.success && !data.skipped) {
         setSent(true);
         setTimeout(() => setShow(false), 3000);
+      } else if (data.skipped) {
+        // Already handled elsewhere (cloud fallback / concurrent cron) —
+        // explain rather than vanish, then dismiss.
+        setSendError("Skipped — a digest for this window was already sent (cloud fallback or concurrent cron).");
+        setTimeout(() => setShow(false), 6000);
       } else {
-        setShow(false);
+        // Keep the banner up — silently hiding it makes a failed send look successful.
+        setSendError(`Send failed: ${data.error ?? "unknown error"}. The banner stays until a digest goes out.`);
       }
     } catch {
-      setShow(false);
+      setSendError("Send failed: could not reach the server.");
     } finally {
       setSending(false);
     }
@@ -97,6 +104,8 @@ export function DigestCatchup() {
       <span className="text-ink-dim">
         {sent ? (
           <span className="text-up">Digest sent!</span>
+        ) : sendError ? (
+          <span className="text-down">{sendError}</span>
         ) : (
           `Today's digest wasn't sent at ${DIGEST_TIME_LABEL}`
         )}

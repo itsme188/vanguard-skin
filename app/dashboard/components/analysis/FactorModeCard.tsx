@@ -28,8 +28,17 @@ export function FactorModeCard({ factorHeatmap, factorCoverage, scope }: Props) 
       const data = await res.json();
       if (data.success) {
         const note = data.errors?.length > 0 ? ` · ${data.errors.length} batch error(s)` : "";
-        toast(`Classified ${data.classified} securities` + (data.skipped > 0 ? ` (${data.skipped} skipped)` : "") + note,
-          data.errors?.length > 0 ? "info" : "success");
+        if (data.classified === 0 && data.skipped === 0 && !data.errors?.length) {
+          // No-op runs need a WHY, not a bare zero — "Classified 0" reads as a broken button.
+          toast(
+            "Nothing to classify — every held security and option underlying already has factor classifications. Options inherit factors from their underlying.",
+            "info"
+          );
+        } else {
+          const created = data.underlyingsCreated > 0 ? ` · ${data.underlyingsCreated} option underlying(s) added` : "";
+          toast(`Classified ${data.classified} securities` + (data.skipped > 0 ? ` (${data.skipped} skipped)` : "") + created + note,
+            data.errors?.length > 0 ? "info" : "success");
+        }
         router.refresh();
       } else {
         toast(`Factor classification failed: ${data.error}`, "error");

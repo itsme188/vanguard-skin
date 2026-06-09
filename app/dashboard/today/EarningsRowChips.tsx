@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { useToast } from "../components/Toast";
 import {
   EarningsEmailViewer,
   type InlineEmailData,
@@ -151,6 +152,7 @@ interface PhaseChipProps {
 
 function PhaseChip({ eventId, phase, sent, skipped, onView }: PhaseChipProps) {
   const router = useRouter();
+  const { toast } = useToast();
   const [pending, startTransition] = useTransition();
   const label = phase === "preview" ? "pre" : "rec";
 
@@ -169,18 +171,27 @@ function PhaseChip({ eventId, phase, sent, skipped, onView }: PhaseChipProps) {
 
   async function toggleSkip() {
     if (pending) return;
-    if (skipped) {
-      await fetch(`/api/earnings/skip?eventId=${eventId}&phase=${phase}`, {
-        method: "DELETE",
-      });
-    } else {
-      await fetch("/api/earnings/skip", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ eventId, phase }),
-      });
+    try {
+      const res = skipped
+        ? await fetch(`/api/earnings/skip?eventId=${eventId}&phase=${phase}`, {
+            method: "DELETE",
+          })
+        : await fetch("/api/earnings/skip", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ eventId, phase }),
+          });
+      if (!res.ok) {
+        toast(
+          `Couldn't ${skipped ? "un-skip" : "skip"} the ${phase} email (server returned ${res.status}) — the chip state is unchanged.`,
+          "error"
+        );
+        return;
+      }
+      startTransition(() => router.refresh());
+    } catch {
+      toast(`Couldn't ${skipped ? "un-skip" : "skip"} the ${phase} email: could not reach the server.`, "error");
     }
-    startTransition(() => router.refresh());
   }
 
   if (skipped) {
