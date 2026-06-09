@@ -15,11 +15,19 @@ vi.mock("@/lib/compute/analysis-narratives", () => ({
   }),
 }));
 
+// Mock the cache read so tests don't depend on the real production DB's
+// analysis_narratives cache. Default: cache miss (null). Individual tests
+// override with mockReturnValueOnce to exercise the cache-hit path.
+vi.mock("@/lib/queries/analysis-narratives", () => ({
+  getCachedNarrative: vi.fn(() => null),
+}));
+
 import {
   GET,
   POST,
   __resetRateLimitForTests,
 } from "@/app/api/analysis/narrative/route";
+import { getCachedNarrative } from "@/lib/queries/analysis-narratives";
 
 describe("GET /api/analysis/narrative", () => {
   beforeEach(() => {
@@ -112,31 +120,24 @@ describe("GET /api/analysis/narrative cache-miss rate-limit", () => {
   });
 
   it("cache hit bypasses rate-limit (repeated cache hits always return 200)", async () => {
-    // First call: cache miss — sets the rate-limit timestamp.
     const makeReq = () =>
       new Request(
         "http://x/api/analysis/narrative?scope=all&surface=risk-metrics"
       );
-    await GET(makeReq() as never);
-    // Now make generateNarrative return fromCache:true so the route does the
-    // cache-hit path on subsequent calls.
-    const { generateNarrative } = await import(
-      "@/lib/compute/analysis-narratives"
-    );
-    (generateNarrative as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+    // First call: cache miss (default getCachedNarrative → null) — sets the
+    // cache-miss rate-limit timestamp.
+    const r1 = await GET(makeReq() as never);
+    expect(r1.status).toBe(200);
+    // Cache is now warm: getCachedNarrative returns a row. Even within the
+    // rate-limit window, a cache hit short-circuits BEFORE the limiter → 200.
+    (getCachedNarrative as ReturnType<typeof vi.fn>).mockReturnValueOnce({
       narrativeMd: "Cached prose.",
-      fromCache: true,
       generatedAt: "2026-05-10T22:00:00Z",
     });
-    // Second call within rate-limit window — but fromCache=true means it
-    // short-circuits BEFORE the rate-limit check.
-    // NOTE: the route does the cache lookup via getCachedNarrative, not
-    // generateNarrative's return value, so this test verifies the mock path.
     const r2 = await GET(makeReq() as never);
-    // We haven't mocked getCachedNarrative, so this still goes through
-    // generateNarrative and hits the rate-limit (429). The "cache HIT bypasses"
-    // path is exercised when getCachedNarrative returns a non-null row, which
-    // requires a DB. Assert 429 here as a baseline (proves the first test works).
-    expect([200, 429]).toContain(r2.status);
+    expect(r2.status).toBe(200);
+    const body2 = await r2.json();
+    expect(body2.fromCache).toBe(true);
+    expect(body2.narrativeMd).toBe("Cached prose.");
   });
 });
