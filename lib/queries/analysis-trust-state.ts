@@ -46,11 +46,17 @@ export function getAnalysisTrustState(
     )
     SELECT
       COUNT(DISTINCT s.id) AS total,
-      COUNT(DISTINCT sf.security_id) AS classified,
-      GROUP_CONCAT(CASE WHEN sf.security_id IS NULL THEN s.symbol END) AS missing
+      COUNT(DISTINCT CASE WHEN sf.security_id IS NOT NULL OR sf_u.security_id IS NOT NULL THEN s.id END) AS classified,
+      GROUP_CONCAT(CASE WHEN sf.security_id IS NULL AND sf_u.security_id IS NULL THEN s.symbol END) AS missing
     FROM latest l
     JOIN securities s ON s.id = l.security_id
     LEFT JOIN security_factors sf ON sf.security_id = s.id
+    -- Options inherit factors from their underlying at query time (same rule
+    -- as getFactorHeatmap / getFactorCoverage in lib/queries/analysis.ts) —
+    -- count them as classified when the underlying has a factor row, or this
+    -- metric contradicts the heatmap it sits above.
+    LEFT JOIN securities s_u ON s_u.symbol = s.underlying_symbol
+    LEFT JOIN security_factors sf_u ON sf_u.security_id = s_u.id
   `
     )
     .get(...params) as { total: number; classified: number; missing: string | null };

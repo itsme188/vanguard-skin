@@ -10,11 +10,16 @@ import { getModelForFeature } from "@/lib/ai/provider";
 import { FACTOR_COLUMNS, FACTOR_LABELS, type FactorColumn } from "@/lib/factors";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { extractJsonArray } from "@/lib/ai/extract-json";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
 export interface FactorClassifyResult {
   classified: number;
   skipped: number;
   errors: string[];
+  /** Securities that actually needed Claude this run — 0 means "nothing to do", not "the run failed". */
+  candidates: number;
+  /** Securities rows created for option underlyings that didn't exist yet (options on non-held names). */
+  underlyingsCreated: number;
 }
 
 /** A run is a failure only when it classified nothing AND hit errors. */
@@ -75,14 +80,15 @@ export async function classifyFactors(
   db: Database.Database
 ): Promise<FactorClassifyResult> {
   // Find securities that need factor classification:
-  // - Have active holdings (quantity > 0, not matured)
+  // - Have active holdings (quantity != 0 — shorts carry factor exposure too,
+  //   and every read surface counts them; `> 0` left PINS/FEZ unclassifiable)
   // - Not already in security_factors
   // - Not an option (options inherit from underlying at query time)
   const unclassified = db
     .prepare(
       `SELECT DISTINCT s.id, s.symbol, s.name, s.security_type
        FROM securities s
-       JOIN holdings h ON h.security_id = s.id AND h.quantity > 0
+       JOIN holdings h ON h.security_id = s.id AND h.quantity != 0
        LEFT JOIN security_factors sf ON sf.security_id = s.id
        WHERE sf.security_id IS NULL
          AND s.underlying_symbol IS NULL
@@ -95,6 +101,50 @@ export async function classifyFactors(
       name: string | null;
       security_type: string | null;
     }>;
+
+  // Underlyings of currently-held, unexpired options. Options never get their
+  // own factor rows — they inherit from the underlying at query time (see
+  // getFactorHeatmap) — but that only works when the underlying HAS a factor
+  // row. Underlyings the user doesn't hold directly (covered by the option
+  // alone) never enter the holdings-joined query above, so they're gathered
+  // here; missing securities rows are created (symbol-only, enriched later by
+  // TWS) so the factor row has somewhere to live.
+  const optionUnderlyings = db
+    .prepare(
+      `SELECT DISTINCT s.underlying_symbol AS symbol,
+              u.id AS existing_id, u.name, u.security_type
+       FROM holdings h
+       JOIN securities s ON s.id = h.security_id
+       LEFT JOIN securities u ON u.symbol = s.underlying_symbol
+       LEFT JOIN security_factors usf ON usf.security_id = u.id
+       WHERE ${latestHoldingsPredicate({})}
+         AND s.underlying_symbol IS NOT NULL
+         AND (s.expiration_date IS NULL OR s.expiration_date >= date('now'))
+         AND usf.security_id IS NULL
+       ORDER BY s.underlying_symbol`
+    )
+    .all() as Array<{
+      symbol: string;
+      existing_id: number | null;
+      name: string | null;
+      security_type: string | null;
+    }>;
+
+  let underlyingsCreated = 0;
+  const seenIds = new Set(unclassified.map((s) => s.id));
+  const insertUnderlying = db.prepare(
+    `INSERT INTO securities (symbol, source_key) VALUES (?, ?)`
+  );
+  for (const u of optionUnderlyings) {
+    let id = u.existing_id;
+    if (id === null) {
+      id = Number(insertUnderlying.run(u.symbol, `underlying:${u.symbol}`).lastInsertRowid);
+      underlyingsCreated++;
+    }
+    if (seenIds.has(id)) continue; // already a direct candidate (held stock that's also an underlying)
+    seenIds.add(id);
+    unclassified.push({ id, symbol: u.symbol, name: u.name, security_type: u.security_type });
+  }
 
   // Set simple defaults for bonds, money market, etc.
   let skipped = 0;
@@ -145,7 +195,7 @@ export async function classifyFactors(
   }
 
   if (toClassify.length === 0) {
-    return { classified: 0, skipped, errors: [] };
+    return { classified: 0, skipped, errors: [], candidates: 0, underlyingsCreated };
   }
 
   // Batch and classify with Claude
@@ -211,5 +261,5 @@ export async function classifyFactors(
     }
   }
 
-  return { classified, skipped, errors };
+  return { classified, skipped, errors, candidates: toClassify.length, underlyingsCreated };
 }

@@ -34,6 +34,33 @@ describe("getAnalysisTrustState", () => {
     expect(state.factorCoverage.missingSymbols).toContain("MSFT");
   });
 
+  it("counts an option as classified when its underlying has factors (inheritance-aware)", () => {
+    db.prepare(`INSERT INTO securities (id, symbol, security_type, underlying_symbol) VALUES
+                  (10, 'PANW', 'Stock', NULL),
+                  (11, 'PANW  300116C00200000', 'Option', 'PANW')`).run();
+    // Only the OPTION is held — the underlying just has a factor row to inherit from
+    db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key)
+                VALUES (3, 11, '2026-06-01', 2, 'tws-1')`).run();
+    db.prepare(`INSERT INTO security_factors (security_id, ai_exposure) VALUES (10, 'High')`).run();
+
+    const state = getAnalysisTrustState(db);
+    expect(state.factorCoverage.totalNames).toBe(1);
+    expect(state.factorCoverage.classified).toBe(1);
+    expect(state.factorCoverage.missingSymbols).toEqual([]);
+  });
+
+  it("still reports an option as missing when its underlying has no factors", () => {
+    db.prepare(`INSERT INTO securities (id, symbol, security_type, underlying_symbol) VALUES
+                  (10, 'VLO', 'Stock', NULL),
+                  (11, 'VLO   300116P00100000', 'Option', 'VLO')`).run();
+    db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key)
+                VALUES (3, 11, '2026-06-01', 1, 'tws-2')`).run();
+
+    const state = getAnalysisTrustState(db);
+    expect(state.factorCoverage.classified).toBe(0);
+    expect(state.factorCoverage.missingSymbols).toEqual(["VLO   300116P00100000"]);
+  });
+
   it("reports last classification timestamp from security_factors.updated_at", () => {
     db.prepare(`INSERT INTO securities (id, symbol, security_type) VALUES (10, 'AAPL', 'Stock')`).run();
     db.prepare(`INSERT INTO security_factors (security_id, ai_exposure, updated_at) VALUES (10, 'High', '2026-05-01 12:00:00')`).run();
