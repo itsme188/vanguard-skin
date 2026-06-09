@@ -22,6 +22,15 @@ const mocks = vi.hoisted(() => ({
     generated: 0,
     failed: 0,
   })),
+  classifyOptionSectors: vi.fn(async () => ({ classified: 1, errors: [] })),
+  getUnsectoredOptionUnderlyings: vi.fn(() => [] as string[]),
+  classifyFactors: vi.fn(async () => ({
+    classified: 0,
+    skipped: 0,
+    errors: [] as string[],
+    candidates: 0,
+    underlyingsCreated: 0,
+  })),
 }));
 
 vi.mock("@/lib/tws/positions", () => ({ syncPortfolio: mocks.syncPortfolio }));
@@ -40,6 +49,13 @@ vi.mock("@/lib/alerts/detect", () => ({
 }));
 vi.mock("@/lib/alerts/generate-suggestion", () => ({
   generateSuggestionsForPendingAlerts: mocks.generateSuggestionsForPendingAlerts,
+}));
+vi.mock("@/lib/securities/classify-option-sectors", () => ({
+  classifyOptionSectors: mocks.classifyOptionSectors,
+  getUnsectoredOptionUnderlyings: mocks.getUnsectoredOptionUnderlyings,
+}));
+vi.mock("@/lib/compute/classify-factors", () => ({
+  classifyFactors: mocks.classifyFactors,
 }));
 
 import { runAutoRefresh } from "@/lib/tws/auto-refresh";
@@ -248,5 +264,50 @@ describe("auto-refresh — integration", () => {
     mocks.detectAndFireAlerts.mockImplementationOnce(() => ({ fired: 0, deduped: 0, scanned: 4 }));
     await runAutoRefresh(db, "quick");
     expect(mocks.generateSuggestionsForPendingAlerts).not.toHaveBeenCalled();
+  });
+
+  it("classifies blank-sector option underlyings on full refresh (Step 2.5)", async () => {
+    mocks.getUnsectoredOptionUnderlyings.mockReturnValue(["XYZ"]);
+    const result = await runAutoRefresh(db, "full");
+    expect(result).not.toBeNull();
+    expect(mocks.classifyOptionSectors).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips option-sector classification when nothing is unsectored", async () => {
+    mocks.getUnsectoredOptionUnderlyings.mockReturnValue([]);
+    await runAutoRefresh(db, "full");
+    expect(mocks.classifyOptionSectors).not.toHaveBeenCalled();
+  });
+
+  it("does not run option-sector classification on quick refresh", async () => {
+    mocks.getUnsectoredOptionUnderlyings.mockReturnValue(["XYZ"]);
+    await runAutoRefresh(db, "quick");
+    expect(mocks.classifyOptionSectors).not.toHaveBeenCalled();
+  });
+
+  it("runs factor classification on full refresh (Step 2.6), not quick", async () => {
+    await runAutoRefresh(db, "full");
+    expect(mocks.classifyFactors).toHaveBeenCalledTimes(1);
+
+    resetSyncState();
+    vi.clearAllMocks();
+    await runAutoRefresh(db, "quick");
+    expect(mocks.classifyFactors).not.toHaveBeenCalled();
+  });
+
+  it("factor-classification failure is isolated — pipeline still succeeds", async () => {
+    mocks.classifyFactors.mockRejectedValueOnce(new Error("Claude down"));
+    const result = await runAutoRefresh(db, "full");
+    expect(result).not.toBeNull();
+    expect(mocks.detectAndFireAlerts).toHaveBeenCalled();
+  });
+
+  it("option-sector classification failure is isolated — pipeline still succeeds", async () => {
+    mocks.getUnsectoredOptionUnderlyings.mockReturnValue(["XYZ"]);
+    mocks.classifyOptionSectors.mockRejectedValueOnce(new Error("Claude down"));
+    const result = await runAutoRefresh(db, "full");
+    expect(result).not.toBeNull();
+    // Best-effort: the failure must not abort later steps
+    expect(mocks.detectAndFireAlerts).toHaveBeenCalled();
   });
 });
