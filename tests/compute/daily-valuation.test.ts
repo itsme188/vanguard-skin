@@ -515,6 +515,51 @@ describe("daily valuation computation", () => {
     expect(rothVal.total_value).toBe(750);
   });
 
+  it("anchors total to the broker-reported snapshot total even when reported cash is present", () => {
+    // The broker's NetLiq (snapshot total) is authoritative. If our holdings
+    // reconstruction disagrees with the broker's (ghost rows from intraday
+    // syncs, partial captures), pairing reported cash with reconstructed
+    // holdings leaks the error into total_value. Anchoring via inferred cash
+    // (total − holdings) makes total ≡ NetLiq by construction.
+    const sec = seedSecurity(db, "AAPL");
+    seedHolding(db, ACCOUNT_ID, sec, 10, "2025-01-31");
+    seedPrice(db, sec, "2025-01-31", 150); // reconstructed holdings = 1500
+    // Broker reports total 2000 with cash 800 (broker sees holdings of 1200 —
+    // our reconstruction is $300 off, e.g. a ghost row).
+    db.prepare(
+      "INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, cash_value) VALUES (?, ?, ?, ?)"
+    ).run(ACCOUNT_ID, "2025-01-31", 2000, 800);
+
+    computeDailyValuations(db);
+
+    const val = db
+      .prepare("SELECT * FROM daily_valuations WHERE account_id = ? AND valuation_date = '2025-01-31'")
+      .get(ACCOUNT_ID) as any;
+
+    expect(val.total_value).toBe(2000); // broker NetLiq wins
+    expect(val.cash_balance).toBe(500); // residual absorbs the reconstruction error
+  });
+
+  it("falls back to broker-reported cash when holdings cannot be reconstructed at the anchor date", () => {
+    const sec = seedSecurity(db, "AAPL");
+    seedHolding(db, ACCOUNT_ID, sec, 10, "2025-01-31");
+    // No price on the snapshot date → no daily_valuations row on 1/31 →
+    // anchor has holdings_value NULL. Reported cash is the only signal.
+    seedPrice(db, sec, "2025-02-15", 160);
+    db.prepare(
+      "INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, cash_value) VALUES (?, ?, ?, ?)"
+    ).run(ACCOUNT_ID, "2025-01-31", 2000, 800);
+
+    computeDailyValuations(db);
+
+    const val = db
+      .prepare("SELECT * FROM daily_valuations WHERE account_id = ? AND valuation_date = '2025-02-15'")
+      .get(ACCOUNT_ID) as any;
+
+    expect(val.cash_balance).toBe(800); // reported cash carried forward
+    expect(val.total_value).toBe(1600 + 800);
+  });
+
   it("mixed daily and monthly-only securities produce stable valuations", () => {
     // Simulates the real scenario: stocks with daily prices + mutual fund with monthly only
     const stock = seedSecurity(db, "AAPL");
