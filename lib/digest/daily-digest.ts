@@ -197,7 +197,8 @@ export function generateDigestSince(db: Database.Database, sinceDate: string): s
 
 /**
  * Generate a markdown daily digest from research articles received in the last 24 hours.
- * Backward-compatible wrapper for the cron job.
+ * Legacy per-source wrapper — the cron/email paths now use generateDigestSinceAdaptive;
+ * this remains for tests and the by-source preview pane.
  */
 export function generateDailyDigest(db: Database.Database): string | null {
   const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
