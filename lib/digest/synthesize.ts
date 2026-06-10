@@ -174,7 +174,12 @@ export async function synthesize(input: SynthesisInput): Promise<string> {
     model,
     system: buildSystemPrompt(sessionHeading),
     prompt,
-    maxOutputTokens: 4096,
+    // 8192, not 4096: the structured contract (## Session + one ## section per
+    // covered name + ## Also covered) over a 25-40 article window regularly
+    // exceeds 4096 output tokens — observed live 2026-06-09, where truncation
+    // tripped the finishReason guard and silently degraded every heavy day to
+    // the per-source fallback layout.
+    maxOutputTokens: 8192,
   });
 
   // ── Validation ────────────────────────────────────────────────────────────

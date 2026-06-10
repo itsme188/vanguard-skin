@@ -407,7 +407,10 @@ async function synthesizeViaAI(
   try {
     const result = await generateText({
       model: getModelForFeature(env, "fallbackEvening"),
-      maxOutputTokens: 4096,
+      // 8192 mirrors lib/digest/synthesize.ts — the structured section
+      // contract regularly exceeds 4096 output tokens on heavy days, and the
+      // truncation guard would otherwise degrade the cloud email every time.
+      maxOutputTokens: 8192,
       prompt,
     });
 
