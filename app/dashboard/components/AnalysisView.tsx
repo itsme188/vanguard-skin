@@ -12,6 +12,7 @@ import type {
   FactorCoverage,
 } from "@/lib/queries/analysis";
 import { FACTOR_LABELS, type FactorColumn, FACTOR_COLUMNS } from "@/lib/factors";
+import type { PortfolioExposureSummary } from "@/lib/compute/exposure";
 import { RiskMetrics } from "./RiskMetrics";
 import { PositionRiskCard } from "./PositionRisk";
 import { FactorAnalysisCard } from "./FactorAnalysis";
@@ -104,6 +105,8 @@ function bucketAllocation(allocation: AllocationEntry[]): AllocationEntry[] {
       group_name: `Other (${rest.length})`,
       total_market_value: rest.reduce((s, r) => s + r.total_market_value, 0),
       percentage: rest.reduce((s, r) => s + r.percentage, 0),
+      net_exposure: rest.reduce((s, r) => s + r.net_exposure, 0),
+      exposure_pct: rest.reduce((s, r) => s + r.exposure_pct, 0),
       position_count: rest.reduce((s, r) => s + r.position_count, 0),
     },
   ];
@@ -120,6 +123,7 @@ export type AnalysisMode = "classification" | "factors";
 
 interface AnalysisViewProps {
   allocation: AllocationEntry[];
+  exposureSummary?: PortfolioExposureSummary;
   concentration: ConcentrationMetrics;
   coverage: ClassificationCoverage;
   dataCoverage: AnalysisDataCoverage;
@@ -134,6 +138,7 @@ interface AnalysisViewProps {
 
 export function AnalysisView({
   allocation,
+  exposureSummary,
   concentration,
   coverage,
   dataCoverage,
@@ -346,7 +351,25 @@ export function AnalysisView({
 
         {/* Breakdown Table */}
         <div className="bg-panel border border-edge rounded-lg p-4">
-          <h3 className="text-sm font-medium text-ink mb-4">Breakdown</h3>
+          <div className="flex items-baseline justify-between mb-4 gap-2 flex-wrap">
+            <h3 className="text-sm font-medium text-ink">Breakdown</h3>
+            {exposureSummary && exposureSummary.net_ratio != null && (
+              <span
+                className="text-xs text-ink-faint"
+                title="Delta-adjusted: stocks at market value, options at delta × underlying notional (puts negative). Net = signed sum; gross = magnitude of all bets including hedges. 100% = fully invested, unlevered."
+              >
+                Net exposure{" "}
+                <span className="font-mono text-ink-dim">
+                  <Pct value={exposureSummary.net_ratio * 100} digits={0} />
+                </span>
+                {" · gross "}
+                <span className="font-mono text-ink-dim">
+                  <Pct value={(exposureSummary.gross_ratio ?? 0) * 100} digits={0} />
+                </span>
+                {" of holdings"}
+              </span>
+            )}
+          </div>
           <div className="overflow-y-auto max-h-[280px] md:max-h-[380px]">
             <table className="w-full text-sm">
               <thead>
@@ -354,6 +377,12 @@ export function AnalysisView({
                   <th className="text-left py-2 pr-4">{getDimensionLabel(currentDimension)}</th>
                   <th className="text-right py-2 pr-4">Value</th>
                   <th className="text-right py-2 pr-4">%</th>
+                  <th
+                    className="text-right py-2 pr-4"
+                    title="Delta-adjusted exposure as % of holdings — options count at delta × underlying notional (puts negative), so this is what actually moves with the market"
+                  >
+                    Net exp %
+                  </th>
                   <th className="text-right py-2">Positions</th>
                 </tr>
               </thead>
@@ -380,6 +409,13 @@ export function AnalysisView({
                     </td>
                     <td className="text-right py-2 pr-4 font-mono text-ink-dim">
                       <Pct value={row.percentage} digits={1} />
+                    </td>
+                    <td
+                      className={`text-right py-2 pr-4 font-mono ${
+                        row.exposure_pct < 0 ? "text-down" : "text-ink-dim"
+                      }`}
+                    >
+                      <Pct value={row.exposure_pct} digits={1} />
                     </td>
                     <td className="text-right py-2 font-mono text-ink-faint">
                       {row.position_count}

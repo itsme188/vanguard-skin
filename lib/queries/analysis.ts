@@ -9,6 +9,7 @@ import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { explodeHoldingBySector } from "@/lib/compute/explode-sector";
 import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
+import { getOptionExposureMap, exposureForHolding } from "@/lib/compute/exposure";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -29,6 +30,12 @@ export interface AllocationEntry {
   group_name: string;
   total_market_value: number;
   percentage: number;
+  /** Signed delta-adjusted exposure: stocks at MV, options at Δ-notional
+   *  (puts negative). See lib/compute/exposure.ts. */
+  net_exposure: number;
+  /** net_exposure as % of total portfolio MV — same denominator as
+   *  `percentage` so the two columns are directly comparable. */
+  exposure_pct: number;
   position_count: number;
 }
 
@@ -124,17 +131,41 @@ export function getAllocationByDimension(
     symbol: "s.symbol",
   };
 
+  // Classification dimensions where an option's exposure belongs to its
+  // UNDERLYING (an INTC LEAP is semiconductor / US / large-cap exposure, not
+  // "Options") — same inheritance the factor dimensions apply below. The
+  // option's own value remains the fallback when the underlying is missing
+  // or unclassified, so unresolvable options still bucket as 'Options'.
+  // asset_class / security_type intentionally keep the Options grouping.
+  const underlyingInheritDims: AllocationDimension[] = [
+    "fund_category",
+    "geography",
+    "market_cap_category",
+    "style",
+  ];
+  const inheritsFromUnderlying = underlyingInheritDims.includes(dimension);
+
   // For factor dimensions, use COALESCE(direct factor, underlying's factor, 'Unknown')
   const needsFactorJoin = isFactorDimension(dimension);
   const groupExpr = needsFactorJoin
     ? `COALESCE(sf.${dimension}, sf_u.${dimension}, 'Unknown')`
-    : standardColumns[dimension]!;
+    : inheritsFromUnderlying
+      ? `CASE WHEN LOWER(s.security_type) = 'option'
+           THEN COALESCE(s_u.${dimension}, ${standardColumns[dimension]!})
+           ELSE ${standardColumns[dimension]!} END`
+      : standardColumns[dimension]!;
 
-  const factorJoins = needsFactorJoin
-    ? `LEFT JOIN security_factors sf ON sf.security_id = s.id
-       LEFT JOIN securities s_u ON s_u.symbol = s.underlying_symbol
-       LEFT JOIN security_factors sf_u ON sf_u.security_id = s_u.id`
-    : "";
+  const underlyingJoin =
+    needsFactorJoin || inheritsFromUnderlying
+      ? `LEFT JOIN securities s_u ON s_u.symbol = s.underlying_symbol`
+      : "";
+  const factorJoins = `${underlyingJoin}
+    ${
+      needsFactorJoin
+        ? `LEFT JOIN security_factors sf ON sf.security_id = s.id
+           LEFT JOIN security_factors sf_u ON sf_u.security_id = s_u.id`
+        : ""
+    }`;
 
   const conditions = [
     "(s.maturity_date IS NULL OR s.maturity_date >= date('now'))",
@@ -146,37 +177,62 @@ export function getAllocationByDimension(
     params.push(...accountIds);
   }
 
-  return db
+  // Per-holding rows (not SQL GROUP BY) so each row's delta-adjusted
+  // exposure can be resolved in JS — options need Black-Scholes deltas from
+  // computePortfolioGreeks, which SQL can't express.
+  const rows = db
     .prepare(
-      `WITH ${LATEST_HOLDINGS_CTE},
-      allocation AS (
-        SELECT
-          ${groupExpr} AS group_name,
-          CASE
-            WHEN lp.close_price IS NOT NULL
-              THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier")}
-            WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
-              THEN h.cost_basis
-            ELSE 0
-          END AS mv,
-          1 AS cnt
-        FROM latest_holdings h
-        JOIN accounts a ON a.id = h.account_id
-        JOIN securities s ON s.id = h.security_id
-        LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
-        ${factorJoins}
-        WHERE ${conditions.join(" AND ")}
-      )
+      `WITH ${LATEST_HOLDINGS_CTE}
       SELECT
-        group_name,
-        SUM(mv) AS total_market_value,
-        SUM(mv) * 100.0 / NULLIF(SUM(SUM(mv)) OVER (), 0) AS percentage,
-        SUM(cnt) AS position_count
-      FROM allocation
-      GROUP BY group_name
-      ORDER BY total_market_value DESC`
+        ${groupExpr} AS group_name,
+        s.id AS security_id,
+        s.security_type,
+        s.option_type,
+        CASE
+          WHEN lp.close_price IS NOT NULL
+            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier")}
+          WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
+            THEN h.cost_basis
+          ELSE 0
+        END AS mv
+      FROM latest_holdings h
+      JOIN accounts a ON a.id = h.account_id
+      JOIN securities s ON s.id = h.security_id
+      LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
+      ${factorJoins}
+      WHERE ${conditions.join(" AND ")}`
     )
-    .all(...params) as AllocationEntry[];
+    .all(...params) as Array<{
+      group_name: string;
+      security_id: number;
+      security_type: string | null;
+      option_type: string | null;
+      mv: number;
+    }>;
+
+  const optionExposures = getOptionExposureMap(db, accountIds);
+  const byGroup = new Map<string, { mv: number; exposure: number; count: number }>();
+  let total = 0;
+  for (const row of rows) {
+    total += row.mv;
+    const exposure = exposureForHolding(row, optionExposures);
+    const entry = byGroup.get(row.group_name) ?? { mv: 0, exposure: 0, count: 0 };
+    entry.mv += row.mv;
+    entry.exposure += exposure;
+    entry.count += 1;
+    byGroup.set(row.group_name, entry);
+  }
+
+  return [...byGroup.entries()]
+    .map(([group_name, { mv, exposure, count }]) => ({
+      group_name,
+      total_market_value: mv,
+      percentage: total !== 0 ? (mv * 100) / total : 0,
+      net_exposure: exposure,
+      exposure_pct: total !== 0 ? (exposure * 100) / total : 0,
+      position_count: count,
+    }))
+    .sort((a, b) => b.total_market_value - a.total_market_value);
 }
 
 /**
@@ -206,8 +262,10 @@ function getSectorAllocationWithLookThrough(
     .prepare(
       `WITH ${LATEST_HOLDINGS_CTE}
       SELECT
+        s.id AS security_id,
         s.symbol,
         s.security_type,
+        s.option_type,
         s.sector,
         s.fund_category,
         CASE
@@ -224,19 +282,23 @@ function getSectorAllocationWithLookThrough(
       WHERE ${conditions.join(" AND ")}`
     )
     .all(...params) as Array<{
+      security_id: number;
       symbol: string;
       security_type: string | null;
+      option_type: string | null;
       sector: string | null;
       fund_category: string | null;
       mv: number;
     }>;
 
   const weights = getEtfSectorWeights(db);
-  const bySector = new Map<string, { value: number; count: number }>();
+  const optionExposures = getOptionExposureMap(db, accountIds);
+  const bySector = new Map<string, { value: number; exposure: number; count: number }>();
   let total = 0;
 
   for (const r of rows) {
     total += r.mv;
+    const rowExposure = exposureForHolding(r, optionExposures);
     const parts = explodeHoldingBySector(
       r.symbol,
       r.security_type,
@@ -245,11 +307,14 @@ function getSectorAllocationWithLookThrough(
       r.sector ?? r.fund_category
     );
     // Dominant sector carries the position count; every part carries value.
+    // Exposure splits across parts by each part's MV share (delta = 1 for
+    // funds, so the proportions match; options are single-part anyway).
     let dominant = parts[0];
     for (const part of parts) {
       if (Math.abs(part.value) > Math.abs(dominant.value)) dominant = part;
-      const entry = bySector.get(part.sector) ?? { value: 0, count: 0 };
+      const entry = bySector.get(part.sector) ?? { value: 0, exposure: 0, count: 0 };
       entry.value += part.value;
+      entry.exposure += r.mv !== 0 ? rowExposure * (part.value / r.mv) : 0;
       bySector.set(part.sector, entry);
     }
     const dom = bySector.get(dominant.sector)!;
@@ -257,10 +322,12 @@ function getSectorAllocationWithLookThrough(
   }
 
   return [...bySector.entries()]
-    .map(([group_name, { value, count }]) => ({
+    .map(([group_name, { value, exposure, count }]) => ({
       group_name,
       total_market_value: value,
       percentage: total !== 0 ? (value * 100) / total : 0,
+      net_exposure: exposure,
+      exposure_pct: total !== 0 ? (exposure * 100) / total : 0,
       position_count: count,
     }))
     .sort((a, b) => b.total_market_value - a.total_market_value) as AllocationEntry[];

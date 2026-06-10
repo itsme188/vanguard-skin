@@ -10,6 +10,7 @@ import {
   getFactorCoverage,
   type AllocationDimension,
 } from "@/lib/queries/analysis";
+import { getPortfolioExposureSummary } from "@/lib/compute/exposure";
 import { getTradeReviews } from "@/lib/queries/trade-reviews";
 import { getAvailableReviewPeriods } from "@/lib/compute/trade-roundtrips";
 import { FACTOR_COLUMNS } from "@/lib/factors";
@@ -186,10 +187,11 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
       ? (params.dimension as AllocationDimension)
       : defaultDimension;
 
-  let accountIds, allocation, concentration, coverage, dataCoverage, factorHeatmap, factorCoverage;
+  let accountIds, allocation, exposureSummary, concentration, coverage, dataCoverage, factorHeatmap, factorCoverage;
   try {
     accountIds = resolveAccountIds(scope);
     allocation = getAllocationByDimension(db, dimension, accountIds);
+    exposureSummary = getPortfolioExposureSummary(db, accountIds);
     concentration = getConcentrationMetrics(db, accountIds);
     coverage = getClassificationCoverage(db, accountIds);
     dataCoverage = getAnalysisDataCoverage(db, accountIds);
@@ -233,6 +235,7 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
 
       <AnalysisView
         allocation={allocation}
+        exposureSummary={exposureSummary}
         concentration={concentration}
         coverage={coverage}
         dataCoverage={dataCoverage}

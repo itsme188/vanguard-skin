@@ -231,8 +231,9 @@ function bucketMultiplier(factor: FactorColumn, bucket: string | null): number {
 }
 
 /** Fallback when elasticity inputs are missing (no underlying price / IV /
- *  option price). Sign carries the option's direction. */
-const DEFAULT_OPTION_ELASTICITY = 2.5;
+ *  option price). Sign carries the option's direction. Exported so the
+ *  delta-exposure column (lib/compute/exposure.ts) shares the convention. */
+export const DEFAULT_OPTION_ELASTICITY = 2.5;
 
 /** |Ω| clamp — deep-OTM short-dated options have huge theoretical elasticity
  *  but gamma/vol effects dominate there; a linear-delta model shouldn't
