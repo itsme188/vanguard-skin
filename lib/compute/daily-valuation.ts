@@ -189,11 +189,21 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
         const anchor = anchors[i];
         if (anchor.holdings_value === null && anchor.cash_value === null) continue;
 
-        // Prefer TWS-reported cash when available; fall back to inference
-        const cashResidual = anchor.cash_value != null
-          ? anchor.cash_value
-          : anchor.holdings_value != null
-            ? anchor.snapshot_total - anchor.holdings_value
+        // Anchor the TOTAL to the broker-reported snapshot: inferred cash
+        // (snapshot_total − holdings_value) makes total ≡ NetLiq by
+        // construction, so reconstruction errors in the holdings rows (ghost
+        // positions from intraday TWS syncs, partial captures) cancel out of
+        // total_value instead of flowing into it. Pre-fix this preferred the
+        // TWS-reported cash_value, which paired real cash with ghost-inflated
+        // holdings and produced fake ±13% days in the IBKR series (peak
+        // 2026-04-23/24: ±$50-90k vs TWS's own smooth NetLiq). cash_balance is
+        // therefore a residual on broker-anchored days, not literal cash.
+        // Broker-reported cash_value is only used when holdings can't be
+        // reconstructed at the anchor date (no priced row that day).
+        const cashResidual = anchor.holdings_value != null
+          ? anchor.snapshot_total - anchor.holdings_value
+          : anchor.cash_value != null
+            ? anchor.cash_value
             : 0;
 
         if (i < anchors.length - 1) {
