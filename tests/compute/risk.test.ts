@@ -53,6 +53,16 @@ function createTestDb(): Database.Database {
       UNIQUE(account_id, valuation_date),
       FOREIGN KEY (account_id) REFERENCES accounts(id)
     );
+
+    CREATE TABLE transactions (
+      id INTEGER PRIMARY KEY,
+      account_id INTEGER NOT NULL,
+      trade_date TEXT NOT NULL,
+      type TEXT NOT NULL,
+      amount REAL,
+      is_external_flow INTEGER DEFAULT 0,
+      FOREIGN KEY (account_id) REFERENCES accounts(id)
+    );
   `);
 
   return db;
@@ -246,6 +256,123 @@ describe("computeRiskMetrics", () => {
     expect(acct2.dataPoints).toBe(50);
     // Combined values are higher
     expect(all.volatility).not.toEqual(acct1.volatility);
+  });
+});
+
+describe("external cash-flow adjustment", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+  });
+
+  /** Insert an external flow (negative = withdrawal, positive = deposit). */
+  function seedFlow(date: string, amount: number, accountId = 1) {
+    db.prepare(
+      "INSERT INTO transactions (account_id, trade_date, type, amount, is_external_flow) VALUES (?, ?, ?, ?, 1)"
+    ).run(accountId, date, amount < 0 ? "WITHDRAWAL" : "DEPOSIT", amount);
+  }
+
+  it("does not count a withdrawal as a drawdown", () => {
+    // Flat $100k market; $40k leaves on day 30. Raw series shows a 40% "crash";
+    // flow-adjusted there is no market movement at all.
+    const values = Array.from({ length: 60 }, (_, i) => (i < 30 ? 100_000 : 60_000));
+    seedDailyValuations(db, values);
+    seedFlow(makeDate(30), -40_000);
+
+    const result = computeRiskMetrics(db);
+    expect(result.maxDrawdown).toBeNull();
+    expect(result.currentDrawdown).toBeNull();
+    expect(result.volatility).toBeCloseTo(0, 6);
+  });
+
+  it("does not count a deposit as a gain", () => {
+    const values = Array.from({ length: 60 }, (_, i) => (i < 30 ? 100_000 : 150_000));
+    seedDailyValuations(db, values);
+    seedFlow(makeDate(30), 50_000);
+
+    const result = computeRiskMetrics(db);
+    expect(result.maxDrawdown).toBeNull();
+    expect(result.volatility).toBeCloseTo(0, 6);
+  });
+
+  it("preserves the real market drawdown across a withdrawal", () => {
+    // Market: +2%/day days 1-10, -1%/day days 11-20, +0.1%/day after.
+    // A $20k withdrawal lands on day 15, mid-decline. True peak-to-trough
+    // market drawdown is 1 - 0.99^10 ≈ 9.56%; the raw value series would
+    // show ~25% because of the withdrawal.
+    const values: number[] = [100_000];
+    for (let i = 1; i < 60; i++) {
+      const r = i <= 10 ? 0.02 : i <= 20 ? -0.01 : 0.001;
+      values.push(values[i - 1] * (1 + r) + (i === 15 ? -20_000 : 0));
+    }
+    seedDailyValuations(db, values);
+    seedFlow(makeDate(15), -20_000);
+
+    const result = computeRiskMetrics(db);
+    expect(result.maxDrawdown).not.toBeNull();
+    expect(result.maxDrawdown!.percent).toBeCloseTo(1 - 0.99 ** 10, 3);
+    expect(result.maxDrawdown!.peakDate).toBe(makeDate(10));
+    expect(result.maxDrawdown!.troughDate).toBe(makeDate(20));
+    // Dollar fields keep reporting the actual account value on those dates.
+    expect(result.maxDrawdown!.peakValue).toBeCloseTo(values[10], 0);
+    expect(result.maxDrawdown!.troughValue).toBeCloseTo(values[20], 0);
+  });
+
+  it("keeps Sharpe positive when a large withdrawal lands mid-series", () => {
+    // Gentle upward drift with noise; a 30% withdrawal on day 50. Raw returns
+    // would include a -30% "day" that flips the mean (and Sharpe) negative.
+    const values: number[] = [100_000];
+    for (let i = 1; i < 100; i++) {
+      const r = 0.001 + Math.sin(i) * 0.005;
+      values.push(values[i - 1] * (1 + r) + (i === 50 ? -30_000 : 0));
+    }
+    seedDailyValuations(db, values);
+    seedFlow(makeDate(50), -30_000);
+
+    const result = computeRiskMetrics(db, { riskFreeRate: 0.045 });
+    expect(result.sharpeRatio).not.toBeNull();
+    expect(result.sharpeRatio!).toBeGreaterThan(0);
+  });
+
+  it("attributes a flow dated on a missing valuation day to the next valuation date", () => {
+    // Valuations exist for days 0..40 EXCEPT day 15 (e.g. a weekend). The
+    // withdrawal is dated day 15; its effect first appears in day 16's value.
+    db.exec("INSERT OR IGNORE INTO accounts (id, name) VALUES (1, 'Test Account')");
+    const stmt = db.prepare(
+      "INSERT INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (1, ?, 0, ?, ?)"
+    );
+    for (let i = 0; i < 41; i++) {
+      if (i === 15) continue;
+      const v = i < 15 ? 100_000 : 70_000;
+      stmt.run(makeDate(i), v, v);
+    }
+    seedFlow(makeDate(15), -30_000);
+
+    const result = computeRiskMetrics(db);
+    expect(result.maxDrawdown).toBeNull();
+    expect(result.volatility).toBeCloseTo(0, 6);
+  });
+
+  it("only adjusts for flows in the scoped accounts", () => {
+    // Account 1 is flat; account 2 receives the withdrawal. Scoped to account
+    // 1, the flow must NOT be applied (it would fabricate a phantom rally).
+    seedDailyValuations(db, Array.from({ length: 60 }, () => 100_000));
+    db.exec("INSERT INTO accounts (id, name) VALUES (2, 'Other')");
+    seedFlow(makeDate(30), -40_000, 2);
+
+    const result = computeRiskMetrics(db, { accountId: 1 });
+    expect(result.maxDrawdown).toBeNull();
+    expect(result.volatility).toBeCloseTo(0, 6);
+  });
+
+  it("is a no-op when the transactions table does not exist (minimal test DBs)", () => {
+    db.exec("DROP TABLE transactions");
+    seedDailyValuations(db, Array.from({ length: 50 }, (_, i) => 100 + i));
+
+    expect(() => computeRiskMetrics(db)).not.toThrow();
+    const result = computeRiskMetrics(db);
+    expect(result.dataPoints).toBe(50);
   });
 });
 
