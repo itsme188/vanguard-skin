@@ -31,6 +31,7 @@ import {
   type FallbackResult,
   type ProcessedArticle,
 } from "./fallback-digest";
+import { editionLabel } from "./editions";
 
 // Evening live-fetch cap, sized against the 50-subrequest Workers free-tier
 // ceiling AND the anomaly block's batched Yahoo calls:
@@ -345,7 +346,7 @@ export function buildSynthesisPrompt(
   for (const [sym, arts] of Object.entries(buckets)) {
     bucketLines.push(`### ${sym}`);
     for (const a of arts) {
-      bucketLines.push(`**${a.source_name}**: ${a.subject}`);
+      bucketLines.push(`**${a.source_name}${editionLabel(a.source_name, a.subject)}**: ${a.subject}`);
       if (a.summary) bucketLines.push(a.summary);
       if (a.portfolio_relevance) bucketLines.push(`> ${a.portfolio_relevance}`);
       bucketLines.push("");
@@ -360,10 +361,13 @@ Today's research feed — grouped by company/topic:
 
 ${bucketLines.join("\n")}
 
-Write a concise markdown evening recap:
-1. **Today's Key Themes** (2-3 sentences) — what mattered most across the day's research.
-2. **Company-by-Company** — for each relevant holding with significant coverage, one tight paragraph: what was said, what it means for the position.
-3. **Positioning Notes** — brief closing on any names where today's coverage changes the near-term thesis.
+Write a concise markdown evening recap with EXACTLY this section order:
+1. \`## The Session\` — the macro / market-wide narrative of the day (2-4 sentences).
+2. One \`## SYM\` section per relevant holding with significant coverage — the header MUST begin with the ticker symbol. One tight paragraph each: what was said, what it means for the position.
+3. \`## Also covered\` — one closing line for everything thin.
+
+EDITION COLLAPSING (follow strictly):
+- Some source names carry an edition tag like [dawn], [midday], [recap], [morning_wrap], [eod_wrap]. Tagged articles are installments of ONE publication's daily cycle; later editions supersede earlier ones. Tell each session's story ONCE — never present two editions of the same publication as independent sources agreeing with each other.
 
 TIMEFRAME & THREAD COHERENCE (follow strictly):
 - A company's coverage may span DIFFERENT trading days with OPPOSING moves. When it does, attribute each price move to its specific day ("rose Thursday as money rotated into financials; fell ~5% Friday in the broad selloff") instead of fusing them into one sentence. A name up one day and down the next is NOT a contradiction — name the days.
