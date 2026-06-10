@@ -89,4 +89,6 @@ export interface PositionSyncResult {
   cashBalance: number | null;
   snapshotInserted: boolean;
   valuationsRecomputed: boolean;
+  /** Same-day tws ghost rows removed (positions closed between intraday syncs). */
+  staleRowsRemoved: number;
 }
