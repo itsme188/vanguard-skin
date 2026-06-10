@@ -1,3 +1,6 @@
 screenshots/
 reports/
 logs/
+expected-values.json
+findings/
+sandbox/
