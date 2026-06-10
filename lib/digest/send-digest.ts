@@ -120,8 +120,8 @@ export async function sendDigestEmail(
   backfillSourceUrls(db);
 
   const digest = sinceSnapshot !== null
-    ? await generateDigestSinceAdaptive(db, sinceSnapshot, { includeAnomalies: false })
-    : await generateDigestSinceAdaptive(db, new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10), { includeAnomalies: false });
+    ? await generateDigestSinceAdaptive(db, sinceSnapshot, { includeAnomalies: false, edition: "morning" })
+    : await generateDigestSinceAdaptive(db, new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10), { includeAnomalies: false, edition: "morning" });
 
   if (!digest) {
     return {
