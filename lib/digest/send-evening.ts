@@ -106,6 +106,7 @@ export async function sendEveningEmail(
 
   const digest = await generateDigestSinceAdaptive(db, sinceSnapshot, {
     includeAnomalies: true,
+    edition: "evening",
   });
 
   if (!digest) {

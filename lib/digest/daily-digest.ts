@@ -3,6 +3,8 @@ import { getRecentArticles } from "@/lib/queries/research";
 import { bucketByCompany } from "@/lib/digest/group-by-company";
 import { synthesize, SynthesisEmptyError } from "@/lib/digest/synthesize";
 import { computeAnomalies, formatVanguardAnomaliesBlock } from "@/lib/digest/anomalies";
+import { splitLateArrivals, renderLateArrivalsBlock } from "@/lib/digest/late-arrivals";
+import { splitEssays, renderResearchDesk, insertCrossFilePointers } from "@/lib/digest/research-desk";
 
 // ── Alerts block ────────────────────────────────────────────────────
 
@@ -361,23 +363,27 @@ function renderPerSourceBody(
 }
 
 /**
- * Adaptive composer: uses cross-source synthesis when ≥5 articles are
- * available, falls back to the existing per-source layout otherwise (or on
- * synthesis error).
+ * Adaptive composer: uses cross-source synthesis when ≥5 commentary articles
+ * are available, falls back to per-source layout otherwise (or on synthesis
+ * error). Essays are split out and rendered in a separate Research Desk section.
  *
- * @param opts.includeAnomalies - When true, prepends the Vanguard anomaly
+ * @param opts.includeAnomalies - When true, includes the Vanguard anomaly
  *   block (if non-empty). Morning digest passes false; evening passes true.
+ * @param opts.edition - "morning" (default) or "evening". Controls the title,
+ *   session heading passed to synthesize, and late-arrivals label.
  */
 export async function generateDigestSinceAdaptive(
   db: Database.Database,
   sinceDate: string,
-  opts: { includeAnomalies?: boolean } = {},
+  opts: { includeAnomalies?: boolean; edition?: "morning" | "evening" } = {},
 ): Promise<string | null> {
+  const edition = opts.edition ?? "morning";
+
   const articles = getRecentArticles(db, {
     startDate: sinceDate,
     processedOnly: true,
     relevantOnly: true,
-    limit: 30,
+    limit: 40, // raised from 30 — edition collapsing keeps synthesis input flat; covers heavy Mondays
   });
 
   const alertsBlock = formatTriggeredAlertsSection(db, sinceDate);
@@ -399,17 +405,28 @@ export async function generateDigestSinceAdaptive(
       ? "No new research articles, but price levels fired — see below."
       : `${articles.length} article${articles.length === 1 ? "" : "s"} from ${countSources(articles)} source${countSources(articles) === 1 ? "" : "s"}`;
 
-  const lines: string[] = [
-    `# Research Digest`,
-    `### ${dateStr}`,
-    "",
-    countLine,
-    "",
-    "---",
-    "",
-  ];
+  const title = edition === "evening" ? "# Evening Recap" : "# Morning Research Digest";
+  const lines: string[] = [title, `### ${dateStr}`, "", countLine, "", "---", ""];
 
-  // Optional anomaly block
+  // ── 1. Late arrivals — articles that just missed the PREVIOUS email ──────
+  // Only meaningful when sinceDate is a full ISO send timestamp (the marker);
+  // date-only windows (manual/sinceDate modes) have no known send time.
+  const { late, rest: working } = splitLateArrivals(articles, sinceDate);
+  if (late.length > 0) {
+    lines.push(
+      renderLateArrivalsBlock(
+        late,
+        edition === "evening" ? "this morning's email" : "yesterday evening's email",
+      ),
+    );
+  }
+
+  // ── 2. Alerts ─────────────────────────────────────────────────────────────
+  if (alertsBlock) {
+    lines.push(alertsBlock);
+  }
+
+  // ── 3. Anomalies (evening only) ───────────────────────────────────────────
   if (opts.includeAnomalies) {
     const anomalyBlock = formatVanguardAnomaliesBlock(db);
     if (anomalyBlock) {
@@ -419,14 +436,11 @@ export async function generateDigestSinceAdaptive(
     }
   }
 
-  // Alerts block
-  if (alertsBlock) {
-    lines.push(alertsBlock);
-  }
+  // ── 4. Split essays out of the synthesis stream ───────────────────────────
+  const { essays, commentary } = splitEssays(working);
 
-  // ── Adaptive body ─────────────────────────────────────────────────────────
-
-  if (articles.length >= SYNTHESIS_MIN_ARTICLES) {
+  // ── 5. Commentary body — synthesized when there's enough to synthesize ────
+  if (commentary.length >= SYNTHESIS_MIN_ARTICLES) {
     const heldSymbols = getHeldSymbols(db);
     const watchlist = getWatchlistSymbols(db);
     const anomalyFlags = opts.includeAnomalies ? computeAnomalies(db) : [];
@@ -435,20 +449,27 @@ export async function generateDigestSinceAdaptive(
       companyName: a.companyName,
     }));
 
-    const rawBuckets = bucketByCompany(articles);
+    const rawBuckets = bucketByCompany(commentary);
     const buckets = enrichBucketCompanyNames(db, rawBuckets);
 
     try {
-      const synth = await synthesize({ buckets, heldSymbols, watchlist, anomalies });
+      let synth = await synthesize({
+        buckets,
+        heldSymbols,
+        watchlist,
+        anomalies,
+        sessionHeading: edition === "evening" ? "The Session" : "Overnight & Setup",
+      });
+      synth = insertCrossFilePointers(synth, essays, [...heldSymbols, ...watchlist]);
       lines.push(synth);
       lines.push("");
       lines.push("---");
       lines.push("");
 
-      // Concise per-source tail: one link line per article
+      // Concise per-source tail: commentary only — essays are linked in Research Desk
       lines.push("**Sources**");
       lines.push("");
-      for (const article of articles) {
+      for (const article of commentary) {
         const url = article.source_url || article.website_url;
         if (url) {
           lines.push(`- **${article.source_name}**: [${article.subject}](${url})`);
@@ -460,17 +481,22 @@ export async function generateDigestSinceAdaptive(
     } catch (err) {
       if (err instanceof SynthesisEmptyError) {
         console.warn(`[digest] synthesis fell back to per-source: ${(err as Error).message}`);
-        recordSynthesisFallback(db, (err as Error).message, articles.length);
+        recordSynthesisFallback(db, (err as Error).message, commentary.length);
       } else {
         console.warn(`[digest] synthesis error (network/rate-limit), fell back to per-source: ${(err as Error).message}`);
-        recordSynthesisFallback(db, `generic: ${(err as Error).message}`, articles.length);
+        recordSynthesisFallback(db, `generic: ${(err as Error).message}`, commentary.length);
       }
-      // Per-source fallback
-      lines.push(...renderPerSourceBody(articles));
+      lines.push(...renderPerSourceBody(commentary));
     }
-  } else {
-    // < SYNTHESIS_MIN_ARTICLES — per-source layout
-    lines.push(...renderPerSourceBody(articles));
+  } else if (commentary.length > 0) {
+    // < SYNTHESIS_MIN_ARTICLES — per-source layout for the commentary stream
+    lines.push(...renderPerSourceBody(commentary));
+  }
+
+  // ── 6. Research Desk — one entry per essay, rendered in code ──────────────
+  const desk = renderResearchDesk(essays);
+  if (desk) {
+    lines.push(desk);
   }
 
   return lines.join("\n").trim();
