@@ -38,6 +38,16 @@ describe("classifyUnresolvedWithClaude", () => {
     expect(row.fund_category).toBe("Sector Equity");
     expect(row.classification_source).toBe("auto_ai");
   });
+  it("normalizes fragmented fund_category vocabulary at write time", async () => {
+    (generateText as ReturnType<typeof vi.fn>).mockResolvedValue({ text: JSON.stringify([
+      { symbol: "XLE", fund_category: "Technology", geography: "US", market_cap_category: "Large", style: "Growth" },
+    ]) });
+    const db = makeDb();
+    const res = await classifyUnresolvedWithClaude(db, [{ id: 1, symbol: "XLE", security_type: "ETF" }]);
+    expect(res.classified).toBe(1);
+    const row = db.prepare("SELECT * FROM securities WHERE symbol='XLE'").get() as any;
+    expect(row.fund_category).toBe("US Sector Equity (Technology)");
+  });
   it("returns an error and classifies nothing when Claude fails", async () => {
     (generateText as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("402 credits"));
     const db = makeDb();

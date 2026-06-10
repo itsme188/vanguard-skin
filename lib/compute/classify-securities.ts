@@ -16,6 +16,7 @@ import { SECURITY_CLASSIFICATIONS } from "@/lib/data/security-classifications";
 import { generateText } from "ai";
 import { getModelForFeature } from "@/lib/ai/provider";
 import { extractJsonArray } from "@/lib/ai/extract-json";
+import { normalizeFundCategory } from "@/lib/securities/normalize-fund-category";
 
 export interface ClassificationResult {
   /** Total securities processed */
@@ -75,7 +76,7 @@ export function classifySecurities(db: Database.Database): ClassificationResult 
       const lookup = SECURITY_CLASSIFICATIONS[sec.symbol];
       if (lookup) {
         updateStmt.run(
-          lookup.fund_category,
+          normalizeFundCategory(lookup.fund_category),
           lookup.geography,
           lookup.market_cap_category ?? null,
           lookup.style ?? null,
@@ -113,7 +114,7 @@ export function classifySecurities(db: Database.Database): ClassificationResult 
           const parentLookup = SECURITY_CLASSIFICATIONS[underlying];
           if (parentLookup) {
             updateStmt.run(
-              parentLookup.fund_category,
+              normalizeFundCategory(parentLookup.fund_category),
               parentLookup.geography,
               parentLookup.market_cap_category ?? null,
               parentLookup.style ?? null,
@@ -152,7 +153,7 @@ export function classifySecurities(db: Database.Database): ClassificationResult 
         const parentLookup = SECURITY_CLASSIFICATIONS[sec.symbol];
         if (parentLookup) {
           updateStmt.run(
-            parentLookup.fund_category,
+            normalizeFundCategory(parentLookup.fund_category),
             parentLookup.geography,
             parentLookup.market_cap_category ?? null,
             parentLookup.style ?? null,
@@ -187,7 +188,7 @@ export function classifySecurities(db: Database.Database): ClassificationResult 
 
 const AI_CLASSIFY_SYSTEM = `You classify securities. Return ONLY a JSON array, one object per input symbol, each:
 {"symbol":"...","fund_category":"...","geography":"US|International|Global|Emerging","market_cap_category":"Large|Mid|Small|null","style":"Growth|Value|Blend|null"}
-fund_category examples: "Large Blend", "Sector Equity", "Growth", "Diversified Bond". No prose, no code fences.`;
+fund_category: for US single-name stocks and US sector funds use the scheme "US Sector Equity (<Sector>)" — e.g. "US Sector Equity (Technology)", "US Sector Equity (Semiconductors)", "US Sector Equity (Health Care)", "US Sector Equity (Financial)". Never emit a bare sector name like "Technology". Other valid examples: "US Large Cap Equity", "US Small Cap Equity", "International Equity", "Diversified Bond", "US Treasury". No prose, no code fences.`;
 
 export interface AiFallbackResult { classified: number; errors: string[]; }
 
@@ -214,7 +215,7 @@ export async function classifyUnresolvedWithClaude(
       for (const r of results) {
         const id = idMap.get(r.symbol);
         if (!id) continue;
-        update.run(r.fund_category ?? null, r.geography ?? null, r.market_cap_category || null, r.style || null, id);
+        update.run(normalizeFundCategory(r.fund_category), r.geography ?? null, r.market_cap_category || null, r.style || null, id);
         classified++;
       }
     } catch (err) {
