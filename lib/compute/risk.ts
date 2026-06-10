@@ -122,13 +122,39 @@ export function computeRiskMetrics(
           endDate: options?.endDate,
         });
 
-  // 2. Compute drawdown and return metrics from valuations
-  const maxDrawdown = computeMaxDrawdown(valuations.map(v => ({ date: v.valuation_date, value: v.total_value })));
-  const currentDrawdown = computeCurrentDrawdown(valuations.map(v => ({ date: v.valuation_date, value: v.total_value })));
-  const { volatility, sharpeRatio } = computeVolatility(
-    valuations.map(v => v.total_value),
-    riskFreeRate
-  );
+  // 2. Compute drawdown and return metrics from a FLOW-ADJUSTED return index,
+  // never the raw value series. A withdrawal/deposit changes account value
+  // without being a market move — computing drawdown/Sharpe on raw values
+  // turns a $100k withdrawal into a fake -19% "day" (the 2026-06-10 IBKR
+  // 23%-drawdown bug). Same flow rows (is_external_flow=1) the TWR engine uses.
+  const points = valuations.map(v => ({ date: v.valuation_date, value: v.total_value }));
+  const flows =
+    points.length >= 2
+      ? fetchNetFlowsByDate(db, accountIds, points[0].date, points[points.length - 1].date)
+      : [];
+  const { index, logReturns } = buildFlowAdjustedIndex(points, flows);
+
+  const rawValueByDate = new Map(points.map(p => [p.date, p.value]));
+  const maxDrawdownIdx = computeMaxDrawdown(index);
+  // Percent + dates come from the flow-adjusted index; the dollar fields keep
+  // reporting the actual account value on those dates (what the user can see
+  // on a statement), so they intentionally don't ratio back to `percent`.
+  const maxDrawdown = maxDrawdownIdx
+    ? {
+        ...maxDrawdownIdx,
+        peakValue: rawValueByDate.get(maxDrawdownIdx.peakDate) ?? maxDrawdownIdx.peakValue,
+        troughValue: rawValueByDate.get(maxDrawdownIdx.troughDate) ?? maxDrawdownIdx.troughValue,
+      }
+    : null;
+  const currentDrawdownIdx = computeCurrentDrawdown(index);
+  const currentDrawdown = currentDrawdownIdx
+    ? {
+        ...currentDrawdownIdx,
+        peakValue: rawValueByDate.get(currentDrawdownIdx.peakDate) ?? currentDrawdownIdx.peakValue,
+        currentValue: points[points.length - 1].value,
+      }
+    : null;
+  const { volatility, sharpeRatio } = computeVolatility(logReturns, points.length, riskFreeRate);
 
   // 3. Compute concentration from current holdings
   const { herfindahl, top5Concentration, top5Positions, positionCount } =
@@ -146,6 +172,91 @@ export function computeRiskMetrics(
     positionCount,
     dataPoints: valuations.length,
   };
+}
+
+// ─── External cash-flow adjustment ──────────────────────────────
+
+interface SeriesPoint {
+  date: string;
+  value: number;
+}
+
+/**
+ * Net external flows (deposits positive, withdrawals negative) per trade_date
+ * for the scoped accounts, bounded to (startDate, endDate]. Flows on/before
+ * the first valuation date are already baked into the starting value; flows
+ * after the last valuation date haven't hit the series yet.
+ *
+ * Gracefully returns [] when the transactions table doesn't exist (minimal
+ * in-memory test DBs) — same precedent as getRiskFreeRate's settings guard.
+ */
+function fetchNetFlowsByDate(
+  db: Database.Database,
+  accountIds: number[] | undefined,
+  startDate: string,
+  endDate: string
+): { date: string; net: number }[] {
+  const hasTable = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'transactions'")
+    .get();
+  if (!hasTable) return [];
+
+  const accountFilter =
+    accountIds && accountIds.length > 0
+      ? `AND account_id IN (${accountIds.map(() => "?").join(",")})`
+      : "";
+
+  return db
+    .prepare(
+      `SELECT trade_date AS date, SUM(amount) AS net
+       FROM transactions
+       WHERE is_external_flow = 1
+         AND trade_date > ? AND trade_date <= ?
+         ${accountFilter}
+       GROUP BY trade_date
+       HAVING SUM(amount) != 0
+       ORDER BY trade_date ASC`
+    )
+    .all(startDate, endDate, ...(accountIds ?? [])) as { date: string; net: number }[];
+}
+
+/**
+ * Build a growth-of-$1 index from daily valuations with external flows
+ * stripped out: r_t = (V_t − F_t) / V_{t−1}, where F_t is the net flow that
+ * landed in (date_{t−1}, date_t] (end-of-day convention — a flow dated on a
+ * valuation date adjusts that date's return, matching statement EOD values).
+ * Drawdowns computed on this index reflect market movement only; the raw
+ * series would read every withdrawal as a crash and every deposit as a rally.
+ */
+function buildFlowAdjustedIndex(
+  series: SeriesPoint[],
+  flows: { date: string; net: number }[]
+): { index: SeriesPoint[]; logReturns: number[] } {
+  if (series.length === 0) return { index: [], logReturns: [] };
+
+  const index: SeriesPoint[] = [{ date: series[0].date, value: 1 }];
+  const logReturns: number[] = [];
+  let fi = 0;
+  while (fi < flows.length && flows[fi].date <= series[0].date) fi++;
+
+  for (let t = 1; t < series.length; t++) {
+    let net = 0;
+    while (fi < flows.length && flows[fi].date <= series[t].date) {
+      net += flows[fi].net;
+      fi++;
+    }
+    const prev = series[t - 1].value;
+    const adjusted = series[t].value - net;
+    let indexValue = index[t - 1].value;
+    if (prev > 0 && adjusted > 0) {
+      const growth = adjusted / prev;
+      logReturns.push(Math.log(growth));
+      indexValue = index[t - 1].value * growth;
+    }
+    index.push({ date: series[t].date, value: indexValue });
+  }
+
+  return { index, logReturns };
 }
 
 // ─── Max Drawdown ───────────────────────────────────────────────
@@ -222,18 +333,12 @@ function computeCurrentDrawdown(
 // ─── Volatility & Sharpe ────────────────────────────────────────
 
 function computeVolatility(
-  values: number[],
+  returns: number[],
+  seriesLength: number,
   riskFreeRate: number
 ): { volatility: number | null; sharpeRatio: number | null } {
-  if (values.length < 30) return { volatility: null, sharpeRatio: null };
-
-  // Compute daily log returns
-  const returns: number[] = [];
-  for (let i = 1; i < values.length; i++) {
-    if (values[i - 1] > 0 && values[i] > 0) {
-      returns.push(Math.log(values[i] / values[i - 1]));
-    }
-  }
+  // `returns` are flow-adjusted daily log returns (see buildFlowAdjustedIndex).
+  if (seriesLength < 30) return { volatility: null, sharpeRatio: null };
 
   if (returns.length < 20) return { volatility: null, sharpeRatio: null };
 
