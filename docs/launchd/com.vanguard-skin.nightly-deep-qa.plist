@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.vanguard-skin.nightly-deep-qa</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>/Users/Yitzi/code/vanguard-skin/qa/nightly-deep-qa.sh</string>
+	</array>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>2</integer>
+		<key>Minute</key>
+		<integer>45</integer>
+	</dict>
+	<key>StandardOutPath</key>
+	<string>/Users/Yitzi/Library/Logs/vanguard-nightly-deep-qa.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/Yitzi/Library/Logs/vanguard-nightly-deep-qa.log</string>
+</dict>
+</plist>
