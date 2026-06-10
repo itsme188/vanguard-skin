@@ -15,6 +15,7 @@
 import { generateText } from "ai";
 import { getModelForFeature } from "@/lib/ai/provider";
 import { stripModelPreamble } from "@/lib/ai/strip-preamble";
+import { editionLabel } from "@/lib/digest/editions";
 import type { CompanyBucket } from "@/lib/digest/group-by-company";
 
 // ─── Error class ─────────────────────────────────────────────────────────────
@@ -40,11 +41,16 @@ export interface SynthesisInput {
    * No $ amounts or position sizes (privacy rule).
    */
   anomalies: { symbol: string; companyName: string | null }[];
+  /**
+   * Heading for the lead macro/market section: "The Session" (evening) or
+   * "Overnight & Setup" (morning). Defaults to "The Session".
+   */
+  sessionHeading?: string;
 }
 
 // ─── System prompt ────────────────────────────────────────────────────────────
 
-const SYNTHESIS_SYSTEM_PROMPT = `You are synthesizing newsletter coverage for a portfolio investor's day-end recap. Write one section per company/topic that surfaces what mattered TODAY across sources, with citations.
+const SYNTHESIS_SYSTEM_PROMPT_BASE = `You are synthesizing newsletter coverage for a portfolio investor's day-end recap. Write one section per company/topic that surfaces what mattered TODAY across sources, with citations.
 
 CRITICAL OUTPUT RULES:
 - First character must be \`#\`. No preamble, no narration ("I'll now...", "Good, here is..."), no closing commentary.
@@ -67,6 +73,20 @@ TIMEFRAME & THREAD COHERENCE (HARD):
 - A single company section may draw on articles from DIFFERENT trading days and with OPPOSING sentiment. When it does, attribute each price move or claim to its specific day ("rose Thursday as money rotated into financials; fell ~5% Friday in the broad selloff") instead of fusing them into one cause-and-effect sentence. A name being up one day and down the next is NOT a contradiction — name the days so the reader sees two sessions, not one muddled one.
 - Keep a structural / longer-horizon thread (e.g. an IPO-underwriting fee catalyst, a pending deal, a product cycle) SEPARATE from a same-day tactical move (e.g. today's selloff). Put them in separate sentences and do not imply one caused the other unless a source explicitly says so.
 - Do not invent a sector or market driver a source did not state. If a held name fell but no source attributes the move to its sector, say it fell with the broad market — do not assert an unsourced reason (e.g. "as the selloff hit brokers/banks") that no article supports.`;
+
+function buildSystemPrompt(sessionHeading: string): string {
+  return `${SYNTHESIS_SYSTEM_PROMPT_BASE}
+
+EDITION COLLAPSING (HARD):
+- Some bucket lines carry an edition tag like [dawn], [midday], [recap], [morning_wrap], [eod_wrap], [one-off note]. Tagged articles are installments of ONE publication's daily cycle: dawn → midday → recap narrate the SAME trading session as it develops, and later editions supersede earlier ones.
+- Tell each session's story ONCE, chronologically. Treat the latest edition as the authoritative account; pull from earlier editions only what the later ones dropped. Never present two editions of the same publication as independent sources agreeing with each other — they are the same desk.
+- An intraday reversal (up at midday, down by the close) is one narrative beat ("reversed in the afternoon as …"), not two contradictory reports.
+
+OUTPUT SECTION ORDER (HARD):
+- First section: \`## ${sessionHeading}\` — the macro / market-wide narrative drawn from the Macro bucket and the session-arc commentary.
+- Then one section per company with meaningful coverage. The header MUST begin with the ticker symbol exactly as given in the bucket heading — \`## NVDA (NVIDIA Corp)\` — because deterministic post-processing matches on the leading ticker.
+- Last section: \`## Also covered\`.`;
+}
 
 // ─── Prompt builders ──────────────────────────────────────────────────────────
 
@@ -95,7 +115,9 @@ function renderBucket(bucket: CompanyBucket): string {
     const url = article.source_url || article.website_url;
     const urlPart = url ? ` [${url}]` : "";
     const summaryText = article.summary ?? article.subject ?? "(no summary)";
-    lines.push(`- ${article.source_name} (${sentiment})${urlPart}: ${summaryText}`);
+    lines.push(
+      `- ${article.source_name}${editionLabel(article.source_name, article.subject)} (${sentiment})${urlPart}: ${summaryText}`,
+    );
   }
 
   return lines.join("\n");
@@ -146,10 +168,11 @@ function buildSynthesisPrompt(input: SynthesisInput): string {
 export async function synthesize(input: SynthesisInput): Promise<string> {
   const model = getModelForFeature("dailyDigestSynthesis");
   const prompt = buildSynthesisPrompt(input);
+  const sessionHeading = input.sessionHeading ?? "The Session";
 
   const result = await generateText({
     model,
-    system: SYNTHESIS_SYSTEM_PROMPT,
+    system: buildSystemPrompt(sessionHeading),
     prompt,
     maxOutputTokens: 4096,
   });

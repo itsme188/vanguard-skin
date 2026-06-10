@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { CompanyBucket } from "@/lib/digest/group-by-company";
+import type { SynthesisInput } from "@/lib/digest/synthesize";
 
 // ---------------------------------------------------------------------------
 // Mocks — must be set up before importing the module under test
@@ -326,5 +327,104 @@ describe("synthesize", () => {
     expect(capturedSystem).toContain("attribute each price move");
     expect(capturedSystem).toContain("is NOT a contradiction");
     expect(capturedSystem).toContain("do not assert an unsourced reason");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Edition-aware prompt (digest redesign — Task 4)
+// ---------------------------------------------------------------------------
+
+describe("edition-aware prompt (digest redesign)", () => {
+  /** Build an article with a custom subject (the edition classifier reads subject). */
+  function makeArticleWithSubject(
+    id: number,
+    sourceName: string,
+    subject: string,
+    sentiment: string | null = "bullish",
+    summary = "Some article summary text.",
+    sourceUrl: string | null = null,
+  ): CompanyBucket["articles"][number] {
+    return {
+      id,
+      source_name: sourceName,
+      subject,
+      summary,
+      sentiment,
+      mentioned_symbols: null,
+      portfolio_relevance: null,
+      key_themes: null,
+      source_url: sourceUrl,
+      website_url: null,
+    };
+  }
+
+  /**
+   * Mock generateText once to capture system + prompt, then call synthesize
+   * with the given overrides merged onto a sensible base input.
+   */
+  async function captureSynthesisCall(
+    over: Partial<SynthesisInput> = {},
+  ): Promise<{ system: string; prompt: string }> {
+    let capturedSystem = "";
+    let capturedPrompt = "";
+
+    (generateText as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      async (args: { system?: string; prompt?: string }) => {
+        capturedSystem = args.system ?? "";
+        capturedPrompt = args.prompt ?? "";
+        return {
+          text: "## Heading\n" + "x".repeat(300),
+          finishReason: "stop" as const,
+        };
+      },
+    );
+
+    const baseInput: SynthesisInput = {
+      buckets: [
+        makeBucket("NVDA", "NVIDIA Corp", [
+          makeArticleWithSubject(
+            1,
+            "Vital Knowledge",
+            "Vital Knowledge: Vital Market Recap for Tuesday June 9, 2026",
+          ),
+        ]),
+      ],
+      heldSymbols: ["NVDA"],
+      watchlist: [],
+      anomalies: [],
+    };
+
+    await synthesize({ ...baseInput, ...over });
+    return { system: capturedSystem, prompt: capturedPrompt };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("system prompt pins EDITION COLLAPSING and OUTPUT SECTION ORDER blocks", async () => {
+    const { system } = await captureSynthesisCall();
+    expect(system).toContain("EDITION COLLAPSING (HARD):");
+    expect(system).toContain("Tell each session's story ONCE");
+    expect(system).toContain("OUTPUT SECTION ORDER (HARD):");
+    expect(system).toContain("## Also covered");
+    expect(system).toContain("header MUST begin with the ticker symbol");
+  });
+
+  it("session heading flows into the system prompt", async () => {
+    const { system } = await captureSynthesisCall({
+      sessionHeading: "Overnight & Setup",
+    });
+    expect(system).toContain("## Overnight & Setup");
+  });
+
+  it("defaults sessionHeading to The Session", async () => {
+    const { system } = await captureSynthesisCall();
+    expect(system).toContain("## The Session");
+  });
+
+  it("bucket lines carry edition tags", async () => {
+    const { prompt } = await captureSynthesisCall();
+    expect(prompt).toContain("Vital Knowledge [recap]");
   });
 });
