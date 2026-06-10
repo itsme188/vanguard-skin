@@ -172,12 +172,19 @@ function logSectorGap(
   ).run(symbol, sector);
 }
 
+// COALESCE on all three payload columns: an enrichment pass may only ADD
+// data, never clear it. fetchActualForEvent returns { actual: null }
+// gracefully for source_keys it can't dispatch (e.g. 'manual:' events) —
+// an unconditional SET here destroyed manually-saved actuals when the
+// EarningsHub "gen" button re-ran enrichment before composing, then 409'd
+// telling the user to use the override it had just wiped (deep-QA finding
+// 2026-06-10). A fresh non-null fetch still overwrites.
 const updateEnrichment = (db: Database.Database) =>
   db.prepare(
     `UPDATE calendar_events
-     SET actual_value = ?,
+     SET actual_value = COALESCE(?, actual_value),
          consensus_value = COALESCE(?, consensus_value),
-         reaction_snapshot = ?,
+         reaction_snapshot = COALESCE(?, reaction_snapshot),
          enriched_at = datetime('now')
      WHERE id = ?`,
   );

@@ -228,6 +228,49 @@ describe("runEnrichment", () => {
     expect(results[0].enriched).toBe(true);
   });
 
+  it("never clears an existing actual_value/reaction when a re-enrichment pass fetches nothing", async () => {
+    // The EarningsHub "gen" button runs enrichment before composing the
+    // recap. For a manual event, fetchActualForEvent has no dispatcher
+    // match and returns { actual: null } gracefully (not a throw) — the
+    // unconditional `SET actual_value = ?` then DESTROYED the user's
+    // manually-saved actuals and 409'd. Deep-QA finding 2026-06-10:
+    // earningshub-gen-button--gen-compose-recap-wipes-manually-saved-actuals.
+    seedSecurity(db, 1, "NVDA", "Technology");
+    const { lastInsertRowid } = insertEvent(db, {
+      source: "manual",
+      source_key: "manual:NVDA:2026-04-11:earnings",
+      event_type: "earnings",
+      event_date: "2026-04-11",
+      release_time: "16:15",
+      symbol: "NVDA",
+      security_id: 1,
+    });
+    const eventId = Number(lastInsertRowid);
+    const savedReaction = JSON.stringify({ source: "yahoo", spy: -0.4 });
+    db.prepare(
+      "UPDATE calendar_events SET actual_value = ?, reaction_snapshot = ? WHERE id = ?",
+    ).run("EPS 0.92 · Rev 30.1B", savedReaction, eventId);
+
+    // Every upstream fetch returns nothing useful (graceful nulls).
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: false,
+      json: async () => ({}),
+    });
+
+    await runEnrichment(db, {
+      eventId,
+      now: new Date("2026-04-11T22:00:00Z"),
+    });
+
+    const row = db
+      .prepare(
+        "SELECT actual_value, reaction_snapshot FROM calendar_events WHERE id = ?",
+      )
+      .get(eventId) as { actual_value: string | null; reaction_snapshot: string | null };
+    expect(row.actual_value).toBe("EPS 0.92 · Rev 30.1B");
+    expect(row.reaction_snapshot).toBe(savedReaction);
+  });
+
   it("logs an unmapped-sector earnings gap", async () => {
     // Finnhub actual fetch
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
