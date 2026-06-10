@@ -49,7 +49,7 @@ vi.mock("../src/resend", () => ({
   sendEmail: vi.fn(async () => ({ id: "mock-email-id" })),
 }));
 
-import { runFallbackDigest } from "../src/fallback-digest";
+import { runFallbackDigest, composeDigestMarkdown, type ProcessedArticle } from "../src/fallback-digest";
 import { loadLatestSnapshot } from "../src/state";
 import { sendEmail } from "../src/resend";
 
@@ -288,5 +288,41 @@ describe("runFallbackDigest", () => {
     // Should NOT be an error about missing recipient
     expect(result.kind).not.toBe("error");
     expect(result.error || "").not.toMatch(/recipient/i);
+  });
+});
+
+// ── composeDigestMarkdown — structured layout ────────────────────────────────
+
+describe("composeDigestMarkdown — structured layout", () => {
+  it("composeDigestMarkdown splits Market Commentary and Research Desk with edition tags", () => {
+    const fresh: ProcessedArticle[] = [
+      {
+        source_name: "Vital Knowledge",
+        subject: "Vital Knowledge: Vital Market Recap for Tuesday June 9, 2026",
+        received_at: "2026-06-09 14:00:00",
+        source_url: null,
+        summary: "Market recap summary",
+        sentiment: "bullish",
+        key_themes: ["macro"],
+        portfolio_relevance: "Relevant to holdings",
+        gmail_message_id: "msg-vk-1",
+      },
+      {
+        source_name: "The Diff",
+        subject: "An essay",
+        received_at: "2026-06-09 10:00:00",
+        source_url: null,
+        summary: "Essay summary",
+        sentiment: "neutral",
+        key_themes: ["tech"],
+        portfolio_relevance: "Somewhat relevant",
+        gmail_message_id: "msg-diff-1",
+      },
+    ];
+    const md = composeDigestMarkdown(fresh, []);
+    expect(md).toContain("## Market Commentary");
+    expect(md).toContain("VITAL KNOWLEDGE [RECAP]");
+    expect(md).toContain("## Research Desk");
+    expect(md!.indexOf("## Market Commentary")).toBeLessThan(md!.indexOf("## Research Desk"));
   });
 });

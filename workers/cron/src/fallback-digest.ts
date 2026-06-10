@@ -29,6 +29,7 @@ import { loadLatestSnapshot, type Snapshot, type RecentArticleMeta } from "./sta
 import { getModelForFeature } from "./ai";
 import { briefingToHtml } from "./html";
 import { todayET } from "./dst";
+import { sourceKind, editionLabel } from "./editions";
 
 // Workers Free plan caps each invocation at 50 subrequests. The digest does
 // 1 list call per source + 2 calls per processed article (getMessage + Claude).
@@ -301,12 +302,46 @@ function filterTodayArticles(metas: RecentArticleMeta[]): RecentArticleMeta[] {
     .slice(0, 30);
 }
 
-function composeDigestMarkdown(
+interface RenderItem {
+  source_name: string;
+  subject: string;
+  sentiment: string;
+  url: string | null;
+  summary: string | null;
+  portfolio_relevance: string | null;
+  themes: string[];
+}
+
+export function composeDigestMarkdown(
   fresh: ProcessedArticle[],
   snapshotMeta: RecentArticleMeta[]
 ): string | null {
   const totalCount = fresh.length + snapshotMeta.length;
   if (totalCount === 0) return null;
+
+  const items: RenderItem[] = [
+    ...fresh.map((a) => ({
+      source_name: a.source_name,
+      subject: a.subject,
+      sentiment: a.sentiment,
+      url: null,
+      summary: a.summary || null,
+      portfolio_relevance: a.portfolio_relevance || null,
+      themes: a.key_themes,
+    })),
+    ...snapshotMeta.map((a) => ({
+      source_name: a.source_name,
+      subject: a.subject,
+      sentiment: a.sentiment ?? "neutral",
+      url: a.source_url || a.website_url,
+      summary: a.summary,
+      portfolio_relevance: a.portfolio_relevance,
+      themes: parseJsonArray(a.key_themes),
+    })),
+  ];
+
+  const commentary = items.filter((i) => sourceKind(i.source_name) === "commentary");
+  const essays = items.filter((i) => sourceKind(i.source_name) === "essay");
 
   const dateStr = new Date().toLocaleDateString("en-US", {
     timeZone: "America/New_York", // Worker runs in UTC — render the ET market day
@@ -320,53 +355,42 @@ function composeDigestMarkdown(
     `# Morning Research Digest`,
     `### ${dateStr}`,
     "",
-    `${totalCount} article${totalCount === 1 ? "" : "s"} · ${new Set([...fresh.map((a) => a.source_name), ...snapshotMeta.map((a) => a.source_name)]).size} sources`,
+    `${totalCount} article${totalCount === 1 ? "" : "s"} · ${new Set(items.map((i) => i.source_name)).size} sources`,
     "",
     "---",
     "",
   ];
 
-  for (const a of fresh) {
-    lines.push(`## ${a.source_name.toUpperCase()} · *${a.sentiment}*`);
-    lines.push(`### ${a.subject}`);
+  const renderItem = (i: RenderItem, withEdition: boolean) => {
+    const tag = withEdition ? editionLabel(i.source_name, i.subject).toUpperCase() : "";
+    lines.push(`**${i.source_name.toUpperCase()}${tag}** · *${i.sentiment}*`);
+    lines.push(i.url ? `### [${i.subject}](${i.url})` : `### ${i.subject}`);
     lines.push("");
-    if (a.summary) {
-      lines.push(a.summary);
+    if (i.summary) {
+      lines.push(i.summary);
       lines.push("");
     }
-    if (a.portfolio_relevance) {
-      lines.push(`> **Portfolio relevance**: ${a.portfolio_relevance}`);
+    if (i.portfolio_relevance) {
+      lines.push(`> **Portfolio relevance**: ${i.portfolio_relevance}`);
       lines.push("");
     }
-    if (a.key_themes.length > 0) {
-      lines.push(`*${a.key_themes.join(" · ")}*`);
+    if (i.themes.length > 0) {
+      lines.push(`*${i.themes.join(" · ")}*`);
       lines.push("");
     }
     lines.push("---");
     lines.push("");
-  }
+  };
 
-  for (const a of snapshotMeta) {
-    const sentiment = a.sentiment ?? "neutral";
-    lines.push(`## ${a.source_name.toUpperCase()} · *${sentiment}*`);
-    const url = a.source_url || a.website_url;
-    lines.push(url ? `### [${a.subject}](${url})` : `### ${a.subject}`);
+  if (commentary.length > 0) {
+    lines.push("## Market Commentary");
     lines.push("");
-    if (a.summary) {
-      lines.push(a.summary);
-      lines.push("");
-    }
-    if (a.portfolio_relevance) {
-      lines.push(`> **Portfolio relevance**: ${a.portfolio_relevance}`);
-      lines.push("");
-    }
-    const themes = parseJsonArray(a.key_themes);
-    if (themes.length > 0) {
-      lines.push(`*${themes.join(" · ")}*`);
-      lines.push("");
-    }
-    lines.push("---");
+    for (const i of commentary) renderItem(i, true);
+  }
+  if (essays.length > 0) {
+    lines.push("## Research Desk");
     lines.push("");
+    for (const i of essays) renderItem(i, false);
   }
 
   return lines.join("\n").trim();

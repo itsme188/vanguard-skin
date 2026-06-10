@@ -651,4 +651,33 @@ describe("buildSynthesisPrompt — timeframe/thread coherence", () => {
     expect(prompt).toContain("is NOT a contradiction");
     expect(prompt).toContain("do not assert an unsourced reason");
   });
+
+  it("buildSynthesisPrompt carries edition tags and the section contract", () => {
+    const snap = { heldSymbols: ["NVDA"] } as unknown as Snapshot;
+    const meta = {
+      id: 1,
+      source_id: 1,
+      source_name: "Vital Knowledge",
+      gmail_message_id: "msg-vk-1",
+      received_at: "2026-06-09 14:00:00",
+      subject: "Vital Knowledge: Vital Market Recap for Tuesday June 9, 2026",
+      sender: "test@vitalk.com",
+      summary: "Market recap summary",
+      key_themes: JSON.stringify(["macro"]),
+      sentiment: "bullish",
+      sentiment_score: null,
+      mentioned_symbols: JSON.stringify(["NVDA"]),
+      portfolio_relevance: "Relevant to NVDA",
+      source_url: null,
+      website_url: null,
+      processed_at: "2026-06-09T14:00:00.000Z",
+      ai_model: null,
+    };
+    const buckets = { NVDA: [meta] };
+    const prompt = buildSynthesisPrompt(buckets, snap);
+    expect(prompt).toContain("**Vital Knowledge [recap]**");
+    expect(prompt).toContain("EDITION COLLAPSING");
+    expect(prompt).toContain("## The Session");
+    expect(prompt).toContain("## Also covered");
+  });
 });
