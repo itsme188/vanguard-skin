@@ -1,0 +1,13 @@
+{
+  "mode": "all",
+  "rotation": {
+    "Mon": "today",
+    "Tue": "analysis",
+    "Wed": "research",
+    "Thu": "security-detail",
+    "Fri": "import-settings",
+    "Sat": "mobile",
+    "Sun": "accounts-charts-calendar"
+  },
+  "maxConcurrentAgents": 4
+}
