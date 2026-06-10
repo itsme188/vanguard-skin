@@ -96,7 +96,7 @@ describe("synthesize", () => {
     // Feature key must be "dailyDigestSynthesis"
     expect(getModelForFeature).toHaveBeenCalledWith("dailyDigestSynthesis");
     expect(generateText).toHaveBeenCalledWith(
-      expect.objectContaining({ model: "mock-model", maxOutputTokens: 4096 }),
+      expect.objectContaining({ model: "mock-model", maxOutputTokens: 8192 }),
     );
 
     // Returned text is the valid synthesis (trimmed)
