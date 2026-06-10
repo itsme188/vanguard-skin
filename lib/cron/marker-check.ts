@@ -16,11 +16,19 @@
  *     may still choose to skip.
  */
 
+import type Database from "better-sqlite3";
+import {
+  getLastDigestSentAt,
+  setLastDigestSentAt,
+} from "@/lib/digest/daily-digest";
+
 export type MarkerSentBy = "mac" | "cloud" | null;
 
 export interface MarkerCheckResult {
   sentBy: MarkerSentBy;
   date: string;
+  /** ISO timestamp of the cloud send/attempt start; null for legacy markers. */
+  sentAt?: string | null;
 }
 
 const DEFAULT_TIMEOUT_MS = 3000;
@@ -62,5 +70,24 @@ export async function checkCloudMarker(
     return null;
   } finally {
     clearTimeout(timer);
+  }
+}
+
+/**
+ * Stale-window fix (2026-06-09): when the Mac skips because the cloud already
+ * sent, advance the shared last_digest_sent_at pointer so the NEXT Mac-won
+ * email doesn't re-cover days the cloud already summarized. Forward-only —
+ * never regress the pointer. Legacy markers without sentAt fall back to
+ * now−30min (slight overlap beats dropped articles).
+ */
+export function advanceDigestMarkerAfterCloudSend(
+  db: Database.Database,
+  sentAt: string | null | undefined,
+): void {
+  const target =
+    sentAt ?? new Date(Date.now() - 30 * 60 * 1000).toISOString();
+  const current = getLastDigestSentAt(db);
+  if (!current || Date.parse(target) > Date.parse(current)) {
+    setLastDigestSentAt(db, target);
   }
 }

@@ -5,7 +5,10 @@ import {
   DigestSendError,
   type DigestMode,
 } from "@/lib/digest/send-digest";
-import { checkCloudMarker } from "@/lib/cron/marker-check";
+import {
+  checkCloudMarker,
+  advanceDigestMarkerAfterCloudSend,
+} from "@/lib/cron/marker-check";
 import {
   setRunningMarker,
   clearRunningMarker,
@@ -50,6 +53,7 @@ export async function POST(request: Request) {
 
   const marker = await checkCloudMarker("digest");
   if (marker?.sentBy === "cloud") {
+    advanceDigestMarkerAfterCloudSend(db, marker.sentAt);
     return Response.json({
       success: true,
       skipped: true,

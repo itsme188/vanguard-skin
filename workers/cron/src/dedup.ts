@@ -133,20 +133,33 @@ export async function clearAttemptingMarker(
   await kv.delete(attemptingKey(type, date));
 }
 
+const ISO_RE = /^\d{4}-\d{2}-\d{2}T/;
+
 /** Used by the /internal/marker endpoint the Mac polls. */
 export async function getMarkerStatus(
   kv: KVNamespace,
   type: JobType,
   date: string = todayET()
-): Promise<{ sentBy: SentBy | null; date: string }> {
-  const { mac, cloud, cloudAttempting } = await readMarkers(kv, type, date);
+): Promise<{ sentBy: SentBy | null; date: string; sentAt: string | null }> {
+  // Read VALUES (not just existence): writeMarker / setAttemptingMarker have
+  // always stored new Date().toISOString(), which is exactly the send/start
+  // timestamp the Mac needs to advance its local last_digest_sent_at when it
+  // skips with "cloud already sent" (stale-window fix, 2026-06-09).
+  const [mac, cloud, attempting] = await Promise.all([
+    kv.get(markerKey("mac", type, date)),
+    kv.get(markerKey("cloud", type, date)),
+    kv.get(attemptingKey(type, date)),
+  ]);
+  const iso = (v: string | null): string | null =>
+    v !== null && ISO_RE.test(v) ? v : null;
+
   // cloud wins ties — if both markers are set, the cloud-sent email definitely
   // went out (Mac marker may have been written after cloud delivery by a race).
-  if (cloud) return { sentBy: "cloud", date };
-  // cloud-attempting means a fallback is mid-flight RIGHT NOW. Tell Mac to skip
-  // so it doesn't race the in-progress send. If the fallback dies the marker
-  // expires in 10 min and the next launchd attempt re-evaluates.
-  if (cloudAttempting) return { sentBy: "cloud", date };
-  if (mac) return { sentBy: "mac", date };
-  return { sentBy: null, date };
+  if (cloud !== null) return { sentBy: "cloud", date, sentAt: iso(cloud) };
+  // cloud-attempting means a fallback is mid-flight RIGHT NOW. Its timestamp is
+  // BEFORE the fallback's Gmail fetch, so it is a safe (conservative) sentAt.
+  if (attempting !== null)
+    return { sentBy: "cloud", date, sentAt: iso(attempting) };
+  if (mac !== null) return { sentBy: "mac", date, sentAt: iso(mac) };
+  return { sentBy: null, date, sentAt: null };
 }

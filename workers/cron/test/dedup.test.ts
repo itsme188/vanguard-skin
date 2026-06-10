@@ -198,7 +198,7 @@ describe("Marker dedup system", () => {
       getMock.mockResolvedValueOnce(null); // macRunning
 
       const result = await getMarkerStatus(kv, "briefing", "2026-05-08");
-      expect(result).toEqual({ sentBy: null, date: "2026-05-08" });
+      expect(result).toEqual({ sentBy: null, date: "2026-05-08", sentAt: null });
     });
 
     it("should return sentBy=mac when only mac marker exists", async () => {
@@ -251,8 +251,26 @@ describe("Marker dedup system", () => {
         getMock.mockResolvedValueOnce(null);
 
         const result = await getMarkerStatus(kv, type, "2026-05-08");
-        expect(result).toEqual({ sentBy: null, date: "2026-05-08" });
+        expect(result).toEqual({ sentBy: null, date: "2026-05-08", sentAt: null });
       }
+    });
+
+    it("getMarkerStatus returns the marker's ISO value as sentAt", async () => {
+      // writeMarker stores new Date().toISOString() — the new implementation
+      // must read the VALUE (not just presence) and return it as sentAt.
+      await writeMarker(kv, "cloud", "evening", "2026-06-09");
+      const status = await getMarkerStatus(kv, "evening", "2026-06-09");
+      expect(status.sentBy).toBe("cloud");
+      expect(status.sentAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    });
+
+    it("getMarkerStatus returns sentAt null for non-ISO marker values", async () => {
+      // Legacy markers (or markers written with value "1") must NOT surfaced
+      // as sentAt — sentAt should be null so the Mac falls back to now−30min.
+      await kv.put("cloud-sent-evening-2026-06-09", "1");
+      const status = await getMarkerStatus(kv, "evening", "2026-06-09");
+      expect(status.sentBy).toBe("cloud");
+      expect(status.sentAt).toBeNull();
     });
   });
 
@@ -308,7 +326,8 @@ describe("Marker dedup system", () => {
       const types: JobType[] = ["briefing", "digest", "evening"];
 
       for (const type of types) {
-        getMock.mockResolvedValueOnce(null);
+        // getMarkerStatus now reads 3 keys directly (mac, cloud, attempting)
+        // rather than delegating to readMarkers (which reads 4).
         getMock.mockResolvedValueOnce(null);
         getMock.mockResolvedValueOnce(null);
         getMock.mockResolvedValueOnce(null);
@@ -316,7 +335,7 @@ describe("Marker dedup system", () => {
         await getMarkerStatus(kv, type, "2026-05-08");
       }
 
-      expect(getMock.mock.calls.length).toBe(12);
+      expect(getMock.mock.calls.length).toBe(9); // 3 calls per type, 3 types
     });
   });
 

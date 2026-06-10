@@ -48,6 +48,9 @@ vi.mock("@/lib/digest/send-evening", () => ({
 
 vi.mock("@/lib/cron/marker-check", () => ({
   checkCloudMarker: hoisted.checkCloudMarker,
+  // advanceDigestMarkerAfterCloudSend uses the db singleton which is null in
+  // this test suite — mock it to avoid a TypeError on the cloud-skip path.
+  advanceDigestMarkerAfterCloudSend: vi.fn(),
 }));
 
 vi.mock("@/lib/cron/running-marker", () => ({

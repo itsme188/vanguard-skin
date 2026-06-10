@@ -4,7 +4,10 @@ import {
   sendEveningEmail,
   EveningSendError,
 } from "@/lib/digest/send-evening";
-import { checkCloudMarker } from "@/lib/cron/marker-check";
+import {
+  checkCloudMarker,
+  advanceDigestMarkerAfterCloudSend,
+} from "@/lib/cron/marker-check";
 import {
   setRunningMarker,
   clearRunningMarker,
@@ -53,6 +56,7 @@ export async function POST(request: Request) {
   // don't regenerate. Gracefully no-ops when WORKER_MARKER_URL is unset.
   const marker = await checkCloudMarker("evening");
   if (marker?.sentBy === "cloud") {
+    advanceDigestMarkerAfterCloudSend(db, marker.sentAt);
     return Response.json({
       success: true,
       skipped: true,
