@@ -41,6 +41,21 @@ describe("splitLateArrivals", () => {
     expect(splitLateArrivals([a], since).late).toEqual([]);
     expect(splitLateArrivals([a], since, 120).late).toEqual([a]);
   });
+
+  it("boundary semantics: exactly-at-send is NOT late, exactly-at-cutoff IS late", () => {
+    const atSend = mk("2026-06-09T12:45:00.000Z");
+    const atCutoff = mk("2026-06-09T13:45:00.000Z");
+    const { late, rest } = splitLateArrivals([atSend, atCutoff], since);
+    expect(late).toEqual([atCutoff]);
+    expect(rest).toEqual([atSend]);
+  });
+
+  it("unparseable received_at goes to rest", () => {
+    const bad = mk("not-a-timestamp");
+    const { late, rest } = splitLateArrivals([bad], since);
+    expect(late).toEqual([]);
+    expect(rest).toEqual([bad]);
+  });
 });
 
 describe("renderLateArrivalsBlock", () => {
@@ -58,5 +73,14 @@ describe("renderLateArrivalsBlock", () => {
 
   it("returns empty string for no late articles", () => {
     expect(renderLateArrivalsBlock([], "this morning's email")).toBe("");
+  });
+
+  it("skips the summary block when summary is null", () => {
+    const block = renderLateArrivalsBlock(
+      [{ ...mk("2026-06-09T12:48:00.000Z"), summary: null }],
+      "this morning's email",
+    );
+    expect(block).toContain("## ⏰ Late arrivals");
+    expect(block).not.toContain("Summary text.");
   });
 });
