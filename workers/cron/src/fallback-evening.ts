@@ -369,10 +369,10 @@ Write a concise markdown evening recap with EXACTLY this section order:
 EDITION COLLAPSING (follow strictly):
 - Some source names carry an edition tag like [dawn], [midday], [recap], [morning_wrap], [eod_wrap]. Tagged articles are installments of ONE publication's daily cycle; later editions supersede earlier ones. Tell each session's story ONCE — never present two editions of the same publication as independent sources agreeing with each other.
 
-TIMEFRAME & THREAD COHERENCE (follow strictly):
-- A company's coverage may span DIFFERENT trading days with OPPOSING moves. When it does, attribute each price move to its specific day ("rose Thursday as money rotated into financials; fell ~5% Friday in the broad selloff") instead of fusing them into one sentence. A name up one day and down the next is NOT a contradiction — name the days.
-- Keep a structural / longer-horizon thread (e.g. an IPO-underwriting fee catalyst, a pending deal) SEPARATE from a same-day tactical move (e.g. today's selloff). Use separate sentences; do not imply one caused the other unless a source says so.
-- Do not invent a sector or market driver a source did not state. If a name fell but no source attributes it to its sector, say it fell with the broad market — do not assert an unsourced reason.
+TIMEFRAME & THREAD COHERENCE (HARD):
+- A single company section may draw on articles from DIFFERENT trading days and with OPPOSING sentiment. When it does, attribute each price move or claim to its specific day ("rose Thursday as money rotated into financials; fell ~5% Friday in the broad selloff") instead of fusing them into one cause-and-effect sentence. A name being up one day and down the next is NOT a contradiction — name the days so the reader sees two sessions, not one muddled one.
+- Keep a structural / longer-horizon thread (e.g. an IPO-underwriting fee catalyst, a pending deal, a product cycle) SEPARATE from a same-day tactical move (e.g. today's selloff). Put them in separate sentences and do not imply one caused the other unless a source explicitly says so.
+- Do not invent a sector or market driver a source did not state. If a held name fell but no source attributes the move to its sector, say it fell with the broad market — do not assert an unsourced reason (e.g. "as the selloff hit brokers/banks") that no article supports.
 
 Output markdown only. No preamble, no sign-off.`;
 }
