@@ -47,12 +47,25 @@ up() {
   # entry also wins over the dotenv copy).
   local -a pins=()
   local key
-  while IFS= read -r key; do
-    case "$key" in
-      ANTHROPIC_API_KEY|FINNHUB_API_KEY|FRED_API_KEY) ;;
-      *) pins+=("$key=") ;;
-    esac
-  done < <(grep -oE '^[A-Za-z_][A-Za-z0-9_]*' "$STANDALONE/.env.local" 2>/dev/null || true)
+  # Enumerate keys from every dotenv file Next's loadEnvConfig reads in
+  # production (in load order: production.local > local > production > base).
+  # The grep+awk form handles leading whitespace, "export KEY=…" prefix, and
+  # key names containing "." or "-" (all valid in dotenv).
+  for dotenv_file in \
+    "$STANDALONE/.env.production.local" \
+    "$STANDALONE/.env.local" \
+    "$STANDALONE/.env.production" \
+    "$STANDALONE/.env"
+  do
+    [ -f "$dotenv_file" ] || continue
+    while IFS= read -r key; do
+      case "$key" in
+        ANTHROPIC_API_KEY|FINNHUB_API_KEY|FRED_API_KEY) ;;
+        *) pins+=("$key=") ;;
+      esac
+    done < <(grep -oE '^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_.-]*' "$dotenv_file" 2>/dev/null \
+               | awk '{print $NF}' || true)
+  done
 
   (
     cd "$STANDALONE"
@@ -73,7 +86,8 @@ up() {
     fi
     sleep 1
   done
-  echo "ERROR: sandbox server did not become healthy in 30s — see $LOG_FILE" >&2
+  cp "$LOG_FILE" "$SCRIPT_DIR/sandbox-boot-failure.log" 2>/dev/null || true
+  echo "ERROR: sandbox server did not become healthy in 30s — see $SCRIPT_DIR/sandbox-boot-failure.log" >&2
   down; exit 1
 }
 

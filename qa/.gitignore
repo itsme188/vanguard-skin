@@ -4,3 +4,4 @@ logs/
 expected-values.json
 findings/
 sandbox/
+sandbox-boot-failure.log
