@@ -64,6 +64,13 @@ export function getRecentArticles(
      * content — digest/briefing/trade-review callers opt in.
      */
     relevantOnly?: boolean;
+    /**
+     * Full-timestamp upper bound (ISO or SQLite format), datetime()-wrapped on
+     * both sides like startDate. Distinct from `endDate`, which is date-only
+     * and gets a " 23:59:59" suffix. Used by the digest composer's
+     * late-arrival cap-saturation guard to fetch a time-bounded tranche.
+     */
+    endDateTime?: string;
     limit?: number;
   }
 ): ResearchArticle[] {
@@ -97,6 +104,10 @@ export function getRecentArticles(
   if (options?.endDate) {
     conditions.push("datetime(a.received_at) <= datetime(?)");
     params.push(options.endDate + " 23:59:59");
+  }
+  if (options?.endDateTime) {
+    conditions.push("datetime(a.received_at) <= datetime(?)");
+    params.push(options.endDateTime);
   }
   if (options?.search) {
     conditions.push("(a.subject LIKE ? OR a.summary LIKE ? OR a.raw_text LIKE ? OR a.mentioned_symbols LIKE ?)");

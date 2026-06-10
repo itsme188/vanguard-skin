@@ -90,7 +90,7 @@ describe.each([
       vi.mocked(checkCloudMarker).mockReset();
     });
 
-    it("advances to the cloud sentAt", async () => {
+    it("advances to the cloud sentAt minus the 5-minute overlap buffer", async () => {
       setLastDigestSentAt(testDb, "2026-06-04T12:45:00.000Z");
       vi.mocked(checkCloudMarker).mockResolvedValue({
         sentBy: "cloud",
@@ -100,7 +100,10 @@ describe.each([
       const res = await post(req());
       const body = await res.json();
       expect(body.skipped).toBe(true);
-      expect(getLastDigestSentAt(testDb)).toBe("2026-06-09T13:01:00.000Z");
+      // sentAt is written AFTER the cloud's Resend delivery; its Gmail fetch ran
+      // minutes earlier. The buffer keeps that processing window inside the next
+      // Mac email — duplication over drops.
+      expect(getLastDigestSentAt(testDb)).toBe("2026-06-09T12:56:00.000Z");
     });
 
     it("falls back to now−30min when sentAt is missing (legacy marker)", async () => {
