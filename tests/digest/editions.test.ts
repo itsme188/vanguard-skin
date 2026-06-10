@@ -74,7 +74,7 @@ describe("SOURCE_KINDS / sourceKind", () => {
   it("classifies the known essay sources", () => {
     for (const name of [
       "Stratechery Updates", "The Diff", "MBI Deep Dives", "Semi Doped",
-      "Eliant Capital", "Paul Kedrosky", "Sam Ro from TKer", "Liberty's Highlights",
+      "Eliant Capital", "Paul Kedrosky", "Sam Ro from TKer", "Liberty’s Highlights",
       "BEP Research", "Simon Willison", "Irrational Analysis", "Mobile Dev Memo",
       "Bloomberg Odd Lots", "Northbeam - The Media Buyer", "Consumer Ascent",
       "TickerTrends Research", "Sharp Text", "Emerging AI", "Investing With Martin",

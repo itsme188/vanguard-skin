@@ -57,7 +57,7 @@ export const SOURCE_KINDS: Record<string, SourceKind> = {
   "Eliant Capital": "essay",
   "Paul Kedrosky": "essay",
   "Sam Ro from TKer": "essay",
-  "Liberty's Highlights": "essay",
+  "Liberty’s Highlights": "essay",
   "BEP Research": "essay",
   "Simon Willison": "essay",
   "Irrational Analysis": "essay",
