@@ -5,6 +5,7 @@ import type { Position } from "@stoqey/ib/dist/api-next";
 import type { AccountUpdate } from "@stoqey/ib/dist/api-next/account/account-update";
 import { getIbApi } from "./client";
 import { upsertSecurity } from "../mutations/securities";
+import { removeStaleSameDayTwsHoldings } from "../mutations/same-day-tws-holdings";
 import { computeDailyValuations } from "../compute/daily-valuation";
 import type { PositionSyncProgress, PositionSyncResult } from "./types";
 
@@ -258,6 +259,12 @@ export async function syncPortfolio(
   // Map securityId → marketPrice for saving prices after position commit
   const priceMap = new Map<number, number>();
 
+  // Security IDs present in THIS sync — used to clear same-day ghost rows
+  // left by earlier intraday syncs (positions closed between syncs linger
+  // because the upsert never deletes and zero-quantity positions are skipped).
+  const syncedSecurityIds: number[] = [];
+  let staleRowsRemoved = 0;
+
   db.transaction(() => {
     for (let i = 0; i < positions.length; i++) {
       const pos = positions[i];
@@ -311,6 +318,7 @@ export async function syncPortfolio(
       const costBasis = pos.avgCost != null ? pos.pos * pos.avgCost : null;
       const sourceKey = `tws-${accountId}-${securityId}-${today}`;
       upsertHolding.run(accountId, securityId, pos.pos, costBasis, today, sourceKey);
+      syncedSecurityIds.push(securityId);
 
       // Collect market prices from getAccountUpdates() (not available from getPositions)
       if (pos.marketPrice != null && pos.marketPrice > 0) {
@@ -325,6 +333,21 @@ export async function syncPortfolio(
         current: i + 1,
         total: positions.length,
       });
+    }
+
+    // Clear ghost rows from earlier syncs today (shrink-guarded inside).
+    const cleanup = removeStaleSameDayTwsHoldings(db, {
+      accountId,
+      asOfDate: today,
+      syncedSecurityIds,
+    });
+    staleRowsRemoved = cleanup.deleted;
+    if (cleanup.skipped) {
+      console.warn(
+        `[syncPortfolio] Same-day ghost cleanup skipped — sync returned ${syncedSecurityIds.length} positions vs existing tws rows (partial sync suspected)`
+      );
+    } else if (cleanup.deleted > 0) {
+      console.log(`[syncPortfolio] Removed ${cleanup.deleted} same-day ghost holdings row(s)`);
     }
   })();
 
@@ -393,5 +416,6 @@ export async function syncPortfolio(
     cashBalance,
     snapshotInserted,
     valuationsRecomputed,
+    staleRowsRemoved,
   };
 }
