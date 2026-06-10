@@ -3,8 +3,6 @@ import { isGmailConfigured, getGmailClient } from "@/lib/gmail/auth";
 import { fetchNewArticles, backfillSourceUrls } from "@/lib/gmail/fetch";
 import { processUnprocessedArticles } from "@/lib/gmail/process";
 import {
-  generateDailyDigest,
-  generateDigestSince,
   generateDigestSinceAdaptive,
   getLastDigestSentAt,
   setLastDigestSentAt,
