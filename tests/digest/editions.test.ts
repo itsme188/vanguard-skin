@@ -93,7 +93,7 @@ describe("SOURCE_KINDS / sourceKind", () => {
 });
 
 describe("editionLabel", () => {
-  it("renders a bracketed tag for cyclical editions and empty for standalone/one_off", () => {
+  it("renders a bracketed tag for cyclical editions, [one-off note] for transient notes, and empty for standalone", () => {
     expect(editionLabel("Vital Knowledge", "Vital Knowledge: Vital Market Recap for Tuesday June 9, 2026")).toBe(" [recap]");
     expect(editionLabel("TMT Breakout", "TMTB Morning Wrap")).toBe(" [morning_wrap]");
     expect(editionLabel("Vital Knowledge", "Vital Knowledge: Iran & tech: thoughts")).toBe(" [one-off note]");
