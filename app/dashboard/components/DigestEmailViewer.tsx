@@ -3,12 +3,13 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 
-type Layout = "by_source" | "by_company";
+type Layout = "structured" | "by_source" | "by_company";
 
 interface DigestPreviewResponse {
   success: boolean;
   since: string;
   empty: boolean;
+  structuredHtml: string | null;
   bySourceHtml: string | null;
   byCompanyHtml: string | null;
 }
@@ -32,7 +33,7 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
   const [data, setData] = useState<DigestPreviewResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [layout, setLayout] = useState<Layout>("by_source");
+  const [layout, setLayout] = useState<Layout>("structured");
 
   useEffect(() => {
     if (!open) return;
@@ -53,7 +54,9 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
       .then((d) => {
         if (cancelled) return;
         setData(d);
-        if (!d.bySourceHtml && d.byCompanyHtml) setLayout("by_company");
+        if (d.structuredHtml) setLayout("structured");
+        else if (d.bySourceHtml) setLayout("by_source");
+        else if (d.byCompanyHtml) setLayout("by_company");
       })
       .catch((err: unknown) => {
         if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load digest.");
@@ -78,8 +81,11 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
 
   if (!open || typeof document === "undefined") return null;
 
-  const activeHtml = layout === "by_source" ? data?.bySourceHtml : data?.byCompanyHtml;
-  const otherAvailable = layout === "by_source" ? Boolean(data?.byCompanyHtml) : Boolean(data?.bySourceHtml);
+  const activeHtml =
+    layout === "structured" ? data?.structuredHtml
+    : layout === "by_source" ? data?.bySourceHtml
+    : data?.byCompanyHtml;
+  const otherAvailable = Boolean(data?.structuredHtml || data?.bySourceHtml || data?.byCompanyHtml);
 
   return createPortal(
     <div
@@ -106,9 +112,21 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
             <div className="flex rounded-md border border-edge overflow-hidden text-[11px]">
               <button
                 type="button"
+                onClick={() => setLayout("structured")}
+                disabled={!data?.structuredHtml}
+                className={`px-2.5 py-1 ${
+                  layout === "structured"
+                    ? "bg-gold/15 text-gold"
+                    : "text-ink-dim hover:bg-raised disabled:opacity-40"
+                }`}
+              >
+                Structured
+              </button>
+              <button
+                type="button"
                 onClick={() => setLayout("by_source")}
                 disabled={!data?.bySourceHtml}
-                className={`px-2.5 py-1 ${
+                className={`px-2.5 py-1 border-l border-edge ${
                   layout === "by_source"
                     ? "bg-gold/15 text-gold"
                     : "text-ink-dim hover:bg-raised disabled:opacity-40"
@@ -162,11 +180,11 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
           )}
           {data && !data.empty && !activeHtml && (
             <div className="px-5 py-12 text-center text-[14px] text-ink-faint">
-              {layout === "by_source" ? "By-publication" : "By-company"} view unavailable.
+              {layout === "structured" ? "Structured" : layout === "by_source" ? "By-publication" : "By-company"} view unavailable.
               {otherAvailable && (
                 <button
                   type="button"
-                  onClick={() => setLayout(layout === "by_source" ? "by_company" : "by_source")}
+                  onClick={() => setLayout(layout === "structured" ? "by_source" : layout === "by_source" ? "by_company" : "structured")}
                   className="block mx-auto mt-3 text-[12px] text-gold hover:text-gold/80"
                 >
                   Switch to the other view →
