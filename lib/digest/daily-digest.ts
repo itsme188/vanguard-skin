@@ -380,12 +380,29 @@ export async function generateDigestSinceAdaptive(
 ): Promise<string | null> {
   const edition = opts.edition ?? "morning";
 
-  const articles = getRecentArticles(db, {
+  let articles = getRecentArticles(db, {
     startDate: sinceDate,
     processedOnly: true,
     relevantOnly: true,
     limit: 40, // raised from 30 — edition collapsing keeps synthesis input flat; covers heavy Mondays
   });
+
+  // Cap-saturation guard: late arrivals sit at the OLDEST end of the window,
+  // which is exactly what the DESC limit drops first on a >40-article window
+  // (heavy Monday after a missed Friday send). Re-fetch the late tranche
+  // explicitly so the rescue block can never be truncated away by the cap.
+  if (sinceDate.includes("T") && articles.length === 40) {
+    const lateWindowEnd = new Date(Date.parse(sinceDate) + 60 * 60 * 1000).toISOString();
+    const lateTranche = getRecentArticles(db, {
+      startDate: sinceDate,
+      endDateTime: lateWindowEnd,
+      processedOnly: true,
+      relevantOnly: true,
+      limit: 10,
+    });
+    const have = new Set(articles.map((a) => a.id));
+    articles = [...articles, ...lateTranche.filter((a) => !have.has(a.id))];
+  }
 
   const alertsBlock = formatTriggeredAlertsSection(db, sinceDate);
 

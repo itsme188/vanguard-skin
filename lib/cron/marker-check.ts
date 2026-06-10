@@ -79,13 +79,22 @@ export async function checkCloudMarker(
  * email doesn't re-cover days the cloud already summarized. Forward-only —
  * never regress the pointer. Legacy markers without sentAt fall back to
  * now−30min (slight overlap beats dropped articles).
+ *
+ * sentAt gets a 5-minute overlap buffer: the Worker writes its cloud-sent
+ * marker AFTER Resend delivery, but its Gmail fetch ran 1-3 minutes earlier —
+ * an article received inside that processing window is in neither the cloud
+ * email nor (without the buffer) the next Mac window. Duplication is
+ * acceptable; a dropped article is not.
  */
+const CLOUD_SENT_OVERLAP_MS = 5 * 60 * 1000;
+
 export function advanceDigestMarkerAfterCloudSend(
   db: Database.Database,
   sentAt: string | null | undefined,
 ): void {
-  const target =
-    sentAt ?? new Date(Date.now() - 30 * 60 * 1000).toISOString();
+  const target = sentAt
+    ? new Date(Date.parse(sentAt) - CLOUD_SENT_OVERLAP_MS).toISOString()
+    : new Date(Date.now() - 30 * 60 * 1000).toISOString();
   const current = getLastDigestSentAt(db);
   if (!current || Date.parse(target) > Date.parse(current)) {
     setLastDigestSentAt(db, target);

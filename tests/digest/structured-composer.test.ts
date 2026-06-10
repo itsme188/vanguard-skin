@@ -117,6 +117,22 @@ describe("generateDigestSinceAdaptive — structured composer", () => {
     expect(subjects).not.toContain("TMTB Morning Wrap");
   });
 
+  it("cap saturation: a late arrival beyond the 40-newest cap is still rescued", async () => {
+    const db = setupDb();
+    // The late arrival is the OLDEST article in the window (3 min after the
+    // previous send) — exactly what ORDER BY received_at DESC LIMIT 40 drops.
+    insertArticle(db, 3, "TMTB Morning Wrap", "2026-06-09 12:48:00");
+    // 42 newer commentary articles saturate the cap.
+    for (let i = 0; i < 42; i++) {
+      const hh = String(14 + Math.floor(i / 30)).padStart(2, "0");
+      const mm = String(i % 30).padStart(2, "0");
+      insertArticle(db, 1, `Vital Knowledge: note ${i}`, `2026-06-09 ${hh}:${mm}:00`);
+    }
+    const md = await generateDigestSinceAdaptive(db, SINCE, { edition: "evening" });
+    expect(md!).toContain("## ⏰ Late arrivals");
+    expect(md!).toContain("TMTB Morning Wrap");
+  });
+
   it("<5 commentary articles → per-source fallback for commentary, Research Desk still renders", async () => {
     const db = setupDb();
     insertArticle(db, 1, "Vital Knowledge: Vital Dawn for Tuesday June 9, 2026", "2026-06-09 14:00:00");
