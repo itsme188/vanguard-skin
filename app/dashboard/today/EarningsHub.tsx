@@ -29,6 +29,7 @@ import { SymbolLink } from "../components/SymbolLink";
 import { EarningsHubAddForm } from "./EarningsHubAddForm";
 import { EarningsHubRefreshButton } from "./EarningsHubRefreshButton";
 import { EarningsRowChips } from "./EarningsRowChips";
+import { EarningsDeleteButton } from "./EarningsDeleteButton";
 import { EarningsDateChip } from "./EarningsDateChip";
 import { BogeysUploadButton } from "./BogeysUploadButton";
 import { BogeysEditButton } from "./BogeysEditButton";
@@ -394,7 +395,10 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
           />
         )}
       </span>
-      <span style={{ textAlign: "right" }}>
+      <span
+        className="inline-flex items-center justify-end gap-1"
+        style={{ textAlign: "right" }}
+      >
         <EarningsRowChips
           eventId={event.id}
           previewSent={event.previewSent}
@@ -402,6 +406,11 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
           previewSkipped={event.previewSkipped}
           recapSkipped={event.recapSkipped}
         />
+        {/* Manual rows only — sync-owned rows (finnhub/wsh/fred) are
+            guarded server-side too (DELETE returns 403). */}
+        {event.source === "manual" && (
+          <EarningsDeleteButton eventId={event.id} symbol={event.symbol} />
+        )}
       </span>
     </div>
   );
@@ -521,6 +530,10 @@ function MobileCard({ event }: { event: EnrichedRow }) {
           previewSkipped={event.previewSkipped}
           recapSkipped={event.recapSkipped}
         />
+        {/* Manual rows only — server-side source guard is the authority. */}
+        {event.source === "manual" && (
+          <EarningsDeleteButton eventId={event.id} symbol={event.symbol} />
+        )}
       </div>
     </div>
   );
