@@ -199,7 +199,8 @@ export async function POST(request: NextRequest) {
 
   const api = getIbApi();
   if (!api) {
-    // TWS disconnected — serve stale cache
+    // TWS disconnected — serve stale cache. Don't claim "showing cached data"
+    // when the cache is empty (blank chart + that banner read as broken).
     return NextResponse.json({
       bars: cachedBars,
       symbol: sec.symbol,
@@ -208,7 +209,10 @@ export async function POST(request: NextRequest) {
       cached: true,
       stale: cachedBars.length > 0,
       lastBarDate: latestDate,
-      warning: "TWS not connected. Showing cached data.",
+      warning:
+        cachedBars.length > 0
+          ? "TWS not connected. Showing cached data."
+          : `TWS not connected — no cached data for ${sec.symbol}.`,
       transactions,
     });
   }

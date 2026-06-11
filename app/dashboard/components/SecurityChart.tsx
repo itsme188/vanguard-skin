@@ -902,6 +902,20 @@ export function SecurityChart({
             <div className="text-ink-faint text-sm">Loading chart data...</div>
           </div>
         )}
+        {/* Explicit empty state — a blank black canvas next to a "cached data"
+            banner reads as broken. Centered message inside the chart area
+            (EmptySection's card chrome doesn't fit inside a chart panel).
+            Shows in both Single and Watchlist (compact) modes. */}
+        {!loading && !error && barCount === 0 && (
+          <div className="absolute inset-0 z-[5] flex items-center justify-center px-4 pointer-events-none">
+            <p
+              className="text-sm font-mono text-center"
+              style={{ color: C.text }}
+            >
+              No cached price history for {symbol} — connect TWS to load bars.
+            </p>
+          </div>
+        )}
         <div ref={chartContainerRef} className="w-full h-full" />
         {addPopover && !compact && (
           <AddLevelPopover
