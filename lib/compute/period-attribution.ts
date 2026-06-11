@@ -1,4 +1,11 @@
 import type Database from "better-sqlite3";
+import { calendarDaysBetween } from "@/lib/calendar/date-utils";
+
+// Guard against the `prices`/`daily_valuations` multi-month gap: a return pair
+// spanning more than this many calendar days is dropped (an ln/simple return
+// across the gap injects a giant fake "daily" return). Same convention as
+// lib/compute/risk.ts.
+const MAX_RETURN_GAP_DAYS = 7;
 
 export interface AttributionRow {
   symbol: string;
@@ -25,7 +32,7 @@ function computeBetaForPeriod(
   benchmarkSymbol: string,
   startDate: string,
   endDate: string,
-): { beta: number; benchmarkReturn: number } | null {
+): { beta: number; benchmarkReturn: number; portfolioReturn: number } | null {
   const valuations = db
     .prepare(
       `SELECT valuation_date, total_value FROM daily_valuations
@@ -44,17 +51,42 @@ function computeBetaForPeriod(
 
   if (valuations.length < 5 || benchmarks.length < 5) return null;
 
+  // External cash flows (deposits/withdrawals) show up as one-day jumps in
+  // daily_valuations. They are not investment return — subtract them from the
+  // day's value change so neither the regression nor the period return is
+  // distorted (a -$100k withdrawal otherwise reads as a -19% "return").
+  const flowRows = db
+    .prepare(
+      `SELECT trade_date, SUM(amount) AS amount
+       FROM transactions
+       WHERE account_id = ? AND is_external_flow = 1 AND amount IS NOT NULL
+         AND trade_date BETWEEN ? AND ?
+       GROUP BY trade_date`,
+    )
+    .all(accountId, startDate, endDate) as { trade_date: string; amount: number }[];
+  const flowByDate = new Map(flowRows.map((f) => [f.trade_date, f.amount]));
+
   const benchByDate = new Map(benchmarks.map((b) => [b.date, b.close_price]));
   const aligned: { portReturn: number; benchReturn: number }[] = [];
 
   for (let i = 1; i < valuations.length; i++) {
     const prev = valuations[i - 1];
     const curr = valuations[i];
+    // Gap guard: never compute a "daily" return across a multi-week hole
+    if (calendarDaysBetween(prev.valuation_date, curr.valuation_date) > MAX_RETURN_GAP_DAYS) {
+      continue;
+    }
     const benchPrev = benchByDate.get(prev.valuation_date);
     const benchCurr = benchByDate.get(curr.valuation_date);
     if (benchPrev && benchCurr && prev.total_value > 0 && benchPrev > 0) {
+      // Net external flow attributed to this pair: flows dated after prev up
+      // to and including curr (the first valuation already reflects earlier flows).
+      let flow = 0;
+      for (const [date, amount] of flowByDate) {
+        if (date > prev.valuation_date && date <= curr.valuation_date) flow += amount;
+      }
       aligned.push({
-        portReturn: (curr.total_value - prev.total_value) / prev.total_value,
+        portReturn: (curr.total_value - prev.total_value - flow) / prev.total_value,
         benchReturn: (benchCurr - benchPrev) / benchPrev,
       });
     }
@@ -73,11 +105,13 @@ function computeBetaForPeriod(
   if (varB === 0) return null;
   const beta = covar / varB;
 
-  const firstBench = benchmarks[0].close_price;
-  const lastBench = benchmarks[benchmarks.length - 1].close_price;
-  const benchmarkReturn = (lastBench - firstBench) / firstBench;
+  // Compound BOTH period returns over the same aligned (flow-adjusted,
+  // gap-guarded) pairs so the decomposition is internally consistent:
+  // portfolioReturn = beta × benchmarkReturn + alpha by construction.
+  const portfolioReturn = aligned.reduce((p, r) => p * (1 + r.portReturn), 1) - 1;
+  const benchmarkReturn = aligned.reduce((p, r) => p * (1 + r.benchReturn), 1) - 1;
 
-  return { beta, benchmarkReturn };
+  return { beta, benchmarkReturn, portfolioReturn };
 }
 
 // ─── Per-position contributions ───────────────────────────────────────────────
@@ -161,13 +195,16 @@ export function computePeriodAttribution(
     .map(([sector, contribution]) => ({ sector, contribution }))
     .sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution));
 
-  const totalReturn = rows.reduce((s, r) => s + r.contribution, 0);
+  // Decompose the PORTFOLIO's period return (from the daily-valuation series —
+  // the same series the beta regression runs on), never the sum of per-position
+  // contributions: those require holdings + prices at exactly startDate and are
+  // routinely empty, which made alpha ≡ −betaContribution (the 2026-06-10 bug).
   let betaContribution = 0;
   let alphaContribution = 0;
   const reg = computeBetaForPeriod(db, accountId, benchmarkSymbol, startDate, endDate);
   if (reg) {
     betaContribution = reg.beta * reg.benchmarkReturn;
-    alphaContribution = totalReturn - betaContribution;
+    alphaContribution = reg.portfolioReturn - betaContribution;
   }
 
   return {
