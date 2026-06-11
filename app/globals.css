@@ -206,6 +206,17 @@
 /* iPhone safe area for bottom nav / home indicator */
 .pb-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }
 
+/* Hide the scrollbar on intentionally-scrollable rows (chip rows, toolbars).
+ * Scrolling/swiping still works — only the bar itself is suppressed.
+ * Referenced by QuickActionChips + the Research Feeds toolbar. */
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
 /* Electron: make the top padding area draggable as a native title bar */
 .electron header > :first-child {
   -webkit-app-region: drag;

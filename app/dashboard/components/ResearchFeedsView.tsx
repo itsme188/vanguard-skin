@@ -353,7 +353,10 @@ export function ResearchFeedsView({
             ))}
         </select>
 
-        <div className="flex items-center gap-2">
+        {/* overflow-x-auto + scrollbar-none: containment guard — on very narrow
+            viewports this action row scrolls within itself (no visible bar)
+            instead of pushing the page into horizontal scroll. */}
+        <div className="flex items-center gap-2 overflow-x-auto scrollbar-none">
           {/* Search: full input on desktop, icon toggle on mobile */}
           <input
             type="text"
@@ -555,7 +558,11 @@ function ArticleCard({
   const border = sentimentBorder[article.sentiment ?? "neutral"] ?? "border-l-edge-strong";
 
   return (
-    <article className={`py-6 first:pt-0 ${expanded ? "" : "cursor-pointer group"}`}>
+    // break-words (overflow-wrap, inherited): AI summaries/relevance lines can
+    // contain long unbreakable tokens (e.g. "AAPL/AMZN/META/MSFT/GOOG/CRWD" —
+    // slashes are not break opportunities) which otherwise push the whole page
+    // into horizontal scroll at mobile widths.
+    <article className={`py-6 first:pt-0 break-words ${expanded ? "" : "cursor-pointer group"}`}>
       {/* Collapsed view — click to expand */}
       <div onClick={expanded ? undefined : onToggle}>
         {/* Meta line */}
@@ -708,7 +715,8 @@ function FilteredArticleRow({
 
   return (
     <div className="py-4 flex items-start gap-4">
-      <div className="min-w-0 flex-1">
+      {/* break-words: same long-token guard as ArticleCard (subjects/reasons). */}
+      <div className="min-w-0 flex-1 break-words">
         <div className="flex items-center gap-2.5 mb-1">
           <span className="text-xs font-semibold text-ink-faint uppercase tracking-wider">
             {article.source_name}
