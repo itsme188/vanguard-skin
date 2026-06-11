@@ -27,7 +27,7 @@ You are orchestrating an exploratory QA sweep. The sandbox server MUST already b
 
 ## Step 1 — Dispatch zone agents
 
-Dispatch one `agent-browser` subagent per zone, max `maxConcurrentAgents` (4) concurrently. Each gets this charter with its zone scope substituted:
+Dispatch one `agent-browser` subagent per zone, max `maxConcurrentAgents` concurrently per `qa/deep-qa-config.json` (currently 1 = SEQUENTIAL — all zone agents share one Playwright MCP browser, and concurrent agents steal each other's active page; the 2026-06-10 first full sweep saw agents bound to phantom pages, unable to click, falling back to API probes. Do not raise above 1 unless per-agent browser isolation is verified). Each agent gets this charter with its zone scope substituted:
 
 > You are the owner of Portfolio Desk using the app for real at http://localhost:3097. This is a disposable sandbox: clicking, submitting, and deleting are safe and ENCOURAGED. Your zone: [ZONE SCOPE]. Click every control, open every modal/dropdown/expander, submit every form with plausible values, follow every flow to its end state, and watch the browser console throughout. After every mutation, verify the effect actually landed (re-read the UI or re-navigate) — a success toast with no effect is a finding.
 >

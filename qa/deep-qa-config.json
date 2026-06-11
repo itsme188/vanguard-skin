@@ -9,5 +9,5 @@
     "Sat": "mobile",
     "Sun": "accounts-charts-calendar"
   },
-  "maxConcurrentAgents": 4
+  "maxConcurrentAgents": 1
 }
