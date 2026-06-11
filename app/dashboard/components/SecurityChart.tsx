@@ -331,6 +331,10 @@ export function SecurityChart({
       volumeSeriesRef.current = volumeSeries;
 
       resizeObserver = new ResizeObserver((entries) => {
+        // Guard: the container's detach-triggered resize record can be
+        // delivered around the unmount commit, after chart.remove() has
+        // disposed the instance — LWC then throws "Object is disposed".
+        if (disposed) return;
         const { width, height } = entries[0].contentRect;
         chart.applyOptions({ width, height });
       });
@@ -374,6 +378,9 @@ export function SecurityChart({
 
     (async () => {
       const lc = await import("lightweight-charts");
+      // Re-check after the await — the captured chart may have been disposed
+      // by the init effect's cleanup (keyed remount) while the import resolved.
+      if (chartRef.current !== chart) return;
       updateIndicators(lc, chart, allBars, activeIndicators, indicatorMapRef.current, visibleStart);
     })();
   }, [activeIndicators, activeDuration]);
@@ -388,7 +395,11 @@ export function SecurityChart({
 
     (async () => {
       const lc = await import("lightweight-charts");
-      markersPluginRef.current = updateMarkers(lc, candleSeriesRef.current!, currentTransactionsRef.current, showMarkers, markersPluginRef.current, isPrivateRef.current);
+      // Re-check after the await — refs are nulled when the chart is disposed
+      // on unmount, and touching the old markers plugin then throws.
+      const series = candleSeriesRef.current;
+      if (!series) return;
+      markersPluginRef.current = updateMarkers(lc, series, currentTransactionsRef.current, showMarkers, markersPluginRef.current, isPrivateRef.current);
     })();
   }, [showMarkers]);
 
@@ -422,9 +433,12 @@ export function SecurityChart({
     if (candleSeriesRef.current) {
       (async () => {
         const lc = await import("lightweight-charts");
+        // Re-check after the await — see the markers effect above.
+        const series = candleSeriesRef.current;
+        if (!series) return;
         markersPluginRef.current = updateMarkers(
           lc,
-          candleSeriesRef.current!,
+          series,
           currentTransactionsRef.current,
           showMarkers,
           markersPluginRef.current,
