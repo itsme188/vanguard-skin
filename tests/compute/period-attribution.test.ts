@@ -95,37 +95,111 @@ describe("computePeriodAttribution", () => {
     expect(r.sectorContribution.find((s) => s.sector === "Unclassified")).toBeDefined();
   });
 
-  it("beta-vs-alpha decomposition sums to total return within rounding error", () => {
-    // Seed benchmark prices (need >=5 for regression)
-    const dates = ["2026-01-01", "2026-02-01", "2026-03-01", "2026-04-01", "2026-04-30"];
-    const benchPrices = [400, 405, 415, 410, 420];
-    for (let i = 0; i < dates.length; i++) {
+  describe("beta vs alpha decomposition", () => {
+    // Build daily dates "2026-05-01" + i (May has 31 days; we stay within it)
+    const day = (i: number) => `2026-05-${String(1 + i).padStart(2, "0")}`;
+
+    /** Seed a daily benchmark + valuation series from per-day returns.
+     *  portValues[i] is derived from flow-adjusted returns plus any external
+     *  flow amounts landing that day (flows[i]). Returns the seeded values. */
+    const seedSeries = (opts: {
+      accountId: number;
+      benchReturns: number[]; // daily benchmark returns (length n)
+      portReturns: number[]; // daily flow-adjusted portfolio returns (length n)
+      flows?: Record<number, number>; // dayIndex (1-based pair end) → external flow amount
+    }) => {
+      const n = opts.benchReturns.length;
+      let bench = 400;
+      let port = 100000;
       db.prepare(
         `INSERT INTO benchmark_prices (symbol, date, close_price, source) VALUES ('SPY', ?, ?, 'tws')`,
-      ).run(dates[i], benchPrices[i]);
-    }
-    // Seed daily_valuations (no source column — not in schema)
-    const portValues = [100000, 102000, 108000, 105000, 112000];
-    for (let i = 0; i < dates.length; i++) {
+      ).run(day(0), bench);
       db.prepare(
-        `INSERT INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (1, ?, 0, ?, ?)`,
-      ).run(dates[i], portValues[i], portValues[i]);
-    }
+        `INSERT INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (?, ?, 0, ?, ?)`,
+      ).run(opts.accountId, day(0), port, port);
+      for (let i = 0; i < n; i++) {
+        bench *= 1 + opts.benchReturns[i];
+        const flow = opts.flows?.[i + 1] ?? 0;
+        port = port * (1 + opts.portReturns[i]) + flow;
+        db.prepare(
+          `INSERT INTO benchmark_prices (symbol, date, close_price, source) VALUES ('SPY', ?, ?, 'tws')`,
+        ).run(day(i + 1), bench);
+        db.prepare(
+          `INSERT INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (?, ?, 0, ?, ?)`,
+        ).run(opts.accountId, day(i + 1), port, port);
+        if (flow !== 0) {
+          db.prepare(
+            `INSERT INTO transactions (account_id, trade_date, type, amount, is_external_flow, source_key) VALUES (?, ?, 'WITHDRAWAL', ?, 1, ?)`,
+          ).run(opts.accountId, day(i + 1), flow, `flow-${opts.accountId}-${i}`);
+        }
+      }
+    };
 
-    const r = computePeriodAttribution(db, 1, "2026-01-01", "2026-04-30", "SPY");
-    // beta+alpha should sum to total position-weighted return
-    const totalReturn = [
-      ...r.topContributors,
-      ...r.topDetractors,
-      // Sector contribution covers all positions including mid-contributors
-    ].reduce((s, p) => s + p.contribution, 0);
-    // If regression succeeded, check decomposition
-    if (r.betaVsAlpha.betaContribution !== 0 || r.betaVsAlpha.alphaContribution !== 0) {
-      const sum = r.betaVsAlpha.betaContribution + r.betaVsAlpha.alphaContribution;
-      // totalReturn from all positions (sum of all contributions, not just top5 each)
-      const allRows = [...r.sectorContribution].reduce((s, sec) => s + sec.contribution, 0);
-      expect(Math.abs(sum - allRows)).toBeLessThan(0.0001);
-    }
+    const compound = (rets: number[]) => rets.reduce((p, r) => p * (1 + r), 1) - 1;
+
+    // Hand-computable: port = 1.2 × bench + 0.002 each day → regression beta is
+    // exactly 1.2; betaContribution = 1.2 × compounded benchmark return; alpha =
+    // compounded portfolio return − betaContribution.
+    const benchReturns = [0.01, -0.005, 0.008, 0.002, -0.003, 0.006, 0.001, -0.004, 0.009];
+    const portReturns = benchReturns.map((b) => 1.2 * b + 0.002);
+
+    it("alpha is portfolio return minus beta×benchmark — never the negation of beta", () => {
+      // Live-DB condition for the 2026-06-10 bug: NO holdings/prices rows exist
+      // at the period start (account 2 has none seeded), so per-position
+      // contributions are empty. Pre-fix, alpha = 0 − betaContribution ≡ −beta.
+      seedSeries({ accountId: 2, benchReturns, portReturns });
+
+      const r = computePeriodAttribution(db, 2, day(0), day(9), "SPY");
+      const { betaContribution, alphaContribution } = r.betaVsAlpha;
+
+      expect(betaContribution).not.toBe(0);
+      // The bug signature: alpha ≡ −beta (sums to exactly 0)
+      expect(Math.abs(betaContribution + alphaContribution)).toBeGreaterThan(0.0001);
+
+      const expectedPortReturn = compound(portReturns);
+      const expectedBenchReturn = compound(benchReturns);
+      expect(betaContribution).toBeCloseTo(1.2 * expectedBenchReturn, 8);
+      expect(alphaContribution).toBeCloseTo(expectedPortReturn - 1.2 * expectedBenchReturn, 8);
+      // And the decomposition ties out to the portfolio's period return
+      expect(betaContribution + alphaContribution).toBeCloseTo(expectedPortReturn, 8);
+    });
+
+    it("excludes external cash flows from both the regression and the period return", () => {
+      // Same return series, but a -10,000 withdrawal lands on day 5. The
+      // valuation drops by the flow; the decomposition must be unchanged.
+      seedSeries({ accountId: 2, benchReturns, portReturns, flows: { 5: -10000 } });
+
+      const r = computePeriodAttribution(db, 2, day(0), day(9), "SPY");
+      const expectedPortReturn = compound(portReturns);
+      const expectedBenchReturn = compound(benchReturns);
+      expect(r.betaVsAlpha.betaContribution).toBeCloseTo(1.2 * expectedBenchReturn, 8);
+      expect(r.betaVsAlpha.alphaContribution).toBeCloseTo(
+        expectedPortReturn - 1.2 * expectedBenchReturn,
+        8,
+      );
+    });
+
+    it("drops return pairs spanning >7 calendar days (prices gap guard)", () => {
+      // Dense daily series in May, then a single far-future pair across a
+      // multi-week gap with an absurd jump — the gap pair must not poison
+      // beta or the period return.
+      seedSeries({ accountId: 2, benchReturns, portReturns });
+      db.prepare(
+        `INSERT INTO benchmark_prices (symbol, date, close_price, source) VALUES ('SPY', '2026-06-30', 500, 'tws')`,
+      ).run();
+      db.prepare(
+        `INSERT INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (2, '2026-06-30', 0, 500000, 500000)`,
+      ).run();
+
+      const r = computePeriodAttribution(db, 2, day(0), "2026-06-30", "SPY");
+      const expectedPortReturn = compound(portReturns);
+      const expectedBenchReturn = compound(benchReturns);
+      expect(r.betaVsAlpha.betaContribution).toBeCloseTo(1.2 * expectedBenchReturn, 8);
+      expect(r.betaVsAlpha.alphaContribution).toBeCloseTo(
+        expectedPortReturn - 1.2 * expectedBenchReturn,
+        8,
+      );
+    });
   });
 
   it("returns empty/zero results safely when start or end snapshot is missing", () => {
