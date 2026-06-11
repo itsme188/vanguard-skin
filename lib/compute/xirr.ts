@@ -464,6 +464,25 @@ export function computeXirr(
 
   if (perAccount.length === 0) return null;
 
+  // ─── Single-account scope: headline IS that account's XIRR ─────
+  // The portfolio-wide aggregation below intentionally sums across ALL
+  // accounts (no account filter), so returning it for a scoped call would
+  // show the combined portfolio number for every scope — the 2026-06-10
+  // Performance MWR-headline bug.
+  if (accountId && perAccount.length === 1) {
+    const acct = perAccount[0];
+    return {
+      startDate: acct.startDate,
+      endDate: acct.endDate,
+      xirr: acct.xirr,
+      totalInvested: acct.totalInvested,
+      totalWithdrawn: acct.totalWithdrawn,
+      currentValue: acct.currentValue,
+      cashFlowCount: acct.cashFlowCount,
+      perAccount,
+    };
+  }
+
   // ─── Portfolio-wide XIRR ─────────────────────────────────────
 
   const portfolioCashFlows: CashFlow[] = [];

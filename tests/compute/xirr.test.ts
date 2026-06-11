@@ -332,4 +332,50 @@ describe("XIRR computation", () => {
     // Portfolio ending value should be $1.53M (Mar totals), not just $515k from TWS
     expect(result!.currentValue).toBe(1530000);
   });
+
+  // ─── Scope-aware top-level result (headline per scope) ────────────
+  //
+  // Bug (2026-06-10): the top-level xirr/currentValue/totalInvested were
+  // ALWAYS computed from the all-accounts aggregate, even when accountId was
+  // passed — the option only filtered perAccount[]. The Performance view MWR
+  // headline therefore showed the combined portfolio number for every scope.
+  describe("scope-aware top-level XIRR", () => {
+    function seedTwoAccounts(): void {
+      const ACCT_2 = 2;
+      seedSnapshot(db, ACCT_1, "2025-12-31", 100000);
+      seedSnapshot(db, ACCT_2, "2025-12-31", 100000);
+      seedSnapshot(db, ACCT_1, "2026-05-31", 110000); // +10% over 5 months
+      seedSnapshot(db, ACCT_2, "2026-05-31", 130000); // +30% over 5 months
+    }
+
+    it("top-level fields mirror perAccount[0] when scoped to a single account", () => {
+      seedTwoAccounts();
+      const result = computeXirr(db, { startDate: "2026-01-01", accountId: 1 });
+      expect(result).not.toBeNull();
+      const acct = result!.perAccount[0];
+      expect(result!.xirr).toBe(acct.xirr);
+      expect(result!.currentValue).toBe(acct.currentValue);
+      expect(result!.totalInvested).toBe(acct.totalInvested);
+      expect(result!.totalWithdrawn).toBe(acct.totalWithdrawn);
+      expect(result!.cashFlowCount).toBe(acct.cashFlowCount);
+      expect(result!.currentValue).toBe(110000);
+    });
+
+    it("scoped XIRRs differ per account and the combined sits between them", () => {
+      seedTwoAccounts();
+      const r1 = computeXirr(db, { startDate: "2026-01-01", accountId: 1 });
+      const r2 = computeXirr(db, { startDate: "2026-01-01", accountId: 2 });
+      const combined = computeXirr(db, { startDate: "2026-01-01" });
+      expect(r1).not.toBeNull();
+      expect(r2).not.toBeNull();
+      expect(combined).not.toBeNull();
+
+      // +30% account annualizes well above the +10% account
+      expect(r2!.xirr).toBeGreaterThan(r1!.xirr + 0.05);
+      // Combined (equal starting weights) lands strictly between the two
+      expect(combined!.xirr).toBeGreaterThan(r1!.xirr);
+      expect(combined!.xirr).toBeLessThan(r2!.xirr);
+      expect(combined!.currentValue).toBe(240000);
+    });
+  });
 });

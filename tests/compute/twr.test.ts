@@ -387,4 +387,110 @@ describe("TWR computation", () => {
     expect(acct.totalReturn).toBeGreaterThan(-0.05);
     expect(acct.totalReturn).toBeLessThan(0.05);
   });
+
+  // ─── Scope-aware top-level result (headline per scope) ────────────
+  //
+  // Bug (2026-06-10): the top-level totalReturn/annualizedReturn were ALWAYS
+  // computed from the all-accounts aggregate, even when accountId was passed —
+  // the option only filtered perAccount[]. The Performance view headline
+  // therefore showed the combined portfolio number for every scope.
+  //
+  // Ground truth: chained statement TWRs verified against the IBKR
+  // PortfolioAnalyst PDF to the basis point.
+  describe("scope-aware top-level TWR", () => {
+    const MONTHS = ["2026-01-31", "2026-02-28", "2026-03-31", "2026-04-30", "2026-05-31"];
+    const MONTHLY_RETURNS: Record<number, number[]> = {
+      1: [-0.010212, -0.026796, -0.055982, 0.1464, 0.1191], // Vanguard Taxable (canonical, decimal)
+      2: [0.020503, 0.010643, -0.048169, 0.2384, 0.0669], // Roth (canonical, decimal)
+      3: [0.04988, -0.034033, 0.012633, 0.05239320524, 0.07706298396], // IBKR (Apr/May rows are ibkr-activity, stored as PERCENT)
+    };
+    const START_VALUES: Record<number, number> = { 1: 1000000, 2: 300000, 3: 500000 };
+
+    const chain = (rs: number[]) => rs.reduce((p, r) => p * (1 + r), 1) - 1;
+
+    function seedGroundTruth(): void {
+      for (const acctId of [1, 2, 3]) {
+        seedSnapshot(db, acctId, "2025-12-31", START_VALUES[acctId]);
+        let v = START_VALUES[acctId];
+        MONTHLY_RETURNS[acctId].forEach((r, i) => {
+          v = v * (1 + r);
+          // IBKR Apr+May came in via the ibkr-activity parser, which stores
+          // twr as a PERCENT (5.239320524 = 5.24%); everything else decimal.
+          const isIbkrPct = acctId === 3 && i >= 3;
+          seedSnapshot(db, acctId, MONTHS[i], v, {
+            twr: isIbkrPct ? r * 100 : r,
+            source: isIbkrPct ? "ibkr-activity" : "canonical",
+          });
+        });
+      }
+    }
+
+    it("returns Vanguard Taxable's own chained TWR for accountId=1 (~+16.66% YTD)", () => {
+      seedGroundTruth();
+      const result = computeTwr(db, { startDate: "2026-01-01", accountId: 1 });
+      expect(result).not.toBeNull();
+      expect(result!.totalReturn).toBeCloseTo(chain(MONTHLY_RETURNS[1]), 6); // 0.166625…
+      expect(result!.totalReturn).toBeCloseTo(0.1666, 4);
+    });
+
+    it("returns Roth's own chained TWR for accountId=2 (~+29.70% YTD)", () => {
+      seedGroundTruth();
+      const result = computeTwr(db, { startDate: "2026-01-01", accountId: 2 });
+      expect(result).not.toBeNull();
+      expect(result!.totalReturn).toBeCloseTo(chain(MONTHLY_RETURNS[2]), 6); // 0.297049…
+      expect(result!.totalReturn).toBeCloseTo(0.2970, 4);
+    });
+
+    it("returns IBKR's own chained TWR for accountId=3, honoring ibkr-activity percent rows (~+16.41% YTD)", () => {
+      seedGroundTruth();
+      const result = computeTwr(db, { startDate: "2026-01-01", accountId: 3 });
+      expect(result).not.toBeNull();
+      expect(result!.totalReturn).toBeCloseTo(chain(MONTHLY_RETURNS[3]), 6); // 0.164054…
+      expect(result!.totalReturn).toBeCloseTo(0.1641, 4);
+    });
+
+    it("top-level fields mirror perAccount[0] when scoped to a single account", () => {
+      seedGroundTruth();
+      const result = computeTwr(db, { startDate: "2026-01-01", accountId: 2 });
+      expect(result).not.toBeNull();
+      const acct = result!.perAccount[0];
+      expect(result!.totalReturn).toBe(acct.totalReturn);
+      expect(result!.annualizedReturn).toBe(acct.annualizedReturn);
+      expect(result!.startDate).toBe(acct.startDate);
+      expect(result!.endDate).toBe(acct.endDate);
+      expect(result!.totalDays).toBe(acct.totalDays);
+    });
+
+    it("unscoped call still returns the combined aggregate (and it differs from each scope)", () => {
+      seedGroundTruth();
+
+      // Expected combined: Modified Dietz on summed month-end values (no flows
+      // seeded, so each sub-period is a simple aggregate ratio).
+      const values: Record<number, number[]> = {};
+      for (const acctId of [1, 2, 3]) {
+        let v = START_VALUES[acctId];
+        values[acctId] = [v];
+        for (const r of MONTHLY_RETURNS[acctId]) {
+          v = v * (1 + r);
+          values[acctId].push(v);
+        }
+      }
+      const sums = [0, 1, 2, 3, 4, 5].map(
+        (i) => values[1][i] + values[2][i] + values[3][i],
+      );
+      const expectedCombined = chain(
+        sums.slice(1).map((s, i) => s / sums[i] - 1),
+      );
+
+      const combined = computeTwr(db, { startDate: "2026-01-01" });
+      expect(combined).not.toBeNull();
+      expect(combined!.totalReturn).toBeCloseTo(expectedCombined, 6);
+      expect(combined!.perAccount).toHaveLength(3);
+
+      for (const acctId of [1, 2, 3]) {
+        const scoped = computeTwr(db, { startDate: "2026-01-01", accountId: acctId });
+        expect(scoped!.totalReturn).not.toBeCloseTo(combined!.totalReturn, 3);
+      }
+    });
+  });
 });
