@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import Link from "next/link";
 import { db } from "@/lib/db";
 import { computeTwr } from "@/lib/compute/twr";
@@ -275,16 +276,23 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
           <section className="rounded-xl bg-panel p-4 sm:p-5 card-elev">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 sm:gap-6">
               <KpiCell
-                label="TWR · annualized"
-                value={annualizedTwr}
+                label={`TWR · ${PERIODS.find((p) => p.key === activePeriod)?.label ?? "period"}`}
+                value={totalReturnPct}
                 kind="pct"
-                title="Time-weighted return — manager-skill measure that strips out cash-flow timing."
+                title="Time-weighted return over the selected period — manager-skill measure that strips out cash-flow timing."
+                subNode={
+                  annualizedTwr !== null ? (
+                    <>
+                      ≈ <Pct value={annualizedTwr * 100} digits={0} signed /> annualized
+                    </>
+                  ) : null
+                }
               />
               <KpiCell
-                label="MWR (XIRR)"
+                label="MWR (XIRR) · annualized"
                 value={xirrAnnualized}
                 kind="pct"
-                title="Money-weighted return — investor-experience measure that includes cash-flow timing."
+                title="Money-weighted return, annualized by construction — investor-experience measure that includes cash-flow timing."
                 sub={interpretTwrVsXirr(annualizedTwr, xirrAnnualized)}
               />
               <KpiCell
@@ -402,12 +410,14 @@ function KpiCell({
   kind,
   title,
   sub,
+  subNode,
 }: {
   label: string;
   value: number | null;
   kind: "pct" | "money" | "ratio";
   title?: string;
   sub?: Interpretation | null;
+  subNode?: ReactNode;
 }) {
   const className =
     value === null
@@ -432,6 +442,7 @@ function KpiCell({
           <Money value={value} signed />
         )}
       </p>
+      {subNode && <p className="text-xs mt-1 text-ink-faint">{subNode}</p>}
       {sub && (
         <p className={`text-xs mt-1 ${toneClass(sub.tone)}`}>{sub.text}</p>
       )}

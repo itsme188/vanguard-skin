@@ -332,6 +332,26 @@ export function computeTwr(
 
   if (perAccount.length === 0) return null;
 
+  // ─── Single-account scope: headline IS that account's chained TWR ──
+  // The portfolio-wide aggregation below intentionally sums across ALL
+  // accounts (it has no account filter), so returning it for a scoped call
+  // would silently show the combined portfolio number for every scope —
+  // exactly the 2026-06-10 Performance-headline bug. The per-account path is
+  // also the more accurate one for a single account: it uses the statement's
+  // pre-computed monthly TWR (percent/decimal source-aware) instead of a
+  // Modified Dietz approximation.
+  if (accountId && perAccount.length === 1) {
+    const acct = perAccount[0];
+    return {
+      startDate: acct.startDate,
+      endDate: acct.endDate,
+      totalReturn: acct.totalReturn,
+      annualizedReturn: acct.annualizedReturn,
+      totalDays: acct.totalDays,
+      perAccount,
+    };
+  }
+
   // ─── Portfolio-wide TWR ────────────────────────────────────────
 
   // Aggregate snapshots across accounts per month
