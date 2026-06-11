@@ -153,6 +153,43 @@ describe("computeExposureDelta", () => {
     expect(result.before.topConcentrations.length).toBeGreaterThanOrEqual(3);
   });
 
+  describe("short positions stay in the after book", () => {
+    // Regression: applyLegs filtered `marketValue > 0`, dropping shorts from
+    // the AFTER snapshot while BEFORE included them — every what-if's Total
+    // Value Δ was inflated by a constant |sum of short MVs| (live: $57,771).
+    const today = new Date().toISOString().slice(0, 10);
+
+    beforeEach(() => {
+      // Short 50 shares of PINS @ $30 = -$1,500 in IBKR.
+      db.prepare(`INSERT INTO securities (id, symbol, security_type, sector) VALUES (6, 'PINS', 'Stock', 'Communication Services')`).run();
+      db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (6, ?, 30, 'tws')`).run(today);
+      db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (3, 6, ?, -50, 'tws-pins')`).run(today);
+    });
+
+    it("what-if Δ equals exactly the entered amount when shorts are held", () => {
+      const result = computeExposureDelta(db, "all", undefined, [
+        { symbol: "KO_LIKE_BUY", action: "buy", dollarAmount: 0 }, // no-op leg shape guard
+        { symbol: "AAPL", action: "buy", dollarAmount: 10000 },
+      ]);
+      // before includes the -$1,500 short: 2000 + 3000 + 2000 - 1500
+      expect(result.before.totalValue).toBe(5500);
+      expect(result.after.totalValue).toBeCloseTo(result.before.totalValue + 10000, 2);
+    });
+
+    it("empty legs is a true no-op even with shorts held", () => {
+      const result = computeExposureDelta(db, "all", undefined, []);
+      expect(result.after.totalValue).toBeCloseTo(result.before.totalValue, 2);
+      expect(result.after.beta).toBeCloseTo(result.before.beta, 6);
+    });
+
+    it("buying into the short (covering) still moves total by the entered amount", () => {
+      const result = computeExposureDelta(db, "all", undefined, [
+        { symbol: "PINS", action: "buy", dollarAmount: 600 }, // covers 20 of 50 shares
+      ]);
+      expect(result.after.totalValue).toBeCloseTo(result.before.totalValue + 600, 2);
+    });
+  });
+
   it("empty legs produces a no-op delta (before == after)", () => {
     const result = computeExposureDelta(db, "all", undefined, []);
     expect(result.after.totalValue).toBeCloseTo(result.before.totalValue, 2);
