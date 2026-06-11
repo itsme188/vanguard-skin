@@ -2,9 +2,81 @@ import { describe, expect, it } from "vitest";
 import {
   formatLargeNumber,
   formatLargeUSD,
+  formatPercent,
+  formatUSD,
+  formatUSDPrecise,
   parseLargeUSD,
   parseStoredTimestamp,
+  rendersAsZero,
 } from "../../lib/format";
+
+// ── Negative-zero guard ──────────────────────────────────────────────
+// A signed value that ROUNDS to zero must render unsigned — a near-worthless
+// expiring option with a -$0.40 day move was rendering "−$0" on Today.
+
+describe("rendersAsZero", () => {
+  it("detects rounded-to-zero strings", () => {
+    expect(rendersAsZero("$0")).toBe(true);
+    expect(rendersAsZero("-$0.00")).toBe(true);
+    expect(rendersAsZero("0.0%")).toBe(true);
+    expect(rendersAsZero("-0.0")).toBe(true);
+  });
+
+  it("passes strings with significant digits", () => {
+    expect(rendersAsZero("$1")).toBe(false);
+    expect(rendersAsZero("-$0.01")).toBe(false);
+    expect(rendersAsZero("$1,000")).toBe(false);
+    expect(rendersAsZero("0.1%")).toBe(false);
+  });
+});
+
+describe("formatUSD negative zero", () => {
+  it("renders tiny negatives as unsigned $0", () => {
+    expect(formatUSD(-0.4)).toBe("$0");
+    expect(formatUSD(-0)).toBe("$0");
+  });
+
+  it("keeps the sign once a digit survives rounding", () => {
+    expect(formatUSD(-1)).toBe("-$1");
+    // Intl halfExpand rounds -0.5 away from zero → a real digit survives.
+    expect(formatUSD(-0.5)).toBe("-$1");
+  });
+
+  it("leaves normal values untouched", () => {
+    expect(formatUSD(1234)).toBe("$1,234");
+    expect(formatUSD(0)).toBe("$0");
+  });
+});
+
+describe("formatUSDPrecise negative zero", () => {
+  it("renders sub-cent negatives as unsigned $0.00", () => {
+    expect(formatUSDPrecise(-0.004)).toBe("$0.00");
+    expect(formatUSDPrecise(-0)).toBe("$0.00");
+  });
+
+  it("keeps the sign for a real cent", () => {
+    expect(formatUSDPrecise(-0.01)).toBe("-$0.01");
+  });
+});
+
+describe("formatPercent negative zero", () => {
+  it("renders tiny negatives as unsigned 0.0%", () => {
+    expect(formatPercent(-0.04)).toBe("0.0%");
+    expect(formatPercent(-0, 2)).toBe("0.00%");
+  });
+
+  it("keeps the sign once a digit survives rounding", () => {
+    expect(formatPercent(-0.05)).toBe("-0.1%");
+    expect(formatPercent(-1.23, 2)).toBe("-1.23%");
+  });
+});
+
+describe("formatLargeUSD / formatLargeNumber negative zero", () => {
+  it("renders tiny negatives unsigned", () => {
+    expect(formatLargeUSD(-0.004)).toBe("$0.00");
+    expect(formatLargeNumber(-0.004)).toBe("0.00");
+  });
+});
 
 describe("parseStoredTimestamp", () => {
   it("parses a space-separated SQLite UTC timestamp as UTC, not local", () => {

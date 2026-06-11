@@ -14,8 +14,20 @@ const currencyPreciseFormatter = new Intl.NumberFormat("en-US", {
 
 const numberFormatter = new Intl.NumberFormat("en-US");
 
+/**
+ * True when a formatted numeric string contains no significant digit — i.e.
+ * the value rounded to zero at the rendered precision ("$0", "-$0.00",
+ * "0.0%"). Used to drop the sign on tiny negatives AFTER rounding so no
+ * surface ever renders a signed negative zero ("−$0").
+ */
+export function rendersAsZero(formatted: string): boolean {
+  return !/[1-9]/.test(formatted);
+}
+
 export function formatUSD(value: number): string {
-  return currencyFormatter.format(value);
+  const out = currencyFormatter.format(value);
+  // Tiny negatives (e.g. -0.4) round to zero but keep their sign ("-$0").
+  return rendersAsZero(out) ? currencyFormatter.format(0) : out;
 }
 
 /**
@@ -35,7 +47,8 @@ export function parseStoredTimestamp(value: string): Date {
 }
 
 export function formatUSDPrecise(value: number): string {
-  return currencyPreciseFormatter.format(value);
+  const out = currencyPreciseFormatter.format(value);
+  return rendersAsZero(out) ? currencyPreciseFormatter.format(0) : out;
 }
 
 export function formatNumber(value: number): string {
@@ -44,7 +57,9 @@ export function formatNumber(value: number): string {
 
 export function formatPercent(value: number, digits = 1): string {
   if (!Number.isFinite(value)) return "—";
-  return `${value.toFixed(digits)}%`;
+  const out = `${value.toFixed(digits)}%`;
+  // (-0.04).toFixed(1) === "-0.0" — drop the sign once it rounds to zero.
+  return rendersAsZero(out) ? `${(0).toFixed(digits)}%` : out;
 }
 
 export function formatShares(value: number, digits = 0): string {
@@ -61,25 +76,30 @@ export function formatShares(value: number, digits = 0): string {
 // scoreboard cells, AI prompts, and any UI that shows revenue / market-cap.
 export function formatLargeUSD(value: number): string {
   if (!Number.isFinite(value)) return "—";
-  const sign = value < 0 ? "-" : "";
   const abs = Math.abs(value);
-  if (abs >= 1_000_000_000) return `${sign}$${(abs / 1_000_000_000).toFixed(2)}B`;
-  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
-  if (abs >= 1_000) return `${sign}$${numberFormatter.format(Math.round(abs))}`;
+  let body: string;
+  if (abs >= 1_000_000_000) body = `$${(abs / 1_000_000_000).toFixed(2)}B`;
+  else if (abs >= 1_000_000) body = `$${(abs / 1_000_000).toFixed(1)}M`;
+  else if (abs >= 1_000) body = `$${numberFormatter.format(Math.round(abs))}`;
   // Sub-$1k: keep 2 decimals so EPS-scale values render naturally ($0.91)
-  return `${sign}$${abs.toFixed(2)}`;
+  else body = `$${abs.toFixed(2)}`;
+  // Sign applies only when the rounded output is nonzero — never "-$0.00".
+  const sign = value < 0 && !rendersAsZero(body) ? "-" : "";
+  return `${sign}${body}`;
 }
 
 // Same scaling as formatLargeUSD but without the "$" glyph. For unit counts
 // (subscribers, contracts, etc.) and contexts that already supply currency.
 export function formatLargeNumber(value: number): string {
   if (!Number.isFinite(value)) return "—";
-  const sign = value < 0 ? "-" : "";
   const abs = Math.abs(value);
-  if (abs >= 1_000_000_000) return `${sign}${(abs / 1_000_000_000).toFixed(2)}B`;
-  if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(1)}M`;
-  if (abs >= 1_000) return `${sign}${numberFormatter.format(Math.round(abs))}`;
-  return `${sign}${abs.toFixed(2)}`;
+  let body: string;
+  if (abs >= 1_000_000_000) body = `${(abs / 1_000_000_000).toFixed(2)}B`;
+  else if (abs >= 1_000_000) body = `${(abs / 1_000_000).toFixed(1)}M`;
+  else if (abs >= 1_000) body = numberFormatter.format(Math.round(abs));
+  else body = abs.toFixed(2);
+  const sign = value < 0 && !rendersAsZero(body) ? "-" : "";
+  return `${sign}${body}`;
 }
 
 // Parse a user-entered or AI-extracted large-USD string into a number.

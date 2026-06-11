@@ -7,6 +7,7 @@ import {
   formatShares,
   formatUSD,
   formatUSDPrecise,
+  rendersAsZero,
 } from "@/lib/format";
 import { usePrivacy } from "./context";
 
@@ -46,7 +47,15 @@ export function Money({
   const formatted = formatter(Math.abs(value));
   // formatter output always begins with "$" — strip it when `bare`.
   const numeric = bare ? formatted.replace(/^\$/, "") : formatted;
-  const sign = signed && value > 0 ? "+" : value < 0 ? "−" : "";
+  // Sign is decided AFTER rounding: a tiny value that rounds to "$0" renders
+  // unsigned — never "−$0" / "+$0".
+  const sign = rendersAsZero(numeric)
+    ? ""
+    : signed && value > 0
+      ? "+"
+      : value < 0
+        ? "−"
+        : "";
   return <span className={className}>{`${sign}${numeric}`}</span>;
 }
 
@@ -73,7 +82,14 @@ export function Pct({
     return <span className={className}>{MASK}</span>;
   }
   const formatted = formatPercent(Math.abs(value), digits);
-  const sign = signed && value > 0 ? "+" : value < 0 ? "−" : "";
+  // Same negative-zero guard as <Money> — sign decided after rounding.
+  const sign = rendersAsZero(formatted)
+    ? ""
+    : signed && value > 0
+      ? "+"
+      : value < 0
+        ? "−"
+        : "";
   return <span className={className}>{`${sign}${formatted}`}</span>;
 }
 
