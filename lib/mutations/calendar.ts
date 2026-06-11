@@ -40,6 +40,14 @@ export interface CalendarEventInput {
  * Batch upsert calendar events. Uses ON CONFLICT(source_key) to update
  * existing events rather than creating duplicates.
  * Returns counts distinguishing new inserts from updates of existing rows.
+ *
+ * Enrichment invariant ("sync may only add data, never clear it"):
+ * the conflict clause deliberately does NOT touch actual_value /
+ * consensus_value / reaction_snapshot / enriched_at — those are owned by
+ * the post-release enrichment runner — and release_time uses COALESCE so a
+ * fresh input that resolves no release time (e.g. other_macro with a lost
+ * event_time) can't clear a value that was backfilled and feeds the
+ * enrichment window filter.
  */
 export function upsertCalendarEvents(
   db: Database.Database,
@@ -67,7 +75,7 @@ export function upsertCalendarEvents(
        event_type = excluded.event_type,
        event_date = excluded.event_date,
        event_time = excluded.event_time,
-       release_time = excluded.release_time,
+       release_time = COALESCE(excluded.release_time, calendar_events.release_time),
        title = excluded.title,
        description = excluded.description,
        expected_impact = excluded.expected_impact,
@@ -326,7 +334,42 @@ function deriveReleaseTime(
 }
 
 /**
+ * Delete UN-enriched events for a given week + source. The sync pipeline's
+ * delete-before-reinsert exists for reschedule-orphan cleanup (source_key
+ * includes the date, so a rescheduled event leaves a stale row behind) — but
+ * an ENRICHED row is the historical record of a release that already
+ * happened: deleting it destroys actual_value / consensus_value /
+ * reaction_snapshot / enriched_at, and (via ON DELETE CASCADE) the
+ * earnings_emails / earnings_email_skips audit rows keyed on its id.
+ *
+ * Sync may only ADD data, never clear it (same invariant as the enrichment
+ * runner's COALESCE guards, 309f2ca). Enriched rows survive: if the new sync
+ * set re-produces the same source_key, upsertCalendarEvents refreshes the
+ * sync-owned metadata without touching enrichment; if it doesn't (source
+ * list drift — the Existing Home Sales disappearance), the row simply stays.
+ * Un-enriched orphans are still cleaned exactly as before.
+ */
+export function deleteUnenrichedEventsForWeek(
+  db: Database.Database,
+  weekOf: string,
+  source: CalendarEventSource
+): number {
+  return db
+    .prepare(
+      `DELETE FROM calendar_events
+        WHERE week_of = ? AND source = ?
+          AND actual_value IS NULL
+          AND consensus_value IS NULL
+          AND reaction_snapshot IS NULL
+          AND enriched_at IS NULL`
+    )
+    .run(weekOf, source).changes;
+}
+
+/**
  * Delete events for a given week, optionally filtered by source.
+ * NOTE: unconditional — destroys enrichment. Sync paths must use
+ * deleteUnenrichedEventsForWeek instead.
  */
 export function deleteEventsForWeek(
   db: Database.Database,
