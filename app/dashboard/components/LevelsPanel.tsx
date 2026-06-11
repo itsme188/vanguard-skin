@@ -9,7 +9,10 @@ import type {
   LevelTimeframe,
   LevelPriceSource,
 } from "@/lib/types";
-import { Money } from "@/lib/privacy/components";
+// Level prices are PUBLIC market data (a price level reveals neither what the
+// user owns nor earns), so they render via pure formatters — never privacy-
+// masked. This matches the SuggestedLevels rows, which always show full prices.
+import { formatUSDPrecise } from "@/lib/format";
 import { useToast } from "./Toast";
 import { Chip } from "./Chip";
 import { SortPicker } from "./SortPicker";
@@ -1005,7 +1008,7 @@ export function LevelsPanel({
                               opacity: inactive ? 0.5 : 1,
                             }}
                           >
-                            <Money value={l.price} precise />
+                            {formatUSDPrecise(l.price)}
                           </span>
                         ) : (
                           <>
@@ -1030,7 +1033,7 @@ export function LevelsPanel({
                                   fontVariantNumeric: "tabular-nums",
                                 }}
                               >
-                                ≈ <Money value={l.effective_price} precise />
+                                ≈ {formatUSDPrecise(l.effective_price)}
                               </span>
                             ) : (
                               <span
@@ -1075,7 +1078,7 @@ export function LevelsPanel({
                               borderRadius: "2px",
                             }}
                           >
-                            Triggered @ <Money value={l.triggered_price} precise />
+                            Triggered @ {l.triggered_price !== null ? formatUSDPrecise(l.triggered_price) : "—"}
                           </span>
                         )}
                         {alertedToday && (
@@ -1225,7 +1228,9 @@ export function LevelsPanel({
               <div className="flex-1 min-w-0">
                 <div className="flex items-baseline gap-2 flex-wrap">
                   {l.price_source === "static" ? (
-                    <Money value={l.price} precise className="text-sm font-mono font-medium text-ink" />
+                    <span className="text-sm font-mono font-medium text-ink">
+                      {formatUSDPrecise(l.price)}
+                    </span>
                   ) : (
                     <>
                       <span className="text-sm font-mono font-medium text-ink">
@@ -1233,7 +1238,7 @@ export function LevelsPanel({
                       </span>
                       {l.effective_price !== null ? (
                         <span className="text-[10px] text-ink-faint">
-                          ≈ <Money value={l.effective_price} precise />
+                          ≈ {formatUSDPrecise(l.effective_price)}
                         </span>
                       ) : (
                         <span className="text-[10px] text-amber-400" title="Not enough OHLCV history to compute this MA yet — the level won't fire until bars accumulate.">
@@ -1254,7 +1259,7 @@ export function LevelsPanel({
                   )}
                   {l.is_active === 0 && l.triggered_at && (
                     <Chip size="xs" tone="gold">
-                      triggered @ <Money value={l.triggered_price} precise />
+                      triggered @ {l.triggered_price !== null ? formatUSDPrecise(l.triggered_price) : "—"}
                     </Chip>
                   )}
                   {triggeredToday(l.triggered_at) && (

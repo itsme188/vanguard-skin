@@ -4,7 +4,11 @@ import { Suspense, useEffect, useMemo, useState, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import type { LevelAlert, AlertResponse, LevelReviewStatus } from "@/lib/types";
-import { Money, Pct, Shares } from "@/lib/privacy/components";
+import { Shares } from "@/lib/privacy/components";
+// Level prices, trigger prices, and current market prices are PUBLIC market
+// data — they reveal nothing about what the user owns/earns, so they render
+// via pure formatters, never privacy-masked (held quantities still mask).
+import { formatPercent, formatUSDPrecise } from "@/lib/format";
 import { useToast } from "../components/Toast";
 import { SortPicker } from "../components/SortPicker";
 import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
@@ -644,7 +648,7 @@ function AlertRow({
             {alert.level && (
               <span className="text-[11px] text-ink-dim">
                 {alert.level.level_type.replace("_", " ")} @{" "}
-                <Money value={alert.level.price} precise />
+                {formatUSDPrecise(alert.level.price)}
                 {alert.level.price_source && alert.level.price_source !== "static" && (
                   <span
                     className="ml-1.5 inline-block px-1 py-0.5 rounded text-[9px] bg-raised text-ink-faint uppercase tracking-wider"
@@ -656,7 +660,7 @@ function AlertRow({
               </span>
             )}
             <span className="text-[11px] text-ink-faint">
-              hit <Money value={alert.triggered_price} precise />
+              hit {formatUSDPrecise(alert.triggered_price)}
             </span>
             <span className="text-[10px] text-ink-faint">{when}</span>
           </div>
@@ -810,7 +814,7 @@ function ReviewRow({
               {level.level_type.replace("_", " ")}
             </span>
             <span className="text-sm font-mono text-ink">
-              @ <Money value={level.price} precise />
+              @ {formatUSDPrecise(level.price)}
             </span>
             {level.price_source && level.price_source !== "static" && (
               <span className="text-[9px] px-1 py-0.5 rounded bg-raised text-ink-faint uppercase tracking-wider">
@@ -819,8 +823,9 @@ function ReviewRow({
             )}
             {distVal !== null && (
               <span className="text-[11px] text-ink-faint font-mono">
-                <Pct value={distVal} digits={1} signed /> vs{" "}
-                <Money value={level.current_price} precise />
+                {distVal >= 0 ? "+" : ""}
+                {formatPercent(distVal, 1)} vs{" "}
+                {level.current_price != null ? formatUSDPrecise(level.current_price) : "—"}
               </span>
             )}
             <span className="text-[10px] text-ink-faint">{when}</span>
