@@ -7,7 +7,7 @@ import { fetchNasdaqEarningsForSymbols } from "@/lib/calendar/nasdaq";
 import { reconcileEarningsDates } from "@/lib/calendar/reconcile-earnings-dates";
 import { getHeldStockSymbols } from "@/lib/queries/briefing-symbols";
 import { getReadThroughReporterSymbols } from "@/lib/queries/read-through-pairs";
-import { upsertCalendarEvents, deleteEventsForWeek } from "@/lib/mutations/calendar";
+import { upsertCalendarEvents, deleteUnenrichedEventsForWeek } from "@/lib/mutations/calendar";
 import { getIbApi, disconnectTws } from "@/lib/tws/client";
 import { addDays, validateWeekOf, todayET } from "@/lib/calendar/date-utils";
 
@@ -150,7 +150,10 @@ export async function syncCalendarForWeek(
     try {
       const macroInputs = await fetchMacroEvents(startDate, endDate, weekOf);
       if (macroInputs.length > 0) {
-        deleteEventsForWeek(db, weekOf, "claude_macro");
+        // Reschedule-orphan cleanup — un-enriched rows only. Enriched rows are
+        // historical records of releases that happened; the upsert below
+        // refreshes their sync-owned metadata without touching enrichment.
+        deleteUnenrichedEventsForWeek(db, weekOf, "claude_macro");
         const result = upsertCalendarEvents(db, macroInputs);
         macroNew = result.inserted;
       }
@@ -198,7 +201,9 @@ export async function syncCalendarForWeek(
           },
         );
         if (finnhubInputs.length > 0) {
-          deleteEventsForWeek(db, weekOf, "finnhub");
+          // Same enrichment-preserving cleanup as the macro phase — an enriched
+          // earnings row also anchors earnings_emails dedup rows (CASCADE).
+          deleteUnenrichedEventsForWeek(db, weekOf, "finnhub");
           const result = upsertCalendarEvents(db, finnhubInputs);
           finnhubNew = result.inserted;
         }
@@ -242,7 +247,7 @@ export async function syncCalendarForWeek(
         weekOf,
       );
       if (nasdaqInputs.length > 0) {
-        deleteEventsForWeek(db, weekOf, "nasdaq");
+        deleteUnenrichedEventsForWeek(db, weekOf, "nasdaq");
         const result = upsertCalendarEvents(db, nasdaqInputs);
         nasdaqNew = result.inserted;
       }
