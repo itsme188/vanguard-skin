@@ -271,8 +271,14 @@ function applyLegs(
       const h = next[idx];
       const shares = leg.dollarAmount / (h.price * h.multiplier);
       const delta = leg.action === "buy" ? shares : -shares;
+      const prevQuantity = h.quantity;
       h.quantity += delta;
-      if (h.quantity < 0) h.quantity = 0; // clamp short via synthetic sell
+      // A sell on a LONG clamps at zero (no synthetic short). Shorts are
+      // untouched: a buy covers (and may cross into long), a sell adds to
+      // the short — never zero an existing short via the clamp.
+      if (leg.action === "sell" && prevQuantity > 0 && h.quantity < 0) {
+        h.quantity = 0;
+      }
       h.marketValue = marketValue(h.quantity, h.price, h.securityType, h.multiplier);
     } else {
       if (leg.action === "sell") continue; // can't sell what we don't hold
@@ -289,7 +295,11 @@ function applyLegs(
     }
   }
 
-  return next.filter((h) => h.marketValue > 0);
+  // Keep shorts (negative marketValue) — dropping them gave the AFTER
+  // snapshot a higher baseline than BEFORE by |sum of short MVs| (constant
+  // ~$57.8k inflation of every what-if Total Value Δ). Only fully-zeroed
+  // positions leave the book.
+  return next.filter((h) => h.quantity !== 0);
 }
 
 function getCaps(db: Database.Database, scope: string): ConstructionCaps {
