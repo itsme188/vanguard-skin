@@ -8,7 +8,102 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
-import { parseSourceKey, fetchActualForEvent } from "@/lib/calendar/enrich-actuals";
+import {
+  parseSourceKey,
+  fetchActualForEvent,
+  formatFredValue,
+  RELEASE_ID_TO_SERIES,
+} from "@/lib/calendar/enrich-actuals";
+
+// ── formatFredValue — units + level/delta semantics ──────────────────
+//
+// Values below are REAL FRED observations (verified live 2026-06-11).
+// The 2026-06-11 deep-QA sweep caught the old `level_k` formatter
+// (a) appending "K" to raw-count series (ICSA is "Number", not thousands
+// → "+4,000K" = 4M jobless claims) and (b) rendering deltas for series
+// the press quotes as levels (claims, home sales, JOLTS, starts).
+
+const obs = (value: number, priorValue: number | null = null) => ({
+  value,
+  date: "2026-06-06",
+  priorValue,
+  priorYearValue: null as number | null,
+});
+
+describe("formatFredValue — count/level semantics", () => {
+  it("renders Initial Claims as the LEVEL in K (raw-count series)", () => {
+    // ICSA week ending 2026-06-06: 229,000 (prior 225,000). Old code
+    // emitted the WoW delta "+4,000K" — 4 million claims.
+    expect(formatFredValue(obs(229000, 225000), { formatAs: "level_count", unitScale: 1 }))
+      .toBe("229K");
+  });
+
+  it("renders Existing Home Sales as the level in M (raw-count series)", () => {
+    // May 2026: 4,170,000 SAAR (prior 4,040,000). Old: "+130,000K".
+    expect(formatFredValue(obs(4170000, 4040000), { formatAs: "level_count", unitScale: 1 }))
+      .toBe("4.17M");
+  });
+
+  it("scales thousands-denominated levels to M (Housing Starts)", () => {
+    // April 2026: 1,465 thousand SAAR. Old: "-42K" (the MoM delta).
+    expect(formatFredValue(obs(1465, 1507), { formatAs: "level_count", unitScale: 1000 }))
+      .toBe("1.47M");
+  });
+
+  it("keeps sub-million thousands-denominated levels in K (New Home Sales)", () => {
+    expect(formatFredValue(obs(622, 663), { formatAs: "level_count", unitScale: 1000 }))
+      .toBe("622K");
+  });
+
+  it("renders JOLTS openings as the level in M", () => {
+    expect(formatFredValue(obs(7618, 6887), { formatAs: "level_count", unitScale: 1000 }))
+      .toBe("7.62M");
+  });
+
+  it("renders payrolls as a signed monthly delta in K (delta convention)", () => {
+    // PAYEMS May 2026: 159,001K (prior 158,829K) → +172K jobs.
+    expect(formatFredValue(obs(159001, 158829), { formatAs: "delta_k", unitScale: 1000 }))
+      .toBe("+172K");
+  });
+
+  it("renders negative payroll deltas with a minus sign", () => {
+    expect(formatFredValue(obs(158650, 158829), { formatAs: "delta_k", unitScale: 1000 }))
+      .toBe("-179K");
+  });
+
+  it("renders raw-persons delta series in K (monthly ADP)", () => {
+    expect(formatFredValue(obs(134500000, 134458000), { formatAs: "delta_k", unitScale: 1 }))
+      .toBe("+42K");
+  });
+
+  it("returns null for delta_k with no prior observation (never a bare level)", () => {
+    expect(formatFredValue(obs(159001, null), { formatAs: "delta_k", unitScale: 1000 }))
+      .toBeNull();
+  });
+
+  it("renders trade balance in signed $B (millions-of-dollars series)", () => {
+    // BOPGSTB April 2026: -55,881 ($M). Old: "-55,881" with no unit.
+    expect(formatFredValue(obs(-55881, -56585), { formatAs: "usd_millions" }))
+      .toBe("-$55.9B");
+  });
+});
+
+describe("RELEASE_ID_TO_SERIES — units-verified config", () => {
+  it("pins ICSA as a level-quoted raw-count series", () => {
+    expect(RELEASE_ID_TO_SERIES[180]).toEqual({
+      seriesId: "ICSA", formatAs: "level_count", unitScale: 1,
+    });
+  });
+
+  it("uses the MONTHLY ADP series (weekly raw series can't produce the headline)", () => {
+    expect(RELEASE_ID_TO_SERIES[194].seriesId).toBe("ADPMNUSNERSA");
+    expect(RELEASE_ID_TO_SERIES[194].formatAs).toBe("delta_k");
+  });
+
+  it("pins trade balance as millions-of-USD", () => {
+    expect(RELEASE_ID_TO_SERIES[51].formatAs).toBe("usd_millions");
+  });
+});
 
 describe("parseSourceKey", () => {
   it("parses fred:<releaseId>:<date>", () => {
@@ -94,6 +189,49 @@ describe("fetchActualForEvent — dispatcher", () => {
     expect(result.consensus).toBe("3.2%");
     // (310.326 - 300.84) / 300.84 * 100 = 3.15%, rounded to 3.2%.
     expect(result.actual).toMatch(/^\d\.\d%$/);
+
+    // Vintage must be pinned to the event date (ALFRED realtime params) so
+    // a late re-run can never pick up later-published observations or
+    // revisions — the stored actual is the release-day first print.
+    const calledUrl = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    expect(calledUrl).toContain("realtime_start=2026-04-11");
+    expect(calledUrl).toContain("realtime_end=2026-04-11");
+  });
+
+  it("falls back to prior-month-end capping when a series has no ALFRED vintages", async () => {
+    // First call (vintage-pinned) 400s — EXHOSLUSM495S-style licensed
+    // series. Second call must drop realtime params and cap observation_end
+    // at the end of the month BEFORE the event, so a later-published month
+    // can never leak in.
+    (global.fetch as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ ok: false, status: 400, json: async () => ({}) })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          observations: [
+            { date: "2026-05-01", value: "4170000" },
+            { date: "2026-04-01", value: "4040000" },
+          ],
+        }),
+      });
+
+    const result = await fetchActualForEvent(db, {
+      id: 1,
+      source: "claude_macro",
+      source_key: "fred:291:2026-06-09",
+      event_type: "housing",
+      event_date: "2026-06-09",
+      release_time: "10:00",
+      symbol: null,
+      title: "May Existing Home Sales",
+      consensus_estimate: null,
+      raw_json: null,
+    });
+
+    expect(result.actual).toBe("4.17M");
+    const fallbackUrl = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[1][0] as string;
+    expect(fallbackUrl).toContain("observation_end=2026-05-31");
+    expect(fallbackUrl).not.toContain("realtime_start");
   });
 
   it("returns null actual but keeps consensus for unknown source_keys", async () => {
@@ -171,7 +309,9 @@ describe("fetchActualForEvent — dispatcher", () => {
   });
 
   it("returns null actual when FRED API is unreachable", async () => {
-    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+    // Persistent mock (not Once): the vintage-pinned call AND the
+    // prior-month-end fallback call both fail when FRED is down.
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
       ok: false,
       status: 500,
       json: async () => ({}),

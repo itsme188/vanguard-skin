@@ -9,27 +9,35 @@
  * when reconciled into calendar_events.
  */
 
-interface FredSeriesConfig {
+// formatAs + unitScale semantics are documented in the Mac module
+// (lib/calendar/enrich-actuals.ts) — units verified against the FRED
+// /series endpoint 2026-06-11. Keep this map + formatFredValue in
+// lockstep with the Mac side; parity is pinned by mirrored test cases
+// in test/enrich-actuals.test.ts.
+export interface FredSeriesConfig {
   seriesId: string;
-  formatAs: "pct" | "pct_yoy" | "pct_mom" | "level_k" | "level" | "qoq_saar";
+  formatAs: "pct" | "pct_yoy" | "pct_mom" | "delta_k" | "level_count" | "usd_millions" | "qoq_saar";
+  /** Multiplier converting a raw observation to ones. Required for
+   *  delta_k / level_count; ignored by the pct/usd formats. */
+  unitScale?: number;
 }
 
-const RELEASE_ID_TO_SERIES: Record<number, FredSeriesConfig> = {
+export const RELEASE_ID_TO_SERIES: Record<number, FredSeriesConfig> = {
   10:  { seriesId: "CPIAUCSL", formatAs: "pct_yoy" },
   46:  { seriesId: "PPIACO",   formatAs: "pct_yoy" },
   54:  { seriesId: "PCEPILFE", formatAs: "pct_yoy" },
   53:  { seriesId: "GDPC1",    formatAs: "qoq_saar" },
-  50:  { seriesId: "PAYEMS",   formatAs: "level_k" },
-  194: { seriesId: "ADPWNUSNERSA", formatAs: "level_k" },
-  192: { seriesId: "JTSJOL",   formatAs: "level_k" },
-  180: { seriesId: "ICSA",     formatAs: "level_k" },
+  50:  { seriesId: "PAYEMS",   formatAs: "delta_k", unitScale: 1000 },
+  194: { seriesId: "ADPMNUSNERSA", formatAs: "delta_k", unitScale: 1 },
+  192: { seriesId: "JTSJOL",   formatAs: "level_count", unitScale: 1000 },
+  180: { seriesId: "ICSA",     formatAs: "level_count", unitScale: 1 },
   9:   { seriesId: "RSAFS",    formatAs: "pct_mom" },
-  27:  { seriesId: "HOUST",    formatAs: "level_k" },
-  291: { seriesId: "EXHOSLUSM495S", formatAs: "level_k" },
-  97:  { seriesId: "HSN1F",    formatAs: "level_k" },
+  27:  { seriesId: "HOUST",    formatAs: "level_count", unitScale: 1000 },
+  291: { seriesId: "EXHOSLUSM495S", formatAs: "level_count", unitScale: 1 },
+  97:  { seriesId: "HSN1F",    formatAs: "level_count", unitScale: 1000 },
   13:  { seriesId: "INDPRO",   formatAs: "pct_yoy" },
   95:  { seriesId: "DGORDER",  formatAs: "pct_mom" },
-  51:  { seriesId: "BOPGSTB",  formatAs: "level" },
+  51:  { seriesId: "BOPGSTB",  formatAs: "usd_millions" },
 };
 
 interface FredObservation {
@@ -45,6 +53,10 @@ export async function fetchFredSeriesLatest(
   apiKey: string | undefined,
   seriesId: string,
   observationEnd?: string,
+  /** Pin the FRED/ALFRED vintage — the series as published on this date.
+   *  See the Mac module for the full rationale (release-day first print,
+   *  immune to later-published months + revisions). */
+  realtimeAt?: string,
 ): Promise<{ value: number; date: string; priorValue: number | null; priorYearValue: number | null } | null> {
   if (!apiKey) return null;
   const url = new URL("https://api.stlouisfed.org/fred/series/observations");
@@ -54,6 +66,10 @@ export async function fetchFredSeriesLatest(
   url.searchParams.set("sort_order", "desc");
   url.searchParams.set("limit", "14");
   if (observationEnd) url.searchParams.set("observation_end", observationEnd);
+  if (realtimeAt) {
+    url.searchParams.set("realtime_start", realtimeAt);
+    url.searchParams.set("realtime_end", realtimeAt);
+  }
 
   const res = await fetch(url.toString());
   if (!res.ok) return null;
@@ -78,12 +94,47 @@ export async function fetchFredSeriesLatest(
   };
 }
 
-function formatFredValue(
+/** Last day of the month before a YYYY-MM-DD date ("2026-06-09" → "2026-05-31"). */
+function priorMonthEnd(date: string): string {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCDate(0); // day 0 = last day of the previous month
+  return d.toISOString().slice(0, 10);
+}
+
+/** Release-day observation fetch: ALFRED vintage at the event date, falling
+ *  back to current-vintage capped at prior-month-end for series with no
+ *  ALFRED vintages (EXHOSLUSM495S). Mirrors the Mac module — see
+ *  lib/calendar/enrich-actuals.ts::fetchFredVintageForEvent for rationale. */
+export async function fetchFredVintageForEvent(
+  apiKey: string | undefined,
+  seriesId: string,
+  eventDate: string,
+): Promise<Awaited<ReturnType<typeof fetchFredSeriesLatest>>> {
+  const vintage = await fetchFredSeriesLatest(apiKey, seriesId, eventDate, eventDate);
+  if (vintage) return vintage;
+  return fetchFredSeriesLatest(apiKey, seriesId, priorMonthEnd(eventDate));
+}
+
+/** "4.17M" / "229K" / "950" from a value in ones. Integer-cent rounding
+ *  before division avoids float artifacts (1465000 → "1.47M", not "1.46M"). */
+function formatCount(ones: number): string {
+  const sign = ones < 0 ? "-" : "";
+  const abs = Math.abs(ones);
+  if (abs >= 1_000_000) {
+    const m = Math.round(abs / 10_000) / 100;
+    return `${sign}${m.toFixed(2).replace(/\.?0+$/, "")}M`;
+  }
+  if (abs >= 1_000) return `${sign}${Math.round(abs / 1_000).toLocaleString("en-US")}K`;
+  return `${sign}${Math.round(abs).toLocaleString("en-US")}`;
+}
+
+export function formatFredValue(
   obs: NonNullable<Awaited<ReturnType<typeof fetchFredSeriesLatest>>>,
-  formatAs: FredSeriesConfig["formatAs"],
+  cfg: Pick<FredSeriesConfig, "formatAs" | "unitScale">,
 ): string | null {
   const { value, priorValue, priorYearValue } = obs;
-  switch (formatAs) {
+  const scale = cfg.unitScale ?? 1;
+  switch (cfg.formatAs) {
     case "pct":
       return `${value.toFixed(1)}%`;
     case "pct_yoy": {
@@ -96,13 +147,28 @@ function formatFredValue(
       const mom = ((value - priorValue) / priorValue) * 100;
       return `${mom.toFixed(1)}%`;
     }
-    case "level_k": {
-      if (priorValue == null) return `${Math.round(value).toLocaleString("en-US")}K`;
-      const delta = Math.round(value - priorValue);
-      return `${delta > 0 ? "+" : ""}${delta.toLocaleString("en-US")}K`;
+    case "delta_k": {
+      // Payroll-style prints are quoted as the period change ("+172K
+      // jobs"). Without a prior observation there is no change to report
+      // — null, never the (meaningless) level.
+      if (priorValue == null) return null;
+      const delta = (value - priorValue) * scale;
+      return `${delta >= 0 ? "+" : ""}${formatCount(delta)}`;
     }
-    case "level":
-      return value.toLocaleString("en-US");
+    case "level_count":
+      // Level-quoted prints: claims "229K", existing home sales "4.17M".
+      return formatCount(value * scale);
+    case "usd_millions": {
+      // Series denominated in millions of dollars (e.g. BOPGSTB).
+      const dollars = value * 1_000_000;
+      const sign = dollars < 0 ? "-" : "";
+      const abs = Math.abs(dollars);
+      if (abs >= 1_000_000_000) {
+        const b = Math.round(abs / 100_000_000) / 10;
+        return `${sign}$${b.toFixed(1).replace(/\.0$/, "")}B`;
+      }
+      return `${sign}$${formatCount(abs)}`;
+    }
     case "qoq_saar": {
       if (priorValue == null || priorValue === 0) return null;
       const qoq = Math.pow(value / priorValue, 4) - 1;
@@ -193,9 +259,11 @@ export async function fetchActualForEventCloud(
   if (parsed.kind === "fred") {
     const cfg = RELEASE_ID_TO_SERIES[parsed.releaseId];
     if (!cfg) return { actual: null, consensus, source: "unknown", reason: "unmapped_release_id" };
-    const obs = await fetchFredSeriesLatest(env.FRED_API_KEY, cfg.seriesId, event.event_date);
+    // Vintage pinned to event_date: the release-day first print, immune to
+    // later-published months and revisions (see fetchFredVintageForEvent).
+    const obs = await fetchFredVintageForEvent(env.FRED_API_KEY, cfg.seriesId, event.event_date);
     if (!obs) return { actual: null, consensus, source: "fred", reason: "no_observation" };
-    return { actual: formatFredValue(obs, cfg.formatAs), consensus, source: "fred" };
+    return { actual: formatFredValue(obs, cfg), consensus, source: "fred" };
   }
 
   if (parsed.kind === "fomc") {
