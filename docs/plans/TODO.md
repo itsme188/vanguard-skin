@@ -137,6 +137,15 @@
 
 - **Continue factor-analysis collaboration with ChatGPT** — give it the freshly refreshed GitHub link after this session's README + screenshot + CHANGELOG sweep so its context matches the post-redesign reality.
 
+### Closed this session (2026-06-11 night — deep-QA schedule timezone fix + second sweep's findings)
+
+The 6/11 19:45 sweep (mis-scheduled, see first bullet) ran end-to-end autonomously and produced 10 new findings; this session fixed the schedule, merged the sweep's 7 auto-fixes, and fixed the 2 judgment-needed findings (HIGH + MEDIUM). 6 commits `28b8f80..deb8ddd` + merge `bf8e5dd`; tests 2703 → **2734 Mac + 249 Worker**; Worker deployed `1eebe686`; all pushed; DMG via this session-end.
+
+- ✅ **Deep-QA fired at 7:45 PM, not 2:45 AM** (`28b8f80`) — `StartCalendarInterval` evaluates Hour/Minute in the timezone UserEventAgent cached at BOOT (Mac booted 5/20 in Israel → "02:45" = 19:45 ET nightly, colliding with evenings; `launchctl print` showed the correct descriptor while the fire log said 7:45 PM). Converted to `StartInterval=300` + in-script self-gate: once per local day, first tick in 02:45–07:00, marker `qa/findings/.deep-qa-last-run`, `DEEP_QA_FORCE=1` bypass. Memory `feedback_launchd_et_gate.md` extended with the boot-tz-cache failure mode.
+- ✅ **Sweep's 7 auto-fixes merged** (`bf8e5dd`, branch deleted): period-selector no-op, credit_rating dimension, custom-scenario scope, documents type-filter allowlist, actual-chip truncation, UTC note dates, Gmail pre-flight on research auto-sync.
+- ✅ **HIGH: macro actuals wrong scale/units** (`d3e9361`) — `level_k` assumed every FRED series was thousands+delta; ICSA is a raw count quoted as a LEVEL ("+4,000K" stored for 229K claims), EXHOSL raw count ("+130,000K" for 4.17M), BOPGSTB millions rendered unitless ("-55,881" for -$55.9B). Per-series `unitScale` + semantic `delta_k`/`level_count`/`usd_millions` (units verified vs FRED /series); ADP switched to MONTHLY `ADPMNUSNERSA`; **vintage pinned to event_date** (ALFRED realtime) so stored actuals are the release-day first print — with prior-month-end fallback for no-vintage series (EXHOSL). Worker mirror parity-pinned by mirrored tests. `scripts/repair-macro-actual-scale.ts` repaired 13 production rows (idempotent). Memory: `reference_fred_units_vintage.md`.
+- ✅ **MEDIUM: beta/alpha decomposition collapsed scope=all to accountIds[0]** (`cc317ff`) — `computePeriodAttribution` now takes the full scope (id / id-set / undefined=whole portfolio): per-date SUM before regression, flows scoped, same-symbol cross-account positions merged. Fixing it exposed a second layer: per-account valuation coverage starts on different dates (IBKR 3/27, Vanguard+Roth 4/06) and the summed series read the appearing accounts as a fake +89% return — regression now keeps full-coverage dates only (max simultaneous account count). Browser-verified: scope=all +5.51% β / +3.02% α.
+
 ### Closed this session (2026-06-10 evening → 06-11 — Nightly Deep QA system + first sweep + all 11 findings fixed)
 
 Built the exploratory "synthetic owner" QA system (spec `docs/superpowers/specs/2026-06-10-nightly-deep-qa-design.md`, plan + subagent-driven exec), ran the first full sweep same day, and fixed every finding it produced. 24 commits `2f33e06..cd5d986`; tests 2676 → **2703**; all pushed; DMG rebuild via this session-end.
@@ -362,6 +371,12 @@ Headline features not reflected in the v2 archive:
 ---
 
 ## Open items
+
+Added 2026-06-11 night (deep-QA second sweep + fix session):
+
+- [ ] **NotesAmbient FAB overlaps last mobile holding row at max scroll** (LOW, sweep finding `mobile--notesambient-fab-overlaps-last-holding-row`) — design call: bottom padding on the Today holdings list vs FAB placement. ~15 min once a direction is picked.
+- [ ] **PPI series choice: PPIACO vs PPI Final Demand** — `RELEASE_ID_TO_SERIES[46]` uses PPIACO (All Commodities, currently printing 9.7% YoY) but the press headline is PPI Final Demand (PPIFIS). Not a scale bug — the YoY math is correct for the series — but the chip reads hotter than the headline number. Verify release 46's headline series against FRED before swapping (`lib/calendar/enrich-actuals.ts` + Worker mirror + repair-script re-run for stored PPI rows).
+- [ ] **Coverage-jump hazard in other multi-account consumers of `getDailyValuationsForAccounts`** — tonight's `cc317ff` added a full-coverage date filter inside `computePeriodAttribution` only. `computeMarketRegression` (factors) and `computeRiskMetrics` share the same summed-series pattern and would read an account's coverage start (IBKR 3/27 vs Vanguard/Roth 4/06) as a fake return for multi-account scopes whose window spans the boundary. Consider hoisting the filter into `getDailyValuationsForAccounts` as an opt-in flag (`fullCoverageOnly`) after checking each consumer's tolerance.
 
 Closed this session (2026-04-24 evening — Calendar Living Record Tier-3 sprint):
 
