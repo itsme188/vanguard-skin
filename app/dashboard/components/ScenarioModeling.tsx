@@ -74,6 +74,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
           marketMove: customMarketMove / 100,
           rateMove: customRateMove || undefined,
           sectorMoves: Object.keys(sectorMoves).length > 0 ? sectorMoves : undefined,
+          scope,
         }),
       });
       const json = await res.json();
@@ -89,7 +90,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
     } finally {
       setCustomLoading(false);
     }
-  }, [customMarketMove, customRateMove, customSectorOverrides]);
+  }, [customMarketMove, customRateMove, customSectorOverrides, scope]);
 
   useEffect(() => {
     setLoading(true);

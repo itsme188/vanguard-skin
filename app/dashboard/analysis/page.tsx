@@ -30,12 +30,13 @@ interface PageProps {
     scope?: string;
     mode?: string;
     view?: string;
+    period?: string;
   }>;
 }
 
 const CLASSIFICATION_DIMENSIONS: AllocationDimension[] = [
   "fund_category", "geography", "market_cap_category", "style",
-  "sector", "asset_class", "security_type", "account", "symbol",
+  "sector", "asset_class", "security_type", "credit_rating", "account", "symbol",
 ];
 
 const FACTOR_DIMENSIONS: AllocationDimension[] = [...FACTOR_COLUMNS];
@@ -125,7 +126,7 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
     return (
       <div className="space-y-6 md:space-y-0">
         <AnalysisViewToggle currentView="performance" scope={params.scope} />
-        <PerformanceView scope={params.scope} />
+        <PerformanceView scope={params.scope} period={params.period} />
       </div>
     );
   }
