@@ -36,7 +36,7 @@ interface PageProps {
 
 const CLASSIFICATION_DIMENSIONS: AllocationDimension[] = [
   "fund_category", "geography", "market_cap_category", "style",
-  "sector", "asset_class", "security_type", "account", "symbol",
+  "sector", "asset_class", "security_type", "credit_rating", "account", "symbol",
 ];
 
 const FACTOR_DIMENSIONS: AllocationDimension[] = [...FACTOR_COLUMNS];
