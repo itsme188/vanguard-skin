@@ -21,11 +21,18 @@ import {
 const RAW_TEXT_PLACEHOLDER =
   "[Full text is still being extracted — check back in a few minutes.]";
 
+// Must cover every ResearchDocumentType member — a missing entry makes
+// DOC_TYPES.includes() false and silently DROPS the filter (all docs returned).
 const DOC_TYPES: ResearchDocumentType[] = [
   "analyst_report",
   "research_note",
   "market_analysis",
   "industry_primer",
+  "investor_letter",
+  "earnings_presentation",
+  "article",
+  "book_summary_or_essay",
+  "macro_note",
   "other",
 ];
 
