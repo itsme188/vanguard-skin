@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Nightly deep QA — sandbox up, headless /qa-deep-sweep, sandbox down.
-# Scheduled by com.vanguard-skin.nightly-deep-qa.plist at 2:45 AM local.
+# Scheduled by com.vanguard-skin.nightly-deep-qa.plist (StartInterval=300,
+# i.e. every 5 min) with the self-gate below: once per local day, first tick
+# inside the 02:45–07:00 local window.
 # PATH DEVIATION: claude CLI lives at /Users/Yitzi/.local/bin (not in standard
 # Homebrew/system paths); that directory is prepended below.
 set -uo pipefail
@@ -9,6 +11,24 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 export PATH="/Users/Yitzi/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 cd "$PROJECT_DIR"
+
+# --- Schedule self-gate ------------------------------------------------------
+# Why not StartCalendarInterval: launchd evaluates Hour/Minute in the timezone
+# UserEventAgent cached at boot, NOT the current system zone. The Mac booted
+# 2026-05-20 in Israel (UTC+3), so "Hour 2, Minute 45" fired at 19:45 ET every
+# night (observed 6/10 + 6/11) and collided with evening use. Same failure
+# class the et-gate.sh pattern fixed for the email jobs — this job gates on
+# LOCAL time deliberately (2:45 AM is about Mac-idle hours, not market hours).
+# Window is bounded at 07:00 so a Mac asleep past it skips the night rather
+# than launching a 3h sweep mid-day. DEEP_QA_FORCE=1 bypasses the gate for
+# manual runs (the mutex below still applies).
+MARKER_FILE="$SCRIPT_DIR/findings/.deep-qa-last-run"
+if [ "${DEEP_QA_FORCE:-0}" != "1" ]; then
+  MIN_OF_DAY=$(( 10#$(date +%H) * 60 + 10#$(date +%M) ))
+  { [ "$MIN_OF_DAY" -ge 165 ] && [ "$MIN_OF_DAY" -lt 420 ]; } || exit 0
+  [ "$(cat "$MARKER_FILE" 2>/dev/null)" = "$(date +%Y-%m-%d)" ] && exit 0
+fi
+date +%Y-%m-%d > "$MARKER_FILE"
 
 echo "=== Deep QA run $(date '+%Y-%m-%d %H:%M:%S') ==="
 
