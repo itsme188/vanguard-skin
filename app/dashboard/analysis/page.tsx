@@ -30,6 +30,7 @@ interface PageProps {
     scope?: string;
     mode?: string;
     view?: string;
+    period?: string;
   }>;
 }
 
@@ -125,7 +126,7 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
     return (
       <div className="space-y-6 md:space-y-0">
         <AnalysisViewToggle currentView="performance" scope={params.scope} />
-        <PerformanceView scope={params.scope} />
+        <PerformanceView scope={params.scope} period={params.period} />
       </div>
     );
   }
