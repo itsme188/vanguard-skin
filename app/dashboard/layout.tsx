@@ -65,8 +65,11 @@ export default function DashboardLayout({
         {/* Digest catch-up notification */}
         <DigestCatchup />
 
-        {/* Content */}
-        <main id="main-content" className="max-w-[1600px] mx-auto px-4 md:px-6 pt-4 md:pt-6 pb-20 md:pb-6">
+        {/* Content. Mobile pb must clear BOTH fixed layers stacked at the
+            bottom: MobileBottomNav AND the NotesAmbient FAB (bottom-20 +
+            h-12 → its top edge is 128px up) — pb-20 left the last row of
+            any list pinned behind the FAB at max scroll. */}
+        <main id="main-content" className="max-w-[1600px] mx-auto px-4 md:px-6 pt-4 md:pt-6 pb-36 md:pb-6">
           {children}
         </main>
 
