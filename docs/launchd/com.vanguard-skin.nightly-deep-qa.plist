@@ -9,13 +9,14 @@
 		<string>/bin/bash</string>
 		<string>/Users/Yitzi/code/vanguard-skin/qa/nightly-deep-qa.sh</string>
 	</array>
-	<key>StartCalendarInterval</key>
-	<dict>
-		<key>Hour</key>
-		<integer>2</integer>
-		<key>Minute</key>
-		<integer>45</integer>
-	</dict>
+	<!-- Every 5 min; the script self-gates to once per local day in the
+	     02:45-07:00 window. Do NOT use StartCalendarInterval: launchd
+	     evaluates it in the timezone cached at boot (fired at 19:45 ET
+	     while "scheduled" for 02:45 after a boot in Israel, 2026-06-11). -->
+	<key>StartInterval</key>
+	<integer>300</integer>
+	<key>RunAtLoad</key>
+	<false/>
 	<key>StandardOutPath</key>
 	<string>/Users/Yitzi/Library/Logs/vanguard-nightly-deep-qa.log</string>
 	<key>StandardErrorPath</key>
