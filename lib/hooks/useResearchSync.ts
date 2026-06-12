@@ -46,6 +46,19 @@ export function useResearchSync(options: {
     syncingRef.current = true;
     onSyncStart?.();
     try {
+      // Pre-flight: skip quietly when Gmail OAuth isn't configured — firing
+      // the sync would 400 and log a console error on every mount. The
+      // config-only check reads env vars, no Google round-trip. If the
+      // pre-flight itself fails, fall through and attempt the sync anyway.
+      try {
+        const status = await fetch("/api/gmail/status?check=config");
+        if (status.ok) {
+          const { connected } = (await status.json()) as { connected?: boolean };
+          if (connected === false) return;
+        }
+      } catch {
+        // Pre-flight unreachable — let the sync attempt decide.
+      }
       // The endpoint is SSE — but for our purposes we just need it to fire
       // and complete. We `read` the stream to drain it; we don't surface
       // the events. The user's manual sync UI in ResearchFeedsView handles
