@@ -62,13 +62,17 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { marketMove, rateMove, sectorMoves, name, accountId } = body as {
+    const { marketMove, rateMove, sectorMoves, name, accountId: bodyAccountId, scope } = body as {
       marketMove?: number;
       rateMove?: number;
       sectorMoves?: Record<string, number>;
       name?: string;
       accountId?: number;
+      scope?: string;
     };
+    // Match the GET path's scope resolution so a custom scenario is baselined
+    // to the same account set as the preset cards it renders next to.
+    const accountId = bodyAccountId ?? resolveScopeToSingleId(db, scope ?? null);
 
     if (marketMove == null || typeof marketMove !== "number") {
       return NextResponse.json(
