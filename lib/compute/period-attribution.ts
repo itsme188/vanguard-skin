@@ -1,5 +1,30 @@
 import type Database from "better-sqlite3";
 import { calendarDaysBetween } from "@/lib/calendar/date-utils";
+import {
+  getDailyValuationsCombined,
+  getDailyValuationsForAccounts,
+} from "@/lib/queries/daily-valuations";
+
+/**
+ * Scope for attribution: a single account id, an explicit id set, or
+ * undefined for the whole portfolio. Multi-account scopes are aggregated —
+ * valuations SUMMED per date before the regression, holdings merged per
+ * security — never collapsed to the first id (deep-QA 2026-06-11: scope=all
+ * rendered account 1's beta/alpha labeled "All accounts").
+ */
+export type AttributionScope = number | number[] | undefined;
+
+function scopeToIds(scope: AttributionScope): number[] | undefined {
+  if (typeof scope === "number") return [scope];
+  if (scope && scope.length > 0) return scope;
+  return undefined;
+}
+
+/** `AND <column> IN (?,?,…)` fragment + params, or empty for whole-portfolio. */
+function accountFilter(ids: number[] | undefined, column: string): { sql: string; params: number[] } {
+  if (!ids) return { sql: "", params: [] };
+  return { sql: ` AND ${column} IN (${ids.map(() => "?").join(",")})`, params: ids };
+}
 
 // Guard against the `prices`/`daily_valuations` multi-month gap: a return pair
 // spanning more than this many calendar days is dropped (an ln/simple return
@@ -28,18 +53,38 @@ export interface PeriodAttribution {
 
 function computeBetaForPeriod(
   db: Database.Database,
-  accountId: number,
+  accountIds: number[] | undefined,
   benchmarkSymbol: string,
   startDate: string,
   endDate: string,
 ): { beta: number; benchmarkReturn: number; portfolioReturn: number } | null {
-  const valuations = db
+  // SUM across the scoped accounts per date BEFORE any return math — the
+  // regression must see one portfolio series, never a single account's.
+  const summed = accountIds
+    ? getDailyValuationsForAccounts(db, accountIds, { startDate, endDate })
+    : getDailyValuationsCombined(db, { startDate, endDate });
+
+  // Full-coverage filter: only dates where the MAX number of simultaneously-
+  // covered accounts all have a row. Account coverage windows differ (live
+  // DB: IBKR daily valuations start 3/27, Vanguard + Roth 4/06) and the
+  // summed series "gains" an appearing account's entire value as a fake
+  // return — a 4-day pair slips under the gap guard and read as +89% YTD.
+  // Max-coverage (not accountIds.length) self-calibrates when a scoped
+  // account has no data at all in the window. Omit, never mislead.
+  const covFilter = accountFilter(accountIds, "account_id");
+  const coverage = new Map<string, number>();
+  for (const row of db
     .prepare(
-      `SELECT valuation_date, total_value FROM daily_valuations
-       WHERE account_id = ? AND valuation_date BETWEEN ? AND ?
-       ORDER BY valuation_date ASC`,
+      `SELECT valuation_date AS d, COUNT(DISTINCT account_id) AS n
+       FROM daily_valuations
+       WHERE valuation_date BETWEEN ? AND ?${covFilter.sql}
+       GROUP BY valuation_date`,
     )
-    .all(accountId, startDate, endDate) as { valuation_date: string; total_value: number }[];
+    .all(startDate, endDate, ...covFilter.params) as { d: string; n: number }[]) {
+    coverage.set(row.d, row.n);
+  }
+  const fullCoverage = Math.max(0, ...coverage.values());
+  const valuations = summed.filter((v) => coverage.get(v.valuation_date) === fullCoverage);
 
   const benchmarks = db
     .prepare(
@@ -55,15 +100,16 @@ function computeBetaForPeriod(
   // daily_valuations. They are not investment return — subtract them from the
   // day's value change so neither the regression nor the period return is
   // distorted (a -$100k withdrawal otherwise reads as a -19% "return").
+  const flowFilter = accountFilter(accountIds, "account_id");
   const flowRows = db
     .prepare(
       `SELECT trade_date, SUM(amount) AS amount
        FROM transactions
-       WHERE account_id = ? AND is_external_flow = 1 AND amount IS NOT NULL
-         AND trade_date BETWEEN ? AND ?
+       WHERE is_external_flow = 1 AND amount IS NOT NULL
+         AND trade_date BETWEEN ? AND ?${flowFilter.sql}
        GROUP BY trade_date`,
     )
-    .all(accountId, startDate, endDate) as { trade_date: string; amount: number }[];
+    .all(startDate, endDate, ...flowFilter.params) as { trade_date: string; amount: number }[];
   const flowByDate = new Map(flowRows.map((f) => [f.trade_date, f.amount]));
 
   const benchByDate = new Map(benchmarks.map((b) => [b.date, b.close_price]));
@@ -118,15 +164,18 @@ function computeBetaForPeriod(
 
 function computePerPositionContributions(
   db: Database.Database,
-  accountId: number,
+  accountIds: number[] | undefined,
   startDate: string,
   endDate: string,
 ): { rows: AttributionRow[]; sectorMap: Map<string, number> } {
+  const acctFilter = accountFilter(accountIds, "hs.account_id");
+  // GROUP BY security: the same symbol held in two scoped accounts is ONE
+  // position with the combined quantity, not two duplicate rows.
   const rows = db
     .prepare(
       `SELECT
          s.symbol,
-         hs.quantity AS qty,
+         SUM(hs.quantity) AS qty,
          ps.close_price AS start_price,
          pe.close_price AS end_price,
          COALESCE(s.sector, 'Unclassified') AS sector
@@ -134,11 +183,12 @@ function computePerPositionContributions(
        JOIN securities s ON s.id = hs.security_id
        JOIN prices ps ON ps.security_id = hs.security_id AND ps.date = ?
        LEFT JOIN prices pe ON pe.security_id = hs.security_id AND pe.date = ?
-       WHERE hs.account_id = ? AND hs.as_of_date = ?
+       WHERE hs.as_of_date = ?${acctFilter.sql}
          AND LOWER(s.security_type) IN ('stock', 'etf', 'common stock', 'mutual fund')
-         AND hs.quantity > 0`, // Sector contribution analysis is long-only; short positions excluded by design.
+         AND hs.quantity > 0
+       GROUP BY s.id`, // Sector contribution analysis is long-only; short positions excluded by design.
     )
-    .all(startDate, endDate, accountId, startDate) as Array<{
+    .all(startDate, endDate, startDate, ...acctFilter.params) as Array<{
     symbol: string;
     qty: number;
     start_price: number;
@@ -170,14 +220,16 @@ function computePerPositionContributions(
 
 export function computePeriodAttribution(
   db: Database.Database,
-  accountId: number,
+  /** Single id, explicit id set, or undefined = whole portfolio. */
+  scope: AttributionScope,
   startDate: string,
   endDate: string,
   benchmarkSymbol: string = "SPY",
 ): PeriodAttribution {
+  const accountIds = scopeToIds(scope);
   const { rows, sectorMap } = computePerPositionContributions(
     db,
-    accountId,
+    accountIds,
     startDate,
     endDate,
   );
@@ -201,7 +253,7 @@ export function computePeriodAttribution(
   // routinely empty, which made alpha ≡ −betaContribution (the 2026-06-10 bug).
   let betaContribution = 0;
   let alphaContribution = 0;
-  const reg = computeBetaForPeriod(db, accountId, benchmarkSymbol, startDate, endDate);
+  const reg = computeBetaForPeriod(db, accountIds, benchmarkSymbol, startDate, endDate);
   if (reg) {
     betaContribution = reg.beta * reg.benchmarkReturn;
     alphaContribution = reg.portfolioReturn - betaContribution;

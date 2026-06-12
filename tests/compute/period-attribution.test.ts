@@ -210,27 +210,147 @@ describe("computePeriodAttribution", () => {
     expect(r.betaVsAlpha).toEqual({ betaContribution: 0, alphaContribution: 0 });
   });
 
-  it("attribution renders when scope is 'all' — direct first-account query succeeds where resolveScope returns undefined", () => {
-    // Regression: resolveScope(db, "all") returns undefined (no-filter sentinel),
-    // so ids?.[0] is always undefined and attribution silently never ran on the
-    // default scope. The fix queries for the first account directly.
-    //
-    // Simulate what PerformanceView does after the fix:
-    const scopeIds = resolveScope(db, "all");
-    // Confirm the old behaviour: resolveScope returns undefined for "all"
-    expect(scopeIds).toBeUndefined();
+  describe("multi-account scopes (never collapse to accountIds[0])", () => {
+    // resolveScope(db, "all") returns undefined — the whole-portfolio
+    // sentinel. The 2026-06-10 fix fell back to the FIRST account by id,
+    // presenting one account's attribution as "All accounts" (deep-QA
+    // finding 2026-06-11). undefined must now mean: aggregate everything.
 
-    // The fix: fall back to a direct query when resolveScope returns undefined
-    const row = db
-      .prepare("SELECT id FROM accounts ORDER BY id LIMIT 1")
-      .get() as { id: number } | undefined;
-    const attrAccountId = row?.id;
+    it("undefined scope aggregates contributions from every account", () => {
+      expect(resolveScope(db, "all")).toBeUndefined();
 
-    // There must be at least one account (seeded by migration 002)
-    expect(attrAccountId).toBeDefined();
+      // A symbol held ONLY in account 2 — invisible under first-id collapse.
+      db.prepare(
+        `INSERT INTO securities (id, symbol, security_type, sector) VALUES (20, 'ACCT2ONLY', 'Stock', 'Industrials')`,
+      ).run();
+      db.prepare(
+        `INSERT INTO prices (security_id, date, close_price, source) VALUES (20, '2026-01-01', 100, 'tws')`,
+      ).run();
+      db.prepare(
+        `INSERT INTO prices (security_id, date, close_price, source) VALUES (20, '2026-04-30', 150, 'tws')`,
+      ).run();
+      db.prepare(
+        `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (2, 20, '2026-01-01', 100, 'a2-s')`,
+      ).run();
 
-    // Attribution must succeed (return non-empty results) for that account
-    const r = computePeriodAttribution(db, attrAccountId!, "2026-01-01", "2026-04-30");
-    expect(r.topContributors.length).toBeGreaterThan(0);
+      const r = computePeriodAttribution(db, undefined, "2026-01-01", "2026-04-30");
+      expect(r.topContributors.map((c) => c.symbol)).toContain("ACCT2ONLY");
+      // Account 1's positions are still in the mix
+      expect(r.topContributors.map((c) => c.symbol)).toContain("AAPL");
+    });
+
+    it("merges the same security across accounts into ONE row with combined weight", () => {
+      // AAPL also held in account 2: 100 more shares at the same prices.
+      db.prepare(
+        `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (2, 10, '2026-01-01', 100, 'a2-aapl')`,
+      ).run();
+
+      const r = computePeriodAttribution(db, [1, 2], "2026-01-01", "2026-04-30");
+      const aaplRows = r.topContributors.filter((c) => c.symbol === "AAPL");
+      expect(aaplRows).toHaveLength(1);
+      // Combined: 200 sh × $100 = $20,000 of a $49,000 scope, +20% return.
+      expect(aaplRows[0].contribution).toBeCloseTo((20000 / 49000) * 0.2, 8);
+    });
+
+    it("runs the beta regression on the SUMMED valuation series, not account[0]'s", () => {
+      const day = (i: number) => `2026-05-${String(1 + i).padStart(2, "0")}`;
+      const benchReturns = [0.01, -0.005, 0.008, 0.002, -0.003, 0.006, 0.001, -0.004, 0.009];
+      const portReturns = benchReturns.map((b) => 1.2 * b + 0.002);
+
+      // Account 2: the active series. Account 3: constant $100k ballast —
+      // the combined portfolio has roughly HALF the beta of account 2 alone.
+      let bench = 400;
+      let port = 100000;
+      db.prepare(
+        `INSERT INTO benchmark_prices (symbol, date, close_price, source) VALUES ('SPY', ?, ?, 'tws')`,
+      ).run(day(0), bench);
+      db.prepare(
+        `INSERT INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (2, ?, 0, ?, ?)`,
+      ).run(day(0), port, port);
+      db.prepare(
+        `INSERT INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (3, ?, 100000, 0, 100000)`,
+      ).run(day(0));
+      for (let i = 0; i < benchReturns.length; i++) {
+        bench *= 1 + benchReturns[i];
+        port *= 1 + portReturns[i];
+        db.prepare(
+          `INSERT INTO benchmark_prices (symbol, date, close_price, source) VALUES ('SPY', ?, ?, 'tws')`,
+        ).run(day(i + 1), bench);
+        db.prepare(
+          `INSERT INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (2, ?, 0, ?, ?)`,
+        ).run(day(i + 1), port, port);
+        db.prepare(
+          `INSERT INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (3, ?, 100000, 0, 100000)`,
+        ).run(day(i + 1));
+      }
+
+      const combined = computePeriodAttribution(db, [2, 3], day(0), day(9), "SPY");
+      const alone = computePeriodAttribution(db, 2, day(0), day(9), "SPY");
+
+      // The decomposition must tie out to the COMBINED period return
+      // (port2End + ballast) / (port2Start + ballast) − 1 — under first-id
+      // collapse it would tie to account 2's (≈2× larger) return instead.
+      const expectedCombinedReturn = (port + 100000) / 200000 - 1;
+      expect(
+        combined.betaVsAlpha.betaContribution + combined.betaVsAlpha.alphaContribution,
+      ).toBeCloseTo(expectedCombinedReturn, 8);
+
+      // And the ballast must dampen beta exposure vs the active account alone.
+      expect(combined.betaVsAlpha.betaContribution).toBeLessThan(
+        alone.betaVsAlpha.betaContribution * 0.7,
+      );
+    });
+
+    it("drops partial-coverage dates — an account's series starting mid-window is not a return", () => {
+      const day = (i: number) => `2026-05-${String(1 + i).padStart(2, "0")}`;
+      const benchReturns = [0.01, -0.005, 0.008, 0.002, -0.003, 0.006, 0.001, -0.004, 0.009];
+      const portReturns = benchReturns.map((b) => 1.2 * b + 0.002);
+
+      // Account 2 has rows for the whole window; account 3's coverage only
+      // BEGINS on day 4 (live-DB shape: IBKR daily valuations start 3/27,
+      // Vanguard+Roth on 4/06). The day3→day4 summed pair is 1 calendar day
+      // — inside the gap guard — but jumps by account 3's entire $100k.
+      // That jump is coverage, not return, and must be excluded.
+      let bench = 400;
+      let port = 100000;
+      const port2Values: number[] = [port];
+      db.prepare(
+        `INSERT INTO benchmark_prices (symbol, date, close_price, source) VALUES ('SPY', ?, ?, 'tws')`,
+      ).run(day(0), bench);
+      db.prepare(
+        `INSERT INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (2, ?, 0, ?, ?)`,
+      ).run(day(0), port, port);
+      for (let i = 0; i < benchReturns.length; i++) {
+        bench *= 1 + benchReturns[i];
+        port *= 1 + portReturns[i];
+        port2Values.push(port);
+        db.prepare(
+          `INSERT INTO benchmark_prices (symbol, date, close_price, source) VALUES ('SPY', ?, ?, 'tws')`,
+        ).run(day(i + 1), bench);
+        db.prepare(
+          `INSERT INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (2, ?, 0, ?, ?)`,
+        ).run(day(i + 1), port, port);
+        if (i + 1 >= 4) {
+          db.prepare(
+            `INSERT INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (3, ?, 100000, 0, 100000)`,
+          ).run(day(i + 1));
+        }
+      }
+
+      const r = computePeriodAttribution(db, [2, 3], day(0), day(9), "SPY");
+      // Decomposition must tie to the FULL-COVERAGE return only: day4→day9
+      // on the summed series (port2 + constant ballast). The coverage jump
+      // would otherwise read as a ~+90% "return".
+      const expectedReturn = (port2Values[9] + 100000) / (port2Values[4] + 100000) - 1;
+      expect(
+        r.betaVsAlpha.betaContribution + r.betaVsAlpha.alphaContribution,
+      ).toBeCloseTo(expectedReturn, 8);
+    });
+
+    it("keeps single-account positional calls working (back-compat)", () => {
+      const single = computePeriodAttribution(db, 1, "2026-01-01", "2026-04-30");
+      const asArray = computePeriodAttribution(db, [1], "2026-01-01", "2026-04-30");
+      expect(asArray).toEqual(single);
+    });
   });
 });
