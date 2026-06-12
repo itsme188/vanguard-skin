@@ -11,6 +11,7 @@ import { runMigrations } from "@/lib/db/migrate";
 import {
   parseSourceKey,
   fetchActualForEvent,
+  fetchFredSeriesLatest,
   formatFredValue,
   RELEASE_ID_TO_SERIES,
 } from "@/lib/calendar/enrich-actuals";
@@ -102,6 +103,71 @@ describe("RELEASE_ID_TO_SERIES — units-verified config", () => {
 
   it("pins trade balance as millions-of-USD", () => {
     expect(RELEASE_ID_TO_SERIES[51].formatAs).toBe("usd_millions");
+  });
+
+  it("pins PPI to the headline Final Demand series, not All Commodities", () => {
+    // The press / consensus quote PPI *Final Demand* (PPIFIS, release 46
+    // membership verified via FRED /series/release 2026-06-12). PPIACO is
+    // the legacy all-commodities basket — May 2026 prints +13.1% YoY where
+    // the final-demand headline is +6.4%; a stored PPIACO YoY matches no
+    // number the user will ever read.
+    expect(RELEASE_ID_TO_SERIES[46]).toEqual({ seriesId: "PPIFIS", formatAs: "pct_yoy" });
+  });
+});
+
+describe("fetchFredSeriesLatest — priorYear selection", () => {
+  // Real PPIACO observations, ALFRED vintage 2026-06-11 (probed live
+  // 2026-06-12). FRED returns EVERY month in desc order, so an
+  // 11-months-back row (2025-06) sits ahead of the true year-ago row
+  // (2025-05). The sparse mocks in the dispatcher tests above hid this:
+  // a "first match in 11–13 months" scan computed the 6/11 PPI YoY
+  // against June 2025 (12.3%) instead of May 2025 (13.1%).
+  const PPIACO_DESC: Array<[string, string]> = [
+    ["2026-05-01", "292.504"], ["2026-04-01", "282.700"], ["2026-03-01", "275.979"],
+    ["2026-02-01", "269.553"], ["2026-01-01", "263.608"], ["2025-12-01", "261.333"],
+    ["2025-11-01", "261.914"], ["2025-10-01", "260.591"], ["2025-09-01", "262.054"],
+    ["2025-08-01", "262.110"], ["2025-07-01", "262.358"], ["2025-06-01", "260.491"],
+    ["2025-05-01", "258.678"], ["2025-04-01", "258.392"],
+  ];
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+    process.env.FRED_API_KEY = "test_fred_key";
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.FRED_API_KEY;
+  });
+
+  it("computes YoY against the exact 12-months-back observation, not 11", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        observations: PPIACO_DESC.map(([date, value]) => ({ date, value })),
+      }),
+    });
+
+    const result = await fetchFredSeriesLatest("PPIACO", "2026-06-11", "2026-06-11");
+    expect(result?.value).toBe(292.504);
+    // 2025-05 (12 months back), NOT 2025-06 (11 months back).
+    expect(result?.priorYearValue).toBe(258.678);
+  });
+
+  it("falls back to a near-12-month observation when the exact month is missing", async () => {
+    // Vintage holes happen (a month can be absent from an old ALFRED
+    // vintage). Better an 11-month YoY than none — but only when 12 is
+    // genuinely unavailable.
+    const withHole = PPIACO_DESC.filter(([date]) => date !== "2025-05-01");
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        observations: withHole.map(([date, value]) => ({ date, value })),
+      }),
+    });
+
+    const result = await fetchFredSeriesLatest("PPIACO", "2026-06-11", "2026-06-11");
+    expect(result?.priorYearValue).toBe(260.491); // 2025-06, the nearest in-window row
   });
 });
 
