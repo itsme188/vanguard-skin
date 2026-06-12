@@ -59,33 +59,48 @@ interface CalendarEventRow {
 // happens downstream — this module only reports the raw published value.
 //
 // formatAs tells us how to render the raw FRED number:
-//   pct      → "3.2%"        (already a percent in the series)
-//   pct_yoy  → YoY change from prior-year observation, "3.2%"
-//   pct_mom  → MoM change from prior observation, "0.3%"
-//   level_k  → "250K"        (number in thousands)
-//   level    → as-is
-//   qoq_saar → quarterly SAAR percentage "2.8%"
-interface FredSeriesConfig {
+//   pct         → "3.2%"   (already a percent in the series)
+//   pct_yoy     → YoY change from prior-year observation, "3.2%"
+//   pct_mom     → MoM change from prior observation, "0.3%"
+//   delta_k     → signed period-over-period change, "+172K" (payroll-style
+//                 prints where the press quotes the CHANGE, not the level)
+//   level_count → the level itself, "229K" / "4.17M" (claims, home sales,
+//                 JOLTS, starts — prints quoted as a LEVEL)
+//   usd_millions→ "-$55.9B" (series denominated in millions of dollars)
+//   qoq_saar    → quarterly SAAR percentage "2.8%"
+//
+// unitScale converts a raw observation to ones BEFORE formatting. FRED
+// series are heterogeneous: PAYEMS is "Thousands of Persons" (scale 1000)
+// but ICSA is "Number" and EXHOSLUSM495S is "Number of Units" (scale 1).
+// Units verified against the FRED /series endpoint 2026-06-11 — the old
+// one-size-fits-all `level_k` ("delta, assume thousands, append K") stored
+// "+4,000K" for 229K jobless claims and "+130,000K" for 4.17M home sales
+// (deep-QA finding: today-releases--macro-enrichment-actuals-stored-at-
+// wrong-scale-units). Re-verify units before adding any new series.
+export interface FredSeriesConfig {
   seriesId: string;
-  formatAs: "pct" | "pct_yoy" | "pct_mom" | "level_k" | "level" | "qoq_saar";
+  formatAs: "pct" | "pct_yoy" | "pct_mom" | "delta_k" | "level_count" | "usd_millions" | "qoq_saar";
+  /** Multiplier converting a raw observation to ones. Required for
+   *  delta_k / level_count; ignored by the pct/usd formats. */
+  unitScale?: number;
 }
 
-const RELEASE_ID_TO_SERIES: Record<number, FredSeriesConfig> = {
+export const RELEASE_ID_TO_SERIES: Record<number, FredSeriesConfig> = {
   10:  { seriesId: "CPIAUCSL", formatAs: "pct_yoy" },   // CPI YoY
   46:  { seriesId: "PPIACO",   formatAs: "pct_yoy" },   // PPI YoY
   54:  { seriesId: "PCEPILFE", formatAs: "pct_yoy" },   // Core PCE YoY
   53:  { seriesId: "GDPC1",    formatAs: "qoq_saar" },  // Real GDP SAAR
-  50:  { seriesId: "PAYEMS",   formatAs: "level_k" },   // Nonfarm payrolls delta
-  194: { seriesId: "ADPWNUSNERSA", formatAs: "level_k" }, // ADP
-  192: { seriesId: "JTSJOL",   formatAs: "level_k" },   // JOLTS
-  180: { seriesId: "ICSA",     formatAs: "level_k" },   // Initial claims
+  50:  { seriesId: "PAYEMS",   formatAs: "delta_k", unitScale: 1000 }, // NFP: change, thousands of persons
+  194: { seriesId: "ADPMNUSNERSA", formatAs: "delta_k", unitScale: 1 }, // ADP MONTHLY: change, raw persons
+  192: { seriesId: "JTSJOL",   formatAs: "level_count", unitScale: 1000 }, // JOLTS: level, thousands
+  180: { seriesId: "ICSA",     formatAs: "level_count", unitScale: 1 },    // Initial claims: level, raw count
   9:   { seriesId: "RSAFS",    formatAs: "pct_mom" },   // Retail sales MoM
-  27:  { seriesId: "HOUST",    formatAs: "level_k" },   // Housing starts
-  291: { seriesId: "EXHOSLUSM495S", formatAs: "level_k" }, // Existing home sales
-  97:  { seriesId: "HSN1F",    formatAs: "level_k" },   // New home sales
+  27:  { seriesId: "HOUST",    formatAs: "level_count", unitScale: 1000 }, // Housing starts: level, thousands SAAR
+  291: { seriesId: "EXHOSLUSM495S", formatAs: "level_count", unitScale: 1 }, // Existing home sales: level, raw count SAAR
+  97:  { seriesId: "HSN1F",    formatAs: "level_count", unitScale: 1000 }, // New home sales: level, thousands SAAR
   13:  { seriesId: "INDPRO",   formatAs: "pct_yoy" },   // Industrial production
   95:  { seriesId: "DGORDER",  formatAs: "pct_mom" },   // Durable goods orders
-  51:  { seriesId: "BOPGSTB",  formatAs: "level" },     // Trade balance ($ bn)
+  51:  { seriesId: "BOPGSTB",  formatAs: "usd_millions" }, // Trade balance, millions of $
 };
 
 // ── FRED API ────────────────────────────────────────────────────────
@@ -103,6 +118,16 @@ export async function fetchFredSeriesLatest(
   seriesId: string,
   /** Optional upper bound on observation_date — "<= observationEnd". */
   observationEnd?: string,
+  /**
+   * Pin the FRED vintage (ALFRED realtime_start/realtime_end) to this date —
+   * the series exactly as published on that day. Without it, re-running an
+   * old event picks up LATER-published observations: monthly series are
+   * dated the 1st of the data month, so "observation_end = event_date" lets
+   * next month's print (published weeks after the event) leak in, plus all
+   * revisions since. The actual the market reacted to is the release-day
+   * first print — pass the event_date for any release-day "actual".
+   */
+  realtimeAt?: string,
 ): Promise<{ value: number; date: string; priorValue: number | null; priorYearValue: number | null } | null> {
   const apiKey = process.env.FRED_API_KEY;
   if (!apiKey) return null;
@@ -115,6 +140,10 @@ export async function fetchFredSeriesLatest(
   url.searchParams.set("limit", "14");  // get enough for YoY compare
   if (observationEnd) {
     url.searchParams.set("observation_end", observationEnd);
+  }
+  if (realtimeAt) {
+    url.searchParams.set("realtime_start", realtimeAt);
+    url.searchParams.set("realtime_end", realtimeAt);
   }
 
   const res = await fetch(url.toString());
@@ -142,12 +171,56 @@ export async function fetchFredSeriesLatest(
   };
 }
 
-function formatFredValue(
+/** "4.17M" / "229K" / "950" from a value in ones. Integer-cent rounding
+ *  before division avoids float artifacts (1465000 → "1.47M", not "1.46M"). */
+function formatCount(ones: number): string {
+  const sign = ones < 0 ? "-" : "";
+  const abs = Math.abs(ones);
+  if (abs >= 1_000_000) {
+    const m = Math.round(abs / 10_000) / 100;
+    return `${sign}${m.toFixed(2).replace(/\.?0+$/, "")}M`;
+  }
+  if (abs >= 1_000) return `${sign}${Math.round(abs / 1_000).toLocaleString("en-US")}K`;
+  return `${sign}${Math.round(abs).toLocaleString("en-US")}`;
+}
+
+/** Last day of the month before a YYYY-MM-DD date ("2026-06-09" → "2026-05-31"). */
+function priorMonthEnd(date: string): string {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCDate(0); // day 0 = last day of the previous month
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Release-day observation fetch with vintage pinning + fallback.
+ *
+ * Primary: ALFRED vintage at the event date — the series exactly as
+ * published that day (first print, no later months, no revisions).
+ *
+ * Fallback: some series have NO ALFRED vintages (EXHOSLUSM495S — licensed
+ * NAR data — 400s on any realtime query). Retry with current-vintage data
+ * capped at the end of the month BEFORE the event: a monthly prior-month-
+ * release series can then never pick up an observation published after the
+ * event, at the cost of reading today's revision instead of the first
+ * print. All weekly series in RELEASE_ID_TO_SERIES have vintages, so the
+ * fallback only ever serves monthly prior-month releases.
+ */
+export async function fetchFredVintageForEvent(
+  seriesId: string,
+  eventDate: string,
+): Promise<Awaited<ReturnType<typeof fetchFredSeriesLatest>>> {
+  const vintage = await fetchFredSeriesLatest(seriesId, eventDate, eventDate);
+  if (vintage) return vintage;
+  return fetchFredSeriesLatest(seriesId, priorMonthEnd(eventDate));
+}
+
+export function formatFredValue(
   obs: NonNullable<Awaited<ReturnType<typeof fetchFredSeriesLatest>>>,
-  formatAs: FredSeriesConfig["formatAs"],
+  cfg: Pick<FredSeriesConfig, "formatAs" | "unitScale">,
 ): string | null {
   const { value, priorValue, priorYearValue } = obs;
-  switch (formatAs) {
+  const scale = cfg.unitScale ?? 1;
+  switch (cfg.formatAs) {
     case "pct":
       return `${value.toFixed(1)}%`;
     case "pct_yoy": {
@@ -160,15 +233,28 @@ function formatFredValue(
       const mom = ((value - priorValue) / priorValue) * 100;
       return `${mom.toFixed(1)}%`;
     }
-    case "level_k": {
-      // Values in thousands, e.g., PAYEMS = 158000 (158M jobs); for
-      // payrolls we want the *change*, not the level.
-      if (priorValue == null) return `${Math.round(value).toLocaleString("en-US")}K`;
-      const delta = Math.round(value - priorValue);
-      return `${delta > 0 ? "+" : ""}${delta.toLocaleString("en-US")}K`;
+    case "delta_k": {
+      // Payroll-style prints are quoted as the period change ("+172K
+      // jobs"). Without a prior observation there is no change to report
+      // — null, never the (meaningless) level.
+      if (priorValue == null) return null;
+      const delta = (value - priorValue) * scale;
+      return `${delta >= 0 ? "+" : ""}${formatCount(delta)}`;
     }
-    case "level":
-      return value.toLocaleString("en-US");
+    case "level_count":
+      // Level-quoted prints: claims "229K", existing home sales "4.17M".
+      return formatCount(value * scale);
+    case "usd_millions": {
+      // Series denominated in millions of dollars (e.g. BOPGSTB).
+      const dollars = value * 1_000_000;
+      const sign = dollars < 0 ? "-" : "";
+      const abs = Math.abs(dollars);
+      if (abs >= 1_000_000_000) {
+        const b = Math.round(abs / 100_000_000) / 10;
+        return `${sign}$${b.toFixed(1).replace(/\.0$/, "")}B`;
+      }
+      return `${sign}$${formatCount(abs)}`;
+    }
     case "qoq_saar": {
       // GDPC1 is indexed real GDP level in $B 2017 dollars; the "actual"
       // quoted on release is the SAAR percentage. We approximate via
@@ -300,10 +386,12 @@ export async function fetchActualForEvent(
   if (parsed.kind === "fred") {
     const cfg = RELEASE_ID_TO_SERIES[parsed.releaseId];
     if (!cfg) return { actual: null, consensus, source: "unknown" };
-    const obs = await fetchFredSeriesLatest(cfg.seriesId, event.event_date);
+    // Vintage pinned to event_date: the release-day first print, immune to
+    // later-published months and revisions (see fetchFredVintageForEvent).
+    const obs = await fetchFredVintageForEvent(cfg.seriesId, event.event_date);
     if (!obs) return { actual: null, consensus, source: "fred" };
     return {
-      actual: formatFredValue(obs, cfg.formatAs),
+      actual: formatFredValue(obs, cfg),
       consensus,
       source: "fred",
     };
