@@ -172,8 +172,10 @@ function EventRow({ event }: { event: CalendarEvent }) {
             Macro
           </span>
         )}
+        {/* shrink-0 + nowrap: the row flex-wraps, so a long actual value drops
+            to its own line — never clipped to "actual…". */}
         {actualDisplay && (
-          <span className="text-[11px] font-mono text-up bg-up/10 rounded px-1.5 py-0.5 ml-auto truncate max-w-[60%]">
+          <span className="text-[11px] font-mono text-up bg-up/10 rounded px-1.5 py-0.5 ml-auto shrink-0 whitespace-nowrap">
             <PrivateText>actual {actualDisplay}</PrivateText>
           </span>
         )}
