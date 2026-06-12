@@ -9,8 +9,8 @@
  * "K" to raw-count series and rendering deltas for level-quoted series.
  */
 
-import { describe, it, expect } from "vitest";
-import { formatFredValue, RELEASE_ID_TO_SERIES } from "../src/enrich-actuals";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { fetchFredSeriesLatest, formatFredValue, RELEASE_ID_TO_SERIES } from "../src/enrich-actuals";
 
 const obs = (value: number, priorValue: number | null = null) => ({
   value,
@@ -85,5 +85,61 @@ describe("RELEASE_ID_TO_SERIES — units-verified config (Worker mirror)", () =>
 
   it("pins trade balance as millions-of-USD", () => {
     expect(RELEASE_ID_TO_SERIES[51].formatAs).toBe("usd_millions");
+  });
+
+  it("pins PPI to the headline Final Demand series, not All Commodities", () => {
+    // Parity with the Mac case: press/consensus quote PPI Final Demand
+    // (PPIFIS, release 46 membership verified via FRED /series/release
+    // 2026-06-12); PPIACO all-commodities YoY matches no published headline.
+    expect(RELEASE_ID_TO_SERIES[46]).toEqual({ seriesId: "PPIFIS", formatAs: "pct_yoy" });
+  });
+});
+
+describe("fetchFredSeriesLatest — priorYear selection (Worker mirror)", () => {
+  // Identical fixture to the Mac case: real PPIACO observations, ALFRED
+  // vintage 2026-06-11. Desc order puts the 11-months-back row (2025-06)
+  // ahead of the true year-ago row (2025-05); a first-match 11–13-month
+  // window scan picks the wrong YoY base.
+  const PPIACO_DESC: Array<[string, string]> = [
+    ["2026-05-01", "292.504"], ["2026-04-01", "282.700"], ["2026-03-01", "275.979"],
+    ["2026-02-01", "269.553"], ["2026-01-01", "263.608"], ["2025-12-01", "261.333"],
+    ["2025-11-01", "261.914"], ["2025-10-01", "260.591"], ["2025-09-01", "262.054"],
+    ["2025-08-01", "262.110"], ["2025-07-01", "262.358"], ["2025-06-01", "260.491"],
+    ["2025-05-01", "258.678"], ["2025-04-01", "258.392"],
+  ];
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("computes YoY against the exact 12-months-back observation, not 11", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        observations: PPIACO_DESC.map(([date, value]) => ({ date, value })),
+      }),
+    });
+
+    const result = await fetchFredSeriesLatest("test_key", "PPIACO", "2026-06-11", "2026-06-11");
+    expect(result?.value).toBe(292.504);
+    // 2025-05 (12 months back), NOT 2025-06 (11 months back).
+    expect(result?.priorYearValue).toBe(258.678);
+  });
+
+  it("falls back to a near-12-month observation when the exact month is missing", async () => {
+    const withHole = PPIACO_DESC.filter(([date]) => date !== "2025-05-01");
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        observations: withHole.map(([date, value]) => ({ date, value })),
+      }),
+    });
+
+    const result = await fetchFredSeriesLatest("test_key", "PPIACO", "2026-06-11", "2026-06-11");
+    expect(result?.priorYearValue).toBe(260.491); // 2025-06, nearest in-window row
   });
 });

@@ -12,6 +12,15 @@
  * millions, no unit) for -$55.9B. ADP also pointed at the WEEKLY raw
  * series; the monthly headline series is ADPMNUSNERSA.
  *
+ * 2026-06-12 second wave: the original scope assumed "pct_* releases were
+ * always correct" — disproved against real FRED data. Pre-fix pct_yoy rows
+ * stored the PRIOR month's YoY (CPI 6/10 "3.9%" vs the real 4.2% May
+ * print; PPI 6/11 "9.7%" ≈ April-on-April), the priorYear lookup matched
+ * 11 months back instead of 12, and release 46 pointed at PPIACO (all
+ * commodities) instead of the PPIFIS Final Demand headline. Scope is now
+ * EVERY mapped fred:* row — recompute-and-compare makes that safe: rows
+ * that already match are left untouched.
+ *
  * This script re-runs enrichment formatting for every affected fred:* row
  * using the fixed RELEASE_ID_TO_SERIES config (units verified against the
  * FRED /series endpoint 2026-06-11) and overwrites actual_value. Only
@@ -37,9 +46,11 @@ import {
 
 const DB_PATH = process.env.VANGUARD_DB_PATH ?? path.join(process.cwd(), "data", "vanguard.db");
 
-// Release ids whose formatAs changed in the 2026-06-11 fix (delta_k /
-// level_count / usd_millions). pct_* releases were always correct.
-const AFFECTED_RELEASE_IDS = new Set([50, 194, 192, 180, 27, 291, 97, 51]);
+// Every mapped release id. The first wave (2026-06-11) limited this to the
+// unit-scale formats on the assumption pct_* rows were correct — they were
+// not (prior-month YoY + 11-month base + PPIACO). Recompute-and-compare
+// keeps a full sweep safe and idempotent.
+const AFFECTED_RELEASE_IDS = new Set(Object.keys(RELEASE_ID_TO_SERIES).map(Number));
 
 interface EventRow {
   id: number;

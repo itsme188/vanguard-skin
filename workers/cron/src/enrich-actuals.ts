@@ -24,7 +24,7 @@ export interface FredSeriesConfig {
 
 export const RELEASE_ID_TO_SERIES: Record<number, FredSeriesConfig> = {
   10:  { seriesId: "CPIAUCSL", formatAs: "pct_yoy" },
-  46:  { seriesId: "PPIACO",   formatAs: "pct_yoy" },
+  46:  { seriesId: "PPIFIS",   formatAs: "pct_yoy" }, // PPI Final Demand — the press headline, not PPIACO all-commodities
   54:  { seriesId: "PCEPILFE", formatAs: "pct_yoy" },
   53:  { seriesId: "GDPC1",    formatAs: "qoq_saar" },
   50:  { seriesId: "PAYEMS",   formatAs: "delta_k", unitScale: 1000 },
@@ -79,12 +79,21 @@ export async function fetchFredSeriesLatest(
 
   const latest = rows[0];
   const prior = rows[1] ?? null;
-  const priorYear = rows.find((r) => {
+  // Exact 12 months back first — rows are DESC, so a first-match 11–13
+  // window always lands on 11 months and computes YoY against the wrong
+  // base month. The window survives only as a fallback for vintage holes.
+  const monthsBack = (r: FredObservation) => {
     const d = new Date(r.date);
     const ld = new Date(latest.date);
-    const monthsBack = (ld.getFullYear() - d.getFullYear()) * 12 + (ld.getMonth() - d.getMonth());
-    return monthsBack >= 11 && monthsBack <= 13;
-  }) ?? null;
+    return (ld.getFullYear() - d.getFullYear()) * 12 + (ld.getMonth() - d.getMonth());
+  };
+  const priorYear =
+    rows.find((r) => monthsBack(r) === 12) ??
+    rows.find((r) => {
+      const mb = monthsBack(r);
+      return mb >= 11 && mb <= 13;
+    }) ??
+    null;
 
   return {
     value: Number(latest.value),
