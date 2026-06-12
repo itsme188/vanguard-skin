@@ -51,6 +51,20 @@ if ! command -v claude &>/dev/null; then
   echo "ERROR: claude CLI not on PATH — aborting"; exit 1
 fi
 
+# --- npx / MCP launch preflight ----------------------------------------------
+# The zone agents' playwright + sqlite MCP servers are npx-launched. A poisoned
+# user npm cache (root-owned shards from a sudo npm run on 2026-04-23) made
+# every MCP launch die with EACCES — the 2026-06-12 run swept 0 zones. Two
+# layers: (1) a dedicated cache (inherited by claude → npx children) so this
+# job never depends on shared user-cache state; (2) a fail-fast probe so a
+# broken launch path aborts HERE with a diagnosis instead of burning a sandbox
+# boot + a claude session that can only report "no browser tools".
+export NPM_CONFIG_CACHE="$SCRIPT_DIR/sandbox/npm-cache"
+if ! npx -y @playwright/mcp@latest --version >/dev/null 2>&1; then
+  echo "ERROR: npx cannot launch @playwright/mcp (cache: $NPM_CONFIG_CACHE) — aborting before sandbox boot"
+  exit 1
+fi
+
 bash "$SCRIPT_DIR/sandbox.sh" up || { echo "ERROR: sandbox boot failed"; exit 1; }
 # Single EXIT trap (bash traps replace, not stack): sandbox down + release lock.
 trap 'bash "$SCRIPT_DIR/sandbox.sh" down; rmdir "$LOCK_DIR" 2>/dev/null' EXIT
