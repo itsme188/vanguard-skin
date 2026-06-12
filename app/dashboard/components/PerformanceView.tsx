@@ -6,7 +6,7 @@ import { computeXirr } from "@/lib/compute/xirr";
 import { computeRiskMetrics } from "@/lib/compute/risk";
 import { reconcileTwrAgainstStatements } from "@/lib/compute/twr-reconcile";
 import { computePeriodAttribution } from "@/lib/compute/period-attribution";
-import { resolveScopeToSingleId } from "@/lib/queries/accounts";
+import { resolveScope, resolveScopeToSingleId } from "@/lib/queries/accounts";
 import { getDailyValuationsByAccount, getDailyValuationsCombined } from "@/lib/queries/daily-valuations";
 import { Money, Pct } from "@/lib/privacy/components";
 import { formatPercent } from "@/lib/format";
@@ -158,32 +158,22 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
   }
 
   // ── Period attribution ──────────────────────────────────────────
-  // Use the first account in scope for attribution (position-level data).
-  // When scope=all, resolveScope returns undefined (meaning "no filter"), so
-  // we can't use it to pick an account. Instead, query directly for the first
-  // account by ID as a stable fallback.
-  const attrAccountId: number | undefined =
-    accountId ??
-    (() => {
-      const row = db
-        .prepare("SELECT id FROM accounts ORDER BY id LIMIT 1")
-        .get() as { id: number } | undefined;
-      return row?.id;
-    })();
-
+  // Pass the FULL scope: resolveScope's id set for a named scope, undefined
+  // (= whole portfolio) for "all". computePeriodAttribution aggregates
+  // multi-account scopes internally — never hand it a single "first"
+  // account (pre-fix, scope=all rendered account 1's beta/alpha labeled
+  // "All accounts"; deep-QA finding 2026-06-11).
   let attribution: ReturnType<typeof computePeriodAttribution> | null = null;
-  if (attrAccountId !== undefined) {
-    try {
-      attribution = computePeriodAttribution(
-        db,
-        attrAccountId,
-        effectiveStart,
-        today,
-        BENCHMARK_SYMBOL,
-      );
-    } catch {
-      // Non-blocking
-    }
+  try {
+    attribution = computePeriodAttribution(
+      db,
+      activeScope === "all" ? undefined : resolveScope(db, activeScope),
+      effectiveStart,
+      today,
+      BENCHMARK_SYMBOL,
+    );
+  } catch {
+    // Non-blocking
   }
 
   const buildHref = (next: { period?: Period; scope?: string }) => {
