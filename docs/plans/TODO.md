@@ -137,6 +137,14 @@
 
 - **Continue factor-analysis collaboration with ChatGPT** — give it the freshly refreshed GitHub link after this session's README + screenshot + CHANGELOG sweep so its context matches the post-redesign reality.
 
+### Closed this session (2026-06-12 — 6/11 findings follow-through + deep-QA infra failure root-caused)
+
+Session goals: (1) verify the 6/11 findings are fully fixed AND live, (2) root-cause the 6/12 deep-QA run failure. Verified the 6/11 fix wave is merged + in the 23:55 DMG + repaired in the prod DB, then found and fixed two real gaps. 4 commits `d7e8fc1..37b51e2`; tests 2734 → **2740 Mac + 252 Worker**; Worker deployed `ed05cf7b`; pushed; DMG via this session-end.
+
+- ✅ **PPI series choice: PPIACO → PPIFIS** (`d7e8fc1`) — and the TODO entry's "the YoY math is correct for the series" turned out FALSE on real-data verification: pre-fix pct_yoy rows stored the PRIOR month's YoY, and the `priorYear` lookup matched 11 months back instead of 12 (desc scan + 11–13 window; sparse test mocks hid it). Exact-12-first fix Mac + Worker parity (real ALFRED-vintage fixture); release 46 → PPIFIS verified via FRED /series/release; repair script widened to every mapped release and applied — 7 prod rows (PPI 6/11 "9.7%"→"6.4%", CPI 6/10 "3.9%"→"4.2%"); idempotency re-verified (26/26 correct).
+- ✅ **NotesAmbient FAB overlaps last mobile holding row** (`a734a79`) — root cause was the dashboard layout's mobile `pb-20` clearing only the bottom nav, not the FAB band (80–128px); every tab had the latent overlap, so the fix is layout-level (`pb-36`), not Today-page padding. Playwright-verified at 390×844 (40px clearance at max scroll).
+- ✅ **6/12 deep-QA run failure root-caused + triple-hardened** (`17c8b7e`) — the schedule fix WORKED (first on-schedule 02:45 fire); the run swept 0 zones because both MCP servers are npx-launched and `~/.npm/_cacache` held 51 root-owned shards from an Apr 23 `sudo npm` run (EACCES on fresh `@latest` shard writes; likely also the 6/11 mid-run Playwright death). Fixes: user chown'd `~/.npm` (51→0, npx verified), `nightly-deep-qa.sh` got a dedicated `NPM_CONFIG_CACHE` + fail-fast `npx @playwright/mcp --version` preflight, memory `feedback_never_sudo_npm.md`. Stale QA docs reconciled (ledger fix_commit backfill; FINDINGS.md "(not merged)" notes — the branch HAD merged via `bf8e5dd`).
+
 ### Closed this session (2026-06-11 night — deep-QA schedule timezone fix + second sweep's findings)
 
 The 6/11 19:45 sweep (mis-scheduled, see first bullet) ran end-to-end autonomously and produced 10 new findings; this session fixed the schedule, merged the sweep's 7 auto-fixes, and fixed the 2 judgment-needed findings (HIGH + MEDIUM). 6 commits `28b8f80..deb8ddd` + merge `bf8e5dd`; tests 2703 → **2734 Mac + 249 Worker**; Worker deployed `1eebe686`; all pushed; DMG via this session-end.
@@ -374,8 +382,6 @@ Headline features not reflected in the v2 archive:
 
 Added 2026-06-11 night (deep-QA second sweep + fix session):
 
-- [ ] **NotesAmbient FAB overlaps last mobile holding row at max scroll** (LOW, sweep finding `mobile--notesambient-fab-overlaps-last-holding-row`) — design call: bottom padding on the Today holdings list vs FAB placement. ~15 min once a direction is picked.
-- [ ] **PPI series choice: PPIACO vs PPI Final Demand** — `RELEASE_ID_TO_SERIES[46]` uses PPIACO (All Commodities, currently printing 9.7% YoY) but the press headline is PPI Final Demand (PPIFIS). Not a scale bug — the YoY math is correct for the series — but the chip reads hotter than the headline number. Verify release 46's headline series against FRED before swapping (`lib/calendar/enrich-actuals.ts` + Worker mirror + repair-script re-run for stored PPI rows).
 - [ ] **Coverage-jump hazard in other multi-account consumers of `getDailyValuationsForAccounts`** — tonight's `cc317ff` added a full-coverage date filter inside `computePeriodAttribution` only. `computeMarketRegression` (factors) and `computeRiskMetrics` share the same summed-series pattern and would read an account's coverage start (IBKR 3/27 vs Vanguard/Roth 4/06) as a fake return for multi-account scopes whose window spans the boundary. Consider hoisting the filter into `getDailyValuationsForAccounts` as an opt-in flag (`fullCoverageOnly`) after checking each consumer's tolerance.
 
 Closed this session (2026-04-24 evening — Calendar Living Record Tier-3 sprint):
