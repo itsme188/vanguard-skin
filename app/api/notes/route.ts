@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { getNotesFiltered, getSecurityIdBySymbol } from "@/lib/queries/notes";
 import { createNote, updateNote, deleteNote } from "@/lib/mutations/notes";
 import type { NoteType, NoteSentiment } from "@/lib/types";
+import { todayET } from "@/lib/calendar/date-utils";
 
 const VALID_TYPES: NoteType[] = ["journal", "earnings", "trade_thesis"];
 const VALID_SENTIMENTS: NoteSentiment[] = [
@@ -87,7 +88,8 @@ export async function POST(request: NextRequest) {
       content,
       security_id: resolvedSecurityId,
       transaction_id: transaction_id ?? null,
-      event_date: event_date ?? new Date().toISOString().slice(0, 10),
+      // ET-anchor: a 9pm ET quick-note must file under today, not UTC-tomorrow.
+      event_date: event_date ?? todayET(),
       tags: tags ?? null,
       sentiment: sentiment ?? null,
     });
