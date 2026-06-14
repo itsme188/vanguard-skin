@@ -4,6 +4,8 @@ import fs from "node:fs";
 import { runMigrations } from "./db/migrate";
 import { setFeatureModelOverrideSource } from "./ai/override-source";
 import { getFeatureModelOverrides } from "./queries/ai-model-overrides";
+import { setModelCatalogSource } from "./ai/catalog-source";
+import { getModelCatalog } from "./ai/model-catalog";
 
 // DATABASE_PATH wins (full path to a .db file). Falls back to
 // VANGUARD_DB_DIR/vanguard.db for back-compat. Lets a worktree point at the
@@ -25,3 +27,4 @@ runMigrations(db);
 // importing the resolver never opens the SQLite file as a side effect
 // (in-memory test DBs / Workers fall back to FEATURE_MODELS silently).
 setFeatureModelOverrideSource(() => getFeatureModelOverrides(db));
+setModelCatalogSource(() => getModelCatalog(db));
