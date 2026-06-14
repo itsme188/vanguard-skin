@@ -29,6 +29,7 @@ import {
   deleteObject,
   isR2Configured,
 } from "@/lib/storage/r2";
+import { getModelCatalog } from "@/lib/ai/model-catalog";
 
 const DEEP_READ_SOURCE_IDS = [1, 18, 19, 28]; // VK, Eliant, Purple Drink, Meisler
 const DEEP_READ_HOURS = 72;
@@ -38,7 +39,7 @@ const CALENDAR_LOOKAHEAD_DAYS = 7;
 const SNAPSHOT_RETENTION_DAYS = 7;
 
 interface Snapshot {
-  schemaVersion: 5;
+  schemaVersion: 6;
   snapshotDate: string;
   generatedAt: string;
   heldSymbols: string[];
@@ -122,6 +123,10 @@ interface Snapshot {
     notes: string | null;
     uploaded_at: string;
   }>;
+  // v6 — available Anthropic model ids (from /v1/models, cached in settings).
+  // Worker fallbacks use this for tier-aware model selection + reactive failover.
+  // [] when never refreshed — graceful: falls back to TIER_STATIC_FALLBACK.
+  modelCatalog: string[];
 }
 
 function today(): string {
@@ -415,7 +420,7 @@ function buildSnapshot(db: Database.Database): Snapshot {
     }>;
 
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     snapshotDate: today(),
     generatedAt: new Date().toISOString(),
     heldSymbols: getHeldStockSymbolsRO(db),
@@ -455,6 +460,9 @@ function buildSnapshot(db: Database.Database): Snapshot {
       daysAgo(1),
       daysAhead(CALENDAR_LOOKAHEAD_DAYS),
     ),
+    // v6 — available Anthropic model ids for Worker tier resolution + failover.
+    // Returns [] when the Mac has never run a catalog refresh (travel, fresh install).
+    modelCatalog: getModelCatalog(db),
   };
 }
 
@@ -500,7 +508,8 @@ async function main() {
       `${snapshot.vanguardHoldings.length} vanguard-holdings, ` +
       `${snapshot.securityBetas.length} betas, ` +
       `${snapshot.notes.length} notes, ` +
-      `${snapshot.earningsBogeys.length} bogeys`
+      `${snapshot.earningsBogeys.length} bogeys, ` +
+      `${snapshot.modelCatalog.length} model-catalog`
   );
 
   const keepFromDate = daysAgo(SNAPSHOT_RETENTION_DAYS);
