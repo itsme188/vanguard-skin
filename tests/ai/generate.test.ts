@@ -29,6 +29,9 @@ describe("generateTextForFeature", () => {
     const r = await generateTextForFeature("chat", { prompt: "hi" });
     expect(r.text).toBe("ok2");
     expect(generateTextMock).toHaveBeenCalledTimes(2);
+    // Prove the first call used Fable and the retry used the NEXT rung (Opus), not Fable again.
+    expect(generateTextMock.mock.calls[0][0].model.modelId).toBe("claude-fable-5");
+    expect(generateTextMock.mock.calls[1][0].model.modelId).toBe("claude-opus-4-8");
   });
 
   it("on refusal finishReason, throws AIRefusalError (graceful, named)", async () => {

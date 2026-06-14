@@ -20,7 +20,7 @@ import { generateText, generateObject, APICallError } from "ai";
 import type { FeatureKey } from "@/lib/ai/feature-keys";
 import { getModelForFeature } from "@/lib/ai/provider";
 import { resolveFeatureModel } from "@/lib/ai/models";
-import { dropModelFromCatalog, invalidateModelCatalogCache } from "@/lib/ai/catalog-source";
+import { dropModelFromCatalog } from "@/lib/ai/catalog-source";
 
 export class AIRefusalError extends Error {
   constructor(public feature: FeatureKey, public modelId: string) {
@@ -58,7 +58,6 @@ export async function generateTextForFeature(feature: FeatureKey, opts: GenTextO
     if (!isModelUnavailable(err)) throw err;
     // Reactive failover: drop the dead model, re-resolve, retry once.
     dropModelFromCatalog(modelId);
-    invalidateModelCatalogCache();
     const next = resolveFeatureModel(feature).modelId;
     console.warn(`[ai] ${feature}: ${modelId} unavailable → failing over to ${next}`);
     modelId = next;
@@ -77,7 +76,6 @@ export async function generateObjectForFeature(feature: FeatureKey, opts: GenObj
   } catch (err) {
     if (!isModelUnavailable(err)) throw err;
     dropModelFromCatalog(modelId);
-    invalidateModelCatalogCache();
     const next = resolveFeatureModel(feature).modelId;
     console.warn(`[ai] ${feature}: ${modelId} unavailable → retrying with re-resolved model ${next}`);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
