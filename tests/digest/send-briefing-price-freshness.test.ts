@@ -62,6 +62,10 @@ vi.mock("@/lib/compute/security-regression-backfill", () => ({
     .mockReturnValue({ processed: 0, succeeded: 0, skipped: 0, failed: 0 }),
 }));
 
+vi.mock("@/lib/ai/model-catalog", () => ({
+  refreshModelCatalog: vi.fn(async () => []),
+}));
+
 vi.mock("@/lib/calendar/briefing-html", () => ({
   briefingToHtml: vi.fn().mockReturnValue("<html>fake</html>"),
 }));
