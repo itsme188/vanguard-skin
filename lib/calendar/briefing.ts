@@ -15,7 +15,7 @@ import {
   type LevelNearPrice,
 } from "@/lib/queries/briefing-levels";
 import { getModelForFeature } from "@/lib/ai/provider";
-import { FEATURE_MODELS } from "@/lib/ai/models";
+import { resolveFeatureModel } from "@/lib/ai/models";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { mondayOf } from "@/lib/calendar/date-utils";
 import {
@@ -257,7 +257,7 @@ export async function generateWeeklyBriefing(
     title,
     content,
     eventCount: events.length,
-    model: FEATURE_MODELS.briefing,
+    model: resolveFeatureModel("briefing").modelId,
   });
 
   options?.onProgress?.("Briefing complete", 4, 4);

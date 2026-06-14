@@ -12,7 +12,6 @@
  * The Claude call is model-agnostic via `getModelForFeature("filingSectionExtraction")`.
  */
 
-import { generateText } from "ai";
 import type Database from "better-sqlite3";
 import {
   getLatestAnnualOrQuarterlyFiling,
@@ -20,8 +19,8 @@ import {
   stripFilingHtml,
   extractItemSection,
 } from "@/lib/apis/edgar";
-import { getModelForFeature } from "@/lib/ai/provider";
 import { resolveFeatureModel } from "@/lib/ai/models";
+import { generateTextForFeature } from "@/lib/ai/generate";
 import {
   getCachedFilingSection,
   type FilingSection,
@@ -193,9 +192,8 @@ export async function getFilingSection(
 
   let modelOutput: string;
   try {
-    const model = getModelForFeature("filingSectionExtraction");
-    const { text } = await generateText({
-      model,
+    // AIRefusalError flows into this catch block and surfaces as { error }
+    const { text } = await generateTextForFeature("filingSectionExtraction", {
       prompt,
       maxOutputTokens: 2000,
     });
