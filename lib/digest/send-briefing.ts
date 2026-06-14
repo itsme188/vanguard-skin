@@ -10,6 +10,8 @@ import { setLastBriefingSentAt } from "@/lib/digest/daily-digest";
 import { syncCalendarForWeek } from "@/lib/calendar/sync";
 import { getRecipientsFor } from "@/lib/queries/email-recipients";
 import { generateNarrative, NARRATIVE_SURFACES } from "@/lib/compute/analysis-narratives";
+import { refreshModelCatalog } from "@/lib/ai/model-catalog";
+import { invalidateModelCatalogCache } from "@/lib/ai/catalog-source";
 
 export class BriefingSendError extends Error {
   constructor(
@@ -120,6 +122,16 @@ export async function sendBriefingEmail(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[send-briefing] price-freshness probe failed: ${msg}`);
+  }
+
+  // Model catalog refresh. Sunday cadence is appropriate — the catalog only
+  // drives new-model discovery and weekly is plenty. Best-effort — failures
+  // MUST NOT block the briefing.
+  try {
+    await refreshModelCatalog(db);
+    invalidateModelCatalogCache(); // pick up the new list immediately
+  } catch (e) {
+    console.warn(`[send-briefing] model catalog refresh skipped: ${String(e)}`);
   }
 
   // Calendar sync. Until 2026-04-27 the briefing path skipped this,
