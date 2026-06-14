@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { jsonSchema } from "ai";
 import { generateObjectForFeature } from "@/lib/ai/generate";
-import { FEATURE_MODELS } from "@/lib/ai/models";
+import { resolveFeatureModel } from "@/lib/ai/models";
 import { verifyMentions } from "@/lib/research/verify-mentions";
 
 interface UnprocessedArticle {
@@ -121,7 +121,7 @@ export async function processUnprocessedArticles(
         result.sentiment_score,
         JSON.stringify(verifiedSymbols),
         result.portfolio_relevance,
-        FEATURE_MODELS.newsletterProcessing,
+        resolveFeatureModel("newsletterProcessing").modelId,
         article.id
       );
 

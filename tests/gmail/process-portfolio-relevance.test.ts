@@ -22,6 +22,7 @@ vi.mock("@/lib/ai/generate", () => ({
 
 vi.mock("@/lib/ai/models", () => ({
   FEATURE_MODELS: { newsletterProcessing: "mock-model" },
+  resolveFeatureModel: () => ({ provider: "anthropic", modelId: "mock-model" }),
 }));
 
 vi.mock("@/lib/research/verify-mentions", () => ({
