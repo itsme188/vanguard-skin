@@ -12,8 +12,7 @@
  */
 
 import type Database from "better-sqlite3";
-import { generateText } from "ai";
-import { getModelForFeature } from "@/lib/ai/provider";
+import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
 import { resolveFeatureModel } from "@/lib/ai/models";
 import { resolveScope } from "@/lib/queries/accounts";
 import {
@@ -148,19 +147,22 @@ export async function generateNarrative(
   // 4. Call Sonnet via AI Gateway. Wrap in try/catch so the caller can
   // distinguish AI errors (network / rate-limit / auth) from validation
   // errors (unknown surface / truncated output / dollar leak).
-  const model = getModelForFeature("analysisFactorNarrative");
   const surfacePrompt = SURFACE_PROMPTS[surface];
   const prompt = `${surfacePrompt}\n\nData (JSON):\n${context}`;
 
   let rawText: string;
   try {
-    const result = await generateText({
-      model,
+    const result = await generateTextForFeature("analysisFactorNarrative", {
       system: SYSTEM_PROMPT,
       prompt,
     });
     rawText = result.text;
   } catch (err) {
+    if (err instanceof AIRefusalError) {
+      throw new Error(
+        `Sonnet narrative generation refused for ${opts.scope}/${opts.surfaceKey}`
+      );
+    }
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(
       `Sonnet narrative generation failed for ${opts.scope}/${opts.surfaceKey}: ${msg}`

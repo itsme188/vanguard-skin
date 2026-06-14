@@ -1,17 +1,27 @@
 // tests/compute/classify-securities-fallback.test.ts
 //
 // NOTE: Uses the vi.fn()-direct mock pattern (same as synthesize.test.ts).
-// The wrapper pattern `vi.mock("ai", () => ({ generateText: (...a) => outerMock(...a) }))`
+// The wrapper pattern `vi.mock("@/lib/ai/generate", () => ({ generateTextForFeature: (...a) => outerMock(...a) }))`
 // has a Vitest 4 quirk: `mockRejectedValue` on the inner vi.fn() triggers a spurious
 // "unhandled rejection" failure even when the try/catch in the implementation properly
 // catches the error. Using vi.fn() directly avoids this.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 
-vi.mock("@/lib/ai/provider", () => ({ getModelForFeature: vi.fn(() => "mock-model") }));
-vi.mock("ai", () => ({ generateText: vi.fn() }));
+vi.mock("@/lib/ai/generate", () => ({
+  generateTextForFeature: vi.fn(),
+  AIRefusalError: class AIRefusalError extends Error {
+    constructor(feature: string, modelId: string) {
+      super(`AI refused request for feature "${feature}" (model ${modelId})`);
+      this.name = "AIRefusalError";
+    }
+  },
+}));
+vi.mock("@/lib/ai/models", () => ({
+  resolveFeatureModel: vi.fn(() => ({ provider: "anthropic", modelId: "claude-sonnet-4-6-20250219" })),
+}));
 
-import { generateText } from "ai";
+import { generateTextForFeature } from "@/lib/ai/generate";
 import { classifyUnresolvedWithClaude } from "@/lib/compute/classify-securities";
 
 function makeDb() {
@@ -28,7 +38,7 @@ beforeEach(() => vi.clearAllMocks());
 
 describe("classifyUnresolvedWithClaude", () => {
   it("fills the four classification fields from Claude output", async () => {
-    (generateText as ReturnType<typeof vi.fn>).mockResolvedValue({ text: JSON.stringify([
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({ text: JSON.stringify([
       { symbol: "XLE", fund_category: "Sector Equity", geography: "US", market_cap_category: "Large", style: "Value" },
     ]) });
     const db = makeDb();
@@ -39,7 +49,7 @@ describe("classifyUnresolvedWithClaude", () => {
     expect(row.classification_source).toBe("auto_ai");
   });
   it("normalizes fragmented fund_category vocabulary at write time", async () => {
-    (generateText as ReturnType<typeof vi.fn>).mockResolvedValue({ text: JSON.stringify([
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({ text: JSON.stringify([
       { symbol: "XLE", fund_category: "Technology", geography: "US", market_cap_category: "Large", style: "Growth" },
     ]) });
     const db = makeDb();
@@ -49,7 +59,7 @@ describe("classifyUnresolvedWithClaude", () => {
     expect(row.fund_category).toBe("US Sector Equity (Technology)");
   });
   it("returns an error and classifies nothing when Claude fails", async () => {
-    (generateText as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("402 credits"));
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("402 credits"));
     const db = makeDb();
     const res = await classifyUnresolvedWithClaude(db, [{ id: 1, symbol: "XLE", security_type: "ETF" }]);
     expect(res.classified).toBe(0);

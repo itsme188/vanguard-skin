@@ -1,9 +1,19 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import Database from "better-sqlite3";
 
-vi.mock("@/lib/ai/provider", () => ({ getModelForFeature: vi.fn(() => "mock-model") }));
 const generateTextMock = vi.fn();
-vi.mock("ai", () => ({ generateText: (...a: unknown[]) => generateTextMock(...a) }));
+vi.mock("@/lib/ai/generate", () => ({
+  generateTextForFeature: (...a: unknown[]) => generateTextMock(...a),
+  AIRefusalError: class AIRefusalError extends Error {
+    constructor(feature: string, modelId: string) {
+      super(`AI refused request for feature "${feature}" (model ${modelId})`);
+      this.name = "AIRefusalError";
+    }
+  },
+}));
+vi.mock("@/lib/ai/models", () => ({
+  resolveFeatureModel: vi.fn(() => ({ provider: "anthropic", modelId: "claude-sonnet-4-6-20250219" })),
+}));
 
 import { classifyOptionSectors, getUnsectoredOptionUnderlyings } from "@/lib/securities/classify-option-sectors";
 

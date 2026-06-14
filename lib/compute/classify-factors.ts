@@ -5,8 +5,7 @@
  */
 
 import type Database from "better-sqlite3";
-import { generateText } from "ai";
-import { getModelForFeature } from "@/lib/ai/provider";
+import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
 import { FACTOR_COLUMNS, FACTOR_LABELS, type FactorColumn } from "@/lib/factors";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
 import { extractJsonArray } from "@/lib/ai/extract-json";
@@ -199,7 +198,6 @@ export async function classifyFactors(
   }
 
   // Batch and classify with Claude
-  const model = getModelForFeature("factorClassification");
   const BATCH_SIZE = 25;
   let classified = 0;
   const errors: string[] = [];
@@ -211,8 +209,7 @@ export async function classifyFactors(
       .join("\n")}`;
 
     try {
-      const { text } = await generateText({
-        model,
+      const { text } = await generateTextForFeature("factorClassification", {
         maxOutputTokens: 8000,
         temperature: 0.2,
         system: SYSTEM_PROMPT,
@@ -256,6 +253,10 @@ export async function classifyFactors(
         classified++;
       }
     } catch (err) {
+      if (err instanceof AIRefusalError) {
+        errors.push(`Batch ${i / BATCH_SIZE + 1}: AI refusal`);
+        continue;
+      }
       const msg = err instanceof Error ? err.message : "Unknown error";
       errors.push(`Batch ${i / BATCH_SIZE + 1}: ${msg}`);
     }
