@@ -32,7 +32,7 @@ import {
   type ExtractedMessage,
 } from "./gmail";
 import { loadLatestSnapshot, type Snapshot } from "./state";
-import { getModelForFeature } from "./ai";
+import { generateWithFailover } from "./ai";
 import { getCurrentETHour, getCurrentETMinute } from "./dst";
 
 const MAX_ARTICLES_PER_RUN = 10;
@@ -159,16 +159,17 @@ export async function runNewsletterFetch(
   env: NewsletterFetchEnv,
   deps: Partial<NewsletterFetchDeps> = {},
 ): Promise<NewsletterFetchResult> {
-  const d: NewsletterFetchDeps = {
-    loadSnapshot: deps.loadSnapshot ?? loadLatestSnapshot,
-    getAccessToken: deps.getAccessToken ?? getAccessToken,
-    listMessages: deps.listMessages ?? listMessages,
-    getMessage: deps.getMessage ?? (getMessage as NewsletterFetchDeps["getMessage"]),
-    extractMessage:
-      deps.extractMessage ??
-      ((msg: unknown) => extractMessage(msg as Parameters<typeof extractMessage>[0])),
-    analyzeArticle: deps.analyzeArticle ?? defaultAnalyze,
-  };
+  // loadSnapshot + getAccessToken/listMessages/getMessage/extractMessage resolve
+  // immediately; analyzeArticle is wired AFTER the snapshot loads so we can
+  // pass snapshot.modelCatalog into the default implementation without changing
+  // the NewsletterFetchDeps interface (which tests mock without a catalog param).
+  const loadSnapshot = deps.loadSnapshot ?? loadLatestSnapshot;
+  const resolvedGetAccessToken = deps.getAccessToken ?? getAccessToken;
+  const resolvedListMessages = deps.listMessages ?? listMessages;
+  const resolvedGetMessage = deps.getMessage ?? (getMessage as NewsletterFetchDeps["getMessage"]);
+  const resolvedExtractMessage =
+    deps.extractMessage ??
+    ((msg: unknown) => extractMessage(msg as Parameters<typeof extractMessage>[0]));
 
   // Skip when Mac has run its own sync recently — avoids paying for a
   // duplicate Claude pass while Mac is alive.
@@ -177,8 +178,22 @@ export async function runNewsletterFetch(
     return { kind: "skipped", reason: "mac-recent-newsletter-sync marker present" };
   }
 
-  const snapshot = await d.loadSnapshot(env.ARCHIVE);
+  const snapshot = await loadSnapshot(env.ARCHIVE);
   if (!snapshot) return { kind: "no_snapshot" };
+
+  // Wire analyzeArticle AFTER snapshot load so the default can capture the
+  // catalog for tier-aware model resolution + failover. Injected mocks override.
+  const catalog = snapshot.modelCatalog ?? [];
+  const d: NewsletterFetchDeps = {
+    loadSnapshot,
+    getAccessToken: resolvedGetAccessToken,
+    listMessages: resolvedListMessages,
+    getMessage: resolvedGetMessage,
+    extractMessage: resolvedExtractMessage,
+    analyzeArticle:
+      deps.analyzeArticle ??
+      ((e, source, detail, holdingsCtx) => defaultAnalyze(e, source, detail, holdingsCtx, catalog)),
+  };
 
   const accessToken = await d.getAccessToken(env);
   const heldSymbolsContext = snapshot.heldSymbols.join(", ");
@@ -290,6 +305,7 @@ async function defaultAnalyze(
   source: Snapshot["researchSources"][number],
   detail: ExtractedMessage,
   holdingsContext: string,
+  catalog: string[] = [],
 ): Promise<ArticleAnalysis | null> {
   const text =
     detail.body.length > 15_000
@@ -313,12 +329,18 @@ affects the portfolio (Fed policy, rates, broad indices, sector exposure).
 Set FALSE only for clearly off-topic content. Default to TRUE when
 uncertain — prefer to under-filter.`;
 
-  const { object } = await generateObject({
-    model: getModelForFeature(env, "fallbackNewsletterProcessing"),
-    maxOutputTokens: 2048,
-    schema: ARTICLE_SCHEMA,
-    prompt,
-  });
+  const { object } = await generateWithFailover(
+    env,
+    "fallbackNewsletterProcessing",
+    catalog,
+    (model) =>
+      generateObject({
+        model,
+        maxOutputTokens: 2048,
+        schema: ARTICLE_SCHEMA,
+        prompt,
+      }),
+  );
 
   return {
     summary: object.summary || "",

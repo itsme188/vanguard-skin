@@ -26,7 +26,7 @@ import {
 } from "./gmail";
 import { sendEmail } from "./resend";
 import { loadLatestSnapshot, type Snapshot, type RecentArticleMeta } from "./state";
-import { getModelForFeature } from "./ai";
+import { generateWithFailover } from "./ai";
 import { briefingToHtml } from "./html";
 import { todayET } from "./dst";
 import { sourceKind, editionLabel } from "./editions";
@@ -113,6 +113,7 @@ export async function fetchAndProcessNewArticles(
   opts: { maxArticles?: number } = {},
 ): Promise<FetchAndProcessResult> {
   const maxArticles = opts.maxArticles ?? MAX_ARTICLES_PER_RUN;
+  const catalog = snapshot.modelCatalog ?? [];
   const accessToken = await getAccessToken(env);
   const heldSymbolsContext = snapshot.heldSymbols.join(", ");
 
@@ -152,7 +153,7 @@ export async function fetchAndProcessNewArticles(
       try {
         const detail = extractMessage(await getMessage(accessToken, m.id));
         if (!detail) continue;
-        const article = await processArticle(env, source, detail, heldSymbolsContext);
+        const article = await processArticle(env, source, detail, heldSymbolsContext, catalog);
         if (article) {
           article.gmail_message_id = m.id;
           processed.push(article);
@@ -257,7 +258,8 @@ async function processArticle(
   env: FallbackEnv,
   source: Snapshot["researchSources"][number],
   detail: ExtractedMessage,
-  holdingsContext: string
+  holdingsContext: string,
+  catalog: string[] = [],
 ): Promise<ProcessedArticle | null> {
   const text =
     detail.body.length > 15_000 ? detail.body.slice(0, 15_000) + "\n...[truncated]" : detail.body;
@@ -273,12 +275,18 @@ ${source.processing_prompt ? `\nSource-specific instructions: ${source.processin
 Article text:
 ${text}`;
 
-  const { object } = await generateObject({
-    model: getModelForFeature(env, "fallbackNewsletterProcessing"),
-    maxOutputTokens: 2048,
-    schema: ARTICLE_SCHEMA,
-    prompt,
-  });
+  const { object } = await generateWithFailover(
+    env,
+    "fallbackNewsletterProcessing",
+    catalog,
+    (model) =>
+      generateObject({
+        model,
+        maxOutputTokens: 2048,
+        schema: ARTICLE_SCHEMA,
+        prompt,
+      }),
+  );
 
   return {
     source_name: source.name,

@@ -12,6 +12,7 @@
 
 import { createAnthropic } from "@ai-sdk/anthropic";
 import type { LanguageModel } from "ai";
+import { resolveTier, type Tier } from "./model-tiers";
 
 export type WorkerFeature =
   | "fallbackBriefing"
@@ -24,19 +25,27 @@ export interface AIEnv {
   CLOUDFLARE_GATEWAY_ID?: string;
 }
 
-export const MODEL_FOR_FEATURE: Record<WorkerFeature, string> = {
-  // Opus 4.7 — same as Mac's briefing feature.
-  fallbackBriefing: "claude-opus-4-7",
-  // Sonnet 4.6 — same as Mac's newsletterProcessing.
-  fallbackNewsletterProcessing: "claude-sonnet-4-6",
-  // Sonnet 4.6 — evening email synthesis. Sonnet is sufficient; saves cost
-  // since this runs nightly vs. the Sunday-only briefing.
-  fallbackEvening: "claude-sonnet-4-6",
+/** Tier assignment per Worker feature — mirrors FEATURE_MODELS on the Mac. */
+export const FEATURE_TIER: Record<WorkerFeature, Tier> = {
+  // Opus-class (frontier) — same as Mac's briefing feature.
+  fallbackBriefing: "frontier",
+  // Sonnet-class (workhorse) — same as Mac's newsletterProcessing.
+  fallbackNewsletterProcessing: "workhorse",
+  // Sonnet-class (workhorse) — evening email synthesis. Sonnet is sufficient;
+  // saves cost since this runs nightly vs. the Sunday-only briefing.
+  fallbackEvening: "workhorse",
 };
 
-export function getModelForFeature(env: AIEnv, feature: WorkerFeature): LanguageModel {
+export function getModelForFeature(
+  env: AIEnv,
+  feature: WorkerFeature,
+  catalog: string[] = [],
+  excluded: Set<string> = new Set(),
+): LanguageModel {
   const apiKey = env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error(`ANTHROPIC_API_KEY missing (feature: ${feature})`);
+
+  const modelId = resolveTier(FEATURE_TIER[feature], catalog, excluded);
 
   const gw = env.CLOUDFLARE_ACCOUNT_ID && env.CLOUDFLARE_GATEWAY_ID
     ? { accountId: env.CLOUDFLARE_ACCOUNT_ID, gatewayId: env.CLOUDFLARE_GATEWAY_ID }
@@ -50,5 +59,30 @@ export function getModelForFeature(env: AIEnv, feature: WorkerFeature): Language
   if (gw) headers["cf-aig-metadata"] = JSON.stringify({ feature });
 
   const anthropic = createAnthropic({ apiKey, baseURL, headers });
-  return anthropic(MODEL_FOR_FEATURE[feature]);
+  return anthropic(modelId);
+}
+
+/**
+ * Wraps a single AI call with reactive failover: if the resolved model returns
+ * a 404 / not_found, exclude it and retry once with the next model in the tier
+ * ladder. On any other error, re-throws immediately.
+ */
+export async function generateWithFailover<T>(
+  env: AIEnv,
+  feature: WorkerFeature,
+  catalog: string[],
+  call: (model: LanguageModel) => Promise<T>,
+): Promise<T> {
+  const excluded = new Set<string>();
+  const modelId = resolveTier(FEATURE_TIER[feature], catalog);
+  try {
+    return await call(getModelForFeature(env, feature, catalog, excluded));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const notFound = (err as { statusCode?: number })?.statusCode === 404 || /not_found|may not exist/i.test(msg);
+    if (!notFound) throw err;
+    excluded.add(modelId);
+    console.warn(`[worker-ai] ${feature}: ${modelId} unavailable → failover`);
+    return await call(getModelForFeature(env, feature, catalog, excluded));
+  }
 }

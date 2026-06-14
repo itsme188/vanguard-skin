@@ -21,7 +21,7 @@
 import { generateText } from "ai";
 import { loadLatestSnapshot, type Snapshot } from "./state";
 import { sendEmail } from "./resend";
-import { getModelForFeature } from "./ai";
+import { generateWithFailover } from "./ai";
 import { briefingToHtml } from "./html";
 import { todayET, getCurrentETDayOfWeek } from "./dst";
 import type { FallbackEnv, FallbackResult } from "./fallback-digest";
@@ -84,13 +84,13 @@ export async function runFallbackBriefing(
   const heldSymbols = await mergeLiveIbkrSymbols(env, snapshot.heldSymbols);
   const prompt = buildPrompt(snapshot, weekOf, heldSymbols);
 
+  const catalog = snapshot.modelCatalog ?? [];
+
   let text: string;
   try {
-    const result = await generateText({
-      model: getModelForFeature(env, "fallbackBriefing"),
-      maxOutputTokens: 8192,
-      prompt,
-    });
+    const result = await generateWithFailover(env, "fallbackBriefing", catalog, (model) =>
+      generateText({ model, maxOutputTokens: 8192, prompt }),
+    );
     text = result.text;
   } catch (err) {
     // The credit-exhaustion / rate-limit analog. Surface loudly as kind:"error"
