@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
-import { generateObject, jsonSchema } from "ai";
-import { getModelForFeature } from "@/lib/ai/provider";
-import { FEATURE_MODELS } from "@/lib/ai/models";
+import { jsonSchema } from "ai";
+import { generateObjectForFeature } from "@/lib/ai/generate";
+import { resolveFeatureModel } from "@/lib/ai/models";
 import type { FeatureKey } from "@/lib/ai/feature-keys";
 import {
   getRoundTrips,
@@ -348,7 +348,7 @@ export async function generateTradeReview(
   const tradeCount = groupedTrades.length;
   const featureKey: FeatureKey =
     tradeCount > SONNET_TRADE_THRESHOLD ? "tradeReviewMainLarge" : "tradeReviewMain";
-  const modelSpec = FEATURE_MODELS[featureKey];
+  const modelSpec = resolveFeatureModel(featureKey).modelId;
   // Scale max_tokens with trade count.
   // Each trade_grade entry (with assessment + what_worked + what_didnt) is
   // realistically 300-500 output tokens. review_markdown alone is typically
@@ -423,13 +423,12 @@ export async function generateTradeReview(
     object: TradeReviewStructured;
     usage: { inputTokens?: number; outputTokens?: number } | undefined;
   }> => {
-    const response = await generateObject({
-      model: getModelForFeature(key),
+    const response = await generateObjectForFeature(key, {
       maxOutputTokens: maxTokens,
       schema: REVIEW_SCHEMA,
       system: extraSystem ? `${system}\n\n${extraSystem}` : system,
       prompt: user,
-    });
+    }) as unknown as { object: TradeReviewStructured; usage: { inputTokens?: number; outputTokens?: number } | undefined };
     return { object: response.object, usage: response.usage };
   };
 
@@ -483,7 +482,7 @@ export async function generateTradeReview(
       featureKey === "tradeReviewMain"
         ? "tradeReviewMainLarge"
         : "tradeReviewMain";
-    const fallbackSpec = FEATURE_MODELS[fallbackKey];
+    const fallbackSpec = resolveFeatureModel(fallbackKey).modelId;
     options?.onProgress?.(
       `Primary model (${modelSpec}) returned empty markdown twice — falling back to ${fallbackSpec}...`,
       4,

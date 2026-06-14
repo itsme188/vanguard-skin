@@ -1,8 +1,8 @@
-import { generateText } from "ai";
 import type { CalendarEventType, EventImpact } from "@/lib/types";
 import type { CalendarEventInput } from "@/lib/mutations/calendar";
 import { SONNET_MODEL } from "@/lib/claude-models";
-import { getModelForFeature, getRawAnthropicClient } from "@/lib/ai/provider";
+import { getRawAnthropicClient } from "@/lib/ai/provider";
+import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
 
 // ── FRED Release IDs → Calendar Event Types ──────────────────────
 //
@@ -303,11 +303,20 @@ For each event, provide enrichment data as a JSON array (same order as above):
 
 Return ONLY a JSON array of objects, one per event, in the same order. No markdown, no explanation.`;
 
-  const { text } = await generateText({
-    model: getModelForFeature("macroEnrichment"),
-    maxOutputTokens: 4096,
-    prompt,
-  });
+  let text: string;
+  try {
+    const res = await generateTextForFeature("macroEnrichment", {
+      maxOutputTokens: 4096,
+      prompt,
+    });
+    text = res.text;
+  } catch (e) {
+    if (e instanceof AIRefusalError) {
+      console.warn("[enrichEventsWithClaude] AI refused enrichment request — skipping");
+      return new Map();
+    }
+    throw e;
+  }
 
   let jsonStr = text.trim();
   const fenceMatch = jsonStr.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);

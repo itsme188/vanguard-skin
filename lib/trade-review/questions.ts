@@ -1,5 +1,5 @@
-import { generateObject, jsonSchema } from "ai";
-import { getModelForFeature } from "@/lib/ai/provider";
+import { jsonSchema } from "ai";
+import { generateObjectForFeature } from "@/lib/ai/generate";
 import type { GroupedTrade, RoundTripSummary } from "@/lib/compute/trade-roundtrips";
 import type { TradeMarketContext } from "./market-context";
 
@@ -136,12 +136,11 @@ Do NOT ask about trades where:
 
 Keep questions concise and specific. One question per trade maximum.`;
 
-  const { object } = await generateObject({
-    model: getModelForFeature("tradeReviewQA"),
+  const { object } = await generateObjectForFeature("tradeReviewQA", {
     maxOutputTokens: 2000,
     schema: QUESTIONS_SCHEMA,
     prompt,
-  });
+  }) as unknown as { object: QuestionsResult };
 
   return (object.questions ?? []).map((q) => ({
     tradeNumber: q.trade_number,
