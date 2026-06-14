@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
-import { generateObject, jsonSchema } from "ai";
+import { jsonSchema } from "ai";
+import { generateObjectForFeature } from "@/lib/ai/generate";
 import { FEATURE_MODELS } from "@/lib/ai/models";
-import { getModelForFeature } from "@/lib/ai/provider";
 import { verifyMentions } from "@/lib/research/verify-mentions";
 
 interface UnprocessedArticle {
@@ -213,8 +213,7 @@ async function extractWithClaude(
       ? article.raw_text.slice(0, 15_000) + "\n...[truncated]"
       : article.raw_text;
 
-  const { object } = await generateObject({
-    model: getModelForFeature("newsletterProcessing"),
+  const { object: _rawObject } = await generateObjectForFeature("newsletterProcessing", {
     maxOutputTokens: 2048,
     schema: ANALYSIS_SCHEMA,
     prompt: `Analyze this financial newsletter article and extract structured data.
@@ -231,6 +230,8 @@ ${text}`,
 
   // Normalize. is_portfolio_relevant defaults to true on a missing/null
   // response — under-filter when uncertain, matches the prompt direction.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const object = _rawObject as any as ProcessedResult;
   return {
     summary: object.summary || "",
     key_themes: (object.key_themes || []).slice(0, 5),

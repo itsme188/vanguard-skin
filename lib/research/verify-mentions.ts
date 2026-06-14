@@ -1,5 +1,5 @@
-import { generateObject, jsonSchema } from "ai";
-import { getModelForFeature } from "@/lib/ai/provider";
+import { jsonSchema } from "ai";
+import { generateObjectForFeature } from "@/lib/ai/generate";
 
 /**
  * Two-layer verification of ticker symbols extracted from newsletter articles.
@@ -118,8 +118,7 @@ export async function verifyMentionsWithHaiku(
     .join("\n\n---\n\n");
 
   try {
-    const { object } = await generateObject({
-      model: getModelForFeature("researchMentionVerification"),
+    const { object: _rawObject } = await generateObjectForFeature("researchMentionVerification", {
       maxOutputTokens: 1024,
       schema: VERIFICATION_SCHEMA,
       prompt: `You are verifying that ticker symbols extracted from a financial newsletter actually refer to publicly traded securities being discussed, not homonyms or coincidental substring matches.
@@ -136,6 +135,8 @@ ${contextBlock}
 
 Return one verdict per candidate in the same order. For each, set keep=true|false and give a brief reason.`,
     });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const object = _rawObject as any as { verdicts: HaikuVerdict[] };
 
     const map = new Map<string, HaikuVerdict>();
     for (const v of object.verdicts) {

@@ -1,6 +1,5 @@
 import type Database from "better-sqlite3";
-import { generateText } from "ai";
-import { getModelForFeature } from "@/lib/ai/provider";
+import { generateTextForFeature } from "@/lib/ai/generate";
 import { upsertLevel } from "@/lib/mutations/security-levels";
 import type {
   LevelType,
@@ -225,8 +224,7 @@ export async function extractLevelsFromArticle(
 
   let responseText: string;
   try {
-    const { text } = await generateText({
-      model: getModelForFeature("newsletterLevelExtraction"),
+    const { text } = await generateTextForFeature("newsletterLevelExtraction", {
       maxOutputTokens: 2048,
       prompt: buildExtractionPrompt(article, relevantSymbols),
     });

@@ -12,8 +12,7 @@
  *   - `## Also covered` closing section for thin coverage.
  */
 
-import { generateText } from "ai";
-import { getModelForFeature } from "@/lib/ai/provider";
+import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
 import { stripModelPreamble } from "@/lib/ai/strip-preamble";
 import { editionLabel } from "@/lib/digest/editions";
 import type { CompanyBucket } from "@/lib/digest/group-by-company";
@@ -166,21 +165,28 @@ function buildSynthesisPrompt(input: SynthesisInput): string {
  * @throws SynthesisEmptyError
  */
 export async function synthesize(input: SynthesisInput): Promise<string> {
-  const model = getModelForFeature("dailyDigestSynthesis");
   const prompt = buildSynthesisPrompt(input);
   const sessionHeading = input.sessionHeading ?? "The Session";
 
-  const result = await generateText({
-    model,
-    system: buildSystemPrompt(sessionHeading),
-    prompt,
-    // 8192, not 4096: the structured contract (## Session + one ## section per
-    // covered name + ## Also covered) over a 25-40 article window regularly
-    // exceeds 4096 output tokens — observed live 2026-06-09, where truncation
-    // tripped the finishReason guard and silently degraded every heavy day to
-    // the per-source fallback layout.
-    maxOutputTokens: 8192,
-  });
+  let result: Awaited<ReturnType<typeof generateTextForFeature>>;
+  try {
+    result = await generateTextForFeature("dailyDigestSynthesis", {
+      system: buildSystemPrompt(sessionHeading),
+      prompt,
+      // 8192, not 4096: the structured contract (## Session + one ## section per
+      // covered name + ## Also covered) over a 25-40 article window regularly
+      // exceeds 4096 output tokens — observed live 2026-06-09, where truncation
+      // tripped the finishReason guard and silently degraded every heavy day to
+      // the per-source fallback layout.
+      maxOutputTokens: 8192,
+    });
+  } catch (e) {
+    if (e instanceof AIRefusalError) {
+      console.warn(`[synthesize] Model refused (${e.modelId}); treating as empty synthesis`);
+      throw new SynthesisEmptyError("model refusal");
+    }
+    throw e;
+  }
 
   // ── Validation ────────────────────────────────────────────────────────────
 
