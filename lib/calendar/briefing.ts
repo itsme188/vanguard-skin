@@ -1,5 +1,4 @@
 import type Database from "better-sqlite3";
-import { generateText } from "ai";
 import type { CalendarEvent } from "@/lib/types";
 import { getEventsByWeek } from "@/lib/queries/calendar";
 import { saveBriefing } from "@/lib/mutations/calendar";
@@ -14,8 +13,9 @@ import {
   type LevelTriggeredThisWeek,
   type LevelNearPrice,
 } from "@/lib/queries/briefing-levels";
-import { getModelForFeature } from "@/lib/ai/provider";
 import { resolveFeatureModel } from "@/lib/ai/models";
+import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
+import type { FeatureKey } from "@/lib/ai/feature-keys";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { mondayOf } from "@/lib/calendar/date-utils";
 import {
@@ -239,7 +239,7 @@ export async function generateWeeklyBriefing(
   });
 
   const text = await generateBriefingTextWithRegen({
-    model: getModelForFeature("briefing"),
+    feature: "briefing",
     prompt,
     onRegen: (matches) =>
       options?.onProgress?.(
@@ -279,35 +279,50 @@ export async function generateWeeklyBriefing(
  * in isolation (without seeding the full briefing DB state).
  */
 export async function generateBriefingTextWithRegen(args: {
-  // Loose typed so tests can pass a mock-model string without importing
-  // AI-SDK types. The real call passes a `LanguageModel` instance.
-  model: Parameters<typeof generateText>[0]["model"];
+  feature: FeatureKey;
   prompt: string;
   maxOutputTokens?: number;
   /** Optional hook so callers can surface "regenerating..." progress. */
   onRegen?: (matches: string[]) => void;
 }): Promise<string> {
   const maxOutputTokens = args.maxOutputTokens ?? 8192;
-  const firstAttempt = await generateText({
-    model: args.model,
-    maxOutputTokens,
-    prompt: args.prompt,
-  });
 
-  const matches = findSelfAdmissions(firstAttempt.text);
-  if (matches.length === 0) return firstAttempt.text;
+  let firstText: string;
+  try {
+    const firstAttempt = await generateTextForFeature(args.feature, {
+      maxOutputTokens,
+      prompt: args.prompt,
+    });
+    firstText = firstAttempt.text;
+  } catch (err) {
+    if (err instanceof AIRefusalError) {
+      console.warn(`[briefing] model refused the first generation attempt`);
+      return "";
+    }
+    throw err;
+  }
+
+  const matches = findSelfAdmissions(firstText);
+  if (matches.length === 0) return firstText;
 
   console.warn(
     `[briefing] self-admission detected on first draft (${matches.join(", ")}) — regenerating once`,
   );
   args.onRegen?.(matches);
 
-  const retry = await generateText({
-    model: args.model,
-    maxOutputTokens,
-    prompt: args.prompt + buildSelfAdmissionAddendum(matches),
-  });
-  return retry.text;
+  try {
+    const retry = await generateTextForFeature(args.feature, {
+      maxOutputTokens,
+      prompt: args.prompt + buildSelfAdmissionAddendum(matches),
+    });
+    return retry.text;
+  } catch (err) {
+    if (err instanceof AIRefusalError) {
+      console.warn(`[briefing] model refused the retry generation attempt`);
+      return "";
+    }
+    throw err;
+  }
 }
 
 // ── Prompt assembly ────────────────────────────────────────────────

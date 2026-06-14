@@ -176,6 +176,12 @@ export async function callClaudeForPdfExtraction(
 
   const message = await stream.finalMessage();
 
+  // Guard against Fable-style refusals (stop_reason === "refusal" means the
+  // content array is empty — reading content[0] blindly would throw).
+  if (message.stop_reason === "refusal") {
+    throw new Error("Claude refused the PDF extraction request");
+  }
+
   // Check for output truncation
   if (message.stop_reason === "max_tokens") {
     throw new Error(

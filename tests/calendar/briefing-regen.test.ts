@@ -3,24 +3,26 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // ---------------------------------------------------------------------------
 // Mocks — must be set up before importing the module under test (per the
 // `memory/feedback_ai_test_mocking.md` pattern: any test that touches AI
-// MUST mock `generateText` / `getModelForFeature` so the test is
-// deterministic regardless of whether `.env.local` is loaded).
+// MUST mock generateTextForFeature so the test is deterministic regardless
+// of whether `.env.local` is loaded).
 // ---------------------------------------------------------------------------
 
-vi.mock("ai", () => ({
-  generateText: vi.fn(),
-}));
-
-vi.mock("@/lib/ai/provider", () => ({
-  getModelForFeature: vi.fn(() => "mock-briefing-model"),
+vi.mock("@/lib/ai/generate", () => ({
+  generateTextForFeature: vi.fn(),
+  AIRefusalError: class AIRefusalError extends Error {
+    constructor(public feature: string, public modelId: string) {
+      super(`AI refused request for feature "${feature}" (model ${modelId})`);
+      this.name = "AIRefusalError";
+    }
+  },
 }));
 
 // ---------------------------------------------------------------------------
 
-import { generateText } from "ai";
+import { generateTextForFeature } from "@/lib/ai/generate";
 import { generateBriefingTextWithRegen } from "@/lib/calendar/briefing";
 
-const mockedGenerate = vi.mocked(generateText);
+const mockedGenerate = vi.mocked(generateTextForFeature);
 
 beforeEach(() => {
   mockedGenerate.mockReset();
@@ -36,7 +38,7 @@ describe("generateBriefingTextWithRegen", () => {
     } as any);
 
     const result = await generateBriefingTextWithRegen({
-      model: "mock-briefing-model",
+      feature: "briefing",
       prompt: "Generate a briefing for week 2026-05-11.",
     });
 
@@ -56,14 +58,14 @@ describe("generateBriefingTextWithRegen", () => {
       } as any);
 
     const result = await generateBriefingTextWithRegen({
-      model: "mock-briefing-model",
+      feature: "briefing",
       prompt: "Generate a briefing for week 2026-05-11.",
     });
 
     expect(result).toContain("Clean retry");
     expect(mockedGenerate).toHaveBeenCalledTimes(2);
 
-    const secondCallArgs = mockedGenerate.mock.calls[1][0];
+    const secondCallArgs = mockedGenerate.mock.calls[1][1];
     expect(secondCallArgs.prompt).toContain("RETRY DUE TO SELF-ADMISSION");
     expect(secondCallArgs.prompt).toContain('"data looks corrupted"');
     expect(secondCallArgs.prompt).toContain(
@@ -84,7 +86,7 @@ describe("generateBriefingTextWithRegen", () => {
       } as any);
 
     const result = await generateBriefingTextWithRegen({
-      model: "mock-briefing-model",
+      feature: "briefing",
       prompt: "P",
     });
 
@@ -105,7 +107,7 @@ describe("generateBriefingTextWithRegen", () => {
 
     const onRegen = vi.fn();
     await generateBriefingTextWithRegen({
-      model: "mock-briefing-model",
+      feature: "briefing",
       prompt: "P",
       onRegen,
     });
@@ -123,12 +125,12 @@ describe("generateBriefingTextWithRegen", () => {
     } as any);
 
     await generateBriefingTextWithRegen({
-      model: "mock-briefing-model",
+      feature: "briefing",
       prompt: "P",
       maxOutputTokens: 16384,
     });
 
-    expect(mockedGenerate.mock.calls[0][0].maxOutputTokens).toBe(16384);
+    expect(mockedGenerate.mock.calls[0][1].maxOutputTokens).toBe(16384);
   });
 
   it("defaults maxOutputTokens to 8192 when omitted", async () => {
@@ -138,10 +140,56 @@ describe("generateBriefingTextWithRegen", () => {
     } as any);
 
     await generateBriefingTextWithRegen({
-      model: "mock-briefing-model",
+      feature: "briefing",
       prompt: "P",
     });
 
-    expect(mockedGenerate.mock.calls[0][0].maxOutputTokens).toBe(8192);
+    expect(mockedGenerate.mock.calls[0][1].maxOutputTokens).toBe(8192);
+  });
+
+  it("returns empty string when model refuses on first attempt", async () => {
+    const { AIRefusalError } = await import("@/lib/ai/generate");
+    mockedGenerate.mockRejectedValueOnce(
+      new AIRefusalError("briefing", "claude-fable-5"),
+    );
+
+    const result = await generateBriefingTextWithRegen({
+      feature: "briefing",
+      prompt: "P",
+    });
+
+    expect(result).toBe("");
+    expect(mockedGenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns empty string when model refuses on retry attempt", async () => {
+    const { AIRefusalError } = await import("@/lib/ai/generate");
+    mockedGenerate
+      .mockResolvedValueOnce({
+        text: "The data looks corrupted.",
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any)
+      .mockRejectedValueOnce(
+        new AIRefusalError("briefing", "claude-fable-5"),
+      );
+
+    const result = await generateBriefingTextWithRegen({
+      feature: "briefing",
+      prompt: "P",
+    });
+
+    expect(result).toBe("");
+    expect(mockedGenerate).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-throws non-refusal errors", async () => {
+    mockedGenerate.mockRejectedValueOnce(new Error("Network failure"));
+
+    await expect(
+      generateBriefingTextWithRegen({
+        feature: "briefing",
+        prompt: "P",
+      }),
+    ).rejects.toThrow("Network failure");
   });
 });

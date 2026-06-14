@@ -11,6 +11,10 @@
  * resolveTier is pure: (tier, available-model-ids, excluded?) → concrete id.
  */
 
+// Org data retention: Fable 5 requires the Anthropic org to be on >=30-day
+// retention (ZDR/under-30d → every Fable request 400s). Confirm in the
+// Anthropic Console before frontier routes to Fable. (Operational, not enforced here.)
+
 export type Tier = "frontier" | "workhorse" | "cheap";
 
 /** Capability order, highest first, per tier. Values are model *families*. */
