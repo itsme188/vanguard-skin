@@ -181,7 +181,7 @@ export interface SnapshotBogey {
  * fallback gracefully degrades when these are missing.
  */
 export interface Snapshot {
-  schemaVersion: 1 | 2 | 3 | 4 | 5;
+  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6;
   snapshotDate: string;
   generatedAt: string;
   heldSymbols: string[];
@@ -217,6 +217,10 @@ export interface Snapshot {
   // v5 — earnings-email enrichment. Optional for back-compat with v1–v4.
   notes?: SnapshotNote[];
   earningsBogeys?: SnapshotBogey[];
+  // v6 — available Anthropic model ids (from /v1/models, cached in Mac `settings`).
+  // Used by Worker fallbacks for tier-aware model resolution + reactive failover.
+  // Optional for back-compat with v1–v5 snapshots; falls back to [] → TIER_STATIC_FALLBACK.
+  modelCatalog?: string[];
 }
 
 /** Fetch the most recent snapshot (within 7d). Returns null if none exist. */

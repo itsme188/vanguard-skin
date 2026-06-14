@@ -22,7 +22,7 @@
 import { generateText, generateObject, jsonSchema } from "ai";
 import { loadLatestSnapshot, type Snapshot, type RecentArticleMeta } from "./state";
 import { sendEmail } from "./resend";
-import { getModelForFeature } from "./ai";
+import { generateWithFailover } from "./ai";
 import { briefingToHtml } from "./html";
 import { todayET } from "./dst";
 import {
@@ -404,15 +404,18 @@ async function synthesizeViaAI(
 ): Promise<string | null> {
   const buckets = bucketByCompany(articles);
   const prompt = buildSynthesisPrompt(buckets, snap);
+  const catalog = snap.modelCatalog ?? [];
   try {
-    const result = await generateText({
-      model: getModelForFeature(env, "fallbackEvening"),
-      // 8192 mirrors lib/digest/synthesize.ts — the structured section
-      // contract regularly exceeds 4096 output tokens on heavy days, and the
-      // truncation guard would otherwise degrade the cloud email every time.
-      maxOutputTokens: 8192,
-      prompt,
-    });
+    const result = await generateWithFailover(env, "fallbackEvening", catalog, (model) =>
+      generateText({
+        model,
+        // 8192 mirrors lib/digest/synthesize.ts — the structured section
+        // contract regularly exceeds 4096 output tokens on heavy days, and the
+        // truncation guard would otherwise degrade the cloud email every time.
+        maxOutputTokens: 8192,
+        prompt,
+      }),
+    );
 
     // Mirror Mac's strict validation in lib/digest/synthesize.ts:
     //   1. Truncation guard, 2. preamble strip, 3. header check, 4. min length.
