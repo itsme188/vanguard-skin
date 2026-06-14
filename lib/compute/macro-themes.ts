@@ -141,8 +141,7 @@ export function buildMacroSignalBlob(
 // Theme generation
 // ---------------------------------------------------------------------------
 
-import { generateText } from "ai";
-import { getModelForFeature } from "@/lib/ai/provider";
+import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
 import { resolveFeatureModel } from "@/lib/ai/models";
 import { resolveScope } from "@/lib/queries/accounts";
 import { getCachedMacroThemes, upsertMacroThemes } from "@/lib/queries/analysis-macro-themes";
@@ -227,12 +226,14 @@ export async function generateMacroThemes(
   };
   const prompt = USER_PROMPT_TEMPLATE.replace("{INPUTS_JSON}", JSON.stringify(inputs, null, 2).slice(0, 16000));
 
-  const model = getModelForFeature("analysisMacroThemes");
   let rawText: string;
   try {
-    const result = await generateText({ model, system: SYSTEM_PROMPT, prompt });
+    const result = await generateTextForFeature("analysisMacroThemes", { system: SYSTEM_PROMPT, prompt });
     rawText = result.text.trim();
   } catch (err) {
+    if (err instanceof AIRefusalError) {
+      throw new Error(`Sonnet macro-themes generation refused`);
+    }
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(`Sonnet macro-themes generation failed: ${msg}`);
   }

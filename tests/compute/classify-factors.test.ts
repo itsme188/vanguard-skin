@@ -5,10 +5,20 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 
-vi.mock("@/lib/ai/provider", () => ({ getModelForFeature: vi.fn(() => "mock-model") }));
-vi.mock("ai", () => ({ generateText: vi.fn() }));
+vi.mock("@/lib/ai/generate", () => ({
+  generateTextForFeature: vi.fn(),
+  AIRefusalError: class AIRefusalError extends Error {
+    constructor(feature: string, modelId: string) {
+      super(`AI refused request for feature "${feature}" (model ${modelId})`);
+      this.name = "AIRefusalError";
+    }
+  },
+}));
+vi.mock("@/lib/ai/models", () => ({
+  resolveFeatureModel: vi.fn(() => ({ provider: "anthropic", modelId: "claude-sonnet-4-6-20250219" })),
+}));
 
-import { generateText } from "ai";
+import { generateTextForFeature } from "@/lib/ai/generate";
 import { classifyFactors } from "@/lib/compute/classify-factors";
 
 const FUTURE_EXPIRY = "2030-01-16";
@@ -55,7 +65,7 @@ function insertHolding(db: Database.Database, securityId: number, quantity = 1) 
 }
 
 function claudeReturns(rows: Array<Record<string, string>>) {
-  (generateText as ReturnType<typeof vi.fn>).mockResolvedValue({
+  (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
     text: JSON.stringify(rows),
   });
 }
@@ -141,7 +151,7 @@ describe("classifyFactors — option underlying coverage", () => {
 
     const result = await classifyFactors(db);
 
-    expect(generateText).not.toHaveBeenCalled();
+    expect(generateTextForFeature).not.toHaveBeenCalled();
     expect(result.classified).toBe(0);
     expect(result.candidates).toBe(0);
   });
@@ -158,7 +168,7 @@ describe("classifyFactors — option underlying coverage", () => {
 
     const result = await classifyFactors(db);
 
-    expect(generateText).not.toHaveBeenCalled();
+    expect(generateTextForFeature).not.toHaveBeenCalled();
     expect(db.prepare("SELECT id FROM securities WHERE symbol='XYZ'").get()).toBeUndefined();
     expect(result.classified).toBe(0);
   });
@@ -178,8 +188,8 @@ describe("classifyFactors — option underlying coverage", () => {
 
     const result = await classifyFactors(db);
 
-    expect(generateText).toHaveBeenCalledTimes(1);
-    const prompt = (generateText as ReturnType<typeof vi.fn>).mock.calls[0][0].prompt as string;
+    expect(generateTextForFeature).toHaveBeenCalledTimes(1);
+    const prompt = (generateTextForFeature as ReturnType<typeof vi.fn>).mock.calls[0][1].prompt as string;
     expect(prompt.match(/VLO/g)?.length).toBe(1); // one candidate line, not two
     expect(result.classified).toBe(1);
   });

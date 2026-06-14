@@ -13,8 +13,7 @@
 
 import type Database from "better-sqlite3";
 import { SECURITY_CLASSIFICATIONS } from "@/lib/data/security-classifications";
-import { generateText } from "ai";
-import { getModelForFeature } from "@/lib/ai/provider";
+import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
 import { extractJsonArray } from "@/lib/ai/extract-json";
 import { normalizeFundCategory } from "@/lib/securities/normalize-fund-category";
 
@@ -197,7 +196,6 @@ export async function classifyUnresolvedWithClaude(
   unresolved: Array<{ id: number; symbol: string; security_type: string | null }>
 ): Promise<AiFallbackResult> {
   if (unresolved.length === 0) return { classified: 0, errors: [] };
-  const model = getModelForFeature("securityClassification");
   const update = db.prepare(`
     UPDATE securities SET fund_category = ?, geography = ?, market_cap_category = ?, style = ?, classification_source = 'auto_ai'
     WHERE id = ?`);
@@ -208,7 +206,7 @@ export async function classifyUnresolvedWithClaude(
     const batch = unresolved.slice(i, i + BATCH);
     const prompt = `Classify:\n${batch.map((s) => `- ${s.symbol} (type: ${s.security_type ?? "stock"})`).join("\n")}`;
     try {
-      const { text } = await generateText({ model, maxOutputTokens: 4000, temperature: 0.2, system: AI_CLASSIFY_SYSTEM, prompt });
+      const { text } = await generateTextForFeature("securityClassification", { maxOutputTokens: 4000, temperature: 0.2, system: AI_CLASSIFY_SYSTEM, prompt });
       const json = extractJsonArray(text);
       const results = JSON.parse(json) as Array<Record<string, string>>;
       const idMap = new Map(batch.map((s) => [s.symbol, s.id]));
@@ -219,6 +217,10 @@ export async function classifyUnresolvedWithClaude(
         classified++;
       }
     } catch (err) {
+      if (err instanceof AIRefusalError) {
+        errors.push(`Batch ${i / BATCH + 1}: AI refusal`);
+        continue;
+      }
       errors.push(`Batch ${i / BATCH + 1}: ${err instanceof Error ? err.message : "unknown"}`);
     }
   }

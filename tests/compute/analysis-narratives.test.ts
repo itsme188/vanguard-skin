@@ -6,21 +6,26 @@ import {
   generateNarrative,
   NARRATIVE_SURFACES,
 } from "@/lib/compute/analysis-narratives";
-import { generateText } from "ai";
+import { generateTextForFeature } from "@/lib/ai/generate";
 
-// Mock the `ai` package's generateText so tests don't burn real Sonnet calls
-// when ANTHROPIC_API_KEY is loaded into the env (e.g. via .env.local). Without
+// Mock generateTextForFeature so tests don't burn real Sonnet calls when
+// ANTHROPIC_API_KEY is loaded into the env (e.g. via .env.local). Without
 // this mock the "forceRegen bypasses cache" test would race the 5s vitest
 // timeout against a real network round-trip.
-vi.mock("ai", async () => {
-  const actual = await vi.importActual<typeof import("ai")>("ai");
-  return {
-    ...actual,
-    generateText: vi.fn().mockRejectedValue(
-      new Error("generateText mocked off in tests")
-    ),
-  };
-});
+vi.mock("@/lib/ai/generate", () => ({
+  generateTextForFeature: vi.fn().mockRejectedValue(
+    new Error("generateTextForFeature mocked off in tests")
+  ),
+  AIRefusalError: class AIRefusalError extends Error {
+    constructor(feature: string, modelId: string) {
+      super(`AI refused request for feature "${feature}" (model ${modelId})`);
+      this.name = "AIRefusalError";
+    }
+  },
+}));
+vi.mock("@/lib/ai/models", () => ({
+  resolveFeatureModel: vi.fn(() => ({ provider: "anthropic", modelId: "claude-sonnet-4-6-20250219" })),
+}));
 
 describe("generateNarrative", () => {
   let db: Database.Database;
@@ -113,7 +118,7 @@ describe("buildContextForSurface multi-account fidelity (via generateNarrative)"
 
   it("includes account-2-only holdings in the context and drops the old preamble", async () => {
     let capturedPrompt = "";
-    vi.mocked(generateText).mockImplementationOnce(async (args) => {
+    vi.mocked(generateTextForFeature).mockImplementationOnce(async (_feature, args) => {
       const p = args.prompt;
       capturedPrompt = typeof p === "string" ? p : "";
       return { text: "The portfolio carries meaningful AI exposure across names." } as never;

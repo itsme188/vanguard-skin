@@ -1,6 +1,5 @@
 import type Database from "better-sqlite3";
-import { generateText } from "ai";
-import { getModelForFeature } from "@/lib/ai/provider";
+import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
 import { normalizeSector, GICS_SECTORS } from "@/lib/securities/normalize-sector";
 import { extractJsonArray } from "@/lib/ai/extract-json";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
@@ -39,7 +38,6 @@ export async function classifyOptionSectors(db: Database.Database): Promise<Opti
   const underlyings = getUnsectoredOptionUnderlyings(db);
   if (underlyings.length === 0) return { classified: 0, errors: [] };
 
-  const model = getModelForFeature("securityClassification");
   const writeSector = db.prepare(
     `UPDATE securities SET sector = ?
      WHERE LOWER(security_type) = 'option' AND UPPER(underlying_symbol) = ?
@@ -53,7 +51,7 @@ export async function classifyOptionSectors(db: Database.Database): Promise<Opti
     const batch = underlyings.slice(i, i + BATCH);
     const prompt = `Tickers:\n${batch.map((t) => `- ${t}`).join("\n")}`;
     try {
-      const { text } = await generateText({ model, maxOutputTokens: 2000, temperature: 0.1, system: SYSTEM, prompt });
+      const { text } = await generateTextForFeature("securityClassification", { maxOutputTokens: 2000, temperature: 0.1, system: SYSTEM, prompt });
       const results = JSON.parse(extractJsonArray(text)) as Array<Record<string, string>>;
       for (const r of results) {
         const gics = normalizeSector(r.sector);
@@ -64,6 +62,10 @@ export async function classifyOptionSectors(db: Database.Database): Promise<Opti
         classified += writeSector.run(gics, String(r.symbol).toUpperCase()).changes;
       }
     } catch (err) {
+      if (err instanceof AIRefusalError) {
+        errors.push(`Batch ${i / BATCH + 1}: AI refusal`);
+        continue;
+      }
       errors.push(`Batch ${i / BATCH + 1}: ${err instanceof Error ? err.message : "unknown"}`);
     }
   }
