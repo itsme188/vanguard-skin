@@ -151,7 +151,10 @@ export async function POST(request: NextRequest) {
           thinking: { type: "adaptive" },
         },
       },
-      onFinish: async ({ text }) => {
+      onFinish: async ({ text, finishReason }) => {
+        if (finishReason === "content-filter") {
+          console.warn("[chat] model refused the request");
+        }
         if (text && conversationId) {
           saveMessage(db, conversationId, "assistant", text, null);
           // Auto-title from first exchange

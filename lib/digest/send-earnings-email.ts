@@ -1405,6 +1405,11 @@ async function callClaude(
     tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }],
     messages: [{ role: "user", content: prompt }],
   });
+  // Guard against Fable-style refusals (stop_reason === "refusal" means the
+  // content array is empty — reading content[0] blindly would throw).
+  if (response.stop_reason === "refusal") {
+    throw new Error("Claude refused the earnings email request");
+  }
   const textBlocks = response.content.filter(
     (b): b is Anthropic.TextBlock => b.type === "text",
   );
