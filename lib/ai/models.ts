@@ -1,12 +1,24 @@
-import { HAIKU_MODEL, OPUS_MODEL, SONNET_MODEL } from "@/lib/claude-models";
 import type { FeatureKey } from "@/lib/ai/feature-keys";
 import { getCachedFeatureModelOverrides } from "@/lib/ai/override-source";
+import { getCachedModelCatalog } from "@/lib/ai/catalog-source";
+import { resolveTier, type Tier } from "@/lib/ai/model-tiers";
+
+const TIER_TOKENS: Record<string, Tier> = {
+  "$frontier": "frontier",
+  "$workhorse": "workhorse",
+  "$cheap": "cheap",
+};
 
 /**
  * Policy plane for AI model selection.
  *
  * Each feature key maps to a provider-qualified model string:
- *   "<provider>/<model-id>"
+ *   "<provider>/<model-id>"  — explicit concrete id, or
+ *   "<provider>/$<tier>"     — tier token expanded via the live catalog
+ *
+ * Tier tokens: $frontier (best available), $workhorse (Sonnet-class),
+ * $cheap (Haiku-class). Expansion is handled by resolveFeatureModel via
+ * lib/ai/model-tiers.ts + the live catalog in lib/ai/catalog-source.ts.
  *
  * Supported providers (resolved by lib/ai/provider.ts):
  *   - "anthropic"   — Claude via @ai-sdk/anthropic, routes through Gateway if configured
@@ -19,96 +31,63 @@ import { getCachedFeatureModelOverrides } from "@/lib/ai/override-source";
  *   2. Restart the dev server / re-deploy.
  *   3. Watch the Gateway dashboard — cost, latency, and quality observable per call.
  *   4. Roll back by reverting the string if quality drops.
- *
- * All feature entries default to Anthropic today. Phase 2 experiments flip
- * specific entries to Workers AI / OpenAI once real cost data identifies the
- * best candidates.
  */
 export const FEATURE_MODELS: Record<FeatureKey, string> = {
-  // Reasoning-heavy features — stay on Opus.
-  chat: `anthropic/${OPUS_MODEL}`,
+  // frontier (was Opus)
+  chat: "anthropic/$frontier",
+  briefing: "anthropic/$frontier",
+  tradeReviewMain: "anthropic/$frontier",
+  pdfParsing: "anthropic/$frontier",
 
-  // Cross-source synthesis for morning + evening digests. Sonnet 4.6 is
-  // strong on structured-narrative work and ~5x cheaper than Opus.
-  dailyDigestSynthesis: `anthropic/${SONNET_MODEL}`,
-
-  briefing: `anthropic/${OPUS_MODEL}`,
-  tradeReviewMain: `anthropic/${OPUS_MODEL}`,
-  pdfParsing: `anthropic/${OPUS_MODEL}`,
-
-  // Large trade reviews (>20 trades) use Sonnet to avoid Opus timeout risk.
-  tradeReviewMainLarge: `anthropic/${SONNET_MODEL}`,
-
-  // Structured / lower-stakes work. Some entries route to Workers AI to test
-  // cheaper alternatives. Rollback = flip back to `anthropic/${SONNET_MODEL}`
-  // if quality regresses.
-  //
-  // Two Workers AI quirks we've hit:
-  //
-  // 1. Kimi K2.x is a *reasoning* model — reasoning_content shares the
-  //    max_tokens budget. Empirically, even maxOutputTokens=2048 was
-  //    insufficient for prompts that ask for structured JSON over
-  //    multi-thousand-token input (newsletter extraction): reasoning
-  //    consumed the entire budget, finish_reason=length, no visible
-  //    content. Safe only for short prompts with short structured output.
-  //
-  // 2. Llama 3.3 via the compat endpoint: if the response *looks* like valid
-  //    JSON, Cloudflare auto-parses `message.content` into an object rather
-  //    than a string. AI SDK's OpenAI-compatible provider chokes on that
-  //    (expects content to be a string). Avoid Llama for any call whose
-  //    prompt asks for raw JSON output — use Sonnet on Anthropic instead.
-  tradeReviewQA: `anthropic/${SONNET_MODEL}`,
-  alertSuggestion: "workers-ai/@cf/meta/llama-4-scout-17b-16e-instruct",
-  newsletterLevelExtraction: `anthropic/${SONNET_MODEL}`,
-  newsletterProcessing: `anthropic/${SONNET_MODEL}`,
-  factorClassification: `anthropic/${SONNET_MODEL}`,
-  securityClassification: `anthropic/${SONNET_MODEL}`,
-  analysisFactorNarrative: `anthropic/${SONNET_MODEL}`,
+  // workhorse (was Sonnet)
+  dailyDigestSynthesis: "anthropic/$workhorse",
+  tradeReviewMainLarge: "anthropic/$workhorse",
+  tradeReviewQA: "anthropic/$workhorse",
+  newsletterLevelExtraction: "anthropic/$workhorse",
+  newsletterProcessing: "anthropic/$workhorse",
+  factorClassification: "anthropic/$workhorse",
+  securityClassification: "anthropic/$workhorse",
+  analysisFactorNarrative: "anthropic/$workhorse",
   // Weekly macro-themes generation for the Analysis Workspace + Sunday
-  // briefing. Sonnet 4.6 via AI Gateway, pre-gen at Sunday cadence, cache
-  // until next Sunday. ~$0.85/month at 4 scopes × 1/wk.
-  analysisMacroThemes: `anthropic/${SONNET_MODEL}`,
-  macroEnrichment: `anthropic/${SONNET_MODEL}`,
+  // briefing. ~$0.85/month at 4 scopes × 1/wk.
+  analysisMacroThemes: "anthropic/$workhorse",
+  macroEnrichment: "anthropic/$workhorse",
 
   // Must stay on Anthropic — uses Claude-native web_search tool.
-  scheduleVerification: `anthropic/${SONNET_MODEL}`,
+  scheduleVerification: "anthropic/$workhorse",
 
-  // 10-K / 10-Q section summarization. Sonnet is cheap enough to cache per
-  // (symbol, accession, section) and strong enough to reliably summarize
-  // ~30-100K char filings into structured bullets.
-  filingSectionExtraction: `anthropic/${SONNET_MODEL}`,
+  // 10-K / 10-Q section summarization.
+  filingSectionExtraction: "anthropic/$workhorse",
 
   // Research PDF knowledge base — extracts metadata + raw text from uploaded
   // analyst reports / research notes. Anthropic's native PDF content block
-  // handles layout + tables; Sonnet is plenty for the structured-extraction
-  // task and one-shot per upload keeps costs predictable.
-  researchDocumentExtraction: `anthropic/${SONNET_MODEL}`,
+  // handles layout + tables.
+  researchDocumentExtraction: "anthropic/$workhorse",
 
-  // Post-extraction verification of ticker mentions. Drops homonyms like
-  // "HOOD" in "likelihood", "NET" in "net income", URL fragments. Haiku is
-  // plenty for yes/no judgments with short context snippets.
-  researchMentionVerification: `anthropic/${HAIKU_MODEL}`,
-
-  // One-sentence narrative per suggested S/R level on the chart. Cached per
-  // (security_id, level_price, day) so a single Haiku call amortizes across
-  // all same-day views.
-  suggestedLevelNarrative: `anthropic/${HAIKU_MODEL}`,
-
-  // Earnings preview/recap emails. Must stay on Anthropic — composer enables
-  // Claude-native web_search to fill consensus + sell-side commentary gaps
-  // when Finnhub data is missing or thin.
-  earningsPreview: `anthropic/${SONNET_MODEL}`,
-  earningsRecap: `anthropic/${SONNET_MODEL}`,
+  // Earnings preview/recap emails. Must stay on Anthropic — uses
+  // Claude-native web_search to fill consensus + sell-side commentary gaps.
+  earningsPreview: "anthropic/$workhorse",
+  earningsRecap: "anthropic/$workhorse",
 
   // Multi-symbol earnings bogeys PDF (e.g., TMT Breakout's weekly preview).
-  // Sonnet via Anthropic — native PDF content block handles tables + layout
-  // reliably; Workers AI doesn't currently support binary PDF input.
-  earningsBogeysExtraction: `anthropic/${SONNET_MODEL}`,
+  // Must stay on Anthropic — native PDF content block.
+  earningsBogeysExtraction: "anthropic/$workhorse",
 
   // Per-ETF GICS sector-weight look-through. Must stay on Anthropic — uses
-  // Claude-native web_search (Finnhub ETF data is premium-gated). Refreshed
-  // quarterly via scripts/refresh-etf-sector-weights.ts.
-  etfSectorWeights: `anthropic/${SONNET_MODEL}`,
+  // Claude-native web_search (Finnhub ETF data is premium-gated).
+  etfSectorWeights: "anthropic/$workhorse",
+
+  // cheap (was Haiku)
+  // Post-extraction verification of ticker mentions. Haiku is plenty for
+  // yes/no judgments with short context snippets.
+  researchMentionVerification: "anthropic/$cheap",
+
+  // One-sentence narrative per suggested S/R level on the chart. Cached per
+  // (security_id, level_price, day) so a single call amortizes across same-day views.
+  suggestedLevelNarrative: "anthropic/$cheap",
+
+  // explicit experiment — NOT tiered; Workers AI cost experiment
+  alertSuggestion: "workers-ai/@cf/meta/llama-4-scout-17b-16e-instruct",
 };
 
 export interface ResolvedModel {
@@ -133,6 +112,18 @@ export function parseModelSpec(spec: string): ResolvedModel {
   return { provider, modelId };
 }
 
+/** Expand a "<provider>/<spec>" where spec may be a $tier token or a concrete id. */
+function expandSpec(spec: string): ResolvedModel {
+  const slash = spec.indexOf("/");
+  const maybeToken = slash === -1 ? "" : spec.slice(slash + 1);
+  const tier = TIER_TOKENS[maybeToken];
+  if (tier) {
+    const provider = spec.slice(0, slash);
+    return parseModelSpec(`${provider}/${resolveTier(tier, getCachedModelCatalog())}`);
+  }
+  return parseModelSpec(spec);
+}
+
 /**
  * Resolve a feature's logical model to its concrete (provider, modelId) pair.
  *
@@ -145,20 +136,23 @@ export function parseModelSpec(spec: string): ResolvedModel {
  * (e.g. provider support removed) also falls back rather than breaking the
  * feature.
  *
+ * $frontier/$workhorse/$cheap tier tokens in FEATURE_MODELS are expanded
+ * against the live catalog from getCachedModelCatalog(); empty catalog falls
+ * back to TIER_STATIC_FALLBACK. A malformed user override also falls through
+ * to the tier-aware default (not a literal $-token string).
+ *
  * Throws if the feature key isn't configured or the default spec is malformed.
  */
 export function resolveFeatureModel(feature: FeatureKey): ResolvedModel {
   const override = getCachedFeatureModelOverrides()[feature];
   if (override) {
     try {
-      return parseModelSpec(override);
+      return expandSpec(override);
     } catch {
       // Malformed/unsupported override — fall through to the code default.
     }
   }
-  const spec = FEATURE_MODELS[feature];
-  if (!spec) {
-    throw new Error(`No model configured for feature "${feature}"`);
-  }
-  return parseModelSpec(spec);
+  const def = FEATURE_MODELS[feature];
+  if (!def) throw new Error(`No model configured for feature "${feature}"`);
+  return expandSpec(def);
 }

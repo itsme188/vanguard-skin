@@ -1,24 +1,10 @@
 /**
- * Central source of truth for Claude model IDs used throughout the app.
- *
- * Anthropic's API doesn't support "latest" aliases — every call must pass
- * a specific model ID. Historically these were scattered across a dozen
- * files, which meant a model rename (e.g. a typo like `claude-sonnet-4-7`
- * for a version that doesn't exist) silently broke every feature that
- * called Claude.
- *
- * Rule: do NOT inline a model string anywhere else. Import from here.
- *
- * To bump a model family: edit this file, run the full test suite, and
- * manually smoke-test each feature that uses Claude (chat, calendar sync,
- * trade review, briefing, Gmail processing, PDF extraction).
+ * Legacy single-source constants. Model selection now lives in
+ * lib/ai/model-tiers.ts (tier ladders) + the live catalog. These re-exports
+ * remain ONLY for non-feature importers; prefer tiers for anything new.
  */
+import { TIER_STATIC_FALLBACK } from "@/lib/ai/model-tiers";
 
-/** Top-tier reasoning. Used for chat, trade reviews, briefings. */
-export const OPUS_MODEL = "claude-opus-4-7";
-
-/** Fast/cheap. Used for enrichment, Gmail processing, high-volume tasks. */
-export const SONNET_MODEL = "claude-sonnet-4-6";
-
-/** Cheapest + fastest. Used for one-sentence generation, verification passes. */
-export const HAIKU_MODEL = "claude-haiku-4-5-20251001";
+export const OPUS_MODEL = TIER_STATIC_FALLBACK.frontier;
+export const SONNET_MODEL = TIER_STATIC_FALLBACK.workhorse;
+export const HAIKU_MODEL = TIER_STATIC_FALLBACK.cheap;
