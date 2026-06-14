@@ -9,6 +9,10 @@ const TIER_TOKENS: Record<string, Tier> = {
   "$cheap": "cheap",
 };
 
+const lastResolvedByTier = new Map<Tier, string>();
+/** test-only: reset the per-tier last-resolved tracking map */
+export function __resetTierLog(): void { lastResolvedByTier.clear(); }
+
 /**
  * Policy plane for AI model selection.
  *
@@ -119,7 +123,15 @@ function expandSpec(spec: string): ResolvedModel {
   const tier = TIER_TOKENS[maybeToken];
   if (tier) {
     const provider = spec.slice(0, slash);
-    return parseModelSpec(`${provider}/${resolveTier(tier, getCachedModelCatalog())}`);
+    const resolvedId = resolveTier(tier, getCachedModelCatalog());
+    const prev = lastResolvedByTier.get(tier);
+    if (prev !== resolvedId) {
+      if (prev !== undefined) {
+        console.log(`[ai] tier "${tier}" now resolves to ${resolvedId} (was ${prev})`);
+      }
+      lastResolvedByTier.set(tier, resolvedId);
+    }
+    return parseModelSpec(`${provider}/${resolvedId}`);
   }
   return parseModelSpec(spec);
 }
