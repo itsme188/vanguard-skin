@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
-import { generateObject, jsonSchema } from "ai";
-import { getModelForFeature } from "@/lib/ai/provider";
+import { jsonSchema } from "ai";
+import { generateObjectForFeature } from "@/lib/ai/generate";
 import type { SuggestedLevel } from "./suggested-levels";
 import type { OhlcBar } from "./indicators";
 
@@ -74,12 +74,13 @@ export async function getOrGenerateNarrative(
   if (cached) return cached.narrative;
 
   try {
-    const { object } = await generateObject({
-      model: getModelForFeature("suggestedLevelNarrative"),
+    const { object: _rawObject } = await generateObjectForFeature("suggestedLevelNarrative", {
       maxOutputTokens: 256,
       schema: NARRATIVE_SCHEMA,
       prompt: buildPrompt(input),
     });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const object = _rawObject as any as { narrative: string };
     const narrative = (object.narrative ?? "").trim();
     if (!narrative) return null;
 

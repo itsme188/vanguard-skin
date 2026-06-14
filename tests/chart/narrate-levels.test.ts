@@ -7,12 +7,11 @@ import type { OhlcBar } from "@/lib/chart/indicators";
 
 // Mock the AI layer so tests don't hit the real API.
 vi.mock("ai", () => ({
-  generateObject: vi.fn(async () => ({ object: { narrative: "mocked sentence." } })),
   jsonSchema: (s: unknown) => s,
 }));
 
-vi.mock("@/lib/ai/provider", () => ({
-  getModelForFeature: () => "mock-model",
+vi.mock("@/lib/ai/generate", () => ({
+  generateObjectForFeature: vi.fn(async () => ({ object: { narrative: "mocked sentence." } })),
 }));
 
 const SAMPLE_LEVEL: SuggestedLevel = {
@@ -66,7 +65,7 @@ describe("getOrGenerateNarrative", () => {
   });
 
   it("returns cached narrative on second call same day (no second AI invocation)", async () => {
-    const { generateObject } = await import("ai");
+    const { generateObjectForFeature } = await import("@/lib/ai/generate");
 
     await getOrGenerateNarrative(db, {
       securityId: 1,
@@ -83,11 +82,11 @@ describe("getOrGenerateNarrative", () => {
       recentBars: SAMPLE_BARS,
     });
 
-    expect(generateObject).toHaveBeenCalledTimes(1);
+    expect(generateObjectForFeature).toHaveBeenCalledTimes(1);
   });
 
   it("caches independently per direction (support vs resistance at same price)", async () => {
-    const { generateObject } = await import("ai");
+    const { generateObjectForFeature } = await import("@/lib/ai/generate");
 
     await getOrGenerateNarrative(db, {
       securityId: 1,
@@ -104,7 +103,7 @@ describe("getOrGenerateNarrative", () => {
       recentBars: SAMPLE_BARS,
     });
 
-    expect(generateObject).toHaveBeenCalledTimes(2);
+    expect(generateObjectForFeature).toHaveBeenCalledTimes(2);
     const rows = db
       .prepare(`SELECT COUNT(*) AS n FROM suggested_level_narratives`)
       .get() as { n: number };
@@ -112,8 +111,8 @@ describe("getOrGenerateNarrative", () => {
   });
 
   it("returns null and does not throw when the AI call fails", async () => {
-    const { generateObject } = await import("ai");
-    (generateObject as unknown as { mockRejectedValueOnce: (e: Error) => void }).mockRejectedValueOnce(
+    const { generateObjectForFeature } = await import("@/lib/ai/generate");
+    (generateObjectForFeature as unknown as { mockRejectedValueOnce: (e: Error) => void }).mockRejectedValueOnce(
       new Error("upstream 500"),
     );
 
@@ -133,8 +132,8 @@ describe("getOrGenerateNarrative", () => {
   });
 
   it("returns null on empty narrative", async () => {
-    const { generateObject } = await import("ai");
-    (generateObject as unknown as { mockResolvedValueOnce: (v: unknown) => void }).mockResolvedValueOnce(
+    const { generateObjectForFeature } = await import("@/lib/ai/generate");
+    (generateObjectForFeature as unknown as { mockResolvedValueOnce: (v: unknown) => void }).mockResolvedValueOnce(
       { object: { narrative: "   " } },
     );
 

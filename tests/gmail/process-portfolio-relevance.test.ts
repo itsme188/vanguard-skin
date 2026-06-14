@@ -13,12 +13,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 
 vi.mock("ai", () => ({
-  generateObject: vi.fn(),
   jsonSchema: <T,>(s: T) => s,
 }));
 
-vi.mock("@/lib/ai/provider", () => ({
-  getModelForFeature: vi.fn(() => "mock-model"),
+vi.mock("@/lib/ai/generate", () => ({
+  generateObjectForFeature: vi.fn(),
 }));
 
 vi.mock("@/lib/ai/models", () => ({
@@ -31,7 +30,7 @@ vi.mock("@/lib/research/verify-mentions", () => ({
   ),
 }));
 
-import { generateObject } from "ai";
+import { generateObjectForFeature } from "@/lib/ai/generate";
 import { processUnprocessedArticles } from "@/lib/gmail/process";
 
 function makeDb(allowOffTopic = 0): Database.Database {
@@ -123,7 +122,7 @@ describe("D3 portfolio-relevance gate", () => {
   it("flips is_relevant=0 and tags 'off_topic' when Claude votes false and source does NOT allow off-topic", async () => {
     const db = makeDb(0);
     insertUnprocessed(db);
-    (generateObject as ReturnType<typeof vi.fn>).mockResolvedValue({
+    (generateObjectForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
       object: OFF_TOPIC_RESPONSE,
     });
 
@@ -152,7 +151,7 @@ describe("D3 portfolio-relevance gate", () => {
   it("keeps is_relevant=1 when source has allow_off_topic=1 (escape hatch for Helene-style commentary)", async () => {
     const db = makeDb(1);
     insertUnprocessed(db);
-    (generateObject as ReturnType<typeof vi.fn>).mockResolvedValue({
+    (generateObjectForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
       object: OFF_TOPIC_RESPONSE,
     });
 
@@ -169,7 +168,7 @@ describe("D3 portfolio-relevance gate", () => {
   it("keeps is_relevant=1 when Claude votes true", async () => {
     const db = makeDb(0);
     insertUnprocessed(db, "Fed pivot drives Q3 macro view");
-    (generateObject as ReturnType<typeof vi.fn>).mockResolvedValue({
+    (generateObjectForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
       object: RELEVANT_RESPONSE,
     });
 
@@ -186,7 +185,7 @@ describe("D3 portfolio-relevance gate", () => {
   it("under-filters when is_portfolio_relevant is missing/null from the response (defensive default)", async () => {
     const db = makeDb(0);
     insertUnprocessed(db, "Ambiguous content");
-    (generateObject as ReturnType<typeof vi.fn>).mockResolvedValue({
+    (generateObjectForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
       object: {
         ...RELEVANT_RESPONSE,
         is_portfolio_relevant: undefined,
@@ -205,7 +204,7 @@ describe("D3 portfolio-relevance gate", () => {
   it("uses a fallback reason when portfolio_relevance string is empty", async () => {
     const db = makeDb(0);
     insertUnprocessed(db);
-    (generateObject as ReturnType<typeof vi.fn>).mockResolvedValue({
+    (generateObjectForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
       object: { ...OFF_TOPIC_RESPONSE, portfolio_relevance: "" },
     });
 
@@ -222,7 +221,7 @@ describe("D3 portfolio-relevance gate", () => {
     const db = makeDb(0);
     insertUnprocessed(db);
     const longRelevance = "A".repeat(500);
-    (generateObject as ReturnType<typeof vi.fn>).mockResolvedValue({
+    (generateObjectForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
       object: { ...OFF_TOPIC_RESPONSE, portfolio_relevance: longRelevance },
     });
 

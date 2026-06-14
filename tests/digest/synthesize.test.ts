@@ -6,20 +6,21 @@ import type { SynthesisInput } from "@/lib/digest/synthesize";
 // Mocks — must be set up before importing the module under test
 // ---------------------------------------------------------------------------
 
-vi.mock("ai", () => ({
-  generateText: vi.fn(),
-}));
-
-vi.mock("@/lib/ai/provider", () => ({
-  getModelForFeature: vi.fn(() => "mock-model"),
+vi.mock("@/lib/ai/generate", () => ({
+  generateTextForFeature: vi.fn(),
+  AIRefusalError: class AIRefusalError extends Error {
+    constructor(public feature: string, public modelId: string) {
+      super(`AI refused request for feature "${feature}" (model ${modelId})`);
+      this.name = "AIRefusalError";
+    }
+  },
 }));
 
 // ---------------------------------------------------------------------------
 // Import the module under test (after mocks are registered)
 // ---------------------------------------------------------------------------
 
-import { generateText } from "ai";
-import { getModelForFeature } from "@/lib/ai/provider";
+import { generateTextForFeature } from "@/lib/ai/generate";
 import { synthesize, SynthesisEmptyError } from "@/lib/digest/synthesize";
 
 // ---------------------------------------------------------------------------
@@ -72,7 +73,7 @@ describe("synthesize", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // Default happy-path mock: valid markdown text
-    (generateText as ReturnType<typeof vi.fn>).mockResolvedValue({
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
       text: VALID_SYNTHESIS,
       finishReason: "stop",
     });
@@ -93,10 +94,10 @@ describe("synthesize", () => {
       anomalies: [],
     });
 
-    // Feature key must be "dailyDigestSynthesis"
-    expect(getModelForFeature).toHaveBeenCalledWith("dailyDigestSynthesis");
-    expect(generateText).toHaveBeenCalledWith(
-      expect.objectContaining({ model: "mock-model", maxOutputTokens: 8192 }),
+    // Wrapper is called with the feature key as first arg + options containing maxOutputTokens
+    expect(generateTextForFeature).toHaveBeenCalledWith(
+      "dailyDigestSynthesis",
+      expect.objectContaining({ maxOutputTokens: 8192 }),
     );
 
     // Returned text is the valid synthesis (trimmed)
@@ -109,7 +110,7 @@ describe("synthesize", () => {
   it("strips model preamble before returning", async () => {
     const preamble = "Good, I now have enough context. Let me synthesize.\n\n";
     const body = pad("## NVDA\nCore body of the synthesis here with enough text.");
-    (generateText as ReturnType<typeof vi.fn>).mockResolvedValue({
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
       text: preamble + body,
       finishReason: "stop",
     });
@@ -130,7 +131,7 @@ describe("synthesize", () => {
   // 3. Too short after stripping
   // -------------------------------------------------------------------------
   it("throws SynthesisEmptyError when result < 200 chars after stripping", async () => {
-    (generateText as ReturnType<typeof vi.fn>).mockResolvedValue({
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
       text: "## Empty",  // 8 chars — well under 200
       finishReason: "stop",
     });
@@ -159,7 +160,7 @@ describe("synthesize", () => {
   // -------------------------------------------------------------------------
   it("throws SynthesisEmptyError when finishReason === 'length'", async () => {
     // Even long text should fail when truncated
-    (generateText as ReturnType<typeof vi.fn>).mockResolvedValue({
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
       text: pad("## NVDA\nSome very long synthesis text that got cut off", 500),
       finishReason: "length",
     });
@@ -197,7 +198,7 @@ describe("synthesize", () => {
       "is long enough to pass the 200-char check.";
     expect(pureNarration.length).toBeGreaterThan(200);  // confirm it's long enough
 
-    (generateText as ReturnType<typeof vi.fn>).mockResolvedValue({
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
       text: pureNarration,
       finishReason: "stop",
     });
@@ -226,8 +227,8 @@ describe("synthesize", () => {
   // -------------------------------------------------------------------------
   it("includes held tickers, watchlist, and anomaly tickers in the prompt", async () => {
     let capturedPrompt = "";
-    (generateText as ReturnType<typeof vi.fn>).mockImplementation(
-      async (args: { prompt?: string; system?: string; messages?: unknown }) => {
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_feature: string, args: { prompt?: string; system?: string; messages?: unknown }) => {
         // Capture both prompt and system in a single string for assertion
         capturedPrompt = [args.system ?? "", args.prompt ?? ""].join("\n");
         return { text: VALID_SYNTHESIS, finishReason: "stop" };
@@ -253,8 +254,8 @@ describe("synthesize", () => {
   // -------------------------------------------------------------------------
   it("instructs Sonnet to NOT characterize coverage as 'indirect'/'in passing'", async () => {
     let capturedSystem = "";
-    (generateText as ReturnType<typeof vi.fn>).mockImplementation(
-      async (args: { prompt?: string; system?: string; messages?: unknown }) => {
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_feature: string, args: { prompt?: string; system?: string; messages?: unknown }) => {
         capturedSystem = args.system ?? "";
         return { text: VALID_SYNTHESIS, finishReason: "stop" };
       },
@@ -280,8 +281,8 @@ describe("synthesize", () => {
 
   it("instructs Sonnet to give held tickers their own section, not 'Also covered'", async () => {
     let capturedSystem = "";
-    (generateText as ReturnType<typeof vi.fn>).mockImplementation(
-      async (args: { prompt?: string; system?: string; messages?: unknown }) => {
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_feature: string, args: { prompt?: string; system?: string; messages?: unknown }) => {
         capturedSystem = args.system ?? "";
         return { text: VALID_SYNTHESIS, finishReason: "stop" };
       },
@@ -308,8 +309,8 @@ describe("synthesize", () => {
   // -------------------------------------------------------------------------
   it("instructs Sonnet to separate trading days and keep distinct threads apart", async () => {
     let capturedSystem = "";
-    (generateText as ReturnType<typeof vi.fn>).mockImplementation(
-      async (args: { prompt?: string; system?: string; messages?: unknown }) => {
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_feature: string, args: { prompt?: string; system?: string; messages?: unknown }) => {
         capturedSystem = args.system ?? "";
         return { text: VALID_SYNTHESIS, finishReason: "stop" };
       },
@@ -359,7 +360,7 @@ describe("edition-aware prompt (digest redesign)", () => {
   }
 
   /**
-   * Mock generateText once to capture system + prompt, then call synthesize
+   * Mock generateTextForFeature once to capture system + prompt, then call synthesize
    * with the given overrides merged onto a sensible base input.
    */
   async function captureSynthesisCall(
@@ -368,8 +369,8 @@ describe("edition-aware prompt (digest redesign)", () => {
     let capturedSystem = "";
     let capturedPrompt = "";
 
-    (generateText as ReturnType<typeof vi.fn>).mockImplementationOnce(
-      async (args: { system?: string; prompt?: string }) => {
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      async (_feature: string, args: { system?: string; prompt?: string }) => {
         capturedSystem = args.system ?? "";
         capturedPrompt = args.prompt ?? "";
         return {
