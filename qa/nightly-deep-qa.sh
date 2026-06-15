@@ -69,7 +69,16 @@ bash "$SCRIPT_DIR/sandbox.sh" up || { echo "ERROR: sandbox boot failed"; exit 1;
 # Single EXIT trap (bash traps replace, not stack): sandbox down + release lock.
 trap 'bash "$SCRIPT_DIR/sandbox.sh" down; rmdir "$LOCK_DIR" 2>/dev/null' EXIT
 
-claude -p "/qa-deep-sweep"
+# --- Model selection: strongest-available ladder, never a fixed pin ---------
+# `--model fable` is a server-resolved alias for the latest Fable model, so it
+# auto-tracks Fable 5's return with no edit here. `--fallback-model` catches BOTH
+# overload (529) AND access/pull errors (verified 2026-06-14), so when a model is
+# yanked the run silently steps down the ladder instead of dying at exit 1.
+# Provenance: 2026-06-13 the model was pulled (US gov order re: cyber capability),
+# leaving the cron's floating default pinned to an inaccessible `claude-fable-5`
+# id — two consecutive nights (6/13, 6/14) exited in ~9s before the sweep skill
+# even loaded (so no Pushover fired). Ladder: fable (strongest) -> opus -> sonnet.
+claude -p "/qa-deep-sweep" --model fable --fallback-model "opus,sonnet"
 STATUS=$?
 
 echo "=== Deep QA finished (claude exit $STATUS) $(date '+%Y-%m-%d %H:%M:%S') ==="
