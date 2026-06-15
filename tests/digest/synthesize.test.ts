@@ -329,6 +329,33 @@ describe("synthesize", () => {
     expect(capturedSystem).toContain("is NOT a contradiction");
     expect(capturedSystem).toContain("do not assert an unsourced reason");
   });
+
+  // -------------------------------------------------------------------------
+  // 10. Attribution / provenance (U1 2026-06-15: a TMT Breakout email that
+  //     summarized a Gavin Baker podcast got rendered as TMTB's own first-
+  //     person view). The synthesis must attribute relayed views to the
+  //     originator, not the newsletter.
+  // -------------------------------------------------------------------------
+  it("instructs Sonnet to attribute a relayed third-party view to its originator", async () => {
+    let capturedSystem = "";
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_feature: string, args: { prompt?: string; system?: string; messages?: unknown }) => {
+        capturedSystem = args.system ?? "";
+        return { text: VALID_SYNTHESIS, finishReason: "stop" };
+      },
+    );
+
+    await synthesize({
+      buckets: [makeBucket("NVDA", "NVIDIA Corp", [makeArticle(1, "TMT Breakout")])],
+      heldSymbols: ["NVDA"],
+      watchlist: [],
+      anomalies: [],
+    });
+
+    expect(capturedSystem).toContain("ATTRIBUTION & PROVENANCE");
+    expect(capturedSystem).toContain("attribute the view to the ORIGINATOR");
+    expect(capturedSystem).toContain("do not invent an originator");
+  });
 });
 
 // ---------------------------------------------------------------------------

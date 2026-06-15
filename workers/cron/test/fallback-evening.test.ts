@@ -653,6 +653,18 @@ describe("buildSynthesisPrompt — timeframe/thread coherence", () => {
     expect(prompt).toContain("do not assert an unsourced reason");
   });
 
+  // U1 (2026-06-15): a TMT Breakout email summarizing a Gavin Baker podcast was
+  // rendered as TMTB's own first-person view in the cloud recap. The prompt must
+  // attribute a relayed third-party view to its originator. (Mac parity: synthesize.ts.)
+  it("instructs the model to attribute relayed third-party views to the originator", () => {
+    const snap = { heldSymbols: ["NVDA"] } as unknown as Snapshot;
+    const prompt = buildSynthesisPrompt({ NVDA: [] }, snap);
+
+    expect(prompt).toContain("ATTRIBUTION & PROVENANCE");
+    expect(prompt).toContain("attribute the view to the ORIGINATOR");
+    expect(prompt).toContain("do not invent an originator");
+  });
+
   it("buildSynthesisPrompt carries edition tags and the section contract", () => {
     const snap = { heldSymbols: ["NVDA"] } as unknown as Snapshot;
     const meta = {

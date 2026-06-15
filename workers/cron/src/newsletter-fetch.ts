@@ -327,7 +327,9 @@ For is_portfolio_relevant: Set TRUE when the article touches any held or
 watchlist ticker OR meaningfully shifts macro/sector context that already
 affects the portfolio (Fed policy, rates, broad indices, sector exposure).
 Set FALSE only for clearly off-topic content. Default to TRUE when
-uncertain — prefer to under-filter.`;
+uncertain — prefer to under-filter.
+
+ATTRIBUTION (provenance): If this piece is primarily RELAYING a third party's views — a podcast guest, interview subject, or quoted analyst (e.g. the newsletter summarizing someone else's remarks) — the summary MUST name that originator and make the relaying explicit ("TMT Breakout summarizes Gavin Baker's podcast remarks: ..."), and never flatten their view into the newsletter's own first-person voice. When the views are the newsletter author's own, no attribution phrase is needed.`;
 
   const { object } = await generateWithFailover(
     env,

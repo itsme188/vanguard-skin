@@ -225,7 +225,9 @@ From: ${article.sender}
 Current portfolio holdings: ${holdingsContext || "(none loaded)"}
 ${article.processing_prompt ? `\nSource-specific instructions: ${article.processing_prompt}\n` : ""}
 Article text:
-${text}`,
+${text}
+
+ATTRIBUTION (provenance): If this piece is primarily RELAYING a third party's views — a podcast guest, interview subject, or quoted analyst (e.g. the newsletter summarizing someone else's remarks) — the summary MUST name that originator and make the relaying explicit ("TMT Breakout summarizes Gavin Baker's podcast remarks: ..."), and never flatten their view into the newsletter's own first-person voice. When the views are the newsletter author's own, no attribution phrase is needed.`,
   });
 
   // Normalize. is_portfolio_relevant defaults to true on a missing/null
