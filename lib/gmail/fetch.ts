@@ -59,7 +59,7 @@ export async function fetchNewArticles(
         const detail = await getMessageDetail(gmail, msg.id!);
         if (!detail) continue;
 
-        const sourceUrl = extractSourceUrl(detail.html, detail.body);
+        const sourceUrl = extractSourceUrl(detail.html, detail.body, detail.sender);
 
         // Pre-Claude short-circuit. Inserts the row as `is_relevant=0` so
         // processUnprocessedArticles + digest queries can filter it out
@@ -306,10 +306,15 @@ function findPart(
 export function backfillSourceUrls(db: Database.Database): number {
   const articles = db
     .prepare(
-      `SELECT id, raw_html, raw_text FROM research_articles
+      `SELECT id, raw_html, raw_text, sender FROM research_articles
        WHERE (raw_html IS NOT NULL OR raw_text IS NOT NULL) AND source_url IS NULL`
     )
-    .all() as { id: number; raw_html: string | null; raw_text: string | null }[];
+    .all() as {
+    id: number;
+    raw_html: string | null;
+    raw_text: string | null;
+    sender: string | null;
+  }[];
 
   if (articles.length === 0) return 0;
 
@@ -319,7 +324,7 @@ export function backfillSourceUrls(db: Database.Database): number {
 
   let updated = 0;
   for (const article of articles) {
-    const url = extractSourceUrl(article.raw_html, article.raw_text);
+    const url = extractSourceUrl(article.raw_html, article.raw_text, article.sender);
     if (url) {
       update.run(url, article.id);
       updated++;

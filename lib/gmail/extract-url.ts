@@ -7,10 +7,23 @@
  * 3. Find "View this post on the web at {URL}" in raw plaintext (Substack fallback)
  * 4. Find open.substack.com article links in HTML
  *
+ * `sender` (the From header) is used to reject a bare in-body `*.substack.com/p/`
+ * link that belongs to a DIFFERENT publication than the one that sent the email
+ * — newsletters routinely link to other authors' posts in their body, and
+ * grabbing the first such link mis-attributed a Sharp Text issue to a Soapbox
+ * Trade Substack post (2026-06). When the sender is provided and isn't on the
+ * same registrable domain as the link, the link is skipped (and we fall back to
+ * the plaintext "View in browser" URL instead).
+ *
  * Returns null if no usable URL is found.
  */
-export function extractSourceUrl(rawHtml: string | null, rawText?: string | null): string | null {
+export function extractSourceUrl(
+  rawHtml: string | null,
+  rawText?: string | null,
+  sender?: string | null,
+): string | null {
   if (!rawHtml && !rawText) return null;
+  const senderDomain = extractSenderDomain(sender);
 
   if (rawHtml) {
     // 1. Look for "View in browser" / "Read online" / "Read in browser" style links
@@ -54,15 +67,30 @@ export function extractSourceUrl(rawHtml: string | null, rawText?: string | null
     );
     if (openSubstackMatch) return cleanUrl(openSubstackMatch[1]);
 
-    // Substack: direct post URLs with custom domains
+    // Substack: direct post URLs with custom domains. A bare in-body
+    // substack-post link is only the article's OWN url when the sender is also
+    // on substack.com; otherwise it's an editorial link to another author's
+    // post (the Sharp Text → soapboxtrade.substack bug). With no sender known
+    // we keep the legacy behavior.
     const substackPostMatch = rawHtml.match(
       /href="(https?:\/\/[^"]*\.substack\.com\/p\/[^"?]+)"/i
     );
-    if (substackPostMatch) return cleanUrl(substackPostMatch[1]);
+    if (substackPostMatch) {
+      const u = cleanUrl(substackPostMatch[1]);
+      if (!senderDomain || sameRegistrableDomain(u, senderDomain)) return u;
+    }
   }
 
-  // 3. Plaintext fallback: Substack "View this post on the web at {URL}"
+  // 3. Plaintext fallbacks.
   if (rawText) {
+    // 3a. "View in browser ( {URL} )" — recovers the canonical article URL when
+    // the HTML anchor didn't match (Ghost / Sharp Text put it in the text head).
+    const vibMatch = rawText.match(
+      /view\s+(?:this\s+)?(?:email\s+|post\s+)?in\s+(?:your\s+)?browser[^\n]*?(https?:\/\/[^\s)<>"]+)/i
+    );
+    if (vibMatch) return cleanUrl(vibMatch[1]);
+
+    // 3b. Substack "View this post on the web at {URL}"
     const textUrlMatch = rawText.match(
       /View this post on the web at\s+(https?:\/\/\S+)/i
     );
@@ -70,6 +98,27 @@ export function extractSourceUrl(rawHtml: string | null, rawText?: string | null
   }
 
   return null;
+}
+
+/** Domain portion of a "Name <user@domain>" sender, lowercased. */
+function extractSenderDomain(sender?: string | null): string {
+  if (!sender) return "";
+  const m = sender.match(/@([a-z0-9.-]+)/i);
+  return m ? m[1].toLowerCase().replace(/[.>\s]+$/, "") : "";
+}
+
+/** Last two labels of a host — a good-enough registrable domain (no PSL). */
+function registrableDomain(host: string): string {
+  return host.toLowerCase().split(".").filter(Boolean).slice(-2).join(".");
+}
+
+/** True when the URL's host shares a registrable domain with the sender. */
+function sameRegistrableDomain(url: string, senderDomain: string): boolean {
+  try {
+    return registrableDomain(new URL(url).host) === registrableDomain(senderDomain);
+  } catch {
+    return false;
+  }
 }
 
 /** Strip common tracking parameters and decode entities. */

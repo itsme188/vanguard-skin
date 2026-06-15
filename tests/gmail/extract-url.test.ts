@@ -92,6 +92,36 @@ Content follows...`;
     );
   });
 
+  // ── Cross-publication guard (2026-06 Sharp Text → soapboxtrade bug) ─
+  // Sharp Text (sender @sharptext.net, a Ghost site) had no matching HTML
+  // "view in browser" anchor, so extraction grabbed an in-body editorial link
+  // to ANOTHER author's Substack post. With the sender known, that bare
+  // substack link must be rejected and the canonical URL recovered from the
+  // plaintext "View in browser" line instead.
+  it("does NOT grab an in-body substack link from a different publication", () => {
+    const html = `<div>Great piece by Soapbox: <a href="https://soapboxtrade.substack.com/p/chinas-export-surge">read it</a></div>`;
+    const text = `A closer look at Europe.\n\nView in browser ( https://sharptext.net/2026/europes-final-warning/?access_token=abc )\n\nbody`;
+    const sender = "Andrew Sharp <email@sharptext.net>";
+    expect(extractSourceUrl(html, text, sender)).toBe(
+      "https://sharptext.net/2026/europes-final-warning/?access_token=abc"
+    );
+  });
+
+  it("still extracts a substack post link when the SENDER is on substack.com", () => {
+    const html = `<a href="https://thebignewsletter.substack.com/p/the-big-one">Read</a>`;
+    const sender = "Big Newsletter <newsletter@substack.com>";
+    expect(extractSourceUrl(html, null, sender)).toBe(
+      "https://thebignewsletter.substack.com/p/the-big-one"
+    );
+  });
+
+  it("recovers the canonical URL from a plaintext 'View in browser' line", () => {
+    const text = `Headline\n\nView in browser ( https://sharptext.net/2026/foo/ )\n\nbody`;
+    expect(extractSourceUrl(null, text, "x@sharptext.net")).toBe(
+      "https://sharptext.net/2026/foo/"
+    );
+  });
+
   // ── Ghost: /r/{hash} redirect links ───────────────────────────────
 
   it("extracts MBI Deep Dives article link (3rd /r/ link)", () => {
