@@ -65,30 +65,15 @@ export async function generateWeeklyBriefing(
 
   options?.onProgress?.("Building portfolio + events context...", 0, 4);
 
-  // ── Portfolio holdings (cross-account) ─────────────────────────
+  // ── Portfolio holdings (Vanguard accounts only — IBKR excluded) ──
   // `!= 0` (not `> 0`) so shorts surface in the symbol list. `net_qty` is
   // the cross-account sum so Opus knows the net direction without us
   // expanding into per-account legs — keeps the prompt compact while
   // closing A7 (the long-only filter previously hid e.g. shorted MSFT
-  // entirely from the briefing's portfolio context).
-  const holdings = db
-    .prepare(
-      `SELECT s.symbol, s.name, s.security_type, s.sector,
-              SUM(h.quantity) AS net_qty
-       FROM holdings h
-       JOIN securities s ON s.id = h.security_id
-       WHERE h.quantity != 0
-         AND h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id)
-       GROUP BY s.id
-       ORDER BY s.symbol`
-    )
-    .all() as {
-      symbol: string;
-      name: string | null;
-      security_type: string | null;
-      sector: string | null;
-      net_qty: number;
-    }[];
+  // entirely from the briefing's portfolio context). IBKR is excluded
+  // (see getBriefingHoldings / BRIEFING_EXCLUDE_IBKR_SQL) — it's the
+  // short-term trading book and must not be framed as core positioning.
+  const holdings = getBriefingHoldings(db);
 
   // ── Event partitioning: portfolio earnings (Finnhub) vs macro ──
   const weekStart = weekOf;
@@ -487,6 +472,7 @@ function getExpiringOptions(
        JOIN accounts a ON a.id = h.account_id
        WHERE LOWER(s.security_type) = 'option'
          AND h.quantity != 0
+         AND ${BRIEFING_EXCLUDE_IBKR_SQL}
          AND s.expiration_date BETWEEN ? AND ?
          AND h.as_of_date = (
            SELECT MAX(h2.as_of_date) FROM holdings h2
@@ -640,6 +626,7 @@ function querySymbolsBySectors(
          FROM holdings h
          JOIN securities s ON s.id = h.security_id
          WHERE h.quantity > 0
+           AND ${BRIEFING_EXCLUDE_IBKR_SQL}
            AND LOWER(s.security_type) IN ('stock','common stock','etf')
            AND s.sector IS NOT NULL
            AND h.as_of_date = (
@@ -657,6 +644,7 @@ function querySymbolsBySectors(
        FROM holdings h
        JOIN securities s ON s.id = h.security_id
        WHERE h.quantity > 0
+         AND ${BRIEFING_EXCLUDE_IBKR_SQL}
          AND LOWER(s.security_type) IN ('stock','common stock','etf')
          AND s.sector IN (${placeholders})
          AND h.as_of_date = (
@@ -666,6 +654,54 @@ function querySymbolsBySectors(
     )
     .all(...sectors) as { symbol: string }[];
   return rows.map((r) => r.symbol);
+}
+
+// ── Briefing account scope: exclude IBKR ────────────────────────────
+
+/**
+ * The weekly briefing's portfolio context EXCLUDES the IBKR account(s).
+ *
+ * IBKR is the user's short-term / active-trading book; its positions are
+ * tactical and must NEVER be framed as core holdings in the briefing. This
+ * fixes the "you hold QQQ outright" bug — QQQ (and a large book of QQQ
+ * options) is held only in IBKR, never in either Vanguard account, yet the
+ * cross-account holdings sum surfaced it to Opus as a plain holding.
+ *
+ * The predicate matches the account-name "ibkr" convention used elsewhere in
+ * the codebase (e.g. combineFamilyPositions) so a renamed/added IBKR account
+ * is still caught. It is applied to every briefing-LOCAL holdings/positions
+ * query. Shared queries used by OTHER surfaces are intentionally NOT filtered
+ * — `getHeldStockSymbols` (drives the earnings-calendar sync for Today's
+ * EarningsHub) and `getCrossAccountPositions` (earnings emails) keep their
+ * full cross-account view.
+ *
+ * Assumes the holdings table is aliased `h` in the consuming query.
+ */
+export const BRIEFING_EXCLUDE_IBKR_SQL =
+  "h.account_id NOT IN (SELECT id FROM accounts WHERE LOWER(name) LIKE '%ibkr%')";
+
+/**
+ * Portfolio holdings that feed the briefing's prompt — Vanguard accounts only
+ * (IBKR excluded, see BRIEFING_EXCLUDE_IBKR_SQL). `quantity != 0` so net
+ * shorts surface; `net_qty` is the cross-account (Vanguard Taxable + Roth)
+ * sum. Extracted from generateWeeklyBriefing for unit testability.
+ */
+export function getBriefingHoldings(
+  db: Database.Database,
+): BriefingHolding[] {
+  return db
+    .prepare(
+      `SELECT s.symbol, s.name, s.security_type, s.sector,
+              SUM(h.quantity) AS net_qty
+       FROM holdings h
+       JOIN securities s ON s.id = h.security_id
+       WHERE h.quantity != 0
+         AND ${BRIEFING_EXCLUDE_IBKR_SQL}
+         AND h.as_of_date = (SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id)
+       GROUP BY s.id
+       ORDER BY s.symbol`,
+    )
+    .all() as BriefingHolding[];
 }
 
 // ── Main-holdings list formatter (A7 short-aware) ───────────────────
@@ -761,6 +797,7 @@ export function buildCombinedPositionsForEvents(
          WHERE s.symbol IN (${placeholders})
            AND LOWER(s.security_type) != 'option'
            AND h.quantity != 0
+           AND ${BRIEFING_EXCLUDE_IBKR_SQL}
            AND h.as_of_date = (
              SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id
            )`,
@@ -785,6 +822,7 @@ export function buildCombinedPositionsForEvents(
          WHERE LOWER(s.security_type) = 'option'
            AND s.underlying_symbol IN (${placeholders})
            AND h.quantity != 0
+           AND ${BRIEFING_EXCLUDE_IBKR_SQL}
            AND h.as_of_date = (
              SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id
            )`,
@@ -867,6 +905,7 @@ export function buildCurrentPrices(
        FROM holdings h JOIN securities s ON s.id = h.security_id
        WHERE LOWER(s.security_type) = 'option'
          AND h.quantity != 0
+         AND ${BRIEFING_EXCLUDE_IBKR_SQL}
          AND s.underlying_symbol IS NOT NULL
          AND h.as_of_date = (
            SELECT MAX(h2.as_of_date) FROM holdings h2 WHERE h2.account_id = h.account_id

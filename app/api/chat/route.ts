@@ -9,6 +9,7 @@ import {
 import { db } from "@/lib/db";
 import { getPortfolioSummaryForChat } from "@/lib/queries/portfolio-summary";
 import { CHAT_TOOLS, executeTool, resolveAccountName } from "@/lib/chat/tools";
+import { scopeToAccountName, clampToolInputToScope } from "@/lib/chat/scope";
 import { buildSystemPrompt } from "@/lib/chat/system-prompt";
 import { computeIbkrTradingContext } from "@/lib/chat/ibkr-context";
 import { getAccountByName } from "@/lib/queries/accounts";
@@ -105,11 +106,11 @@ export async function POST(request: NextRequest) {
     // Convert existing Anthropic tool definitions to AI SDK tool format.
     // Each tool wraps the existing executeTool() dispatcher, preserving all
     // tool logic and data quality annotations without any rewrite.
-    // When scope is set to a specific account, auto-inject account_name into
-    // tool inputs so the AI can't accidentally query all accounts.
-    const scopeAccountName = scope !== "all" && scope !== "macro"
-      ? resolveAccountName(db, { ibkr: "IBKR", "vanguard-taxable": "Vanguard Taxable", "vanguard-roth-ira": "Vanguard Roth IRA" }[scope] ?? "")
-      : undefined;
+    // HARD scope boundary: when scope is a single account, clampToolInputToScope
+    // FORCES account_name to that account for every account-bearing tool —
+    // overriding any model-supplied value — so a scoped chat can never reach
+    // another account's portfolio data (U2c leak fix). undefined for all/macro.
+    const scopeAccountName = scopeToAccountName(db, scope);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const aiTools: Record<string, any> = {};
@@ -120,13 +121,12 @@ export async function POST(request: NextRequest) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         inputSchema: jsonSchema<Record<string, unknown>>(t.input_schema as any),
         execute: async (rawInput) => {
-          // Enforce scope: inject account_name if scoped and tool accepts it
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          let input = rawInput as Record<string, any>;
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          if (scopeAccountName && !input.account_name && (t.input_schema as any)?.properties?.account_name) {
-            input = { ...input, account_name: scopeAccountName };
-          }
+          const input = clampToolInputToScope(
+            rawInput as Record<string, unknown>,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            t.input_schema as any,
+            scopeAccountName,
+          );
           return executeTool(db, name, input);
         },
       });

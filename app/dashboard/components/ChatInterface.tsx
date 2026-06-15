@@ -309,15 +309,14 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
   const pageContext = useMemo(() => getPageContext(pathname), [pathname]);
   const quickActions = useMemo(() => getQuickActions(pathname), [pathname]);
 
-  // Recreate transport when scope or conversationId changes
-  const transport = useMemo(
-    () =>
-      new DefaultChatTransport({
-        api: "/api/chat",
-        body: { scope, conversationId, pageContext },
-      }),
-    [scope, conversationId, pageContext]
-  );
+  // Stable, api-only transport. Do NOT put request body (scope / conversationId
+  // / pageContext) here: `useChat` captures the transport from the FIRST render
+  // and ignores later transport objects, so a body baked in here freezes at the
+  // mount-time values (scope "all") — the scope selector then silently never
+  // reaches /api/chat (the 2026-06-15 leak: a "Vanguard Taxable" chat ran
+  // unscoped). The live scope is passed per-call via sendMessage/regenerate's
+  // `body` instead (see requestBody below), which reads current state at send time.
+  const transport = useMemo(() => new DefaultChatTransport({ api: "/api/chat" }), []);
 
   const {
     messages,
@@ -328,6 +327,13 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
     setMessages,
     stop,
   } = useChat({ transport });
+
+  // Per-call request body — re-read on every send so the CURRENT scope,
+  // conversation, and page context reach the server (see transport note above).
+  const requestBody = useMemo(
+    () => ({ scope, conversationId, pageContext }),
+    [scope, conversationId, pageContext]
+  );
 
   const isStreaming = status === "streaming" || status === "submitted";
   const isLocked = messages.length > 0;
@@ -423,7 +429,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
 
     const text = inputText.trim();
     setInputText("");
-    await sendMessage({ text });
+    await sendMessage({ text }, { body: requestBody });
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -633,7 +639,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
         {status === "error" && messages.length > 0 && (
           <div className="flex justify-start">
             <button
-              onClick={() => regenerate()}
+              onClick={() => regenerate({ body: requestBody })}
               className="px-3 py-1.5 text-xs text-ink-dim border border-edge rounded-lg hover:text-ink hover:border-edge-strong transition-all focus-ring"
             >
               Retry
