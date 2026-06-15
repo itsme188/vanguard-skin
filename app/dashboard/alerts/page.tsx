@@ -11,7 +11,50 @@ import { Shares } from "@/lib/privacy/components";
 import { formatPercent, formatUSDPrecise } from "@/lib/format";
 import { useToast } from "../components/Toast";
 import { SortPicker } from "../components/SortPicker";
+import { SymbolLink } from "../components/SymbolLink";
+import { Chip } from "../components/Chip";
 import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
+
+// One armed level as returned by GET /api/levels/armed (mirrors ArmedLevel in
+// lib/queries/security-levels.ts). Prices here are PUBLIC market data.
+interface ArmedLevelView {
+  id: number;
+  security_id: number;
+  symbol: string;
+  security_name: string | null;
+  level_type: string;
+  price: number;
+  price_source: string;
+  effective_price: number | null;
+  current_price: number | null;
+  distance_pct: number | null;
+  direction: string | null;
+  action_hint: string | null;
+  source: string;
+  source_author: string | null;
+  thesis: string | null;
+  timeframe: string | null;
+  set_date: string;
+}
+
+const LEVEL_TYPE_LABEL: Record<string, string> = {
+  support: "Support",
+  resistance: "Resistance",
+  entry: "Entry",
+  exit: "Exit",
+  stop: "Stop",
+  scale_in: "Scale-in",
+};
+
+type ArmedSortField = "nearest" | "symbol" | "level_price" | "source_author" | "level_type";
+
+const ARMED_SORT_OPTIONS = [
+  { field: "nearest" as const, label: "Nearest" },
+  { field: "symbol" as const, label: "Symbol" },
+  { field: "level_price" as const, label: "Price" },
+  { field: "source_author" as const, label: "Source" },
+  { field: "level_type" as const, label: "Type" },
+];
 
 type StreamSortField = "recency" | "symbol" | "level_price" | "source_author";
 
@@ -54,11 +97,12 @@ interface PendingLevel {
   created_at: string;
 }
 
-type StreamFilter = "pending" | "review" | "acted" | "ignored" | "dismissed" | "all";
+type StreamFilter = "pending" | "review" | "armed" | "acted" | "ignored" | "dismissed" | "all";
 
 const FILTER_OPTIONS: Array<{ label: string; value: StreamFilter }> = [
   { label: "Pending", value: "pending" },
   { label: "Review", value: "review" },
+  { label: "Armed", value: "armed" },
   { label: "Acted", value: "acted" },
   { label: "Ignored", value: "ignored" },
   { label: "Dismissed", value: "dismissed" },
@@ -102,14 +146,17 @@ function AlertsPageInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
 
-  // Filter is reflected in the URL so /dashboard/levels/review can deep-link
-  // to ?view=review. Treat ?view=review as filter=review on first render.
+  // Filter is reflected in the URL so other surfaces can deep-link:
+  // /dashboard/levels/review → ?view=review; the Today "armed levels" link →
+  // ?view=armed. Treat those as the matching filter on first render.
+  const viewParam = searchParams.get("view");
   const initialFilter: StreamFilter =
-    searchParams.get("view") === "review" ? "review" : "pending";
+    viewParam === "review" ? "review" : viewParam === "armed" ? "armed" : "pending";
 
   const [filter, setFilter] = useState<StreamFilter>(initialFilter);
   const [alerts, setAlerts] = useState<EnrichedAlert[]>([]);
   const [reviewLevels, setReviewLevels] = useState<PendingLevel[]>([]);
+  const [armedLevels, setArmedLevels] = useState<ArmedLevelView[]>([]);
   const [pendingAlertCount, setPendingAlertCount] = useState(0);
   const [loading, setLoading] = useState(false);
   const [detecting, setDetecting] = useState(false);
@@ -145,13 +192,17 @@ function AlertsPageInner() {
         ? `/api/alerts?response=${alertsResponseParam}`
         : "/api/alerts";
 
-      const [alertsRes, reviewRes] = await Promise.all([
+      // Armed levels are fetched every refresh so the "Armed" pill badge stays
+      // live regardless of which filter is active.
+      const [alertsRes, reviewRes, armedRes] = await Promise.all([
         fetch(alertsUrl),
         fetch("/api/levels/review"),
+        fetch("/api/levels/armed"),
       ]);
-      const [alertsJson, reviewJson] = await Promise.all([
+      const [alertsJson, reviewJson, armedJson] = await Promise.all([
         alertsRes.json(),
         reviewRes.json(),
+        armedRes.json(),
       ]);
 
       if (alertsJson?.success) {
@@ -160,6 +211,9 @@ function AlertsPageInner() {
       }
       if (reviewJson?.success) {
         setReviewLevels(reviewJson.levels as PendingLevel[]);
+      }
+      if (armedJson?.success) {
+        setArmedLevels(armedJson.levels as ArmedLevelView[]);
       }
     } finally {
       setLoading(false);
@@ -301,6 +355,8 @@ function AlertsPageInner() {
 
   // Build the stream of items for the current filter.
   const streamItems = useMemo<StreamItem[]>(() => {
+    // Armed is its own view (a level list, not an alert/review stream).
+    if (filter === "armed") return [];
     if (filter === "review") {
       return reviewLevels.map((l) => ({ kind: "review", recencyAt: l.created_at, level: l }));
     }
@@ -341,8 +397,10 @@ function AlertsPageInner() {
   }, [streamItems, sort]);
 
   const reviewCount = reviewLevels.length;
+  const armedCount = armedLevels.length;
   const isPending = filter === "pending";
   const isReview = filter === "review";
+  const isArmed = filter === "armed";
   const totalPending = pendingAlertCount + reviewCount;
 
   return (
@@ -393,7 +451,9 @@ function AlertsPageInner() {
                   ? totalPending
                   : opt.value === "review"
                     ? reviewCount
-                    : 0;
+                    : opt.value === "armed"
+                      ? armedCount
+                      : 0;
               return (
                 <button
                   key={opt.value}
@@ -426,11 +486,19 @@ function AlertsPageInner() {
         </div>
       )}
 
-      {sortedItems.length > 1 && (
+      {!isArmed && sortedItems.length > 1 && (
         <SortPicker options={SORT_OPTIONS} sort={sort} onSort={setSort} />
       )}
 
-      {loading && sortedItems.length === 0 ? (
+      {isArmed ? (
+        loading && armedLevels.length === 0 ? (
+          <p className="text-[11px] text-ink-faint italic py-6 text-center">Loading...</p>
+        ) : armedLevels.length === 0 ? (
+          <EmptyState filter={filter} />
+        ) : (
+          <ArmedLevelsList levels={armedLevels} />
+        )
+      ) : loading && sortedItems.length === 0 ? (
         <p className="text-[11px] text-ink-faint italic py-6 text-center">Loading...</p>
       ) : sortedItems.length === 0 ? (
         <EmptyState filter={filter} />
@@ -459,6 +527,21 @@ function AlertsPageInner() {
 }
 
 function EmptyState({ filter }: { filter: StreamFilter }) {
+  if (filter === "armed") {
+    return (
+      <div className="rounded-xl border border-edge bg-panel p-10 text-center">
+        <p className="text-sm text-ink-dim">No armed levels.</p>
+        <p className="text-[11px] text-ink-faint mt-2">
+          Levels you add (or approve from Review) arm automatically and show here with their
+          distance to trigger. Add levels on any{" "}
+          <Link href="/dashboard/accounts?id=all#holdings" className="text-gold underline">
+            security detail page
+          </Link>
+          .
+        </p>
+      </div>
+    );
+  }
   if (filter === "review") {
     return (
       <div className="rounded-xl border border-edge bg-panel p-10 text-center">
@@ -482,6 +565,111 @@ function EmptyState({ filter }: { filter: StreamFilter }) {
         .
       </p>
     </div>
+  );
+}
+
+// ─── Armed levels view (U3) ─────────────────────────────────────────
+
+function ArmedLevelsList({ levels }: { levels: ArmedLevelView[] }) {
+  const { sort, setSort } = useSortParam<ArmedSortField>("armedLevels", "nearest", "asc");
+
+  const sorted = useMemo(() => {
+    const field = sort.field;
+    if (!field) return levels;
+    const getValue = (l: ArmedLevelView): unknown => {
+      if (field === "nearest") return l.distance_pct === null ? null : Math.abs(l.distance_pct);
+      if (field === "symbol") return l.symbol;
+      if (field === "level_price") return l.effective_price ?? l.price;
+      if (field === "source_author") return l.source_author;
+      if (field === "level_type") return l.level_type;
+      return null;
+    };
+    return [...levels].sort((a, b) => compareValues(getValue(a), getValue(b), sort.dir));
+  }, [levels, sort]);
+
+  return (
+    <div className="space-y-3">
+      {levels.length > 1 && (
+        <SortPicker options={ARMED_SORT_OPTIONS} sort={sort} onSort={setSort} />
+      )}
+      <ul className="divide-y divide-edge rounded-xl border border-edge bg-panel">
+        {sorted.map((l) => (
+          <ArmedLevelRow key={l.id} level={l} />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function ArmedLevelRow({ level: l }: { level: ArmedLevelView }) {
+  const typeLabel = LEVEL_TYPE_LABEL[l.level_type] ?? l.level_type;
+  const isStatic = l.price_source === "static";
+  const dist = l.distance_pct;
+  // "X% away" reads cleanest as an absolute gap; the level type + direction +
+  // the live price column tell the user which side of the level price sits on.
+  const distanceLabel = dist === null ? null : `${formatPercent(Math.abs(dist) * 100)} away`;
+  const near = dist !== null && Math.abs(dist) <= 0.02; // within 2% — about to fire
+
+  return (
+    <li className="py-2.5 px-3 flex items-start gap-3">
+      <div className="w-16 shrink-0 pt-0.5 font-mono text-[12px] font-medium text-ink">
+        <SymbolLink securityId={l.security_id} symbol={l.symbol} />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-baseline gap-2 flex-wrap">
+          <span className="text-[11px] uppercase tracking-wide font-semibold text-ink-dim">
+            {typeLabel}
+          </span>
+          {isStatic ? (
+            <span className="text-sm font-mono font-medium text-ink">
+              {formatUSDPrecise(l.price)}
+            </span>
+          ) : (
+            <>
+              <span className="text-sm font-mono font-medium text-ink">
+                {formatPriceSourceLabel(l.price_source)}
+              </span>
+              {l.effective_price !== null ? (
+                <span className="text-[10px] text-ink-faint">
+                  ≈ {formatUSDPrecise(l.effective_price)}
+                </span>
+              ) : (
+                <span className="text-[10px] text-amber-400">insufficient history</span>
+              )}
+            </>
+          )}
+          {l.direction && (
+            <span className="text-[11px] font-medium text-ink-dim uppercase tracking-wide">
+              {l.direction}
+            </span>
+          )}
+          {distanceLabel && (
+            <Chip size="xs" tone={near ? "warn" : "neutral"}>
+              {distanceLabel}
+            </Chip>
+          )}
+          {l.action_hint && (
+            <Chip size="xs" tone="neutral">
+              {l.action_hint.replace("_", " ")}
+            </Chip>
+          )}
+        </div>
+        {(l.thesis || l.source_author) && (
+          <p className="text-[11px] text-ink-faint mt-0.5">
+            {l.source_author && <span className="text-ink-dim">{l.source_author}: </span>}
+            {l.thesis}
+          </p>
+        )}
+      </div>
+      {l.current_price !== null && (
+        <div className="text-right shrink-0">
+          <div className="text-[10px] text-ink-faint uppercase tracking-wide">Now</div>
+          <div className="text-sm font-mono text-ink-dim">
+            {formatUSDPrecise(l.current_price)}
+          </div>
+        </div>
+      )}
+    </li>
   );
 }
 

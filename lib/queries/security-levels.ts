@@ -148,6 +148,123 @@ export function findCrossedLevels(
   return crossed;
 }
 
+// ─── Armed-levels view (U3: consolidated "what am I watching") ───────
+
+/**
+ * One armed price level, enriched for the Alerts-inbox "Armed" view:
+ * symbol + security name, the effective threshold (static price, or the live
+ * MA when price_source is an MA — null when history is insufficient), the
+ * latest market price, and the signed distance from price to threshold.
+ */
+export interface ArmedLevel
+  extends Pick<
+    SecurityLevel,
+    | "id"
+    | "security_id"
+    | "level_type"
+    | "price"
+    | "price_source"
+    | "direction"
+    | "action_hint"
+    | "source"
+    | "source_author"
+    | "thesis"
+    | "timeframe"
+    | "set_date"
+    | "expires_at"
+  > {
+  symbol: string;
+  security_name: string | null;
+  /** Static price, or the live MA value; null when an MA can't be computed. */
+  effective_price: number | null;
+  /** Latest close (prices, with benchmark_prices fallback); null if none. */
+  current_price: number | null;
+  /** (current − effective) / effective. null when either side is missing. */
+  distance_pct: number | null;
+}
+
+/**
+ * All currently-armed levels (is_active=1, auto_approved, unexpired) across
+ * every security, enriched with symbol + effective threshold + current price +
+ * distance, sorted nearest-to-trigger first (null distances last). Mirrors the
+ * price/benchmark CTE + auto_approved whitelist that findCrossedLevels uses, but
+ * keeps levels whose price is stale or whose MA can't resolve (the view should
+ * still list them) rather than filtering them out.
+ */
+export function getArmedLevels(db: Database.Database): ArmedLevel[] {
+  const rows = db
+    .prepare(
+      `WITH latest_primary AS (
+         SELECT p1.security_id, p1.close_price, p1.date
+         FROM prices p1
+         WHERE p1.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = p1.security_id)
+       ),
+       latest_benchmark AS (
+         SELECT s.id AS security_id, bp.close_price, bp.date
+         FROM securities s
+         JOIN benchmark_prices bp ON bp.symbol = s.symbol
+         WHERE bp.date = (SELECT MAX(bp2.date) FROM benchmark_prices bp2 WHERE bp2.symbol = bp.symbol)
+       )
+       SELECT sl.*, s.symbol AS sym, s.name AS security_name,
+         COALESCE(lp.close_price, lb.close_price) AS current_price
+       FROM security_levels sl
+       JOIN securities s ON s.id = sl.security_id
+       LEFT JOIN latest_primary lp ON lp.security_id = sl.security_id
+       LEFT JOIN latest_benchmark lb ON lb.security_id = sl.security_id
+       WHERE sl.is_active = 1
+         AND sl.review_status = 'auto_approved'
+         AND (sl.expires_at IS NULL OR sl.expires_at >= date('now'))`
+    )
+    .all() as Array<
+    SecurityLevel & {
+      sym: string;
+      security_name: string | null;
+      current_price: number | null;
+    }
+  >;
+
+  const out: ArmedLevel[] = rows.map((r) => {
+    const effective_price =
+      r.price_source === "static" ? r.price : resolveLevelPrice(db, r);
+    const current_price = r.current_price ?? null;
+    const distance_pct =
+      current_price !== null && effective_price !== null && effective_price !== 0
+        ? (current_price - effective_price) / effective_price
+        : null;
+    return {
+      id: r.id,
+      security_id: r.security_id,
+      symbol: r.sym,
+      security_name: r.security_name,
+      level_type: r.level_type,
+      price: r.price,
+      price_source: r.price_source,
+      effective_price,
+      current_price,
+      distance_pct,
+      direction: r.direction,
+      action_hint: r.action_hint,
+      source: r.source,
+      source_author: r.source_author,
+      thesis: r.thesis,
+      timeframe: r.timeframe,
+      set_date: r.set_date,
+      expires_at: r.expires_at,
+    };
+  });
+
+  // Nearest-to-trigger first; levels with no computable distance sink to the
+  // bottom, tie-broken by symbol for stable ordering.
+  out.sort((a, b) => {
+    const da = a.distance_pct === null ? Infinity : Math.abs(a.distance_pct);
+    const db2 = b.distance_pct === null ? Infinity : Math.abs(b.distance_pct);
+    if (da !== db2) return da - db2;
+    return a.symbol.localeCompare(b.symbol);
+  });
+
+  return out;
+}
+
 // ─── Alert queries ─────────────────────────────────────────────────
 
 export function getAlerts(

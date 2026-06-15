@@ -339,9 +339,17 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
         </div>
 
         {alerts.length === 0 ? (
-          <p className="text-[14px] text-ink-faint">
-            No pending alerts. Levels are armed — you&rsquo;ll be notified when they trigger.
-          </p>
+          <div className="space-y-2">
+            <p className="text-[14px] text-ink-faint">
+              No pending alerts. Levels are armed — you&rsquo;ll be notified when they trigger.
+            </p>
+            <Link
+              href="/dashboard/alerts?view=armed"
+              className="block text-[13px] font-medium text-gold hover:text-gold/80"
+            >
+              View armed levels &rarr;
+            </Link>
+          </div>
         ) : (
           <div className="space-y-3">
             {alertsToday.length > 0 && (
@@ -350,12 +358,20 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
             {alertsOlder.length > 0 && (
               <AlertGroup title="Older pending" alerts={alertsOlder} dim />
             )}
-            <Link
-              href="/dashboard/alerts"
-              className="block text-center text-[14px] font-medium text-gold hover:text-gold/80 py-1"
-            >
-              Respond in alerts inbox &rarr;
-            </Link>
+            <div className="flex items-center justify-center gap-4 py-1">
+              <Link
+                href="/dashboard/alerts"
+                className="text-[14px] font-medium text-gold hover:text-gold/80"
+              >
+                Respond in alerts inbox &rarr;
+              </Link>
+              <Link
+                href="/dashboard/alerts?view=armed"
+                className="text-[13px] text-ink-dim hover:text-ink"
+              >
+                View armed levels
+              </Link>
+            </div>
           </div>
         )}
       </section>

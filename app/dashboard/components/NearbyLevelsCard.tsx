@@ -52,9 +52,19 @@ export function NearbyLevelsCard({ levels }: { levels: LevelNearPrice[] }) {
           </li>
         ))}
       </ul>
-      {overflow > 0 && (
-        <p className="text-[10px] text-ink-faint mt-2 text-right">+{overflow} more</p>
-      )}
+      <div className="mt-2 flex items-center justify-between gap-2">
+        {overflow > 0 ? (
+          <span className="text-[10px] text-ink-faint">+{overflow} more</span>
+        ) : (
+          <span />
+        )}
+        <Link
+          href="/dashboard/alerts?view=armed"
+          className="text-[11px] font-medium text-gold hover:text-gold/80"
+        >
+          View all armed levels &rarr;
+        </Link>
+      </div>
     </section>
   );
 }
