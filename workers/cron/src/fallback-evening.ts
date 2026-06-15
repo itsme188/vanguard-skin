@@ -374,6 +374,10 @@ TIMEFRAME & THREAD COHERENCE (HARD):
 - Keep a structural / longer-horizon thread (e.g. an IPO-underwriting fee catalyst, a pending deal, a product cycle) SEPARATE from a same-day tactical move (e.g. today's selloff). Put them in separate sentences and do not imply one caused the other unless a source explicitly says so.
 - Do not invent a sector or market driver a source did not state. If a held name fell but no source attributes the move to its sector, say it fell with the broad market — do not assert an unsourced reason (e.g. "as the selloff hit brokers/banks") that no article supports.
 
+ATTRIBUTION & PROVENANCE (HARD):
+- A source's summary sometimes RELAYS a third party's views rather than voicing the source's own opinion — a podcast guest, an interview subject, or a quoted analyst (the summary will say so, e.g. "TMT Breakout summarizes Gavin Baker's podcast remarks"). When it does, attribute the view to the ORIGINATOR, not the newsletter: write "Gavin Baker (via TMT Breakout) argued ..." — never "TMT Breakout argued ..." as if it were the newsletter's own call.
+- Do not strip a named originator out of a relayed view. And do not invent an originator when the summary names none — a summary with no relay attribution IS the source's own view.
+
 Output markdown only. No preamble, no sign-off.`;
 }
 

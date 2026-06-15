@@ -407,13 +407,13 @@ function buildPrompt(p: PromptInput): string {
       : "";
 
   const weekendSection = p.deepContext
-    ? `\n## Weekend Reading — Full Newsletter Text\nThese are the complete texts of the user's preferred weekend newsletters. Read each carefully. The user's goal is for your synthesis below to **replace** him reading these himself. Identify where authors agree, where they disagree, the consensus call vs contrarian takes, and any specific securities or sectors they highlight. Cite authors by name when referencing a view.\n\n${p.deepContext}\n`
+    ? `\n## Weekend Reading — Full Newsletter Text\nThese are the complete texts of the user's preferred weekend newsletters. Read each carefully. The user's goal is for your synthesis below to **replace** him reading these himself. Identify where authors agree, where they disagree, the consensus call vs contrarian takes, and any specific securities or sectors they highlight. Cite authors by name when referencing a view. ATTRIBUTION: when a newsletter is RELAYING a third party's views — a podcast guest, an interview subject, or a quoted analyst — attribute the view to that originator ("Gavin Baker, via TMT Breakout, argued ..."), never present it as the newsletter's own call.\n\n${p.deepContext}\n`
     : p.imapFallback
       ? `\n## Weekend Market Context (Vital Knowledge — IMAP fallback)\n${p.imapFallback}\n`
       : "";
 
   const breadthSection = p.breadthContext
-    ? `\n## Broader Market Signals (Summary Level — Other Sources)\nPre-summarized by the research-feed pipeline. Use for breadth, not depth.\n\n${p.breadthContext}\n`
+    ? `\n## Broader Market Signals (Summary Level — Other Sources)\nPre-summarized by the research-feed pipeline. Use for breadth, not depth. A summary may name an ORIGINATOR it is relaying (e.g. "TMT Breakout summarizes Gavin Baker's podcast remarks") — when it does, attribute the view to that originator, not to the newsletter.\n\n${p.breadthContext}\n`
     : "";
 
   return `You are a financial research analyst preparing a weekly market briefing for a single portfolio manager. Generate a comprehensive briefing for the week of ${weekTitle}.
