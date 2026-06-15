@@ -264,6 +264,14 @@ html {
 html[data-chat-rail="collapsed"] {
   --chat-rail-width: 0px;
 }
+/* Expanded reading width (U2b). Widens the reservation to match the wider
+ * panel — but only while the rail is open (data-chat-rail="open"); when
+ * collapsed, the single-attribute collapsed rule above still wins (it sets 0)
+ * because this selector requires rail="open". Keep 720px in sync with
+ * EXPANDED_WIDTH_PX in lib/chat/rail-layout.ts. */
+html[data-chat-expanded="true"][data-chat-rail="open"] {
+  --chat-rail-width: 720px;
+}
 
 /* Apply reservation only at xl+ (≥1280px) — below xl the rail is a
  * floating drawer and doesn't need a layout reservation. */
