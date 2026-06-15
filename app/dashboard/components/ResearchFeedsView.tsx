@@ -556,6 +556,10 @@ function ArticleCard({
     year: "numeric",
   });
   const border = sentimentBorder[article.sentiment ?? "neutral"] ?? "border-l-edge-strong";
+  // The original article on the publisher's site. Falls back to the source's
+  // homepage so there's always a way out to the source even when inline text
+  // isn't available (U5). source_url can be null for some rows.
+  const originalUrl = article.source_url ?? article.website_url;
 
   return (
     // break-words (overflow-wrap, inherited): AI summaries/relevance lines can
@@ -573,6 +577,18 @@ function ArticleCard({
           <span className="text-ink-faint">·</span>
           <time className="text-xs text-ink-faint">{dateStr}</time>
           <SentimentBadge sentiment={article.sentiment} />
+          {originalUrl && (
+            <a
+              href={originalUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="text-xs text-ink-faint hover:text-gold transition-colors ml-auto"
+              title="Open the original article in your browser"
+            >
+              Open original ↗
+            </a>
+          )}
         </div>
 
         {/* Headline — reader-app scale (~21px / line-height tight) */}
@@ -621,7 +637,22 @@ function ArticleCard({
               </div>
             ) : (
               <p className="text-sm text-ink-faint italic py-4">
-                Full text not available for this article.
+                Full text not available for this article
+                {originalUrl ? (
+                  <>
+                    {" — "}
+                    <a
+                      href={originalUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-gold hover:text-gold/80 not-italic"
+                    >
+                      open the original ↗
+                    </a>
+                  </>
+                ) : (
+                  "."
+                )}
               </p>
             )}
           </div>
