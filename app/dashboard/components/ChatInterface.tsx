@@ -372,22 +372,15 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
     }
   }, [setMessages]);
 
-  // On mount: load most recent conversation
+  // On mount: default to a FRESH conversation (U2a). We populate the history
+  // list so past chats stay reachable (Recent Conversations in the empty state),
+  // but deliberately do NOT auto-resume the most recent one — opening the app
+  // lands on an empty "New conversation" rather than mid-thread.
   useEffect(() => {
     if (loadedInitial) return;
     setLoadedInitial(true);
-
-    (async () => {
-      const convs = await fetchConversations();
-      if (convs.length > 0) {
-        // Load the most recent conversation (already sorted by updated_at DESC)
-        const latest = convs[0];
-        if (latest.message_count > 0) {
-          await loadConversation(latest);
-        }
-      }
-    })();
-  }, [loadedInitial, fetchConversations, loadConversation]);
+    void fetchConversations();
+  }, [loadedInitial, fetchConversations]);
 
   // After streaming ends, refresh conversation list to pick up new/updated conversations
   const prevStatusRef = useRef(status);
@@ -605,10 +598,10 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
             className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
           >
             <div
-              className={`max-w-[80%] rounded-xl px-4 py-3 text-sm leading-relaxed ${
+              className={`rounded-xl px-4 py-3 text-sm leading-relaxed ${
                 msg.role === "user"
-                  ? "bg-raised border border-edge text-ink"
-                  : "bg-panel border border-edge text-ink"
+                  ? "max-w-[80%] bg-raised border border-edge text-ink"
+                  : "max-w-[92%] bg-panel border border-edge text-ink"
               }`}
             >
               {msg.role === "user" ? (

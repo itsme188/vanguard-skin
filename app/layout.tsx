@@ -36,9 +36,12 @@ try {
   var c = localStorage.getItem('vgs:chatRail');
   if (c !== 'collapsed') c = 'open';
   document.documentElement.setAttribute('data-chat-rail', c);
+  var x = localStorage.getItem('vgs:chatExpanded') === 'true' ? 'true' : 'false';
+  document.documentElement.setAttribute('data-chat-expanded', x);
 } catch (e) {
   document.documentElement.setAttribute('data-theme', 'light');
   document.documentElement.setAttribute('data-chat-rail', 'open');
+  document.documentElement.setAttribute('data-chat-expanded', 'false');
 }
 if (navigator.userAgent.includes('Electron')) {
   document.documentElement.classList.add('electron');

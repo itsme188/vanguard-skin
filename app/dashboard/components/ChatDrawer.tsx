@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { ChatInterface } from "./ChatInterface";
 import { useIsMobile } from "@/lib/hooks/useIsMobile";
 import { useIsLargeDesktop } from "@/lib/hooks/useIsLargeDesktop";
+import { chatPanelWidthPx } from "@/lib/chat/rail-layout";
 
 // Three layout modes:
 //   - mobile (<768px): full-screen overlay, slide-up. Opens via toggle-mobile-chat
@@ -16,8 +17,11 @@ import { useIsLargeDesktop } from "@/lib/hooks/useIsLargeDesktop";
 //     localStorage["vgs:chatRail"] + mirrored to <html data-chat-rail="..."> by
 //     the anti-FOUC script in app/layout.tsx, so first paint matches the
 //     user's last choice. Cmd+J expands when collapsed; focuses input when open.
-const RAIL_WIDTH = 480;
 const COLLAPSE_STORAGE_KEY = "vgs:chatRail";
+// Expanded = the wider reading width (U2b), orthogonal to collapsed. Persisted
+// separately + mirrored to <html data-chat-expanded>. Applies to both the
+// large-desktop rail and the 768–1279px drawer (not mobile — already full-screen).
+const EXPAND_STORAGE_KEY = "vgs:chatExpanded";
 
 export function ChatDrawer() {
   const [open, setOpen] = useState(false);
@@ -25,6 +29,9 @@ export function ChatDrawer() {
   // and the header CSS attribute. Default to whatever the FOUC script wrote
   // (read on first client mount to avoid hydration mismatch).
   const [collapsed, setCollapsed] = useState(false);
+  // expanded = wider panel for reading long answers. Default matches the FOUC
+  // script (data-chat-expanded), synced to React state on first mount below.
+  const [expanded, setExpanded] = useState(false);
   const isMobile = useIsMobile();
   const isLargeDesktop = useIsLargeDesktop();
   const pathname = usePathname();
@@ -36,10 +43,26 @@ export function ChatDrawer() {
     try {
       const stored = localStorage.getItem(COLLAPSE_STORAGE_KEY);
       setCollapsed(stored === "collapsed");
+      setExpanded(localStorage.getItem(EXPAND_STORAGE_KEY) === "true");
     } catch {
       // localStorage unavailable (private browsing) — stay in default open state
     }
   }, []);
+
+  // Persist expanded + mirror to data-chat-expanded so globals.css widens the
+  // layout reservation (--chat-rail-width) and first paint matches via the
+  // anti-FOUC script in app/layout.tsx.
+  useEffect(() => {
+    try {
+      localStorage.setItem(EXPAND_STORAGE_KEY, expanded ? "true" : "false");
+      document.documentElement.setAttribute(
+        "data-chat-expanded",
+        expanded ? "true" : "false",
+      );
+    } catch {
+      // ignored — see above
+    }
+  }, [expanded]);
 
   // Persist collapse state + sync the data attribute when it flips. The
   // attribute drives the layout reservation (chat-rail-reserve) and the
@@ -139,7 +162,7 @@ export function ChatDrawer() {
       {/* Chat panel */}
       <div
         className={`fixed z-50 bg-canvas transform transition-transform duration-300 ease-in-out ${panelClass}`}
-        style={!isMobile ? { width: `${RAIL_WIDTH}px`, maxWidth: "90vw" } : undefined}
+        style={!isMobile ? { width: `${chatPanelWidthPx(expanded)}px`, maxWidth: "90vw" } : undefined}
         role={isLargeDesktop ? "complementary" : "dialog"}
         aria-label="Chat assistant"
         aria-hidden={!railVisible}
@@ -179,6 +202,53 @@ export function ChatDrawer() {
               <kbd className="text-[10px] text-ink-faint font-mono bg-raised px-1.5 py-0.5 rounded border border-edge">
                 {"⌘"}J
               </kbd>
+            )}
+            {/* Expand / narrow button (U2b) — desktop only (mobile is full-screen).
+                Toggles the panel between the normal rail and the wider reading
+                width; persisted via vgs:chatExpanded. */}
+            {!isMobile && (
+              <button
+                onClick={() => setExpanded((v) => !v)}
+                className="text-ink-faint hover:text-ink transition-colors p-1 rounded-md hover:bg-raised"
+                aria-label={expanded ? "Narrow chat" : "Widen chat"}
+                title={expanded ? "Narrow chat" : "Widen chat for reading"}
+              >
+                {expanded ? (
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <polyline points="4 14 10 14 10 20" />
+                    <polyline points="20 10 14 10 14 4" />
+                    <line x1="14" y1="10" x2="21" y2="3" />
+                    <line x1="3" y1="21" x2="10" y2="14" />
+                  </svg>
+                ) : (
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <polyline points="15 3 21 3 21 9" />
+                    <polyline points="9 21 3 21 3 15" />
+                    <line x1="21" y1="3" x2="14" y2="10" />
+                    <line x1="3" y1="21" x2="10" y2="14" />
+                  </svg>
+                )}
+              </button>
             )}
             {/* Collapse button — only on the persistent large-desktop rail.
                 Slides the rail off-screen + frees the layout reservation so
