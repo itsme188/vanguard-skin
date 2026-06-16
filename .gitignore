@@ -66,8 +66,14 @@ next-env.d.ts
 .claude/scheduled_tasks.lock
 
 # playwright + manual screenshot artifacts at repo root
-# (often contain real portfolio data — README screenshots live elsewhere)
+# (often contain real portfolio data — README screenshots live in docs/screenshots/)
+# Catch-all: NO root-level PNG is ever committable. Legit screenshots live under
+# docs/screenshots/ (a subdirectory, unaffected by this anchored rule). The
+# specific prefixes below are kept for documentation but /*.png supersedes them
+# — added 2026-06-16 after two un-ignored root captures (today-full-page.png)
+# slipped past the prefix list.
 .playwright-mcp/
+/*.png
 /sweep-*.png
 /verify-*.png
 /phase5-*.png
