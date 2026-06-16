@@ -42,17 +42,10 @@ vi.mock("../src/resend", () => ({
   sendEmail: vi.fn(async () => ({ id: "mock-email-id" })),
 }));
 
-// Mock ONLY the IBKR network fetch; pure transforms stay real.
-vi.mock("../src/ibkr-positions", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/ibkr-positions")>();
-  return { ...actual, fetchLiveIbkrPositionsCached: vi.fn() };
-});
-
 import { runFallbackBriefing } from "../src/fallback-briefing";
 import { loadLatestSnapshot } from "../src/state";
 import { sendEmail } from "../src/resend";
 import { generateText } from "ai";
-import { fetchLiveIbkrPositionsCached } from "../src/ibkr-positions";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -74,12 +67,16 @@ function makeEnv(overrides: Partial<FallbackEnv> = {}): FallbackEnv {
   };
 }
 
-function makeSnapshot(briefingRecipients?: string | null): Snapshot {
+function makeSnapshot(
+  briefingRecipients?: string | null,
+  briefingHoldings?: Snapshot["briefingHoldings"],
+): Snapshot {
   return {
-    schemaVersion: 3,
+    schemaVersion: briefingHoldings ? 7 : 3,
     snapshotDate: "2026-05-08",
     generatedAt: new Date().toISOString(),
     heldSymbols: ["AAPL"],
+    briefingHoldings,
     settings: {
       last_digest_sent_at: "2026-05-08T08:45:00Z",
       last_briefing_sent_at: null,
@@ -154,52 +151,54 @@ describe("runFallbackBriefing", () => {
       text: "## Week Overview\n\nSome briefing content.",
     });
     (sendEmail as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "mock-email-id" });
-    (fetchLiveIbkrPositionsCached as ReturnType<typeof vi.fn>).mockResolvedValue([]);
   });
-
-  // ── Tier 3: live IBKR holdings-context refresh ────────────────────────────
-
-  const IBKR_ENV: Partial<FallbackEnv> = {
-    IBKR_CONSUMER_KEY: "QAJVIHZHI",
-    IBKR_ACCESS_TOKEN: "tok",
-    IBKR_PREPEND: "deadbeef",
-    IBKR_DH_PRIME: "00cb",
-    IBKR_SIGNATURE_KEY_PKCS8: "cGtjczg=",
-  };
 
   function promptOfLastGenerate(): string {
     const calls = (generateText as ReturnType<typeof vi.fn>).mock.calls;
     return calls[calls.length - 1][0].prompt as string;
   }
 
-  it("merges current live IBKR symbols into the holdings context", async () => {
-    const env = makeEnv(IBKR_ENV);
-    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(makeSnapshot()); // held: AAPL
-    (fetchLiveIbkrPositionsCached as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { symbol: "NVDA", securityType: "Stock", underlyingSymbol: null, optionType: null, strikePrice: null, expirationDate: null, multiplier: null, quantity: 30, costBasis: 3000, mktPrice: 120 },
+  // ── v7: Vanguard-only briefing holdings (IBKR exclusion parity) ───────────
+
+  it("renders Vanguard briefingHoldings and NEVER surfaces the IBKR trading book", async () => {
+    const env = makeEnv();
+    // heldSymbols (cross-account) includes QQQ — the IBKR name U4 excludes —
+    // but briefingHoldings (Vanguard-only) does not. The briefing must use the
+    // latter so QQQ never reaches the prompt.
+    const snap = makeSnapshot(undefined, [
+      { symbol: "AAPL", name: "Apple Inc", sector: "Technology", netQty: 100 },
+      { symbol: "VTI", name: "Vanguard Total Market", sector: "Diversified", netQty: 50 },
     ]);
+    snap.heldSymbols = ["AAPL", "QQQ", "VTI"]; // QQQ = IBKR-held
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snap);
 
     await runFallbackBriefing(env);
 
     const prompt = promptOfLastGenerate();
-    expect(prompt).toContain("AAPL"); // snapshot held kept
-    expect(prompt).toContain("NVDA"); // live IBKR name added
+    expect(prompt).toContain("AAPL");
+    expect(prompt).toContain("VTI");
+    expect(prompt).not.toContain("QQQ"); // IBKR trading book stays out
   });
 
-  it("uses the snapshot held list verbatim when IBKR is not configured", async () => {
-    const env = makeEnv(); // no IBKR_*
-    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(makeSnapshot());
+  it("renders rich holdings detail (name, sector) and a NET SHORT marker", async () => {
+    const env = makeEnv();
+    const snap = makeSnapshot(undefined, [
+      { symbol: "AAPL", name: "Apple Inc", sector: "Technology", netQty: 100 },
+      { symbol: "TSLA", name: "Tesla Inc", sector: "Consumer Discretionary", netQty: -25 },
+    ]);
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snap);
 
     await runFallbackBriefing(env);
 
-    expect(fetchLiveIbkrPositionsCached).not.toHaveBeenCalled();
-    expect(promptOfLastGenerate()).toContain("AAPL");
+    const prompt = promptOfLastGenerate();
+    expect(prompt).toContain("AAPL (Apple Inc, Technology)");
+    expect(prompt).toContain("TSLA (Tesla Inc, Consumer Discretionary) — NET SHORT 25");
   });
 
-  it("degrades to the snapshot list when the live IBKR fetch throws", async () => {
-    const env = makeEnv(IBKR_ENV);
-    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(makeSnapshot());
-    (fetchLiveIbkrPositionsCached as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("IBKR down"));
+  it("degrades to the heldSymbols flat list when briefingHoldings is absent (pre-v7 snapshot)", async () => {
+    const env = makeEnv();
+    const snap = makeSnapshot(); // no briefingHoldings → heldSymbols = ["AAPL"]
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snap);
 
     const result = await runFallbackBriefing(env);
     expect(result.kind).not.toBe("error"); // briefing still ships

@@ -30,6 +30,7 @@ import {
   isR2Configured,
 } from "@/lib/storage/r2";
 import { getModelCatalog } from "@/lib/ai/model-catalog";
+import { getBriefingHoldings } from "@/lib/calendar/briefing";
 
 const DEEP_READ_SOURCE_IDS = [1, 18, 19, 28]; // VK, Eliant, Purple Drink, Meisler
 const DEEP_READ_HOURS = 72;
@@ -39,7 +40,7 @@ const CALENDAR_LOOKAHEAD_DAYS = 7;
 const SNAPSHOT_RETENTION_DAYS = 7;
 
 interface Snapshot {
-  schemaVersion: 6;
+  schemaVersion: 7;
   snapshotDate: string;
   generatedAt: string;
   heldSymbols: string[];
@@ -127,6 +128,17 @@ interface Snapshot {
   // Worker fallbacks use this for tier-aware model selection + reactive failover.
   // [] when never refreshed — graceful: falls back to TIER_STATIC_FALLBACK.
   modelCatalog: string[];
+  // v7 — Vanguard-only briefing holdings (IBKR excluded via the Mac
+  // single-source getBriefingHoldings / BRIEFING_EXCLUDE_IBKR_SQL). The cloud
+  // briefing fallback renders these instead of the cross-account heldSymbols
+  // list so it never surfaces the IBKR trading book as research holdings
+  // (mirrors the U4 Mac-side exclusion, 2026-06-15).
+  briefingHoldings: Array<{
+    symbol: string;
+    name: string | null;
+    sector: string | null;
+    netQty: number;
+  }>;
 }
 
 function today(): string {
@@ -165,6 +177,23 @@ function getHeldStockSymbolsRO(db: Database.Database): string[] {
     )
     .all() as { symbol: string }[];
   return rows.map((r) => r.symbol);
+}
+
+/**
+ * Vanguard-only briefing holdings for the cloud briefing fallback. Reuses the
+ * Mac single source (getBriefingHoldings → BRIEFING_EXCLUDE_IBKR_SQL) so the
+ * IBKR-exclusion rule lives in exactly one place and the Worker never
+ * re-implements it. Maps the DB row's snake_case net_qty to camelCase netQty.
+ */
+function getBriefingHoldingsForSnapshot(
+  db: Database.Database,
+): Array<{ symbol: string; name: string | null; sector: string | null; netQty: number }> {
+  return getBriefingHoldings(db).map((h) => ({
+    symbol: h.symbol,
+    name: h.name,
+    sector: h.sector,
+    netQty: h.net_qty,
+  }));
 }
 
 function getSettingValue(db: Database.Database, key: string): string | null {
@@ -420,7 +449,7 @@ function buildSnapshot(db: Database.Database): Snapshot {
     }>;
 
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     snapshotDate: today(),
     generatedAt: new Date().toISOString(),
     heldSymbols: getHeldStockSymbolsRO(db),
@@ -463,6 +492,9 @@ function buildSnapshot(db: Database.Database): Snapshot {
     // v6 — available Anthropic model ids for Worker tier resolution + failover.
     // Returns [] when the Mac has never run a catalog refresh (travel, fresh install).
     modelCatalog: getModelCatalog(db),
+    // v7 — Vanguard-only briefing holdings (IBKR excluded). Single-sourced from
+    // the Mac's getBriefingHoldings so the cloud briefing matches the real one.
+    briefingHoldings: getBriefingHoldingsForSnapshot(db),
   };
 }
 
@@ -506,6 +538,7 @@ async function main() {
       `${snapshot.securities.length} securities, ` +
       `${snapshot.earningsEmails.length} audit rows, ` +
       `${snapshot.vanguardHoldings.length} vanguard-holdings, ` +
+      `${snapshot.briefingHoldings.length} briefing-holdings, ` +
       `${snapshot.securityBetas.length} betas, ` +
       `${snapshot.notes.length} notes, ` +
       `${snapshot.earningsBogeys.length} bogeys, ` +

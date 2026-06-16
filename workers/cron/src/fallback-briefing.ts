@@ -25,8 +25,6 @@ import { generateWithFailover } from "./ai";
 import { briefingToHtml } from "./html";
 import { todayET, getCurrentETDayOfWeek } from "./dst";
 import type { FallbackEnv, FallbackResult } from "./fallback-digest";
-import { ibkrConfigFromEnv } from "./ibkr-oauth";
-import { fetchLiveIbkrPositionsCached, liveSymbolsForContext } from "./ibkr-positions";
 
 // Must match Mac's lib/calendar/briefing.ts constants.
 const PREFERRED_SOURCE_IDS = [1, 18, 19, 28];
@@ -74,15 +72,13 @@ export async function runFallbackBriefing(
 
   const weekOf = briefingWeekOf();
 
-  // Tier 3 — refresh the holdings context with the CURRENT IBKR book. The
-  // snapshot's held-symbol list freezes at 2am and goes stale while the Mac is
-  // asleep (travel), so a recently-bought IBKR name would be missing from the
-  // briefing's portfolio context. Union (not replace): we can't tell a sold
-  // Vanguard name from a sold IBKR name without per-account symbol mapping, so
-  // we only ADD current IBKR symbols. Best-effort — any failure leaves the
-  // snapshot list untouched.
-  const heldSymbols = await mergeLiveIbkrSymbols(env, snapshot.heldSymbols);
-  const prompt = buildPrompt(snapshot, weekOf, heldSymbols);
+  // IBKR is the short-term trading book and is deliberately EXCLUDED from the
+  // briefing's portfolio context (mirrors the Mac's BRIEFING_EXCLUDE_IBKR_SQL /
+  // getBriefingHoldings, U4 2026-06-15). buildPrompt renders snapshot
+  // .briefingHoldings (Vanguard-only) and never pulls live IBKR — so a
+  // cloud-generated briefing never surfaces the trading book as research
+  // holdings, which the old live-IBKR-symbol merge used to do.
+  const prompt = buildPrompt(snapshot, weekOf);
 
   const catalog = snapshot.modelCatalog ?? [];
 
@@ -137,33 +133,37 @@ export async function runFallbackBriefing(
 // ── Prompt assembly ────────────────────────────────────────────────
 
 /**
- * Best-effort: union the snapshot's held symbols with the current live IBKR
- * book. Returns the snapshot list unchanged when IBKR isn't configured or the
- * fetch fails — never throws.
+ * Render the briefing's portfolio-holdings context. Prefers the v7
+ * Vanguard-only `briefingHoldings` (IBKR excluded — single-sourced from the
+ * Mac's getBriefingHoldings), rendered richly (symbol, name, sector, NET SHORT
+ * marker) to mirror the Mac briefing's formatHoldingsList. Falls back to the
+ * cross-account `heldSymbols` flat list for pre-v7 snapshots (a ≤24h window
+ * after deploy, until the next 2am snapshot writes the field) so the briefing
+ * still ships rather than rendering an empty holdings block.
  */
-async function mergeLiveIbkrSymbols(
-  env: FallbackEnv,
-  snapshotHeld: string[],
-): Promise<string[]> {
-  const cfg = ibkrConfigFromEnv(env as unknown as Record<string, string | undefined>);
-  if (!cfg) return snapshotHeld;
-  try {
-    const positions = await fetchLiveIbkrPositionsCached(env.CRON_KV, cfg);
-    const merged = new Set(snapshotHeld.map((s) => s.toUpperCase()));
-    for (const sym of liveSymbolsForContext(positions)) merged.add(sym);
-    console.log(`[fallback-briefing] live IBKR symbols merged: ${liveSymbolsForContext(positions).length}`);
-    return [...merged];
-  } catch (err) {
-    console.warn("[fallback-briefing] live IBKR symbol refresh failed:", err);
-    return snapshotHeld;
+export function renderBriefingHoldings(snapshot: Snapshot): string {
+  const holdings = snapshot.briefingHoldings;
+  if (holdings && holdings.length > 0) {
+    return holdings
+      .map((h) => {
+        const shortSuffix =
+          h.netQty < 0
+            ? ` — NET SHORT ${Math.abs(h.netQty)} (cross-account net)`
+            : "";
+        return `${h.symbol} (${h.name ?? "unknown"}, ${h.sector ?? "N/A"})${shortSuffix}`;
+      })
+      .join("\n");
   }
+  // Pre-v7 snapshot (no briefingHoldings field): degrade to the cross-account
+  // flat symbol list. This includes IBKR names — accepted for the brief
+  // post-deploy window only; the next nightly snapshot replaces it.
+  return snapshot.heldSymbols.join(", ") || "(no holdings snapshot available)";
 }
 
-function buildPrompt(snapshot: Snapshot, weekOf: string, heldSymbols: string[] = snapshot.heldSymbols): string {
+function buildPrompt(snapshot: Snapshot, weekOf: string): string {
   const weekTitle = formatWeekTitle(weekOf);
 
-  const holdingsList =
-    heldSymbols.join(", ") || "(no holdings snapshot available)";
+  const holdingsList = renderBriefingHoldings(snapshot);
 
   // Partition events by category — same classification as Mac side.
   const portfolioEarnings = snapshot.calendarEvents.filter(

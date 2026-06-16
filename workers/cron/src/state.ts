@@ -180,8 +180,22 @@ export interface SnapshotBogey {
  * All v2/v3/v4/v5 fields are optional for back-compat with older snapshots; the
  * fallback gracefully degrades when these are missing.
  */
+/**
+ * Vanguard-only briefing holding (IBKR excluded — see the Mac
+ * BRIEFING_EXCLUDE_IBKR_SQL / getBriefingHoldings single source). The cloud
+ * briefing renders this instead of the cross-account `heldSymbols` flat list so
+ * it never surfaces the IBKR trading book as research holdings.
+ */
+export interface BriefingHoldingSnapshot {
+  symbol: string;
+  name: string | null;
+  sector: string | null;
+  /** Cross-account net quantity (positive = long, negative = short). */
+  netQty: number;
+}
+
 export interface Snapshot {
-  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6;
+  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7;
   snapshotDate: string;
   generatedAt: string;
   heldSymbols: string[];
@@ -221,6 +235,11 @@ export interface Snapshot {
   // Used by Worker fallbacks for tier-aware model resolution + reactive failover.
   // Optional for back-compat with v1–v5 snapshots; falls back to [] → TIER_STATIC_FALLBACK.
   modelCatalog?: string[];
+  // v7 — Vanguard-only briefing holdings (IBKR excluded, mirrors the Mac's
+  // BRIEFING_EXCLUDE_IBKR_SQL). The cloud briefing renders these so it never
+  // re-surfaces the IBKR trading book. Optional for back-compat: pre-v7
+  // snapshots fall back to the cross-account `heldSymbols` flat list.
+  briefingHoldings?: BriefingHoldingSnapshot[];
 }
 
 /** Fetch the most recent snapshot (within 7d). Returns null if none exist. */
