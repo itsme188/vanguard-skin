@@ -44,6 +44,25 @@ interface AppSettings {
   cloudflareGatewayToken?: string;
   cloudflareWorkersAIToken?: string;
   openaiApiKey?: string;
+  // ── Keys migrated off the bundled .env.local (2026-06-16) ──────────────────
+  // Previously the packaged server read these straight from the bundled
+  // Resources/standalone/.env.local (Next auto-loads from cwd). That shipped
+  // every secret inside the DMG. These are now injected from settings.json like
+  // the rest; see bootstrapFromEnvLocal's idempotent backfill + main.ts.
+  /** Shared secret for X-Cron-Secret on /api/cron/* routes + Worker marker calls. */
+  cronSharedSecret?: string;
+  /** Finnhub key — per-held-stock earnings calendar sync. */
+  finnhubApiKey?: string;
+  /** Gmail OAuth (inbound newsletter ingestion via googleapis). */
+  googleClientId?: string;
+  googleClientSecret?: string;
+  googleRefreshToken?: string;
+  /** Cloudflare R2 (statement PDF archival). R2_ACCOUNT_ID falls back to cloudflareAccountId. */
+  r2AccessKeyId?: string;
+  r2BucketName?: string;
+  r2SecretAccessKey?: string;
+  /** Worker /internal/marker URL — Mac pre-flights cloud-sent dedup markers. */
+  workerMarkerUrl?: string;
   /** Auto-refresh interval in minutes. 0 = disabled. Default: 30. */
   refreshIntervalMinutes?: number;
   firstRunComplete?: boolean;
@@ -92,20 +111,46 @@ export function saveSettings(updates: Partial<AppSettings>): void {
 }
 
 /**
- * On first launch, import API keys from the project's .env.local file
- * so the user doesn't have to re-enter them in the Settings Modal.
+ * Single source mapping each .env.local key to its AppSettings field. Used for
+ * BOTH the first-run import and the always-runs backfill. All values are
+ * strings (twsHost/twsPort/booleans are not env-bootstrapped).
+ *
+ * WORKER_GMAIL_* are intentionally absent — the Mac server reads none of them
+ * (they're Cloudflare Worker secrets used only by `wrangler deploy`).
  */
-export function bootstrapFromEnvLocal(): void {
-  const current = readFile();
-  if (current.firstRunComplete) return; // Already set up
+const ENV_TO_SETTING: Array<[string, keyof AppSettings]> = [
+  ["ANTHROPIC_API_KEY", "anthropicApiKey"],
+  ["IBKR_ACCOUNT_CODE", "ibkrAccountCode"],
+  ["GMAIL_ADDRESS", "gmailAddress"],
+  ["GMAIL_APP_PASSWORD", "gmailAppPassword"],
+  ["RESEND_API_KEY", "resendApiKey"],
+  ["RESEND_FROM_DOMAIN", "resendFromDomain"],
+  ["BRIEFING_EMAIL_TO", "briefingEmailTo"],
+  ["FRED_API_KEY", "fredApiKey"],
+  ["EDGAR_CONTACT_EMAIL", "edgarContactEmail"],
+  ["API_NINJAS_API_KEY", "apiNinjasKey"],
+  ["ALPHA_VANTAGE_API_KEY", "alphaVantageApiKey"],
+  ["PUSHOVER_APP_TOKEN", "pushoverAppToken"],
+  ["PUSHOVER_USER_KEY", "pushoverUserKey"],
+  ["PUSHOVER_LINK_BASE", "pushoverLinkBase"],
+  ["CLOUDFLARE_ACCOUNT_ID", "cloudflareAccountId"],
+  ["CLOUDFLARE_GATEWAY_ID", "cloudflareGatewayId"],
+  ["CLOUDFLARE_GATEWAY_TOKEN", "cloudflareGatewayToken"],
+  ["CLOUDFLARE_WORKERS_AI_TOKEN", "cloudflareWorkersAIToken"],
+  ["OPENAI_API_KEY", "openaiApiKey"],
+  // Migrated off the bundled .env.local (2026-06-16) — see AppSettings comment.
+  ["CRON_SHARED_SECRET", "cronSharedSecret"],
+  ["FINNHUB_API_KEY", "finnhubApiKey"],
+  ["GOOGLE_CLIENT_ID", "googleClientId"],
+  ["GOOGLE_CLIENT_SECRET", "googleClientSecret"],
+  ["GOOGLE_REFRESH_TOKEN", "googleRefreshToken"],
+  ["R2_ACCESS_KEY_ID", "r2AccessKeyId"],
+  ["R2_BUCKET_NAME", "r2BucketName"],
+  ["R2_SECRET_ACCESS_KEY", "r2SecretAccessKey"],
+  ["WORKER_MARKER_URL", "workerMarkerUrl"],
+];
 
-  const envPath = path.join(
-    process.env.HOME || "/Users/Yitzi",
-    "code", "vanguard-skin", ".env.local"
-  );
-
-  if (!fs.existsSync(envPath)) return;
-
+function parseEnvFile(envPath: string): Record<string, string> {
   const envMap: Record<string, string> = {};
   const lines = fs.readFileSync(envPath, "utf-8").split("\n");
   for (const line of lines) {
@@ -117,30 +162,55 @@ export function bootstrapFromEnvLocal(): void {
     const val = trimmed.slice(eqIdx + 1).trim();
     envMap[key] = val;
   }
+  return envMap;
+}
 
-  const updates: Partial<AppSettings> = { firstRunComplete: true };
-  if (envMap.ANTHROPIC_API_KEY) updates.anthropicApiKey = envMap.ANTHROPIC_API_KEY;
-  if (envMap.IBKR_ACCOUNT_CODE) updates.ibkrAccountCode = envMap.IBKR_ACCOUNT_CODE;
-  if (envMap.GMAIL_ADDRESS) updates.gmailAddress = envMap.GMAIL_ADDRESS;
-  if (envMap.GMAIL_APP_PASSWORD) updates.gmailAppPassword = envMap.GMAIL_APP_PASSWORD;
-  if (envMap.RESEND_API_KEY) updates.resendApiKey = envMap.RESEND_API_KEY;
-  if (envMap.RESEND_FROM_DOMAIN) updates.resendFromDomain = envMap.RESEND_FROM_DOMAIN;
-  if (envMap.BRIEFING_EMAIL_TO) updates.briefingEmailTo = envMap.BRIEFING_EMAIL_TO;
-  if (envMap.FRED_API_KEY) updates.fredApiKey = envMap.FRED_API_KEY;
-  if (envMap.EDGAR_CONTACT_EMAIL) updates.edgarContactEmail = envMap.EDGAR_CONTACT_EMAIL;
-  if (envMap.API_NINJAS_API_KEY) updates.apiNinjasKey = envMap.API_NINJAS_API_KEY;
-  if (envMap.ALPHA_VANTAGE_API_KEY) updates.alphaVantageApiKey = envMap.ALPHA_VANTAGE_API_KEY;
-  if (envMap.PUSHOVER_APP_TOKEN) updates.pushoverAppToken = envMap.PUSHOVER_APP_TOKEN;
-  if (envMap.PUSHOVER_USER_KEY) updates.pushoverUserKey = envMap.PUSHOVER_USER_KEY;
-  if (envMap.PUSHOVER_LINK_BASE) updates.pushoverLinkBase = envMap.PUSHOVER_LINK_BASE;
-  if (envMap.CLOUDFLARE_ACCOUNT_ID) updates.cloudflareAccountId = envMap.CLOUDFLARE_ACCOUNT_ID;
-  if (envMap.CLOUDFLARE_GATEWAY_ID) updates.cloudflareGatewayId = envMap.CLOUDFLARE_GATEWAY_ID;
-  if (envMap.CLOUDFLARE_GATEWAY_TOKEN) updates.cloudflareGatewayToken = envMap.CLOUDFLARE_GATEWAY_TOKEN;
-  if (envMap.CLOUDFLARE_WORKERS_AI_TOKEN) updates.cloudflareWorkersAIToken = envMap.CLOUDFLARE_WORKERS_AI_TOKEN;
-  if (envMap.OPENAI_API_KEY) updates.openaiApiKey = envMap.OPENAI_API_KEY;
+/**
+ * Import API keys from the project's .env.local into settings.json so the
+ * packaged app never needs the bundled .env.local (which used to ship every
+ * secret inside the DMG — fixed 2026-06-16).
+ *
+ * Two passes, both reading the dev-repo `~/code/vanguard-skin/.env.local`:
+ *  - FIRST RUN (firstRunComplete unset): import every mapped key present.
+ *  - EVERY RUN (idempotent backfill): seed any mapped setting that is currently
+ *    absent/empty. This lets an existing install pick up newly-migrated keys
+ *    (the 9 added 2026-06-16) on the next launch without re-entering anything,
+ *    and never overwrites a value the user edited in Settings.
+ */
+export function bootstrapFromEnvLocal(): void {
+  const current = readFile();
+  const isFirstRun = !current.firstRunComplete;
 
-  saveSettings(updates);
-  console.log("[settings] Bootstrapped from .env.local — API keys imported");
+  const envPath = path.join(
+    process.env.HOME || "/Users/Yitzi",
+    "code", "vanguard-skin", ".env.local"
+  );
+
+  if (!fs.existsSync(envPath)) {
+    // No dev .env.local (e.g. a fresh Mac without the repo). Still mark first
+    // run done so we don't probe every launch; the user enters keys in Settings.
+    if (isFirstRun) saveSettings({ firstRunComplete: true });
+    return;
+  }
+
+  const envMap = parseEnvFile(envPath);
+  const updates: Record<string, string | boolean> = {};
+  for (const [envKey, settingKey] of ENV_TO_SETTING) {
+    const val = envMap[envKey];
+    if (!val) continue;
+    const existing = current[settingKey];
+    // First run imports everything; later runs only fill gaps (backfill).
+    if (isFirstRun || existing === undefined || existing === "") {
+      updates[settingKey] = val;
+    }
+  }
+  if (isFirstRun) updates.firstRunComplete = true;
+
+  if (Object.keys(updates).length > 0) {
+    saveSettings(updates as Partial<AppSettings>);
+    const action = isFirstRun ? "imported" : "backfilled";
+    console.log(`[settings] ${action} ${Object.keys(updates).length} key(s) from .env.local`);
+  }
 }
 
 export function getSanitizedSettings(): Record<string, string | number | boolean> {
@@ -167,6 +237,17 @@ export function getSanitizedSettings(): Record<string, string | number | boolean
     cloudflareGatewayToken: s.cloudflareGatewayToken ? "***" + s.cloudflareGatewayToken.slice(-4) : "",
     cloudflareWorkersAIToken: s.cloudflareWorkersAIToken ? "***" + s.cloudflareWorkersAIToken.slice(-4) : "",
     openaiApiKey: s.openaiApiKey ? "***" + s.openaiApiKey.slice(-4) : "",
+    // Migrated off bundled .env.local (2026-06-16). Secrets → ***last4; the
+    // OAuth client id, R2 bucket name, and marker URL are not secret → plain.
+    cronSharedSecret: s.cronSharedSecret ? "***" + s.cronSharedSecret.slice(-4) : "",
+    finnhubApiKey: s.finnhubApiKey ? "***" + s.finnhubApiKey.slice(-4) : "",
+    googleClientId: s.googleClientId ?? "",
+    googleClientSecret: s.googleClientSecret ? "***" + s.googleClientSecret.slice(-4) : "",
+    googleRefreshToken: s.googleRefreshToken ? "***" + s.googleRefreshToken.slice(-4) : "",
+    r2AccessKeyId: s.r2AccessKeyId ? "***" + s.r2AccessKeyId.slice(-4) : "",
+    r2BucketName: s.r2BucketName ?? "",
+    r2SecretAccessKey: s.r2SecretAccessKey ? "***" + s.r2SecretAccessKey.slice(-4) : "",
+    workerMarkerUrl: s.workerMarkerUrl ?? "",
     hasAnthropicKey: !!s.anthropicApiKey,
     hasCloudflareGateway: !!(s.cloudflareAccountId && s.cloudflareGatewayId),
     autoConnectTws: s.autoConnectTws ?? true,
