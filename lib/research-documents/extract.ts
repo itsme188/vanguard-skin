@@ -333,7 +333,7 @@ export function normalizeTags(raw: unknown): string[] {
   return out;
 }
 
-function normalizeMetadata(
+export function normalizeMetadata(
   raw: unknown,
   modelId: string,
 ): ExtractedResearchMetadata {
