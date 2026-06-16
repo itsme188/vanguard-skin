@@ -8,6 +8,8 @@ import {
   reconcileCloudFetchedNewsletters,
   postMacRecentNewsletterSyncMarker,
 } from "@/lib/research/reconcile-cloud-fetched";
+import { ingestForwardedDocuments, makeIngestDeps } from "@/lib/research-inbox/ingest";
+import { RESEARCH_INBOX_ADDRESS } from "@/lib/research-inbox/config";
 
 /**
  * POST /api/cron/research-sync — Cron-authenticated background research sync.
@@ -75,6 +77,21 @@ export async function POST(request: Request) {
       console.error("[cron/research-sync] level extraction failed:", err);
     }
 
+    // Forward-to-research inbox (U6): ingest anything forwarded to the research
+    // address into research_documents. Best-effort — failures don't fail the sync.
+    let inboxIngested = 0;
+    let inboxFailed = 0;
+    try {
+      const inboxResult = await ingestForwardedDocuments(
+        db,
+        makeIngestDeps(gmail, RESEARCH_INBOX_ADDRESS),
+      );
+      inboxIngested = inboxResult.ingested;
+      inboxFailed = inboxResult.failed;
+    } catch (err) {
+      console.error("[cron/research-sync] inbox ingest failed:", err);
+    }
+
     return Response.json({
       success: true,
       cloudReconciled,
@@ -85,6 +102,8 @@ export async function POST(request: Request) {
       processFailed: processResult.failed,
       levelsScanned,
       levelsInserted,
+      inboxIngested,
+      inboxFailed,
     });
   } catch (err) {
     console.error("[cron/research-sync] error:", err);

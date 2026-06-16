@@ -691,6 +691,61 @@ function DocumentRow({
 
 // ─── Main view ────────────────────────────────────────────────────
 
+// ─── Forward-to-research inbox card (U6) ─────────────────────────
+
+function InboxForwardCard({ onIngested }: { onIngested: () => void }) {
+  const { toast } = useToast();
+  const [checking, setChecking] = useState(false);
+  const address = "read@myportfoliodesk.com";
+
+  const check = useCallback(async () => {
+    setChecking(true);
+    try {
+      const res = await fetch("/api/research/ingest-inbox", { method: "POST" });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        const n: number = data.ingested ?? 0;
+        if (n > 0) {
+          toast(`Filed ${n} forwarded item${n === 1 ? "" : "s"} into Documents.`, "info");
+          onIngested();
+        } else {
+          toast("Inbox checked — nothing new to file.", "info");
+        }
+        if (data.failed > 0) {
+          toast(`${data.failed} forwarded message(s) couldn't be processed.`, "error");
+        }
+      } else {
+        toast(`Couldn't check the inbox: ${data.error ?? res.status}`, "error");
+      }
+    } catch {
+      toast("Couldn't reach the inbox checker.", "error");
+    } finally {
+      setChecking(false);
+    }
+  }, [toast, onIngested]);
+
+  return (
+    <div className="rounded-xl border border-edge bg-panel p-4 flex items-center justify-between gap-3">
+      <div className="min-w-0">
+        <div className="text-sm font-medium text-ink">Forward articles to file them here</div>
+        <div className="text-xs text-ink-faint mt-0.5">
+          Send any email — a link, a PDF, or a screenshot — to{" "}
+          <span className="font-mono text-ink-dim">{address}</span> and it lands in
+          Documents automatically (also checked on each research sync).
+        </div>
+      </div>
+      <button
+        onClick={check}
+        disabled={checking}
+        className="shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg border border-edge text-ink-dim hover:text-ink disabled:opacity-50"
+        title="Pull anything forwarded to the research address right now"
+      >
+        {checking ? "Checking…" : "Check inbox"}
+      </button>
+    </div>
+  );
+}
+
 export function ResearchDocumentsView() {
   const [documents, setDocuments] = useState<ResearchDocumentSummary[]>([]);
   const [total, setTotal] = useState(0);
@@ -739,6 +794,8 @@ export function ResearchDocumentsView() {
   return (
     <div className="space-y-4">
       <UploadZone onUploadComplete={fetchDocuments} />
+
+      <InboxForwardCard onIngested={fetchDocuments} />
 
       <div className="flex items-center justify-between gap-2">
         <Filters
