@@ -20,6 +20,12 @@ extraResources:
     to: standalone
     filter:
       - "**/*"
+      # NEVER ship secrets in the DMG. next build copies .env.local into the
+      # standalone output and the packaged server (cwd = Resources/standalone)
+      # would auto-load it — shipping all 27 keys. Keys now come from
+      # settings.json injection (electron/main.ts). The rm in electron:copy-static
+      # removes it at the source; this exclusion is the defensive second layer.
+      - "!.env*"
   # node_modules must be added explicitly — electron-builder excludes
   # directories named "node_modules" by default even in extraResources
   - from: .next/standalone/node_modules

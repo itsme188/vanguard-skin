@@ -122,6 +122,18 @@ function startServer(): Promise<void> {
     if (settings.cloudflareGatewayToken) env.CLOUDFLARE_GATEWAY_TOKEN = settings.cloudflareGatewayToken;
     if (settings.cloudflareWorkersAIToken) env.CLOUDFLARE_WORKERS_AI_TOKEN = settings.cloudflareWorkersAIToken;
     if (settings.openaiApiKey) env.OPENAI_API_KEY = settings.openaiApiKey;
+    // Migrated off the bundled .env.local (2026-06-16) — these used to reach the
+    // server only via Next auto-loading Resources/standalone/.env.local, which
+    // shipped every secret in the DMG. Now injected like the rest.
+    if (settings.cronSharedSecret) env.CRON_SHARED_SECRET = settings.cronSharedSecret;
+    if (settings.finnhubApiKey) env.FINNHUB_API_KEY = settings.finnhubApiKey;
+    if (settings.googleClientId) env.GOOGLE_CLIENT_ID = settings.googleClientId;
+    if (settings.googleClientSecret) env.GOOGLE_CLIENT_SECRET = settings.googleClientSecret;
+    if (settings.googleRefreshToken) env.GOOGLE_REFRESH_TOKEN = settings.googleRefreshToken;
+    if (settings.r2AccessKeyId) env.R2_ACCESS_KEY_ID = settings.r2AccessKeyId;
+    if (settings.r2BucketName) env.R2_BUCKET_NAME = settings.r2BucketName;
+    if (settings.r2SecretAccessKey) env.R2_SECRET_ACCESS_KEY = settings.r2SecretAccessKey;
+    if (settings.workerMarkerUrl) env.WORKER_MARKER_URL = settings.workerMarkerUrl;
 
     // Use the standalone server.js (works in both dev and packaged modes)
     const serverScript = IS_DEV
