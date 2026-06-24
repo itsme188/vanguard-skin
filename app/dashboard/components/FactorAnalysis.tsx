@@ -317,7 +317,7 @@ function TiltBar({
           return (
             <div
               key={bucket.label}
-              className={`h-full transition-all ${drillable ? "cursor-pointer hover:opacity-80" : ""}`}
+              className={`h-full transition-[width,opacity] ${drillable ? "cursor-pointer hover:opacity-80" : ""}`}
               style={{
                 width: `${bucket.weight * 100}%`,
                 backgroundColor: TILT_COLORS[i % TILT_COLORS.length],

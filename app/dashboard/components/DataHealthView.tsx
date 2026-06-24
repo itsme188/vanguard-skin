@@ -187,7 +187,7 @@ export function DataHealthView() {
               </div>
               <div className="h-2 rounded-full bg-raised overflow-hidden">
                 <div
-                  className={`h-full rounded-full transition-all ${
+                  className={`h-full rounded-full transition-[width,background-color] ${
                     ac.coveragePct >= 90
                       ? "bg-up"
                       : ac.coveragePct >= 70

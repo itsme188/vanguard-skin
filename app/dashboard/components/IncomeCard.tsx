@@ -165,7 +165,7 @@ export function IncomeCard() {
           return (
             <div key={i} className="flex-1 flex flex-col items-center gap-1">
               <div
-                className={`w-full rounded-t-sm transition-all ${
+                className={`w-full rounded-t-sm transition-[height,background-color] ${
                   isFuture
                     ? "bg-muted"
                     : value > 0

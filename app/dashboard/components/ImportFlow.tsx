@@ -176,7 +176,7 @@ export function ImportFlow() {
         }}
         onClick={() => state.status === "idle" && fileInputRef.current?.click()}
         className={`
-          relative rounded-xl border-2 border-dashed p-6 sm:p-12 text-center transition-all cursor-pointer focus-ring
+          relative rounded-xl border-2 border-dashed p-6 sm:p-12 text-center transition-[border-color,background-color,scale] cursor-pointer focus-ring
           ${
             isDragOver
               ? "border-gold bg-gold-glow scale-[1.005]"
@@ -353,7 +353,7 @@ export function ImportFlow() {
         <div className="flex gap-3 pt-2">
           <button
             onClick={handleImport}
-            className="px-5 py-2.5 rounded-lg bg-gold text-canvas font-medium text-sm hover:brightness-110 transition-all focus-ring"
+            className="px-5 py-2.5 rounded-lg bg-gold text-canvas font-medium text-sm hover:brightness-110 transition-[filter,scale] active:scale-[0.96] focus-ring"
           >
             Import {files.length} file{files.length !== 1 ? "s" : ""}
           </button>

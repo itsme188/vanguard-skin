@@ -55,7 +55,7 @@ export function AccountSummaryCards({
             key={account.id}
             href={`/dashboard/accounts?id=${account.id}`}
             aria-label={`${account.name} portfolio value`}
-            className="group rounded-xl border border-edge bg-panel p-5 hover:border-edge-strong hover:bg-raised/50 transition-all focus-ring"
+            className="group rounded-xl border border-edge bg-panel p-5 hover:border-edge-strong hover:bg-raised/50 transition-[border-color,background-color] focus-ring"
           >
             {/* Header: account name + date label */}
             <div className="flex items-center justify-between mb-3">

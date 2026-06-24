@@ -185,7 +185,7 @@ export function SendDigestPanel({ onClose }: { onClose: () => void }) {
         <button
           onClick={handleSend}
           disabled={sending || !recipient.trim()}
-          className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-md text-sm font-medium bg-gold text-canvas hover:brightness-110 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-md text-sm font-medium bg-gold text-canvas hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {sending ? (
             <div className="w-3.5 h-3.5 border-2 border-canvas border-t-transparent rounded-full animate-spin" />

@@ -126,7 +126,7 @@ export function NotesAmbient() {
         // xl:right-[500px] clears the persistent chat rail (480px wide
         // + 20px gap). Without it the FAB would render underneath the chat
         // panel at desktop ≥1280px.
-        className="fixed z-[55] bottom-20 right-4 md:bottom-6 md:right-6 xl:right-[500px] w-12 h-12 rounded-full bg-panel border border-edge shadow-lg hover:shadow-xl text-ink-dim hover:text-gold transition-all flex items-center justify-center"
+        className="fixed z-[55] bottom-20 right-4 md:bottom-6 md:right-6 xl:right-[500px] w-12 h-12 rounded-full bg-panel border border-edge shadow-lg hover:shadow-xl text-ink-dim hover:text-gold transition-[box-shadow,color,scale] active:scale-[0.96] flex items-center justify-center"
         aria-label="Open ambient notes (or press ⌘;)"
         title="Notes (⌘;)"
       >
@@ -206,7 +206,7 @@ export function NotesAmbient() {
           <button
             onClick={handleSaveToNotes}
             disabled={!draft.trim() || saveState === "saving"}
-            className="px-3 py-1 rounded-md text-xs font-medium bg-gold text-canvas hover:brightness-110 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+            className="px-3 py-1 rounded-md text-xs font-medium bg-gold text-canvas hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-40 disabled:cursor-not-allowed"
           >
             Save to Notes
           </button>

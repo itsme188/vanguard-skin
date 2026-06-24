@@ -33,7 +33,7 @@ export default function DashboardError({
         </p>
         <button
           onClick={reset}
-          className="px-5 py-2.5 rounded-lg bg-gold text-canvas font-medium text-sm hover:brightness-110 transition-all"
+          className="px-5 py-2.5 rounded-lg bg-gold text-canvas font-medium text-sm hover:brightness-110 transition-[filter,scale] active:scale-[0.96]"
         >
           Try Again
         </button>

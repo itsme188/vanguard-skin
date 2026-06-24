@@ -817,7 +817,7 @@ export default async function SecurityDetailPage(props: {
             </p>
             <Link
               href="/dashboard/import"
-              className="mt-3 inline-block px-4 py-2 rounded-lg bg-gold text-canvas text-sm font-medium hover:brightness-110 transition-all"
+              className="mt-3 inline-block px-4 py-2 rounded-lg bg-gold text-canvas text-sm font-medium hover:brightness-110 transition-[filter,scale] active:scale-[0.96]"
             >
               Import Files
             </Link>
