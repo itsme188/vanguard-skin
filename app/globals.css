@@ -233,6 +233,20 @@ body {
   font-family: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
 }
 
+/* Text wrapping (make-interfaces-feel-better #10).
+ * `balance` evens out short heading lines — the browser caps it to ≤6 lines,
+ * so it silently no-ops on anything long. `pretty` just prevents a lone orphan
+ * word on the last line of body/UI copy, with no line-count limit. Both are
+ * purely visual (line-break choices only) so there is no layout-shift risk.
+ * Element selectors sit below Tailwind utilities, so an explicit `text-nowrap`
+ * / `text-balance` class on any node still wins. */
+h1, h2, h3, h4 {
+  text-wrap: balance;
+}
+p, li, figcaption, blockquote, dd {
+  text-wrap: pretty;
+}
+
 /* Tabular numbers for financial data */
 .tabular-nums {
   font-variant-numeric: tabular-nums;

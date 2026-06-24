@@ -523,7 +523,7 @@ function TwsPanel({
               <div className="space-y-1.5">
                 <div className="w-full h-1 rounded-full bg-raised overflow-hidden">
                   <div
-                    className="h-full bg-blue rounded-full transition-all duration-300"
+                    className="h-full bg-blue rounded-full transition-[width] duration-300"
                     style={{
                       width: syncState.phaseProgress && syncState.phaseProgress.total > 0
                         ? `${(syncState.phaseProgress.current / syncState.phaseProgress.total) * 100}%`
@@ -676,7 +676,7 @@ function TwsPanel({
                 {/* Progress bar */}
                 <div className="w-full h-1 rounded-full bg-raised overflow-hidden">
                   <div
-                    className="h-full bg-blue rounded-full transition-all duration-300"
+                    className="h-full bg-blue rounded-full transition-[width] duration-300"
                     style={{
                       width: `${((priceProgress.completed + priceProgress.errors) / priceProgress.total) * 100}%`,
                     }}

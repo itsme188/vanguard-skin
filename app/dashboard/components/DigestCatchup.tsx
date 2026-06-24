@@ -115,7 +115,7 @@ export function DigestCatchup() {
           <button
             onClick={handleSend}
             disabled={sending}
-            className="px-3 py-1 rounded-md text-xs font-medium bg-gold text-canvas hover:brightness-110 disabled:opacity-50"
+            className="px-3 py-1 rounded-md text-xs font-medium bg-gold text-canvas hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-50"
           >
             {sending ? "Sending..." : "Send now"}
           </button>

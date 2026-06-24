@@ -67,7 +67,7 @@ export function ConfirmDialog({
         <button
           ref={confirmRef}
           onClick={onConfirm}
-          className={`px-4 py-2 rounded-lg text-sm font-medium transition-all focus-ring ${
+          className={`px-4 py-2 rounded-lg text-sm font-medium transition-[filter,background-color,scale] active:scale-[0.96] focus-ring ${
             variant === "danger"
               ? "bg-down/90 text-white hover:bg-down"
               : "bg-gold text-canvas hover:brightness-110"

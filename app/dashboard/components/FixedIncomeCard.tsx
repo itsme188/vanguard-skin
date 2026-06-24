@@ -137,7 +137,7 @@ export function FixedIncomeCard({ scope }: { scope?: string }) {
             {data.creditBreakdown.map((bucket) => (
               <div
                 key={bucket.rating}
-                className="h-full transition-all"
+                className="h-full transition-[width,background-color]"
                 style={{
                   width: `${bucket.weight * 100}%`,
                   backgroundColor: creditColor(bucket.rating),

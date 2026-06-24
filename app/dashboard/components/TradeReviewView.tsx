@@ -422,7 +422,7 @@ export function TradeReviewView({
               if (period) handleGenerate(period.periodStart, period.periodEnd);
             }}
             disabled={generating || !selectedPeriod}
-            className="px-4 py-1.5 rounded-lg bg-gold text-canvas text-sm font-medium hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed transition-all focus-ring whitespace-nowrap"
+            className="px-4 py-1.5 rounded-lg bg-gold text-canvas text-sm font-medium hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed transition-[filter,scale] active:scale-[0.96] focus-ring whitespace-nowrap"
           >
             {generating ? "Generating..." : "Generate Review"}
           </button>
@@ -482,7 +482,7 @@ export function TradeReviewView({
           <div className="flex gap-3 pt-1">
             <button
               onClick={handleSubmitAnswers}
-              className="px-4 py-1.5 rounded-lg bg-gold text-canvas text-sm font-medium hover:brightness-110 transition-all focus-ring"
+              className="px-4 py-1.5 rounded-lg bg-gold text-canvas text-sm font-medium hover:brightness-110 transition-[filter,scale] active:scale-[0.96] focus-ring"
             >
               Submit & Generate
             </button>

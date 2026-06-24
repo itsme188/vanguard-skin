@@ -248,7 +248,7 @@ function DimensionBar({ label, dim }: { label: string; dim: DimensionScore }) {
       </button>
       <div className="w-full h-1 rounded-full bg-raised overflow-hidden">
         <div
-          className={`h-full rounded-full transition-all duration-500 ${barColor}`}
+          className={`h-full rounded-full transition-[width,background-color] duration-500 ${barColor}`}
           style={{ width: `${score}%` }}
         />
       </div>

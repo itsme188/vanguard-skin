@@ -391,7 +391,7 @@ export function ManageSourcesModal({
               <button
                 onClick={handleAddManual}
                 disabled={adding || !manualName.trim() || !manualEmail.trim()}
-                className="px-3 py-1.5 rounded-md text-sm font-medium bg-gold text-canvas hover:brightness-110 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                className="px-3 py-1.5 rounded-md text-sm font-medium bg-gold text-canvas hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Add Source
               </button>
@@ -463,7 +463,7 @@ export function ManageSourcesModal({
                           <button
                             onClick={() => handleAddDiscovered(sender)}
                             disabled={adding}
-                            className="shrink-0 px-2.5 py-1 rounded-md text-xs font-medium bg-gold text-canvas hover:brightness-110 transition-all disabled:opacity-50"
+                            className="shrink-0 px-2.5 py-1 rounded-md text-xs font-medium bg-gold text-canvas hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-50"
                           >
                             Add
                           </button>

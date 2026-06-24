@@ -158,7 +158,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
             <button
               key={result.scenario.id}
               onClick={() => setExpanded(isExpanded ? null : result.scenario.id)}
-              className={`text-left rounded-xl border p-4 transition-all ${
+              className={`text-left rounded-xl border p-4 transition-[border-color,background-color,box-shadow] ${
                 isExpanded
                   ? "border-gold/50 bg-panel shadow-lg col-span-full"
                   : "border-edge bg-panel hover:border-edge-strong"
@@ -416,7 +416,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
             <button
               onClick={handleComputeCustom}
               disabled={customLoading}
-              className="px-4 py-1.5 rounded-lg bg-gold text-canvas text-sm font-medium hover:brightness-110 disabled:opacity-50 transition-all focus-ring"
+              className="px-4 py-1.5 rounded-lg bg-gold text-canvas text-sm font-medium hover:brightness-110 disabled:opacity-50 transition-[filter,scale] active:scale-[0.96] focus-ring"
             >
               {customLoading ? "Computing..." : "Compute Scenario"}
             </button>

@@ -543,7 +543,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
                     key={opt.value}
                     onClick={() => setScope(opt.value)}
                     aria-pressed={scope === opt.value}
-                    className={`px-4 py-1.5 rounded-full text-xs border transition-all focus-ring ${
+                    className={`px-4 py-1.5 rounded-full text-xs border transition-[color,border-color] focus-ring ${
                       scope === opt.value
                         ? "border-gold text-gold"
                         : "border-edge text-ink-dim hover:text-ink hover:border-edge-strong"
@@ -572,7 +572,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
                       <button
                         key={conv.id}
                         onClick={() => loadConversation(conv)}
-                        className="text-left px-3 py-1.5 rounded-lg border border-edge text-xs text-ink-dim hover:text-ink hover:border-edge-strong transition-all focus-ring truncate"
+                        className="text-left px-3 py-1.5 rounded-lg border border-edge text-xs text-ink-dim hover:text-ink hover:border-edge-strong transition-[color,border-color] focus-ring truncate"
                         title={conv.title ?? `Conversation ${conv.id}`}
                       >
                         {conv.title ?? `Conversation ${conv.id}`}
@@ -633,7 +633,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
           <div className="flex justify-start">
             <button
               onClick={() => regenerate({ body: requestBody })}
-              className="px-3 py-1.5 text-xs text-ink-dim border border-edge rounded-lg hover:text-ink hover:border-edge-strong transition-all focus-ring"
+              className="px-3 py-1.5 text-xs text-ink-dim border border-edge rounded-lg hover:text-ink hover:border-edge-strong transition-[color,border-color] focus-ring"
             >
               Retry
             </button>
@@ -665,7 +665,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
             disabled={isStreaming || !inputText.trim()}
             aria-label={isStreaming ? "Streaming response" : "Send message"}
             title={!inputText.trim() ? "Type a message first" : undefined}
-            className="px-5 py-3 rounded-xl bg-gold text-canvas font-medium text-sm hover:brightness-110 transition-all disabled:opacity-40 disabled:hover:brightness-100 disabled:cursor-not-allowed focus-ring"
+            className="px-5 py-3 rounded-xl bg-gold text-canvas font-medium text-sm hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-40 disabled:hover:brightness-100 disabled:cursor-not-allowed focus-ring"
           >
             {isStreaming ? "..." : "Send"}
           </button>

@@ -107,7 +107,7 @@ export function ReconciliationTable({
         <h3 className="text-sm font-medium text-ink-dim">Checkpoints</h3>
         <button
           onClick={() => setShowForm(!showForm)}
-          className="px-4 py-2 rounded-lg bg-raised border border-edge text-sm font-medium text-ink-dim hover:text-ink hover:border-edge-strong transition-all focus-ring"
+          className="px-4 py-2 rounded-lg bg-raised border border-edge text-sm font-medium text-ink-dim hover:text-ink hover:border-edge-strong transition-[color,border-color,scale] active:scale-[0.96] focus-ring"
         >
           {showForm ? "Cancel" : "+ Add Checkpoint"}
         </button>
@@ -184,7 +184,7 @@ export function ReconciliationTable({
               type="submit"
               disabled={isSubmitting || !isFormValid}
               title={!isFormValid ? "Fill in all required fields" : undefined}
-              className="px-5 py-2 rounded-lg bg-gold text-canvas font-medium text-sm hover:brightness-110 transition-all disabled:opacity-50 disabled:cursor-not-allowed focus-ring"
+              className="px-5 py-2 rounded-lg bg-gold text-canvas font-medium text-sm hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-50 disabled:cursor-not-allowed focus-ring"
             >
               {isSubmitting ? "Saving..." : "Save Checkpoint"}
             </button>

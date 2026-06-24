@@ -7,7 +7,7 @@ export function PrivacyToggle() {
   return (
     <button
       onClick={toggle}
-      className={`transition-colors ${
+      className={`inline-flex items-center justify-center w-10 h-10 transition-colors ${
         isPrivate ? "text-gold hover:text-gold/80" : "text-ink-faint hover:text-ink-dim"
       }`}
       title={isPrivate ? "Show amounts" : "Hide amounts (privacy mode)"}

@@ -182,7 +182,7 @@ export function CorporateActionsSection({
           <button
             type="submit"
             disabled={submitting}
-            className="px-4 py-2 rounded-lg bg-gold text-canvas text-sm font-medium hover:brightness-110 transition-all disabled:opacity-50"
+            className="px-4 py-2 rounded-lg bg-gold text-canvas text-sm font-medium hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-50"
           >
             {submitting ? "Applying..." : "Apply Corporate Action"}
           </button>
