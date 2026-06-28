@@ -197,7 +197,7 @@ export function EarningsHub() {
           </span>
         </div>
         <div className="flex items-baseline gap-2 font-mono" style={{ fontSize: "11px" }}>
-          <span className="text-ink-faint">{events.length} events</span>
+          <span className="text-ink-faint">{events.length} {events.length === 1 ? "event" : "events"}</span>
           {heldCount > 0 && <span className="text-up">· {heldCount} held</span>}
           {watchCount > 0 && <span className="text-gold">· {watchCount} watchlist</span>}
         </div>
