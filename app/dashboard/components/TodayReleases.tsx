@@ -63,18 +63,26 @@ export function TodayReleases({
         {releases.map((event) => {
           const snapshot = parseReactionSnapshot(event.reaction_snapshot);
           const enriched = !!event.enriched_at;
+          const showPill = !!event.symbol && event.security_id != null;
+          // Earnings titles already begin with the ticker ("NKE earnings (AMC)").
+          // When the symbol pill is shown, drop that leading prefix so we don't
+          // render "NKE NKE earnings (AMC)".
+          const displayTitle =
+            showPill && event.symbol && event.title?.startsWith(`${event.symbol} `)
+              ? event.title.slice(event.symbol.length + 1)
+              : event.title;
           return (
             <li key={event.id} className="px-4 py-2 space-y-1">
               <div className="flex items-baseline justify-between gap-2">
                 <span className="text-[14px] text-ink font-medium min-w-0 truncate">
-                  {event.symbol && event.security_id != null && (
+                  {showPill && (
                     <SymbolLink
-                      securityId={event.security_id}
-                      symbol={event.symbol}
+                      securityId={event.security_id!}
+                      symbol={event.symbol!}
                       className="font-mono mr-1.5"
                     />
                   )}
-                  {event.title}
+                  {displayTitle}
                 </span>
                 <span className="text-[11px] font-mono text-ink-faint shrink-0">
                   {upcoming && event.event_date && (
