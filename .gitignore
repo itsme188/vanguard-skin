@@ -85,3 +85,14 @@ next-env.d.ts
 /transcripts-*.png
 /app-bottom-*.png
 /ter-transcripts-*.png
+
+# playwright accessibility-tree snapshots dumped at repo root during interactive
+# QA (browser_snapshot with a bare `page-name.md` target). Same catch-all logic
+# as /*.png above — NO root-level .md is committable except the four real docs
+# whitelisted below. Added 2026-07-01 after 22 QA snapshot dumps (~1.6MB) piled
+# up in the root. New top-level docs need `git add -f` (rare by design).
+/*.md
+!/README.md
+!/CLAUDE.md
+!/AGENTS.md
+!/CHANGELOG.md
