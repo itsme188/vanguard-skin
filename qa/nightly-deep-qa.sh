@@ -111,9 +111,32 @@ pick_model() {
 }
 MODEL="$(pick_model)" || { notify_failure "no callable model (fable/opus/sonnet all failed the probe)"; exit 1; }
 echo "Resolved callable model: $MODEL"
+
+# --- Headless background-task ceiling -----------------------------------------
+# The sweep dispatches one agent-browser subagent per zone. When the orchestrator
+# runs them as BACKGROUND tasks (a non-deterministic model choice — SKILL.md Step 1
+# doesn't force blocking dispatch), `claude -p` applies its default 600s
+# CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS and KILLS the still-running zone agent at the
+# 10-min mark, then exits 0. That silently truncated the sweep every night 6/29-7/1
+# (12-19 min runs, no findings, no run log, no alert — exit 0 dodged notify_failure).
+# A real 7-zone sweep takes ~2h (up to ~6h when the Mac sleeps mid-run), so lift the
+# ceiling to 6h. Finite, not 0/indefinite, so a genuinely-hung agent can't bleed into
+# the next day; the post-run completeness guard below turns a >6h cut into a loud fail.
+export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=21600000  # 6h
+
 claude -p "/qa-deep-sweep" --model "$MODEL"
 STATUS=$?
 [ "$STATUS" -ne 0 ] && notify_failure "/qa-deep-sweep exited $STATUS (model $MODEL)"
+
+# --- Completeness guard (exit 0 is NOT proof of a finished sweep) --------------
+# The 600s-ceiling kills above exited 0, so non-zero-only alerting stayed silent for
+# ~4 nights. The sweep's FINAL action is appending qa/findings/runs/<today>.md
+# (SKILL.md "Run log" step), so its absence means the sweep died before finalizing —
+# regardless of exit code. Alert on that even when STATUS is 0.
+RUN_LOG="$SCRIPT_DIR/findings/runs/$(date +%Y-%m-%d).md"
+if [ "$STATUS" -eq 0 ] && [ ! -f "$RUN_LOG" ]; then
+  notify_failure "/qa-deep-sweep exited 0 but wrote no run log ($(basename "$RUN_LOG")) — sweep died before finalizing findings"
+fi
 
 echo "=== Deep QA finished (claude exit $STATUS) $(date '+%Y-%m-%d %H:%M:%S') ==="
 exit $STATUS
