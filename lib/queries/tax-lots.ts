@@ -65,7 +65,7 @@ export function getOpenTaxLots(db: Database.Database): TaxLotWithSecurity[] {
         tl.security_id, s.symbol, s.name AS security_name,
         tl.acquisition_date, tl.acquisition_price,
         tl.quantity_acquired, tl.quantity_remaining,
-        tl.cost_basis, tl.is_from_opening_snapshot,
+        tl.cost_basis * COALESCE(fx.usd_per_unit, 1) AS cost_basis, tl.is_from_opening_snapshot,
         ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} AS adjusted_cost_basis,
         p.close_price AS current_price,
         CASE WHEN p.close_price IS NOT NULL
