@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { marketValue } from "@/lib/valuation";
+import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 
 /** Don't carry a price forward more than 45 days — beyond that, the position
  *  was likely liquidated or the data is too stale to be meaningful. */
@@ -19,6 +20,7 @@ interface HoldingRow {
   quantity: number;
   security_type: string | null;
   multiplier: number;
+  currency: string | null;
   as_of_date: string;
 }
 
@@ -78,7 +80,7 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
     // statement on every date — losing the prepared-statement optimization
     // this hot loop depends on. Intentionally inline.
     const getHoldings = db.prepare(
-      `SELECT h.security_id, h.quantity, s.security_type, COALESCE(s.multiplier, 1) AS multiplier, h.as_of_date
+      `SELECT h.security_id, h.quantity, s.security_type, COALESCE(s.multiplier, 1) AS multiplier, s.currency, h.as_of_date
        FROM holdings h
        JOIN securities s ON s.id = h.security_id
        WHERE h.account_id = ?
@@ -109,7 +111,13 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
           const price = getPrice.get(holding.security_id, date, date) as PriceRow | undefined;
 
           if (price) {
-            holdingsValue += marketValue(holding.quantity, price.close_price, holding.security_type, holding.multiplier);
+            holdingsValue += marketValue(
+              holding.quantity,
+              price.close_price,
+              holding.security_type,
+              holding.multiplier,
+              getUsdPerUnit(db, holding.currency)
+            );
             pricedCount++;
 
             // Track staleness of the oldest price used in this valuation
