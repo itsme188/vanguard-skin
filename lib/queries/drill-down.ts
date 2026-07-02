@@ -132,7 +132,7 @@ export function getHoldingsInBucket(
         s.symbol,
         s.name AS security_name,
         s.sector,
-        ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier")} AS market_value,
+        ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} AS market_value,
         sb.beta AS beta,
         ${factorSelect}
       FROM holdings h
@@ -146,6 +146,7 @@ export function getHoldingsInBucket(
           SELECT security_id, MAX(date) AS max_date FROM prices GROUP BY security_id
         ) lp ON p.security_id = lp.security_id AND p.date = lp.max_date
       ) lp ON lp.security_id = s.id
+      LEFT JOIN fx_rates fx ON fx.currency = s.currency
       WHERE ${latestHoldingsPredicate({ accountFilter })}
         AND COALESCE(lp.close_price, 0) > 0
         ${extraWhere}
@@ -162,7 +163,7 @@ export function getHoldingsInBucket(
   // visible scope, not just the filtered subset.
   const totalRow = db
     .prepare(
-      `SELECT SUM(${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier")}) AS total
+      `SELECT SUM(${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}) AS total
        FROM holdings h
        JOIN securities s ON s.id = h.security_id
        LEFT JOIN (
@@ -172,6 +173,7 @@ export function getHoldingsInBucket(
            SELECT security_id, MAX(date) AS max_date FROM prices GROUP BY security_id
          ) lp ON p.security_id = lp.security_id AND p.date = lp.max_date
        ) lp ON lp.security_id = s.id
+       LEFT JOIN fx_rates fx ON fx.currency = s.currency
        WHERE ${latestHoldingsPredicate({ accountFilter })}
          AND COALESCE(lp.close_price, 0) > 0`
     )

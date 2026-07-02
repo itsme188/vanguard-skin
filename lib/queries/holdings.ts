@@ -36,6 +36,7 @@ export function getAllHoldings(db: Database.Database): AllHoldingsRow[] {
     "p.close_price",
     "s.security_type",
     "COALESCE(s.multiplier, 1)",
+    "COALESCE(fx.usd_per_unit, 1)",
   );
 
   const sql = `
@@ -55,13 +56,14 @@ export function getAllHoldings(db: Database.Database): AllHoldingsRow[] {
         THEN ${marketValueExpr}
         ELSE NULL END AS current_value,
       CASE WHEN p.close_price IS NOT NULL AND h.cost_basis IS NOT NULL
-        THEN ${marketValueExpr} - h.cost_basis
+        THEN ${marketValueExpr} - (h.cost_basis * COALESCE(fx.usd_per_unit, 1))
         ELSE NULL END AS unrealized_gain
     FROM holdings h
     JOIN accounts a ON a.id = h.account_id
     JOIN securities s ON s.id = h.security_id
     LEFT JOIN prices p ON p.security_id = h.security_id
       AND p.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = h.security_id)
+    LEFT JOIN fx_rates fx ON fx.currency = s.currency
     WHERE h.quantity > 0
       AND h.as_of_date = (
         SELECT MAX(h2.as_of_date) FROM holdings h2
