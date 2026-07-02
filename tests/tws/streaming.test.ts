@@ -15,13 +15,19 @@ const mockedGetIbApi = vi.mocked(getIbApi);
 function seedSecurity(
   db: Database.Database,
   symbol: string,
-  opts?: { conId?: number; currency?: string },
+  opts?: { conId?: number; currency?: string; securityType?: string },
 ): number {
   const result = db
     .prepare(
       "INSERT INTO securities (symbol, name, security_type, ib_con_id, currency) VALUES (?, ?, ?, ?, COALESCE(?, 'USD'))",
     )
-    .run(symbol, symbol + " Corp", "stock", opts?.conId ?? null, opts?.currency ?? null);
+    .run(
+      symbol,
+      symbol + " Corp",
+      opts?.securityType ?? "stock",
+      opts?.conId ?? null,
+      opts?.currency ?? null,
+    );
   return result.lastInsertRowid as number;
 }
 
@@ -79,5 +85,28 @@ describe("startStreaming — contract currency", () => {
 
     const [contractArg] = mockApi.getMarketData.mock.calls[0];
     expect(contractArg.currency).toBe("USD");
+  });
+
+  it("forces USD for an OPTION contract even when the security's stored currency is non-USD (KRW)", () => {
+    const secId = seedSecurity(db, "402340  260320C00045000", {
+      conId: 556,
+      currency: "KRW",
+      securityType: "option",
+    });
+
+    const mockApi = {
+      setMarketDataType: vi.fn(),
+      getMarketData: vi.fn().mockReturnValue(fakeMarketDataObservable()),
+    };
+    mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+
+    startStreaming(db, { securityIds: [secId] });
+
+    expect(mockApi.getMarketData).toHaveBeenCalledWith(
+      { conId: 556, secType: "OPT", exchange: "SMART", currency: "USD" },
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
   });
 });

@@ -246,6 +246,34 @@ describe("fetchHistoricalPrices", () => {
     expect(contractArg.currency).toBe("USD");
   });
 
+  it("forces USD for an OPTION contract even when the security's stored currency is non-USD (KRW)", async () => {
+    const result = db
+      .prepare(
+        "INSERT INTO securities (symbol, name, security_type, ib_con_id, currency) VALUES (?, ?, ?, ?, ?)",
+      )
+      .run("402340  260320C00045000", "Korea Corp Option", "option", 556, "KRW");
+    const secId = result.lastInsertRowid as number;
+
+    const mockApi = {
+      getHistoricalData: vi.fn().mockResolvedValue([]),
+    };
+    mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+
+    // securityIds bypasses the default query's option exclusion, so this path
+    // IS reachable (e.g. Security Detail chart / manual chart fetch for a held option).
+    await fetchHistoricalPrices(db, { securityIds: [secId] });
+
+    expect(mockApi.getHistoricalData).toHaveBeenCalledWith(
+      { conId: 556, secType: "OPT", exchange: "SMART", currency: "USD" },
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
   describe("incremental mode", () => {
     it("uses shorter duration when recent prices exist", async () => {
       const secId = seedSecurity(db, "AAPL", "stock");
