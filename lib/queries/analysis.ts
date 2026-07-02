@@ -190,7 +190,7 @@ export function getAllocationByDimension(
         s.option_type,
         CASE
           WHEN lp.close_price IS NOT NULL
-            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier")}
+            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
           WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
             THEN h.cost_basis
           ELSE 0
@@ -199,6 +199,7 @@ export function getAllocationByDimension(
       JOIN accounts a ON a.id = h.account_id
       JOIN securities s ON s.id = h.security_id
       LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
+      LEFT JOIN fx_rates fx ON fx.currency = s.currency
       ${factorJoins}
       WHERE ${conditions.join(" AND ")}`
     )
@@ -270,7 +271,7 @@ function getSectorAllocationWithLookThrough(
         s.fund_category,
         CASE
           WHEN lp.close_price IS NOT NULL
-            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier")}
+            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
           WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
             THEN h.cost_basis
           ELSE 0
@@ -279,6 +280,7 @@ function getSectorAllocationWithLookThrough(
       JOIN accounts a ON a.id = h.account_id
       JOIN securities s ON s.id = h.security_id
       LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
+      LEFT JOIN fx_rates fx ON fx.currency = s.currency
       WHERE ${conditions.join(" AND ")}`
     )
     .all(...params) as Array<{
@@ -364,7 +366,7 @@ export function getConcentrationMetrics(
         s.fund_category,
         CASE
           WHEN lp.close_price IS NOT NULL
-            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier")}
+            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
           WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
             THEN h.cost_basis
           ELSE 0
@@ -372,6 +374,7 @@ export function getConcentrationMetrics(
       FROM latest_holdings h
       JOIN securities s ON s.id = h.security_id
       LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
+      LEFT JOIN fx_rates fx ON fx.currency = s.currency
       WHERE ${conditions.join(" AND ")}
       ORDER BY market_value DESC`
     )
@@ -532,7 +535,7 @@ export function getAnalysisDataCoverage(
         COALESCE(SUM(
           CASE
             WHEN lp.close_price IS NOT NULL
-              THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier")}
+              THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
             WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
               THEN h.cost_basis
             ELSE 0
@@ -542,6 +545,7 @@ export function getAnalysisDataCoverage(
       FROM latest_holdings h
       JOIN securities s ON s.id = h.security_id
       LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
+      LEFT JOIN fx_rates fx ON fx.currency = s.currency
       WHERE (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
         ${accountFilter}`
     )
@@ -643,7 +647,7 @@ export function getFactorHeatmap(
         s.underlying_symbol,
         SUM(CASE
           WHEN lp.close_price IS NOT NULL
-            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier")}
+            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
           WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
             THEN h.cost_basis
           ELSE 0
@@ -661,6 +665,7 @@ export function getFactorHeatmap(
       FROM latest_holdings h
       JOIN securities s ON s.id = h.security_id
       LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
+      LEFT JOIN fx_rates fx ON fx.currency = s.currency
       LEFT JOIN security_factors sf ON sf.security_id = s.id
       LEFT JOIN securities s_u ON s_u.symbol = s.underlying_symbol
       LEFT JOIN security_factors sf_u ON sf_u.security_id = s_u.id

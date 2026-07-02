@@ -25,7 +25,15 @@ function createTestDb(): Database.Database {
       geography TEXT,
       classification_source TEXT,
       underlying_symbol TEXT,
-      maturity_date TEXT
+      maturity_date TEXT,
+      currency TEXT NOT NULL DEFAULT 'USD'
+    );
+
+    CREATE TABLE fx_rates (
+      currency TEXT PRIMARY KEY,
+      usd_per_unit REAL NOT NULL,
+      as_of TEXT NOT NULL,
+      source TEXT
     );
 
     CREATE TABLE security_factors (
