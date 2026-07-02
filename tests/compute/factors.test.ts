@@ -227,6 +227,58 @@ describe("computeFactorAnalysis", () => {
   });
 });
 
+describe("FX conversion (Task 9b — factor tilt weights)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+  });
+
+  it("KRW holding's size-tilt weight reflects USD conversion, not won notional", () => {
+    const today = recentDate(0);
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test')");
+
+    // USD control: 10 sh @ $208 = $2,080. Large Cap.
+    db.prepare(
+      "INSERT INTO securities (id, symbol, name, market_cap_category, currency) VALUES (1, 'AAPL', 'Apple', 'Large Cap', 'USD')"
+    ).run();
+    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 1, ?, 10)").run(today);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (1, ?, 208)").run(today);
+
+    // KRW holding: 10 sh @ ₩1,731,000 = ₩17,310,000 notional. fx 0.000734 → ≈$12,705.54. Small Cap.
+    db.prepare(
+      "INSERT INTO securities (id, symbol, name, market_cap_category, currency) VALUES (2, '402340', 'KRW Co', 'Small Cap', 'KRW')"
+    ).run();
+    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 2, ?, 10)").run(today);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (2, ?, 1731000)").run(today);
+    db.prepare(
+      "INSERT INTO fx_rates (currency, usd_per_unit, as_of, source) VALUES ('KRW', 0.000734, ?, 'test')"
+    ).run(today);
+
+    const result = computeFactorAnalysis(db);
+
+    const expectedKrwUsd = 10 * 1_731_000 * 0.000734; // ≈ $12,705.54
+    const expectedTotal = expectedKrwUsd + 2_080;
+
+    expect(result.sizeTilt).not.toBeNull();
+    const smallCap = result.sizeTilt!.buckets.find((b) => b.label === "Small Cap")!;
+    const largeCap = result.sizeTilt!.buckets.find((b) => b.label === "Large Cap")!;
+
+    // The KRW bucket should weight ~85.9% (its true USD share), NOT ~99.99%
+    // (which is what the won notional ÷ total would produce).
+    expect(smallCap.weight).toBeCloseTo(expectedKrwUsd / expectedTotal, 3);
+    expect(smallCap.weight).toBeLessThan(0.9);
+    expect(smallCap.weight).toBeGreaterThan(0.8);
+
+    // USD control byte-unchanged.
+    expect(largeCap.weight).toBeCloseTo(2_080 / expectedTotal, 3);
+
+    // Market-beta regression pulls from daily_valuations only — untouched by
+    // holdings currency (no daily_valuations rows seeded here → stays null).
+    expect(result.marketRegression).toBeNull();
+  });
+});
+
 describe("computeMacroFactorTilts", () => {
   let db: Database.Database;
 
