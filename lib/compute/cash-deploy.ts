@@ -19,6 +19,7 @@ import { computeExposureDelta, type ExposureDelta } from "./exposure-delta";
 import { explodeHoldingBySector } from "./explode-sector";
 import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import { marketValue } from "@/lib/valuation";
+import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 
 export type CashDeployMode = "benchmark" | "factor_balance" | "heuristic";
 
@@ -87,6 +88,7 @@ function loadCurrentHoldings(
         s.symbol,
         s.security_type,
         s.sector,
+        s.currency,
         COALESCE(s.multiplier, 1) AS multiplier,
         SUM(lh.quantity) AS quantity,
         lp.close_price AS price
@@ -101,6 +103,7 @@ function loadCurrentHoldings(
       symbol: string;
       security_type: string | null;
       sector: string | null;
+      currency: string | null;
       multiplier: number;
       quantity: number;
       price: number;
@@ -110,7 +113,7 @@ function loadCurrentHoldings(
   const sectorValue = new Map<string, number>();
   let totalValue = 0;
   for (const r of rows) {
-    const mv = marketValue(r.quantity, r.price, r.security_type, r.multiplier);
+    const mv = marketValue(r.quantity, r.price, r.security_type, r.multiplier, getUsdPerUnit(db, r.currency));
     if (mv <= 0) continue;
     totalValue += mv;
     for (const part of explodeHoldingBySector(r.symbol, r.security_type, mv, etfWeights, r.sector)) {
