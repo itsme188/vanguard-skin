@@ -85,5 +85,15 @@ describe("getAllHoldings FX conversion", () => {
     expect(krwRow!.current_value).toBeCloseTo(expectedUsdMv, 5);
     expect(krwRow!.current_value).toBeLessThan(20_000);
     expect(krwRow!.unrealized_gain).toBeCloseTo(expectedUsdMv - expectedUsdCost, 5);
+
+    // Task 5d: the RAW returned cost_basis field must also be USD, not the
+    // won notional (₩16,329,792) — otherwise pct = gain(USD)/cost_basis(KRW)
+    // and <Money> rendering both break downstream.
+    expect(krwRow!.cost_basis).toBeCloseTo(expectedUsdCost, 5);
+    expect(krwRow!.cost_basis).not.toBeCloseTo(16_329_792, 0);
+    expect(krwRow!.cost_basis).toBeLessThan(20_000);
+
+    // USD control's returned cost_basis is byte-unchanged.
+    expect(usdRow!.cost_basis).toBe(1_800_000);
   });
 });

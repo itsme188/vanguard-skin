@@ -153,4 +153,23 @@ describe("getPortfolioSummaryForChat FX conversion", () => {
     // Must NOT show the won-notional phantom loss (-$30,000,000).
     expect(summary).not.toContain("30,000,000");
   });
+
+  it("Tax Summary open-lots cost basis uses USD, not the won phantom (Task 5d)", () => {
+    const krw = seedSecurity(db, "402340", { currency: "KRW" });
+    // 10 units @ ₩1,632,979.2/unit -> cost_basis ₩16,329,792.
+    seedTaxLot(db, ACCOUNT_ID, krw, "2025-01-01", 1_632_979.2, 10, 16_329_792);
+    seedPrice(db, krw, TODAY, 1_731_000);
+
+    upsertFxRate(db, { currency: "KRW", usdPerUnit: 0.000734, asOf: TODAY, source: "test" });
+
+    const summary = getPortfolioSummaryForChat(db);
+
+    const expectedUsdCost = 16_329_792 * 0.000734; // ~11,986.07 -> "$11,986"
+
+    expect(summary).toContain("Tax Summary");
+    expect(summary).toContain(`cost basis: ${formatUSD(expectedUsdCost)}`);
+
+    // Must NOT show the won-notional phantom cost basis (₩16,329,792).
+    expect(summary).not.toContain("16,329,792");
+  });
 });

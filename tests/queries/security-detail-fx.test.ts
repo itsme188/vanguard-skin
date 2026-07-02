@@ -130,6 +130,12 @@ describe("security-detail FX conversion", () => {
         5
       );
       expect(positions[0].unrealized_gain).toBeCloseTo(719.47, 1);
+
+      // Task 5d: the RAW returned cost_basis field must also be USD, not the
+      // won notional (₩16,329,792).
+      expect(positions[0].cost_basis).toBeCloseTo(expectedCostUsd, 5);
+      expect(positions[0].cost_basis).not.toBeCloseTo(16_329_792, 0);
+      expect(positions[0].cost_basis).toBeLessThan(20_000);
     });
 
     it("USD control is unaffected (byte-unchanged behavior)", () => {
@@ -141,6 +147,7 @@ describe("security-detail FX conversion", () => {
       expect(positions).toHaveLength(1);
       expect(positions[0].current_value).toBe(25_000);
       expect(positions[0].unrealized_gain).toBe(5_000);
+      expect(positions[0].cost_basis).toBe(20_000);
     });
   });
 
@@ -173,6 +180,11 @@ describe("security-detail FX conversion", () => {
 
       expect(lots[0].unrealized_gain).toBeCloseTo(expectedMv - expectedCostUsd, 2);
       expect(lots[0].unrealized_gain).toBeCloseTo(719.47, 1);
+
+      // Task 5d: the RAW returned cost_basis field must also be USD, not the
+      // won notional (₩16,329,792).
+      expect(lots[0].cost_basis).toBeCloseTo(expectedCostUsd, 2);
+      expect(lots[0].cost_basis).not.toBeCloseTo(16_329_792, 0);
     });
 
     it("USD control is unaffected (byte-unchanged behavior)", () => {
@@ -185,6 +197,7 @@ describe("security-detail FX conversion", () => {
       expect(lots[0].current_value).toBe(25_000);
       expect(lots[0].adjusted_cost_basis).toBe(20_000);
       expect(lots[0].unrealized_gain).toBe(5_000);
+      expect(lots[0].cost_basis).toBe(20_000);
     });
   });
 });

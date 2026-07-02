@@ -137,7 +137,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
       )
       SELECT a.name AS account_name, s.symbol, s.name AS security_name,
               s.security_type, s.asset_class, s.sector,
-              h.quantity, h.cost_basis, h.as_of_date,
+              h.quantity, h.cost_basis * COALESCE(fx.usd_per_unit, 1) AS cost_basis, h.as_of_date,
               lp.close_price AS latest_price,
               CASE WHEN lp.close_price IS NOT NULL
                 THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
@@ -288,8 +288,11 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
     .prepare(
       `SELECT
         COUNT(*) AS open_lots,
-        COALESCE(SUM(quantity_remaining * acquisition_price), 0) AS total_cost_basis
-       FROM tax_lots WHERE quantity_remaining > 0 ${taxLotsAccountFilter}`
+        COALESCE(SUM(quantity_remaining * acquisition_price * COALESCE(fx.usd_per_unit, 1)), 0) AS total_cost_basis
+       FROM tax_lots
+       JOIN securities s ON s.id = tax_lots.security_id
+       LEFT JOIN fx_rates fx ON fx.currency = s.currency
+       WHERE quantity_remaining > 0 ${taxLotsAccountFilter}`
     )
     .get(...taxLotsAccountParams) as { open_lots: number; total_cost_basis: number };
 
@@ -327,7 +330,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         a.name AS account_name,
         (${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
          - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}) AS unrealized_loss,
-        tl.cost_basis,
+        tl.cost_basis * COALESCE(fx.usd_per_unit, 1) AS cost_basis,
         CAST(julianday(?) - julianday(tl.acquisition_date) AS INTEGER) AS days_held
       FROM tax_lots tl
       JOIN accounts a ON a.id = tl.account_id
