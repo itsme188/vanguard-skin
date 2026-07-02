@@ -120,12 +120,13 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
       portfolio_total AS (
         SELECT COALESCE(SUM(
           CASE WHEN lp.close_price IS NOT NULL
-            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier")}
+            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
             ELSE 0 END
         ), 1) AS total
         FROM holdings h
         JOIN securities s ON s.id = h.security_id
         LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
+        LEFT JOIN fx_rates fx ON fx.currency = s.currency
         WHERE h.as_of_date = (
           SELECT MAX(h2.as_of_date) FROM holdings h2
           WHERE h2.account_id = h.account_id
@@ -139,21 +140,22 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
               h.quantity, h.cost_basis, h.as_of_date,
               lp.close_price AS latest_price,
               CASE WHEN lp.close_price IS NOT NULL
-                THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier")}
+                THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
                 ELSE NULL
               END AS market_value,
               CASE WHEN lp.close_price IS NOT NULL AND h.cost_basis IS NOT NULL AND h.cost_basis > 0
-                THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier")} - h.cost_basis
+                THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} - (h.cost_basis * COALESCE(fx.usd_per_unit, 1))
                 ELSE NULL
               END AS unrealized_gain,
               CASE WHEN lp.close_price IS NOT NULL
-                THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier")} * 100.0 / (SELECT total FROM portfolio_total)
+                THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} * 100.0 / (SELECT total FROM portfolio_total)
                 ELSE NULL
               END AS position_weight_pct
        FROM holdings h
        JOIN accounts a ON a.id = h.account_id
        JOIN securities s ON s.id = h.security_id
        LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
+       LEFT JOIN fx_rates fx ON fx.currency = s.currency
        WHERE h.as_of_date = (
          SELECT MAX(h2.as_of_date) FROM holdings h2
          WHERE h2.account_id = h.account_id
@@ -195,10 +197,11 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
       alloc AS (
         SELECT
           COALESCE(s.asset_class, s.security_type, 'Unknown') AS group_name,
-          ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier")} AS mv
+          ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} AS mv
         FROM holdings h
         JOIN securities s ON s.id = h.security_id
         LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
+        LEFT JOIN fx_rates fx ON fx.currency = s.currency
         WHERE lp.close_price IS NOT NULL
           AND h.as_of_date = (
             SELECT MAX(h2.as_of_date) FROM holdings h2
@@ -238,10 +241,11 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
       alloc AS (
         SELECT
           COALESCE(s.sector, 'Unknown') AS group_name,
-          ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier")} AS mv
+          ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} AS mv
         FROM holdings h
         JOIN securities s ON s.id = h.security_id
         LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
+        LEFT JOIN fx_rates fx ON fx.currency = s.currency
         WHERE lp.close_price IS NOT NULL
           AND h.as_of_date = (
             SELECT MAX(h2.as_of_date) FROM holdings h2
@@ -321,18 +325,19 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
       SELECT
         s.symbol,
         a.name AS account_name,
-        (${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier")}
-         - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier")}) AS unrealized_loss,
+        (${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
+         - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}) AS unrealized_loss,
         tl.cost_basis,
         CAST(julianday(?) - julianday(tl.acquisition_date) AS INTEGER) AS days_held
       FROM tax_lots tl
       JOIN accounts a ON a.id = tl.account_id
       JOIN securities s ON s.id = tl.security_id
       LEFT JOIN latest_prices lp ON lp.security_id = tl.security_id
+      LEFT JOIN fx_rates fx ON fx.currency = s.currency
       WHERE tl.quantity_remaining > 0
         AND lp.close_price IS NOT NULL
-        AND (${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier")}
-             - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier")}) < -100
+        AND (${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
+             - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}) < -100
         ${taxLotsFilter}
       ORDER BY unrealized_loss ASC
       LIMIT 5`
@@ -364,13 +369,14 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
         date(tl.acquisition_date, '+366 days') AS long_term_date,
         CAST(julianday(date(tl.acquisition_date, '+366 days')) - julianday(?) AS INTEGER) AS days_remaining,
         CASE WHEN lp.close_price IS NOT NULL
-          THEN ${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier")}
-               - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier")}
+          THEN ${adjustedMarketValueSQL("tl.quantity_remaining", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
+               - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
           ELSE NULL END AS unrealized_gain
       FROM tax_lots tl
       JOIN accounts a ON a.id = tl.account_id
       JOIN securities s ON s.id = tl.security_id
       LEFT JOIN latest_prices lp ON lp.security_id = tl.security_id
+      LEFT JOIN fx_rates fx ON fx.currency = s.currency
       WHERE tl.quantity_remaining > 0
         AND julianday(date(tl.acquisition_date, '+366 days')) > julianday(?)
         AND julianday(date(tl.acquisition_date, '+366 days')) - julianday(?) <= 60
