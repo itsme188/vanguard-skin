@@ -10,6 +10,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
+import { upsertFxRate } from "@/lib/mutations/fx-rates";
 import {
   getOptionExposureMap,
   optionExposureFallback,
@@ -23,10 +24,12 @@ function seedAccount(name: string): number {
   return (db.prepare("SELECT id FROM accounts WHERE name = ?").get(name) as { id: number }).id;
 }
 
-function seedStock(symbol: string): number {
+function seedStock(symbol: string, currency: string = "USD"): number {
   return db
-    .prepare("INSERT INTO securities (symbol, name, security_type, multiplier) VALUES (?, ?, 'Stock', 1)")
-    .run(symbol, `${symbol} Inc`).lastInsertRowid as number;
+    .prepare(
+      "INSERT INTO securities (symbol, name, security_type, multiplier, currency) VALUES (?, ?, 'Stock', 1, ?)"
+    )
+    .run(symbol, `${symbol} Inc`, currency).lastInsertRowid as number;
 }
 
 function seedOption(
@@ -163,5 +166,40 @@ describe("getPortfolioExposureSummary", () => {
     const s = getPortfolioExposureSummary(db, [a1]);
     expect(s.total_market_value).toBeCloseTo(1_000);
     expect(s.net_exposure).toBeCloseTo(1_000);
+  });
+
+  it("KRW holding contributes its USD value, not its won notional", () => {
+    const acct = seedAccount("Test");
+
+    // USD control: 10 sh @ $208 = $2,080. Unaffected by the FX join (default
+    // currency 'USD' has no fx_rates row; COALESCE(fx.usd_per_unit,1) → 1).
+    const aapl = seedStock("AAPL", "USD");
+    seedHolding(acct, aapl, 10);
+    seedPrice(aapl, 208);
+
+    // KRW holding: 10 sh @ ₩1,731,000 = ₩17,310,000 notional.
+    const krw = seedStock("402340", "KRW");
+    seedHolding(acct, krw, 10);
+    seedPrice(krw, 1_731_000);
+
+    upsertFxRate(db, {
+      currency: "KRW",
+      usdPerUnit: 0.000734,
+      asOf: "2026-06-01",
+      source: "test",
+    });
+
+    const s = getPortfolioExposureSummary(db);
+
+    const expectedKrwUsd = 10 * 1_731_000 * 0.000734; // ≈ $12,705.54
+    const expectedTotal = 2_080 + expectedKrwUsd;
+
+    // Total market value (and thus net/gross exposure, which are MV for
+    // non-options) must reflect the USD-converted KRW value, NOT the won
+    // notional treated as dollars (2,080 + 17,310,000 ≈ $17.3M phantom).
+    expect(s.total_market_value).toBeCloseTo(expectedTotal, 5);
+    expect(s.total_market_value).toBeLessThan(20_000);
+    expect(s.net_exposure).toBeCloseTo(expectedTotal, 5);
+    expect(s.gross_exposure).toBeCloseTo(expectedTotal, 5);
   });
 });

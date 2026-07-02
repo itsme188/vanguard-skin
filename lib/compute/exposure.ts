@@ -123,7 +123,7 @@ export function getPortfolioExposureSummary(
         s.option_type,
         CASE
           WHEN lp.close_price IS NOT NULL
-            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier")}
+            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
           WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
             THEN h.cost_basis
           ELSE 0
@@ -131,6 +131,7 @@ export function getPortfolioExposureSummary(
       FROM latest_holdings h
       JOIN securities s ON s.id = h.security_id
       LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
+      LEFT JOIN fx_rates fx ON fx.currency = s.currency
       WHERE ${conditions.join(" AND ")}`
     )
     .all(...params) as Array<{
