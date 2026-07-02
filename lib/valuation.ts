@@ -15,12 +15,14 @@ export function marketValue(
   quantity: number,
   price: number,
   securityType: string | null,
-  multiplier: number = 1
+  multiplier: number = 1,
+  usdPerUnit: number = 1
 ): number {
-  if (securityType?.toLowerCase() === "bond") {
-    return (quantity * price) / 100;
-  }
-  return quantity * price * multiplier;
+  const native =
+    securityType?.toLowerCase() === "bond"
+      ? (quantity * price) / 100
+      : quantity * price * multiplier;
+  return native * usdPerUnit;
 }
 
 /**
@@ -57,15 +59,17 @@ export function unitPriceFromMarketValue(
  * Use in raw SQL queries where the TypeScript function cannot be called.
  *
  * @param multiplierExpr - SQL expression for the security's multiplier column (defaults to "1")
+ * @param fxExpr - SQL expression for the FX conversion factor (defaults to "1")
  */
 export function adjustedMarketValueSQL(
   quantityExpr: string,
   priceExpr: string,
   securityTypeExpr: string,
-  multiplierExpr: string = "1"
+  multiplierExpr: string = "1",
+  fxExpr: string = "1"
 ): string {
-  return `CASE WHEN LOWER(${securityTypeExpr}) = 'bond'
+  return `(CASE WHEN LOWER(${securityTypeExpr}) = 'bond'
     THEN ${quantityExpr} * ${priceExpr} / 100.0
     ELSE ${quantityExpr} * ${priceExpr} * COALESCE(${multiplierExpr}, 1)
-  END`;
+  END) * COALESCE(${fxExpr}, 1)`;
 }
