@@ -278,7 +278,12 @@ function applyLegs(
 
     if (idx !== undefined) {
       const h = next[idx];
-      const shares = leg.dollarAmount / (h.price * h.multiplier);
+      // leg.dollarAmount is a USD figure — convert to native-currency
+      // notional BEFORE dividing by the native price so the resulting
+      // marketValue() delta (which multiplies back by usdPerUnit) equals
+      // exactly leg.dollarAmount USD, not leg.dollarAmount * usdPerUnit.
+      const usdPerUnit = getUsdPerUnit(db, h.currency) || 1;
+      const shares = leg.dollarAmount / (h.price * h.multiplier * usdPerUnit);
       const delta = leg.action === "buy" ? shares : -shares;
       const prevQuantity = h.quantity;
       h.quantity += delta;
@@ -288,20 +293,22 @@ function applyLegs(
       if (leg.action === "sell" && prevQuantity > 0 && h.quantity < 0) {
         h.quantity = 0;
       }
-      h.marketValue = marketValue(h.quantity, h.price, h.securityType, h.multiplier, getUsdPerUnit(db, h.currency));
+      h.marketValue = marketValue(h.quantity, h.price, h.securityType, h.multiplier, usdPerUnit);
     } else {
       if (leg.action === "sell") continue; // can't sell what we don't hold
       const synth = resolve(leg.symbol);
       if (!synth) continue; // unknown symbol — skip silently
-      const shares = leg.dollarAmount / (synth.price * synth.multiplier);
+      // Same USD-notional conversion as above — see comment there. Options
+      // are USD-denominated in this app (securities.currency defaults to
+      // 'USD' at ingestion unless a real non-USD currency was captured) —
+      // synth.currency already reflects that, so no special option-vs-non-
+      // option branch is needed here.
+      const usdPerUnit = getUsdPerUnit(db, synth.currency) || 1;
+      const shares = leg.dollarAmount / (synth.price * synth.multiplier * usdPerUnit);
       const row: HoldingRow = {
         ...synth,
         quantity: shares,
-        // Options are USD-denominated in this app (securities.currency
-        // defaults to 'USD' at ingestion unless a real non-USD currency was
-        // captured) — synth.currency already reflects that, so no special
-        // option-vs-non-option branch is needed here.
-        marketValue: marketValue(shares, synth.price, synth.securityType, synth.multiplier, getUsdPerUnit(db, synth.currency)),
+        marketValue: marketValue(shares, synth.price, synth.securityType, synth.multiplier, usdPerUnit),
       };
       next.push(row);
       indexBy.set(upper, next.length - 1);

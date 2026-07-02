@@ -246,39 +246,57 @@ describe("FX conversion (Task 9c — exposure-delta market value)", () => {
     expect(aapl.weightPct).toBeCloseTo(2_000 / expectedTotal, 3);
   });
 
-  it("existing-holding BUY leg market value stays USD-scaled after a leg, not KRW notional (h / line 282)", () => {
+  it("existing-holding BUY leg on a KRW security moves total portfolio value by exactly the entered USD amount (h / line ~287)", () => {
     const before = computeExposureDelta(db, "all", undefined, []);
     const result = computeExposureDelta(db, "all", undefined, [
       { symbol: "402340", action: "buy", dollarAmount: 1000 },
     ]);
-    // applyLegs derives the share delta as dollarAmount/(price*multiplier) —
-    // a pre-existing, out-of-scope quirk for non-USD symbols (it doesn't
-    // convert dollarAmount into native currency first). That quirk makes the
-    // mv delta from the leg exactly dollarAmount × usdPerUnit (shares × price
-    // × fx = (dollarAmount/price) × price × fx = dollarAmount × fx) — a
-    // small, deterministic number here, NOT the multi-million-dollar KRW
-    // notional the pre-fix bug (fx defaulting to 1) would have produced for
-    // the position's BASE market value.
-    const expectedDelta = 1000 * 0.000734;
-    expect(result.after.totalValue).toBeCloseTo(before.before.totalValue + expectedDelta, 2);
-    expect(result.after.totalValue).toBeLessThan(20_000); // NOT the ₩17.31M-scale phantom
+    // A "$1,000 buy" what-if leg is a USD figure entered by the user — it
+    // must change total portfolio value by exactly $1,000 USD, regardless
+    // of the security's native currency. applyLegs converts dollarAmount
+    // into native-currency notional (dividing by usdPerUnit) BEFORE
+    // deriving the share count, so marketValue()'s subsequent × usdPerUnit
+    // exactly cancels back out to the original $1,000.
+    //
+    // Pre-fix regression (post-Task-9c, pre-this-fix): the share count was
+    // computed as dollarAmount / (price * multiplier) — i.e. dollarAmount
+    // was treated as ALREADY being native-currency notional — so the
+    // downstream × usdPerUnit conversion applied the fx factor a SECOND
+    // time, producing a delta of dollarAmount × usdPerUnit ≈ $0.73 instead
+    // of $1,000 (off by the fx factor, ~1362×).
+    const buggyPreFixDelta = 1000 * 0.000734; // ≈ $0.73 — what the regression produced
+    expect(result.after.totalValue).not.toBeCloseTo(before.before.totalValue + buggyPreFixDelta, 2);
+    expect(result.after.totalValue).toBeCloseTo(before.before.totalValue + 1000, 2);
   });
 
-  it("synthesized new-position market value reflects USD conversion, not KRW notional (synth / line 291)", () => {
+  it("synthesized new-position BUY leg on a KRW security moves total portfolio value by exactly the entered USD amount (synth / line ~301)", () => {
     const before = computeExposureDelta(db, "all", undefined, []);
     const result = computeExposureDelta(db, "all", undefined, [
       { symbol: "005930", action: "buy", dollarAmount: 5000 },
     ]);
-    // Same shares-from-native-price quirk as above: synth shares =
-    // dollarAmount/(price*multiplier), so the synthesized row's mv =
-    // shares × price × multiplier × fx = dollarAmount × fx exactly.
-    // Pre-fix (fx defaulting to 1) this would instead equal the raw
-    // dollarAmount unconverted from a won-scale price — i.e. the position
-    // would misreport as if $5,000 native-KRW-priced shares were worth
-    // $5,000 USD instead of their true ~$3.67 USD equivalent.
-    const expectedDelta = 5000 * 0.000734;
-    expect(result.after.totalValue).toBeCloseTo(before.before.totalValue + expectedDelta, 2);
+    // Same correctness requirement as the existing-holding case above: a
+    // "$5,000 buy" leg synthesizing a brand-new KRW position must still
+    // move the USD total by exactly $5,000.
+    //
+    // Pre-fix regression: shares were derived as dollarAmount / (price *
+    // multiplier) using the raw KRW price, so the synthesized row's market
+    // value came out to dollarAmount × usdPerUnit ≈ $3.67 instead of
+    // $5,000 (off by the fx factor, ~1362×).
+    const buggyPreFixDelta = 5000 * 0.000734; // ≈ $3.67 — what the regression produced
+    expect(result.after.totalValue).not.toBeCloseTo(before.before.totalValue + buggyPreFixDelta, 2);
+    expect(result.after.totalValue).toBeCloseTo(before.before.totalValue + 5000, 2);
     const synthPos = result.after.topConcentrations.find((c) => c.symbol === "005930");
     expect(synthPos).toBeDefined();
+  });
+
+  it("USD-leg control: a $X buy on a USD security still moves total by exactly $X (byte-unchanged behavior)", () => {
+    const before = computeExposureDelta(db, "all", undefined, []);
+    const result = computeExposureDelta(db, "all", undefined, [
+      { symbol: "AAPL", action: "buy", dollarAmount: 1500 },
+    ]);
+    // USD securities have usdPerUnit === 1, so the native-notional
+    // conversion introduced by this fix is a no-op — confirms the fix
+    // doesn't perturb existing USD what-if behavior.
+    expect(result.after.totalValue).toBeCloseTo(before.before.totalValue + 1500, 2);
   });
 });
