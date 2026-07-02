@@ -135,12 +135,14 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
       "p_today.close_price",
       "s.security_type",
       "COALESCE(s.multiplier, 1)",
+      "COALESCE(fx.usd_per_unit, 1)",
     );
     const marketValuePrior = adjustedMarketValueSQL(
       "h.quantity",
       "p_prior.close_price",
       "s.security_type",
       "COALESCE(s.multiplier, 1)",
+      "COALESCE(fx.usd_per_unit, 1)",
     );
     // Rank every price row per security so we can pull the top two.
     // rn=1 is the most recent close, rn=2 is the prior — today's move is
@@ -172,6 +174,7 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
          JOIN securities s ON s.id = h.security_id
          LEFT JOIN ranked_prices p_today ON p_today.security_id = h.security_id AND p_today.rn = 1
          LEFT JOIN ranked_prices p_prior ON p_prior.security_id = h.security_id AND p_prior.rn = 2
+         LEFT JOIN fx_rates fx ON fx.currency = s.currency
          WHERE h.account_id = ?
            AND h.quantity > 0
            AND h.as_of_date = (SELECT MAX(as_of_date) FROM holdings WHERE account_id = ?)

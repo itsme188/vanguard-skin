@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { upsertFxRate } from "@/lib/mutations/fx-rates";
-import { getAllocationByDimension } from "@/lib/queries/analysis";
+import {
+  getAllocationByDimension,
+  getConcentrationMetrics,
+  getAnalysisDataCoverage,
+  getFactorHeatmap,
+} from "@/lib/queries/analysis";
 
 let db: Database.Database;
 
@@ -117,5 +122,85 @@ describe("Analysis allocation FX", () => {
     expect(total).toBeCloseTo(2_080_000 + expectedKrwUsd, 5);
     expect(total).toBeGreaterThan(2_000_000);
     expect(total).toBeLessThan(2_200_000);
+  });
+});
+
+// ─── cost_basis fallback FX (no price row → the `WHEN h.cost_basis > 0 THEN
+// h.cost_basis` branch fires). Pre-fix this returned the raw won notional
+// (₩16,329,792 read as $16,329,792); it must be USD-converted the same way
+// the priced branch is. ────────────────────────────────────────────────────
+describe("Analysis cost_basis fallback FX (Task 7a, Gap 2)", () => {
+  const KRW_COST_BASIS = 16_329_792;
+  const KRW_RATE = 0.000734;
+  const expectedUsd = KRW_COST_BASIS * KRW_RATE; // ≈ $11,986.07
+
+  function seedKrwNoPriceHolding(acctId: number, symbol = "005930") {
+    const krwId = seedSecurity(db, symbol, { currency: "KRW" });
+    // Deliberately NO seedPrice() call — forces the cost_basis fallback.
+    seedHolding(db, acctId, krwId, 10, KRW_COST_BASIS);
+    upsertFxRate(db, {
+      currency: "KRW",
+      usdPerUnit: KRW_RATE,
+      asOf: "2026-07-01",
+      source: "test",
+    });
+    return krwId;
+  }
+
+  it("getAllocationByDimension(symbol): fallback value is USD, not won notional", () => {
+    const acctId = seedAccount(db, "IBKR");
+    seedKrwNoPriceHolding(acctId);
+
+    const alloc = getAllocationByDimension(db, "symbol");
+    const krwRow = alloc.find((a) => a.group_name === "005930");
+
+    expect(krwRow).toBeTruthy();
+    expect(krwRow!.total_market_value).toBeCloseTo(expectedUsd, 2);
+    expect(krwRow!.total_market_value).toBeLessThan(20_000);
+  });
+
+  it("getAllocationByDimension(sector, ETF look-through path): fallback value is USD", () => {
+    const acctId = seedAccount(db, "IBKR");
+    seedKrwNoPriceHolding(acctId);
+
+    const alloc = getAllocationByDimension(db, "sector");
+    const total = alloc.reduce((sum, a) => sum + a.total_market_value, 0);
+
+    expect(total).toBeCloseTo(expectedUsd, 2);
+    expect(total).toBeLessThan(20_000);
+  });
+
+  it("getConcentrationMetrics: top_positions market_value is USD", () => {
+    const acctId = seedAccount(db, "IBKR");
+    seedKrwNoPriceHolding(acctId);
+
+    const metrics = getConcentrationMetrics(db);
+    const krwPos = metrics.top_positions.find((p) => p.symbol === "005930");
+
+    expect(krwPos).toBeTruthy();
+    expect(krwPos!.market_value).toBeCloseTo(expectedUsd, 2);
+    expect(krwPos!.market_value).toBeLessThan(20_000);
+  });
+
+  it("getAnalysisDataCoverage: holdingsTotal is USD", () => {
+    const acctId = seedAccount(db, "IBKR");
+    seedKrwNoPriceHolding(acctId);
+
+    const coverage = getAnalysisDataCoverage(db);
+
+    expect(coverage.holdingsTotal).toBeCloseTo(expectedUsd, 2);
+    expect(coverage.holdingsTotal).toBeLessThan(20_000);
+  });
+
+  it("getFactorHeatmap: market_value is USD", () => {
+    const acctId = seedAccount(db, "IBKR");
+    seedKrwNoPriceHolding(acctId);
+
+    const heatmap = getFactorHeatmap(db);
+    const krwRow = heatmap.find((r) => r.symbol === "005930");
+
+    expect(krwRow).toBeTruthy();
+    expect(krwRow!.market_value).toBeCloseTo(expectedUsd, 2);
+    expect(krwRow!.market_value).toBeLessThan(20_000);
   });
 });
