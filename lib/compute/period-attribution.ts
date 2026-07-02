@@ -4,6 +4,7 @@ import {
   getDailyValuationsCombined,
   getDailyValuationsForAccounts,
 } from "@/lib/queries/daily-valuations";
+import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 
 /**
  * Scope for attribution: a single account id, an explicit id set, or
@@ -178,6 +179,7 @@ function computePerPositionContributions(
          SUM(hs.quantity) AS qty,
          ps.close_price AS start_price,
          pe.close_price AS end_price,
+         s.currency,
          COALESCE(s.sector, 'Unclassified') AS sector
        FROM holdings hs
        JOIN securities s ON s.id = hs.security_id
@@ -193,12 +195,22 @@ function computePerPositionContributions(
     qty: number;
     start_price: number;
     end_price: number | null;
+    currency: string | null;
     sector: string;
   }>;
 
   if (rows.length === 0) return { rows: [], sectorMap: new Map() };
 
-  const totalStartValue = rows.reduce((s, r) => s + r.qty * r.start_price, 0);
+  // Per-holding $ WEIGHTS must be USD-comparable across securities — a raw
+  // native-currency qty×price sum would let a KRW holding's won notional
+  // dominate totalStartValue and hence startWeight (the "contribution"
+  // phantom). The %-return factor (positionReturn) is currency-invariant
+  // (a ratio of two same-currency prices) and stays unconverted.
+  const usdPerUnitFor = (currency: string | null) => getUsdPerUnit(db, currency);
+  const totalStartValue = rows.reduce(
+    (s, r) => s + r.qty * r.start_price * usdPerUnitFor(r.currency),
+    0,
+  );
   if (totalStartValue === 0) return { rows: [], sectorMap: new Map() };
 
   const contributions: AttributionRow[] = [];
@@ -206,7 +218,8 @@ function computePerPositionContributions(
 
   for (const r of rows) {
     if (r.end_price == null) continue;
-    const startWeight = (r.qty * r.start_price) / totalStartValue;
+    const startValueUsd = r.qty * r.start_price * usdPerUnitFor(r.currency);
+    const startWeight = startValueUsd / totalStartValue;
     const positionReturn = (r.end_price - r.start_price) / r.start_price;
     const contribution = startWeight * positionReturn;
     contributions.push({ symbol: r.symbol, contribution });

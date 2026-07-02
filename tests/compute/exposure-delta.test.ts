@@ -197,3 +197,88 @@ describe("computeExposureDelta", () => {
     expect(result.flags.filter((f) => f.metric === "top1" || f.metric === "top3").length).toBeGreaterThanOrEqual(0);
   });
 });
+
+describe("FX conversion (Task 9c — exposure-delta market value)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+
+    const today = new Date().toISOString().slice(0, 10);
+
+    // USD control: AAPL 10 sh @ $200 = $2,000.
+    db.prepare(
+      `INSERT INTO securities (id, symbol, security_type, sector, currency) VALUES (1, 'AAPL', 'Stock', 'Technology', 'USD')`
+    ).run();
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (1, ?, 200, 'tws')`).run(today);
+    db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 1, ?, 10, 'vg-aapl')`).run(today);
+
+    // KRW holding: 10 sh @ ₩1,731,000 = ₩17,310,000 notional. fx 0.000734 → ≈$12,705.54.
+    db.prepare(
+      `INSERT INTO securities (id, symbol, security_type, sector, currency) VALUES (2, '402340', 'Stock', 'Technology', 'KRW')`
+    ).run();
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (2, ?, 1731000, 'tws')`).run(today);
+    db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 2, ?, 10, 'vg-krw')`).run(today);
+    db.prepare(`INSERT INTO fx_rates (currency, usd_per_unit, as_of, source) VALUES ('KRW', 0.000734, ?, 'test')`).run(today);
+
+    // A NOT-currently-held KRW candidate, for the synth (line 291) path.
+    db.prepare(
+      `INSERT INTO securities (id, symbol, security_type, sector, currency) VALUES (3, '005930', 'Stock', 'Technology', 'KRW')`
+    ).run();
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (3, ?, 71000, 'tws')`).run(today);
+  });
+
+  it("before.totalValue and topConcentrations reflect USD conversion, not KRW notional (r / line 142)", () => {
+    const result = computeExposureDelta(db, "all", undefined, []);
+    const expectedKrwUsd = 10 * 1_731_000 * 0.000734; // ≈ $12,705.54
+    const expectedTotal = expectedKrwUsd + 2_000;
+
+    expect(result.before.totalValue).toBeCloseTo(expectedTotal, 2);
+    expect(result.before.totalValue).toBeLessThan(20_000); // NOT the ₩17.31M phantom
+
+    const krw = result.before.topConcentrations.find((c) => c.symbol === "402340")!;
+    const aapl = result.before.topConcentrations.find((c) => c.symbol === "AAPL")!;
+    expect(krw).toBeDefined();
+    expect(aapl).toBeDefined();
+    expect(krw.weightPct).toBeCloseTo(expectedKrwUsd / expectedTotal, 3);
+    expect(aapl.weightPct).toBeCloseTo(2_000 / expectedTotal, 3);
+  });
+
+  it("existing-holding BUY leg market value stays USD-scaled after a leg, not KRW notional (h / line 282)", () => {
+    const before = computeExposureDelta(db, "all", undefined, []);
+    const result = computeExposureDelta(db, "all", undefined, [
+      { symbol: "402340", action: "buy", dollarAmount: 1000 },
+    ]);
+    // applyLegs derives the share delta as dollarAmount/(price*multiplier) —
+    // a pre-existing, out-of-scope quirk for non-USD symbols (it doesn't
+    // convert dollarAmount into native currency first). That quirk makes the
+    // mv delta from the leg exactly dollarAmount × usdPerUnit (shares × price
+    // × fx = (dollarAmount/price) × price × fx = dollarAmount × fx) — a
+    // small, deterministic number here, NOT the multi-million-dollar KRW
+    // notional the pre-fix bug (fx defaulting to 1) would have produced for
+    // the position's BASE market value.
+    const expectedDelta = 1000 * 0.000734;
+    expect(result.after.totalValue).toBeCloseTo(before.before.totalValue + expectedDelta, 2);
+    expect(result.after.totalValue).toBeLessThan(20_000); // NOT the ₩17.31M-scale phantom
+  });
+
+  it("synthesized new-position market value reflects USD conversion, not KRW notional (synth / line 291)", () => {
+    const before = computeExposureDelta(db, "all", undefined, []);
+    const result = computeExposureDelta(db, "all", undefined, [
+      { symbol: "005930", action: "buy", dollarAmount: 5000 },
+    ]);
+    // Same shares-from-native-price quirk as above: synth shares =
+    // dollarAmount/(price*multiplier), so the synthesized row's mv =
+    // shares × price × multiplier × fx = dollarAmount × fx exactly.
+    // Pre-fix (fx defaulting to 1) this would instead equal the raw
+    // dollarAmount unconverted from a won-scale price — i.e. the position
+    // would misreport as if $5,000 native-KRW-priced shares were worth
+    // $5,000 USD instead of their true ~$3.67 USD equivalent.
+    const expectedDelta = 5000 * 0.000734;
+    expect(result.after.totalValue).toBeCloseTo(before.before.totalValue + expectedDelta, 2);
+    const synthPos = result.after.topConcentrations.find((c) => c.symbol === "005930");
+    expect(synthPos).toBeDefined();
+  });
+});

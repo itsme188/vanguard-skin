@@ -354,3 +354,82 @@ describe("computePeriodAttribution", () => {
     });
   });
 });
+
+describe("FX conversion (Task 9c — per-position contribution weights)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  it("KRW holding's weight (and hence contribution) reflects USD conversion, not won notional", () => {
+    // USD control: AAPL 10 sh, $100 -> $120 (+20%), Technology. $1,000 start value.
+    db.prepare(
+      `INSERT INTO securities (id, symbol, security_type, sector, currency) VALUES (1, 'AAPL', 'Stock', 'Technology', 'USD')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO prices (security_id, date, close_price, source) VALUES (1, '2026-01-01', 100, 'tws')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO prices (security_id, date, close_price, source) VALUES (1, '2026-04-30', 120, 'tws')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 1, '2026-01-01', 10, 's-aapl')`,
+    ).run();
+
+    // KRW holding: 10 sh @ ₩1,731,000 -> ₩1,900,000 (start->end), Technology.
+    // fx 0.000734: start USD value ≈ $12,705.54, i.e. it should NOT dwarf
+    // AAPL's $1,000 start value the way the ₩17.31M raw notional would.
+    db.prepare(
+      `INSERT INTO securities (id, symbol, security_type, sector, currency) VALUES (2, '402340', 'Stock', 'Technology', 'KRW')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO prices (security_id, date, close_price, source) VALUES (2, '2026-01-01', 1731000, 'tws')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO prices (security_id, date, close_price, source) VALUES (2, '2026-04-30', 1900000, 'tws')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 2, '2026-01-01', 10, 's-krw')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO fx_rates (currency, usd_per_unit, as_of, source) VALUES ('KRW', 0.000734, '2026-01-01', 'test')`,
+    ).run();
+
+    const r = computePeriodAttribution(db, 1, "2026-01-01", "2026-04-30");
+
+    const expectedKrwStartUsd = 10 * 1_731_000 * 0.000734; // ≈ $12,705.54
+    const expectedTotalStartUsd = expectedKrwStartUsd + 1_000; // + AAPL's $1,000
+    const krwReturn = (1_900_000 - 1_731_000) / 1_731_000;
+    const aaplReturn = (120 - 100) / 100;
+
+    const expectedKrwWeight = expectedKrwStartUsd / expectedTotalStartUsd;
+    const expectedAaplWeight = 1_000 / expectedTotalStartUsd;
+    const expectedKrwContribution = expectedKrwWeight * krwReturn;
+    const expectedAaplContribution = expectedAaplWeight * aaplReturn;
+
+    const krw = r.topContributors.find((c) => c.symbol === "402340")
+      ?? r.topDetractors.find((c) => c.symbol === "402340");
+    const aapl = r.topContributors.find((c) => c.symbol === "AAPL")
+      ?? r.topDetractors.find((c) => c.symbol === "AAPL");
+    expect(krw).toBeDefined();
+    expect(aapl).toBeDefined();
+
+    // Converted: KRW's weight is a modest ~92.7% (its true USD share of a
+    // mixed book), not swamping AAPL to <0.006% the way the ₩17.31M raw
+    // notional would (won notional ÷ (won notional + $1,000) ≈ 99.994%).
+    expect(krw!.contribution).toBeCloseTo(expectedKrwContribution, 6);
+    expect(aapl!.contribution).toBeCloseTo(expectedAaplContribution, 6);
+
+    // Sanity bound ruling out the phantom: under the unconverted bug, AAPL's
+    // contribution would be diluted to ~0.0000116 (weight ≈ 1000/17,311,000),
+    // three orders of magnitude smaller than the correctly-converted value.
+    expect(aapl!.contribution).toBeGreaterThan(0.01);
+
+    const tech = r.sectorContribution.find((s) => s.sector === "Technology");
+    expect(tech).toBeDefined();
+    expect(tech!.contribution).toBeCloseTo(expectedKrwContribution + expectedAaplContribution, 6);
+  });
+});

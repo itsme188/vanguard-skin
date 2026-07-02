@@ -122,3 +122,62 @@ describe("suggestAllocation", () => {
     expect(result.benchmarkSymbol).toBe("QQQ");
   });
 });
+
+describe("FX conversion (Task 9c — cash-deploy market value)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  it("sector gap dollarGap reflects USD conversion, not KRW notional", () => {
+    const today = new Date().toISOString().slice(0, 10);
+
+    // USD control: AAPL 40 sh @ $200 = $8,000, Technology.
+    db.prepare(
+      `INSERT INTO securities (id, symbol, security_type, sector, currency) VALUES (1, 'AAPL', 'Stock', 'Technology', 'USD')`
+    ).run();
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (1, ?, 200, 'tws')`).run(today);
+    db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 1, '2026-04-30', 40, 'h-aapl')`).run();
+
+    // KRW holding: 10 sh @ ₩1,731,000 = ₩17,310,000 notional. fx 0.000734 → ≈$12,705.54. Technology.
+    db.prepare(
+      `INSERT INTO securities (id, symbol, security_type, sector, currency) VALUES (2, '402340', 'Stock', 'Technology', 'KRW')`
+    ).run();
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (2, ?, 1731000, 'tws')`).run(today);
+    db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 2, '2026-04-30', 10, 'h-krw')`).run();
+    db.prepare(`INSERT INTO fx_rates (currency, usd_per_unit, as_of, source) VALUES ('KRW', 0.000734, ?, 'test')`).run(today);
+
+    // USD control 2: JNJ 33 sh @ $150 = $4,950, Healthcare.
+    db.prepare(`INSERT INTO securities (id, symbol, security_type, sector, currency) VALUES (3, 'JNJ', 'Stock', 'Healthcare', 'USD')`).run();
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (3, ?, 150, 'tws')`).run(today);
+    db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 3, '2026-04-30', 33, 'h-jnj')`).run();
+
+    // Heuristic mode (no benchmark composition) so targetWeight=0 for every
+    // sector — dollarGap then equals exactly -(sector's converted dollars),
+    // giving a direct handle on the per-sector market value the solver saw.
+    db.prepare(`DELETE FROM benchmark_compositions`).run();
+
+    const result = suggestAllocation(db, "vanguard", [1], 1000);
+    expect(result.mode).toBe("heuristic");
+
+    const expectedKrwUsd = 10 * 1_731_000 * 0.000734; // ≈ $12,705.54
+    const expectedTechDollars = 8_000 + expectedKrwUsd;
+    const expectedHealthDollars = 4_950;
+
+    const techGap = result.gaps.find((g) => g.sector === "Technology");
+    const healthGap = result.gaps.find((g) => g.sector === "Healthcare");
+    expect(techGap).toBeDefined();
+    expect(healthGap).toBeDefined();
+
+    // Converted: Technology ≈ $20,705.54, NOT the ₩17.31M-inflated phantom
+    // (which would put Technology's dollarGap over $17M).
+    expect(Math.abs(techGap!.dollarGap)).toBeCloseTo(expectedTechDollars, 1);
+    expect(Math.abs(techGap!.dollarGap)).toBeLessThan(30_000);
+
+    // Healthcare (USD-only) byte-unchanged.
+    expect(Math.abs(healthGap!.dollarGap)).toBeCloseTo(expectedHealthDollars, 1);
+  });
+});

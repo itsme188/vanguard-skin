@@ -13,6 +13,7 @@ import type Database from "better-sqlite3";
 import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
 import { marketValue } from "@/lib/valuation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 
 export interface HypotheticalLeg {
   symbol: string;
@@ -59,6 +60,7 @@ interface HoldingRow {
   symbol: string;
   securityType: string | null;
   sector: string | null;
+  currency: string | null;
   multiplier: number;
   quantity: number;
   price: number;
@@ -100,6 +102,7 @@ function loadCurrentHoldings(
         s.symbol,
         s.security_type,
         s.sector,
+        s.currency,
         COALESCE(s.multiplier, 1) AS multiplier,
         SUM(lh.quantity) AS quantity,
         lp.close_price AS price,
@@ -118,6 +121,7 @@ function loadCurrentHoldings(
       symbol: string;
       security_type: string | null;
       sector: string | null;
+      currency: string | null;
       multiplier: number;
       quantity: number;
       price: number | null;
@@ -136,10 +140,11 @@ function loadCurrentHoldings(
         symbol: r.symbol,
         securityType: r.security_type,
         sector: r.sector,
+        currency: r.currency,
         multiplier: r.multiplier,
         quantity: r.quantity,
         price: r.price!,
-        marketValue: marketValue(r.quantity, r.price!, r.security_type, r.multiplier),
+        marketValue: marketValue(r.quantity, r.price!, r.security_type, r.multiplier, getUsdPerUnit(db, r.currency)),
         beta: r.cached_beta ?? 1.0,
         factors,
       };
@@ -153,7 +158,7 @@ function loadCurrentHoldings(
 function lookupSymbol(
   db: Database.Database,
   symbol: string
-): Pick<HoldingRow, "symbol" | "securityType" | "sector" | "multiplier" | "price" | "beta" | "factors"> | null {
+): Pick<HoldingRow, "symbol" | "securityType" | "sector" | "currency" | "multiplier" | "price" | "beta" | "factors"> | null {
   const row = db
     .prepare(
       `
@@ -162,6 +167,7 @@ function lookupSymbol(
         s.symbol,
         s.security_type,
         s.sector,
+        s.currency,
         COALESCE(s.multiplier, 1) AS multiplier,
         (SELECT p.close_price FROM prices p
           WHERE p.security_id = s.id ORDER BY p.date DESC LIMIT 1) AS price,
@@ -179,6 +185,7 @@ function lookupSymbol(
       symbol: string;
       security_type: string | null;
       sector: string | null;
+      currency: string | null;
       multiplier: number;
       price: number | null;
       cached_beta: number | null;
@@ -195,6 +202,7 @@ function lookupSymbol(
     symbol: row.symbol,
     securityType: row.security_type,
     sector: row.sector,
+    currency: row.currency,
     multiplier: row.multiplier,
     price: row.price,
     beta: row.cached_beta ?? 1.0,
@@ -254,6 +262,7 @@ function snapshot(holdings: HoldingRow[]): ExposureSnapshot {
 }
 
 function applyLegs(
+  db: Database.Database,
   current: HoldingRow[],
   legs: HypotheticalLeg[],
   resolve: (symbol: string) => HoldingRow | null
@@ -279,7 +288,7 @@ function applyLegs(
       if (leg.action === "sell" && prevQuantity > 0 && h.quantity < 0) {
         h.quantity = 0;
       }
-      h.marketValue = marketValue(h.quantity, h.price, h.securityType, h.multiplier);
+      h.marketValue = marketValue(h.quantity, h.price, h.securityType, h.multiplier, getUsdPerUnit(db, h.currency));
     } else {
       if (leg.action === "sell") continue; // can't sell what we don't hold
       const synth = resolve(leg.symbol);
@@ -288,7 +297,11 @@ function applyLegs(
       const row: HoldingRow = {
         ...synth,
         quantity: shares,
-        marketValue: marketValue(shares, synth.price, synth.securityType, synth.multiplier),
+        // Options are USD-denominated in this app (securities.currency
+        // defaults to 'USD' at ingestion unless a real non-USD currency was
+        // captured) — synth.currency already reflects that, so no special
+        // option-vs-non-option branch is needed here.
+        marketValue: marketValue(shares, synth.price, synth.securityType, synth.multiplier, getUsdPerUnit(db, synth.currency)),
       };
       next.push(row);
       indexBy.set(upper, next.length - 1);
@@ -382,13 +395,14 @@ export function computeExposureDelta(
 ): ExposureDelta {
   const current = loadCurrentHoldings(db, accountIds);
   const before = snapshot(current);
-  const resolved = applyLegs(current, legs, (symbol) => {
+  const resolved = applyLegs(db, current, legs, (symbol) => {
     const sym = lookupSymbol(db, symbol);
     if (!sym) return null;
     return {
       symbol: sym.symbol,
       securityType: sym.securityType,
       sector: sym.sector,
+      currency: sym.currency,
       multiplier: sym.multiplier,
       quantity: 0,
       price: sym.price,
