@@ -53,6 +53,17 @@ function seedHolding(accountId: number, securityId: number, quantity: number) {
   ).run(accountId, securityId, quantity, securityId);
 }
 
+function seedHoldingWithCostBasis(
+  accountId: number,
+  securityId: number,
+  quantity: number,
+  costBasis: number
+) {
+  db.prepare(
+    "INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key) VALUES (?, ?, ?, ?, '2026-06-01', 'test:' || ?)"
+  ).run(accountId, securityId, quantity, costBasis, securityId);
+}
+
 function seedPrice(securityId: number, price: number) {
   db.prepare(
     "INSERT INTO prices (security_id, close_price, date, source) VALUES (?, ?, '2026-06-01', 'test')"
@@ -201,5 +212,28 @@ describe("getPortfolioExposureSummary", () => {
     expect(s.total_market_value).toBeLessThan(20_000);
     expect(s.net_exposure).toBeCloseTo(expectedTotal, 5);
     expect(s.gross_exposure).toBeCloseTo(expectedTotal, 5);
+  });
+
+  it("KRW holding with NO price falls back to USD-converted cost_basis (Task 7a, Gap 2), not won notional", () => {
+    const acct = seedAccount("Test");
+
+    // No price row seeded — forces the `WHEN h.cost_basis > 0 THEN h.cost_basis`
+    // fallback branch. ₩16,329,792 cost basis.
+    const krw = seedStock("005930", "KRW");
+    seedHoldingWithCostBasis(acct, krw, 10, 16_329_792);
+
+    upsertFxRate(db, {
+      currency: "KRW",
+      usdPerUnit: 0.000734,
+      asOf: "2026-06-01",
+      source: "test",
+    });
+
+    const s = getPortfolioExposureSummary(db);
+    const expectedUsd = 16_329_792 * 0.000734; // ≈ $11,986.07
+
+    expect(s.total_market_value).toBeCloseTo(expectedUsd, 2);
+    expect(s.total_market_value).toBeLessThan(20_000);
+    expect(s.net_exposure).toBeCloseTo(expectedUsd, 2);
   });
 });

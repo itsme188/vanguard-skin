@@ -125,7 +125,7 @@ export function getPortfolioExposureSummary(
           WHEN lp.close_price IS NOT NULL
             THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
           WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
-            THEN h.cost_basis
+            THEN h.cost_basis * COALESCE(fx.usd_per_unit, 1)
           ELSE 0
         END AS mv
       FROM latest_holdings h
