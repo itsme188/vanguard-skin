@@ -118,6 +118,36 @@ describe("tax-lots FX conversion", () => {
       expect(usdLot!.adjusted_cost_basis).toBe(20_000);
       expect(usdLot!.unrealized_gain).toBe(5_000);
     });
+
+    it("converts the raw cost_basis field to USD, not the won phantom", () => {
+      const krw = seedSecurity(db, "402340", { currency: "KRW" });
+      seedTaxLot(db, ACCOUNT_ID, krw, "2025-01-01", 1_632_979.2, 10, 16_329_792);
+      seedPrice(db, krw, 1_731_000, TODAY);
+
+      upsertFxRate(db, {
+        currency: "KRW",
+        usdPerUnit: 0.000734,
+        asOf: TODAY,
+        source: "test",
+      });
+
+      const aapl = seedSecurity(db, "AAPL", { currency: "USD" });
+      seedTaxLot(db, ACCOUNT_ID, aapl, "2025-01-01", 200, 100, 20_000);
+      seedPrice(db, aapl, 250, TODAY);
+
+      const lots = getOpenTaxLots(db);
+      const krwLot = lots.find((l) => l.symbol === "402340");
+      const usdLot = lots.find((l) => l.symbol === "AAPL");
+      expect(krwLot).toBeTruthy();
+      expect(usdLot).toBeTruthy();
+
+      const expectedCostUsd = 10 * 1_632_979.2 * 0.000734; // 11,986.07
+      expect(krwLot!.cost_basis).toBeCloseTo(expectedCostUsd, 2);
+      expect(krwLot!.cost_basis).not.toBeCloseTo(16_329_792, 0);
+
+      // USD control: byte-identical (×1)
+      expect(usdLot!.cost_basis).toBe(20_000);
+    });
   });
 
   describe("getTaxLotSummary", () => {
