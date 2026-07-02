@@ -321,14 +321,11 @@ export function computeRecipeScenario(
         COALESCE(sf.ai_exposure, sf_u.ai_exposure) AS ai_exposure,
         COALESCE(sf.crypto_adjacent, sf_u.crypto_adjacent) AS crypto_adjacent,
         COALESCE(sf.regulatory_risk, sf_u.regulatory_risk) AS regulatory_risk,
-        CASE
-          WHEN LOWER(s.security_type) = 'bond'
-            THEN lh.total_qty * COALESCE(lp.close_price, 0) / 100.0
-          ELSE lh.total_qty * COALESCE(lp.close_price, 0) * COALESCE(s.multiplier, 1)
-        END AS market_value
+        ${adjustedMarketValueSQL("lh.total_qty", "COALESCE(lp.close_price, 0)", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} AS market_value
       FROM latest_holdings lh
       JOIN securities s ON s.id = lh.security_id
       LEFT JOIN latest_prices lp ON lp.security_id = lh.security_id
+      LEFT JOIN fx_rates fx ON fx.currency = s.currency
       LEFT JOIN security_factors sf ON sf.security_id = s.id
       -- Option → underlying inheritance (the same COALESCE rule every
       -- factor-coverage surface applies — options have no factor rows of
@@ -516,7 +513,3 @@ export function matchScenariosToThemes(
     return { ...r, liveNowReason: match.name };
   });
 }
-
-// Suppress unused-var lint on the SQL helper import (kept for parity with
-// scenarios.ts patterns).
-void adjustedMarketValueSQL;

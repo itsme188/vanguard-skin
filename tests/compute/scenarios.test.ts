@@ -38,7 +38,15 @@ function createTestDb(): Database.Database {
       strike_price REAL,
       expiration_date TEXT,
       option_type TEXT,
-      fund_category TEXT
+      fund_category TEXT,
+      currency TEXT NOT NULL DEFAULT 'USD'
+    );
+
+    CREATE TABLE fx_rates (
+      currency TEXT PRIMARY KEY,
+      usd_per_unit REAL NOT NULL,
+      as_of TEXT NOT NULL,
+      source TEXT
     );
 
     CREATE TABLE security_quotes (
@@ -264,5 +272,63 @@ describe("legacy custom-scenario path (non-recipe ids flow through beta heuristi
     const bnd = result.positionImpacts.find((p) => p.symbol === "BND")!;
     // 5y duration × 1% rate move = -5%
     expect(bnd.changePercent).toBeCloseTo(-0.05, 2);
+  });
+});
+
+describe("FX conversion (Task 9a — scenario market value)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+  });
+
+  it("KRW holding's current value and scenario dollar impact reflect USD conversion, not won notional", () => {
+    const today = new Date().toISOString().slice(0, 10);
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test')");
+
+    // USD control: 10 sh @ $208 = $2,080. Unaffected by the FX join (default
+    // currency 'USD' has no fx_rates row; COALESCE(fx.usd_per_unit,1) → 1).
+    db.prepare(
+      "INSERT INTO securities (id, symbol, name, security_type, currency) VALUES (1, 'AAPL', 'Apple', 'stock', 'USD')"
+    ).run();
+    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 1, ?, 10)").run(today);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (1, ?, 208)").run(today);
+
+    // KRW holding: 10 sh @ ₩1,731,000 = ₩17,310,000 notional. fx 0.000734 → ≈$12,705.54.
+    db.prepare(
+      "INSERT INTO securities (id, symbol, name, security_type, currency) VALUES (2, '402340', 'KRW Co', 'stock', 'KRW')"
+    ).run();
+    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 2, ?, 10)").run(today);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (2, ?, 1731000)").run(today);
+    db.prepare(
+      "INSERT INTO fx_rates (currency, usd_per_unit, as_of, source) VALUES ('KRW', 0.000734, ?, 'test')"
+    ).run(today);
+
+    // Legacy custom (non-recipe) scenario — flows through scenarios.ts's own
+    // inline market_value query, not scenario-recipes.ts.
+    const customCorrection = {
+      id: "custom-fx-test",
+      name: "Custom",
+      description: "test",
+      category: "custom" as const,
+      marketMove: -0.10,
+    };
+    const result = computeScenario(db, customCorrection);
+
+    const expectedKrwUsd = 10 * 1_731_000 * 0.000734; // ≈ $12,705.54
+    const krw = result.positionImpacts.find((p) => p.symbol === "402340")!;
+    const aapl = result.positionImpacts.find((p) => p.symbol === "AAPL")!;
+
+    // Plain stock, no sector/style/market-cap → beta 1.0 → changePercent = marketMove.
+    expect(krw.currentValue).toBeCloseTo(expectedKrwUsd, 2);
+    expect(krw.currentValue).toBeLessThan(20_000); // NOT the ₩17.31M phantom
+    expect(krw.estimatedChange).toBeCloseTo(expectedKrwUsd * -0.10, 2);
+    expect(krw.estimatedNewValue).toBeCloseTo(expectedKrwUsd * 0.9, 2);
+
+    // USD control byte-unchanged.
+    expect(aapl.currentValue).toBeCloseTo(2_080, 2);
+    expect(aapl.estimatedChange).toBeCloseTo(-208, 2);
+
+    expect(result.currentPortfolioValue).toBeCloseTo(2_080 + expectedKrwUsd, 2);
   });
 });
