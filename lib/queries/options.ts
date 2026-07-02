@@ -7,6 +7,7 @@
 
 import type Database from "better-sqlite3";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
+import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -95,6 +96,7 @@ export function getOptionPositions(
         s.strike_price,
         s.expiration_date,
         COALESCE(s.multiplier, 1) AS multiplier,
+        s.currency,
         h.quantity,
         h.cost_basis,
         h.account_id,
@@ -129,6 +131,7 @@ export function getOptionPositions(
     strike_price: number;
     expiration_date: string;
     multiplier: number;
+    currency: string | null;
     quantity: number;
     cost_basis: number | null;
     account_id: number;
@@ -138,10 +141,15 @@ export function getOptionPositions(
   }>;
 
   return rows.map((r) => {
+    // Options are USD-denominated in practice, so this is a no-op today
+    // (usdPerUnit === 1) — threaded through for consistency/defensiveness
+    // with every other market-value site (see fx-conversion-pattern.md).
+    const usdPerUnit = getUsdPerUnit(db, r.currency);
     const mv =
       r.current_price != null
-        ? r.quantity * r.current_price * r.multiplier
+        ? r.quantity * r.current_price * r.multiplier * usdPerUnit
         : null;
+    const costBasis = r.cost_basis != null ? r.cost_basis * usdPerUnit : null;
     return {
       securityId: r.security_id,
       symbol: r.symbol,
@@ -152,13 +160,13 @@ export function getOptionPositions(
       expiration: r.expiration_date,
       quantity: r.quantity,
       multiplier: r.multiplier,
-      costBasis: r.cost_basis,
+      costBasis,
       currentPrice: r.current_price,
       underlyingPrice: r.underlying_price,
       accountId: r.account_id,
       accountName: r.account_name,
       marketValue: mv,
-      unrealizedPnl: mv != null && r.cost_basis != null ? mv - r.cost_basis : null,
+      unrealizedPnl: mv != null && costBasis != null ? mv - costBasis : null,
     };
   });
 }

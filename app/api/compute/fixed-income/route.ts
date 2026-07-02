@@ -33,7 +33,7 @@ export async function GET(request: Request) {
          SELECT
            s.symbol,
            s.name,
-           lh.total_qty * COALESCE(lp.close_price, 0) / 100.0 AS market_value,
+           lh.total_qty * COALESCE(lp.close_price, 0) / 100.0 * COALESCE(fx.usd_per_unit, 1) AS market_value,
            s.duration_years,
            s.credit_rating,
            s.coupon_rate,
@@ -41,6 +41,7 @@ export async function GET(request: Request) {
          FROM latest_holdings lh
          JOIN securities s ON s.id = lh.security_id
          LEFT JOIN latest_prices lp ON lp.security_id = lh.security_id
+         LEFT JOIN fx_rates fx ON fx.currency = s.currency
          WHERE LOWER(s.security_type) = 'bond'
            AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
            AND COALESCE(lp.close_price, 0) > 0
@@ -78,15 +79,16 @@ export async function GET(request: Request) {
            )
          )
          SELECT SUM(
-           CASE
+           (CASE
              WHEN LOWER(s.security_type) = 'bond'
                THEN lh.total_qty * COALESCE(lp.close_price, 0) / 100.0
              ELSE lh.total_qty * COALESCE(lp.close_price, 0) * COALESCE(s.multiplier, 1)
-           END
+           END) * COALESCE(fx.usd_per_unit, 1)
          ) AS total_value
          FROM latest_holdings lh
          JOIN securities s ON s.id = lh.security_id
          LEFT JOIN latest_prices lp ON lp.security_id = lh.security_id
+         LEFT JOIN fx_rates fx ON fx.currency = s.currency
          WHERE COALESCE(lp.close_price, 0) > 0`
       )
       .get() as { total_value: number } | undefined;
