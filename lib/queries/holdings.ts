@@ -49,7 +49,7 @@ export function getAllHoldings(db: Database.Database): AllHoldingsRow[] {
       s.security_type,
       COALESCE(s.multiplier, 1) AS multiplier,
       h.quantity,
-      h.cost_basis,
+      h.cost_basis * COALESCE(fx.usd_per_unit, 1) AS cost_basis,
       h.as_of_date,
       p.close_price AS current_price,
       CASE WHEN p.close_price IS NOT NULL
