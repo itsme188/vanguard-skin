@@ -19,7 +19,15 @@ function createTestDb(): Database.Database {
       symbol TEXT NOT NULL UNIQUE,
       name TEXT,
       security_type TEXT DEFAULT 'stock',
-      multiplier REAL DEFAULT 1
+      multiplier REAL DEFAULT 1,
+      currency TEXT NOT NULL DEFAULT 'USD'
+    );
+
+    CREATE TABLE fx_rates (
+      currency TEXT PRIMARY KEY,
+      usd_per_unit REAL NOT NULL,
+      as_of TEXT NOT NULL,
+      source TEXT
     );
 
     CREATE TABLE holdings (
@@ -506,6 +514,117 @@ describe("computePositionRisk", () => {
     expect(result.positions).toHaveLength(1);
     expect(result.positions[0].annualizedVol).toBeNull();
     expect(result.positions[0].dataPoints).toBeLessThan(20);
+  });
+
+  it("weight reflects USD-converted market value, not KRW notional", () => {
+    const today = new Date().toISOString().slice(0, 10);
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test')");
+
+    // USD control: 10 sh @ $208 = $2,080.
+    db.prepare(
+      "INSERT INTO securities (id, symbol, name, security_type, currency) VALUES (1, 'AAPL', 'Apple', 'stock', 'USD')"
+    ).run();
+    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 1, ?, 10)").run(today);
+
+    // KRW holding: 10 sh @ ₩1,731,000 = ₩17,310,000 notional. fx 0.000734 → ≈$12,705.54.
+    db.prepare(
+      "INSERT INTO securities (id, symbol, name, security_type, currency) VALUES (2, '402340', 'KRW Co', 'stock', 'KRW')"
+    ).run();
+    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 2, ?, 10)").run(today);
+    db.prepare(
+      "INSERT INTO fx_rates (currency, usd_per_unit, as_of, source) VALUES ('KRW', 0.000734, ?, 'test')"
+    ).run(today);
+
+    // 60 days of prices for both so the top-N query and weight computation work.
+    const base = new Date();
+    for (let i = 0; i < 60; i++) {
+      const d = new Date(base);
+      d.setDate(d.getDate() - 59 + i);
+      const date = d.toISOString().slice(0, 10);
+      db.prepare("INSERT OR IGNORE INTO prices (security_id, date, close_price) VALUES (1, ?, 208)").run(date);
+      db.prepare("INSERT OR IGNORE INTO prices (security_id, date, close_price) VALUES (2, ?, 1731000)").run(date);
+    }
+
+    const result = computePositionRisk(db);
+    const expectedKrwUsd = 10 * 1_731_000 * 0.000734; // ≈ $12,705.54
+    const expectedTotal = expectedKrwUsd + 2_080;
+
+    const krw = result.positions.find((p) => p.symbol === "402340")!;
+    const aapl = result.positions.find((p) => p.symbol === "AAPL")!;
+    expect(krw).toBeDefined();
+    expect(aapl).toBeDefined();
+
+    // The KRW position's weight should reflect its true ~$12.7K USD value,
+    // NOT dominate at ~99.99% (won notional ÷ total).
+    expect(krw!.weight).toBeCloseTo(expectedKrwUsd / expectedTotal, 3);
+    expect(krw!.weight).toBeLessThan(0.9);
+    expect(krw!.weight).toBeGreaterThan(0.8);
+
+    // USD control byte-unchanged.
+    expect(aapl!.weight).toBeCloseTo(2_080 / expectedTotal, 3);
+  });
+});
+
+describe("FX conversion (Task 9b — risk concentration weights)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+  });
+
+  it("Herfindahl/top5 concentration weight reflects USD conversion, not KRW notional", () => {
+    const today = new Date().toISOString().slice(0, 10);
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test')");
+
+    // USD control: 10 sh @ $208 = $2,080.
+    db.prepare(
+      "INSERT INTO securities (id, symbol, name, security_type, currency) VALUES (1, 'AAPL', 'Apple', 'stock', 'USD')"
+    ).run();
+    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 1, ?, 10)").run(today);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (1, ?, 208)").run(today);
+
+    // KRW holding: 10 sh @ ₩1,731,000 = ₩17,310,000 notional. fx 0.000734 → ≈$12,705.54.
+    db.prepare(
+      "INSERT INTO securities (id, symbol, name, security_type, currency) VALUES (2, '402340', 'KRW Co', 'stock', 'KRW')"
+    ).run();
+    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 2, ?, 10)").run(today);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (2, ?, 1731000)").run(today);
+    db.prepare(
+      "INSERT INTO fx_rates (currency, usd_per_unit, as_of, source) VALUES ('KRW', 0.000734, ?, 'test')"
+    ).run(today);
+
+    // Daily valuations feed drawdown/vol/Sharpe — computed from a wholly
+    // separate flow-adjusted series, structurally untouched by holdings
+    // currency (it never reads securities/holdings/prices at all).
+    seedDailyValuations(db, Array.from({ length: 40 }, (_, i) => 100 + i * 0.5));
+
+    const result = computeRiskMetrics(db);
+
+    const expectedKrwUsd = 10 * 1_731_000 * 0.000734; // ≈ $12,705.54
+    const expectedTotal = expectedKrwUsd + 2_080;
+
+    const krw = result.top5Positions.find((p) => p.symbol === "402340")!;
+    const aapl = result.top5Positions.find((p) => p.symbol === "AAPL")!;
+    expect(krw).toBeDefined();
+    expect(aapl).toBeDefined();
+
+    expect(krw!.marketValue).toBeCloseTo(expectedKrwUsd, 2);
+    expect(krw!.marketValue).toBeLessThan(20_000); // NOT the ₩17.31M phantom
+    expect(krw!.weight).toBeCloseTo(expectedKrwUsd / expectedTotal, 3);
+    expect(krw!.weight).toBeLessThan(0.9); // not dominating at ~99.99% notional weight
+
+    // USD control byte-unchanged.
+    expect(aapl!.marketValue).toBeCloseTo(2_080, 2);
+    expect(aapl!.weight).toBeCloseTo(2_080 / expectedTotal, 3);
+
+    // Herfindahl computed from the same corrected weights.
+    const expectedHerf = (expectedKrwUsd / expectedTotal) ** 2 + (2_080 / expectedTotal) ** 2;
+    expect(result.herfindahl).toBeCloseTo(expectedHerf, 3);
+
+    // Drawdown/volatility/Sharpe are unaffected by the KRW conversion — they
+    // come from the daily_valuations series, not per-holding market value.
+    expect(result.volatility).not.toBeNull();
+    expect(result.maxDrawdown).toBeNull(); // monotonically rising series seeded above
   });
 });
 
