@@ -29,6 +29,7 @@ interface SecurityRow {
   symbol: string;
   security_type: string | null;
   ib_con_id: number | null;
+  currency: string | null;
 }
 
 /**
@@ -75,7 +76,7 @@ export async function fetchSnapshotPrices(
     const placeholders = options.securityIds.map(() => "?").join(",");
     securities = db
       .prepare(
-        `SELECT id, symbol, security_type, ib_con_id FROM securities WHERE id IN (${placeholders})`,
+        `SELECT id, symbol, security_type, ib_con_id, currency FROM securities WHERE id IN (${placeholders})`,
       )
       .all(...options.securityIds) as SecurityRow[];
   } else {
@@ -84,7 +85,7 @@ export async function fetchSnapshotPrices(
     // Requires enrichment to have been run first (populates ib_con_id).
     securities = db
       .prepare(
-        `SELECT DISTINCT s.id, s.symbol, s.security_type, s.ib_con_id
+        `SELECT DISTINCT s.id, s.symbol, s.security_type, s.ib_con_id, s.currency
          FROM securities s
          JOIN holdings h ON h.security_id = s.id AND h.quantity > 0
          WHERE s.ib_con_id IS NOT NULL`,
@@ -116,9 +117,14 @@ export async function fetchSnapshotPrices(
       });
 
       const secType = mapSecurityType(sec.security_type);
+      // Options stay USD (listed equity/index options are USD-denominated
+      // regardless of the underlying's currency); other types use the
+      // security's own stored currency so a KRW contract like 402340 isn't
+      // queried as if it were USD (Task 6: foreign-currency valuation).
+      const currency = secType === SecType.OPT ? "USD" : sec.currency || "USD";
       const contract = sec.ib_con_id
-        ? { conId: sec.ib_con_id, secType, exchange: "SMART", currency: "USD" }
-        : { symbol: sec.symbol, secType, exchange: "SMART", currency: "USD" };
+        ? { conId: sec.ib_con_id, secType, exchange: "SMART", currency }
+        : { symbol: sec.symbol, secType, exchange: "SMART", currency };
 
       try {
         const snapshot = await Promise.race([

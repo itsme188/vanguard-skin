@@ -40,6 +40,22 @@ export interface MappedPosition {
   costBasis: number | null;
   mktPrice: number | null;
   mktValue: number | null;
+  currency: string;
+}
+
+/** USD per 1 unit of the position's local currency, from the broker's own USD
+ *  market value. Returns null when inputs are missing/≤0 (caller skips fx write). */
+export function deriveUsdPerUnit(
+  mktValueUsd: number | null,
+  mktPriceLocal: number | null,
+  quantity: number,
+  multiplier: number = 1,
+): number | null {
+  if (!mktValueUsd || !mktPriceLocal || !quantity) return null;
+  const localNotional = mktPriceLocal * quantity * (multiplier || 1);
+  if (localNotional <= 0) return null;
+  const rate = mktValueUsd / localNotional;
+  return Number.isFinite(rate) && rate > 0 ? rate : null;
 }
 
 const ASSET_CLASS_TO_TYPE: Record<string, string> = {
@@ -74,6 +90,9 @@ export function mapPosition(raw: RawPosition): MappedPosition {
   const mktPrice = typeof raw.mktPrice === "number" ? raw.mktPrice : null;
   const mktValue = typeof raw.mktValue === "number" ? raw.mktValue : null;
   const contractDesc = raw.contractDesc ?? "";
+  // Guard against an empty-string broker currency (`??` alone only catches
+  // null/undefined) — treat it the same as missing and default to USD.
+  const currency = (raw.currency && raw.currency.trim() ? raw.currency : "USD").toUpperCase();
 
   if (securityType === "Option") {
     const extracted = extractOccFromContractDesc(contractDesc);
@@ -95,6 +114,7 @@ export function mapPosition(raw: RawPosition): MappedPosition {
           costBasis,
           mktPrice,
           mktValue,
+          currency,
         };
       }
     }
@@ -111,5 +131,6 @@ export function mapPosition(raw: RawPosition): MappedPosition {
     costBasis,
     mktPrice,
     mktValue,
+    currency,
   };
 }

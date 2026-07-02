@@ -11,6 +11,7 @@ import type Database from "better-sqlite3";
 import { upsertSecurity } from "../mutations/securities";
 import { computeDailyValuations } from "../compute/daily-valuation";
 import { todayET } from "../calendar/date-utils";
+import { upsertFxRate } from "../mutations/fx-rates";
 import { loadIbkrConfig } from "./config";
 import {
   openSession,
@@ -18,7 +19,7 @@ import {
   getPositions,
   getLedger,
 } from "./web-api";
-import { mapPosition, type MappedPosition } from "./map-positions";
+import { mapPosition, deriveUsdPerUnit, type MappedPosition } from "./map-positions";
 import type { IbkrOAuthConfig } from "./oauth-client";
 import { getMarketDataSnapshot, type ParsedQuote } from "./market-data";
 import { getQuoteCandidateConids } from "../queries/security-quotes";
@@ -118,6 +119,7 @@ export function writeIbkrHoldings(
         expirationDate: m.expirationDate,
         optionType: m.optionType,
         multiplier: m.multiplier,
+        currency: m.currency,
       });
       if (m.conid != null) updateConId.run(m.conid, securityId);
       upsertHolding.run(accountId, securityId, m.quantity, m.costBasis, today, `tws-${accountId}-${securityId}-${today}`);
@@ -125,6 +127,22 @@ export function writeIbkrHoldings(
       if (m.mktPrice != null && m.mktPrice > 0) {
         upsertPrice.run(securityId, today, m.mktPrice);
         pricesWritten++;
+      }
+
+      // Foreign-currency positions: the IBKR Web API's `mktValue` field is
+      // confirmed USD/base-currency (verified against the brief's KRW
+      // fixture: 1,731,000 KRW × 10 sh × ~0.000734 ≈ 12,705 mktValue), unlike
+      // the TWS `Position.marketValue` field (see the parallel comment + open
+      // question in lib/tws/positions.ts::syncPortfolio). If that TWS
+      // assumption ever proves wrong on a live sync, THIS path — sourced from
+      // `m.mktValue` — is the reliable fallback signal, and the ledger's
+      // per-currency `exchangeRate` (lib/ibkr/web-api.ts::getLedger) is the
+      // fallback-of-last-resort noted there.
+      if (m.currency && m.currency !== "USD") {
+        const rate = deriveUsdPerUnit(m.mktValue, m.mktPrice, m.quantity, m.multiplier ?? 1);
+        if (rate != null) {
+          upsertFxRate(db, { currency: m.currency, usdPerUnit: rate, asOf: today, source: "ibkr_derived" });
+        }
       }
     }
   })();

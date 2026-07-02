@@ -222,4 +222,38 @@ describe("upsertSecurity", () => {
     const row = db.prepare("SELECT multiplier FROM securities WHERE id = ?").get(id) as any;
     expect(row.multiplier).toBeNull();
   });
+
+  it("defaults currency to 'USD' when not provided", () => {
+    const id = upsertSecurity(db, "VTI", "Vanguard Total Market", "etf");
+    const row = db.prepare("SELECT currency FROM securities WHERE id = ?").get(id) as any;
+    expect(row.currency).toBe("USD");
+  });
+
+  it("persists an explicit non-USD currency", () => {
+    const id = upsertSecurity(db, {
+      symbol: "402340",
+      name: "SK Hynix",
+      securityType: "stock",
+      currency: "KRW",
+    });
+    const row = db.prepare("SELECT currency FROM securities WHERE id = ?").get(id) as any;
+    expect(row.currency).toBe("KRW");
+  });
+
+  it("does not clobber a stored non-USD currency with a later default-USD upsert", () => {
+    const id1 = upsertSecurity(db, { symbol: "402340", securityType: "stock", currency: "KRW" });
+    // A later writer (e.g. plain TWS enrichment) that doesn't know the currency
+    // re-upserts without one — must not reset the stored KRW back to USD.
+    const id2 = upsertSecurity(db, { symbol: "402340", name: "SK Hynix" });
+    expect(id2).toBe(id1);
+    const row = db.prepare("SELECT currency FROM securities WHERE id = ?").get(id1) as any;
+    expect(row.currency).toBe("KRW");
+  });
+
+  it("updates currency when a later upsert supplies a genuine non-USD value", () => {
+    const id = upsertSecurity(db, { symbol: "402340", securityType: "stock" }); // defaults USD
+    upsertSecurity(db, { symbol: "402340", currency: "KRW" });
+    const row = db.prepare("SELECT currency FROM securities WHERE id = ?").get(id) as any;
+    expect(row.currency).toBe("KRW");
+  });
 });
