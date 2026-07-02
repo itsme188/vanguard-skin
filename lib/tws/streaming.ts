@@ -121,20 +121,26 @@ export function startStreaming(
   api.setMarketDataType(MarketDataType.DELAYED_FROZEN);
 
   // Get securities to stream
-  let securities: { id: number; symbol: string; security_type: string | null; ib_con_id: number | null }[];
+  let securities: {
+    id: number;
+    symbol: string;
+    security_type: string | null;
+    ib_con_id: number | null;
+    currency: string | null;
+  }[];
 
   if (options?.securityIds?.length) {
     const placeholders = options.securityIds.map(() => "?").join(",");
     securities = db
       .prepare(
-        `SELECT id, symbol, security_type, ib_con_id FROM securities WHERE id IN (${placeholders})`
+        `SELECT id, symbol, security_type, ib_con_id, currency FROM securities WHERE id IN (${placeholders})`
       )
       .all(...options.securityIds) as typeof securities;
   } else {
     // Stream all securities with positions and ib_con_id
     securities = db
       .prepare(
-        `SELECT DISTINCT s.id, s.symbol, s.security_type, s.ib_con_id
+        `SELECT DISTINCT s.id, s.symbol, s.security_type, s.ib_con_id, s.currency
          FROM securities s
          JOIN holdings h ON h.security_id = s.id
          WHERE s.ib_con_id IS NOT NULL
@@ -149,9 +155,12 @@ export function startStreaming(
 
   for (const sec of securities) {
     const secType = mapSecurityType(sec.security_type);
+    // Use the security's own stored currency (Task 6/7b: foreign-currency
+    // valuation) so a KRW-denominated held security isn't queried as USD.
+    const currency = sec.currency || "USD";
     const contract = sec.ib_con_id
-      ? { conId: sec.ib_con_id, secType, exchange: "SMART", currency: "USD" }
-      : { symbol: sec.symbol, secType, exchange: "SMART", currency: "USD" };
+      ? { conId: sec.ib_con_id, secType, exchange: "SMART", currency }
+      : { symbol: sec.symbol, secType, exchange: "SMART", currency };
 
     // Initialize cache entry
     if (!state.cache.has(sec.id)) {

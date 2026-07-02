@@ -30,6 +30,7 @@ interface SecurityRow {
   symbol: string;
   security_type: string | null;
   ib_con_id: number | null;
+  currency: string | null;
 }
 
 /** Convert "20250131" → "2025-01-31" */
@@ -71,7 +72,7 @@ export async function fetchHistoricalPrices(
     const placeholders = options.securityIds.map(() => "?").join(",");
     securities = db
       .prepare(
-        `SELECT id, symbol, security_type, ib_con_id FROM securities WHERE id IN (${placeholders})`,
+        `SELECT id, symbol, security_type, ib_con_id, currency FROM securities WHERE id IN (${placeholders})`,
       )
       .all(...options.securityIds) as SecurityRow[];
   } else {
@@ -79,7 +80,7 @@ export async function fetchHistoricalPrices(
     // Excludes mutual funds (no TWS trade data) and options (need special handling).
     securities = db
       .prepare(
-        `SELECT id, symbol, security_type, ib_con_id FROM securities
+        `SELECT id, symbol, security_type, ib_con_id, currency FROM securities
          WHERE ib_con_id IS NOT NULL
            AND (security_type IS NULL OR LOWER(security_type) NOT IN (${PRICE_FETCH_EXCLUDED_TYPES.map(() => "?").join(", ")}))`,
       )
@@ -134,9 +135,12 @@ export async function fetchHistoricalPrices(
     });
 
     const secType = mapSecurityType(sec.security_type);
+    // Use the security's own stored currency (Task 6/7b: foreign-currency
+    // valuation) so a KRW-denominated held security isn't queried as USD.
+    const currency = sec.currency || "USD";
     const contract = sec.ib_con_id
-      ? { conId: sec.ib_con_id, secType, exchange: "SMART", currency: "USD" }
-      : { symbol: sec.symbol, secType, exchange: "SMART", currency: "USD" };
+      ? { conId: sec.ib_con_id, secType, exchange: "SMART", currency }
+      : { symbol: sec.symbol, secType, exchange: "SMART", currency };
 
     // Choose whatToShow based on security type (bonds: BID_ASK, funds: MIDPOINT, stocks: TRADES)
     const whatToShow = getWhatToShow(sec.security_type);

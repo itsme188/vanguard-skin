@@ -205,6 +205,47 @@ describe("fetchHistoricalPrices", () => {
     );
   });
 
+  it("uses the security's own stored currency for the contract (non-USD)", async () => {
+    const result = db
+      .prepare(
+        "INSERT INTO securities (symbol, name, security_type, ib_con_id, currency) VALUES (?, ?, ?, ?, ?)",
+      )
+      .run("402340", "Korea Corp", "stock", 555, "KRW");
+    const secId = result.lastInsertRowid as number;
+
+    const mockApi = {
+      getHistoricalData: vi.fn().mockResolvedValue([]),
+    };
+    mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+
+    await fetchHistoricalPrices(db, { securityIds: [secId] });
+
+    expect(mockApi.getHistoricalData).toHaveBeenCalledWith(
+      { conId: 555, secType: "STK", exchange: "SMART", currency: "KRW" },
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it("defaults to USD when a security has no currency stored (NULL)", async () => {
+    // seedSecurity omits currency; migration 061's column DEFAULT 'USD' applies.
+    const secId = seedSecurity(db, "AAPL", "stock");
+
+    const mockApi = {
+      getHistoricalData: vi.fn().mockResolvedValue([]),
+    };
+    mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+
+    await fetchHistoricalPrices(db, { securityIds: [secId] });
+
+    const [contractArg] = mockApi.getHistoricalData.mock.calls[0];
+    expect(contractArg.currency).toBe("USD");
+  });
+
   describe("incremental mode", () => {
     it("uses shorter duration when recent prices exist", async () => {
       const secId = seedSecurity(db, "AAPL", "stock");
