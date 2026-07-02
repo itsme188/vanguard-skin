@@ -8,6 +8,7 @@ import {
   FACTOR_SHOCK_SENSITIVITIES,
 } from "@/lib/compute/scenario-recipes";
 import { computeScenario, PRESET_SCENARIOS } from "@/lib/compute/scenarios";
+import { upsertFxRate } from "@/lib/mutations/fx-rates";
 
 // Migration 002 seeds: 1=Vanguard Taxable, 2=Vanguard Roth IRA, 3=IBKR.
 
@@ -292,6 +293,35 @@ describe("computeRecipeScenario", () => {
     const result = computeRecipeScenario(db, findRecipe("crypto_minus_30pct")!);
     expect(result.estimatedChange).toBeCloseTo(0, 2);
     expect(result.estimatedPortfolioValue).toBeCloseTo(result.currentPortfolioValue, 2);
+  });
+
+  it("KRW holding's market value and dollar impact are USD-scaled, not won notional (Task 9a)", () => {
+    const today = new Date().toISOString().slice(0, 10);
+    // KRW security with the same Very-High-AI/Growth/Technology bucket as
+    // NVDA so ai_capex_pause's -21% math is directly comparable.
+    db.prepare(`INSERT INTO securities (id, symbol, security_type, sector, currency) VALUES (5, '402340', 'Stock', 'Technology', 'KRW')`).run();
+    db.prepare(`
+      INSERT INTO security_factors (security_id, ai_exposure, growth_vs_value, tariff_exposure, interest_rate_sensitive, regulatory_risk, cyclical, crypto_adjacent, international_exposure, geopolitical_onshoring)
+      VALUES (5, 'Very High', 'Growth', 'Moderate', 'Low', 'Low', 'Moderate', 'No', 'Moderate', 'No')
+    `).run();
+    // 10 sh @ ₩1,731,000 = ₩17,310,000 notional; fx 0.000734 → ≈$12,705.54
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (5, ?, 1731000, 'tws')`).run(today);
+    db.prepare(`INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 5, '2026-04-30', 10, 'h-krw')`).run();
+    upsertFxRate(db, { currency: "KRW", usdPerUnit: 0.000734, asOf: today, source: "test" });
+
+    const result = computeRecipeScenario(db, findRecipe("ai_capex_pause")!);
+    const krw = result.positionImpacts.find((p) => p.symbol === "402340")!;
+    const nvda = result.positionImpacts.find((p) => p.symbol === "NVDA")!;
+
+    const expectedUsd = 10 * 1_731_000 * 0.000734; // ≈ $12,705.54
+    expect(krw.currentValue).toBeCloseTo(expectedUsd, 2);
+    expect(krw.currentValue).toBeLessThan(20_000); // NOT the ₩17.31M phantom
+    // Very High AI (1.40) × -0.15 = -0.21, same bucket math as NVDA.
+    expect(krw.changePercent).toBeCloseTo(-0.21, 3);
+    expect(krw.estimatedChange).toBeCloseTo(expectedUsd * -0.21, 2);
+
+    // USD control (NVDA, $10,000) byte-unchanged.
+    expect(nvda.currentValue).toBeCloseTo(10_000, 2);
   });
 
   it("missing factor classification defaults bucket multiplier to 0", () => {

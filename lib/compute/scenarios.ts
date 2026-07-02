@@ -113,14 +113,15 @@ export function computeScenario(
          s.market_cap_category,
          s.duration_years,
          s.credit_rating,
-         CASE
+         (CASE
            WHEN LOWER(s.security_type) = 'bond'
              THEN lh.total_qty * COALESCE(lp.close_price, 0) / 100.0
            ELSE lh.total_qty * COALESCE(lp.close_price, 0) * COALESCE(s.multiplier, 1)
-         END AS market_value
+         END) * COALESCE(fx.usd_per_unit, 1) AS market_value
        FROM latest_holdings lh
        JOIN securities s ON s.id = lh.security_id
        LEFT JOIN latest_prices lp ON lp.security_id = lh.security_id
+       LEFT JOIN fx_rates fx ON fx.currency = s.currency
        WHERE COALESCE(lp.close_price, 0) > 0
        ORDER BY market_value DESC`
     )
