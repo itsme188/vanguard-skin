@@ -12,6 +12,7 @@ export interface UpsertSecurityParams {
   optionType?: "CALL" | "PUT";
   multiplier?: number;
   maturityDate?: string;
+  currency?: string;
 }
 
 export function upsertSecurity(
@@ -113,10 +114,18 @@ export function upsertSecurity(
     }
   }
 
+  // Currency defaults to 'USD' on a fresh insert (column is NOT NULL). On
+  // conflict, an incoming 'USD' (whether explicit or the caller's default —
+  // the two are indistinguishable here) never clobbers an already-stored
+  // non-USD currency; a genuine non-USD value always wins. This protects a
+  // security correctly tagged e.g. 'KRW' by the FX-aware ingestion path from
+  // being reset back to 'USD' by a later writer that doesn't know better.
+  const currency = p.currency ?? "USD";
+
   db.prepare(
     `INSERT INTO securities (symbol, name, security_type, asset_class,
-       underlying_symbol, strike_price, expiration_date, option_type, multiplier, maturity_date)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       underlying_symbol, strike_price, expiration_date, option_type, multiplier, maturity_date, currency)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(symbol) DO UPDATE SET
        name = COALESCE(excluded.name, securities.name),
        security_type = COALESCE(excluded.security_type, securities.security_type),
@@ -126,7 +135,8 @@ export function upsertSecurity(
        expiration_date = COALESCE(excluded.expiration_date, securities.expiration_date),
        option_type = COALESCE(excluded.option_type, securities.option_type),
        multiplier = COALESCE(excluded.multiplier, securities.multiplier),
-       maturity_date = COALESCE(excluded.maturity_date, securities.maturity_date)`
+       maturity_date = COALESCE(excluded.maturity_date, securities.maturity_date),
+       currency = COALESCE(NULLIF(excluded.currency, 'USD'), securities.currency)`
   ).run(
     p.symbol,
     p.name ?? null,
@@ -137,7 +147,8 @@ export function upsertSecurity(
     p.expirationDate ?? null,
     p.optionType ?? null,
     p.multiplier ?? null,
-    p.maturityDate ?? null
+    p.maturityDate ?? null,
+    currency
   );
 
   const row = db

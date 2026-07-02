@@ -13,6 +13,7 @@ interface SecurityRow {
   symbol: string;
   security_type: string | null;
   name: string | null;
+  currency: string | null;
 }
 
 /**
@@ -66,12 +67,14 @@ function buildContract(sec: SecurityRow): Record<string, unknown> | null {
     };
   }
 
-  // Stocks, ETFs, bonds, mutual funds — simple symbol lookup
+  // Stocks, ETFs, bonds, mutual funds — simple symbol lookup. Use the
+  // security's own stored currency (Task 6: foreign-currency valuation) so a
+  // KRW-denominated contract like 402340 isn't queried as if it were USD.
   return {
     symbol: sec.symbol,
     secType,
     exchange: "SMART",
-    currency: "USD",
+    currency: sec.currency || "USD",
   };
 }
 
@@ -99,7 +102,7 @@ export async function enrichSecurities(
     const placeholders = securityIds.map(() => "?").join(",");
     securities = db
       .prepare(
-        `SELECT id, symbol, security_type, name FROM securities WHERE id IN (${placeholders})`,
+        `SELECT id, symbol, security_type, name, currency FROM securities WHERE id IN (${placeholders})`,
       )
       .all(...securityIds) as SecurityRow[];
   } else {
@@ -115,7 +118,7 @@ export async function enrichSecurities(
     // contractDetails.longName for IBKR-imported holdings.
     securities = db
       .prepare(
-        `SELECT DISTINCT s.id, s.symbol, s.security_type, s.name
+        `SELECT DISTINCT s.id, s.symbol, s.security_type, s.name, s.currency
          FROM securities s
          JOIN holdings h ON h.security_id = s.id
          WHERE (s.ib_con_id IS NULL OR s.name IS NULL OR s.name = s.symbol)

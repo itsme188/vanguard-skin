@@ -7,6 +7,8 @@ import { getIbApi } from "./client";
 import { upsertSecurity } from "../mutations/securities";
 import { removeStaleSameDayTwsHoldings } from "../mutations/same-day-tws-holdings";
 import { computeDailyValuations } from "../compute/daily-valuation";
+import { upsertFxRate } from "../mutations/fx-rates";
+import { deriveUsdPerUnit } from "../ibkr/map-positions";
 import type { PositionSyncProgress, PositionSyncResult } from "./types";
 
 // ── Type mappings ────────────────────────────────────────────────
@@ -289,6 +291,9 @@ export async function syncPortfolio(
       const initialName =
         localSymbol && localSymbol !== symbol ? localSymbol : undefined;
 
+      const currency = (contract.currency && contract.currency.trim() ? contract.currency : "USD").toUpperCase();
+      const multiplier = contract.multiplier ? Number(contract.multiplier) : undefined;
+
       const securityId = upsertSecurity(db, {
         symbol,
         name: initialName,
@@ -300,7 +305,8 @@ export async function syncPortfolio(
         optionType: isOption
           ? (contract.right === OptionType.Put ? "PUT" : "CALL")
           : undefined,
-        multiplier: contract.multiplier ? Number(contract.multiplier) : undefined,
+        multiplier,
+        currency,
       });
 
       if (!existingSecurityIds.has(securityId)) {
@@ -323,6 +329,30 @@ export async function syncPortfolio(
       // Collect market prices from getAccountUpdates() (not available from getPositions)
       if (pos.marketPrice != null && pos.marketPrice > 0) {
         priceMap.set(securityId, pos.marketPrice);
+      }
+
+      // Foreign-currency positions: capture the broker's own FX rate, derived
+      // from marketValue vs (marketPrice × qty × multiplier).
+      //
+      // ASSUMPTION (unverified — see Task 6 validation gate): this assumes
+      // getAccountUpdates()'s `Position.marketValue` is base-currency (USD)
+      // denominated while `marketPrice` stays local-currency, matching what
+      // the IBKR Web API's `mktValue` field is confirmed to do (verified via
+      // the brief's KRW fixture: 1,731,000 KRW × 10 sh × ~0.000734 ≈ 12,705
+      // USD mktValue). We could NOT run a live TWS sync to confirm this holds
+      // for TWS's `updatePortfolio`/`getAccountUpdates` callback specifically.
+      // If a live sync shows the derived rate for a KRW position landing near
+      // 1 (instead of ~0.000734), `marketValue` is actually LOCAL-currency on
+      // this path — stop deriving here and source the rate instead from the
+      // IBKR Web API ledger's per-currency `exchangeRate` field
+      // (lib/ibkr/web-api.ts::getLedger — the ledger response is a
+      // currency→{...} map; each non-base entry carries its own exchange
+      // rate to base currency).
+      if (currency !== "USD") {
+        const rate = deriveUsdPerUnit(pos.marketValue ?? null, pos.marketPrice ?? null, pos.pos, multiplier ?? 1);
+        if (rate != null) {
+          upsertFxRate(db, { currency, usdPerUnit: rate, asOf: today, source: "tws_derived" });
+        }
       }
 
       positionsSynced++;

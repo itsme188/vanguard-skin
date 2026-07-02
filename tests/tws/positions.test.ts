@@ -44,6 +44,8 @@ function makeAccountUpdate(
     pos: number;
     avgCost?: number;
     marketPrice?: number;
+    marketValue?: number;
+    currency?: string;
     localSymbol?: string;
     strike?: number;
     right?: string;
@@ -65,7 +67,7 @@ function makeAccountUpdate(
         secType: p.secType ?? SecType.STK,
         conId: p.conId ?? Math.floor(Math.random() * 100000),
         exchange: "SMART",
-        currency: "USD",
+        currency: p.currency ?? "USD",
         localSymbol: p.localSymbol ?? p.symbol,
         strike: p.strike,
         right: p.right,
@@ -75,7 +77,7 @@ function makeAccountUpdate(
       pos: p.pos,
       avgCost: p.avgCost ?? 0,
       marketPrice: p.marketPrice ?? 0,
-      marketValue: p.pos * (p.marketPrice ?? 0),
+      marketValue: p.marketValue ?? p.pos * (p.marketPrice ?? 0),
       unrealizedPNL: 0,
       realizedPNL: 0,
     });
@@ -300,6 +302,56 @@ describe("TWS portfolio sync", () => {
     expect(holdings).toHaveLength(1);
     expect(holdings[0].quantity).toBe(200);
     expect(holdings[0].cost_basis).toBe(31000); // 200 * 155
+  });
+
+  it("persists a non-USD contract currency onto the security", async () => {
+    mockApi!.getAccountUpdates.mockReturnValue(
+      mockObservable(makeAccountUpdate([
+        { symbol: "402340", pos: 10, avgCost: 1_632_979.2, marketPrice: 1_731_000, currency: "KRW", conId: 555 },
+      ], 484374.59, 64983.18))
+    );
+
+    const syncPortfolio = await getSyncPortfolio();
+    await syncPortfolio(db);
+
+    const sec = db.prepare("SELECT currency FROM securities WHERE symbol = '402340'").get() as any;
+    expect(sec.currency).toBe("KRW");
+  });
+
+  it("derives + persists an FX rate from marketValue/marketPrice for a non-USD position", async () => {
+    // marketValue here is the USD-base figure the broker reports (per the
+    // documented assumption — see the code comment in syncPortfolio).
+    const usdMarketValue = 12705; // 10 sh × 1,731,000 KRW × ~0.000734
+    mockApi!.getAccountUpdates.mockReturnValue(
+      mockObservable(makeAccountUpdate([
+        {
+          symbol: "402340", pos: 10, avgCost: 1_632_979.2, marketPrice: 1_731_000,
+          marketValue: usdMarketValue, currency: "KRW", conId: 555,
+        },
+      ], 484374.59, 64983.18))
+    );
+
+    const syncPortfolio = await getSyncPortfolio();
+    await syncPortfolio(db);
+
+    const fx = db.prepare("SELECT currency, usd_per_unit, source FROM fx_rates WHERE currency = 'KRW'").get() as any;
+    expect(fx).toBeDefined();
+    expect(fx.usd_per_unit).toBeCloseTo(0.000734, 6);
+    expect(fx.source).toBe("tws_derived");
+  });
+
+  it("does not write an fx_rates row for a USD position", async () => {
+    mockApi!.getAccountUpdates.mockReturnValue(
+      mockObservable(makeAccountUpdate([
+        { symbol: "AAPL", pos: 100, avgCost: 150, marketPrice: 175, conId: 265598 },
+      ], 100000, 30000))
+    );
+
+    const syncPortfolio = await getSyncPortfolio();
+    await syncPortfolio(db);
+
+    const count = db.prepare("SELECT COUNT(*) c FROM fx_rates").get() as any;
+    expect(count.c).toBe(0);
   });
 
   it("enriches new securities with ib_con_id during sync", async () => {

@@ -18,7 +18,13 @@ beforeEach(() => {
   runMigrations(db); // seeds the default accounts incl. 'IBKR'
 });
 
-function stock(symbol: string, qty: number, avgCost: number, mktPrice: number): MappedPosition {
+function stock(
+  symbol: string,
+  qty: number,
+  avgCost: number,
+  mktPrice: number,
+  opts: { currency?: string; mktValue?: number } = {},
+): MappedPosition {
   return {
     symbol,
     securityType: "Stock",
@@ -28,7 +34,8 @@ function stock(symbol: string, qty: number, avgCost: number, mktPrice: number): 
     avgCost,
     costBasis: avgCost ? qty * avgCost : null,
     mktPrice,
-    mktValue: qty * mktPrice,
+    mktValue: opts.mktValue ?? qty * mktPrice,
+    currency: opts.currency ?? "USD",
   };
 }
 
@@ -80,6 +87,41 @@ describe("writeIbkrHoldings", () => {
     expect(res.positionsWritten).toBe(0);
     const h = db.prepare("SELECT COUNT(*) c FROM holdings WHERE as_of_date='2026-06-03'").get() as { c: number };
     expect(h.c).toBe(0);
+  });
+
+  it("persists a non-USD currency and derives + writes the fx_rates row", () => {
+    const res = writeIbkrHoldings(
+      db,
+      {
+        accountCode: "U1",
+        netLiq: 500000,
+        cash: 10000,
+        positions: [
+          stock("402340", 10, 1_632_979.2, 1_731_000, { currency: "KRW", mktValue: 12705 }),
+        ],
+      },
+      { asOfDate: "2026-06-03" },
+    );
+    expect(res.positionsWritten).toBe(1);
+
+    const sec = db.prepare("SELECT currency FROM securities WHERE symbol = '402340'").get() as { currency: string };
+    expect(sec.currency).toBe("KRW");
+
+    const fx = db
+      .prepare("SELECT usd_per_unit, source FROM fx_rates WHERE currency = 'KRW'")
+      .get() as { usd_per_unit: number; source: string };
+    expect(fx.usd_per_unit).toBeCloseTo(0.000734, 6);
+    expect(fx.source).toBe("ibkr_derived");
+  });
+
+  it("does not write an fx_rates row for a USD position", () => {
+    writeIbkrHoldings(
+      db,
+      { accountCode: "U1", netLiq: 500000, cash: 10000, positions: [stock("NET", 60, 200, 269.42)] },
+      { asOfDate: "2026-06-03" },
+    );
+    const count = db.prepare("SELECT COUNT(*) c FROM fx_rates").get() as { c: number };
+    expect(count.c).toBe(0);
   });
 
   it("throws when the DB account is missing", () => {
