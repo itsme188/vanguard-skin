@@ -30,6 +30,7 @@ interface SecurityRow {
   symbol: string;
   security_type: string | null;
   ib_con_id: number | null;
+  currency: string | null;
 }
 
 export interface FetchOhlcvOptions {
@@ -64,7 +65,7 @@ export async function fetchOhlcvBars(
 
   const sec = db
     .prepare(
-      "SELECT id, symbol, security_type, ib_con_id FROM securities WHERE id = ?",
+      "SELECT id, symbol, security_type, ib_con_id, currency FROM securities WHERE id = ?",
     )
     .get(options.securityId) as SecurityRow | undefined;
 
@@ -117,11 +118,13 @@ export async function fetchOhlcvBars(
   options.onProgress?.(`${sec.symbol}: fetching ${durationStr} of ${barSizeStr} bars...`);
 
   const secType = mapSecurityType(sec.security_type);
+  // Use the security's own stored currency (Task 6/7b: foreign-currency
+  // valuation) so a KRW-denominated held security isn't queried as USD.
   const contract = {
     conId: sec.ib_con_id,
     secType,
     exchange: "SMART",
-    currency: "USD",
+    currency: sec.currency || "USD",
   };
 
   const rawBars = await Promise.race([
