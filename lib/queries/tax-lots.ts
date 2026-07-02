@@ -66,18 +66,19 @@ export function getOpenTaxLots(db: Database.Database): TaxLotWithSecurity[] {
         tl.acquisition_date, tl.acquisition_price,
         tl.quantity_acquired, tl.quantity_remaining,
         tl.cost_basis, tl.is_from_opening_snapshot,
-        ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier")} AS adjusted_cost_basis,
+        ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} AS adjusted_cost_basis,
         p.close_price AS current_price,
         CASE WHEN p.close_price IS NOT NULL
-          THEN ${adjustedMarketValueSQL("tl.quantity_remaining", "p.close_price", "s.security_type", "s.multiplier")}
+          THEN ${adjustedMarketValueSQL("tl.quantity_remaining", "p.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
           ELSE NULL END AS current_value,
         CASE WHEN p.close_price IS NOT NULL
-          THEN ${adjustedMarketValueSQL("tl.quantity_remaining", "p.close_price", "s.security_type", "s.multiplier")}
-               - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier")}
+          THEN ${adjustedMarketValueSQL("tl.quantity_remaining", "p.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
+               - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
           ELSE NULL END AS unrealized_gain
       FROM tax_lots tl
       JOIN accounts a ON a.id = tl.account_id
       JOIN securities s ON s.id = tl.security_id
+      LEFT JOIN fx_rates fx ON fx.currency = s.currency
       LEFT JOIN prices p ON p.security_id = tl.security_id
         AND p.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = tl.security_id)
       WHERE tl.quantity_remaining > 0
@@ -123,12 +124,13 @@ export function getTaxLotSummary(
         COUNT(*) AS totalOpenLots,
         COALESCE(SUM(
           CASE WHEN p.close_price IS NOT NULL
-            THEN ${adjustedMarketValueSQL("tl.quantity_remaining", "p.close_price", "s.security_type", "s.multiplier")}
-                 - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier")}
+            THEN ${adjustedMarketValueSQL("tl.quantity_remaining", "p.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
+                 - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
             ELSE 0 END
         ), 0) AS totalUnrealizedGain
       FROM tax_lots tl
       JOIN securities s ON s.id = tl.security_id
+      LEFT JOIN fx_rates fx ON fx.currency = s.currency
       LEFT JOIN prices p ON p.security_id = tl.security_id
         AND p.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = tl.security_id)
       WHERE tl.quantity_remaining > 0`
