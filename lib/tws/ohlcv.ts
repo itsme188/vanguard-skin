@@ -118,13 +118,15 @@ export async function fetchOhlcvBars(
   options.onProgress?.(`${sec.symbol}: fetching ${durationStr} of ${barSizeStr} bars...`);
 
   const secType = mapSecurityType(sec.security_type);
-  // Use the security's own stored currency (Task 6/7b: foreign-currency
-  // valuation) so a KRW-denominated held security isn't queried as USD.
+  // Options stay USD (listed equity/index options are USD-denominated
+  // regardless of the underlying's currency); other types use the
+  // security's own stored currency (Task 6/7b: foreign-currency valuation)
+  // so a KRW-denominated held security isn't queried as USD.
   const contract = {
     conId: sec.ib_con_id,
     secType,
     exchange: "SMART",
-    currency: sec.currency || "USD",
+    currency: secType === SecType.OPT ? "USD" : sec.currency || "USD",
   };
 
   const rawBars = await Promise.race([

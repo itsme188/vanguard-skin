@@ -287,6 +287,25 @@ describe("fetchOhlcvBars (TWS integration)", () => {
     expect(contractArg.currency).toBe("USD");
   });
 
+  it("forces USD for an OPTION contract even when the security's stored currency is non-USD (KRW)", async () => {
+    const result = db
+      .prepare(
+        "INSERT INTO securities (symbol, name, security_type, ib_con_id, currency) VALUES (?, ?, ?, ?, ?)",
+      )
+      .run("402340  260320C00045000", "Korea Corp Option", "option", 556, "KRW");
+    const secId = result.lastInsertRowid as number;
+
+    const mockApi = {
+      getHistoricalData: vi.fn().mockResolvedValue([]),
+    };
+    mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+
+    await fetchOhlcvBars(db, { securityId: secId });
+
+    const [contractArg] = mockApi.getHistoricalData.mock.calls[0];
+    expect(contractArg).toEqual({ conId: 556, secType: "OPT", exchange: "SMART", currency: "USD" });
+  });
+
   it("throws for non-existent security", async () => {
     const mockApi = { getHistoricalData: vi.fn() };
     mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);

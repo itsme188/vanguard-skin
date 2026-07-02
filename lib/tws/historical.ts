@@ -135,9 +135,11 @@ export async function fetchHistoricalPrices(
     });
 
     const secType = mapSecurityType(sec.security_type);
-    // Use the security's own stored currency (Task 6/7b: foreign-currency
-    // valuation) so a KRW-denominated held security isn't queried as USD.
-    const currency = sec.currency || "USD";
+    // Options stay USD (listed equity/index options are USD-denominated
+    // regardless of the underlying's currency); other types use the
+    // security's own stored currency (Task 6/7b: foreign-currency valuation)
+    // so a KRW-denominated held security isn't queried as USD.
+    const currency = secType === SecType.OPT ? "USD" : sec.currency || "USD";
     const contract = sec.ib_con_id
       ? { conId: sec.ib_con_id, secType, exchange: "SMART", currency }
       : { symbol: sec.symbol, secType, exchange: "SMART", currency };
