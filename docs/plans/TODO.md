@@ -166,6 +166,17 @@
 
 - **Continue factor-analysis collaboration with ChatGPT** — give it the freshly refreshed GitHub link after this session's README + screenshot + CHANGELOG sweep so its context matches the post-redesign reality.
 
+### Closed this session (2026-07-03 — roadmap-verify + FX go-live + bugs-first sweep)
+
+- ✅ **Roadmap verification pass** — every open TODO/QA item checked against code + live DB + system state; 18 stale entries closed (`3e0c3e4`); 3 QA findings re-attributed (stat strip = `MarketDataPanel` KpiCell not QuoteStats; volume label = hidden-scale last-value pill; Alerts wrap = group-as-one-block).
+- ✅ **[FX-GOLIVE] + ledger-rate fix** (`e1613dc`) — first live sync derived KRW=1.0; live probe proved Web-API `mktValue` is NATIVE currency; rates now from ledger `exchangerate` (`ibkr_ledger`) + `upsertFxRate` precedence guard. KRW 0.0006531 live; 402340 = $10.5k (was $17.31M phantom); portfolio $2.07M. TWS-path assumption now self-validating via guard log.
+- ✅ **Earnings supersession data-preservation** (`761fbc4`) — reconciler COALESCEs enrichment forward + re-points earnings_emails/bogeys/skips (UPDATE OR IGNORE).
+- ✅ **Coverage-jump guard** (`0ce68b5`) — `fullCoverageOnly` on both summed-series queries; factors + risk wired; period-attribution migrated. Live alpha +204%→+34%.
+- ✅ **[R1] away-from-home auto-refresh** (`5cd756a` spec + `42484cf`) — see the User-roadmap entry above.
+- ✅ **[R2] long-email ingestion** (`ea64aad`) — see the User-roadmap entry above; 48 clipped articles refetched + re-summarized.
+- ✅ **11-finding QA UI batch** (`d6b47d8`) — equity-curve axis, volume pill, off-range markers, Notes live search, Feeds no-match state, source-delete confirm, options `$0.00`→`—`, gen-409→friendly notReady, Alerts/Charts/KpiCell mobile overflow. All browser-verified desktop + 390×844.
+- Worker deployed `df8db49f` (extraction-cap parity); DMG rebuilt + installed at session end. Tests 2901→2934 Mac / 260 Worker.
+
 ### Closed this session (2026-06-24 — UI-polish skill sweep + deep-QA cron re-fix)
 
 Session goal: installed the `make-interfaces-feel-better` design skill (personal, `~/.claude/skills/`) and applied it across the dashboard; then the user noticed deep-QA hadn't produced findings in a while — root-caused and re-fixed. Two feature commits; **2828/2828 tests** pass; UI changes E2E-verified in-browser (computed styles + 40×40 hit areas).
