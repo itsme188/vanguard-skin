@@ -97,9 +97,23 @@ export function NotesView({
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // ─── Live search (deep-QA finding: Enter-only read as broken) ──
+  // Controlled draft + 350ms debounce → URL replace. Enter still applies
+  // immediately. Skip the initial mount (and echoes of the current URL
+  // value) so navigation isn't triggered by arriving with ?search= set.
+  const [searchDraft, setSearchDraft] = useState(currentSearch ?? "");
+  useEffect(() => {
+    if (searchDraft === (currentSearch ?? "")) return;
+    const t = setTimeout(() => {
+      setFilter("search", searchDraft.trim(), { replace: true });
+    }, 350);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchDraft, currentSearch]);
+
   // ─── Filter navigation ─────────────────────────────────────────
 
-  function setFilter(key: string, value: string) {
+  function setFilter(key: string, value: string, opts?: { replace?: boolean }) {
     startTransition(() => {
       const params = new URLSearchParams(searchParams.toString());
       if (value === "") {
@@ -107,7 +121,9 @@ export function NotesView({
       } else {
         params.set(key, value);
       }
-      router.push(`?${params.toString()}`);
+      // replace: live-search keystrokes shouldn't stack history entries.
+      if (opts?.replace) router.replace(`?${params.toString()}`);
+      else router.push(`?${params.toString()}`);
     });
   }
 
@@ -355,9 +371,10 @@ export function NotesView({
       <div>
         <input
           type="text"
-          defaultValue={currentSearch ?? ""}
+          value={searchDraft}
           placeholder="Search notes..."
           aria-label="Search notes"
+          onChange={(e) => setSearchDraft(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               setFilter("search", (e.target as HTMLInputElement).value);

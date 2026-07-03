@@ -279,6 +279,12 @@ export function SecurityChart({
           },
         },
         priceScaleId: "volume",
+        // The volume scale is hidden, but without these the last-value pill
+        // still paints onto the visible right axis THROUGH the chart-level
+        // $-price formatter ("$175275.31" deep-QA finding). The crosshair
+        // legend carries the volume number; the axis label adds nothing.
+        lastValueVisible: false,
+        priceLineVisible: false,
       });
       chart.priceScale("volume").applyOptions({
         scaleMargins: { top: 0.8, bottom: 0 },
@@ -1096,11 +1102,24 @@ function updateMarkers(
 
   if (!show || transactions.length === 0) return null;
 
+  // Only mark trades that fall within the loaded bars: LightweightCharts
+  // clamps markers older than the first bar onto the left edge with clipped
+  // text, stacking into a garbled column (deep-QA finding — e.g. 1Y range
+  // with 2Y of transactions). Deriving from the series covers every caller
+  // (mount, refresh, duration change). Dates are ISO strings, so string
+  // comparison against the bar time is safe.
+  const bars = candleSeries.data();
+  const firstBarTime = bars.length > 0 ? String(bars[0].time) : null;
+  const visible = firstBarTime
+    ? transactions.filter((t) => t.date >= firstBarTime)
+    : transactions;
+  if (visible.length === 0) return null;
+
   const isBuy = (t: string) =>
     t === "BUY" || t === "BUY_TO_OPEN" || t === "BUY_TO_CLOSE";
 
   type MarkerType = import("lightweight-charts").SeriesMarker<import("lightweight-charts").Time>;
-  const markers: MarkerType[] = transactions.map((t) => ({
+  const markers: MarkerType[] = visible.map((t) => ({
     time: t.date as import("lightweight-charts").Time,
     position: isBuy(t.type) ? ("belowBar" as const) : ("aboveBar" as const),
     shape: isBuy(t.type) ? ("arrowUp" as const) : ("arrowDown" as const),

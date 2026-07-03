@@ -168,9 +168,15 @@ export function KpiCell({
   return (
     <div
       style={{
-        flex: "1 1 0",
+        // flex-basis 160px (not 0): with basis 0 the cells shrink to ~70px
+        // at 390px and clip values to "$4.." — the parent's flex-wrap never
+        // triggers because the cells CAN shrink. A real basis wraps narrow
+        // viewports to 2 cells per row; 16px side padding leaves ~163px of
+        // content at 390px, enough for a full "$268.66 – $273.23" range
+        // (deep-QA finding + browser-verified at 390×844).
+        flex: "1 1 160px",
         minWidth: 0,
-        padding: "14px 20px",
+        padding: "14px 16px",
         borderRight: "1px solid #1f1f1f",
       }}
     >
@@ -197,9 +203,11 @@ export function KpiCell({
           color: tone ?? "#eee",
           fontVariantNumeric: "tabular-nums",
           lineHeight: 1.2,
-          whiteSpace: "nowrap",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
+          // Wrap, never ellipsis: dual-endpoint ranges ("$268.66 – $273.23")
+          // clipped to "$268.66 – $27…" at 390px no matter how the cell
+          // basis was tuned. A wrapped second line is always readable
+          // (deep-QA finding, browser-verified at 390×844).
+          overflowWrap: "break-word",
         }}
       >
         {value}

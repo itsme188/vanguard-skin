@@ -52,8 +52,10 @@ export function ChartsView({
   return (
     <div className="space-y-4">
       {/* View mode toggle */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
+      {/* flex-wrap + min-w-0: at 390px the toggle (~140px) + 320px-capped
+          select exceeded the viewport (deep-QA horizontal-overflow finding). */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-3 flex-wrap min-w-0">
           <div className="flex gap-0.5 bg-raised rounded-lg p-0.5">
             <button
               onClick={() => setViewMode("single")}
@@ -79,7 +81,7 @@ export function ChartsView({
               value={selected?.id ?? ""}
               onChange={(e) => handleSelect(Number(e.target.value))}
               className="bg-raised border border-edge rounded-lg px-3 py-2 text-sm font-mono
-                text-ink focus:outline-none focus:ring-1 focus:ring-gold max-w-xs truncate"
+                text-ink focus:outline-none focus:ring-1 focus:ring-gold max-w-[60vw] sm:max-w-xs truncate"
             >
               {securities.map((sec) => (
                 <option key={sec.id} value={sec.id}>

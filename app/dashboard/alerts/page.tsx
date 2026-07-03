@@ -444,7 +444,10 @@ function AlertsPageInner() {
           >
             {detecting ? "Scanning..." : "Scan now"}
           </button>
-          <div className="flex gap-1 p-1 rounded-lg border border-edge bg-panel">
+          {/* flex-wrap INSIDE the group: the 7-pill row is ~470px — wider
+              than a 390px viewport — so wrapping only at the parent level
+              still overflowed (the group wraps as one block). */}
+          <div className="flex flex-wrap gap-1 p-1 rounded-lg border border-edge bg-panel">
             {FILTER_OPTIONS.map((opt) => {
               const badge =
                 opt.value === "pending"

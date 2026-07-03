@@ -497,6 +497,20 @@ export function ResearchFeedsView({
           articles={filteredArticles}
           onUnfilter={handleUnfilter}
         />
+      ) : articles.length === 0 && (searchQuery.length > 0 || sourceFilter !== null) ? (
+        // Zero results under an active search/filter is a no-match state,
+        // not the no-data onboarding (deep-QA: "Connect Gmail" copy wrongly
+        // implied Gmail was disconnected).
+        <div className="rounded-xl border border-edge bg-panel p-10 text-center max-w-2xl mx-auto">
+          <p className="text-ink-dim">
+            {searchQuery.length > 0
+              ? `No articles match "${searchQuery}".`
+              : "No articles from this source yet."}
+          </p>
+          <p className="text-ink-faint text-sm mt-1">
+            Try a different search term or clear the filter.
+          </p>
+        </div>
       ) : articles.length === 0 ? (
         <div className="rounded-xl border border-edge bg-panel p-10 text-center max-w-2xl mx-auto">
           <p className="text-ink-dim">No articles yet.</p>
