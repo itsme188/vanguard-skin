@@ -89,7 +89,11 @@ describe("writeIbkrHoldings", () => {
     expect(h.c).toBe(0);
   });
 
-  it("persists a non-USD currency and derives + writes the fx_rates row", () => {
+  it("persists a non-USD currency and writes the ledger-sourced fx_rates row", () => {
+    // Live-verified 2026-07-03: the Web API's per-position `mktValue` is
+    // NATIVE currency (16,010,000 KRW for 10 sh @ 1,601,000), so deriving
+    // from it always yields ~1. The rate must come from the ledger's
+    // per-currency `exchangerate`, threaded in via snapshot.fxRates.
     const res = writeIbkrHoldings(
       db,
       {
@@ -97,8 +101,9 @@ describe("writeIbkrHoldings", () => {
         netLiq: 500000,
         cash: 10000,
         positions: [
-          stock("402340", 10, 1_632_979.2, 1_731_000, { currency: "KRW", mktValue: 12705 }),
+          stock("402340", 10, 1_632_979.2, 1_731_000, { currency: "KRW", mktValue: 17_310_000 }),
         ],
+        fxRates: { KRW: 0.0006531 },
       },
       { asOfDate: "2026-06-03" },
     );
@@ -108,10 +113,29 @@ describe("writeIbkrHoldings", () => {
     expect(sec.currency).toBe("KRW");
 
     const fx = db
-      .prepare("SELECT usd_per_unit, source FROM fx_rates WHERE currency = 'KRW'")
-      .get() as { usd_per_unit: number; source: string };
-    expect(fx.usd_per_unit).toBeCloseTo(0.000734, 6);
-    expect(fx.source).toBe("ibkr_derived");
+      .prepare("SELECT usd_per_unit, source, as_of FROM fx_rates WHERE currency = 'KRW'")
+      .get() as { usd_per_unit: number; source: string; as_of: string };
+    expect(fx.usd_per_unit).toBeCloseTo(0.0006531, 7);
+    expect(fx.source).toBe("ibkr_ledger");
+    expect(fx.as_of).toBe("2026-06-03");
+  });
+
+  it("writes NO fx_rates row for a non-USD position when the ledger has no rate (never derives ~1 from native mktValue)", () => {
+    writeIbkrHoldings(
+      db,
+      {
+        accountCode: "U1",
+        netLiq: 500000,
+        cash: 10000,
+        positions: [
+          stock("402340", 10, 1_632_979.2, 1_731_000, { currency: "KRW", mktValue: 17_310_000 }),
+        ],
+        // no fxRates — e.g. ledger fetch failed or lacked the currency
+      },
+      { asOfDate: "2026-06-03" },
+    );
+    const count = db.prepare("SELECT COUNT(*) c FROM fx_rates").get() as { c: number };
+    expect(count.c).toBe(0);
   });
 
   it("does not write an fx_rates row for a USD position", () => {
