@@ -35,6 +35,10 @@ interface EarningsRow {
   raw_json: string | null;
   actual_value: string | null;
   date_status: string | null;
+  consensus_estimate: string | null;
+  consensus_value: string | null;
+  reaction_snapshot: string | null;
+  enriched_at: string | null;
 }
 
 function addDaysUTC(date: string, days: number): string {
@@ -129,7 +133,8 @@ export function reconcileEarningsDates(
 
   const rows = db
     .prepare(
-      `SELECT id, source, symbol, event_date, raw_json, actual_value, date_status
+      `SELECT id, source, symbol, event_date, raw_json, actual_value, date_status,
+              consensus_estimate, consensus_value, reaction_snapshot, enriched_at
        FROM calendar_events
        WHERE event_type = 'earnings' AND event_date BETWEEN ? AND ?
        ORDER BY event_date ASC`,
@@ -151,6 +156,28 @@ export function reconcileEarningsDates(
     "UPDATE calendar_events SET superseded = 1, date_status = NULL, date_conflict_with = NULL WHERE id = ?",
   );
 
+  // Supersession is data-preserving (QA 2026-07-02: confirming a conflicted
+  // date orphaned consensus, user-entered actuals, sent-email audit rows,
+  // bogeys, and skips on the superseded event — the row regressed to
+  // "Consensus not yet published" and the sweep cron could re-send a
+  // duplicate preview). Enrichment COALESCEs forward onto the canonical
+  // (never overwriting its own non-NULL values — same "sync may only ADD
+  // data" invariant as the enrichment-runner), and child audit rows re-point.
+  // UPDATE OR IGNORE keeps the canonical's own row on a UNIQUE collision,
+  // leaving the superseded-side duplicate in place for audit.
+  const carryEnrichment = db.prepare(
+    `UPDATE calendar_events SET
+       consensus_estimate = COALESCE(consensus_estimate, ?),
+       consensus_value = COALESCE(consensus_value, ?),
+       actual_value = COALESCE(actual_value, ?),
+       reaction_snapshot = COALESCE(reaction_snapshot, ?),
+       enriched_at = COALESCE(enriched_at, ?)
+     WHERE id = ?`,
+  );
+  const repointChildren = ["earnings_emails", "earnings_bogeys", "earnings_email_skips"].map(
+    (table) => db.prepare(`UPDATE OR IGNORE ${table} SET event_id = ? WHERE event_id = ?`),
+  );
+
   const result: ReconcileResult = { confirmed: 0, conflict: 0, single: 0, userConfirmed: 0 };
 
   const apply = db.transaction(() => {
@@ -169,8 +196,22 @@ export function reconcileEarningsDates(
       for (const cluster of clusters) {
         const res = resolveCluster(cluster, today);
         setCanonical.run(res.status, res.conflictWith, res.canonicalId);
-        for (const r of cluster) {
-          if (r.id !== res.canonicalId) setSuperseded.run(r.id);
+        // Freshest-enriched donor first: with several superseded rows, the
+        // first non-NULL value per column wins (COALESCE), so order matters.
+        const superseded = cluster
+          .filter((r) => r.id !== res.canonicalId)
+          .sort((a, b) => (b.enriched_at ?? "").localeCompare(a.enriched_at ?? ""));
+        for (const r of superseded) {
+          setSuperseded.run(r.id);
+          carryEnrichment.run(
+            r.consensus_estimate,
+            r.consensus_value,
+            r.actual_value,
+            r.reaction_snapshot,
+            r.enriched_at,
+            res.canonicalId,
+          );
+          for (const repoint of repointChildren) repoint.run(res.canonicalId, r.id);
         }
         if (res.status === "confirmed") result.confirmed++;
         else if (res.status === "conflict") result.conflict++;

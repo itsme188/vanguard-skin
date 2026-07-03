@@ -126,3 +126,138 @@ describe("reconcileEarningsDates", () => {
     expect(states.find((s) => s.superseded === 0)!.date_status).toBe("confirmed");
   });
 });
+
+// ── Enrichment carry-forward on supersession ────────────────────────
+//
+// QA finding (2026-07-02/03): confirming a conflicting date created a fresh
+// manual event and orphaned the known consensus, user-entered actuals,
+// reaction snapshot, sent-email audit rows, bogeys, and skips on the
+// superseded event — the row regressed to "Consensus not yet published" and
+// the sweep cron could re-send a duplicate preview. Supersession must be
+// data-preserving: enrichment COALESCEs forward, child rows re-point.
+
+function enrich(
+  id: number,
+  e: {
+    consensusEstimate?: string;
+    consensusValue?: string;
+    actualValue?: string;
+    reactionSnapshot?: string;
+    enrichedAt?: string;
+  },
+) {
+  db.prepare(
+    `UPDATE calendar_events SET
+       consensus_estimate = COALESCE(?, consensus_estimate),
+       consensus_value = COALESCE(?, consensus_value),
+       actual_value = COALESCE(?, actual_value),
+       reaction_snapshot = COALESCE(?, reaction_snapshot),
+       enriched_at = COALESCE(?, enriched_at)
+     WHERE id = ?`,
+  ).run(
+    e.consensusEstimate ?? null,
+    e.consensusValue ?? null,
+    e.actualValue ?? null,
+    e.reactionSnapshot ?? null,
+    e.enrichedAt ?? null,
+    id,
+  );
+}
+
+function enrichment(id: number) {
+  return db
+    .prepare(
+      `SELECT consensus_estimate, consensus_value, actual_value, reaction_snapshot, enriched_at
+       FROM calendar_events WHERE id = ?`,
+    )
+    .get(id) as {
+    consensus_estimate: string | null;
+    consensus_value: string | null;
+    actual_value: string | null;
+    reaction_snapshot: string | null;
+    enriched_at: string | null;
+  };
+}
+
+describe("reconcileEarningsDates — enrichment carry-forward", () => {
+  it("carries consensus/actuals/reaction/enriched_at from superseded rows onto the canonical", () => {
+    const nasdaq = seed({ source: "nasdaq", symbol: "NKE", date: "2026-06-09" });
+    enrich(nasdaq, {
+      consensusEstimate: "EPS 0.11 · Rev 10.7B",
+      consensusValue: "EPS 0.11",
+      actualValue: "EPS 0.14 · Rev 11.50B",
+      reactionSnapshot: '{"source":"yahoo","spy":0.4}',
+      enrichedAt: "2026-06-09 21:00:00",
+    });
+    const manual = seed({ source: "manual", symbol: "NKE", date: "2026-06-09", dateStatus: "user_confirmed" });
+
+    reconcileEarningsDates(db, { today: TODAY });
+
+    expect(row(manual).superseded).toBe(0);
+    expect(row(nasdaq).superseded).toBe(1);
+    const m = enrichment(manual);
+    expect(m.consensus_estimate).toBe("EPS 0.11 · Rev 10.7B");
+    expect(m.consensus_value).toBe("EPS 0.11");
+    expect(m.actual_value).toBe("EPS 0.14 · Rev 11.50B");
+    expect(m.reaction_snapshot).toBe('{"source":"yahoo","spy":0.4}');
+    expect(m.enriched_at).toBe("2026-06-09 21:00:00");
+  });
+
+  it("never overwrites the canonical's own non-NULL enrichment", () => {
+    const finn = seed({ source: "finnhub", symbol: "TER", date: "2026-06-12" });
+    enrich(finn, { consensusValue: "EPS 9.99" });
+    const manual = seed({ source: "manual", symbol: "TER", date: "2026-06-12", dateStatus: "user_confirmed" });
+    enrich(manual, { consensusValue: "EPS 1.23" });
+
+    reconcileEarningsDates(db, { today: TODAY });
+
+    expect(enrichment(manual).consensus_value).toBe("EPS 1.23");
+  });
+
+  it("re-points earnings_emails, earnings_bogeys, and earnings_email_skips to the canonical", () => {
+    const nasdaq = seed({ source: "nasdaq", symbol: "NKE", date: "2026-06-09" });
+    const manual = seed({ source: "manual", symbol: "NKE", date: "2026-06-09", dateStatus: "user_confirmed" });
+    db.prepare(
+      "INSERT INTO earnings_emails (event_id, phase, recipient, ai_output_md) VALUES (?, 'preview', 'x@y.com', 'md')",
+    ).run(nasdaq);
+    db.prepare(
+      "INSERT INTO earnings_bogeys (event_id, source, source_label, eps_consensus) VALUES (?, 'manual', 'me', 0.14)",
+    ).run(nasdaq);
+    db.prepare("INSERT INTO earnings_email_skips (event_id, phase) VALUES (?, 'recap')").run(nasdaq);
+
+    reconcileEarningsDates(db, { today: TODAY });
+
+    expect(
+      (db.prepare("SELECT event_id FROM earnings_emails WHERE phase='preview'").get() as { event_id: number })
+        .event_id,
+    ).toBe(manual);
+    expect(
+      (db.prepare("SELECT event_id FROM earnings_bogeys").get() as { event_id: number }).event_id,
+    ).toBe(manual);
+    expect(
+      (db.prepare("SELECT event_id FROM earnings_email_skips").get() as { event_id: number }).event_id,
+    ).toBe(manual);
+  });
+
+  it("keeps the canonical's audit row when re-pointing would violate UNIQUE(event_id, phase)", () => {
+    const nasdaq = seed({ source: "nasdaq", symbol: "NKE", date: "2026-06-09" });
+    const manual = seed({ source: "manual", symbol: "NKE", date: "2026-06-09", dateStatus: "user_confirmed" });
+    const ins = db.prepare(
+      "INSERT INTO earnings_emails (event_id, phase, recipient, ai_output_md) VALUES (?, 'preview', 'x@y.com', ?)",
+    );
+    ins.run(nasdaq, "old-md");
+    ins.run(manual, "canonical-md");
+
+    expect(() => reconcileEarningsDates(db, { today: TODAY })).not.toThrow();
+
+    const canonicalRow = db
+      .prepare("SELECT ai_output_md FROM earnings_emails WHERE event_id = ? AND phase='preview'")
+      .get(manual) as { ai_output_md: string };
+    expect(canonicalRow.ai_output_md).toBe("canonical-md");
+    // The colliding superseded-side row stays put for audit.
+    const oldRow = db
+      .prepare("SELECT ai_output_md FROM earnings_emails WHERE event_id = ? AND phase='preview'")
+      .get(nasdaq) as { ai_output_md: string };
+    expect(oldRow.ai_output_md).toBe("old-md");
+  });
+});
