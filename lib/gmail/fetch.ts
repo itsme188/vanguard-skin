@@ -4,6 +4,7 @@ import { stripHtml } from "../vital-knowledge";
 import { sanitizeNewsletterHtml, normalizeNewsletterHtml } from "./sanitize";
 import { extractSourceUrl } from "./extract-url";
 import { checkShortCircuit } from "./short-circuit";
+import { RAW_TEXT_STORE_CAP, RAW_HTML_STORE_CAP } from "./prompt-caps";
 
 /**
  * Fetch new newsletter articles from Gmail for all active research sources.
@@ -146,7 +147,7 @@ export async function backfillArticleHtml(
       const { html } = extractBody(msg.data.payload);
       if (html) {
         updateHtml.run(
-          normalizeNewsletterHtml(sanitizeNewsletterHtml(html)).slice(0, 200_000),
+          normalizeNewsletterHtml(sanitizeNewsletterHtml(html)).slice(0, RAW_HTML_STORE_CAP),
           article.id,
         );
         updated++;
@@ -246,12 +247,12 @@ async function getMessageDetail(
     receivedAt,
     subject,
     sender,
-    body: text.slice(0, 50_000), // Cap at 50K chars
-    html: html ? normalizeNewsletterHtml(sanitizeNewsletterHtml(html)).slice(0, 200_000) : null,
+    body: text.slice(0, RAW_TEXT_STORE_CAP),
+    html: html ? normalizeNewsletterHtml(sanitizeNewsletterHtml(html)).slice(0, RAW_HTML_STORE_CAP) : null,
   };
 }
 
-function extractBody(
+export function extractBody(
   payload: gmail_v1.Schema$MessagePart | undefined
 ): { text: string; html: string | null } {
   if (!payload) return { text: "", html: null };

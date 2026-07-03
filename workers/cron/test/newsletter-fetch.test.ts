@@ -300,3 +300,23 @@ describe("runNewsletterFetch — KV writes", () => {
     expect(keys).toEqual(["cloud-fetched-newsletter-mb"]);
   });
 });
+
+// ── Long-email prompt cap parity (2026-07-03) ───────────────────────
+// Mac lib/gmail/prompt-caps.ts::EXTRACTION_PROMPT_CHAR_CAP is 150_000; the
+// Worker mirror must match so a Mac-asleep day doesn't silently produce
+// thinner summaries for long weeklies (Eliant, Semi Doped).
+import { EXTRACTION_PROMPT_CHAR_CAP, truncateBodyForPrompt } from "../src/newsletter-fetch";
+
+describe("extraction prompt cap parity", () => {
+  it("matches the Mac cap (150k chars)", () => {
+    expect(EXTRACTION_PROMPT_CHAR_CAP).toBe(150_000);
+  });
+
+  it("passes short bodies through and marks truncation beyond the cap", () => {
+    expect(truncateBodyForPrompt("short")).toBe("short");
+    const long = "y".repeat(EXTRACTION_PROMPT_CHAR_CAP + 100);
+    const out = truncateBodyForPrompt(long);
+    expect(out.endsWith("\n...[truncated]")).toBe(true);
+    expect(out.length).toBeLessThan(long.length);
+  });
+});
