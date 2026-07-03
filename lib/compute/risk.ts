@@ -110,16 +110,22 @@ export function computeRiskMetrics(
   const riskFreeRate = options?.riskFreeRate ?? getRiskFreeRate(db);
   const accountIds = normalizeAccountIds(options);
 
-  // 1. Get daily valuations (summed across the scoped accounts)
+  // 1. Get daily valuations (summed across the scoped accounts).
+  // fullCoverageOnly: an account whose coverage starts mid-window would sum
+  // in as a fake +100% "day" — a coverage artifact, not a market move, and
+  // not an external flow either, so the flow-adjustment below can't
+  // neutralize it (see fullCoverageHaving in lib/queries/daily-valuations).
   const valuations =
     accountIds && accountIds.length > 0
       ? getDailyValuationsForAccounts(db, accountIds, {
           startDate: options?.startDate,
           endDate: options?.endDate,
+          fullCoverageOnly: true,
         })
       : getDailyValuationsCombined(db, {
           startDate: options?.startDate,
           endDate: options?.endDate,
+          fullCoverageOnly: true,
         });
 
   // 2. Compute drawdown and return metrics from a FLOW-ADJUSTED return index,

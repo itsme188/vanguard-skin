@@ -720,3 +720,32 @@ describe("multi-account scope (accountIds[])", () => {
     );
   });
 });
+
+describe("computeRiskMetrics coverage-jump guard", () => {
+  it("multi-account metrics ignore dates before all scoped accounts have coverage", () => {
+    const db = createTestDb();
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'A'), (2, 'B')");
+
+    // Account 1: 70 flat days at $100k. Account 2: flat $100k but only
+    // covered for the last 40 days. The summed series pre-guard reads
+    // 100k → 200k on account 2's first covered date — a fake +100% "day"
+    // that is a coverage artifact, not a market move (and not an external
+    // flow either, so flow-adjustment can't neutralize it).
+    const ins = db.prepare(
+      "INSERT INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (?, ?, 0, ?, ?)"
+    );
+    for (let i = 69; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const date = d.toISOString().slice(0, 10);
+      ins.run(1, date, 100_000, 100_000);
+      if (i <= 39) ins.run(2, date, 100_000, 100_000);
+    }
+
+    const result = computeRiskMetrics(db, { accountIds: [1, 2] });
+    // A perfectly flat full-coverage series has ~zero volatility; the
+    // coverage jump would have produced an enormous annualized figure.
+    expect(result.volatility).not.toBeNull();
+    expect(result.volatility!).toBeLessThan(0.01);
+  });
+});

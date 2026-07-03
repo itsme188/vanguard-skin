@@ -579,3 +579,39 @@ describe("computeFactorAnalysis multi-account scope", () => {
     );
   });
 });
+
+describe("computeMarketRegression coverage-jump guard", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = createTestDb();
+  });
+
+  it("multi-account regression ignores dates before all scoped accounts have coverage", () => {
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'A'), (2, 'B')");
+
+    // Account 1: 60 days perfectly tracking SPY. Account 2: a large constant
+    // book that only gains daily-valuation coverage for the last 35 days —
+    // its appearance is a coverage artifact, not a market move. Pre-guard,
+    // the summed series jumps +$1M on its first covered date and the
+    // regression sees a ~+900% "daily return".
+    for (let i = 59; i >= 0; i--) {
+      const date = recentDate(i);
+      const price = 500 + (59 - i) * 0.3 + Math.sin((59 - i) * 0.5) * 10;
+      db.prepare("INSERT OR IGNORE INTO benchmark_prices (symbol, date, close_price) VALUES ('SPY', ?, ?)").run(date, price);
+      db.prepare("INSERT OR IGNORE INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (1, ?, 0, ?, ?)").run(date, price * 200, price * 200);
+      if (i <= 34) {
+        db.prepare("INSERT OR IGNORE INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (2, ?, 0, ?, ?)").run(date, 1_000_000, 1_000_000);
+      }
+    }
+
+    const result = computeFactorAnalysis(db, { accountIds: [1, 2] });
+    expect(result.marketRegression).not.toBeNull();
+    const reg = result.marketRegression!;
+    // Only the 35 full-coverage dates participate (34 returns), not ~59.
+    expect(reg.dataPoints).toBeLessThanOrEqual(35);
+    // Sane numbers: the flat +$1M block damps beta below 1; the coverage
+    // jump would have produced a wildly inflated beta/alpha instead.
+    expect(Math.abs(reg.beta)).toBeLessThan(3);
+    expect(Math.abs(reg.alpha)).toBeLessThan(1);
+  });
+});

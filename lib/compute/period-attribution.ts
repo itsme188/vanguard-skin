@@ -61,31 +61,13 @@ function computeBetaForPeriod(
 ): { beta: number; benchmarkReturn: number; portfolioReturn: number } | null {
   // SUM across the scoped accounts per date BEFORE any return math — the
   // regression must see one portfolio series, never a single account's.
-  const summed = accountIds
-    ? getDailyValuationsForAccounts(db, accountIds, { startDate, endDate })
-    : getDailyValuationsCombined(db, { startDate, endDate });
-
-  // Full-coverage filter: only dates where the MAX number of simultaneously-
-  // covered accounts all have a row. Account coverage windows differ (live
-  // DB: IBKR daily valuations start 3/27, Vanguard + Roth 4/06) and the
-  // summed series "gains" an appearing account's entire value as a fake
-  // return — a 4-day pair slips under the gap guard and read as +89% YTD.
-  // Max-coverage (not accountIds.length) self-calibrates when a scoped
-  // account has no data at all in the window. Omit, never mislead.
-  const covFilter = accountFilter(accountIds, "account_id");
-  const coverage = new Map<string, number>();
-  for (const row of db
-    .prepare(
-      `SELECT valuation_date AS d, COUNT(DISTINCT account_id) AS n
-       FROM daily_valuations
-       WHERE valuation_date BETWEEN ? AND ?${covFilter.sql}
-       GROUP BY valuation_date`,
-    )
-    .all(startDate, endDate, ...covFilter.params) as { d: string; n: number }[]) {
-    coverage.set(row.d, row.n);
-  }
-  const fullCoverage = Math.max(0, ...coverage.values());
-  const valuations = summed.filter((v) => coverage.get(v.valuation_date) === fullCoverage);
+  // fullCoverageOnly is the coverage-jump guard (an appearing account's
+  // whole value reads as a fake +89% YTD return) — single-sourced in
+  // lib/queries/daily-valuations.ts::fullCoverageHaving since 2026-07-03;
+  // this file's inline copy migrated there.
+  const valuations = accountIds
+    ? getDailyValuationsForAccounts(db, accountIds, { startDate, endDate, fullCoverageOnly: true })
+    : getDailyValuationsCombined(db, { startDate, endDate, fullCoverageOnly: true });
 
   const benchmarks = db
     .prepare(

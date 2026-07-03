@@ -95,12 +95,15 @@ function computeMarketRegression(
 ): MarketRegression | null {
   const benchmarkSymbol = options?.benchmarkSymbol ?? "SPY";
 
-  // 1. Get portfolio daily valuations (summed across the scoped accounts)
+  // 1. Get portfolio daily valuations (summed across the scoped accounts).
+  // fullCoverageOnly: account coverage windows differ — without it, an
+  // appearing account's whole value reads as a fake return and poisons
+  // beta/alpha (the +89% phantom-alpha class; see fullCoverageHaving).
   const accountIds = normalizeAccountIds(options);
   const valuations =
     accountIds && accountIds.length > 0
-      ? getDailyValuationsForAccounts(db, accountIds)
-      : getDailyValuationsCombined(db);
+      ? getDailyValuationsForAccounts(db, accountIds, { fullCoverageOnly: true })
+      : getDailyValuationsCombined(db, { fullCoverageOnly: true });
 
   if (valuations.length < 30) return null;
 
