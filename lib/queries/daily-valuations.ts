@@ -42,6 +42,27 @@ export function getDailyValuationsByAccount(
 }
 
 /**
+ * Coverage-jump guard shared by the two summed-series variants below.
+ *
+ * Account daily-valuation coverage windows differ (live DB: IBKR starts
+ * 3/27, Vanguard + Roth 4/06) — a summed series "gains" an appearing
+ * account's entire value as a fake return on its first covered date (+89%
+ * phantom YTD alpha). With `fullCoverageOnly`, only dates where the MAX
+ * number of simultaneously-covered accounts all have a row survive.
+ * Max-coverage (not the requested account count) self-calibrates when a
+ * scoped account has no data at all in the window. Omit, never mislead.
+ */
+function fullCoverageHaving(where: string): string {
+  return `HAVING COUNT(DISTINCT account_id) = (
+    SELECT MAX(n) FROM (
+      SELECT COUNT(DISTINCT account_id) AS n
+      FROM daily_valuations ${where}
+      GROUP BY valuation_date
+    )
+  )`;
+}
+
+/**
  * Get aggregated daily valuations across all accounts within a date range.
  * Returns one row per date with summed values.
  */
@@ -50,6 +71,7 @@ export function getDailyValuationsCombined(
   options?: {
     startDate?: string;
     endDate?: string;
+    fullCoverageOnly?: boolean;
   }
 ): DailyValuation[] {
   const conditions: string[] = [];
@@ -65,6 +87,7 @@ export function getDailyValuationsCombined(
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const having = options?.fullCoverageOnly ? fullCoverageHaving(where) : "";
 
   return db
     .prepare(
@@ -75,9 +98,10 @@ export function getDailyValuationsCombined(
        FROM daily_valuations
        ${where}
        GROUP BY valuation_date
+       ${having}
        ORDER BY valuation_date ASC`
     )
-    .all(...params) as DailyValuation[];
+    .all(...params, ...(options?.fullCoverageOnly ? params : [])) as DailyValuation[];
 }
 
 /**
@@ -96,6 +120,7 @@ export function getDailyValuationsForAccounts(
   options?: {
     startDate?: string;
     endDate?: string;
+    fullCoverageOnly?: boolean;
   }
 ): DailyValuation[] {
   if (!accountIds || accountIds.length === 0) {
@@ -116,6 +141,9 @@ export function getDailyValuationsForAccounts(
     params.push(options.endDate);
   }
 
+  const where = `WHERE ${conditions.join(" AND ")}`;
+  const having = options?.fullCoverageOnly ? fullCoverageHaving(where) : "";
+
   return db
     .prepare(
       `SELECT valuation_date, 0 AS account_id,
@@ -123,11 +151,12 @@ export function getDailyValuationsForAccounts(
               SUM(holdings_value) AS holdings_value,
               SUM(total_value) AS total_value
        FROM daily_valuations
-       WHERE ${conditions.join(" AND ")}
+       ${where}
        GROUP BY valuation_date
+       ${having}
        ORDER BY valuation_date ASC`
     )
-    .all(...params) as DailyValuation[];
+    .all(...params, ...(options?.fullCoverageOnly ? params : [])) as DailyValuation[];
 }
 
 /**
