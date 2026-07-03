@@ -334,20 +334,21 @@ export async function syncPortfolio(
       // Foreign-currency positions: capture the broker's own FX rate, derived
       // from marketValue vs (marketPrice × qty × multiplier).
       //
-      // ASSUMPTION (unverified — see Task 6 validation gate): this assumes
+      // ASSUMPTION (still unverified for TWS): this assumes
       // getAccountUpdates()'s `Position.marketValue` is base-currency (USD)
-      // denominated while `marketPrice` stays local-currency, matching what
-      // the IBKR Web API's `mktValue` field is confirmed to do (verified via
-      // the brief's KRW fixture: 1,731,000 KRW × 10 sh × ~0.000734 ≈ 12,705
-      // USD mktValue). We could NOT run a live TWS sync to confirm this holds
-      // for TWS's `updatePortfolio`/`getAccountUpdates` callback specifically.
-      // If a live sync shows the derived rate for a KRW position landing near
-      // 1 (instead of ~0.000734), `marketValue` is actually LOCAL-currency on
-      // this path — stop deriving here and source the rate instead from the
-      // IBKR Web API ledger's per-currency `exchangeRate` field
-      // (lib/ibkr/web-api.ts::getLedger — the ledger response is a
-      // currency→{...} map; each non-base entry carries its own exchange
-      // rate to base currency).
+      // denominated while `marketPrice` stays local-currency. NOTE: the
+      // sibling assumption for the IBKR Web API was DISPROVEN live on
+      // 2026-07-03 — its `mktValue` is NATIVE currency, and the first
+      // go-live sync derived a bogus KRW=1.0 from it. That path now sources
+      // rates from the ledger's per-currency `exchangerate`
+      // (lib/ibkr/map-positions.ts::extractLedgerFxRates, source
+      // 'ibkr_ledger'). This TWS derive is kept as a secondary signal, but
+      // upsertFxRate's precedence guard prevents a derived write from
+      // clobbering a ledger rate fresher than 7 days — so if TWS's
+      // marketValue also turns out native (derived rate ≈ 1), the guard logs
+      // and skips instead of corrupting. When a live TWS sync happens with a
+      // foreign position, check the log: a skipped ~1.0 write confirms
+      // native; a clean ~ledger-rate write confirms USD-base.
       if (currency !== "USD") {
         const rate = deriveUsdPerUnit(pos.marketValue ?? null, pos.marketPrice ?? null, pos.pos, multiplier ?? 1);
         if (rate != null) {

@@ -19,7 +19,7 @@ import {
   getPositions,
   getLedger,
 } from "./web-api";
-import { mapPosition, deriveUsdPerUnit, type MappedPosition } from "./map-positions";
+import { mapPosition, extractLedgerFxRates, type MappedPosition } from "./map-positions";
 import type { IbkrOAuthConfig } from "./oauth-client";
 import { getMarketDataSnapshot, type ParsedQuote } from "./market-data";
 import { getQuoteCandidateConids } from "../queries/security-quotes";
@@ -37,6 +37,8 @@ export interface IbkrPortfolioSnapshot {
   positions: MappedPosition[];
   netLiq: number | null;
   cash: number | null;
+  /** USD per unit per non-USD currency, from the ledger's `exchangerate`. */
+  fxRates?: Record<string, number>;
 }
 
 export interface IbkrWriteResult {
@@ -72,7 +74,7 @@ export async function fetchIbkrPortfolio(
   const cash =
     (base.cashbalance as number | undefined) ?? (base.settledcash as number | undefined) ?? null;
 
-  return { accountCode, positions, netLiq, cash };
+  return { accountCode, positions, netLiq, cash, fxRates: extractLedgerFxRates(ledger) };
 }
 
 /**
@@ -129,19 +131,18 @@ export function writeIbkrHoldings(
         pricesWritten++;
       }
 
-      // Foreign-currency positions: the IBKR Web API's `mktValue` field is
-      // confirmed USD/base-currency (verified against the brief's KRW
-      // fixture: 1,731,000 KRW × 10 sh × ~0.000734 ≈ 12,705 mktValue), unlike
-      // the TWS `Position.marketValue` field (see the parallel comment + open
-      // question in lib/tws/positions.ts::syncPortfolio). If that TWS
-      // assumption ever proves wrong on a live sync, THIS path — sourced from
-      // `m.mktValue` — is the reliable fallback signal, and the ledger's
-      // per-currency `exchangeRate` (lib/ibkr/web-api.ts::getLedger) is the
-      // fallback-of-last-resort noted there.
+      // Foreign-currency positions: the Web API's per-position `mktValue` is
+      // NATIVE currency (live-verified 2026-07-03: 402340 @ 1,601,000 KRW ×
+      // 10 sh → mktValue 16,010,000 KRW, baseMktValue null), so deriving a
+      // rate from it always lands ≈1 — the first go-live sync wrote KRW=1.0
+      // that way. The authoritative source is the ledger's per-currency
+      // `exchangerate` (0.0006531 on the same probe), threaded in via
+      // snapshot.fxRates. When the ledger lacks the currency, write NOTHING —
+      // getUsdPerUnit's missing-rate path is honest; a bogus 1.0 is not.
       if (m.currency && m.currency !== "USD") {
-        const rate = deriveUsdPerUnit(m.mktValue, m.mktPrice, m.quantity, m.multiplier ?? 1);
+        const rate = snapshot.fxRates?.[m.currency.toUpperCase()];
         if (rate != null) {
-          upsertFxRate(db, { currency: m.currency, usdPerUnit: rate, asOf: today, source: "ibkr_derived" });
+          upsertFxRate(db, { currency: m.currency, usdPerUnit: rate, asOf: today, source: "ibkr_ledger" });
         }
       }
     }

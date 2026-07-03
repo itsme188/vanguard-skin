@@ -43,8 +43,31 @@ export interface MappedPosition {
   currency: string;
 }
 
+/** USD per 1 unit of each non-USD currency, from the Web API ledger's
+ *  per-currency `exchangerate` field (currency→{...} map; live-verified
+ *  2026-07-03). This is the authoritative rate source for the Web API path —
+ *  per-position `mktValue` there is NATIVE currency, so deriving from it
+ *  yields a bogus ~1.0. Skips BASE/USD and invalid rates. */
+export function extractLedgerFxRates(
+  ledger: Record<string, unknown> | undefined,
+): Record<string, number> {
+  const rates: Record<string, number> = {};
+  for (const [key, entry] of Object.entries(ledger ?? {})) {
+    const currency = key.toUpperCase();
+    if (currency === "USD" || currency === "BASE") continue;
+    const rate = (entry as { exchangerate?: unknown } | null)?.exchangerate;
+    if (typeof rate === "number" && Number.isFinite(rate) && rate > 0) {
+      rates[currency] = rate;
+    }
+  }
+  return rates;
+}
+
 /** USD per 1 unit of the position's local currency, from the broker's own USD
- *  market value. Returns null when inputs are missing/≤0 (caller skips fx write). */
+ *  market value. Returns null when inputs are missing/≤0 (caller skips fx write).
+ *  CAUTION: only valid on paths where `marketValue` is USD-base — the IBKR Web
+ *  API's `mktValue` is NOT (native currency, live-verified 2026-07-03); the TWS
+ *  `Position.marketValue` base is still unverified (see lib/tws/positions.ts). */
 export function deriveUsdPerUnit(
   mktValueUsd: number | null,
   mktPriceLocal: number | null,
