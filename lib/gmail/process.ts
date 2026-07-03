@@ -3,6 +3,7 @@ import { jsonSchema } from "ai";
 import { generateObjectForFeature } from "@/lib/ai/generate";
 import { resolveFeatureModel } from "@/lib/ai/models";
 import { verifyMentions } from "@/lib/research/verify-mentions";
+import { truncateForPrompt } from "./prompt-caps";
 
 interface UnprocessedArticle {
   id: number;
@@ -207,11 +208,11 @@ async function extractWithClaude(
   article: UnprocessedArticle,
   holdingsContext: string
 ): Promise<ProcessedResult> {
-  // Truncate very long articles for the prompt
-  const text =
-    article.raw_text.length > 15_000
-      ? article.raw_text.slice(0, 15_000) + "\n...[truncated]"
-      : article.raw_text;
+  // Cap very long articles for the prompt. 150k chars (was 15k — long
+  // weeklies' summaries only reflected the opening ~15% for months; see
+  // lib/gmail/prompt-caps.ts). Worker mirror: workers/cron/src/
+  // newsletter-fetch.ts::truncateBodyForPrompt (parity-pinned).
+  const text = truncateForPrompt(article.raw_text);
 
   const { object: _rawObject } = await generateObjectForFeature("newsletterProcessing", {
     maxOutputTokens: 2048,

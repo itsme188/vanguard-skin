@@ -37,9 +37,13 @@ const PREFERRED_SOURCE_IDS = [
 // without pulling mid-week back-catalog.
 const DEEP_READ_HOURS = 72;
 
-// Hard caps to keep input cost predictable.
-const MAX_CHARS_PER_ARTICLE = 30_000;   // truncate extremely long pieces
-const MAX_TOTAL_DEEP_CHARS = 200_000;   // ~50k tokens input ceiling for deep section
+// Hard caps to keep input cost predictable. Raised 2026-07-03 (30k/200k →
+// 100k/400k): Eliant Capital weeklies routinely exceed 30k chars, so the
+// Sunday briefing was reading only the opening third of a preferred deep-read
+// source (same R2 long-email audit that raised the extraction caps). New
+// worst case ≈ 100k tokens ≈ ~$1.50 Opus input once a week — accepted.
+const MAX_CHARS_PER_ARTICLE = 100_000;  // truncate extremely long pieces
+const MAX_TOTAL_DEEP_CHARS = 400_000;   // ~100k tokens input ceiling for deep section
 const BROADER_ARTICLE_LIMIT = 15;       // summary-level articles from other sources
 
 /**

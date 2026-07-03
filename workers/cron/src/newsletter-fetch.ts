@@ -300,6 +300,19 @@ export async function runNewsletterFetch(
   return { kind: "success", fetched: totalFetched };
 }
 
+// Mirror of Mac lib/gmail/prompt-caps.ts::EXTRACTION_PROMPT_CHAR_CAP —
+// parity-pinned in test/newsletter-fetch.test.ts. Was 15k: long weeklies'
+// summaries reflected only the opening ~15% of the email (R2 audit
+// 2026-07-03). Keep BOTH sides in sync.
+export const EXTRACTION_PROMPT_CHAR_CAP = 150_000;
+
+/** Cap text for the AI prompt, marking the cut so the model knows it's partial. */
+export function truncateBodyForPrompt(body: string): string {
+  return body.length > EXTRACTION_PROMPT_CHAR_CAP
+    ? body.slice(0, EXTRACTION_PROMPT_CHAR_CAP) + "\n...[truncated]"
+    : body;
+}
+
 async function defaultAnalyze(
   env: NewsletterFetchEnv,
   source: Snapshot["researchSources"][number],
@@ -307,10 +320,7 @@ async function defaultAnalyze(
   holdingsContext: string,
   catalog: string[] = [],
 ): Promise<ArticleAnalysis | null> {
-  const text =
-    detail.body.length > 15_000
-      ? detail.body.slice(0, 15_000) + "\n...[truncated]"
-      : detail.body;
+  const text = truncateBodyForPrompt(detail.body);
 
   const prompt = `Analyze this financial newsletter article and extract structured data.
 
