@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef } from "react";
 import type { ResearchSource } from "@/lib/queries/research";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 interface DiscoveredSender {
   email: string;
@@ -25,6 +26,7 @@ export function ManageSourcesModal({
   onSourcesChanged,
 }: Props) {
   const [sources, setSources] = useState(initialSources);
+  const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
   const [discovering, setDiscovering] = useState(false);
   const [discovered, setDiscovered] = useState<DiscoveredSender[]>([]);
   const [showDiscover, setShowDiscover] = useState(false);
@@ -316,10 +318,12 @@ export function ManageSourcesModal({
                           }`}
                         />
                       </button>
-                      {/* Delete — only for sources with no articles */}
+                      {/* Delete — only for sources with no articles.
+                          Confirm first, matching the Notes/Documents delete
+                          flows (deep-QA: instant delete was jarring). */}
                       {(!s.article_count || s.article_count === 0) && (
                         <button
-                          onClick={() => handleDelete(s.id)}
+                          onClick={() => setPendingDeleteId(s.id)}
                           className="text-ink-faint hover:text-down transition-colors"
                           title="Delete source"
                         >
@@ -487,6 +491,19 @@ export function ManageSourcesModal({
           </button>
         </div>
       </div>
+      <ConfirmDialog
+        open={pendingDeleteId !== null}
+        title="Delete source"
+        message="Are you sure you want to remove this newsletter source? This cannot be undone."
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={() => {
+          const id = pendingDeleteId;
+          setPendingDeleteId(null);
+          if (id !== null) void handleDelete(id);
+        }}
+        onCancel={() => setPendingDeleteId(null)}
+      />
     </div>
   );
 }

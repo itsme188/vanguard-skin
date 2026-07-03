@@ -336,6 +336,12 @@ export function EquityCurveChart({
   const color = ACCOUNT_COLORS[accountName] ?? "#C9A44E";
   const hasCashData = hasDaily && data.some((d) => (d.cash ?? 0) > 0);
 
+  // Day-level ticks for intra-year ranges — the month-year formatter repeated
+  // "Jun 26" for every daily tick on 1M/3M/6M/YTD (deep-QA finding). The
+  // multi-year "All" range keeps month-year; minTickGap thins dense daily data.
+  const xTickFormatter =
+    DATE_RANGES[selectedRange].label === "All" ? formatDate : shortDate;
+
   if (rawData.length === 0) {
     return (
       <div className="rounded-xl border border-dashed border-edge bg-panel/50 p-8 text-center">
@@ -410,7 +416,8 @@ export function EquityCurveChart({
               />
               <XAxis
                 dataKey="date"
-                tickFormatter={formatDate}
+                tickFormatter={xTickFormatter}
+                minTickGap={40}
                 stroke="#4E5668"
                 tick={{ fontSize: 11 }}
                 axisLine={false}
@@ -502,7 +509,8 @@ export function EquityCurveChart({
               />
               <XAxis
                 dataKey="date"
-                tickFormatter={formatDate}
+                tickFormatter={xTickFormatter}
+                minTickGap={40}
                 stroke="#4E5668"
                 tick={{ fontSize: 11 }}
                 axisLine={false}

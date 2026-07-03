@@ -88,6 +88,19 @@ export async function POST(request: Request) {
     });
   } catch (err) {
     if (err instanceof EarningsEmailError) {
+      // The no-actuals-yet guard (409) is the EXPECTED outcome of clicking
+      // "gen" before a company reports — return 200 with a structured flag
+      // so a routine click doesn't log a browser console error, and keep
+      // the internals (event id, API paths) out of the user-facing copy.
+      // The cron-auth /api/earnings/email path keeps its literal 409.
+      if (err.status === 409) {
+        return Response.json({
+          success: false,
+          notReady: true,
+          error:
+            "Not reported yet — the recap unlocks once actuals land, or after you save reported actuals in the bogeys editor.",
+        });
+      }
       return Response.json({ error: err.message }, { status: err.status });
     }
     console.error("[recap-modal] Compose error:", err);

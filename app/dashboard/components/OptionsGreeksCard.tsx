@@ -118,7 +118,10 @@ export function OptionsGreeksCard({ scope }: { scope?: string }) {
                     <PrivateText>{p.quantity > 0 ? `+${p.quantity}` : String(p.quantity)}</PrivateText>
                   </td>
                   <td className="hidden md:table-cell text-right py-2 px-2 font-mono text-ink-dim">
-                    ${p.underlyingPrice.toFixed(2)}
+                    {/* 0 means "no underlying price" here (see the Greeks
+                        diagnostics) — render — like the Greeks columns do,
+                        not a misleading literal $0.00. */}
+                    {p.underlyingPrice > 0 ? `$${p.underlyingPrice.toFixed(2)}` : "—"}
                   </td>
                   <td className={`text-right py-2 px-2 font-mono ${dte <= 7 ? "text-down" : dte <= 30 ? "text-gold" : "text-ink-dim"}`}>
                     {dte}d

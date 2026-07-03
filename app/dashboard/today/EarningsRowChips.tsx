@@ -57,12 +57,18 @@ export function EarningsRowChips({
       });
       const json = (await res.json().catch(() => ({}))) as {
         success?: boolean;
+        notReady?: boolean;
         html?: string;
         title?: string;
         symbol?: string;
         eventDate?: string | null;
         error?: string;
       };
+      if (json.notReady) {
+        // Expected pre-report state — friendly copy, no thrown error.
+        setGenerateError(json.error ?? "Not reported yet.");
+        return;
+      }
       if (!res.ok || !json.success) {
         throw new Error(json.error ?? `HTTP ${res.status}`);
       }
