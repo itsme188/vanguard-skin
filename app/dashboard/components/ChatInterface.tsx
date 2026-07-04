@@ -521,7 +521,10 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
         {/* Empty state */}
         {messages.length === 0 && (
           <div className="flex items-center justify-center h-full">
-            <div className="text-center max-w-md">
+            {/* min-w-0 + w-full: flex-child min-width:auto otherwise lets long
+                conversation titles push this past narrow (mobile) viewports,
+                clipping both edges and defeating the buttons' truncate */}
+            <div className="text-center w-full max-w-md min-w-0 px-4">
               <div className="text-3xl text-ink-faint mb-4 italic font-light">
                 Analyst
               </div>
