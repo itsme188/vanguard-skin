@@ -18,6 +18,23 @@ export interface WatchlistItem {
   price_date: string | null;
 }
 
+/** Active watchlist symbols, stock-like only, uppercase — the earnings-scan
+ *  candidate shape (Wave 1 B10). */
+export function getActiveWatchlistStockSymbols(db: Database.Database): string[] {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT UPPER(s.symbol) AS symbol
+         FROM watchlist w
+         JOIN securities s ON s.id = w.security_id
+        WHERE w.is_active = 1
+          AND LOWER(COALESCE(s.security_type, '')) IN ('stock', 'common stock')
+          AND s.symbol IS NOT NULL AND s.symbol != ''
+        ORDER BY symbol`,
+    )
+    .all() as { symbol: string }[];
+  return rows.map((r) => r.symbol);
+}
+
 export function getWatchlistGroups(db: Database.Database): string[] {
   const rows = db
     .prepare(
