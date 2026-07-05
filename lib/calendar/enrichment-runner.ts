@@ -28,6 +28,13 @@ const MAX_AGE_MS_MACRO = 2 * 60 * 60 * 1000;
 const MAX_AGE_MS_EARNINGS = 12 * 60 * 60 * 1000;
 const MIN_AGE_MS = 5 * 60 * 1000;      // 5 minutes
 
+// Earnings rows retry across ticks until complete. Pace retries so
+// overlapping invocations (route + script) don't hammer Finnhub/Yahoo.
+const RETRY_PACING_MS = 10 * 60 * 1000;
+// After this long past release, an actual-bearing earnings row counts as
+// complete even without a reaction snapshot (bars target T+120; +30 slack).
+const REACTION_SETTLE_MS = 150 * 60 * 1000;
+
 function maxAgeFor(event: { source: string; event_type: string }): number {
   if (event.source === "finnhub" || event.event_type === "earnings") {
     return MAX_AGE_MS_EARNINGS;
@@ -47,6 +54,9 @@ interface EnrichmentCandidate {
   consensus_estimate: string | null;
   raw_json: string | null;
   security_id: number | null;
+  actual_value: string | null;
+  reaction_snapshot: string | null;
+  enrichment_attempted_at: string | null;
 }
 
 export interface EnrichOptions {
@@ -98,7 +108,8 @@ function findCandidates(
     const row = db
       .prepare(
         `SELECT id, source, source_key, event_type, event_date, release_time,
-                symbol, title, consensus_estimate, raw_json, security_id
+                symbol, title, consensus_estimate, raw_json, security_id,
+                actual_value, reaction_snapshot, enrichment_attempted_at
          FROM calendar_events
          WHERE id = ?`,
       )
@@ -121,7 +132,8 @@ function findCandidates(
   const rows = db
     .prepare(
       `SELECT id, source, source_key, event_type, event_date, release_time,
-              symbol, title, consensus_estimate, raw_json, security_id
+              symbol, title, consensus_estimate, raw_json, security_id,
+              actual_value, reaction_snapshot, enrichment_attempted_at
        FROM calendar_events
        WHERE enriched_at IS NULL
          AND release_time IS NOT NULL
@@ -138,6 +150,11 @@ function findCandidates(
     const ageMs = nowMs - releaseInstant.getTime();
     const maxAge = maxAgeFor(row);
     if (ageMs >= MIN_AGE_MS && ageMs <= maxAge) {
+      if (row.enrichment_attempted_at) {
+        // datetime('now') format: "YYYY-MM-DD HH:MM:SS" (UTC).
+        const attemptedMs = Date.parse(row.enrichment_attempted_at.replace(" ", "T") + "Z");
+        if (Number.isFinite(attemptedMs) && nowMs - attemptedMs < RETRY_PACING_MS) continue;
+      }
       filtered.push(row);
       if (filtered.length >= limit) break;
     }
@@ -179,13 +196,19 @@ function logSectorGap(
 // EarningsHub "gen" button re-ran enrichment before composing, then 409'd
 // telling the user to use the override it had just wiped (deep-QA finding
 // 2026-06-10). A fresh non-null fetch still overwrites.
+//
+// enriched_at is stamped only when the pass is COMPLETE (bound ?4 = 1);
+// earnings rows retry across ticks until then. enrichment_attempted_at is
+// stamped every pass — it drives retry pacing in findCandidates.
 const updateEnrichment = (db: Database.Database) =>
   db.prepare(
     `UPDATE calendar_events
      SET actual_value = COALESCE(?, actual_value),
          consensus_value = COALESCE(?, consensus_value),
          reaction_snapshot = COALESCE(?, reaction_snapshot),
-         enriched_at = datetime('now')
+         enrichment_attempted_at = datetime('now'),
+         enriched_at = CASE WHEN ? THEN COALESCE(enriched_at, datetime('now'))
+                            ELSE enriched_at END
      WHERE id = ?`,
   );
 
@@ -221,7 +244,9 @@ export async function runEnrichment(
 
   for (const event of candidates) {
     try {
-      const actualResult = await fetchActualForEvent(db, event);
+      const actualResult = event.actual_value
+        ? { actual: null, consensus: null } // already captured on a prior attempt
+        : await fetchActualForEvent(db, event);
 
       // Reaction snapshot — only attempt when TWS is available.
       let reaction: ReactionSnapshot | null = null;
@@ -277,10 +302,29 @@ export async function runEnrichment(
         }
       }
 
+      const isEarnings =
+        event.source === "finnhub" || event.event_type === "earnings";
+      const releaseInstantForAge =
+        event.release_time
+          ? composeReleaseInstant(event.event_date, event.release_time)
+          : null;
+      const ageMs = releaseInstantForAge
+        ? (opts.now ?? new Date()).getTime() - releaseInstantForAge.getTime()
+        : Number.POSITIVE_INFINITY;
+      const hasActual = actualResult.actual != null || event.actual_value != null;
+      const hasReaction = reaction != null || event.reaction_snapshot != null;
+      // Macro rows keep single-shot semantics (complete on first attempt);
+      // earnings rows complete only when the actual landed AND the reaction
+      // either landed or its capture window has settled.
+      const complete = !isEarnings
+        ? true
+        : hasActual && (hasReaction || ageMs >= REACTION_SETTLE_MS);
+
       update.run(
         actualResult.actual,
         actualResult.consensus,
         reaction ? JSON.stringify(reaction) : null,
+        complete ? 1 : 0,
         event.id,
       );
 
@@ -289,7 +333,7 @@ export async function runEnrichment(
         source_key: event.source_key,
         actual: actualResult.actual,
         reaction,
-        enriched: true,
+        enriched: complete,
       });
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
@@ -316,7 +360,8 @@ async function runTwsReactionUpgrade(
   const row = db
     .prepare(
       `SELECT id, source, source_key, event_type, event_date, release_time,
-              symbol, title, consensus_estimate, raw_json, security_id
+              symbol, title, consensus_estimate, raw_json, security_id,
+              actual_value, reaction_snapshot, enrichment_attempted_at
        FROM calendar_events
        WHERE id = ?`,
     )

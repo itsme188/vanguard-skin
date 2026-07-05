@@ -101,4 +101,36 @@ describe("reconcileCloudEnrichment data-preservation guards", () => {
     expect(row.reaction_snapshot).toContain("yahoo");
     expect(row.enriched_at).toBeNull(); // Mac retry (Task 6) can still fetch the actual
   });
+
+  it("TWS-wins branch does NOT stamp enriched_at when the row still lacks an actual (Task 6)", async () => {
+    // A row that already has a TWS-sourced reaction (e.g. captured via the
+    // Mac's own reaction-snapshot path) but no actual yet — enriched_at is
+    // still NULL because Task 6's runner only stamps on completion.
+    const r3 = db
+      .prepare(
+        `INSERT INTO calendar_events (source, source_key, event_type, event_date, week_of, title, symbol, reaction_snapshot)
+       VALUES ('finnhub', 'finnhub:V:2026-07-28', 'earnings', '2026-07-28', '2026-07-27', 'V', 'V', ?)`,
+      )
+      .run(JSON.stringify({ source: "tws", spy: { delta_pct: 0.1 } }));
+    const id3 = Number(r3.lastInsertRowid);
+    mockWorker({
+      [String(id3)]: {
+        eventId: id3,
+        source_key: "finnhub:V:2026-07-28",
+        actual: null,
+        consensus: null,
+        source: "cloud",
+        reaction: { source: "yahoo", spy: { delta_pct: 0.4 } },
+        fetchedAt: "2026-07-28T21:00:00Z",
+      },
+    });
+    await reconcileCloudEnrichment(db, "secret");
+    const row = db
+      .prepare("SELECT enriched_at, actual_value, reaction_snapshot FROM calendar_events WHERE id = ?")
+      .get(id3) as { enriched_at: string | null; actual_value: string | null; reaction_snapshot: string | null };
+    expect(row.enriched_at).toBeNull(); // TWS wins, but no actual → Mac retry keeps going
+    expect(row.actual_value).toBeNull();
+    // TWS reaction is preserved — the cloud payload's Yahoo reaction is discarded (TWS wins).
+    expect(row.reaction_snapshot).toContain("tws");
+  });
 });

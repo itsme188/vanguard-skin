@@ -10,6 +10,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { runEnrichment } from "@/lib/calendar/enrichment-runner";
+import { composeReleaseInstant } from "@/lib/calendar/reaction-snapshot";
 
 function seedSecurity(
   db: Database.Database,
@@ -335,5 +336,265 @@ describe("runEnrichment", () => {
       .prepare("SELECT enriched_at FROM calendar_events")
       .get() as { enriched_at: string | null };
     expect(row.enriched_at).toBeNull();
+  });
+});
+
+describe("earnings retry-until-complete (migration 062)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    vi.stubGlobal("fetch", vi.fn());
+    process.env.FRED_API_KEY = "test_fred_key";
+    process.env.FINNHUB_API_KEY = "test_finnhub_key";
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.FRED_API_KEY;
+    delete process.env.FINNHUB_API_KEY;
+  });
+
+  /**
+   * Convert a UTC instant into its ET wall-clock date/time parts, for
+   * constructing event_date/release_time fixtures. Using Intl (rather than
+   * hand-rolled DST math) means these tests don't need to know whether a
+   * given date falls in EDT or EST.
+   */
+  function etDateTimeParts(d: Date): { date: string; time: string } {
+    const fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/New_York",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+    const parts = fmt.formatToParts(d);
+    const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+    let hour = get("hour");
+    if (hour === "24") hour = "00"; // Intl quirk: midnight can format as "24"
+    return {
+      date: `${get("year")}-${get("month")}-${get("day")}`,
+      time: `${hour}:${get("minute")}`,
+    };
+  }
+
+  function getRow(id: number) {
+    return db
+      .prepare(
+        `SELECT enriched_at, enrichment_attempted_at, actual_value, reaction_snapshot
+         FROM calendar_events WHERE id = ?`,
+      )
+      .get(id) as {
+      enriched_at: string | null;
+      enrichment_attempted_at: string | null;
+      actual_value: string | null;
+      reaction_snapshot: string | null;
+    };
+  }
+
+  function mockFinnhubActual(entry: {
+    date: string;
+    epsActual?: number | null;
+    epsEstimate?: number | null;
+  } | null) {
+    (global.fetch as ReturnType<typeof vi.fn>).mockReset();
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      json: async () => ({ earningsCalendar: entry ? [entry] : [] }),
+    });
+  }
+
+  const emptyTws = { getHistoricalData: async () => [] };
+  // Bars straddling an 08:00 ET release: pre-target (07:55 ET) and
+  // post-target (10:00 ET = release+120min). Same bars serve every symbol
+  // call (SPY/QQQ/TLT/sector/event-symbol) since matchBarsToReaction only
+  // needs SOME bar within tolerance of each target.
+  function realTwsFor(eventDate: string) {
+    const [y, m, d] = eventDate.split("-");
+    return {
+      getHistoricalData: async () => [
+        { time: `${y}${m}${d}  07:55:00`, close: 500.0 },
+        { time: `${y}${m}${d}  10:00:00`, close: 505.0 },
+      ],
+    };
+  }
+
+  // Earnings-retry scenarios (2, 3, and the first-attempt-null test 1) use a
+  // release instant far in the future relative to real wall-clock "now" —
+  // enrichment_attempted_at is always stamped with REAL datetime('now'), so
+  // parking the fictional release ~30 days out guarantees
+  // (fictional now) - (real attempted_at) comfortably clears the 10-min
+  // retry-pacing threshold on every subsequent call, regardless of when
+  // this test suite actually runs.
+  const { date: FUTURE_DATE, time: FUTURE_TIME } = etDateTimeParts(
+    new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+  );
+  // Reconstruct via composeReleaseInstant (the same function the runner
+  // uses internally) rather than the raw pre-rounding Date — etDateTimeParts
+  // truncates to the minute, so anchoring on the raw instant would leave a
+  // sub-minute drift against the runner's own ageMs computation, which is
+  // too close for comfort against the 150-min settle-deadline boundary.
+  const RELEASE_INSTANT = composeReleaseInstant(FUTURE_DATE, FUTURE_TIME)!;
+
+  function releasePlus(minutes: number): Date {
+    return new Date(RELEASE_INSTANT.getTime() + minutes * 60 * 1000);
+  }
+
+  it("does NOT stamp enriched_at when the actual fetch returns null", async () => {
+    seedSecurity(db, 200, "ZETA", "Technology");
+    const { lastInsertRowid } = insertEvent(db, {
+      source: "finnhub",
+      source_key: `finnhub:ZETA:${FUTURE_DATE}`,
+      event_type: "earnings",
+      event_date: FUTURE_DATE,
+      release_time: FUTURE_TIME,
+      symbol: "ZETA",
+      security_id: 200,
+    });
+    const eventId = Number(lastInsertRowid);
+
+    mockFinnhubActual(null); // no matching entry → actual null
+    await runEnrichment(db, {
+      now: releasePlus(20),
+      tws: emptyTws as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+      pacingMs: 0,
+    });
+
+    const row = getRow(eventId);
+    expect(row.enriched_at).toBeNull();
+    expect(row.enrichment_attempted_at).not.toBeNull();
+  });
+
+  it("retries on a later tick and completes once actual + reaction exist", async () => {
+    seedSecurity(db, 201, "YOTA", "Technology");
+    const { lastInsertRowid } = insertEvent(db, {
+      source: "finnhub",
+      source_key: `finnhub:YOTA:${FUTURE_DATE}`,
+      event_type: "earnings",
+      event_date: FUTURE_DATE,
+      release_time: FUTURE_TIME,
+      symbol: "YOTA",
+      security_id: 201,
+    });
+    const eventId = Number(lastInsertRowid);
+
+    // Attempt 1 at T+20: nulls → incomplete.
+    mockFinnhubActual(null);
+    await runEnrichment(db, {
+      now: releasePlus(20),
+      tws: emptyTws as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+      pacingMs: 0,
+    });
+    expect(getRow(eventId).enriched_at).toBeNull();
+
+    // Attempt 2 at T+155: actual + reaction available → complete.
+    mockFinnhubActual({ date: FUTURE_DATE, epsActual: 2.5, epsEstimate: 2.3 });
+    await runEnrichment(db, {
+      now: releasePlus(155),
+      tws: realTwsFor(FUTURE_DATE) as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+      pacingMs: 0,
+    });
+
+    const row = getRow(eventId);
+    expect(row.actual_value).toContain("EPS");
+    expect(row.enriched_at).not.toBeNull();
+  });
+
+  it("actual present but no reaction: incomplete before 150 min, complete after", async () => {
+    seedSecurity(db, 202, "XILA", "Technology");
+    const { lastInsertRowid } = insertEvent(db, {
+      source: "finnhub",
+      source_key: `finnhub:XILA:${FUTURE_DATE}`,
+      event_type: "earnings",
+      event_date: FUTURE_DATE,
+      release_time: FUTURE_TIME,
+      symbol: "XILA",
+      security_id: 202,
+    });
+    const eventId = Number(lastInsertRowid);
+
+    mockFinnhubActual({ date: FUTURE_DATE, epsActual: 1.1, epsEstimate: 1.0 });
+    await runEnrichment(db, {
+      now: releasePlus(20),
+      tws: emptyTws as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+      pacingMs: 0,
+    });
+    expect(getRow(eventId).enriched_at).toBeNull(); // has actual, waiting on reaction window
+    expect(getRow(eventId).actual_value).toContain("EPS"); // but the actual was stored (COALESCE)
+
+    await runEnrichment(db, {
+      now: releasePlus(151),
+      tws: emptyTws as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+      pacingMs: 0,
+    });
+    expect(getRow(eventId).enriched_at).not.toBeNull(); // settle deadline passed
+  });
+
+  it("paces retries: a row attempted <10 min ago is not re-selected", async () => {
+    // Both `now` values here are real-clock-relative (not the far-future
+    // fixture) so they land on the SAME clock as enrichment_attempted_at,
+    // which is always stamped with real SQL datetime('now').
+    const realNow = new Date();
+    const releaseInstant = new Date(realNow.getTime() - 20 * 60 * 1000);
+    const { date, time } = etDateTimeParts(releaseInstant);
+
+    seedSecurity(db, 203, "WUXI", "Technology");
+    const { lastInsertRowid } = insertEvent(db, {
+      source: "finnhub",
+      source_key: `finnhub:WUXI:${date}`,
+      event_type: "earnings",
+      event_date: date,
+      release_time: time,
+      symbol: "WUXI",
+      security_id: 203,
+    });
+    const eventId = Number(lastInsertRowid);
+
+    mockFinnhubActual(null);
+    await runEnrichment(db, {
+      now: realNow,
+      tws: emptyTws as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+      pacingMs: 0,
+    });
+    const firstAttempt = getRow(eventId).enrichment_attempted_at;
+    expect(firstAttempt).not.toBeNull();
+
+    const results = await runEnrichment(db, {
+      now: new Date(realNow.getTime() + 5 * 60 * 1000), // 5 min later
+      tws: emptyTws as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+      pacingMs: 0,
+    });
+    expect(results).toEqual([]); // paced out — not re-selected
+    expect(getRow(eventId).enrichment_attempted_at).toBe(firstAttempt); // unchanged
+  });
+
+  it("macro rows keep single-shot semantics (enriched_at stamped even on null actual)", async () => {
+    insertEvent(db, {
+      source: "claude_macro",
+      source_key: `fred:10:${FUTURE_DATE}`,
+      event_type: "cpi",
+      event_date: FUTURE_DATE,
+      release_time: FUTURE_TIME,
+      consensus_estimate: "3.0%",
+    });
+
+    // FRED fetch fails → actual null.
+    (global.fetch as ReturnType<typeof vi.fn>).mockReset();
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: false,
+      json: async () => ({}),
+    });
+
+    await runEnrichment(db, { now: releasePlus(20) });
+
+    const row = db
+      .prepare("SELECT enriched_at FROM calendar_events")
+      .get() as { enriched_at: string | null };
+    expect(row.enriched_at).not.toBeNull();
   });
 });

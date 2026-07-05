@@ -107,6 +107,16 @@ export async function reconcileCloudEnrichment(
          enriched_at = COALESCE(enriched_at, datetime('now'))
      WHERE id = ?`,
   );
+  // TWS-wins branch, but the row still lacks an actual (Task 6 semantics):
+  // update consensus only, leave enriched_at NULL so the Mac's enrichment
+  // retry loop keeps trying to fetch the actual. Stamping here on a null
+  // actual would prematurely kill that retry loop.
+  const updateActualOnlyNoStamp = db.prepare(
+    `UPDATE calendar_events
+     SET actual_value = COALESCE(?, actual_value),
+         consensus_value = COALESCE(consensus_value, ?)
+     WHERE id = ?`,
+  );
   // Reaction arrived but neither the payload nor the row has an actual yet:
   // store the reaction, leave enriched_at NULL so the Mac's enrichment
   // retry loop can still fetch the actual (Task 6 semantics).
@@ -164,7 +174,11 @@ export async function reconcileCloudEnrichment(
       const rowHasOrGetsActual = payload.actual != null || existing.actual_value != null;
 
       if (existingIsTws) {
-        updateActualOnly.run(payload.actual, payload.consensus, eventId);
+        if (rowHasOrGetsActual) {
+          updateActualOnly.run(payload.actual, payload.consensus, eventId);
+        } else {
+          updateActualOnlyNoStamp.run(payload.actual, payload.consensus, eventId);
+        }
         skippedTwsWins += 1;
       } else if (rowHasOrGetsActual) {
         updateWithReaction.run(
