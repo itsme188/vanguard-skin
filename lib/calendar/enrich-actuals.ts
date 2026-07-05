@@ -326,7 +326,12 @@ async function fetchFinnhubActual(
   const res = await fetch(url);
   if (!res.ok) return { actual: null, consensus: null };
   const data = (await res.json()) as { earningsCalendar?: FinnhubEarningsEntry[] };
-  const entry = data.earningsCalendar?.find((e) => e.date === date && e.symbol === symbol);
+  // The query is already symbol-scoped (?symbol=), so every returned entry
+  // belongs to the queried issuer — but Finnhub may echo a foreign-exchange
+  // suffix (query "GFL" → entries with symbol "GFL.TO"; same behavior
+  // documented in lib/calendar/finnhub.ts). Match on date only; never
+  // require the echoed symbol to equal the queried one.
+  const entry = data.earningsCalendar?.find((e) => e.date === date);
   if (!entry) return { actual: null, consensus: null };
 
   const actualParts: string[] = [];
