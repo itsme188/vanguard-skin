@@ -16,9 +16,11 @@ import { runMigrations } from "@/lib/db/migrate";
 
 const sendPreview = vi.fn(async () => ({ success: true }));
 const sendRecap = vi.fn(async () => ({ success: true }));
+const reapStaleClaims = vi.fn(() => 0);
 vi.mock("@/lib/digest/send-earnings-email", () => ({
   sendEarningsPreview: (...a: unknown[]) => sendPreview(...a),
   sendEarningsRecap: (...a: unknown[]) => sendRecap(...a),
+  reapStaleEarningsEmailClaims: (...a: unknown[]) => reapStaleClaims(...a),
   EarningsEmailError: class extends Error {
     status = 500;
   },
@@ -96,13 +98,14 @@ describe("runEarningsEmailSweep marker dance", () => {
 
     sendPreview.mockClear();
     sendRecap.mockClear();
+    reapStaleClaims.mockClear();
     checkMarker.mockClear();
     setRunning.mockClear();
     clearRunning.mockClear();
     writeSent.mockClear();
   });
 
-  it("checks cloud marker, sets running, sends, writes mac-sent, clears running", async () => {
+  it("checks cloud marker, sets running, sends, writes mac-sent, clears running, in order", async () => {
     seedHeldPreviewCandidate(db, "AAPL");
 
     const summary = await runEarningsEmailSweep(db, { now: NOW });
@@ -113,6 +116,20 @@ describe("runEarningsEmailSweep marker dance", () => {
     expect(sendPreview).toHaveBeenCalledTimes(1);
     expect(writeSent).toHaveBeenCalled();
     expect(clearRunning).toHaveBeenCalled();
+
+    // Marker call-order pin (Task 7 reviewer follow-up): checkMarker must
+    // resolve before the running marker is set, which must precede the
+    // actual send, which must precede the mac-sent write, which must
+    // precede clearing the running marker.
+    const checkOrder = checkMarker.mock.invocationCallOrder[0];
+    const setRunningOrder = setRunning.mock.invocationCallOrder[0];
+    const sendOrder = sendPreview.mock.invocationCallOrder[0];
+    const writeSentOrder = writeSent.mock.invocationCallOrder[0];
+    const clearRunningOrder = clearRunning.mock.invocationCallOrder[0];
+    expect(checkOrder).toBeLessThan(setRunningOrder);
+    expect(setRunningOrder).toBeLessThan(sendOrder);
+    expect(sendOrder).toBeLessThan(writeSentOrder);
+    expect(writeSentOrder).toBeLessThan(clearRunningOrder);
   });
 
   it("skips the send when the cloud already delivered, and records a local audit row", async () => {

@@ -19,6 +19,7 @@ import {
   sendEarningsPreview,
   sendEarningsRecap,
   EarningsEmailError,
+  reapStaleEarningsEmailClaims,
 } from "@/lib/digest/send-earnings-email";
 import {
   checkEarningsCloudMarker,
@@ -68,6 +69,17 @@ export async function runEarningsEmailSweep(
   db: Database.Database,
   opts: EmailSweepOpts = {},
 ): Promise<SweepSummary> {
+  // Reap stale (>30 min) 'in_progress' claim rows BEFORE candidate selection
+  // — a stale claim from a dead process otherwise hides its event from
+  // findEmailCandidates forever (the claim row satisfies the "already
+  // audited" exclusion but no email was ever sent). See B3.
+  const reaped = reapStaleEarningsEmailClaims(db);
+  if (reaped > 0) {
+    console.warn(
+      `[earnings-sweep] reaped ${reaped} stale in-progress claim(s) from a dead process`,
+    );
+  }
+
   const candidates = findEmailCandidates(db, opts);
   const results: SweepCandidateResult[] = [];
 

@@ -45,6 +45,11 @@ export function getEmailAuditsForEvent(
  * For a list of event_ids, return which phases have been sent.
  * Empty input → empty result. Single round-trip; caller decides
  * which events render which buttons.
+ *
+ * Excludes live 'in_progress' claim rows (see the cross-process send-claim
+ * mutex in lib/digest/send-earnings-email.ts, bug B3) — a send that's still
+ * mid-compose hasn't actually delivered anything yet, so the "sent" chip
+ * would be a lie. 'sent-by-cloud' rows (Worker-delivered) DO count as sent.
  */
 export function getSentPhasesForEvents(
   db: Database.Database,
@@ -55,7 +60,8 @@ export function getSentPhasesForEvents(
   const rows = db
     .prepare(
       `SELECT event_id, phase FROM earnings_emails
-        WHERE event_id IN (${eventIds.map(() => "?").join(",")})`,
+        WHERE event_id IN (${eventIds.map(() => "?").join(",")})
+          AND (error IS NULL OR error != 'in_progress')`,
     )
     .all(...eventIds) as { event_id: number; phase: "preview" | "recap" }[];
   for (const r of rows) {
