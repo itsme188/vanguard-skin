@@ -271,7 +271,10 @@ export function PerformanceCurveChart({
             width={42}
           />
           <Tooltip
-            formatter={(value: unknown) => [fmt(Number(value)), ""]}
+            formatter={(value: unknown, name: unknown) => [
+              fmt(Number(value)),
+              String(name ?? ""),
+            ]}
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             labelFormatter={(label: any) => shortDate(String(label))}
             contentStyle={{
