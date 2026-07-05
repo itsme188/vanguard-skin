@@ -15,48 +15,20 @@ import { config } from "dotenv";
 config({ path: ".env.local" });
 
 import { db } from "../lib/db";
-import { findEmailCandidates } from "../lib/calendar/enrichment-runner";
-import {
-  sendEarningsPreview,
-  sendEarningsRecap,
-} from "../lib/digest/send-earnings-email";
+import { runEarningsEmailSweep } from "../lib/calendar/email-sweep";
 
 async function main() {
-  const candidates = findEmailCandidates(db);
-  if (candidates.length === 0) {
+  const summary = await runEarningsEmailSweep(db);
+  if (summary.swept === 0) {
     console.log(`${new Date().toISOString()} — no email candidates`);
     return;
   }
-
-  console.log(
-    `${new Date().toISOString()} — ${candidates.length} candidate(s):`,
-  );
-  for (const c of candidates) {
-    console.log(`  • ${c.symbol} ${c.phase} (event_id=${c.eventId})`);
+  for (const r of summary.results) {
+    const dt = (r.durationMs / 1000).toFixed(1);
+    const state = r.skipped ? "SKIP (cloud sent)" : r.ok ? "OK" : `FAILED: ${r.message}`;
+    console.log(`  [${r.symbol}] ${r.phase} ${state} (${dt}s)`);
   }
-
-  let sent = 0;
-  let failed = 0;
-  for (const cand of candidates) {
-    const t0 = Date.now();
-    try {
-      if (cand.phase === "preview") {
-        await sendEarningsPreview(db, cand.eventId);
-      } else {
-        await sendEarningsRecap(db, cand.eventId);
-      }
-      const dt = ((Date.now() - t0) / 1000).toFixed(1);
-      console.log(`  [${cand.symbol}] ${cand.phase} OK (${dt}s)`);
-      sent++;
-    } catch (err) {
-      const dt = ((Date.now() - t0) / 1000).toFixed(1);
-      const msg = err instanceof Error ? err.message : String(err);
-      console.log(`  [${cand.symbol}] ${cand.phase} FAILED (${dt}s): ${msg}`);
-      failed++;
-    }
-  }
-
-  console.log(`Done — sent ${sent}, failed ${failed}`);
+  console.log(`Done — sent ${summary.sent}, skipped ${summary.skipped}, failed ${summary.failed}`);
 }
 
 main().catch((err) => {
