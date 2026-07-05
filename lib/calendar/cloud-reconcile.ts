@@ -16,6 +16,7 @@ export interface CloudReconcileResult {
   ok: boolean;
   reconciled: number;
   skipped_tws_wins: number;
+  skipped_deferred: number;
   errors?: { eventId: string; error: string }[];
   error?: string;
   note?: string;
@@ -43,6 +44,7 @@ export async function reconcileCloudEnrichment(
       ok: true,
       reconciled: 0,
       skipped_tws_wins: 0,
+      skipped_deferred: 0,
       note: "WORKER_MARKER_URL unset — no-op",
     };
   }
@@ -57,6 +59,7 @@ export async function reconcileCloudEnrichment(
         ok: false,
         reconciled: 0,
         skipped_tws_wins: 0,
+        skipped_deferred: 0,
         error: `worker returned ${res.status}`,
         status: 502,
       };
@@ -68,6 +71,7 @@ export async function reconcileCloudEnrichment(
       ok: false,
       reconciled: 0,
       skipped_tws_wins: 0,
+      skipped_deferred: 0,
       error: err instanceof Error ? err.message : String(err),
       status: 502,
     };
@@ -75,31 +79,41 @@ export async function reconcileCloudEnrichment(
 
   const entries = Object.entries(payloads);
   if (entries.length === 0) {
-    return { ok: true, reconciled: 0, skipped_tws_wins: 0 };
+    return { ok: true, reconciled: 0, skipped_tws_wins: 0, skipped_deferred: 0 };
   }
 
   let reconciled = 0;
   let skippedTwsWins = 0;
+  let skippedDeferred = 0;
   const errors: { eventId: string; error: string }[] = [];
 
   const selectRow = db.prepare(
-    `SELECT id, reaction_snapshot, consensus_value, enriched_at
+    `SELECT id, reaction_snapshot, consensus_value, enriched_at, actual_value
      FROM calendar_events
      WHERE id = ?`,
   );
   const updateWithReaction = db.prepare(
     `UPDATE calendar_events
-     SET actual_value = ?,
+     SET actual_value = COALESCE(?, actual_value),
          consensus_value = COALESCE(consensus_value, ?),
-         reaction_snapshot = ?,
-         enriched_at = datetime('now')
+         reaction_snapshot = COALESCE(?, reaction_snapshot),
+         enriched_at = COALESCE(enriched_at, datetime('now'))
      WHERE id = ?`,
   );
   const updateActualOnly = db.prepare(
     `UPDATE calendar_events
-     SET actual_value = ?,
+     SET actual_value = COALESCE(?, actual_value),
          consensus_value = COALESCE(consensus_value, ?),
          enriched_at = COALESCE(enriched_at, datetime('now'))
+     WHERE id = ?`,
+  );
+  // Reaction arrived but neither the payload nor the row has an actual yet:
+  // store the reaction, leave enriched_at NULL so the Mac's enrichment
+  // retry loop can still fetch the actual (Task 6 semantics).
+  const updateReactionNoStamp = db.prepare(
+    `UPDATE calendar_events
+     SET reaction_snapshot = COALESCE(?, reaction_snapshot),
+         consensus_value = COALESCE(consensus_value, ?)
      WHERE id = ?`,
   );
 
@@ -108,12 +122,27 @@ export async function reconcileCloudEnrichment(
     if (!Number.isInteger(eventId)) continue;
 
     try {
+      if (payload.deferred) {
+        // "deferred" = the Worker explicitly punted this event to the Mac
+        // (e.g. nonfred Claude fetches). Nothing to apply — drain the key.
+        await deleteFromWorker(base, secret, eventId);
+        skippedDeferred += 1;
+        continue;
+      }
+      if (payload.actual == null && payload.consensus == null && payload.reaction == null) {
+        // Empty payload — nothing to add. Drain so it doesn't re-reconcile forever.
+        await deleteFromWorker(base, secret, eventId);
+        skippedDeferred += 1;
+        continue;
+      }
+
       const existing = selectRow.get(eventId) as
         | {
             id: number;
             reaction_snapshot: string | null;
             consensus_value: string | null;
             enriched_at: string | null;
+            actual_value: string | null;
           }
         | undefined;
 
@@ -132,14 +161,22 @@ export async function reconcileCloudEnrichment(
         }
       }
 
+      const rowHasOrGetsActual = payload.actual != null || existing.actual_value != null;
+
       if (existingIsTws) {
         updateActualOnly.run(payload.actual, payload.consensus, eventId);
         skippedTwsWins += 1;
-      } else {
+      } else if (rowHasOrGetsActual) {
         updateWithReaction.run(
           payload.actual,
           payload.consensus,
           payload.reaction ? JSON.stringify(payload.reaction) : null,
+          eventId,
+        );
+      } else {
+        updateReactionNoStamp.run(
+          payload.reaction ? JSON.stringify(payload.reaction) : null,
+          payload.consensus,
           eventId,
         );
       }
@@ -158,6 +195,7 @@ export async function reconcileCloudEnrichment(
     ok: true,
     reconciled,
     skipped_tws_wins: skippedTwsWins,
+    skipped_deferred: skippedDeferred,
     errors,
   };
 }
