@@ -356,6 +356,45 @@ describe("fetchActualForEvent — dispatcher", () => {
     expect(result.consensus).toContain("EPS 0.60");
   });
 
+  it("matches Finnhub entries whose symbol carries a foreign-exchange suffix (GFL → GFL.TO)", async () => {
+    // Finnhub echoes the query "GFL" with entries stamped "GFL.TO" (the
+    // Toronto listing) — same behavior already handled on the sync side
+    // in lib/calendar/finnhub.ts. The query is already symbol-scoped via
+    // ?symbol=, so the actuals fetch must match on date only and never
+    // require the echoed symbol to equal the queried one.
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        earningsCalendar: [
+          {
+            symbol: "GFL.TO",
+            date: "2026-07-29",
+            epsActual: 0.31,
+            epsEstimate: 0.28,
+            revenueActual: 2100000000,
+            revenueEstimate: 2050000000,
+          },
+        ],
+      }),
+    });
+
+    const result = await fetchActualForEvent(db, {
+      id: 1,
+      source: "finnhub",
+      source_key: "finnhub:GFL:2026-07-29",
+      event_type: "earnings",
+      event_date: "2026-07-29",
+      release_time: "16:15",
+      symbol: "GFL",
+      title: "GFL earnings",
+      consensus_estimate: "EPS 0.28",
+      raw_json: null,
+    });
+
+    expect(result.source).toBe("finnhub");
+    expect(result.actual).toContain("EPS 0.31");
+  });
+
   it("returns null when FRED release_id is not mapped", async () => {
     const result = await fetchActualForEvent(db, {
       id: 1,
