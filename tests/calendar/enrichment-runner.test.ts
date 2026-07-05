@@ -11,7 +11,7 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { runEnrichment } from "@/lib/calendar/enrichment-runner";
 import { composeReleaseInstant } from "@/lib/calendar/reaction-snapshot";
-import { setMutedEarningsSymbols } from "@/lib/queries/earnings-settings";
+import { setMutedEarningsSymbols, setEarningsEmailsEnabled } from "@/lib/queries/earnings-settings";
 
 vi.mock("@/lib/alerts/print-push", () => ({
   sendEarningsPrintPush: vi.fn(),
@@ -748,6 +748,35 @@ describe("push-at-print hook (Wave 1 §2)", () => {
       release_time: "08:00",
       symbol: "MUTE",
       security_id: 302,
+    });
+
+    const now = new Date("2026-04-24T16:30:00Z");
+    await runEnrichment(db, { now });
+
+    expect(mockSendEarningsPrintPush).not.toHaveBeenCalled();
+  });
+
+  it("does NOT fire when master toggle is off", async () => {
+    seedSecurity(db, 305, "TOGGLE", "Technology");
+    seedAccount(904, "Test Account 5");
+    seedHolding(904, 305, 30, "2026-04-20");
+    setEarningsEmailsEnabled(db, false);
+
+    mockFinnhubActual({
+      symbol: "TOGGLE",
+      date: "2026-04-24",
+      epsActual: 1.1,
+      epsEstimate: 1.0,
+    });
+
+    insertEvent(db, {
+      source: "finnhub",
+      source_key: "finnhub:TOGGLE:2026-04-24",
+      event_type: "earnings",
+      event_date: "2026-04-24",
+      release_time: "08:00",
+      symbol: "TOGGLE",
+      security_id: 305,
     });
 
     const now = new Date("2026-04-24T16:30:00Z");
