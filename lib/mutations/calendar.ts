@@ -348,6 +348,14 @@ function deriveReleaseTime(
  * sync-owned metadata without touching enrichment; if it doesn't (source
  * list drift — the Existing Home Sales disappearance), the row simply stays.
  * Un-enriched orphans are still cleaned exactly as before.
+ *
+ * Rows referenced by earnings_emails / earnings_email_skips / earnings_bogeys
+ * are also user-curated state — even for a PRE-release (unenriched) event, a
+ * sent preview audit row, a per-event skip, or a user-uploaded bogey exists.
+ * Deleting the parent CASCADEs them away, and the re-inserted row (upserted
+ * on the next sync pass) gets a NEW id that orphans any KV/snapshot refs
+ * keyed on the old one (B4). Sync may only replace rows nothing else points
+ * at.
  */
 export function deleteUnenrichedEventsForWeek(
   db: Database.Database,
@@ -361,7 +369,10 @@ export function deleteUnenrichedEventsForWeek(
           AND actual_value IS NULL
           AND consensus_value IS NULL
           AND reaction_snapshot IS NULL
-          AND enriched_at IS NULL`
+          AND enriched_at IS NULL
+          AND id NOT IN (SELECT event_id FROM earnings_emails)
+          AND id NOT IN (SELECT event_id FROM earnings_email_skips)
+          AND id NOT IN (SELECT event_id FROM earnings_bogeys)`
     )
     .run(weekOf, source).changes;
 }
