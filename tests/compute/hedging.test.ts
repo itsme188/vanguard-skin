@@ -1,9 +1,13 @@
-import { describe, it, expect } from "vitest";
+import Database from "better-sqlite3";
+import { describe, it, expect, beforeEach } from "vitest";
 import {
   classifyBook,
+  computeGapGuardedBeta,
+  resolveProxyBeta,
   type DefenseInstrument,
   type UnderlyingGroup,
 } from "@/lib/compute/hedging";
+import { runMigrations } from "@/lib/db/migrate";
 
 function inst(over: Partial<DefenseInstrument>): DefenseInstrument {
   return {
@@ -124,5 +128,61 @@ describe("classifyBook — Tier 1 pairs", () => {
       inst({ securityId: 1, symbol: "XOM", exposure: 11000 }),
     ])]));
     expect(r.pairs.find((p) => p.underlying === "XOM")!.classification).toBe("unhedged");
+  });
+});
+
+function dailySeries(start: string, closes: number[]): Array<{ date: string; close: number }> {
+  const out: Array<{ date: string; close: number }> = [];
+  const d = new Date(start + "T00:00:00Z");
+  for (const close of closes) {
+    out.push({ date: d.toISOString().slice(0, 10), close });
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  return out;
+}
+
+describe("computeGapGuardedBeta", () => {
+  it("computes ~2.0 beta for a 2x levered series", () => {
+    const bench = dailySeries("2026-06-01", [100, 101, 99.9, 101.5, 100.8, 102, 101.2, 103, 102.1, 104]);
+    const sec = dailySeries("2026-06-01", bench.map((b, i) => 100 * Math.pow(b.close / 100, 2)));
+    const beta = computeGapGuardedBeta(sec, bench.slice());
+    expect(beta).not.toBeNull();
+    expect(beta!).toBeGreaterThan(1.6);
+    expect(beta!).toBeLessThan(2.4);
+  });
+
+  it("drops return pairs spanning a >7 calendar-day gap", () => {
+    // Two dense clusters separated by a 9-month hole; the cross-gap pair
+    // would inject a giant fake return (the NFLX β=-14.31 failure mode).
+    const a = dailySeries("2025-06-01", [100, 101, 100.5, 101.2, 100.9, 101.8]);
+    const b = dailySeries("2026-03-27", [50, 50.4, 50.1, 50.8, 50.5, 51]).map((r) => ({ ...r }));
+    const bench = [...dailySeries("2025-06-01", [400, 402, 401, 403, 402, 404]), ...dailySeries("2026-03-27", [500, 502, 501, 504, 502, 505])];
+    const beta = computeGapGuardedBeta([...a, ...b], bench);
+    expect(beta).not.toBeNull();
+    expect(Math.abs(beta!)).toBeLessThan(5); // sane despite the -50% "day"
+  });
+
+  it("returns null with fewer than 6 usable return pairs", () => {
+    expect(computeGapGuardedBeta(dailySeries("2026-06-01", [100, 101, 102]), dailySeries("2026-06-01", [400, 401, 402]))).toBeNull();
+  });
+});
+
+describe("resolveProxyBeta", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  it("prefers the cached security_betas row", () => {
+    db.prepare(`INSERT INTO securities (symbol, name, security_type, source_key) VALUES ('MTUM','MTUM','ETF','t:MTUM')`).run();
+    const sid = (db.prepare(`SELECT id FROM securities WHERE symbol='MTUM'`).get() as { id: number }).id;
+    db.prepare(`INSERT INTO security_betas (security_id, lookback_days, beta, computed_at) VALUES (?, 60, 1.42, datetime('now'))`).run(sid);
+    expect(resolveProxyBeta(db, "MTUM")).toEqual({ beta: 1.42, source: "cached" });
+  });
+
+  it("falls back to assumed 1.0 when nothing is available", () => {
+    expect(resolveProxyBeta(db, "ZZZQ")).toEqual({ beta: 1.0, source: "assumed" });
   });
 });

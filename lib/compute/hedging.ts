@@ -1,3 +1,5 @@
+import type Database from "better-sqlite3";
+
 /**
  * Defense/Hedging engine — classifies the book into hedged pairs (Tier 1),
  * proxy protection (Tier 2), amplifiers, and standalone bets, then scores
@@ -222,4 +224,91 @@ export function classifyBook(groups: Map<string, UnderlyingGroup>): ClassifyResu
   }
 
   return { pairs, proxyCandidates, standaloneBets };
+}
+
+// ─── Beta Resolver (Task 2) ────────────────────────────────────────
+
+const MAX_RETURN_PAIR_GAP_DAYS = 7; // prices-table hole guard (see CLAUDE.md)
+const MIN_BETA_RETURN_PAIRS = 6;
+
+function calendarDaysBetween(a: string, b: string): number {
+  return Math.abs(new Date(b + "T00:00:00Z").getTime() - new Date(a + "T00:00:00Z").getTime()) / 86_400_000;
+}
+
+/** Log-return pairs aligned by date, dropping pairs spanning > MAX_RETURN_PAIR_GAP_DAYS. */
+function gapGuardedReturns(series: Array<{ date: string; close: number }>): Map<string, number> {
+  const sorted = [...series].sort((a, b) => a.date.localeCompare(b.date));
+  const out = new Map<string, number>();
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = sorted[i - 1];
+    const cur = sorted[i];
+    if (prev.close <= 0 || cur.close <= 0) continue;
+    if (calendarDaysBetween(prev.date, cur.date) > MAX_RETURN_PAIR_GAP_DAYS) continue;
+    out.set(cur.date, Math.log(cur.close / prev.close));
+  }
+  return out;
+}
+
+export function computeGapGuardedBeta(
+  series: Array<{ date: string; close: number }>,
+  bench: Array<{ date: string; close: number }>
+): number | null {
+  const secR = gapGuardedReturns(series);
+  const benchR = gapGuardedReturns(bench);
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (const [date, r] of secR) {
+    const br = benchR.get(date);
+    if (br !== undefined) {
+      ys.push(r);
+      xs.push(br);
+    }
+  }
+  if (xs.length < MIN_BETA_RETURN_PAIRS) return null;
+  const mx = sum(xs) / xs.length;
+  const my = sum(ys) / ys.length;
+  let cov = 0;
+  let varx = 0;
+  for (let i = 0; i < xs.length; i++) {
+    cov += (xs[i] - mx) * (ys[i] - my);
+    varx += (xs[i] - mx) ** 2;
+  }
+  if (varx === 0) return null;
+  return cov / varx;
+}
+
+export interface ResolvedBeta {
+  beta: number;
+  source: "cached" | "computed" | "assumed";
+}
+
+/**
+ * β for a proxy-hedge underlying: security_betas cache → gap-guarded compute
+ * from cached closes (prices + benchmark_prices vs SPY) → assumed 1.0.
+ */
+export function resolveProxyBeta(db: Database.Database, symbol: string): ResolvedBeta {
+  const cached = db
+    .prepare(
+      `SELECT sb.beta FROM security_betas sb
+       JOIN securities s ON s.id = sb.security_id
+       WHERE s.symbol = ? ORDER BY sb.computed_at DESC LIMIT 1`
+    )
+    .get(symbol) as { beta: number } | undefined;
+  if (cached) return { beta: cached.beta, source: "cached" };
+
+  const closesFor = (sym: string): Array<{ date: string; close: number }> =>
+    db
+      .prepare(
+        `SELECT date, close_price AS close FROM prices p JOIN securities s ON s.id = p.security_id WHERE s.symbol = ?
+         UNION ALL
+         SELECT date, close_price AS close FROM benchmark_prices WHERE symbol = ?
+         ORDER BY date`
+      )
+      .all(sym, sym) as Array<{ date: string; close: number }>;
+
+  const sec = closesFor(symbol);
+  const spy = closesFor("SPY");
+  const computed = computeGapGuardedBeta(sec, spy);
+  if (computed !== null) return { beta: computed, source: "computed" };
+  return { beta: 1.0, source: "assumed" };
 }
