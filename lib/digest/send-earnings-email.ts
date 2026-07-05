@@ -810,7 +810,7 @@ function findPriorTranscript(
 
 // ── Reaction snapshot formatter ────────────────────────────────────
 
-function formatReactionSnapshot(json: string | null): string | null {
+export function formatReactionSnapshot(json: string | null): string | null {
   if (!json) return null;
   try {
     const snap = JSON.parse(json) as {
@@ -842,7 +842,9 @@ function formatReactionSnapshot(json: string | null): string | null {
 }
 
 function pctSign(v: number): string {
-  const n = (v * 100).toFixed(2);
+  // delta_pct arrives already in percent (matchBarsToReaction multiplies by
+  // 100 at capture time) — format as-is.
+  const n = v.toFixed(2);
   return v >= 0 ? `+${n}%` : `${n}%`;
 }
 
