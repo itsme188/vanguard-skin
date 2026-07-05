@@ -135,7 +135,13 @@ export async function runEarningsEmailSweep(
     }
   }
 
-  const recapAlerts = await alertBlockedRecaps(db, { now: opts.now });
+  let recapAlerts = 0;
+  try {
+    recapAlerts = await alertBlockedRecaps(db, { now: opts.now });
+  } catch (err) {
+    console.warn("[earnings-sweep] blocked-recap alert pass failed:", err);
+    recapAlerts = 0;
+  }
 
   return {
     swept: candidates.length,
@@ -199,6 +205,10 @@ export async function alertBlockedRecaps(
     )
     .all() as BlockedRecapRow[];
 
+  const stampAlerted = db.prepare(
+    `UPDATE calendar_events SET actual_missing_alerted_at = datetime('now') WHERE id = ?`,
+  );
+
   let alerted = 0;
   for (const row of rows) {
     const release = composeReleaseInstant(row.event_date, row.release_time);
@@ -207,9 +217,7 @@ export async function alertBlockedRecaps(
     if (ageMs < BLOCKED_RECAP_MIN_AGE_MS || ageMs > BLOCKED_RECAP_MAX_AGE_MS) continue;
 
     // Stamp BEFORE pushing — one alert per event even if Pushover errors.
-    db.prepare(
-      `UPDATE calendar_events SET actual_missing_alerted_at = datetime('now') WHERE id = ?`,
-    ).run(row.id);
+    stampAlerted.run(row.id);
 
     const hours = Math.round(ageMs / (60 * 60 * 1000));
     await sendPushover({
