@@ -415,3 +415,70 @@ export function attributeProxies(
 
   return { proxies, sectorCoverage };
 }
+
+// ─── Per-hedge Scoring (Task 4) ────────────────────────────────────────
+
+export type HedgeBadge = "expiring" | "decayed" | "expensive" | "deep_itm";
+
+export interface HedgeScore {
+  securityId: number;
+  symbol: string;
+  underlying: string;
+  /** What it protects: a name, "sector: Technology (90%) + …", or "book". */
+  protects: string;
+  protectedNotional: number;
+  thetaPerDay: number | null;
+  monthlyBleedPct: number | null;
+  runwayDays: number | null;
+  /** (strike − spot) / spot; negative = OTM for puts. */
+  moneynessPct: number | null;
+  /** Dollars protected per dollar of monthly decay; null when no carry data. */
+  efficiency: number | null;
+  badges: HedgeBadge[];
+}
+
+export function scoreHedges(
+  inputs: Array<{ instrument: DefenseInstrument; protects: string; protectedNotional: number }>
+): HedgeScore[] {
+  const T = HEDGE_BADGE_THRESHOLDS;
+  const scores = inputs.map(({ instrument: i, protects, protectedNotional }) => {
+    const hasGreeks = i.greeksAvailable && i.isOption;
+    const thetaPerDay = hasGreeks && typeof i.thetaPerDay === "number" ? i.thetaPerDay : null;
+    const monthlyBleed = thetaPerDay !== null && protectedNotional > 0 ? Math.abs(thetaPerDay) * 30 : null;
+    const monthlyBleedPct = monthlyBleed !== null ? monthlyBleed / protectedNotional : null;
+    const runwayDays = i.isOption && typeof i.daysToExpiry === "number" ? i.daysToExpiry : null;
+    const moneynessPct =
+      i.isOption && typeof i.strike === "number" && typeof i.underlyingPrice === "number" && i.underlyingPrice > 0
+        ? (i.strike - i.underlyingPrice) / i.underlyingPrice
+        : null;
+    const efficiency = monthlyBleed !== null && monthlyBleed > 0 ? protectedNotional / monthlyBleed : null;
+
+    const badges: HedgeBadge[] = [];
+    if (runwayDays !== null && runwayDays < T.EXPIRING_DAYS) badges.push("expiring");
+    const otmPct = i.optionType === "PUT" ? (moneynessPct !== null ? -moneynessPct : null) : moneynessPct;
+    if (otmPct !== null && runwayDays !== null && otmPct > T.DECAYED_OTM_PCT && runwayDays < T.DECAYED_RUNWAY_DAYS) badges.push("decayed");
+    if (monthlyBleedPct !== null && monthlyBleedPct > T.EXPENSIVE_MONTHLY_BLEED_PCT) badges.push("expensive");
+    if (typeof i.delta === "number" && Math.abs(i.delta) >= T.DEEP_ITM_ABS_DELTA) badges.push("deep_itm");
+
+    return {
+      securityId: i.securityId,
+      symbol: i.symbol,
+      underlying: i.underlying,
+      protects,
+      protectedNotional,
+      thetaPerDay,
+      monthlyBleedPct,
+      runwayDays,
+      moneynessPct,
+      efficiency,
+      badges,
+    };
+  });
+
+  return scores.sort((a, b) => {
+    if (a.efficiency === null && b.efficiency === null) return 0;
+    if (a.efficiency === null) return 1;
+    if (b.efficiency === null) return -1;
+    return a.efficiency - b.efficiency;
+  });
+}
