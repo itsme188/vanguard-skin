@@ -291,18 +291,31 @@ export function resolveProxyBeta(db: Database.Database, symbol: string): Resolve
     .prepare(
       `SELECT sb.beta FROM security_betas sb
        JOIN securities s ON s.id = sb.security_id
-       WHERE s.symbol = ? ORDER BY sb.computed_at DESC LIMIT 1`
+       WHERE s.symbol = ? AND sb.beta IS NOT NULL ORDER BY sb.computed_at DESC LIMIT 1`
     )
     .get(symbol) as { beta: number } | undefined;
   if (cached) return { beta: cached.beta, source: "cached" };
 
+  // Deterministic one-source-per-date: prefer `prices` (broker-sourced closes)
+  // over `benchmark_prices` (fallback) when both tables have a row for the
+  // same date — a same-date collision otherwise corrupts gapGuardedReturns'
+  // date-keyed Map (identical dupes collapse variance to ~0; near-identical
+  // dupes inject a few-bp noise return that can send beta wildly off).
   const closesFor = (sym: string): Array<{ date: string; close: number }> =>
     db
       .prepare(
-        `SELECT date, close_price AS close FROM prices p JOIN securities s ON s.id = p.security_id WHERE s.symbol = ?
-         UNION ALL
-         SELECT date, close_price AS close FROM benchmark_prices WHERE symbol = ?
-         ORDER BY date`
+        `SELECT date, close FROM (
+           SELECT date, close_price AS close,
+                  ROW_NUMBER() OVER (PARTITION BY date ORDER BY pri) AS rn
+           FROM (
+             SELECT p.date AS date, p.close_price, 1 AS pri
+             FROM prices p JOIN securities s ON s.id = p.security_id
+             WHERE s.symbol = ? AND p.close_price > 0
+             UNION ALL
+             SELECT bp.date, bp.close_price, 2 AS pri
+             FROM benchmark_prices bp WHERE bp.symbol = ? AND bp.close_price > 0
+           )
+         ) WHERE rn = 1 ORDER BY date`
       )
       .all(sym, sym) as Array<{ date: string; close: number }>;
 
