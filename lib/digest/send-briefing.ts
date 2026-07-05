@@ -12,7 +12,12 @@ import { getRecipientsFor } from "@/lib/queries/email-recipients";
 import { generateNarrative, NARRATIVE_SURFACES } from "@/lib/compute/analysis-narratives";
 import { refreshModelCatalog } from "@/lib/ai/model-catalog";
 import { invalidateModelCatalogCache } from "@/lib/ai/catalog-source";
-import { findEarningsCoverageGaps, renderCoverageGapsBlock } from "@/lib/calendar/coverage-guard";
+import {
+  findEarningsCoverageGaps,
+  renderCoverageGapsBlock,
+  wasCoveragePushSentToday,
+  markCoveragePushSent,
+} from "@/lib/calendar/coverage-guard";
 import { sendPushover } from "@/lib/alerts/notify-pushover";
 
 export class BriefingSendError extends Error {
@@ -171,7 +176,9 @@ export async function sendBriefingEmail(
   try {
     const gaps = findEarningsCoverageGaps(db);
     coverageGapsBlock = renderCoverageGapsBlock(gaps);
-    if (gaps.length > 0) {
+    if (gaps.length > 0 && !wasCoveragePushSentToday(db)) {
+      // Manual re-sends of the briefing must not re-push the same gap set;
+      // the email block above still renders every time.
       const symbols = gaps.map((g) => g.symbol).join(", ");
       void sendPushover({
         title: "Earnings coverage gaps",
@@ -179,6 +186,7 @@ export async function sendBriefingEmail(
         url: `${process.env.PUSHOVER_LINK_BASE ?? "http://localhost:3099"}/dashboard/today`,
         urlTitle: "Open Earnings Hub",
       });
+      markCoveragePushSent(db);
     }
   } catch (err) {
     console.warn(`[coverage-guard] skipped: ${err instanceof Error ? err.message : String(err)}`);

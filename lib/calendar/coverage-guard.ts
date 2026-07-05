@@ -18,6 +18,7 @@ import { todayET, addDays } from "@/lib/calendar/date-utils";
 const DUE_AFTER_DAYS = 75;
 const LOOKAHEAD_DAYS = 45;
 const IGNORED_KEY = "coverage_guard_ignored_symbols";
+const LAST_PUSH_KEY = "coverage_guard_last_push_date";
 
 export interface CoverageGap {
   symbol: string;
@@ -38,6 +39,35 @@ export function getCoverageGuardIgnoredSymbols(db: Database.Database): string[] 
     return Array.isArray(parsed) ? parsed.map((s) => String(s).toUpperCase()) : [];
   } catch {
     return []; // settings table absent (minimal test DBs) or malformed JSON
+  }
+}
+
+/** True when the coverage-gap Pushover already fired today (ET). Manual
+ *  re-sends of the briefing (`/api/calendar/email`) must not re-push the
+ *  same gap set every time — the email block itself still renders on
+ *  every send, only the push is deduped. */
+export function wasCoveragePushSentToday(db: Database.Database, today?: string): boolean {
+  const day = today ?? todayET();
+  try {
+    const row = db
+      .prepare(`SELECT value FROM settings WHERE key = ?`)
+      .get(LAST_PUSH_KEY) as { value: string } | undefined;
+    return row?.value === day;
+  } catch {
+    return false; // settings table absent (minimal test DBs)
+  }
+}
+
+/** Records that the coverage-gap Pushover fired today (ET). */
+export function markCoveragePushSent(db: Database.Database, today?: string): void {
+  const day = today ?? todayET();
+  try {
+    db.prepare(
+      `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+    ).run(LAST_PUSH_KEY, day);
+  } catch {
+    // settings table absent (minimal test DBs) — best-effort, never throw
   }
 }
 
