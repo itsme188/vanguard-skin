@@ -120,9 +120,12 @@ export function getAllocationByDimension(
   // Standard classification columns on the securities table
   const standardColumns: Partial<Record<AllocationDimension, string>> = {
     fund_category: "COALESCE(s.fund_category, 'Unclassified')",
-    geography: "COALESCE(s.geography, 'Unknown')",
-    market_cap_category: "COALESCE(s.market_cap_category, 'Unknown')",
-    style: "COALESCE(s.style, 'Unknown')",
+    // NULLIF(...,'null') guards rows where an AI classify pass stored the
+    // literal string "null" (prompt enums include a `null` token) — without
+    // it the breakdown renders a category row literally labeled "null".
+    geography: "COALESCE(NULLIF(s.geography, 'null'), 'Unknown')",
+    market_cap_category: "COALESCE(NULLIF(s.market_cap_category, 'null'), 'Unknown')",
+    style: "COALESCE(NULLIF(s.style, 'null'), 'Unknown')",
     sector: "COALESCE(s.sector, s.fund_category, 'Unknown')",
     asset_class: "COALESCE(s.asset_class, s.security_type, 'Unknown')",
     security_type: "COALESCE(s.security_type, 'Unknown')",

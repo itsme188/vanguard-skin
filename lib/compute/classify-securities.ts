@@ -191,6 +191,19 @@ fund_category: for US single-name stocks and US sector funds use the scheme "US 
 
 export interface AiFallbackResult { classified: number; errors: string[]; }
 
+/**
+ * The classify prompt's enums include a literal `null` token ("Large|Mid|Small|null"),
+ * so the model sometimes returns the STRING "null" — truthy, so `|| null` passes it
+ * through and it renders as a category row literally labeled "null". Normalize any
+ * null-ish string to a real null at the write boundary.
+ */
+function cleanEnumValue(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (trimmed === "" || /^(null|none|n\/a)$/i.test(trimmed)) return null;
+  return trimmed;
+}
+
 export async function classifyUnresolvedWithClaude(
   db: Database.Database,
   unresolved: Array<{ id: number; symbol: string; security_type: string | null }>
@@ -213,7 +226,7 @@ export async function classifyUnresolvedWithClaude(
       for (const r of results) {
         const id = idMap.get(r.symbol);
         if (!id) continue;
-        update.run(normalizeFundCategory(r.fund_category), r.geography ?? null, r.market_cap_category || null, r.style || null, id);
+        update.run(normalizeFundCategory(r.fund_category), cleanEnumValue(r.geography), cleanEnumValue(r.market_cap_category), cleanEnumValue(r.style), id);
         classified++;
       }
     } catch (err) {
