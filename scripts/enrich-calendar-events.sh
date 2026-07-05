@@ -70,10 +70,11 @@ fi
 
 # ── 2. Earnings email sweep (Phase 3) ───────────────────────────────
 # Self-gates on the candidate window — empty windows return immediately
-# with `swept: 0`. The composer writes the audit row on success so the
-# next tick won't re-fire the same event/phase pair.
+# with `swept: 0`. 600s budget: multi-candidate ticks run 60-180s of Claude
+# compose per email. DB claim rows (error='in_progress') make the tsx
+# fallback idempotent even if this HTTP call times out mid-loop.
 echo "$(date '+%Y-%m-%d %H:%M:%S') — earnings-sweep tick"
-if try_http_post 240 \
+if try_http_post 600 \
     "http://localhost:3099/api/cron/earnings-sweep" \
     "http://localhost:3000/api/cron/earnings-sweep"; then
   echo "$(date '+%Y-%m-%d %H:%M:%S') — sweep HTTP OK"

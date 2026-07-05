@@ -182,25 +182,43 @@ async function sendEarningsEmail(
     );
   }
 
-  const composed = await composeEarningsEmail(db, eventId, phase, {
-    footerNote: opts.footerNote,
-  });
+  const claim = claimEarningsEmailSlot(db, eventId, phase, recipient);
+  if (!claim.claimed) {
+    throw new EarningsEmailError(
+      `Event ${eventId} ${phase} is already being sent by another process — skipping duplicate.`,
+      409,
+    );
+  }
 
-  const phaseEmoji = phase === "preview" ? "\u{1F50D}" : "\u{1F4CA}";
+  let composed: ComposeEarningsResult;
   try {
-    await sendEmail({
-      to: recipient,
-      subject: `${phaseEmoji} ${composed.title}`,
-      html: composed.html,
-      fromLocalPart: "earnings",
+    composed = await composeEarningsEmail(db, eventId, phase, {
+      footerNote: opts.footerNote,
     });
+
+    const phaseEmoji = phase === "preview" ? "\u{1F50D}" : "\u{1F4CA}";
+    try {
+      await sendEmail({
+        to: recipient,
+        subject: `${phaseEmoji} ${composed.title}`,
+        html: composed.html,
+        fromLocalPart: "earnings",
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new EarningsEmailError(`Send failed: ${msg}`, 500);
+    }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new EarningsEmailError(`Send failed: ${msg}`, 500);
+    // A fresh claim must not survive a failed compose/send — the next sweep
+    // tick should retry. (Refire mode never wrote a claim row.)
+    if (claim.mode === "fresh") releaseEarningsEmailClaim(db, eventId, phase);
+    throw err;
   }
 
   // Audit row for the EarningsHub UI status chips + Phase-3 cron dedup.
   // UNIQUE(event_id, phase) — re-fires update in place rather than fail.
+  // This upsert converts the 'in_progress' claim row into the completed row
+  // (or, for a manual refire, overwrites the prior completed row in place).
   recordEarningsEmailAudit(db, {
     eventId,
     phase,
@@ -219,6 +237,86 @@ async function sendEarningsEmail(
     title: composed.title,
     modelOutputChars: composed.markdown.length,
   };
+}
+
+// ── Cross-process send claims ──────────────────────────────────────
+//
+// The launchd shell has a curl timeout + tsx fallback chain; on a heavy tick
+// the fallback re-runs the sweep while the first invocation is still
+// composing (60-180s per Claude call), and audit rows land only post-send —
+// so in-flight candidates used to send twice (audit 2026-07-04, bug B3).
+// The UNIQUE(event_id, phase) constraint doubles as a cross-process mutex:
+// claim the slot with error='in_progress' BEFORE composing. States:
+//   error='in_progress'   → claim held by a live send (or a crashed one; reaped after 30 min)
+//   error='sent-by-cloud' → Worker fallback delivered (email-sweep.ts writes these)
+//   error IS NULL         → completed local send
+// A failed send releases its fresh claim so the next tick retries.
+//
+// Note for future readers: `error` stores non-error states too
+// ('in_progress', 'sent-by-cloud') — don't treat `error IS NOT NULL` as a
+// failure signal; those two sentinels must be checked explicitly.
+
+const CLAIM_STALE_MINUTES = 30;
+
+export function claimEarningsEmailSlot(
+  db: Database.Database,
+  eventId: number,
+  phase: "preview" | "recap",
+  recipient: string,
+): { claimed: boolean; mode: "fresh" | "refire"; reason?: "in_progress" } {
+  const ins = db
+    .prepare(
+      `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, ai_input_hash, ai_output_md, error)
+       VALUES (?, ?, ?, datetime('now'), NULL, NULL, 'in_progress')
+       ON CONFLICT(event_id, phase) DO NOTHING`,
+    )
+    .run(eventId, phase, recipient);
+  if (ins.changes === 1) return { claimed: true, mode: "fresh" };
+
+  const existing = db
+    .prepare(
+      `SELECT error FROM earnings_emails WHERE event_id = ? AND phase = ?`,
+    )
+    .get(eventId, phase) as { error: string | null } | undefined;
+
+  if (existing?.error === "in_progress") {
+    // Take over only if the holder looks dead (claim older than the stale cutoff).
+    const takeover = db
+      .prepare(
+        `UPDATE earnings_emails
+            SET sent_at = datetime('now'), recipient = ?
+          WHERE event_id = ? AND phase = ? AND error = 'in_progress'
+            AND datetime(sent_at) <= datetime('now', '-${CLAIM_STALE_MINUTES} minutes')`,
+      )
+      .run(recipient, eventId, phase);
+    if (takeover.changes === 1) return { claimed: true, mode: "fresh" };
+    return { claimed: false, mode: "fresh", reason: "in_progress" };
+  }
+
+  // Completed row (local send or cloud-sent placeholder): this is a manual
+  // re-fire — allowed; the final audit upsert overwrites in place.
+  return { claimed: true, mode: "refire" };
+}
+
+export function releaseEarningsEmailClaim(
+  db: Database.Database,
+  eventId: number,
+  phase: "preview" | "recap",
+): void {
+  db.prepare(
+    `DELETE FROM earnings_emails
+      WHERE event_id = ? AND phase = ? AND error = 'in_progress'`,
+  ).run(eventId, phase);
+}
+
+export function reapStaleEarningsEmailClaims(db: Database.Database): number {
+  return db
+    .prepare(
+      `DELETE FROM earnings_emails
+        WHERE error = 'in_progress'
+          AND datetime(sent_at) <= datetime('now', '-${CLAIM_STALE_MINUTES} minutes')`,
+    )
+    .run().changes;
 }
 
 // ── Calendar event helper ──────────────────────────────────────────
