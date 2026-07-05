@@ -185,4 +185,87 @@ describe("resolveProxyBeta", () => {
   it("falls back to assumed 1.0 when nothing is available", () => {
     expect(resolveProxyBeta(db, "ZZZQ")).toEqual({ beta: 1.0, source: "assumed" });
   });
+
+  const SPY_CLOSES = [100, 101, 99.9, 101.5, 100.8, 102, 101.2, 103, 102.1, 104];
+
+  function seedSpyBenchmark() {
+    for (const row of dailySeries("2026-06-01", SPY_CLOSES)) {
+      db.prepare(
+        `INSERT INTO benchmark_prices (symbol, date, close_price, source) VALUES ('SPY', ?, ?, 'tws')`
+      ).run(row.date, row.close);
+    }
+  }
+
+  function insertSecurity(symbol: string): number {
+    db.prepare(
+      `INSERT INTO securities (symbol, name, security_type, source_key) VALUES (?, ?, 'ETF', ?)`
+    ).run(symbol, symbol, `t:${symbol}`);
+    return (db.prepare(`SELECT id FROM securities WHERE symbol = ?`).get(symbol) as { id: number }).id;
+  }
+
+  it("computes beta from prices + benchmark_prices when there is no cached row (computed tier)", () => {
+    seedSpyBenchmark();
+    const sid = insertSecurity("XLE");
+    // 2x-levered mover vs SPY (same construction as computeGapGuardedBeta's 2x test).
+    const sec = dailySeries("2026-06-01", SPY_CLOSES.map((c) => 100 * Math.pow(c / 100, 2)));
+    for (const row of sec) {
+      db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (?, ?, ?, 'tws')`).run(
+        sid,
+        row.date,
+        row.close
+      );
+    }
+    const result = resolveProxyBeta(db, "XLE");
+    expect(result.source).toBe("computed");
+    expect(result.beta).toBeGreaterThan(1.6);
+    expect(result.beta).toBeLessThan(2.4);
+  });
+
+  it("prefers the prices-table close over a near-identical (~3bp offset) benchmark_prices duplicate on the same date", () => {
+    seedSpyBenchmark();
+    const sid = insertSecurity("DIA");
+    const clean = dailySeries("2026-06-01", SPY_CLOSES); // clean 1x mover vs SPY
+    for (const row of clean) {
+      db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (?, ?, ?, 'tws')`).run(
+        sid,
+        row.date,
+        row.close
+      );
+    }
+    // Same symbol, same dates, near-identical closes (few-bp source discrepancy) in benchmark_prices too.
+    for (const row of clean) {
+      db.prepare(
+        `INSERT INTO benchmark_prices (symbol, date, close_price, source) VALUES ('DIA', ?, ?, 'tws')`
+      ).run(row.date, row.close * 1.0003);
+    }
+    const result = resolveProxyBeta(db, "DIA");
+    expect(result.source).toBe("computed");
+    expect(Number.isFinite(result.beta)).toBe(true);
+    expect(result.beta).toBeGreaterThan(0.5);
+    expect(result.beta).toBeLessThan(1.5);
+  });
+
+  it("prefers the prices-table close over a byte-identical benchmark_prices duplicate on the same date", () => {
+    seedSpyBenchmark();
+    const sid = insertSecurity("DIA");
+    const clean = dailySeries("2026-06-01", SPY_CLOSES); // clean 1x mover vs SPY
+    for (const row of clean) {
+      db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (?, ?, ?, 'tws')`).run(
+        sid,
+        row.date,
+        row.close
+      );
+    }
+    // Same symbol, same dates, byte-identical closes duplicated into benchmark_prices.
+    for (const row of clean) {
+      db.prepare(
+        `INSERT INTO benchmark_prices (symbol, date, close_price, source) VALUES ('DIA', ?, ?, 'tws')`
+      ).run(row.date, row.close);
+    }
+    const result = resolveProxyBeta(db, "DIA");
+    expect(result.source).toBe("computed");
+    expect(Number.isFinite(result.beta)).toBe(true);
+    expect(result.beta).toBeGreaterThan(0.5);
+    expect(result.beta).toBeLessThan(1.5);
+  });
 });
