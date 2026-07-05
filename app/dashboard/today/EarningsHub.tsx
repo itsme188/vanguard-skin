@@ -34,11 +34,7 @@ import { EarningsDateChip } from "./EarningsDateChip";
 import { BogeysUploadButton } from "./BogeysUploadButton";
 import { BogeysEditButton } from "./BogeysEditButton";
 import { getSkippedPhasesForEvents } from "@/lib/queries/earnings-skips";
-
-interface EmailAuditRow {
-  event_id: number;
-  phase: "preview" | "recap";
-}
+import { getSentPhasesForEvents } from "@/lib/queries/earnings-emails";
 
 type EnrichedRow = CalendarEvent & {
   status: SymbolStatus;
@@ -128,20 +124,11 @@ export function EarningsHub() {
   const symbols = events.map((e) => e.symbol).filter((s): s is string => !!s);
   const statusMap = getSymbolStatus(db, symbols);
 
-  const auditRows = events.length === 0
-    ? []
-    : (db
-        .prepare(
-          `SELECT event_id, phase FROM earnings_emails
-            WHERE event_id IN (${events.map(() => "?").join(",")})`,
-        )
-        .all(...events.map((e) => e.id)) as EmailAuditRow[]);
-  const previewSet = new Set<number>();
-  const recapSet = new Set<number>();
-  for (const r of auditRows) {
-    if (r.phase === "preview") previewSet.add(r.event_id);
-    if (r.phase === "recap") recapSet.add(r.event_id);
-  }
+  // getSentPhasesForEvents already excludes live 'in_progress' claim rows
+  // (see the tri-state note in lib/digest/send-earnings-email.ts) — a claim
+  // held by a still-composing (or crashed) send hasn't delivered anything,
+  // so it must not render a "sent" chip. 'sent-by-cloud' rows DO count.
+  const sentPhases = getSentPhasesForEvents(db, events.map((e) => e.id));
 
   const bogeysSet = new Set<number>();
   if (events.length > 0) {
@@ -159,8 +146,8 @@ export function EarningsHub() {
   const enriched: EnrichedRow[] = events.map((e) => ({
     ...e,
     status: e.symbol ? (statusMap[e.symbol.toUpperCase()] ?? "neither") : "neither",
-    previewSent: previewSet.has(e.id),
-    recapSent: recapSet.has(e.id),
+    previewSent: sentPhases[e.id]?.preview ?? false,
+    recapSent: sentPhases[e.id]?.recap ?? false,
     previewSkipped: skipMap[e.id]?.preview ?? false,
     recapSkipped: skipMap[e.id]?.recap ?? false,
     hasBogeys: bogeysSet.has(e.id),

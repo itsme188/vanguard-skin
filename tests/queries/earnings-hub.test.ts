@@ -6,6 +6,7 @@ import {
   getHeldStockSymbols,
 } from "@/lib/queries/briefing-symbols";
 import { getEarningsForWeekDeduped, countEarningsDateConflicts } from "@/lib/queries/calendar";
+import { getSentPhasesForEvents } from "@/lib/queries/earnings-emails";
 
 let db: Database.Database;
 
@@ -266,5 +267,60 @@ describe("getEarningsForWeekDeduped", () => {
     seedHolding(ibkr, a, 100);
     seedHolding(vt, b, 50);
     expect(getHeldStockSymbols(db).sort()).toEqual(["AAPL", "MSFT"]);
+  });
+});
+
+describe("EarningsHub chip source — getSentPhasesForEvents tri-state filter", () => {
+  // EarningsHub.tsx renders previewSent/recapSent chips from this query
+  // (replacing a pre-existing inline SELECT that had no tri-state filter,
+  // see final-review fix pass). A live/stale 'in_progress' claim must NOT
+  // render as "sent" — only a completed local send or a 'sent-by-cloud'
+  // Worker delivery should.
+  it("excludes a live 'in_progress' claim row from the sent set", () => {
+    const eventId = seedEarningsEvent({
+      symbol: "GLW",
+      source: "finnhub",
+      eventDate: "2026-04-28",
+      weekOf: "2026-04-27",
+    });
+    db.prepare(
+      `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, ai_input_hash, ai_output_md, error)
+       VALUES (?, 'preview', 'user@example.com', datetime('now'), NULL, NULL, 'in_progress')`,
+    ).run(eventId);
+
+    const result = getSentPhasesForEvents(db, [eventId]);
+    expect(result[eventId]?.preview ?? false).toBe(false);
+  });
+
+  it("counts a 'sent-by-cloud' row as sent", () => {
+    const eventId = seedEarningsEvent({
+      symbol: "GLW",
+      source: "finnhub",
+      eventDate: "2026-04-28",
+      weekOf: "2026-04-27",
+    });
+    db.prepare(
+      `INSERT INTO earnings_emails (event_id, phase, recipient, ai_output_md, error)
+       VALUES (?, 'preview', 'cloud-fallback', NULL, 'sent-by-cloud')`,
+    ).run(eventId);
+
+    const result = getSentPhasesForEvents(db, [eventId]);
+    expect(result[eventId]?.preview).toBe(true);
+  });
+
+  it("counts a completed local send (error NULL) as sent", () => {
+    const eventId = seedEarningsEvent({
+      symbol: "GLW",
+      source: "finnhub",
+      eventDate: "2026-04-28",
+      weekOf: "2026-04-27",
+    });
+    db.prepare(
+      `INSERT INTO earnings_emails (event_id, phase, recipient, ai_output_md, error)
+       VALUES (?, 'recap', 'user@example.com', '# recap prose', NULL)`,
+    ).run(eventId);
+
+    const result = getSentPhasesForEvents(db, [eventId]);
+    expect(result[eventId]?.recap).toBe(true);
   });
 });
