@@ -12,6 +12,8 @@ import { getRecipientsFor } from "@/lib/queries/email-recipients";
 import { generateNarrative, NARRATIVE_SURFACES } from "@/lib/compute/analysis-narratives";
 import { refreshModelCatalog } from "@/lib/ai/model-catalog";
 import { invalidateModelCatalogCache } from "@/lib/ai/catalog-source";
+import { findEarningsCoverageGaps, renderCoverageGapsBlock } from "@/lib/calendar/coverage-guard";
+import { sendPushover } from "@/lib/alerts/notify-pushover";
 
 export class BriefingSendError extends Error {
   constructor(
@@ -140,12 +142,16 @@ export async function sendBriefingEmail(
   // week_of=2026-04-27. Errors here are logged but never block — partial
   // calendar data is still better than no briefing.
   //
-  // Sync the current week AND the following week. The +1 sweep catches
+  // Sync the current week AND the following weeks. The +1 sweep catches
   // Finnhub-newly-published earnings dates that landed in the past week
   // (the Sunday TER-shaped scenario), so the EarningsHub UI on /today
   // surfaces them automatically rather than waiting for the user to
   // click "Refresh from Finnhub" themselves.
-  for (const w of [weekOf, addDays(weekOf, 7)]) {
+  //
+  // 4 weeks of reach: earnings dates confirm 2-4+ weeks out, and the July
+  // 2026 bank week was structurally unreachable at [week, +1] (audit
+  // 2026-07-04). Idempotent; ~+2 min of Finnhub pacing on Sundays.
+  for (const w of [weekOf, addDays(weekOf, 7), addDays(weekOf, 14), addDays(weekOf, 21)]) {
     try {
       const result = await syncCalendarForWeek(db, w);
       if (result.errors.length > 0) {
@@ -155,6 +161,27 @@ export async function sendBriefingEmail(
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`[send-briefing] calendar sync (${w}) failed: ${msg}`);
     }
+  }
+
+  // Coverage guard (Wave 1 §1): with 4 weeks of sync reach, a name that
+  // STILL has no scheduled event when a report is due means no source has
+  // it — surface it rather than fail silently. Best-effort: a guard failure
+  // must never block the briefing.
+  let coverageGapsBlock = "";
+  try {
+    const gaps = findEarningsCoverageGaps(db);
+    coverageGapsBlock = renderCoverageGapsBlock(gaps);
+    if (gaps.length > 0) {
+      const symbols = gaps.map((g) => g.symbol).join(", ");
+      void sendPushover({
+        title: "Earnings coverage gaps",
+        message: `${gaps.length} name(s) with a report due and nothing scheduled: ${symbols}`,
+        url: `${process.env.PUSHOVER_LINK_BASE ?? "http://localhost:3099"}/dashboard/today`,
+        urlTitle: "Open Earnings Hub",
+      });
+    }
+  } catch (err) {
+    console.warn(`[coverage-guard] skipped: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   // Narrative pre-generation. 4 scopes × 4 surfaces = 16 Sonnet calls,
@@ -248,7 +275,12 @@ export async function sendBriefingEmail(
   }
 
   const title = briefing.title || `Week of ${weekOf}`;
-  const html = briefingToHtml(briefing.content, title, opts.footerNote);
+  // Coverage block is appended at SEND time so it's always fresh — the
+  // cached calendar_briefings.content row stays pure AI output.
+  const contentForEmail = coverageGapsBlock
+    ? `${briefing.content}\n\n---\n\n${coverageGapsBlock}`
+    : briefing.content;
+  const html = briefingToHtml(contentForEmail, title, opts.footerNote);
 
   try {
     await sendEmail({
