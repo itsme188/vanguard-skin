@@ -11,6 +11,14 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { runEnrichment } from "@/lib/calendar/enrichment-runner";
 import { composeReleaseInstant } from "@/lib/calendar/reaction-snapshot";
+import { setMutedEarningsSymbols } from "@/lib/queries/earnings-settings";
+
+vi.mock("@/lib/alerts/print-push", () => ({
+  sendEarningsPrintPush: vi.fn(),
+}));
+import { sendEarningsPrintPush } from "@/lib/alerts/print-push";
+
+const mockSendEarningsPrintPush = vi.mocked(sendEarningsPrintPush);
 
 function seedSecurity(
   db: Database.Database,
@@ -596,5 +604,215 @@ describe("earnings retry-until-complete (migration 062)", () => {
       .prepare("SELECT enriched_at FROM calendar_events")
       .get() as { enriched_at: string | null };
     expect(row.enriched_at).not.toBeNull();
+  });
+});
+
+describe("push-at-print hook (Wave 1 §2)", () => {
+  let db: Database.Database;
+
+  function seedAccount(id: number, name: string) {
+    db.prepare(`INSERT INTO accounts (id, name) VALUES (?, ?)`).run(id, name);
+  }
+
+  function seedHolding(
+    accountId: number,
+    securityId: number,
+    quantity: number,
+    asOfDate: string,
+  ) {
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(
+      accountId,
+      securityId,
+      quantity,
+      asOfDate,
+      `test:${accountId}:${securityId}:${asOfDate}`,
+    );
+  }
+
+  function mockFinnhubActual(entry: {
+    symbol: string;
+    date: string;
+    epsActual?: number | null;
+    epsEstimate?: number | null;
+    revenueActual?: number | null;
+    revenueEstimate?: number | null;
+  } | null) {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ earningsCalendar: entry ? [entry] : [] }),
+    });
+  }
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    vi.stubGlobal("fetch", vi.fn());
+    process.env.FRED_API_KEY = "test_fred_key";
+    process.env.FINNHUB_API_KEY = "test_finnhub_key";
+    mockSendEarningsPrintPush.mockClear();
+    mockSendEarningsPrintPush.mockResolvedValue({ pushed: true });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.FRED_API_KEY;
+    delete process.env.FINNHUB_API_KEY;
+  });
+
+  it("fires on the null→non-null actual transition for a held earnings row", async () => {
+    seedSecurity(db, 300, "PUSH", "Technology");
+    seedAccount(900, "Test Account");
+    seedHolding(900, 300, 100, "2026-04-20");
+
+    mockFinnhubActual({
+      symbol: "PUSH",
+      date: "2026-04-24",
+      epsActual: 1.42,
+      epsEstimate: 1.35,
+      revenueActual: 775200000,
+      revenueEstimate: 762000000,
+    });
+
+    const { lastInsertRowid } = insertEvent(db, {
+      source: "finnhub",
+      source_key: "finnhub:PUSH:2026-04-24",
+      event_type: "earnings",
+      event_date: "2026-04-24",
+      release_time: "08:00",
+      symbol: "PUSH",
+      security_id: 300,
+    });
+    const eventId = Number(lastInsertRowid);
+
+    // 08:00 EDT = 12:00 UTC. 4.5h later — inside the earnings 12h window.
+    const now = new Date("2026-04-24T16:30:00Z");
+    await runEnrichment(db, { now });
+
+    expect(mockSendEarningsPrintPush).toHaveBeenCalledTimes(1);
+    expect(mockSendEarningsPrintPush).toHaveBeenCalledWith({
+      eventId,
+      symbol: "PUSH",
+      actualValue: "EPS 1.42 · Rev 775,200,000",
+      consensusValue: "EPS 1.35 · Rev 762,000,000",
+      reactionJson: null,
+    });
+  });
+
+  it("does NOT fire on a retry tick where the actual was already stored", async () => {
+    seedSecurity(db, 301, "RETRY", "Technology");
+    seedAccount(901, "Test Account 2");
+    seedHolding(901, 301, 50, "2026-04-20");
+
+    const { lastInsertRowid } = insertEvent(db, {
+      source: "finnhub",
+      source_key: "finnhub:RETRY:2026-04-24",
+      event_type: "earnings",
+      event_date: "2026-04-24",
+      release_time: "08:00",
+      symbol: "RETRY",
+      security_id: 301,
+    });
+    const eventId = Number(lastInsertRowid);
+    db.prepare(
+      "UPDATE calendar_events SET actual_value = ? WHERE id = ?",
+    ).run("EPS 2.00 · Rev 500,000,000", eventId);
+
+    const now = new Date("2026-04-24T16:30:00Z");
+    await runEnrichment(db, { now });
+
+    expect(mockSendEarningsPrintPush).not.toHaveBeenCalled();
+  });
+
+  it("does NOT fire for a muted symbol", async () => {
+    seedSecurity(db, 302, "MUTE", "Technology");
+    seedAccount(902, "Test Account 3");
+    seedHolding(902, 302, 25, "2026-04-20");
+    setMutedEarningsSymbols(db, ["MUTE"]);
+
+    mockFinnhubActual({
+      symbol: "MUTE",
+      date: "2026-04-24",
+      epsActual: 0.5,
+      epsEstimate: 0.45,
+    });
+
+    insertEvent(db, {
+      source: "finnhub",
+      source_key: "finnhub:MUTE:2026-04-24",
+      event_type: "earnings",
+      event_date: "2026-04-24",
+      release_time: "08:00",
+      symbol: "MUTE",
+      security_id: 302,
+    });
+
+    const now = new Date("2026-04-24T16:30:00Z");
+    await runEnrichment(db, { now });
+
+    expect(mockSendEarningsPrintPush).not.toHaveBeenCalled();
+  });
+
+  it("does NOT fire for a symbol that is neither held nor watchlisted", async () => {
+    seedSecurity(db, 303, "NOPOS", "Technology");
+    // No holdings, no watchlist row.
+
+    mockFinnhubActual({
+      symbol: "NOPOS",
+      date: "2026-04-24",
+      epsActual: 0.75,
+      epsEstimate: 0.7,
+    });
+
+    insertEvent(db, {
+      source: "finnhub",
+      source_key: "finnhub:NOPOS:2026-04-24",
+      event_type: "earnings",
+      event_date: "2026-04-24",
+      release_time: "08:00",
+      symbol: "NOPOS",
+      security_id: 303,
+    });
+
+    const now = new Date("2026-04-24T16:30:00Z");
+    await runEnrichment(db, { now });
+
+    expect(mockSendEarningsPrintPush).not.toHaveBeenCalled();
+  });
+
+  it("does NOT fire for a macro row even when it carries an actual + a symbol", async () => {
+    seedSecurity(db, 304, "AAPL", "Technology");
+    seedAccount(903, "Test Account 4");
+    seedHolding(903, 304, 10, "2026-04-11");
+
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        observations: [
+          { date: "2026-04-01", value: "310.326" },
+          { date: "2025-04-01", value: "300.84" },
+        ],
+      }),
+    });
+
+    insertEvent(db, {
+      source: "claude_macro",
+      source_key: "fred:10:2026-04-11",
+      event_type: "cpi",
+      event_date: "2026-04-11",
+      release_time: "08:30",
+      symbol: "AAPL",
+      security_id: 304,
+      consensus_estimate: "3.2%",
+    });
+
+    // 08:30 EDT = 12:30 UTC. 1 hour post-release.
+    const now = new Date("2026-04-11T13:30:00Z");
+    await runEnrichment(db, { now });
+
+    expect(mockSendEarningsPrintPush).not.toHaveBeenCalled();
   });
 });
