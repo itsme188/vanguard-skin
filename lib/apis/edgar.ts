@@ -573,22 +573,65 @@ export interface Earnings8KFiling {
 }
 
 /**
- * Strip HTML tags and decode common entities from EDGAR filing documents.
+ * Remove the inline-XBRL header block from a filing document. Modern EDGAR
+ * primary docs embed machine metadata (accession number, CIK, boolean flags,
+ * period dates) inside <ix:header>/<ix:hidden> — tag-stripping alone
+ * concatenates it into an unreadable prefix like
+ * "hood-202604280001783879FALSE00017838792026-04-28...".
  */
-function stripHtmlTags(html: string): string {
+export function stripXbrlHeader(html: string): string {
   return html
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p>/gi, "\n\n")
-    .replace(/<\/tr>/gi, "\n")
-    .replace(/<\/td>/gi, "\t")
-    .replace(/<\/th>/gi, "\t")
-    .replace(/<[^>]+>/g, "")
+    .replace(/<ix:header[\s\S]*?<\/ix:header>/gi, "")
+    .replace(/<ix:hidden[\s\S]*?<\/ix:hidden>/gi, "");
+}
+
+/**
+ * Decode HTML entities in EDGAR filing text: the common named set plus
+ * numeric character references. EDGAR filings lean heavily on numeric
+ * entities (&#160; non-breaking space, &#8217; apostrophe, &#9744; checkbox)
+ * which otherwise render literally in the transcript viewer.
+ */
+export function decodeFilingEntities(text: string): string {
+  return text
+    .replace(/&#x([0-9a-f]+);/gi, (m, hex: string) => {
+      const code = parseInt(hex, 16);
+      try {
+        return String.fromCodePoint(code);
+      } catch {
+        return m;
+      }
+    })
+    .replace(/&#(\d+);/g, (m, dec: string) => {
+      const code = parseInt(dec, 10);
+      try {
+        return String.fromCodePoint(code);
+      } catch {
+        return m;
+      }
+    })
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
     .replace(/&nbsp;/g, " ")
+    .replace(/\u00a0/g, " ");
+}
+
+/**
+ * Strip HTML tags and decode common entities from EDGAR filing documents.
+ */
+function stripHtmlTags(html: string): string {
+  return decodeFilingEntities(
+    stripXbrlHeader(html)
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/p>/gi, "\n\n")
+      .replace(/<\/tr>/gi, "\n")
+      .replace(/<\/td>/gi, "\t")
+      .replace(/<\/th>/gi, "\t")
+      .replace(/<\/div>/gi, "\n")
+      .replace(/<[^>]+>/g, "")
+  )
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -754,20 +797,16 @@ export async function fetchFilingPrimaryDoc(
  * reuse it without dragging the 8-K code path in.
  */
 export function stripFilingHtml(html: string): string {
-  return html
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p>/gi, "\n\n")
-    .replace(/<\/tr>/gi, "\n")
-    .replace(/<\/td>/gi, "\t")
-    .replace(/<\/th>/gi, "\t")
-    .replace(/<\/div>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, " ")
+  return decodeFilingEntities(
+    stripXbrlHeader(html)
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/p>/gi, "\n\n")
+      .replace(/<\/tr>/gi, "\n")
+      .replace(/<\/td>/gi, "\t")
+      .replace(/<\/th>/gi, "\t")
+      .replace(/<\/div>/gi, "\n")
+      .replace(/<[^>]+>/g, "")
+  )
     .replace(/\u00a0/g, " ")
     .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
