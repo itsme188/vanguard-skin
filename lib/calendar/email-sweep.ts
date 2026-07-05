@@ -27,6 +27,8 @@ import {
   clearEarningsRunningMarker,
   writeMacSentEarningsMarker,
 } from "@/lib/cron/earnings-marker-check";
+import { composeReleaseInstant } from "./reaction-snapshot";
+import { sendPushover } from "@/lib/alerts/notify-pushover";
 
 export interface SweepCandidateResult {
   eventId: number;
@@ -44,6 +46,7 @@ export interface SweepSummary {
   sent: number;
   skipped: number;
   failed: number;
+  recapAlerts: number;
   results: SweepCandidateResult[];
 }
 
@@ -132,11 +135,92 @@ export async function runEarningsEmailSweep(
     }
   }
 
+  const recapAlerts = await alertBlockedRecaps(db, { now: opts.now });
+
   return {
     swept: candidates.length,
     sent: results.filter((r) => r.ok && !r.skipped).length,
     skipped: results.filter((r) => r.skipped).length,
     failed: results.filter((r) => !r.ok).length,
+    recapAlerts,
     results,
   };
+}
+
+// A previewed print with no actual after this long is "blocked" — the recap
+// gate (actual_value IS NOT NULL) will never open on its own. 2h floor gives
+// Finnhub + the retry loop (Task 6) a fair chance first.
+const BLOCKED_RECAP_MIN_AGE_MS = 2 * 60 * 60 * 1000;
+// Ceiling keeps next-morning catch-up ticks useful for AMC prints (launchd
+// gate closes before AMC+2h) without alerting about ancient events.
+const BLOCKED_RECAP_MAX_AGE_MS = 18 * 60 * 60 * 1000;
+
+interface BlockedRecapRow {
+  id: number;
+  symbol: string;
+  event_date: string;
+  release_time: string;
+}
+
+/**
+ * Pushover once per event when a PREVIEWED earnings print has been out >2h
+ * with no actual captured — last season 10 previews died silently this way
+ * (audit 2026-07-04 §2). The push deep-links to the Today page where the
+ * BogeysEditModal actuals override lives; entering an actual re-opens the
+ * recap path (the sweep picks it up next tick).
+ */
+export async function alertBlockedRecaps(
+  db: Database.Database,
+  opts: { now?: Date } = {},
+): Promise<number> {
+  const now = opts.now ?? new Date();
+  const nowMs = now.getTime();
+
+  const rows = db
+    .prepare(
+      `SELECT ce.id, ce.symbol, ce.event_date, ce.release_time
+         FROM calendar_events ce
+         JOIN earnings_emails ep
+           ON ep.event_id = ce.id AND ep.phase = 'preview'
+          AND (ep.error IS NULL OR ep.error NOT IN ('in_progress'))
+         LEFT JOIN earnings_emails er
+           ON er.event_id = ce.id AND er.phase = 'recap'
+         LEFT JOIN earnings_email_skips es
+           ON es.event_id = ce.id AND es.phase = 'recap'
+        WHERE ce.event_type = 'earnings'
+          AND COALESCE(ce.superseded, 0) = 0
+          AND ce.actual_value IS NULL
+          AND ce.actual_missing_alerted_at IS NULL
+          AND ce.release_time IS NOT NULL
+          AND ce.symbol IS NOT NULL
+          AND ce.event_date >= date('now', '-2 days')
+          AND er.id IS NULL
+          AND es.id IS NULL`,
+    )
+    .all() as BlockedRecapRow[];
+
+  let alerted = 0;
+  for (const row of rows) {
+    const release = composeReleaseInstant(row.event_date, row.release_time);
+    if (!release) continue;
+    const ageMs = nowMs - release.getTime();
+    if (ageMs < BLOCKED_RECAP_MIN_AGE_MS || ageMs > BLOCKED_RECAP_MAX_AGE_MS) continue;
+
+    // Stamp BEFORE pushing — one alert per event even if Pushover errors.
+    db.prepare(
+      `UPDATE calendar_events SET actual_missing_alerted_at = datetime('now') WHERE id = ?`,
+    ).run(row.id);
+
+    const hours = Math.round(ageMs / (60 * 60 * 1000));
+    await sendPushover({
+      title: `${row.symbol} recap blocked — no actuals`,
+      message:
+        `${row.symbol} reported ~${hours}h ago but no actual EPS/Rev has arrived, ` +
+        `so the recap email is blocked. Enter actuals manually to unblock it.`,
+      url: `${process.env.PUSHOVER_LINK_BASE ?? "http://localhost:3099"}/dashboard/today`,
+      urlTitle: "Open Earnings Hub",
+    });
+    alerted += 1;
+  }
+  return alerted;
 }
