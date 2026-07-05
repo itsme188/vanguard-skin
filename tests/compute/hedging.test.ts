@@ -331,4 +331,18 @@ describe("attributeProxies — Tier 2 cascade", () => {
     expect(fin.protected).toBe(8000);
     expect(fin.coveragePct).toBeCloseTo(0.2);
   });
+
+  it("surfaces protection credited to a sector the book does not hold (conservation)", () => {
+    const r = attributeProxies([cand("IGV", 10000)], ctx({
+      sectorWeights: new Map([["IGV", [{ sector: "Technology", weight_pct: 90 }, { sector: "Communication Services", weight_pct: 10 }]]]),
+      // ctx()'s default longExposureBySector has Technology + Financials, NOT Communication Services
+    }));
+    const comm = r.sectorCoverage.find((s) => s.sector === "Communication Services")!;
+    expect(comm).toBeDefined();
+    expect(comm.longExposure).toBe(0);
+    expect(comm.protected).toBe(1000);
+    expect(comm.coveragePct).toBeNull();
+    const totalShown = r.sectorCoverage.reduce((a, s) => a + s.protected, 0);
+    expect(totalShown).toBeCloseTo(10000); // nothing vanished
+  });
 });
