@@ -52,4 +52,14 @@ describe("composePrintPushMessage", () => {
     });
     expect(out.message).toBe("EPS 1.42");
   });
+
+  it("preserves negative EPS signs (miss vs positive consensus)", () => {
+    const out = composePrintPushMessage({
+      symbol: "U",
+      actualValue: "EPS -0.24",
+      consensusValue: "EPS 0.10",
+      reactionJson: null,
+    });
+    expect(out.message).toBe("EPS -0.24 vs 0.10 est");
+  });
 });
