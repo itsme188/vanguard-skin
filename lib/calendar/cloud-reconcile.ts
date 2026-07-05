@@ -1,4 +1,10 @@
 import type Database from "better-sqlite3";
+import { sendEarningsPrintPush } from "@/lib/alerts/print-push";
+import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
+import {
+  getEarningsSettings,
+  shouldSendEarningsEmail,
+} from "@/lib/queries/earnings-settings";
 
 interface CloudEnrichedPayload {
   eventId: number;
@@ -88,7 +94,7 @@ export async function reconcileCloudEnrichment(
   const errors: { eventId: string; error: string }[] = [];
 
   const selectRow = db.prepare(
-    `SELECT id, reaction_snapshot, consensus_value, enriched_at, actual_value
+    `SELECT id, reaction_snapshot, consensus_value, enriched_at, actual_value, event_type, symbol
      FROM calendar_events
      WHERE id = ?`,
   );
@@ -153,6 +159,8 @@ export async function reconcileCloudEnrichment(
             consensus_value: string | null;
             enriched_at: string | null;
             actual_value: string | null;
+            event_type: string;
+            symbol: string | null;
           }
         | undefined;
 
@@ -195,6 +203,38 @@ export async function reconcileCloudEnrichment(
         );
       }
       reconciled += 1;
+
+      // Push-at-print for cloud-captured actuals (Wave 1 §2). The marker
+      // check inside sendEarningsPrintPush dedups against a push the Worker
+      // already fired at capture time. Best-effort.
+      if (
+        payload.actual != null &&
+        existing.actual_value == null &&
+        existing.event_type === "earnings" &&
+        existing.symbol
+      ) {
+        try {
+          const sym = existing.symbol.toUpperCase();
+          const status = getSymbolStatus(db, [sym])[sym];
+          const settings = getEarningsSettings(db);
+          if (
+            (status === "held" || status === "watchlist") &&
+            shouldSendEarningsEmail(settings, sym)
+          ) {
+            await sendEarningsPrintPush({
+              eventId,
+              symbol: sym,
+              actualValue: payload.actual,
+              consensusValue: payload.consensus ?? existing.consensus_value,
+              reactionJson: payload.reaction
+                ? JSON.stringify(payload.reaction)
+                : existing.reaction_snapshot,
+            });
+          }
+        } catch (err) {
+          console.warn(`[print-push] reconcile event ${eventId} failed:`, err);
+        }
+      }
 
       await deleteFromWorker(base, secret, eventId);
     } catch (err) {
