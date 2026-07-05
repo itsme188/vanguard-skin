@@ -758,6 +758,7 @@ describe("computeGroupedTrades", () => {
       makeRoundTrip({
         saleTransactionId: 100,
         entryDate: "2025-06-01",
+        entryPrice: 100,
         entryCost: 500,
         exitQuantity: 5,
         exitProceeds: 800,
@@ -767,6 +768,7 @@ describe("computeGroupedTrades", () => {
       makeRoundTrip({
         saleTransactionId: 100,
         entryDate: "2025-09-01",
+        entryPrice: 100,
         entryCost: 600,
         exitQuantity: 6,
         exitProceeds: 960,
@@ -776,6 +778,7 @@ describe("computeGroupedTrades", () => {
       makeRoundTrip({
         saleTransactionId: 100,
         entryDate: "2025-11-01",
+        entryPrice: 100,
         entryCost: 400,
         exitQuantity: 4,
         exitProceeds: 640,
@@ -829,6 +832,36 @@ describe("computeGroupedTrades", () => {
     ];
     const grouped = computeGroupedTrades(roundTrips);
     expect(grouped[0].returnPct).toBeCloseTo(-20);
+  });
+
+  it("keeps avgEntryPrice per-unit when entryCost carries the option multiplier", () => {
+    // Option lot: 1 contract at $38.30/unit, entryCost = 1 × 38.30 × 100 = $3,830.
+    // avgEntryPrice must stay comparable to exitPrice (per-unit), not become $3,830.
+    const roundTrips: RoundTrip[] = [
+      makeRoundTrip({
+        saleTransactionId: 1,
+        entryPrice: 38.3,
+        entryQuantity: 1,
+        entryCost: 3830,
+        exitQuantity: 1,
+        exitPrice: 93,
+        exitProceeds: 9300,
+        realizedPnl: 5470,
+      }),
+      makeRoundTrip({
+        saleTransactionId: 1,
+        entryPrice: 40.3,
+        entryQuantity: 1,
+        entryCost: 4030,
+        exitQuantity: 1,
+        exitPrice: 93,
+        exitProceeds: 9300,
+        realizedPnl: 5270,
+      }),
+    ];
+    const grouped = computeGroupedTrades(roundTrips);
+    expect(grouped[0].avgEntryPrice).toBeCloseTo(39.3); // (38.30 + 40.30) / 2
+    expect(grouped[0].totalCost).toBe(7860); // dollar columns keep the multiplier
   });
 });
 

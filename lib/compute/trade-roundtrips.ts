@@ -393,7 +393,14 @@ export function computeGroupedTrades(roundTrips: RoundTrip[]): GroupedTrade[] {
       totalQuantity: totalQty,
       sellTransactionQty: sellTxQty,
       lotCoverage: Math.min(coverage, 1), // cap at 1 (rounding)
-      avgEntryPrice: totalQty > 0 ? totalCost / totalQty : 0,
+      // Quantity-weighted per-unit price — NOT totalCost / totalQty, which
+      // would be ×multiplier for options (entryCost carries the contract
+      // multiplier; entryPrice and exitPrice are per-unit).
+      avgEntryPrice:
+        totalQty > 0
+          ? lots.reduce((s, rt) => s + rt.entryPrice * rt.exitQuantity, 0) /
+            totalQty
+          : 0,
       exitPrice: lots[0].exitPrice,
       exitDate: lots[0].exitDate,
       earliestEntryDate: entryDates[0],
