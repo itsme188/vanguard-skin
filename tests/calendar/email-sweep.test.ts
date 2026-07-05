@@ -37,7 +37,12 @@ vi.mock("@/lib/cron/earnings-marker-check", () => ({
   writeMacSentEarningsMarker: (...a: unknown[]) => writeSent(...a),
 }));
 
-import { runEarningsEmailSweep } from "@/lib/calendar/email-sweep";
+const pushover = vi.fn(async () => ({ sent: true }));
+vi.mock("@/lib/alerts/notify-pushover", () => ({
+  sendPushover: (...a: unknown[]) => pushover(...a),
+}));
+
+import { runEarningsEmailSweep, alertBlockedRecaps } from "@/lib/calendar/email-sweep";
 
 // 2h before 16:30 ET release = 20:30 UTC. Same construction as
 // tests/calendar/findEmailCandidates-skip.test.ts's AAPL preview case —
@@ -155,5 +160,137 @@ describe("runEarningsEmailSweep marker dance", () => {
 
     expect(summary.failed).toBe(1);
     expect(clearRunning).toHaveBeenCalled();
+  });
+});
+
+/**
+ * alertBlockedRecaps (Task 9): last season 10 previewed names never got a
+ * recap because Finnhub actuals never arrived — silently. This gate fires
+ * ONE Pushover push per event once a previewed print has sat 2-18h
+ * post-release with no actual, deep-linking to Today so the user can enter
+ * actuals manually via BogeysEditModal.
+ *
+ * The implementation's SQL pre-filter (`ce.event_date >= date('now', '-2
+ * days')`) uses SQLite's own real wall-clock `now()`, NOT the injected
+ * `opts.now` — so fixtures here are built from the REAL current instant
+ * (captured once at module load) rather than a frozen historical date like
+ * the marker-dance tests above use. This keeps the SQL pre-filter and the
+ * JS age-window check aligned regardless of what day the suite actually
+ * runs, and mirrors composeReleaseInstant round-tripping used by
+ * tests/calendar/enrichment-runner.test.ts for DST-proof window fixtures.
+ */
+describe("alertBlockedRecaps", () => {
+  let db: Database.Database;
+
+  // Real current instant, captured once so every fixture + the injected
+  // `now` in each test share one consistent reference point.
+  const REAL_NOW = new Date();
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    pushover.mockClear();
+  });
+
+  /**
+   * Convert a UTC instant into its ET wall-clock date/time parts, for
+   * constructing event_date/release_time fixtures. Same helper as
+   * tests/calendar/enrichment-runner.test.ts's etDateTimeParts — using Intl
+   * (rather than hand-rolled DST math) means these fixtures don't need to
+   * know whether a given date falls in EDT or EST.
+   */
+  function etDateTimeParts(d: Date): { date: string; time: string } {
+    const fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/New_York",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+    const parts = fmt.formatToParts(d);
+    const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+    let hour = get("hour");
+    if (hour === "24") hour = "00"; // Intl quirk: midnight can format as "24"
+    return {
+      date: `${get("year")}-${get("month")}-${get("day")}`,
+      time: `${hour}:${get("minute")}`,
+    };
+  }
+
+  /** Insert a bare earnings calendar_events row whose release was `hoursAgo`
+   * hours before REAL_NOW. No security_id / holdings needed — alertBlockedRecaps
+   * doesn't filter on held/watchlist status. */
+  function insertReleasedEvent(symbol: string, hoursAgo: number): number {
+    const releaseInstant = new Date(REAL_NOW.getTime() - hoursAgo * 60 * 60 * 1000);
+    const { date, time } = etDateTimeParts(releaseInstant);
+    const result = db
+      .prepare(
+        `INSERT INTO calendar_events (
+           source, event_type, event_date, event_time, release_time, title,
+           symbol, source_key, week_of
+         ) VALUES ('finnhub','earnings',?,?,?,?,?,?,?)`,
+      )
+      .run(
+        date,
+        time,
+        time,
+        `${symbol} earnings`,
+        symbol,
+        `finnhub:${symbol}:${date}`,
+        date,
+      );
+    return result.lastInsertRowid as number;
+  }
+
+  function insertSentPreview(eventId: number): void {
+    db.prepare(
+      `INSERT INTO earnings_emails (event_id, phase, recipient, ai_output_md, error)
+       VALUES (?, 'preview', 'test@example.com', 'preview body', NULL)`,
+    ).run(eventId);
+  }
+
+  it("pushes once for a previewed event >2h post-release with no actual, then never again", async () => {
+    const eventId = insertReleasedEvent("ZETA", 3);
+    insertSentPreview(eventId);
+
+    const n1 = await alertBlockedRecaps(db, { now: REAL_NOW });
+    expect(n1).toBe(1);
+    expect(pushover).toHaveBeenCalledTimes(1);
+
+    const n2 = await alertBlockedRecaps(db, { now: REAL_NOW });
+    expect(n2).toBe(0); // actual_missing_alerted_at dedup
+    expect(pushover).toHaveBeenCalledTimes(1); // no second push
+  });
+
+  it("does not alert when the actual landed", async () => {
+    const eventId = insertReleasedEvent("ZETA", 3);
+    insertSentPreview(eventId);
+    db.prepare(`UPDATE calendar_events SET actual_value = ? WHERE id = ?`).run(
+      "EPS 1.23 · Rev 400M",
+      eventId,
+    );
+
+    expect(await alertBlockedRecaps(db, { now: REAL_NOW })).toBe(0);
+    expect(pushover).not.toHaveBeenCalled();
+  });
+
+  it("does not alert without a sent preview", async () => {
+    insertReleasedEvent("ZETA", 3); // no earnings_emails preview row
+
+    expect(await alertBlockedRecaps(db, { now: REAL_NOW })).toBe(0);
+    expect(pushover).not.toHaveBeenCalled();
+  });
+
+  it("does not alert before 2h or after 18h post-release", async () => {
+    const early = insertReleasedEvent("EARLY", 1); // 1h ago — under the floor
+    insertSentPreview(early);
+    const late = insertReleasedEvent("LATEE", 20); // 20h ago — past the ceiling
+    insertSentPreview(late);
+
+    expect(await alertBlockedRecaps(db, { now: REAL_NOW })).toBe(0);
+    expect(pushover).not.toHaveBeenCalled();
   });
 });
