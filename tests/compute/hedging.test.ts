@@ -5,6 +5,7 @@ import {
   computeGapGuardedBeta,
   resolveProxyBeta,
   attributeProxies,
+  scoreHedges,
   type DefenseInstrument,
   type UnderlyingGroup,
   type AttributionContext,
@@ -344,5 +345,65 @@ describe("attributeProxies — Tier 2 cascade", () => {
     expect(comm.coveragePct).toBeNull();
     const totalShown = r.sectorCoverage.reduce((a, s) => a + s.protected, 0);
     expect(totalShown).toBeCloseTo(10000); // nothing vanished
+  });
+});
+
+function hedgeInput(over: Partial<DefenseInstrument>, protects = "MSFT", protectedNotional = 10000) {
+  return {
+    instrument: inst({
+      isOption: true,
+      optionType: "PUT" as const,
+      exposure: -protectedNotional,
+      strike: 400,
+      underlyingPrice: 500,
+      daysToExpiry: 180,
+      thetaPerDay: -10,
+      delta: -0.3,
+      greeksAvailable: true,
+      ...over,
+    }),
+    protects,
+    protectedNotional,
+  };
+}
+
+describe("scoreHedges", () => {
+  it("computes bleed, runway, moneyness, efficiency", () => {
+    const [s] = scoreHedges([hedgeInput({})]);
+    expect(s.monthlyBleedPct).toBeCloseTo((10 * 30) / 10000); // 3%/mo
+    expect(s.runwayDays).toBe(180);
+    expect(s.moneynessPct).toBeCloseTo((400 - 500) / 500); // -20% = 20% OTM put
+    expect(s.efficiency).toBeCloseTo(10000 / 300);
+  });
+
+  it("badges: expiring under 30d", () => {
+    expect(scoreHedges([hedgeInput({ daysToExpiry: 20 })])[0].badges).toContain("expiring");
+  });
+
+  it("badges: decayed when >20% OTM and runway <45d", () => {
+    const [s] = scoreHedges([hedgeInput({ daysToExpiry: 40, strike: 350, underlyingPrice: 500 })]);
+    expect(s.badges).toContain("decayed");
+  });
+
+  it("badges: expensive above 3%/mo bleed; deep_itm at |delta| >= 0.8", () => {
+    expect(scoreHedges([hedgeInput({ thetaPerDay: -15 })])[0].badges).toContain("expensive");
+    expect(scoreHedges([hedgeInput({ delta: -0.85 })])[0].badges).toContain("deep_itm");
+  });
+
+  it("excludes fake numbers when Greeks unavailable (share-short proxies score with null carry)", () => {
+    const [s] = scoreHedges([hedgeInput({ isOption: false, optionType: null, thetaPerDay: undefined, daysToExpiry: undefined, strike: undefined, delta: undefined, greeksAvailable: false })]);
+    expect(s.monthlyBleedPct).toBeNull();
+    expect(s.efficiency).toBeNull();
+    expect(s.runwayDays).toBeNull();
+    expect(s.badges).toEqual([]);
+  });
+
+  it("sorts by efficiency ascending with nulls last (close-first candidates on top)", () => {
+    const scores = scoreHedges([
+      hedgeInput({ thetaPerDay: -30, securityId: 1 }),  // eff ≈ 11.1
+      hedgeInput({ thetaPerDay: -5, securityId: 2 }),   // eff ≈ 66.7
+      hedgeInput({ isOption: false, optionType: null, thetaPerDay: undefined, greeksAvailable: false, securityId: 3 }),
+    ]);
+    expect(scores.map((s) => s.securityId)).toEqual([1, 2, 3]);
   });
 });
