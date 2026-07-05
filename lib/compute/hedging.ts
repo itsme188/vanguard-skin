@@ -325,3 +325,91 @@ export function resolveProxyBeta(db: Database.Database, symbol: string): Resolve
   if (computed !== null) return { beta: computed, source: "computed" };
   return { beta: 1.0, source: "assumed" };
 }
+
+// ─── Proxy Attribution (Task 3) ────────────────────────────────────────
+
+export interface ProxyHedge {
+  underlying: string;
+  protectiveNotional: number;
+  route: "sector" | "geography" | "beta";
+  creditedTo: Array<{ bucket: string; credited: number }>;
+  betaSource?: ResolvedBeta["source"];
+  instruments: DefenseInstrument[];
+}
+
+export interface SectorCoverage {
+  sector: string;
+  longExposure: number;
+  protected: number;
+  coveragePct: number | null;
+}
+
+export interface AttributionContext {
+  /** getEtfSectorWeights(db) shape: symbol → [{sector, weight_pct}] */
+  sectorWeights: Map<string, Array<{ sector: string; weight_pct: number }>>;
+  /** ETF symbol → geography (from securities.geography of the ETF row). */
+  etfGeography: Map<string, string>;
+  longExposureBySector: Map<string, number>;
+  longExposureByGeography: Map<string, number>;
+  /** Tier-1 offsetCredited bucketed by the pair's sector (for the bars). */
+  tier1CreditedBySector: Map<string, number>;
+  totalLongExposure: number;
+  resolveBeta: (symbol: string) => ResolvedBeta;
+}
+
+export function attributeProxies(
+  candidates: ProxyCandidate[],
+  ctx: AttributionContext
+): { proxies: ProxyHedge[]; sectorCoverage: SectorCoverage[] } {
+  const proxies: ProxyHedge[] = [];
+  const protectedBySector = new Map<string, number>(ctx.tier1CreditedBySector);
+
+  for (const c of candidates) {
+    const weights = ctx.sectorWeights.get(c.underlying);
+    if (weights && weights.length > 0) {
+      const creditedTo = weights.map((w) => ({
+        bucket: w.sector,
+        credited: c.protectiveNotional * (w.weight_pct / 100),
+      }));
+      for (const ct of creditedTo) {
+        protectedBySector.set(ct.bucket, (protectedBySector.get(ct.bucket) ?? 0) + ct.credited);
+      }
+      proxies.push({ underlying: c.underlying, protectiveNotional: c.protectiveNotional, route: "sector", creditedTo, instruments: c.instruments });
+      continue;
+    }
+    const geo = ctx.etfGeography.get(c.underlying);
+    if (geo && ctx.longExposureByGeography.has(geo)) {
+      proxies.push({
+        underlying: c.underlying,
+        protectiveNotional: c.protectiveNotional,
+        route: "geography",
+        creditedTo: [{ bucket: geo, credited: c.protectiveNotional }],
+        instruments: c.instruments,
+      });
+      continue;
+    }
+    const { beta, source } = ctx.resolveBeta(c.underlying);
+    proxies.push({
+      underlying: c.underlying,
+      protectiveNotional: c.protectiveNotional,
+      route: "beta",
+      creditedTo: [{ bucket: "book", credited: c.protectiveNotional * beta }],
+      betaSource: source,
+      instruments: c.instruments,
+    });
+  }
+
+  const sectorCoverage: SectorCoverage[] = [...ctx.longExposureBySector.entries()]
+    .map(([sector, longExposure]) => {
+      const prot = protectedBySector.get(sector) ?? 0;
+      return {
+        sector,
+        longExposure,
+        protected: prot,
+        coveragePct: longExposure > 0 ? prot / longExposure : null,
+      };
+    })
+    .sort((a, b) => b.longExposure - a.longExposure);
+
+  return { proxies, sectorCoverage };
+}

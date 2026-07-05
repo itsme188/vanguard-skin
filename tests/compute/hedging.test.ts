@@ -4,8 +4,11 @@ import {
   classifyBook,
   computeGapGuardedBeta,
   resolveProxyBeta,
+  attributeProxies,
   type DefenseInstrument,
   type UnderlyingGroup,
+  type AttributionContext,
+  type ProxyCandidate,
 } from "@/lib/compute/hedging";
 import { runMigrations } from "@/lib/db/migrate";
 
@@ -267,5 +270,65 @@ describe("resolveProxyBeta", () => {
     expect(Number.isFinite(result.beta)).toBe(true);
     expect(result.beta).toBeGreaterThan(0.5);
     expect(result.beta).toBeLessThan(1.5);
+  });
+});
+
+function ctx(over: Partial<AttributionContext> = {}): AttributionContext {
+  return {
+    sectorWeights: new Map(),
+    etfGeography: new Map(),
+    longExposureBySector: new Map([["Technology", 100000], ["Financials", 40000]]),
+    longExposureByGeography: new Map([["Europe", 20000]]),
+    tier1CreditedBySector: new Map(),
+    totalLongExposure: 200000,
+    resolveBeta: () => ({ beta: 1.0, source: "assumed" as const }),
+    ...over,
+  };
+}
+
+function cand(underlying: string, notional: number): ProxyCandidate {
+  return { underlying, protectiveNotional: notional, source: "no_core_etf", instruments: [] };
+}
+
+describe("attributeProxies — Tier 2 cascade", () => {
+  it("routes via cached sector weights and builds sector coverage", () => {
+    const r = attributeProxies([cand("IGV", 10000)], ctx({
+      sectorWeights: new Map([["IGV", [{ sector: "Technology", weight_pct: 90 }, { sector: "Communication Services", weight_pct: 10 }]]]),
+    }));
+    expect(r.proxies[0].route).toBe("sector");
+    expect(r.proxies[0].creditedTo).toEqual([
+      { bucket: "Technology", credited: 9000 },
+      { bucket: "Communication Services", credited: 1000 },
+    ]);
+    const tech = r.sectorCoverage.find((s) => s.sector === "Technology")!;
+    expect(tech.longExposure).toBe(100000);
+    expect(tech.protected).toBe(9000);
+    expect(tech.coveragePct).toBeCloseTo(0.09);
+  });
+
+  it("routes country ETFs via geography when no sector weights", () => {
+    const r = attributeProxies([cand("EWG", 5000)], ctx({
+      etfGeography: new Map([["EWG", "Europe"]]),
+    }));
+    expect(r.proxies[0].route).toBe("geography");
+    expect(r.proxies[0].creditedTo).toEqual([{ bucket: "Europe", credited: 5000 }]);
+  });
+
+  it("falls back to beta-weighted broad-book credit and carries the beta source", () => {
+    const r = attributeProxies([cand("MTUM", 10000)], ctx({
+      resolveBeta: () => ({ beta: 1.2, source: "cached" as const }),
+    }));
+    expect(r.proxies[0].route).toBe("beta");
+    expect(r.proxies[0].creditedTo).toEqual([{ bucket: "book", credited: 12000 }]);
+    expect(r.proxies[0].betaSource).toBe("cached");
+  });
+
+  it("includes tier-1 credits in sector coverage", () => {
+    const r = attributeProxies([], ctx({
+      tier1CreditedBySector: new Map([["Financials", 8000]]),
+    }));
+    const fin = r.sectorCoverage.find((s) => s.sector === "Financials")!;
+    expect(fin.protected).toBe(8000);
+    expect(fin.coveragePct).toBeCloseTo(0.2);
   });
 });
