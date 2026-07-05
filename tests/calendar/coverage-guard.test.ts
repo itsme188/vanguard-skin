@@ -5,6 +5,8 @@ import {
   findEarningsCoverageGaps,
   renderCoverageGapsBlock,
   getCoverageGuardIgnoredSymbols,
+  wasCoveragePushSentToday,
+  markCoveragePushSent,
 } from "@/lib/calendar/coverage-guard";
 
 const TODAY = "2026-07-05";
@@ -250,6 +252,31 @@ describe("getCoverageGuardIgnoredSymbols", () => {
       `INSERT INTO settings (key, value) VALUES ('coverage_guard_ignored_symbols', 'not json')`,
     ).run();
     expect(getCoverageGuardIgnoredSymbols(db)).toEqual([]);
+  });
+});
+
+describe("coverage guard push dedup", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("journal_mode = WAL");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  it("wasCoveragePushSentToday is false when no push has ever been recorded", () => {
+    expect(wasCoveragePushSentToday(db, TODAY)).toBe(false);
+  });
+
+  it("markCoveragePushSent then wasCoveragePushSentToday for the same day is true", () => {
+    markCoveragePushSent(db, TODAY);
+    expect(wasCoveragePushSentToday(db, TODAY)).toBe(true);
+  });
+
+  it("a push recorded on a prior day does not count as sent today", () => {
+    markCoveragePushSent(db, "2026-07-04");
+    expect(wasCoveragePushSentToday(db, TODAY)).toBe(false);
   });
 });
 
