@@ -10,7 +10,7 @@
  * a local "sent-by-cloud" audit row when the cloud already delivered.
  */
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 
@@ -37,7 +37,7 @@ vi.mock("@/lib/cron/earnings-marker-check", () => ({
   writeMacSentEarningsMarker: (...a: unknown[]) => writeSent(...a),
 }));
 
-const pushover = vi.fn(async () => ({ sent: true }));
+const pushover = vi.fn(async (_msg: unknown) => ({ sent: true }));
 vi.mock("@/lib/alerts/notify-pushover", () => ({
   sendPushover: (...a: unknown[]) => pushover(...a),
 }));
@@ -116,6 +116,10 @@ describe("runEarningsEmailSweep marker dance", () => {
     const summary = await runEarningsEmailSweep(db, { now: NOW });
 
     expect(summary.sent).toBe(1);
+    // Default path pin (Task 9 reviewer follow-up): a fresh preview send with
+    // no pre-existing earnings_emails row can't also be a "blocked recap"
+    // candidate, so the alert pass must report zero.
+    expect(summary.recapAlerts).toBe(0);
     expect(checkMarker).toHaveBeenCalledWith("preview", expect.any(Number));
     expect(setRunning).toHaveBeenCalled();
     expect(sendPreview).toHaveBeenCalledTimes(1);
@@ -252,6 +256,30 @@ describe("alertBlockedRecaps", () => {
     ).run(eventId);
   }
 
+  /** Preview audit row recorded via the cloud-fallback path (Task 3 pattern:
+   * ai_output_md NULL, error='sent-by-cloud'). The alertBlockedRecaps JOIN
+   * only excludes error='in_progress' — a cloud-sent preview still counts as
+   * "previewed" for blocked-recap purposes. */
+  function insertCloudSentPreview(eventId: number): void {
+    db.prepare(
+      `INSERT INTO earnings_emails (event_id, phase, recipient, ai_output_md, error)
+       VALUES (?, 'preview', 'cloud-fallback', NULL, 'sent-by-cloud')`,
+    ).run(eventId);
+  }
+
+  function insertRecapAudit(eventId: number): void {
+    db.prepare(
+      `INSERT INTO earnings_emails (event_id, phase, recipient, ai_output_md, error)
+       VALUES (?, 'recap', 'test@example.com', 'recap body', NULL)`,
+    ).run(eventId);
+  }
+
+  function insertRecapSkip(eventId: number): void {
+    db.prepare(
+      `INSERT INTO earnings_email_skips (event_id, phase) VALUES (?, 'recap')`,
+    ).run(eventId);
+  }
+
   it("pushes once for a previewed event >2h post-release with no actual, then never again", async () => {
     const eventId = insertReleasedEvent("ZETA", 3);
     insertSentPreview(eventId);
@@ -292,5 +320,108 @@ describe("alertBlockedRecaps", () => {
 
     expect(await alertBlockedRecaps(db, { now: REAL_NOW })).toBe(0);
     expect(pushover).not.toHaveBeenCalled();
+  });
+
+  it("stamps actual_missing_alerted_at on the eligible row and leaves a non-eligible row null", async () => {
+    const eligible = insertReleasedEvent("ZETA", 3);
+    insertSentPreview(eligible);
+    // Non-eligible sibling: no preview ever sent, so alertBlockedRecaps
+    // should skip it entirely and never touch its stamp column.
+    const nonEligible = insertReleasedEvent("NOPE", 3);
+
+    const n = await alertBlockedRecaps(db, { now: REAL_NOW });
+    expect(n).toBe(1);
+
+    const eligibleRow = db
+      .prepare(`SELECT actual_missing_alerted_at FROM calendar_events WHERE id = ?`)
+      .get(eligible) as { actual_missing_alerted_at: string | null };
+    expect(eligibleRow.actual_missing_alerted_at).not.toBeNull();
+
+    const nonEligibleRow = db
+      .prepare(`SELECT actual_missing_alerted_at FROM calendar_events WHERE id = ?`)
+      .get(nonEligible) as { actual_missing_alerted_at: string | null };
+    expect(nonEligibleRow.actual_missing_alerted_at).toBeNull();
+  });
+
+  describe("push payload", () => {
+    const ORIGINAL_LINK_BASE = process.env.PUSHOVER_LINK_BASE;
+
+    afterEach(() => {
+      if (ORIGINAL_LINK_BASE === undefined) {
+        delete process.env.PUSHOVER_LINK_BASE;
+      } else {
+        process.env.PUSHOVER_LINK_BASE = ORIGINAL_LINK_BASE;
+      }
+    });
+
+    it("builds title/url/urlTitle with the localhost fallback when PUSHOVER_LINK_BASE is unset", async () => {
+      delete process.env.PUSHOVER_LINK_BASE;
+      const eventId = insertReleasedEvent("ZETA", 3);
+      insertSentPreview(eventId);
+
+      await alertBlockedRecaps(db, { now: REAL_NOW });
+
+      expect(pushover).toHaveBeenCalledTimes(1);
+      const payload = pushover.mock.calls[0][0] as {
+        title: string;
+        url: string;
+        urlTitle: string;
+      };
+      expect(payload.title).toContain("ZETA");
+      expect(payload.title).toContain("recap blocked");
+      expect(payload.url).toBe("http://localhost:3099/dashboard/today");
+      expect(payload.urlTitle).toBe("Open Earnings Hub");
+    });
+
+    it("uses PUSHOVER_LINK_BASE for the deep link when set", async () => {
+      process.env.PUSHOVER_LINK_BASE = "https://100.96.0.1:3099";
+      const eventId = insertReleasedEvent("ZETA", 3);
+      insertSentPreview(eventId);
+
+      await alertBlockedRecaps(db, { now: REAL_NOW });
+
+      const payload = pushover.mock.calls[0][0] as { url: string };
+      expect(payload.url).toBe("https://100.96.0.1:3099/dashboard/today");
+    });
+  });
+
+  describe("eligibility branches", () => {
+    it("alerts on a preview sent via the cloud-fallback path ('sent-by-cloud')", async () => {
+      const eventId = insertReleasedEvent("ZETA", 3);
+      insertCloudSentPreview(eventId);
+
+      expect(await alertBlockedRecaps(db, { now: REAL_NOW })).toBe(1);
+      expect(pushover).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not alert when a recap audit row already exists", async () => {
+      const eventId = insertReleasedEvent("ZETA", 3);
+      insertSentPreview(eventId);
+      insertRecapAudit(eventId);
+
+      expect(await alertBlockedRecaps(db, { now: REAL_NOW })).toBe(0);
+      expect(pushover).not.toHaveBeenCalled();
+    });
+
+    it("does not alert when a recap skip row already exists", async () => {
+      const eventId = insertReleasedEvent("ZETA", 3);
+      insertSentPreview(eventId);
+      insertRecapSkip(eventId);
+
+      expect(await alertBlockedRecaps(db, { now: REAL_NOW })).toBe(0);
+      expect(pushover).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("wired through runEarningsEmailSweep", () => {
+    it("surfaces recapAlerts=1 and fires Pushover for an eligible blocked-recap fixture", async () => {
+      const eventId = insertReleasedEvent("ZETA", 3);
+      insertSentPreview(eventId);
+
+      const summary = await runEarningsEmailSweep(db, { now: REAL_NOW });
+
+      expect(summary.recapAlerts).toBe(1);
+      expect(pushover).toHaveBeenCalledTimes(1);
+    });
   });
 });
