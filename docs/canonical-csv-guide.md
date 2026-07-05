@@ -47,7 +47,7 @@ account,trade_date,settlement_date,type,symbol,security_name,security_type,quant
 | security_type | No | string | Stock, Bond, ETF, Option, Mutual Fund |
 | quantity | No | number | Shares/units — ALWAYS POSITIVE. The type field carries direction. |
 | price | No | number | Price per share ($) |
-| amount | No | number | Total dollar amount (positive = inflow, negative = outflow) |
+| amount | No | number | Total dollar amount — signed cash effect (positive = inflow, negative = outflow). BUY/BUY_TO_OPEN/BUY_TO_CLOSE/BUY_TO_COVER are NEGATIVE; SELL/SELL_TO_CLOSE/SELL_TO_OPEN positive; DIVIDEND/INTEREST/DEPOSIT positive; TAX_WITHHELD/FEE/COMMISSION/WITHDRAWAL negative; REINVESTMENT positive (see income rule) |
 | fees | No | number | Fees and commissions ($) |
 | notes | No | string | Free-text notes |
 
@@ -63,14 +63,14 @@ SPLIT, RETURN_OF_CAPITAL, SHORT_SELL
 
 **Income-row placement rule:** For `DIVIDEND`, `INTEREST`, and `TAX_WITHHELD` rows, leave `quantity` and `price` empty and put the cash amount in the `amount` column — never in `fees`. For `REINVESTMENT` rows, populate both `quantity`/`price` (shares received at the reinvestment price) **and** `amount` (total value reinvested).
 
-**TRANSFER sign rule:** For Vanguard `TRANSFER` rows (VMFXX money-market sweeps), `amount` is **signed**: "Sweep Into Settlement Fund" is positive (cash entering VMFXX), "Sweep Out Of Settlement Fund" is negative (cash leaving VMFXX to settle a trade). The direction is already in the notes column — mirror it in the sign.
+**TRANSFER sign rule:** For Vanguard `TRANSFER` rows (VMFXX money-market sweeps), `amount` is **signed**: "Sweep Into Settlement Fund" is positive (cash entering VMFXX), "Sweep Out Of Settlement Fund" is negative (cash leaving VMFXX to settle a trade). The direction is already in the notes column — mirror it in the sign. **Quarter-end statements (Mar/Jun/Sep/Dec)** label these rows "Sweep in" / "Sweep out" and print the amount from the *settlement fund's counterparty* perspective (Sweep in shows negative, Sweep out positive) — FLIP the statement's sign and normalize the note to the canonical phrasing above. Statement sweep rows show symbol `-`; emit `VMFXX`.
 
 **Gifted / journaled shares rule:** For shares moved between accounts or sub-accounts (gifts, sub-account journals — not cash), use `TRANSFER_IN` (shares received) or `TRANSFER_OUT` (shares given/moved out). Put the share count in `quantity`, leave `price` empty, and set `amount` to `0` (no cash changes hands). Emit one row per journal line exactly as the statement lists them; **multiple same-day, same-symbol transfers are expected and must each appear** — the importer disambiguates identical rows automatically, so never merge or drop them.
 
 **Example:**
 ```csv
 account,trade_date,settlement_date,type,symbol,security_name,security_type,quantity,price,amount,fees,notes
-Vanguard Taxable,2025-06-15,,BUY,AAPL,Apple Inc,Stock,10,150.25,1502.50,4.95,
+Vanguard Taxable,2025-06-15,,BUY,AAPL,Apple Inc,Stock,10,150.25,-1502.50,4.95,
 Vanguard Taxable,2025-06-20,,DIVIDEND,AAPL,Apple Inc,Stock,,,25.00,,Q2 dividend
 Vanguard Taxable,2025-06-30,,INTEREST,VMFXX,Vanguard Federal Money Market Fund,Mutual Fund,,,12.45,,
 Vanguard Taxable,2025-06-20,,REINVESTMENT,VTI,Vanguard Total Stock Market ETF,ETF,0.098,255.10,25.00,,Reinvested Q2 dividend

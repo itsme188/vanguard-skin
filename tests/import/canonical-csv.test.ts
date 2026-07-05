@@ -47,7 +47,7 @@ describe("canonical transactions parser", () => {
 
   it("parses basic transactions", () => {
     const csv = `${header}
-Vanguard Taxable,2025-06-15,,BUY,AAPL,Apple Inc,Stock,10,150.25,1502.50,4.95,
+Vanguard Taxable,2025-06-15,,BUY,AAPL,Apple Inc,Stock,10,150.25,-1502.50,4.95,
 Vanguard Taxable,2025-06-20,,DIVIDEND,AAPL,Apple Inc,Stock,,,25.00,,Q2 dividend`;
 
     const result = parseCanonicalCsv(csv, "txn.csv");
@@ -64,7 +64,8 @@ Vanguard Taxable,2025-06-20,,DIVIDEND,AAPL,Apple Inc,Stock,,,25.00,,Q2 dividend`
     expect(buy.symbol).toBe("AAPL");
     expect(buy.quantity).toBe(10);
     expect(buy.pricePerShare).toBe(150.25);
-    expect(buy.amount).toBe(1502.5);
+    // Amount is the signed cash effect — a BUY is cash out, so negative.
+    expect(buy.amount).toBe(-1502.5);
     expect(buy.fees).toBe(4.95);
 
     const div = result.transactions[1];
