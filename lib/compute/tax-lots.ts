@@ -116,17 +116,20 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
     //           EXERCISED, ASSIGNED, BUY_TO_CLOSE
     const sells = db
       .prepare(
-        `SELECT id, account_id, security_id, trade_date, type, quantity, price_per_share, amount, fees
-         FROM transactions
-         WHERE LOWER(type) IN ('sell', 'sell_to_close', 'redemption', 'buy_to_cover',
+        `SELECT t.id, t.account_id, t.security_id, t.trade_date, t.type, t.quantity,
+                t.price_per_share, t.amount, t.fees,
+                COALESCE(s.multiplier, 1) AS multiplier
+         FROM transactions t
+         JOIN securities s ON s.id = t.security_id
+         WHERE LOWER(t.type) IN ('sell', 'sell_to_close', 'redemption', 'buy_to_cover',
                                 'expired', 'exercised', 'assigned', 'buy_to_close')
-           AND security_id IS NOT NULL
-           AND quantity IS NOT NULL
-           AND (price_per_share IS NOT NULL
-                OR LOWER(type) IN ('expired', 'exercised', 'assigned'))
-         ORDER BY trade_date, id`
+           AND t.security_id IS NOT NULL
+           AND t.quantity IS NOT NULL
+           AND (t.price_per_share IS NOT NULL
+                OR LOWER(t.type) IN ('expired', 'exercised', 'assigned'))
+         ORDER BY t.trade_date, t.id`
       )
-      .all() as TransactionRow[];
+      .all() as Array<TransactionRow & { multiplier: number }>;
 
     const insertSale = db.prepare(
       `INSERT INTO tax_lot_sales
@@ -180,8 +183,11 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
         if (remainingToSell <= 0) break;
 
         const quantitySold = Math.min(remainingToSell, lot.quantity_remaining);
-        const costBasisAllocated = quantitySold * lot.acquisition_price;
-        const proceeds = quantitySold * effectiveSalePrice;
+        // Prices are per-unit; the contract multiplier (100 for options, 1
+        // otherwise) converts to real dollars. sale_price stays per-unit.
+        const costBasisAllocated =
+          quantitySold * lot.acquisition_price * sell.multiplier;
+        const proceeds = quantitySold * effectiveSalePrice * sell.multiplier;
         // For short positions (SELL_TO_OPEN), the standard formula produces
         // inverted signs. Negate to get correct economic P&L.
         let realizedGainLoss = proceeds - costBasisAllocated;

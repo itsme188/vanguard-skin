@@ -105,8 +105,8 @@ describe("option tax lot handling", () => {
     expect(sales.length).toBe(1);
     expect(sales[0].sale_price).toBe(0); // expired at $0
     expect(sales[0].proceeds).toBe(0);
-    expect(sales[0].cost_basis_allocated).toBe(10); // 2 * $5
-    expect(sales[0].realized_gain_loss).toBe(-10); // full loss of premium
+    expect(sales[0].cost_basis_allocated).toBe(1000); // 2 * $5 * 100 multiplier
+    expect(sales[0].realized_gain_loss).toBe(-1000); // full loss of premium
   });
 
   it("short call expired: full premium gain", () => {
@@ -126,9 +126,9 @@ describe("option tax lot handling", () => {
     const sales = getTaxLotSales();
     expect(sales.length).toBe(1);
     expect(sales[0].sale_price).toBe(0); // expired at $0
-    expect(sales[0].cost_basis_allocated).toBe(12); // 3 * $4
-    expect(sales[0].realized_gain_loss).toBe(12); // kept full premium = $12 gain
-    // Short option P&L is negated: raw (0 - 12 = -12) → negated → +12
+    expect(sales[0].cost_basis_allocated).toBe(1200); // 3 * $4 * 100 multiplier
+    expect(sales[0].realized_gain_loss).toBe(1200); // kept full premium = $1,200 gain
+    // Short option P&L is negated: raw (0 - 1200 = -1200) → negated → +1200
   });
 
   it("buy_to_close: closes short option lot", () => {
@@ -141,10 +141,10 @@ describe("option tax lot handling", () => {
 
     const sales = getTaxLotSales();
     expect(sales.length).toBe(1);
-    expect(sales[0].cost_basis_allocated).toBe(6); // opened at $6
-    expect(sales[0].sale_price).toBe(2); // closed at $2
-    expect(sales[0].realized_gain_loss).toBe(4); // sold at $6, bought back at $2 = $4 profit
-    // Short option P&L is negated: raw (2 - 6 = -4) → negated → +4
+    expect(sales[0].cost_basis_allocated).toBe(600); // opened at $6 × 100 multiplier
+    expect(sales[0].sale_price).toBe(2); // closed at $2 (per-unit)
+    expect(sales[0].realized_gain_loss).toBe(400); // sold at $6, bought back at $2, ×100
+    // Short option P&L is negated: raw (200 - 600 = -400) → negated → +400
   });
 
   it("long call exercised: stock cost basis includes premium", () => {
@@ -161,7 +161,7 @@ describe("option tax lot handling", () => {
     const optionSales = getTaxLotSales().filter((s) => s.security_type === "option");
     expect(optionSales.length).toBe(1);
     expect(optionSales[0].sale_price).toBe(0);
-    expect(optionSales[0].realized_gain_loss).toBe(-5); // option lot: 0 - 5
+    expect(optionSales[0].realized_gain_loss).toBe(-500); // option lot: 0 - 5×100
 
     // Stock lot should have adjusted cost basis: $180 + $5 = $185
     const stockLots = getTaxLots().filter((l) => l.security_type === "stock");
@@ -251,8 +251,41 @@ describe("option tax lot handling", () => {
     const optionSales = getTaxLotSales().filter((s) => s.security_type === "option");
     expect(optionSales.length).toBe(1);
     expect(optionSales[0].sale_price).toBe(5);
-    expect(optionSales[0].cost_basis_allocated).toBe(7); // 2 * 3.50
-    expect(optionSales[0].realized_gain_loss).toBe(3); // 10 - 7
+    expect(optionSales[0].cost_basis_allocated).toBe(700); // 2 * 3.50 * 100
+    expect(optionSales[0].realized_gain_loss).toBe(300); // 1000 - 700
+  });
+
+  it("applies the contract multiplier to option sale dollar amounts", () => {
+    // Buy 2 calls at $3.50/unit, sell at $5.00/unit. With the ×100 contract
+    // multiplier the real dollars are: cost $700, proceeds $1,000, P&L $300.
+    // sale_price stays per-unit ($5) — only the dollar columns scale.
+    insertOptionSecurity(10, "AAPL  260619C00200000", "CALL", 200, "2026-06-19");
+    insertTransaction(10, "BUY_TO_OPEN", "2026-01-15", 2, 3.50);
+    insertTransaction(10, "SELL_TO_CLOSE", "2026-04-01", 2, 5.00);
+
+    const result = computeTaxLots(db);
+
+    const sales = getTaxLotSales();
+    expect(sales.length).toBe(1);
+    expect(sales[0].sale_price).toBe(5); // per-unit, unchanged
+    expect(sales[0].cost_basis_allocated).toBe(700); // 2 × $3.50 × 100
+    expect(sales[0].proceeds).toBe(1000); // 2 × $5.00 × 100
+    expect(sales[0].realized_gain_loss).toBe(300);
+    expect(result.totalRealizedGain).toBe(300);
+  });
+
+  it("applies the contract multiplier to short option P&L", () => {
+    // Sell 3 calls at $4/unit, expire worthless → keep 3 × $4 × 100 = $1,200
+    insertOptionSecurity(10, "AAPL  260619C00200000", "CALL", 200, "2026-06-19");
+    insertTransaction(10, "SELL_TO_OPEN", "2026-02-01", 3, 4.00);
+    insertTransaction(10, "EXPIRED", "2026-06-19", 3, 0);
+
+    computeTaxLots(db);
+
+    const sales = getTaxLotSales();
+    expect(sales.length).toBe(1);
+    expect(sales[0].cost_basis_allocated).toBe(1200); // 3 × $4 × 100
+    expect(sales[0].realized_gain_loss).toBe(1200); // kept full premium
   });
 
   it("sets is_short=1 on SELL_TO_OPEN lots, is_short=0 on others", () => {
