@@ -399,8 +399,10 @@ export function attributeProxies(
     });
   }
 
-  const sectorCoverage: SectorCoverage[] = [...ctx.longExposureBySector.entries()]
-    .map(([sector, longExposure]) => {
+  const sectors = new Set([...ctx.longExposureBySector.keys(), ...protectedBySector.keys()]);
+  const sectorCoverage: SectorCoverage[] = [...sectors]
+    .map((sector) => {
+      const longExposure = ctx.longExposureBySector.get(sector) ?? 0;
       const prot = protectedBySector.get(sector) ?? 0;
       return {
         sector,
