@@ -18,6 +18,13 @@ export const dynamic = "force-dynamic";
  * reaction_snapshot) — that means the viewer reflects post-enrichment data
  * even when the email itself was sent before enrichment landed. The AI
  * prose comes verbatim from earnings_emails.ai_output_md.
+ *
+ * getEmailAudit already filters out live 'in_progress' claim rows (a claim
+ * hasn't delivered anything — see the tri-state note in
+ * lib/digest/send-earnings-email.ts), so those 404 the same as a missing row.
+ * 'sent-by-cloud' rows DO come back but have ai_output_md = NULL (no local
+ * prose copy) — the `sentBy` field tells the viewer to explain that instead
+ * of rendering a silently near-empty email.
  */
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -74,6 +81,7 @@ export async function GET(request: Request) {
     eventDate: event.event_date,
     symbol,
     phase,
+    sentBy: audit.error === "sent-by-cloud" ? "cloud" : "local",
     fullHtml,
   });
 }

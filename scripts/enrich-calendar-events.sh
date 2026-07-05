@@ -1,7 +1,13 @@
 #!/bin/bash
 # Launchd entry: post-release calendar enrichment + earnings email sweep.
-# Called every 15 min 09:30–16:00 ET Mon–Fri by
+# Called every 15 min, 24/7, with NO time-of-day gate by
 # ~/Library/LaunchAgents/com.vanguard-skin.calendar-enrich.plist
+# (StartInterval=900; the plist has never had a 09:30-16:00 window — each
+# tick no-ops cheaply, <200ms, outside business hours since findCandidates
+# returns [] when nothing is in-window). This matters for the retry-until-
+# settle enrichment loop (Task 6/B2) and AMC earnings recaps: both DEPEND on
+# evening/overnight ticks still running — a market-hours-only gate would
+# have silently starved every AMC recap and any retry past 4pm ET.
 #
 # Two responsibilities per tick (Phase 3, 2026-04-28):
 #   1. Calendar enrichment — fill actual_value + reaction_snapshot for

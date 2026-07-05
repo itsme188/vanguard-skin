@@ -10,6 +10,8 @@ interface EmailContentResponse {
   eventDate: string;
   symbol: string;
   phase: "preview" | "recap";
+  /** "cloud" = Worker fallback delivered this one — no local ai_output_md copy exists. */
+  sentBy?: "local" | "cloud";
   fullHtml: string;
 }
 
@@ -138,6 +140,12 @@ export function EarningsEmailViewer({
             {data && !data.sentAt && (
               <p className="text-[11px] text-ink-faint font-mono mt-0.5 truncate">
                 Live preview — not sent
+              </p>
+            )}
+            {data && data.sentBy === "cloud" && (
+              <p className="text-[11px] text-gold font-mono mt-0.5 truncate">
+                Delivered by cloud fallback — no local copy of the prose (scoreboard below is
+                still live-rebuilt)
               </p>
             )}
           </div>

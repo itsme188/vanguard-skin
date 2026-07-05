@@ -94,7 +94,7 @@ function makeEarningsSnapshot(): Snapshot {
   } as unknown as Snapshot;
 }
 
-/** `now` placed inside the preview window (105–135 min before release). */
+/** `now` placed inside the Worker's preview window (105–120 min before release). */
 function previewWindowNow(): Date {
   const release = composeReleaseInstant(EVENT_DATE, RELEASE_TIME);
   if (!release) throw new Error("composeReleaseInstant returned null in test setup");
@@ -156,6 +156,97 @@ describe("runEarningsFallback observability", () => {
     expect(result.swept).toBe(0);
     expect(result.failed).toBe(0);
     expect(result.lastError).toBeUndefined();
+  });
+});
+
+describe("runEarningsFallback Mac-first preview window (final-review fix pass)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (sendEmail as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "mock-email-id" });
+  });
+
+  /** `now` placed `minutesOut` minutes before release. */
+  function nowMinutesBeforeRelease(minutesOut: number): Date {
+    const release = composeReleaseInstant(EVENT_DATE, RELEASE_TIME);
+    if (!release) throw new Error("composeReleaseInstant returned null in test setup");
+    return new Date(release.getTime() - minutesOut * 60 * 1000);
+  }
+
+  it("an event 130min out is NOT a Worker candidate (Mac-exclusive [120,135] band)", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeEarningsSnapshot(),
+    );
+
+    const result = await runEarningsFallback(env, { now: nowMinutesBeforeRelease(130) });
+
+    expect(result.swept).toBe(0);
+    expect(result.sent).toBe(0);
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it("an event 115min out IS a Worker candidate (inside the narrowed [105,120] window)", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeEarningsSnapshot(),
+    );
+
+    const result = await runEarningsFallback(env, { now: nowMinutesBeforeRelease(115) });
+
+    expect(result.swept).toBe(1);
+    expect(result.sent).toBe(1);
+  });
+});
+
+describe("runEarningsFallback claim-aware dedup (final-review fix pass)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (sendEmail as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "mock-email-id" });
+  });
+
+  it("does NOT skip a candidate whose only snapshot audit row is a live 'in_progress' claim", async () => {
+    const snap = makeEarningsSnapshot();
+    (snap as unknown as Snapshot).earningsEmails = [
+      {
+        id: 1,
+        event_id: 1,
+        phase: "preview",
+        recipient: "user@example.com",
+        sent_at: "2026-06-15 12:00:00",
+        error: "in_progress",
+      },
+    ];
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snap);
+
+    const result = await runEarningsFallback(env, { now: previewWindowNow() });
+
+    // A claim isn't a send — the Worker must still see this as a candidate
+    // and fire its own fallback (subject to the KV marker check, which is
+    // separate from this snapshot-derived audited set).
+    expect(result.swept).toBe(1);
+    expect(result.sent).toBe(1);
+  });
+
+  it("DOES skip a candidate with a completed local send (error IS NULL) in the snapshot", async () => {
+    const snap = makeEarningsSnapshot();
+    (snap as unknown as Snapshot).earningsEmails = [
+      {
+        id: 1,
+        event_id: 1,
+        phase: "preview",
+        recipient: "user@example.com",
+        sent_at: "2026-06-15 12:00:00",
+        error: null,
+      },
+    ];
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snap);
+
+    const result = await runEarningsFallback(env, { now: previewWindowNow() });
+
+    expect(result.swept).toBe(0);
+    expect(sendEmail).not.toHaveBeenCalled();
   });
 });
 

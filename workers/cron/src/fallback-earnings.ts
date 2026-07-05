@@ -19,7 +19,9 @@
  *      lack holdings/securities/accounts and the fallback no-ops).
  *   2. Find candidate earnings events:
  *      - Preview window: release_time IS NOT NULL AND
- *        now+105min ≤ release_instant ≤ now+135min
+ *        now+105min ≤ release_instant ≤ now+120min (narrowed from 135 — see
+ *        the Mac-first tick offset comment on PREVIEW_WINDOW_MAX_MS below;
+ *        the Mac primary sweep still uses the full [105,135] band)
  *      - Recap window: enriched_at IS NOT NULL AND
  *        now ≤ enriched_at + 4h
  *   3. Filter to held|watchlist (snapshot.heldSymbols) + earningsSettings
@@ -86,7 +88,19 @@ function issuerSiblings(symbol: string): readonly string[] {
 }
 
 const PREVIEW_WINDOW_MIN_MS = 105 * 60 * 1000;
-const PREVIEW_WINDOW_MAX_MS = 135 * 60 * 1000;
+// Mac-first tick offset (final-review fix pass): the Mac primary sweep's
+// candidate window is the FULL [105,135] min-until-release band (both sides
+// used to share it), so whichever side's ~15-min cron tick landed first inside
+// that 30-min window won EVERY day — an awake Mac still lost half the time to
+// a Worker tick that happened to fire first, silently degrading the user to
+// the lean cloud preview all season. Narrowed to 120 so the Worker never sees
+// a candidate until the Mac's [120,135] band has already had a full 15-min
+// tick cycle to claim it (mac-sent/mac-running markers) — same "Worker email
+// dispatches sit ONE tick AFTER the Mac's window, never ON it" convention as
+// the digest/briefing/evening dispatch offsets (see CLAUDE.md launchd
+// section). Recap window is untouched — its 4h band already gives ample
+// Mac-first berth.
+const PREVIEW_WINDOW_MAX_MS = 120 * 60 * 1000;
 const RECAP_WINDOW_MAX_MS = 4 * 60 * 60 * 1000;
 
 export interface FallbackEnv {
@@ -244,8 +258,16 @@ function findCandidatesFromSnapshot(
   const heldSet = new Set(snapshot.heldSymbols.map((s) => s.toUpperCase()));
   const muted = new Set(snapshot.earningsSettings?.mutedSymbols ?? []);
   const auditKey = (eventId: number, phase: EarningsPhase) => `${eventId}:${phase}`;
+  // Skip live 'in_progress' claim rows — a claim (in-flight or crashed Mac
+  // send) hasn't delivered anything, so it must not suppress the cloud
+  // fallback. The 2am R2 snapshot can ship a claim that's still alive (or
+  // stale-and-never-reaped) at scan time, which would otherwise block the
+  // cloud path for that (event, phase) for the rest of the day. 'sent-by-
+  // cloud' and completed local-send rows (error IS NULL) DO count as audited.
   const auditedSet = new Set(
-    (snapshot.earningsEmails ?? []).map((r) => auditKey(r.event_id, r.phase)),
+    (snapshot.earningsEmails ?? [])
+      .filter((r) => r.error !== "in_progress")
+      .map((r) => auditKey(r.event_id, r.phase)),
   );
 
   const out: SnapshotCandidate[] = [];

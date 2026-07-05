@@ -157,8 +157,12 @@ export async function runEarningsEmailSweep(
 // gate (actual_value IS NOT NULL) will never open on its own. 2h floor gives
 // Finnhub + the retry loop (Task 6) a fair chance first.
 const BLOCKED_RECAP_MIN_AGE_MS = 2 * 60 * 60 * 1000;
-// Ceiling keeps next-morning catch-up ticks useful for AMC prints (launchd
-// gate closes before AMC+2h) without alerting about ancient events.
+// Ceiling is NOT about a launchd gate closing — the tick runs 24/7 every 15
+// min with no time-of-day window (see scripts/enrich-calendar-events.sh).
+// 18h instead bounds how stale an event can be before a Pushover alert about
+// it stops being useful — it exists to cover multi-hour Mac-asleep gaps
+// (overnight, travel) without alerting about arbitrarily ancient events that
+// slipped through the `event_date >= now-2days` guard above.
 const BLOCKED_RECAP_MAX_AGE_MS = 18 * 60 * 60 * 1000;
 
 interface BlockedRecapRow {

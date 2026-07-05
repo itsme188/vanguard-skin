@@ -11,6 +11,15 @@ export interface EarningsEmailAudit {
   error: string | null;
 }
 
+/**
+ * Single audit row for an (event, phase). Excludes live 'in_progress' claim
+ * rows (see the cross-process send-claim mutex + tri-state note in
+ * lib/digest/send-earnings-email.ts) — a claim isn't a sent email, so any
+ * reader (the in-app email viewer, in particular) must see "no row" rather
+ * than an in-flight/possibly-crashed compose. 'sent-by-cloud' rows DO return
+ * (caller should branch on `error === "sent-by-cloud"` — those rows have
+ * `ai_output_md = NULL`, no local prose copy).
+ */
 export function getEmailAudit(
   db: Database.Database,
   eventId: number,
@@ -21,7 +30,8 @@ export function getEmailAudit(
       .prepare(
         `SELECT id, event_id, phase, recipient, sent_at, ai_input_hash, ai_output_md, error
            FROM earnings_emails
-          WHERE event_id = ? AND phase = ?`,
+          WHERE event_id = ? AND phase = ?
+            AND (error IS NULL OR error != 'in_progress')`,
       )
       .get(eventId, phase) as EarningsEmailAudit | undefined) ?? null
   );
