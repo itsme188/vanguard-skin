@@ -14,9 +14,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 
-const sendPreview = vi.fn(async () => ({ success: true }));
-const sendRecap = vi.fn(async () => ({ success: true }));
-const reapStaleClaims = vi.fn(() => 0);
+const sendPreview = vi.fn(async (..._args: unknown[]) => ({ success: true }));
+const sendRecap = vi.fn(async (..._args: unknown[]) => ({ success: true }));
+const reapStaleClaims = vi.fn((..._args: unknown[]) => 0);
 vi.mock("@/lib/digest/send-earnings-email", () => ({
   sendEarningsPreview: (...a: unknown[]) => sendPreview(...a),
   sendEarningsRecap: (...a: unknown[]) => sendRecap(...a),
@@ -26,10 +26,10 @@ vi.mock("@/lib/digest/send-earnings-email", () => ({
   },
 }));
 
-const checkMarker = vi.fn(async () => null as { sentBy: string } | null);
-const setRunning = vi.fn(async () => null);
-const clearRunning = vi.fn(async () => null);
-const writeSent = vi.fn(async () => null);
+const checkMarker = vi.fn(async (..._args: unknown[]) => null as { sentBy: string } | null);
+const setRunning = vi.fn(async (..._args: unknown[]) => null);
+const clearRunning = vi.fn(async (..._args: unknown[]) => null);
+const writeSent = vi.fn(async (..._args: unknown[]) => null);
 vi.mock("@/lib/cron/earnings-marker-check", () => ({
   checkEarningsCloudMarker: (...a: unknown[]) => checkMarker(...a),
   setEarningsRunningMarker: (...a: unknown[]) => setRunning(...a),
@@ -37,7 +37,7 @@ vi.mock("@/lib/cron/earnings-marker-check", () => ({
   writeMacSentEarningsMarker: (...a: unknown[]) => writeSent(...a),
 }));
 
-const pushover = vi.fn(async (_msg: unknown) => ({ sent: true }));
+const pushover = vi.fn(async (..._args: unknown[]) => ({ sent: true }));
 vi.mock("@/lib/alerts/notify-pushover", () => ({
   sendPushover: (...a: unknown[]) => pushover(...a),
 }));
