@@ -62,12 +62,13 @@ describe("generateNarrative", () => {
     ).rejects.toThrow(/unknown surface/i);
   });
 
-  it("exports the 4 expected surface keys", () => {
+  it("exports the 5 expected surface keys", () => {
     expect(NARRATIVE_SURFACES).toEqual([
       "factor-analysis",
       "risk-metrics",
       "position-risk",
       "factor-heatmap",
+      "defense",
     ]);
   });
 

@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 
 interface Props {
   scope: string;
-  surfaceKey: "factor-analysis" | "risk-metrics" | "position-risk" | "factor-heatmap";
+  surfaceKey: "factor-analysis" | "risk-metrics" | "position-risk" | "factor-heatmap" | "defense";
 }
 
 export function NarrativeBlock({ scope, surfaceKey }: Props) {
