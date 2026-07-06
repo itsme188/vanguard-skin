@@ -3,9 +3,9 @@ import type { AnalysisSubView } from "@/lib/analysis/view-param";
 
 // Analysis sub-view switcher — mirrors ResearchViewToggle's pill idiom.
 // Desktop users get the Analysis tab-dropdown in TabNav; this pill row is
-// mobile-only (the mobile bottom-nav has no subviews, so without this 3 of
-// the 4 Analysis sub-screens are unreachable on iPhone). Rendered on ALL
-// FOUR sub-views so Performance and Trade Reviews are no longer dead-ends.
+// mobile-only (the mobile bottom-nav has no subviews, so without this most
+// Analysis sub-screens are unreachable on iPhone). Rendered on ALL FIVE
+// sub-views so Performance / Trade Reviews / Defense are not dead-ends.
 const VIEWS: { key: AnalysisSubView; label: string; query: string }[] = [
   { key: "workspace", label: "Workspace", query: "" },
   { key: "diagnostics", label: "Diagnostics", query: "view=diagnostics" },
