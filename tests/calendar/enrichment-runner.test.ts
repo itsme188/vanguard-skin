@@ -9,7 +9,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
-import { runEnrichment } from "@/lib/calendar/enrichment-runner";
+import { runEnrichment, REACTION_READY_MS } from "@/lib/calendar/enrichment-runner";
 import { composeReleaseInstant } from "@/lib/calendar/reaction-snapshot";
 import { setMutedEarningsSymbols, setEarningsEmailsEnabled } from "@/lib/queries/earnings-settings";
 
@@ -19,6 +19,32 @@ vi.mock("@/lib/alerts/print-push", () => ({
 import { sendEarningsPrintPush } from "@/lib/alerts/print-push";
 
 const mockSendEarningsPrintPush = vi.mocked(sendEarningsPrintPush);
+
+// Wrap (not replace) the two reaction-capture entry points so the T+115m
+// gate tests can assert call/no-call while every other test in this file
+// still exercises the real capture logic (bars → matchBarsToReaction →
+// reaction_snapshot JSON) unchanged.
+vi.mock("@/lib/calendar/reaction-snapshot", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/calendar/reaction-snapshot")>();
+  return {
+    ...actual,
+    captureReactionFromTws: vi.fn(actual.captureReactionFromTws),
+  };
+});
+import { captureReactionFromTws } from "@/lib/calendar/reaction-snapshot";
+const mockCaptureReactionFromTws = vi.mocked(captureReactionFromTws);
+
+vi.mock("../../workers/cron/src/yahoo", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../workers/cron/src/yahoo")>();
+  return {
+    ...actual,
+    captureReactionFromYahoo: vi.fn(actual.captureReactionFromYahoo),
+  };
+});
+import { captureReactionFromYahoo } from "../../workers/cron/src/yahoo";
+const mockCaptureReactionFromYahoo = vi.mocked(captureReactionFromYahoo);
 
 function seedSecurity(
   db: Database.Database,
@@ -604,6 +630,132 @@ describe("earnings retry-until-complete (migration 062)", () => {
       .prepare("SELECT enriched_at FROM calendar_events")
       .get() as { enriched_at: string | null };
     expect(row.enriched_at).not.toBeNull();
+  });
+});
+
+describe("reaction-capture gate: T+115m for earnings only (Task 7)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    vi.stubGlobal("fetch", vi.fn());
+    process.env.FRED_API_KEY = "test_fred_key";
+    process.env.FINNHUB_API_KEY = "test_finnhub_key";
+    mockCaptureReactionFromTws.mockClear();
+    mockCaptureReactionFromYahoo.mockClear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.FRED_API_KEY;
+    delete process.env.FINNHUB_API_KEY;
+  });
+
+  // A stub `tws` object is enough — the assertions are on whether
+  // captureReactionFromTws/captureReactionFromYahoo get invoked at all, not
+  // on what bars they'd find.
+  const mockTws = { getHistoricalData: async () => [] };
+
+  it("skips reaction capture for an earnings row before T+115m (retry tick covers it)", async () => {
+    seedSecurity(db, 400, "GATE", "Technology");
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        earningsCalendar: [
+          { symbol: "GATE", date: "2026-04-24", epsActual: 1.0, epsEstimate: 0.9 },
+        ],
+      }),
+    });
+
+    const { lastInsertRowid } = insertEvent(db, {
+      source: "finnhub",
+      source_key: "finnhub:GATE:2026-04-24",
+      event_type: "earnings",
+      event_date: "2026-04-24",
+      release_time: "08:00", // 08:00 EDT = 12:00 UTC
+      symbol: "GATE",
+      security_id: 400,
+    });
+    const eventId = Number(lastInsertRowid);
+    const releaseInstant = composeReleaseInstant("2026-04-24", "08:00")!;
+
+    // 30 minutes post-release — well short of the 115-min gate.
+    const now = new Date(releaseInstant.getTime() + 30 * 60 * 1000);
+    await runEnrichment(db, { now, tws: mockTws as any, pacingMs: 0 }); // eslint-disable-line @typescript-eslint/no-explicit-any
+
+    expect(mockCaptureReactionFromTws).not.toHaveBeenCalled();
+    expect(mockCaptureReactionFromYahoo).not.toHaveBeenCalled();
+
+    const row = db
+      .prepare(
+        "SELECT enriched_at, actual_value FROM calendar_events WHERE id = ?",
+      )
+      .get(eventId) as { enriched_at: string | null; actual_value: string | null };
+    // The actual landed (COALESCE-written) but completion still requires the
+    // reaction OR the 150-min settle deadline — neither holds at T+30m, so
+    // the row stays open for the next retry tick.
+    expect(row.actual_value).toBeTruthy();
+    expect(row.enriched_at).toBeNull();
+  });
+
+  it("still captures reaction immediately for a macro row (single-shot semantics)", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        observations: [
+          { date: "2026-04-01", value: "310.326" },
+          { date: "2025-04-01", value: "300.84" },
+        ],
+      }),
+    });
+
+    insertEvent(db, {
+      source: "claude_macro",
+      source_key: "fred:10:2026-04-11",
+      event_type: "cpi",
+      event_date: "2026-04-11",
+      release_time: "08:30", // 08:30 EDT = 12:30 UTC
+      consensus_estimate: "3.2%",
+    });
+    const releaseInstant = composeReleaseInstant("2026-04-11", "08:30")!;
+
+    // Same 30-minute age as the skipped earnings case above — macro rows
+    // are never gated, so capture must still be attempted immediately.
+    const now = new Date(releaseInstant.getTime() + 30 * 60 * 1000);
+    await runEnrichment(db, { now, tws: mockTws as any, pacingMs: 0 }); // eslint-disable-line @typescript-eslint/no-explicit-any
+
+    expect(mockCaptureReactionFromTws).toHaveBeenCalled();
+  });
+
+  it("attempts earnings reaction capture once past T+115m", async () => {
+    seedSecurity(db, 401, "LATEGATE", "Technology");
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        earningsCalendar: [
+          { symbol: "LATEGATE", date: "2026-04-24", epsActual: 1.2, epsEstimate: 1.0 },
+        ],
+      }),
+    });
+
+    insertEvent(db, {
+      source: "finnhub",
+      source_key: "finnhub:LATEGATE:2026-04-24",
+      event_type: "earnings",
+      event_date: "2026-04-24",
+      release_time: "08:00", // 08:00 EDT = 12:00 UTC
+      symbol: "LATEGATE",
+      security_id: 401,
+    });
+    const releaseInstant = composeReleaseInstant("2026-04-24", "08:00")!;
+
+    // Just past REACTION_READY_MS — the gate should now allow the attempt.
+    const now = new Date(releaseInstant.getTime() + REACTION_READY_MS + 60_000);
+    await runEnrichment(db, { now, tws: mockTws as any, pacingMs: 0 }); // eslint-disable-line @typescript-eslint/no-explicit-any
+
+    expect(mockCaptureReactionFromTws).toHaveBeenCalled();
   });
 });
 
