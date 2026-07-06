@@ -64,7 +64,7 @@ function MostExposedTable({
   rankedExposures: RankedExposure[];
   standaloneBetKinds: Record<string, "naked_short" | "single_name_put">;
 }) {
-  const { sort, setSort } = useSortParam<ExposureField>("defense", "netExposure", "desc");
+  const { sort, setSort } = useSortParam<ExposureField>("defense", null, "desc");
 
   const rows = [...rankedExposures].sort((a, b) => {
     if (!sort.field) return 0;
@@ -95,7 +95,7 @@ function MostExposedTable({
               {rows.map((row) => {
                 const kind = standaloneBetKinds[row.underlying];
                 return (
-                  <tr key={row.underlying} className="border-b border-edge/50 hover:bg-muted/30">
+                  <tr key={`${row.underlying}:${row.classification}`} className="border-b border-edge/50 hover:bg-muted/30">
                     <td className="py-2 pr-3 text-ink">
                       {row.securityId !== null ? (
                         <SymbolLink securityId={row.securityId} symbol={row.underlying} />

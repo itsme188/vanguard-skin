@@ -410,6 +410,11 @@ describe("interpretProtectionRatio", () => {
     const r = interpretProtectionRatio(0.18);
     expect(r.text).toMatch(/18%/);
   });
+  it("35-60% reads as substantial cushion with good tone", () => {
+    const r = interpretProtectionRatio(0.45);
+    expect(r.tone).toBe("good");
+    expect(r.text).toMatch(/45%/);
+  });
   it("over 60% flags heavy hedging cost drag", () => {
     expect(interpretProtectionRatio(0.65).text).toMatch(/drag|cost/i);
   });
