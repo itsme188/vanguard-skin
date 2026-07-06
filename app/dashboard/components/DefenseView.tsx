@@ -2,7 +2,7 @@ import { db } from "@/lib/db";
 import { resolveScope } from "@/lib/queries/accounts";
 import { computeDefenseAnalysis } from "@/lib/compute/hedging";
 import { interpretProtectionRatio, toneClass } from "@/lib/analysis/interpret";
-import { Money, Pct, Count } from "@/lib/privacy/components";
+import { Money, Pct, Count, PrivateText } from "@/lib/privacy/components";
 import { EmptySection } from "./EmptySection";
 import { NarrativeBlock } from "./analysis/NarrativeBlock";
 import { DefenseTables } from "./DefenseTables";
@@ -58,7 +58,9 @@ export async function DefenseView({ scope = "all" }: DefenseViewProps) {
             <p className="font-mono tabular-nums text-xl text-ink">
               <Pct value={summary.protectionRatio !== null ? summary.protectionRatio * 100 : null} digits={0} />
             </p>
-            <p className={`text-xs mt-1 ${toneClass(protectionInterp.tone)}`}>{protectionInterp.text}</p>
+            <p className={`text-xs mt-1 ${toneClass(protectionInterp.tone)}`}>
+              <PrivateText>{protectionInterp.text}</PrivateText>
+            </p>
           </div>
           <div>
             <p className="text-[11px] uppercase tracking-widest text-ink-faint mb-1">Net exposure</p>
