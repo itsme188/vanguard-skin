@@ -580,5 +580,20 @@ describe("isPlausibleEarnings", () => {
     expect(isPlausibleEarnings(2.0, null, 100_000_000, 99_000_000)).toBe(true);
     expect(isPlausibleEarnings(2.0, 2.1, null, null)).toBe(true);
   });
+
+  it("rejects sign-flipped EPS — GAAP/FFO basis mismatch (B19)", () => {
+    // Real last-season cases: U reported +0.23 vs consensus −0.24;
+    // LAND reported +0.08 vs consensus −0.23 (FFO basis).
+    expect(isPlausibleEarnings(-0.24, 0.23, null, null)).toBe(false);
+    expect(isPlausibleEarnings(-0.23, 0.08, null, null)).toBe(false);
+    expect(isPlausibleEarnings(0.5, -0.1, null, null)).toBe(false);
+  });
+
+  it("still accepts same-sign results and zero edges", () => {
+    expect(isPlausibleEarnings(0.5, 0.6, null, null)).toBe(true);
+    expect(isPlausibleEarnings(-0.5, -0.4, null, null)).toBe(true); // both negative: no ratio guard (cons>0), no sign flip
+    expect(isPlausibleEarnings(0, 0.1, null, null)).toBe(true); // zero consensus carries no sign signal
+    expect(isPlausibleEarnings(0.5, 0, null, null)).toBe(true); // zero actual likewise
+  });
 });
 

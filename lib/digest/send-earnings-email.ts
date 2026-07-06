@@ -1391,7 +1391,19 @@ export function isPlausibleEarnings(
   consensusRev: number | null,
   actualRev: number | null,
 ): boolean {
-  if (consensusEps != null && actualEps != null && consensusEps > 0) {
+  // B19: an EPS sign flip between actual and consensus is a basis mismatch
+  // (GAAP vs adjusted / FFO — U +0.23 vs cons −0.24 last season) far more
+  // often than a genuine loss↔profit surprise. Better no number than a
+  // wrong-basis one; POST /api/earnings/actuals is the manual override.
+  if (
+    consensusEps != null && actualEps != null &&
+    consensusEps !== 0 && actualEps !== 0 &&
+    Math.sign(consensusEps) !== Math.sign(actualEps)
+  ) {
+    return false;
+  }
+
+  if (consensusEps != null && actualEps != null && consensusEps > 0 && actualEps !== 0) {
     // Magnitude check guards both directions. Calibrated so that PWR's
     // genuine +28% EPS beat (Q1 2026, ratio 1.28) survives, while GOOGL's
     // bogus 5.11-vs-2.70 case (ratio 1.89) gets rejected. Real >70% beats
