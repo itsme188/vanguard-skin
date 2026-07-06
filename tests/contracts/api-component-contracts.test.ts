@@ -19,6 +19,7 @@ import { computeFactorAnalysis } from "@/lib/compute/factors";
 import { computeRiskMetrics, computePositionRisk } from "@/lib/compute/risk";
 import { computeAllScenarios } from "@/lib/compute/scenarios";
 import { detectStrategies } from "@/lib/compute/options-strategy";
+import { computeDefenseAnalysis } from "@/lib/compute/hedging";
 
 let db: Database.Database;
 
@@ -164,5 +165,22 @@ describe("OptionsStrategies contract", () => {
   it("returns array of detected strategies", () => {
     const result = detectStrategies([]);
     expect(Array.isArray(result)).toBe(true);
+  });
+});
+
+// ─── DefenseView contract ────────────────────────────────────────────
+
+describe("DefenseView contract", () => {
+  it("returns the shape the component reads", () => {
+    const result = computeDefenseAnalysis(db);
+    expect(result).toHaveProperty("summary");
+    expect(result.summary).toHaveProperty("protectionRatio");
+    expect(result).toHaveProperty("pairs");
+    expect(result).toHaveProperty("proxies");
+    expect(result).toHaveProperty("sectorCoverage");
+    expect(result).toHaveProperty("standaloneBets");
+    expect(result).toHaveProperty("rankedExposures");
+    expect(result).toHaveProperty("hedgeScores");
+    expect(result).toHaveProperty("diagnostics");
   });
 });
