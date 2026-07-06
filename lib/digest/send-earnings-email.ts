@@ -46,6 +46,8 @@ export class EarningsEmailError extends Error {
   constructor(
     message: string,
     public readonly status: number,
+    /** Benign 409 coordination outcomes the sweep should log as skips. */
+    public readonly code?: "claim_held" | "not_ready",
   ) {
     super(message);
     this.name = "EarningsEmailError";
@@ -131,6 +133,7 @@ export async function composeEarningsEmail(
     throw new EarningsEmailError(
       `Event ${eventId} (${event.symbol}) has no actual_value yet — recap deferred until enrichment lands or POST /api/earnings/actuals overrides.`,
       409,
+      "not_ready",
     );
   }
 
@@ -187,6 +190,7 @@ async function sendEarningsEmail(
     throw new EarningsEmailError(
       `Event ${eventId} ${phase} is already being sent by another process — skipping duplicate.`,
       409,
+      "claim_held",
     );
   }
 

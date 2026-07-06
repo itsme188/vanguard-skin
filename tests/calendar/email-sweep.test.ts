@@ -21,8 +21,17 @@ vi.mock("@/lib/digest/send-earnings-email", () => ({
   sendEarningsPreview: (...a: unknown[]) => sendPreview(...a),
   sendEarningsRecap: (...a: unknown[]) => sendRecap(...a),
   reapStaleEarningsEmailClaims: (...a: unknown[]) => reapStaleClaims(...a),
+  // Mirrors the real EarningsEmailError shape (message, status, optional
+  // benign-409 `code` discriminator) — Task 5 needs to construct real
+  // instances from the test body, not just a bare status=500 stand-in.
   EarningsEmailError: class extends Error {
-    status = 500;
+    status: number;
+    code?: "claim_held" | "not_ready";
+    constructor(message: string, status: number, code?: "claim_held" | "not_ready") {
+      super(message);
+      this.status = status;
+      this.code = code;
+    }
   },
 }));
 
@@ -43,6 +52,7 @@ vi.mock("@/lib/alerts/notify-pushover", () => ({
 }));
 
 import { runEarningsEmailSweep, alertBlockedRecaps } from "@/lib/calendar/email-sweep";
+import { EarningsEmailError } from "@/lib/digest/send-earnings-email";
 
 // 2h before 16:30 ET release = 20:30 UTC. Same construction as
 // tests/calendar/findEmailCandidates-skip.test.ts's AAPL preview case —
@@ -164,6 +174,43 @@ describe("runEarningsEmailSweep marker dance", () => {
 
     expect(summary.failed).toBe(1);
     expect(clearRunning).toHaveBeenCalled();
+  });
+
+  // Task 5: sendEarningsEmail throws EarningsEmailError(msg, 409, "claim_held")
+  // when another process already holds the (event_id, phase) claim slot —
+  // a benign cross-process coordination outcome, not a failure. Pre-fix this
+  // landed in `failed`, making season launchd logs read as broken every time
+  // two processes raced a send.
+  //
+  // Note on fixture shape: the brief's suggested arrangement (pre-insert an
+  // `earnings_emails` row with error='in_progress' before the sweep runs)
+  // isn't reachable here — findEmailCandidates LEFT JOINs earnings_emails on
+  // (event_id, phase) and excludes any row that already has an audit row,
+  // so the candidate would never be selected in the first place and
+  // sendPreview would never be invoked. Since this file mocks
+  // sendEarningsPreview/sendEarningsRecap wholesale (the real claim-check
+  // logic never runs here), the equivalent — and the pattern this file
+  // already uses for the "clears the running marker" throw test above — is
+  // to have the mock reject with a real EarningsEmailError(status=409,
+  // code="claim_held") for an otherwise-eligible candidate.
+  it("counts a cross-process 409 claim refusal as skipped, not failed", async () => {
+    const eventId = seedHeldPreviewCandidate(db, "NFLX");
+    sendPreview.mockRejectedValueOnce(
+      new EarningsEmailError(
+        `Event ${eventId} preview is already being sent by another process — skipping duplicate.`,
+        409,
+        "claim_held",
+      ),
+    );
+
+    const summary = await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(summary.failed).toBe(0);
+    expect(summary.skipped).toBe(1);
+    const r = summary.results.find((x) => x.eventId === eventId)!;
+    expect(r.ok).toBe(true);
+    expect(r.skipped).toBe("claim-held");
+    expect(r.status).toBe(409);
   });
 });
 

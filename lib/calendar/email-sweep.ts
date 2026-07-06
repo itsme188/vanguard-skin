@@ -35,7 +35,7 @@ export interface SweepCandidateResult {
   symbol: string;
   phase: "preview" | "recap";
   ok: boolean;
-  skipped?: "cloud-already-sent";
+  skipped?: "cloud-already-sent" | "claim-held" | "not-ready";
   status?: number;
   message?: string;
   durationMs: number;
@@ -119,13 +119,21 @@ export async function runEarningsEmailSweep(
         durationMs: Date.now() - t0,
       });
     } catch (err) {
-      const status = err instanceof EarningsEmailError ? err.status : 500;
+      const eErr = err instanceof EarningsEmailError ? err : null;
+      const status = eErr ? eErr.status : 500;
       const message = err instanceof Error ? err.message : String(err);
+      // Benign cross-process 409s (another process holds the claim; recap
+      // actuals not ready) are coordination outcomes, not failures — season
+      // launchd logs should read clean (2026-07-04 review minor).
+      const benign409 = eErr !== null && status === 409;
       results.push({
         eventId: cand.eventId,
         symbol: cand.symbol,
         phase: cand.phase,
-        ok: false,
+        ok: benign409,
+        skipped: benign409
+          ? (eErr!.code === "claim_held" ? "claim-held" : "not-ready")
+          : undefined,
         status,
         message,
         durationMs: Date.now() - t0,
