@@ -17,6 +17,7 @@ import { FACTOR_COLUMNS } from "@/lib/factors";
 import { AnalysisView, type AnalysisMode } from "../components/AnalysisView";
 import { TradeReviewView } from "../components/TradeReviewView";
 import { PerformanceView } from "../components/PerformanceView";
+import { DefenseView } from "../components/DefenseView";
 import { IncomeYieldSection } from "../components/IncomeYieldSection";
 import { TrustStrip } from "../components/analysis/TrustStrip";
 import { WorkspacePanel } from "../components/analysis/WorkspacePanel";
@@ -127,6 +128,18 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
       <div className="space-y-6 md:space-y-0">
         <AnalysisViewToggle currentView="performance" scope={params.scope} />
         <PerformanceView scope={params.scope} period={params.period} />
+      </div>
+    );
+  }
+
+  if (resolved.view === "defense") {
+    // md:space-y-0 — mirrors the performance branch: the pill toggle is
+    // md:hidden, so on desktop the wrapper must not introduce a margin
+    // above DefenseView (no layout shift).
+    return (
+      <div className="space-y-6 md:space-y-0">
+        <AnalysisViewToggle currentView="defense" scope={params.scope} />
+        <DefenseView scope={params.scope} />
       </div>
     );
   }
