@@ -70,7 +70,15 @@ export const EVENT_SECTOR_MAP: Record<string, string | null> = {
 export const SECTOR_TO_ETF: Record<string, string> = {
   "Financials":             "XLF",
   "Technology":             "XLK",
-  "Health Care":            "XLV",
+  // Was "Health Care" (vocabulary drift vs. the canonical GICS-11 label
+  // "Healthcare" in lib/securities/normalize-sector.ts::GICS_SECTORS) —
+  // every Healthcare earnings name failed this lookup forever. Fixed
+  // 2026-07-06 alongside the Mac-side key in reaction-snapshot.ts. The
+  // Worker has no normalizeSector defense (no Next path-alias import
+  // across the Cloudflare Workers boundary) — this map assumes
+  // `securities.sector` already carries canonical GICS by the time it
+  // reaches the cloud snapshot.
+  "Healthcare":             "XLV",
   "Consumer Discretionary": "XLY",
   "Consumer Staples":       "XLP",
   "Energy":                 "XLE",

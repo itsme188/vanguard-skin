@@ -12,6 +12,7 @@
 
 import { BarSizeSetting, SecType } from "@stoqey/ib";
 import type { IBApiNext } from "@stoqey/ib";
+import { normalizeSector } from "@/lib/securities/normalize-sector";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -70,7 +71,7 @@ export const EVENT_SECTOR_MAP: Record<string, string | null> = {
 export const SECTOR_TO_ETF: Record<string, string> = {
   "Financials":             "XLF",
   "Technology":             "XLK",
-  "Health Care":            "XLV",
+  "Healthcare":             "XLV",
   "Consumer Discretionary": "XLY",
   "Consumer Staples":       "XLP",
   "Energy":                 "XLE",
@@ -90,7 +91,10 @@ export function resolveSectorEtf(
   securitySector: string | null,
 ): string | null {
   if (eventType === "earnings" && securitySector) {
-    return SECTOR_TO_ETF[securitySector] ?? null;
+    // Defensive normalize: securities.sector is canonical GICS post-2026-06-09,
+    // but legacy rows / raw vendor strings may still arrive here.
+    const canonical = normalizeSector(securitySector) ?? securitySector;
+    return SECTOR_TO_ETF[canonical] ?? null;
   }
   const fromMap = EVENT_SECTOR_MAP[eventType];
   return fromMap ?? null;
