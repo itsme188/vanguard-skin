@@ -885,4 +885,184 @@ describe("import engine", () => {
       expect(expiredStill.c).toBe(1);
     });
   });
+
+  describe("ibkr-activity exchange-suffixed symbol resolution (2026-07-05 Korea dup bug)", () => {
+    it("resolves a known exchange-suffixed symbol to an existing base-symbol security (no duplicate row)", () => {
+      // Seed the base-symbol security the way TWS/Web-API sync would have
+      // created it: bare "402340", currency KRW.
+      const baseSecId = (
+        db
+          .prepare(
+            `INSERT INTO securities (symbol, security_type, currency)
+             VALUES ('402340', 'Stock', 'KRW') RETURNING id`,
+          )
+          .get() as { id: number }
+      ).id;
+      // "IBKR" account already exists via migration 002_seed_accounts.sql.
+
+      const parsed: import("@/lib/import/types").ParsedImportResult = {
+        sourceType: "ibkr-activity",
+        sourceName: "IBKR 2026-06 activity.csv",
+        transactions: [
+          {
+            accountName: "IBKR",
+            tradeDate: "2026-06-15",
+            type: "BUY",
+            symbol: "402340.KS",
+            quantity: 10,
+            amount: -500000,
+            pricePerShare: 50000,
+            sourceKey: "ibkr:trade:2026-06-15:402340.KS:10:-500000",
+          },
+        ],
+        securities: [{ symbol: "402340.KS", securityType: "Stock" }],
+        holdings: [
+          {
+            accountName: "IBKR",
+            symbol: "402340.KS",
+            quantity: 10,
+            asOfDate: "2026-06-30",
+            sourceKey: "ibkr:pos:2026-06-30:402340.KS",
+          },
+        ],
+        prices: [
+          {
+            symbol: "402340.KS",
+            date: "2026-06-30",
+            closePrice: 50000,
+            source: "ibkr-activity",
+          },
+        ],
+        snapshots: [],
+        errors: [],
+        warnings: [],
+      };
+
+      const result = commitImport(db, parsed);
+
+      // No new securities row was created for the suffixed symbol.
+      expect(result.newSecurities).toBe(0);
+      const allSecurities = db
+        .prepare("SELECT COUNT(*) as c FROM securities")
+        .get() as { c: number };
+      expect(allSecurities.c).toBe(1);
+      const suffixedRow = db
+        .prepare("SELECT COUNT(*) as c FROM securities WHERE symbol = '402340.KS'")
+        .get() as { c: number };
+      expect(suffixedRow.c).toBe(0);
+
+      // Currency was never clobbered back to USD.
+      const currency = db
+        .prepare("SELECT currency FROM securities WHERE id = ?")
+        .get(baseSecId) as { currency: string };
+      expect(currency.currency).toBe("KRW");
+
+      // The transaction, holding, and price all landed on the existing base security.
+      const txn = db
+        .prepare("SELECT security_id FROM transactions WHERE source_key = ?")
+        .get("ibkr:trade:2026-06-15:402340.KS:10:-500000") as
+        | { security_id: number }
+        | undefined;
+      expect(txn?.security_id).toBe(baseSecId);
+
+      const holding = db
+        .prepare(
+          "SELECT security_id FROM holdings WHERE source_key = 'ibkr:pos:2026-06-30:402340.KS'",
+        )
+        .get() as { security_id: number } | undefined;
+      expect(holding?.security_id).toBe(baseSecId);
+
+      const price = db
+        .prepare(
+          "SELECT security_id FROM prices WHERE security_id = ? AND date = '2026-06-30'",
+        )
+        .get(baseSecId) as { security_id: number } | undefined;
+      expect(price?.security_id).toBe(baseSecId);
+    });
+
+    it("keeps a suffixed symbol untouched when no base-symbol security exists", () => {
+      const parsed: import("@/lib/import/types").ParsedImportResult = {
+        sourceType: "ibkr-activity",
+        sourceName: "IBKR 2026-06 activity.csv",
+        transactions: [],
+        securities: [{ symbol: "FAKE.KS", securityType: "Stock" }],
+        holdings: [
+          {
+            accountName: "IBKR",
+            symbol: "FAKE.KS",
+            quantity: 3,
+            asOfDate: "2026-06-30",
+            sourceKey: "ibkr:pos:2026-06-30:FAKE.KS",
+          },
+        ],
+        prices: [],
+        snapshots: [],
+        errors: [],
+        warnings: [],
+      };
+
+      const result = commitImport(db, parsed);
+
+      expect(result.newSecurities).toBe(1);
+      const row = db
+        .prepare("SELECT id, symbol FROM securities WHERE symbol = 'FAKE.KS'")
+        .get() as { id: number; symbol: string } | undefined;
+      expect(row).toBeDefined();
+      expect(row?.symbol).toBe("FAKE.KS");
+
+      const holding = db
+        .prepare(
+          "SELECT security_id FROM holdings WHERE source_key = 'ibkr:pos:2026-06-30:FAKE.KS'",
+        )
+        .get() as { security_id: number } | undefined;
+      expect(holding?.security_id).toBe(row?.id);
+    });
+
+    it("never rewrites a dual-class US ticker suffix (HEI.A) even when the base symbol exists", () => {
+      const heiId = (
+        db
+          .prepare(
+            "INSERT INTO securities (symbol, security_type) VALUES ('HEI', 'Stock') RETURNING id",
+          )
+          .get() as { id: number }
+      ).id;
+
+      const parsed: import("@/lib/import/types").ParsedImportResult = {
+        sourceType: "ibkr-activity",
+        sourceName: "IBKR 2026-06 activity.csv",
+        transactions: [],
+        securities: [{ symbol: "HEI.A", securityType: "Stock" }],
+        holdings: [
+          {
+            accountName: "IBKR",
+            symbol: "HEI.A",
+            quantity: 4,
+            asOfDate: "2026-06-30",
+            sourceKey: "ibkr:pos:2026-06-30:HEI.A",
+          },
+        ],
+        prices: [],
+        snapshots: [],
+        errors: [],
+        warnings: [],
+      };
+
+      const result = commitImport(db, parsed);
+
+      // A NEW security row for "HEI.A" is created — never merged into "HEI".
+      expect(result.newSecurities).toBe(1);
+      const heiARow = db
+        .prepare("SELECT id FROM securities WHERE symbol = 'HEI.A'")
+        .get() as { id: number } | undefined;
+      expect(heiARow).toBeDefined();
+      expect(heiARow?.id).not.toBe(heiId);
+
+      const holding = db
+        .prepare(
+          "SELECT security_id FROM holdings WHERE source_key = 'ibkr:pos:2026-06-30:HEI.A'",
+        )
+        .get() as { security_id: number } | undefined;
+      expect(holding?.security_id).toBe(heiARow?.id);
+    });
+  });
 });
