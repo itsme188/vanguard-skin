@@ -649,7 +649,22 @@ export function commitImport(
     "ibkr-holdings",
     "ibkr-activity", // ibkr-activity statements include a positions block
   ];
-  if (HOLDINGS_SNAPSHOT_SOURCES.includes(parsed.sourceType)) {
+  // canonical-csv is deliberately NOT in the static list above — a
+  // canonical-csv import can be transactions-only (dividends, fees, trades)
+  // OR carry a full holdings block, and blanket-adding the source type would
+  // fire the sweep even for pure-transaction imports with no bearing on
+  // current positions. Instead, gate on EVIDENCE: did this batch's parsed
+  // result actually carry holdings rows? `parsed.holdings.length` (not
+  // `newHoldings`) is the right signal — a verbatim re-import of an
+  // unchanged statement legitimately reports `newHoldings === 0` (every row
+  // is an idempotent no-op via the ON CONFLICT guard) even though it's a
+  // genuine holdings snapshot that should still keep the sweep active. The
+  // sweeps are idempotent + shrink-guarded, so gating this liberally is safe
+  // by design — the worst case is a harmless extra global scan.
+  const hasHoldingsSnapshot =
+    HOLDINGS_SNAPSHOT_SOURCES.includes(parsed.sourceType) ||
+    parsed.holdings.length > 0;
+  if (hasHoldingsSnapshot) {
     try {
       const purged = purgeExpiredOptionHoldings(db);
       if (purged > 0) {
