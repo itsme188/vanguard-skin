@@ -377,6 +377,21 @@ export function interpretVega(totalVega: number): Interpretation {
 
 // ─── Performance ─────────────────────────────────────────────────
 
+// ─── Defense / Hedging ───────────────────────────────────────────
+
+/** Protection ratio: protective notional / long exposure (fraction, 0-1+). */
+export function interpretProtectionRatio(ratio: number | null): Interpretation {
+  if (ratio === null) return { text: "No long exposure to protect in this scope.", tone: "neutral" };
+  const pct = Math.round(ratio * 100);
+  if (ratio < 0.05)
+    return { text: `Only ${pct}% of the long book carries any hedge delta — effectively unhedged; a broad decline lands at full weight.`, tone: "bad" };
+  if (ratio <= 0.35)
+    return { text: `${pct}% of the long book is covered by hedge delta — partial protection; the uncovered majority still drives drawdowns.`, tone: "neutral" };
+  if (ratio <= 0.6)
+    return { text: `${pct}% of the long book is hedged — substantial cushion in a selloff at a meaningful carry cost.`, tone: "good" };
+  return { text: `${pct}% hedge coverage — the book is defensively positioned, but the theta cost drag will bite in flat or rising markets.`, tone: "neutral" };
+}
+
 /**
  * TWR vs XIRR spread (both annualized fractions). XIRR above TWR means
  * cash-flow timing helped; below means it hurt. Returns null when either

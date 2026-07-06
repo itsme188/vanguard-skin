@@ -16,6 +16,7 @@ import {
   interpretTheta,
   interpretVega,
   interpretTwrVsXirr,
+  interpretProtectionRatio,
   toneClass,
 } from "@/lib/analysis/interpret";
 
@@ -392,6 +393,25 @@ describe("interpretTwrVsXirr", () => {
   it("XIRR lagging TWR by >= 1pp — timing detracted (bad)", () => {
     const r = interpretTwrVsXirr(0.11, 0.08);
     expect(r?.tone).toBe("bad");
+  });
+});
+
+// ─── interpretProtectionRatio ────────────────────────────────────
+
+describe("interpretProtectionRatio", () => {
+  it("null ratio → neutral no-data text", () => {
+    const r = interpretProtectionRatio(null);
+    expect(r.tone).toBe("neutral");
+  });
+  it("under 5% reads as essentially unhedged", () => {
+    expect(interpretProtectionRatio(0.03).text).toMatch(/unhedged|unprotected/i);
+  });
+  it("5-35% reads as partial protection, neutral-to-good tone", () => {
+    const r = interpretProtectionRatio(0.18);
+    expect(r.text).toMatch(/18%/);
+  });
+  it("over 60% flags heavy hedging cost drag", () => {
+    expect(interpretProtectionRatio(0.65).text).toMatch(/drag|cost/i);
   });
 });
 
