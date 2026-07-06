@@ -6,6 +6,7 @@ import { MarkdownMessage } from "./MarkdownMessage";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
 import { Money, Pct, Shares, PrivateText } from "@/lib/privacy/components";
+import { isNarrativeStale } from "@/lib/trade-review/stale-narrative";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -697,8 +698,28 @@ function ReviewDetail({
     if (t.grade) gradeCounts[t.grade] = (gradeCounts[t.grade] || 0) + 1;
   }
 
+  const narrativeStale = isNarrativeStale(review.generated_at, groupedTrades);
+
   return (
     <div className="divide-y divide-edge">
+      {/* Stale-narrative warning: header metrics were repaired (option
+          contract multiplier) after this review's prose was generated —
+          the narrative's dollar figures are from the understated era. */}
+      {narrativeStale && (
+        <div className="px-5 py-3 bg-gold/5 border-l-2 border-gold flex items-start gap-2">
+          <span aria-hidden className="text-gold text-sm leading-5">⚠</span>
+          <p className="text-xs text-ink-dim leading-5">
+            <span className="text-gold font-medium">
+              Dollar figures in this narrative are outdated.
+            </span>{" "}
+            The metrics above were corrected on 2026-07-04 (option P&L had been
+            100× understated when this review was written) — trust the header
+            numbers over any totals quoted in the prose, and regenerate the
+            review to refresh the narrative.
+          </p>
+        </div>
+      )}
+
       {/* Summary strip */}
       <div className="px-5 py-3 flex flex-wrap items-center gap-4 bg-raised/20">
         <MetricBadge
