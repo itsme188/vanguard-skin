@@ -167,4 +167,80 @@ describe("computeDefenseAnalysis", () => {
 
     expect(msftPairAfter.coreExposure).toBeCloseTo(msftPairBefore.coreExposure * 0.0007, 2);
   });
+
+  it("excludes the opposing CALL from an etf_negative_stack candidate's hedge-book rows and never over-scores its credited notional", () => {
+    // Short 100 sh IWM (ETF) + 3 protective puts (same-sign as the short) +
+    // 1 opposing CALL that partially offsets the short — the CALL must not
+    // get a hedgeScores row, and the sum of what DOES get scored for this
+    // candidate must not exceed the credited protectiveNotional.
+    const expiry180 = daysFromNow(180);
+    const expiryTag = expiry180.replace(/-/g, "").slice(2);
+
+    const iwmId = seedSecurity("IWM", { type: "ETF" });
+    seedHolding(accountA, iwmId, -100);
+    seedPrice(iwmId, 220);
+
+    const iwmPutId = seedSecurity(`IWM   ${expiryTag}P00200000`, {
+      type: "Option",
+      underlyingSymbol: "IWM",
+      optionType: "PUT",
+      strikePrice: 200,
+      expirationDate: expiry180,
+      multiplier: 100,
+    });
+    seedHolding(accountA, iwmPutId, 3);
+    seedPrice(iwmPutId, 5);
+
+    const iwmCallId = seedSecurity(`IWM   ${expiryTag}C00230000`, {
+      type: "Option",
+      underlyingSymbol: "IWM",
+      optionType: "CALL",
+      strikePrice: 230,
+      expirationDate: expiry180,
+      multiplier: 100,
+    });
+    seedHolding(accountA, iwmCallId, 1);
+    seedPrice(iwmCallId, 4);
+
+    const result = computeDefenseAnalysis(db, [accountA]);
+
+    expect(result.pairs.find((p) => p.underlying === "IWM")).toBeUndefined();
+    const proxy = result.proxies.find((p) => p.underlying === "IWM");
+    expect(proxy).toBeDefined();
+
+    // The call never earns a hedge-book row.
+    expect(result.hedgeScores.find((h) => h.securityId === iwmCallId)).toBeUndefined();
+
+    // Everything scored for this candidate (core short + puts) sums to no
+    // more than the credited protectiveNotional (the call's offset already
+    // reduced what's credited via coreRemainder).
+    const scoredForCandidate = result.hedgeScores
+      .filter((h) => h.underlying === "IWM")
+      .reduce((a, h) => a + h.protectedNotional, 0);
+    expect(scoredForCandidate).toBeLessThanOrEqual(proxy!.protectiveNotional + 0.01);
+  });
+
+  it("surfaces a greeks_fallback diagnostic when an option's underlying has no price to compute Greeks", () => {
+    const badUnderlyingId = seedSecurity("BADU", { type: "Stock" });
+    // Deliberately NOT calling seedPrice(badUnderlyingId, ...) — the Greeks
+    // engine can't solve without an underlying price ("no_underlying_price").
+    void badUnderlyingId;
+    const expiry90 = daysFromNow(90);
+    const badPutSymbol = `BADU  ${expiry90.replace(/-/g, "").slice(2)}P00050000`;
+    const badPutId = seedSecurity(badPutSymbol, {
+      type: "Option",
+      underlyingSymbol: "BADU",
+      optionType: "PUT",
+      strikePrice: 50,
+      expirationDate: expiry90,
+      multiplier: 100,
+    });
+    seedHolding(accountA, badPutId, 2);
+
+    const result = computeDefenseAnalysis(db, [accountA]);
+
+    expect(
+      result.diagnostics.some((d) => d.kind === "greeks_fallback" && d.symbol === badPutSymbol)
+    ).toBe(true);
+  });
 });

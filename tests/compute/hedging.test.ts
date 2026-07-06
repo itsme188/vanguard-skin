@@ -73,6 +73,18 @@ describe("classifyBook — Tier 1 pairs", () => {
     expect(pair.netExposure).toBe(17000);
   });
 
+  it("classifies long stock + only same-sign calls (no opposing puts) as amplified", () => {
+    const r = classifyBook(new Map([group("NVDA", false, [
+      inst({ securityId: 1, symbol: "NVDA", exposure: 10000 }),
+      inst({ securityId: 2, symbol: "NVDA  260320C00100000", isOption: true, optionType: "CALL", quantity: 5, exposure: 6000, marketValue: 2500 }),
+    ])]));
+    const pair = r.pairs.find((p) => p.underlying === "NVDA")!;
+    expect(pair.classification).toBe("amplified");
+    expect(pair.hasAmplifiers).toBe(true);
+    expect(pair.offsetCredited).toBe(0);
+    expect(pair.netExposure).toBe(16000);
+  });
+
   it("caps offset credit at |core| and spills ETF excess to proxy candidates", () => {
     const r = classifyBook(new Map([group("XLE", true, [
       inst({ securityId: 1, symbol: "XLE", exposure: 10000 }),
@@ -315,6 +327,18 @@ describe("attributeProxies — Tier 2 cascade", () => {
     expect(r.proxies[0].creditedTo).toEqual([{ bucket: "Europe", credited: 5000 }]);
   });
 
+  it("falls through to beta route when the ETF's geography isn't held anywhere in the book", () => {
+    const r = attributeProxies([cand("EWJ", 5000)], ctx({
+      // ctx()'s default longExposureByGeography only has "Europe" — "Japan"
+      // is a real geography match on the ETF row, but the book holds none of it.
+      etfGeography: new Map([["EWJ", "Japan"]]),
+      resolveBeta: () => ({ beta: 0.9, source: "cached" as const }),
+    }));
+    expect(r.proxies[0].route).toBe("beta");
+    expect(r.proxies[0].creditedTo).toEqual([{ bucket: "book", credited: 4500 }]);
+    expect(r.proxies[0].betaSource).toBe("cached");
+  });
+
   it("falls back to beta-weighted broad-book credit and carries the beta source", () => {
     const r = attributeProxies([cand("MTUM", 10000)], ctx({
       resolveBeta: () => ({ beta: 1.2, source: "cached" as const }),
@@ -382,6 +406,14 @@ describe("scoreHedges", () => {
 
   it("badges: decayed when >20% OTM and runway <45d", () => {
     const [s] = scoreHedges([hedgeInput({ daysToExpiry: 40, strike: 350, underlyingPrice: 500 })]);
+    expect(s.badges).toContain("decayed");
+  });
+
+  it("badges: CALL-side decayed uses unflipped otmPct (strike 30% above spot, runway <45d)", () => {
+    const [s] = scoreHedges([
+      hedgeInput({ optionType: "CALL", strike: 130, underlyingPrice: 100, daysToExpiry: 30 }),
+    ]);
+    expect(s.moneynessPct).toBeCloseTo(0.3);
     expect(s.badges).toContain("decayed");
   });
 

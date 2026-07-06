@@ -360,6 +360,9 @@ export interface AttributionContext {
   longExposureByGeography: Map<string, number>;
   /** Tier-1 offsetCredited bucketed by the pair's sector (for the bars). */
   tier1CreditedBySector: Map<string, number>;
+  /** Carried for interface completeness / future consumers — attributeProxies
+   * itself never reads this field; the orchestrator computes and uses its
+   * own totalLongExposure (for pctOfBook, etc.). Do not remove. */
   totalLongExposure: number;
   resolveBeta: (symbol: string) => ResolvedBeta;
 }
@@ -788,7 +791,8 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
       symbol: row.symbol,
       underlying: canonical,
       isOption,
-      optionType: isOption ? (row.option_type as "CALL" | "PUT" | null) : null,
+      // Case-insensitive normalize — house rule (see options-greeks.ts:399).
+      optionType: isOption ? ((row.option_type?.toUpperCase() ?? null) as "CALL" | "PUT" | null) : null,
       quantity: row.quantity,
       exposure,
       marketValue: row.mv,
@@ -909,13 +913,23 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
   // fraction above (credited/offset) and the spill-side fraction here
   // (spill/offset) — the two fractions sum to 1, so the same dollar is never
   // scored twice.
+  //
+  // Index coupling: attributeProxies() emits exactly one ProxyHedge per
+  // ProxyCandidate, IN ORDER — proxies[i] always describes
+  // classifyResult.proxyCandidates[i]. Don't reorder either array independently.
   classifyResult.proxyCandidates.forEach((candidate, i) => {
     const hedge = proxies[i];
     const routeDescription = describeProxyRoute(hedge);
+    // Only protective (negative-exposure) instruments earn a hedge-book row.
+    // no_core_etf/tier1_spill candidates already carry all-protective
+    // instruments (filter is a no-op there); etf_negative_stack's
+    // `instruments` is the WHOLE underlying group — including opposing calls
+    // that offset the short — which must never surface as a "hedge".
+    const protective = candidate.instruments.filter((inst) => inst.exposure < 0);
     if (candidate.source === "tier1_spill") {
       const pair = pairsByUnderlying.get(candidate.underlying);
       const ratio = pair && pair.offsetExposure > 0 ? candidate.protectiveNotional / pair.offsetExposure : 0;
-      for (const inst of candidate.instruments) {
+      for (const inst of protective) {
         scoreInputs.push({
           instrument: inst,
           protects: routeDescription,
@@ -923,11 +937,18 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
         });
       }
     } else {
-      for (const inst of candidate.instruments) {
+      // Scale to the credited notional so an etf_negative_stack core's full
+      // (pre-offset) exposure never overstates what's actually protecting the
+      // book — mirrors the tier1_spill ratio above. No-op (ratio 1) for
+      // no_core_etf, whose protectiveNotional already equals the sum of its
+      // (already all-protective) instruments' exposure.
+      const protectiveSum = sum(protective.map((inst) => Math.abs(inst.exposure)));
+      const ratio = protectiveSum > 0 ? candidate.protectiveNotional / protectiveSum : 0;
+      for (const inst of protective) {
         scoreInputs.push({
           instrument: inst,
           protects: routeDescription,
-          protectedNotional: Math.abs(inst.exposure),
+          protectedNotional: Math.abs(inst.exposure) * ratio,
         });
       }
     }

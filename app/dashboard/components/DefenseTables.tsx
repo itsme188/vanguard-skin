@@ -87,7 +87,7 @@ function MostExposedTable({
                 <SortableHeader field="netExposure" sort={sort} onSort={setSort} align="right">Net exposure</SortableHeader>
                 <SortableHeader field="pctOfBook" sort={sort} onSort={setSort} align="right">% of book</SortableHeader>
                 <SortableHeader field="tier1CoveragePct" sort={sort} onSort={setSort} align="right">Tier-1 cover</SortableHeader>
-                <SortableHeader field="sectorProxyCoveragePct" sort={sort} onSort={setSort} align="right">Sector proxy cover</SortableHeader>
+                <SortableHeader field="sectorProxyCoveragePct" sort={sort} onSort={setSort} align="right">Sector cover</SortableHeader>
                 <th className="text-right py-2 px-2 font-medium">Flags</th>
               </tr>
             </thead>
