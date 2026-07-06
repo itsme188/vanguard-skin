@@ -16,6 +16,7 @@ import {
   type ReactionSnapshot,
 } from "./reaction-snapshot";
 import { captureReactionFromYahoo } from "../../workers/cron/src/yahoo";
+import { sendEarningsPrintPush } from "@/lib/alerts/print-push";
 
 // Macro releases (FRED/FOMC/nonfred): data is typically published within
 // minutes of release, and the reaction window is the immediate 2-hour
@@ -327,6 +328,38 @@ export async function runEnrichment(
         complete ? 1 : 0,
         event.id,
       );
+
+      // Push-at-print (Wave 1 §2): fire exactly on the null→non-null actual
+      // transition for a covered, unmuted earnings name. Best-effort — a
+      // push failure never affects enrichment.
+      if (
+        isEarnings &&
+        event.symbol &&
+        event.actual_value == null &&
+        actualResult.actual != null
+      ) {
+        try {
+          const sym = event.symbol.toUpperCase();
+          const status = getSymbolStatus(db, [sym])[sym];
+          const settings = getEarningsSettings(db);
+          if (
+            (status === "held" || status === "watchlist") &&
+            shouldSendEarningsEmail(settings, sym)
+          ) {
+            await sendEarningsPrintPush({
+              eventId: event.id,
+              symbol: sym,
+              actualValue: actualResult.actual,
+              consensusValue: actualResult.consensus ?? event.consensus_estimate,
+              reactionJson: reaction
+                ? JSON.stringify(reaction)
+                : event.reaction_snapshot,
+            });
+          }
+        } catch (err) {
+          console.warn(`[print-push] event ${event.id} failed:`, err);
+        }
+      }
 
       results.push({
         eventId: event.id,

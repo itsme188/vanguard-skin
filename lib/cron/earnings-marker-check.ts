@@ -121,3 +121,26 @@ export function writeMacSentEarningsMarker(
   });
   return workerFetch("/internal/earnings-sent-marker", params, "POST");
 }
+
+/**
+ * Push-at-print dedup marker (Wave 1 §2). Whichever side (Mac enrichment,
+ * Mac reconcile, Worker cloud-enrich) captures the actual checks this BEFORE
+ * pushing and writes it after. `false`/unreachable → allow the push (a
+ * duplicate requires both sides active, which requires the Worker reachable).
+ */
+export async function checkPrintPushMarker(eventId: number): Promise<boolean> {
+  const params = new URLSearchParams({ eventId: String(eventId) });
+  const res = await workerFetch("/internal/print-push-marker", params, "GET");
+  if (!res || !res.ok) return false;
+  try {
+    const body = (await res.json()) as { pushed?: boolean };
+    return body.pushed === true;
+  } catch {
+    return false;
+  }
+}
+
+export function writePrintPushMarker(eventId: number): Promise<Response | null> {
+  const params = new URLSearchParams({ eventId: String(eventId) });
+  return workerFetch("/internal/print-push-marker", params, "POST");
+}

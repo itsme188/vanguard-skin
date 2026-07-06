@@ -40,7 +40,7 @@ const CALENDAR_LOOKAHEAD_DAYS = 7;
 const SNAPSHOT_RETENTION_DAYS = 7;
 
 interface Snapshot {
-  schemaVersion: 7;
+  schemaVersion: 8;
   snapshotDate: string;
   generatedAt: string;
   heldSymbols: string[];
@@ -139,6 +139,11 @@ interface Snapshot {
     sector: string | null;
     netQty: number;
   }>;
+  // v8 — active watchlist stock symbols (Wave 1 §2 push-at-print). Lets the
+  // Worker's cloud-enrich push hook cover watchlist names, not just held
+  // ones (workers/cron/src/state.ts::watchlistSymbols is the optional/
+  // back-compat mirror the Worker reads).
+  watchlistSymbols: string[];
 }
 
 function today(): string {
@@ -174,6 +179,27 @@ function getHeldStockSymbolsRO(db: Database.Database): string[] {
            WHERE h2.account_id = h.account_id
          )
        ORDER BY s.symbol`
+    )
+    .all() as { symbol: string }[];
+  return rows.map((r) => r.symbol);
+}
+
+/**
+ * Active watchlist stock symbols (v8, Wave 1 §2 push-at-print). Lets the
+ * Worker's cloud-enrich push hook cover watchlist names in addition to held
+ * ones — a print push on a not-yet-owned symbol the user is tracking is
+ * still useful, and pre-v8 the hook could only see `heldSymbols`.
+ */
+function getActiveWatchlistStockSymbolsRO(db: Database.Database): string[] {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT UPPER(s.symbol) AS symbol
+         FROM watchlist w
+         JOIN securities s ON s.id = w.security_id
+        WHERE w.is_active = 1
+          AND LOWER(COALESCE(s.security_type, '')) IN ('stock', 'common stock')
+          AND s.symbol IS NOT NULL AND s.symbol != ''
+        ORDER BY symbol`,
     )
     .all() as { symbol: string }[];
   return rows.map((r) => r.symbol);
@@ -388,7 +414,7 @@ function buildSnapshot(db: Database.Database): Snapshot {
     .prepare(
       `SELECT h.id, h.account_id, h.security_id, h.quantity, h.cost_basis, h.as_of_date
          FROM holdings h
-        WHERE h.quantity > 0
+        WHERE h.quantity != 0
           AND h.as_of_date = (
             SELECT MAX(h2.as_of_date) FROM holdings h2
              WHERE h2.account_id = h.account_id
@@ -449,7 +475,7 @@ function buildSnapshot(db: Database.Database): Snapshot {
     }>;
 
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     snapshotDate: today(),
     generatedAt: new Date().toISOString(),
     heldSymbols: getHeldStockSymbolsRO(db),
@@ -495,6 +521,8 @@ function buildSnapshot(db: Database.Database): Snapshot {
     // v7 — Vanguard-only briefing holdings (IBKR excluded). Single-sourced from
     // the Mac's getBriefingHoldings so the cloud briefing matches the real one.
     briefingHoldings: getBriefingHoldingsForSnapshot(db),
+    // v8 — active watchlist stock symbols for the Worker's push-at-print hook.
+    watchlistSymbols: getActiveWatchlistStockSymbolsRO(db),
   };
 }
 
@@ -542,7 +570,8 @@ async function main() {
       `${snapshot.securityBetas.length} betas, ` +
       `${snapshot.notes.length} notes, ` +
       `${snapshot.earningsBogeys.length} bogeys, ` +
-      `${snapshot.modelCatalog.length} model-catalog`
+      `${snapshot.modelCatalog.length} model-catalog, ` +
+      `${snapshot.watchlistSymbols.length} watchlist-symbols`
   );
 
   const keepFromDate = daysAgo(SNAPSHOT_RETENTION_DAYS);

@@ -1,4 +1,10 @@
 import type Database from "better-sqlite3";
+import { sendEarningsPrintPush } from "@/lib/alerts/print-push";
+import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
+import {
+  getEarningsSettings,
+  shouldSendEarningsEmail,
+} from "@/lib/queries/earnings-settings";
 
 interface CloudEnrichedPayload {
   eventId: number;
@@ -21,6 +27,20 @@ export interface CloudReconcileResult {
   error?: string;
   note?: string;
   status?: number;
+}
+
+// A days-old print is briefing material, not a push — if the Worker's
+// cloud-enriched payload sat in KV long enough that the Mac only reconciles
+// it well after the print, firing Pushover now would be a stale, confusing
+// notification. Missing/unparseable fetchedAt is treated as fresh (never
+// block the push over a formatting surprise).
+const STALE_PAYLOAD_MS = 24 * 3600 * 1000;
+
+function isStalePayload(fetchedAt: string | undefined, now: number = Date.now()): boolean {
+  if (!fetchedAt) return false;
+  const parsed = Date.parse(fetchedAt);
+  if (Number.isNaN(parsed)) return false;
+  return now - parsed > STALE_PAYLOAD_MS;
 }
 
 function workerBase(): string | null {
@@ -88,7 +108,7 @@ export async function reconcileCloudEnrichment(
   const errors: { eventId: string; error: string }[] = [];
 
   const selectRow = db.prepare(
-    `SELECT id, reaction_snapshot, consensus_value, enriched_at, actual_value
+    `SELECT id, reaction_snapshot, consensus_value, consensus_estimate, enriched_at, actual_value, event_type, symbol
      FROM calendar_events
      WHERE id = ?`,
   );
@@ -151,8 +171,11 @@ export async function reconcileCloudEnrichment(
             id: number;
             reaction_snapshot: string | null;
             consensus_value: string | null;
+            consensus_estimate: string | null;
             enriched_at: string | null;
             actual_value: string | null;
+            event_type: string;
+            symbol: string | null;
           }
         | undefined;
 
@@ -195,6 +218,44 @@ export async function reconcileCloudEnrichment(
         );
       }
       reconciled += 1;
+
+      // Push-at-print for cloud-captured actuals (Wave 1 §2). The marker
+      // check inside sendEarningsPrintPush dedups against a push the Worker
+      // already fired at capture time. Best-effort. Skip when the payload is
+      // stale — a days-old print belongs in the briefing, not a push.
+      if (
+        payload.actual != null &&
+        existing.actual_value == null &&
+        existing.event_type === "earnings" &&
+        existing.symbol &&
+        !isStalePayload(payload.fetchedAt)
+      ) {
+        try {
+          const sym = existing.symbol.toUpperCase();
+          const status = getSymbolStatus(db, [sym])[sym];
+          const settings = getEarningsSettings(db);
+          if (
+            (status === "held" || status === "watchlist") &&
+            shouldSendEarningsEmail(settings, sym)
+          ) {
+            await sendEarningsPrintPush({
+              eventId,
+              symbol: sym,
+              actualValue: payload.actual,
+              // renderHeadlineTable precedence: consensus_value (set at
+              // release-time enrichment) wins over consensus_estimate (the
+              // older Finnhub-sync-time snapshot) — see CLAUDE.md.
+              consensusValue:
+                payload.consensus ?? existing.consensus_value ?? existing.consensus_estimate,
+              reactionJson: payload.reaction
+                ? JSON.stringify(payload.reaction)
+                : existing.reaction_snapshot,
+            });
+          }
+        } catch (err) {
+          console.warn(`[print-push] reconcile event ${eventId} failed:`, err);
+        }
+      }
 
       await deleteFromWorker(base, secret, eventId);
     } catch (err) {

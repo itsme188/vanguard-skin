@@ -27,10 +27,16 @@ vi.mock("../src/yahoo", () => ({
   captureReactionFromYahoo: vi.fn(async () => ({ source: "yahoo" })),
 }));
 
+vi.mock("../src/pushover", () => ({
+  sendPushover: vi.fn(async () => ({ sent: true, requestId: "req-1" })),
+}));
+
 import { runCloudFallback, isBenignEnrichOutcome } from "../src/calendar-enrich";
 import { loadLatestSnapshot } from "../src/state";
 import { fetchActualForEventCloud } from "../src/enrich-actuals";
 import { composeReleaseInstant } from "../src/reaction-matcher";
+import { sendPushover } from "../src/pushover";
+import { readPrintPushMarker } from "../src/earnings-markers";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -187,5 +193,174 @@ describe("isBenignEnrichOutcome (enrich-fail de-noise)", () => {
 
   it("treats error as a real failure", () => {
     expect(isBenignEnrichOutcome({ kind: "error", error: "archive_binding_missing" })).toBe(false);
+  });
+});
+
+// ── Push-at-print hook (Wave 1 §2) ──────────────────────────────────────────
+
+describe("runCloudFallback push-at-print hook", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /** Snapshot with earnings gates configurable per test. v8 by default (has watchlistSymbols). */
+  function makePushSnapshot(overrides: {
+    heldSymbols?: string[];
+    watchlistSymbols?: string[] | undefined; // undefined → omit the field entirely (pre-v8 snapshot)
+    mutedSymbols?: string[];
+    enabled?: boolean;
+    schemaVersion?: Snapshot["schemaVersion"];
+  } = {}): Snapshot {
+    const snap: Snapshot = {
+      schemaVersion: overrides.schemaVersion ?? 8,
+      snapshotDate: EVENT_DATE,
+      generatedAt: new Date().toISOString(),
+      heldSymbols: overrides.heldSymbols ?? [],
+      settings: { last_digest_sent_at: null, last_briefing_sent_at: null },
+      calendarEvents: [
+        {
+          id: 1,
+          source_key: "finnhub:AAPL:2026-06-15",
+          event_type: "earnings",
+          event_date: EVENT_DATE,
+          release_time: RELEASE_TIME,
+          symbol: "AAPL",
+          consensus_estimate: "EPS 1.50",
+          security_id: null,
+          actual_value: null,
+          enriched_at: null,
+          reaction_snapshot: null,
+        },
+      ],
+      researchSources: [],
+      recentArticlesMeta: [],
+      deepReadArticles: [],
+      earningsSettings: {
+        enabled: overrides.enabled ?? true,
+        mutedSymbols: overrides.mutedSymbols ?? [],
+      },
+    } as unknown as Snapshot;
+    if (overrides.watchlistSymbols !== undefined) {
+      (snap as unknown as { watchlistSymbols: string[] }).watchlistSymbols = overrides.watchlistSymbols;
+    }
+    return snap;
+  }
+
+  function mockCleanActual() {
+    (fetchActualForEventCloud as ReturnType<typeof vi.fn>).mockResolvedValue({
+      actual: "EPS 1.55",
+      consensus: "EPS 1.50",
+      source: "finnhub",
+      deferred: false,
+      reason: null,
+    });
+  }
+
+  it("pushes and writes the marker when the symbol is held", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makePushSnapshot({ heldSymbols: ["AAPL"] }),
+    );
+    mockCleanActual();
+
+    await runCloudFallback(env, { nowMs: candidateWindowNowMs(), pacingMs: 0 });
+
+    expect(sendPushover).toHaveBeenCalledTimes(1);
+    const [, msg] = (sendPushover as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(msg.title).toBe("AAPL reported");
+    expect(await readPrintPushMarker(env.CRON_KV, 1)).toBe(true);
+  });
+
+  it("does not push again when the print-push marker is already present", async () => {
+    const env = makeEnv();
+    await env.CRON_KV.put("print-push-1", new Date().toISOString());
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makePushSnapshot({ heldSymbols: ["AAPL"] }),
+    );
+    mockCleanActual();
+
+    await runCloudFallback(env, { nowMs: candidateWindowNowMs(), pacingMs: 0 });
+
+    expect(sendPushover).not.toHaveBeenCalled();
+  });
+
+  it("pushes when the symbol is only on the watchlist (not held)", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makePushSnapshot({ heldSymbols: [], watchlistSymbols: ["AAPL"] }),
+    );
+    mockCleanActual();
+
+    await runCloudFallback(env, { nowMs: candidateWindowNowMs(), pacingMs: 0 });
+
+    expect(sendPushover).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not push when the symbol is in neither held nor watchlist", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makePushSnapshot({ heldSymbols: [], watchlistSymbols: [] }),
+    );
+    mockCleanActual();
+
+    await runCloudFallback(env, { nowMs: candidateWindowNowMs(), pacingMs: 0 });
+
+    expect(sendPushover).not.toHaveBeenCalled();
+  });
+
+  it("does not push a muted symbol even though it is held", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makePushSnapshot({ heldSymbols: ["AAPL"], mutedSymbols: ["AAPL"] }),
+    );
+    mockCleanActual();
+
+    await runCloudFallback(env, { nowMs: candidateWindowNowMs(), pacingMs: 0 });
+
+    expect(sendPushover).not.toHaveBeenCalled();
+  });
+
+  it("does not push a deferred actual (no real actual captured yet)", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makePushSnapshot({ heldSymbols: ["AAPL"] }),
+    );
+    (fetchActualForEventCloud as ReturnType<typeof vi.fn>).mockResolvedValue({
+      actual: null,
+      consensus: "EPS 1.50",
+      source: "finnhub",
+      deferred: true,
+      reason: "claude_nonfred_deferred",
+    });
+
+    await runCloudFallback(env, { nowMs: candidateWindowNowMs(), pacingMs: 0 });
+
+    expect(sendPushover).not.toHaveBeenCalled();
+  });
+
+  it("degrades to held-only coverage on a pre-v8 snapshot lacking watchlistSymbols (no crash)", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makePushSnapshot({ heldSymbols: [], watchlistSymbols: undefined, schemaVersion: 7 }),
+    );
+    mockCleanActual();
+
+    const summary = await runCloudFallback(env, { nowMs: candidateWindowNowMs(), pacingMs: 0 });
+
+    expect(summary.kind).toBe("success");
+    expect(summary.failures).toBe(0);
+    expect(sendPushover).not.toHaveBeenCalled(); // not held, no watchlist field present
+  });
+
+  it("v7-snapshot held symbol still pushes (watchlistSymbols absence doesn't block held coverage)", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makePushSnapshot({ heldSymbols: ["AAPL"], watchlistSymbols: undefined, schemaVersion: 7 }),
+    );
+    mockCleanActual();
+
+    await runCloudFallback(env, { nowMs: candidateWindowNowMs(), pacingMs: 0 });
+
+    expect(sendPushover).toHaveBeenCalledTimes(1);
   });
 });

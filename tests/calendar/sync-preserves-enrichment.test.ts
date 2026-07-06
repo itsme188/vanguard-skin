@@ -22,6 +22,10 @@ vi.mock("@/lib/calendar/nasdaq", () => ({
 }));
 vi.mock("@/lib/queries/briefing-symbols", () => ({
   getHeldStockSymbols: vi.fn(() => [] as string[]),
+  // Wave 1 item 3 hoisted the scan-set computation out of the
+  // FINNHUB_API_KEY-gated block so the Nasdaq cross-check can reuse it —
+  // it now runs unconditionally, so this mock needs the export too.
+  getHeldOptionUnderlyingSymbols: vi.fn(() => [] as string[]),
 }));
 vi.mock("@/lib/tws/client", () => ({
   getIbApi: vi.fn(() => null), // TWS not connected → WSH phase skipped

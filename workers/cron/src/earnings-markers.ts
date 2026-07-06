@@ -113,3 +113,33 @@ export async function getEarningsMarkerStatus(
   if (mac) return { sentBy: "mac" };
   return { sentBy: null };
 }
+
+/**
+ * Push-at-print dedup marker (Wave 1 §2). Keyed on eventId only (no phase —
+ * the print push fires once per event the moment an actual is captured,
+ * regardless of which side — Mac enrichment, Mac reconcile, or Worker
+ * cloud-enrich — got there first). 7-day TTL: this marker must outlive the
+ * cloud-enriched payload's own TTL, else a Mac that wakes up more than 24h
+ * later reconciles a still-present payload and re-pushes a stale print.
+ */
+const PRINT_PUSH_TTL_SECONDS = 7 * 24 * 3600;
+
+export function printPushKey(eventId: number): string {
+  return `print-push-${eventId}`;
+}
+
+export async function readPrintPushMarker(
+  kv: KVNamespace,
+  eventId: number,
+): Promise<boolean> {
+  return (await kv.get(printPushKey(eventId))) != null;
+}
+
+export async function writePrintPushMarker(
+  kv: KVNamespace,
+  eventId: number,
+): Promise<void> {
+  await kv.put(printPushKey(eventId), new Date().toISOString(), {
+    expirationTtl: PRINT_PUSH_TTL_SECONDS,
+  });
+}

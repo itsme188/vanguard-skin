@@ -21,6 +21,10 @@ vi.mock("@/lib/calendar/nasdaq", () => ({
 }));
 vi.mock("@/lib/queries/briefing-symbols", () => ({
   getHeldStockSymbols: vi.fn(() => [] as string[]),
+  getHeldOptionUnderlyingSymbols: vi.fn(() => [] as string[]),
+}));
+vi.mock("@/lib/queries/watchlist", () => ({
+  getActiveWatchlistStockSymbols: vi.fn(() => [] as string[]),
 }));
 vi.mock("@/lib/tws/client", () => ({
   getIbApi: vi.fn(() => null), // default: TWS not connected
@@ -30,10 +34,12 @@ vi.mock("@/lib/tws/client", () => ({
 import { syncCalendarForWeek, SyncCalendarValidationError } from "@/lib/calendar/sync";
 import { fetchMacroEvents } from "@/lib/calendar/macro-events";
 import { fetchFinnhubEarningsForSymbols } from "@/lib/calendar/finnhub";
+import { fetchNasdaqEarningsForSymbols } from "@/lib/calendar/nasdaq";
 import { fetchWshEvents } from "@/lib/tws/wsh";
 import { parseWshEvents } from "@/lib/calendar/parse-wsh";
 import { getIbApi } from "@/lib/tws/client";
-import { getHeldStockSymbols } from "@/lib/queries/briefing-symbols";
+import { getHeldStockSymbols, getHeldOptionUnderlyingSymbols } from "@/lib/queries/briefing-symbols";
+import { getActiveWatchlistStockSymbols } from "@/lib/queries/watchlist";
 import { upsertCalendarEvents } from "@/lib/mutations/calendar";
 
 let db: Database.Database;
@@ -127,6 +133,28 @@ describe("syncCalendarForWeek", () => {
     expect(result.macroEvents).toBe(0);
     expect(result.finnhubEvents).toBe(1);
     expect(result.errors).toEqual([expect.stringMatching(/^macro: FRED 503/)]);
+  });
+
+  it("merges watchlist symbols and held-option underlyings into the Finnhub scan", async () => {
+    process.env.FINNHUB_API_KEY = "test-key";
+    vi.mocked(fetchMacroEvents).mockResolvedValueOnce([]);
+    vi.mocked(getHeldStockSymbols).mockReturnValueOnce(["AAPL"]);
+    vi.mocked(getActiveWatchlistStockSymbols).mockReturnValueOnce(["SHOP"]);
+    vi.mocked(getHeldOptionUnderlyingSymbols).mockReturnValueOnce(["TER"]);
+    vi.mocked(fetchFinnhubEarningsForSymbols).mockResolvedValueOnce([]);
+
+    await syncCalendarForWeek(db, "2026-04-27");
+
+    expect(vi.mocked(fetchFinnhubEarningsForSymbols)).toHaveBeenCalledTimes(1);
+    const symbolsArg = vi.mocked(fetchFinnhubEarningsForSymbols).mock.calls[0][1];
+    expect(symbolsArg).toEqual(["AAPL", "SHOP", "TER"]);
+
+    // Wave 1 item 3: the Nasdaq cross-check must scan the exact same merged
+    // set (held ∪ reporters ∪ watchlist ∪ optionUnderlyings) as Finnhub, not
+    // a narrower held-only-plus-reporters set.
+    expect(vi.mocked(fetchNasdaqEarningsForSymbols)).toHaveBeenCalledTimes(1);
+    const nasdaqSymbolsArg = vi.mocked(fetchNasdaqEarningsForSymbols).mock.calls[0][1];
+    expect(nasdaqSymbolsArg).toEqual(["AAPL", "SHOP", "TER"]);
   });
 
   it("skips wsh phase when TWS is not connected", async () => {

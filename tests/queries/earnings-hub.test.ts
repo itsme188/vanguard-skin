@@ -4,6 +4,7 @@ import { runMigrations } from "@/lib/db/migrate";
 import {
   getSymbolStatus,
   getHeldStockSymbols,
+  getHeldOptionUnderlyingSymbols,
 } from "@/lib/queries/briefing-symbols";
 import { getEarningsForWeekDeduped, countEarningsDateConflicts } from "@/lib/queries/calendar";
 import { getSentPhasesForEvents } from "@/lib/queries/earnings-emails";
@@ -38,6 +39,21 @@ function seedHolding(accountId: number, securityId: number, qty: number, asOf = 
   db.prepare(
     "INSERT INTO holdings (account_id, security_id, quantity, as_of_date) VALUES (?, ?, ?, ?)",
   ).run(accountId, securityId, qty, asOf);
+}
+
+function seedOption(
+  symbol: string,
+  underlyingSymbol: string,
+  expirationDate: string | null,
+): number {
+  return db
+    .prepare(
+      `INSERT INTO securities
+       (symbol, name, security_type, asset_class, multiplier, underlying_symbol, expiration_date)
+       VALUES (?, ?, 'Option', 'option', 100, ?, ?)`,
+    )
+    .run(symbol, `${symbol} Option`, underlyingSymbol, expirationDate)
+    .lastInsertRowid as number;
 }
 
 function seedWatchlist(securityId: number, active = 1): void {
@@ -131,6 +147,62 @@ describe("getSymbolStatus", () => {
     const glwId = seedSecurity("GLW");
     seedHolding(acct, glwId, 0); // closed position
     expect(getSymbolStatus(db, ["GLW"]).GLW).toBe("neither");
+  });
+
+  it("a short-only stock position confers held status (quantity != 0)", () => {
+    const acct = getAccount("IBKR");
+    const tslaId = seedSecurity("TSLA");
+    seedHolding(acct, tslaId, -300); // short, latest row for (account, security)
+    expect(getSymbolStatus(db, ["TSLA"])).toEqual({ TSLA: "held" });
+  });
+
+  it("classifies a symbol held only via options as held", () => {
+    const acct = getAccount("IBKR");
+    const optId = seedOption("TER   270115C00120000", "TER", "2027-01-15"); // ~1yr out
+    seedHolding(acct, optId, 2);
+    expect(getSymbolStatus(db, ["TER"])).toEqual({ TER: "held" });
+  });
+
+  it("an EXPIRED option does not confer held status", () => {
+    const acct = getAccount("IBKR");
+    const optId = seedOption("TER   200115C00120000", "TER", "2020-01-15"); // long expired
+    seedHolding(acct, optId, 2);
+    expect(getSymbolStatus(db, ["TER"])).toEqual({ TER: "neither" });
+  });
+
+  it("a short option position confers held status (quantity != 0)", () => {
+    const acct = getAccount("IBKR");
+    const optId = seedOption("TER   270115P00120000", "TER", "2027-01-15");
+    seedHolding(acct, optId, -3); // short
+    expect(getSymbolStatus(db, ["TER"])).toEqual({ TER: "held" });
+  });
+
+  it("option underlying matches via issuer family", () => {
+    const acct = getAccount("IBKR");
+    // Option on GOOGL; query GOOG (same issuer family) should resolve held.
+    const optId = seedOption("GOOGL 270115C00150000", "GOOGL", "2027-01-15");
+    seedHolding(acct, optId, 1);
+    expect(getSymbolStatus(db, ["GOOG"])).toEqual({ GOOG: "held" });
+  });
+});
+
+describe("getHeldOptionUnderlyingSymbols", () => {
+  it("returns distinct unexpired option underlyings, uppercased", () => {
+    const acct = getAccount("IBKR");
+    const terOpt = seedOption("TER   270115C00120000", "ter", "2027-01-15");
+    const glwOpt = seedOption("GLW   270115P00030000", "GLW", "2027-01-15");
+    seedHolding(acct, terOpt, 2);
+    seedHolding(acct, glwOpt, -1); // short still counts
+    expect(getHeldOptionUnderlyingSymbols(db).sort()).toEqual(["GLW", "TER"]);
+  });
+
+  it("excludes expired options and zero-quantity holdings", () => {
+    const acct = getAccount("IBKR");
+    const expiredOpt = seedOption("TER   200115C00120000", "TER", "2020-01-15");
+    const closedOpt = seedOption("GLW   270115P00030000", "GLW", "2027-01-15");
+    seedHolding(acct, expiredOpt, 2);
+    seedHolding(acct, closedOpt, 0);
+    expect(getHeldOptionUnderlyingSymbols(db)).toEqual([]);
   });
 });
 
