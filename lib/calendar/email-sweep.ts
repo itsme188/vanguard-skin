@@ -29,6 +29,7 @@ import {
 } from "@/lib/cron/earnings-marker-check";
 import { composeReleaseInstant } from "./reaction-snapshot";
 import { sendPushover } from "@/lib/alerts/notify-pushover";
+import { getEarningsSettings, shouldSendEarningsEmail } from "@/lib/queries/earnings-settings";
 
 export interface SweepCandidateResult {
   eventId: number;
@@ -221,8 +222,19 @@ export async function alertBlockedRecaps(
     `UPDATE calendar_events SET actual_missing_alerted_at = datetime('now') WHERE id = ?`,
   );
 
+  const settings = getEarningsSettings(db);
+
   let alerted = 0;
   for (const row of rows) {
+    // Respect the mute list (user decision 2026-07-06): a symbol muted after
+    // its preview went out shouldn't push blocked-recap alerts. Deliberately
+    // NO stamp — unmuting while the event is still inside the age window
+    // re-enables the alert on the next tick. shouldSendEarningsEmail also
+    // honors the master `earnings_emails_enabled` toggle, so this alert goes
+    // silent along with the sends themselves when earnings emails are
+    // globally disabled — consistent with the rest of the sweep.
+    if (!shouldSendEarningsEmail(settings, row.symbol)) continue;
+
     const release = composeReleaseInstant(row.event_date, row.release_time);
     if (!release) continue;
     const ageMs = nowMs - release.getTime();

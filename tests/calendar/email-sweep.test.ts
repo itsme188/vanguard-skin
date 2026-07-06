@@ -53,6 +53,7 @@ vi.mock("@/lib/alerts/notify-pushover", () => ({
 
 import { runEarningsEmailSweep, alertBlockedRecaps } from "@/lib/calendar/email-sweep";
 import { EarningsEmailError } from "@/lib/digest/send-earnings-email";
+import { setMutedEarningsSymbols } from "@/lib/queries/earnings-settings";
 
 // 2h before 16:30 ET release = 20:30 UTC. Same construction as
 // tests/calendar/findEmailCandidates-skip.test.ts's AAPL preview case —
@@ -457,6 +458,37 @@ describe("alertBlockedRecaps", () => {
 
       expect(await alertBlockedRecaps(db, { now: REAL_NOW })).toBe(0);
       expect(pushover).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("respects the muted-symbols setting (Task 8)", () => {
+    it("does not push a blocked-recap alert for a muted symbol, and does not stamp it", async () => {
+      const eventId = insertReleasedEvent("TER", 3);
+      insertSentPreview(eventId);
+      // getMutedEarningsSymbols reads a comma-separated string, NOT a JSON
+      // array — go through the real setter so the fixture matches the
+      // actual settings shape rather than guessing at it.
+      setMutedEarningsSymbols(db, ["TER"]);
+
+      const alerted = await alertBlockedRecaps(db, { now: REAL_NOW });
+      expect(alerted).toBe(0);
+      expect(pushover).not.toHaveBeenCalled();
+
+      const row = db
+        .prepare(`SELECT actual_missing_alerted_at FROM calendar_events WHERE id = ?`)
+        .get(eventId) as { actual_missing_alerted_at: string | null };
+      // Unmuting inside the age window should re-enable the alert on the
+      // next tick — deliberately no stamp for muted rows.
+      expect(row.actual_missing_alerted_at).toBeNull();
+    });
+
+    it("still alerts for a non-muted symbol when other symbols are muted", async () => {
+      const eventId = insertReleasedEvent("ZETA", 3);
+      insertSentPreview(eventId);
+      setMutedEarningsSymbols(db, ["TER", "AAPL"]);
+
+      expect(await alertBlockedRecaps(db, { now: REAL_NOW })).toBe(1);
+      expect(pushover).toHaveBeenCalledTimes(1);
     });
   });
 
