@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { PrivateText } from "@/lib/privacy/components";
 
 interface Props {
   scope: string;
@@ -34,7 +35,10 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
 
   return (
     <div className="text-sm text-ink-dim italic border-l-2 border-gold/40 pl-3 my-3 leading-relaxed">
-      {text}
+      {/* AI narrative embeds portfolio-derived figures at generation time, so
+          the only correct mask is the whole prose block (same rule as the
+          interpretation sentences). */}
+      <PrivateText>{text}</PrivateText>
     </div>
   );
 }
