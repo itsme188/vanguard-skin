@@ -22,6 +22,7 @@ import {
 import { computeFactorAnalysis } from "@/lib/compute/factors";
 import { computeRiskMetrics, computePositionRisk } from "@/lib/compute/risk";
 import { getFactorHeatmap } from "@/lib/queries/analysis";
+import { computeDefenseAnalysis } from "@/lib/compute/hedging";
 
 // ─── Surface registry ────────────────────────────────────────────────────────
 
@@ -30,6 +31,7 @@ export const NARRATIVE_SURFACES = [
   "risk-metrics",
   "position-risk",
   "factor-heatmap",
+  "defense",
 ] as const;
 export type NarrativeSurface = (typeof NARRATIVE_SURFACES)[number];
 
@@ -65,6 +67,8 @@ const SURFACE_PROMPTS: Record<NarrativeSurface, string> = {
     "In 2-3 sentences, identify which positions are driving the portfolio's risk. Mention the top 2-3 risk contributors by name and what makes them risky (size, beta, factor exposure). Avoid specific dollar amounts.",
   "factor-heatmap":
     "Read the heatmap of factor exposures across positions. In 2-3 sentences, call out the most concentrated factor bucket and any surprising holes (e.g., zero crypto exposure, no defensive plays). Avoid specific dollar amounts.",
+  defense:
+    "You are reviewing the portfolio's defensive posture. In 3-4 sentences: state how much of the long book is protected and through what (same-name hedges vs index/sector puts), name the largest UNPROTECTED exposures, and flag any hedge that looks expensive or nearly decayed (use the badges). Plain prose, no headers, no advice to buy anything new.",
 };
 
 // ─── Per-surface context builder ─────────────────────────────────────────────
@@ -111,6 +115,22 @@ function buildContextForSurface(
     const result = getFactorHeatmap(db, accountIds);
     if (!result || result.length === 0) return emptyMessage;
     return JSON.stringify(result, null, 2);
+  }
+
+  if (surface === "defense") {
+    const result = computeDefenseAnalysis(db, accountIds);
+    if (result.summary.hedgeCount === 0 && result.summary.shortExposure === 0) return emptyMessage;
+    return JSON.stringify(
+      {
+        summary: result.summary,
+        sectorCoverage: result.sectorCoverage,
+        topExposures: result.rankedExposures.slice(0, 10),
+        hedgeScores: result.hedgeScores.slice(0, 15),
+        diagnostics: result.diagnostics,
+      },
+      null,
+      2
+    );
   }
 
   // Unreachable — surface is exhaustive.
