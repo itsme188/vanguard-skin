@@ -1065,4 +1065,184 @@ describe("import engine", () => {
       expect(holding?.security_id).toBe(heiARow?.id);
     });
   });
+
+  describe("canonical-csv holdings imports trigger closed-position sweeps (evidence-gated, 2026-07-05)", () => {
+    it("triggers reconcileClosedEquityHoldings when the canonical-csv batch includes holdings", () => {
+      const accountId = (
+        db.prepare("INSERT INTO accounts (name) VALUES ('roth') RETURNING id").get() as {
+          id: number;
+        }
+      ).id;
+      const acwvId = (
+        db
+          .prepare(
+            "INSERT INTO securities (symbol, security_type) VALUES ('ACWV', 'ETF') RETURNING id",
+          )
+          .get() as { id: number }
+      ).id;
+      const eemvId = (
+        db
+          .prepare(
+            "INSERT INTO securities (symbol, security_type) VALUES ('EEMV', 'ETF') RETURNING id",
+          )
+          .get() as { id: number }
+      ).id;
+      const vtiId = (
+        db
+          .prepare(
+            "INSERT INTO securities (symbol, security_type) VALUES ('VTI', 'ETF') RETURNING id",
+          )
+          .get() as { id: number }
+      ).id;
+      const spyId = (
+        db
+          .prepare(
+            "INSERT INTO securities (symbol, security_type) VALUES ('SPY', 'ETF') RETURNING id",
+          )
+          .get() as { id: number }
+      ).id;
+
+      // Prior full snapshot: 4 positions.
+      const priorDate = "2026-05-31";
+      for (const [secId, qty] of [
+        [acwvId, 10],
+        [eemvId, 20],
+        [vtiId, 5],
+        [spyId, 8],
+      ] as const) {
+        db.prepare(
+          `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+           VALUES (?, ?, ?, ?, ?)`,
+        ).run(accountId, secId, qty, priorDate, `seed:${secId}:${priorDate}`);
+      }
+
+      // New canonical-csv holdings import: ACWV + EEMV sold, only VTI/SPY remain
+      // (2 of 4 = exactly the shrink floor, so the guard should NOT trip).
+      const newDate = "2026-06-30";
+      const parsed: import("@/lib/import/types").ParsedImportResult = {
+        sourceType: "canonical-csv",
+        sourceName: "canonical-2026-06.csv",
+        transactions: [],
+        securities: [
+          { symbol: "VTI", securityType: "ETF" },
+          { symbol: "SPY", securityType: "ETF" },
+        ],
+        holdings: [
+          {
+            accountName: "roth",
+            symbol: "VTI",
+            quantity: 5,
+            asOfDate: newDate,
+            sourceKey: `canonical:hold:${newDate}:VTI`,
+          },
+          {
+            accountName: "roth",
+            symbol: "SPY",
+            quantity: 8,
+            asOfDate: newDate,
+            sourceKey: `canonical:hold:${newDate}:SPY`,
+          },
+        ],
+        prices: [],
+        snapshots: [],
+        errors: [],
+        warnings: [],
+      };
+
+      commitImport(db, parsed);
+
+      const acwvZero = db
+        .prepare(
+          "SELECT quantity FROM holdings WHERE account_id = ? AND security_id = ? AND as_of_date = ?",
+        )
+        .get(accountId, acwvId, newDate) as { quantity: number } | undefined;
+      const eemvZero = db
+        .prepare(
+          "SELECT quantity FROM holdings WHERE account_id = ? AND security_id = ? AND as_of_date = ?",
+        )
+        .get(accountId, eemvId, newDate) as { quantity: number } | undefined;
+
+      expect(acwvZero?.quantity).toBe(0);
+      expect(eemvZero?.quantity).toBe(0);
+    });
+
+    it("does NOT trigger the closed-equity sweep for a transactions-only canonical-csv import", () => {
+      const accountId = (
+        db.prepare("INSERT INTO accounts (name) VALUES ('roth2') RETURNING id").get() as {
+          id: number;
+        }
+      ).id;
+      const acwvId = (
+        db
+          .prepare(
+            "INSERT INTO securities (symbol, security_type) VALUES ('ACWV2', 'ETF') RETURNING id",
+          )
+          .get() as { id: number }
+      ).id;
+      const vtiId = (
+        db
+          .prepare(
+            "INSERT INTO securities (symbol, security_type) VALUES ('VTI2', 'ETF') RETURNING id",
+          )
+          .get() as { id: number }
+      ).id;
+
+      // Two PRE-EXISTING snapshots already on the books: an older one with both
+      // positions, and a newer "latest" one where ACWV2 already disappeared —
+      // i.e. conditions that WOULD produce a zero-row if the sweep ran.
+      const olderDate = "2026-05-31";
+      const latestDate = "2026-06-30";
+      db.prepare(
+        `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+         VALUES (?, ?, 10, ?, ?)`,
+      ).run(accountId, acwvId, olderDate, `seed:acwv:${olderDate}`);
+      db.prepare(
+        `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+         VALUES (?, ?, 5, ?, ?)`,
+      ).run(accountId, vtiId, olderDate, `seed:vti:${olderDate}`);
+      db.prepare(
+        `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+         VALUES (?, ?, 5, ?, ?)`,
+      ).run(accountId, vtiId, latestDate, `seed:vti:${latestDate}`);
+
+      const beforeCount = (
+        db.prepare("SELECT COUNT(*) as c FROM holdings").get() as { c: number }
+      ).c;
+
+      const parsed: import("@/lib/import/types").ParsedImportResult = {
+        sourceType: "canonical-csv",
+        sourceName: "canonical-txns-2026-07.csv",
+        transactions: [
+          {
+            accountName: "roth2",
+            tradeDate: "2026-07-01",
+            type: "DIVIDEND",
+            symbol: "VTI2",
+            amount: 12.34,
+            sourceKey: "canonical:txn:roth2:VTI2:2026-07-01:DIVIDEND:1234",
+          },
+        ],
+        securities: [{ symbol: "VTI2", securityType: "ETF" }],
+        holdings: [],
+        prices: [],
+        snapshots: [],
+        errors: [],
+        warnings: [],
+      };
+
+      commitImport(db, parsed);
+
+      const afterCount = (
+        db.prepare("SELECT COUNT(*) as c FROM holdings").get() as { c: number }
+      ).c;
+      expect(afterCount).toBe(beforeCount); // sweep did not add a zero-row
+
+      const acwvAtLatest = db
+        .prepare(
+          "SELECT quantity FROM holdings WHERE account_id = ? AND security_id = ? AND as_of_date = ?",
+        )
+        .get(accountId, acwvId, latestDate) as { quantity: number } | undefined;
+      expect(acwvAtLatest).toBeUndefined();
+    });
+  });
 });
