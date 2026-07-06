@@ -15,7 +15,8 @@ interface CloudEnrichedPayload {
   deferred?: boolean;
   reason?: string;
   reaction: unknown;
-  fetchedAt: string;
+  /** Absent on pre-Wave-1 Worker payloads — treated as fresh (see isStalePayload). */
+  fetchedAt?: string;
 }
 
 export interface CloudReconcileResult {

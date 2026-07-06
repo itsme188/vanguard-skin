@@ -280,6 +280,27 @@ describe("push-at-print hook (Wave 1 §2, cloud reconcile path)", () => {
     expect(mockSendEarningsPrintPush).toHaveBeenCalledTimes(1);
   });
 
+  it("fires when the payload has NO fetchedAt (old Worker payload) — treated as fresh", async () => {
+    seedHeldSecurity("OLDW");
+    const eventId = insertCalendarEvent({ symbol: "OLDW", actual_value: null });
+
+    mockWorker({
+      [String(eventId)]: {
+        eventId,
+        source_key: "finnhub:OLDW:2026-07-28",
+        actual: "EPS 0.95 · Rev 210,000,000",
+        consensus: null,
+        source: "cloud",
+        reaction: null,
+        // fetchedAt deliberately absent — pre-Wave-1 Worker payload shape
+      },
+    });
+
+    await reconcileCloudEnrichment(db, "secret");
+
+    expect(mockSendEarningsPrintPush).toHaveBeenCalledTimes(1);
+  });
+
   it("push consensus falls back to consensus_estimate when neither the payload nor consensus_value has it", async () => {
     seedHeldSecurity("EST");
     const eventId = insertCalendarEvent({ symbol: "EST", actual_value: null });
