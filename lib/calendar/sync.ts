@@ -170,35 +170,39 @@ export async function syncCalendarForWeek(
     }
   }
 
+  // Scan set = held stocks ∪ read-through reporters ∪ active watchlist ∪
+  // held-option underlyings. Watchlist names get full earnings parity (user
+  // decision, Wave 1); option-only names (e.g. a TER LEAP with no TER stock)
+  // must see their print too. Deduped + uppercase to keep call counts tight.
+  // Shared by the Finnhub scan AND the Nasdaq cross-check (Wave 1 item 3) —
+  // the cross-check must validate dates for the exact universe Finnhub
+  // scanned, or a watchlist-only/option-only name could get a Finnhub row
+  // with no Nasdaq corroboration.
+  const heldSymbols = getHeldStockSymbols(db);
+  const reporterSymbols = getReadThroughReporterSymbols(db);
+  const watchlistSymbols = getActiveWatchlistStockSymbols(db);
+  const optionUnderlyings = getHeldOptionUnderlyingSymbols(db);
+  const scanSymbols = Array.from(
+    new Set(
+      [...heldSymbols, ...reporterSymbols, ...watchlistSymbols, ...optionUnderlyings].map(
+        (s) => s.toUpperCase(),
+      ),
+    ),
+  ).sort();
+
   if (includeFinnhub) {
     if (process.env.FINNHUB_API_KEY) {
-      // Scan set = held stocks ∪ read-through reporters ∪ active watchlist
-      // ∪ held-option underlyings. Watchlist names get full earnings parity
-      // (user decision, Wave 1); option-only names (e.g. a TER LEAP with no
-      // TER stock) must see their print too. Deduped + uppercase to keep the
-      // Finnhub call count tight.
-      const heldSymbols = getHeldStockSymbols(db);
-      const reporterSymbols = getReadThroughReporterSymbols(db);
-      const watchlistSymbols = getActiveWatchlistStockSymbols(db);
-      const optionUnderlyings = getHeldOptionUnderlyingSymbols(db);
-      const symbols = Array.from(
-        new Set(
-          [...heldSymbols, ...reporterSymbols, ...watchlistSymbols, ...optionUnderlyings].map(
-            (s) => s.toUpperCase(),
-          ),
-        ),
-      ).sort();
-      const extras = symbols.length - heldSymbols.length;
+      const extras = scanSymbols.length - heldSymbols.length;
       const extrasSuffix =
         extras > 0 ? ` (+ ${extras} watchlist/reporter/underlying)` : "";
       send({
         phase: "finnhub_fetch",
-        message: `Scanning ${symbols.length} symbol${symbols.length === 1 ? "" : "s"} via Finnhub${extrasSuffix}...`,
+        message: `Scanning ${scanSymbols.length} symbol${scanSymbols.length === 1 ? "" : "s"} via Finnhub${extrasSuffix}...`,
       });
       try {
         const finnhubInputs = await fetchFinnhubEarningsForSymbols(
           db,
-          symbols,
+          scanSymbols,
           startDate,
           endDate,
           weekOf,
@@ -232,22 +236,18 @@ export async function syncCalendarForWeek(
   }
 
   // ── Nasdaq cross-check (date authority alongside Finnhub) ──────────
-  // Same symbol set as Finnhub. Window reaches back 7 days before the week so a
-  // name that already reported (a corrected past date) can supersede a stale
-  // future Finnhub row. US-listed only — no GFL→GFL.TO drift. Graceful-degrades
-  // (returns fewer rows) if the unofficial endpoint is unavailable.
+  // Same scanSymbols set as Finnhub (hoisted above). Window reaches back 7
+  // days before the week so a name that already reported (a corrected past
+  // date) can supersede a stale future Finnhub row. US-listed only — no
+  // GFL→GFL.TO drift. Graceful-degrades (returns fewer rows) if the
+  // unofficial endpoint is unavailable.
   if (includeNasdaq) {
     send({ phase: "nasdaq_fetch", message: "Cross-checking earnings dates via Nasdaq..." });
     try {
-      const heldSymbols = getHeldStockSymbols(db);
-      const reporterSymbols = getReadThroughReporterSymbols(db);
-      const symbols = Array.from(
-        new Set([...heldSymbols, ...reporterSymbols].map((s) => s.toUpperCase())),
-      ).sort();
       const nasdaqStart = addDays(startDate, -7);
       const nasdaqInputs = await fetchNasdaqEarningsForSymbols(
         db,
-        symbols,
+        scanSymbols,
         nasdaqStart,
         endDate,
         weekOf,

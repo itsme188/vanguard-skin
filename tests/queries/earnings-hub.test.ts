@@ -149,6 +149,13 @@ describe("getSymbolStatus", () => {
     expect(getSymbolStatus(db, ["GLW"]).GLW).toBe("neither");
   });
 
+  it("a short-only stock position confers held status (quantity != 0)", () => {
+    const acct = getAccount("IBKR");
+    const tslaId = seedSecurity("TSLA");
+    seedHolding(acct, tslaId, -300); // short, latest row for (account, security)
+    expect(getSymbolStatus(db, ["TSLA"])).toEqual({ TSLA: "held" });
+  });
+
   it("classifies a symbol held only via options as held", () => {
     const acct = getAccount("IBKR");
     const optId = seedOption("TER   270115C00120000", "TER", "2027-01-15"); // ~1yr out

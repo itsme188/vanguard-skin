@@ -236,6 +236,77 @@ describe("push-at-print hook (Wave 1 §2, cloud reconcile path)", () => {
     });
   });
 
+  it("does NOT fire when the payload is stale (fetchedAt > 24h old)", async () => {
+    seedHeldSecurity("STALE");
+    const eventId = insertCalendarEvent({ symbol: "STALE", actual_value: null });
+    const staleFetchedAt = new Date(Date.now() - 25 * 3600 * 1000).toISOString();
+
+    mockWorker({
+      [String(eventId)]: {
+        eventId,
+        source_key: "finnhub:STALE:2026-07-28",
+        actual: "EPS 1.10 · Rev 400,000,000",
+        consensus: null,
+        source: "cloud",
+        reaction: null,
+        fetchedAt: staleFetchedAt,
+      },
+    });
+
+    await reconcileCloudEnrichment(db, "secret");
+
+    expect(mockSendEarningsPrintPush).not.toHaveBeenCalled();
+  });
+
+  it("fires when the payload is fresh (fetchedAt well within 24h)", async () => {
+    seedHeldSecurity("FRESH");
+    const eventId = insertCalendarEvent({ symbol: "FRESH", actual_value: null });
+    const freshFetchedAt = new Date(Date.now() - 5 * 60 * 1000).toISOString(); // 5 min ago
+
+    mockWorker({
+      [String(eventId)]: {
+        eventId,
+        source_key: "finnhub:FRESH:2026-07-28",
+        actual: "EPS 1.20 · Rev 410,000,000",
+        consensus: null,
+        source: "cloud",
+        reaction: null,
+        fetchedAt: freshFetchedAt,
+      },
+    });
+
+    await reconcileCloudEnrichment(db, "secret");
+
+    expect(mockSendEarningsPrintPush).toHaveBeenCalledTimes(1);
+  });
+
+  it("push consensus falls back to consensus_estimate when neither the payload nor consensus_value has it", async () => {
+    seedHeldSecurity("EST");
+    const eventId = insertCalendarEvent({ symbol: "EST", actual_value: null });
+    db.prepare(`UPDATE calendar_events SET consensus_estimate = ? WHERE id = ?`).run(
+      "EPS 0.75 · Rev 250,000,000",
+      eventId,
+    );
+
+    mockWorker({
+      [String(eventId)]: {
+        eventId,
+        source_key: "finnhub:EST:2026-07-28",
+        actual: "EPS 0.90 · Rev 260,000,000",
+        consensus: null,
+        source: "cloud",
+        reaction: null,
+        fetchedAt: "2026-07-28T21:00:00Z",
+      },
+    });
+
+    await reconcileCloudEnrichment(db, "secret");
+
+    expect(mockSendEarningsPrintPush).toHaveBeenCalledWith(
+      expect.objectContaining({ consensusValue: "EPS 0.75 · Rev 250,000,000" }),
+    );
+  });
+
   it("does NOT fire when the row already had an actual", async () => {
     seedHeldSecurity("OLD");
     const eventId = insertCalendarEvent({
@@ -260,18 +331,28 @@ describe("push-at-print hook (Wave 1 §2, cloud reconcile path)", () => {
     expect(mockSendEarningsPrintPush).not.toHaveBeenCalled();
   });
 
-  it("does NOT fire for a deferred payload", async () => {
-    seedHeldSecurity("DEFER");
-    const eventId = insertCalendarEvent({ symbol: "DEFER", actual_value: null });
+  // NOTE: a "deferred payload → no push" case was here previously, but it
+  // was vacuous — deferred payloads `continue` before this hook is ever
+  // reached (see the `if (payload.deferred)` branch above), so the
+  // assertion could never fail. Replaced with the novel untested path: the
+  // TWS-wins branch (existing row has a TWS-sourced reaction but no actual
+  // yet) still falls through to the push hook once the cloud payload
+  // delivers the first actual.
+  it("fires when the TWS-wins branch delivers the first actual (existing TWS reaction, no actual yet)", async () => {
+    seedHeldSecurity("TWSWIN");
+    const eventId = insertCalendarEvent({ symbol: "TWSWIN", actual_value: null });
+    db.prepare(`UPDATE calendar_events SET reaction_snapshot = ? WHERE id = ?`).run(
+      JSON.stringify({ source: "tws", spy: { delta_pct: 0.2 } }),
+      eventId,
+    );
 
     mockWorker({
       [String(eventId)]: {
         eventId,
-        source_key: "finnhub:DEFER:2026-07-28",
-        actual: null,
-        consensus: null,
+        source_key: "finnhub:TWSWIN:2026-07-28",
+        actual: "EPS 0.88 · Rev 300,000,000",
+        consensus: "EPS 0.80 · Rev 290,000,000",
         source: "cloud",
-        deferred: true,
         reaction: null,
         fetchedAt: "2026-07-28T21:00:00Z",
       },
@@ -279,7 +360,16 @@ describe("push-at-print hook (Wave 1 §2, cloud reconcile path)", () => {
 
     await reconcileCloudEnrichment(db, "secret");
 
-    expect(mockSendEarningsPrintPush).not.toHaveBeenCalled();
+    expect(mockSendEarningsPrintPush).toHaveBeenCalledTimes(1);
+    expect(mockSendEarningsPrintPush).toHaveBeenCalledWith({
+      eventId,
+      symbol: "TWSWIN",
+      actualValue: "EPS 0.88 · Rev 300,000,000",
+      consensusValue: "EPS 0.80 · Rev 290,000,000",
+      // TWS reaction preserved (existing.reaction_snapshot) since the cloud
+      // payload carried no reaction of its own.
+      reactionJson: JSON.stringify({ source: "tws", spy: { delta_pct: 0.2 } }),
+    });
   });
 
   it("does NOT fire for a macro row even when it carries an actual + a held symbol", async () => {

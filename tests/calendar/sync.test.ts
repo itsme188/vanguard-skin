@@ -34,6 +34,7 @@ vi.mock("@/lib/tws/client", () => ({
 import { syncCalendarForWeek, SyncCalendarValidationError } from "@/lib/calendar/sync";
 import { fetchMacroEvents } from "@/lib/calendar/macro-events";
 import { fetchFinnhubEarningsForSymbols } from "@/lib/calendar/finnhub";
+import { fetchNasdaqEarningsForSymbols } from "@/lib/calendar/nasdaq";
 import { fetchWshEvents } from "@/lib/tws/wsh";
 import { parseWshEvents } from "@/lib/calendar/parse-wsh";
 import { getIbApi } from "@/lib/tws/client";
@@ -147,6 +148,13 @@ describe("syncCalendarForWeek", () => {
     expect(vi.mocked(fetchFinnhubEarningsForSymbols)).toHaveBeenCalledTimes(1);
     const symbolsArg = vi.mocked(fetchFinnhubEarningsForSymbols).mock.calls[0][1];
     expect(symbolsArg).toEqual(["AAPL", "SHOP", "TER"]);
+
+    // Wave 1 item 3: the Nasdaq cross-check must scan the exact same merged
+    // set (held ∪ reporters ∪ watchlist ∪ optionUnderlyings) as Finnhub, not
+    // a narrower held-only-plus-reporters set.
+    expect(vi.mocked(fetchNasdaqEarningsForSymbols)).toHaveBeenCalledTimes(1);
+    const nasdaqSymbolsArg = vi.mocked(fetchNasdaqEarningsForSymbols).mock.calls[0][1];
+    expect(nasdaqSymbolsArg).toEqual(["AAPL", "SHOP", "TER"]);
   });
 
   it("skips wsh phase when TWS is not connected", async () => {
