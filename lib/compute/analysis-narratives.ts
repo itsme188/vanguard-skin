@@ -68,7 +68,7 @@ const SURFACE_PROMPTS: Record<NarrativeSurface, string> = {
   "factor-heatmap":
     "Read the heatmap of factor exposures across positions. In 2-3 sentences, call out the most concentrated factor bucket and any surprising holes (e.g., zero crypto exposure, no defensive plays). Avoid specific dollar amounts.",
   defense:
-    "You are reviewing the portfolio's defensive posture. In 3-4 sentences: state how much of the long book is protected and through what (same-name hedges vs index/sector puts), name the largest UNPROTECTED exposures, and flag any hedge that looks expensive or nearly decayed (use the badges). Plain prose, no headers, no advice to buy anything new.",
+    "You are reviewing the portfolio's defensive posture. In 2-4 sentences: state how much of the long book is protected and through what (same-name hedges vs index/sector puts), name the largest UNPROTECTED exposures, and flag any hedge that looks expensive or nearly decayed (use the badges). Plain prose, no headers, no advice to buy anything new. All ratio/pct fields in the context are decimal fractions (0.18 = 18%) — convert before narrating.",
 };
 
 // ─── Per-surface context builder ─────────────────────────────────────────────
