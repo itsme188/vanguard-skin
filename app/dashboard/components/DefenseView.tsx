@@ -3,6 +3,7 @@ import { resolveScope } from "@/lib/queries/accounts";
 import { computeDefenseAnalysis } from "@/lib/compute/hedging";
 import { interpretProtectionRatio, toneClass } from "@/lib/analysis/interpret";
 import { Money, Pct, Count, PrivateText } from "@/lib/privacy/components";
+import { CoverageBar } from "./CoverageBar";
 import { EmptySection } from "./EmptySection";
 import { NarrativeBlock } from "./analysis/NarrativeBlock";
 import { DefenseTables } from "./DefenseTables";
@@ -90,26 +91,18 @@ export async function DefenseView({ scope = "all" }: DefenseViewProps) {
           </p>
         ) : (
           <div className="space-y-3">
-            {analysis.sectorCoverage.map((sc) => {
-              const widthPct = Math.min(100, Math.max(0, (sc.coveragePct ?? 0) * 100));
-              return (
-                <div key={sc.sector}>
-                  <div className="flex items-baseline justify-between text-xs mb-1">
-                    <span className="text-ink">{sc.sector}</span>
-                    <span className="text-ink-faint">
-                      <Money value={sc.longExposure} className="mr-2" />
-                      <Pct value={sc.coveragePct !== null ? sc.coveragePct * 100 : null} digits={0} />
-                    </span>
-                  </div>
-                  <div className="h-2 rounded-full bg-raised overflow-hidden">
-                    <div
-                      className="h-full rounded-full bg-gold"
-                      style={{ width: `${widthPct}%` }}
-                    />
-                  </div>
+            {analysis.sectorCoverage.map((sc) => (
+              <div key={sc.sector}>
+                <div className="flex items-baseline justify-between text-xs mb-1">
+                  <span className="text-ink">{sc.sector}</span>
+                  <span className="text-ink-faint">
+                    <Money value={sc.longExposure} className="mr-2" />
+                    <Pct value={sc.coveragePct !== null ? sc.coveragePct * 100 : null} digits={0} />
+                  </span>
                 </div>
-              );
-            })}
+                <CoverageBar pct={sc.coveragePct} />
+              </div>
+            ))}
           </div>
         )}
       </section>
