@@ -4,6 +4,8 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { parseImport, commitImport, undoImport } from "@/lib/import/engine";
+import { upsertSecurity } from "@/lib/mutations/securities";
+import { parseVanguardCostBasis } from "@/lib/import/parsers/vanguard-cost-basis";
 
 // Load test fixtures
 const fixturesDir = path.join(__dirname, "..", "fixtures");
@@ -980,7 +982,7 @@ describe("import engine", () => {
       expect(price?.security_id).toBe(baseSecId);
     });
 
-    it("keeps a suffixed symbol untouched when no base-symbol security exists", () => {
+    it("normalizes a suffixed symbol to its bare form even when no base-symbol security exists yet (2026-07-05 review redesign: pure/unconditional, not DB-existence-gated)", () => {
       const parsed: import("@/lib/import/types").ParsedImportResult = {
         sourceType: "ibkr-activity",
         sourceName: "IBKR 2026-06 activity.csv",
@@ -1003,13 +1005,24 @@ describe("import engine", () => {
 
       const result = commitImport(db, parsed);
 
+      // A bare-symbol security is created — never one under the suffixed form.
       expect(result.newSecurities).toBe(1);
       const row = db
-        .prepare("SELECT id, symbol FROM securities WHERE symbol = 'FAKE.KS'")
-        .get() as { id: number; symbol: string } | undefined;
+        .prepare("SELECT id, symbol, currency FROM securities WHERE symbol = 'FAKE'")
+        .get() as { id: number; symbol: string; currency: string } | undefined;
       expect(row).toBeDefined();
-      expect(row?.symbol).toBe("FAKE.KS");
+      expect(row?.symbol).toBe("FAKE");
+      // Defaults to USD (self-heals to the real currency on the next sync
+      // upsert, via the COALESCE(NULLIF(...,'USD'),...) preservation pattern).
+      expect(row?.currency).toBe("USD");
 
+      const suffixedRow = db
+        .prepare("SELECT COUNT(*) as c FROM securities WHERE symbol = 'FAKE.KS'")
+        .get() as { c: number };
+      expect(suffixedRow.c).toBe(0);
+
+      // The holding's source_key retains the ORIGINAL suffixed statement
+      // symbol — normalization never rewrites source_key, only .symbol.
       const holding = db
         .prepare(
           "SELECT security_id FROM holdings WHERE source_key = 'ibkr:pos:2026-06-30:FAKE.KS'",
@@ -1063,6 +1076,128 @@ describe("import engine", () => {
         )
         .get() as { security_id: number } | undefined;
       expect(holding?.security_id).toBe(heiARow?.id);
+    });
+
+    it("re-importing the same statement after the base-symbol security is later created by a sync does not throw a source_key UNIQUE violation (2026-07-05 review redesign — idempotency regression)", () => {
+      // A fresh ParsedImportResult per commit — mirrors re-parsing the SAME
+      // statement file twice, since the real parser is pure and produces a
+      // brand-new object each call. Reusing one mutated object reference
+      // across two commitImport calls would not faithfully reproduce the
+      // scenario (normalization mutates parsed records in place).
+      function buildBatch(): import("@/lib/import/types").ParsedImportResult {
+        return {
+          sourceType: "ibkr-activity",
+          sourceName: "IBKR 2026-06 activity.csv",
+          transactions: [
+            {
+              accountName: "IBKR",
+              tradeDate: "2026-06-15",
+              type: "BUY",
+              symbol: "402340.KS",
+              quantity: 10,
+              amount: -500000,
+              pricePerShare: 50000,
+              sourceKey: "ibkr:trade:2026-06-15:402340.KS:10:-500000",
+            },
+          ],
+          securities: [{ symbol: "402340.KS", securityType: "Stock" }],
+          holdings: [
+            {
+              accountName: "IBKR",
+              symbol: "402340.KS",
+              quantity: 10,
+              asOfDate: "2026-06-30",
+              sourceKey: "ibkr:pos:2026-06-30:402340.KS",
+            },
+          ],
+          prices: [
+            {
+              symbol: "402340.KS",
+              date: "2026-06-30",
+              closePrice: 50000,
+              source: "ibkr-activity",
+            },
+          ],
+          snapshots: [],
+          errors: [],
+          warnings: [],
+        };
+      }
+
+      // First commit — NO base-symbol ("402340") row exists yet.
+      commitImport(db, buildBatch());
+
+      const ibkrAccountId = (
+        db.prepare("SELECT id FROM accounts WHERE name = 'IBKR'").get() as {
+          id: number;
+        }
+      ).id;
+      const beforeTxnCount = (
+        db.prepare("SELECT COUNT(*) as c FROM transactions").get() as {
+          c: number;
+        }
+      ).c;
+      const beforeHoldingCount = (
+        db
+          .prepare(
+            "SELECT COUNT(*) as c FROM holdings WHERE account_id = ?",
+          )
+          .get(ibkrAccountId) as { c: number }
+      ).c;
+
+      // Simulate the TWS/Web-API sync later creating the bare-symbol
+      // security row (currency resolved from the live contract, e.g. KRW).
+      upsertSecurity(db, {
+        symbol: "402340",
+        securityType: "Stock",
+        currency: "KRW",
+      });
+
+      // Re-commit the SAME statement (a legitimate duplicate/re-run import).
+      // Under the pre-redesign DB-existence-gated resolver this throws a
+      // "UNIQUE constraint failed: holdings.source_key" error and rolls back
+      // the whole batch, because the second commit resolves "402340.KS" to
+      // the NOW-existing base row's security_id while the first commit's
+      // holding row is still keyed to the suffixed-symbol security_id — same
+      // source_key, different (account_id, security_id, as_of_date), so the
+      // upsert's ON CONFLICT target misses and the column-level UNIQUE on
+      // source_key fires instead.
+      expect(() => commitImport(db, buildBatch())).not.toThrow();
+
+      const afterTxnCount = (
+        db.prepare("SELECT COUNT(*) as c FROM transactions").get() as {
+          c: number;
+        }
+      ).c;
+      const afterHoldingCount = (
+        db
+          .prepare(
+            "SELECT COUNT(*) as c FROM holdings WHERE account_id = ?",
+          )
+          .get(ibkrAccountId) as { c: number }
+      ).c;
+
+      // INSERT OR IGNORE on the unchanged source_key — no new transaction row.
+      expect(afterTxnCount).toBe(beforeTxnCount);
+      // ON CONFLICT(account_id, security_id, as_of_date) matches the SAME
+      // row both times — no new/duplicate holding row.
+      expect(afterHoldingCount).toBe(beforeHoldingCount);
+
+      // Exactly one securities row for the whole "402340" family — never a
+      // second row under the suffixed "402340.KS" form.
+      const securitiesForFamily = db
+        .prepare(
+          "SELECT symbol FROM securities WHERE symbol IN ('402340', '402340.KS')",
+        )
+        .all() as { symbol: string }[];
+      expect(securitiesForFamily).toHaveLength(1);
+      expect(securitiesForFamily[0].symbol).toBe("402340");
+
+      // Currency was never clobbered back to USD by the re-import.
+      const currency = db
+        .prepare("SELECT currency FROM securities WHERE symbol = '402340'")
+        .get() as { currency: string };
+      expect(currency.currency).toBe("KRW");
     });
   });
 
@@ -1243,6 +1378,70 @@ describe("import engine", () => {
         )
         .get(accountId, acwvId, latestDate) as { quantity: number } | undefined;
       expect(acwvAtLatest).toBeUndefined();
+    });
+
+    it("does NOT trigger the closed-equity sweep for a legacy vanguard-cost-basis import even though it carries holdings rows (2026-07-05 review redesign — scope narrowed to canonical-csv only)", () => {
+      // "Vanguard Taxable" is already seeded by migration 002 — the
+      // cost-basis fixture's "Brokerage" account maps to it via ACCOUNT_MAP.
+      const accountId = (
+        db
+          .prepare("SELECT id FROM accounts WHERE name = 'Vanguard Taxable'")
+          .get() as { id: number }
+      ).id;
+      const staleId = (
+        db
+          .prepare(
+            "INSERT INTO securities (symbol, security_type) VALUES ('STALECB', 'Stock') RETURNING id",
+          )
+          .get() as { id: number }
+      ).id;
+
+      // A pre-existing snapshot that WOULD produce a zero-row for STALECB if
+      // the closed-equity sweep ran (it's absent from the cost-basis import
+      // below, which is itself a different-shaped/legacy snapshot).
+      const latestDate = "2026-06-30";
+      db.prepare(
+        `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+         VALUES (?, ?, 10, ?, ?)`,
+      ).run(accountId, staleId, latestDate, `seed:stalecb:${latestDate}`);
+
+      const beforeCount = (
+        db.prepare("SELECT COUNT(*) as c FROM holdings").get() as { c: number }
+      ).c;
+
+      // The legacy (original-format) vanguard-cost-basis branch still emits
+      // ParsedHolding rows — confirm via the real parser + fixture, not a
+      // hand-built ParsedImportResult, so the test can't drift from the
+      // parser's actual behavior.
+      const costBasisFixture = fs.readFileSync(
+        path.join(fixturesDir, "vanguard-cost-basis-sample.csv"),
+        "utf-8",
+      );
+      const parsed = parseVanguardCostBasis(
+        costBasisFixture,
+        "vanguard_cost_basis.csv",
+      );
+      expect(parsed.sourceType).toBe("vanguard-cost-basis");
+      expect(parsed.holdings.length).toBeGreaterThan(0);
+
+      commitImport(db, parsed);
+
+      const afterCount = (
+        db.prepare("SELECT COUNT(*) as c FROM holdings").get() as { c: number }
+      ).c;
+      // The import's OWN holdings rows are written unconditionally (that's
+      // the primary write path, not gated) — only the post-commit SWEEP is
+      // gated. So the expected delta is exactly the fixture's own holdings
+      // count; anything more would mean the sweep fired and inserted an
+      // extra zero-row for STALECB.
+      expect(afterCount).toBe(beforeCount + parsed.holdings.length);
+
+      const staleAtLatest = db
+        .prepare(
+          "SELECT quantity FROM holdings WHERE account_id = ? AND security_id = ? AND as_of_date = ?",
+        )
+        .get(accountId, staleId, latestDate) as { quantity: number } | undefined;
+      expect(staleAtLatest?.quantity).toBe(10); // untouched, not zeroed
     });
   });
 });

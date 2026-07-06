@@ -28,29 +28,61 @@ import { normalizeSector } from "@/lib/securities/normalize-sector";
 // ── IBKR exchange-suffixed symbol resolution ────────────────────────
 //
 // IBKR activity statements print foreign-listed positions with an
-// exchange-suffixed symbol (e.g. the Korea-listed "402340.KS"), but the
-// securities row for that name may already exist under the BARE symbol
-// ("402340", currency='KRW') — created separately by the TWS/Web-API sync.
-// Left unresolved, `upsertSecurity` creates a brand-new row for "402340.KS"
-// (defaulting currency='USD'), and the statement's native-KRW price then
-// gets valued as if it were dollars — a currency-scaled phantom holding.
+// exchange-suffixed symbol (e.g. the Korea-listed "402340.KS"). The
+// TWS/Web-API sync, however, always writes that same listing under the BARE
+// symbol ("402340", currency resolved from the contract — e.g. 'KRW') — the
+// bare form is this codebase's canonical representation for a foreign
+// listing. Normalization therefore strips a known IBKR exchange suffix
+// UNCONDITIONALLY, never gated on whether a base-symbol securities row
+// already exists.
+//
+// Why unconditional (2026-07-05 review redesign — replaces a DB-existence
+// gate that shipped, then was reverted, in this same branch): gating
+// resolution on "does a base row exist yet" makes symbol resolution a
+// function of MUTABLE DB STATE, not just the file's own bytes. The same
+// statement file would then resolve differently depending on import order:
+// first import (no base row yet) keeps "402340.KS" and creates a security
+// under that suffixed symbol; once a sync later creates the bare "402340"
+// row, re-importing the IDENTICAL statement resolves to a DIFFERENT
+// security id for the same holding — the ON CONFLICT(account_id,
+// security_id, as_of_date) target on the second commit no longer matches
+// the first commit's row, so the INSERT falls through to a plain insert
+// that collides with the (unchanged, suffix-preserving) `source_key`
+// UNIQUE column constraint instead — which the upsert's ON CONFLICT clause
+// doesn't cover — and the whole transaction rolls back.
+//
+// Stripping unconditionally makes symbol (and therefore security)
+// resolution a PURE function of the file: idempotent in every DB state.
+// If the statement arrives before any sync row exists, the bare-symbol
+// security is created fresh (currency defaults to USD via `upsertSecurity`)
+// and self-heals to the real currency on the next sync upsert (the
+// COALESCE(NULLIF(excluded.currency,'USD'), securities.currency) pattern —
+// see lib/mutations/securities.ts) — one row either way, never two.
 //
 // `parseIbkrActivity` is a pure function (content, filename) -> parsed
 // records with no `db` parameter, and its own test suite
-// (tests/import/parsers/ibkr-activity.test.ts) exercises it that way. Adding
-// a DB dependency there would break that contract for no benefit, since the
-// only thing this resolution needs — "does a securities row already exist
-// for the base symbol" — is exactly what `commitImport` already has open
-// access to, at the same place it calls `upsertSecurity`. So the resolution
-// lives here, gated to `sourceType === "ibkr-activity"`, and runs once
-// up front (mutating the validated `parsed` records) before any DB writes.
+// (tests/import/parsers/ibkr-activity.test.ts) exercises it that way; this
+// normalization deliberately stays pure too and lives in `commitImport`
+// (gated to `sourceType === "ibkr-activity"`), running once up front
+// (mutating the validated `parsed` records) before any DB writes.
+//
+// source_key invariant: normalization rewrites ONLY the in-memory `.symbol`
+// field. `source_key` values are built from the parser's ORIGINAL
+// (unresolved, still-suffixed) statement symbol and are NEVER rewritten
+// here — source_key = pure function of file content; symbol = normalized.
+// Re-running normalization against the same source_key is what makes the
+// idempotency guarantee above hold.
 
 /**
  * Exchange suffixes IBKR appends to foreign-listed symbols on activity
  * statements. Extensible — add new suffixes here as they're observed on
- * real statements. Deliberately excludes single-letter dual-class suffixes
- * (.A, .B, ...) used by some US tickers (HEI.A, BRK.B) — those must never
- * be treated as exchange suffixes and rewritten.
+ * real statements. The actual safety rule this list encodes is: no suffix
+ * that collides with a plausible US dual-class share letter (.A, .B, ...) —
+ * see lib/securities/issuer-family.ts's FAMILIES list, which only ever uses
+ * single-letter class suffixes (HEI.A, BRK.A/BRK.B). `.T` and `.L` below are
+ * also single letters, but they're real exchange suffixes (Tokyo, London)
+ * with no dual-class collision anywhere in that family list, so they're
+ * safe to strip unconditionally.
  */
 export const IBKR_EXCHANGE_SUFFIXES = [
   ".KS", // Korea (KOSPI)
@@ -71,50 +103,41 @@ export const IBKR_EXCHANGE_SUFFIXES = [
 ] as const;
 
 /**
- * Resolve an IBKR exchange-suffixed symbol (e.g. "402340.KS") to an existing
- * base-symbol securities row (e.g. "402340") if one is already in the DB.
- * Never blind-strips: if no base row exists, the original symbol is returned
- * untouched so a genuinely new foreign symbol isn't silently re-keyed.
+ * Resolve an IBKR exchange-suffixed symbol (e.g. "402340.KS") to its bare
+ * base symbol (e.g. "402340"). PURE — no db access, no lookups — and
+ * therefore unconditional: a recognized suffix is always stripped,
+ * regardless of whether a base-symbol securities row currently exists. See
+ * the file-header comment above for why this must not depend on DB state.
  */
-function resolveIbkrExchangeSuffixedSymbol(
-  db: Database.Database,
-  symbol: string
-): string {
+export function resolveIbkrExchangeSuffixedSymbol(symbol: string): string {
   const suffix = IBKR_EXCHANGE_SUFFIXES.find((s) => symbol.endsWith(s));
   if (!suffix) return symbol;
   const base = symbol.slice(0, -suffix.length);
   if (!base) return symbol;
-  const existing = db
-    .prepare("SELECT 1 FROM securities WHERE symbol = ?")
-    .get(base);
-  return existing ? base : symbol;
+  return base;
 }
 
-function resolveIbkrExchangeSuffixedSymbols(
-  db: Database.Database,
-  parsed: ParsedImportResult
-): void {
+function resolveIbkrExchangeSuffixedSymbols(parsed: ParsedImportResult): void {
   if (parsed.sourceType !== "ibkr-activity") return;
 
   for (const sec of parsed.securities) {
-    sec.symbol = resolveIbkrExchangeSuffixedSymbol(db, sec.symbol);
+    sec.symbol = resolveIbkrExchangeSuffixedSymbol(sec.symbol);
     if (sec.underlyingSymbol) {
       sec.underlyingSymbol = resolveIbkrExchangeSuffixedSymbol(
-        db,
         sec.underlyingSymbol
       );
     }
   }
   for (const txn of parsed.transactions) {
     if (txn.symbol) {
-      txn.symbol = resolveIbkrExchangeSuffixedSymbol(db, txn.symbol);
+      txn.symbol = resolveIbkrExchangeSuffixedSymbol(txn.symbol);
     }
   }
   for (const h of parsed.holdings) {
-    h.symbol = resolveIbkrExchangeSuffixedSymbol(db, h.symbol);
+    h.symbol = resolveIbkrExchangeSuffixedSymbol(h.symbol);
   }
   for (const p of parsed.prices) {
-    p.symbol = resolveIbkrExchangeSuffixedSymbol(db, p.symbol);
+    p.symbol = resolveIbkrExchangeSuffixedSymbol(p.symbol);
   }
 }
 
@@ -212,10 +235,10 @@ export function commitImport(
   // Use the validated (cleaned) result for all DB writes
   parsed = validatedResult;
 
-  // Resolve IBKR exchange-suffixed foreign symbols ("402340.KS") to an
-  // existing base-symbol security ("402340") BEFORE any writes below — see
+  // Normalize IBKR exchange-suffixed foreign symbols ("402340.KS" ->
+  // "402340") BEFORE any writes below — pure/unconditional, see
   // resolveIbkrExchangeSuffixedSymbols for the full rationale.
-  resolveIbkrExchangeSuffixedSymbols(db, parsed);
+  resolveIbkrExchangeSuffixedSymbols(parsed);
 
   let newTransactions = 0;
   let newHoldings = 0;
@@ -653,17 +676,23 @@ export function commitImport(
   // canonical-csv import can be transactions-only (dividends, fees, trades)
   // OR carry a full holdings block, and blanket-adding the source type would
   // fire the sweep even for pure-transaction imports with no bearing on
-  // current positions. Instead, gate on EVIDENCE: did this batch's parsed
-  // result actually carry holdings rows? `parsed.holdings.length` (not
-  // `newHoldings`) is the right signal — a verbatim re-import of an
-  // unchanged statement legitimately reports `newHoldings === 0` (every row
-  // is an idempotent no-op via the ON CONFLICT guard) even though it's a
-  // genuine holdings snapshot that should still keep the sweep active. The
-  // sweeps are idempotent + shrink-guarded, so gating this liberally is safe
-  // by design — the worst case is a harmless extra global scan.
+  // current positions. Instead, gate on EVIDENCE, scoped ONLY to
+  // canonical-csv: did THIS batch's parsed result carry holdings rows?
+  // `parsed.holdings.length` (not `newHoldings`) is the right signal — a
+  // verbatim re-import of an unchanged statement legitimately reports
+  // `newHoldings === 0` (every row is an idempotent no-op via the ON
+  // CONFLICT guard) even though it's a genuine holdings snapshot that
+  // should still keep the sweep active. The `sourceType === "canonical-csv"`
+  // guard is deliberate, not redundant with `.length > 0` alone — other
+  // parsers (e.g. the legacy `vanguard-cost-basis` original-format branch)
+  // also emit `ParsedHolding[]` rows without being a full-book snapshot
+  // source in the same sense, and widening the evidence check to ANY source
+  // type would silently re-include them. The sweeps are idempotent +
+  // shrink-guarded, so gating canonical-csv this liberally is safe by
+  // design — the worst case is a harmless extra global scan.
   const hasHoldingsSnapshot =
     HOLDINGS_SNAPSHOT_SOURCES.includes(parsed.sourceType) ||
-    parsed.holdings.length > 0;
+    (parsed.sourceType === "canonical-csv" && parsed.holdings.length > 0);
   if (hasHoldingsSnapshot) {
     try {
       const purged = purgeExpiredOptionHoldings(db);
