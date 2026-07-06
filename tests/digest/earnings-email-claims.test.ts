@@ -38,17 +38,52 @@ describe("earnings email claim slot", () => {
 
   it("first claim wins, concurrent second claim is refused", () => {
     const a = claimEarningsEmailSlot(db, eventId, "preview", "x@y.com");
-    expect(a).toEqual({ claimed: true, mode: "fresh" });
+    expect(a.claimed).toBe(true);
+    expect(a.mode).toBe("fresh");
+    expect(a.token).toBeTruthy();
     const b = claimEarningsEmailSlot(db, eventId, "preview", "x@y.com");
     expect(b.claimed).toBe(false);
     expect(b.reason).toBe("in_progress");
   });
 
   it("release deletes the claim so a retry can re-claim", () => {
-    claimEarningsEmailSlot(db, eventId, "preview", "x@y.com");
-    releaseEarningsEmailClaim(db, eventId, "preview");
+    const a = claimEarningsEmailSlot(db, eventId, "preview", "x@y.com");
+    releaseEarningsEmailClaim(db, eventId, "preview", a.token!);
     const again = claimEarningsEmailSlot(db, eventId, "preview", "x@y.com");
     expect(again.claimed).toBe(true);
+  });
+
+  it("a late finisher's release cannot delete a successor's takeover claim", () => {
+    const a = claimEarningsEmailSlot(db, eventId, "preview", "x@y.com");
+    expect(a.claimed).toBe(true);
+    expect(a.token).toBeTruthy();
+
+    // Age A's claim past the 30-min stale cutoff, then B takes over.
+    db.prepare(
+      `UPDATE earnings_emails SET sent_at = datetime('now', '-31 minutes')
+        WHERE event_id = ? AND phase = 'preview'`,
+    ).run(eventId);
+    const b = claimEarningsEmailSlot(db, eventId, "preview", "x@y.com");
+    expect(b.claimed).toBe(true);
+    expect(b.token).toBeTruthy();
+    expect(b.token).not.toBe(a.token);
+
+    // A fails late and releases with ITS token — B's claim must survive.
+    releaseEarningsEmailClaim(db, eventId, "preview", a.token!);
+    const row = db
+      .prepare(
+        `SELECT error, claim_token FROM earnings_emails WHERE event_id = ? AND phase = 'preview'`,
+      )
+      .get(eventId) as { error: string; claim_token: string };
+    expect(row).toBeDefined();
+    expect(row.error).toBe("in_progress");
+    expect(row.claim_token).toBe(b.token);
+
+    // B releasing with its own token works.
+    releaseEarningsEmailClaim(db, eventId, "preview", b.token!);
+    expect(
+      db.prepare(`SELECT 1 FROM earnings_emails WHERE event_id = ?`).get(eventId),
+    ).toBeUndefined();
   });
 
   it("stale in_progress claims (>30 min) can be taken over", () => {
