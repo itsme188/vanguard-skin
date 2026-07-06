@@ -1,5 +1,5 @@
 import type Anthropic from "@anthropic-ai/sdk";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
 import { sendEmail } from "@/lib/email";
@@ -215,7 +215,9 @@ async function sendEarningsEmail(
   } catch (err) {
     // A fresh claim must not survive a failed compose/send — the next sweep
     // tick should retry. (Refire mode never wrote a claim row.)
-    if (claim.mode === "fresh") releaseEarningsEmailClaim(db, eventId, phase);
+    if (claim.mode === "fresh" && claim.token) {
+      releaseEarningsEmailClaim(db, eventId, phase, claim.token);
+    }
     throw err;
   }
 
@@ -267,15 +269,16 @@ export function claimEarningsEmailSlot(
   eventId: number,
   phase: "preview" | "recap",
   recipient: string,
-): { claimed: boolean; mode: "fresh" | "refire"; reason?: "in_progress" } {
+): { claimed: boolean; mode: "fresh" | "refire"; token?: string; reason?: "in_progress" } {
+  const token = randomUUID();
   const ins = db
     .prepare(
-      `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, ai_input_hash, ai_output_md, error)
-       VALUES (?, ?, ?, datetime('now'), NULL, NULL, 'in_progress')
+      `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, ai_input_hash, ai_output_md, error, claim_token)
+       VALUES (?, ?, ?, datetime('now'), NULL, NULL, 'in_progress', ?)
        ON CONFLICT(event_id, phase) DO NOTHING`,
     )
-    .run(eventId, phase, recipient);
-  if (ins.changes === 1) return { claimed: true, mode: "fresh" };
+    .run(eventId, phase, recipient, token);
+  if (ins.changes === 1) return { claimed: true, mode: "fresh", token };
 
   const existing = db
     .prepare(
@@ -288,12 +291,12 @@ export function claimEarningsEmailSlot(
     const takeover = db
       .prepare(
         `UPDATE earnings_emails
-            SET sent_at = datetime('now'), recipient = ?
+            SET sent_at = datetime('now'), recipient = ?, claim_token = ?
           WHERE event_id = ? AND phase = ? AND error = 'in_progress'
             AND datetime(sent_at) <= datetime('now', '-${CLAIM_STALE_MINUTES} minutes')`,
       )
-      .run(recipient, eventId, phase);
-    if (takeover.changes === 1) return { claimed: true, mode: "fresh" };
+      .run(recipient, token, eventId, phase);
+    if (takeover.changes === 1) return { claimed: true, mode: "fresh", token };
     return { claimed: false, mode: "fresh", reason: "in_progress" };
   }
 
@@ -306,11 +309,14 @@ export function releaseEarningsEmailClaim(
   db: Database.Database,
   eventId: number,
   phase: "preview" | "recap",
+  token: string,
 ): void {
+  // Token-conditional: a late finisher must not delete a successor's
+  // takeover claim (migration 063).
   db.prepare(
     `DELETE FROM earnings_emails
-      WHERE event_id = ? AND phase = ? AND error = 'in_progress'`,
-  ).run(eventId, phase);
+      WHERE event_id = ? AND phase = ? AND error = 'in_progress' AND claim_token = ?`,
+  ).run(eventId, phase, token);
 }
 
 export function reapStaleEarningsEmailClaims(db: Database.Database): number {
