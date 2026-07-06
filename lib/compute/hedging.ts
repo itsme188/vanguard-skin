@@ -1,4 +1,11 @@
 import type Database from "better-sqlite3";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { adjustedMarketValueSQL } from "@/lib/valuation";
+import { computePortfolioGreeks, type GreeksDiagnostic } from "@/lib/compute/options-greeks";
+import { optionExposureFallback } from "@/lib/compute/exposure";
+import { issuerSiblings } from "@/lib/securities/issuer-family";
+import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
+import { explodeHoldingBySector } from "@/lib/compute/explode-sector";
 
 /**
  * Defense/Hedging engine — classifies the book into hedged pairs (Tier 1),
@@ -481,4 +488,528 @@ export function scoreHedges(
     if (b.efficiency === null) return -1;
     return a.efficiency - b.efficiency;
   });
+}
+
+// ─── Orchestrator (Task 5) ──────────────────────────────────────────────
+
+interface DefenseHoldingRow {
+  security_id: number;
+  symbol: string;
+  security_type: string | null;
+  option_type: string | null;
+  underlying_symbol: string | null;
+  sector: string | null;
+  geography: string | null;
+  currency: string | null;
+  quantity: number;
+  mv: number;
+}
+
+interface UnderlyingMeta {
+  isEtf: boolean;
+  geography: string | null;
+  sector: string | null;
+  securityId: number | null;
+}
+
+interface GreeksAgg {
+  exposure: number;
+  thetaPerDay: number;
+  delta: number | null;
+  daysToExpiry: number | null;
+  strike: number | null;
+  underlyingPrice: number | null;
+  greeksAvailable: boolean;
+}
+
+/** issuerSiblings-canonical key for a raw underlying symbol. */
+function canonicalUnderlying(symbol: string): string {
+  return issuerSiblings(symbol).slice().sort()[0];
+}
+
+/** Options → underlying_symbol (fallback: OCC symbol prefix before the first space). Shares → own symbol. */
+function rawUnderlyingOf(
+  row: Pick<DefenseHoldingRow, "symbol" | "security_type" | "underlying_symbol">
+): string {
+  if ((row.security_type ?? "").toLowerCase() === "option") {
+    return row.underlying_symbol ?? row.symbol.split(" ")[0];
+  }
+  return row.symbol;
+}
+
+/** "sector: Technology 90% / Communication Services 10%" | "geography: Europe" | "book (β=1.2)" */
+function describeProxyRoute(hedge: ProxyHedge): string {
+  if (hedge.route === "sector") {
+    return (
+      "sector: " +
+      hedge.creditedTo
+        .map((c) => `${c.bucket} ${Math.round((c.credited / hedge.protectiveNotional) * 100)}%`)
+        .join(" / ")
+    );
+  }
+  if (hedge.route === "geography") {
+    return `geography: ${hedge.creditedTo[0]?.bucket ?? "Unknown"}`;
+  }
+  const beta =
+    hedge.protectiveNotional !== 0 ? (hedge.creditedTo[0]?.credited ?? 0) / hedge.protectiveNotional : 1;
+  return `book (β=${beta.toFixed(1)})`;
+}
+
+export interface RankedExposure {
+  underlying: string;
+  netExposure: number;
+  pctOfBook: number | null; // |net| / totalLongExposure
+  tier1CoveragePct: number | null;
+  sectorProxyCoveragePct: number | null; // the sector's coverage, context column
+  classification: PairClassification;
+  hasAmplifiers: boolean;
+  sector: string | null;
+  securityId: number | null; // for SymbolLink; null if underlying row absent
+}
+
+export interface DefenseDiagnostic {
+  kind: "assumed_beta" | "no_sector_weights" | "greeks_fallback" | "unknown_underlying";
+  symbol: string;
+  detail: string;
+}
+
+export interface DefenseSummary {
+  longExposure: number;
+  shortExposure: number;
+  protectiveNotional: number;
+  protectionRatio: number | null;
+  netExposure: number;
+  grossExposure: number;
+  hedgeCount: number;
+}
+
+export interface DefenseAnalysis {
+  summary: DefenseSummary;
+  pairs: UnderlyingPair[];
+  proxies: ProxyHedge[];
+  sectorCoverage: SectorCoverage[];
+  standaloneBets: StandaloneBet[];
+  rankedExposures: RankedExposure[];
+  hedgeScores: HedgeScore[];
+  diagnostics: DefenseDiagnostic[];
+}
+
+/**
+ * Defense/Hedging orchestrator — pulls the holdings universe (shares + options,
+ * shorts included, FX-adjusted), wires Greeks-derived exposure, classifies the
+ * book (Task 1), attributes proxy hedges (Task 3), and scores every hedge
+ * (Task 4). See docs/superpowers/specs/2026-07-05-defense-hedging-tab-design.md.
+ */
+export function computeDefenseAnalysis(db: Database.Database, accountIds?: number[]): DefenseAnalysis {
+  const diagnostics: DefenseDiagnostic[] = [];
+  const scopedAccountIds = accountIds && accountIds.length > 0 ? accountIds : undefined;
+  const accountFilter = scopedAccountIds
+    ? `AND h.account_id IN (${scopedAccountIds.map(() => "?").join(",")})`
+    : "";
+
+  // ─── Note 1: SQL pull — holdings universe (shares + options, shorts
+  // included), FX-adjusted, maturity/expiry filtered. ─────────────────
+  const sql = `
+    WITH latest_holdings AS (
+      SELECT h.* FROM holdings h
+      WHERE ${latestHoldingsPredicate({ keyBy: "account_security", includeShorts: true, accountFilter })}
+    ),
+    latest_prices AS (
+      SELECT p.security_id, p.close_price
+      FROM prices p
+      INNER JOIN (SELECT security_id, MAX(date) AS max_date FROM prices GROUP BY security_id) lp
+      ON p.security_id = lp.security_id AND p.date = lp.max_date
+    )
+    SELECT
+      s.id AS security_id, s.symbol, s.security_type, s.option_type, s.underlying_symbol,
+      s.sector, s.geography, s.currency, h.quantity,
+      CASE
+        WHEN lp.close_price IS NOT NULL
+          THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
+        WHEN h.cost_basis IS NOT NULL AND h.cost_basis != 0
+          THEN h.cost_basis * COALESCE(fx.usd_per_unit, 1)
+        ELSE 0
+      END AS mv
+    FROM latest_holdings h
+    JOIN securities s ON s.id = h.security_id
+    LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
+    LEFT JOIN fx_rates fx ON fx.currency = s.currency
+    WHERE (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
+      AND (s.expiration_date IS NULL OR s.expiration_date >= date('now', '-1 day'))
+      AND LOWER(s.security_type) IN ('stock', 'etf', 'common stock', 'option', 'mutual fund')
+  `;
+  const rawRows = db.prepare(sql).all(...(scopedAccountIds ?? [])) as DefenseHoldingRow[];
+
+  // Sum quantity/mv across accounts per security_id.
+  const aggregated = new Map<number, DefenseHoldingRow>();
+  for (const r of rawRows) {
+    const existing = aggregated.get(r.security_id);
+    if (existing) {
+      existing.quantity += r.quantity;
+      existing.mv += r.mv;
+    } else {
+      aggregated.set(r.security_id, { ...r });
+    }
+  }
+  const rows = [...aggregated.values()];
+  const securityTypeById = new Map<number, string | null>();
+  for (const row of rows) securityTypeById.set(row.security_id, row.security_type);
+
+  // ─── Note 2: Greeks — signed delta-notional exposure + theta, summed
+  // across scoped accounts; ±2.5×MV fallback when Greeks unavailable. ──
+  const greeksMap = new Map<number, GreeksAgg>();
+  const greeksDiagBySymbol = new Map<string, GreeksDiagnostic>();
+  const scopes: Array<number | undefined> = scopedAccountIds ?? [undefined];
+  for (const accountId of scopes) {
+    const greeks = computePortfolioGreeks(db, accountId !== undefined ? { accountId } : undefined);
+    for (const d of greeks.diagnostics) greeksDiagBySymbol.set(d.symbol, d);
+    for (const pos of greeks.positions) {
+      const cur: GreeksAgg =
+        greeksMap.get(pos.securityId) ?? {
+          exposure: 0,
+          thetaPerDay: 0,
+          delta: null,
+          daysToExpiry: pos.daysToExpiry,
+          strike: pos.strike,
+          underlyingPrice: pos.underlyingPrice,
+          greeksAvailable: false,
+        };
+      if (pos.greeks) {
+        cur.exposure += pos.greeks.delta * pos.underlyingPrice * pos.multiplier * pos.quantity;
+        cur.thetaPerDay += pos.greeks.theta * pos.multiplier * pos.quantity;
+        cur.delta = pos.greeks.delta;
+        cur.greeksAvailable = true;
+      }
+      cur.daysToExpiry = pos.daysToExpiry;
+      cur.strike = pos.strike;
+      cur.underlyingPrice = pos.underlyingPrice;
+      greeksMap.set(pos.securityId, cur);
+    }
+  }
+
+  // ─── Note 4: underlying isEtf / geography / sector / securityId — one
+  // query over the distinct raw underlyings referenced by this universe. ──
+  const rawUnderlyings = new Set<string>();
+  for (const row of rows) rawUnderlyings.add(rawUnderlyingOf(row));
+  const rawList = [...rawUnderlyings];
+  const underlyingRows =
+    rawList.length > 0
+      ? (db
+          .prepare(
+            `SELECT id, symbol, security_type, geography, sector FROM securities WHERE symbol IN (${rawList
+              .map(() => "?")
+              .join(",")})`
+          )
+          .all(...rawList) as Array<{
+            id: number;
+            symbol: string;
+            security_type: string | null;
+            geography: string | null;
+            sector: string | null;
+          }>)
+      : [];
+  const rawInfoBySymbol = new Map(underlyingRows.map((r) => [r.symbol, r]));
+
+  const underlyingInfo = new Map<string, UnderlyingMeta>();
+  for (const raw of rawList) {
+    const canonical = canonicalUnderlying(raw);
+    const found = rawInfoBySymbol.get(raw);
+    if (!found) {
+      diagnostics.push({
+        kind: "unknown_underlying",
+        symbol: raw,
+        detail: `No securities row found for underlying ${raw} — treated as non-ETF with unknown sector/geography`,
+      });
+    }
+    const isEtf = found ? ["etf", "mutual fund"].includes((found.security_type ?? "").toLowerCase()) : false;
+    const existing = underlyingInfo.get(canonical);
+    underlyingInfo.set(canonical, {
+      isEtf: (existing?.isEtf ?? false) || isEtf,
+      geography: existing?.geography ?? found?.geography ?? null,
+      sector: existing?.sector ?? found?.sector ?? null,
+      securityId: existing?.securityId ?? found?.id ?? null,
+    });
+  }
+
+  const etfGeography = new Map<string, string>();
+  for (const [canonical, meta] of underlyingInfo) {
+    if (meta.isEtf && meta.geography) etfGeography.set(canonical, meta.geography);
+  }
+
+  // ─── Note 3 + instrument assembly ──────────────────────────────────
+  const instruments: DefenseInstrument[] = [];
+  for (const row of rows) {
+    const isOption = (row.security_type ?? "").toLowerCase() === "option";
+    const raw = rawUnderlyingOf(row);
+    const canonical = canonicalUnderlying(raw);
+    const meta = underlyingInfo.get(canonical);
+
+    let exposure: number;
+    let thetaPerDay: number | null | undefined;
+    let delta: number | null | undefined;
+    let daysToExpiry: number | undefined;
+    let strike: number | undefined;
+    let underlyingPrice: number | undefined;
+    let greeksAvailable = false;
+
+    if (isOption) {
+      const g = greeksMap.get(row.security_id);
+      if (g && g.greeksAvailable) {
+        exposure = g.exposure;
+        thetaPerDay = g.thetaPerDay;
+        delta = g.delta;
+        daysToExpiry = g.daysToExpiry ?? undefined;
+        strike = g.strike ?? undefined;
+        underlyingPrice = g.underlyingPrice ?? undefined;
+        greeksAvailable = true;
+      } else {
+        exposure = optionExposureFallback(row.option_type, row.mv);
+        thetaPerDay = null;
+        delta = null;
+        daysToExpiry = g?.daysToExpiry ?? undefined;
+        strike = g?.strike ?? undefined;
+        underlyingPrice = g?.underlyingPrice ?? undefined;
+        greeksAvailable = false;
+        const reasonDiag = greeksDiagBySymbol.get(row.symbol);
+        diagnostics.push({
+          kind: "greeks_fallback",
+          symbol: row.symbol,
+          detail: reasonDiag
+            ? `Greeks unavailable (${reasonDiag.reason}) — using the ±2.5× market-value fallback`
+            : `Greeks unavailable — using the ±2.5× market-value fallback`,
+        });
+      }
+    } else {
+      exposure = row.mv;
+    }
+
+    instruments.push({
+      securityId: row.security_id,
+      symbol: row.symbol,
+      underlying: canonical,
+      isOption,
+      optionType: isOption ? (row.option_type as "CALL" | "PUT" | null) : null,
+      quantity: row.quantity,
+      exposure,
+      marketValue: row.mv,
+      underlyingIsEtf: meta?.isEtf ?? false,
+      sector: row.sector,
+      geography: row.geography,
+      greeksAvailable,
+      ...(isOption ? { strike, daysToExpiry, thetaPerDay, delta, underlyingPrice } : {}),
+    });
+  }
+
+  // ─── Group + classify ───────────────────────────────────────────────
+  const groups = new Map<string, UnderlyingGroup>();
+  for (const inst of instruments) {
+    const g = groups.get(inst.underlying) ?? {
+      underlying: inst.underlying,
+      underlyingIsEtf: inst.underlyingIsEtf,
+      instruments: [],
+    };
+    g.instruments.push(inst);
+    groups.set(inst.underlying, g);
+  }
+  const classifyResult = classifyBook(groups);
+
+  // ─── Note 5: attribution context ────────────────────────────────────
+  const sectorWeights = getEtfSectorWeights(db);
+  let totalLongExposure = 0;
+  const longExposureBySector = new Map<string, number>();
+  const longExposureByGeography = new Map<string, number>();
+
+  for (const inst of instruments) {
+    if (inst.exposure <= 0) continue;
+    totalLongExposure += inst.exposure;
+
+    if (!inst.isOption) {
+      const parts = explodeHoldingBySector(
+        inst.symbol,
+        securityTypeById.get(inst.securityId) ?? null,
+        inst.exposure,
+        sectorWeights,
+        inst.sector
+      );
+      for (const p of parts) {
+        longExposureBySector.set(p.sector, (longExposureBySector.get(p.sector) ?? 0) + p.value);
+      }
+    } else {
+      const meta = underlyingInfo.get(inst.underlying);
+      const sector = meta?.sector ?? inst.sector ?? "Unknown";
+      longExposureBySector.set(sector, (longExposureBySector.get(sector) ?? 0) + inst.exposure);
+    }
+
+    const meta = underlyingInfo.get(inst.underlying);
+    const geo = meta?.geography ?? inst.geography ?? "Unknown";
+    longExposureByGeography.set(geo, (longExposureByGeography.get(geo) ?? 0) + inst.exposure);
+  }
+
+  const tier1CreditedBySector = new Map<string, number>();
+  for (const pair of classifyResult.pairs) {
+    if (pair.offsetCredited > 0) {
+      const key = pair.sector ?? "Unknown";
+      tier1CreditedBySector.set(key, (tier1CreditedBySector.get(key) ?? 0) + pair.offsetCredited);
+    }
+  }
+
+  // Wrap resolveProxyBeta: attributeProxies only calls this once sector AND
+  // geography routing have both failed, so every call here IS "landed on the
+  // beta route" — push no_sector_weights unconditionally, assumed_beta only
+  // when the resolved source is "assumed".
+  const resolveBeta = (symbol: string): ResolvedBeta => {
+    diagnostics.push({
+      kind: "no_sector_weights",
+      symbol,
+      detail: `No cached sector weights or geography match for ${symbol} — routed to beta-weighted broad-book credit`,
+    });
+    const result = resolveProxyBeta(db, symbol);
+    if (result.source === "assumed") {
+      diagnostics.push({
+        kind: "assumed_beta",
+        symbol,
+        detail: `No cached or computable beta for ${symbol} — assumed β=1.0`,
+      });
+    }
+    return result;
+  };
+
+  const attributionCtx: AttributionContext = {
+    sectorWeights,
+    etfGeography,
+    longExposureBySector,
+    longExposureByGeography,
+    tier1CreditedBySector,
+    totalLongExposure,
+    resolveBeta,
+  };
+
+  const { proxies, sectorCoverage } = attributeProxies(classifyResult.proxyCandidates, attributionCtx);
+
+  // ─── Note 6: hedge score inputs ──────────────────────────────────────
+  const pairsByUnderlying = new Map(classifyResult.pairs.map((p) => [p.underlying, p]));
+  const scoreInputs: Array<{ instrument: DefenseInstrument; protects: string; protectedNotional: number }> = [];
+
+  for (const pair of classifyResult.pairs) {
+    if (pair.offsetExposure <= 0) continue;
+    const coreSign = Math.sign(pair.coreExposure);
+    const opposing = pair.instruments.filter((i) => i.isOption && Math.sign(i.exposure) === -coreSign);
+    const creditRatio = pair.offsetCredited / pair.offsetExposure;
+    for (const inst of opposing) {
+      scoreInputs.push({
+        instrument: inst,
+        protects: pair.underlying,
+        protectedNotional: Math.abs(inst.exposure) * creditRatio,
+      });
+    }
+  }
+
+  // Spill double-attribution guard: a tier1_spill proxy candidate shares its
+  // `instruments` array with the pair it spilled from. Score the pair-side
+  // fraction above (credited/offset) and the spill-side fraction here
+  // (spill/offset) — the two fractions sum to 1, so the same dollar is never
+  // scored twice.
+  classifyResult.proxyCandidates.forEach((candidate, i) => {
+    const hedge = proxies[i];
+    const routeDescription = describeProxyRoute(hedge);
+    if (candidate.source === "tier1_spill") {
+      const pair = pairsByUnderlying.get(candidate.underlying);
+      const ratio = pair && pair.offsetExposure > 0 ? candidate.protectiveNotional / pair.offsetExposure : 0;
+      for (const inst of candidate.instruments) {
+        scoreInputs.push({
+          instrument: inst,
+          protects: routeDescription,
+          protectedNotional: Math.abs(inst.exposure) * ratio,
+        });
+      }
+    } else {
+      for (const inst of candidate.instruments) {
+        scoreInputs.push({
+          instrument: inst,
+          protects: routeDescription,
+          protectedNotional: Math.abs(inst.exposure),
+        });
+      }
+    }
+  });
+
+  const hedgeScores = scoreHedges(scoreInputs);
+
+  // ─── Note 7: summary ─────────────────────────────────────────────────
+  let shortExposure = 0;
+  let netExposure = 0;
+  let grossExposure = 0;
+  for (const inst of instruments) {
+    netExposure += inst.exposure;
+    grossExposure += Math.abs(inst.exposure);
+    if (inst.exposure < 0) shortExposure += inst.exposure;
+  }
+
+  let protectiveNotional = 0;
+  for (const pair of classifyResult.pairs) protectiveNotional += pair.offsetCredited;
+  for (const proxy of proxies) {
+    for (const c of proxy.creditedTo) protectiveNotional += c.credited;
+  }
+
+  const summary: DefenseSummary = {
+    longExposure: totalLongExposure,
+    shortExposure,
+    protectiveNotional,
+    protectionRatio: totalLongExposure > 0 ? protectiveNotional / totalLongExposure : null,
+    netExposure,
+    grossExposure,
+    hedgeCount: hedgeScores.length,
+  };
+
+  // ─── Note 8: ranked exposures ────────────────────────────────────────
+  function coreSecurityId(insts: DefenseInstrument[], canonical: string): number | null {
+    const core = insts.find((i) => !i.isOption);
+    if (core) return core.securityId;
+    return underlyingInfo.get(canonical)?.securityId ?? null;
+  }
+
+  const rankedExposures: RankedExposure[] = [];
+  for (const pair of classifyResult.pairs) {
+    rankedExposures.push({
+      underlying: pair.underlying,
+      netExposure: pair.netExposure,
+      pctOfBook: totalLongExposure > 0 ? Math.abs(pair.netExposure) / totalLongExposure : null,
+      tier1CoveragePct: pair.coveragePct,
+      sectorProxyCoveragePct: pair.sector
+        ? sectorCoverage.find((s) => s.sector === pair.sector)?.coveragePct ?? null
+        : null,
+      classification: pair.classification,
+      hasAmplifiers: pair.hasAmplifiers,
+      sector: pair.sector,
+      securityId: coreSecurityId(pair.instruments, pair.underlying),
+    });
+  }
+  for (const bet of classifyResult.standaloneBets) {
+    const sector = bet.instruments.find((i) => i.sector)?.sector ?? null;
+    rankedExposures.push({
+      underlying: bet.underlying,
+      netExposure: bet.exposure,
+      pctOfBook: totalLongExposure > 0 ? Math.abs(bet.exposure) / totalLongExposure : null,
+      tier1CoveragePct: null,
+      sectorProxyCoveragePct: sector ? sectorCoverage.find((s) => s.sector === sector)?.coveragePct ?? null : null,
+      // Standalone bets are, by definition, never paired with an offsetting
+      // instrument — "unhedged" is the PairClassification value that matches.
+      classification: "unhedged",
+      hasAmplifiers: false,
+      sector,
+      securityId: coreSecurityId(bet.instruments, bet.underlying),
+    });
+  }
+  rankedExposures.sort((a, b) => Math.abs(b.netExposure) - Math.abs(a.netExposure));
+
+  return {
+    summary,
+    pairs: classifyResult.pairs,
+    proxies,
+    sectorCoverage,
+    standaloneBets: classifyResult.standaloneBets,
+    rankedExposures,
+    hedgeScores,
+    diagnostics,
+  };
 }
