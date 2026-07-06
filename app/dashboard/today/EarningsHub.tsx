@@ -24,7 +24,6 @@ import { getCurrentMonday, addDays } from "@/lib/calendar/date-utils";
 import { formatFinnhubFigure, parseFinnhubFigure } from "@/lib/format/finnhub-figure";
 import { isPlausibleEarnings } from "@/lib/digest/send-earnings-email";
 import type { CalendarEvent } from "@/lib/types";
-import { PrivateText } from "@/lib/privacy/components";
 import { SymbolLink } from "../components/SymbolLink";
 import { EarningsHubAddForm } from "./EarningsHubAddForm";
 import { EarningsHubRefreshButton } from "./EarningsHubRefreshButton";
@@ -403,13 +402,18 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
   );
 }
 
+/**
+ * Consensus / actual EPS + revenue are PUBLIC market data (any reader can
+ * look them up) — they reveal nothing about the user's holdings, so they
+ * render unmasked per the privacy-masks-portfolio-only rule (B16).
+ */
 function NumCell({ value }: { value: string | null }) {
   return (
     <span
       className={`font-mono tabular-nums truncate ${value ? "text-ink-dim" : "text-ink-faint"}`}
       style={{ fontSize: "13px" }}
     >
-      {value ? <PrivateText>{value}</PrivateText> : "—"}
+      {value ?? "—"}
     </span>
   );
 }
@@ -468,8 +472,7 @@ function MobileCard({ event }: { event: EnrichedRow }) {
           <span className="text-ink-faint">
             Cons{" "}
             <span className="text-ink-dim">
-              {cons.eps ? <PrivateText>{cons.eps}</PrivateText> : "—"} ·{" "}
-              {cons.revenue ? <PrivateText>{cons.revenue}</PrivateText> : "—"}
+              {cons.eps ?? "—"} · {cons.revenue ?? "—"}
             </span>
           </span>
         )}
@@ -491,8 +494,7 @@ function MobileCard({ event }: { event: EnrichedRow }) {
               <span className="text-ink-faint">
                 Act{" "}
                 <span className="text-ink-dim">
-                  {act.eps ? <PrivateText>{act.eps}</PrivateText> : "—"} ·{" "}
-                  {act.revenue ? <PrivateText>{act.revenue}</PrivateText> : "—"}
+                  {act.eps ?? "—"} · {act.revenue ?? "—"}
                 </span>
               </span>
               {delta && (
