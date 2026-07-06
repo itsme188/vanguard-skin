@@ -646,7 +646,7 @@ function buildRecapContext(
 
 // ── Cross-account positions ────────────────────────────────────────
 
-function getCrossAccountPositions(
+export function getCrossAccountPositions(
   db: Database.Database,
   family: readonly string[],
 ): PositionEntry[] {
