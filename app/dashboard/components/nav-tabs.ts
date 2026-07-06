@@ -20,6 +20,7 @@ export const tabs: Tab[] = [
       { name: "Diagnostics", href: "/dashboard/analysis?view=diagnostics", matchParam: { key: "view", value: "diagnostics" } },
       { name: "Performance", href: "/dashboard/analysis?view=performance", matchParam: { key: "view", value: "performance" } },
       { name: "Trade Reviews", href: "/dashboard/analysis?view=trade-reviews", matchParam: { key: "view", value: "trade-reviews" } },
+      { name: "Defense", href: "/dashboard/analysis?view=defense", matchParam: { key: "view", value: "defense" } },
     ],
   },
   {

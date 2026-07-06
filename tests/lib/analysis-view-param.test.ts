@@ -39,6 +39,10 @@ describe("resolveAnalysisView", () => {
     expect(resolveAnalysisView({ view: "trade-reviews" }).view).toBe("trade-reviews");
   });
 
+  it("resolves the defense sub-view", () => {
+    expect(resolveAnalysisView({ view: "defense" })).toEqual({ view: "defense", mode: "classification" });
+  });
+
   // ── Legacy aliases (CLAUDE.md documents ?mode=factors as kept) ──
   it("aliases legacy ?mode=factors (no view) to diagnostics/factors", () => {
     expect(resolveAnalysisView({ mode: "factors" })).toEqual({
