@@ -88,13 +88,15 @@ export function getSymbolStatus(
   const distinctInput = Array.from(allFamilyMembers);
   const placeholders = distinctInput.map(() => "?").join(",");
 
+  // A short into a print is exposure — aligns with the option branch below
+  // and getCrossAccountPositions (B7); quantity != 0 rather than > 0.
   const heldRows = db
     .prepare(
       `SELECT DISTINCT UPPER(s.symbol) AS symbol
          FROM holdings h
          JOIN securities s ON s.id = h.security_id
         WHERE UPPER(s.symbol) IN (${placeholders})
-          AND h.quantity > 0
+          AND h.quantity != 0
           AND h.as_of_date = (
             SELECT MAX(h2.as_of_date) FROM holdings h2
              WHERE h2.account_id = h.account_id
@@ -103,6 +105,26 @@ export function getSymbolStatus(
     )
     .all(...distinctInput) as { symbol: string }[];
   const held = new Set(heldRows.map((r) => r.symbol));
+
+  // Option-only exposure counts as held: a TER LEAP with no TER stock still
+  // makes TER's print matter (same look-through the earnings composer does
+  // via underlying_symbol). Unexpired, quantity != 0 (shorts carry exposure).
+  const optionHeldRows = db
+    .prepare(
+      `SELECT DISTINCT UPPER(s.underlying_symbol) AS symbol
+         FROM holdings h
+         JOIN securities s ON s.id = h.security_id
+        WHERE UPPER(COALESCE(s.underlying_symbol, '')) IN (${placeholders})
+          AND LOWER(COALESCE(s.security_type, '')) = 'option'
+          AND h.quantity != 0
+          AND (s.expiration_date IS NULL OR s.expiration_date >= date('now'))
+          AND h.as_of_date = (
+            SELECT MAX(h2.as_of_date) FROM holdings h2
+             WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id
+          )`,
+    )
+    .all(...distinctInput) as { symbol: string }[];
+  for (const r of optionHeldRows) held.add(r.symbol);
 
   const watchlistRows = db
     .prepare(
@@ -125,6 +147,31 @@ export function getSymbolStatus(
     else out[sym] = "neither";
   }
   return out;
+}
+
+/**
+ * Distinct underlyings of currently-held unexpired options (quantity != 0).
+ * Fed into the Finnhub earnings scan so option-only names get their events
+ * synced (Wave 1 B10 — a TER-LEAP-only book must still see TER's print).
+ */
+export function getHeldOptionUnderlyingSymbols(db: Database.Database): string[] {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT UPPER(s.underlying_symbol) AS symbol
+         FROM holdings h
+         JOIN securities s ON s.id = h.security_id
+        WHERE LOWER(COALESCE(s.security_type, '')) = 'option'
+          AND s.underlying_symbol IS NOT NULL AND s.underlying_symbol != ''
+          AND h.quantity != 0
+          AND (s.expiration_date IS NULL OR s.expiration_date >= date('now'))
+          AND h.as_of_date = (
+            SELECT MAX(h2.as_of_date) FROM holdings h2
+             WHERE h2.account_id = h.account_id AND h2.security_id = h.security_id
+          )
+        ORDER BY symbol`,
+    )
+    .all() as { symbol: string }[];
+  return rows.map((r) => r.symbol);
 }
 
 /**

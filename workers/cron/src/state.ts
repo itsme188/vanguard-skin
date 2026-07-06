@@ -195,7 +195,7 @@ export interface BriefingHoldingSnapshot {
 }
 
 export interface Snapshot {
-  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7;
+  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
   snapshotDate: string;
   generatedAt: string;
   heldSymbols: string[];
@@ -240,6 +240,11 @@ export interface Snapshot {
   // re-surfaces the IBKR trading book. Optional for back-compat: pre-v7
   // snapshots fall back to the cross-account `heldSymbols` flat list.
   briefingHoldings?: BriefingHoldingSnapshot[];
+  // v8 — active watchlist stock symbols (Wave 1 §2 push-at-print). Lets the
+  // Worker's cloud-enrich push hook cover watchlist names, not just held
+  // ones. Additive/optional for back-compat: snapshots ≤v7 lack this field
+  // and the push hook gracefully degrades to held-only coverage.
+  watchlistSymbols?: string[];
 }
 
 /** Fetch the most recent snapshot (within 7d). Returns null if none exist. */

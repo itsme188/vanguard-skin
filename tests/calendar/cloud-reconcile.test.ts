@@ -1,7 +1,15 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
+import { setMutedEarningsSymbols } from "@/lib/queries/earnings-settings";
+
+vi.mock("@/lib/alerts/print-push", () => ({
+  sendEarningsPrintPush: vi.fn(),
+}));
+import { sendEarningsPrintPush } from "@/lib/alerts/print-push";
 import { reconcileCloudEnrichment } from "@/lib/calendar/cloud-reconcile";
+
+const mockSendEarningsPrintPush = vi.mocked(sendEarningsPrintPush);
 
 function mockWorker(payloads: Record<string, unknown>) {
   globalThis.fetch = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
@@ -132,5 +140,282 @@ describe("reconcileCloudEnrichment data-preservation guards", () => {
     expect(row.actual_value).toBeNull();
     // TWS reaction is preserved — the cloud payload's Yahoo reaction is discarded (TWS wins).
     expect(row.reaction_snapshot).toContain("tws");
+  });
+});
+
+describe("push-at-print hook (Wave 1 §2, cloud reconcile path)", () => {
+  let db: Database.Database;
+
+  function seedAccount(name: string): number {
+    return (
+      db.prepare("INSERT INTO accounts (name) VALUES (?) RETURNING id").get(name) as {
+        id: number;
+      }
+    ).id;
+  }
+
+  function seedHeldSecurity(symbol: string): void {
+    const securityId = (
+      db
+        .prepare(
+          `INSERT INTO securities (symbol, security_type, asset_class, multiplier)
+           VALUES (?, 'stock', 'equity', 1) RETURNING id`,
+        )
+        .get(symbol) as { id: number }
+    ).id;
+    const accountId = seedAccount(`acct-${symbol}`);
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+       VALUES (?, ?, 100, date('now'), ?)`,
+    ).run(accountId, securityId, `test:${accountId}:${securityId}`);
+  }
+
+  function insertCalendarEvent(opts: {
+    symbol: string;
+    event_type?: string;
+    actual_value?: string | null;
+    consensus_value?: string | null;
+  }): number {
+    const r = db
+      .prepare(
+        `INSERT INTO calendar_events
+           (source, source_key, event_type, event_date, week_of, title, symbol, actual_value, consensus_value)
+         VALUES ('finnhub', ?, ?, '2026-07-28', '2026-07-27', ?, ?, ?, ?)`,
+      )
+      .run(
+        `finnhub:${opts.symbol}:2026-07-28`,
+        opts.event_type ?? "earnings",
+        opts.symbol,
+        opts.symbol,
+        opts.actual_value ?? null,
+        opts.consensus_value ?? null,
+      );
+    return Number(r.lastInsertRowid);
+  }
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("journal_mode = WAL");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    process.env.WORKER_MARKER_URL = "https://worker.example.com";
+    mockSendEarningsPrintPush.mockClear();
+    mockSendEarningsPrintPush.mockResolvedValue({ pushed: true });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.WORKER_MARKER_URL;
+  });
+
+  it("fires once for a held earnings row transitioning from no actual, with reactionJson from the payload", async () => {
+    seedHeldSecurity("PUSH");
+    const eventId = insertCalendarEvent({ symbol: "PUSH", actual_value: null });
+
+    mockWorker({
+      [String(eventId)]: {
+        eventId,
+        source_key: "finnhub:PUSH:2026-07-28",
+        actual: "EPS 1.42 · Rev 775,000,000",
+        consensus: "EPS 1.35 · Rev 762,000,000",
+        source: "cloud",
+        reaction: { source: "yahoo", spy: { delta_pct: 0.4 } },
+        fetchedAt: "2026-07-28T21:00:00Z",
+      },
+    });
+
+    await reconcileCloudEnrichment(db, "secret");
+
+    expect(mockSendEarningsPrintPush).toHaveBeenCalledTimes(1);
+    expect(mockSendEarningsPrintPush).toHaveBeenCalledWith({
+      eventId,
+      symbol: "PUSH",
+      actualValue: "EPS 1.42 · Rev 775,000,000",
+      consensusValue: "EPS 1.35 · Rev 762,000,000",
+      reactionJson: JSON.stringify({ source: "yahoo", spy: { delta_pct: 0.4 } }),
+    });
+  });
+
+  it("does NOT fire when the payload is stale (fetchedAt > 24h old)", async () => {
+    seedHeldSecurity("STALE");
+    const eventId = insertCalendarEvent({ symbol: "STALE", actual_value: null });
+    const staleFetchedAt = new Date(Date.now() - 25 * 3600 * 1000).toISOString();
+
+    mockWorker({
+      [String(eventId)]: {
+        eventId,
+        source_key: "finnhub:STALE:2026-07-28",
+        actual: "EPS 1.10 · Rev 400,000,000",
+        consensus: null,
+        source: "cloud",
+        reaction: null,
+        fetchedAt: staleFetchedAt,
+      },
+    });
+
+    await reconcileCloudEnrichment(db, "secret");
+
+    expect(mockSendEarningsPrintPush).not.toHaveBeenCalled();
+  });
+
+  it("fires when the payload is fresh (fetchedAt well within 24h)", async () => {
+    seedHeldSecurity("FRESH");
+    const eventId = insertCalendarEvent({ symbol: "FRESH", actual_value: null });
+    const freshFetchedAt = new Date(Date.now() - 5 * 60 * 1000).toISOString(); // 5 min ago
+
+    mockWorker({
+      [String(eventId)]: {
+        eventId,
+        source_key: "finnhub:FRESH:2026-07-28",
+        actual: "EPS 1.20 · Rev 410,000,000",
+        consensus: null,
+        source: "cloud",
+        reaction: null,
+        fetchedAt: freshFetchedAt,
+      },
+    });
+
+    await reconcileCloudEnrichment(db, "secret");
+
+    expect(mockSendEarningsPrintPush).toHaveBeenCalledTimes(1);
+  });
+
+  it("push consensus falls back to consensus_estimate when neither the payload nor consensus_value has it", async () => {
+    seedHeldSecurity("EST");
+    const eventId = insertCalendarEvent({ symbol: "EST", actual_value: null });
+    db.prepare(`UPDATE calendar_events SET consensus_estimate = ? WHERE id = ?`).run(
+      "EPS 0.75 · Rev 250,000,000",
+      eventId,
+    );
+
+    mockWorker({
+      [String(eventId)]: {
+        eventId,
+        source_key: "finnhub:EST:2026-07-28",
+        actual: "EPS 0.90 · Rev 260,000,000",
+        consensus: null,
+        source: "cloud",
+        reaction: null,
+        fetchedAt: "2026-07-28T21:00:00Z",
+      },
+    });
+
+    await reconcileCloudEnrichment(db, "secret");
+
+    expect(mockSendEarningsPrintPush).toHaveBeenCalledWith(
+      expect.objectContaining({ consensusValue: "EPS 0.75 · Rev 250,000,000" }),
+    );
+  });
+
+  it("does NOT fire when the row already had an actual", async () => {
+    seedHeldSecurity("OLD");
+    const eventId = insertCalendarEvent({
+      symbol: "OLD",
+      actual_value: "EPS 1.00 · Rev 500,000,000",
+    });
+
+    mockWorker({
+      [String(eventId)]: {
+        eventId,
+        source_key: "finnhub:OLD:2026-07-28",
+        actual: "EPS 2.00 · Rev 600,000,000",
+        consensus: null,
+        source: "cloud",
+        reaction: null,
+        fetchedAt: "2026-07-28T21:00:00Z",
+      },
+    });
+
+    await reconcileCloudEnrichment(db, "secret");
+
+    expect(mockSendEarningsPrintPush).not.toHaveBeenCalled();
+  });
+
+  // NOTE: a "deferred payload → no push" case was here previously, but it
+  // was vacuous — deferred payloads `continue` before this hook is ever
+  // reached (see the `if (payload.deferred)` branch above), so the
+  // assertion could never fail. Replaced with the novel untested path: the
+  // TWS-wins branch (existing row has a TWS-sourced reaction but no actual
+  // yet) still falls through to the push hook once the cloud payload
+  // delivers the first actual.
+  it("fires when the TWS-wins branch delivers the first actual (existing TWS reaction, no actual yet)", async () => {
+    seedHeldSecurity("TWSWIN");
+    const eventId = insertCalendarEvent({ symbol: "TWSWIN", actual_value: null });
+    db.prepare(`UPDATE calendar_events SET reaction_snapshot = ? WHERE id = ?`).run(
+      JSON.stringify({ source: "tws", spy: { delta_pct: 0.2 } }),
+      eventId,
+    );
+
+    mockWorker({
+      [String(eventId)]: {
+        eventId,
+        source_key: "finnhub:TWSWIN:2026-07-28",
+        actual: "EPS 0.88 · Rev 300,000,000",
+        consensus: "EPS 0.80 · Rev 290,000,000",
+        source: "cloud",
+        reaction: null,
+        fetchedAt: "2026-07-28T21:00:00Z",
+      },
+    });
+
+    await reconcileCloudEnrichment(db, "secret");
+
+    expect(mockSendEarningsPrintPush).toHaveBeenCalledTimes(1);
+    expect(mockSendEarningsPrintPush).toHaveBeenCalledWith({
+      eventId,
+      symbol: "TWSWIN",
+      actualValue: "EPS 0.88 · Rev 300,000,000",
+      consensusValue: "EPS 0.80 · Rev 290,000,000",
+      // TWS reaction preserved (existing.reaction_snapshot) since the cloud
+      // payload carried no reaction of its own.
+      reactionJson: JSON.stringify({ source: "tws", spy: { delta_pct: 0.2 } }),
+    });
+  });
+
+  it("does NOT fire for a macro row even when it carries an actual + a held symbol", async () => {
+    seedHeldSecurity("MACRO");
+    const eventId = insertCalendarEvent({
+      symbol: "MACRO",
+      event_type: "cpi",
+      actual_value: null,
+    });
+
+    mockWorker({
+      [String(eventId)]: {
+        eventId,
+        source_key: "finnhub:MACRO:2026-07-28",
+        actual: "3.2%",
+        consensus: "3.1%",
+        source: "cloud",
+        reaction: { source: "yahoo", spy: { delta_pct: 0.1 } },
+        fetchedAt: "2026-07-28T21:00:00Z",
+      },
+    });
+
+    await reconcileCloudEnrichment(db, "secret");
+
+    expect(mockSendEarningsPrintPush).not.toHaveBeenCalled();
+  });
+
+  it("does NOT fire for a muted symbol", async () => {
+    seedHeldSecurity("MUTE");
+    setMutedEarningsSymbols(db, ["MUTE"]);
+    const eventId = insertCalendarEvent({ symbol: "MUTE", actual_value: null });
+
+    mockWorker({
+      [String(eventId)]: {
+        eventId,
+        source_key: "finnhub:MUTE:2026-07-28",
+        actual: "EPS 0.50 · Rev 100,000,000",
+        consensus: null,
+        source: "cloud",
+        reaction: null,
+        fetchedAt: "2026-07-28T21:00:00Z",
+      },
+    });
+
+    await reconcileCloudEnrichment(db, "secret");
+
+    expect(mockSendEarningsPrintPush).not.toHaveBeenCalled();
   });
 });

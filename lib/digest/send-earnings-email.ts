@@ -646,7 +646,7 @@ function buildRecapContext(
 
 // ── Cross-account positions ────────────────────────────────────────
 
-function getCrossAccountPositions(
+export function getCrossAccountPositions(
   db: Database.Database,
   family: readonly string[],
 ): PositionEntry[] {
@@ -691,7 +691,7 @@ function getCrossAccountPositions(
          JOIN securities s ON s.id = h.security_id
          WHERE (UPPER(s.symbol) IN (${placeholders})
                 OR UPPER(COALESCE(s.underlying_symbol, '')) IN (${placeholders}))
-           AND h.quantity > 0
+           AND h.quantity != 0
            AND h.as_of_date = (
              SELECT MAX(h2.as_of_date) FROM holdings h2
              WHERE h2.account_id = h.account_id
