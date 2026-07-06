@@ -414,7 +414,7 @@ function buildSnapshot(db: Database.Database): Snapshot {
     .prepare(
       `SELECT h.id, h.account_id, h.security_id, h.quantity, h.cost_basis, h.as_of_date
          FROM holdings h
-        WHERE h.quantity > 0
+        WHERE h.quantity != 0
           AND h.as_of_date = (
             SELECT MAX(h2.as_of_date) FROM holdings h2
              WHERE h2.account_id = h.account_id

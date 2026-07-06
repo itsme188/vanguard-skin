@@ -118,6 +118,32 @@ function makeOptionPositionCtx(): EarningsPreviewContext {
   };
 }
 
+function makeShortStockPositionCtx(): EarningsPreviewContext {
+  return {
+    ...makeStockPositionCtx(),
+    positions: [
+      {
+        account_name: "ibkr",
+        symbol: "AAPL",
+        quantity: -300,
+        cost_basis: 45000,
+        as_of_date: "2026-05-12",
+        latest_price: 175,
+        security_type: "stock",
+        underlying_symbol: null,
+        option_type: null,
+        strike_price: null,
+        expiration_date: null,
+        multiplier: null,
+      },
+    ],
+    longShares: 0,
+    shortShares: 300,
+    longContracts: 0,
+    shortContracts: 0,
+  };
+}
+
 function assertNoDollarLeak(prompt: string): void {
   const lines = prompt.split("\n");
   const posIdx = lines.findIndex((l) => l.startsWith("## Positions"));
@@ -191,5 +217,17 @@ describe("earnings prompt position-block — no $ amount leaks", () => {
     expect(prompt).toContain("3 long option contract(s)");
     expect(prompt.toLowerCase()).not.toContain("shares notional");
     expect(prompt.toLowerCase()).not.toContain("notional shares");
+  });
+
+  it("a short stock position surfaces in the preview context (not 'does not hold')", () => {
+    const prompt = renderPreviewPrompt(makeShortStockPositionCtx());
+    assertNoDollarLeak(prompt);
+    // Ownership + direction disclosed via formatPositionPresence.
+    expect(prompt).toContain("300 sh short AAPL");
+    expect(prompt).toContain("ibkr");
+    // Combined-exposure summary must bucket it as a short share count.
+    expect(prompt).toContain("300 short shares");
+    // Must NOT claim the user holds no position.
+    expect(prompt).not.toContain("does NOT currently hold");
   });
 });

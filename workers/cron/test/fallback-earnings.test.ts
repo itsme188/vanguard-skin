@@ -466,3 +466,84 @@ describe("runEarningsFallback Tier 3 live-IBKR position refresh", () => {
     expect(fetchLiveIbkrPositionsCached).not.toHaveBeenCalled();
   });
 });
+
+describe("runEarningsFallback shorts surface (B7)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (sendEmail as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "mock-email-id" });
+  });
+
+  function htmlOfLastSend(): string {
+    const calls = (sendEmail as ReturnType<typeof vi.fn>).mock.calls;
+    return calls[calls.length - 1][1].html as string;
+  }
+
+  const AAPL_SECURITY = {
+    id: 10,
+    symbol: "AAPL",
+    name: "Apple",
+    security_type: "stock",
+    asset_class: "STK",
+    sector: null,
+    underlying_symbol: null,
+    option_type: null,
+    strike_price: null,
+    expiration_date: null,
+    multiplier: null,
+  };
+
+  /** Snapshot with a +500 sh long position (Vanguard) and a -300 sh short (IBKR), same security. */
+  function snapshotWithLongAndShortAapl(): Snapshot {
+    const snap = makeEarningsSnapshot();
+    (snap as unknown as Snapshot).accounts = [
+      { id: 1, name: "Vanguard Taxable" },
+      { id: 2, name: "IBKR" },
+    ];
+    (snap as unknown as Snapshot).securities = [AAPL_SECURITY];
+    (snap as unknown as Snapshot).holdings = [
+      { id: 1, account_id: 1, security_id: 10, quantity: 500, cost_basis: 90000, as_of_date: EVENT_DATE },
+      { id: 2, account_id: 2, security_id: 10, quantity: -300, cost_basis: 54000, as_of_date: EVENT_DATE },
+    ];
+    return snap;
+  }
+
+  /** Snapshot with ONLY a -300 sh short position (no long leg at all). */
+  function snapshotWithShortOnlyAapl(): Snapshot {
+    const snap = makeEarningsSnapshot();
+    (snap as unknown as Snapshot).accounts = [{ id: 2, name: "IBKR" }];
+    (snap as unknown as Snapshot).securities = [AAPL_SECURITY];
+    (snap as unknown as Snapshot).holdings = [
+      { id: 1, account_id: 2, security_id: 10, quantity: -300, cost_basis: 54000, as_of_date: EVENT_DATE },
+    ];
+    return snap;
+  }
+
+  it("renders long and short buckets separately, never a netted count", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      snapshotWithLongAndShortAapl(),
+    );
+
+    const result = await runEarningsFallback(env, { now: previewWindowNow() });
+    expect(result.sent).toBe(1);
+
+    const html = htmlOfLastSend();
+    expect(html).toContain("500 long shares");
+    expect(html).toContain("300 short shares");
+    expect(html).not.toContain("200");
+  });
+
+  it("a short-only position renders presence, not 'No current holdings'", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      snapshotWithShortOnlyAapl(),
+    );
+
+    const result = await runEarningsFallback(env, { now: previewWindowNow() });
+    expect(result.sent).toBe(1);
+
+    const html = htmlOfLastSend();
+    expect(html).toContain("300 sh short AAPL");
+    expect(html).not.toMatch(/No current/);
+  });
+});

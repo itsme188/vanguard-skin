@@ -47,7 +47,10 @@ import { briefingToHtml } from "./html";
 import { sendEmail } from "./resend";
 import { composeReleaseInstant } from "./reaction-matcher";
 import { captureReactionFromYahoo } from "./yahoo";
-import { formatPositionPresence } from "./presence-position";
+import {
+  formatPositionPresence,
+  formatCombinedExposurePresence,
+} from "./presence-position";
 import { ibkrConfigFromEnv } from "./ibkr-oauth";
 import {
   fetchLiveIbkrPositionsCached,
@@ -409,7 +412,7 @@ function resolvePositions(
   const familySet = new Set(family.map((s) => s.toUpperCase()));
   const out: PositionView[] = [];
   for (const h of holdings as HoldingRow[]) {
-    if (!h.quantity || h.quantity <= 0) continue;
+    if (!h.quantity) continue;
     const sec = securityById.get(h.security_id);
     if (!sec) continue;
     const symMatch = sec.symbol && familySet.has(sec.symbol.toUpperCase());
@@ -518,11 +521,30 @@ export function renderPositions(
     return `- ${presence}`;
   });
 
-  const shares = positions.filter((p) => p.security_type.toLowerCase() !== "option").reduce((s, p) => s + p.quantity, 0);
-  const contracts = positions.filter((p) => p.security_type.toLowerCase() === "option").reduce((s, p) => s + p.quantity, 0);
-  const summaryParts: string[] = [];
-  if (shares !== 0) summaryParts.push(`${Math.abs(shares).toFixed(0)} shares`);
-  if (contracts !== 0) summaryParts.push(`${Math.abs(contracts).toFixed(0)} option contract(s)`);
+  // Bucket by long/short + stock/option — never net a long against a short
+  // (a net-zero-looking sum would hide a hedged or fully-short book). Mirrors
+  // the Mac buildPreviewContext accumulation in lib/digest/send-earnings-email.ts.
+  let longShares = 0;
+  let shortShares = 0;
+  let longContracts = 0;
+  let shortContracts = 0;
+  for (const p of positions) {
+    const isOption = p.security_type.toLowerCase() === "option";
+    if (isOption) {
+      if (p.quantity > 0) longContracts += p.quantity;
+      else shortContracts += Math.abs(p.quantity);
+    } else {
+      if (p.quantity > 0) longShares += p.quantity;
+      else shortShares += Math.abs(p.quantity);
+    }
+  }
+  const exposure = formatCombinedExposurePresence({
+    positionCount: positions.length,
+    longShares,
+    shortShares,
+    longContracts,
+    shortContracts,
+  });
 
   // Provenance: with a live IBKR read, the IBKR rows are current-as-of-send and
   // only the Vanguard/Roth rows are snapshot-frozen — say so, since this email
@@ -530,7 +552,7 @@ export function renderPositions(
   const provenance = ibkrLive
     ? `IBKR live, Vanguard/Roth from snapshot — ${positions.length} row${positions.length === 1 ? "" : "s"}`
     : `snapshot ${positions.length} row${positions.length === 1 ? "" : "s"}`;
-  return `## Positions (cross-account, ${provenance})\n${lines.join("\n")}\n\n**Combined exposure:** ${summaryParts.join(" + ") || "none"} for ${symbol}.`;
+  return `## Positions (cross-account, ${provenance})\n${lines.join("\n")}\n\n**Combined exposure:** ${exposure} for ${symbol}.`;
 }
 
 /** The snapshot account whose name marks it as the IBKR brokerage (default "IBKR"). */
