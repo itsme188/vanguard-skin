@@ -64,8 +64,10 @@ import {
 
 // Issuer-family map mirrored from lib/securities/issuer-family.ts. Worker
 // can't cross the Next.js path-alias boundary, so this is a hand copy.
-// Keep in sync; new families are slow-moving (rare additions).
-const ISSUER_FAMILIES: ReadonlyArray<readonly string[]> = [
+// Keep in sync; new families are slow-moving (rare additions). Exported so
+// other Worker modules (e.g. calendar-enrich.ts's push-at-print hook) reuse
+// this single Worker-side copy instead of hand-copying the family list again.
+export const ISSUER_FAMILIES: ReadonlyArray<readonly string[]> = [
   ["GOOG", "GOOGL"],
   ["BRK A", "BRK B", "BRK.A", "BRK.B", "BRK/A", "BRK/B", "BRK-A", "BRK-B"],
   ["FOX", "FOXA"],
@@ -81,7 +83,7 @@ for (const fam of ISSUER_FAMILIES) {
   for (const s of fam) FAMILY_BY_SYMBOL.set(s.toUpperCase(), fam);
 }
 
-function issuerSiblings(symbol: string): readonly string[] {
+export function issuerSiblings(symbol: string): readonly string[] {
   if (!symbol) return [];
   const fam = FAMILY_BY_SYMBOL.get(symbol.toUpperCase());
   return fam ?? [symbol.toUpperCase()];

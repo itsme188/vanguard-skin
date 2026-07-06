@@ -28,6 +28,10 @@ import { loadLatestSnapshot } from "./state";
 import { composeReleaseInstant, resolveSectorEtf } from "./reaction-matcher";
 import { captureReactionFromYahoo } from "./yahoo";
 import { fetchActualForEventCloud, type WorkerEnrichActualResult } from "./enrich-actuals";
+import { issuerSiblings } from "./fallback-earnings";
+import { readPrintPushMarker, writePrintPushMarker } from "./earnings-markers";
+import { composePrintPushMessage } from "./print-push-message";
+import { sendPushover } from "./pushover";
 
 // ── Primary call ────────────────────────────────────────────────────
 
@@ -177,6 +181,11 @@ export interface EnrichRunEnv {
   CLOUD_ENRICH_ENABLED?: string;
   FRED_API_KEY?: string;
   FINNHUB_API_KEY?: string;
+  // Push-at-print (Wave 1 §2) — same Pushover creds the level-scan fan-out
+  // uses (workers/cron/src/pushover.ts).
+  PUSHOVER_APP_TOKEN?: string;
+  PUSHOVER_USER_KEY?: string;
+  PUSHOVER_LINK_BASE?: string;
 }
 
 // ── Fallback: cloud enrichment ──────────────────────────────────────
@@ -304,6 +313,53 @@ export async function runCloudFallback(
       await env.CRON_KV.put(cloudEnrichedKey(cand.id), JSON.stringify(payload), {
         expirationTtl: 7 * 24 * 3600,
       });
+
+      // Push-at-print (Wave 1 §2): the Worker is often the first to capture
+      // an actual while the Mac sleeps — push immediately rather than waiting
+      // for the Mac's wake-up reconcile. Held/watchlist from the snapshot
+      // (watchlistSymbols is additive v8; older snapshots → held-only),
+      // muted list respected, issuer-family aware, KV-marker deduped.
+      if (
+        cand.event_type === "earnings" &&
+        cand.symbol &&
+        payload.actual != null &&
+        !payload.deferred
+      ) {
+        try {
+          const sym = cand.symbol.toUpperCase();
+          const family = issuerSiblings(sym).map((s) => s.toUpperCase());
+          const heldSet = new Set((snapshot.heldSymbols ?? []).map((s) => s.toUpperCase()));
+          const watchSet = new Set((snapshot.watchlistSymbols ?? []).map((s) => s.toUpperCase()));
+          const muted = new Set(
+            (snapshot.earningsSettings?.mutedSymbols ?? []).map((s) => s.toUpperCase()),
+          );
+          const enabled = snapshot.earningsSettings?.enabled !== false;
+          const covered = family.some((f) => heldSet.has(f) || watchSet.has(f));
+          const isMuted = family.some((f) => muted.has(f));
+          if (enabled && covered && !isMuted && !(await readPrintPushMarker(env.CRON_KV, cand.id))) {
+            const { title, message } = composePrintPushMessage({
+              symbol: sym,
+              actualValue: payload.actual,
+              consensusValue: payload.consensus,
+              reactionJson: payload.reaction ? JSON.stringify(payload.reaction) : null,
+            });
+            // Same link-base resolution as sendLevelAlertPush (pushover.ts) —
+            // no MESH_HOSTNAME-independent hardcoded IP.
+            const base =
+              env.PUSHOVER_LINK_BASE ??
+              (env.MESH_HOSTNAME ? `https://${env.MESH_HOSTNAME}` : "http://localhost:3099");
+            const pushRes = await sendPushover(env, {
+              title,
+              message,
+              url: `${base}/dashboard/today`,
+              urlTitle: "Open Earnings Hub",
+            });
+            if (pushRes.sent) await writePrintPushMarker(env.CRON_KV, cand.id);
+          }
+        } catch (err) {
+          console.warn(`[calendar-enrich] print-push failed for ${cand.id}:`, err);
+        }
+      }
     } catch (err) {
       failures += 1;
       lastError = err instanceof Error ? err.message : String(err);
