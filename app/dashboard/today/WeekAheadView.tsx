@@ -2,7 +2,6 @@ import Link from "next/link";
 import type { CalendarEvent } from "@/lib/types";
 import { addDays, formatWeekRange, todayET } from "@/lib/calendar/date-utils";
 import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
-import { PrivateText } from "@/lib/privacy/components";
 
 interface WeekAheadViewProps {
   events: CalendarEvent[];
@@ -174,16 +173,20 @@ function EventRow({ event }: { event: CalendarEvent }) {
         )}
         {/* shrink-0 + nowrap: the row flex-wraps, so a long actual value drops
             to its own line — never clipped to "actual…". */}
+        {/* Consensus / actual values are PUBLIC market data (macro
+            prints, street EPS/Rev) — they reveal nothing about the
+            user's holdings, so they render unmasked per the
+            privacy-masks-portfolio-only rule (B16 sibling). */}
         {actualDisplay && (
           <span className="text-[11px] font-mono text-up bg-up/10 rounded px-1.5 py-0.5 ml-auto shrink-0 whitespace-nowrap">
-            <PrivateText>actual {actualDisplay}</PrivateText>
+            actual {actualDisplay}
           </span>
         )}
       </div>
       <p className="text-[13px] text-ink-dim leading-snug line-clamp-2">{event.title}</p>
       {consensusDisplay && !actualDisplay && (
         <p className="text-[12px] font-mono text-ink-faint mt-1.5 truncate">
-          <PrivateText>Cons: {consensusDisplay}</PrivateText>
+          Cons: {consensusDisplay}
         </p>
       )}
     </div>
