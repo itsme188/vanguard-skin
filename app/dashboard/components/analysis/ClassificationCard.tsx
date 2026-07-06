@@ -145,7 +145,7 @@ export function ClassificationCard({ concentration, coverage }: Props) {
           </div>
         </div>
 
-        <div className="flex gap-4 mt-3">
+        <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3">
           {coverage.by_source.map((s) => (
             <span key={s.source} className="text-xs text-ink-faint">
               <span className="text-ink-dim font-mono">{s.count}</span>{" "}
