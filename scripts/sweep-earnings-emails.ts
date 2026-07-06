@@ -25,7 +25,7 @@ async function main() {
   }
   for (const r of summary.results) {
     const dt = (r.durationMs / 1000).toFixed(1);
-    const state = r.skipped ? "SKIP (cloud sent)" : r.ok ? "OK" : `FAILED: ${r.message}`;
+    const state = r.skipped ? `SKIP (${r.skipped})` : r.ok ? "OK" : `FAILED: ${r.message}`;
     console.log(`  [${r.symbol}] ${r.phase} ${state} (${dt}s)`);
   }
   console.log(`Done — sent ${summary.sent}, skipped ${summary.skipped}, failed ${summary.failed}`);

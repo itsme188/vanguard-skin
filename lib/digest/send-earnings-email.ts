@@ -1414,6 +1414,9 @@ export function isPlausibleEarnings(
   }
 
   if (consensusEps != null && actualEps != null && consensusEps > 0 && actualEps !== 0) {
+    // actualEps 0 carries no ratio claim — a genuine $0.00 print never produces
+    // a divide-by-zero or ratio trip, so treat it like zero consensus (printable
+    // as-is, not implausible). Only actualEps null or nonzero enter the ratio guard.
     // Magnitude check guards both directions. Calibrated so that PWR's
     // genuine +28% EPS beat (Q1 2026, ratio 1.28) survives, while GOOGL's
     // bogus 5.11-vs-2.70 case (ratio 1.89) gets rejected. Real >70% beats
