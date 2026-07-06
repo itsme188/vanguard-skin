@@ -29,6 +29,19 @@ export function useResearchSync(options: {
   const syncingRef = useRef(false);
   const lastFocusAtRef = useRef<number>(Date.now());
 
+  // Callers pass inline arrows for onSyncStart/onSyncDone. Depending on them
+  // directly would recreate triggerSync every render, re-firing the mount
+  // effect below in a loop: the callbacks' setState → render → new triggerSync
+  // → effect → setState… (a request storm on any install where the Gmail
+  // pre-flight short-circuits before the localStorage debounce is stamped).
+  // Same trap as the useCallback render-loop rule in CLAUDE.md.
+  const onSyncStartRef = useRef(onSyncStart);
+  const onSyncDoneRef = useRef(onSyncDone);
+  useEffect(() => {
+    onSyncStartRef.current = onSyncStart;
+    onSyncDoneRef.current = onSyncDone;
+  });
+
   const triggerSync = useCallback(async () => {
     if (syncingRef.current) return;
 
@@ -44,7 +57,7 @@ export function useResearchSync(options: {
     if (Number.isFinite(last) && Date.now() - last < MIN_INTERVAL_MS) return;
 
     syncingRef.current = true;
-    onSyncStart?.();
+    onSyncStartRef.current?.();
     try {
       // Pre-flight: skip quietly when Gmail OAuth isn't configured — firing
       // the sync would 400 and log a console error on every mount. The
@@ -82,9 +95,9 @@ export function useResearchSync(options: {
       // Network error — silent. Manual sync button is always available.
     } finally {
       syncingRef.current = false;
-      onSyncDone?.();
+      onSyncDoneRef.current?.();
     }
-  }, [onSyncStart, onSyncDone]);
+  }, []);
 
   // Fire once when the component mounts and `enabled` flips to true.
   useEffect(() => {
