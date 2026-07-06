@@ -10,8 +10,8 @@ export const tabs: Tab[] = [
   {
     name: "Analysis",
     href: "/dashboard/analysis",
-    // Canonical ?view= scheme (2026-06-09): workspace | diagnostics |
-    // performance | trade-reviews. Legacy ?mode=factors / ?mode=classification
+    // Canonical ?view= scheme (2026-06-09; defense added 2026-07-05): workspace |
+    // diagnostics | performance | trade-reviews | defense. Legacy ?mode=factors / ?mode=classification
     // still resolve to Diagnostics via lib/analysis/view-param.ts; the old
     // Classification / Factor Exposure split is now the in-page mode toggle
     // inside Diagnostics.

@@ -1,7 +1,7 @@
 // Analysis tab sub-view param normalization — single source of truth.
 //
-// Canonical scheme (2026-06-09 IA fix): `?view=` with four values:
-//   workspace (default) | diagnostics | performance | trade-reviews
+// Canonical scheme (2026-06-09 IA fix; defense added 2026-07-05): `?view=` with five values:
+//   workspace (default) | diagnostics | performance | trade-reviews | defense
 // Diagnostics keeps a secondary `?mode=` (classification default | factors)
 // for its internal classification/factor toggle.
 //
