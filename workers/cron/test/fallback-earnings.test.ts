@@ -547,3 +547,48 @@ describe("runEarningsFallback shorts surface (B7)", () => {
     expect(html).not.toMatch(/No current/);
   });
 });
+
+describe("B20: issuer-family aware held/watchlist/mute gates", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (sendEmail as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "mock-email-id" });
+  });
+
+  function snapshotWith(overrides: {
+    heldSymbols?: string[]; watchlistSymbols?: string[]; mutedSymbols?: string[]; eventSymbol?: string;
+  }) {
+    const snap = makeEarningsSnapshot() as any;
+    snap.heldSymbols = overrides.heldSymbols ?? [];
+    if (overrides.watchlistSymbols) snap.watchlistSymbols = overrides.watchlistSymbols;
+    if (overrides.mutedSymbols) snap.earningsSettings = { enabled: true, mutedSymbols: overrides.mutedSymbols };
+    if (overrides.eventSymbol) snap.calendarEvents[0].symbol = overrides.eventSymbol;
+    return snap as Snapshot;
+  }
+
+  it("GOOGL event with only GOOG held is a candidate (family walk)", async () => {
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      snapshotWith({ heldSymbols: ["GOOG"], eventSymbol: "GOOGL" }),
+    );
+    const result = await runEarningsFallback(makeEnv(), { now: previewWindowNow() });
+    expect(sendEmail).toHaveBeenCalled();
+    expect(result.sent).toBeGreaterThan(0);
+  });
+
+  it("watchlist-only symbol is a candidate (snapshot v8 parity with push-at-print)", async () => {
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      snapshotWith({ heldSymbols: [], watchlistSymbols: ["AAPL"] }),
+    );
+    const result = await runEarningsFallback(makeEnv(), { now: previewWindowNow() });
+    expect(sendEmail).toHaveBeenCalled();
+    expect(result.sent).toBeGreaterThan(0);
+  });
+
+  it("mute list is case-insensitive and family-aware", async () => {
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      snapshotWith({ heldSymbols: ["GOOG"], eventSymbol: "GOOGL", mutedSymbols: ["goog"] }),
+    );
+    const result = await runEarningsFallback(makeEnv(), { now: previewWindowNow() });
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(result.sent).toBe(0);
+  });
+});

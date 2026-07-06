@@ -261,7 +261,12 @@ function findCandidatesFromSnapshot(
 ): SnapshotCandidate[] {
   const nowMs = now.getTime();
   const heldSet = new Set(snapshot.heldSymbols.map((s) => s.toUpperCase()));
-  const muted = new Set(snapshot.earningsSettings?.mutedSymbols ?? []);
+  const watchSet = new Set(
+    (snapshot.watchlistSymbols ?? []).map((s) => s.toUpperCase()),
+  );
+  const muted = new Set(
+    (snapshot.earningsSettings?.mutedSymbols ?? []).map((s) => s.toUpperCase()),
+  );
   const auditKey = (eventId: number, phase: EarningsPhase) => `${eventId}:${phase}`;
   // Skip live 'in_progress' claim rows — a claim (in-flight or crashed Mac
   // send) hasn't delivered anything, so it must not suppress the cloud
@@ -281,8 +286,13 @@ function findCandidatesFromSnapshot(
     if (e.event_type !== "earnings") continue;
     if (!e.symbol) continue;
     const sym = e.symbol.toUpperCase();
-    if (!heldSet.has(sym)) continue; // held-only — Worker doesn't have watchlist data yet
-    if (muted.has(sym)) continue;
+    // B20: family walk so a GOOGL event with GOOG held isn't dropped, plus
+    // watchlist coverage (snapshot v8 ships watchlistSymbols; older
+    // snapshots degrade to held-only via ?? []). Mirrors the push-at-print
+    // gate in calendar-enrich.ts.
+    const family = issuerSiblings(sym).map((s) => s.toUpperCase());
+    if (!family.some((f) => heldSet.has(f) || watchSet.has(f))) continue;
+    if (family.some((f) => muted.has(f))) continue;
 
     // Preview candidate
     if (e.release_time && !auditedSet.has(auditKey(e.id, "preview"))) {
