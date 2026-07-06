@@ -438,6 +438,8 @@ export interface HedgeScore {
   protects: string;
   protectedNotional: number;
   thetaPerDay: number | null;
+  /** Monthly theta as a fraction of protected notional; negative = the hedge
+   *  COLLECTS theta (short-option premium income), not a cost. */
   monthlyBleedPct: number | null;
   runwayDays: number | null;
   /** (strike − spot) / spot; negative = OTM for puts. */
@@ -454,7 +456,11 @@ export function scoreHedges(
   const scores = inputs.map(({ instrument: i, protects, protectedNotional }) => {
     const hasGreeks = i.greeksAvailable && i.isOption;
     const thetaPerDay = hasGreeks && typeof i.thetaPerDay === "number" ? i.thetaPerDay : null;
-    const monthlyBleed = thetaPerDay !== null && protectedNotional > 0 ? Math.abs(thetaPerDay) * 30 : null;
+    // Signed carry: theta < 0 (long options) decays — positive bleed = cost.
+    // theta > 0 (a short-option hedge collecting premium) — negative bleed =
+    // income; "expensive" then never fires and efficiency stays null via the
+    // existing monthlyBleed > 0 guard. Identical output for all long hedges.
+    const monthlyBleed = thetaPerDay !== null && protectedNotional > 0 ? -thetaPerDay * 30 : null;
     const monthlyBleedPct = monthlyBleed !== null ? monthlyBleed / protectedNotional : null;
     const runwayDays = i.isOption && typeof i.daysToExpiry === "number" ? i.daysToExpiry : null;
     const moneynessPct =

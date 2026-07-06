@@ -438,4 +438,17 @@ describe("scoreHedges", () => {
     ]);
     expect(scores.map((s) => s.securityId)).toEqual([1, 2, 3]);
   });
+
+  it("short-option hedge (positive theta) reports negative bleed = income; no expensive badge; null efficiency", () => {
+    const [s] = scoreHedges([hedgeInput({ thetaPerDay: 12 })]);
+    expect(s.monthlyBleedPct).not.toBeNull();
+    expect(s.monthlyBleedPct!).toBeLessThan(0); // collecting theta, not bleeding it
+    expect(s.badges).not.toContain("expensive");
+    expect(s.efficiency).toBeNull();
+  });
+
+  it("long-option bleed is unchanged by the sign convention (theta −10 → positive cost)", () => {
+    const [s] = scoreHedges([hedgeInput({ thetaPerDay: -10 })]);
+    expect(s.monthlyBleedPct!).toBeGreaterThan(0);
+  });
 });
