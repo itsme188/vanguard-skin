@@ -25,6 +25,99 @@ import { purgeMaturedBondHoldings } from "@/lib/mutations/matured-bonds";
 import { reconcileClosedEquityHoldings } from "@/lib/mutations/closed-equity";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
 
+// ── IBKR exchange-suffixed symbol resolution ────────────────────────
+//
+// IBKR activity statements print foreign-listed positions with an
+// exchange-suffixed symbol (e.g. the Korea-listed "402340.KS"), but the
+// securities row for that name may already exist under the BARE symbol
+// ("402340", currency='KRW') — created separately by the TWS/Web-API sync.
+// Left unresolved, `upsertSecurity` creates a brand-new row for "402340.KS"
+// (defaulting currency='USD'), and the statement's native-KRW price then
+// gets valued as if it were dollars — a currency-scaled phantom holding.
+//
+// `parseIbkrActivity` is a pure function (content, filename) -> parsed
+// records with no `db` parameter, and its own test suite
+// (tests/import/parsers/ibkr-activity.test.ts) exercises it that way. Adding
+// a DB dependency there would break that contract for no benefit, since the
+// only thing this resolution needs — "does a securities row already exist
+// for the base symbol" — is exactly what `commitImport` already has open
+// access to, at the same place it calls `upsertSecurity`. So the resolution
+// lives here, gated to `sourceType === "ibkr-activity"`, and runs once
+// up front (mutating the validated `parsed` records) before any DB writes.
+
+/**
+ * Exchange suffixes IBKR appends to foreign-listed symbols on activity
+ * statements. Extensible — add new suffixes here as they're observed on
+ * real statements. Deliberately excludes single-letter dual-class suffixes
+ * (.A, .B, ...) used by some US tickers (HEI.A, BRK.B) — those must never
+ * be treated as exchange suffixes and rewritten.
+ */
+export const IBKR_EXCHANGE_SUFFIXES = [
+  ".KS", // Korea (KOSPI)
+  ".T", // Tokyo
+  ".TO", // Toronto
+  ".L", // London
+  ".HK", // Hong Kong
+  ".SW", // Switzerland (SIX)
+  ".AX", // Australia (ASX)
+  ".PA", // Paris (Euronext)
+  ".DE", // Germany (Xetra)
+  ".MI", // Milan (Borsa Italiana)
+  ".AS", // Amsterdam (Euronext)
+  ".MC", // Madrid (BME)
+  ".VX", // Switzerland (virt-x/SIX, legacy feed)
+  ".SS", // Shanghai
+  ".SZ", // Shenzhen
+] as const;
+
+/**
+ * Resolve an IBKR exchange-suffixed symbol (e.g. "402340.KS") to an existing
+ * base-symbol securities row (e.g. "402340") if one is already in the DB.
+ * Never blind-strips: if no base row exists, the original symbol is returned
+ * untouched so a genuinely new foreign symbol isn't silently re-keyed.
+ */
+function resolveIbkrExchangeSuffixedSymbol(
+  db: Database.Database,
+  symbol: string
+): string {
+  const suffix = IBKR_EXCHANGE_SUFFIXES.find((s) => symbol.endsWith(s));
+  if (!suffix) return symbol;
+  const base = symbol.slice(0, -suffix.length);
+  if (!base) return symbol;
+  const existing = db
+    .prepare("SELECT 1 FROM securities WHERE symbol = ?")
+    .get(base);
+  return existing ? base : symbol;
+}
+
+function resolveIbkrExchangeSuffixedSymbols(
+  db: Database.Database,
+  parsed: ParsedImportResult
+): void {
+  if (parsed.sourceType !== "ibkr-activity") return;
+
+  for (const sec of parsed.securities) {
+    sec.symbol = resolveIbkrExchangeSuffixedSymbol(db, sec.symbol);
+    if (sec.underlyingSymbol) {
+      sec.underlyingSymbol = resolveIbkrExchangeSuffixedSymbol(
+        db,
+        sec.underlyingSymbol
+      );
+    }
+  }
+  for (const txn of parsed.transactions) {
+    if (txn.symbol) {
+      txn.symbol = resolveIbkrExchangeSuffixedSymbol(db, txn.symbol);
+    }
+  }
+  for (const h of parsed.holdings) {
+    h.symbol = resolveIbkrExchangeSuffixedSymbol(db, h.symbol);
+  }
+  for (const p of parsed.prices) {
+    p.symbol = resolveIbkrExchangeSuffixedSymbol(db, p.symbol);
+  }
+}
+
 // ── Parse (detect + parse, no DB writes) ────────────────────────────
 
 export async function parseImport(
@@ -118,6 +211,11 @@ export function commitImport(
   }
   // Use the validated (cleaned) result for all DB writes
   parsed = validatedResult;
+
+  // Resolve IBKR exchange-suffixed foreign symbols ("402340.KS") to an
+  // existing base-symbol security ("402340") BEFORE any writes below — see
+  // resolveIbkrExchangeSuffixedSymbols for the full rationale.
+  resolveIbkrExchangeSuffixedSymbols(db, parsed);
 
   let newTransactions = 0;
   let newHoldings = 0;
