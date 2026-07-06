@@ -111,6 +111,15 @@ describe("resolveSectorEtf", () => {
   it("returns null for earnings with no sector", () => {
     expect(resolveSectorEtf("earnings", null)).toBeNull();
   });
+
+  it("resolves the canonical GICS 'Healthcare' label to XLV (vocabulary-drift fix)", () => {
+    expect(resolveSectorEtf("earnings", "Healthcare")).toBe("XLV");
+  });
+
+  it("resolves legacy pre-normalizer labels via normalizeSector defense", () => {
+    expect(resolveSectorEtf("earnings", "Health Care")).toBe("XLV");
+    expect(resolveSectorEtf("earnings", "Financial")).toBe("XLF");
+  });
 });
 
 describe("captureReactionFromTws", () => {
