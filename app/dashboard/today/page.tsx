@@ -160,10 +160,10 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
            s.symbol,
            s.name AS security_name,
            h.quantity,
-           p_today.close_price AS current_price,
+           p_today.close_price * COALESCE(fx.usd_per_unit, 1) AS current_price,
            p_today.date AS price_date,
            p_today.source AS price_source,
-           p_prior.close_price AS prior_close,
+           p_prior.close_price * COALESCE(fx.usd_per_unit, 1) AS prior_close,
            CASE WHEN p_today.close_price IS NOT NULL THEN ${marketValueCurrent} ELSE NULL END AS current_value,
            CASE WHEN p_today.close_price IS NOT NULL AND p_prior.close_price IS NOT NULL
              THEN ${marketValueCurrent} - ${marketValuePrior} ELSE NULL END AS today_gain,

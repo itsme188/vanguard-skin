@@ -3,6 +3,7 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { reconcileCostBasis } from "@/lib/compute/cost-basis-reconciliation";
 import { computeTaxLots } from "@/lib/compute/tax-lots";
+import { upsertFxRate } from "@/lib/mutations/fx-rates";
 
 let db: Database.Database;
 
@@ -131,5 +132,29 @@ describe("reconcileCostBasis", () => {
     expect(result.totalBrokerCostBasis).toBe(35500);
     expect(result.totalComputedCostBasis).toBe(35000);
     expect(result.totalDifference).toBe(500);
+  });
+});
+
+describe("reconcileCostBasis FX conversion", () => {
+  it("converts KRW broker AND computed cost basis to USD (both sides, delta preserved)", () => {
+    db.prepare(
+      "INSERT INTO securities (id, symbol, name, security_type, currency) VALUES (3, '402340', 'Hanwha Vision', 'stock', 'KRW')"
+    ).run();
+    // Buy 10 sh @ ₩1,600,000 = ₩16,000,000 computed basis.
+    insertTransaction(3, "BUY", "2025-06-01", 10, 1_600_000);
+    computeTaxLots(db);
+    // Broker reports ₩16,329,792 (includes fees/FX drift).
+    insertHolding(3, 10, 16_329_792, "2026-03-27");
+    upsertFxRate(db, { currency: "KRW", usdPerUnit: 0.0006531, asOf: "2026-07-03", source: "test" });
+
+    const result = reconcileCostBasis(db);
+    const row = result.rows.find((r) => r.symbol === "402340");
+    expect(row).toBeTruthy();
+    // Pre-fix both sides rendered as won-with-$-glyph ($16.3M phantom).
+    expect(row!.brokerCostBasis).toBeCloseTo(16_329_792 * 0.0006531, 2);
+    expect(row!.computedCostBasis).toBeCloseTo(16_000_000 * 0.0006531, 2);
+    expect(row!.brokerCostBasis!).toBeLessThan(20_000);
+    // Delta scales with the same factor — flag semantics unchanged.
+    expect(row!.costBasisDiff).toBeCloseTo((16_329_792 - 16_000_000) * 0.0006531, 2);
   });
 });

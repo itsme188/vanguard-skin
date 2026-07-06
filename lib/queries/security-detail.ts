@@ -25,6 +25,7 @@ import { getTranscriptsForSecurity } from "@/lib/queries/transcripts";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { getArticlesForSecurity, type ResearchMention } from "@/lib/queries/research";
 import { getLatestDailyBar, get52WeekRange, getOhlcvBars } from "@/lib/queries/ohlcv";
+import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 import { computeATR, type OhlcBar } from "@/lib/chart/indicators";
 
 // ─── Result types ──────────────────────────────────────────────
@@ -89,6 +90,13 @@ export interface SecurityDetailData {
   transcripts: EarningsTranscript[];
   tradeGrades: TradeGradeEntry[];
   researchMentions: ResearchMention[];
+  /**
+   * USD per unit of the security's native currency (1 for USD/unknown).
+   * `price` and `kpis` stay NATIVE — the chart price-line and ATR/52wk
+   * ratios need native units — so $-display sites multiply by this factor
+   * at render time (MarketDataPanel / QuoteStats).
+   */
+  usdPerUnit: number;
 }
 
 export interface TradeGradeEntry {
@@ -512,5 +520,6 @@ export function getSecurityDetail(
     transcripts,
     tradeGrades,
     researchMentions,
+    usdPerUnit: getUsdPerUnit(db, security.currency ?? "USD"),
   };
 }

@@ -13,9 +13,17 @@ import { formatUSDPrecise, formatPercent } from "@/lib/format";
 export function QuoteStats({
   quote,
   currentPrice,
+  usdPerUnit = 1,
 }: {
   quote: SecurityQuote | null;
   currentPrice: number | null;
+  /**
+   * FX factor for foreign-currency securities (1 for USD). Quote fields and
+   * currentPrice arrive in the security's NATIVE currency; the $-labeled
+   * displays below multiply by this, while the range-position ratio stays
+   * native (scale-invariant either way).
+   */
+  usdPerUnit?: number;
 }) {
   if (!quote) return null;
   const { iv_underlying, hv_30d, week52_high, week52_low, dividend_yield } = quote;
@@ -37,7 +45,7 @@ export function QuoteStats({
           <div className="mb-1 flex items-baseline justify-between text-[11px] font-mono">
             <span className="text-ink-faint uppercase tracking-wider">52-wk range</span>
             {currentPrice != null && (
-              <span className="text-ink-dim">{formatUSDPrecise(currentPrice)}</span>
+              <span className="text-ink-dim">{formatUSDPrecise(currentPrice * usdPerUnit)}</span>
             )}
           </div>
           <div className="relative h-1.5 rounded-full bg-muted">
@@ -50,8 +58,8 @@ export function QuoteStats({
             )}
           </div>
           <div className="mt-1 flex justify-between text-[11px] font-mono text-ink-faint">
-            <span>{formatUSDPrecise(week52_low!)}</span>
-            <span>{formatUSDPrecise(week52_high!)}</span>
+            <span>{formatUSDPrecise(week52_low! * usdPerUnit)}</span>
+            <span>{formatUSDPrecise(week52_high! * usdPerUnit)}</span>
           </div>
         </div>
       )}

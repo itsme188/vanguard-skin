@@ -83,11 +83,12 @@ export function reconcileCostBasis(
         s.name AS security_name,
         s.security_type,
         h.quantity,
-        h.cost_basis AS broker_cost_basis,
+        h.cost_basis * COALESCE(fx.usd_per_unit, 1) AS broker_cost_basis,
         h.as_of_date
        FROM holdings h
        JOIN securities s ON s.id = h.security_id
        JOIN accounts a ON a.id = h.account_id
+       LEFT JOIN fx_rates fx ON fx.currency = s.currency
        WHERE ${latestHoldingsPredicate({ keyBy: "account", includeShorts: true, accountFilter })}
          AND LOWER(s.security_type) NOT IN ('mutual fund', 'money market', 'fund', 'money_market')
        ORDER BY a.name, s.symbol`
@@ -110,17 +111,21 @@ export function reconcileCostBasis(
   const lotParams: number[] = [];
   if (options.accountId) lotParams.push(options.accountId);
 
+  // Both sides of the reconciliation carry the FX factor so a foreign name
+  // compares USD-vs-USD (converting only one side would fake a divergence).
   const computedLots = db
     .prepare(
       `SELECT
-        account_id,
-        security_id,
-        SUM(quantity_remaining) AS total_quantity,
-        SUM(quantity_remaining * acquisition_price) AS total_cost_basis
-       FROM tax_lots
-       WHERE quantity_remaining > 0
+        tl.account_id,
+        tl.security_id,
+        SUM(tl.quantity_remaining) AS total_quantity,
+        SUM(tl.quantity_remaining * tl.acquisition_price) * COALESCE(fx.usd_per_unit, 1) AS total_cost_basis
+       FROM tax_lots tl
+       JOIN securities s ON s.id = tl.security_id
+       LEFT JOIN fx_rates fx ON fx.currency = s.currency
+       WHERE tl.quantity_remaining > 0
          ${lotAccountFilter}
-       GROUP BY account_id, security_id`
+       GROUP BY tl.account_id, tl.security_id`
     )
     .all(...lotParams) as Array<{
     account_id: number;

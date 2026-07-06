@@ -6,6 +6,7 @@ import {
   formatCurrentPricesBlock,
 } from "@/lib/calendar/briefing";
 import type { CalendarEvent } from "@/lib/types";
+import { upsertFxRate } from "@/lib/mutations/fx-rates";
 
 let db: Database.Database;
 
@@ -186,5 +187,30 @@ describe("formatCurrentPricesBlock", () => {
     expect(out).toBe(
       "- AAPL: $267.75 (2026-04-27)\n- GOOG: $343.31 (2026-04-27)\n- TER: $420.80 (2026-04-27)"
     );
+  });
+});
+
+describe("buildCurrentPrices FX conversion", () => {
+  it("converts a foreign-currency close to USD before it reaches the LLM prompt", () => {
+    const krw = db
+      .prepare(
+        "INSERT INTO securities (symbol, name, security_type, asset_class, multiplier, currency) VALUES ('402340', 'Hanwha Vision', 'stock', 'equity', 1, 'KRW')"
+      )
+      .run().lastInsertRowid as number;
+    seedHolding(krw, 1, 10);
+    seedPrice(krw, 1_602_000);
+    upsertFxRate(db, { currency: "KRW", usdPerUnit: 0.0006531, asOf: "2026-07-03", source: "test" });
+
+    const out = buildCurrentPrices(db, {
+      holdings: [{ symbol: "402340" }],
+      expiringOptions: [],
+      portfolioEarnings: [],
+      wshEarnings: [],
+    });
+
+    // Opus reads "402340 closed at $X" verbatim — native won here means the
+    // model narrates a $1.6M/share stock.
+    expect(out.get("402340")!.close).toBeCloseTo(1_602_000 * 0.0006531, 4);
+    expect(out.get("402340")!.close).toBeLessThan(2_000);
   });
 });

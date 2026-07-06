@@ -36,6 +36,12 @@ interface Props {
   priceChangePct: number | null;
   priceDate: string | null;
   kpis: SecurityKpis | null;
+  /**
+   * FX factor for foreign-currency securities (1 for USD). Price + KPI props
+   * arrive NATIVE — the chart's price line and the ATR% ratio need native
+   * units — so only the $-labeled displays multiply by this at render time.
+   */
+  usdPerUnit?: number;
 }
 
 /**
@@ -69,6 +75,7 @@ export function MarketDataPanel({
   priceChangePct,
   priceDate,
   kpis,
+  usdPerUnit = 1,
 }: Props) {
   const isUp = priceChange != null && priceChange >= 0;
   const gainColor = isUp ? "#22c55e" : "#ef4444";
@@ -176,7 +183,7 @@ export function MarketDataPanel({
               >
                 $
               </span>
-              <Money value={currentPrice} precise bare />
+              <Money value={currentPrice * usdPerUnit} precise bare />
             </div>
 
             {priceChange != null && priceChangePct != null && (
@@ -189,7 +196,7 @@ export function MarketDataPanel({
                     fontVariantNumeric: "tabular-nums",
                   }}
                 >
-                  <Money value={priceChange} precise signed />
+                  <Money value={priceChange * usdPerUnit} precise signed />
                 </div>
                 <div
                   style={{
@@ -236,7 +243,7 @@ export function MarketDataPanel({
               kpis.open != null ? (
                 <>
                   <span style={{ color: "#555", marginRight: "0.08em" }}>$</span>
-                  <Money value={kpis.open} precise bare />
+                  <Money value={kpis.open * usdPerUnit} precise bare />
                 </>
               ) : (
                 "—"
@@ -248,7 +255,7 @@ export function MarketDataPanel({
             value={
               kpis.dayLow != null && kpis.dayHigh != null ? (
                 <>
-                  <Money value={kpis.dayLow} precise /> – <Money value={kpis.dayHigh} precise />
+                  <Money value={kpis.dayLow * usdPerUnit} precise /> – <Money value={kpis.dayHigh * usdPerUnit} precise />
                 </>
               ) : (
                 "—"
@@ -260,7 +267,7 @@ export function MarketDataPanel({
             value={
               kpis.week52Low != null && kpis.week52High != null ? (
                 <>
-                  <Money value={kpis.week52Low} precise /> – <Money value={kpis.week52High} precise />
+                  <Money value={kpis.week52Low * usdPerUnit} precise /> – <Money value={kpis.week52High * usdPerUnit} precise />
                 </>
               ) : (
                 "—"
@@ -286,7 +293,7 @@ export function MarketDataPanel({
               kpis.atr14 != null ? (
                 <>
                   <span style={{ color: "#555", marginRight: "0.08em" }}>$</span>
-                  <Money value={kpis.atr14} precise bare />
+                  <Money value={kpis.atr14 * usdPerUnit} precise bare />
                 </>
               ) : (
                 "—"
