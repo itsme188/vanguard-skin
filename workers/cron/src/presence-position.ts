@@ -92,3 +92,30 @@ function formatQty(q: number): string {
   if (Number.isInteger(abs)) return abs.toString();
   return abs.toFixed(2);
 }
+
+/**
+ * Combined-positions summary for use in earnings-email prompts. Replaces the
+ * old "Combined exposure: ${combinedShares} shares + ${contracts} option
+ * contract(s) (~${notional} shares notional)" line that leaked the
+ * derivable-from-price notional dollar exposure.
+ *
+ * Returns a presence-only summary: position counts + direction breakdown,
+ * no derivable $.
+ */
+export function formatCombinedExposurePresence(args: {
+  positionCount: number;
+  longShares: number;
+  shortShares: number;
+  longContracts: number;
+  shortContracts: number;
+}): string {
+  if (args.positionCount === 0) return "no live exposure";
+  const parts: string[] = [];
+  if (args.longShares > 0) parts.push(`${args.longShares.toFixed(0)} long shares`);
+  if (args.shortShares > 0) parts.push(`${args.shortShares.toFixed(0)} short shares`);
+  if (args.longContracts > 0)
+    parts.push(`${args.longContracts.toFixed(0)} long option contract(s)`);
+  if (args.shortContracts > 0)
+    parts.push(`${args.shortContracts.toFixed(0)} short option contract(s)`);
+  return parts.length > 0 ? parts.join(" + ") : "no live exposure";
+}
