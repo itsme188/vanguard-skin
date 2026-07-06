@@ -2,7 +2,7 @@ import { db } from "@/lib/db";
 import { resolveScope } from "@/lib/queries/accounts";
 import { computeDefenseAnalysis } from "@/lib/compute/hedging";
 import { interpretProtectionRatio, toneClass } from "@/lib/analysis/interpret";
-import { Money, Pct } from "@/lib/privacy/components";
+import { Money, Pct, Count } from "@/lib/privacy/components";
 import { EmptySection } from "./EmptySection";
 import { NarrativeBlock } from "./analysis/NarrativeBlock";
 import { DefenseTables } from "./DefenseTables";
@@ -74,7 +74,7 @@ export async function DefenseView({ scope = "all" }: DefenseViewProps) {
           </div>
           <div>
             <p className="text-[11px] uppercase tracking-widest text-ink-faint mb-1">Hedges scored</p>
-            <p className="font-mono tabular-nums text-xl text-ink">{summary.hedgeCount}</p>
+            <p className="font-mono tabular-nums text-xl text-ink"><Count value={summary.hedgeCount} /></p>
           </div>
         </div>
       </section>
