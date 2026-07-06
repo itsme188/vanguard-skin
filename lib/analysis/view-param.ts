@@ -16,7 +16,8 @@ export type AnalysisSubView =
   | "workspace"
   | "diagnostics"
   | "performance"
-  | "trade-reviews";
+  | "trade-reviews"
+  | "defense";
 
 export type AnalysisDiagnosticsMode = "classification" | "factors";
 
@@ -47,6 +48,8 @@ export function resolveAnalysisView(params: {
     case "trade-reviews":
     case "reviews": // legacy Research-era alias
       return { view: "trade-reviews", mode: "classification" };
+    case "defense":
+      return { view: "defense", mode: "classification" };
   }
 
   // No (or unknown) view: legacy ?mode= alias keeps old diagnostics URLs working.

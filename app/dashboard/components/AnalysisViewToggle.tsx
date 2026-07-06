@@ -11,6 +11,7 @@ const VIEWS: { key: AnalysisSubView; label: string; query: string }[] = [
   { key: "diagnostics", label: "Diagnostics", query: "view=diagnostics" },
   { key: "performance", label: "Performance", query: "view=performance" },
   { key: "trade-reviews", label: "Reviews", query: "view=trade-reviews" },
+  { key: "defense", label: "Defense", query: "view=defense" },
 ];
 
 export function AnalysisViewToggle({
