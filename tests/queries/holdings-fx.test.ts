@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { upsertFxRate } from "@/lib/mutations/fx-rates";
-import { getAllHoldings } from "@/lib/queries/holdings";
+import { getAllHoldings, getHoldingsByAccount } from "@/lib/queries/holdings";
 
 function seedSecurity(
   db: Database.Database,
@@ -95,5 +95,43 @@ describe("getAllHoldings FX conversion", () => {
 
     // USD control's returned cost_basis is byte-unchanged.
     expect(usdRow!.cost_basis).toBe(1_800_000);
+  });
+});
+
+describe("getHoldingsByAccount FX conversion", () => {
+  let db: Database.Database;
+  const ACCOUNT_ID = 1;
+  const TODAY = "2026-07-01";
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  it("KRW cost_basis converts to USD; USD control byte-unchanged", () => {
+    const aapl = seedSecurity(db, "AAPL", { currency: "USD" });
+    seedHolding(db, ACCOUNT_ID, aapl, 100, TODAY, 15_000);
+
+    const krw = seedSecurity(db, "402340", { currency: "KRW" });
+    seedHolding(db, ACCOUNT_ID, krw, 10, TODAY, 16_329_792);
+
+    upsertFxRate(db, { currency: "KRW", usdPerUnit: 0.0006531, asOf: TODAY, source: "test" });
+
+    const rows = getHoldingsByAccount(db, ACCOUNT_ID);
+    const usdRow = rows.find((r) => r.symbol === "AAPL")!;
+    const krwRow = rows.find((r) => r.symbol === "402340")!;
+
+    expect(usdRow.cost_basis).toBe(15_000);
+    // ₩16,329,792 × 0.0006531 ≈ $10,665 — NOT the $16.3M phantom.
+    expect(krwRow.cost_basis).toBeCloseTo(16_329_792 * 0.0006531, 5);
+    expect(krwRow.cost_basis).toBeLessThan(20_000);
+  });
+
+  it("missing fx_rates row passes native through at rate 1 (never fabricates)", () => {
+    const krw = seedSecurity(db, "402340", { currency: "KRW" });
+    seedHolding(db, ACCOUNT_ID, krw, 10, TODAY, 16_329_792);
+    const rows = getHoldingsByAccount(db, ACCOUNT_ID);
+    expect(rows[0].cost_basis).toBe(16_329_792);
   });
 });

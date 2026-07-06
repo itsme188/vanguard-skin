@@ -90,7 +90,12 @@ export function getLatestPrice(
   return (
     db
       .prepare(
-        "SELECT close_price, date FROM prices WHERE security_id = ? ORDER BY date DESC LIMIT 1",
+        `SELECT p.close_price * COALESCE(fx.usd_per_unit, 1) AS close_price, p.date
+         FROM prices p
+         JOIN securities s ON s.id = p.security_id
+         LEFT JOIN fx_rates fx ON fx.currency = s.currency
+         WHERE p.security_id = ?
+         ORDER BY p.date DESC LIMIT 1`,
       )
       .get(securityId) as { close_price: number; date: string } | undefined
   ) ?? null;

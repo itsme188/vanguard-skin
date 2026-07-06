@@ -925,9 +925,10 @@ export function buildCurrentPrices(
   const placeholders = list.map(() => "?").join(",");
   const rows = db
     .prepare(
-      `SELECT s.symbol, p.close_price, p.date
+      `SELECT s.symbol, p.close_price * COALESCE(fx.usd_per_unit, 1) AS close_price, p.date
        FROM securities s
        JOIN prices p ON p.security_id = s.id
+       LEFT JOIN fx_rates fx ON fx.currency = s.currency
        WHERE s.symbol IN (${placeholders})
          AND LOWER(s.security_type) IN ('stock','etf','mutual fund','common stock','bond')
          AND p.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = s.id)`

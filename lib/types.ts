@@ -19,6 +19,7 @@ export interface Security {
   industry: string | null;
   exchange: string | null;
   ib_con_id: number | null;
+  currency: string | null;
 }
 
 export interface Transaction {

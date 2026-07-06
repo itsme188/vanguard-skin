@@ -84,10 +84,12 @@ export function getHoldingsByAccount(
   let sql = `
     SELECT h.*, s.symbol, s.name as security_name, s.security_type, a.name as account_name,
            s.underlying_symbol, s.strike_price, s.expiration_date, s.option_type,
-           COALESCE(s.multiplier, 1) as multiplier
+           COALESCE(s.multiplier, 1) as multiplier,
+           h.cost_basis * COALESCE(fx.usd_per_unit, 1) as cost_basis
     FROM holdings h
     JOIN securities s ON s.id = h.security_id
     JOIN accounts a ON a.id = h.account_id
+    LEFT JOIN fx_rates fx ON fx.currency = s.currency
     WHERE h.account_id = ?
   `;
   const params: (number | string)[] = [accountId];

@@ -5,6 +5,7 @@ import { upsertFxRate } from "@/lib/mutations/fx-rates";
 import {
   getHoldingsBySecurity,
   getOpenTaxLotsBySecurity,
+  getSecurityDetail,
 } from "@/lib/queries/security-detail";
 
 // ─── Seed helpers (mirrors tests/queries/portfolio-summary-fx.test.ts) ────
@@ -199,5 +200,42 @@ describe("security-detail FX conversion", () => {
       expect(lots[0].unrealized_gain).toBe(5_000);
       expect(lots[0].cost_basis).toBe(20_000);
     });
+  });
+});
+
+describe("getSecurityDetail usdPerUnit", () => {
+  let db: Database.Database;
+  const TODAY = "2026-07-03";
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  it("exposes the KRW fx factor; hero price stays NATIVE for chart/ratio consumers", () => {
+    const krw = seedSecurity(db, "402340", { currency: "KRW" });
+    seedPrice(db, krw, 1_602_000, TODAY);
+    upsertFxRate(db, { currency: "KRW", usdPerUnit: 0.0006531, asOf: TODAY, source: "test" });
+
+    const detail = getSecurityDetail(db, krw);
+    expect(detail).toBeTruthy();
+    // Display sites multiply by this; the chart price-line + ATR ratio keep native.
+    expect(detail!.usdPerUnit).toBeCloseTo(0.0006531, 9);
+    expect(detail!.price?.close_price).toBe(1_602_000);
+  });
+
+  it("USD security exposes 1 (byte-identical rendering)", () => {
+    const aapl = seedSecurity(db, "AAPL", { currency: "USD" });
+    seedPrice(db, aapl, 208, TODAY);
+    const detail = getSecurityDetail(db, aapl);
+    expect(detail!.usdPerUnit).toBe(1);
+  });
+
+  it("missing fx row falls back to 1 (native passthrough, never fabricated)", () => {
+    const krw = seedSecurity(db, "402340", { currency: "KRW" });
+    seedPrice(db, krw, 1_602_000, TODAY);
+    const detail = getSecurityDetail(db, krw);
+    expect(detail!.usdPerUnit).toBe(1);
   });
 });

@@ -220,6 +220,7 @@ export default async function SecurityDetailPage(props: {
         priceChangePct={price?.change_pct ?? null}
         priceDate={price?.date ?? null}
         kpis={kpis}
+        usdPerUnit={detail.usdPerUnit}
       />
 
       {/* Action buttons */}
@@ -239,7 +240,7 @@ export default async function SecurityDetailPage(props: {
       </div>
 
       {/* IBKR market-data snapshot strip — 52wk range + IV/HV (public data) */}
-      <QuoteStats quote={quote} currentPrice={price?.close_price ?? null} />
+      <QuoteStats quote={quote} currentPrice={price?.close_price ?? null} usdPerUnit={detail.usdPerUnit} />
 
       {/* Watchlist price targets */}
       {watched && watchlistItem && (watchlistItem.price_target_low || watchlistItem.price_target_high) && (
