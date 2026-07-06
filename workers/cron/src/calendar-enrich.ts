@@ -319,6 +319,8 @@ export async function runCloudFallback(
       // for the Mac's wake-up reconcile. Held/watchlist from the snapshot
       // (watchlistSymbols is additive v8; older snapshots → held-only),
       // muted list respected, issuer-family aware, KV-marker deduped.
+      // Costs up to 3 subrequests per print (marker read, Pushover POST,
+      // marker write) against the invocation's 50-subrequest free-tier budget.
       if (
         cand.event_type === "earnings" &&
         cand.symbol &&

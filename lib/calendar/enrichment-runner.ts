@@ -17,6 +17,11 @@ import {
 } from "./reaction-snapshot";
 import { captureReactionFromYahoo } from "../../workers/cron/src/yahoo";
 import { sendEarningsPrintPush } from "@/lib/alerts/print-push";
+import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
+import {
+  getEarningsSettings,
+  shouldSendEarningsEmail,
+} from "@/lib/queries/earnings-settings";
 
 // Macro releases (FRED/FOMC/nonfred): data is typically published within
 // minutes of release, and the reaction window is the immediate 2-hour
@@ -480,12 +485,6 @@ async function runTwsReactionUpgrade(
 // the user doesn't own. The audit-row filter is the dedup floor — when
 // the email lands, the composer's UNIQUE-protected INSERT prevents a
 // second tick from re-firing the same event/phase pair.
-
-import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
-import {
-  getEarningsSettings,
-  shouldSendEarningsEmail,
-} from "@/lib/queries/earnings-settings";
 
 const PREVIEW_WINDOW_MIN_MS = 105 * 60 * 1000;
 const PREVIEW_WINDOW_MAX_MS = 135 * 60 * 1000;
