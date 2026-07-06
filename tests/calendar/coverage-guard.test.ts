@@ -236,6 +236,37 @@ describe("findEarningsCoverageGaps", () => {
     ]);
   });
 
+  it("a far-future event (beyond the 45d horizon) suppresses the no_history mislabel", () => {
+    const acct = insertAccount(db);
+    const sec = insertSecurity(db, "SPCE");
+    insertHolding(db, acct, sec, 10);
+    insertEarningsEvent(db, "SPCE", "2026-09-15"); // 72d out — beyond LOOKAHEAD_DAYS
+    // no past events at all — pre-fix this was kind "no_history"
+
+    expect(findEarningsCoverageGaps(db, { today: TODAY })).toEqual([]);
+  });
+
+  it("a far-future event also suppresses due_no_event (a scheduled report IS coverage)", () => {
+    const acct = insertAccount(db);
+    const sec = insertSecurity(db, "ORCL");
+    insertHolding(db, acct, sec, 25);
+    insertEarningsEvent(db, "ORCL", "2026-03-01"); // 126d ago — due
+    insertEarningsEvent(db, "ORCL", "2026-09-15"); // scheduled, beyond horizon
+
+    expect(findEarningsCoverageGaps(db, { today: TODAY })).toEqual([]);
+  });
+
+  it("a superseded far-future event does NOT count as coverage", () => {
+    const acct = insertAccount(db);
+    const sec = insertSecurity(db, "SNOW");
+    insertHolding(db, acct, sec, 15);
+    insertEarningsEvent(db, "SNOW", "2026-09-15", { superseded: 1 }); // only event, superseded
+
+    expect(findEarningsCoverageGaps(db, { today: TODAY })).toEqual([
+      { symbol: "SNOW", kind: "no_history", lastEventDate: null, daysSinceLast: null },
+    ]);
+  });
+
   it("ignored symbols are excluded", () => {
     db.prepare(
       `INSERT INTO settings (key, value) VALUES ('coverage_guard_ignored_symbols', '["402340"]')`,

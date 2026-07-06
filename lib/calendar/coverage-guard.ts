@@ -137,6 +137,23 @@ export function findEarningsCoverageGaps(
       .get(today, horizon, ...family);
     if (future) continue;
 
+    // A scheduled event BEYOND the look-ahead horizon still proves a source
+    // covers the name (manual far-future entries). Without this, a family
+    // whose only event is >LOOKAHEAD_DAYS out falls through both the future
+    // check (BETWEEN today AND horizon) and the last-report check
+    // (event_date <= today) and gets mislabeled "no_history".
+    const farFuture = db
+      .prepare(
+        `SELECT 1 FROM calendar_events
+          WHERE event_type = 'earnings'
+            AND COALESCE(superseded, 0) = 0
+            AND event_date > ?
+            AND UPPER(symbol) IN (${placeholders})
+          LIMIT 1`,
+      )
+      .get(horizon, ...family);
+    if (farFuture) continue;
+
     // Any past event (superseded included) is evidence a source covers the name.
     const last = db
       .prepare(
