@@ -49,6 +49,8 @@ import {
   setEarningsRunningMarker,
   clearEarningsRunningMarker,
   writeEarningsMarker,
+  readPrintPushMarker,
+  writePrintPushMarker,
   type EarningsPhase,
 } from "./earnings-markers";
 import { runLevelScan, shouldRunLevelScan } from "./level-scan";
@@ -692,6 +694,30 @@ export default {
       }
       await writeEarningsMarker(env.CRON_KV, "mac", phase as EarningsPhase, eventId);
       return Response.json({ ok: true, phase, eventId });
+    }
+
+    // Push-at-print dedup (Wave 1 §2) — whichever side (Mac enrichment, Mac
+    // reconcile, or the Worker's own cloud-enrich hook) captures an earnings
+    // actual first checks this marker before pushing, and writes it after a
+    // successful push. Keyed on eventId only (no phase — a print push fires
+    // once per event, not per preview/recap).
+    if (request.method === "GET" && url.pathname === "/internal/print-push-marker") {
+      const eventIdStr = url.searchParams.get("eventId");
+      const eventId = parseInt(eventIdStr ?? "", 10);
+      if (!Number.isInteger(eventId) || eventId <= 0) {
+        return Response.json({ error: "eventId must be a positive integer" }, { status: 400 });
+      }
+      return Response.json({ pushed: await readPrintPushMarker(env.CRON_KV, eventId) });
+    }
+
+    if (request.method === "POST" && url.pathname === "/internal/print-push-marker") {
+      const eventIdStr = url.searchParams.get("eventId");
+      const eventId = parseInt(eventIdStr ?? "", 10);
+      if (!Number.isInteger(eventId) || eventId <= 0) {
+        return Response.json({ error: "eventId must be a positive integer" }, { status: 400 });
+      }
+      await writePrintPushMarker(env.CRON_KV, eventId);
+      return Response.json({ ok: true, eventId });
     }
 
     // Phase 9b — Mac reconcile endpoints. Mac polls to read cloud-enriched
