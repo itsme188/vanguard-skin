@@ -3,6 +3,7 @@ import {
   parseFinnhubFigure,
   formatFinnhubFigure,
   formatFinnhubFigureCompact,
+  mergeFinnhubActual,
 } from "@/lib/format/finnhub-figure";
 
 describe("parseFinnhubFigure", () => {
@@ -54,5 +55,35 @@ describe("formatFinnhubFigure", () => {
     expect(formatFinnhubFigureCompact("EPS 0.91 · Rev 4345870107")).toBe("$0.91 · $4.35B");
     expect(formatFinnhubFigureCompact("EPS 0.91")).toBe("$0.91");
     expect(formatFinnhubFigureCompact(null)).toBe("");
+  });
+});
+
+describe("mergeFinnhubActual (B18 — manual override must not wipe the other field)", () => {
+  it("EPS-only save preserves stored revenue", () => {
+    expect(mergeFinnhubActual("EPS 1.10 · Rev 4340000000", { eps: 1.23 })).toBe(
+      "EPS 1.23 · Rev 4340000000"
+    );
+  });
+
+  it("revenue-only save preserves stored EPS", () => {
+    expect(mergeFinnhubActual("EPS 1.10 · Rev 4340000000", { revenue: 5_000_000_000 })).toBe(
+      "EPS 1.10 · Rev 5000000000"
+    );
+  });
+
+  it("both provided replaces both", () => {
+    expect(
+      mergeFinnhubActual("EPS 1.10 · Rev 4340000000", { eps: -0.05, revenue: 1000 })
+    ).toBe("EPS -0.05 · Rev 1000");
+  });
+
+  it("no existing value + one field yields a single-part string", () => {
+    expect(mergeFinnhubActual(null, { eps: 2.5 })).toBe("EPS 2.50");
+    expect(mergeFinnhubActual(null, { revenue: 900 })).toBe("Rev 900");
+  });
+
+  it("nothing provided and nothing stored returns null", () => {
+    expect(mergeFinnhubActual(null, {})).toBeNull();
+    expect(mergeFinnhubActual("garbage with no figures", {})).toBeNull();
   });
 });

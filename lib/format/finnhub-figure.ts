@@ -80,3 +80,24 @@ export function formatFinnhubFigureCompact(s: string | null | undefined): string
   const parts = [f.eps, f.revenue].filter((v): v is string => !!v);
   return parts.join(" · ");
 }
+
+/**
+ * Merge a manual actuals override into an existing Finnhub-shaped
+ * `actual_value` string. Fields the caller doesn't provide (null/undefined)
+ * KEEP their stored value — pre-fix, `POST /api/earnings/actuals` rebuilt
+ * the whole string from the request body, so saving only EPS silently wiped
+ * a previously-captured revenue (audit B18). Returns null when neither
+ * field survives the merge (caller should 400).
+ */
+export function mergeFinnhubActual(
+  existingRaw: string | null | undefined,
+  updates: { eps?: number | null; revenue?: number | null }
+): string | null {
+  const existing = parseFinnhubFigure(existingRaw);
+  const eps = updates.eps ?? existing.eps;
+  const revenue = updates.revenue ?? existing.revenue;
+  const parts: string[] = [];
+  if (eps != null && Number.isFinite(eps)) parts.push(`EPS ${eps.toFixed(2)}`);
+  if (revenue != null && Number.isFinite(revenue)) parts.push(`Rev ${Math.round(revenue)}`);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}

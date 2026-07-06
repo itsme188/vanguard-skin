@@ -2,6 +2,7 @@
 
 import type { ReactionSnapshot } from "@/lib/calendar/reaction-snapshot";
 import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
+import { parseStoredTimestamp } from "@/lib/format";
 
 /**
  * Compact post-release result chips for the Calendar page event row.
@@ -141,9 +142,26 @@ export function EnrichmentDetail({
 
       {enrichedAt && (
         <div className="mt-2 pt-2 border-t border-edge/30 text-[9px] text-ink-faint">
-          Enriched {new Date(enrichedAt).toLocaleString()}
+          {/* enriched_at is SQLite datetime('now') — UTC with a space, no tz
+              marker. Bare new Date() reads it as local (and Safari rejects it
+              outright: "Invalid Date"). Parse as UTC, render ET (B15). */}
+          Enriched {formatEnrichedAt(enrichedAt)}
         </div>
       )}
     </div>
+  );
+}
+
+function formatEnrichedAt(storedTs: string): string {
+  const d = parseStoredTimestamp(storedTs);
+  if (isNaN(d.getTime())) return storedTs;
+  return (
+    d.toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      timeZone: "America/New_York",
+    }) + " ET"
   );
 }

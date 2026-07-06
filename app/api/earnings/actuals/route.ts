@@ -1,5 +1,6 @@
 import { db } from "@/lib/db";
 import type { CalendarEvent } from "@/lib/types";
+import { parseFinnhubFigure, mergeFinnhubActual } from "@/lib/format/finnhub-figure";
 
 export const dynamic = "force-dynamic";
 
@@ -63,30 +64,34 @@ export async function POST(request: Request) {
   }
 
   const event = db
-    .prepare(`SELECT id, event_type FROM calendar_events WHERE id = ?`)
-    .get(body.event_id) as { id: number; event_type: string } | undefined;
+    .prepare(`SELECT id, event_type, actual_value FROM calendar_events WHERE id = ?`)
+    .get(body.event_id) as
+    | { id: number; event_type: string; actual_value: string | null }
+    | undefined;
   if (!event) {
     return Response.json({ error: `Event ${body.event_id} not found.` }, { status: 404 });
   }
 
-  // Format as Finnhub-shaped "EPS X.XX · Rev NNNNNN" so renderHeadlineTable
-  // and downstream parsers Just Work without extra branches.
-  const parts: string[] = [];
-  if (body.eps_actual != null && Number.isFinite(body.eps_actual)) {
-    parts.push(`EPS ${body.eps_actual.toFixed(2)}`);
-  }
-  if (body.revenue_actual_usd != null && Number.isFinite(body.revenue_actual_usd)) {
-    parts.push(`Rev ${Math.round(body.revenue_actual_usd)}`);
-  }
-
-  if (parts.length === 0) {
+  if (body.eps_actual == null && body.revenue_actual_usd == null) {
     return Response.json(
       { error: "Provide at least one of eps_actual or revenue_actual_usd." },
       { status: 400 },
     );
   }
 
-  const formatted = parts.join(" · ");
+  // MERGE into the stored Finnhub-shaped value — an EPS-only save must not
+  // wipe a previously-captured revenue (audit B18). Output stays
+  // "EPS X.XX · Rev NNNNNN" so all downstream readers work unchanged.
+  const formatted = mergeFinnhubActual(event.actual_value, {
+    eps: body.eps_actual,
+    revenue: body.revenue_actual_usd,
+  });
+  if (!formatted) {
+    return Response.json(
+      { error: "Provide at least one of eps_actual or revenue_actual_usd." },
+      { status: 400 },
+    );
+  }
   db.prepare(
     `UPDATE calendar_events
         SET actual_value = ?,
@@ -95,25 +100,4 @@ export async function POST(request: Request) {
   ).run(formatted, body.event_id);
 
   return Response.json({ success: true, actual_value: formatted });
-}
-
-interface ParsedFinnhubFigure {
-  eps: number | null;
-  revenue: number | null;
-}
-
-function parseFinnhubFigure(s: string | null): ParsedFinnhubFigure {
-  if (!s) return { eps: null, revenue: null };
-  const out: ParsedFinnhubFigure = { eps: null, revenue: null };
-  const epsMatch = /EPS\s+(-?\d+(?:\.\d+)?)/i.exec(s);
-  if (epsMatch) {
-    const v = Number(epsMatch[1]);
-    out.eps = Number.isFinite(v) ? v : null;
-  }
-  const revMatch = /Rev\s+([\d.,]+)/i.exec(s);
-  if (revMatch) {
-    const v = Number(revMatch[1].replace(/,/g, ""));
-    out.revenue = Number.isFinite(v) ? v : null;
-  }
-  return out;
 }

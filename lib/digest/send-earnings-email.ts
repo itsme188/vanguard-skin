@@ -1498,13 +1498,35 @@ async function callClaude(
     );
   }
   const client = getRawAnthropicClient(featureKey);
-  const response = await client.messages.create({
+  // B17: a heavy print (big bogies table + web_search citations) can hit the
+  // token cap and truncate mid-table — retry once at a doubled cap, and if
+  // that ALSO truncates, fail the send (better no email than a cut-off one;
+  // the sweep's claim-release path preserves the retry).
+  let response = await client.messages.create({
     model: modelId,
     max_tokens: 4096,
     system: SYSTEM_PROMPT,
     tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }],
     messages: [{ role: "user", content: prompt }],
   });
+  if (response.stop_reason === "max_tokens") {
+    console.warn(
+      `[earnings-email] ${phase} output truncated at 4096 tokens — retrying at 8192`,
+    );
+    response = await client.messages.create({
+      model: modelId,
+      max_tokens: 8192,
+      system: SYSTEM_PROMPT,
+      tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }],
+      messages: [{ role: "user", content: prompt }],
+    });
+    if (response.stop_reason === "max_tokens") {
+      throw new EarningsEmailError(
+        `Claude output for ${phase} truncated even at 8192 tokens — refusing to send a cut-off email.`,
+        500,
+      );
+    }
+  }
   // Guard against Fable-style refusals (stop_reason === "refusal" means the
   // content array is empty — reading content[0] blindly would throw).
   if (response.stop_reason === "refusal") {
