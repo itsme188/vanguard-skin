@@ -41,6 +41,13 @@ const RETRY_PACING_MS = 10 * 60 * 1000;
 // complete even without a reaction snapshot (bars target T+120; +30 slack).
 const REACTION_SETTLE_MS = 150 * 60 * 1000;
 
+// Reaction bars target t_post = release+120m (TWS fetch window ends at
+// +125m) — any capture attempt before ~T+115m is a guaranteed-empty
+// TWS/Yahoo round. Earnings rows retry every tick (migration 062) so they
+// come back; macro rows are single-shot and are NEVER gated (their
+// immediate partial capture is by design).
+export const REACTION_READY_MS = 115 * 60 * 1000;
+
 function maxAgeFor(event: { source: string; event_type: string }): number {
   if (event.source === "finnhub" || event.event_type === "earnings") {
     return MAX_AGE_MS_EARNINGS;
@@ -250,6 +257,9 @@ export async function runEnrichment(
 
   for (const event of candidates) {
     try {
+      const isEarnings =
+        event.source === "finnhub" || event.event_type === "earnings";
+
       const actualResult = event.actual_value
         ? { actual: null, consensus: null } // already captured on a prior attempt
         : await fetchActualForEvent(db, event);
@@ -276,8 +286,17 @@ export async function runEnrichment(
           const eventSymbol =
             event.event_type === "earnings" ? event.symbol : null;
 
+          // Earnings rows retry every tick, so a capture attempt before bars
+          // can plausibly exist is a guaranteed-empty TWS/Yahoo round —
+          // skip it and let a later tick (past T+115m) do the work. Macro
+          // rows are single-shot and are NEVER gated (see REACTION_READY_MS).
+          const captureAgeMs =
+            (opts.now ?? new Date()).getTime() - releaseInstant.getTime();
+          const reactionReady =
+            !isEarnings || captureAgeMs >= REACTION_READY_MS;
+
           // Prefer TWS — superior intraday TRADES bars, no upstream rate limit.
-          if (opts.tws) {
+          if (opts.tws && reactionReady) {
             reaction = await captureReactionFromTws(
               opts.tws,
               releaseInstant,
@@ -291,7 +310,7 @@ export async function runEnrichment(
           // module the Worker cloud-fallback uses, so the resulting JSON
           // shape is identical (source: "yahoo"). Best-effort — never
           // let a Yahoo failure abort enrichment.
-          if (!reaction) {
+          if (!reaction && reactionReady) {
             try {
               reaction = await captureReactionFromYahoo(
                 releaseInstant,
@@ -308,8 +327,6 @@ export async function runEnrichment(
         }
       }
 
-      const isEarnings =
-        event.source === "finnhub" || event.event_type === "earnings";
       const releaseInstantForAge =
         event.release_time
           ? composeReleaseInstant(event.event_date, event.release_time)
