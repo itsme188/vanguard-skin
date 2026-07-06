@@ -11,6 +11,7 @@
 import type Database from "better-sqlite3";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
+import { getHeldOptionUnderlyingSymbols } from "@/lib/queries/briefing-symbols";
 
 // A report is "due" when the last one is older than this. 75d + the 45d
 // look-ahead brackets the quarterly cycle: a name that reported 60d ago has
@@ -108,8 +109,13 @@ export function findEarningsCoverageGaps(
     )
     .all() as { symbol: string }[];
 
+  // Held-option underlyings (final-review seam 3): an option-only book (a
+  // TER LEAP with no TER stock) is leveraged into the print just as much as
+  // a stock position — the guard must cover it, same as B10's Finnhub scan.
+  const optionUnderlyings = getHeldOptionUnderlyingSymbols(db).map((s) => ({ symbol: s }));
+
   const candidates = Array.from(
-    new Set([...heldRows, ...watchlistRows].map((r) => r.symbol)),
+    new Set([...heldRows, ...watchlistRows, ...optionUnderlyings].map((r) => r.symbol)),
   )
     .filter((sym) => !ignored.has(sym))
     .sort();

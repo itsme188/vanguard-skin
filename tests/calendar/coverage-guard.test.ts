@@ -51,6 +51,24 @@ function insertHolding(
   return Number(r.lastInsertRowid);
 }
 
+function insertOptionHolding(
+  db: Database.Database,
+  accountId: number,
+  underlyingSymbol: string,
+  quantity: number,
+  expirationDate = "2027-01-15",
+): number {
+  const optSymbol = `${underlyingSymbol}  270115C00120000`;
+  const secId = db
+    .prepare(
+      `INSERT INTO securities (symbol, name, security_type, underlying_symbol, expiration_date, multiplier)
+       VALUES (?, ?, 'option', ?, ?, 100)`,
+    )
+    .run(optSymbol, optSymbol, underlyingSymbol, expirationDate).lastInsertRowid as number;
+  insertHolding(db, accountId, Number(secId), quantity);
+  return Number(secId);
+}
+
 function insertWatchlist(
   db: Database.Database,
   securityId: number,
@@ -204,6 +222,18 @@ describe("findEarningsCoverageGaps", () => {
     const gaps = findEarningsCoverageGaps(db, { today: TODAY });
 
     expect(gaps).toEqual([]);
+  });
+
+  it("an option-only underlying (no stock position) with no earnings history is a no_history gap", () => {
+    const acct = insertAccount(db);
+    insertOptionHolding(db, acct, "TER", 2); // LEAP, no TER stock held
+    // zero earnings events ever for TER
+
+    const gaps = findEarningsCoverageGaps(db, { today: TODAY });
+
+    expect(gaps).toEqual([
+      { symbol: "TER", kind: "no_history", lastEventDate: null, daysSinceLast: null },
+    ]);
   });
 
   it("ignored symbols are excluded", () => {

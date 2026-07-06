@@ -179,14 +179,18 @@ export async function sendBriefingEmail(
     if (gaps.length > 0 && !wasCoveragePushSentToday(db)) {
       // Manual re-sends of the briefing must not re-push the same gap set;
       // the email block above still renders every time.
+      // Awaited (not fire-and-forget): the briefing path can afford one
+      // bounded push RTT, and marking the daily budget as "spent" must never
+      // happen ahead of confirming Pushover actually sent — a Pushover
+      // outage must not silently consume the day's coverage-gap push.
       const symbols = gaps.map((g) => g.symbol).join(", ");
-      void sendPushover({
+      const pushResult = await sendPushover({
         title: "Earnings coverage gaps",
         message: `${gaps.length} name(s) with a report due and nothing scheduled: ${symbols}`,
         url: `${process.env.PUSHOVER_LINK_BASE ?? "http://localhost:3099"}/dashboard/today`,
         urlTitle: "Open Earnings Hub",
       });
-      markCoveragePushSent(db);
+      if (pushResult.sent) markCoveragePushSent(db);
     }
   } catch (err) {
     console.warn(`[coverage-guard] skipped: ${err instanceof Error ? err.message : String(err)}`);

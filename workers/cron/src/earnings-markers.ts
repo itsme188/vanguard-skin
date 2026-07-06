@@ -118,10 +118,11 @@ export async function getEarningsMarkerStatus(
  * Push-at-print dedup marker (Wave 1 §2). Keyed on eventId only (no phase —
  * the print push fires once per event the moment an actual is captured,
  * regardless of which side — Mac enrichment, Mac reconcile, or Worker
- * cloud-enrich — got there first). 24h TTL matches the Mac's earnings-marker
- * sibling's short-lived intent (a print push is only meaningful same-day).
+ * cloud-enrich — got there first). 7-day TTL: this marker must outlive the
+ * cloud-enriched payload's own TTL, else a Mac that wakes up more than 24h
+ * later reconciles a still-present payload and re-pushes a stale print.
  */
-const PRINT_PUSH_TTL_SECONDS = 24 * 3600;
+const PRINT_PUSH_TTL_SECONDS = 7 * 24 * 3600;
 
 export function printPushKey(eventId: number): string {
   return `print-push-${eventId}`;

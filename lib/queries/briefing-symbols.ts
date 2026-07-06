@@ -88,13 +88,15 @@ export function getSymbolStatus(
   const distinctInput = Array.from(allFamilyMembers);
   const placeholders = distinctInput.map(() => "?").join(",");
 
+  // A short into a print is exposure — aligns with the option branch below
+  // and getCrossAccountPositions (B7); quantity != 0 rather than > 0.
   const heldRows = db
     .prepare(
       `SELECT DISTINCT UPPER(s.symbol) AS symbol
          FROM holdings h
          JOIN securities s ON s.id = h.security_id
         WHERE UPPER(s.symbol) IN (${placeholders})
-          AND h.quantity > 0
+          AND h.quantity != 0
           AND h.as_of_date = (
             SELECT MAX(h2.as_of_date) FROM holdings h2
              WHERE h2.account_id = h.account_id
