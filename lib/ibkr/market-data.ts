@@ -70,12 +70,27 @@ function parsePlainNumber(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * Field 31 (last) ONLY: IBKR prefixes the value with "C" (prior close — the
+ * instrument hasn't traded this session) or "H" (halted). Live-probed
+ * 2026-07-07 on OPT/BOND conids ("C8.01" for an untraded option premium);
+ * documented IBKR convention. The prefixed value is still a real price —
+ * strip the marker, then apply the same strict numeric parse. Other fields
+ * (52wk hi/lo) never carry prefixes and stay on parsePlainNumber.
+ */
+function parseLastPrice(v: unknown): number | null {
+  if (typeof v === "string") {
+    return parsePlainNumber(v.trim().replace(/^[CH]/, ""));
+  }
+  return parsePlainNumber(v);
+}
+
 /** Map one raw snapshot row (numeric-coded fields) → a typed quote. Pure. */
 export function parseSnapshotRow(row: Record<string, unknown>): ParsedQuote {
   const conid = typeof row.conid === "number" ? row.conid : null;
   return {
     conid,
-    last: parsePlainNumber(row[SNAPSHOT_FIELDS.LAST]),
+    last: parseLastPrice(row[SNAPSHOT_FIELDS.LAST]),
     ivUnderlying: parsePercentFraction(row[SNAPSHOT_FIELDS.IV]),
     hv30d: parsePercentFraction(row[SNAPSHOT_FIELDS.HV]),
     week52High: parsePlainNumber(row[SNAPSHOT_FIELDS.WK52_HIGH]),

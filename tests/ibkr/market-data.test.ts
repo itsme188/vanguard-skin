@@ -49,4 +49,19 @@ describe("parseSnapshotRow (verified IBKR field-code map, 2026-06-08)", () => {
   it("exposes the field codes we request (verified set, no dividend yield)", () => {
     expect(SNAPSHOT_FIELD_CODES).toEqual(["31", "7283", "7284", "7293", "7294"]);
   });
+
+  it("parses C-prefixed (prior close) and H-prefixed (halted) last prices — live probe 2026-07-07", () => {
+    // Real rows from the OPT/BOND probe: instruments that haven't traded today
+    // return field 31 as "C<prior close>" (e.g. AFRM option "C8.01"). A naive
+    // numeric parse dropped these — which also silently skipped equities
+    // quoted from prior close.
+    expect(parseSnapshotRow({ conid: 760270996, "31": "C8.01" }).last).toBeCloseTo(8.01, 2);
+    expect(parseSnapshotRow({ conid: 1, "31": "H12.5" }).last).toBeCloseTo(12.5, 2);
+    // Plain numeric still works; magnitude suffixes still rejected.
+    expect(parseSnapshotRow({ conid: 1, "31": "46.02" }).last).toBeCloseTo(46.02, 2);
+    expect(parseSnapshotRow({ conid: 1, "31": "45.0M" }).last).toBeNull();
+    expect(parseSnapshotRow({ conid: 1, "31": "C45.0M" }).last).toBeNull();
+    // The prefix allowance is ONLY for field 31 — 52wk fields never carry it.
+    expect(parseSnapshotRow({ conid: 1, "7293": "C316.94" }).week52High).toBeNull();
+  });
 });

@@ -35,6 +35,9 @@ export interface SyncState {
   phaseProgress: PhaseProgress | null;
   lastSyncAt: string | null; // ISO timestamp
   lastSyncResult: AutoRefreshResult | null;
+  /** Which pipeline produced lastSyncResult — the TWS auto-refresh or the
+   *  IBKR Web API disconnected fallback (R1b). Null until the first sync. */
+  lastSyncVia: "tws" | "ibkr-webapi" | null;
   error: string | null;
 }
 
@@ -52,6 +55,7 @@ if (!g.__sync_state) {
     phaseProgress: null,
     lastSyncAt: null,
     lastSyncResult: null,
+    lastSyncVia: null,
     error: null,
   };
 }
@@ -76,12 +80,16 @@ export function setSyncProgress(progress: PhaseProgress): void {
   g.__sync_state!.phaseProgress = progress;
 }
 
-export function setSyncComplete(result: AutoRefreshResult): void {
+export function setSyncComplete(
+  result: AutoRefreshResult,
+  via: "tws" | "ibkr-webapi" = "tws",
+): void {
   g.__sync_state!.status = "idle";
   g.__sync_state!.currentPhase = null;
   g.__sync_state!.phaseProgress = null;
   g.__sync_state!.lastSyncAt = new Date().toISOString();
   g.__sync_state!.lastSyncResult = result;
+  g.__sync_state!.lastSyncVia = via;
   g.__sync_state!.error = null;
 }
 

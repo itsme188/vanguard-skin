@@ -38,12 +38,7 @@ import { fetchSnapshotPrices } from "./snapshot";
 import { fetchBenchmarkPrices } from "./benchmark";
 import { fetchBenchmarkClosesFromYahoo } from "../benchmark/yahoo-benchmarks";
 import { computeDailyValuations } from "../compute/daily-valuation";
-import { detectAndFireAlerts } from "../alerts/detect";
-import {
-  postMacRecentScanMarker,
-  reconcileCloudFiredLevels,
-} from "../alerts/reconcile-cloud-fired";
-import { generateSuggestionsForPendingAlerts } from "../alerts/generate-suggestion";
+import { runLevelScanCycle } from "../alerts/scan-cycle";
 
 export type RefreshLevel = "full" | "quick";
 
@@ -342,53 +337,17 @@ export async function runAutoRefresh(
       console.error("[auto-refresh] Yahoo benchmark top-off error:", msg);
     }
 
-    // Step 6: Detect crossed levels + fire alerts (after prices + valuations are fresh)
+    // Step 6: Detect crossed levels + fire alerts (after prices + valuations
+    // are fresh). The cycle (reconcile cloud-fired → detect → mac-recent-scan
+    // marker → suggestions) is shared with the IBKR Web API disconnected
+    // refresh — see lib/alerts/scan-cycle.ts for the sequencing rationale.
     setSyncPhase("alerts");
     try {
-      // Drain any cloud-fired level markers FIRST — these are alerts the
-      // Worker already fired via Pushover while Mac was asleep. Inserting
-      // them now ensures the inbox catches up before Mac's own scan runs,
-      // and triggerLevel's hasAlertToday guard then dedups against them.
-      const cronSecret = process.env.CRON_SHARED_SECRET;
-      if (cronSecret) {
-        try {
-          const cloudReconcile = await reconcileCloudFiredLevels(db, cronSecret);
-          if (cloudReconcile.reconciled > 0) {
-            console.log(
-              `[auto-refresh] Cloud-fired levels reconciled: ${cloudReconcile.reconciled}, ` +
-                `${cloudReconcile.skipped_already_alerted} already-alerted, ` +
-                `${cloudReconcile.skipped_level_missing} level-missing`,
-            );
-          }
-        } catch (err) {
-          console.warn("[auto-refresh] Cloud-fired level reconcile failed:", err);
-        }
-      }
-
-      const detect = detectAndFireAlerts(db);
-      alertsFired = detect.fired;
-      console.log(
-        `[auto-refresh] Alerts: ${detect.fired} fired, ${detect.deduped} deduped, ${detect.scanned} scanned`,
-      );
-
-      // Post mac-recent-scan marker to the Worker so it skips its cloud
-      // scan on the next tick. Fire-and-forget; never blocks the pipeline.
-      if (cronSecret) {
-        void postMacRecentScanMarker(cronSecret);
-      }
-
-      // Generate suggestions in parallel — awaited but tolerant of Claude errors.
-      // A handful of Sonnet calls resolve in ~3-5s total (Promise.all).
-      if (detect.fired > 0) {
-        try {
-          const s = await generateSuggestionsForPendingAlerts(db);
-          console.log(
-            `[auto-refresh] Suggestions: ${s.generated} generated, ${s.failed} failed`,
-          );
-        } catch (err) {
-          console.warn("[auto-refresh] Suggestion generation wrapper failed:", err);
-        }
-      }
+      const scan = await runLevelScanCycle(db, {
+        cronSecret: process.env.CRON_SHARED_SECRET,
+        logPrefix: "[auto-refresh]",
+      });
+      alertsFired = scan.fired;
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Alert detection failed";
       errors.push(msg);

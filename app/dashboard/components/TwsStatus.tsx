@@ -98,6 +98,16 @@ export function TwsStatus() {
                 · synced {formatTimeSince(syncState.lastSyncAt)}
               </span>
             )}
+            {/* Disconnected-path visibility (R1b): the IBKR Web API fallback
+                refreshed prices while TWS is down — say so instead of looking
+                like nothing ever syncs away from home. */}
+            {syncState?.lastSyncAt &&
+              syncState.lastSyncVia === "ibkr-webapi" &&
+              status.state !== "connected" && (
+                <span className="text-ink-faint">
+                  · Web API synced {formatTimeSince(syncState.lastSyncAt)}
+                </span>
+              )}
           </>
         )}
         {streaming.isStreaming && (
@@ -552,6 +562,9 @@ function TwsPanel({
                   : ""}
                 {" · "}
                 {(syncState.lastSyncResult.durationMs / 1000).toFixed(0)}s
+                {syncState.lastSyncVia === "ibkr-webapi"
+                  ? " · via IBKR Web API (TWS offline)"
+                  : ""}
               </p>
             )}
 
