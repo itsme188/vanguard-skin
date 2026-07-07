@@ -31,7 +31,7 @@ vi.mock("../src/pushover", () => ({
   sendPushover: vi.fn(async () => ({ sent: true, requestId: "req-1" })),
 }));
 
-import { runCloudFallback, isBenignEnrichOutcome } from "../src/calendar-enrich";
+import { runCloudFallback, isBenignEnrichOutcome, shouldRunCalendarEnrich } from "../src/calendar-enrich";
 import { loadLatestSnapshot } from "../src/state";
 import { fetchActualForEventCloud } from "../src/enrich-actuals";
 import { composeReleaseInstant } from "../src/reaction-matcher";
@@ -362,5 +362,54 @@ describe("runCloudFallback push-at-print hook", () => {
     await runCloudFallback(env, { nowMs: candidateWindowNowMs(), pacingMs: 0 });
 
     expect(sendPushover).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("shouldRunCalendarEnrich gate (B8: 18:59 upper bound for AMC reactions)", () => {
+  it("runs through 18:59 ET on a weekday", () => {
+    expect(shouldRunCalendarEnrich({ hour: 18, minute: 30, dow: 3 })).toBe(true);
+    expect(shouldRunCalendarEnrich({ hour: 18, minute: 59, dow: 3 })).toBe(true);
+  });
+  it("stops at 19:00 ET and stays weekday-only", () => {
+    expect(shouldRunCalendarEnrich({ hour: 19, minute: 0, dow: 3 })).toBe(false);
+    expect(shouldRunCalendarEnrich({ hour: 18, minute: 30, dow: 6 })).toBe(false);
+  });
+});
+
+describe("per-type candidate window (B8: earnings 12h, macro 2h)", () => {
+  beforeEach(() => {
+    vi.mocked(loadLatestSnapshot).mockReset();
+    vi.mocked(fetchActualForEventCloud).mockReset();
+    vi.mocked(fetchActualForEventCloud).mockResolvedValue({
+      actual: "EPS 1.60 · Rev 91,000,000,000",
+      consensus: "EPS 1.50 · Rev 90,000,000,000",
+      source: "finnhub",
+    });
+  });
+
+  it("keeps an earnings row alive 5h post-release", async () => {
+    vi.mocked(loadLatestSnapshot).mockResolvedValue(makeEnrichSnapshot());
+    const release = composeReleaseInstant(EVENT_DATE, RELEASE_TIME)!;
+    const res = await runCloudFallback(makeEnv(), { nowMs: release.getTime() + 5 * 3600_000, pacingMs: 0 });
+    expect(res.kind).toBe("success");
+    expect(res.candidatesProcessed).toBe(1);
+  });
+
+  it("drops a MACRO row 5h post-release (2h window unchanged)", async () => {
+    const snap = makeEnrichSnapshot();
+    const ev = snap.calendarEvents[0] as Record<string, unknown>;
+    ev.event_type = "cpi";
+    ev.source_key = "fred:10";
+    vi.mocked(loadLatestSnapshot).mockResolvedValue(snap);
+    const release = composeReleaseInstant(EVENT_DATE, RELEASE_TIME)!;
+    const res = await runCloudFallback(makeEnv(), { nowMs: release.getTime() + 5 * 3600_000, pacingMs: 0 });
+    expect(res.kind).toBe("no_candidates");
+  });
+
+  it("drops an earnings row past 12h", async () => {
+    vi.mocked(loadLatestSnapshot).mockResolvedValue(makeEnrichSnapshot());
+    const release = composeReleaseInstant(EVENT_DATE, RELEASE_TIME)!;
+    const res = await runCloudFallback(makeEnv(), { nowMs: release.getTime() + 13 * 3600_000, pacingMs: 0 });
+    expect(res.kind).toBe("no_candidates");
   });
 });

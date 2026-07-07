@@ -103,7 +103,14 @@ export function shouldRunCalendarEnrich(
 ): boolean {
   if (now.dow < 1 || now.dow > 5) return false;
   const minuteOfDay = now.hour * 60 + now.minute;
-  return minuteOfDay >= 9 * 60 + 30 && minuteOfDay <= 17 * 60 + 59;
+  // Upper bound 18:59 ET (was 17:59, B8): reaction capture needs a tick at
+  // ≥ release+110min (bars target T+120 with 10-min tolerance —
+  // BAR_TOLERANCE_MS in reaction-matcher.ts). The AMC cohort releases
+  // 16:00–16:30, so the latest capturable floor is 18:20 (16:30 release);
+  // 18:59 gives every AMC name at least two tick opportunities
+  // (e.g. 16:30 → 18:30 + 18:45). Before this, cloud AMC reactions were
+  // structurally impossible.
+  return minuteOfDay >= 9 * 60 + 30 && minuteOfDay <= 18 * 60 + 59;
 }
 
 /**
@@ -187,6 +194,10 @@ export interface EnrichRunEnv {
 
 const CANDIDATE_WINDOW_MS_MAX = 2 * 60 * 60 * 1000;
 const CANDIDATE_WINDOW_MS_MIN = 5 * 60 * 1000;
+// Earnings rows retry up to 12h post-release (Mac MAX_AGE_MS_EARNINGS mirror
+// — a BMO 08:00 print can't capture a reaction before the market opens, and
+// retries continue until the payload is COMPLETE). Macro rows keep 2h.
+const MAX_AGE_MS_EARNINGS = 12 * 60 * 60 * 1000;
 const MAX_CANDIDATES_PER_TICK = 10;
 
 interface SnapshotCalendarEvent {
@@ -250,7 +261,13 @@ export async function runCloudFallback(
     const releaseInstant = composeReleaseInstant(ev.event_date, ev.release_time);
     if (!releaseInstant) continue;
     const ageMs = nowMs - releaseInstant.getTime();
-    if (ageMs < CANDIDATE_WINDOW_MS_MIN || ageMs > CANDIDATE_WINDOW_MS_MAX) continue;
+    const maxAgeMs = isEarningsRow(
+      typeof ev.event_type === "string" ? ev.event_type : "",
+      ev.source_key,
+    )
+      ? MAX_AGE_MS_EARNINGS
+      : CANDIDATE_WINDOW_MS_MAX;
+    if (ageMs < CANDIDATE_WINDOW_MS_MIN || ageMs > maxAgeMs) continue;
 
     candidates.push({
       id: ev.id,
