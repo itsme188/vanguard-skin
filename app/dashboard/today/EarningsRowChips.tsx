@@ -24,6 +24,9 @@ type Phase = "preview" | "recap";
  * - Sent → solid green chip, opens the email viewer.
  * - Pending + not skipped → faint chip with hover-revealed × button to skip
  *   (skip POSTs to /api/earnings/skip and the next 15-min sweep excludes it).
+ *   On coarse pointers the overlay is removed entirely and an always-visible
+ *   ✕ renders beside the chip instead (hover doesn't exist on touch, and an
+ *   invisible opacity-0 overlay would eat stray taps).
  * - Skipped → muted chip showing "skipped" with an undo affordance.
  *
  * Skipping never disables the symbol globally — it's a per-event mark.
@@ -215,22 +218,42 @@ function PhaseChip({ eventId, phase, sent, skipped, onView }: PhaseChipProps) {
   }
 
   return (
-    <span className="group relative inline-flex">
-      <span
-        className="text-[10px] font-mono px-1.5 py-0.5 rounded text-ink-faint bg-raised group-hover:opacity-30 transition-opacity"
-        title={`${phase} pending`}
-      >
-        {label}
+    <span className="inline-flex items-center gap-0.5">
+      <span className="group relative inline-flex">
+        <span
+          className="text-[10px] font-mono px-1.5 py-0.5 rounded text-ink-faint bg-raised group-hover:opacity-30 transition-opacity"
+          title={`${phase} pending`}
+        >
+          {label}
+        </span>
+        {/* Hover-reveal overlay is a fine-pointer affordance only. On touch
+            it must be REMOVED, not just unstyled — an opacity-0 button still
+            receives taps, so a coarse-pointer tap on the "pending" chip would
+            invisibly skip the email. */}
+        <button
+          type="button"
+          onClick={toggleSkip}
+          disabled={pending}
+          className="pointer-coarse:hidden absolute inset-0 flex items-center justify-center text-[10px] font-mono rounded text-down bg-down/15 hover:bg-down/25 opacity-0 group-hover:opacity-100 disabled:opacity-50 transition-opacity cursor-pointer"
+          title={`Skip ${phase} for this event`}
+          aria-label={`Skip ${phase} email for this event`}
+        >
+          skip
+        </button>
       </span>
+      {/* Touch replacement: always-visible ✕ beside the chip. The after:
+          pseudo-element extends the tap target beyond the tiny glyph without
+          disturbing the dense row layout (±2px x, ±8px y stays clear of the
+          adjacent chips' hit areas at gap-1). */}
       <button
         type="button"
         onClick={toggleSkip}
         disabled={pending}
-        className="absolute inset-0 flex items-center justify-center text-[10px] font-mono rounded text-down bg-down/15 hover:bg-down/25 opacity-0 group-hover:opacity-100 disabled:opacity-50 transition-opacity cursor-pointer"
+        className="relative hidden pointer-coarse:inline-flex items-center justify-center text-[10px] font-mono px-1 py-0.5 rounded text-down bg-down/20 disabled:opacity-50 active:scale-[0.96] transition-transform after:absolute after:content-[''] after:-inset-y-2 after:-inset-x-0.5"
         title={`Skip ${phase} for this event`}
         aria-label={`Skip ${phase} email for this event`}
       >
-        skip
+        ✕
       </button>
     </span>
   );
