@@ -32,6 +32,17 @@ import { issuerSiblings } from "./fallback-earnings";
 import { readPrintPushMarker, writePrintPushMarker } from "./earnings-markers";
 import { composePrintPushMessage } from "./print-push-message";
 import { sendPushover } from "./pushover";
+import {
+  cloudEnrichedKey,
+  isPayloadComplete,
+  isEarningsRow,
+  REACTION_READY_MS,
+  type CloudEnrichedPayload,
+} from "./cloud-enriched";
+
+// Back-compat re-exports — existing importers/tests reach these through
+// calendar-enrich; the definitions now live in cloud-enriched.ts.
+export { cloudEnrichedKey, isPayloadComplete, type CloudEnrichedPayload };
 
 // ── Primary call ────────────────────────────────────────────────────
 
@@ -133,23 +144,7 @@ function failSlotKey(date: string, hour: number, minute: number): string {
   return `enrich-fail-${date}-${String(hour).padStart(2, "0")}${String(slotMin).padStart(2, "0")}`;
 }
 
-export function cloudEnrichedKey(eventId: number): string {
-  return `cloud-enriched-${eventId}`;
-}
 
-// ── Payload shape (shared with reconcile endpoint on Mac) ───────────
-
-export interface CloudEnrichedPayload {
-  eventId: number;
-  source_key: string;
-  actual: string | null;
-  consensus: string | null;
-  source: WorkerEnrichActualResult["source"];
-  deferred?: boolean;
-  reason?: string;
-  reaction: unknown; // ReactionSnapshot JSON, or null
-  fetchedAt: string;
-}
 
 // ── Return shape ────────────────────────────────────────────────────
 
