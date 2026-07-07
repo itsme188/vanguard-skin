@@ -185,7 +185,12 @@ export function AiModelsSection() {
                       className="text-[10px] font-mono text-ink-faint truncate max-w-[55%]"
                       title={`Effective: ${row.effective}`}
                     >
-                      {row.effective}
+                      {/* Tier-token defaults ($frontier/$workhorse/$cheap) resolve
+                          to a concrete model at call time — show the expansion so
+                          "default" doesn't read as an opaque token. */}
+                      {!row.override && row.defaultModel.includes("/$")
+                        ? `${row.defaultModel.split("/")[1]} → ${row.effective}`
+                        : row.effective}
                     </span>
                   </div>
                   <div className="flex items-center gap-1.5">
