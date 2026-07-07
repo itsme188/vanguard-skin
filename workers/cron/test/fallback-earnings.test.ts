@@ -29,7 +29,13 @@ vi.mock("../src/ibkr-positions", async (importOriginal) => {
   return { ...actual, fetchLiveIbkrPositionsCached: vi.fn() };
 });
 
-import { runEarningsFallback, renderPositions, type PositionView } from "../src/fallback-earnings";
+import {
+  runEarningsFallback,
+  renderPositions,
+  renderScoreboard,
+  evaluateRecapContent,
+  type PositionView,
+} from "../src/fallback-earnings";
 import { loadLatestSnapshot } from "../src/state";
 import { sendEmail } from "../src/resend";
 import { composeReleaseInstant } from "../src/reaction-matcher";
@@ -672,5 +678,102 @@ describe("KV recap road (B8: same-day cloud-enriched payloads)", () => {
     const res = await runEarningsFallback(env, { now });
     expect(res.sent).toBe(0);
     expect(vi.mocked(sendEmail)).not.toHaveBeenCalled();
+  });
+});
+
+describe("recap safety gates (B8)", () => {
+  const baseEvent = () =>
+    ({
+      id: 1, source: "finnhub", event_type: "earnings", event_date: EVENT_DATE,
+      event_time: "AMC", title: "AAPL earnings", description: null, security_id: null,
+      symbol: "AAPL", expected_impact: "high",
+      consensus_estimate: "EPS 1.50 · Rev 90,000,000,000",
+      previous_value: null, raw_json: null,
+      consensus_value: null, actual_value: null, reaction_snapshot: null,
+    }) as unknown as import("../src/state").CalendarEventRow;
+
+  it("no actual anywhere → send:false no-actual", () => {
+    expect(evaluateRecapContent(baseEvent(), null)).toEqual({ send: false, reason: "no-actual" });
+  });
+
+  it("payload actual counts as the actual", () => {
+    const v = evaluateRecapContent(baseEvent(), {
+      eventId: 1, source_key: "finnhub:AAPL:2026-06-15",
+      actual: "EPS 1.60 · Rev 91,000,000,000", consensus: null, source: "finnhub",
+      reaction: null, fetchedAt: new Date().toISOString(),
+    });
+    expect(v).toEqual({ send: true, implausible: false });
+  });
+
+  it("implausible actual + no reaction → send:false implausible-no-data-point", () => {
+    const ev = baseEvent();
+    (ev as Record<string, unknown>).actual_value = "EPS 5.11"; // vs cons 1.50 → ratio 3.4
+    expect(evaluateRecapContent(ev, null)).toEqual({ send: false, reason: "implausible-no-data-point" });
+  });
+
+  it("implausible actual + reaction present → sends, flagged implausible", () => {
+    const ev = baseEvent();
+    (ev as Record<string, unknown>).actual_value = "EPS 5.11";
+    (ev as Record<string, unknown>).reaction_snapshot = JSON.stringify({ symbol: { delta_pct: -4.2 } });
+    expect(evaluateRecapContent(ev, null)).toEqual({ send: true, implausible: true });
+  });
+
+  it("scoreboard NEVER renders consensus_value in the Actual column", () => {
+    const ev = baseEvent();
+    (ev as Record<string, unknown>).consensus_value = "EPS 1.55 · Rev 90,500,000,000";
+    const md = renderScoreboard(ev, "recap", null, false);
+    const epsRow = md.split("\n").find((l) => l.includes("**EPS**"))!;
+    expect(epsRow).toContain("| — |"); // Actual cell blank — 1.55 must not appear as actual
+  });
+
+  it("scoreboard consensus precedence: consensus_value > payload.consensus > consensus_estimate", () => {
+    const ev = baseEvent();
+    (ev as Record<string, unknown>).consensus_value = "EPS 1.55 · Rev 90,500,000,000";
+    const md = renderScoreboard(ev, "recap", null, false);
+    expect(md).toContain("1.55");
+    const md2 = renderScoreboard(baseEvent(), "recap", {
+      eventId: 1, source_key: "x", actual: null, consensus: "EPS 1.52 · Rev 90,200,000,000",
+      source: "finnhub", reaction: null, fetchedAt: new Date().toISOString(),
+    }, false);
+    expect(md2).toContain("1.52");
+    expect(renderScoreboard(baseEvent(), "recap", null, false)).toContain("1.50");
+  });
+
+  it("scoreboard blanks implausible actuals and appends the ⚠ line", () => {
+    const ev = baseEvent();
+    (ev as Record<string, unknown>).actual_value = "EPS 5.11 · Rev 91,000,000,000";
+    (ev as Record<string, unknown>).reaction_snapshot = JSON.stringify({ symbol: { delta_pct: -4.2 } });
+    const md = renderScoreboard(ev, "recap", null, true);
+    expect(md).not.toContain("5.11");
+    expect(md).toContain("⚠ Reported actuals were flagged as implausible");
+    expect(md).toContain("-4.20%"); // reaction row still renders
+  });
+
+  it("scoreboard renders the payload reaction when the snapshot has none", () => {
+    const ev = baseEvent();
+    (ev as Record<string, unknown>).actual_value = "EPS 1.60 · Rev 91,000,000,000";
+    const md = renderScoreboard(ev, "recap", {
+      eventId: 1, source_key: "x", actual: null, consensus: null, source: "finnhub",
+      reaction: { symbol: { delta_pct: 3.15 }, spy: { delta_pct: 0.4 } },
+      fetchedAt: new Date().toISOString(),
+    }, false);
+    expect(md).toContain("+3.15%");
+  });
+
+  it("end-to-end: snapshot-road recap with enriched_at but NULL actual is skipped markerless", async () => {
+    const snap = makeEarningsSnapshot();
+    const ev = snap.calendarEvents[0] as Record<string, unknown>;
+    const release = composeReleaseInstant(EVENT_DATE, RELEASE_TIME)!;
+    ev.enriched_at = new Date(release.getTime() + 130 * 60_000).toISOString().replace("T", " ").slice(0, 19);
+    ev.actual_value = null;
+    vi.mocked(loadLatestSnapshot).mockResolvedValue(snap as never);
+    const env = makeEnv();
+    const res = await runEarningsFallback(env, { now: new Date(release.getTime() + 150 * 60_000) });
+    expect(res.sent).toBe(0);
+    expect(vi.mocked(sendEmail)).not.toHaveBeenCalled();
+    expect(await env.CRON_KV.get("cloud-sent-earnings-recap-1")).toBeNull();
+    expect(res.details).toContainEqual(
+      expect.objectContaining({ eventId: 1, phase: "recap", status: "skipped", reason: "no-actual" }),
+    );
   });
 });
