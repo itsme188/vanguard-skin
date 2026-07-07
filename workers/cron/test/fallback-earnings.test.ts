@@ -34,6 +34,7 @@ import { loadLatestSnapshot } from "../src/state";
 import { sendEmail } from "../src/resend";
 import { composeReleaseInstant } from "../src/reaction-matcher";
 import { fetchLiveIbkrPositionsCached } from "../src/ibkr-positions";
+import { cloudEnrichedKey } from "../src/cloud-enriched";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -590,5 +591,86 @@ describe("B20: issuer-family aware held/watchlist/mute gates", () => {
     const result = await runEarningsFallback(makeEnv(), { now: previewWindowNow() });
     expect(sendEmail).not.toHaveBeenCalled();
     expect(result.sent).toBe(0);
+  });
+});
+
+describe("KV recap road (B8: same-day cloud-enriched payloads)", () => {
+  const release = () => composeReleaseInstant(EVENT_DATE, RELEASE_TIME)!;
+  const completePayload = () => ({
+    eventId: 1,
+    source_key: "finnhub:AAPL:2026-06-15",
+    actual: "EPS 1.60 · Rev 91,000,000,000",
+    consensus: "EPS 1.50 · Rev 90,000,000,000",
+    source: "finnhub",
+    reaction: { source: "yahoo", window_min: 120, symbol: { symbol: "AAPL", delta_pct: 4.1 }, spy: { delta_pct: 0.3 }, qqq: { delta_pct: 0.5 } },
+    fetchedAt: new Date(release().getTime() + 125 * 60_000).toISOString(),
+  });
+
+  beforeEach(() => {
+    vi.mocked(loadLatestSnapshot).mockReset();
+    vi.mocked(sendEmail).mockClear();
+    vi.mocked(fetchLiveIbkrPositionsCached).mockResolvedValue([]);
+  });
+
+  it("sends a recap from a complete payload and writes the cloud marker", async () => {
+    vi.mocked(loadLatestSnapshot).mockResolvedValue(makeEarningsSnapshot());
+    const env = makeEnv();
+    await env.CRON_KV.put(cloudEnrichedKey(1), JSON.stringify(completePayload()));
+    const now = new Date(release().getTime() + 150 * 60_000); // fetchedAt + 25min
+    const res = await runEarningsFallback(env, { now });
+    expect(res.sent).toBe(1);
+    expect(res.details[0]).toMatchObject({ eventId: 1, phase: "recap", status: "sent" });
+    expect(await env.CRON_KV.get("cloud-sent-earnings-recap-1")).not.toBeNull();
+  });
+
+  it("skips an incomplete payload with reason, no marker, no email", async () => {
+    vi.mocked(loadLatestSnapshot).mockResolvedValue(makeEarningsSnapshot());
+    const env = makeEnv();
+    const p = completePayload();
+    (p as Record<string, unknown>).actual = null;
+    await env.CRON_KV.put(cloudEnrichedKey(1), JSON.stringify(p));
+    const now = new Date(release().getTime() + 150 * 60_000);
+    const res = await runEarningsFallback(env, { now });
+    expect(res.sent).toBe(0);
+    expect(vi.mocked(sendEmail)).not.toHaveBeenCalled();
+    expect(await env.CRON_KV.get("cloud-sent-earnings-recap-1")).toBeNull();
+    expect(res.details).toContainEqual(
+      expect.objectContaining({ eventId: 1, phase: "recap", status: "skipped", reason: "payload-incomplete" }),
+    );
+  });
+
+  it("reports payload-missing when nothing is in KV yet", async () => {
+    vi.mocked(loadLatestSnapshot).mockResolvedValue(makeEarningsSnapshot());
+    const env = makeEnv();
+    const now = new Date(release().getTime() + 60 * 60_000);
+    const res = await runEarningsFallback(env, { now });
+    expect(res.details).toContainEqual(
+      expect.objectContaining({ eventId: 1, phase: "recap", status: "skipped", reason: "payload-missing" }),
+    );
+  });
+
+  it("degrades a KV read failure to a markerless skip and keeps running", async () => {
+    vi.mocked(loadLatestSnapshot).mockResolvedValue(makeEarningsSnapshot());
+    const env = makeEnv();
+    (env.CRON_KV.get as ReturnType<typeof vi.fn>).mockImplementation(async (key: string) => {
+      if (key.startsWith("cloud-enriched-")) throw new Error("kv down");
+      return null;
+    });
+    const now = new Date(release().getTime() + 60 * 60_000);
+    const res = await runEarningsFallback(env, { now });
+    expect(res.failed).toBe(0);
+    expect(res.details).toContainEqual(
+      expect.objectContaining({ eventId: 1, phase: "recap", status: "skipped", reason: "kv-error" }),
+    );
+  });
+
+  it("does not recap an expired payload (fetchedAt older than 4h)", async () => {
+    vi.mocked(loadLatestSnapshot).mockResolvedValue(makeEarningsSnapshot());
+    const env = makeEnv();
+    await env.CRON_KV.put(cloudEnrichedKey(1), JSON.stringify(completePayload()));
+    const now = new Date(release().getTime() + 125 * 60_000 + 4 * 3600_000 + 60_000);
+    const res = await runEarningsFallback(env, { now });
+    expect(res.sent).toBe(0);
+    expect(vi.mocked(sendEmail)).not.toHaveBeenCalled();
   });
 });
