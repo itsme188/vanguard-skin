@@ -64,6 +64,11 @@ import {
   writeEarningsMarker,
   type EarningsPhase,
 } from "./earnings-markers";
+import {
+  cloudEnrichedKey,
+  isPayloadComplete,
+  type CloudEnrichedPayload,
+} from "./cloud-enriched";
 
 // Issuer-family map mirrored from lib/securities/issuer-family.ts. Worker
 // can't cross the Next.js path-alias boundary, so this is a hand copy.
@@ -153,7 +158,20 @@ interface SnapshotCandidate {
   symbol: string;
   phase: EarningsPhase;
   event: CalendarEventRow;
+  /** Present on KV-road recap candidates — carries same-day cloud-enriched data. */
+  payload?: CloudEnrichedPayload | null;
 }
+
+interface ScanSkip {
+  eventId: number;
+  symbol: string;
+  phase: EarningsPhase;
+  reason: string;
+}
+
+// KV probe band: release within the last 12h (enrich retry window) + 4h
+// (recap window). Outside it a payload can't produce an unexpired recap.
+const KV_PROBE_WINDOW_MS = 16 * 60 * 60 * 1000;
 
 export async function runEarningsFallback(
   env: FallbackEnv,
@@ -177,9 +195,13 @@ export async function runEarningsFallback(
   }
 
   const now = opts.now ?? new Date();
-  const candidates = findCandidatesFromSnapshot(snapshot, now);
+  const scan = await findCandidatesFromSnapshot(snapshot, now, env.CRON_KV);
+  const candidates = scan.candidates;
   result.swept = candidates.length;
-
+  for (const s of scan.skips) {
+    result.skipped++;
+    result.details.push({ eventId: s.eventId, symbol: s.symbol, phase: s.phase, status: "skipped", reason: s.reason });
+  }
   if (candidates.length === 0) return result;
 
   // Tier 3 — live IBKR refresh. The snapshot's IBKR rows can be days stale while
@@ -255,10 +277,11 @@ export async function runEarningsFallback(
   return result;
 }
 
-function findCandidatesFromSnapshot(
+async function findCandidatesFromSnapshot(
   snapshot: Snapshot,
   now: Date,
-): SnapshotCandidate[] {
+  kv: KVNamespace,
+): Promise<{ candidates: SnapshotCandidate[]; skips: ScanSkip[] }> {
   const nowMs = now.getTime();
   const heldSet = new Set(snapshot.heldSymbols.map((s) => s.toUpperCase()));
   const watchSet = new Set(
@@ -281,6 +304,7 @@ function findCandidatesFromSnapshot(
   );
 
   const out: SnapshotCandidate[] = [];
+  const skips: ScanSkip[] = [];
 
   for (const e of snapshot.calendarEvents) {
     if (e.event_type !== "earnings") continue;
@@ -305,9 +329,11 @@ function findCandidatesFromSnapshot(
       }
     }
 
-    // Recap candidate
+    // Recap — road 1 (snapshot enriched_at, pre-2am enrichment) stays as-is
+    // here; Task 7 adds the no-actual gate to it.
     const enrichedAt = (e as Record<string, unknown>).enriched_at as string | null | undefined;
-    if (enrichedAt && !auditedSet.has(auditKey(e.id, "recap"))) {
+    const recapAudited = auditedSet.has(auditKey(e.id, "recap"));
+    if (enrichedAt && !recapAudited) {
       const enrichedMs = Date.parse(enrichedAt.replace(" ", "T") + "Z");
       if (Number.isFinite(enrichedMs)) {
         const ageMs = nowMs - enrichedMs;
@@ -315,10 +341,40 @@ function findCandidatesFromSnapshot(
           out.push({ eventId: e.id, symbol: sym, phase: "recap", event: e });
         }
       }
+    } else if (!enrichedAt && !recapAudited && e.release_time) {
+      // Recap — road 2 (B8): same-day cloud-enriched KV payload, invisible to
+      // the 2am snapshot. Probe KV only inside the release band (bounded reads).
+      const releaseInstant = composeReleaseInstant(e.event_date, e.release_time as string);
+      if (releaseInstant) {
+        const sinceRelease = nowMs - releaseInstant.getTime();
+        if (sinceRelease >= 0 && sinceRelease <= KV_PROBE_WINDOW_MS) {
+          try {
+            const raw = await kv.get(cloudEnrichedKey(e.id));
+            if (!raw) {
+              skips.push({ eventId: e.id, symbol: sym, phase: "recap", reason: "payload-missing" });
+            } else {
+              const payload = JSON.parse(raw) as CloudEnrichedPayload;
+              if (!isPayloadComplete(payload, releaseInstant, nowMs)) {
+                skips.push({ eventId: e.id, symbol: sym, phase: "recap", reason: "payload-incomplete" });
+              } else {
+                const readyMs = Date.parse(payload.fetchedAt);
+                if (Number.isFinite(readyMs) && nowMs - readyMs >= 0 && nowMs - readyMs <= RECAP_WINDOW_MAX_MS) {
+                  out.push({ eventId: e.id, symbol: sym, phase: "recap", event: e, payload });
+                }
+                // fetchedAt outside the 4h window → expired recap, silent
+                // (mirrors the snapshot road's silent expiry).
+              }
+            }
+          } catch (err) {
+            console.warn(`[fallback-earnings] KV probe failed for event ${e.id}:`, err);
+            skips.push({ eventId: e.id, symbol: sym, phase: "recap", reason: "kv-error" });
+          }
+        }
+      }
     }
   }
 
-  return out;
+  return { candidates: out, skips };
 }
 
 async function composeAndSend(
