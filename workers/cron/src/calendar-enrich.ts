@@ -2,10 +2,13 @@
  * Worker calendar-enrich dispatch.
  *
  * Fires every 15 minutes via the "every-15m" cron trigger, but self-gates
- * inside `shouldRunNow` to US-market business hours (09:30 → 18:00 ET,
- * Mon-Fri). The 18:00 upper bound extends past market close specifically
- * so AMC earnings (release 16:15 ET, reaction window 16:15 + 2h = 18:15)
- * can still be captured within the runner's -2h window.
+ * inside `shouldRunNow` to US-market business hours (09:30 → 18:59 ET,
+ * Mon-Fri). The 18:59 upper bound (extended from 18:00, B8) exists because
+ * earnings-row reaction capture is gated to T+115min (`REACTION_READY_MS`,
+ * see cloud-enriched.ts) — a late-AMC name (e.g. 16:30 release) isn't
+ * reaction-ready until ~18:25, so the old 18:00 boundary gave it zero
+ * capturable ticks. 18:59 gives every AMC name at least two tick
+ * opportunities within the runner's -2h candidate window.
  *
  * Architecture mirrors briefing/digest: try the Mac primary via
  * `callPrimary`, record an `enrich-sent-{slot}` KV marker on success. On
