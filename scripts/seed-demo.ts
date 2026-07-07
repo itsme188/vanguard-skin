@@ -197,7 +197,8 @@ const IBKR_HOLDINGS: AccountAllocation = {
   "TSLA  260619P00200000": { qty: 3, costBasis: 2550 }, // long put
   "MSFT  260619C00450000": { qty: -1, costBasis: 0 }, // short call (covered)
   "NVDA  260221C00180000": { qty: 0, costBasis: 0 }, // bought Nov, expired Feb
-  "912828ZQ7": { qty: 50, costBasis: 47250 },
+  // Bond quantity is FACE VALUE in dollars (par convention — valuation divides by 100)
+  "912828ZQ7": { qty: 50000, costBasis: 47250 },
 };
 
 // ---------------------------------------------------------------------------

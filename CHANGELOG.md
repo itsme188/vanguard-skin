@@ -6,6 +6,62 @@ The repo name remains `vanguard-skin`; the user-facing app was renamed **Portfol
 
 ---
 
+## v2.3 — Earnings Season & Away-From-Home — 2026-07-07
+
+Consolidated release covering May–July 2026 work on `main`.
+Tests: 3213 passing (plus a separate Cloudflare Worker suite).
+
+### New analysis surfaces
+
+- **Defense/Hedging tab** (`/dashboard/analysis?view=defense`) — finds your hedges (puts, shorts, inverse positions), matches them against what they protect (same-name pairs first, then proxy attribution through sector/geography/beta), and scores each hedge's protection vs. its cost. Income-generating hedges (short options collecting premium) are scored as income, not cost.
+- **Foreign-currency holdings** — prices and cost basis stored in the security's native currency, converted to USD at real broker exchange rates at display time. Every dollar surface in the app carries the conversion; nothing is ever guessed.
+- **Delta-adjusted exposure** — allocation views now show *net exposure* alongside market value, so a hedged bucket (stock + puts) correctly reads as less exposed than its dollar size suggests.
+- **ETF sector look-through** — ETFs split into their underlying sector weights instead of sitting in one bucket; options classify under their underlying company.
+- **Levels performance scoring** (`/dashboard/levels/performance`) — every newsletter author who suggests price levels gets scored on hit rate and 30/60/90-day forward P&L, so you learn whose calls are worth acting on.
+- **Armed levels tab** — see every live price level sorted by distance to trigger.
+
+### Earnings coverage, hardened for the season
+
+- **Push-at-print** — the moment actual numbers land for a company you own, your phone gets the headline (EPS/revenue vs. consensus), from whichever side (Mac or cloud) captures it first, de-duplicated.
+- **Retry-until-complete enrichment** — earnings rows keep retrying until both actuals and the market reaction are captured; recap emails only fire once real numbers exist. A previewed report stuck 2+ hours without actuals raises a phone alert instead of failing silently.
+- **Same-day cloud recaps** — recap emails now go out the same day even when the Mac is asleep, composed in the cloud from independently captured data.
+- **Coverage guard** — the Sunday briefing warns when a held name's next earnings date hasn't been scheduled yet (last report >75 days ago, nothing on the calendar).
+- **Bogeys upload** — drop a multi-symbol analyst-expectations PDF and the numbers fan out to each company's upcoming event; recaps anchor beat/miss on the whisper numbers when present.
+- **Plausibility guards** — implausible reported actuals (vendor data drift, GAAP/FFO mismatches, sign flips vs. consensus) are flagged and blanked rather than displayed as truth.
+- **Any exposure counts** — shorts and option positions on a name now trigger earnings coverage, not just long stock.
+
+### Email & research pipeline
+
+- **Evening email** (Mon–Thu 7 PM, Fri 5:30 PM ET) — session recap with cross-source synthesis plus an anomaly block flagging holdings that moved unusually hard relative to the market (beta-adjusted, two-gate).
+- **Structured digest composer** — morning/evening digests synthesize per company across sources ("The Session" / "Overnight & Setup"), with essays kept separate in a Research Desk section and late-arriving newsletters rescued into the next send.
+- **Forward-to-research** — forward any email (PDF attachment, image, link, or long read) to your personal research address and it becomes a searchable research document.
+- **Off-topic filtering** — Substack admin mail short-circuits at fetch; the AI votes on portfolio relevance per article (biased to keep, per-source opt-out, one-click unfilter audit list).
+- **Long-newsletter fix** — full newsletter bodies are stored and summarized (previous caps silently truncated long weeklies to their opening sections).
+
+### Works away from home
+
+- **Full cloud fallback suite** — a single Cloudflare Worker cron now mirrors every scheduled job when the Mac is unreachable: morning digest, evening email, Sunday briefing, earnings previews/recaps, newsletter fetching, price-level scanning (with phone push), and calendar enrichment. Everything reconciles back into the Mac's database on wake, and KV markers guarantee nothing sends twice.
+- **IBKR without TWS** — a headless OAuth connection to IBKR's Web API refreshes holdings, prices (including options and bonds), and fires price-level alerts even when Trader Workstation is closed — on the Mac and in the cloud.
+- **Market-data quotes** — IV, HV, and 52-week ranges cached per security from IBKR snapshots; options Greeks use real implied volatility instead of a blanket assumption.
+- **Model resilience** — AI features pick models by capability tier from a live catalog that probes what's actually callable, with automatic failover when a model is pulled — no more silent breakage when a model ID changes.
+
+### Import & data integrity
+
+- **Monthly statement workflow** — guided import for Vanguard PDF + IBKR CSV statement batches with penny-level reconciliation gates.
+- **Canonical CSV hardening** — signed cash-effect amount convention locked and documented in all three synced places; strict numeric parsing (comma-bearing values can no longer silently truncate); cents-level dedup keys.
+- **Closed-position hygiene** — expired options, matured bonds, and closed equities are swept automatically (with shrink guards so a partial sync can never wipe the book).
+- **Flow-adjusted risk metrics** — withdrawals no longer read as crashes; daily totals anchor to broker-reported values.
+- **FRED first-print vintages** — stored macro actuals are the release-day first print with per-series units verified against FRED, not whatever the API returns months later.
+
+### UI & polish
+
+- **Privacy sweep** — AI-generated prose (which embeds portfolio figures at generation time) is now masked as a block wherever it renders; outbound emails describe positions presence-only.
+- **Touch fixes** — hover-only buttons no longer create invisible tap-traps on phones.
+- **Honest feedback** — every mutating button explains no-ops and failures in domain language instead of failing silently.
+- **Settings** — per-feature AI model overrides with live tier expansion display, per-email recipients, earnings mute lists — all editable in-app.
+
+---
+
 ## v2.2 — Holistic Redesign — 2026-04-30
 
 Branch: `redesign-rollout` → merged to `main` as `a800884` on 2026-04-30 night-end.
