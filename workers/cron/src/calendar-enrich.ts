@@ -290,35 +290,61 @@ export async function runCloudFallback(
 
   for (const cand of candidates) {
     try {
-      const existing = await env.CRON_KV.get(cloudEnrichedKey(cand.id));
-      if (existing) continue; // idempotent across ticks in the same slot
+      const isEarnings = isEarningsRow(cand.event_type, cand.source_key);
+      const existingRaw = await env.CRON_KV.get(cloudEnrichedKey(cand.id));
+      let existing: CloudEnrichedPayload | null = null;
+      if (existingRaw) {
+        try {
+          existing = JSON.parse(existingRaw) as CloudEnrichedPayload;
+        } catch {
+          existing = null;
+        }
+        // Macro rows keep single-shot semantics EXACTLY (immediate partial
+        // capture is by design). Earnings rows retry until COMPLETE — the
+        // Worker mirror of the Mac's migration-062 retry-until-complete.
+        if (!isEarnings) continue;
+        if (existing && isPayloadComplete(existing, cand.releaseInstant, nowMs)) continue;
+      }
 
-      const actual = await fetchActualForEventCloud(
-        { source_key: cand.source_key, event_date: cand.event_date, consensus_estimate: cand.consensus_estimate },
-        env,
-      );
-      if (actual.deferred) deferred += 1;
+      // Fetch only what's missing — an existing actual is never re-fetched
+      // (subrequest saving) and never erased by a later null fetch.
+      const haveActual = existing?.actual != null && existing?.deferred !== true;
+      const actual: WorkerEnrichActualResult = haveActual
+        ? { actual: existing!.actual, consensus: existing!.consensus, source: existing!.source }
+        : await fetchActualForEventCloud(
+            { source_key: cand.source_key, event_date: cand.event_date, consensus_estimate: cand.consensus_estimate },
+            env,
+          );
+      if (!haveActual && actual.deferred) deferred += 1;
 
       // Earnings sector is not in the snapshot; map from event_type only on
       // cloud path. Macro events map cleanly; earnings will get null sector
       // ETF and publish SPY/QQQ/TLT only — Mac's TWS-upgrade path can add
       // the sector ETF later if needed.
       const sectorEtf = resolveSectorEtf(cand.event_type, null);
-      // Yahoo requires no API key — always attempt reaction capture.
-      const reaction = await captureReactionFromYahoo(cand.releaseInstant, sectorEtf, {
-        pacingMs,
-        eventSymbol: cand.event_type === "earnings" ? cand.symbol : null,
-      });
+      // Earnings reactions are pointless before T+115 (bars target T+120,
+      // 10-min tolerance) — Mac REACTION_READY_MS mirror. Macro rows are
+      // NEVER gated (immediate partial capture is by design).
+      const reactionAllowed =
+        !isEarnings || nowMs - cand.releaseInstant.getTime() >= REACTION_READY_MS;
+      const reaction =
+        existing?.reaction ??
+        (reactionAllowed
+          ? await captureReactionFromYahoo(cand.releaseInstant, sectorEtf, {
+              pacingMs,
+              eventSymbol: cand.event_type === "earnings" ? cand.symbol : null,
+            })
+          : null);
 
       const payload: CloudEnrichedPayload = {
         eventId: cand.id,
         source_key: cand.source_key,
-        actual: actual.actual,
-        consensus: actual.consensus,
-        source: actual.source,
+        actual: actual.actual ?? existing?.actual ?? null,
+        consensus: actual.consensus ?? existing?.consensus ?? null,
+        source: actual.actual != null ? actual.source : existing?.source ?? actual.source,
         deferred: actual.deferred,
         reason: actual.reason,
-        reaction,
+        reaction: reaction ?? existing?.reaction ?? null,
         fetchedAt: new Date().toISOString(),
       };
 
