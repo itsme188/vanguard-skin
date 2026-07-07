@@ -69,6 +69,7 @@ import {
   isPayloadComplete,
   type CloudEnrichedPayload,
 } from "./cloud-enriched";
+import { isPlausibleEarnings } from "./plausibility";
 
 // Issuer-family map mirrored from lib/securities/issuer-family.ts. Worker
 // can't cross the Next.js path-alias boundary, so this is a hand copy.
@@ -239,6 +240,23 @@ export async function runEarningsFallback(
       continue;
     }
 
+    let implausible = false;
+    if (cand.phase === "recap") {
+      const verdict = evaluateRecapContent(cand.event, cand.payload ?? null);
+      if (!verdict.send) {
+        result.skipped++;
+        result.details.push({
+          eventId: cand.eventId,
+          symbol: cand.symbol,
+          phase: cand.phase,
+          status: "skipped",
+          reason: verdict.reason,
+        });
+        continue;
+      }
+      implausible = verdict.implausible;
+    }
+
     if (opts.dryRun) {
       result.details.push({
         eventId: cand.eventId,
@@ -252,7 +270,7 @@ export async function runEarningsFallback(
     }
 
     try {
-      await composeAndSend(env, snapshot, cand, liveIbkr, ibkrAccountName);
+      await composeAndSend(env, snapshot, cand, liveIbkr, ibkrAccountName, implausible);
       await writeEarningsMarker(env.CRON_KV, "cloud", cand.phase, cand.eventId);
       result.sent++;
       result.details.push({
@@ -329,8 +347,10 @@ async function findCandidatesFromSnapshot(
       }
     }
 
-    // Recap — road 1 (snapshot enriched_at, pre-2am enrichment) stays as-is
-    // here; Task 7 adds the no-actual gate to it.
+    // Recap — road 1 (snapshot enriched_at, pre-2am enrichment). B8 gates on
+    // an actual being present — evaluateRecapContent re-checks at send time
+    // (belt-and-suspenders), but gating here keeps a no-actual row out of
+    // `swept` entirely and reports it as a scan-level skip.
     const enrichedAt = (e as Record<string, unknown>).enriched_at as string | null | undefined;
     const recapAudited = auditedSet.has(auditKey(e.id, "recap"));
     if (enrichedAt && !recapAudited) {
@@ -338,7 +358,11 @@ async function findCandidatesFromSnapshot(
       if (Number.isFinite(enrichedMs)) {
         const ageMs = nowMs - enrichedMs;
         if (ageMs >= 0 && ageMs <= RECAP_WINDOW_MAX_MS) {
-          out.push({ eventId: e.id, symbol: sym, phase: "recap", event: e });
+          if (((e as Record<string, unknown>).actual_value ?? null) == null) {
+            skips.push({ eventId: e.id, symbol: sym, phase: "recap", reason: "no-actual" });
+          } else {
+            out.push({ eventId: e.id, symbol: sym, phase: "recap", event: e });
+          }
         }
       }
     } else if (!enrichedAt && !recapAudited && e.release_time) {
@@ -383,6 +407,7 @@ async function composeAndSend(
   cand: SnapshotCandidate,
   liveIbkr: LiveIbkrPosition[] | null,
   ibkrAccountName: string,
+  implausible: boolean,
 ): Promise<void> {
   if (!env.BRIEFING_EMAIL_TO) {
     throw new Error("BRIEFING_EMAIL_TO missing");
@@ -397,7 +422,7 @@ async function composeAndSend(
   // verbatim (prior behavior).
   const snapshotViews = resolvePositions(snapshot, family);
   const positions = combineFamilyPositions(snapshotViews, liveIbkr, family, ibkrAccountName);
-  const scoreboard = renderScoreboard(cand.event, cand.phase, snapshot, family);
+  const scoreboard = renderScoreboard(cand.event, cand.phase, cand.payload ?? null, implausible);
   const positionsBlock = renderPositions(positions, cand.symbol, family, liveIbkr !== null);
 
   // v5 — the user's own thesis notes + curated bogeys (consensus/whisper).
@@ -502,18 +527,63 @@ function resolvePositions(
   return out;
 }
 
+// ── Recap safety gate (B8) ────────────────────────────────────────────
+
+/**
+ * B8 recap send-decision: (1) actual-required — no actual anywhere means no
+ * candidate, never a marker; (2) "at least one real data point" — an
+ * implausible actual (isPlausibleEarnings mirror, incl. B19 sign-flip) gets
+ * its cells blanked, and if there's no reaction either, the email would be
+ * content-free, so skip WITHOUT a marker (stricter than the Mac, which always
+ * sends once complete — rationale in the 2026-07-07 B8 spec).
+ */
+export function evaluateRecapContent(
+  event: CalendarEventRow,
+  payload: CloudEnrichedPayload | null,
+): { send: true; implausible: boolean } | { send: false; reason: "no-actual" | "implausible-no-data-point" } {
+  const actualRaw = ((event.actual_value as string | null) ?? payload?.actual) ?? null;
+  if (actualRaw == null) return { send: false, reason: "no-actual" };
+
+  const consRaw =
+    ((event.consensus_value as string | null) ?? payload?.consensus ?? event.consensus_estimate) ?? null;
+  const cons = parseFinnhubFigure(consRaw);
+  const act = parseFinnhubFigure(actualRaw);
+  const plausible = isPlausibleEarnings(
+    cons.eps != null ? Number(cons.eps) : null,
+    act.eps != null ? Number(act.eps) : null,
+    cons.revenue != null ? Number(cons.revenue) : null,
+    act.revenue != null ? Number(act.revenue) : null,
+  );
+
+  const hasReaction =
+    (event.reaction_snapshot as string | null) != null || payload?.reaction != null;
+  if (!plausible && !hasReaction) return { send: false, reason: "implausible-no-data-point" };
+  return { send: true, implausible: !plausible };
+}
+
 // ── Scoreboard table (mirrors Mac renderHeadlineTable) ──────────────
 
-function renderScoreboard(
+export function renderScoreboard(
   event: CalendarEventRow,
   phase: EarningsPhase,
-  _snapshot: Snapshot,
-  _family: readonly string[],
+  payload: CloudEnrichedPayload | null,
+  implausible: boolean,
 ): string {
-  const cons = parseFinnhubFigure(event.consensus_estimate);
-  const actual = phase === "recap"
-    ? parseFinnhubFigure((event.actual_value ?? event.consensus_value ?? null) as string | null)
-    : { eps: null as string | null, revenue: null as string | null };
+  // Consensus precedence mirrors the Mac renderHeadlineTable: the
+  // enrichment-time consensus_value wins, then the same-day payload's, then
+  // the Finnhub-sync-time consensus_estimate.
+  const cons = parseFinnhubFigure(
+    (((event.consensus_value as string | null) ?? payload?.consensus ?? event.consensus_estimate) ?? null),
+  );
+  // Actual NEVER falls back to consensus_value — that was the
+  // estimates-dressed-as-actuals failure 921d552 eliminated on the Mac.
+  // Implausible actuals render blanked (⚠ line below the table).
+  const actualRaw =
+    phase === "recap" ? (((event.actual_value as string | null) ?? payload?.actual) ?? null) : null;
+  const actual =
+    phase === "recap" && !implausible
+      ? parseFinnhubFigure(actualRaw)
+      : { eps: null as string | null, revenue: null as string | null };
 
   const epsConsensus = cons.eps ?? "—";
   const epsActual = actual.eps ?? "—";
@@ -530,13 +600,19 @@ function renderScoreboard(
       : "—";
 
   const isRecap = phase === "recap";
-  const reactionJson = (event.reaction_snapshot ?? null) as string | null;
+  const reactionJson =
+    ((event.reaction_snapshot as string | null) ??
+      (payload?.reaction != null ? JSON.stringify(payload.reaction) : null));
   const stockR = isRecap ? readReactionDelta(reactionJson, "symbol") : "—";
   const spyR = isRecap ? readReactionDelta(reactionJson, "spy") : "—";
   const qqqR = isRecap ? readReactionDelta(reactionJson, "qqq") : "—";
 
   const phaseLabel = phase === "preview" ? "into the print" : "post-print";
   const sym = event.symbol ?? "";
+
+  const warn = implausible
+    ? `\n\n*⚠ Reported actuals were flagged as implausible vs consensus — cells blanked (B19-style basis mismatch or scrape failure). Override via POST /api/earnings/actuals once the Mac is back.*`
+    : "";
 
   return `## ${sym} scoreboard — ${phaseLabel}
 
@@ -549,7 +625,7 @@ function renderScoreboard(
 | **SPY @ T+2h** | — | ${spyR} | — |
 | **QQQ @ T+2h** | — | ${qqqR} | — |
 
-*Cloud-fallback delivery — empty cells in a preview are intentional. \`—\` in the actual column on a recap means data wasn't available at send time.*`;
+*Cloud-fallback delivery — empty cells in a preview are intentional. \`—\` in the actual column on a recap means data wasn't available at send time.*${warn}`;
 }
 
 export function renderPositions(
