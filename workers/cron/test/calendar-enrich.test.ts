@@ -35,8 +35,10 @@ import { runCloudFallback, isBenignEnrichOutcome, shouldRunCalendarEnrich } from
 import { loadLatestSnapshot } from "../src/state";
 import { fetchActualForEventCloud } from "../src/enrich-actuals";
 import { composeReleaseInstant } from "../src/reaction-matcher";
+import { captureReactionFromYahoo } from "../src/yahoo";
 import { sendPushover } from "../src/pushover";
 import { readPrintPushMarker } from "../src/earnings-markers";
+import { cloudEnrichedKey } from "../src/cloud-enriched";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -411,5 +413,93 @@ describe("per-type candidate window (B8: earnings 12h, macro 2h)", () => {
     const release = composeReleaseInstant(EVENT_DATE, RELEASE_TIME)!;
     const res = await runCloudFallback(makeEnv(), { nowMs: release.getTime() + 13 * 3600_000, pacingMs: 0 });
     expect(res.kind).toBe("no_candidates");
+  });
+});
+
+describe("retry-until-complete (B8: earnings only, Mac migration-062 mirror)", () => {
+  const release = () => composeReleaseInstant(EVENT_DATE, RELEASE_TIME)!;
+
+  beforeEach(() => {
+    vi.mocked(loadLatestSnapshot).mockReset();
+    vi.mocked(fetchActualForEventCloud).mockReset();
+    vi.mocked(captureReactionFromYahoo).mockReset();
+    vi.mocked(captureReactionFromYahoo).mockResolvedValue({ source: "yahoo" } as never);
+  });
+
+  async function seedPayload(env: ReturnType<typeof makeEnv>, payload: Record<string, unknown>) {
+    await env.CRON_KV.put(cloudEnrichedKey(1), JSON.stringify(payload));
+  }
+
+  it("re-attempts an earnings payload whose actual is missing", async () => {
+    vi.mocked(loadLatestSnapshot).mockResolvedValue(makeEnrichSnapshot());
+    vi.mocked(fetchActualForEventCloud).mockResolvedValue({
+      actual: "EPS 1.60 · Rev 91,000,000,000", consensus: "EPS 1.50 · Rev 90,000,000,000", source: "finnhub",
+    });
+    const env = makeEnv();
+    await seedPayload(env, { eventId: 1, source_key: "finnhub:AAPL:2026-06-15", actual: null, consensus: null, source: "finnhub", reaction: null, fetchedAt: new Date(release().getTime() + 10 * 60_000).toISOString() });
+    const res = await runCloudFallback(env, { nowMs: release().getTime() + 3 * 3600_000, pacingMs: 0 });
+    expect(res.candidatesProcessed).toBe(1);
+    expect(vi.mocked(fetchActualForEventCloud)).toHaveBeenCalledTimes(1);
+    const stored = JSON.parse((await env.CRON_KV.get(cloudEnrichedKey(1)))!) as Record<string, unknown>;
+    expect(stored.actual).toBe("EPS 1.60 · Rev 91,000,000,000");
+  });
+
+  it("skips an earnings payload that is already complete", async () => {
+    vi.mocked(loadLatestSnapshot).mockResolvedValue(makeEnrichSnapshot());
+    const env = makeEnv();
+    await seedPayload(env, { eventId: 1, source_key: "finnhub:AAPL:2026-06-15", actual: "EPS 1.60", consensus: null, source: "finnhub", reaction: { source: "yahoo" }, fetchedAt: new Date().toISOString() });
+    await runCloudFallback(env, { nowMs: release().getTime() + 3 * 3600_000, pacingMs: 0 });
+    expect(vi.mocked(fetchActualForEventCloud)).not.toHaveBeenCalled();
+    expect(vi.mocked(captureReactionFromYahoo)).not.toHaveBeenCalled();
+  });
+
+  it("keeps MACRO single-shot: existing payload → untouched even if incomplete", async () => {
+    const snap = makeEnrichSnapshot();
+    const ev = snap.calendarEvents[0] as Record<string, unknown>;
+    ev.event_type = "cpi";
+    ev.source_key = "fred:10";
+    vi.mocked(loadLatestSnapshot).mockResolvedValue(snap);
+    const env = makeEnv();
+    await seedPayload(env, { eventId: 1, source_key: "fred:10", actual: null, consensus: null, source: "fred", reaction: null, fetchedAt: new Date().toISOString() });
+    await runCloudFallback(env, { nowMs: release().getTime() + 60 * 60_000, pacingMs: 0 });
+    expect(vi.mocked(fetchActualForEventCloud)).not.toHaveBeenCalled();
+  });
+
+  it("does not fetch Yahoo for an earnings row before T+115 (actual-only tick)", async () => {
+    vi.mocked(loadLatestSnapshot).mockResolvedValue(makeEnrichSnapshot());
+    vi.mocked(fetchActualForEventCloud).mockResolvedValue({ actual: "EPS 1.60", consensus: null, source: "finnhub" });
+    const env = makeEnv();
+    await runCloudFallback(env, { nowMs: release().getTime() + 30 * 60_000, pacingMs: 0 });
+    expect(vi.mocked(captureReactionFromYahoo)).not.toHaveBeenCalled();
+    const stored = JSON.parse((await env.CRON_KV.get(cloudEnrichedKey(1)))!) as Record<string, unknown>;
+    expect(stored.actual).toBe("EPS 1.60");
+    expect(stored.reaction).toBeNull();
+  });
+
+  it("still fetches Yahoo immediately for a macro row (never gated)", async () => {
+    const snap = makeEnrichSnapshot();
+    const ev = snap.calendarEvents[0] as Record<string, unknown>;
+    ev.event_type = "cpi";
+    ev.source_key = "fred:10";
+    vi.mocked(loadLatestSnapshot).mockResolvedValue(snap);
+    vi.mocked(fetchActualForEventCloud).mockResolvedValue({ actual: "3.2%", consensus: null, source: "fred" });
+    const env = makeEnv();
+    await runCloudFallback(env, { nowMs: release().getTime() + 30 * 60_000, pacingMs: 0 });
+    expect(vi.mocked(captureReactionFromYahoo)).toHaveBeenCalledTimes(1);
+  });
+
+  it("COALESCEs on overwrite: a captured actual survives a null re-fetch", async () => {
+    vi.mocked(loadLatestSnapshot).mockResolvedValue(makeEnrichSnapshot());
+    vi.mocked(fetchActualForEventCloud).mockResolvedValue({ actual: null, consensus: null, source: "finnhub", reason: "no_actual_yet" });
+    const env = makeEnv();
+    // actual present but reaction missing and settle not reached → incomplete → retried
+    await seedPayload(env, { eventId: 1, source_key: "finnhub:AAPL:2026-06-15", actual: "EPS 1.60", consensus: "EPS 1.50", source: "finnhub", reaction: null, fetchedAt: new Date().toISOString() });
+    vi.mocked(captureReactionFromYahoo).mockResolvedValue(null as never);
+    await runCloudFallback(env, { nowMs: release().getTime() + 2 * 3600_000, pacingMs: 0 });
+    const stored = JSON.parse((await env.CRON_KV.get(cloudEnrichedKey(1)))!) as Record<string, unknown>;
+    expect(stored.actual).toBe("EPS 1.60"); // not erased
+    expect(stored.consensus).toBe("EPS 1.50");
+    // existing actual present → Finnhub fetch skipped (fetch-only-what's-missing)
+    expect(vi.mocked(fetchActualForEventCloud)).not.toHaveBeenCalled();
   });
 });
