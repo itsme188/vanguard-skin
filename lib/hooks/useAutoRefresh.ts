@@ -5,9 +5,11 @@ import type { SyncState } from "@/lib/tws/sync-state";
 import { shouldFireDisconnectedRefresh } from "@/lib/tws/webapi-refresh-gate";
 
 /** localStorage key for the disconnected-path (IBKR Web API) refresh debounce.
- *  The Web API fallback never updates server-side sync-state and the hook's
- *  in-memory ref resets on every page mount — without a persistent gate,
- *  every page-open away from home would fire a refresh. */
+ *  The hook's in-memory ref resets on every page mount, so a persistent gate
+ *  is needed or every page-open away from home would fire a refresh. (Since
+ *  R1b the Web API path DOES report through server sync-state — via
+ *  lastSyncVia:'ibkr-webapi' — but this client-side debounce stays as the
+ *  cheap first gate that avoids even the POST.) */
 const LAST_WEBAPI_REFRESH_KEY = "vgs:lastWebApiRefresh";
 
 /**

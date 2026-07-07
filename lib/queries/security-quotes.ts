@@ -30,23 +30,36 @@ export function getSecurityQuote(
 export interface QuoteCandidate {
   securityId: number;
   conid: number;
+  /**
+   * Price-only tier (held options + bonds, R1b 2026-07-07): the snapshot's
+   * last price is written to `prices` but NO `security_quotes` row is cached —
+   * that table is deliberately an equities-only IV/HV/52wk cache (an option's
+   * IV lives on its UNDERLYING; bonds have neither). Probe-verified: field 31
+   * returns per-share option premiums and par-based bond prices, both matching
+   * the prices-table conventions.
+   */
+  priceOnly: boolean;
 }
 
 /**
- * Securities eligible for an IBKR market-data snapshot: equity-like securities
- * (stocks / ETFs / funds) with a resolved IBKR conid that are either currently
- * held (non-zero qty in their account's latest snapshot) or on the active
- * watchlist. Excluded: options (the IV we want is the UNDERLYING's, and Greeks
- * solves per-option IV from the option price), and bonds / cash (no IV / 52-week
- * range, and bond pricing has par-adjustment handled by the positions path).
+ * Securities eligible for an IBKR market-data snapshot, in two tiers:
+ *  - Full quote (priceOnly=false): equity-like securities (stocks / ETFs /
+ *    funds) with a resolved IBKR conid, currently held (non-zero qty in their
+ *    account's latest snapshot) or on the active watchlist.
+ *  - Price only (priceOnly=true): currently-HELD options + bonds with a conid —
+ *    keeps their prices moving while TWS is down (the Web API positions path
+ *    only covers the IBKR account; Vanguard-held options/bonds have no other
+ *    TWS-independent price source). Watchlist stays equities-only.
+ * Cash is never a candidate.
  */
 export function getQuoteCandidateConids(db: Database.Database): QuoteCandidate[] {
-  return db
+  const rows = db
     .prepare(
-      `SELECT DISTINCT s.id AS securityId, s.ib_con_id AS conid
+      `SELECT DISTINCT s.id AS securityId, s.ib_con_id AS conid,
+              CASE WHEN LOWER(COALESCE(s.security_type, '')) IN ('option', 'bond') THEN 1 ELSE 0 END AS priceOnly
          FROM securities s
         WHERE s.ib_con_id IS NOT NULL
-          AND LOWER(COALESCE(s.security_type, '')) NOT IN ('option', 'bond', 'cash')
+          AND LOWER(COALESCE(s.security_type, '')) != 'cash'
           AND (
             s.id IN (
               SELECT h.security_id
@@ -60,8 +73,12 @@ export function getQuoteCandidateConids(db: Database.Database): QuoteCandidate[]
                  AND latest.d = h.as_of_date
                WHERE h.quantity != 0
             )
-            OR s.id IN (SELECT security_id FROM watchlist WHERE is_active = 1)
+            OR (
+              LOWER(COALESCE(s.security_type, '')) NOT IN ('option', 'bond')
+              AND s.id IN (SELECT security_id FROM watchlist WHERE is_active = 1)
+            )
           )`,
     )
-    .all() as QuoteCandidate[];
+    .all() as Array<{ securityId: number; conid: number; priceOnly: number }>;
+  return rows.map((r) => ({ ...r, priceOnly: r.priceOnly === 1 }));
 }

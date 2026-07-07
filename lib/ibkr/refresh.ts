@@ -24,6 +24,13 @@ import type { IbkrOAuthConfig } from "./oauth-client";
 import { getMarketDataSnapshot, type ParsedQuote } from "./market-data";
 import { getQuoteCandidateConids } from "../queries/security-quotes";
 import { upsertSecurityQuote } from "../mutations/security-quotes";
+import { runLevelScanCycle } from "../alerts/scan-cycle";
+import {
+  isSyncing,
+  setSyncComplete,
+  setSyncError,
+  setSyncPhase,
+} from "../tws/sync-state";
 import {
   fetchFinnhubDividendYields,
   getYieldRefreshCandidates,
@@ -169,27 +176,77 @@ export function writeIbkrHoldings(
 
 /**
  * Full Tier 2 refresh: fetch live + write. Returns null when IBKR OAuth isn't
- * configured (so callers degrade gracefully, like the TWS path does).
+ * configured (so callers degrade gracefully, like the TWS path does) OR when a
+ * sync is already in progress (shares the TWS pipeline's mutex).
+ *
+ * R1b (2026-07-07): this path now also (a) reports through sync-state with
+ * via='ibkr-webapi' so the header shows the refresh happened while TWS is
+ * down, and (b) runs the shared level-scan cycle afterward so MA-based levels
+ * fire away from home (the Worker's cloud scan covers static levels only).
  */
 export async function refreshIbkrHoldingsFromWebApi(
   db: Database.Database,
   cfg: IbkrOAuthConfig | null = loadIbkrConfig(),
 ): Promise<IbkrWriteResult | null> {
   if (!cfg) return null;
-  const snapshot = await fetchIbkrPortfolio(cfg);
-  const result = writeIbkrHoldings(db, snapshot);
+  if (isSyncing()) {
+    console.log("[ibkr] Web API refresh skipped — a sync is already in progress");
+    return null;
+  }
 
-  // Best-effort quote enrichment (IV / HV / 52wk range + watchlist price top-up).
-  // Never blocks the holdings refresh — mirrors the TWS path's non-fatal steps.
+  const startTime = Date.now();
+  setSyncPhase("positions");
+  let result: IbkrWriteResult;
+  try {
+    const snapshot = await fetchIbkrPortfolio(cfg);
+    result = writeIbkrHoldings(db, snapshot);
+  } catch (err) {
+    setSyncError(err instanceof Error ? err.message : "IBKR Web API refresh failed");
+    throw err;
+  }
+
+  // Best-effort quote enrichment (IV / HV / 52wk range + watchlist price top-up
+  // + held option/bond price-only tier). Never blocks the holdings refresh —
+  // mirrors the TWS path's non-fatal steps.
+  let quotePricesWritten = 0;
+  setSyncPhase("prices");
   try {
     const lst = await openSession(cfg);
     const q = await fetchAndStoreQuotes(db, cfg, lst.token);
+    quotePricesWritten = q.pricesWritten;
     console.log(
       `[ibkr] quote enrichment: ${q.securitiesUpdated} securities, ${q.pricesWritten} prices (${q.conidsRequested} conids)`,
     );
   } catch (err) {
     console.warn("[ibkr] quote enrichment failed (non-fatal):", err);
   }
+
+  // Level-scan cycle on the fresh prices (best-effort, mirrors Step 6).
+  let alertsFired = 0;
+  setSyncPhase("alerts");
+  try {
+    const scan = await runLevelScanCycle(db, {
+      cronSecret: process.env.CRON_SHARED_SECRET,
+      logPrefix: "[ibkr]",
+    });
+    alertsFired = scan.fired;
+  } catch (err) {
+    console.warn("[ibkr] level scan failed (non-fatal):", err);
+  }
+
+  setSyncComplete(
+    {
+      positionsSynced: result.positionsWritten,
+      securitiesEnriched: 0,
+      pricesUpdated: result.pricesWritten + quotePricesWritten,
+      valuationsRecomputed: true,
+      benchmarksSynced: 0,
+      alertsFired,
+      errors: [],
+      durationMs: Date.now() - startTime,
+    },
+    "ibkr-webapi",
+  );
 
   return result;
 }
@@ -232,9 +289,16 @@ export async function fetchAndStoreQuotes(
     return { conidsRequested: 0, securitiesUpdated: 0, pricesWritten: 0 };
   }
 
-  const securityIdByConid = new Map(candidates.map((c) => [c.conid, c.securityId]));
+  const candidateByConid = new Map(candidates.map((c) => [c.conid, c]));
   const conids = candidates.map((c) => c.conid);
-  const quotes = await fetchSnapshot(cfg, lst, conids);
+  // Chunk the snapshot request — the price-only tier (held options + bonds,
+  // R1b) roughly doubles the conid count; 80 per call is the batch size the
+  // 2026-06-08 ship verified live (84 conids in one request).
+  const SNAPSHOT_BATCH = 80;
+  const quotes: ParsedQuote[] = [];
+  for (let i = 0; i < conids.length; i += SNAPSHOT_BATCH) {
+    quotes.push(...(await fetchSnapshot(cfg, lst, conids.slice(i, i + SNAPSHOT_BATCH))));
+  }
 
   // Dividend yield — not exposed by the IBKR session (probe-verified
   // 2026-06-09); a small capped Finnhub batch fills/rotates it instead.
@@ -266,20 +330,26 @@ export async function fetchAndStoreQuotes(
   db.transaction(() => {
     for (const q of quotes) {
       if (q.conid == null) continue;
-      const securityId = securityIdByConid.get(q.conid);
-      if (securityId == null) continue; // not a candidate we asked for
-      upsertSecurityQuote(db, {
-        securityId,
-        asOfDate: asOf,
-        ivUnderlying: q.ivUnderlying,
-        hv30d: q.hv30d,
-        week52High: q.week52High,
-        week52Low: q.week52Low,
-        // Finnhub batch when selected this run; null otherwise — the
-        // upsert's COALESCE keeps the last-known value.
-        dividendYield: yieldBySecurityId.get(securityId) ?? null,
-      });
-      securitiesUpdated++;
+      const candidate = candidateByConid.get(q.conid);
+      if (candidate == null) continue; // not a candidate we asked for
+      const securityId = candidate.securityId;
+      // Price-only tier (held options + bonds): the snapshot last keeps their
+      // prices moving while TWS is down, but security_quotes stays an
+      // equities-only IV/HV/52wk cache — never cache a quote row for them.
+      if (!candidate.priceOnly) {
+        upsertSecurityQuote(db, {
+          securityId,
+          asOfDate: asOf,
+          ivUnderlying: q.ivUnderlying,
+          hv30d: q.hv30d,
+          week52High: q.week52High,
+          week52Low: q.week52Low,
+          // Finnhub batch when selected this run; null otherwise — the
+          // upsert's COALESCE keeps the last-known value.
+          dividendYield: yieldBySecurityId.get(securityId) ?? null,
+        });
+        securitiesUpdated++;
+      }
       if (q.last != null && q.last > 0) {
         upsertPrice.run(securityId, asOf, q.last);
         pricesWritten++;

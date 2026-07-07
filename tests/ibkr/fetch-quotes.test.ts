@@ -44,9 +44,7 @@ describe("fetchAndStoreQuotes", () => {
     const aapl = seedSecurity("AAPL", 265598);
     const nvda = seedSecurity("NVDA", 4815747);
     const msft = seedSecurity("MSFT", 272093); // neither held nor watchlisted
-    const tbill = seedSecurity("912810SA7", 99999999, "Bond"); // held bond — excluded
     hold(acct, aapl, 100);
-    hold(acct, tbill, 10);
     watch(nvda);
 
     let requestedConids: number[] = [];
@@ -67,11 +65,9 @@ describe("fetchAndStoreQuotes", () => {
       fetchSnapshot: stub,
     });
 
-    // Only held (AAPL) + watchlist (NVDA) conids requested — MSFT (not held)
-    // and the held T-bill (bond) both excluded.
+    // Only held (AAPL) + watchlist (NVDA) conids requested — MSFT (not held) excluded.
     expect(requestedConids.sort()).toEqual([265598, 4815747].sort());
     expect(requestedConids).not.toContain(272093);
-    expect(requestedConids).not.toContain(99999999);
 
     expect(res.securitiesUpdated).toBe(2);
     expect(res.pricesWritten).toBe(2);
@@ -89,6 +85,60 @@ describe("fetchAndStoreQuotes", () => {
 
     // MSFT untouched.
     expect(getSecurityQuote(db, msft)).toBeNull();
+  });
+
+  it("prices held options + bonds as price-only candidates — prices written, no security_quotes row (R1b, probe-verified 2026-07-07)", async () => {
+    const acct = getIbkrAccount();
+    const aapl = seedSecurity("AAPL", 265598); // held equity — full quote
+    const call = seedSecurity("AFRM  270115C00115000", 760270996, "Option");
+    const tbill = seedSecurity("912810SA7", 306557971, "Bond");
+    const watchedCall = seedSecurity("SPY   270115C00700000", 555000111, "Option"); // watchlist option — NOT a candidate
+    hold(acct, aapl, 100);
+    hold(acct, call, 2);
+    hold(acct, tbill, 10);
+    watch(watchedCall);
+
+    let requestedConids: number[] = [];
+    const stub = async (
+      _cfg: IbkrOAuthConfig,
+      _lst: string,
+      conids: number[],
+    ): Promise<ParsedQuote[]> => {
+      requestedConids = [...requestedConids, ...conids];
+      return [
+        { conid: 265598, last: 302.94, ivUnderlying: 0.2441, hv30d: 0.2322, week52High: 316.94, week52Low: 194.47 },
+        // Option premium per-share (probe: "C8.01" → 8.01); bond par-based (72.53).
+        { conid: 760270996, last: 8.01, ivUnderlying: null, hv30d: null, week52High: null, week52Low: null },
+        { conid: 306557971, last: 72.53, ivUnderlying: null, hv30d: null, week52High: null, week52Low: null },
+      ];
+    };
+
+    const res = await fetchAndStoreQuotes(db, CFG, "lst", {
+      asOfDate: "2026-07-07",
+      fetchSnapshot: stub,
+      fetchYields: async () => ({}),
+    });
+
+    // Held option + bond requested; watchlist option excluded (price-only tier is held-only).
+    expect(requestedConids).toContain(760270996);
+    expect(requestedConids).toContain(306557971);
+    expect(requestedConids).not.toContain(555000111);
+
+    // Prices land for all three; quote rows only for the equity.
+    expect(res.pricesWritten).toBe(3);
+    expect(res.securitiesUpdated).toBe(1);
+    const optPx = db
+      .prepare("SELECT close_price, source FROM prices WHERE security_id = ? AND date = '2026-07-07'")
+      .get(call) as { close_price: number; source: string } | undefined;
+    expect(optPx?.close_price).toBeCloseTo(8.01, 2);
+    expect(optPx?.source).toBe("tws");
+    const bondPx = db
+      .prepare("SELECT close_price FROM prices WHERE security_id = ? AND date = '2026-07-07'")
+      .get(tbill) as { close_price: number } | undefined;
+    expect(bondPx?.close_price).toBeCloseTo(72.53, 2);
+    expect(getSecurityQuote(db, call)).toBeNull();
+    expect(getSecurityQuote(db, tbill)).toBeNull();
+    expect(getSecurityQuote(db, aapl)!.week52_high).toBe(316.94);
   });
 
   it("no-ops cleanly when there are no candidate securities", async () => {

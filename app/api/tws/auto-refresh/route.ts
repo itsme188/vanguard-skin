@@ -19,10 +19,14 @@ export async function POST(request: NextRequest) {
     if (cfg) {
       try {
         const res = await refreshIbkrHoldingsFromWebApi(db, cfg);
+        // cfg is non-null here, so a null result means the sync-state mutex
+        // skipped the run (another refresh is mid-flight).
         return NextResponse.json({
           success: true,
           via: "ibkr-webapi",
-          message: `IBKR Web API refresh: ${res?.positionsWritten ?? 0} positions as of ${res?.asOfDate}`,
+          message: res
+            ? `IBKR Web API refresh: ${res.positionsWritten} positions as of ${res.asOfDate}`
+            : "IBKR Web API refresh skipped — a sync is already in progress",
           result: res,
         });
       } catch (err) {
