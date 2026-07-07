@@ -77,7 +77,6 @@ export function findEarningsCoverageGaps(
   opts: { today?: string } = {},
 ): CoverageGap[] {
   const today = opts.today ?? todayET();
-  const horizon = addDays(today, LOOKAHEAD_DAYS);
   const dueCutoff = addDays(today, -DUE_AFTER_DAYS);
   const ignored = new Set(getCoverageGuardIgnoredSymbols(db));
 
@@ -125,34 +124,23 @@ export function findEarningsCoverageGaps(
     const family = issuerSiblings(symbol).map((s) => s.toUpperCase());
     const placeholders = family.map(() => "?").join(",");
 
+    // ANY scheduled event from today forward proves a source covers the name
+    // — inside the look-ahead horizon (the common case) or beyond it (manual
+    // far-future entries). Both must count: a family whose only event is
+    // >LOOKAHEAD_DAYS out would otherwise fall through this check AND the
+    // last-report check (event_date <= today) and get mislabeled
+    // "no_history".
     const future = db
       .prepare(
         `SELECT 1 FROM calendar_events
           WHERE event_type = 'earnings'
             AND COALESCE(superseded, 0) = 0
-            AND event_date BETWEEN ? AND ?
+            AND event_date >= ?
             AND UPPER(symbol) IN (${placeholders})
           LIMIT 1`,
       )
-      .get(today, horizon, ...family);
+      .get(today, ...family);
     if (future) continue;
-
-    // A scheduled event BEYOND the look-ahead horizon still proves a source
-    // covers the name (manual far-future entries). Without this, a family
-    // whose only event is >LOOKAHEAD_DAYS out falls through both the future
-    // check (BETWEEN today AND horizon) and the last-report check
-    // (event_date <= today) and gets mislabeled "no_history".
-    const farFuture = db
-      .prepare(
-        `SELECT 1 FROM calendar_events
-          WHERE event_type = 'earnings'
-            AND COALESCE(superseded, 0) = 0
-            AND event_date > ?
-            AND UPPER(symbol) IN (${placeholders})
-          LIMIT 1`,
-      )
-      .get(horizon, ...family);
-    if (farFuture) continue;
 
     // Any past event (superseded included) is evidence a source covers the name.
     const last = db
