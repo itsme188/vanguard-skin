@@ -74,6 +74,8 @@ next-env.d.ts
 # slipped past the prefix list.
 .playwright-mcp/
 /*.png
+/*.jpg
+/*.jpeg
 /sweep-*.png
 /verify-*.png
 /phase5-*.png
