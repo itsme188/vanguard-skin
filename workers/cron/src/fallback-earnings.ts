@@ -109,8 +109,10 @@ const PREVIEW_WINDOW_MIN_MS = 105 * 60 * 1000;
 // tick cycle to claim it (mac-sent/mac-running markers) — same "Worker email
 // dispatches sit ONE tick AFTER the Mac's window, never ON it" convention as
 // the digest/briefing/evening dispatch offsets (see CLAUDE.md launchd
-// section). Recap window is untouched — its 4h band already gives ample
-// Mac-first berth.
+// section). Recap window road 1 (snapshot enriched_at) is untouched — its
+// 4h band already gives ample Mac-first berth. Road 2 (same-day KV probe,
+// added in B8) earns its Mac-first berth a different way — see the comment
+// at the KV probe site in findCandidatesFromSnapshot below.
 const PREVIEW_WINDOW_MAX_MS = 120 * 60 * 1000;
 const RECAP_WINDOW_MAX_MS = 4 * 60 * 60 * 1000;
 
@@ -368,6 +370,13 @@ async function findCandidatesFromSnapshot(
     } else if (!enrichedAt && !recapAudited && e.release_time) {
       // Recap — road 2 (B8): same-day cloud-enriched KV payload, invisible to
       // the 2am snapshot. Probe KV only inside the release band (bounded reads).
+      // Awake-Mac-first guard for THIS road: the Mac's reconcile
+      // (lib/calendar/cloud-reconcile.ts, chained into its 15-min enrich
+      // script) DELETES the payload within one tick of waking, so an awake
+      // Mac always consumes the payload before the Worker's next recap tick
+      // can see it. If reconcile ever stops deleting keys, this road needs
+      // an explicit Mac-first berth of its own — same race family as the
+      // 6/3–6/9 digest incident.
       const releaseInstant = composeReleaseInstant(e.event_date, e.release_time as string);
       if (releaseInstant) {
         const sinceRelease = nowMs - releaseInstant.getTime();
@@ -529,6 +538,19 @@ function resolvePositions(
 
 // ── Recap safety gate (B8) ────────────────────────────────────────────
 
+/** Number(s), guarded to null on non-finite (NaN/Infinity) rather than letting
+ * it flow into isPlausibleEarnings — a NaN consensusEps trips the sign-flip
+ * check spuriously (Math.sign(NaN) !== Math.sign(anything) is always true).
+ * Defense-in-depth: parseFinnhubFigure's eps regex only ever captures valid
+ * float syntax today, so eps can't actually produce NaN through the current
+ * pipeline, but the revenue capture group ([\d.,]+) is looser and a future
+ * regex change could reintroduce the risk on either field. */
+function num(s: string | null): number | null {
+  if (s == null) return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
 /**
  * B8 recap send-decision: (1) actual-required — no actual anywhere means no
  * candidate, never a marker; (2) "at least one real data point" — an
@@ -544,21 +566,47 @@ export function evaluateRecapContent(
   const actualRaw = ((event.actual_value as string | null) ?? payload?.actual) ?? null;
   if (actualRaw == null) return { send: false, reason: "no-actual" };
 
-  const consRaw =
-    ((event.consensus_value as string | null) ?? payload?.consensus ?? event.consensus_estimate) ?? null;
+  const consRaw = effectiveConsensusRaw(event, payload);
   const cons = parseFinnhubFigure(consRaw);
   const act = parseFinnhubFigure(actualRaw);
   const plausible = isPlausibleEarnings(
-    cons.eps != null ? Number(cons.eps) : null,
-    act.eps != null ? Number(act.eps) : null,
-    cons.revenue != null ? Number(cons.revenue) : null,
-    act.revenue != null ? Number(act.revenue) : null,
+    num(cons.eps),
+    num(act.eps),
+    num(cons.revenue),
+    num(act.revenue),
   );
 
+  // A real data point = at least one reaction delta the scoreboard would
+  // actually render, not merely a truthy-but-empty payload (e.g. `{}`) —
+  // readReactionDelta is the same defensive reader the scoreboard itself
+  // uses, so "has a data point" and "renders a data point" can't diverge.
+  const reactionJson =
+    (event.reaction_snapshot as string | null) ??
+    (payload?.reaction != null ? JSON.stringify(payload.reaction) : null);
   const hasReaction =
-    (event.reaction_snapshot as string | null) != null || payload?.reaction != null;
+    readReactionDelta(reactionJson, "symbol") !== "—" ||
+    readReactionDelta(reactionJson, "spy") !== "—" ||
+    readReactionDelta(reactionJson, "qqq") !== "—";
   if (!plausible && !hasReaction) return { send: false, reason: "implausible-no-data-point" };
   return { send: true, implausible: !plausible };
+}
+
+/**
+ * Consensus precedence, single-sourced for BOTH the plausibility gate
+ * (evaluateRecapContent) and the rendered table (renderScoreboard): the
+ * enrichment-time consensus_value wins, then the same-day cloud-enriched
+ * payload's, then the Finnhub-sync-time consensus_estimate. If these two
+ * consumers ever drifted, the gate and the table would judge the print
+ * against different consensus values — the exact asymmetric-precedence bug
+ * class 921d552 fixed on the Mac (renderHeadlineTable consensus precedence).
+ */
+function effectiveConsensusRaw(
+  event: CalendarEventRow,
+  payload: CloudEnrichedPayload | null,
+): string | null {
+  return (
+    ((event.consensus_value as string | null) ?? payload?.consensus ?? event.consensus_estimate) ?? null
+  );
 }
 
 // ── Scoreboard table (mirrors Mac renderHeadlineTable) ──────────────
@@ -569,12 +617,7 @@ export function renderScoreboard(
   payload: CloudEnrichedPayload | null,
   implausible: boolean,
 ): string {
-  // Consensus precedence mirrors the Mac renderHeadlineTable: the
-  // enrichment-time consensus_value wins, then the same-day payload's, then
-  // the Finnhub-sync-time consensus_estimate.
-  const cons = parseFinnhubFigure(
-    (((event.consensus_value as string | null) ?? payload?.consensus ?? event.consensus_estimate) ?? null),
-  );
+  const cons = parseFinnhubFigure(effectiveConsensusRaw(event, payload));
   // Actual NEVER falls back to consensus_value — that was the
   // estimates-dressed-as-actuals failure 921d552 eliminated on the Mac.
   // Implausible actuals render blanked (⚠ line below the table).
@@ -849,7 +892,9 @@ function formatDate(iso: string): string {
 }
 
 // captureReactionFromYahoo is imported but not used here — the Worker
-// fallback reads reaction from the snapshot's calendar_events row which
-// the Mac's enrichment-runner already populates. Yahoo capture stays
-// available for future use cases where the Worker enriches itself.
+// fallback reads reaction data from the snapshot's calendar_events row
+// (road 1, populated by the Mac's enrichment-runner) AND, since B8, from
+// same-day payload.reaction in cloud-enriched KV payloads (road 2 — see the
+// KV probe in findCandidatesFromSnapshot). Yahoo capture stays available for
+// future use cases where the Worker enriches itself directly.
 void captureReactionFromYahoo;

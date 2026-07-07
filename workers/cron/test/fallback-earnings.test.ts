@@ -718,6 +718,31 @@ describe("recap safety gates (B8)", () => {
     expect(evaluateRecapContent(ev, null)).toEqual({ send: true, implausible: true });
   });
 
+  it("implausible actual + junk empty-object reaction → still no-data-point (final-review fix)", () => {
+    // A malformed/empty reaction_snapshot (e.g. `{}`) is truthy but carries
+    // no renderable delta — the old `!= null` check would have let this
+    // through as "has a reaction" and sent a fully-blanked scoreboard.
+    const ev = baseEvent();
+    (ev as Record<string, unknown>).actual_value = "EPS 5.11"; // vs cons 1.50 → implausible
+    (ev as Record<string, unknown>).reaction_snapshot = JSON.stringify({});
+    expect(evaluateRecapContent(ev, null)).toEqual({ send: false, reason: "implausible-no-data-point" });
+  });
+
+  it("unparseable consensus doesn't trip the sign-flip guard (final-review fix)", () => {
+    // parseFinnhubFigure's EPS regex only ever captures valid float syntax,
+    // so a NaN can't actually reach isPlausibleEarnings through this path
+    // today (Number() on a regex-captured "-?\d+(?:\.\d+)?" string always
+    // succeeds) — the num() guard in evaluateRecapContent is defense-in-depth
+    // for if that regex ever loosens. This test instead pins the adjacent,
+    // reachable case: a non-numeric consensus string parses to a null eps
+    // (not NaN), which correctly carries no plausibility claim at all rather
+    // than spuriously failing the sign-flip check.
+    const ev = baseEvent();
+    (ev as Record<string, unknown>).consensus_estimate = "EPS abc";
+    (ev as Record<string, unknown>).actual_value = "EPS 1.60";
+    expect(evaluateRecapContent(ev, null)).toEqual({ send: true, implausible: false });
+  });
+
   it("scoreboard NEVER renders consensus_value in the Actual column", () => {
     const ev = baseEvent();
     (ev as Record<string, unknown>).consensus_value = "EPS 1.55 · Rev 90,500,000,000";
