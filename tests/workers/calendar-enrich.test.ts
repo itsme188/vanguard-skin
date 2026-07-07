@@ -49,15 +49,15 @@ describe("shouldRunCalendarEnrich", () => {
     ).toBe(true);
   });
 
-  it("returns true at 17:59 ET (last covered minute)", () => {
+  it("returns true at 18:59 ET (last covered minute, B8: extended for AMC reactions)", () => {
     expect(
-      shouldRunCalendarEnrich({ hour: 17, minute: 59, dow: 3 }),
+      shouldRunCalendarEnrich({ hour: 18, minute: 59, dow: 3 }),
     ).toBe(true);
   });
 
-  it("returns false at 18:00 ET and later", () => {
+  it("returns false at 19:00 ET and later", () => {
     expect(
-      shouldRunCalendarEnrich({ hour: 18, minute: 0, dow: 3 }),
+      shouldRunCalendarEnrich({ hour: 19, minute: 0, dow: 3 }),
     ).toBe(false);
     expect(
       shouldRunCalendarEnrich({ hour: 22, minute: 0, dow: 3 }),
@@ -98,8 +98,9 @@ describe("runCalendarEnrich", () => {
   }
 
   it("skips off-hours ticks", async () => {
-    // 22:00 UTC on a Friday = 17:00 ET winter / 18:00 EDT (off-hours edge)
-    vi.setSystemTime(new Date("2026-04-24T22:05:00Z"));
+    // 23:05 UTC on a Friday = 19:05 ET (EDT, UTC-4) — past the B8 18:59
+    // upper bound, so this is genuinely off-hours.
+    vi.setSystemTime(new Date("2026-04-24T23:05:00Z"));
     const env = baseEnv();
     const result = await runCalendarEnrich(env);
     expect(result.skipped).toBe("off_hours");

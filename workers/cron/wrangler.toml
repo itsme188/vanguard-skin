@@ -13,7 +13,7 @@ compatibility_flags = ["nodejs_compat"]
 #   - Mon-Fri 08:45 ET        → daily digest
 #   - Mon-Thu 19:00 ET        → evening email
 #   - Fri 17:30 ET            → evening email
-#   - any tick, Mon-Fri        → calendar-enrich (self-gates 09:30-18:00 ET)
+#   - any tick, Mon-Fri        → calendar-enrich (self-gates 09:30-18:59 ET)
 #                                + earnings-fallback (self-gates 05:00-20:00 ET)
 #
 # This pattern was already in use for calendar-enrich; consolidation
