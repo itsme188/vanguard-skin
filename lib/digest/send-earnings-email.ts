@@ -23,6 +23,11 @@ import { getCachedTranscript } from "@/lib/queries/transcripts";
 import { getNotesForFamily, type NoteWithContext } from "@/lib/queries/notes";
 import { getBogeysForEvent, type EarningsBogey } from "@/lib/queries/earnings-bogeys";
 import { getReadThroughsForTargets } from "@/lib/queries/read-through-pairs";
+import {
+  getCallNoteForEvent,
+  getLatestCallNoteForFamily,
+  type EarningsCallNote,
+} from "@/lib/queries/earnings-call-notes";
 import { addDays } from "@/lib/calendar/date-utils";
 import type { ReactionSnapshot } from "@/lib/calendar/reaction-snapshot";
 import type { CalendarEvent, EarningsTranscript } from "@/lib/types";
@@ -437,6 +442,7 @@ interface PreviewContext {
   priorTranscript: EarningsTranscript | null;
   bogeys: EarningsBogey[];
   readThroughs: ReadThroughEntry[];
+  priorCallNote: EarningsCallNote | null;
 }
 
 /**
@@ -466,6 +472,7 @@ export interface ReadThroughEntry {
 interface RecapContext extends PreviewContext {
   reactionSnapshotMarkdown: string | null;
   freshPressReleases: string | null;
+  callNote: EarningsCallNote | null;
 }
 
 function buildPreviewContext(
@@ -500,6 +507,7 @@ function buildPreviewContext(
   const priorTranscript = findPriorTranscript(db, symbol, event.event_date);
   const bogeys = getBogeysForEvent(db, event.id);
   const readThroughs = buildReadThroughEntries(db, family, event.event_date);
+  const priorCallNote = getLatestCallNoteForFamily(db, symbol, event.event_date);
 
   return {
     symbol,
@@ -519,6 +527,7 @@ function buildPreviewContext(
     priorTranscript,
     bogeys,
     readThroughs,
+    priorCallNote,
   };
 }
 
@@ -647,11 +656,13 @@ function buildRecapContext(
   // For the recap we want every PR since the release time, not just last 30d.
   // 2 days back from now is plenty for both BMO + AMC.
   const freshPressReleases = formatPressReleases(db, base.family, 2, 12);
+  const callNote = getCallNoteForEvent(db, event.id);
 
   return {
     ...base,
     reactionSnapshotMarkdown,
     freshPressReleases,
+    callNote,
   };
 }
 
@@ -1105,6 +1116,7 @@ export function renderPreviewPrompt(ctx: PreviewContext): string {
 - Source: ${ctx.event.source}
 - Expected impact: ${ctx.event.expected_impact ?? "n/a"}
 ${userNotesBlock}
+${renderPriorCallNoteBlock(ctx.priorCallNote)}
 ${bogeysBlock}
 ${consensusBlock}
 ${positionsBlock}
@@ -1182,6 +1194,7 @@ export function renderRecapPrompt(ctx: RecapContext): string {
 - Release time: ${ctx.event.release_time ?? "(not specified)"}
 - Source: ${ctx.event.source}
 ${userNotesBlock}
+${renderCallNoteBlock(ctx.callNote)}
 ${bogeysBlock}
 ${consensusBlock}
 ${actualBlock}
@@ -1404,6 +1417,39 @@ function renderUserNotesBlock(ctx: PreviewContext): string {
     return `### [${n.event_date}] ${n.note_type} on ${sym}${sentSuffix}${tagsSuffix}\n${content}`;
   });
   return `\n## Your prior notes on ${ctx.symbol} — read these FIRST and frame the briefing in conversation with the prior thesis\n\nThese are the user's own journal / earnings / trade-thesis notes attached to ${ctx.symbol} or any sibling-class security in the family. Treat them as the **primary lens** through which the briefing should be written — quote dates, refer to the user's prior view directly, and flag where the new event either confirms, evolves, or contradicts what the user already wrote. Do NOT paraphrase these as if they were newsletter content; they're the user's own words.\n\n${lines.join("\n\n---\n\n")}\n`;
+}
+
+const GUIDANCE_LABELS: Record<string, string> = {
+  raised: "RAISED",
+  inline: "IN LINE",
+  lowered: "LOWERED",
+  not_given: "NOT GIVEN",
+};
+
+function callNoteLines(note: EarningsCallNote): string[] {
+  const lines: string[] = [];
+  const label = note.guidance ? GUIDANCE_LABELS[note.guidance] : null;
+  if (label) lines.push(`- You marked guidance: **${label}**`);
+  if (note.tone) lines.push(`- Management tone: ${note.tone}`);
+  if (note.surprises) lines.push(`- Surprises: ${note.surprises}`);
+  if (note.follow_ups) lines.push(`- Follow-ups: ${note.follow_ups}`);
+  return lines;
+}
+
+/** Recap: the user's own structured capture from during/after the call. */
+export function renderCallNoteBlock(note: EarningsCallNote | null): string {
+  if (!note) return "";
+  const lines = callNoteLines(note);
+  if (lines.length === 0) return "";
+  return `\n## Your call notes (captured during/after the call)\n${lines.join("\n")}\n`;
+}
+
+/** Preview: prior quarter's capture — continuity with the user's own read. */
+export function renderPriorCallNoteBlock(note: EarningsCallNote | null): string {
+  if (!note) return "";
+  const lines = callNoteLines(note);
+  if (lines.length === 0) return "";
+  return `\n## Last quarter's call, in your words\n${lines.join("\n")}\n`;
 }
 
 function renderBogeysBlock(ctx: PreviewContext): string {
