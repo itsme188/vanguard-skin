@@ -51,6 +51,8 @@ const SEND_TONES: Record<string, ChipTone> = {
   waiting: "neutral",
   missed: "down",
   blocked: "down",
+  captured: "up",
+  implausible: "warn",
 };
 const SEND_GLYPHS: Record<string, string> = {
   sent: "✓",
@@ -61,6 +63,8 @@ const SEND_GLYPHS: Record<string, string> = {
   waiting: "",
   missed: "✗",
   blocked: "✗",
+  captured: "✓",
+  implausible: "⚠",
 };
 
 function chipFor(label: string, state: string): { tone: ChipTone; text: string } {
@@ -81,12 +85,19 @@ export function EarningsCockpit() {
   const [payload, setPayload] = useState<Payload | null>(null);
   const [stale, setStale] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const loadedOnce = useRef(false);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
 
   const load = useCallback(async () => {
     try {
       const res = await fetch("/api/earnings/cockpit");
       const json = await res.json();
+      if (!alive.current) return;
       if (res.ok && json.success) {
         setPayload(json.data);
         setStale(false);
@@ -94,9 +105,8 @@ export function EarningsCockpit() {
         setStale(true);
       }
     } catch {
+      if (!alive.current) return;
       setStale(true); // keep last good payload; never blank a rendered cockpit
-    } finally {
-      loadedOnce.current = true;
     }
   }, []);
 
@@ -141,26 +151,38 @@ export function EarningsCockpit() {
       </div>
 
       {carryover.length > 0 && (
-        <Lane label="yesterday — unfinished" rows={carryover} tint />
+        <Lane label="yesterday — unfinished" rows={carryover} tint onChanged={load} />
       )}
-      {lanes.bmo.length > 0 && <Lane label="before the open" rows={lanes.bmo} />}
-      {lanes.amc.length > 0 && <Lane label="after the close" rows={lanes.amc} />}
-      {lanes.unknown.length > 0 && <Lane label="time unknown" rows={lanes.unknown} />}
+      {lanes.bmo.length > 0 && <Lane label="before the open" rows={lanes.bmo} onChanged={load} />}
+      {lanes.amc.length > 0 && <Lane label="after the close" rows={lanes.amc} onChanged={load} />}
+      {lanes.unknown.length > 0 && (
+        <Lane label="time unknown" rows={lanes.unknown} onChanged={load} />
+      )}
     </section>
   );
+}
 
-  function Lane({ label, rows, tint }: { label: string; rows: Row[]; tint?: boolean }) {
-    return (
-      <div className={`mt-3 rounded-lg ${tint ? "bg-amber-500/10 p-2" : ""}`}>
-        <div className="font-mono text-[10px] uppercase tracking-widest text-ink-faint">{label}</div>
-        <ul className="mt-1 space-y-2">
-          {rows.map((row) => (
-            <CockpitRowView key={row.eventId} row={row} onChanged={load} />
-          ))}
-        </ul>
-      </div>
-    );
-  }
+function Lane({
+  label,
+  rows,
+  tint,
+  onChanged,
+}: {
+  label: string;
+  rows: Row[];
+  tint?: boolean;
+  onChanged: () => void;
+}) {
+  return (
+    <div className={`mt-3 rounded-lg ${tint ? "bg-amber-500/10 p-2" : ""}`}>
+      <div className="font-mono text-[10px] uppercase tracking-widest text-ink-faint">{label}</div>
+      <ul className="mt-1 space-y-2">
+        {rows.map((row) => (
+          <CockpitRowView key={row.eventId} row={row} onChanged={onChanged} />
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 function CockpitRowView({ row, onChanged }: { row: Row; onChanged: () => void }) {
