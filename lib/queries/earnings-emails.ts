@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import type { EmailSendState } from "@/lib/earnings/cockpit-stages";
 
 export interface EarningsEmailAudit {
   id: number;
@@ -81,4 +82,35 @@ export function getSentPhasesForEvents(
     out[r.event_id] = existing;
   }
   return out;
+}
+
+/**
+ * Cockpit send-state per (event, phase) INCLUDING live 'in_progress' claims —
+ * unlike getSentPhasesForEvents/getEmailAudit, which deliberately exclude them.
+ * Mapping: NULL → 'sent' (local), 'sent-by-cloud' → itself, 'in_progress' →
+ * 'in-flight'. Any other historical error string is treated as 'sent'
+ * (failure claims are released/deleted by the sweep, so persistent rows sent).
+ */
+export function getEmailStatesForEvents(
+  db: Database.Database,
+  eventIds: number[],
+): Record<number, { preview: EmailSendState; recap: EmailSendState }> {
+  const result: Record<number, { preview: EmailSendState; recap: EmailSendState }> = {};
+  if (eventIds.length === 0) return result;
+  const placeholders = eventIds.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `SELECT event_id, phase, error FROM earnings_emails WHERE event_id IN (${placeholders})`,
+    )
+    .all(...eventIds) as Array<{ event_id: number; phase: "preview" | "recap"; error: string | null }>;
+  for (const row of rows) {
+    const state: EmailSendState =
+      row.error === "in_progress" ? "in-flight"
+      : row.error === "sent-by-cloud" ? "sent-by-cloud"
+      : "sent";
+    const entry = result[row.event_id] ?? { preview: null, recap: null };
+    entry[row.phase] = state;
+    result[row.event_id] = entry;
+  }
+  return result;
 }
