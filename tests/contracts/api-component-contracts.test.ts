@@ -20,6 +20,8 @@ import { computeRiskMetrics, computePositionRisk } from "@/lib/compute/risk";
 import { computeAllScenarios } from "@/lib/compute/scenarios";
 import { detectStrategies } from "@/lib/compute/options-strategy";
 import { computeDefenseAnalysis } from "@/lib/compute/hedging";
+import { buildCockpitPayload } from "@/lib/queries/earnings-cockpit";
+import { upsertCallNote } from "@/lib/mutations/earnings-call-notes";
 
 let db: Database.Database;
 
@@ -182,5 +184,42 @@ describe("DefenseView contract", () => {
     expect(result).toHaveProperty("rankedExposures");
     expect(result).toHaveProperty("hedgeScores");
     expect(result).toHaveProperty("diagnostics");
+  });
+});
+
+// ─── EarningsCockpit contract ────────────────────────────────────────
+
+describe("EarningsCockpit contract", () => {
+  it("buildCockpitPayload shape matches component destructuring", () => {
+    const payload = buildCockpitPayload(db, new Date("2026-07-08T14:00:00Z"));
+    // Component destructures: data.lanes.{bmo,amc,unknown}, data.carryover,
+    // data.nextRelease, data.generatedAt, data.skippedRows
+    expect(payload).toHaveProperty("lanes.bmo");
+    expect(payload).toHaveProperty("lanes.amc");
+    expect(payload).toHaveProperty("lanes.unknown");
+    expect(payload).toHaveProperty("carryover");
+    expect(payload).toHaveProperty("nextRelease");
+    expect(payload).toHaveProperty("generatedAt");
+    expect(payload).toHaveProperty("skippedRows");
+  });
+});
+
+// ─── CallNoteModal contract ──────────────────────────────────────────
+
+describe("CallNoteModal contract", () => {
+  it("upsertCallNote returns the row shape the modal reads back", () => {
+    const eventId = db
+      .prepare(
+        `INSERT INTO calendar_events (source, event_type, event_date, title, symbol, source_key)
+         VALUES ('manual', 'earnings', '2026-07-08', 'X earnings', 'X', 'manual:X:contract')`
+      )
+      .run().lastInsertRowid as number;
+    const note = upsertCallNote(db, { eventId, symbol: "X", guidance: "inline" });
+    // Modal reads: guidance, tone, surprises, follow_ups
+    expect(note).toHaveProperty("guidance", "inline");
+    expect(note).toHaveProperty("tone");
+    expect(note).toHaveProperty("surprises");
+    expect(note).toHaveProperty("follow_ups");
+    expect(note).toHaveProperty("event_id", eventId);
   });
 });
