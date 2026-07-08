@@ -91,6 +91,7 @@ describe("deriveEventStages", () => {
       NO_EMAILS, NO_SKIPS, false, now, TODAY
     );
     expect(malformed.reaction.state).toBe("pending");
+    expect(malformed.reaction.readyAt).toBe(new Date(Date.parse("2026-07-08T20:20:00Z") + REACTION_READY_MS).toISOString());
   });
 
   it("null release_time: unknown released state today; carryover (yesterday) counts as released + blocked when no actual", () => {
@@ -108,5 +109,23 @@ describe("deriveEventStages", () => {
     expect(yesterday.released.state).toBe("released");
     expect(yesterday.preview).toBe("missed");
     expect(yesterday.actual).toBe("blocked");
+  });
+
+  it("carryover row with known late release instant: < 2h elapsed → pending; ≥ 2h → blocked", () => {
+    // 2026-07-07 23:50 ET = 2026-07-08 03:50 UTC
+    const ev = { ...AMC_EVENT, event_date: "2026-07-07", release_time: "23:50" };
+    const todayEt = "2026-07-08";
+
+    // 15 min after release: still pending
+    const justAfter = new Date("2026-07-08T04:05:00Z");
+    const s1 = deriveEventStages(ev, NO_EMAILS, NO_SKIPS, false, justAfter, todayEt);
+    expect(s1.actual).toBe("pending");
+    expect(s1.recap).toBe("waiting");
+
+    // Exactly 2h after release: blocked
+    const atBoundary = new Date("2026-07-08T05:50:00Z");
+    const s2 = deriveEventStages(ev, NO_EMAILS, NO_SKIPS, false, atBoundary, todayEt);
+    expect(s2.actual).toBe("blocked");
+    expect(s2.recap).toBe("blocked");
   });
 });
