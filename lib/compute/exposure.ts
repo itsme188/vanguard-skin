@@ -165,3 +165,12 @@ export function getPortfolioExposureSummary(
     gross_ratio: totalMv !== 0 ? gross / totalMv : null,
   };
 }
+
+/** Cockpit per-family net exposure. Full implementation in Task 4. */
+export function getNetExposureForSymbolFamilies(
+  db: Database.Database,
+  symbols: string[]
+): Record<string, number> {
+  void db;
+  return Object.fromEntries(symbols.map((s) => [s, 0]));
+}
