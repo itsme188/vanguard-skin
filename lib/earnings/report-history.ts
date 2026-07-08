@@ -42,6 +42,7 @@ export async function fetchAvEarningsHistory(
     if (!Array.isArray(q)) return []; // covers AV "Note"/"Information" rate-limit payloads
     return q
       .filter((r) => typeof r.reportedDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(r.reportedDate as string))
+      .sort((a, b) => ((a.reportedDate as string) < (b.reportedDate as string) ? 1 : -1))
       .slice(0, KEEP_QUARTERS)
       .map((r) => ({
         fiscalDateEnding: typeof r.fiscalDateEnding === "string" ? r.fiscalDateEnding : null,

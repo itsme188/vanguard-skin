@@ -33,6 +33,31 @@ describe("fetchAvEarningsHistory", () => {
   it("returns [] on AV error / rate-limit note payload", async () => {
     expect(await fetchAvEarningsHistory("TER", { apiKey: "k", fetchImpl: mockFetch({ Note: "rate limited" }) })).toEqual([]);
   });
+  it("sorts defensively newest-first when AV returns out-of-order quarters", async () => {
+    // Create 13 quarters in oldest-first order to verify the sort + slice keeps the right 12
+    const oldest = "2024-01-31";
+    const quarters = Array.from({ length: 13 }, (_, i) => ({
+      fiscalDateEnding: `${2025 - Math.floor(i / 4)}-${String((i % 4) * 3 + 1).padStart(2, "0")}-01`,
+      reportedDate: new Date(2025, 0, 31 - i).toISOString().slice(0, 10), // YYYY-MM-DD, descending
+      reportedEPS: "1.5",
+      estimatedEPS: "1.4",
+      surprise: "0.1",
+      surprisePercentage: "7.1",
+      reportTime: "post-market",
+    }));
+    // Reverse to oldest-first (the bad ordering)
+    quarters.reverse();
+    const json = { symbol: "TER", quarterlyEarnings: quarters };
+    const reports = await fetchAvEarningsHistory("TER", { apiKey: "k", fetchImpl: mockFetch(json) });
+    // Should return exactly 12 (the oldest is dropped)
+    expect(reports).toHaveLength(12);
+    // Should be newest-first: index 0 is the most recent, index 11 is 12 quarters ago
+    const newest = reports[0].reportedDate;
+    const oldest_kept = reports[11].reportedDate;
+    expect(newest > oldest_kept).toBe(true); // String comparison works for YYYY-MM-DD
+    // The absolute oldest quarter should NOT be in the result
+    expect(reports.find((r) => r.reportedDate === oldest)).toBeUndefined();
+  });
 });
 
 describe("computePostPrintMoves", () => {
