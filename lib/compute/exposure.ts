@@ -24,6 +24,7 @@ import { computePortfolioGreeks } from "@/lib/compute/options-greeks";
 import { DEFAULT_OPTION_ELASTICITY } from "@/lib/compute/scenario-recipes";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { issuerSiblings } from "@/lib/securities/issuer-family";
 
 /**
  * Signed delta-notional per option security_id, summed across the scoped
@@ -166,11 +167,79 @@ export function getPortfolioExposureSummary(
   };
 }
 
-/** Cockpit per-family net exposure. Full implementation in Task 4. */
+/**
+ * Per-reporter family net exposure for the earnings cockpit: for each input
+ * symbol, Σ over ALL accounts of (signed stock/fund MV + delta-adjusted
+ * option exposure) where the security's symbol OR underlying_symbol is in
+ * the issuer family. Shorts stay signed (quantity != 0 predicate). FX via
+ * fx_rates. Unheld names → 0.
+ */
 export function getNetExposureForSymbolFamilies(
   db: Database.Database,
   symbols: string[]
 ): Record<string, number> {
-  void db;
-  return Object.fromEntries(symbols.map((s) => [s, 0]));
+  const result: Record<string, number> = {};
+  if (symbols.length === 0) return result;
+
+  // familyMember (upper) → input symbol. First input wins on overlap.
+  const memberToInput = new Map<string, string>();
+  for (const input of symbols) {
+    result[input] = 0;
+    for (const member of issuerSiblings(input)) {
+      const key = member.toUpperCase();
+      if (!memberToInput.has(key)) memberToInput.set(key, input);
+    }
+  }
+  const members = [...memberToInput.keys()];
+  const placeholders = members.map(() => "?").join(",");
+
+  const rows = db
+    .prepare(
+      `WITH latest_holdings AS (
+        SELECT h.* FROM holdings h
+        WHERE ${latestHoldingsPredicate()}
+      ),
+      latest_prices AS (
+        SELECT p.security_id, p.close_price
+        FROM prices p
+        INNER JOIN (SELECT security_id, MAX(date) AS max_date FROM prices GROUP BY security_id) lp
+        ON p.security_id = lp.security_id AND p.date = lp.max_date
+      )
+      SELECT
+        s.id AS security_id,
+        s.security_type,
+        s.option_type,
+        UPPER(COALESCE(s.underlying_symbol, s.symbol)) AS family_symbol,
+        CASE
+          WHEN lp.close_price IS NOT NULL
+            THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
+          WHEN h.cost_basis IS NOT NULL AND h.cost_basis > 0
+            THEN h.cost_basis * COALESCE(fx.usd_per_unit, 1)
+          ELSE 0
+        END AS mv
+      FROM latest_holdings h
+      JOIN securities s ON s.id = h.security_id
+      LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
+      LEFT JOIN fx_rates fx ON fx.currency = s.currency
+      WHERE (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
+        AND (s.expiration_date IS NULL OR s.expiration_date >= date('now'))
+        AND UPPER(COALESCE(s.underlying_symbol, s.symbol)) IN (${placeholders})`
+    )
+    .all(...members) as Array<{
+      security_id: number;
+      security_type: string | null;
+      option_type: string | null;
+      family_symbol: string;
+      mv: number;
+    }>;
+
+  if (rows.length === 0) return result;
+
+  const optionExposures = getOptionExposureMap(db);
+  for (const row of rows) {
+    const input = memberToInput.get(row.family_symbol);
+    if (!input) continue;
+    result[input] += exposureForHolding(row, optionExposures);
+  }
+  return result;
 }
