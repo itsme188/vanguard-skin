@@ -87,9 +87,12 @@ export function deriveEventStages(
       : "implausible";
   } else if (
     hasReleased &&
-    (isPastDay ||
-      (instant && now.getTime() - instant.getTime() >= COCKPIT_BLOCKED_MIN_AGE_MS))
+    (instant
+      ? now.getTime() - instant.getTime() >= COCKPIT_BLOCKED_MIN_AGE_MS
+      : isPastDay)
   ) {
+    // Blocked: ≥2h past a known release instant; for carryover rows with no known time,
+    // the elapsed day itself is the evidence.
     actual = "blocked";
   } else {
     actual = "pending";
@@ -104,7 +107,13 @@ export function deriveEventStages(
       source = typeof parsed.source === "string" ? parsed.source : null;
       reaction = { state: "captured", source, readyAt: null };
     } catch {
-      reaction = { state: "pending", source: null, readyAt: null };
+      reaction = {
+        state: "pending",
+        source: null,
+        readyAt: instant
+          ? new Date(instant.getTime() + REACTION_READY_MS).toISOString()
+          : null,
+      };
     }
   } else {
     reaction = {
