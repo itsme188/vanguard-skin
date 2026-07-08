@@ -89,6 +89,7 @@ function makeStockPositionCtx(): EarningsPreviewContext {
     priorTranscript: null,
     bogeys: [],
     readThroughs: [],
+    priorCallNote: null,
   };
 }
 
@@ -193,6 +194,7 @@ describe("earnings prompt position-block — no $ amount leaks", () => {
       ...makeStockPositionCtx(),
       reactionSnapshotMarkdown: null,
       freshPressReleases: null,
+      callNote: null,
     };
     const prompt = renderRecapPrompt(ctx);
     assertNoDollarLeak(prompt);
@@ -204,6 +206,7 @@ describe("earnings prompt position-block — no $ amount leaks", () => {
       ...makeStockPositionCtx(),
       reactionSnapshotMarkdown: null,
       freshPressReleases: null,
+      callNote: null,
     };
     const prompt = renderRecapPrompt(ctx);
     expect(prompt).toMatch(/\*\*percentage\*\* P&L impact/);

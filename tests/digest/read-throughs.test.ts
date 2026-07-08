@@ -457,6 +457,7 @@ function makeMinimalPreviewCtx(
     priorTranscript: null,
     bogeys: [],
     readThroughs: [],
+    priorCallNote: null,
     ...overrides,
   };
 }
@@ -500,6 +501,7 @@ describe("renderRecapPrompt — read-throughs integration (sibling of preview)",
       ...base,
       reactionSnapshotMarkdown: "Stock +1.2%, SPY +0.3%, QQQ +0.5% (T+2h)",
       freshPressReleases: null,
+      callNote: null,
     };
   }
 
