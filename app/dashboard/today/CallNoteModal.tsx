@@ -31,25 +31,34 @@ export function CallNoteModal({ eventId, symbol, open, onClose, onSaved }: Props
 
   useEffect(() => {
     if (!open) return;
+    let cancelled = false;
     setError(null);
+    setGuidance(null);
+    setTone("");
+    setSurprises("");
+    setFollowUps("");
     setLoading(true);
     fetch(`/api/earnings/call-notes?eventId=${eventId}`)
-      .then((r) => r.json())
+      .then((r) => r.json() as Promise<{ success: boolean; data?: { guidance: Guidance | null; tone: string | null; surprises: string | null; follow_ups: string | null } | null; error?: string }>)
       .then((json) => {
+        if (cancelled) return;
         if (json.success && json.data) {
           setGuidance(json.data.guidance ?? null);
           setTone(json.data.tone ?? "");
           setSurprises(json.data.surprises ?? "");
           setFollowUps(json.data.follow_ups ?? "");
-        } else if (json.success) {
-          setGuidance(null);
-          setTone("");
-          setSurprises("");
-          setFollowUps("");
         }
       })
-      .catch(() => setError("Couldn't load the existing note — saving will overwrite."))
-      .finally(() => setLoading(false));
+      .catch(() => {
+        if (cancelled) return;
+        setError("Couldn't load the existing note — saving will overwrite.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [open, eventId]);
 
   if (!open || typeof document === "undefined") return null;
@@ -63,7 +72,7 @@ export function CallNoteModal({ eventId, symbol, open, onClose, onSaved }: Props
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ eventId, guidance, tone, surprises, followUps }),
       });
-      const json = await res.json().catch(() => ({}));
+      const json = (await res.json().catch(() => ({}))) as { success?: boolean; error?: string };
       if (!res.ok || !json.success) {
         setError(json.error ?? `Save failed (HTTP ${res.status}).`);
         return; // honest feedback: modal stays open, error visible
