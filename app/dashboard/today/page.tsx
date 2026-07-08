@@ -17,6 +17,7 @@ import { Money, Pct, Shares } from "@/lib/privacy/components";
 import { TodayReleases } from "../components/TodayReleases";
 import { MomentumPulse } from "../components/MomentumPulse";
 import { computeMomentumPulse } from "@/lib/compute/momentum-spread";
+import { EarningsCockpit } from "./EarningsCockpit";
 import { EarningsHub } from "./EarningsHub";
 import { WeekAheadView } from "./WeekAheadView";
 import { IbkrRefreshButton } from "./IbkrRefreshButton";
@@ -327,6 +328,9 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
         )}
         <MomentumPulse pulse={momentumPulse} />
       </div>
+
+      {/* ── Earnings-day cockpit (auto-appears on report days) ── */}
+      <EarningsCockpit />
 
       {/* ── Week-ahead Earnings Hub (full width — primary attention magnet) ── */}
       <EarningsHub />
