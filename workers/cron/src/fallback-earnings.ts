@@ -41,6 +41,9 @@ import type {
   EarningsEmailRow,
   SnapshotNote,
   SnapshotBogey,
+  EarningsIntelSnapshotRow,
+  EarningsHistorySnapshotEntry,
+  EarningsHistorySnapshotRow,
 } from "./state";
 import { loadLatestSnapshot } from "./state";
 import { briefingToHtml } from "./html";
@@ -70,6 +73,7 @@ import {
   type CloudEnrichedPayload,
 } from "./cloud-enriched";
 import { isPlausibleEarnings } from "./plausibility";
+import { formatEtTimestamp } from "./dst";
 
 // Issuer-family map mirrored from lib/securities/issuer-family.ts. Worker
 // can't cross the Next.js path-alias boundary, so this is a hand copy.
@@ -431,8 +435,13 @@ async function composeAndSend(
   // verbatim (prior behavior).
   const snapshotViews = resolvePositions(snapshot, family);
   const positions = combineFamilyPositions(snapshotViews, liveIbkr, family, ibkrAccountName);
-  const scoreboard = renderScoreboard(cand.event, cand.phase, cand.payload ?? null, implausible);
+  const intelCtx = resolveIntelCtx(snapshot, cand.eventId, cand.symbol);
+  const scoreboard = renderScoreboard(cand.event, cand.phase, cand.payload ?? null, implausible, intelCtx);
   const positionsBlock = renderPositions(positions, cand.symbol, family, liveIbkr !== null);
+  // "## Past prints" — preview-only, same slot as the Mac (right after the
+  // scoreboard). "" (no history / recap phase) drops out of the body below.
+  const pastPrintsBlock =
+    cand.phase === "preview" ? renderPastPrintsBlock(intelCtx?.history?.rows ?? []) : "";
 
   // v5 — the user's own thesis notes + curated bogeys (consensus/whisper).
   // These are the cheaply-mirrorable parts of the Mac's rich context, so the
@@ -455,6 +464,7 @@ async function composeAndSend(
   // ordering. Empty blocks drop out.
   const body = [
     scoreboard,
+    pastPrintsBlock,
     positionsBlock,
     bogeysBlock,
     notesBlock,
@@ -609,6 +619,92 @@ function effectiveConsensusRaw(
   );
 }
 
+// ── Earnings-intelligence rows (Task 9: snapshot v9 read-only mirror) ──
+//
+// Row content/format mirrors the Mac's fmtImplied/fmtHistSummary
+// (lib/digest/send-earnings-email.ts) exactly, with ONE addition: the
+// implied-move cell carries an " — as of <ET time>" suffix, since the cloud
+// copy of `computed_at` can be hours (or a day) stale by the time this email
+// sends. `intelCtx` is optional/undefined precisely when the R2 snapshot
+// predates v9 (earningsIntel/earningsHistory both absent) — in that case the
+// two rows are omitted entirely so a pre-v9 snapshot renders byte-identically
+// to today. When the snapshot DOES carry v9 fields but this specific event
+// has no match (new event, intel not yet computed, no history cached), the
+// caller still passes `{ intel: null, history: null }` and the rows render
+// with "—" cells — same as the Mac's own no-data behavior.
+export interface RenderScoreboardIntelCtx {
+  intel: EarningsIntelSnapshotRow | null;
+  history: EarningsHistorySnapshotEntry | null;
+}
+
+function fmtExpiryShort(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(`${iso}T12:00:00Z`);
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+}
+
+function fmtImplied(intel: EarningsIntelSnapshotRow | null | undefined): string {
+  if (!intel || intel.impliedMovePct == null || !intel.impliedMethod) return "—";
+  const pct = intel.impliedMovePct.toFixed(1);
+  const asOf = intel.computedAt ? ` — as of ${formatEtTimestamp(intel.computedAt)}` : "";
+  return intel.impliedMethod === "straddle"
+    ? `±${pct}% (straddle, ${fmtExpiryShort(intel.expiryUsed)} exp${asOf})`
+    : `~±${pct}% (IV approx${asOf})`;
+}
+
+function fmtHistSummary(history: EarningsHistorySnapshotEntry | null | undefined): string {
+  const s = history?.summary;
+  if (!s || s.avgAbsMovePct == null) return "—";
+  const denom = s.beatCount + s.missCount;
+  const beat = denom > 0 ? ` · beat ${s.beatCount}/${denom}` : "";
+  return `±${s.avgAbsMovePct.toFixed(1)}%${beat}`;
+}
+
+// Numeric sibling of readReactionDelta (below) — needed to compare the
+// realized move against intel.impliedMovePct, not just format a string.
+function readReactionPct(
+  json: string | null,
+  key: "spy" | "qqq" | "tlt" | "symbol",
+): number | null {
+  if (!json) return null;
+  try {
+    const snap = JSON.parse(json) as Record<string, unknown>;
+    const node = snap[key] as { delta_pct?: number } | undefined;
+    if (!node || node.delta_pct == null) return null;
+    const v = Number(node.delta_pct);
+    return Number.isFinite(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Deterministic, code-rendered "## Past prints" table — mirrors the Mac's
+ * `renderPastPrintsBlock` exactly (lib/digest/send-earnings-email.ts). Preview-
+ * only consumer (slotted into the email body right after the scoreboard, same
+ * position as the Mac). Returns "" when there's no history yet so callers can
+ * splice it in unconditionally without producing an empty section.
+ */
+export function renderPastPrintsBlock(rows: EarningsHistorySnapshotRow[]): string {
+  if (rows.length === 0) return "";
+  const sign = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`;
+  const lines = rows.map((h) => {
+    const eps = h.epsActual != null && h.epsEstimate != null
+      ? `${h.epsActual.toFixed(2)} / ${h.epsEstimate.toFixed(2)}`
+      : h.epsActual != null ? h.epsActual.toFixed(2) : "—";
+    const surprise = h.surprisePct != null ? sign(h.surprisePct) : "—";
+    const move = h.postPrintMovePct != null ? sign(h.postPrintMovePct) : "—";
+    return `| ${h.reportedDate} | ${eps} | ${surprise} | ${move} |`;
+  });
+  return `## Past prints
+
+| Reported | EPS act / est | Surprise | Next-day move |
+|---|---|---|---|
+${lines.join("\n")}
+
+*Next-day move is close-over-close around the print (public market data; history via Alpha Vantage).*`;
+}
+
 // ── Scoreboard table (mirrors Mac renderHeadlineTable) ──────────────
 
 export function renderScoreboard(
@@ -616,6 +712,7 @@ export function renderScoreboard(
   phase: EarningsPhase,
   payload: CloudEnrichedPayload | null,
   implausible: boolean,
+  intelCtx?: RenderScoreboardIntelCtx | null,
 ): string {
   const cons = parseFinnhubFigure(effectiveConsensusRaw(event, payload));
   // Actual NEVER falls back to consensus_value — that was the
@@ -657,12 +754,36 @@ export function renderScoreboard(
     ? `\n\n*⚠ Reported actuals were flagged as implausible vs consensus — cells blanked (B19-style basis mismatch or scrape failure). Override via POST /api/earnings/actuals once the Mac is back.*`
     : "";
 
+  // Task 9 (snapshot v9): "Expected move (options)" + "Avg move last 8
+  // prints" rows, positioned after Revenue and before Guidance — same slot
+  // as the Mac's renderHeadlineTable. `intelCtx === undefined` is the pre-v9
+  // signal (snapshot lacks both earningsIntel/earningsHistory entirely) —
+  // omit the rows so the scoreboard renders byte-identically to today.
+  // `intelCtx` present but `{intel:null, history:null}` (v9 snapshot, no
+  // match for this event) still renders the rows with "—" cells.
+  let intelRows = "";
+  if (intelCtx !== undefined) {
+    const impliedCell = fmtImplied(intelCtx?.intel);
+    let impliedActual = "—";
+    let impliedVerdict = "—";
+    if (isRecap && intelCtx?.intel?.impliedMovePct != null) {
+      const realized = readReactionPct(reactionJson, "symbol");
+      if (realized != null) {
+        impliedActual = `${realized >= 0 ? "+" : ""}${realized.toFixed(1)}%`;
+        impliedVerdict = Math.abs(realized) <= intelCtx.intel.impliedMovePct ? "inside" : "outside";
+      }
+    }
+    intelRows =
+      `\n| **Expected move (options)** | ${impliedCell} | ${impliedActual} | ${impliedVerdict} |` +
+      `\n| **Avg move last 8 prints** | ${fmtHistSummary(intelCtx?.history)} | — | — |`;
+  }
+
   return `## ${sym} scoreboard — ${phaseLabel}
 
 | Metric | Consensus | Actual | Δ |
 |---|---|---|---|
 | **EPS** | ${epsConsensus} | ${epsActual} | ${epsDelta} |
-| **Revenue** | ${revConsensus} | ${revActual} | ${revDelta} |
+| **Revenue** | ${revConsensus} | ${revActual} | ${revDelta} |${intelRows}
 | **Guidance (next quarter)** | — | — | — |
 | **${sym} @ T+2h** | — | ${stockR} | — |
 | **SPY @ T+2h** | — | ${spyR} | — |
@@ -767,6 +888,33 @@ function renderNote(
     return `## Note — cloud context\n\n${haveLine}Still Mac-only: analyst recommendation trend, prior-quarter transcript context, and sell-side first takes from web search. It ran from the nightly R2 snapshot because the Mac was unreachable — the fuller version will arrive once the Mac is back online (or skip; the next launchd tick dedups against the cloud-sent marker).`;
   }
   return `## Note — cloud context\n\n${haveLine}The numbers above are from Finnhub + Yahoo bars. Still Mac-only: sell-side first takes from web search, transcript quotes once Motley Fool posts, and analyst commentary.`;
+}
+
+// ── v9 context: earnings intelligence from snapshot ─────────────────
+
+/**
+ * Resolves the intel-context param `renderScoreboard` expects, straight from
+ * the R2 snapshot: `undefined` when the snapshot predates v9 (both fields
+ * absent — zero new subrequests, no per-event fetch), otherwise `{intel,
+ * history}` with either side `null` when there's no match for this specific
+ * event/symbol. History is keyed by upcoming-reporter symbol (uppercased at
+ * snapshot-build time on the Mac), matched on `cand.symbol` the same way the
+ * rest of this file resolves the event's symbol (no issuer-family widening
+ * here — the Mac snapshot script keys earningsHistory by the exact reporting
+ * symbol, mirroring how `earnings_intel` is keyed by `event_id`).
+ */
+function resolveIntelCtx(
+  snapshot: Snapshot,
+  eventId: number,
+  symbol: string,
+): RenderScoreboardIntelCtx | undefined {
+  if (snapshot.earningsIntel === undefined && snapshot.earningsHistory === undefined) {
+    return undefined;
+  }
+  return {
+    intel: (snapshot.earningsIntel ?? []).find((i) => i.eventId === eventId) ?? null,
+    history: snapshot.earningsHistory?.[symbol.toUpperCase()] ?? null,
+  };
 }
 
 // ── v5 context: notes + bogeys from snapshot ────────────────────────

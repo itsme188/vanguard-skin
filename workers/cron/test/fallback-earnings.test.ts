@@ -802,3 +802,71 @@ describe("recap safety gates (B8)", () => {
     );
   });
 });
+
+describe("intel rows in cloud scoreboard (Task 9: snapshot v9)", () => {
+  const baseEvent = () =>
+    ({
+      id: 1, source: "finnhub", event_type: "earnings", event_date: EVENT_DATE,
+      event_time: "AMC", title: "AAPL earnings", description: null, security_id: null,
+      symbol: "AAPL", source_key: "finnhub:AAPL:2026-06-15", expected_impact: "high",
+      consensus_estimate: "EPS 1.50 · Rev 90,000,000,000",
+      previous_value: null, raw_json: null,
+      consensus_value: null, actual_value: null, reaction_snapshot: null,
+    }) as unknown as import("../src/state").CalendarEventRow;
+
+  it("renders implied + history rows with as-of label when snapshot carries v9 fields", () => {
+    const event = baseEvent();
+    const md = renderScoreboard(event, "preview", null, false, {
+      intel: {
+        eventId: event.id,
+        sourceKey: event.source_key as unknown as string,
+        impliedMovePct: 4.8,
+        impliedMethod: "straddle",
+        expiryUsed: "2026-07-18",
+        computedAt: "2026-07-14 06:00:00",
+      },
+      history: {
+        rows: [
+          { reportedDate: "2026-04-15", epsActual: 1.6, epsEstimate: 1.5, surprisePct: 6.7, postPrintMovePct: 3.1 },
+          { reportedDate: "2026-01-15", epsActual: 1.4, epsEstimate: 1.45, surprisePct: -3.4, postPrintMovePct: -2.0 },
+        ],
+        summary: { avgAbsMovePct: 3.2, beatCount: 6, missCount: 2, quarterCount: 8 },
+      },
+    });
+    expect(md).toContain("Expected move (options)");
+    expect(md).toContain("±4.8%");
+    expect(md).toContain("as of");
+    expect(md).toContain("Avg move last 8 prints");
+  });
+
+  it("pre-v9 snapshot (fields absent) renders the classic scoreboard unchanged", () => {
+    const md = renderScoreboard(baseEvent(), "preview", null, false, undefined);
+    expect(md).not.toContain("Expected move (options)");
+    expect(md).not.toContain("Avg move last 8 prints");
+  });
+
+  it("v9-capable snapshot but no intel/history match for this event renders dash rows, not omitted", () => {
+    const md = renderScoreboard(baseEvent(), "preview", null, false, { intel: null, history: null });
+    expect(md).toContain("Expected move (options)");
+    const row = md.split("\n").find((l) => l.includes("Expected move (options)"))!;
+    expect(row).toContain("| — | — | — |");
+    const histRow = md.split("\n").find((l) => l.includes("Avg move last 8 prints"))!;
+    expect(histRow).toContain("| — | — | — |");
+  });
+
+  it("recap phase compares realized reaction against implied move ('inside'/'outside')", () => {
+    const ev = baseEvent();
+    (ev as unknown as Record<string, unknown>).reaction_snapshot = JSON.stringify({
+      symbol: { delta_pct: 3.1 },
+    });
+    const md = renderScoreboard(ev, "recap", null, false, {
+      intel: {
+        eventId: ev.id, sourceKey: "x", impliedMovePct: 4.8, impliedMethod: "straddle",
+        expiryUsed: "2026-07-18", computedAt: "2026-07-14 06:00:00",
+      },
+      history: null,
+    });
+    const row = md.split("\n").find((l) => l.includes("Expected move (options)"))!;
+    expect(row).toContain("inside");
+  });
+});
