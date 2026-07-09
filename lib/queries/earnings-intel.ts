@@ -69,16 +69,39 @@ function allCockpitRows(payload: CockpitPayload): CockpitRow[] {
   return [...payload.lanes.bmo, ...payload.lanes.amc, ...payload.lanes.unknown, ...payload.carryover];
 }
 
-/** Structural IntelEvent shape (see note above on why this isn't imported). */
+/**
+ * Structural IntelEvent shape (see note above on why this isn't imported).
+ *
+ * INVARIANT — never re-ensure a released event: the preview-time intel row
+ * (straddle mid / implied move) is the recap's "priced-in" anchor (spec
+ * §recap: "no recompute post-print" — lib/digest/send-earnings-email.ts
+ * ~1215). Once release has occurred, the options chain has moved past the
+ * pre-print quote (after-hours gap, post-crush IV), so recomputing here would
+ * have `upsertEarningsIntel` silently overwrite the pre-print straddle row
+ * with a post-print value — the recap would then present post-print pricing
+ * as "what the options market priced in", and the nightly R2 snapshot would
+ * carry the poisoned value on to the Worker. The cached row is still
+ * DECORATED for display via decorateCockpitIntel below (read-only) — it's
+ * only re-ensuring (fetch + upsert) that's forbidden post-print.
+ *
+ * `row.stages.released.state` (from deriveEventStages, cockpit-stages.ts) is
+ * the authoritative discriminant: "released" covers both a same-day row past
+ * its known release_time AND a carryover (yesterday's unfinished) row, which
+ * cockpit-stages.ts marks "released" via its isPastDay fallback even without
+ * a known release time. "upcoming"/"unknown" rows have not released yet and
+ * still flow through to ensureIntelForEvents.
+ */
 export function cockpitRowsToIntelEvents(
   payload: CockpitPayload
 ): { id: number; symbol: string; event_date: string; event_time: string | null }[] {
-  return allCockpitRows(payload).map((r) => ({
-    id: r.eventId,
-    symbol: r.symbol,
-    event_date: r.eventDate,
-    event_time: r.eventTime,
-  }));
+  return allCockpitRows(payload)
+    .filter((r) => r.stages.released.state !== "released")
+    .map((r) => ({
+      id: r.eventId,
+      symbol: r.symbol,
+      event_date: r.eventDate,
+      event_time: r.eventTime,
+    }));
 }
 
 /**

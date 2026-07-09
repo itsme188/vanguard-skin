@@ -7,8 +7,10 @@ import {
   getReportHistoryForFamily,
   isHistoryStale,
   decorateCockpitIntel,
+  cockpitRowsToIntelEvents,
 } from "@/lib/queries/earnings-intel";
 import type { CockpitPayload, CockpitRow } from "@/lib/queries/earnings-cockpit";
+import type { EventStages } from "@/lib/earnings/cockpit-stages";
 
 let db: Database.Database;
 
@@ -97,5 +99,77 @@ describe("decorateCockpitIntel", () => {
       impliedMovePct: 4.8, impliedMethod: "straddle", histBeatCount: 1,
     });
     expect(payload.carryover[0].intel).toBeNull();
+  });
+});
+
+function stagesWithReleased(state: EventStages["released"]["state"]): EventStages {
+  return {
+    preview: "pending",
+    released: { state, releaseInstant: null },
+    actual: "pending",
+    reaction: { state: "pending", source: null, readyAt: null },
+    recap: "waiting",
+  };
+}
+
+function makeCockpitRow(
+  eventId: number,
+  symbol: string,
+  releasedState: EventStages["released"]["state"],
+  carryover = false,
+): CockpitRow {
+  return {
+    eventId,
+    symbol,
+    securityId: null,
+    title: `${symbol} earnings`,
+    eventDate: carryover ? "2026-07-13" : "2026-07-14",
+    eventTime: "AMC",
+    releaseTime: "16:20",
+    symbolStatus: "held",
+    consensus: "—",
+    actual: null,
+    stages: stagesWithReleased(releasedState),
+    netExposure: 0,
+    isTopExposure: false,
+    hasCallNote: false,
+    carryover,
+    intel: null,
+  };
+}
+
+describe("cockpitRowsToIntelEvents", () => {
+  it("excludes released rows (including carryover) from the ensure list", () => {
+    const upcoming = makeCockpitRow(1, "TER", "upcoming");
+    const released = makeCockpitRow(2, "NVDA", "released");
+    const unknown = makeCockpitRow(3, "ABC", "unknown");
+    const carryover = makeCockpitRow(4, "JPM", "released", true);
+
+    const payload: CockpitPayload = {
+      generatedAt: "2026-07-14T14:00:00.000Z",
+      nextRelease: null,
+      lanes: { bmo: [], amc: [upcoming, released, unknown], unknown: [] },
+      carryover: [carryover],
+      skippedRows: 0,
+    };
+
+    const events = cockpitRowsToIntelEvents(payload);
+    expect(events.map((e) => e.id).sort((a, b) => a - b)).toEqual([1, 3]);
+    expect(events.some((e) => e.id === 2)).toBe(false);
+    expect(events.some((e) => e.id === 4)).toBe(false);
+  });
+
+  it("keeps mapping shape (id/symbol/event_date/event_time) for surviving rows", () => {
+    const upcoming = makeCockpitRow(10, "TER", "upcoming");
+    const payload: CockpitPayload = {
+      generatedAt: "2026-07-14T14:00:00.000Z",
+      nextRelease: null,
+      lanes: { bmo: [], amc: [upcoming], unknown: [] },
+      carryover: [],
+      skippedRows: 0,
+    };
+    expect(cockpitRowsToIntelEvents(payload)).toEqual([
+      { id: 10, symbol: "TER", event_date: "2026-07-14", event_time: "AMC" },
+    ]);
   });
 });
