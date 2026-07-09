@@ -31,6 +31,8 @@ import {
 } from "@/lib/storage/r2";
 import { getModelCatalog } from "@/lib/ai/model-catalog";
 import { getBriefingHoldings } from "@/lib/calendar/briefing";
+import { getReportHistoryForFamily } from "@/lib/queries/earnings-intel";
+import { summarizeHistory } from "@/lib/earnings/report-history";
 
 const DEEP_READ_SOURCE_IDS = [1, 18, 19, 28]; // VK, Eliant, Purple Drink, Meisler
 const DEEP_READ_HOURS = 72;
@@ -40,7 +42,7 @@ const CALENDAR_LOOKAHEAD_DAYS = 7;
 const SNAPSHOT_RETENTION_DAYS = 7;
 
 interface Snapshot {
-  schemaVersion: 8;
+  schemaVersion: 9;
   snapshotDate: string;
   generatedAt: string;
   heldSymbols: string[];
@@ -144,6 +146,36 @@ interface Snapshot {
   // ones (workers/cron/src/state.ts::watchlistSymbols is the optional/
   // back-compat mirror the Worker reads).
   watchlistSymbols: string[];
+  // v9 — earnings intelligence (audit §4C #9/#10, Task 9). Implied-move
+  // intel per upcoming event (event_date >= daysAgo(1), so a same-day-earlier
+  // release stays visible to the Worker like the rest of the calendar
+  // window) + per-symbol surprise/reaction history for symbols reporting in
+  // the next 14 days. Lets the cloud scoreboard render the same "Expected
+  // move (options)" / "Avg move last 8 prints" rows as the Mac composer
+  // (workers/cron/src/fallback-earnings.ts::renderScoreboard), with an
+  // as-of label since `computed_at` can be hours stale by cloud-send time.
+  // Both optional on the Worker side for back-compat with pre-v9 snapshots.
+  earningsIntel: Array<{
+    eventId: number;
+    sourceKey: string;
+    impliedMovePct: number | null;
+    impliedMethod: "straddle" | "iv_approx" | null;
+    expiryUsed: string | null;
+    computedAt: string;
+  }>;
+  earningsHistory: Record<
+    string,
+    {
+      rows: Array<{
+        reportedDate: string;
+        epsActual: number | null;
+        epsEstimate: number | null;
+        surprisePct: number | null;
+        postPrintMovePct: number | null;
+      }>;
+      summary: { avgAbsMovePct: number | null; beatCount: number; missCount: number; quarterCount: number };
+    }
+  >;
 }
 
 function today(): string {
@@ -334,6 +366,82 @@ function getEarningsBogeysForSnapshot(
     .all(startDate, endDate) as Snapshot["earningsBogeys"];
 }
 
+/**
+ * v9 — cached implied-move intel (earnings_intel, migration 065) for events
+ * inside the snapshot's calendar window, so each row's eventId matches a
+ * calendarEvents row the Worker already has (same join-key convention as
+ * getEarningsBogeysForSnapshot above).
+ */
+function getEarningsIntelForSnapshot(
+  db: Database.Database,
+  startDate: string,
+): Snapshot["earningsIntel"] {
+  return db
+    .prepare(
+      `SELECT ei.event_id AS eventId, ce.source_key AS sourceKey,
+              ei.implied_move_pct AS impliedMovePct, ei.implied_method AS impliedMethod,
+              ei.expiry_used AS expiryUsed, ei.computed_at AS computedAt
+         FROM earnings_intel ei
+         JOIN calendar_events ce ON ce.id = ei.event_id
+        WHERE ce.event_date >= ?`,
+    )
+    .all(startDate) as Snapshot["earningsIntel"];
+}
+
+/**
+ * v9 — distinct upcoming-reporter symbols (earnings-type or Finnhub-sourced
+ * calendar rows) in [startDate, endDate], mirroring how the script already
+ * scopes earnings-adjacent queries by event_date window. Uppercased +
+ * de-duped so it's a direct key set for getEarningsHistoryForSnapshot below.
+ */
+function getUpcomingEarningsSymbols(
+  db: Database.Database,
+  startDate: string,
+  endDate: string,
+): string[] {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT UPPER(ce.symbol) AS symbol
+         FROM calendar_events ce
+        WHERE (ce.event_type = 'earnings' OR ce.source = 'finnhub')
+          AND ce.symbol IS NOT NULL AND ce.symbol != ''
+          AND ce.event_date BETWEEN ? AND ?`,
+    )
+    .all(startDate, endDate) as { symbol: string }[];
+  return rows.map((r) => r.symbol);
+}
+
+/**
+ * v9 — per-symbol surprise/reaction history (earnings_report_history) for
+ * every upcoming reporter, capped at 8 rows each (matches the Mac composer's
+ * `loadIntelView` cap). `summary` is computed HERE (Mac-side, via the same
+ * `summarizeHistory` the composer uses) — the Worker never recomputes it,
+ * it only renders the cached fields. Symbols with zero cached history are
+ * omitted entirely (not an empty entry) so the Worker's `history ?? null`
+ * fallback path is exercised identically to "never fetched".
+ */
+function getEarningsHistoryForSnapshot(
+  db: Database.Database,
+  symbols: string[],
+): Snapshot["earningsHistory"] {
+  const out: Snapshot["earningsHistory"] = {};
+  for (const sym of symbols) {
+    const rows = getReportHistoryForFamily(db, sym, 8);
+    if (rows.length === 0) continue;
+    out[sym] = {
+      rows: rows.map((r) => ({
+        reportedDate: r.reportedDate,
+        epsActual: r.epsActual,
+        epsEstimate: r.epsEstimate,
+        surprisePct: r.surprisePct,
+        postPrintMovePct: r.postPrintMovePct,
+      })),
+      summary: summarizeHistory(rows),
+    };
+  }
+  return out;
+}
+
 function buildSnapshot(db: Database.Database): Snapshot {
   // Includes trailing-1-day so the Worker's cloud-enrich fallback can find
   // same-day-before-midnight releases that still need enrichment when the
@@ -474,8 +582,19 @@ function buildSnapshot(db: Database.Database): Snapshot {
       expires_at: string | null;
     }>;
 
+  // v9 — earnings intelligence. `earningsIntelStartDate` mirrors the
+  // trailing-1-day convention used everywhere else in this function (same-day
+  // releases stay visible); the history window looks 14 days ahead, matching
+  // how far out a "next print" is worth caching surprise/reaction context for.
+  const earningsIntelStartDate = daysAgo(1);
+  const upcomingEarningsSymbols = getUpcomingEarningsSymbols(
+    db,
+    earningsIntelStartDate,
+    daysAhead(14),
+  );
+
   return {
-    schemaVersion: 8,
+    schemaVersion: 9,
     snapshotDate: today(),
     generatedAt: new Date().toISOString(),
     heldSymbols: getHeldStockSymbolsRO(db),
@@ -523,6 +642,11 @@ function buildSnapshot(db: Database.Database): Snapshot {
     briefingHoldings: getBriefingHoldingsForSnapshot(db),
     // v8 — active watchlist stock symbols for the Worker's push-at-print hook.
     watchlistSymbols: getActiveWatchlistStockSymbolsRO(db),
+    // v9 — earnings intelligence: implied move per upcoming event + per-symbol
+    // surprise/reaction history. Lets the Worker's scoreboard render the
+    // "Expected move (options)" / "Avg move last 8 prints" rows.
+    earningsIntel: getEarningsIntelForSnapshot(db, earningsIntelStartDate),
+    earningsHistory: getEarningsHistoryForSnapshot(db, upcomingEarningsSymbols),
   };
 }
 
@@ -571,7 +695,9 @@ async function main() {
       `${snapshot.notes.length} notes, ` +
       `${snapshot.earningsBogeys.length} bogeys, ` +
       `${snapshot.modelCatalog.length} model-catalog, ` +
-      `${snapshot.watchlistSymbols.length} watchlist-symbols`
+      `${snapshot.watchlistSymbols.length} watchlist-symbols, ` +
+      `${snapshot.earningsIntel.length} earnings-intel, ` +
+      `${Object.keys(snapshot.earningsHistory).length} earnings-history-symbols`
   );
 
   const keepFromDate = daysAgo(SNAPSHOT_RETENTION_DAYS);

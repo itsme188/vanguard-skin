@@ -176,8 +176,18 @@ export interface SnapshotBogey {
  *   v5 — adds notes + earningsBogeys so the cloud earnings email carries the
  *        user's own thesis notes + curated consensus/whisper (closes part of
  *        the "limited cloud context" gap)
+ *   v6 — adds modelCatalog (available Anthropic model ids) for tier-aware
+ *        model resolution + reactive failover in Worker fallbacks
+ *   v7 — adds briefingHoldings (Vanguard-only, IBKR excluded) for the cloud
+ *        briefing fallback
+ *   v8 — adds watchlistSymbols for the push-at-print hook's watchlist coverage
+ *   v9 — adds earningsIntel (implied move per upcoming event) + earningsHistory
+ *        (per-symbol surprise/reaction history) so the cloud scoreboard can
+ *        render the same "Expected move (options)" / "Avg move last 8 prints"
+ *        rows as the Mac composer, with an as-of label since the cloud copy
+ *        can be hours stale
  *
- * All v2/v3/v4/v5 fields are optional for back-compat with older snapshots; the
+ * All v2–v9 fields are optional for back-compat with older snapshots; the
  * fallback gracefully degrades when these are missing.
  */
 /**
@@ -194,8 +204,47 @@ export interface BriefingHoldingSnapshot {
   netQty: number;
 }
 
+/**
+ * Cached implied-move intelligence for one upcoming earnings event, mirrored
+ * from the Mac's `earnings_intel` table (migration 065). `sourceKey` is
+ * carried for potential future audit joins but the Worker matches on
+ * `eventId` (same as `snapshot.calendarEvents[].id`), same as the Mac.
+ */
+export interface EarningsIntelSnapshotRow {
+  eventId: number;
+  sourceKey: string;
+  impliedMovePct: number | null;
+  impliedMethod: "straddle" | "iv_approx" | null;
+  expiryUsed: string | null;
+  computedAt: string;
+}
+
+/** One past-print history row — mirrors Mac's `ReportHistoryRow` subset used downstream. */
+export interface EarningsHistorySnapshotRow {
+  reportedDate: string;
+  epsActual: number | null;
+  epsEstimate: number | null;
+  surprisePct: number | null;
+  postPrintMovePct: number | null;
+}
+
+/**
+ * Per-symbol history entry — `summary` is computed Mac-side via
+ * `summarizeHistory` (lib/earnings/report-history.ts) and carried verbatim;
+ * the Worker never recomputes it from `rows`.
+ */
+export interface EarningsHistorySnapshotEntry {
+  rows: EarningsHistorySnapshotRow[];
+  summary: {
+    avgAbsMovePct: number | null;
+    beatCount: number;
+    missCount: number;
+    quarterCount: number;
+  };
+}
+
 export interface Snapshot {
-  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
   snapshotDate: string;
   generatedAt: string;
   heldSymbols: string[];
@@ -245,6 +294,13 @@ export interface Snapshot {
   // ones. Additive/optional for back-compat: snapshots ≤v7 lack this field
   // and the push hook gracefully degrades to held-only coverage.
   watchlistSymbols?: string[];
+  // v9 — earnings intelligence: implied move per upcoming event (event_date
+  // >= daysAgo(1)) + per-symbol surprise/reaction history for symbols
+  // reporting in the next 14 days. Optional/additive: snapshots ≤v8 lack both
+  // fields and `renderScoreboard`'s intelCtx param stays undefined, rendering
+  // exactly the classic scoreboard (no "Expected move" / "Avg move" rows).
+  earningsIntel?: EarningsIntelSnapshotRow[];
+  earningsHistory?: Record<string, EarningsHistorySnapshotEntry>;
 }
 
 /** Fetch the most recent snapshot (within 7d). Returns null if none exist. */
