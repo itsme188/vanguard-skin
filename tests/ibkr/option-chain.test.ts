@@ -82,6 +82,58 @@ describe("resolveAtmContracts", () => {
     expect(strikesCalls).toBeGreaterThanOrEqual(2);
     expect(out).toEqual({ callConid: 9003, putConid: 9004, expiry: "2026-07-18", strike: 130 });
   });
+
+  it("null when /secdef/info returns non-ok status", async () => {
+    const request = vi.fn(async (_cfg, _lst, _m, path: string) => {
+      if (path.includes("secdef/strikes")) {
+        return respondJson({ call: [120, 125, 130, 135], put: [120, 125, 130, 135] });
+      }
+      if (path.includes("secdef/info")) {
+        return new Response("error", { status: 500 });
+      }
+      throw new Error(`unexpected path ${path}`);
+    });
+    const out = await resolveAtmContracts(CFG, "lst", {
+      conid: 265598, eventDate: "2026-07-14", eventTime: "AMC", spot: 128.9,
+    }, { request: request as never, delayMs: 0 });
+    expect(out).toBeNull();
+  });
+
+  it("null when /secdef/info returns non-array body", async () => {
+    const request = vi.fn(async (_cfg, _lst, _m, path: string) => {
+      if (path.includes("secdef/strikes")) {
+        return respondJson({ call: [120, 125, 130, 135], put: [120, 125, 130, 135] });
+      }
+      if (path.includes("secdef/info")) {
+        return respondJson({ error: "invalid request" });
+      }
+      throw new Error(`unexpected path ${path}`);
+    });
+    const out = await resolveAtmContracts(CFG, "lst", {
+      conid: 265598, eventDate: "2026-07-14", eventTime: "AMC", spot: 128.9,
+    }, { request: request as never, delayMs: 0 });
+    expect(out).toBeNull();
+  });
+
+  it("null when call/put expiries are disjoint (no shared expiry)", async () => {
+    const request = vi.fn(async (_cfg, _lst, _m, path: string, query: Record<string, string>) => {
+      if (path.includes("secdef/strikes")) {
+        return respondJson({ call: [120, 125, 130, 135], put: [120, 125, 130, 135] });
+      }
+      if (path.includes("secdef/info")) {
+        // Calls: only 20260718 expiry; Puts: only 20260719 expiry. No intersection.
+        if (query.right === "C") {
+          return respondJson([{ conid: 9001, maturityDate: "20260718" }]);
+        }
+        return respondJson([{ conid: 9002, maturityDate: "20260719" }]);
+      }
+      throw new Error(`unexpected path ${path}`);
+    });
+    const out = await resolveAtmContracts(CFG, "lst", {
+      conid: 265598, eventDate: "2026-07-14", eventTime: "AMC", spot: 128.9,
+    }, { request: request as never, delayMs: 0 });
+    expect(out).toBeNull();
+  });
 });
 
 describe("parseSnapshotRow bid/ask", () => {
