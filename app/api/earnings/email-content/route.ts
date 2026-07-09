@@ -3,6 +3,7 @@ import { briefingToHtml } from "@/lib/calendar/briefing-html";
 import {
   formatDateLong,
   renderHeadlineTable,
+  loadIntelView,
 } from "@/lib/digest/send-earnings-email";
 import { getEmailAudit } from "@/lib/queries/earnings-emails";
 import type { CalendarEvent } from "@/lib/types";
@@ -69,7 +70,19 @@ export async function GET(request: Request) {
   const phaseLabel = phase === "preview" ? "Earnings Preview" : "Earnings Recap";
   const title = `${symbol} ${phaseLabel} — ${dateStr}${releaseTimeStr}`;
 
-  const scoreboardMd = renderHeadlineTable(event, symbol, phase);
+  // Load the same earnings-intel view the sent email used (best-effort —
+  // a viewer-route failure here shouldn't 500 the whole modal) so the
+  // in-app viewer's scoreboard matches what was actually sent. Threaded
+  // for BOTH phases: preview shows implied-move + history rows, recap
+  // echoes implied-vs-realized off the same cache.
+  let intelView: ReturnType<typeof loadIntelView> | null = null;
+  try {
+    intelView = loadIntelView(db, event.id, symbol);
+  } catch (err) {
+    console.warn(`[earnings-intel] loadIntelView failed for event ${eventId} (${symbol}):`, err);
+  }
+
+  const scoreboardMd = renderHeadlineTable(event, symbol, phase, intelView);
   const aiMarkdown = audit.ai_output_md ?? "";
   const fullMarkdown = `${scoreboardMd}\n\n${aiMarkdown}`;
   const fullHtml = briefingToHtml(fullMarkdown, title);

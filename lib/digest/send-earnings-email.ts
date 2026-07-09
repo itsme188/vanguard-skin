@@ -32,6 +32,10 @@ import { addDays } from "@/lib/calendar/date-utils";
 import type { ReactionSnapshot } from "@/lib/calendar/reaction-snapshot";
 import type { CalendarEvent, EarningsTranscript } from "@/lib/types";
 import { isPlausibleEarnings } from "@/lib/earnings/plausibility";
+import { getIntelForEvents, getReportHistoryForFamily } from "@/lib/queries/earnings-intel";
+import { summarizeHistory, type HistorySummary } from "@/lib/earnings/report-history";
+import { ensureIntelForEvents } from "@/lib/earnings/intel";
+import type { ReportHistoryRow } from "@/lib/mutations/earnings-intel";
 
 // Preferred newsletter sources for pre-earnings color. Same list as
 // lib/calendar/briefing.ts deep-read with TMT Breakout (id=8) added —
@@ -93,6 +97,43 @@ export async function sendEarningsRecap(
   return sendEarningsEmail(db, eventId, "recap", opts);
 }
 
+// ── Earnings-intelligence view (Task 7) ────────────────────────────
+//
+// Read-only projection over the earnings-intel cache (implied move from
+// `earnings_intel`) + the report-history cache (`earnings_report_history`)
+// for a single event/symbol. Consumed by the scoreboard (implied-move +
+// history-summary rows), the "## Past prints" block (preview email body +
+// preview prompt), and the in-app viewer route — all three must render the
+// same numbers, so they all call this one loader rather than re-querying.
+//
+// Pure DB reads — never throws (getIntelForEvents/getReportHistoryForFamily
+// are plain SELECTs); callers that want it best-effort still wrap the call
+// (see composeEarningsEmail) because a future change to these queries should
+// never be able to block a send.
+export interface EarningsIntelView {
+  impliedMovePct: number | null;
+  impliedMethod: "straddle" | "iv_approx" | null;
+  expiryUsed: string | null;
+  history: ReportHistoryRow[];
+  summary: HistorySummary;
+}
+
+export function loadIntelView(
+  db: Database.Database,
+  eventId: number,
+  symbol: string,
+): EarningsIntelView {
+  const intel = getIntelForEvents(db, [eventId]).get(eventId) ?? null;
+  const history = getReportHistoryForFamily(db, symbol, 8);
+  return {
+    impliedMovePct: intel?.impliedMovePct ?? null,
+    impliedMethod: intel?.impliedMethod ?? null,
+    expiryUsed: intel?.expiryUsed ?? null,
+    history,
+    summary: summarizeHistory(history),
+  };
+}
+
 /**
  * Composer-only path: build context, render prompt, run Claude, assemble
  * markdown + HTML. Does NOT send email and does NOT write the audit row.
@@ -144,6 +185,33 @@ export async function composeEarningsEmail(
   }
 
   const symbol = event.symbol.toUpperCase();
+
+  // Earnings-intelligence tier (Task 6/7): refresh the implied-move +
+  // history cache on every PREVIEW compose (forceFresh — the preview is the
+  // one send where fresh options pricing/history matters; recap just reads
+  // whatever's cached). Best-effort by contract (ensureIntelForEvents never
+  // throws internally per its own doc comment) — wrapped here too so a
+  // future change to that contract can never block the claim-mutexed send
+  // path below.
+  if (phase === "preview") {
+    try {
+      await ensureIntelForEvents(
+        db,
+        [{ id: event.id, symbol, event_date: event.event_date, event_time: event.event_time }],
+        { forceFresh: true },
+      );
+    } catch (err) {
+      console.warn(`[earnings-intel] ensureIntelForEvents failed for event ${eventId} (${symbol}):`, err);
+    }
+  }
+
+  let intelView: EarningsIntelView | null = null;
+  try {
+    intelView = loadIntelView(db, event.id, symbol);
+  } catch (err) {
+    console.warn(`[earnings-intel] loadIntelView failed for event ${eventId} (${symbol}):`, err);
+  }
+
   const ctx =
     phase === "preview"
       ? buildPreviewContext(db, event)
@@ -153,13 +221,18 @@ export async function composeEarningsEmail(
       ? renderPreviewPrompt(ctx)
       : renderRecapPrompt(ctx as RecapContext);
 
-  const headlineTable = renderHeadlineTable(ctx.event, ctx.symbol, phase);
+  const headlineTable = renderHeadlineTable(ctx.event, ctx.symbol, phase, intelView);
   const aiMarkdown = await callClaude(prompt, phase);
   // Headline scoreboard is rendered deterministically from structured
   // fields (consensus_estimate, actual_value, reaction_snapshot) — printable
   // + same shape across preview + recap. AI takes over after for line-by-line
-  // + prose.
-  const markdown = `${headlineTable}\n\n${aiMarkdown}`;
+  // + prose. "## Past prints" is preview-only (code-rendered, never
+  // AI-generated) — the recap doesn't repeat it.
+  const pastPrintsBlock =
+    phase === "preview" ? renderPastPrintsBlock(intelView?.history ?? []) : "";
+  const markdown = pastPrintsBlock
+    ? `${headlineTable}\n\n${pastPrintsBlock}\n\n${aiMarkdown}`
+    : `${headlineTable}\n\n${aiMarkdown}`;
 
   const dateStr = formatDateLong(event.event_date);
   const releaseTimeStr = event.release_time ? ` ${event.release_time} ET` : "";
@@ -443,6 +516,11 @@ interface PreviewContext {
   bogeys: EarningsBogey[];
   readThroughs: ReadThroughEntry[];
   priorCallNote: EarningsCallNote | null;
+  // Earnings-intelligence tier (Task 7). Optional + best-effort: absent
+  // (undefined) when the intel/history queries error, never blocks context
+  // build. Drives the "## Past prints" prompt block; the scoreboard rows
+  // are wired independently in composeEarningsEmail via loadIntelView.
+  intel?: EarningsIntelView;
 }
 
 /**
@@ -508,6 +586,12 @@ function buildPreviewContext(
   const bogeys = getBogeysForEvent(db, event.id);
   const readThroughs = buildReadThroughEntries(db, family, event.event_date);
   const priorCallNote = getLatestCallNoteForFamily(db, symbol, event.event_date);
+  let intel: EarningsIntelView | undefined;
+  try {
+    intel = loadIntelView(db, event.id, symbol);
+  } catch (err) {
+    console.warn(`[earnings-intel] loadIntelView failed for event ${event.id} (${symbol}):`, err);
+  }
 
   return {
     symbol,
@@ -528,6 +612,7 @@ function buildPreviewContext(
     bogeys,
     readThroughs,
     priorCallNote,
+    intel,
   };
 }
 
@@ -992,19 +1077,81 @@ function formatPctDelta(actual: number, consensus: number): string {
   return `${sign}${pct.toFixed(1)}%`;
 }
 
-function readReactionDelta(json: string | null, key: "spy" | "qqq" | "tlt" | "symbol"): string {
-  if (!json) return "—";
+// Raw numeric sibling of readReactionDelta — same parsing, no formatting.
+// Used by the scoreboard's implied-vs-realized "expected move" row, which
+// needs the number to compare against `intel.impliedMovePct`, not just a
+// pre-formatted display string.
+function readReactionPct(json: string | null, key: "spy" | "qqq" | "tlt" | "symbol"): number | null {
+  if (!json) return null;
   try {
     const snap = JSON.parse(json) as Record<string, unknown>;
     const node = snap[key] as { delta_pct?: number } | undefined;
-    if (!node || node.delta_pct == null) return "—";
+    if (!node || node.delta_pct == null) return null;
     const v = Number(node.delta_pct);
-    if (!Number.isFinite(v)) return "—";
-    const sign = v >= 0 ? "+" : "";
-    return `${sign}${v.toFixed(2)}%`;
+    return Number.isFinite(v) ? v : null;
   } catch {
-    return "—";
+    return null;
   }
+}
+
+function readReactionDelta(json: string | null, key: "spy" | "qqq" | "tlt" | "symbol"): string {
+  const v = readReactionPct(json, key);
+  if (v == null) return "—";
+  const sign = v >= 0 ? "+" : "";
+  return `${sign}${v.toFixed(2)}%`;
+}
+
+// ── Earnings-intelligence scoreboard rows (Task 7) ─────────────────
+//
+// "Expected move (options)" + "Avg move last 8 prints" rows. Both are
+// code-rendered from the EarningsIntelView cache — never AI-generated —
+// same discipline as the rest of the scoreboard.
+
+function fmtExpiryShort(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(`${iso}T12:00:00Z`);
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+}
+
+function fmtImplied(intel: EarningsIntelView | null | undefined): string {
+  if (!intel || intel.impliedMovePct == null || !intel.impliedMethod) return "—";
+  const pct = intel.impliedMovePct.toFixed(1);
+  return intel.impliedMethod === "straddle"
+    ? `±${pct}% (straddle, ${fmtExpiryShort(intel.expiryUsed)} exp)`
+    : `~±${pct}% (IV approx)`;
+}
+
+function fmtHistSummary(intel: EarningsIntelView | null | undefined): string {
+  const s = intel?.summary;
+  if (!s || s.avgAbsMovePct == null) return "—";
+  const denom = s.beatCount + s.missCount;
+  const beat = denom > 0 ? ` · beat ${s.beatCount}/${denom}` : "";
+  return `±${s.avgAbsMovePct.toFixed(1)}%${beat}`;
+}
+
+// Deterministic, code-rendered — no AI involvement, same discipline as the
+// scoreboard. Preview-only consumer (email body right after the scoreboard,
+// and the preview prompt after the bogeys block): "" (empty string) when
+// there's no history yet, so callers can splice it in unconditionally
+// without producing an empty "## Past prints" section.
+export function renderPastPrintsBlock(history: ReportHistoryRow[]): string {
+  if (history.length === 0) return "";
+  const sign = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`;
+  const rows = history.map((h) => {
+    const eps = h.epsActual != null && h.epsEstimate != null
+      ? `${h.epsActual.toFixed(2)} / ${h.epsEstimate.toFixed(2)}`
+      : h.epsActual != null ? h.epsActual.toFixed(2) : "—";
+    const surprise = h.surprisePct != null ? sign(h.surprisePct) : "—";
+    const move = h.postPrintMovePct != null ? sign(h.postPrintMovePct) : "—";
+    return `| ${h.reportedDate} | ${eps} | ${surprise} | ${move} |`;
+  });
+  return `## Past prints
+
+| Reported | EPS act / est | Surprise | Next-day move |
+|---|---|---|---|
+${rows.join("\n")}
+
+*Next-day move is close-over-close around the print (public market data; history via Alpha Vantage).*`;
 }
 
 // Pure function — exported so the in-app email viewer can rebuild the
@@ -1016,6 +1163,7 @@ export function renderHeadlineTable(
   event: Pick<CalendarEvent, "consensus_estimate" | "actual_value" | "consensus_value" | "reaction_snapshot">,
   symbol: string,
   phase: "preview" | "recap",
+  intel?: EarningsIntelView | null,
 ): string {
   // Consensus precedence: consensus_value (at-release, set by enrichment) wins
   // over consensus_estimate (Finnhub-sync-time). Apply identically to BOTH
@@ -1062,9 +1210,27 @@ export function renderHeadlineTable(
 
   const phaseLabel = phase === "preview" ? "into the print" : "post-print";
 
+  // Expected move: preview shows the implied cell only (Actual/Δ dashes —
+  // there's nothing to compare against yet). Recap echoes the realized
+  // |stock reaction| against the implied move and calls it inside/outside
+  // the priced-in range — never recomputed here, `intel.impliedMovePct` is
+  // whatever was cached at preview-compose time.
+  const impliedCell = fmtImplied(intel);
+  let impliedActual = "—";
+  let impliedVerdict = "—";
+  if (isRecap && intel?.impliedMovePct != null) {
+    const realized = readReactionPct(event.reaction_snapshot, "symbol");
+    if (realized != null) {
+      impliedActual = `${realized >= 0 ? "+" : ""}${realized.toFixed(1)}%`;
+      impliedVerdict = Math.abs(realized) <= intel.impliedMovePct ? "inside" : "outside";
+    }
+  }
+
   const rows = [
     `| **EPS** | ${epsConsensus} | ${epsActual} | ${epsDelta} |`,
     `| **Revenue** | ${revConsensus} | ${revActual} | ${revDelta} |`,
+    `| **Expected move (options)** | ${impliedCell} | ${impliedActual} | ${impliedVerdict} |`,
+    `| **Avg move last 8 prints** | ${fmtHistSummary(intel)} | — | — |`,
     `| **Guidance (next quarter)** | — | — | — |`,
     `| **${symbol} @ T+2h** | — | ${stockReaction} | — |`,
     `| **SPY @ T+2h** | — | ${spyReaction} | — |`,
@@ -1098,6 +1264,11 @@ export function renderPreviewPrompt(ctx: PreviewContext): string {
   const positionsBlock = renderPositionsBlock(ctx);
   const userNotesBlock = renderUserNotesBlock(ctx);
   const bogeysBlock = renderBogeysBlock(ctx);
+  // Code-rendered, never AI-generated (same discipline as the scoreboard
+  // rows it accompanies) — gives the model quantitative context on implied
+  // move + surprise/reaction history without asking it to compute or recall
+  // any of these numbers itself. "" when the symbol has no cached history.
+  const pastPrintsBlock = renderPastPrintsBlock(ctx.intel?.history ?? []);
   const newslettersBlock = renderNewslettersBlock(ctx, "preview");
   const readThroughsBlock = renderReadThroughsBlock(ctx);
   const analystBlock = renderAnalystBlock(ctx);
@@ -1118,6 +1289,7 @@ export function renderPreviewPrompt(ctx: PreviewContext): string {
 ${userNotesBlock}
 ${renderPriorCallNoteBlock(ctx.priorCallNote)}
 ${bogeysBlock}
+${pastPrintsBlock}
 ${consensusBlock}
 ${positionsBlock}
 ${newslettersBlock}
@@ -1130,7 +1302,7 @@ ${priorCallBlock}
 
 Use the structured context above as the source of truth for positions, consensus, and newsletter quotes. **For anything missing or thin, use web_search** — bogies for the print, sell-side notes published in the last 24-48 hours, recent buy-side commentary, expectations on segment-level metrics, prior-quarter takeaways. Cite source URLs inline as [Source Name](url).
 
-**IMPORTANT — output structure.** A deterministic "scoreboard" headline table is rendered ABOVE your output by the system; do NOT repeat the headline metrics (EPS / Revenue / SPY reaction / QQQ reaction) — your output starts AFTER the scoreboard. Lead with the line-by-line bogies table, then prose. Specifically:
+**IMPORTANT — output structure.** A deterministic "scoreboard" headline table is rendered ABOVE your output by the system; do NOT repeat the headline metrics (EPS / Revenue / Expected move / Avg move / SPY reaction / QQQ reaction) — your output starts AFTER the scoreboard. The "## Past prints" section (if present above) is also rendered by the system, not by you — reference it in your analysis if useful, but do not re-list its rows. Lead with the line-by-line bogies table, then prose. Specifically:
 
 1. **\`## Line-by-line bogies\`** — a markdown table the user can print and fill in by hand during the call. Columns MUST be exactly:
 
@@ -1210,7 +1382,7 @@ ${priorCallBlock}
 
 Use the structured context above as the source of truth. **For anything missing — call commentary, post-print sell-side reactions, transcript quotes, guidance change details — use web_search** with focus on the last 4 hours of coverage. Cite source URLs inline. **When evaluating beat/miss, anchor against the bogeys block (especially whisper numbers) when present, not just the Finnhub consensus.**
 
-**IMPORTANT — output structure.** A deterministic "scoreboard" table is rendered ABOVE your output by the system (it shows EPS / Revenue / stock + SPY + QQQ reactions). Do NOT repeat those headline metrics. Your output starts with the line-by-line table (same shape as the preview, but filled in), then prose. Specifically:
+**IMPORTANT — output structure.** A deterministic "scoreboard" table is rendered ABOVE your output by the system (it shows EPS / Revenue / expected-vs-realized move / avg historical move / stock + SPY + QQQ reactions). Do NOT repeat those headline metrics. Your output starts with the line-by-line table (same shape as the preview, but filled in), then prose. Specifically:
 
 1. **\`## Line-by-line metrics\`** — a markdown table with EXACTLY these columns:
 
