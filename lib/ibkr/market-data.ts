@@ -18,12 +18,23 @@
  * Dividend yield is intentionally absent: the raw snapshot doesn't expose it
  * (probe-confirmed across 3 warm-up polls); it lives on a separate fundamentals
  * endpoint and is deferred. See docs/superpowers/specs/2026-06-08-ibkr-market-data-snapshot-design.md.
+ *
+ * Bid (84) / ask (86) added 2026-07-08 for the earnings-intelligence straddle
+ * read (scripts/probe-ibkr-option-chain.ts) — verified live across 4 option
+ * contracts (bid < last < ask ordering held every time). Unlike field 31
+ * (last), 84/86 NEVER carried a "C"/"H" prefix in any observed row — including
+ * the same row where 31 was prefixed — so they parse with the plain numeric
+ * parser, no prefix-stripping. Deliberately NOT added to the default
+ * SNAPSHOT_FIELD_CODES (equity quote-cache request set is unchanged) —
+ * callers that need bid/ask (option-chain.ts) pass `opts.fields` explicitly.
  */
 
 import { signedRequest, type IbkrOAuthConfig } from "./oauth-client";
 
 export const SNAPSHOT_FIELDS = {
   LAST: "31",
+  BID: "84", // probe-verified 2026-07-08 (scripts/probe-ibkr-option-chain.ts) — bid price
+  ASK: "86", // probe-verified 2026-07-08 (scripts/probe-ibkr-option-chain.ts) — ask price
   IV: "7283",
   HV: "7284",
   WK52_HIGH: "7293",
@@ -42,6 +53,8 @@ export const SNAPSHOT_FIELD_CODES: string[] = [
 export interface ParsedQuote {
   conid: number | null;
   last: number | null;
+  bid: number | null;
+  ask: number | null;
   ivUnderlying: number | null; // annualized fraction (0.24 = 24%)
   hv30d: number | null; // annualized fraction
   week52High: number | null;
@@ -91,6 +104,10 @@ export function parseSnapshotRow(row: Record<string, unknown>): ParsedQuote {
   return {
     conid,
     last: parseLastPrice(row[SNAPSHOT_FIELDS.LAST]),
+    // Probe-verified 2026-07-08: bid/ask (84/86) never carry the C/H prefix
+    // that field 31 does — plain numeric parse, no prefix-stripping needed.
+    bid: parsePlainNumber(row[SNAPSHOT_FIELDS.BID]),
+    ask: parsePlainNumber(row[SNAPSHOT_FIELDS.ASK]),
     ivUnderlying: parsePercentFraction(row[SNAPSHOT_FIELDS.IV]),
     hv30d: parsePercentFraction(row[SNAPSHOT_FIELDS.HV]),
     week52High: parsePlainNumber(row[SNAPSHOT_FIELDS.WK52_HIGH]),
@@ -150,6 +167,8 @@ function mergeQuote(a: ParsedQuote, b: ParsedQuote): ParsedQuote {
   return {
     conid: a.conid ?? b.conid,
     last: b.last ?? a.last,
+    bid: b.bid ?? a.bid,
+    ask: b.ask ?? a.ask,
     ivUnderlying: b.ivUnderlying ?? a.ivUnderlying,
     hv30d: b.hv30d ?? a.hv30d,
     week52High: b.week52High ?? a.week52High,

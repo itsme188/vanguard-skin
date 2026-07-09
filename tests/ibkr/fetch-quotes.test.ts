@@ -55,8 +55,8 @@ describe("fetchAndStoreQuotes", () => {
     ): Promise<ParsedQuote[]> => {
       requestedConids = conids;
       return [
-        { conid: 265598, last: 302.94, ivUnderlying: 0.2441, hv30d: 0.2322, week52High: 316.94, week52Low: 194.47 },
-        { conid: 4815747, last: 140.5, ivUnderlying: 0.55, hv30d: 0.5, week52High: 195, week52Low: 86 },
+        { conid: 265598, last: 302.94, bid: null, ask: null, ivUnderlying: 0.2441, hv30d: 0.2322, week52High: 316.94, week52Low: 194.47 },
+        { conid: 4815747, last: 140.5, bid: null, ask: null, ivUnderlying: 0.55, hv30d: 0.5, week52High: 195, week52Low: 86 },
       ];
     };
 
@@ -106,10 +106,10 @@ describe("fetchAndStoreQuotes", () => {
     ): Promise<ParsedQuote[]> => {
       requestedConids = [...requestedConids, ...conids];
       return [
-        { conid: 265598, last: 302.94, ivUnderlying: 0.2441, hv30d: 0.2322, week52High: 316.94, week52Low: 194.47 },
+        { conid: 265598, last: 302.94, bid: null, ask: null, ivUnderlying: 0.2441, hv30d: 0.2322, week52High: 316.94, week52Low: 194.47 },
         // Option premium per-share (probe: "C8.01" → 8.01); bond par-based (72.53).
-        { conid: 760270996, last: 8.01, ivUnderlying: null, hv30d: null, week52High: null, week52Low: null },
-        { conid: 306557971, last: 72.53, ivUnderlying: null, hv30d: null, week52High: null, week52Low: null },
+        { conid: 760270996, last: 8.01, bid: null, ask: null, ivUnderlying: null, hv30d: null, week52High: null, week52Low: null },
+        { conid: 306557971, last: 72.53, bid: null, ask: null, ivUnderlying: null, hv30d: null, week52High: null, week52Low: null },
       ];
     };
 
@@ -157,7 +157,7 @@ describe("fetchAndStoreQuotes", () => {
     hold(acct, ko, 100);
 
     const snapshotStub = async (): Promise<ParsedQuote[]> => [
-      { conid: 8894, last: 81.19, ivUnderlying: 0.2, hv30d: 0.18, week52High: 90, week52Low: 60 },
+      { conid: 8894, last: 81.19, bid: null, ask: null, ivUnderlying: 0.2, hv30d: 0.18, week52High: 90, week52Low: 60 },
     ];
 
     let requestedSymbols: string[] = [];
@@ -191,7 +191,7 @@ describe("fetchAndStoreQuotes", () => {
     const ko = seedSecurity("KO", 8894);
     hold(acct, ko, 100);
     const snapshotStub = async (): Promise<ParsedQuote[]> => [
-      { conid: 8894, last: 81.19, ivUnderlying: 0.2, hv30d: 0.18, week52High: 90, week52Low: 60 },
+      { conid: 8894, last: 81.19, bid: null, ask: null, ivUnderlying: 0.2, hv30d: 0.18, week52High: 90, week52Low: 60 },
     ];
     const res = await fetchAndStoreQuotes(db, CFG, "lst", {
       asOfDate: "2026-06-09",
@@ -210,7 +210,7 @@ describe("fetchAndStoreQuotes", () => {
     hold(acct, aapl, 100);
 
     const stub = async (): Promise<ParsedQuote[]> => [
-      { conid: 265598, last: null, ivUnderlying: 0.24, hv30d: 0.23, week52High: 316.94, week52Low: 194.47 },
+      { conid: 265598, last: null, bid: null, ask: null, ivUnderlying: 0.24, hv30d: 0.23, week52High: 316.94, week52Low: 194.47 },
     ];
     const res = await fetchAndStoreQuotes(db, CFG, "lst", { asOfDate: "2026-06-08", fetchSnapshot: stub });
 
