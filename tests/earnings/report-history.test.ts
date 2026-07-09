@@ -35,7 +35,8 @@ describe("fetchAvEarningsHistory", () => {
   });
   it("sorts defensively newest-first when AV returns out-of-order quarters", async () => {
     // Create 13 quarters in oldest-first order to verify the sort + slice keeps the right 12
-    const oldest = "2024-01-31";
+    // Fixture: i=0 → 2025-01-31 (newest), i=12 → 2025-01-19 (oldest)
+    const oldest = "2025-01-19"; // The 13th quarter that gets dropped by slice(0, 12)
     const quarters = Array.from({ length: 13 }, (_, i) => ({
       fiscalDateEnding: `${2025 - Math.floor(i / 4)}-${String((i % 4) * 3 + 1).padStart(2, "0")}-01`,
       reportedDate: new Date(2025, 0, 31 - i).toISOString().slice(0, 10), // YYYY-MM-DD, descending
@@ -55,6 +56,8 @@ describe("fetchAvEarningsHistory", () => {
     const newest = reports[0].reportedDate;
     const oldest_kept = reports[11].reportedDate;
     expect(newest > oldest_kept).toBe(true); // String comparison works for YYYY-MM-DD
+    // The oldest KEPT quarter should be 2025-01-20 (second-oldest from fixture)
+    expect(reports[11].reportedDate).toBe("2025-01-20");
     // The absolute oldest quarter should NOT be in the result
     expect(reports.find((r) => r.reportedDate === oldest)).toBeUndefined();
   });
