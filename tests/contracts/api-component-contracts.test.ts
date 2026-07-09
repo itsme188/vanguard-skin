@@ -21,6 +21,7 @@ import { computeAllScenarios } from "@/lib/compute/scenarios";
 import { detectStrategies } from "@/lib/compute/options-strategy";
 import { computeDefenseAnalysis } from "@/lib/compute/hedging";
 import { buildCockpitPayload } from "@/lib/queries/earnings-cockpit";
+import { decorateCockpitIntel } from "@/lib/queries/earnings-intel";
 import { upsertCallNote } from "@/lib/mutations/earnings-call-notes";
 
 let db: Database.Database;
@@ -201,6 +202,29 @@ describe("EarningsCockpit contract", () => {
     expect(payload).toHaveProperty("nextRelease");
     expect(payload).toHaveProperty("generatedAt");
     expect(payload).toHaveProperty("skippedRows");
+  });
+
+  it("decorateCockpitIntel adds an `intel` field (null allowed) to every row the component reads", () => {
+    const acct = seedAccount(db, "acct-ter");
+    const sec = seedSecurity(db, "TER");
+    seedHolding(db, acct, sec, 100);
+    db.prepare(
+      `INSERT INTO calendar_events (source, event_type, event_date, event_time, release_time, title, symbol, source_key)
+       VALUES ('finnhub', 'earnings', '2026-07-08', 'AMC', '16:20', 'TER earnings', 'TER', 'finnhub:TER:2026-07-08:AMC')`
+    ).run();
+
+    const payload = buildCockpitPayload(db, new Date("2026-07-08T14:00:00Z"));
+    decorateCockpitIntel(db, payload);
+
+    // Component reads row.intel — must exist (null allowed) on every row,
+    // across every lane and the carryover strip.
+    const allRows = [
+      ...payload.lanes.bmo, ...payload.lanes.amc, ...payload.lanes.unknown, ...payload.carryover,
+    ];
+    expect(allRows.length).toBeGreaterThan(0);
+    for (const row of allRows) {
+      expect(row).toHaveProperty("intel");
+    }
   });
 });
 
