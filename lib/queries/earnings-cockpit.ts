@@ -21,6 +21,15 @@ import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
 import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
 
+/** Implied-move + history-summary decoration for a cockpit row. */
+export interface CockpitIntel {
+  impliedMovePct: number | null;
+  impliedMethod: "straddle" | "iv_approx" | null;
+  histAvgAbsMovePct: number | null;
+  histBeatCount: number;
+  histQuarterCount: number;
+}
+
 export interface CockpitRow {
   eventId: number;
   symbol: string;
@@ -37,6 +46,10 @@ export interface CockpitRow {
   isTopExposure: boolean;
   hasCallNote: boolean;
   carryover: boolean;
+  /** Earnings-intel decoration (implied move + history summary) — populated
+   *  by decorateCockpitIntel in the route, NOT by buildCockpitPayload (this
+   *  query stays network-free). */
+  intel: CockpitIntel | null;
 }
 
 export interface CockpitPayload {
@@ -174,6 +187,7 @@ export function buildCockpitPayload(
         isTopExposure: false, // set per-lane below
         hasCallNote: notePresence.has(r.id),
         carryover: isCarryover,
+        intel: null, // decorated by decorateCockpitIntel in the route
       });
     } catch (err) {
       skippedRows += 1;

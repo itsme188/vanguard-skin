@@ -18,6 +18,13 @@ interface Stages {
   reaction: { state: string; source: string | null; readyAt: string | null };
   recap: string;
 }
+interface CockpitIntel {
+  impliedMovePct: number | null;
+  impliedMethod: "straddle" | "iv_approx" | null;
+  histAvgAbsMovePct: number | null;
+  histBeatCount: number;
+  histQuarterCount: number;
+}
 interface Row {
   eventId: number;
   symbol: string;
@@ -33,6 +40,7 @@ interface Row {
   isTopExposure: boolean;
   hasCallNote: boolean;
   carryover: boolean;
+  intel: CockpitIntel | null;
 }
 interface Payload {
   generatedAt: string;
@@ -235,6 +243,23 @@ function CockpitRowView({ row, onChanged }: { row: Row; onChanged: () => void })
           </span>
         )}
       </span>
+
+      {row.intel && (row.intel.impliedMovePct != null || row.intel.histAvgAbsMovePct != null) && (
+        <span className="text-[12px] text-ink-dim whitespace-nowrap">
+          {row.intel.impliedMovePct != null && (
+            <>
+              impl {row.intel.impliedMethod === "iv_approx" ? "~" : ""}±{row.intel.impliedMovePct.toFixed(1)}%
+            </>
+          )}
+          {row.intel.impliedMovePct != null && row.intel.histAvgAbsMovePct != null && " · "}
+          {row.intel.histAvgAbsMovePct != null && (
+            <>
+              hist ±{row.intel.histAvgAbsMovePct.toFixed(1)}%
+              {row.intel.histQuarterCount > 0 && ` (${row.intel.histBeatCount}/${row.intel.histQuarterCount})`}
+            </>
+          )}
+        </span>
+      )}
 
       <span className="text-[12px] text-ink-faint">
         {row.consensus && <>cons {row.consensus}</>}

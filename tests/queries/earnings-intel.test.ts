@@ -2,7 +2,13 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { upsertEarningsIntel, replaceReportHistory } from "@/lib/mutations/earnings-intel";
-import { getIntelForEvents, getReportHistoryForFamily, isHistoryStale } from "@/lib/queries/earnings-intel";
+import {
+  getIntelForEvents,
+  getReportHistoryForFamily,
+  isHistoryStale,
+  decorateCockpitIntel,
+} from "@/lib/queries/earnings-intel";
+import type { CockpitPayload, CockpitRow } from "@/lib/queries/earnings-cockpit";
 
 let db: Database.Database;
 
@@ -66,5 +72,30 @@ describe("earnings_report_history", () => {
     expect(isHistoryStale(db, "TER")).toBe(false);
     db.prepare("UPDATE earnings_report_history SET fetched_at = '2026-01-01 00:00:00' WHERE symbol='TER'").run();
     expect(isHistoryStale(db, "TER")).toBe(true);
+  });
+});
+
+describe("decorateCockpitIntel", () => {
+  it("attaches cached intel + history summary per row; null when absent", () => {
+    const id = seedEvent();
+    upsertEarningsIntel(db, {
+      eventId: id, impliedMovePct: 4.8, impliedMethod: "straddle",
+      expiryUsed: "2026-07-18", straddleMid: 6.2, spot: 129.1, computedAt: "2026-07-14 14:05:00",
+    });
+    replaceReportHistory(db, "TER", [HIST()]);
+
+    const amcRow = { eventId: id, symbol: "TER" } as unknown as CockpitRow;
+    const carryoverRow = { eventId: 999999, symbol: "ZZZ" } as unknown as CockpitRow;
+    const payload = {
+      lanes: { bmo: [], unknown: [], amc: [amcRow] },
+      carryover: [carryoverRow],
+    } as unknown as CockpitPayload;
+
+    decorateCockpitIntel(db, payload);
+
+    expect(payload.lanes.amc[0].intel).toMatchObject({
+      impliedMovePct: 4.8, impliedMethod: "straddle", histBeatCount: 1,
+    });
+    expect(payload.carryover[0].intel).toBeNull();
   });
 });
