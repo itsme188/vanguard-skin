@@ -140,3 +140,77 @@ describe("removeStaleSameDayTwsHoldings", () => {
     expect(result.deleted).toBe(0);
   });
 });
+
+describe("removeStaleSameDayTwsHoldings with plaid prefix", () => {
+  let db: Database.Database;
+  let acctId: number;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    db.exec(`
+      CREATE TABLE accounts (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+      CREATE TABLE securities (id INTEGER PRIMARY KEY, symbol TEXT NOT NULL UNIQUE);
+      CREATE TABLE holdings (
+        id INTEGER PRIMARY KEY,
+        account_id INTEGER NOT NULL,
+        security_id INTEGER NOT NULL,
+        quantity REAL NOT NULL,
+        cost_basis REAL,
+        as_of_date TEXT NOT NULL,
+        source_key TEXT,
+        UNIQUE(account_id, security_id, as_of_date)
+      );
+    `);
+    acctId = db.prepare(`INSERT INTO accounts (name) VALUES ('Vanguard Taxable')`).run()
+      .lastInsertRowid as number;
+  });
+
+  function seed(symbol: string, prefix: string): number {
+    const secId = db.prepare(`INSERT INTO securities (symbol) VALUES (?)`).run(symbol)
+      .lastInsertRowid as number;
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+       VALUES (?, ?, 10, NULL, '2026-07-10', ?)`,
+    ).run(acctId, secId, `${prefix}${acctId}:${secId}:2026-07-10`);
+    return secId;
+  }
+
+  it("removes stale plaid rows, leaves tws + statement rows alone", () => {
+    const kept = seed("AAA", "plaid:");
+    const stale = seed("BBB", "plaid:");
+    const twsSec = db.prepare(`INSERT INTO securities (symbol) VALUES (?)`).run("CCC")
+      .lastInsertRowid as number;
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+       VALUES (?, ?, 5, NULL, '2026-07-10', ?)`,
+    ).run(acctId, twsSec, `tws-${acctId}-${twsSec}-2026-07-10`);
+
+    const result = removeStaleSameDayTwsHoldings(db, {
+      accountId: acctId,
+      asOfDate: "2026-07-10",
+      syncedSecurityIds: [kept],
+      sourceKeyLike: "plaid:%",
+    });
+    expect(result.deleted).toBe(1);
+    const remaining = db
+      .prepare(`SELECT security_id FROM holdings WHERE account_id = ? ORDER BY security_id`)
+      .all(acctId) as { security_id: number }[];
+    expect(remaining.map((r) => r.security_id)).toEqual([kept, twsSec].sort((a, b) => a - b));
+    expect(remaining.map((r) => r.security_id)).not.toContain(stale);
+  });
+
+  it("defaults to tws-% when sourceKeyLike omitted (back-compat)", () => {
+    const plaidSec = seed("DDD", "plaid:");
+    const result = removeStaleSameDayTwsHoldings(db, {
+      accountId: acctId,
+      asOfDate: "2026-07-10",
+      syncedSecurityIds: [999999],
+    });
+    // No tws rows exist → nothing counted, nothing deleted, plaid untouched
+    expect(result.deleted).toBe(0);
+    expect(
+      db.prepare(`SELECT COUNT(*) AS c FROM holdings WHERE security_id = ?`).get(plaidSec),
+    ).toEqual({ c: 1 });
+  });
+});

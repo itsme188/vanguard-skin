@@ -12,6 +12,11 @@ export interface RemoveStaleSameDayTwsHoldingsOptions {
    * day's book. Default 0.5 (same rationale as reconcileClosedEquityHoldings).
    */
   shrinkFloor?: number;
+  /**
+   * Source key prefix pattern to match when deleting stale rows.
+   * Default: 'tws-%' (for TWS snapshots). Use 'plaid:%' for Plaid syncs.
+   */
+  sourceKeyLike?: string;
 }
 
 export interface RemoveStaleSameDayTwsHoldingsResult {
@@ -46,14 +51,15 @@ export function removeStaleSameDayTwsHoldings(
   opts: RemoveStaleSameDayTwsHoldingsOptions
 ): RemoveStaleSameDayTwsHoldingsResult {
   const shrinkFloor = opts.shrinkFloor ?? 0.5;
+  const prefix = opts.sourceKeyLike ?? "tws-%";
 
   const existing = (
     db
       .prepare(
         `SELECT COUNT(*) AS c FROM holdings
-         WHERE account_id = ? AND as_of_date = ? AND source_key LIKE 'tws-%'`
+         WHERE account_id = ? AND as_of_date = ? AND source_key LIKE ?`
       )
-      .get(opts.accountId, opts.asOfDate) as { c: number }
+      .get(opts.accountId, opts.asOfDate, prefix) as { c: number }
   ).c;
 
   if (existing === 0) return { deleted: 0, skipped: false };
@@ -69,10 +75,10 @@ export function removeStaleSameDayTwsHoldings(
   const result = db
     .prepare(
       `DELETE FROM holdings
-       WHERE account_id = ? AND as_of_date = ? AND source_key LIKE 'tws-%'
+       WHERE account_id = ? AND as_of_date = ? AND source_key LIKE ?
          AND security_id NOT IN (${placeholders})`
     )
-    .run(opts.accountId, opts.asOfDate, ...opts.syncedSecurityIds);
+    .run(opts.accountId, opts.asOfDate, prefix, ...opts.syncedSecurityIds);
 
   return { deleted: result.changes, skipped: false };
 }
