@@ -1,4 +1,8 @@
 import type Database from "better-sqlite3";
+import {
+  excludeLiveSnapshotsSql,
+  onlyLiveSnapshotsSql,
+} from "@/lib/db/live-sources";
 
 export interface AccountSummary {
   id: number;
@@ -49,7 +53,7 @@ export function getAccountSummaries(db: Database.Database): AccountSummary[] {
           ms.twr,
           ROW_NUMBER() OVER (PARTITION BY ms.account_id ORDER BY ms.month_end_date DESC) AS rn
         FROM monthly_snapshots ms
-        WHERE ms.source != 'tws'
+        WHERE ${excludeLiveSnapshotsSql("ms.source")}
       ),
       latest_daily AS (
         SELECT
@@ -67,7 +71,7 @@ export function getAccountSummaries(db: Database.Database): AccountSummary[] {
           ms.total_value,
           ROW_NUMBER() OVER (PARTITION BY ms.account_id ORDER BY ms.month_end_date DESC) AS rn
         FROM monthly_snapshots ms
-        WHERE ms.source = 'tws'
+        WHERE ${onlyLiveSnapshotsSql("ms.source")}
           AND ms.month_end_date >= date('now', '-1 day')
       ),
       latest_holdings AS (
@@ -93,7 +97,7 @@ export function getAccountSummaries(db: Database.Database): AccountSummary[] {
         -- Previous: most recent non-TWS monthly snapshot strictly before the latest date
         (SELECT ms2.total_value FROM monthly_snapshots ms2
          WHERE ms2.account_id = a.id
-           AND ms2.source != 'tws'
+           AND ${excludeLiveSnapshotsSql("ms2.source")}
            AND ms2.month_end_date < CASE
              WHEN tw.total_value IS NOT NULL THEN tw.month_end_date
              WHEN COALESCE(d.valuation_date, '') > COALESCE(curr.month_end_date, '')
@@ -158,7 +162,7 @@ export function getPortfolioChartData(
       `SELECT ms.month_end_date, a.name as account_name, ms.total_value
        FROM monthly_snapshots ms
        JOIN accounts a ON a.id = ms.account_id
-       WHERE ms.source != 'tws'
+       WHERE ${excludeLiveSnapshotsSql("ms.source")}
        ORDER BY ms.month_end_date`
     )
     .all() as {
@@ -198,7 +202,7 @@ export function getPortfolioTotals(db: Database.Database): PortfolioTotals {
         SELECT account_id, month_end_date, total_value,
           ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY month_end_date DESC) AS rn
         FROM monthly_snapshots
-        WHERE source != 'tws'
+        WHERE ${excludeLiveSnapshotsSql("source")}
       ),
       latest_daily AS (
         SELECT account_id, valuation_date, total_value,
@@ -209,7 +213,7 @@ export function getPortfolioTotals(db: Database.Database): PortfolioTotals {
         SELECT account_id, month_end_date, total_value,
           ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY month_end_date DESC) AS rn
         FROM monthly_snapshots
-        WHERE source = 'tws'
+        WHERE ${onlyLiveSnapshotsSql("source")}
           AND month_end_date >= date('now', '-1 day')
       ),
       account_values AS (
@@ -228,7 +232,7 @@ export function getPortfolioTotals(db: Database.Database): PortfolioTotals {
             ELSE m.month_end_date
           END AS as_of_date,
           (SELECT ms2.total_value FROM monthly_snapshots ms2
-           WHERE ms2.account_id = a.id AND ms2.source != 'tws'
+           WHERE ms2.account_id = a.id AND ${excludeLiveSnapshotsSql("ms2.source")}
              AND ms2.month_end_date < CASE
                WHEN tw.total_value IS NOT NULL THEN tw.month_end_date
                WHEN COALESCE(d.valuation_date, '') > COALESCE(m.month_end_date, '')
@@ -261,7 +265,9 @@ export function getPortfolioTotals(db: Database.Database): PortfolioTotals {
 
   const snapshotCount = (
     db
-      .prepare("SELECT COUNT(*) as count FROM monthly_snapshots WHERE source != 'tws'")
+      .prepare(
+        `SELECT COUNT(*) as count FROM monthly_snapshots WHERE ${excludeLiveSnapshotsSql("source")}`
+      )
       .get() as { count: number }
   ).count;
   const accountCount = (

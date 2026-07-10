@@ -15,6 +15,7 @@
  */
 
 import type Database from "better-sqlite3";
+import { excludeLiveSnapshotsSql } from "@/lib/db/live-sources";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -238,7 +239,7 @@ export function computeXirr(
     .prepare(
       `SELECT MIN(month_end_date) AS min_date, MAX(month_end_date) AS max_date
        FROM monthly_snapshots
-       WHERE source != 'tws'`
+       WHERE ${excludeLiveSnapshotsSql("source")}`
     )
     .get() as { min_date: string | null; max_date: string | null };
 
@@ -264,7 +265,7 @@ export function computeXirr(
      FROM monthly_snapshots
      WHERE account_id = ?
        AND month_end_date <= ?
-       AND source != 'tws'
+       AND ${excludeLiveSnapshotsSql("source")}
      ORDER BY month_end_date DESC
      LIMIT 1`
   );
@@ -285,7 +286,7 @@ export function computeXirr(
      FROM monthly_snapshots
      WHERE account_id = ?
        AND month_end_date < ?
-       AND source != 'tws'
+       AND ${excludeLiveSnapshotsSql("source")}
      ORDER BY month_end_date DESC
      LIMIT 1`
   );
@@ -340,11 +341,11 @@ export function computeXirr(
              FROM monthly_snapshots p2
              WHERE p2.account_id = ms.account_id
                AND p2.month_end_date < ms.month_end_date
-               AND p2.source != 'tws'
+               AND ${excludeLiveSnapshotsSql("p2.source")}
            )
          WHERE ms.account_id = ?
            AND ms.month_end_date >= ? AND ms.month_end_date <= ?
-           AND ms.source != 'tws'
+           AND ${excludeLiveSnapshotsSql("ms.source")}
            AND ms.deposits_withdrawals IS NOT NULL AND ms.deposits_withdrawals != 0
          ORDER BY ms.month_end_date ASC`
       )
@@ -375,7 +376,7 @@ export function computeXirr(
                FROM monthly_snapshots
                WHERE account_id = ?
                  AND month_end_date >= ? AND month_end_date < ?
-                 AND source != 'tws'`
+                 AND ${excludeLiveSnapshotsSql("source")}`
             )
             .get(account.id, `${year}-01-01`, `${year}-12-01`) as {
             total: number;
@@ -499,9 +500,9 @@ export function computeXirr(
          SELECT MAX(month_end_date)
          FROM monthly_snapshots
          WHERE month_end_date < ?
-           AND source != 'tws'
+           AND ${excludeLiveSnapshotsSql("source")}
        )
-         AND source != 'tws'`
+         AND ${excludeLiveSnapshotsSql("source")}`
     )
     .get(effectiveStart) as { total_value: number | null } | undefined;
 
@@ -510,7 +511,7 @@ export function computeXirr(
       `SELECT MAX(month_end_date) AS d
        FROM monthly_snapshots
        WHERE month_end_date < ?
-         AND source != 'tws'`
+         AND ${excludeLiveSnapshotsSql("source")}`
     )
     .get(effectiveStart) as { d: string | null } | undefined;
 
@@ -551,7 +552,7 @@ export function computeXirr(
       `SELECT month_end_date, SUM(deposits_withdrawals) AS total_deps
        FROM monthly_snapshots
        WHERE month_end_date >= ? AND month_end_date <= ?
-         AND source != 'tws'
+         AND ${excludeLiveSnapshotsSql("source")}
          AND deposits_withdrawals IS NOT NULL AND deposits_withdrawals != 0
        GROUP BY month_end_date
        ORDER BY month_end_date ASC`
@@ -576,10 +577,10 @@ export function computeXirr(
            FROM monthly_snapshots p2
            WHERE p2.account_id = ms.account_id
              AND p2.month_end_date < ms.month_end_date
-             AND p2.source != 'tws'
+             AND ${excludeLiveSnapshotsSql("p2.source")}
          )
        WHERE ms.month_end_date >= ? AND ms.month_end_date <= ?
-         AND ms.source != 'tws'
+         AND ${excludeLiveSnapshotsSql("ms.source")}
          AND SUBSTR(ms.month_end_date, 6, 2) = '12'
          AND ms.starting_value IS NOT NULL`
     )
@@ -602,7 +603,7 @@ export function computeXirr(
          FROM monthly_snapshots
          WHERE account_id = ?
            AND month_end_date >= ? AND month_end_date < ?
-           AND source != 'tws'`
+           AND ${excludeLiveSnapshotsSql("source")}`
       )
       .get(ds.account_id, `${year}-01-01`, `${year}-12-01`) as {
       total: number;
@@ -645,9 +646,9 @@ export function computeXirr(
          SELECT MAX(month_end_date)
          FROM monthly_snapshots
          WHERE month_end_date <= ?
-           AND source != 'tws'
+           AND ${excludeLiveSnapshotsSql("source")}
        )
-         AND source != 'tws'`
+         AND ${excludeLiveSnapshotsSql("source")}`
     )
     .get(effectiveEnd) as { total_value: number | null } | undefined;
 
