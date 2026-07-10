@@ -37,7 +37,7 @@ export interface SyncState {
   lastSyncResult: AutoRefreshResult | null;
   /** Which pipeline produced lastSyncResult — the TWS auto-refresh or the
    *  IBKR Web API disconnected fallback (R1b). Null until the first sync. */
-  lastSyncVia: "tws" | "ibkr-webapi" | null;
+  lastSyncVia: "tws" | "ibkr-webapi" | "plaid" | null;
   error: string | null;
 }
 
@@ -82,7 +82,7 @@ export function setSyncProgress(progress: PhaseProgress): void {
 
 export function setSyncComplete(
   result: AutoRefreshResult,
-  via: "tws" | "ibkr-webapi" = "tws",
+  via: "tws" | "ibkr-webapi" | "plaid" = "tws",
 ): void {
   g.__sync_state!.status = "idle";
   g.__sync_state!.currentPhase = null;
