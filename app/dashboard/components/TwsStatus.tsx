@@ -102,10 +102,11 @@ export function TwsStatus() {
                 refreshed prices while TWS is down — say so instead of looking
                 like nothing ever syncs away from home. */}
             {syncState?.lastSyncAt &&
-              syncState.lastSyncVia === "ibkr-webapi" &&
+              (syncState.lastSyncVia === "ibkr-webapi" || syncState.lastSyncVia === "plaid") &&
               status.state !== "connected" && (
                 <span className="text-ink-faint">
-                  · Web API synced {formatTimeSince(syncState.lastSyncAt)}
+                  · {syncState.lastSyncVia === "plaid" ? "Plaid" : "Web API"} synced{" "}
+                  {formatTimeSince(syncState.lastSyncAt)}
                 </span>
               )}
           </>
@@ -564,7 +565,9 @@ function TwsPanel({
                 {(syncState.lastSyncResult.durationMs / 1000).toFixed(0)}s
                 {syncState.lastSyncVia === "ibkr-webapi"
                   ? " · via IBKR Web API (TWS offline)"
-                  : ""}
+                  : syncState.lastSyncVia === "plaid"
+                    ? " · via Plaid (Vanguard)"
+                    : ""}
               </p>
             )}
 
