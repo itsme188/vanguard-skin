@@ -35,12 +35,12 @@ Mirror of the IBKR Web API live path (`lib/ibkr/refresh.ts`): a live-sync module
 Pipeline per run (all-or-nothing per account, DI-shaped, injected `fetchImpl` for tests):
 
 1. **Fetch** `/investments/holdings/get` (returns holdings + securities + account balances in one call).
-2. **Map securities.** Resolution order: `ticker_symbol` match against `securities` (issuer-family aware) → CUSIP match → **log-and-skip** (surfaced in the sync result; never guessed). Options run through `ensureOCCSymbol()` before matching. Plaid rows for the settlement fund (VMFXX) fold into cash, not holdings.
-3. **Write holdings**: full snapshot per mapped account at `todayET()`, `source_key = 'plaid:{acct}:{symbol}'`, **`cost_basis = NULL`** (readers COALESCE back to statement rows — same as TWS rows).
+2. **Map securities.** Resolution order: clean `ticker_symbol` → match-or-create via `upsertSecurity` (keyed on symbol, same as the IBKR live path — creating on a clean ticker is what makes a brand-new mid-month buy appear before the statement); no ticker → CUSIP-as-symbol (the codebase's bond convention) → otherwise **log-and-skip** (surfaced in the sync result; never guessed — `isGarbageSymbol` gate). Options run through `ensureOCCSymbol()` before matching. Plaid rows for the settlement fund (VMFXX / `is_cash_equivalent`) fold into cash, not holdings.
+3. **Write holdings**: full snapshot per mapped account at `todayET()`, `source_key = 'plaid:{accountId}:{securityId}:{date}'` (date included because `holdings.source_key` is globally UNIQUE — the IBKR path does the same), **`cost_basis = NULL`** (readers COALESCE back to statement rows — same as TWS rows). Upsert is conditional: only overwrites rows whose source_key is `tws-`/`plaid:`-prefixed, never a statement row.
 4. **Same-day stale cleanup**: sibling of `removeStaleSameDayTwsHoldings` for `plaid:%` rows absent from the current pull; 50% shrink-guarded.
 5. **Closed positions**: call the existing `reconcileClosedEquityHoldings(db)` (snapshot-diff → `quantity = 0` rows, non-destructive, shrink-guarded).
 6. **Live account snapshot**: same-day `monthly_snapshots` row (NetLiq + cash) with **`source = 'plaid'`** — a fresh cash anchor so a mid-month buy doesn't double-count against carried-forward inferred cash.
-7. **Mutual-fund prices**: Plaid `institution_price` → `prices` with `source = 'vanguard'` (priority 3) **only** for securities whose `security_type` is `Mutual Fund` (case-insensitive, per convention) — the one class TWS snapshot pricing doesn't cover; TWS (priority 1) keeps winning elsewhere.
+7. **Mutual-fund prices**: Plaid `institution_price` → `prices` with **`source = 'plaid'`** at priority tier 3 (a new `WHEN 'plaid' THEN 3` in the engine's priority CASE — plain `'vanguard'` isn't in that map, and honest provenance beats borrowing a statement source string) **only** for securities whose Plaid type is `mutual fund` — the one class TWS snapshot pricing doesn't cover. The Plaid write itself is conditional (`WHERE prices.source IN ('plaid','manual')`) so it never claims a tws/statement price.
 8. **`computeDailyValuations()`**, then report through sync-state with `lastSyncVia: 'plaid'` (mutex via `isSyncing()`).
 
 ### 3. Invariant extensions (the sacred-ground changes)
@@ -80,4 +80,5 @@ Pipeline per run (all-or-nothing per account, DI-shaped, injected `fetchImpl` fo
 | Access token home | SQLite `settings` table | Runtime-obtained by web app; DB local + gitignored |
 | Cost basis | Ignored (NULL) | Plaid unreliable; COALESCE-to-statement precedent exists |
 | Snapshot provenance | New `source = 'plaid'` + shared `LIVE_SNAPSHOT_SOURCES` predicate | Honest provenance without scattering a second magic string |
-| Prices | Mutual funds only, priority 3 | TWS already prices listed securities at priority 1 |
+| Prices | Mutual funds only, `source='plaid'` at priority tier 3 | TWS already prices listed securities at priority 1; honest provenance |
+| New mid-month buys | Created via `upsertSecurity` on clean ticker | Log-and-skip would hide the exact positions this feature exists to surface |
