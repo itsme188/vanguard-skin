@@ -6,6 +6,7 @@
  */
 
 import type Database from "better-sqlite3";
+import { excludeLiveSnapshotsSql } from "@/lib/db/live-sources";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -236,7 +237,7 @@ function scoreCashAccuracy(db: Database.Database): CashAccuracyScore {
       MAX(month_end_date) AS latest_date,
       CAST(julianday(?) - julianday(MAX(month_end_date)) AS INTEGER) AS days_since
     FROM monthly_snapshots
-    WHERE source != 'tws'
+    WHERE ${excludeLiveSnapshotsSql("source")}
   `).get(today) as { latest_date: string | null; days_since: number | null };
 
   const whyMatters =
