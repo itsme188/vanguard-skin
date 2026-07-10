@@ -388,7 +388,7 @@ export function commitImport(
         cost_basis = excluded.cost_basis,
         import_batch_id = excluded.import_batch_id,
         source_key = excluded.source_key
-      WHERE holdings.source_key LIKE 'tws-%'
+      WHERE holdings.source_key LIKE 'tws-%' OR holdings.source_key LIKE 'plaid:%'
     `);
 
     for (const h of parsed.holdings) {
@@ -463,6 +463,7 @@ export function commitImport(
         WHEN 'vanguard-pdf' THEN 3
         WHEN 'vanguard-export' THEN 3
         WHEN 'vanguard-holdings' THEN 3
+        WHEN 'plaid' THEN 3
         ELSE 4
       END <= CASE prices.source
         WHEN 'tws' THEN 1
@@ -471,6 +472,7 @@ export function commitImport(
         WHEN 'vanguard-pdf' THEN 3
         WHEN 'vanguard-export' THEN 3
         WHEN 'vanguard-holdings' THEN 3
+        WHEN 'plaid' THEN 3
         ELSE 4
       END
     `);
@@ -524,7 +526,7 @@ export function commitImport(
         twr = excluded.twr,
         investment_gain = excluded.investment_gain,
         import_batch_id = excluded.import_batch_id
-      WHERE monthly_snapshots.source IN ('tws', 'manual')
+      WHERE monthly_snapshots.source IN ('tws', 'manual', 'plaid')
     `);
 
     for (const s of parsed.snapshots) {
