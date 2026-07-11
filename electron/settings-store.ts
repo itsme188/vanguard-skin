@@ -63,6 +63,14 @@ interface AppSettings {
   r2SecretAccessKey?: string;
   /** Worker /internal/marker URL — Mac pre-flights cloud-sent dedup markers. */
   workerMarkerUrl?: string;
+  /** Plaid client ID — linked banking account sync (optional). */
+  plaidClientId?: string;
+  /** Plaid secret key — linked banking account sync (optional). */
+  plaidSecret?: string;
+  /** Plaid environment — sandbox, development, or production. */
+  plaidEnv?: string;
+  /** Plaid OAuth redirect URI — for account linking flow. */
+  plaidRedirectUri?: string;
   /** Auto-refresh interval in minutes. 0 = disabled. Default: 30. */
   refreshIntervalMinutes?: number;
   firstRunComplete?: boolean;
@@ -148,6 +156,10 @@ const ENV_TO_SETTING: Array<[string, keyof AppSettings]> = [
   ["R2_BUCKET_NAME", "r2BucketName"],
   ["R2_SECRET_ACCESS_KEY", "r2SecretAccessKey"],
   ["WORKER_MARKER_URL", "workerMarkerUrl"],
+  ["PLAID_CLIENT_ID", "plaidClientId"],
+  ["PLAID_SECRET", "plaidSecret"],
+  ["PLAID_ENV", "plaidEnv"],
+  ["PLAID_REDIRECT_URI", "plaidRedirectUri"],
 ];
 
 function parseEnvFile(envPath: string): Record<string, string> {
@@ -248,6 +260,10 @@ export function getSanitizedSettings(): Record<string, string | number | boolean
     r2BucketName: s.r2BucketName ?? "",
     r2SecretAccessKey: s.r2SecretAccessKey ? "***" + s.r2SecretAccessKey.slice(-4) : "",
     workerMarkerUrl: s.workerMarkerUrl ?? "",
+    plaidClientId: s.plaidClientId ?? "",
+    plaidSecret: s.plaidSecret ? "***" + s.plaidSecret.slice(-4) : "",
+    plaidEnv: s.plaidEnv ?? "",
+    plaidRedirectUri: s.plaidRedirectUri ?? "",
     hasAnthropicKey: !!s.anthropicApiKey,
     hasCloudflareGateway: !!(s.cloudflareAccountId && s.cloudflareGatewayId),
     autoConnectTws: s.autoConnectTws ?? true,

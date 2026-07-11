@@ -39,6 +39,20 @@ export interface AppSettings {
   cloudflareGatewayToken?: string;
   cloudflareWorkersAIToken?: string;
   openaiApiKey?: string;
+  pushoverLinkBase?: string;
+  cronSharedSecret?: string;
+  finnhubApiKey?: string;
+  googleClientId?: string;
+  googleClientSecret?: string;
+  googleRefreshToken?: string;
+  r2AccessKeyId?: string;
+  r2BucketName?: string;
+  r2SecretAccessKey?: string;
+  workerMarkerUrl?: string;
+  plaidClientId?: string;
+  plaidSecret?: string;
+  plaidEnv?: string;
+  plaidRedirectUri?: string;
   refreshIntervalMinutes?: number;
   firstRunComplete?: boolean;
 }
@@ -116,6 +130,7 @@ export function getSanitizedSettings(): Record<string, string | number | boolean
     alphaVantageApiKey: s.alphaVantageApiKey ? "***" + s.alphaVantageApiKey.slice(-4) : "",
     pushoverAppToken: s.pushoverAppToken ? "***" + s.pushoverAppToken.slice(-4) : "",
     pushoverUserKey: s.pushoverUserKey ? "***" + s.pushoverUserKey.slice(-4) : "",
+    pushoverLinkBase: s.pushoverLinkBase ?? "",
     cloudflareAccountId: s.cloudflareAccountId ?? "",
     cloudflareGatewayId: s.cloudflareGatewayId ?? "",
     cloudflareGatewayToken: s.cloudflareGatewayToken
@@ -125,6 +140,19 @@ export function getSanitizedSettings(): Record<string, string | number | boolean
       ? "***" + s.cloudflareWorkersAIToken.slice(-4)
       : "",
     openaiApiKey: s.openaiApiKey ? "***" + s.openaiApiKey.slice(-4) : "",
+    cronSharedSecret: s.cronSharedSecret ? "***" + s.cronSharedSecret.slice(-4) : "",
+    finnhubApiKey: s.finnhubApiKey ? "***" + s.finnhubApiKey.slice(-4) : "",
+    googleClientId: s.googleClientId ?? "",
+    googleClientSecret: s.googleClientSecret ? "***" + s.googleClientSecret.slice(-4) : "",
+    googleRefreshToken: s.googleRefreshToken ? "***" + s.googleRefreshToken.slice(-4) : "",
+    r2AccessKeyId: s.r2AccessKeyId ? "***" + s.r2AccessKeyId.slice(-4) : "",
+    r2BucketName: s.r2BucketName ?? "",
+    r2SecretAccessKey: s.r2SecretAccessKey ? "***" + s.r2SecretAccessKey.slice(-4) : "",
+    workerMarkerUrl: s.workerMarkerUrl ?? "",
+    plaidClientId: s.plaidClientId ?? "",
+    plaidSecret: s.plaidSecret ? "***" + s.plaidSecret.slice(-4) : "",
+    plaidEnv: s.plaidEnv ?? "",
+    plaidRedirectUri: s.plaidRedirectUri ?? "",
     hasAnthropicKey: !!s.anthropicApiKey,
     hasCloudflareGateway: !!(s.cloudflareAccountId && s.cloudflareGatewayId),
     autoConnectTws: s.autoConnectTws ?? true,
