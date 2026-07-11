@@ -3,6 +3,7 @@ import {
   createLinkToken,
   exchangePublicToken,
   getInvestmentsHoldings,
+  loadPlaidConfig,
   PlaidApiError,
   type PlaidClientConfig,
 } from "@/lib/plaid/client";
@@ -79,5 +80,54 @@ describe("plaid client", () => {
     } catch (e) {
       expect((e as PlaidApiError).errorCode).toBe("ITEM_LOGIN_REQUIRED");
     }
+  });
+
+  describe("loadPlaidConfig redirectUri (F3)", () => {
+    // process.env.PLAID_REDIRECT_URI ?? default treated "" (Electron
+    // settings.json injection with an unset/blank field) as PRESENT,
+    // shipping an empty redirect_uri to Plaid. Must fall back to the
+    // default on empty string, not just undefined.
+    const ENV_KEYS = ["PLAID_CLIENT_ID", "PLAID_SECRET", "PLAID_REDIRECT_URI", "PLAID_ENV"] as const;
+    const saved: Record<string, string | undefined> = {};
+
+    function withEnv(overrides: Record<string, string | undefined>, fn: () => void) {
+      for (const key of ENV_KEYS) saved[key] = process.env[key];
+      try {
+        for (const key of ENV_KEYS) {
+          if (overrides[key] === undefined) delete process.env[key];
+          else process.env[key] = overrides[key];
+        }
+        fn();
+      } finally {
+        for (const key of ENV_KEYS) {
+          if (saved[key] === undefined) delete process.env[key];
+          else process.env[key] = saved[key];
+        }
+      }
+    }
+
+    it("falls back to the default redirectUri when PLAID_REDIRECT_URI is an empty string", () => {
+      withEnv(
+        { PLAID_CLIENT_ID: "cid", PLAID_SECRET: "sec", PLAID_REDIRECT_URI: "" },
+        () => {
+          const cfg = loadPlaidConfig();
+          expect(cfg?.redirectUri).toBe("http://localhost:3099/dashboard/plaid-link");
+        },
+      );
+    });
+
+    it("uses PLAID_REDIRECT_URI when it's a non-empty string", () => {
+      withEnv(
+        {
+          PLAID_CLIENT_ID: "cid",
+          PLAID_SECRET: "sec",
+          PLAID_REDIRECT_URI: "https://example.com/plaid-link",
+        },
+        () => {
+          const cfg = loadPlaidConfig();
+          expect(cfg?.redirectUri).toBe("https://example.com/plaid-link");
+        },
+      );
+    });
   });
 });
