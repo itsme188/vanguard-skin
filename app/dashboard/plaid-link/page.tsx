@@ -16,6 +16,14 @@
  * load and no SSR content, so the client-only read is simpler and avoids
  * the Suspense wrapper entirely.
  *
+ * The OAuth resume leg's URL is Vanguard's registered redirect_uri —
+ * Plaid does NOT echo `?mode=reauth` back onto it, so whether the resumed
+ * session is a reauth (skip token exchange) or a fresh connect (exchange
+ * the public token) can't be re-derived from the resume URL's query
+ * string. It's captured at mint time instead: the link token AND the
+ * reauth flag are stashed together as one JSON payload in localStorage,
+ * and the resume leg reads BOTH back from that payload.
+ *
  * Opened via `target="_blank"` from Settings → Vanguard Live (Plaid), so
  * it renders inside the normal dashboard shell (header/nav) in its own
  * tab — same as any other /dashboard/* route.
@@ -32,7 +40,7 @@ declare global {
 }
 
 const LINK_SCRIPT_SRC = "https://cdn.plaid.com/link/v2/stable/link-initialize.js";
-const TOKEN_STORAGE_KEY = "vgs:plaidLinkToken";
+const LINK_STORAGE_KEY = "vgs:plaidLink";
 
 type ConnectState =
   | { kind: "loading" }
@@ -40,8 +48,47 @@ type ConnectState =
   | { kind: "success"; message: string }
   | { kind: "error"; message: string };
 
+// Persisted across the Vanguard OAuth redirect: the Link token to resume
+// with, plus whether this session is a reauth (update mode — skip the
+// exchange call) or a fresh connect (exchange the public token).
+type StoredLinkPayload = { token: string; reauth: boolean };
+
+function parseStoredLink(raw: string | null): StoredLinkPayload | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<StoredLinkPayload> | null;
+    if (parsed && typeof parsed.token === "string" && parsed.token.length > 0 && typeof parsed.reauth === "boolean") {
+      return { token: parsed.token, reauth: parsed.reauth };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function loadPlaidScript(): Promise<void> {
   if (window.Plaid) return Promise.resolve();
+
+  // React Strict Mode double-mounts effects in dev, which can call this
+  // twice in quick succession. If a script tag is already present (from
+  // this mount's first pass, or a prior in-flight load), don't append a
+  // second one — just poll for window.Plaid to appear.
+  const existing = document.querySelector<HTMLScriptElement>(`script[src="${LINK_SCRIPT_SRC}"]`);
+  if (existing) {
+    return new Promise((resolve, reject) => {
+      const start = Date.now();
+      const timer = setInterval(() => {
+        if (window.Plaid) {
+          clearInterval(timer);
+          resolve();
+        } else if (Date.now() - start > 10000) {
+          clearInterval(timer);
+          reject(new Error("Failed to load the Plaid Link script."));
+        }
+      }, 50);
+    });
+  }
+
   return new Promise((resolve, reject) => {
     const script = document.createElement("script");
     script.src = LINK_SCRIPT_SRC;
@@ -71,7 +118,7 @@ export default function PlaidLinkPage() {
           error?: string;
         };
         if (cancelled) return;
-        localStorage.removeItem(TOKEN_STORAGE_KEY);
+        localStorage.removeItem(LINK_STORAGE_KEY);
         if (!data.success) {
           setState({ kind: "error", message: data.error || "Exchange failed." });
           return;
@@ -83,7 +130,7 @@ export default function PlaidLinkPage() {
         });
       } catch (err) {
         if (cancelled) return;
-        localStorage.removeItem(TOKEN_STORAGE_KEY);
+        localStorage.removeItem(LINK_STORAGE_KEY);
         setState({
           kind: "error",
           message: err instanceof Error ? `Exchange failed: ${err.message}` : "Exchange failed.",
@@ -93,7 +140,7 @@ export default function PlaidLinkPage() {
 
     function handleExit(err: { error_message?: string; display_message?: string } | null | undefined) {
       if (cancelled) return;
-      localStorage.removeItem(TOKEN_STORAGE_KEY);
+      localStorage.removeItem(LINK_STORAGE_KEY);
       if (!err) {
         setState({ kind: "error", message: "Link closed before connecting — nothing was changed." });
         return;
@@ -119,20 +166,22 @@ export default function PlaidLinkPage() {
 
         if (isOauthResume) {
           // Return leg of Vanguard's OAuth redirect — resume the SAME Link
-          // session with the token we stashed before leaving the page.
-          const token = localStorage.getItem(TOKEN_STORAGE_KEY);
-          if (!token) {
+          // session with the token + reauth flag we stashed before leaving
+          // the page. Do NOT re-derive reauth from this URL's query string
+          // — Plaid's redirect_uri never carries `?mode=reauth`.
+          const stored = parseStoredLink(localStorage.getItem(LINK_STORAGE_KEY));
+          if (!stored) {
             throw new Error(
               "Missing Link session — the token stored before the redirect wasn't found. Close this tab and reconnect from Settings.",
             );
           }
           setState({ kind: "opening" });
           window.Plaid.create({
-            token,
+            token: stored.token,
             receivedRedirectUri: window.location.href,
             onSuccess: (publicToken: string) => {
-              if (isReauth) {
-                localStorage.removeItem(TOKEN_STORAGE_KEY);
+              if (stored.reauth) {
+                localStorage.removeItem(LINK_STORAGE_KEY);
                 setState({ kind: "success", message: "Re-authenticated." });
                 return;
               }
@@ -154,14 +203,17 @@ export default function PlaidLinkPage() {
         if (!data.success || !data.linkToken) {
           throw new Error(data.error || `Failed to create a link token (HTTP ${res.status}).`);
         }
-        localStorage.setItem(TOKEN_STORAGE_KEY, data.linkToken);
+        localStorage.setItem(
+          LINK_STORAGE_KEY,
+          JSON.stringify({ token: data.linkToken, reauth: isReauth } satisfies StoredLinkPayload),
+        );
         if (cancelled) return;
         setState({ kind: "opening" });
         window.Plaid.create({
           token: data.linkToken,
           onSuccess: (publicToken: string) => {
             if (isReauth) {
-              localStorage.removeItem(TOKEN_STORAGE_KEY);
+              localStorage.removeItem(LINK_STORAGE_KEY);
               setState({ kind: "success", message: "Re-authenticated." });
               return;
             }
