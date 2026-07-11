@@ -134,6 +134,10 @@ function startServer(): Promise<void> {
     if (settings.r2BucketName) env.R2_BUCKET_NAME = settings.r2BucketName;
     if (settings.r2SecretAccessKey) env.R2_SECRET_ACCESS_KEY = settings.r2SecretAccessKey;
     if (settings.workerMarkerUrl) env.WORKER_MARKER_URL = settings.workerMarkerUrl;
+    if (settings.plaidClientId) env.PLAID_CLIENT_ID = settings.plaidClientId;
+    if (settings.plaidSecret) env.PLAID_SECRET = settings.plaidSecret;
+    if (settings.plaidEnv) env.PLAID_ENV = settings.plaidEnv;
+    if (settings.plaidRedirectUri) env.PLAID_REDIRECT_URI = settings.plaidRedirectUri;
 
     // Use the standalone server.js (works in both dev and packaged modes)
     const serverScript = IS_DEV
