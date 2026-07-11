@@ -14,6 +14,7 @@ import { AccountDetail } from "../components/AccountDetail";
 import { AccountSelector } from "../components/AccountSelector";
 import { AllHoldingsTable } from "../components/AllHoldingsTable";
 import { EmptyState } from "../components/EmptyState";
+import { PlaidSyncButton } from "../components/PlaidSyncButton";
 
 export default async function AccountsPage(props: {
   searchParams: Promise<{ id?: string }>;
@@ -52,11 +53,14 @@ export default async function AccountsPage(props: {
       <div className="space-y-6">
         <AccountSelector accounts={accounts} selected="all" />
         <section id="holdings" className="space-y-4 scroll-mt-24">
-          <div>
-            <h2 className="text-lg font-medium text-ink">Holdings</h2>
-            <p className="text-sm text-ink-faint mt-0.5">
-              {holdings.length} positions across all accounts
-            </p>
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div>
+              <h2 className="text-lg font-medium text-ink">Holdings</h2>
+              <p className="text-sm text-ink-faint mt-0.5">
+                {holdings.length} positions across all accounts
+              </p>
+            </div>
+            <PlaidSyncButton />
           </div>
           {holdings.length === 0 ? (
             <EmptyState

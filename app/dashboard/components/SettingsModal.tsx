@@ -6,6 +6,7 @@ import { useElectron } from "@/lib/hooks/useElectron";
 import { AiModelsSection } from "./AiModelsSection";
 import { EarningsEmailsSection } from "./EarningsEmailsSection";
 import { EmailRecipientsSection } from "./EmailRecipientsSection";
+import { PlaidSection } from "./PlaidSection";
 
 /**
  * Settings source abstraction — either Electron IPC (packaged app) or the
@@ -376,6 +377,16 @@ export function SettingsModal() {
               {!unavailableReason && (
                 <div className="pt-2 border-t border-edge">
                   <AiModelsSection />
+                </div>
+              )}
+
+              {/* Plaid-backed live Vanguard holdings feed — DB-backed
+                  connection state (access token, account map) via
+                  /api/settings/plaid, same reasoning as the sections
+                  above: applies immediately, no app restart. */}
+              {!unavailableReason && (
+                <div className="pt-2 border-t border-edge">
+                  <PlaidSection />
                 </div>
               )}
 
