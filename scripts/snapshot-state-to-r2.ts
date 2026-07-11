@@ -518,9 +518,25 @@ function buildSnapshot(db: Database.Database): Snapshot {
   // analyst recs, transcripts, notes) is intentionally NOT in the fallback —
   // the cloud email is a leaner "actuals + reaction + positions" version
   // with a footer disclosing limited context.
+  // Cost basis fallback: Plaid sync writes cost_basis = NULL on holdings
+  // rows. Statement imports write the same (account, security) pair with
+  // cost_basis populated on the period-end date. Without this COALESCE,
+  // the first Plaid sync would blank out return-% disclosures in every
+  // Worker cloud-fallback earnings email — mirrors
+  // lib/digest/send-earnings-email.ts::getCrossAccountPositions and
+  // lib/queries/holdings.ts::getAllHoldings/getHoldingsByAccount.
   const holdings = db
     .prepare(
-      `SELECT h.id, h.account_id, h.security_id, h.quantity, h.cost_basis, h.as_of_date
+      `SELECT h.id, h.account_id, h.security_id, h.quantity,
+              COALESCE(
+                h.cost_basis,
+                (SELECT h3.cost_basis FROM holdings h3
+                  WHERE h3.account_id = h.account_id
+                    AND h3.security_id = h.security_id
+                    AND h3.cost_basis IS NOT NULL
+                  ORDER BY h3.as_of_date DESC LIMIT 1)
+              ) AS cost_basis,
+              h.as_of_date
          FROM holdings h
         WHERE h.quantity != 0
           AND h.as_of_date = (

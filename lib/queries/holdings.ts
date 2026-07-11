@@ -39,6 +39,25 @@ export function getAllHoldings(db: Database.Database): AllHoldingsRow[] {
     "COALESCE(fx.usd_per_unit, 1)",
   );
 
+  // Cost basis fallback: Plaid sync writes holdings rows with cost_basis =
+  // NULL (Plaid's investments/holdings/get response has no reliable basis
+  // field for every account type). Statement imports write the same
+  // (account, security) pair with cost_basis populated on the period-end
+  // date. Pre-fix this query keyed off MAX(as_of_date) per account and
+  // silently dropped cost_basis whenever a Plaid row existed on a later
+  // date than the most recent statement — every Vanguard holding rendered
+  // "-" cost basis and NULL unrealized gain after the first Plaid sync.
+  // Mirrors the identical pattern in getCrossAccountPositions
+  // (lib/digest/send-earnings-email.ts).
+  const costBasisExpr = `COALESCE(
+        h.cost_basis,
+        (SELECT h3.cost_basis FROM holdings h3
+          WHERE h3.account_id = h.account_id
+            AND h3.security_id = h.security_id
+            AND h3.cost_basis IS NOT NULL
+          ORDER BY h3.as_of_date DESC LIMIT 1)
+      )`;
+
   const sql = `
     SELECT
       h.account_id,
@@ -49,14 +68,14 @@ export function getAllHoldings(db: Database.Database): AllHoldingsRow[] {
       s.security_type,
       COALESCE(s.multiplier, 1) AS multiplier,
       h.quantity,
-      h.cost_basis * COALESCE(fx.usd_per_unit, 1) AS cost_basis,
+      ${costBasisExpr} * COALESCE(fx.usd_per_unit, 1) AS cost_basis,
       h.as_of_date,
       p.close_price AS current_price,
       CASE WHEN p.close_price IS NOT NULL
         THEN ${marketValueExpr}
         ELSE NULL END AS current_value,
-      CASE WHEN p.close_price IS NOT NULL AND h.cost_basis IS NOT NULL
-        THEN ${marketValueExpr} - (h.cost_basis * COALESCE(fx.usd_per_unit, 1))
+      CASE WHEN p.close_price IS NOT NULL AND ${costBasisExpr} IS NOT NULL
+        THEN ${marketValueExpr} - (${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))
         ELSE NULL END AS unrealized_gain
     FROM holdings h
     JOIN accounts a ON a.id = h.account_id
@@ -81,11 +100,22 @@ export function getHoldingsByAccount(
   accountId: number,
   asOfDate?: string
 ): HoldingWithSecurity[] {
+  // Cost basis fallback — see getAllHoldings above for the Plaid-NULL
+  // rationale; same pattern as getCrossAccountPositions.
+  const costBasisExpr = `COALESCE(
+        h.cost_basis,
+        (SELECT h2.cost_basis FROM holdings h2
+          WHERE h2.account_id = h.account_id
+            AND h2.security_id = h.security_id
+            AND h2.cost_basis IS NOT NULL
+          ORDER BY h2.as_of_date DESC LIMIT 1)
+      )`;
+
   let sql = `
     SELECT h.*, s.symbol, s.name as security_name, s.security_type, a.name as account_name,
            s.underlying_symbol, s.strike_price, s.expiration_date, s.option_type,
            COALESCE(s.multiplier, 1) as multiplier,
-           h.cost_basis * COALESCE(fx.usd_per_unit, 1) as cost_basis
+           ${costBasisExpr} * COALESCE(fx.usd_per_unit, 1) as cost_basis
     FROM holdings h
     JOIN securities s ON s.id = h.security_id
     JOIN accounts a ON a.id = h.account_id
