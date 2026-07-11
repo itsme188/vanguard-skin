@@ -45,6 +45,7 @@ const LINK_STORAGE_KEY = "vgs:plaidLink";
 type ConnectState =
   | { kind: "loading" }
   | { kind: "opening" }
+  | { kind: "syncing" }
   | { kind: "success"; message: string }
   | { kind: "error"; message: string };
 
@@ -138,6 +139,50 @@ export default function PlaidLinkPage() {
       }
     }
 
+    // Reauth (Link update-mode) success path — shared by the direct leg
+    // and the OAuth-resume leg. Update mode never mints a new access
+    // token/public token exchange, so nothing in this flow otherwise
+    // clears plaid_connection_status='reauth_required' — Settings would
+    // keep showing "Reconnect" forever until the next 07:30 ET cron sync
+    // happens to succeed. Firing a sync here closes that gap immediately
+    // and reports honestly: the orchestrator itself sets status="ok" on a
+    // successful sync (no change needed there), so a failed sync here
+    // correctly leaves the reauth-required banner up.
+    async function reauthSuccessAndSync() {
+      localStorage.removeItem(LINK_STORAGE_KEY);
+      if (cancelled) return;
+      setState({ kind: "syncing" });
+      try {
+        const res = await fetch("/api/plaid/sync", { method: "POST" });
+        const data = (await res.json()) as {
+          success: boolean;
+          holdingsWritten?: number;
+          error?: string;
+        };
+        if (cancelled) return;
+        if (data.success) {
+          const n = data.holdingsWritten ?? 0;
+          setState({
+            kind: "success",
+            message: `Re-authenticated and synced — ${n} holding${n === 1 ? "" : "s"} updated.`,
+          });
+        } else {
+          setState({
+            kind: "error",
+            message: `Re-authenticated. Sync failed: ${data.error || "unknown error"} — you can retry from Settings.`,
+          });
+        }
+      } catch (err) {
+        if (cancelled) return;
+        setState({
+          kind: "error",
+          message: `Re-authenticated. Sync failed: ${
+            err instanceof Error ? err.message : "unknown error"
+          } — you can retry from Settings.`,
+        });
+      }
+    }
+
     function handleExit(err: { error_message?: string; display_message?: string } | null | undefined) {
       if (cancelled) return;
       localStorage.removeItem(LINK_STORAGE_KEY);
@@ -181,8 +226,7 @@ export default function PlaidLinkPage() {
             receivedRedirectUri: window.location.href,
             onSuccess: (publicToken: string) => {
               if (stored.reauth) {
-                localStorage.removeItem(LINK_STORAGE_KEY);
-                setState({ kind: "success", message: "Re-authenticated." });
+                void reauthSuccessAndSync();
                 return;
               }
               void exchangeAndReport(publicToken);
@@ -213,8 +257,7 @@ export default function PlaidLinkPage() {
           token: data.linkToken,
           onSuccess: (publicToken: string) => {
             if (isReauth) {
-              localStorage.removeItem(LINK_STORAGE_KEY);
-              setState({ kind: "success", message: "Re-authenticated." });
+              void reauthSuccessAndSync();
               return;
             }
             void exchangeAndReport(publicToken);
@@ -249,6 +292,9 @@ export default function PlaidLinkPage() {
         )}
         {state.kind === "opening" && (
           <p className="text-sm text-ink-faint italic">Opening Plaid Link…</p>
+        )}
+        {state.kind === "syncing" && (
+          <p className="text-sm text-ink-faint italic">Re-authenticated — syncing holdings…</p>
         )}
         {state.kind === "success" && (
           <>
