@@ -24,7 +24,7 @@ export function loadPlaidConfig(): PlaidClientConfig | null {
     secret,
     env,
     redirectUri:
-      process.env.PLAID_REDIRECT_URI ?? "http://localhost:3099/dashboard/plaid-link",
+      process.env.PLAID_REDIRECT_URI || "http://localhost:3099/dashboard/plaid-link",
   };
 }
 
