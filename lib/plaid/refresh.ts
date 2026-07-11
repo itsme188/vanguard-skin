@@ -193,16 +193,26 @@ export async function refreshVanguardHoldingsFromPlaid(
   }
 
   setSyncPhase("valuations");
-  const written = writePlaidHoldings(db, mapped, conn.accountMap, today);
+  let written: ReturnType<typeof writePlaidHoldings>;
   try {
-    computeDailyValuations(db);
-  } catch {
-    // Non-critical (mirrors the TWS + IBKR paths).
-  }
+    written = writePlaidHoldings(db, mapped, conn.accountMap, today);
+    try {
+      computeDailyValuations(db);
+    } catch {
+      // Non-critical (mirrors the TWS + IBKR paths).
+    }
 
-  setPlaidLastSyncAt(db, new Date().toISOString());
-  setPlaidConnectionStatus(db, "ok");
-  setPlaidReauthAlertedAt(db, null);
+    setPlaidLastSyncAt(db, new Date().toISOString());
+    setPlaidConnectionStatus(db, "ok");
+    setPlaidReauthAlertedAt(db, null);
+  } catch (err) {
+    // The fetch half above is already guarded (catch → setSyncError →
+    // rethrow). This mirrors that for the write half: a throw here (e.g. a
+    // DB error mid-write) must not leave sync-state wedged at "syncing" —
+    // isSyncing() would then null-gate every future call until restart.
+    setSyncError(err instanceof Error ? err.message : "Plaid write failed");
+    throw err;
+  }
 
   setSyncComplete(
     {
