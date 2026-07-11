@@ -23,6 +23,7 @@ import { computeDefenseAnalysis } from "@/lib/compute/hedging";
 import { buildCockpitPayload } from "@/lib/queries/earnings-cockpit";
 import { decorateCockpitIntel } from "@/lib/queries/earnings-intel";
 import { upsertCallNote } from "@/lib/mutations/earnings-call-notes";
+import { buildPlaidSettingsPayload } from "@/lib/queries/plaid-settings-payload";
 
 let db: Database.Database;
 
@@ -245,5 +246,22 @@ describe("CallNoteModal contract", () => {
     expect(note).toHaveProperty("surprises");
     expect(note).toHaveProperty("follow_ups");
     expect(note).toHaveProperty("event_id", eventId);
+  });
+});
+
+// ─── PlaidSection contract ───────────────────────────────────────────
+
+describe("PlaidSection contract", () => {
+  it("buildPlaidSettingsPayload returns the shape the settings component reads", () => {
+    const payload = buildPlaidSettingsPayload(db);
+    // Component destructures: configured, connected, connectionStatus,
+    // lastSyncAt, plaidAccounts, accountMap, localAccounts
+    expect(payload).toHaveProperty("configured");
+    expect(payload).toHaveProperty("connected");
+    expect(payload).toHaveProperty("connectionStatus");
+    expect(payload).toHaveProperty("lastSyncAt");
+    expect(payload).toHaveProperty("plaidAccounts");
+    expect(payload).toHaveProperty("accountMap");
+    expect(payload).toHaveProperty("localAccounts");
   });
 });
