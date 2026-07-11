@@ -224,4 +224,55 @@ describe("refreshVanguardHoldingsFromPlaid", () => {
     expect(row.close_price).toBe(111);
     expect(row.source).toBe("tws");
   });
+
+  it("skips an account with zero mapped positions entirely — no holdings, no snapshot (F6)", async () => {
+    // accountMap maps a second Plaid account ("pEmpty") that has a balance
+    // in resp.accounts but NO holdings rows at all — zero mapped
+    // positions. The zero-holdings guard in writePlaidHoldings must skip
+    // that account entirely: no holdings written, no monthly_snapshots
+    // row (which would otherwise misrepresent a real account as "$0,
+    // fully liquidated"), and it must not count toward accountsSynced.
+    const rothId = (
+      db.prepare(`INSERT INTO accounts (name) VALUES ('Roth IRA') RETURNING id`).get() as {
+        id: number;
+      }
+    ).id;
+    setPlaidAccountMap(db, { pTax: taxableId, pEmpty: rothId });
+
+    const base = holdingsJson();
+    const json = {
+      ...base,
+      accounts: [
+        ...base.accounts,
+        {
+          account_id: "pEmpty",
+          name: "Roth IRA",
+          mask: "2222",
+          subtype: "ira",
+          balances: { current: 50000, available: null },
+        },
+      ],
+      // No holdings entries reference "pEmpty" — zero mapped positions.
+    };
+
+    const r = await refreshVanguardHoldingsFromPlaid(db, {
+      cfg: stubCfg(json),
+      now: NOW,
+      force: true,
+    });
+
+    expect(r).not.toBeNull();
+    // Only pTax counted — pEmpty (zero positions) is skipped entirely.
+    expect(r!.accountsSynced).toBe(1);
+
+    const holdingsCount = db
+      .prepare(`SELECT COUNT(*) AS c FROM holdings WHERE account_id = ?`)
+      .get(rothId) as { c: number };
+    expect(holdingsCount.c).toBe(0);
+
+    const snap = db
+      .prepare(`SELECT COUNT(*) AS c FROM monthly_snapshots WHERE account_id = ?`)
+      .get(rothId) as { c: number };
+    expect(snap.c).toBe(0);
+  });
 });
