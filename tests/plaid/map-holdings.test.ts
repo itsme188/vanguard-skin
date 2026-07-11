@@ -68,4 +68,41 @@ describe("mapPlaidHoldings", () => {
       { plaidAccountId: "acctA", symbol: "VWENX", price: 87.31, asOf: "2026-07-09" },
     ]);
   });
+
+  it("folds type:'cash' securities into cash, not position", () => {
+    const resp: PlaidHoldingsResponse = {
+      accounts: [
+        {
+          account_id: "acctB",
+          name: "Brokerage",
+          mask: "5678",
+          subtype: "brokerage",
+          balances: { current: 100000, available: null },
+        },
+      ],
+      holdings: [
+        {
+          account_id: "acctB",
+          security_id: "s-cash",
+          quantity: 1,
+          institution_price: 500,
+          institution_value: 500,
+          institution_price_as_of: "2026-07-09",
+        },
+      ],
+      securities: [
+        {
+          security_id: "s-cash",
+          ticker_symbol: "CUR:USD",
+          cusip: null,
+          name: "US Dollar",
+          type: "cash",
+          is_cash_equivalent: null,
+        },
+      ],
+    };
+    const r = mapPlaidHoldings(resp);
+    expect(r.positions).toHaveLength(0);
+    expect(r.cashByAccount.acctB).toBe(500);
+  });
 });

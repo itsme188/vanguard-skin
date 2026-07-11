@@ -72,7 +72,7 @@ export function mapPlaidHoldings(resp: PlaidHoldingsResponse): PlaidMapResult {
     const plaidType = (sec.type ?? "").toLowerCase();
 
     // Settlement fund / cash equivalents fold into cash, never a position.
-    if (sec.is_cash_equivalent === true || sec.ticker_symbol?.trim() === "VMFXX") {
+    if (sec.is_cash_equivalent === true || plaidType === "cash" || sec.ticker_symbol?.trim() === "VMFXX") {
       if (h.institution_value != null) {
         result.cashByAccount[h.account_id] =
           (result.cashByAccount[h.account_id] ?? 0) + h.institution_value;
