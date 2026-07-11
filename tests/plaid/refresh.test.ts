@@ -6,6 +6,7 @@ import { refreshVanguardHoldingsFromPlaid } from "@/lib/plaid/refresh";
 import { setPlaidItem, setPlaidAccountMap, getPlaidConnection, getPlaidReauthAlertedAt } from "@/lib/queries/plaid-settings";
 import type { PlaidClientConfig } from "@/lib/plaid/client";
 import { todayET } from "@/lib/calendar/date-utils";
+import { getSyncState } from "@/lib/tws/sync-state";
 
 // A weekday, non-holiday reference instant (Fri 2026-07-10 ~noon ET)
 const NOW = new Date("2026-07-10T16:00:00.000Z");
@@ -134,5 +135,83 @@ describe("refreshVanguardHoldingsFromPlaid", () => {
     ).rejects.toThrow();
     expect(getPlaidConnection(db).connectionStatus).toBe("reauth_required");
     expect(getPlaidReauthAlertedAt(db)).not.toBeNull();
+  });
+
+  it("does not wedge sync-state at 'syncing' when the write half throws", async () => {
+    // The fetch half is already guarded (catch → setSyncError → rethrow).
+    // The write half (writePlaidHoldings + the setPlaid* finalizers) was not
+    // — a throw there left global sync-state stuck at "syncing" forever
+    // (isSyncing() then null-gates every future call until process restart).
+    //
+    // Note on mechanism: the task's suggested trigger — pre-seeding a
+    // security under a conflicting type so upsertSecurity's stock↔option
+    // guard "throws" — does not actually throw in the current
+    // implementation (lib/mutations/securities.ts logs a console.warn and
+    // returns the existing id; verified no CHECK/NOT NULL constraint
+    // backs it, so it degrades gracefully by design, not by accident). To
+    // exercise a genuine, deterministic write-half failure instead, drop a
+    // table `writePlaidHoldings` prepares a statement against
+    // (monthly_snapshots) — SQLite throws "no such table" the moment the
+    // write half runs, which is functionally identical to any other DB
+    // error occurring mid-write for the purposes of this regression pin.
+    db.exec(`DROP TABLE monthly_snapshots`);
+
+    await expect(
+      refreshVanguardHoldingsFromPlaid(db, { cfg: stubCfg(holdingsJson()), now: NOW, force: true }),
+    ).rejects.toThrow();
+    expect(getSyncState().status).toBe("error");
+
+    // A subsequent call must not be null-gated by isSyncing() (which would
+    // silently resolve null forever with the old bug) — it should attempt
+    // the sync again and reject for the same underlying reason (the table
+    // is still missing), proving the mutex was correctly released. Assert
+    // via try/catch (rather than `.rejects`) so a regression to the old
+    // null-gated behavior fails loudly as "resolved null" rather than as
+    // an ambiguous matcher error.
+    let secondOutcome: "resolved-null" | "resolved-value" | "rejected";
+    try {
+      const result = await refreshVanguardHoldingsFromPlaid(db, {
+        cfg: stubCfg(holdingsJson()),
+        now: NOW,
+        force: true,
+      });
+      secondOutcome = result === null ? "resolved-null" : "resolved-value";
+    } catch {
+      secondOutcome = "rejected";
+    }
+    expect(secondOutcome).toBe("rejected");
+  });
+
+  it("statement-wins: a vanguard-pdf holdings row survives a same-day plaid sync", async () => {
+    const primId = upsertSecurity(db, { symbol: "PRIM", securityType: "Stock" });
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+       VALUES (?, ?, 999, NULL, ?, 'vanguard-pdf:test:1')`,
+    ).run(taxableId, primId, TODAY);
+
+    await refreshVanguardHoldingsFromPlaid(db, { cfg: stubCfg(holdingsJson()), now: NOW, force: true });
+
+    const row = db
+      .prepare(
+        `SELECT quantity, source_key FROM holdings WHERE account_id = ? AND security_id = ? AND as_of_date = ?`,
+      )
+      .get(taxableId, primId, TODAY) as { quantity: number; source_key: string };
+    expect(row.quantity).toBe(999);
+    expect(row.source_key).toBe("vanguard-pdf:test:1");
+  });
+
+  it("statement-wins: a tws-sourced price row survives a same-day plaid sync", async () => {
+    const vwenxId = upsertSecurity(db, { symbol: "VWENX", securityType: "Mutual Fund" });
+    db.prepare(
+      `INSERT INTO prices (security_id, date, close_price, source) VALUES (?, ?, 111, 'tws')`,
+    ).run(vwenxId, TODAY);
+
+    await refreshVanguardHoldingsFromPlaid(db, { cfg: stubCfg(holdingsJson()), now: NOW, force: true });
+
+    const row = db
+      .prepare(`SELECT close_price, source FROM prices WHERE security_id = ? AND date = ?`)
+      .get(vwenxId, TODAY) as { close_price: number; source: string };
+    expect(row.close_price).toBe(111);
+    expect(row.source).toBe("tws");
   });
 });
