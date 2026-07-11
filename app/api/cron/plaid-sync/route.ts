@@ -21,6 +21,18 @@ export async function POST(request: Request) {
   }
   try {
     const result = await refreshVanguardHoldingsFromPlaid(db);
+    if (result === null) {
+      // refreshVanguardHoldingsFromPlaid null-gates for three distinct
+      // reasons (not connected, credentials not configured, or a sync
+      // already in progress) — {success:true, result:null} alone reads as
+      // "OK" in the launchd log for what's actually a skipped run. Carry
+      // the cause class so the log line is honest about why nothing ran.
+      return Response.json({
+        success: true,
+        result: null,
+        note: "skipped: not connected, not configured, or another sync in progress",
+      });
+    }
     return Response.json({ success: true, result });
   } catch (err) {
     return Response.json(
