@@ -70,9 +70,19 @@ describe("refreshVanguardHoldingsFromPlaid", () => {
   });
 
   it("writes holdings, cash snapshot, MF price; folds VMFXX to cash", async () => {
+    // Pre-seed PRIM so it's an EXISTING security going into this sync —
+    // only VWENX (and the folded VMFXX cash security, created inside
+    // mapPlaidHoldings/upsertSecurity elsewhere) should land in
+    // securitiesCreated for a brand-new symbol.
+    upsertSecurity(db, { symbol: "PRIM", securityType: "Stock" });
+
     const r = await refreshVanguardHoldingsFromPlaid(db, { cfg: stubCfg(holdingsJson()), now: NOW, force: true });
     expect(r).not.toBeNull();
     expect(r!.holdingsWritten).toBe(2); // PRIM + VWENX (VMFXX folded)
+    // F4: brand-new symbol (VWENX) surfaces in securitiesCreated; the
+    // pre-existing PRIM does not.
+    expect(r!.securitiesCreated).toContain("VWENX");
+    expect(r!.securitiesCreated).not.toContain("PRIM");
     const holdings = db
       .prepare(
         `SELECT s.symbol, h.quantity, h.cost_basis, h.source_key FROM holdings h JOIN securities s ON s.id = h.security_id WHERE h.account_id = ? AND h.as_of_date = ?`,

@@ -48,6 +48,7 @@ interface SyncResponse {
   staleRemoved?: number;
   skippedReason?: "market_closed" | "already_synced_today" | null;
   unmatched?: UnmatchedPlaidSecurity[];
+  securitiesCreated?: string[];
   error?: string;
 }
 
@@ -56,7 +57,12 @@ type InlineStatus =
   | { kind: "error"; message: string };
 
 type SyncStatus =
-  | { kind: "success"; message: string; unmatched: UnmatchedPlaidSecurity[] }
+  | {
+      kind: "success";
+      message: string;
+      unmatched: UnmatchedPlaidSecurity[];
+      securitiesCreated: string[];
+    }
   | { kind: "error"; message: string };
 
 function formatTimeSince(isoDate: string): string {
@@ -153,7 +159,16 @@ export function PlaidSection() {
         } else {
           message = `Synced ${holdingsWritten} holding${holdingsWritten === 1 ? "" : "s"} across ${accountsSynced} account${accountsSynced === 1 ? "" : "s"}.`;
         }
-        setSyncStatus({ kind: "success", message, unmatched: data.unmatched ?? [] });
+        const securitiesCreated = data.securitiesCreated ?? [];
+        if (securitiesCreated.length > 0) {
+          message += ` New securities created: ${securitiesCreated.join(", ")} — verify these aren't duplicates of existing holdings.`;
+        }
+        setSyncStatus({
+          kind: "success",
+          message,
+          unmatched: data.unmatched ?? [],
+          securitiesCreated,
+        });
         void load();
       } else {
         setSyncStatus({ kind: "error", message: data.error || "Sync failed." });
