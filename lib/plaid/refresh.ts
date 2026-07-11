@@ -29,6 +29,7 @@ export interface PlaidRefreshResult {
   pricesWritten: number;
   staleRemoved: number;
   unmatched: UnmatchedPlaidSecurity[];
+  securitiesCreated: string[];
 }
 
 const EMPTY: Omit<PlaidRefreshResult, "skippedReason"> = {
@@ -37,6 +38,7 @@ const EMPTY: Omit<PlaidRefreshResult, "skippedReason"> = {
   pricesWritten: 0,
   staleRemoved: 0,
   unmatched: [],
+  securitiesCreated: [],
 };
 
 /**
@@ -49,7 +51,13 @@ export function writePlaidHoldings(
   mapped: PlaidMapResult,
   accountMap: Record<string, number>,
   today: string,
-): { accountsSynced: number; holdingsWritten: number; pricesWritten: number; staleRemoved: number } {
+): {
+  accountsSynced: number;
+  holdingsWritten: number;
+  pricesWritten: number;
+  staleRemoved: number;
+  securitiesCreated: string[];
+} {
   const upsertHolding = db.prepare(
     `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
      VALUES (?, ?, ?, NULL, ?, ?)
@@ -82,6 +90,14 @@ export function writePlaidHoldings(
   let holdingsWritten = 0;
   let pricesWritten = 0;
   let staleRemoved = 0;
+  // Symbol-drift from Plaid tickers can create duplicate securities that
+  // cause phantom closures (reconcileClosedEquityHoldings sees the "old"
+  // symbol vanish) — surface every brand-new security so the user can
+  // eyeball it in Settings rather than discover it downstream. Existence
+  // is checked BEFORE the upsert so a symbol that already existed (even
+  // if this call updates it) is never misreported as "created".
+  const securitiesCreated: string[] = [];
+  const checkExistingSecurity = db.prepare(`SELECT id FROM securities WHERE symbol = ?`);
 
   for (const [plaidAccountId, localAccountId] of Object.entries(accountMap)) {
     const positions = mapped.positions.filter((p) => p.plaidAccountId === plaidAccountId);
@@ -92,6 +108,7 @@ export function writePlaidHoldings(
 
     const syncedSecurityIds: number[] = [];
     for (const p of positions) {
+      const existed = checkExistingSecurity.get(p.symbol) !== undefined;
       const securityId = upsertSecurity(db, {
         symbol: p.symbol,
         name: p.name ?? undefined,
@@ -101,6 +118,7 @@ export function writePlaidHoldings(
         expirationDate: p.expirationDate,
         optionType: p.optionType,
       });
+      if (!existed) securitiesCreated.push(p.symbol);
       syncedSecurityIds.push(securityId);
       const res = upsertHolding.run(
         localAccountId,
@@ -144,7 +162,7 @@ export function writePlaidHoldings(
     reconcileClosedEquityHoldings(db, { accountId: localAccountId });
   }
 
-  return { accountsSynced, holdingsWritten, pricesWritten, staleRemoved };
+  return { accountsSynced, holdingsWritten, pricesWritten, staleRemoved, securitiesCreated };
 }
 
 export async function refreshVanguardHoldingsFromPlaid(
