@@ -121,7 +121,12 @@ export function getHoldingsByAccount(
     JOIN accounts a ON a.id = h.account_id
     LEFT JOIN fx_rates fx ON fx.currency = s.currency
     WHERE h.account_id = ?
+      AND h.quantity != 0
   `;
+  // quantity != 0 (not > 0): shorts are real positions and must render, but
+  // the closed-equity reconciler's quantity=0 tombstone rows (written at the
+  // latest snapshot date to mark statement-disappeared positions) are not —
+  // pre-filter they surfaced as "0 shares · $0.00" holdings (QA 2026-07-11).
   const params: (number | string)[] = [accountId];
 
   if (asOfDate) {

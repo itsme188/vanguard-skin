@@ -60,6 +60,21 @@ describe("holdings queries", () => {
       expect(holdings[1].quantity).toBe(110);
     });
 
+    it("excludes quantity=0 tombstone rows but keeps shorts", () => {
+      // The closed-equity reconciler writes quantity=0 rows at the latest
+      // snapshot date for statement-disappeared positions — those are closure
+      // markers, not positions (QA 2026-07-11: ACWV/EEMV as "0 shares · $0.00").
+      const vti = seedSecurity(db, "VTI");
+      const acwv = seedSecurity(db, "ACWV");
+      const shortSec = seedSecurity(db, "XYZ");
+      seedHolding(db, ACCOUNT_ID, vti, 100, "2025-02-28");
+      seedHolding(db, ACCOUNT_ID, acwv, 0, "2025-02-28");
+      seedHolding(db, ACCOUNT_ID, shortSec, -25, "2025-02-28");
+
+      const holdings = getHoldingsByAccount(db, ACCOUNT_ID);
+      expect(holdings.map((h) => h.symbol).sort()).toEqual(["VTI", "XYZ"]);
+    });
+
     it("returns holdings for a specific date", () => {
       const vti = seedSecurity(db, "VTI");
       seedHolding(db, ACCOUNT_ID, vti, 100, "2025-01-31");
