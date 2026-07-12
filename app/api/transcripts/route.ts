@@ -5,7 +5,21 @@ import {
   getCachedTranscript,
   getCachedQuarters,
 } from "@/lib/queries/transcripts";
+import type { EarningsTranscript } from "@/lib/types";
 import { fetchTranscript } from "@/lib/transcripts/fetch";
+import { decodeFilingEntities } from "@/lib/apis/edgar";
+
+/**
+ * Rows cached before the fetch-time entity decoder existed still carry raw
+ * numeric references (&#160; / &#744;) in their stored transcript text.
+ * Decoding at the read boundary self-heals every legacy row without a data
+ * migration; the decoder is a no-op on already-clean text.
+ */
+function withDecodedTranscript(row: EarningsTranscript): EarningsTranscript {
+  return row.transcript
+    ? { ...row, transcript: decodeFilingEntities(row.transcript) }
+    : row;
+}
 
 /**
  * GET /api/transcripts?ticker=AAPL&year=2025&quarter=3
@@ -45,7 +59,10 @@ export async function GET(request: NextRequest) {
           { status: 404 }
         );
       }
-      return NextResponse.json({ success: true, data: transcript });
+      return NextResponse.json({
+        success: true,
+        data: withDecodedTranscript(transcript),
+      });
     }
 
     // Default: return summaries for this ticker
@@ -95,7 +112,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      data: result.transcript,
+      data: withDecodedTranscript(result.transcript),
       fromCache: result.fromCache,
     });
   } catch (error) {

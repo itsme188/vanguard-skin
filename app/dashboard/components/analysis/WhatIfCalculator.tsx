@@ -260,7 +260,7 @@ function DeltaTable({ delta }: { delta: ExposureDelta }) {
   ].filter((s) => s.rows.length > 0);
 
   return (
-    <div className="bg-canvas border border-edge rounded-lg overflow-hidden">
+    <div className="bg-canvas border border-edge rounded-lg overflow-hidden overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-edge text-ink-faint">

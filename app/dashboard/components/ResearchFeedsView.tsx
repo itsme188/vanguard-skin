@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import Link from "next/link";
 import type { ResearchArticle, ResearchSource, FilteredArticle } from "@/lib/queries/research";
 import { trimEmailFooter } from "@/lib/gmail/sanitize";
@@ -189,17 +189,28 @@ export function ResearchFeedsView({
   );
 
   // Auto-sync on mount + on app refocus after 10+ min idle. Debounced
-  // to once per 5 min across the whole session via localStorage. Doesn't
-  // interfere with the manual sync button — that path uses its own
-  // verbose progress UI; this hook just keeps the feed fresh quietly.
+  // to once per 5 min across the whole session via localStorage. The hook
+  // shares the syncing/syncStatus slots with the manual Sync Feeds button,
+  // so its callbacks must never clobber a manual sync's feedback: when the
+  // Gmail pre-flight short-circuits (unconfigured), the hook re-fires every
+  // mount and its onSyncDone used to null out the status — racing a manual
+  // sync's error message into oblivion (qa: sync-feeds silent-400 regression).
+  const manualSyncRef = useRef(false);
   useResearchSync({
     onSyncStart: () => {
+      if (manualSyncRef.current) return;
       setSyncing(true);
       setSyncStatus("Refreshing in background…");
     },
     onSyncDone: () => {
-      setSyncing(false);
-      setSyncStatus(null);
+      if (!manualSyncRef.current) {
+        setSyncing(false);
+        // Only clear the message this hook wrote — a manual sync's error
+        // (which outlives the manual run by 5s) must survive this cleanup.
+        setSyncStatus((prev) =>
+          prev === "Refreshing in background…" ? null : prev
+        );
+      }
       // Background freshness pass — a failure here just means the list keeps
       // its current (valid) contents, so log rather than toast.
       refreshArticles().catch((err) =>
@@ -209,6 +220,7 @@ export function ResearchFeedsView({
   });
 
   const handleSync = useCallback(async () => {
+    manualSyncRef.current = true;
     setSyncing(true);
     setSyncStatus("Connecting to Gmail...");
 
@@ -261,6 +273,7 @@ export function ResearchFeedsView({
     } catch (err) {
       setSyncStatus(`Error: ${err instanceof Error ? err.message : "Sync failed"}`);
     } finally {
+      manualSyncRef.current = false;
       setSyncing(false);
       setTimeout(() => setSyncStatus(null), 5000);
     }

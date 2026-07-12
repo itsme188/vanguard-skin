@@ -209,9 +209,10 @@ export async function classifyFactors(
       .join("\n")}`;
 
     try {
+      // No `temperature`: tier-resolved models can reject it as deprecated
+      // (live 502 "temperature is deprecated for this model", QA 2026-07-07).
       const { text } = await generateTextForFeature("factorClassification", {
         maxOutputTokens: 8000,
-        temperature: 0.2,
         system: SYSTEM_PROMPT,
         prompt,
       });

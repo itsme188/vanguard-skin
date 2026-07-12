@@ -219,7 +219,8 @@ export async function classifyUnresolvedWithClaude(
     const batch = unresolved.slice(i, i + BATCH);
     const prompt = `Classify:\n${batch.map((s) => `- ${s.symbol} (type: ${s.security_type ?? "stock"})`).join("\n")}`;
     try {
-      const { text } = await generateTextForFeature("securityClassification", { maxOutputTokens: 4000, temperature: 0.2, system: AI_CLASSIFY_SYSTEM, prompt });
+      // No `temperature` — tier-resolved models can reject it as deprecated (QA 2026-07-07).
+      const { text } = await generateTextForFeature("securityClassification", { maxOutputTokens: 4000, system: AI_CLASSIFY_SYSTEM, prompt });
       const json = extractJsonArray(text);
       const results = JSON.parse(json) as Array<Record<string, string>>;
       const idMap = new Map(batch.map((s) => [s.symbol, s.id]));
