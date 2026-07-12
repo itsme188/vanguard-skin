@@ -88,3 +88,25 @@ inside the dark MarketDataPanel module → a corrected fade there needs the pane
 scoped vars to override the fade color. → Routed to Task 7.
 Desktop check at 1440×900: PASS — neither toolbar overflows at desktop, no fade
 engages, rendering identical (both Charts + Security Detail measured).
+
+## Task 8 verification results (2026-07-12)
+
+- E2E portrait flows: alerts hit-areas measured (dismiss ✕ effective ~31×40 coarse), levels
+  add/delete round-trip DB-verified, chat drawer + real streamed response + delete
+  affordance class-verified, scroll-fade behavioral verify (appears on overflow, clears
+  at scroll-end, Value column reachable). Bogeys modal round-trip clean; research
+  expand/collapse + chip extensions verified; import nowrap + contained scroll verified;
+  KPI strip 3+2; dark fade dark (not white). All test data cleaned up server-side.
+- Landscape 1194×834: 9/9 routes PASS incl. Watchlist chart toggle (audit residual closed).
+- Desktop 1440×900: 8 routes, NO regression; Accounts fade = intended shipped design
+  working, DOM-verified is-scrollable gating + clears at scroll-end.
+- Fix wave: cash-deploy band width w-40→w-44 (placeholder now fully visible at 834,
+  desktop unchanged 128px, re-verified); EarningsEmailViewer iframe 75vh→75dvh.
+- Suites: Mac 3369/3369, Worker 336/336, tsc clean.
+- Scoping proof: every new className on the branch matches md:max-*/lg:max-*/pointer-coarse/
+  dvh/whitespace-nowrap/relative/overflow plumbing; only unscoped additions are the
+  reviewed structurally-equivalent SecurityChart toolbar rewrap classes.
+- Residual for real-device pass (Phase 4): T4 input-zoom (Safari-only), true touch tap
+  behavior (all playwright contexts reported pointer:fine — class presence verified
+  instead), 2×2 Watchlist grid population (toggle verified, grid capture lost to browser
+  contention).
