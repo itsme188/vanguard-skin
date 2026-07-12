@@ -204,7 +204,7 @@ export function SettingsModal() {
       {/* Gear button in header */}
       <button
         onClick={() => setOpen(true)}
-        className="text-ink-faint hover:text-ink-dim transition-colors"
+        className="relative text-ink-faint hover:text-ink-dim transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-2 pointer-coarse:after:content-['']"
         title="Settings"
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

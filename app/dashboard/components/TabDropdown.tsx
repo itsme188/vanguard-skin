@@ -144,7 +144,7 @@ export function TabDropdown({ tab, isActive }: Props) {
           aria-label={`${tab.name} sub-views`}
           aria-haspopup="menu"
           aria-expanded={open}
-          className={`relative pr-3 pl-0.5 py-2.5 text-xs transition-colors ${
+          className={`relative pr-3 pl-0.5 py-2.5 text-xs transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 pointer-coarse:after:content-[''] ${
             open ? "text-gold" : isActive ? "text-gold" : "text-ink-faint hover:text-ink-dim"
           }`}
         >
@@ -179,7 +179,7 @@ export function TabDropdown({ tab, isActive }: Props) {
                   itemRefs.current[i] = el;
                 }}
                 tabIndex={-1}
-                className={`flex items-center justify-between px-3 py-1.5 text-sm transition-colors ${
+                className={`flex items-center justify-between px-3 py-1.5 pointer-coarse:py-2.5 text-sm transition-colors ${
                   active ? "text-gold" : "text-ink-dim hover:text-ink hover:bg-raised"
                 } focus:bg-raised focus:outline-none`}
               >

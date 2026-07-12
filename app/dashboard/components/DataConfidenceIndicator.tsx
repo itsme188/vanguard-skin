@@ -136,7 +136,7 @@ export function DataConfidenceIndicator() {
     <div className="relative" ref={popoverRef}>
       <button
         onClick={() => setShowPopover(!showPopover)}
-        className="flex items-center gap-2 text-[11px] text-ink-faint font-mono hover:text-ink-dim transition-colors"
+        className="relative flex items-center gap-2 text-[11px] text-ink-faint font-mono hover:text-ink-dim transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-2 pointer-coarse:after:content-['']"
         title={`Data confidence: ${confidence.overallScore}% — click for details`}
       >
         <span className={`w-2 h-2 rounded-full ${config.color}`} />

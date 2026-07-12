@@ -220,7 +220,7 @@ export function SearchButton() {
   return (
     <button
       onClick={handleClick}
-      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-ink-faint hover:text-ink-dim hover:bg-raised border border-transparent transition-colors"
+      className="relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-ink-faint hover:text-ink-dim hover:bg-raised border border-transparent transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-2 pointer-coarse:after:content-['']"
       title="Search (Cmd+K)"
       aria-label="Open search"
     >
