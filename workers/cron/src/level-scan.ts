@@ -61,6 +61,13 @@ const FIRED_TTL_SECONDS = 24 * 60 * 60; // 24h
 const MAC_SCAN_RECENCY_SECONDS = 90 * 60; // 90 min — wider than the 30-min auto-refresh window
 
 /**
+ * Mirrors LEVEL_PLAUSIBILITY_MAX_DISTANCE in Mac's lib/queries/security-levels.ts
+ * — keep the two in sync. A level more than 50% away from the live price is a
+ * unit/scale error (SPX levels stored on SPY), not a hit.
+ */
+const LEVEL_PLAUSIBILITY_MAX_DISTANCE = 0.5;
+
+/**
  * Pure helper exported for tests. Determines whether `price` crosses `level`
  * given the level type's direction semantics.
  *
@@ -69,8 +76,15 @@ const MAC_SCAN_RECENCY_SECONDS = 90 * 60; // 90 min — wider than the 30-min au
  *   "going up"   types (resistance/exit)            — fire when price >= level.
  *
  * Any other level_type returns false (defensive — never fire on unknown shape).
+ * Also mirrors the Mac-side plausibility guard: a price more than 50% away
+ * from the level never "crosses" it — mis-scaled levels would otherwise sit
+ * permanently hit and push Pushover noise on every cloud scan. (The Mac
+ * exempts options from this guard; here no exemption is needed because OCC
+ * option symbols never resolve on Yahoo, so option levels never reach this
+ * check.)
  */
 export function isLevelCrossed(level: { level_type: string; price: number }, currentPrice: number): boolean {
+  if (Math.abs(currentPrice - level.price) / level.price > LEVEL_PLAUSIBILITY_MAX_DISTANCE) return false;
   const goingDown = ["support", "entry", "scale_in", "stop"].includes(level.level_type);
   if (goingDown) return currentPrice <= level.price;
   if (["resistance", "exit"].includes(level.level_type)) return currentPrice >= level.price;

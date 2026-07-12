@@ -100,7 +100,17 @@ export function getLevelById(
  * days. 4 days tolerates both weekends (Fri → Mon = 3 days) and long-weekend
  * Mondays. Longer gaps mean TWS has been offline and prices are suspect, so
  * scanning them could produce spurious alerts from old crossings.
+ *
+ * Plausibility guard: skips levels whose effective price is more than 50%
+ * away from the current price. A real hit is always detected within a few
+ * percent of the level (scans run every 30 min); a level half or 10× the
+ * price is a unit/scale error (SPX levels stored on SPY, per-contract vs
+ * per-share) and would otherwise sit permanently "hit", re-firing after
+ * every dismiss (QA 2026-07-06: SPY support @ $7,100 vs $748). Mirrored in
+ * the Worker's isLevelCrossed (workers/cron/src/level-scan.ts) — keep the
+ * threshold in sync.
  */
+export const LEVEL_PLAUSIBILITY_MAX_DISTANCE = 0.5;
 export function findCrossedLevels(
   db: Database.Database
 ): Array<SecurityLevel & { current_price: number; effective_price: number; price_date: string }> {
@@ -119,8 +129,10 @@ export function findCrossedLevels(
        )
        SELECT sl.*,
          COALESCE(lp.close_price, lb.close_price) AS current_price,
-         COALESCE(lp.date, lb.date) AS price_date
+         COALESCE(lp.date, lb.date) AS price_date,
+         s.security_type AS sec_type
        FROM security_levels sl
+       JOIN securities s ON s.id = sl.security_id
        LEFT JOIN latest_primary lp ON lp.security_id = sl.security_id
        LEFT JOIN latest_benchmark lb ON lb.security_id = sl.security_id
        WHERE sl.is_active = 1
@@ -129,13 +141,22 @@ export function findCrossedLevels(
          AND COALESCE(lp.close_price, lb.close_price) IS NOT NULL
          AND COALESCE(lp.date, lb.date) >= date('now', '-4 days')`
     )
-    .all() as Array<SecurityLevel & { current_price: number; price_date: string }>;
+    .all() as Array<SecurityLevel & { current_price: number; price_date: string; sec_type: string | null }>;
 
   const crossed: Array<SecurityLevel & { current_price: number; effective_price: number; price_date: string }> = [];
 
   for (const r of rows) {
     const effective = resolveLevelPrice(db, r);
     if (effective === null) continue; // MA can't be computed — skip rather than use stale snapshot
+    // Options exempt from the plausibility guard: option premiums legitimately
+    // double/halve overnight, so a real hit CAN first be seen >50% past the level.
+    const isOption = r.sec_type?.toLowerCase() === "option";
+    if (!isOption && Math.abs(r.current_price - effective) / effective > LEVEL_PLAUSIBILITY_MAX_DISTANCE) {
+      console.warn(
+        `[levels/scan] Skipping implausible level ${r.id} (${r.level_type} @ ${effective}) — current price ${r.current_price} is >${LEVEL_PLAUSIBILITY_MAX_DISTANCE * 100}% away (mis-scaled level?)`
+      );
+      continue;
+    }
     const goingDown = ["support", "entry", "scale_in", "stop"].includes(r.level_type);
     const hit = goingDown
       ? r.current_price <= effective

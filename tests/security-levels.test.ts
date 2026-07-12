@@ -297,6 +297,40 @@ describe("security_levels — findCrossedLevels", () => {
     seedPrice(secId, 175);
     expect(findCrossedLevels(db)).toHaveLength(0);
   });
+
+  it("skips levels >50% away from the current price (mis-scaled level guard)", () => {
+    // Real incident: Eliant's SPX 7100/7150 levels stored raw on SPY ($748) —
+    // "support hit" fired on every scan, and dismissing never stopped it.
+    const secId = seedSecurity("SPY");
+    upsertLevel(db, { security_id: secId, level_type: "support", price: 7100 });
+    upsertLevel(db, { security_id: secId, level_type: "support", price: 7150 });
+    seedPrice(secId, 748);
+
+    expect(findCrossedLevels(db)).toHaveLength(0);
+  });
+
+  it("plausibility guard still fires for a deep-but-plausible hit (49% below)", () => {
+    const secId = seedSecurity("XYZ");
+    upsertLevel(db, { security_id: secId, level_type: "stop", price: 100 });
+    seedPrice(secId, 51); // 49% below the stop — inside the 50% band
+
+    expect(findCrossedLevels(db)).toHaveLength(1);
+  });
+
+  it("plausibility guard exempts options (premiums legitimately double or halve)", () => {
+    const result = db
+      .prepare(
+        "INSERT INTO securities (symbol, name, security_type, asset_class, multiplier) VALUES (?, ?, 'Option', 'equity', 100)"
+      )
+      .run("INTC  270115P00080000", "INTC Jan27 80P");
+    const secId = result.lastInsertRowid as number;
+    upsertLevel(db, { security_id: secId, level_type: "exit", price: 10 });
+    seedPrice(secId, 32); // 220% past the exit — a normal option pop, must still fire
+
+    const crossed = findCrossedLevels(db);
+    expect(crossed).toHaveLength(1);
+    expect(crossed[0].level_type).toBe("exit");
+  });
 });
 
 describe("security_levels — review workflow", () => {
