@@ -1,3 +1,5 @@
+import { parseOCCSymbol } from "@/lib/import/occ-symbol";
+
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
@@ -100,6 +102,21 @@ export function formatLargeNumber(value: number): string {
   else body = abs.toFixed(2);
   const sign = value < 0 && !rendersAsZero(body) ? "-" : "";
   return `${sign}${body}`;
+}
+
+// Compact display form for OCC option symbols in narrow UI columns:
+// "KRE   270115C00070000" → "KRE $70C 1/15/27". Non-OCC symbols pass
+// through unchanged. Raw OCC stays the canonical stored form everywhere —
+// this is display-only (QA 2026-07-12: 21-char OCC symbols wrapped inside
+// fixed-width scenario rows and collided with the adjacent β label).
+export function formatCompactOptionSymbol(symbol: string): string {
+  const parsed = parseOCCSymbol(symbol);
+  if (!parsed) return symbol;
+  const [y, m, d] = parsed.expirationDate.split("-");
+  const strike = Number.isInteger(parsed.strike)
+    ? String(parsed.strike)
+    : parsed.strike.toFixed(2).replace(/\.?0+$/, "");
+  return `${parsed.underlying} $${strike}${parsed.optionType === "CALL" ? "C" : "P"} ${Number(m)}/${Number(d)}/${y.slice(-2)}`;
 }
 
 // Parse a user-entered or AI-extracted large-USD string into a number.

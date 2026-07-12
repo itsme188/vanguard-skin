@@ -6,3 +6,4 @@ findings/
 sandbox/
 sandbox-boot-failure.log
 qa-report.txt
+tmp/

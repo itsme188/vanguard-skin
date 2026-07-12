@@ -64,6 +64,30 @@ function formatDateFull(date: string): string {
   });
 }
 
+/**
+ * One tick per calendar month (the first data point of each month), thinned
+ * to at most `maxTicks` by even stepping. Used for the "All" range where
+ * Recharts' evenly-spaced auto ticks land several times inside the dense
+ * daily-data stretch and the month-year formatter then repeats itself.
+ */
+function monthStartTicks<T extends { date: string }>(
+  data: T[],
+  maxTicks = 12
+): string[] {
+  const seen = new Set<string>();
+  const ticks: string[] = [];
+  for (const d of data) {
+    const monthKey = d.date.slice(0, 7);
+    if (!seen.has(monthKey)) {
+      seen.add(monthKey);
+      ticks.push(d.date);
+    }
+  }
+  if (ticks.length <= maxTicks) return ticks;
+  const step = Math.ceil(ticks.length / maxTicks);
+  return ticks.filter((_, i) => i % step === 0);
+}
+
 // ─── Data filtering ─────────────────────────────────────────────
 
 function filterByRange<T extends { date: string }>(
@@ -341,9 +365,13 @@ export function EquityCurveChart({
 
   // Day-level ticks for intra-year ranges — the month-year formatter repeated
   // "Jun 26" for every daily tick on 1M/3M/6M/YTD (deep-QA finding). The
-  // multi-year "All" range keeps month-year; minTickGap thins dense daily data.
-  const xTickFormatter =
-    DATE_RANGES[selectedRange].label === "All" ? formatDate : shortDate;
+  // multi-year "All" range keeps month-year but needs EXPLICIT month-start
+  // ticks: evenly-spaced auto-ticks cluster inside the dense daily stretch
+  // (sparse monthly anchors early, daily bars recent), emitting "Apr 26" ×3
+  // (deep-QA 2026-07-07). One tick per month, thinned to ≤12.
+  const isAllRange = DATE_RANGES[selectedRange].label === "All";
+  const xTickFormatter = isAllRange ? formatDate : shortDate;
+  const xTicks = isAllRange ? monthStartTicks(data) : undefined;
 
   if (rawData.length === 0) {
     return (
@@ -420,6 +448,7 @@ export function EquityCurveChart({
               <XAxis
                 dataKey="date"
                 tickFormatter={xTickFormatter}
+                ticks={xTicks}
                 minTickGap={40}
                 stroke="#4E5668"
                 tick={{ fontSize: 11 }}
@@ -513,6 +542,7 @@ export function EquityCurveChart({
               <XAxis
                 dataKey="date"
                 tickFormatter={xTickFormatter}
+                ticks={xTicks}
                 minTickGap={40}
                 stroke="#4E5668"
                 tick={{ fontSize: 11 }}

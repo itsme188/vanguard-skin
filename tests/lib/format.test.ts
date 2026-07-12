@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  formatCompactOptionSymbol,
   formatLargeNumber,
   formatLargeUSD,
   formatPercent,
@@ -178,5 +179,21 @@ describe("parseLargeUSD", () => {
   it("passes through finite numbers", () => {
     expect(parseLargeUSD(4_340_000_000)).toBe(4_340_000_000);
     expect(parseLargeUSD(NaN)).toBe(null);
+  });
+});
+
+describe("formatCompactOptionSymbol", () => {
+  it("compacts OCC symbols for narrow display columns", () => {
+    expect(formatCompactOptionSymbol("KRE   270115C00070000")).toBe("KRE $70C 1/15/27");
+    expect(formatCompactOptionSymbol("EWY   260717P00220000")).toBe("EWY $220P 7/17/26");
+  });
+
+  it("preserves fractional strikes without trailing zeros", () => {
+    expect(formatCompactOptionSymbol("INTC  260320P00045500")).toBe("INTC $45.5P 3/20/26");
+  });
+
+  it("passes non-OCC symbols through unchanged", () => {
+    expect(formatCompactOptionSymbol("AAPL")).toBe("AAPL");
+    expect(formatCompactOptionSymbol("BRK/B")).toBe("BRK/B");
   });
 });

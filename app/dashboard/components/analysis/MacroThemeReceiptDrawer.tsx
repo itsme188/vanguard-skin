@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect } from "react";
+
 // Step 0 findings:
 // - SymbolLink requires both `securityId` + `symbol` props; sourceSummary alerts only carry
 //   `symbol` (no securityId), so SymbolLink cannot be used here.
@@ -32,6 +34,16 @@ export function MacroThemeReceiptDrawer({
   sourceSummary: SourceSummary;
   onClose: () => void;
 }) {
+  // Close on Escape — same idiom as TrustStripDrawer; without it a keyboard
+  // user is stuck behind the backdrop (QA 2026-07-12).
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
+  }, [onClose]);
+
   return (
     <div
       className="fixed inset-0 z-50 flex"
