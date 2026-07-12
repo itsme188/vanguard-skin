@@ -53,12 +53,17 @@ export function CashDeployCard({ scope }: Props) {
           value={cash || ""}
           onChange={(e) => setCash(Number(e.target.value) || 0)}
           placeholder="Amount to deploy"
-          className="bg-canvas border border-edge rounded px-2 py-1.5 text-sm font-mono text-ink w-32 focus-ring"
+          // md:max-xl:w-40 (finding #10) — the base w-32 (128px) truncates its
+          // own placeholder in the portrait-tablet band, where this card is
+          // full-width (grid-cols-1 below lg). Band-scoped rather than
+          // unconditional so the input stays byte-identical at >=1280
+          // desktop (2-col grid, plenty of room either way) and <768 phone.
+          className="bg-canvas border border-edge rounded px-2 py-1.5 text-sm font-mono text-ink w-32 md:max-xl:w-40 focus-ring"
         />
         <button
           onClick={run}
           disabled={loading}
-          className="px-3 py-1.5 text-xs bg-gold/15 text-gold border border-gold/40 rounded hover:bg-gold/25 transition-colors disabled:opacity-50 focus-ring"
+          className="relative px-3 py-1.5 text-xs bg-gold/15 text-gold border border-gold/40 rounded hover:bg-gold/25 transition-colors disabled:opacity-50 focus-ring pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-1"
         >
           {loading ? "Computing..." : "Suggest"}
         </button>

@@ -120,14 +120,14 @@ export function WhatIfCalculator({ scope }: Props) {
       <div className="flex items-center gap-2 mt-3">
         <button
           onClick={addLeg}
-          className="px-3 py-1.5 text-xs border border-edge text-ink-dim rounded hover:text-ink hover:border-ink-faint transition-colors"
+          className="relative px-3 py-1.5 text-xs border border-edge text-ink-dim rounded hover:text-ink hover:border-ink-faint transition-colors pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-1"
         >
           + Add leg
         </button>
         <button
           onClick={run}
           disabled={loading}
-          className="px-3 py-1.5 text-xs bg-gold/15 text-gold border border-gold/40 rounded hover:bg-gold/25 transition-colors disabled:opacity-50 focus-ring"
+          className="relative px-3 py-1.5 text-xs bg-gold/15 text-gold border border-gold/40 rounded hover:bg-gold/25 transition-colors disabled:opacity-50 focus-ring pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-1"
         >
           {loading ? "Computing..." : "Compute Δ"}
         </button>
