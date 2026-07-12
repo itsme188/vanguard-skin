@@ -125,7 +125,7 @@ export function EarningsEmailViewer({
         onClick={onClose}
         aria-hidden="true"
       />
-      <div className="relative w-full max-w-3xl mx-auto my-8 electron:mt-12 rounded-xl border border-edge bg-panel shadow-2xl">
+      <div className="relative w-full max-w-3xl mx-auto my-8 electron:mt-12 max-h-[85dvh] overflow-y-auto rounded-xl border border-edge bg-panel shadow-2xl">
         {/* Sticky header */}
         <div className="sticky top-0 z-10 flex items-baseline justify-between px-5 py-3.5 border-b border-edge bg-panel/95 backdrop-blur-sm rounded-t-xl gap-3">
           <div className="flex flex-col min-w-0">
@@ -151,15 +151,19 @@ export function EarningsEmailViewer({
           </div>
           <button
             onClick={onClose}
-            className="text-ink-faint hover:text-ink text-lg leading-none w-6 h-6 flex items-center justify-center rounded hover:bg-raised shrink-0"
+            className="relative text-ink-faint hover:text-ink text-lg leading-none w-6 h-6 flex items-center justify-center rounded hover:bg-raised shrink-0 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
             aria-label="Close email viewer"
           >
             ✕
           </button>
         </div>
 
-        {/* Body */}
-        <div className="p-0 min-h-[300px]">
+        {/* Body — iframe wrapper is separately capped (max-h-[85dvh]) and
+            scrolls internally: the panel above is already bounded, but the
+            iframe's own inline height (75vh) can exceed what's left after
+            the sticky header, so the wrapper needs its own scroll region
+            rather than relying on the outer overlay's page-level scroll. */}
+        <div className="p-0 min-h-[300px] max-h-[85dvh] overflow-y-auto">
           {loading && (
             <div className="px-5 py-12 text-center text-[14px] text-ink-faint">
               Loading email…
