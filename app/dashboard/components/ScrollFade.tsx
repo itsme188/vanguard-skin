@@ -9,17 +9,24 @@ export function ScrollFade({
   children: ReactNode;
   className?: string;
 }) {
+  // Two refs: `ref` is the inner overflow-x-auto scroller (what we measure
+  // scrollWidth/scrollLeft on), `wrapperRef` is the outer `.scroll-fade` div
+  // that globals.css's `.scroll-fade.is-scrollable::after` gradient rule
+  // actually targets. Toggling the class on the wrong element (the inner
+  // div) left the fade permanently inert app-wide — see globals.css comment.
   const ref = useRef<HTMLDivElement>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const el = ref.current;
-    if (!el) return;
+    const wrapper = wrapperRef.current;
+    if (!el || !wrapper) return;
 
     function check() {
-      if (!el) return;
+      if (!el || !wrapper) return;
       const isScrollable = el.scrollWidth > el.clientWidth + 1;
       const isAtEnd = el.scrollLeft + el.clientWidth >= el.scrollWidth - 1;
-      el.classList.toggle("is-scrollable", isScrollable && !isAtEnd);
+      wrapper.classList.toggle("is-scrollable", isScrollable && !isAtEnd);
     }
 
     check();
@@ -34,7 +41,7 @@ export function ScrollFade({
   }, []);
 
   return (
-    <div className={`scroll-fade ${className}`}>
+    <div ref={wrapperRef} className={`scroll-fade ${className}`}>
       <div ref={ref} className="overflow-x-auto">
         {children}
       </div>
