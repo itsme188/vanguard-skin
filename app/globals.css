@@ -206,6 +206,23 @@
 /* iPhone safe area for bottom nav / home indicator */
 .pb-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }
 
+/* ── iPad / touch tier (spec 2026-07-12) ─────────────────────────────
+   T4: Safari auto-zooms any focused input under 16px. Force 16px on
+   coarse-pointer devices only — desktop/mouse rendering unchanged. */
+@media (pointer: coarse) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
+
+/* SAFARI: prevent text inflation on orientation change. */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
 /* Hide the scrollbar on intentionally-scrollable rows (chip rows, toolbars).
  * Scrolling/swiping still works — only the bar itself is suppressed.
  * Referenced by QuickActionChips + the Research Feeds toolbar. */

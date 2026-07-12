@@ -33,7 +33,7 @@ export default function DashboardLayout({
         is a layout-level reservation, not a flex/grid container — header
         sticky positioning still works inside.
       */}
-      <div className="min-h-screen bg-canvas chat-rail-reserve">
+      <div className="min-h-dvh bg-canvas chat-rail-reserve">
         <a href="#main-content" className="skip-link">
           Skip to main content
         </a>
