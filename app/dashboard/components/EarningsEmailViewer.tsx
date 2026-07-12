@@ -179,7 +179,7 @@ export function EarningsEmailViewer({
               title={data.title}
               srcDoc={data.fullHtml}
               className="w-full block border-0 rounded-b-xl"
-              style={{ height: "75vh", backgroundColor: "#1a1a1a" }}
+              style={{ height: "75dvh", backgroundColor: "#1a1a1a" }}
               sandbox="allow-same-origin"
             />
           )}

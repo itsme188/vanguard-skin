@@ -58,7 +58,7 @@ export function CashDeployCard({ scope }: Props) {
           // full-width (grid-cols-1 below lg). Band-scoped rather than
           // unconditional so the input stays byte-identical at >=1280
           // desktop (2-col grid, plenty of room either way) and <768 phone.
-          className="bg-canvas border border-edge rounded px-2 py-1.5 text-sm font-mono text-ink w-32 md:max-xl:w-40 focus-ring"
+          className="bg-canvas border border-edge rounded px-2 py-1.5 text-sm font-mono text-ink w-32 md:max-xl:w-44 focus-ring"
         />
         <button
           onClick={run}
