@@ -51,7 +51,8 @@ export async function classifyOptionSectors(db: Database.Database): Promise<Opti
     const batch = underlyings.slice(i, i + BATCH);
     const prompt = `Tickers:\n${batch.map((t) => `- ${t}`).join("\n")}`;
     try {
-      const { text } = await generateTextForFeature("securityClassification", { maxOutputTokens: 2000, temperature: 0.1, system: SYSTEM, prompt });
+      // No `temperature` — tier-resolved models can reject it as deprecated (QA 2026-07-07).
+      const { text } = await generateTextForFeature("securityClassification", { maxOutputTokens: 2000, system: SYSTEM, prompt });
       const results = JSON.parse(extractJsonArray(text)) as Array<Record<string, string>>;
       for (const r of results) {
         const gics = normalizeSector(r.sector);
