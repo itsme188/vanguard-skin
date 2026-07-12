@@ -6,6 +6,7 @@ import { computeSMA, computeEMA } from "@/lib/chart/indicators";
 import { Money, Count } from "@/lib/privacy/components";
 import { usePrivacy } from "@/lib/privacy/context";
 import { AddLevelPopover } from "./AddLevelPopover";
+import { ScrollFade } from "./ScrollFade";
 
 // LightweightCharts types imported dynamically to avoid SSR issues
 type IChartApi = import("lightweight-charts").IChartApi;
@@ -756,8 +757,11 @@ export function SecurityChart({
 
   return (
     <div className="flex flex-col h-full">
-      {/* Toolbar */}
-      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-edge overflow-x-auto min-w-0">
+      {/* Toolbar — ScrollFade wraps the overflow-x-auto scroller and adds a
+          right-edge gradient (opacity-driven, native-scrollbar-only affordance
+          was missable) that mirrors AccountsView's holdings-table pattern. */}
+      <ScrollFade className="border-b border-edge">
+        <div className="flex items-center gap-2 px-3 py-1.5 min-w-0">
         <div className="flex items-center gap-2 shrink-0">
           {!compact && <span className="font-mono font-semibold text-ink text-lg">{symbol}</span>}
           {!compact && legend && (
@@ -901,7 +905,8 @@ export function SecurityChart({
             {refreshing ? "..." : "Refresh"}
           </button>
         </div>
-      </div>
+        </div>
+      </ScrollFade>
 
       {/* Status bar */}
       {(warning || error) && (
