@@ -236,6 +236,10 @@ export function ImportFlow() {
 
   // Preview — show parsed results
   if (state.status === "preview") {
+    // Only successfully-parsed files are importable. An "Unknown file format"
+    // preview with an enabled Import button is a contradictory affordance
+    // (QA 2026-07-12, third recurrence) — gate the action on parse success.
+    const importableCount = state.results.filter((r) => r.success && r.preview).length;
     return (
       <div className="rounded-xl border border-edge bg-panel p-5 space-y-4">
         <div className="flex items-center justify-between">
@@ -350,13 +354,19 @@ export function ImportFlow() {
           ))}
         </div>
 
-        <div className="flex gap-3 pt-2">
+        <div className="flex gap-3 pt-2 items-center">
           <button
             onClick={handleImport}
-            className="px-5 py-2.5 rounded-lg bg-gold text-canvas font-medium text-sm hover:brightness-110 transition-[filter,scale] active:scale-[0.96] focus-ring"
+            disabled={importableCount === 0}
+            className="px-5 py-2.5 rounded-lg bg-gold text-canvas font-medium text-sm hover:brightness-110 transition-[filter,scale] active:scale-[0.96] focus-ring disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:brightness-100 disabled:active:scale-100"
           >
-            Import {files.length} file{files.length !== 1 ? "s" : ""}
+            Import {importableCount} file{importableCount !== 1 ? "s" : ""}
           </button>
+          {importableCount === 0 && (
+            <span className="text-xs text-ink-faint">
+              Nothing to import — no file matched a known format.
+            </span>
+          )}
           <button
             onClick={reset}
             className="px-5 py-2.5 rounded-lg border border-edge text-ink-dim text-sm hover:bg-raised transition-colors focus-ring"

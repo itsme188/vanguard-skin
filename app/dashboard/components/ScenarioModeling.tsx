@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import type { ScenarioResult } from "@/lib/compute/scenarios";
 import { findRecipe } from "@/lib/compute/scenario-recipes";
 import { PrivateText } from "@/lib/privacy/components";
+import { formatCompactOptionSymbol } from "@/lib/format";
 
 function findRecipeMethodology(id: string): string | null {
   return findRecipe(id)?.methodology ?? null;
@@ -241,15 +242,20 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                             key={pos.securityId}
                             className="flex items-center justify-between text-xs"
                           >
-                            <div className="flex items-center gap-2">
-                              <span className="font-mono font-medium text-ink w-16">
-                                {pos.symbol}
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="font-mono font-medium text-ink min-w-16 truncate whitespace-nowrap">
+                                {formatCompactOptionSymbol(pos.symbol)}
                               </span>
-                              <span className="text-ink-faint text-[10px]">
-                                {"\u03B2"}{pos.beta.toFixed(1)}
-                              </span>
+                              {/* Recipe scenarios are factor-based \u2014 their beta
+                                  is a hardcoded 1.0 for type compat, so showing
+                                  it would be misleading. */}
+                              {!findRecipe(result.scenario.id) && (
+                                <span className="text-ink-faint text-[10px] shrink-0">
+                                  {"\u03B2"}{pos.beta.toFixed(1)}
+                                </span>
+                              )}
                             </div>
-                            <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-3 shrink-0">
                               <PrivateText className="font-mono tabular-nums text-down">
                                 {formatPct(pos.changePercent)}
                               </PrivateText>
@@ -275,15 +281,17 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                             key={pos.securityId}
                             className="flex items-center justify-between text-xs"
                           >
-                            <div className="flex items-center gap-2">
-                              <span className="font-mono font-medium text-ink w-16">
-                                {pos.symbol}
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="font-mono font-medium text-ink min-w-16 truncate whitespace-nowrap">
+                                {formatCompactOptionSymbol(pos.symbol)}
                               </span>
-                              <span className="text-ink-faint text-[10px]">
-                                {"\u03B2"}{pos.beta.toFixed(1)}
-                              </span>
+                              {!findRecipe(result.scenario.id) && (
+                                <span className="text-ink-faint text-[10px] shrink-0">
+                                  {"\u03B2"}{pos.beta.toFixed(1)}
+                                </span>
+                              )}
                             </div>
-                            <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-3 shrink-0">
                               <PrivateText className="font-mono tabular-nums text-up">
                                 {formatPct(pos.changePercent)}
                               </PrivateText>
