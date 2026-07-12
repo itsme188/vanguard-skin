@@ -48,7 +48,7 @@ export default function DashboardLayout({
                   that band that the row no longer needs to shrink this item;
                   whitespace-nowrap is the guard that keeps it single-line
                   rather than relying on that headroom implicitly. */}
-              <h1 className="text-lg md:text-xl text-gold tracking-tight font-medium md:max-lg:whitespace-nowrap">
+              <h1 className="text-lg md:text-xl text-gold tracking-tight font-medium md:max-lg:whitespace-nowrap!">
                 Portfolio Desk
               </h1>
             </div>
