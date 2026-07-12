@@ -119,7 +119,7 @@ export function EarningsRowChips({
           type="button"
           onClick={generateRecap}
           disabled={generating}
-          className="text-[10px] font-mono px-1.5 py-0.5 rounded text-gold bg-gold/15 hover:bg-gold/25 disabled:opacity-50 cursor-pointer"
+          className="relative text-[10px] font-mono px-1.5 py-0.5 rounded text-gold bg-gold/15 hover:bg-gold/25 disabled:opacity-50 cursor-pointer pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
           title="Compose a fresh recap now (runs enrichment + AI; ~30-60s)"
         >
           {generating ? "…" : "gen"}
@@ -170,7 +170,7 @@ function PhaseChip({ eventId, phase, sent, skipped, onView }: PhaseChipProps) {
       <button
         type="button"
         onClick={onView}
-        className="text-[10px] font-mono px-1.5 py-0.5 rounded text-up bg-up/15 hover:bg-up/25 cursor-pointer"
+        className="relative text-[10px] font-mono px-1.5 py-0.5 rounded text-up bg-up/15 hover:bg-up/25 cursor-pointer pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
         title={`View ${phase} email`}
       >
         ✓ {label}
@@ -209,7 +209,7 @@ function PhaseChip({ eventId, phase, sent, skipped, onView }: PhaseChipProps) {
         type="button"
         onClick={toggleSkip}
         disabled={pending}
-        className="text-[10px] font-mono px-1.5 py-0.5 rounded text-ink-faint bg-raised hover:bg-muted disabled:opacity-50 cursor-pointer line-through"
+        className="relative text-[10px] font-mono px-1.5 py-0.5 rounded text-ink-faint bg-raised hover:bg-muted disabled:opacity-50 cursor-pointer line-through pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
         title={`${phase} skipped — click to un-skip`}
       >
         {label}

@@ -66,7 +66,7 @@ export function EarningsDeleteButton({
       type="button"
       onClick={handleDelete}
       disabled={deleting}
-      className="text-[10px] font-mono px-1.5 py-0.5 rounded text-down bg-down/15 hover:bg-down/25 disabled:opacity-50 cursor-pointer"
+      className="relative text-[10px] font-mono px-1.5 py-0.5 rounded text-down bg-down/15 hover:bg-down/25 disabled:opacity-50 cursor-pointer pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
       title={`Remove this manually-added earnings event${label}`}
       aria-label={`Remove manually-added earnings event${label}`}
     >
