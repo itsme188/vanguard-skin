@@ -42,6 +42,33 @@ const TYPE_MAP: Record<string, string> = {
   derivative: "Option",
 };
 
+// Plaid sometimes labels an option position with the UNDERLYING's type
+// ("etf" for an MTUM put) and an unpadded OCC-ish ticker instead of
+// type "derivative" + option_contract (observed live 2026-07-11). Detect
+// the OCC shape in the ticker itself so those positions still normalize
+// to the canonical padded Option symbol instead of becoming duplicate
+// mistyped securities.
+const OCC_SHAPE = /^([A-Z]{1,6})(\d{6})([CP])(\d{8})$/;
+
+function parseOccShapedTicker(symbol: string): {
+  padded: string;
+  underlying: string;
+  expirationDate: string;
+  optionType: "CALL" | "PUT";
+  strikePrice: number;
+} | null {
+  const m = OCC_SHAPE.exec(symbol.replace(/\s+/g, ""));
+  if (!m) return null;
+  const [, underlying, yymmdd, cp, strikeRaw] = m;
+  return {
+    padded: underlying.padEnd(6, " ") + yymmdd + cp + strikeRaw,
+    underlying,
+    expirationDate: `20${yymmdd.slice(0, 2)}-${yymmdd.slice(2, 4)}-${yymmdd.slice(4, 6)}`,
+    optionType: cp === "C" ? "CALL" : "PUT",
+    strikePrice: parseInt(strikeRaw, 10) / 1000,
+  };
+}
+
 function resolveSymbol(sec: PlaidSecurity): { symbol: string } | { reason: string } {
   const ticker = sec.ticker_symbol?.trim();
   if (ticker && !isGarbageSymbol(ticker)) return { symbol: ticker };
@@ -116,6 +143,21 @@ export function mapPlaidHoldings(resp: PlaidHoldingsResponse): PlaidMapResult {
     const resolved = resolveSymbol(sec);
     if ("reason" in resolved) {
       result.unmatched.push({ name: sec.name, reason: resolved.reason });
+      continue;
+    }
+    const occ = parseOccShapedTicker(resolved.symbol);
+    if (occ) {
+      result.positions.push({
+        plaidAccountId: h.account_id,
+        symbol: occ.padded,
+        name: sec.name,
+        securityType: "Option",
+        quantity: h.quantity,
+        underlyingSymbol: occ.underlying,
+        strikePrice: occ.strikePrice,
+        expirationDate: occ.expirationDate,
+        optionType: occ.optionType,
+      });
       continue;
     }
     const securityType =

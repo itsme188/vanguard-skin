@@ -69,6 +69,36 @@ describe("mapPlaidHoldings", () => {
     ]);
   });
 
+  it("detects OCC-shaped tickers mistyped by Plaid (first live sync, 2026-07-11) and normalizes to padded Option", () => {
+    // Plaid labeled real MTUM/HACK put positions type "etf" with an
+    // UNPADDED OCC-ish ticker — the generic path then created duplicate
+    // unpadded "ETF" securities alongside the statements' padded Option
+    // rows, double-counting the position.
+    const resp: PlaidHoldingsResponse = {
+      accounts: [
+        { account_id: "acctA", name: "Brokerage", mask: "1234", subtype: "brokerage", balances: { current: 1000, available: null } },
+      ],
+      holdings: [
+        { account_id: "acctA", security_id: "s-mistyped", quantity: -2, institution_price: 11.2, institution_value: -2240, institution_price_as_of: null },
+      ],
+      securities: [
+        { security_id: "s-mistyped", ticker_symbol: "MTUM260717P00345000", cusip: null, name: "MTUM Jul 2026 Put", type: "etf", is_cash_equivalent: false },
+      ],
+    };
+    const r = mapPlaidHoldings(resp);
+    expect(r.unmatched).toEqual([]);
+    expect(r.positions).toHaveLength(1);
+    const p = r.positions[0];
+    expect(p.symbol).toBe("MTUM  260717P00345000");
+    expect(p.securityType).toBe("Option");
+    expect(p.underlyingSymbol).toBe("MTUM");
+    expect(p.optionType).toBe("PUT");
+    expect(p.strikePrice).toBe(345);
+    expect(p.expirationDate).toBe("2026-07-17");
+    expect(p.quantity).toBe(-2);
+    expect(r.mutualFundPrices).toEqual([]);
+  });
+
   it("folds type:'cash' securities into cash, not position", () => {
     const resp: PlaidHoldingsResponse = {
       accounts: [

@@ -192,6 +192,33 @@ describe("refreshVanguardHoldingsFromPlaid", () => {
     expect(secondOutcome).toBe("rejected");
   });
 
+  it("resolves dotted share-class tickers onto existing slash-form securities (BRK.B → BRK/B, first live sync 2026-07-11)", async () => {
+    // Statements store BRK/B; Plaid says BRK.B. Pre-fix the sync created a
+    // duplicate BRK.B security and the closed-equity reconciler then wrote
+    // phantom quantity=0 rows for the REAL BRK/B in both accounts.
+    const brkSlashId = upsertSecurity(db, { symbol: "BRK/B", securityType: "Stock" });
+    const resp = holdingsJson();
+    resp.holdings.push({
+      account_id: "pTax", security_id: "s-brk", quantity: 25,
+      institution_price: 480, institution_value: 12000, institution_price_as_of: TODAY,
+    });
+    resp.securities.push({
+      security_id: "s-brk", ticker_symbol: "BRK.B", cusip: null,
+      name: "Berkshire Hathaway Class B", type: "equity", is_cash_equivalent: false,
+    });
+
+    const r = await refreshVanguardHoldingsFromPlaid(db, { cfg: stubCfg(resp), now: NOW, force: true });
+
+    // No duplicate security created…
+    expect(db.prepare(`SELECT COUNT(*) AS c FROM securities WHERE symbol = 'BRK.B'`).get()).toEqual({ c: 0 });
+    expect(r!.securitiesCreated).not.toContain("BRK.B");
+    // …and the plaid holdings row landed on the existing BRK/B security.
+    const row = db
+      .prepare(`SELECT quantity FROM holdings WHERE account_id = ? AND security_id = ? AND as_of_date = ?`)
+      .get(taxableId, brkSlashId, TODAY) as { quantity: number } | undefined;
+    expect(row?.quantity).toBe(25);
+  });
+
   it("statement-wins: a vanguard-pdf holdings row survives a same-day plaid sync", async () => {
     const primId = upsertSecurity(db, { symbol: "PRIM", securityType: "Stock" });
     db.prepare(
