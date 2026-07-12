@@ -34,7 +34,7 @@ export function SortPicker<Field extends string>({
             key={opt.field}
             type="button"
             onClick={() => onSort(opt.field)}
-            className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${
+            className={`relative px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-0.5 ${
               active
                 ? "bg-gold/20 text-gold"
                 : "bg-raised text-ink-dim hover:text-ink"
