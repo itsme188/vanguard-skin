@@ -198,7 +198,7 @@ export async function refreshVanguardHoldingsFromPlaid(
       setPlaidConnectionStatus(db, "reauth_required");
       // Stamp BEFORE push so a Pushover failure can't cause repeat alerts.
       if (!getPlaidReauthAlertedAt(db)) {
-        setPlaidReauthAlertedAt(db, new Date().toISOString());
+        setPlaidReauthAlertedAt(db, (opts.now ?? new Date()).toISOString());
         void sendPushover({
           title: "Plaid: Vanguard re-auth required",
           message:
@@ -220,7 +220,10 @@ export async function refreshVanguardHoldingsFromPlaid(
       // Non-critical (mirrors the TWS + IBKR paths).
     }
 
-    setPlaidLastSyncAt(db, new Date().toISOString());
+    // Stamp with the injected clock so this write and the
+    // already-synced-today gate agree on what "today" is (tests pin
+    // opts.now; in production both are the wall clock).
+    setPlaidLastSyncAt(db, (opts.now ?? new Date()).toISOString());
     setPlaidConnectionStatus(db, "ok");
     setPlaidReauthAlertedAt(db, null);
   } catch (err) {
