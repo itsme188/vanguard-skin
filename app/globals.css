@@ -514,7 +514,11 @@ textarea:focus-visible,
   top: 12px;
 }
 
-/* Scroll fade — gradient overlay on right edge of scrollable containers */
+/* Scroll fade — gradient overlay on right edge of scrollable containers.
+ *
+ * ScrollFade.tsx toggles `.is-scrollable` on THIS wrapper (the ref'd
+ * `.scroll-fade` element below) — not the inner `.overflow-x-auto` scroller —
+ * so this selector and the component's DOM target must stay in sync. */
 .scroll-fade {
   position: relative;
 }
@@ -526,7 +530,12 @@ textarea:focus-visible,
   right: 0;
   bottom: 0;
   width: 32px;
-  background: linear-gradient(to right, transparent, var(--color-panel));
+  /* --scroll-fade-color lets a dark-scoped module (e.g. MarketDataPanel)
+   * override the gradient's target color so it fades to ITS OWN near-black
+   * background instead of the app's light-theme --color-panel (a white
+   * smudge on a dark toolbar). Falls back to the normal light/dark theme
+   * panel color everywhere else — byte-identical to before this comment. */
+  background: linear-gradient(to right, transparent, var(--scroll-fade-color, var(--color-panel)));
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.2s;
@@ -534,6 +543,16 @@ textarea:focus-visible,
 
 .scroll-fade.is-scrollable::after {
   opacity: 1;
+}
+
+/* iPad tablet band (spec 2026-07-12, finding #1): the fade is the ONLY cue
+ * that the Accounts holdings table (and siblings) has more columns to the
+ * right, and 32px reads as low-contrast/missable at this width. Widen it in
+ * the 768–1279.98px band only — desktop (>=1280) keeps the original 32px. */
+@media (min-width: 768px) and (max-width: 1279.98px) {
+  .scroll-fade::after {
+    width: 48px;
+  }
 }
 
 /* Toast slide-in animation */

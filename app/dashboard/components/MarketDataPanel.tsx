@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type { CSSProperties } from "react";
 import { SecurityChart } from "./SecurityChart";
 import { LevelsPanel } from "./LevelsPanel";
 import { KpiCell } from "./TerminalSection";
@@ -88,7 +89,14 @@ export function MarketDataPanel({
         background: "#0a0a0a",
         border: "1px solid #1f1f1f",
         boxShadow: "0 32px 64px -32px rgba(0,0,0,0.6)",
-      }}
+        // Scoped override for the .scroll-fade gradient (globals.css) so the
+        // SecurityChart toolbar's scroll fade — rendered inside this dark
+        // module — fades to THIS panel's own near-black background instead
+        // of the app's light-theme --color-panel (a white smudge). Inherits
+        // down through every descendant via normal CSS custom-property
+        // inheritance; nothing else needs to opt in.
+        "--scroll-fade-color": "#0a0a0a",
+      } as CSSProperties}
     >
       {/* Command strip — tiny ticker-tape context line at the very top */}
       <div
