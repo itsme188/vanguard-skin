@@ -153,7 +153,7 @@ export function NotificationBell() {
     <div className="relative" onMouseEnter={onMouseEnter} onMouseLeave={onMouseLeave}>
       <Link
         href="/dashboard/alerts"
-        className="relative flex items-center text-ink-dim hover:text-ink transition-colors"
+        className="relative flex items-center text-ink-dim hover:text-ink transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-2 pointer-coarse:after:content-['']"
         title={tooltip}
       >
         <svg

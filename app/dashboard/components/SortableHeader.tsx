@@ -39,7 +39,7 @@ export function SortableHeader<Field extends string>({
         <button
           type="button"
           onClick={() => onSort(field)}
-          className={`inline-flex items-center gap-1 transition-colors ${align === "right" ? "ml-auto" : ""}`}
+          className={`relative inline-flex items-center gap-1 transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 pointer-coarse:after:content-[''] ${align === "right" ? "ml-auto" : ""}`}
           style={{
             fontFamily: "var(--font-mono), monospace",
             fontSize: "10px",
@@ -63,7 +63,7 @@ export function SortableHeader<Field extends string>({
       <button
         type="button"
         onClick={() => onSort(field)}
-        className={`inline-flex items-center gap-1 transition-colors ${
+        className={`relative inline-flex items-center gap-1 transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 pointer-coarse:after:content-[''] ${
           isActive ? "text-ink" : "text-ink-faint hover:text-ink-dim"
         } ${align === "right" ? "ml-auto" : ""}`}
       >

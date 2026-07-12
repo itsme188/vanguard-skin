@@ -39,7 +39,7 @@ export function ChatToggleButton() {
       //   xl+ (≥1280px): visible only when rail is collapsed
       //     (chat-toggle-rail-aware in globals.css hides this when
       //      <html data-chat-rail="open">; shows when "collapsed")
-      className={`hidden md:flex chat-toggle-rail-aware items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+      className={`relative hidden md:flex chat-toggle-rail-aware items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-2 pointer-coarse:after:content-[''] ${
         open
           ? "bg-gold/10 text-gold border border-gold/30"
           : "text-ink-faint hover:text-ink-dim hover:bg-raised border border-transparent"
