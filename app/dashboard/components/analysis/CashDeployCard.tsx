@@ -53,7 +53,7 @@ export function CashDeployCard({ scope }: Props) {
           value={cash || ""}
           onChange={(e) => setCash(Number(e.target.value) || 0)}
           placeholder="Amount to deploy"
-          // md:max-xl:w-40 (finding #10) — the base w-32 (128px) truncates its
+          // md:max-xl:w-44 (finding #10) — the base w-32 (128px) truncates its
           // own placeholder in the portrait-tablet band, where this card is
           // full-width (grid-cols-1 below lg). Band-scoped rather than
           // unconditional so the input stays byte-identical at >=1280
