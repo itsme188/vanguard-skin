@@ -58,7 +58,9 @@ export function TerminalSection({
               style={{
                 fontFamily: "var(--font-mono), monospace",
                 fontSize: "11px",
-                color: "#666",
+                // #8a8a8a (not #666): 11px text on #0d0d0d needs 4.5:1;
+                // #666 measured 3.4:1 (2026-07-12 HIG audit).
+                color: "#8a8a8a",
                 marginTop: "4px",
                 letterSpacing: "0.1em",
               }}
@@ -186,7 +188,8 @@ export function KpiCell({
           fontSize: "10px",
           letterSpacing: "0.22em",
           textTransform: "uppercase",
-          color: "#666",
+          // #8a8a8a (not #666): micro-labels need 4.5:1 on near-black.
+          color: "#8a8a8a",
           marginBottom: "6px",
           whiteSpace: "nowrap",
           overflow: "hidden",

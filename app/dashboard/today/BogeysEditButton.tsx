@@ -21,8 +21,9 @@ export function BogeysEditButton({ eventId, symbol, hasBogeys }: Props) {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="text-[10px] font-mono uppercase tracking-wider rounded px-1.5 py-0.5 shrink-0 text-ink-faint bg-raised hover:text-gold hover:bg-gold/15"
+        className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 text-[10px] font-mono uppercase tracking-wider rounded px-1.5 py-0.5 shrink-0 text-ink-faint bg-raised hover:text-gold hover:bg-gold/15"
         title={hasBogeys ? "Edit bogeys + actuals" : "Add bogeys / actuals"}
+        aria-label={hasBogeys ? `Edit bogeys for ${symbol}` : `Add bogeys for ${symbol}`}
       >
         {hasBogeys ? "✎ bog" : "+ bog"}
       </button>

@@ -368,7 +368,7 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
             <div className="flex items-center justify-center gap-4 py-1">
               <Link
                 href="/dashboard/alerts"
-                className="text-[14px] font-medium text-gold hover:text-gold/80"
+                className="text-[14px] font-medium text-gold-ink hover:text-gold"
               >
                 Respond in alerts inbox &rarr;
               </Link>

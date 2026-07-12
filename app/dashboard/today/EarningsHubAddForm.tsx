@@ -66,7 +66,7 @@ export function EarningsHubAddForm({ weekOf: _weekOf }: Props) {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="text-[14px] font-medium text-gold hover:text-gold/80"
+        className="text-[14px] font-medium text-gold-ink hover:text-gold"
       >
         + Add ticker
       </button>

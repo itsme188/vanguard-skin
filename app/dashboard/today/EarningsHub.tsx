@@ -232,7 +232,7 @@ export function EarningsHub() {
                     className="px-5 py-2 flex items-baseline gap-3 border-b border-edge bg-raised font-mono uppercase"
                     style={{ fontSize: "11px", letterSpacing: "0.18em" }}
                   >
-                    <span className="text-gold font-semibold">{dayLabel.weekday}</span>
+                    <span className="text-gold-ink font-semibold">{dayLabel.weekday}</span>
                     <span className="text-ink-faint">· {dayLabel.date}</span>
                     <span className="text-ink-faint ml-auto" style={{ fontSize: "10px" }}>
                       {byDay.get(day)!.length} event{byDay.get(day)!.length === 1 ? "" : "s"}
@@ -258,7 +258,7 @@ export function EarningsHub() {
                     className="px-5 py-2 bg-raised font-mono uppercase flex items-baseline gap-2"
                     style={{ fontSize: "11px", letterSpacing: "0.18em" }}
                   >
-                    <span className="text-gold font-semibold">{dayLabel.weekday}</span>
+                    <span className="text-gold-ink font-semibold">{dayLabel.weekday}</span>
                     <span className="text-ink-faint">· {dayLabel.date}</span>
                   </div>
                   {byDay.get(day)!.map((e) => (

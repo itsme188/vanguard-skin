@@ -65,7 +65,9 @@ function filterBarsByWindow(bars: OhlcvBar[], months: number): OhlcvBar[] {
 const C = {
   background: "#0a0a0a",
   gridLines: "#1a1a1a",
-  text: "#777777",
+  // #8a8a8a (not #777): small text on #0a0a0a needs 4.5:1 — #777 measured
+  // 4.4:1 (2026-07-12 HIG audit).
+  text: "#8a8a8a",
   upColor: "#22c55e",
   downColor: "#ef4444",
   borderUp: "#22c55e",
@@ -824,7 +826,7 @@ export function SecurityChart({
               <button
                 key={tf.label}
                 onClick={() => handleTimeframeChange(tf.label)}
-                className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                className={`relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:inset-x-0 px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
                   activeTimeframe === tf.label ? "bg-panel text-gold" : "text-ink-faint hover:text-ink-dim"
                 }`}
               >
@@ -840,7 +842,7 @@ export function SecurityChart({
                 <button
                   key={d.label}
                   onClick={() => handleDurationChange(d.label)}
-                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                  className={`relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:inset-x-0 px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
                     activeDuration === d.label ? "bg-panel text-gold" : "text-ink-faint hover:text-ink-dim"
                   }`}
                 >
@@ -857,7 +859,7 @@ export function SecurityChart({
                 <button
                   key={ind.key}
                   onClick={() => toggleIndicator(ind.key)}
-                  className={`px-2 py-1 text-xs font-medium rounded-md transition-colors ${
+                  className={`relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:inset-x-0 px-2 py-1 text-xs font-medium rounded-md transition-colors ${
                     activeIndicators.has(ind.key)
                       ? "bg-panel"
                       : "text-ink-faint hover:text-ink-dim"
@@ -876,7 +878,7 @@ export function SecurityChart({
             <div className="flex gap-0.5 bg-raised rounded-lg p-0.5">
             <button
               onClick={() => setShowMarkers((v) => !v)}
-              className={`px-2 py-1 text-xs font-medium rounded-md transition-colors ${
+              className={`relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:inset-x-0 px-2 py-1 text-xs font-medium rounded-md transition-colors ${
                 showMarkers ? "bg-panel text-gold" : "text-ink-faint hover:text-ink-dim"
               }`}
               title="Show BUY/SELL transaction markers"
@@ -885,7 +887,7 @@ export function SecurityChart({
             </button>
             <button
               onClick={() => setShowSuggested((v) => !v)}
-              className={`px-2 py-1 text-xs font-medium rounded-md transition-colors ${
+              className={`relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:inset-x-0 px-2 py-1 text-xs font-medium rounded-md transition-colors ${
                 showSuggested ? "bg-panel text-gold" : "text-ink-faint hover:text-ink-dim"
               }`}
               title="Show computed support / resistance levels (pivot-based)"
@@ -898,7 +900,7 @@ export function SecurityChart({
           <button
             onClick={handleRefresh}
             disabled={refreshing}
-            className="px-3 py-1 text-xs font-medium text-ink-faint hover:text-ink-dim
+            className="chart-chrome relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 px-3 py-1 text-xs font-medium text-ink-faint hover:text-ink-dim
               border border-edge rounded-lg transition-colors disabled:opacity-50"
             title="Refresh from TWS"
           >
@@ -958,7 +960,7 @@ export function SecurityChart({
 
       {/* Footer (hidden in compact/multi-panel mode) */}
       {!compact && (
-        <div className="px-4 py-1.5 border-t border-edge flex items-center justify-between text-xs text-ink-faint gap-3 flex-wrap">
+        <div className="chart-chrome px-4 py-1.5 border-t border-edge flex items-center justify-between text-xs text-ink-faint gap-3 flex-wrap">
           <div className="flex items-center gap-3 flex-wrap">
             <span>
               {barCount > 0 ? `${barCount} bars` : "No data"}

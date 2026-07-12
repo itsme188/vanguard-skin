@@ -24,7 +24,7 @@ const EVENT_ICONS: Record<string, string> = {
 
 const IMPACT_STYLES: Record<string, string> = {
   high: "bg-down/20 text-down",
-  medium: "bg-amber-400/20 text-amber-300",
+  medium: "bg-warn/20 text-warn",
   low: "bg-ink-faint/20 text-ink-dim",
 };
 

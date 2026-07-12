@@ -60,7 +60,7 @@ export function NearbyLevelsCard({ levels }: { levels: LevelNearPrice[] }) {
         )}
         <Link
           href="/dashboard/alerts?view=armed"
-          className="text-[11px] font-medium text-gold hover:text-gold/80"
+          className="text-[11px] font-medium text-gold-ink hover:text-gold"
         >
           View all armed levels &rarr;
         </Link>

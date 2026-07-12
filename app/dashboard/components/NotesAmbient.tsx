@@ -187,7 +187,8 @@ export function NotesAmbient() {
           {saveState === "saved" && "Saved to Notes"}
           {saveState === "error" && (errorMsg || "Save failed")}
           {saveState === "idle" && (
-            <span className="text-ink-faint">
+            /* Keyboard hints — meaningless on touch, hidden there */
+            <span className="text-ink-faint pointer-coarse:hidden">
               <kbd className="px-1.5 py-0.5 rounded bg-raised border border-edge text-[10px] font-mono">⌘;</kbd>
               {" toggle · "}
               <kbd className="px-1.5 py-0.5 rounded bg-raised border border-edge text-[10px] font-mono">Esc</kbd>

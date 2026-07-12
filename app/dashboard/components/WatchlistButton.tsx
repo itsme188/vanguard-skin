@@ -66,6 +66,7 @@ export function WatchlistButton({
           : "border-edge text-ink-dim hover:text-ink hover:border-ink-faint"
       }`}
       title={watched ? "Remove from watchlist" : "Add to watchlist"}
+      aria-label={watched ? "Remove from watchlist" : "Add to watchlist"}
     >
       {loading ? (
         "..."
