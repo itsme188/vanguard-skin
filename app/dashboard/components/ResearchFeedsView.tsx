@@ -71,7 +71,12 @@ function SymbolPills({
           <Link
             key={s}
             href={`/dashboard/security/${secId}`}
-            className="px-2 py-0.5 rounded bg-blue/20 text-blue text-xs font-mono font-medium hover:bg-blue/30 transition-colors"
+            // T2 (finding #8): dozens of these links per card, wrapped both
+            // axes at gap-1.5 (6px) — after:-inset-1 gives real hit-area
+            // growth; the ~2px mutual overlap between adjacent chips'
+            // extensions is an acceptable trade-off vs. a dead zone between
+            // them (the chip's own visible box stays the primary target).
+            className="relative px-2 py-0.5 rounded bg-blue/20 text-blue text-xs font-mono font-medium hover:bg-blue/30 transition-colors pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-1"
           >
             {s}
           </Link>
@@ -368,8 +373,14 @@ export function ResearchFeedsView({
 
         {/* overflow-x-auto + scrollbar-none: containment guard — on very narrow
             viewports this action row scrolls within itself (no visible bar)
-            instead of pushing the page into horizontal scroll. */}
-        <div className="flex items-center gap-2 overflow-x-auto scrollbar-none">
+            instead of pushing the page into horizontal scroll.
+            md:max-lg:pr-4 — iPad-portrait only (finding #22): the scrollable
+            strip's last button ("Email") otherwise sits flush against the
+            container's own scroll boundary with zero trailing space, reading
+            as clipped. Small trailing padding gives it breathing room without
+            touching the row's appearance at desktop (>=1280, no scroll) or
+            phone (<768, unaffected band). */}
+        <div className="flex items-center gap-2 overflow-x-auto scrollbar-none md:max-lg:pr-4">
           {/* Search: full input on desktop, icon toggle on mobile */}
           <input
             type="text"
