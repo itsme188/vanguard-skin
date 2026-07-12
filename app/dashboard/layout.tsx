@@ -43,7 +43,12 @@ export default function DashboardLayout({
           <div className="max-w-[1600px] mx-auto px-4 md:px-6 electron:pl-20 flex items-center justify-between h-14">
             <div className="flex items-center gap-2">
               <MobileNavDrawer />
-              <h1 className="text-lg md:text-xl text-gold tracking-tight font-medium">
+              {/* Finding #13: at 834px (iPad portrait band) the wordmark
+                  wraps to 2 lines. TwsStatus's #14 fix frees enough width in
+                  that band that the row no longer needs to shrink this item;
+                  whitespace-nowrap is the guard that keeps it single-line
+                  rather than relying on that headroom implicitly. */}
+              <h1 className="text-lg md:text-xl text-gold tracking-tight font-medium md:max-lg:whitespace-nowrap">
                 Portfolio Desk
               </h1>
             </div>

@@ -78,7 +78,7 @@ export function TwsStatus() {
     <div className="relative">
       <button
         onClick={() => setShowPanel(!showPanel)}
-        className="flex items-center gap-1.5 text-[11px] text-ink-faint font-mono hover:text-ink-dim transition-colors"
+        className="flex items-center gap-1.5 text-[11px] text-ink-faint font-mono hover:text-ink-dim transition-colors md:max-lg:whitespace-nowrap"
       >
         <span className={`w-1.5 h-1.5 rounded-full ${isSyncing ? "bg-blue animate-pulse" : config.color}`} />
         {isSyncing ? (
@@ -94,7 +94,11 @@ export function TwsStatus() {
           <>
             {config.label}
             {syncState?.lastSyncAt && status.state === "connected" && (
-              <span className="text-ink-faint">
+              // Finding #14: the "· synced Xh ago" suffix is the low-value
+              // half of this pill (state dot + label already say "connected");
+              // hiding it in the iPad-portrait band keeps the primary state
+              // visible on one line without wrapping the pill to 2 lines.
+              <span className="text-ink-faint md:max-lg:hidden">
                 · synced {formatTimeSince(syncState.lastSyncAt)}
               </span>
             )}
@@ -104,7 +108,8 @@ export function TwsStatus() {
             {syncState?.lastSyncAt &&
               (syncState.lastSyncVia === "ibkr-webapi" || syncState.lastSyncVia === "plaid") &&
               status.state !== "connected" && (
-                <span className="text-ink-faint">
+                // Finding #14 (in-band only, same rationale as above).
+                <span className="text-ink-faint md:max-lg:hidden">
                   · {syncState.lastSyncVia === "plaid" ? "Plaid" : "Web API"} synced{" "}
                   {formatTimeSince(syncState.lastSyncAt)}
                 </span>
