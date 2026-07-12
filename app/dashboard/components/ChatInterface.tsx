@@ -478,7 +478,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
   }
 
   return (
-    <div className="flex flex-col h-[calc(100vh-12rem)]">
+    <div className="flex flex-col h-[calc(100dvh-12rem)]">
       {/* Messages area */}
       <div
         className="flex-1 overflow-y-auto space-y-4 pb-4"

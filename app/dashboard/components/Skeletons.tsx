@@ -213,7 +213,7 @@ export function NotesSkeleton() {
 /* ── Welcome area + input bar ── */
 export function ChatSkeleton() {
   return (
-    <div className="flex flex-col h-[calc(100vh-12rem)]">
+    <div className="flex flex-col h-[calc(100dvh-12rem)]">
       <div className="flex-1 flex items-center justify-center">
         <div className="text-center space-y-4">
           <SkeletonPulse className="h-10 w-32 mx-auto" />
