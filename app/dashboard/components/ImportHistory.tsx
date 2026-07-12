@@ -104,7 +104,7 @@ export function ImportHistory({ batches }: { batches: ImportBatch[] }) {
                 <td className="px-4 py-3 text-ink">
                   {batch.filename ?? "\u2014"}
                 </td>
-                <td className="px-4 py-3">
+                <td className="px-4 py-3 whitespace-nowrap">
                   <span className="text-xs px-2 py-0.5 rounded bg-blue/20 text-blue font-mono font-medium">
                     {SOURCE_LABELS[batch.source_type] ?? batch.source_type}
                   </span>
@@ -112,14 +112,14 @@ export function ImportHistory({ batches }: { batches: ImportBatch[] }) {
                 <td className="px-4 py-3 text-right font-mono text-ink-dim tabular-nums">
                   {batch.record_count}
                 </td>
-                <td className="px-4 py-3 text-ink-dim text-xs">
+                <td className="px-4 py-3 text-ink-dim text-xs whitespace-nowrap">
                   {formatDate(batch.created_at)}
                 </td>
                 <td className="px-4 py-3 text-right">
                   <button
                     onClick={() => handleUndo(batch.id)}
                     disabled={undoingId === batch.id}
-                    className="text-xs text-ink-faint hover:text-down transition-colors disabled:opacity-50"
+                    className="relative text-xs text-ink-faint hover:text-down transition-colors disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1"
                   >
                     {undoingId === batch.id ? (
                       <div className="w-4 h-4 border-2 border-ink-faint border-t-transparent rounded-full animate-spin" />
