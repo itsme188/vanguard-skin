@@ -268,7 +268,7 @@ function ConversationHistory({
               </button>
               <button
                 onClick={(e) => { e.stopPropagation(); onDelete(conv); }}
-                className="shrink-0 p-2 mr-1 text-ink-faint hover:text-down opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+                className="shrink-0 p-2 mr-1 text-ink-faint hover:text-down opacity-0 group-hover:opacity-100 focus:opacity-100 pointer-coarse:opacity-100 transition-opacity relative pointer-coarse:after:absolute pointer-coarse:after:-inset-2 pointer-coarse:after:content-['']"
                 aria-label={`Delete conversation ${conv.title ?? conv.id}`}
                 title="Delete"
               >
