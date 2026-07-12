@@ -870,3 +870,101 @@ describe("intel rows in cloud scoreboard (Task 9: snapshot v9)", () => {
     expect(row).toContain("inside");
   });
 });
+
+// ── B13: per-run candidate cap (subrequest budget guard) ─────────────────────
+//
+// Each sent candidate costs ~5 subrequests (3 KV marker reads + 1 Resend fetch
+// + 1 KV marker write), and the single */15 invocation's 50-subrequest free-tier
+// budget is shared with calendar-enrich (itself capped at 10 candidates). An
+// uncapped clustered-AMC run could die mid-loop with markers half-written.
+
+function makeCapEvent(
+  overrides: Partial<Record<string, unknown>> & { id: number },
+): Record<string, unknown> {
+  return {
+    ...(makeEarningsSnapshot().calendarEvents[0] as unknown as Record<string, unknown>),
+    source_key: `finnhub:AAPL:${EVENT_DATE}:${overrides.id}`,
+    ...overrides,
+  };
+}
+
+function makeSnapshotWithEvents(events: Record<string, unknown>[]): Snapshot {
+  const snap = makeEarningsSnapshot() as unknown as { calendarEvents: unknown[] };
+  snap.calendarEvents = events;
+  return snap as unknown as Snapshot;
+}
+
+describe("B13: per-run candidate cap", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (sendEmail as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "mock-email-id" });
+  });
+
+  it("processes at most 5 candidates per run; overflow deferred markerless for the next tick", async () => {
+    const events = Array.from({ length: 7 }, (_, i) => makeCapEvent({ id: i + 1 }));
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeSnapshotWithEvents(events),
+    );
+    const env = makeEnv();
+
+    const result = await runEarningsFallback(env, { now: previewWindowNow() });
+
+    expect(result.swept).toBe(7); // all discovered candidates stay visible in the count
+    expect(result.sent).toBe(5);
+    expect(sendEmail).toHaveBeenCalledTimes(5);
+    const deferred = result.details.filter((d) => d.reason === "deferred-cap");
+    expect(deferred).toHaveLength(2);
+    expect(result.skipped).toBe(2);
+    // No cloud-sent marker for deferred events — the next tick must retry them.
+    const putKeys = (env.CRON_KV.put as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => c[0] as string,
+    );
+    expect(putKeys).toHaveLength(5);
+    for (const d of deferred) {
+      expect(putKeys).not.toContain(`cloud-sent-earnings-${d.phase}-${d.eventId}`);
+    }
+  });
+
+  it("prioritizes previews closest to release when over cap", async () => {
+    // The 16:00 event (furthest out, 120 min) is listed FIRST — naive
+    // array-order slicing would keep it and drop a closer release instead.
+    const times = ["16:00", "15:50", "15:52", "15:54", "15:56", "15:58"];
+    const events = times.map((t, i) => makeCapEvent({ id: i + 1, release_time: t }));
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeSnapshotWithEvents(events),
+    );
+    const env = makeEnv();
+
+    // now = 120 min before the 16:00 release → distances 110–120 min, all in-window.
+    const result = await runEarningsFallback(env, { now: previewWindowNow() });
+
+    expect(result.sent).toBe(5);
+    const deferred = result.details.filter((d) => d.reason === "deferred-cap");
+    expect(deferred).toHaveLength(1);
+    expect(deferred[0].eventId).toBe(1); // the 16:00 event — furthest from release
+  });
+
+  it("defers recaps before previews (recap window is 4h; preview window is 15 min)", async () => {
+    const recap = makeCapEvent({
+      id: 99,
+      release_time: "13:00", // release already past → not a preview candidate
+      enriched_at: "2026-06-15 17:30:00", // 30 min before `now` → inside recap window
+      actual_value: "EPS 1.60 · Rev 92000000000",
+      consensus_value: "EPS 1.50 · Rev 90000000000",
+    });
+    const previews = Array.from({ length: 5 }, (_, i) => makeCapEvent({ id: i + 1 }));
+    // Recap listed FIRST — array order must not beat phase priority.
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeSnapshotWithEvents([recap, ...previews]),
+    );
+    const env = makeEnv();
+
+    const result = await runEarningsFallback(env, { now: previewWindowNow() });
+
+    expect(result.sent).toBe(5);
+    const deferred = result.details.filter((d) => d.reason === "deferred-cap");
+    expect(deferred).toHaveLength(1);
+    expect(deferred[0].eventId).toBe(99);
+    expect(deferred[0].phase).toBe("recap");
+  });
+});
