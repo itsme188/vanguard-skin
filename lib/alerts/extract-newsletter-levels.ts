@@ -31,6 +31,7 @@ export interface RelevantSymbol {
   security_id: number;
   current_price: number | null;
   relationship: "held" | "watchlist";
+  security_type: string | null;
 }
 
 /**
@@ -158,13 +159,33 @@ export function parseExtractionResponse(raw: string): ExtractedLevel[] {
 }
 
 /**
+ * Plausibility gate for extracted levels. A level more than 50% away from the
+ * current price is a unit/scale error — the model quoting index-scale levels
+ * on an ETF (SPX 7100 stored on SPY at $748, QA 2026-07-06) or per-contract
+ * vs per-share. No actionable newsletter level is half or double the live
+ * price. Options are exempt: premiums legitimately double/halve (an exit at
+ * 2.5× the current premium is a normal newsletter call). Unknown current
+ * price → not implausible (nothing to compare against; the review gate still
+ * applies). Same 50% threshold as LEVEL_PLAUSIBILITY_MAX_DISTANCE in
+ * lib/queries/security-levels.ts — the scan-time backstop.
+ */
+export function isImplausibleLevelPrice(
+  levelPrice: number,
+  sym: Pick<RelevantSymbol, "current_price" | "security_type">
+): boolean {
+  if (sym.security_type?.toLowerCase() === "option") return false;
+  if (sym.current_price === null || sym.current_price <= 0) return false;
+  return Math.abs(levelPrice - sym.current_price) / sym.current_price > 0.5;
+}
+
+/**
  * Fetch symbols the user holds OR watchlists, with current prices.
  * These are the only symbols we extract levels for — everything else is noise.
  */
 export function getRelevantSymbols(db: Database.Database): RelevantSymbol[] {
   return db
     .prepare(
-      `SELECT DISTINCT s.id AS security_id, s.symbol,
+      `SELECT DISTINCT s.id AS security_id, s.symbol, s.security_type,
               p.close_price AS current_price,
               CASE WHEN h.security_id IS NOT NULL THEN 'held' ELSE 'watchlist' END AS relationship
        FROM securities s
@@ -252,6 +273,13 @@ export async function extractLevelsFromArticle(
     const sym = bySymbol.get(lvl.symbol.toUpperCase());
     if (!sym) {
       // Claude returned a symbol not in our tracked list — discard
+      skipped++;
+      continue;
+    }
+    if (isImplausibleLevelPrice(lvl.price, sym)) {
+      console.warn(
+        `[levels/extract] Dropping implausible ${lvl.symbol} ${lvl.level_type} @ ${lvl.price} — current price ${sym.current_price} (mis-scaled extraction, article ${article.id})`
+      );
       skipped++;
       continue;
     }

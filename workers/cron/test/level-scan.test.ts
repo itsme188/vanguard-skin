@@ -106,6 +106,16 @@ describe("isLevelCrossed", () => {
     expect(isLevelCrossed({ level_type: "unknown", price: 100 }, 50)).toBe(false);
     expect(isLevelCrossed({ level_type: "unknown", price: 100 }, 150)).toBe(false);
   });
+
+  it("price >50% away from the level never crosses (mis-scaled level guard, mirrors Mac)", () => {
+    // Real incident: SPX-scale 7100/7150 "supports" stored on SPY at ~$748.
+    expect(isLevelCrossed({ level_type: "support", price: 7100 }, 748)).toBe(false);
+    expect(isLevelCrossed({ level_type: "support", price: 7150 }, 748)).toBe(false);
+    // Inverted scale error (level 10× too small) also suppressed.
+    expect(isLevelCrossed({ level_type: "resistance", price: 75 }, 748)).toBe(false);
+    // A deep-but-plausible hit inside the band still fires.
+    expect(isLevelCrossed({ level_type: "stop", price: 100 }, 51)).toBe(true);
+  });
 });
 
 describe("runLevelScan — gating", () => {

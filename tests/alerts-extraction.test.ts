@@ -5,6 +5,7 @@ import {
   buildExtractionPrompt,
   parseExtractionResponse,
   getRelevantSymbols,
+  isImplausibleLevelPrice,
   type ArticleInput,
   type RelevantSymbol,
 } from "@/lib/alerts/extract-newsletter-levels";
@@ -20,8 +21,8 @@ describe("buildExtractionPrompt", () => {
     raw_text: "SPY looks vulnerable below 580. QQQ resistance at 505. Above 510 is blue sky.",
   };
   const symbols: RelevantSymbol[] = [
-    { symbol: "SPY", security_id: 1, current_price: 583, relationship: "held" },
-    { symbol: "QQQ", security_id: 2, current_price: 502, relationship: "watchlist" },
+    { symbol: "SPY", security_id: 1, current_price: 583, relationship: "held", security_type: "ETF" },
+    { symbol: "QQQ", security_id: 2, current_price: 502, relationship: "watchlist", security_type: "ETF" },
   ];
 
   it("includes article metadata + tracked symbols + current prices", () => {
@@ -164,6 +165,35 @@ describe("parseExtractionResponse", () => {
     ]);
     const result = parseExtractionResponse(raw);
     expect(result[0].thesis.length).toBe(500);
+  });
+});
+
+// ─── isImplausibleLevelPrice ────────────────────────────────────
+
+describe("isImplausibleLevelPrice", () => {
+  it("flags a level >50% above the current price (SPX-on-SPY scale error)", () => {
+    expect(isImplausibleLevelPrice(7100, { current_price: 748, security_type: "ETF" })).toBe(true);
+    expect(isImplausibleLevelPrice(7150, { current_price: 748, security_type: "ETF" })).toBe(true);
+  });
+
+  it("flags a level >50% below the current price (inverted scale error)", () => {
+    expect(isImplausibleLevelPrice(71, { current_price: 748, security_type: "ETF" })).toBe(true);
+  });
+
+  it("passes normal levels within the band", () => {
+    expect(isImplausibleLevelPrice(715, { current_price: 748, security_type: "ETF" })).toBe(false);
+    expect(isImplausibleLevelPrice(1000, { current_price: 700, security_type: "stock" })).toBe(false); // +43%
+    expect(isImplausibleLevelPrice(360, { current_price: 700, security_type: "stock" })).toBe(false); // −49%
+  });
+
+  it("exempts options (premiums legitimately double/halve)", () => {
+    expect(isImplausibleLevelPrice(25, { current_price: 8, security_type: "Option" })).toBe(false);
+    expect(isImplausibleLevelPrice(25, { current_price: 8, security_type: "option" })).toBe(false);
+  });
+
+  it("passes when no current price is known (review gate still applies)", () => {
+    expect(isImplausibleLevelPrice(7100, { current_price: null, security_type: "ETF" })).toBe(false);
+    expect(isImplausibleLevelPrice(7100, { current_price: 0, security_type: "ETF" })).toBe(false);
   });
 });
 
