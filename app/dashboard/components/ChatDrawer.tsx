@@ -178,7 +178,7 @@ export function ChatDrawer() {
             {isMobile ? (
               <button
                 onClick={() => setOpen(false)}
-                className="text-ink-dim hover:text-ink transition-colors p-1 -ml-1 rounded-md"
+                className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-2 text-ink-dim hover:text-ink transition-colors p-1 -ml-1 rounded-md"
                 aria-label="Close chat"
               >
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
@@ -203,8 +203,9 @@ export function ChatDrawer() {
             </span>
           </div>
           <div className="flex items-center gap-2">
+            {/* Keyboard hint — meaningless on touch, hidden there */}
             {!isMobile && (
-              <kbd className="text-[10px] text-ink-faint font-mono bg-raised px-1.5 py-0.5 rounded border border-edge">
+              <kbd className="pointer-coarse:hidden text-[10px] text-ink-faint font-mono bg-raised px-1.5 py-0.5 rounded border border-edge">
                 {"⌘"}J
               </kbd>
             )}
@@ -214,7 +215,7 @@ export function ChatDrawer() {
             {!isMobile && (
               <button
                 onClick={() => setExpanded((v) => !v)}
-                className="text-ink-faint hover:text-ink transition-colors p-1 rounded-md hover:bg-raised"
+                className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 text-ink-faint hover:text-ink transition-colors p-1 rounded-md hover:bg-raised"
                 aria-label={expanded ? "Narrow chat" : "Widen chat"}
                 title={expanded ? "Narrow chat" : "Widen chat for reading"}
               >
@@ -262,7 +263,7 @@ export function ChatDrawer() {
             {isLargeDesktop && (
               <button
                 onClick={() => setCollapsed(true)}
-                className="text-ink-faint hover:text-ink transition-colors p-1 rounded-md hover:bg-raised"
+                className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 text-ink-faint hover:text-ink transition-colors p-1 rounded-md hover:bg-raised"
                 aria-label="Collapse chat rail"
                 title="Collapse chat (Cmd+J)"
               >
@@ -285,7 +286,7 @@ export function ChatDrawer() {
             {!isLargeDesktop && (
               <button
                 onClick={() => setOpen(false)}
-                className="text-ink-faint hover:text-ink transition-colors p-1 rounded-md hover:bg-raised"
+                className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 text-ink-faint hover:text-ink transition-colors p-1 rounded-md hover:bg-raised"
                 aria-label="Close chat"
               >
                 <svg

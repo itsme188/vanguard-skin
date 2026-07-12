@@ -265,7 +265,7 @@ function PerformanceContent({ state }: { state: AnalysisTrustState }) {
 
       <a
         href="/dashboard/analysis?view=performance"
-        className="inline-block text-sm text-amber-400 hover:text-amber-300 underline underline-offset-2"
+        className="inline-block text-sm text-warn hover:brightness-110 underline underline-offset-2"
       >
         Open Performance →
       </a>

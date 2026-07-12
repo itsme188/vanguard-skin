@@ -84,7 +84,7 @@ export function MarketDataPanel({
 
   return (
     <section
-      className="rounded-2xl overflow-hidden font-mono"
+      className="dark-module-chart rounded-2xl overflow-hidden font-mono"
       style={{
         background: "#0a0a0a",
         border: "1px solid #1f1f1f",
@@ -107,13 +107,14 @@ export function MarketDataPanel({
           fontSize: "11px",
           letterSpacing: "0.18em",
           textTransform: "uppercase",
-          color: "#555",
+          // Dim but AA-passing: #555 measured 2.6:1 on #0d0d0d (needs 4.5).
+          color: "#8a8a8a",
         }}
       >
         <div className="flex items-center gap-3 truncate">
           <span style={{ color: "#ffb84d", fontWeight: 600 }}>{symbol}</span>
           {name && <span>· {name}</span>}
-          {typeLabel && <span style={{ color: "#777" }}>· {typeLabel}</span>}
+          {typeLabel && <span style={{ color: "#8a8a8a" }}>· {typeLabel}</span>}
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <span
@@ -217,7 +218,7 @@ export function MarketDataPanel({
                 </div>
                 <div
                   style={{
-                    color: "#555",
+                    color: "#8a8a8a",
                     fontSize: "10px",
                     letterSpacing: "0.22em",
                     textTransform: "uppercase",
@@ -294,7 +295,7 @@ export function MarketDataPanel({
               vol != null ? (
                 <>
                   <Count value={vol.suffix ? Math.round(vol.num * 10) / 10 : Math.round(vol.num)} />
-                  {vol.suffix && <span style={{ color: "#777" }}>{vol.suffix}</span>}
+                  {vol.suffix && <span style={{ color: "#8a8a8a" }}>{vol.suffix}</span>}
                 </>
               ) : (
                 "—"

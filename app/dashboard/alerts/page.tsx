@@ -412,7 +412,7 @@ function AlertsPageInner() {
             Triggered levels and newsletter-extracted suggestions in one inbox.{" "}
             <Link
               href="/dashboard/levels/performance"
-              className="text-gold hover:text-gold/80"
+              className="text-gold-ink hover:text-gold"
             >
               Source performance →
             </Link>
@@ -423,7 +423,7 @@ function AlertsPageInner() {
             <button
               onClick={approveAll}
               disabled={approvingAll}
-              className="relative px-3 py-1.5 text-xs font-medium rounded-lg border border-gold/30 bg-gold/10 text-gold hover:bg-gold/20 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-1"
+              className="relative px-3 py-1.5 text-xs font-medium rounded-lg border border-gold/30 bg-gold/10 text-gold-ink hover:bg-gold/20 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
               title="Approve every pending newsletter level so the scanner can arm them"
             >
               Approve all ({reviewCount})
@@ -432,7 +432,7 @@ function AlertsPageInner() {
           <button
             onClick={() => runSuggest()}
             disabled={suggesting}
-            className="relative px-3 py-1.5 text-xs font-medium rounded-lg border border-edge text-ink-dim hover:text-ink disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-1"
+            className="relative px-3 py-1.5 text-xs font-medium rounded-lg border border-edge text-ink-dim hover:text-ink disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
             title="Ask Claude to write a recommendation for every pending alert without one"
           >
             {suggesting ? "Thinking..." : "Suggest all"}
@@ -440,7 +440,7 @@ function AlertsPageInner() {
           <button
             onClick={runDetect}
             disabled={detecting}
-            className="relative px-3 py-1.5 text-xs font-medium rounded-lg border border-edge text-ink-dim hover:text-ink disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-1"
+            className="relative px-3 py-1.5 text-xs font-medium rounded-lg border border-edge text-ink-dim hover:text-ink disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
           >
             {detecting ? "Scanning..." : "Scan now"}
           </button>
@@ -461,9 +461,9 @@ function AlertsPageInner() {
                 <button
                   key={opt.value}
                   onClick={() => selectFilter(opt.value)}
-                  className={`relative px-2.5 py-1 text-[11px] rounded transition-colors pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-0.5 ${
+                  className={`relative px-2.5 py-1 text-[11px] rounded transition-colors pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 ${
                     filter === opt.value
-                      ? "bg-gold/15 text-gold"
+                      ? "bg-gold/15 text-gold-ink"
                       : "text-ink-faint hover:text-ink"
                   }`}
                 >
@@ -907,19 +907,19 @@ function AlertRow({
             <>
               <button
                 onClick={() => setNoteOpen(!noteOpen)}
-                className="relative px-2.5 py-1 text-[11px] rounded bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-1"
+                className="relative px-2.5 py-1 text-[11px] rounded bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
               >
                 Acted
               </button>
               <button
                 onClick={() => onRespond(alert.id, "ignored")}
-                className="relative px-2.5 py-1 text-[11px] rounded text-ink-faint hover:text-ink-dim pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-1"
+                className="relative px-2.5 py-1 text-[11px] rounded text-ink-faint hover:text-ink-dim pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
               >
                 Ignore
               </button>
               <button
                 onClick={() => onRespond(alert.id, "dismissed")}
-                className="relative text-ink-faint hover:text-ink text-xs pointer-coarse:p-2 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-1"
+                className="relative text-ink-faint hover:text-ink text-xs pointer-coarse:p-2 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
                 title="Dismiss"
               >
                 ×
@@ -1036,14 +1036,14 @@ function ReviewRow({
           <button
             onClick={() => onDecide(level.id, "auto_approved")}
             disabled={disabled}
-            className="relative px-3 py-1 text-[11px] rounded bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-1"
+            className="relative px-3 py-1 text-[11px] rounded bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
           >
             Approve
           </button>
           <button
             onClick={() => onDecide(level.id, "rejected")}
             disabled={disabled}
-            className="relative px-3 py-1 text-[11px] rounded text-ink-faint hover:text-ink-dim disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-1"
+            className="relative px-3 py-1 text-[11px] rounded text-ink-faint hover:text-ink-dim disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
           >
             Reject
           </button>

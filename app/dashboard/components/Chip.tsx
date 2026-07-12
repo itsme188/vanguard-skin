@@ -13,10 +13,12 @@ export type ChipSize = "xs" | "sm";
 const TONE_CLASSES: Record<ChipTone, string> = {
   up: "bg-up/20 text-up",
   down: "bg-down/20 text-down",
-  gold: "bg-gold/20 text-gold",
+  // Chip text is 11-12px — small-text contrast tier (4.5:1), hence gold-ink
+  // and the theme-aware --warn token rather than raw text-gold/amber-300.
+  gold: "bg-gold/20 text-gold-ink",
   info: "bg-blue/20 text-blue",
   neutral: "bg-raised text-ink-dim",
-  warn: "bg-amber-500/20 text-amber-300",
+  warn: "bg-warn/20 text-warn",
 };
 
 const SIZE_CLASSES: Record<ChipSize, string> = {

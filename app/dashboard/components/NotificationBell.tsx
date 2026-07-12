@@ -155,6 +155,7 @@ export function NotificationBell() {
         href="/dashboard/alerts"
         className="relative flex items-center text-ink-dim hover:text-ink transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-2 pointer-coarse:after:content-['']"
         title={tooltip}
+        aria-label={tooltip}
       >
         <svg
           width="18"
@@ -170,7 +171,7 @@ export function NotificationBell() {
           <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
         </svg>
         {totalCount > 0 && (
-          <span className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-1 rounded-full bg-gold text-canvas text-[9px] font-mono font-bold flex items-center justify-center">
+          <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-gold text-canvas text-[11px] font-mono font-bold flex items-center justify-center">
             {totalCount > 9 ? "9+" : totalCount}
           </span>
         )}
@@ -187,7 +188,7 @@ export function NotificationBell() {
             </span>
             <Link
               href="/dashboard/alerts"
-              className="text-[11px] font-medium text-gold hover:brightness-110"
+              className="text-[11px] font-medium text-gold-ink hover:brightness-110"
             >
               View all →
             </Link>
@@ -196,7 +197,7 @@ export function NotificationBell() {
           {(firedCount ?? 0) > 0 && (
             <div>
               <div className="px-3 py-1.5 bg-raised border-b border-edge">
-                <span className="text-[9px] font-medium text-gold uppercase tracking-wider">
+                <span className="text-[11px] font-medium text-gold-ink uppercase tracking-wider">
                   Pending alerts
                 </span>
               </div>

@@ -39,7 +39,7 @@ const EVENT_TYPE_CONFIG: Record<
 const IMPACT_BADGE: Record<EventImpact, { label: string; className: string }> =
   {
     high: { label: "High Impact", className: "bg-down/20 text-down" },
-    medium: { label: "Medium", className: "bg-amber-500/20 text-amber-300" },
+    medium: { label: "Medium", className: "bg-warn/20 text-warn" },
     low: { label: "Low", className: "bg-muted text-ink-dim" },
   };
 

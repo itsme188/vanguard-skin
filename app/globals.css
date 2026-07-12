@@ -55,10 +55,16 @@
    * deliberate Bloomberg-style accent against cream, not a yellow highlighter) */
   --gold: #b8860b;
   --gold-glow: rgba(184, 134, 11, 0.12);
+  /* gold-ink — gold for SMALL TEXT (links, labels ≤17px). --gold measures
+   * ~3.0:1 on cream — fine for accents, borders, and large/bold text, but
+   * below the 4.5:1 small-text minimum. Use text-gold-ink for gold copy. */
+  --gold-ink: #8a6508;
 
   /* Status — emerald / ruby. Matches dark mode's semantic green/red but at
-   * deeper saturation so they hold up against pure-white cards. */
-  --up: #0d9456;
+   * deeper saturation so they hold up against pure-white cards.
+   * up deepened #0d9456 → #0a7d49 (2026-07-12): 3.9:1 → 4.8:1 on cream so
+   * small-regular gain figures clear the 4.5:1 small-text minimum. */
+  --up: #0a7d49;
   --up-tint: rgba(13, 148, 86, 0.15);
   --down: #c8311c;
   --down-tint: rgba(200, 49, 28, 0.15);
@@ -67,6 +73,10 @@
    * for "today" outlines, info tags, and links. */
   --blue: #1a3b8a;
   --blue-tint: rgba(26, 59, 138, 0.15);
+
+  /* Warning accent — amber-800. Used by <Chip tone="warn">; the old fixed
+   * text-amber-300 measured 1.5:1 on cream. */
+  --warn: #92400e;
 
   /* Tinted card surfaces — variations on the panel for the rare cases that
    * need a brand or warm-context undertone. Amber palette retunes these so
@@ -109,6 +119,7 @@
   /* Brand — Bloomberg amber (the only warm color in dark mode) */
   --gold: #ffb84d;
   --gold-glow: rgba(255, 184, 77, 0.09);
+  --gold-ink: #ffb84d; /* dark gold already ~8:1 on soft black — no split */
 
   /* Status — pure semantic green/red */
   --up: #22c55e;
@@ -121,6 +132,9 @@
    * isn't another shade of green or sienna). */
   --blue: #7ba8d4;
   --blue-tint: rgba(123, 168, 212, 0.15);
+
+  /* Warning accent — amber-300 (the pre-token dark appearance, unchanged) */
+  --warn: #fcd34d;
 
   /* Tinted card surfaces — barely-there variations for brand/warm cards. */
   --panel-sage: #0e1410;     /* near-black + green hint */
@@ -155,9 +169,11 @@
   /* Brand */
   --color-gold: var(--gold);
   --color-gold-glow: var(--gold-glow);
+  --color-gold-ink: var(--gold-ink);
 
   /* Status */
   --color-up: var(--up);
+  --color-warn: var(--warn);
   --color-up-tint: var(--up-tint);
   --color-down: var(--down);
   --color-down-tint: var(--down-tint);
@@ -221,6 +237,37 @@
 html {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+}
+
+/* Dark-module chart chrome (sibling of the --scroll-fade-color pattern in
+ * MarketDataPanel): SecurityChart's dim chrome text (footer legend, Refresh
+ * button, empty-state notice) uses text-ink-faint, which resolves to the
+ * LIGHT theme's #54574c when the chart is embedded in the always-dark
+ * MarketDataPanel — 2.7:1 on near-black. The panel root carries
+ * .dark-module-chart; chrome elements opt in with .chart-chrome. Unlayered,
+ * so it deliberately beats the Tailwind utility (cascade layers). Pill
+ * buttons inside the toolbar do NOT get .chart-chrome — they sit on light
+ * bg-raised groups where ink-faint is correct. */
+.dark-module-chart .chart-chrome {
+  color: #8a8a8a;
+}
+.dark-module-chart button.chart-chrome:hover {
+  color: #d4d4d4;
+}
+
+/* ACCESSIBILITY: respect the system Reduce Motion setting (2026-07-12
+ * HIG audit). Quiets every CSS animation/transition — slide-up overlays,
+ * skeleton pulses, chip transitions — to near-instant. 0.01ms rather than
+ * 0 so transitionend/animationend listeners still fire. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* Hide the scrollbar on intentionally-scrollable rows (chip rows, toolbars).

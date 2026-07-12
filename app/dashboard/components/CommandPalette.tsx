@@ -235,7 +235,8 @@ export function SearchButton() {
         <circle cx="11" cy="11" r="8" />
         <line x1="21" y1="21" x2="16.65" y2="16.65" />
       </svg>
-      <kbd className="hidden md:inline text-[10px] font-mono">{"\u2318"}K</kbd>
+      {/* Keyboard hint \u2014 meaningless on touch, hidden there */}
+      <kbd className="hidden md:pointer-fine:inline text-[10px] font-mono">{"\u2318"}K</kbd>
     </button>
   );
 }
