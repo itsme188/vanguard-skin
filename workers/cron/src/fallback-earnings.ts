@@ -180,6 +180,41 @@ interface ScanSkip {
 // (recap window). Outside it a payload can't produce an unexpired recap.
 const KV_PROBE_WINDOW_MS = 16 * 60 * 60 * 1000;
 
+// B13: per-run candidate cap. Each sent candidate costs ~5 subrequests (3 KV
+// marker reads + 1 Resend fetch + 1 KV marker write), and the single */15
+// invocation's 50-subrequest free-tier budget is shared with calendar-enrich
+// (itself capped at 10 candidates). Uncapped, a clustered AMC night dies
+// mid-loop — the Nth send throws "Too many subrequests" AFTER earlier
+// candidates' markers already committed, and nothing retries the rest.
+// 5 × ~5 = ~25 subrequests for sends, leaving headroom for the snapshot R2
+// read, the IBKR live refresh, and recap-road-2 KV probes.
+const MAX_CANDIDATES_PER_RUN = 5;
+
+/**
+ * B13 priority order under the cap: previews first, closest release first,
+ * recaps last. Rationale: the Worker preview window is one tick wide
+ * ([105,120] min-until-release) — a preview deferred past its window is LOST,
+ * and the closest-to-release preview exits the window soonest. A recap's 4h
+ * window means a deferred recap reliably lands on the next 15-min tick.
+ * Recaps keep scan order among themselves (sort is stable).
+ */
+function prioritizeCandidates(
+  candidates: SnapshotCandidate[],
+  now: Date,
+): SnapshotCandidate[] {
+  const nowMs = now.getTime();
+  const rank = (c: SnapshotCandidate): number => {
+    if (c.phase === "recap") return Number.MAX_SAFE_INTEGER;
+    const instant = c.event.release_time
+      ? composeReleaseInstant(c.event.event_date, c.event.release_time as string)
+      : null;
+    // A preview always has a parseable release instant (the scan required it
+    // to enter the window) — the fallback is pure defense.
+    return instant ? instant.getTime() - nowMs : Number.MAX_SAFE_INTEGER - 1;
+  };
+  return [...candidates].sort((a, b) => rank(a) - rank(b));
+}
+
 export async function runEarningsFallback(
   env: FallbackEnv,
   opts: { now?: Date; dryRun?: boolean } = {},
@@ -203,11 +238,30 @@ export async function runEarningsFallback(
 
   const now = opts.now ?? new Date();
   const scan = await findCandidatesFromSnapshot(snapshot, now, env.CRON_KV);
-  const candidates = scan.candidates;
-  result.swept = candidates.length;
+  const prioritized = prioritizeCandidates(scan.candidates, now);
+  result.swept = prioritized.length; // ALL discovered candidates, incl. deferred
   for (const s of scan.skips) {
     result.skipped++;
     result.details.push({ eventId: s.eventId, symbol: s.symbol, phase: s.phase, status: "skipped", reason: s.reason });
+  }
+  // B13: cap the processed set; overflow is reported (never silently dropped)
+  // and left markerless so the next 15-min tick retries it.
+  const candidates = prioritized.slice(0, MAX_CANDIDATES_PER_RUN);
+  const deferred = prioritized.slice(MAX_CANDIDATES_PER_RUN);
+  if (deferred.length > 0) {
+    console.warn(
+      `[fallback-earnings] candidate cap: processing ${candidates.length} of ${prioritized.length}, deferring ${deferred.length} to next tick`,
+    );
+    for (const d of deferred) {
+      result.skipped++;
+      result.details.push({
+        eventId: d.eventId,
+        symbol: d.symbol,
+        phase: d.phase,
+        status: "skipped",
+        reason: "deferred-cap",
+      });
+    }
   }
   if (candidates.length === 0) return result;
 
