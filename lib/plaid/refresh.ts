@@ -108,9 +108,21 @@ export function writePlaidHoldings(
 
     const syncedSecurityIds: number[] = [];
     for (const p of positions) {
-      const existed = checkExistingSecurity.get(p.symbol) !== undefined;
+      let symbol = p.symbol;
+      let existed = checkExistingSecurity.get(symbol) !== undefined;
+      // Share-class form drift: statements store BRK/B, Plaid says BRK.B.
+      // Creating the dotted twin makes the reconciler phantom-close the
+      // real slash-form row (observed live 2026-07-11) — resolve onto the
+      // existing security instead.
+      if (!existed && symbol.includes(".")) {
+        const slashForm = symbol.replace(/\./g, "/");
+        if (checkExistingSecurity.get(slashForm) !== undefined) {
+          symbol = slashForm;
+          existed = true;
+        }
+      }
       const securityId = upsertSecurity(db, {
-        symbol: p.symbol,
+        symbol,
         name: p.name ?? undefined,
         securityType: p.securityType,
         underlyingSymbol: p.underlyingSymbol,
@@ -118,7 +130,7 @@ export function writePlaidHoldings(
         expirationDate: p.expirationDate,
         optionType: p.optionType,
       });
-      if (!existed) securitiesCreated.push(p.symbol);
+      if (!existed) securitiesCreated.push(symbol);
       syncedSecurityIds.push(securityId);
       const res = upsertHolding.run(
         localAccountId,
