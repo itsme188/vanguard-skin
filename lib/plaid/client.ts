@@ -5,7 +5,14 @@ export interface PlaidClientConfig {
   clientId: string;
   secret: string;
   env: "sandbox" | "production";
-  redirectUri: string;
+  /**
+   * OPT-IN. Plaid rejects /link/token/create outright when redirect_uri
+   * isn't registered in the developer dashboard (verified live
+   * 2026-07-11), and the sandbox test-institution flow needs none. Null
+   * = omit from the Link token request; Vanguard's OAuth connect
+   * requires setting PLAID_REDIRECT_URI to a dashboard-registered URI.
+   */
+  redirectUri: string | null;
   fetchImpl?: typeof fetch;
 }
 
@@ -23,8 +30,7 @@ export function loadPlaidConfig(): PlaidClientConfig | null {
     clientId,
     secret,
     env,
-    redirectUri:
-      process.env.PLAID_REDIRECT_URI || "http://localhost:3099/dashboard/plaid-link",
+    redirectUri: process.env.PLAID_REDIRECT_URI || null,
   };
 }
 
@@ -70,8 +76,10 @@ export async function createLinkToken(
     user: { client_user_id: "vanguard-skin-local" },
     country_codes: ["US"],
     language: "en",
-    redirect_uri: cfg.redirectUri,
   };
+  if (cfg.redirectUri) {
+    body.redirect_uri = cfg.redirectUri;
+  }
   if (opts.accessToken) {
     body.access_token = opts.accessToken; // Link update mode (re-auth)
   } else {

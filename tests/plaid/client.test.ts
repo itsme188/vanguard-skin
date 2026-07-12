@@ -45,6 +45,14 @@ describe("plaid client", () => {
     expect(calls[0].body.redirect_uri).toBe("http://localhost:3099/dashboard/plaid-link");
   });
 
+  it("createLinkToken omits redirect_uri entirely when redirectUri is null (sandbox / no registered OAuth URI)", async () => {
+    const { impl, calls } = stubFetch([{ json: { link_token: "link-no-redirect" } }]);
+    const noRedirect = { ...cfg(impl), redirectUri: null };
+    const token = await createLinkToken(noRedirect);
+    expect(token).toBe("link-no-redirect");
+    expect("redirect_uri" in calls[0].body).toBe(false);
+  });
+
   it("createLinkToken in reauth mode passes access_token and omits products", async () => {
     const { impl, calls } = stubFetch([{ json: { link_token: "link-re" } }]);
     await createLinkToken(cfg(impl), { accessToken: "access-1" });
@@ -82,11 +90,12 @@ describe("plaid client", () => {
     }
   });
 
-  describe("loadPlaidConfig redirectUri (F3)", () => {
-    // process.env.PLAID_REDIRECT_URI ?? default treated "" (Electron
-    // settings.json injection with an unset/blank field) as PRESENT,
-    // shipping an empty redirect_uri to Plaid. Must fall back to the
-    // default on empty string, not just undefined.
+  describe("loadPlaidConfig redirectUri (F3 + sandbox E2E fix)", () => {
+    // Plaid REJECTS /link/token/create when redirect_uri isn't registered
+    // in the developer dashboard (verified live 2026-07-11 — sandbox Link
+    // never opened). redirect_uri is therefore OPT-IN: null unless
+    // PLAID_REDIRECT_URI is a non-empty string. Empty string ("" from an
+    // unset Electron settings.json field) also means absent.
     const ENV_KEYS = ["PLAID_CLIENT_ID", "PLAID_SECRET", "PLAID_REDIRECT_URI", "PLAID_ENV"] as const;
     const saved: Record<string, string | undefined> = {};
 
@@ -106,14 +115,16 @@ describe("plaid client", () => {
       }
     }
 
-    it("falls back to the default redirectUri when PLAID_REDIRECT_URI is an empty string", () => {
+    it("yields a null redirectUri when PLAID_REDIRECT_URI is empty or unset", () => {
       withEnv(
         { PLAID_CLIENT_ID: "cid", PLAID_SECRET: "sec", PLAID_REDIRECT_URI: "" },
         () => {
-          const cfg = loadPlaidConfig();
-          expect(cfg?.redirectUri).toBe("http://localhost:3099/dashboard/plaid-link");
+          expect(loadPlaidConfig()?.redirectUri).toBeNull();
         },
       );
+      withEnv({ PLAID_CLIENT_ID: "cid", PLAID_SECRET: "sec" }, () => {
+        expect(loadPlaidConfig()?.redirectUri).toBeNull();
+      });
     });
 
     it("uses PLAID_REDIRECT_URI when it's a non-empty string", () => {
