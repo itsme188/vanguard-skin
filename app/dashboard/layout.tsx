@@ -73,8 +73,18 @@ export default function DashboardLayout({
         {/* Content. Mobile pb must clear BOTH fixed layers stacked at the
             bottom: MobileBottomNav AND the NotesAmbient FAB (bottom-20 +
             h-12 → its top edge is 128px up) — pb-20 left the last row of
-            any list pinned behind the FAB at max scroll. */}
-        <main id="main-content" className="max-w-[1600px] mx-auto px-4 md:px-6 pt-4 md:pt-6 pb-36 md:pb-6">
+            any list pinned behind the FAB at max scroll.
+
+            At >=768px MobileBottomNav is gone but the NotesAmbient FAB is
+            still fixed bottom-6 (24px) + h-12 (48px), i.e. it occupies
+            24-72px off the bottom edge — md:pb-6 (24px) left that whole
+            band overlapping the last row(s) of any long list (finding #3,
+            iPad tablet/touch tier). Widen it only for coarse-pointer
+            devices (touch — no cursor to hover the FAB out of the way
+            first) so mouse/desktop is unchanged; Tailwind resolves
+            `md:pointer-coarse:pb-24` after the plain `md:pb-6` regardless
+            of source order since it stacks one more variant. */}
+        <main id="main-content" className="max-w-[1600px] mx-auto px-4 md:px-6 pt-4 md:pt-6 pb-36 md:pb-6 md:pointer-coarse:pb-24">
           {children}
         </main>
 
