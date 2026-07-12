@@ -255,8 +255,7 @@ body {
  * so it silently no-ops on anything long. `pretty` just prevents a lone orphan
  * word on the last line of body/UI copy, with no line-count limit. Both are
  * purely visual (line-break choices only) so there is no layout-shift risk.
- * Element selectors sit below Tailwind utilities, so an explicit `text-nowrap`
- * / `text-balance` class on any node still wins. */
+ * Unlayered rule — beats Tailwind's layered utilities per CSS cascade layers; a utility that must override text-wrap here needs the ! important modifier (see the header h1). */
 h1, h2, h3, h4 {
   text-wrap: balance;
 }
