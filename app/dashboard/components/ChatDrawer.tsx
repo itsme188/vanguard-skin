@@ -159,9 +159,14 @@ export function ChatDrawer() {
         />
       )}
 
-      {/* Chat panel */}
+      {/* Chat panel. max-w-[100vw] is a CSS-level belt-and-suspenders cap —
+          the inline style's maxWidth: "90vw" (below) already wins via
+          specificity whenever it applies, but this guards the drawer/rail
+          from ever exceeding the viewport width if that inline style is
+          ever absent (e.g. the isMobile branch, which renders `undefined`
+          and relies on `inset-0` sizing instead). */}
       <div
-        className={`fixed z-50 bg-canvas transform transition-transform duration-300 ease-in-out ${panelClass}`}
+        className={`fixed z-50 bg-canvas transform transition-transform duration-300 ease-in-out max-w-[100vw] ${panelClass}`}
         style={!isMobile ? { width: `${chatPanelWidthPx(expanded)}px`, maxWidth: "90vw" } : undefined}
         role={isLargeDesktop ? "complementary" : "dialog"}
         aria-label="Chat assistant"

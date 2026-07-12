@@ -216,14 +216,14 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
         onClick={onClose}
         aria-hidden="true"
       />
-      <div className="relative w-full max-w-xl mx-auto my-8 electron:mt-12 rounded-xl border border-edge bg-panel shadow-2xl">
+      <div className="relative w-full max-w-xl mx-auto my-8 electron:mt-12 max-h-[85dvh] overflow-y-auto rounded-xl border border-edge bg-panel shadow-2xl">
         <div className="sticky top-0 z-10 flex items-baseline justify-between px-5 py-3.5 border-b border-edge bg-panel/95 backdrop-blur-sm rounded-t-xl">
           <h2 className="text-sm font-medium text-ink">
             Bogeys for <span className="font-mono text-gold">{symbol}</span>
           </h2>
           <button
             onClick={onClose}
-            className="text-ink-faint hover:text-ink text-lg leading-none w-6 h-6 flex items-center justify-center rounded hover:bg-raised"
+            className="relative text-ink-faint hover:text-ink text-lg leading-none w-6 h-6 flex items-center justify-center rounded hover:bg-raised pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
             aria-label="Close"
           >
             ✕
@@ -324,7 +324,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
               <button
                 type="submit"
                 disabled={savingActuals}
-                className="text-[14px] font-medium bg-up/15 text-up border border-up/40 hover:bg-up/25 disabled:opacity-50 rounded px-3 py-1"
+                className="relative text-[14px] font-medium bg-up/15 text-up border border-up/40 hover:bg-up/25 disabled:opacity-50 rounded px-3 py-1 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
               >
                 {savingActuals ? "Saving…" : "Save actuals"}
               </button>
@@ -409,14 +409,14 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
                 type="button"
                 onClick={onClose}
                 disabled={saving}
-                className="text-[14px] text-ink-faint hover:text-ink-dim"
+                className="relative text-[14px] text-ink-faint hover:text-ink-dim pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={saving}
-                className="text-[14px] font-medium bg-gold/20 text-gold border border-gold/40 hover:bg-gold/30 disabled:opacity-50 rounded px-3 py-1"
+                className="relative text-[14px] font-medium bg-gold/20 text-gold border border-gold/40 hover:bg-gold/30 disabled:opacity-50 rounded px-3 py-1 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
               >
                 {saving ? "Saving…" : "Save"}
               </button>

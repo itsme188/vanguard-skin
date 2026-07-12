@@ -97,7 +97,7 @@ export function CallNoteModal({ eventId, symbol, open, onClose, onSaved }: Props
         aria-hidden="true"
       />
       <div
-        className="relative w-full max-w-md rounded-xl bg-panel p-4 shadow-xl"
+        className="relative w-full max-w-md max-h-[85dvh] overflow-y-auto rounded-xl bg-panel p-4 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <h3 className="text-sm font-semibold text-ink">{symbol} — call notes</h3>
@@ -171,7 +171,7 @@ export function CallNoteModal({ eventId, symbol, open, onClose, onSaved }: Props
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg px-3 py-1.5 text-[13px] text-ink-dim hover:text-ink"
+            className="relative rounded-lg px-3 py-1.5 text-[13px] text-ink-dim hover:text-ink pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
           >
             Cancel
           </button>
@@ -179,7 +179,7 @@ export function CallNoteModal({ eventId, symbol, open, onClose, onSaved }: Props
             type="button"
             onClick={save}
             disabled={saving || loading}
-            className="rounded-lg bg-gold px-3 py-1.5 text-[13px] font-medium text-canvas disabled:opacity-50"
+            className="relative rounded-lg bg-gold px-3 py-1.5 text-[13px] font-medium text-canvas disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
           >
             {saving ? "Saving…" : "Save note"}
           </button>
