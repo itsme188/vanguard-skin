@@ -72,3 +72,19 @@ FAB-over-content overlap.
 - Task 6 (chrome): #13, #14.
 - Task 7 (overlays): #1 (fade strengthening — lives in globals.css table-fade
   utility), #3 (FAB clearance), #21 (modal buttons), + planned modal max-h/dvh pass.
+
+## Post-Task-5 discovery (controller browser verification)
+
+**Finding #23 (root cause of #1): `ScrollFade.tsx` is inert app-wide — pre-existing bug on main (`fb543a7`).**
+The component toggles `is-scrollable` on the INNER `overflow-x-auto` div, but the
+`.scroll-fade.is-scrollable::after` gradient rule (globals.css ~518-538) requires the
+class on the SAME element as `.scroll-fade` (the outer wrapper). Verified live at
+834×1194: inner div carries `is-scrollable`, wrapper's `::after` opacity stays 0
+while genuinely overflowing. Affects every consumer (HoldingsTable, AllHoldingsTable,
+TaxLotTables, FactorHeatmap, TransactionHistory, and Task 5's SecurityChart toolbar).
+Explains #1's "zero visual affordance" — the Accounts fade never rendered.
+**Secondary**: gradient color is `var(--color-panel)` which resolves LIGHT (#fff)
+inside the dark MarketDataPanel module → a corrected fade there needs the panel's
+scoped vars to override the fade color. → Routed to Task 7.
+Desktop check at 1440×900: PASS — neither toolbar overflows at desktop, no fade
+engages, rendering identical (both Charts + Security Detail measured).
