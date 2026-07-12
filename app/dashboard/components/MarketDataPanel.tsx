@@ -234,7 +234,13 @@ export function MarketDataPanel({
           Hidden entirely when no bars exist (options, new watchlist adds). */}
       {kpis && (
         <div
-          className="flex flex-wrap"
+          // Portrait-tablet band only: 5 KpiCells at flex-basis 160px wrap
+          // 4+1 (ATR alone on its own row) at iPad-portrait widths. An
+          // explicit 3-col grid in that band wraps 3+2 instead; grid ignores
+          // each cell's inline flex-basis, so no per-cell change is needed.
+          // Untouched at >=1280 (flex-wrap, same as before) and <768 (phone
+          // already stacks narrower via the flex-basis shrink).
+          className="flex flex-wrap md:max-lg:grid md:max-lg:grid-cols-3"
           style={{ borderBottom: "1px solid #1f1f1f", background: "#0b0b0b" }}
         >
           <KpiCell

@@ -337,6 +337,7 @@ function SuggestedLevels({
                   <button
                     onClick={() => accept(sug, i)}
                     disabled={accepting === i}
+                    className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-2"
                     style={{
                       padding: "6px 14px",
                       background: "transparent",
@@ -662,7 +663,7 @@ export function LevelsPanel({
             onClick={() => setAdding((v) => !v)}
             className={
               embedded
-                ? ""
+                ? "relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-1"
                 : "px-3 py-1.5 text-xs font-medium rounded-lg border border-gold/30 bg-gold/10 text-gold hover:bg-gold/20 transition-colors"
             }
             style={
@@ -1148,6 +1149,7 @@ export function LevelsPanel({
                         <button
                           onClick={() => handleDeactivate(l.id)}
                           title="Deactivate"
+                          className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1"
                           style={{
                             background: "transparent",
                             border: "1px solid #333",
@@ -1173,6 +1175,7 @@ export function LevelsPanel({
                               ? "Already alerted today — reactivation is blocked until tomorrow."
                               : "Reactivate"
                           }
+                          className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1"
                           style={{
                             background: "transparent",
                             border: "1px solid " + (alertedToday ? "#333" : "#22c55e"),
@@ -1193,6 +1196,7 @@ export function LevelsPanel({
                       <button
                         onClick={() => handleDelete(l.id)}
                         title="Delete"
+                        className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1"
                         style={{
                           background: "transparent",
                           border: "1px solid #444",
