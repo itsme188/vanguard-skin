@@ -134,9 +134,11 @@ export function SecurityChart({
     (OhlcvBar & { indicators?: Record<string, number> }) | null
   >(null);
 
-  // Toggle states
+  // Toggle states. Transaction markers default ON in single-chart view but
+  // OFF in compact (Watchlist grid) panels — four marker-dense mini-charts
+  // read as clutter; the Txns pill turns them on per panel.
   const [activeIndicators, setActiveIndicators] = useState<Set<IndicatorKey>>(new Set());
-  const [showMarkers, setShowMarkers] = useState(true);
+  const [showMarkers, setShowMarkers] = useState(!compact);
   const [showSuggested, setShowSuggested] = useState(false);
   // Level-overlay fetch failed — chart renders without level lines, which is
   // indistinguishable from "no levels set" unless we say so. Self-heals on
@@ -163,6 +165,12 @@ export function SecurityChart({
   const { isPrivate } = usePrivacy();
   const isPrivateRef = useRef(isPrivate);
   isPrivateRef.current = isPrivate;
+
+  // Mirrored for the init effect, which deliberately excludes showMarkers from
+  // its deps (a toggle must not re-create the chart) but still needs the
+  // current value when the initial fetch resolves.
+  const showMarkersRef = useRef(showMarkers);
+  showMarkersRef.current = showMarkers;
 
   const fetchChartData = useCallback(
     async (duration: string, refresh = false, barSizeOverride?: string) => {
@@ -355,7 +363,7 @@ export function SecurityChart({
         const defaultDuration = DURATIONS.find((d) => d.label === "1Y")!;
         const visibleBars = filterBarsByWindow(data.bars, defaultDuration.months);
         applyBarsToChart(lc, candleSeries, volumeSeries, visibleBars);
-        markersPluginRef.current = updateMarkers(lc, candleSeries, data.transactions ?? [], true, null, isPrivateRef.current);
+        markersPluginRef.current = updateMarkers(lc, candleSeries, data.transactions ?? [], showMarkersRef.current, null, isPrivateRef.current);
         chart.timeScale().fitContent();
       }
     }
@@ -852,8 +860,8 @@ export function SecurityChart({
             </div>
           )}
 
-          {/* Indicator toggles (daily, full mode only) */}
-          {!isIntraday && !compact && (
+          {/* Indicator toggles (daily only) */}
+          {!isIntraday && (
             <div className="flex gap-0.5 bg-raised rounded-lg p-0.5">
               {INDICATORS.map((ind) => (
                 <button
@@ -873,8 +881,8 @@ export function SecurityChart({
             </div>
           )}
 
-          {/* Overlay toggles (daily, full mode only) */}
-          {!isIntraday && !compact && (
+          {/* Overlay toggles (daily only) */}
+          {!isIntraday && (
             <div className="flex gap-0.5 bg-raised rounded-lg p-0.5">
             <button
               onClick={() => setShowMarkers((v) => !v)}
