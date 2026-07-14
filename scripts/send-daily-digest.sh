@@ -42,7 +42,11 @@ echo "$(date '+%Y-%m-%d %H:%M:%S') — Refreshing risk-free rate cache"
 
 for i in $(seq 1 $MAX_RETRIES); do
   echo "$(date '+%Y-%m-%d %H:%M:%S') — Attempt $i of $MAX_RETRIES"
-  RESPONSE=$(curl -sS --max-time 300 -X POST \
+  # --max-time must exceed the send pipeline's worst case (digest: sync +
+  # compose + Claude, several minutes). At the old 300s every attempt "timed
+  # out" while the server kept working, and the retry stacked a concurrent
+  # duplicate pipeline (2026-06-30 + 2026-07-01: digest ×2).
+  RESPONSE=$(curl -sS --max-time 900 -X POST \
     -H "Content-Type: application/json" \
     -H "X-Cron-Secret: $SECRET" \
     -d '{"mode":"since_last"}' \
@@ -55,6 +59,16 @@ for i in $(seq 1 $MAX_RETRIES); do
   fi
 
   echo "Failed (exit code $EXIT_CODE): $RESPONSE"
+
+  # Only a connection failure (curl exit 7 — server not running) is
+  # retryable. A timeout (exit 28) means the server IS running and the
+  # pipeline is still working — curl abandoning the request does NOT stop
+  # the Next.js handler, so retrying would launch a concurrent duplicate.
+  # The route's in-process send mutex is the backstop; don't even knock.
+  if [ $EXIT_CODE -ne 7 ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') — Non-retryable failure (exit $EXIT_CODE); server-side pipeline may still complete. Not retrying."
+    exit 1
+  fi
 
   if [ $i -lt $MAX_RETRIES ]; then
     echo "Waiting ${DELAY}s before retry..."

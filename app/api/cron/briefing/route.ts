@@ -10,6 +10,7 @@ import {
   clearRunningMarker,
   confirmMacSent,
 } from "@/lib/cron/running-marker";
+import { tryAcquireSendLock, releaseSendLock } from "@/lib/cron/send-mutex";
 import { shouldSendBriefingToday } from "@/lib/calendar/market-holidays";
 import { todayET } from "@/lib/calendar/date-utils";
 
@@ -56,23 +57,48 @@ export async function POST(request: Request) {
     }
   }
 
-  // Worker-side dedup: if the cloud fallback already delivered today's email,
-  // don't regenerate. Opt-in — returns null when WORKER_MARKER_URL is unset.
-  const marker = await checkCloudMarker("briefing");
-  if (marker?.sentBy === "cloud") {
+  // In-process mutex — a launchd curl retry (or the Worker's primary call)
+  // landing while an earlier request's pipeline is still running must not
+  // start a second concurrent send. Acquired BEFORE the marker check so two
+  // near-simultaneous entries can't both pass during the marker RTT.
+  // (2026-07-12: three curl attempts each outlived --max-time and all three
+  // pipelines sent — Sunday briefing ×3.)
+  if (!tryAcquireSendLock("briefing")) {
     return Response.json({
       success: true,
       skipped: true,
-      reason: "cloud already sent",
-      date: marker.date,
+      reason: "send already in progress",
     });
   }
 
-  // Signal to Worker that we're starting — fallback path will skip while
-  // this marker is set. Fire-and-forget; never block delivery on Worker RTT.
-  void setRunningMarker("briefing");
-
   try {
+    // Worker-side dedup: if the cloud fallback already delivered today's email,
+    // don't regenerate. Opt-in — returns null when WORKER_MARKER_URL is unset.
+    const marker = await checkCloudMarker("briefing");
+    if (marker?.sentBy === "cloud") {
+      return Response.json({
+        success: true,
+        skipped: true,
+        reason: "cloud already sent",
+        date: marker.date,
+      });
+    }
+    // A mac-sent marker means THIS Mac already shipped today's briefing (a
+    // retried launchd tick after a slow-but-successful earlier run). Skip
+    // unless the caller explicitly forces a resend.
+    if (marker?.sentBy === "mac" && body.force !== true) {
+      return Response.json({
+        success: true,
+        skipped: true,
+        reason: "mac already sent",
+        date: marker.date,
+      });
+    }
+
+    // Signal to Worker that we're starting — fallback path will skip while
+    // this marker is set. Fire-and-forget; never block delivery on Worker RTT.
+    void setRunningMarker("briefing");
+
     const result = await sendBriefingEmail(db, {
       weekOf: body.weekOf as string | undefined,
       recipient: body.to as string | undefined,
@@ -96,6 +122,7 @@ export async function POST(request: Request) {
       { status: 500 }
     );
   } finally {
+    releaseSendLock("briefing");
     void clearRunningMarker("briefing");
   }
 }

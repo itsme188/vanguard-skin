@@ -968,3 +968,40 @@ describe("B13: per-run candidate cap", () => {
     expect(deferred[0].phase).toBe("recap");
   });
 });
+
+describe("superseded cross-source duplicate events (2026-07-14 JPM/BAC double-preview)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (sendEmail as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "mock-email-id" });
+  });
+
+  /** Same print, two calendar rows: finnhub canonical + nasdaq marked superseded
+   *  by the Mac's reconcileEarningsDates. The snapshot ships both (SELECT *);
+   *  only the canonical row may produce an email. */
+  function makeDualSourceSnapshot(): Snapshot {
+    const snap = makeEarningsSnapshot();
+    const rows = (snap as unknown as { calendarEvents: Record<string, unknown>[] }).calendarEvents;
+    rows[0].superseded = 0;
+    rows.push({
+      ...rows[0],
+      id: 2,
+      source: "nasdaq",
+      source_key: "nasdaq:AAPL:2026-06-15",
+      superseded: 1,
+    });
+    return snap;
+  }
+
+  it("skips a superseded event row — one email for the print, sent for the canonical id", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeDualSourceSnapshot(),
+    );
+
+    const result = await runEarningsFallback(env, { now: previewWindowNow() });
+
+    expect(result.sent).toBe(1);
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    expect(result.details.filter((d) => d.status === "sent").map((d) => d.eventId)).toEqual([1]);
+  });
+});
