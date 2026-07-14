@@ -18,6 +18,7 @@ import {
 import { captureReactionFromYahoo } from "../../workers/cron/src/yahoo";
 import { sendEarningsPrintPush } from "@/lib/alerts/print-push";
 import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
+import { issuerSiblings } from "@/lib/securities/issuer-family";
 import {
   getEarningsSettings,
   shouldSendEarningsEmail,
@@ -519,12 +520,42 @@ interface PreviewCandidateRow {
   symbol: string | null;
   event_date: string;
   release_time: string;
+  source: string;
 }
 
 interface RecapCandidateRow {
   id: number;
   symbol: string | null;
+  event_date: string;
   enriched_at: string;
+  source: string;
+}
+
+/**
+ * Collapse cross-source duplicate rows for the same print. One earnings
+ * release can carry TWO calendar_events rows (finnhub + nasdaq scans write
+ * distinct source_keys). reconcileEarningsDates marks the non-canonical row
+ * superseded=1, but it only runs inside syncCalendarForWeek — in the window
+ * between row creation and the next sync BOTH rows are live, and the sweep
+ * sent one email per row (2026-06-30 NKE preview ×2). Key on issuer family +
+ * event_date so dual-class rows (GOOGL/GOOG) collapse too; prefer the
+ * finnhub row, then the lowest id (deterministic across sweep ticks).
+ */
+function dedupeCrossSourceRows<
+  T extends { id: number; symbol: string | null; event_date: string; source: string },
+>(rows: T[]): T[] {
+  const rank = (r: T) => (r.source === "finnhub" ? 0 : 1);
+  const keyOf = (r: T) =>
+    `${[...issuerSiblings(r.symbol ?? "")].sort().join(",")}|${r.event_date}`;
+  const winners = new Map<string, T>();
+  for (const row of rows) {
+    const key = keyOf(row);
+    const cur = winners.get(key);
+    if (!cur || rank(row) < rank(cur) || (rank(row) === rank(cur) && row.id < cur.id)) {
+      winners.set(key, row);
+    }
+  }
+  return rows.filter((row) => winners.get(keyOf(row)) === row);
 }
 
 export interface EmailSweepOpts {
@@ -554,7 +585,7 @@ export function findEmailCandidates(
 
   const previewRows = db
     .prepare(
-      `SELECT ce.id, ce.symbol, ce.event_date, ce.release_time
+      `SELECT ce.id, ce.symbol, ce.event_date, ce.release_time, ce.source
          FROM calendar_events ce
          LEFT JOIN earnings_emails ee
            ON ee.event_id = ce.id AND ee.phase = 'preview'
@@ -570,15 +601,16 @@ export function findEmailCandidates(
     )
     .all(todayStr, tomorrowStr) as PreviewCandidateRow[];
 
-  const previewCandidates: PreviewCandidateRow[] = [];
+  const inWindowPreviews: PreviewCandidateRow[] = [];
   for (const row of previewRows) {
     const releaseInstant = composeReleaseInstant(row.event_date, row.release_time);
     if (!releaseInstant) continue;
     const msUntilRelease = releaseInstant.getTime() - nowMs;
     if (msUntilRelease >= PREVIEW_WINDOW_MIN_MS && msUntilRelease <= PREVIEW_WINDOW_MAX_MS) {
-      previewCandidates.push(row);
+      inWindowPreviews.push(row);
     }
   }
+  const previewCandidates = dedupeCrossSourceRows(inWindowPreviews);
 
   // ── Recap candidates ────────────────────────────────────────────
   // Gate: actual_value MUST be populated. enriched_at gets set the moment
@@ -593,7 +625,7 @@ export function findEmailCandidates(
   const recapCutoff = new Date(nowMs - RECAP_WINDOW_MAX_MS).toISOString().replace("T", " ").slice(0, 19);
   const recapRows = db
     .prepare(
-      `SELECT ce.id, ce.symbol, ce.enriched_at
+      `SELECT ce.id, ce.symbol, ce.event_date, ce.enriched_at, ce.source
          FROM calendar_events ce
          LEFT JOIN earnings_emails ee
            ON ee.event_id = ce.id AND ee.phase = 'recap'
@@ -609,11 +641,12 @@ export function findEmailCandidates(
           AND es.id IS NULL`,
     )
     .all(recapCutoff) as RecapCandidateRow[];
+  const recapCandidates = dedupeCrossSourceRows(recapRows);
 
   // ── Held|watchlist filter ───────────────────────────────────────
   const allSymbols = Array.from(
     new Set(
-      [...previewCandidates, ...recapRows]
+      [...previewCandidates, ...recapCandidates]
         .map((r) => r.symbol)
         .filter((s): s is string => !!s),
     ),
@@ -633,7 +666,7 @@ export function findEmailCandidates(
     out.push({ eventId: row.id, symbol: row.symbol, phase: "preview" });
     if (out.length >= limit) return out;
   }
-  for (const row of recapRows) {
+  for (const row of recapCandidates) {
     if (!row.symbol || !isCovered(row.symbol) || !isAllowed(row.symbol)) continue;
     out.push({ eventId: row.id, symbol: row.symbol, phase: "recap" });
     if (out.length >= limit) return out;

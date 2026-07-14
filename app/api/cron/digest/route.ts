@@ -16,6 +16,7 @@ import {
 } from "@/lib/cron/running-marker";
 import { isMarketHoliday } from "@/lib/calendar/market-holidays";
 import { todayET } from "@/lib/calendar/date-utils";
+import { tryAcquireSendLock, releaseSendLock } from "@/lib/cron/send-mutex";
 
 /**
  * POST /api/cron/digest — Cron-authenticated daily digest trigger.
@@ -51,22 +52,46 @@ export async function POST(request: Request) {
     return Response.json({ success: true, skipped: true, reason: "market_holiday", date: etToday });
   }
 
-  const marker = await checkCloudMarker("digest");
-  if (marker?.sentBy === "cloud") {
-    advanceDigestMarkerAfterCloudSend(db, marker.sentAt);
+  // In-process mutex — a launchd curl retry landing while an earlier
+  // request's pipeline is still running must not start a second concurrent
+  // send. Acquired BEFORE the marker check so two near-simultaneous entries
+  // can't both pass during the marker RTT. (2026-06-30 + 2026-07-01: two
+  // et-gate ticks each outlived curl's --max-time and both sent.)
+  if (!tryAcquireSendLock("digest")) {
     return Response.json({
       success: true,
       skipped: true,
-      reason: "cloud already sent",
-      date: marker.date,
+      reason: "send already in progress",
     });
   }
 
-  // Signal to Worker that we're starting — fallback path will skip while
-  // this marker is set. Fire-and-forget; never block delivery on Worker RTT.
-  void setRunningMarker("digest");
-
   try {
+    const marker = await checkCloudMarker("digest");
+    if (marker?.sentBy === "cloud") {
+      advanceDigestMarkerAfterCloudSend(db, marker.sentAt);
+      return Response.json({
+        success: true,
+        skipped: true,
+        reason: "cloud already sent",
+        date: marker.date,
+      });
+    }
+    // A mac-sent marker means THIS Mac already shipped today's digest (a
+    // retried launchd tick after a slow-but-successful earlier run). Skip
+    // unless the caller explicitly forces a resend.
+    if (marker?.sentBy === "mac" && body.force !== true) {
+      return Response.json({
+        success: true,
+        skipped: true,
+        reason: "mac already sent",
+        date: marker.date,
+      });
+    }
+
+    // Signal to Worker that we're starting — fallback path will skip while
+    // this marker is set. Fire-and-forget; never block delivery on Worker RTT.
+    void setRunningMarker("digest");
+
     const result = await sendDigestEmail(db, {
       recipient: body.to as string | undefined,
       mode: body.mode as DigestMode | undefined,
@@ -91,6 +116,7 @@ export async function POST(request: Request) {
   } finally {
     // Always clear, even on error — leaving the marker set would block
     // subsequent retries. Auto-expires after 10min if this clear fails.
+    releaseSendLock("digest");
     void clearRunningMarker("digest");
   }
 }

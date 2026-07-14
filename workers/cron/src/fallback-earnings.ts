@@ -387,6 +387,13 @@ async function findCandidatesFromSnapshot(
   for (const e of snapshot.calendarEvents) {
     if (e.event_type !== "earnings") continue;
     if (!e.symbol) continue;
+    // Cross-source duplicate guard: one print can carry two calendar rows
+    // (finnhub + nasdaq). The Mac's reconcileEarningsDates marks the
+    // non-canonical row superseded=1 and the Mac sweep filters it in SQL;
+    // the snapshot ships the flag (SELECT *), so honor it here too —
+    // otherwise each source row sends its own email (2026-07-14: JPM/BAC
+    // previews doubled while the Mac slept).
+    if (e.superseded) continue;
     const sym = e.symbol.toUpperCase();
     // B20: family walk so a GOOGL event with GOOG held isn't dropped, plus
     // watchlist coverage (snapshot v8 ships watchlistSymbols; older
