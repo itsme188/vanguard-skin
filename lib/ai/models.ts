@@ -89,6 +89,9 @@ export const FEATURE_MODELS: Record<FeatureKey, string> = {
   // One-sentence narrative per suggested S/R level on the chart. Cached per
   // (security_id, level_price, day) so a single call amortizes across same-day views.
   suggestedLevelNarrative: "anthropic/$cheap",
+  // 1-2 sentence overnight-session extract from VK Dawn for the morning
+  // digest's Overnight block — pure extraction over ≤12k chars, Haiku-grade.
+  overnightCommentary: "anthropic/$cheap",
 
   // explicit experiment — NOT tiered; Workers AI cost experiment
   alertSuggestion: "workers-ai/@cf/meta/llama-4-scout-17b-16e-instruct",

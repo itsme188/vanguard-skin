@@ -4,6 +4,7 @@ import { bucketByCompany } from "@/lib/digest/group-by-company";
 import { synthesize, SynthesisEmptyError } from "@/lib/digest/synthesize";
 import { computeAnomalies, formatVanguardAnomaliesBlock } from "@/lib/digest/anomalies";
 import { splitLateArrivals, renderLateArrivalsBlock } from "@/lib/digest/late-arrivals";
+import { composeOvernightBlock } from "@/lib/digest/overnight";
 import { splitEssays, renderResearchDesk, insertCrossFilePointers } from "@/lib/digest/research-desk";
 
 // ── Alerts block ────────────────────────────────────────────────────
@@ -442,6 +443,19 @@ export async function generateDigestSinceAdaptive(
   // ── 2. Alerts ─────────────────────────────────────────────────────────────
   if (alertsBlock) {
     lines.push(alertsBlock);
+  }
+
+  // ── 2.5 Overnight scoreboard (morning only) ───────────────────────────────
+  // Deterministic Asia/BTC moves + optional VK-Dawn extract. The composer
+  // never throws; null (Yahoo outage, weekend gaps) simply omits the block.
+  if (edition === "morning") {
+    const overnightBlock = await composeOvernightBlock(db);
+    if (overnightBlock) {
+      lines.push(overnightBlock);
+      lines.push("");
+      lines.push("---");
+      lines.push("");
+    }
   }
 
   // ── 3. Anomalies (evening only) ───────────────────────────────────────────

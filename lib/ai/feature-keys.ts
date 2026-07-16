@@ -13,6 +13,7 @@
 export type FeatureKey =
   | "chat"
   | "dailyDigestSynthesis"
+  | "overnightCommentary"
   | "briefing"
   | "tradeReviewMain"
   // Used in place of tradeReviewMain when a review has >20 trades — Opus would
