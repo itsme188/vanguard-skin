@@ -297,9 +297,9 @@ function dedupeClusterByFamily(events: CalendarEventRow[]): CalendarEventRow[] {
  *
  * SKIPS DIVERGENCE: the R2 snapshot does NOT ship earnings_email_skips (a
  * Mac-only table), so a per-(event,phase) recap skip can't be honored here.
- * Accepted (do NOT add snapshot fields): a Mac-side skip already suppresses the
- * Mac path, and the per-event mac-sent marker check in runSlotWrapSend covers
- * the overlap once the Mac acts.
+ * Accepted pre-existing limitation — the individual cloud recap path
+ * (findCandidatesFromSnapshot) ignores earnings_email_skips too; a Mac-side
+ * skip is honored only while the Mac is awake.
  */
 async function buildWrapCluster(
   snapshot: Snapshot,
@@ -342,11 +342,12 @@ async function buildWrapCluster(
   for (const e of dedupeClusterByFamily(raw)) {
     const snapshotActual = (e.actual_value as string | null) ?? null;
     let payload: CloudEnrichedPayload | null = null;
+    let releaseInstant: Date | null = null;
     if (snapshotActual == null) {
       // Probe the same-day cloud-enriched KV payload (B8 road-2 source) for an
       // actual — bounded to the release band so KV reads stay cheap.
       const rt = typeof e.release_time === "string" ? e.release_time : null;
-      const releaseInstant = rt ? composeReleaseInstant(e.event_date, rt) : null;
+      releaseInstant = rt ? composeReleaseInstant(e.event_date, rt) : null;
       if (releaseInstant) {
         const sinceRelease = nowMs - releaseInstant.getTime();
         if (sinceRelease >= 0 && sinceRelease <= KV_PROBE_WINDOW_MS) {
@@ -362,8 +363,20 @@ async function buildWrapCluster(
         }
       }
     }
+    // Readiness bar matches road-2's completeness gate EXACTLY (same
+    // isPayloadComplete call the individual recap path uses at the KV-probe
+    // site in findCandidatesFromSnapshot below): an actual-only payload before
+    // the reaction is captured (and before T+150 settle) is NOT ready. Firing
+    // on actual-only wrapped an all-reported AMC cluster ~2h early with every
+    // reaction column "—", and the resulting per-event cloud-sent markers then
+    // suppressed the COMPLETE recap on both the wrap AND individual paths. The
+    // snapshot-actual branch stays unconditional: a snapshot actual implies
+    // Mac enrichment already stamped the row complete.
     const ready =
-      snapshotActual != null || (payload?.actual != null && payload?.deferred !== true);
+      snapshotActual != null ||
+      (payload != null &&
+        releaseInstant != null &&
+        isPayloadComplete(payload, releaseInstant, nowMs));
     members.push({
       eventId: e.id,
       symbol: (e.symbol as string).toUpperCase(),
