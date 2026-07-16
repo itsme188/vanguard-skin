@@ -48,9 +48,14 @@ vi.mock("@/lib/digest/send-evening", () => ({
 
 vi.mock("@/lib/cron/marker-check", () => ({
   checkCloudMarker: hoisted.checkCloudMarker,
-  // advanceDigestMarkerAfterCloudSend uses the db singleton which is null in
-  // this test suite — mock it to avoid a TypeError on the cloud-skip path.
+  // advanceDigestMarkerAfterCloudSend + reconcileRecentCloudSends use the db
+  // singleton which is null in this test suite — mock them to avoid a
+  // TypeError on the cloud-skip / route-entry paths.
   advanceDigestMarkerAfterCloudSend: vi.fn(),
+  reconcileRecentCloudSends: vi.fn(async () => ({
+    advanced: false,
+    confirmedCloudSends: 0,
+  })),
 }));
 
 vi.mock("@/lib/cron/running-marker", () => ({

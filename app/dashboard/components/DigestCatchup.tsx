@@ -12,9 +12,16 @@ const DIGEST_TIME_LABEL = "8:45 AM";
  * Checks /api/digest/status on mount. Only shows on weekdays AFTER the
  * scheduled send time has passed — pre-8:45 AM the digest is "expected,
  * not late."
+ *
+ * Cloud-aware (2026-07-15): the status route reports today's Worker marker.
+ * A confirmed cloud-fallback delivery counts as sent (pre-fix, the banner
+ * nagged all day on every cloud-sent day because it only read the Mac-local
+ * last_digest_sent_at). An in-flight cloud attempt shows an informational
+ * line WITHOUT the Send button — a manual send would race the fallback.
  */
 export function DigestCatchup() {
   const [show, setShow] = useState(false);
+  const [cloudSending, setCloudSending] = useState(false);
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -36,12 +43,26 @@ export function DigestCatchup() {
       // that's expected. Don't nag.
       if (now < scheduled) {
         setShow(false);
+        setCloudSending(false);
         return;
       }
 
       fetch("/api/digest/status")
         .then((r) => r.json())
         .then((data) => {
+          // Cloud fallback mid-flight: informational, not actionable.
+          if (data.cloudDigestToday?.via === "attempting") {
+            setCloudSending(true);
+            setShow(true);
+            return;
+          }
+          setCloudSending(false);
+          // Confirmed cloud delivery today = sent, regardless of the local
+          // pointer (the status route advances it too, but don't depend on it).
+          if (data.cloudDigestToday?.via === "sent" || (data.cloudDigestToday && !data.cloudDigestToday.via)) {
+            setShow(false);
+            return;
+          }
           if (!data.lastDigestSentAt) {
             setShow(true);
             return;
@@ -106,12 +127,14 @@ export function DigestCatchup() {
           <span className="text-up">Digest sent!</span>
         ) : sendError ? (
           <span className="text-down">{sendError}</span>
+        ) : cloudSending ? (
+          "Cloud fallback is sending today's digest — it should arrive within a few minutes."
         ) : (
           `Today's digest wasn't sent at ${DIGEST_TIME_LABEL}`
         )}
       </span>
       <div className="flex items-center gap-2">
-        {!sent && (
+        {!sent && !cloudSending && (
           <button
             onClick={handleSend}
             disabled={sending}

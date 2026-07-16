@@ -462,7 +462,13 @@ export default {
       if (typeParam !== "briefing" && typeParam !== "digest" && typeParam !== "evening") {
         return Response.json({ error: "type must be briefing, digest, or evening" }, { status: 400 });
       }
-      const status = await getMarkerStatus(env.CRON_KV, typeParam);
+      // The Mac's on-wake reconcile queries yesterday's marker as well as
+      // today's — same ?date convention as /internal/mac-sent below.
+      const dateParam = url.searchParams.get("date") ?? todayET();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
+        return Response.json({ error: "date must be YYYY-MM-DD" }, { status: 400 });
+      }
+      const status = await getMarkerStatus(env.CRON_KV, typeParam, dateParam);
       return Response.json(status);
     }
 
@@ -512,6 +518,32 @@ export default {
     // Cloud-fired level markers — Mac polls on wake, inserts level_alerts
     // for each fired payload, then DELETEs per levelId. Pushover already
     // fired from the Worker — reconcile is audit/UI only.
+    // Cloud-sent earnings audit reconcile (2026-07-15): the Mac's sweep only
+    // sees events inside findEmailCandidates' send windows, so a preview the
+    // Worker cloud-sent while the Mac slept left NO local earnings_emails row
+    // once the window closed — EarningsHub chips and the email viewer lost the
+    // send, and the audit trail lost it forever when the KV TTL expired. This
+    // lists every live cloud-sent marker; the Mac backfills audit rows
+    // (INSERT ... DO NOTHING). Read-only: the marker doubles as the Worker's
+    // own send dedup, so the Mac must NOT delete it — the 30h TTL cleans up.
+    if (request.method === "GET" && url.pathname === "/internal/cloud-sent-earnings") {
+      const list = await env.CRON_KV.list({ prefix: "cloud-sent-earnings-" });
+      const sends: { phase: string; eventId: number; sentAt: string | null }[] = [];
+      await Promise.all(
+        list.keys.map(async (k) => {
+          const m = /^cloud-sent-earnings-(preview|recap)-(\d+)$/.exec(k.name);
+          if (!m) return;
+          const value = await env.CRON_KV.get(k.name);
+          sends.push({
+            phase: m[1],
+            eventId: parseInt(m[2], 10),
+            sentAt: value !== null && /^\d{4}-\d{2}-\d{2}T/.test(value) ? value : null,
+          });
+        }),
+      );
+      return Response.json({ sends });
+    }
+
     if (request.method === "GET" && url.pathname === "/internal/cloud-fired-levels") {
       const list = await env.CRON_KV.list({ prefix: "cloud-fired-level-" });
       const payloads: Record<string, unknown> = {};

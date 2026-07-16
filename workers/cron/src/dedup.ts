@@ -140,7 +140,16 @@ export async function getMarkerStatus(
   kv: KVNamespace,
   type: JobType,
   date: string = todayET()
-): Promise<{ sentBy: SentBy | null; date: string; sentAt: string | null }> {
+): Promise<{
+  sentBy: SentBy | null;
+  date: string;
+  sentAt: string | null;
+  /** "sent" = confirmed delivery; "attempting" = a fallback is mid-flight and
+   *  may still fail. Skip decisions treat both as "cloud claimed it", but
+   *  since-window pointer advances must only trust "sent" — advancing from a
+   *  failed attempt would silently drop the articles it never summarized. */
+  via?: "sent" | "attempting";
+}> {
   // Read VALUES (not just existence): writeMarker / setAttemptingMarker have
   // always stored new Date().toISOString(), which is exactly the send/start
   // timestamp the Mac needs to advance its local last_digest_sent_at when it
@@ -155,11 +164,11 @@ export async function getMarkerStatus(
 
   // cloud wins ties — if both markers are set, the cloud-sent email definitely
   // went out (Mac marker may have been written after cloud delivery by a race).
-  if (cloud !== null) return { sentBy: "cloud", date, sentAt: iso(cloud) };
+  if (cloud !== null) return { sentBy: "cloud", date, sentAt: iso(cloud), via: "sent" };
   // cloud-attempting means a fallback is mid-flight RIGHT NOW. Its timestamp is
   // BEFORE the fallback's Gmail fetch, so it is a safe (conservative) sentAt.
   if (attempting !== null)
-    return { sentBy: "cloud", date, sentAt: iso(attempting) };
-  if (mac !== null) return { sentBy: "mac", date, sentAt: iso(mac) };
+    return { sentBy: "cloud", date, sentAt: iso(attempting), via: "attempting" };
+  if (mac !== null) return { sentBy: "mac", date, sentAt: iso(mac), via: "sent" };
   return { sentBy: null, date, sentAt: null };
 }

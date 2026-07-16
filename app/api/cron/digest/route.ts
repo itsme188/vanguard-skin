@@ -8,6 +8,7 @@ import {
 import {
   checkCloudMarker,
   advanceDigestMarkerAfterCloudSend,
+  reconcileRecentCloudSends,
 } from "@/lib/cron/marker-check";
 import {
   setRunningMarker,
@@ -66,9 +67,21 @@ export async function POST(request: Request) {
   }
 
   try {
+    // On-wake reconcile: a Mac that slept through yesterday's window never ran
+    // this route's cloud-skip branch, so last_digest_sent_at may still predate
+    // cloud sends the reader already received. Advance it BEFORE composing —
+    // otherwise today's Mac-won digest re-covers those days (2026-07-15).
+    await reconcileRecentCloudSends(db);
+
     const marker = await checkCloudMarker("digest");
     if (marker?.sentBy === "cloud") {
-      advanceDigestMarkerAfterCloudSend(db, marker.sentAt);
+      // Advance only on a CONFIRMED send — an in-flight attempt (via=
+      // "attempting") may still fail, and advancing past its start would drop
+      // the articles it never summarized. Skip either way; if the attempt
+      // dies, the Worker's own catch-up sweep re-sends within the window.
+      if (marker.via !== "attempting") {
+        advanceDigestMarkerAfterCloudSend(db, marker.sentAt);
+      }
       return Response.json({
         success: true,
         skipped: true,

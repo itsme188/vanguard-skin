@@ -122,6 +122,40 @@ export function writeMacSentEarningsMarker(
   return workerFetch("/internal/earnings-sent-marker", params, "POST");
 }
 
+export interface CloudSentEarningsMarker {
+  phase: EarningsPhase;
+  eventId: number;
+  /** ISO timestamp the Worker wrote at send time; null for malformed values. */
+  sentAt: string | null;
+}
+
+/**
+ * List every live cloud-sent-earnings-* marker (30h TTL) so the sweep can
+ * backfill local earnings_emails audit rows for sends the Worker delivered
+ * while the Mac slept — including events whose send windows have since
+ * closed, which the per-candidate marker check above can never see
+ * (observed 7/14: cloud-sent previews left no audit row, so EarningsHub
+ * chips + the email viewer lost them when the KV TTL expired).
+ *
+ * Read-only by design: the marker doubles as the Worker's own send dedup,
+ * so the Mac must NOT delete it. The audit row is what stops repeat
+ * reconciles (INSERT ... DO NOTHING); the TTL cleans up the KV side.
+ */
+export async function fetchCloudSentEarnings(): Promise<CloudSentEarningsMarker[]> {
+  const res = await workerFetch(
+    "/internal/cloud-sent-earnings",
+    new URLSearchParams(),
+    "GET",
+  );
+  if (!res || !res.ok) return [];
+  try {
+    const body = (await res.json()) as { sends?: CloudSentEarningsMarker[] };
+    return Array.isArray(body.sends) ? body.sends : [];
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Push-at-print dedup marker (Wave 1 §2). Whichever side (Mac enrichment,
  * Mac reconcile, Worker cloud-enrich) captures the actual checks this BEFORE
