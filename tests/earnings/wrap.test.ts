@@ -74,6 +74,15 @@ describe("wrapSlotFor", () => {
     expect(wrapSlotFor({ event_time: null, title: null, release_time: "16:15" })).toBe("AMC");
     expect(wrapSlotFor({ event_time: null, title: null, release_time: null })).toBeNull();
   });
+
+  it("does not classify a ticker mentioned in the title as its own slot marker", () => {
+    // Bank of Montreal (BMO) reporting after market close — the ticker
+    // substring "BMO" must not win over the actual "After Market Close"
+    // phrase in the title.
+    expect(
+      wrapSlotFor({ event_time: null, title: "BMO earnings (After Market Close)", release_time: null }),
+    ).toBe("AMC");
+  });
 });
 
 describe("getExpectedRecapCluster", () => {
@@ -114,14 +123,17 @@ describe("getExpectedRecapCluster", () => {
     expect(cluster.map((m) => m.symbol).sort()).toEqual(["CLAIM", "HELD1"]);
   });
 
-  it("family-dedupes cross-source rows (one member per print)", () => {
+  it("family-dedupes cross-source, cross-symbol rows for the same print (GOOG vs GOOGL)", () => {
     seedHeld("GOOG");
-    seedEvent({ symbol: "GOOGL" });
+    const finnhubId = seedEvent({ symbol: "GOOGL" }); // source 'finnhub' via helper, AMC (16:15)
     db.prepare(
       `INSERT INTO calendar_events (source, event_type, event_date, release_time, title, symbol, source_key, week_of)
-       VALUES ('nasdaq', 'earnings', ?, '16:15', 'GOOGL earnings', 'GOOGL', 'nasdaq:GOOGL:2026-07-16', '2026-07-13')`,
+       VALUES ('nasdaq', 'earnings', ?, '16:15', 'GOOG earnings', 'GOOG', 'nasdaq:GOOG:2026-07-16', '2026-07-13')`,
     ).run(TODAY);
-    expect(getExpectedRecapCluster(db, TODAY, "AMC")).toHaveLength(1);
+
+    const cluster = getExpectedRecapCluster(db, TODAY, "AMC");
+    expect(cluster).toHaveLength(1);
+    expect(cluster[0].eventId).toBe(finnhubId);
   });
 });
 
@@ -134,6 +146,12 @@ describe("slotDeadlinePassed", () => {
   it("AMC deadline is 20:00 ET", () => {
     expect(slotDeadlinePassed("AMC", new Date("2026-07-16T23:59:00Z"))).toBe(false);
     expect(slotDeadlinePassed("AMC", new Date("2026-07-17T00:00:00Z"))).toBe(true);
+  });
+  it("normalizes ET midnight ('24:00' from Intl) to '00:00', which is before the 20:00 AMC deadline", () => {
+    // 2026-07-17T04:00:00Z is exactly ET midnight (EDT, UTC-4). Without the
+    // "24:00" → "00:00" normalization this would compare "24:00" >= "20:00"
+    // (true) and wrongly report the deadline as passed.
+    expect(slotDeadlinePassed("AMC", new Date("2026-07-17T04:00:00Z"))).toBe(false);
   });
 });
 
