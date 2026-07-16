@@ -79,11 +79,19 @@ audit rows exist) and the wrap notes nothing about them. No clawbacks.
    each with `ai_output_md` = that name's own prose section — the in-app
    `EarningsEmailViewer` keeps working per event unchanged. Claims
    released by the same token.
-8. **Markers:** per-event `mac-sent-earnings-recap-{eventId}` markers
-   written as today (per-event Mac↔cloud dedup unchanged) PLUS a
-   cluster-level `{mac,cloud}-sent-earnings-wrap-{slot}-{date}` marker
-   pair with the same check-before/write-after dance. The Mac pre-checks
-   the cloud wrap marker; the Worker pre-checks both Mac markers.
+8. **Markers (implemented — deviates from the plan above):** per-event
+   `mac-sent-earnings-recap-{eventId}` / `cloud-sent-earnings-recap-{eventId}`
+   markers only, written exactly as an individual recap send would (one per
+   stapled name, after that name's audit row is written) — **no
+   cluster-level `{mac,cloud}-sent-earnings-wrap-{slot}-{date}` marker was
+   built.** Reason: the per-event markers alone already close the Mac↔cloud
+   race for every member (each side's existing per-event pre-check —
+   `checkEarningsCloudMarker` on the Mac, `readEarningsMarkers` on the
+   Worker — sees a just-wrapped name as delivered on the very next
+   candidate/cluster evaluation), and adding a second cluster-scoped marker
+   would only duplicate that dedup while complicating the sent-by-cloud
+   audit backfill (which reads per-event markers, not cluster ones) for no
+   behavioral gain.
 
 ### Worker mirror (`workers/cron/src/fallback-earnings.ts`)
 
