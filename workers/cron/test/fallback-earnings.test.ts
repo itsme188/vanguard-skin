@@ -1137,6 +1137,86 @@ describe("EOD earnings wrap (#17 T4)", () => {
     expect(await env.CRON_KV.get("cloud-sent-earnings-recap-3")).not.toBeNull();
   });
 
+  it("an actual-only KV payload (no reaction, before T+150 settle) is NOT ready — wrap holds pre-deadline (review fix #17 T4)", async () => {
+    // Same shape as the "counts as ready" test above, EXCEPT the KV payload
+    // carries an actual with NO reaction and is probed well before the T+150
+    // completeness settle. Pre-fix, `ready` only checked `payload.actual !=
+    // null`, so NVDA would count ready immediately and the wrap would fire
+    // ~2h early with NVDA's reaction column reading "—".
+    const release = composeReleaseInstant(EVENT_DATE, "16:00")!;
+    const now = new Date(release.getTime() + 60 * 60_000); // T+60min: well before T+150 settle, well before the 20:00 ET AMC deadline
+    const events = [
+      wrapEvent({ id: 1, symbol: "AAPL", actual: READY_ACTUAL }),
+      wrapEvent({ id: 2, symbol: "MSFT", actual: READY_ACTUAL }),
+      wrapEvent({ id: 3, symbol: "NVDA", actual: null }), // no snapshot actual — KV only
+    ];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      wrapSnapshot(events, ["AAPL", "MSFT", "NVDA"]),
+    );
+    const env = makeEnv();
+    await env.CRON_KV.put(
+      cloudEnrichedKey(3),
+      JSON.stringify({
+        eventId: 3,
+        source_key: "finnhub:NVDA:2026-06-15",
+        actual: READY_ACTUAL,
+        consensus: "EPS 1.50 · Rev 90000000000",
+        source: "finnhub",
+        reaction: null, // reaction not yet captured
+        fetchedAt: now.toISOString(),
+      }),
+    );
+
+    const result = await runEarningsFallback(env, { now });
+
+    // NVDA is not ready and the deadline hasn't passed → the whole cluster
+    // holds (AAPL/MSFT's individual road-1 candidacy is irrelevant here since
+    // neither has enriched_at set, but the wrap must not fire on 2-of-3).
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(result.sent).toBe(0);
+    expect(await env.CRON_KV.get("cloud-sent-earnings-recap-1")).toBeNull();
+    expect(await env.CRON_KV.get("cloud-sent-earnings-recap-3")).toBeNull();
+  });
+
+  it("an actual-only KV payload becomes ready once T+150 settle passes with no reaction ever arriving (review fix #17 T4)", async () => {
+    // Same payload as above (reaction: null) but probed AFTER the T+150
+    // completeness settle — isPayloadComplete's second branch (release ≥150min
+    // old) makes it ready even though no reaction ever showed up, matching
+    // road-2's individual-recap completeness bar exactly.
+    const release = composeReleaseInstant(EVENT_DATE, "16:00")!;
+    const now = new Date(release.getTime() + 150 * 60_000 + 60_000); // T+151min: past the settle
+    const events = [
+      wrapEvent({ id: 1, symbol: "AAPL", actual: READY_ACTUAL }),
+      wrapEvent({ id: 2, symbol: "MSFT", actual: READY_ACTUAL }),
+      wrapEvent({ id: 3, symbol: "NVDA", actual: null }),
+    ];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      wrapSnapshot(events, ["AAPL", "MSFT", "NVDA"]),
+    );
+    const env = makeEnv();
+    await env.CRON_KV.put(
+      cloudEnrichedKey(3),
+      JSON.stringify({
+        eventId: 3,
+        source_key: "finnhub:NVDA:2026-06-15",
+        actual: READY_ACTUAL,
+        consensus: "EPS 1.50 · Rev 90000000000",
+        source: "finnhub",
+        reaction: null,
+        fetchedAt: now.toISOString(),
+      }),
+    );
+
+    const result = await runEarningsFallback(env, { now });
+
+    // All 3 now ready (well before the 20:00 ET deadline — readiness alone
+    // drives the fire, not the deadline fallback).
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    expect(subjectOfLastSend()).toContain("(3 names)");
+    expect(result.sent).toBe(3);
+    expect(await env.CRON_KV.get("cloud-sent-earnings-recap-3")).not.toBeNull();
+  });
+
   it("fires at the deadline with a still-waiting line and no marker for the waiting name", async () => {
     const events = [
       wrapEvent({ id: 1, symbol: "AAPL", actual: READY_ACTUAL }),
