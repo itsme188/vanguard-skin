@@ -16,6 +16,7 @@
 
 import type Database from "better-sqlite3";
 import { generateTextForFeature } from "@/lib/ai/generate";
+import { resolveFeatureModel } from "@/lib/ai/models";
 import { upsertBogey } from "@/lib/mutations/earnings-bogeys";
 import { extractJsonArray } from "@/lib/ai/extract-json";
 import { parseLargeUSD } from "@/lib/format";
@@ -163,6 +164,38 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// Symbols this short collide with common English words often enough that a
+// bare \bSYMBOL\b test false-positives constantly (IT, ALL, ON, NOW, SO,
+// KEY, ...). Above this length, collisions with real English words are rare
+// enough that the plain boundary test is fine on its own.
+const SHORT_SYMBOL_MAX_LEN = 3;
+
+// Finance-context cues that, immediately following a short symbol, make the
+// mention unambiguous even without a cashtag ("IT earnings", "IT reports").
+const SHORT_SYMBOL_CONTEXT_CUES = "EARNINGS|REPORTS?|PRINTS?|EPS|Q[1-4]";
+
+/**
+ * Pure symbol-mention test. Guards against common-English-word tickers
+ * (IT, ALL, ON, NOW, SO, KEY, ...) at length <= 3: a bare `\bSYMBOL\b` test
+ * on such a symbol matches ordinary prose constantly. For those short
+ * symbols, require either a `$SYMBOL` cashtag or the symbol immediately
+ * followed by a finance-context cue (earnings/reports/prints/EPS/Qn).
+ * Symbols of length >= 4 use the plain word-boundary test — collisions with
+ * real English words are rare at that length.
+ */
+export function isSymbolMentioned(text: string, symbol: string): boolean {
+  const escaped = escapeRegExp(symbol.toUpperCase());
+  const upperText = text.toUpperCase();
+
+  if (symbol.length > SHORT_SYMBOL_MAX_LEN) {
+    return new RegExp(`\\b${escaped}\\b`).test(upperText);
+  }
+
+  const cashtagRe = new RegExp(`\\$${escaped}\\b`);
+  const contextRe = new RegExp(`\\b${escaped}(?=\\s*(?:${SHORT_SYMBOL_CONTEXT_CUES})\\b)`);
+  return cashtagRe.test(upperText) || contextRe.test(upperText);
+}
+
 /**
  * Fetch upcoming earnings reporters in [today, today+14d] scoped to
  * held/watchlist symbols only (getSymbolStatus, issuer-family aware).
@@ -210,11 +243,8 @@ function filterReportersMentionedInArticle(
   article: ArticleInput,
   reporters: UpcomingReporter[]
 ): UpcomingReporter[] {
-  const text = article.raw_text.toUpperCase();
   return reporters.filter((r) =>
-    issuerSiblings(r.symbol).some((sym) =>
-      new RegExp(`\\b${escapeRegExp(sym.toUpperCase())}\\b`).test(text)
-    )
+    issuerSiblings(r.symbol).some((sym) => isSymbolMentioned(article.raw_text, sym))
   );
 }
 
@@ -285,6 +315,10 @@ export async function extractBogeysFromArticle(
 
   const extracted = parseExtractionResponse(responseText);
   const bySymbol = new Map(mentioned.map((r) => [r.symbol, r]));
+  // Mirrors app/api/earnings/bogeys/upload/route.ts:149 — never record
+  // FEATURE_MODELS[key] directly (it's a tier token); resolve the concrete
+  // model id actually resolved for this feature.
+  const { modelId } = resolveFeatureModel("newsletterBogeyExtraction");
 
   let bogeysStored = 0;
   let eventsMatched = 0;
@@ -312,6 +346,7 @@ export async function extractBogeysFromArticle(
       revenue_consensus_usd: bogey.revenue_consensus,
       revenue_whisper_usd: bogey.revenue_whisper,
       notes: bogey.notes,
+      ai_extraction_model: modelId,
     });
     bogeysStored++;
     eventsMatched++;
