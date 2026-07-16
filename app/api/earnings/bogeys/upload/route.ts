@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { extractBogeysFromPdf } from "@/lib/earnings/extract-bogeys";
+import { extractBogeysFromPdf, BogeysExtractionError } from "@/lib/earnings/extract-bogeys";
 import { upsertBogey } from "@/lib/mutations/earnings-bogeys";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { addDays } from "@/lib/calendar/date-utils";
@@ -78,6 +78,12 @@ export async function POST(request: Request) {
   try {
     extraction = await extractBogeysFromPdf(buffer);
   } catch (err) {
+    if (err instanceof BogeysExtractionError) {
+      return Response.json({ error: err.message }, { status: err.status });
+    }
+    // Parse-shaped failures (non-JSON model output, no text block) carry no
+    // upstream payload — their messages are safe and useful to show.
+    console.error("Bogeys extraction failed:", err);
     return Response.json(
       {
         error: `Bogeys extraction failed: ${err instanceof Error ? err.message : String(err)}`,

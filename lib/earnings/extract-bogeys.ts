@@ -15,9 +15,26 @@
  * plenty for structured extraction; Opus would be overkill.
  */
 
+import { APIError } from "@anthropic-ai/sdk";
 import { getRawAnthropicClient } from "@/lib/ai/provider";
 import { resolveFeatureModel } from "@/lib/ai/models";
 import { parseLargeUSD } from "@/lib/format";
+
+/**
+ * User-presentable extraction failure. `message` is safe to render
+ * verbatim in the UI — raw upstream payloads (which embed request_ids
+ * and API internals) are logged server-side only, never thrown.
+ */
+export class BogeysExtractionError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly code: "invalid_pdf" | "upstream",
+  ) {
+    super(message);
+    this.name = "BogeysExtractionError";
+  }
+}
 
 export interface ExtractedBogey {
   symbol: string;
@@ -96,7 +113,26 @@ export async function extractBogeysFromPdf(
     ],
   });
 
-  const response = await stream.finalMessage();
+  let response;
+  try {
+    response = await stream.finalMessage();
+  } catch (err) {
+    // The only user-supplied input in this call is the PDF itself, so an
+    // upstream 400 means the document was rejected (corrupt / not a PDF).
+    console.error("Bogeys extraction upstream error:", err);
+    if (err instanceof APIError && err.status === 400) {
+      throw new BogeysExtractionError(
+        "That file couldn't be read as a PDF — try re-exporting it and uploading again.",
+        400,
+        "invalid_pdf",
+      );
+    }
+    throw new BogeysExtractionError(
+      `The AI extraction service failed (${err instanceof APIError && err.status ? `upstream ${err.status}` : "connection error"}). Try again in a minute.`,
+      502,
+      "upstream",
+    );
+  }
   const textBlock = response.content.find((b) => b.type === "text");
   if (!textBlock || textBlock.type !== "text") {
     throw new Error("Bogeys extraction returned no text block.");
