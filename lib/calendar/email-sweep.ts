@@ -31,13 +31,15 @@ import {
 import { composeReleaseInstant } from "./reaction-snapshot";
 import { sendPushover } from "@/lib/alerts/notify-pushover";
 import { getEarningsSettings, shouldSendEarningsEmail } from "@/lib/queries/earnings-settings";
+import { getExpectedRecapCluster, wrapSlotFor, WRAP_THRESHOLD } from "@/lib/earnings/wrap";
+import { runWrapPass } from "@/lib/earnings/wrap-send";
 
 export interface SweepCandidateResult {
   eventId: number;
   symbol: string;
   phase: "preview" | "recap";
   ok: boolean;
-  skipped?: "cloud-already-sent" | "claim-held" | "not-ready";
+  skipped?: "cloud-already-sent" | "claim-held" | "not-ready" | "wrap-pending";
   status?: number;
   message?: string;
   durationMs: number;
@@ -51,7 +53,16 @@ export interface SweepSummary {
   recapAlerts: number;
   /** Audit rows backfilled from cloud-sent KV markers this sweep (2026-07-15). */
   cloudReconciled: number;
+  /** EOD wrap emails sent this pass (0–2, one per BMO/AMC slot; #17 T3). */
+  wrapsSent: number;
   results: SweepCandidateResult[];
+}
+
+interface WrapClassifyRow {
+  event_date: string;
+  event_time: string | null;
+  title: string | null;
+  release_time: string | null;
 }
 
 /**
@@ -136,6 +147,38 @@ export async function runEarningsEmailSweep(
   for (const cand of candidates) {
     const t0 = Date.now();
 
+    // ── Wrap-mode suppression (#17 T3) ──────────────────────────────────
+    // A recap candidate whose (date, slot) cluster has reached WRAP_THRESHOLD
+    // gets stapled into ONE wrap email (below) instead of an individual
+    // send. Previews are untouched. This MUST use the same raw
+    // getExpectedRecapCluster(...).length >= WRAP_THRESHOLD determination
+    // that runWrapPass uses internally — never a post-exclusion count, or
+    // individuals get suppressed while the wrap sends nothing (Task 2
+    // reviewer's coordination rule).
+    if (cand.phase === "recap") {
+      const eventRow = db
+        .prepare(
+          `SELECT event_date, event_time, title, release_time FROM calendar_events WHERE id = ?`,
+        )
+        .get(cand.eventId) as WrapClassifyRow | undefined;
+      const slot = eventRow ? wrapSlotFor(eventRow) : null;
+      if (
+        eventRow &&
+        slot !== null &&
+        getExpectedRecapCluster(db, eventRow.event_date, slot).length >= WRAP_THRESHOLD
+      ) {
+        results.push({
+          eventId: cand.eventId,
+          symbol: cand.symbol,
+          phase: cand.phase,
+          ok: true,
+          skipped: "wrap-pending",
+          durationMs: Date.now() - t0,
+        });
+        continue;
+      }
+    }
+
     const cloudMarker = await checkEarningsCloudMarker(cand.phase, cand.eventId);
     if (cloudMarker?.sentBy === "cloud") {
       recordCloudSentAudit(db, cand.eventId, cand.phase);
@@ -190,6 +233,20 @@ export async function runEarningsEmailSweep(
     }
   }
 
+  // ── EOD wrap pass (#17 T3) ────────────────────────────────────────────
+  // Evaluates both slots (BMO, AMC) for today's ET date and fires a stapled
+  // wrap email wherever due. A wrap failure must never fail the sweep — the
+  // sweep's other responsibilities (sends, cloud reconcile, blocked-recap
+  // alerts) still need to complete.
+  let wrapsSent = 0;
+  try {
+    const wrap = await runWrapPass(db, { now: opts.now });
+    wrapsSent = wrap.wrapsSent;
+  } catch (err) {
+    console.warn("[earnings-sweep] wrap pass failed:", err);
+    wrapsSent = 0;
+  }
+
   let recapAlerts = 0;
   try {
     recapAlerts = await alertBlockedRecaps(db, { now: opts.now });
@@ -205,6 +262,7 @@ export async function runEarningsEmailSweep(
     failed: results.filter((r) => !r.ok).length,
     recapAlerts,
     cloudReconciled,
+    wrapsSent,
     results,
   };
 }
