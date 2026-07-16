@@ -4,6 +4,7 @@ import { isGmailConfigured, getGmailClient } from "@/lib/gmail/auth";
 import { fetchNewArticles } from "@/lib/gmail/fetch";
 import { processUnprocessedArticles } from "@/lib/gmail/process";
 import { extractLevelsFromNewArticles } from "@/lib/alerts/extract-newsletter-levels";
+import { extractBogeysFromNewArticles } from "@/lib/earnings/extract-newsletter-bogeys";
 import {
   reconcileCloudFetchedNewsletters,
   postMacRecentNewsletterSyncMarker,
@@ -22,8 +23,9 @@ import { RESEARCH_INBOX_ADDRESS } from "@/lib/research-inbox/config";
  * as the user's manual sync, but does NOT send any email and does NOT stream
  * progress (SSE is for the UI; cron consumers prefer plain JSON).
  *
- * Newsletter level-extraction runs at the end. Failures there don't fail
- * the whole call — the 90-min cadence will catch up next tick.
+ * Newsletter level-extraction, then earnings bogey-extraction, run at the
+ * end. Failures in either don't fail the whole call — the 90-min cadence
+ * will catch up next tick.
  */
 export async function POST(request: Request) {
   const expected = process.env.CRON_SHARED_SECRET;
@@ -77,6 +79,18 @@ export async function POST(request: Request) {
       console.error("[cron/research-sync] level extraction failed:", err);
     }
 
+    // Same best-effort discipline as the levels step above — a bogey
+    // extraction failure never fails the whole cron call.
+    let bogeysStored = 0;
+    let bogeysScanned = 0;
+    try {
+      const bogeysResult = await extractBogeysFromNewArticles(db);
+      bogeysStored = bogeysResult.bogeysStored;
+      bogeysScanned = bogeysResult.articlesScanned;
+    } catch (err) {
+      console.error("[cron/research-sync] bogey extraction failed:", err);
+    }
+
     // Forward-to-research inbox (U6): ingest anything forwarded to the research
     // address into research_documents. Best-effort — failures don't fail the sync.
     let inboxIngested = 0;
@@ -102,6 +116,8 @@ export async function POST(request: Request) {
       processFailed: processResult.failed,
       levelsScanned,
       levelsInserted,
+      bogeysScanned,
+      bogeysStored,
       inboxIngested,
       inboxFailed,
     });

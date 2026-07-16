@@ -19,6 +19,7 @@ import {
   extractBogeysFromNewArticles,
   buildExtractionPrompt,
   parseExtractionResponse,
+  isSymbolMentioned,
 } from "@/lib/earnings/extract-newsletter-bogeys";
 
 // Reset in afterEach (not beforeEach) — see tests/securities/classify-option-sectors.test.ts
@@ -195,6 +196,39 @@ describe("parseExtractionResponse", () => {
     const raw = JSON.stringify([{ symbol: "TSM", revenue_consensus: "$40.2B" }]);
     const out = parseExtractionResponse(raw);
     expect(out[0].revenue_consensus).toBe(40_200_000_000);
+  });
+});
+
+describe("isSymbolMentioned (short-ticker collision guard)", () => {
+  it("does not match a common-English-word ticker's bare occurrence in prose", () => {
+    expect(isSymbolMentioned("This will help it a lot going forward.", "IT")).toBe(false);
+    expect(isSymbolMentioned("All in all, it was a rally.", "ALL")).toBe(false);
+    expect(isSymbolMentioned("The Fed is on hold for now.", "ON")).toBe(false);
+    expect(isSymbolMentioned("Buy now, ask questions later.", "NOW")).toBe(false);
+    expect(isSymbolMentioned("So, what happens next?", "SO")).toBe(false);
+    expect(isSymbolMentioned("That's the key takeaway.", "KEY")).toBe(false);
+  });
+
+  it("matches a $cashtag for a short ticker", () => {
+    expect(isSymbolMentioned("Watching $IT closely into the print.", "IT")).toBe(true);
+  });
+
+  it("matches a short ticker immediately followed by a finance-context cue", () => {
+    expect(isSymbolMentioned("IT earnings are due Thursday.", "IT")).toBe(true);
+    expect(isSymbolMentioned("IT reports next week.", "IT")).toBe(true);
+    expect(isSymbolMentioned("IT prints Wednesday morning.", "IT")).toBe(true);
+    expect(isSymbolMentioned("IT EPS should beat.", "IT")).toBe(true);
+    expect(isSymbolMentioned("IT Q2 numbers land soon.", "IT")).toBe(true);
+  });
+
+  it("is case-insensitive on both the symbol and the surrounding text", () => {
+    expect(isSymbolMentioned("it earnings are due thursday.", "IT")).toBe(true);
+    expect(isSymbolMentioned("this will help it a lot.", "it")).toBe(false);
+  });
+
+  it("uses a plain word-boundary test for symbols of length >= 4 (no cue required)", () => {
+    expect(isSymbolMentioned("Watching NFLX ahead of the print.", "NFLX")).toBe(true);
+    expect(isSymbolMentioned("NFLXY is unrelated.", "NFLX")).toBe(false);
   });
 });
 
@@ -460,5 +494,69 @@ describe("extractBogeysFromNewArticles", () => {
 
     expect(generateTextMock).not.toHaveBeenCalled();
     expect(result.articlesScanned).toBe(0);
+  });
+
+  it("8. a common-English-word ticker (IT) mentioned only as prose never triggers an AI call", async () => {
+    const db = makeDb();
+    addSecurity(db, 1, "IT");
+    holdSecurity(db, 1);
+    addEvent(db, { id: 1, symbol: "IT", daysFromToday: 5 });
+    const articleId = addArticle(db, {
+      subject: "Macro roundup",
+      rawText:
+        "This will help it a lot going forward, and it is a broadly positive setup. " +
+        "filler ".repeat(50),
+    });
+
+    const result = await extractBogeysFromNewArticles(db, { batchSize: 10 });
+
+    expect(generateTextMock).not.toHaveBeenCalled();
+    expect(result.articlesScanned).toBe(1);
+    expect(result.bogeysStored).toBe(0);
+    const row = db
+      .prepare("SELECT bogeys_scanned_at FROM research_articles WHERE id = ?")
+      .get(articleId) as { bogeys_scanned_at: string | null };
+    expect(row.bogeys_scanned_at).not.toBeNull();
+  });
+
+  it("9. a real mention of a common-English-word ticker (IT) with finance context DOES trigger an AI call", async () => {
+    const db = makeDb();
+    addSecurity(db, 1, "IT");
+    holdSecurity(db, 1);
+    addEvent(db, { id: 1, symbol: "IT", daysFromToday: 5 });
+    addArticle(db, {
+      subject: "Enterprise software preview",
+      rawText: "IT earnings are due Thursday morning, street watching license growth. " + "filler ".repeat(50),
+    });
+
+    generateTextMock.mockResolvedValue({
+      text: JSON.stringify([{ symbol: "IT", eps_consensus: 2.7 }]),
+    });
+
+    const result = await extractBogeysFromNewArticles(db);
+
+    expect(generateTextMock).toHaveBeenCalledTimes(1);
+    expect(result.bogeysStored).toBe(1);
+  });
+
+  it("10. stores ai_extraction_model resolved from resolveFeatureModel(\"newsletterBogeyExtraction\")", async () => {
+    const db = makeDb();
+    addSecurity(db, 1, "TSM");
+    holdSecurity(db, 1);
+    addEvent(db, { id: 1, symbol: "TSM", daysFromToday: 5 });
+    addArticle(db, {
+      subject: "Semis weekly",
+      rawText: "TSM reports next week. " + "filler ".repeat(50),
+    });
+
+    generateTextMock.mockResolvedValue({
+      text: JSON.stringify([{ symbol: "TSM", eps_consensus: 3.8 }]),
+    });
+
+    await extractBogeysFromNewArticles(db);
+
+    const rows = db.prepare("SELECT * FROM earnings_bogeys").all() as Array<Record<string, unknown>>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].ai_extraction_model).toBe("claude-test-model");
   });
 });
