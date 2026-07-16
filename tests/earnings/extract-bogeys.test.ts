@@ -1,5 +1,16 @@
-import { describe, it, expect } from "vitest";
-import { parseExtractionResponse } from "@/lib/earnings/extract-bogeys";
+import { describe, it, expect, vi } from "vitest";
+import { APIError } from "@anthropic-ai/sdk";
+import {
+  parseExtractionResponse,
+  extractBogeysFromPdf,
+  BogeysExtractionError,
+} from "@/lib/earnings/extract-bogeys";
+import { getRawAnthropicClient } from "@/lib/ai/provider";
+
+vi.mock("@/lib/ai/provider", () => ({ getRawAnthropicClient: vi.fn() }));
+vi.mock("@/lib/ai/models", () => ({
+  resolveFeatureModel: vi.fn(() => ({ modelId: "claude-test-model" })),
+}));
 
 describe("parseExtractionResponse", () => {
   it("parses a clean JSON array", () => {
@@ -74,5 +85,65 @@ describe("parseExtractionResponse", () => {
 
   it("throws on non-array root", () => {
     expect(() => parseExtractionResponse('{"symbol": "GLW"}')).toThrow();
+  });
+});
+
+describe("extractBogeysFromPdf upstream error mapping", () => {
+  function mockStreamRejecting(err: unknown) {
+    vi.mocked(getRawAnthropicClient).mockReturnValue({
+      messages: { stream: () => ({ finalMessage: () => Promise.reject(err) }) },
+    } as never);
+  }
+
+  // Regression pin (qa 2026-07-16): the raw Anthropic 400 payload — which
+  // embeds request_id and API internals — must never reach the caller's
+  // error message; an invalid document maps to a friendly 400.
+  it("maps an upstream 400 (invalid PDF) to a user-safe 400 without the raw payload", async () => {
+    const rawPayload = {
+      type: "error",
+      error: {
+        type: "invalid_request_error",
+        message: "messages.0.content.0.pdf: The PDF specified was not valid.",
+      },
+      request_id: "req_011Cd5TEST",
+    };
+    mockStreamRejecting(
+      new APIError(400, rawPayload, `400 ${JSON.stringify(rawPayload)}`, new Headers()),
+    );
+
+    const err = await extractBogeysFromPdf(new Uint8Array([1, 2, 3])).catch((e) => e);
+    expect(err).toBeInstanceOf(BogeysExtractionError);
+    expect(err.status).toBe(400);
+    expect(err.code).toBe("invalid_pdf");
+    expect(err.message).not.toContain("request_id");
+    expect(err.message).not.toContain("req_011Cd5TEST");
+    expect(err.message).not.toContain("invalid_request_error");
+  });
+
+  it("maps other upstream API errors to a sanitized 502", async () => {
+    const rawPayload = {
+      type: "error",
+      error: { type: "overloaded_error", message: "Overloaded" },
+      request_id: "req_011Cd5TEST2",
+    };
+    mockStreamRejecting(
+      new APIError(529, rawPayload, `529 ${JSON.stringify(rawPayload)}`, new Headers()),
+    );
+
+    const err = await extractBogeysFromPdf(new Uint8Array([1, 2, 3])).catch((e) => e);
+    expect(err).toBeInstanceOf(BogeysExtractionError);
+    expect(err.status).toBe(502);
+    expect(err.code).toBe("upstream");
+    expect(err.message).toContain("upstream 529");
+    expect(err.message).not.toContain("req_011Cd5TEST2");
+  });
+
+  it("maps connection failures to a sanitized 502", async () => {
+    mockStreamRejecting(new Error("ECONNRESET"));
+
+    const err = await extractBogeysFromPdf(new Uint8Array([1, 2, 3])).catch((e) => e);
+    expect(err).toBeInstanceOf(BogeysExtractionError);
+    expect(err.status).toBe(502);
+    expect(err.message).toContain("connection error");
   });
 });
