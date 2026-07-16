@@ -233,16 +233,26 @@ ATTRIBUTION (provenance): If this piece is primarily RELAYING a third party's vi
 
   // Normalize. is_portfolio_relevant defaults to true on a missing/null
   // response — under-filter when uncertain, matches the prompt direction.
+  // Array fields are type-guarded because jsonSchema() does NOT runtime-
+  // validate — the model can return them as comma-joined STRINGS, which
+  // survive `.slice()` and corrupt storage (crashed the Worker digest
+  // fallback for 1.5h on 2026-07-15; same model, same schema shape).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const object = _rawObject as any as ProcessedResult;
+  const themes = Array.isArray(object.key_themes)
+    ? object.key_themes.filter((t): t is string => typeof t === "string")
+    : typeof (object.key_themes as unknown) === "string"
+      ? String(object.key_themes).split(",").map((t) => t.trim()).filter(Boolean)
+      : [];
+  const symbols = Array.isArray(object.mentioned_symbols)
+    ? object.mentioned_symbols.filter((s): s is string => typeof s === "string")
+    : [];
   return {
     summary: object.summary || "",
-    key_themes: (object.key_themes || []).slice(0, 5),
+    key_themes: themes.slice(0, 5),
     sentiment: object.sentiment || "neutral",
     sentiment_score: Math.max(-1, Math.min(1, object.sentiment_score || 0)),
-    mentioned_symbols: (object.mentioned_symbols || []).map((s) =>
-      s.toUpperCase().trim()
-    ),
+    mentioned_symbols: symbols.map((s) => s.toUpperCase().trim()),
     portfolio_relevance: object.portfolio_relevance || "",
     is_portfolio_relevant: object.is_portfolio_relevant !== false,
   };

@@ -33,6 +33,7 @@ import {
 } from "./gmail";
 import { loadLatestSnapshot, type Snapshot } from "./state";
 import { generateWithFailover } from "./ai";
+import { normalizeThemes } from "./fallback-digest";
 import { getCurrentETHour, getCurrentETMinute } from "./dst";
 
 const MAX_ARTICLES_PER_RUN = 10;
@@ -356,10 +357,14 @@ ATTRIBUTION (provenance): If this piece is primarily RELAYING a third party's vi
 
   return {
     summary: object.summary || "",
-    key_themes: object.key_themes || [],
+    // jsonSchema() doesn't runtime-validate — the model can return these
+    // array fields as strings (crashed the digest fallback 2026-07-15).
+    key_themes: normalizeThemes(object.key_themes),
     sentiment: object.sentiment || "neutral",
     sentiment_score: object.sentiment_score || 0,
-    mentioned_symbols: object.mentioned_symbols || [],
+    mentioned_symbols: Array.isArray(object.mentioned_symbols)
+      ? object.mentioned_symbols.filter((s): s is string => typeof s === "string")
+      : [],
     portfolio_relevance: object.portfolio_relevance || "",
     is_portfolio_relevant: object.is_portfolio_relevant !== false,
   };
