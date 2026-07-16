@@ -15,7 +15,8 @@ import {
   checkEarningsCloudMarker,
   writeMacSentEarningsMarker,
 } from "@/lib/cron/earnings-marker-check";
-import { runWrapPass } from "@/lib/earnings/wrap-send";
+import { runWrapPass, claimReadyMembers } from "@/lib/earnings/wrap-send";
+import type { WrapClusterMember } from "@/lib/earnings/wrap";
 
 // composeEarningsEmail is the only send-earnings-email export we stub — the
 // claim/release/renderHeadlineTable/EarningsEmailError exports stay REAL so the
@@ -310,5 +311,114 @@ describe("runWrapPass", () => {
     } finally {
       if (prev !== undefined) process.env.BRIEFING_EMAIL_TO = prev;
     }
+  });
+
+  it("9. unexpected error mid-build (getEventRow throws for a later member) → outer catch releases every fresh claim, returns zeros, never throws", async () => {
+    // Seed 3 ready members. The first member's compose call has a side effect
+    // that breaks the SECOND member's getEventRow query — getEventRow +
+    // renderHeadlineTable run OUTSIDE the per-member try/catch, so this is an
+    // honest reproduction of an unguarded throw in the compose-through-send
+    // region (Finding 2), not a mocked shortcut.
+    const ids = ["AAA", "BBB", "CCC"].map(seedReadyAmc);
+    const getEventRowSql = "SELECT * FROM calendar_events WHERE id = ?";
+    const originalPrepare = db.prepare.bind(db);
+    let getEventRowCalls = 0;
+    vi.spyOn(db, "prepare").mockImplementation((sql: string) => {
+      if (sql === getEventRowSql) {
+        getEventRowCalls += 1;
+        if (getEventRowCalls === 2) {
+          throw new Error("simulated DB failure reading event row");
+        }
+      }
+      return originalPrepare(sql);
+    });
+
+    const res = await runWrapPass(db, { now: NOW_ALL_READY, recipient: RECIPIENT });
+
+    expect(res).toEqual({ wrapsSent: 0, wrapped: 0, stillWaiting: [] });
+    expect(mockedSend).not.toHaveBeenCalled();
+    expect(mockedMacSent).not.toHaveBeenCalled();
+    // Every fresh claim released — zero rows remain at all (no lingering
+    // 'in_progress' claims, no completed audit rows either).
+    const rows = auditRows();
+    expect(rows.filter((r) => r.error === "in_progress")).toHaveLength(0);
+    expect(rows).toHaveLength(0);
+    expect(ids.length).toBe(3); // sanity: cluster was actually above threshold
+  });
+});
+
+describe("claimReadyMembers", () => {
+  it("drops a refire member (an already-completed recap row) — no token issued, delivered reported, existing row untouched", () => {
+    const a = seedReadyAmc("AAA");
+    const b = seedReadyAmc("BBB");
+    // Simulates the race the wrap must defend against: getExpectedRecapCluster
+    // excludes completed recaps at CLUSTER-BUILD time, so the only way to
+    // reproduce the race in a test is to hand claimReadyMembers a `ready`
+    // list built before a concurrent process finished B's individual recap
+    // — exactly what happens in production between cluster-build and claim.
+    db.prepare(
+      `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, ai_input_hash, ai_output_md, error)
+       VALUES (?, 'recap', 'someone-else@x.com', datetime('now'), 'other-hash', 'already delivered individually', NULL)`,
+    ).run(b);
+
+    const ready: WrapClusterMember[] = [
+      { eventId: a, symbol: "AAA", releaseTime: "16:15", ready: true },
+      { eventId: b, symbol: "BBB", releaseTime: "16:15", ready: true },
+    ];
+
+    const result = claimReadyMembers(db, ready, RECIPIENT);
+
+    expect(result.delivered).toEqual([b]);
+    expect(result.claims.map((c) => c.member.eventId)).toEqual([a]);
+    expect(result.claims[0].mode).toBe("fresh");
+    expect(result.claims[0].token).toBeTruthy();
+
+    // B's pre-existing completed row is untouched: no token, no overwrite.
+    const bRow = db
+      .prepare(`SELECT ai_output_md, error, recipient FROM earnings_emails WHERE event_id = ?`)
+      .get(b) as { ai_output_md: string | null; error: string | null; recipient: string };
+    expect(bRow.ai_output_md).toBe("already delivered individually");
+    expect(bRow.error).toBeNull();
+    expect(bRow.recipient).toBe("someone-else@x.com");
+  });
+
+  it("returns empty claims (nothing to send) when every ready member turns out to already be delivered", () => {
+    const a = seedReadyAmc("AAA");
+    db.prepare(
+      `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, error)
+       VALUES (?, 'recap', 'x@y.com', datetime('now'), NULL)`,
+    ).run(a);
+
+    const ready: WrapClusterMember[] = [{ eventId: a, symbol: "AAA", releaseTime: "16:15", ready: true }];
+    const result = claimReadyMembers(db, ready, RECIPIENT);
+
+    expect(result.claims).toEqual([]);
+    expect(result.delivered).toEqual([a]);
+  });
+
+  it("a live 'in_progress' conflict still aborts the whole batch and releases fresh claims already taken (distinct from refire)", () => {
+    const a = seedReadyAmc("AAA");
+    const b = seedReadyAmc("BBB");
+    db.prepare(
+      `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, error, claim_token)
+       VALUES (?, 'recap', 'other@x.com', datetime('now'), 'in_progress', 'foreign-token')`,
+    ).run(b);
+
+    const ready: WrapClusterMember[] = [
+      { eventId: a, symbol: "AAA", releaseTime: "16:15", ready: true },
+      { eventId: b, symbol: "BBB", releaseTime: "16:15", ready: true },
+    ];
+
+    const result = claimReadyMembers(db, ready, RECIPIENT);
+
+    expect(result.claims).toEqual([]);
+    expect(result.delivered).toEqual([]);
+    // A's fresh claim was released; only the foreign in-progress B row remains.
+    const rows = db.prepare(`SELECT event_id, error FROM earnings_emails`).all() as {
+      event_id: number;
+      error: string | null;
+    }[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual({ event_id: b, error: "in_progress" });
   });
 });

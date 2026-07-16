@@ -8,14 +8,22 @@
  * collapsed into ONE stapled email instead of N individual recaps.
  *
  * Claim choreography (the load-bearing part): claim EVERY ready member BEFORE
- * composing anything. A single claim conflict aborts the whole tick and
+ * composing anything. A single live claim conflict aborts the whole tick and
  * releases the fresh claims already taken (retry next tick) — never a partial
- * send that leaves siblings stranded. After compose, ONE email goes out; each
- * successfully-composed member then gets its own completed audit row + mac-sent
- * marker. A member whose compose fails renders its scoreboard + a retry note in
- * place, releases its claim, and writes NO audit row so its individual recap
- * fires later. A send failure releases all fresh claims and returns zeros — the
- * sweep must never fail on our account.
+ * send that leaves siblings stranded. A "refire" claim (the slot already has a
+ * COMPLETED row — a concurrent process finished that member's individual
+ * recap between cluster-build and claim) is NOT a conflict: that member is
+ * simply already delivered, so `claimReadyMembers` drops it silently rather
+ * than stapling + re-sending it (#17 T2 review Finding 1). After compose, ONE
+ * email goes out; each successfully-composed member then gets its own
+ * completed audit row + mac-sent marker. A member whose compose fails renders
+ * its scoreboard + a retry note in place, releases its claim, and writes NO
+ * audit row so its individual recap fires later. A send failure releases all
+ * fresh claims and returns zeros — the sweep must never fail on our account.
+ * The whole compose-through-send region also carries an outer claim-leak
+ * catch (#17 T2 review Finding 2): any unexpected throw there (not just a
+ * failed `sendEmail`) releases every fresh claim and no-ops rather than
+ * leaking claims into the 30-min 'in_progress' blackout.
  *
  * Spec: docs/superpowers/specs/2026-07-16-eod-earnings-wrap-design.md
  */
@@ -99,6 +107,58 @@ interface Section {
   promptHash: string | null;
 }
 
+export interface ClaimReadyMembersResult {
+  /** Fresh claims taken — ready to compose + staple + send. */
+  claims: Claimed[];
+  /**
+   * Event ids whose recap was ALREADY completed by a concurrent process
+   * between cluster-build and claim (`claimEarningsEmailSlot` returned mode
+   * "refire" — a completed row exists, not a live 'in_progress' conflict). No
+   * token was issued for these, so there's nothing to release; the caller
+   * must drop them silently: never composed, never stapled, never counted in
+   * `wrapped`, never re-audited.
+   */
+  delivered: number[];
+}
+
+/**
+ * Claim EVERY ready member's recap slot BEFORE composing anything.
+ *
+ * A live claim conflict ('in_progress' held by another process, not stale
+ * enough to take over) aborts the whole batch: every claim taken so far in
+ * this call is released and an empty result is returned so the caller
+ * no-ops the whole tick (next tick retries everyone, including the members
+ * that claimed fine here).
+ *
+ * A "refire" claim means the slot already has a COMPLETED row — the
+ * member's individual recap was sent by a concurrent process sometime
+ * between the cluster being built and this claim attempt. That is NOT a
+ * conflict and must NOT abort the batch; it just means this member is
+ * already delivered, so it goes into `delivered` instead of `claims` and is
+ * never touched again by the wrap.
+ */
+export function claimReadyMembers(
+  db: Database.Database,
+  ready: WrapClusterMember[],
+  recipient: string,
+): ClaimReadyMembersResult {
+  const claims: Claimed[] = [];
+  const delivered: number[] = [];
+  for (const m of ready) {
+    const claim = claimEarningsEmailSlot(db, m.eventId, "recap", recipient);
+    if (!claim.claimed) {
+      releaseFreshClaims(db, claims);
+      return { claims: [], delivered: [] };
+    }
+    if (claim.mode === "refire") {
+      delivered.push(m.eventId);
+      continue;
+    }
+    claims.push({ member: m, mode: claim.mode, token: claim.token });
+  }
+  return { claims, delivered };
+}
+
 async function runSlotWrap(
   db: Database.Database,
   date: string,
@@ -142,17 +202,12 @@ async function runSlotWrap(
     ready.length >= 1 && (notReady.length === 0 || slotDeadlinePassed(slot, now));
   if (!shouldSend) return noop(stillWaiting);
 
-  // ── Claim ALL ready members BEFORE composing. Any conflict aborts the whole
-  //    tick; release the fresh claims already taken so the next tick retries.
-  const claims: Claimed[] = [];
-  for (const m of ready) {
-    const claim = claimEarningsEmailSlot(db, m.eventId, "recap", recipient);
-    if (!claim.claimed) {
-      releaseFreshClaims(db, claims);
-      return noop(stillWaiting);
-    }
-    claims.push({ member: m, mode: claim.mode, token: claim.token });
-  }
+  // ── Claim ALL ready members BEFORE composing. A live conflict aborts the
+  //    whole tick; a "refire" claim (already delivered by a concurrent
+  //    process) is dropped silently rather than re-staple/re-sent (#17 T2
+  //    review Finding 1).
+  const { claims } = claimReadyMembers(db, ready, recipient);
+  if (claims.length === 0) return noop(stillWaiting);
 
   // Best-effort running markers so the Worker fallback backs off mid-fire.
   await Promise.all(
@@ -162,63 +217,86 @@ async function runSlotWrap(
   );
 
   try {
-    // ── Compose each. A per-member compose failure renders the scoreboard + a
-    //    retry note in place, releases that member's claim, writes no audit row.
-    const sections: Section[] = [];
-    for (const c of claims) {
-      const event = getEventRow(db, c.member.eventId);
-      const scoreboard = event
-        ? renderHeadlineTable(event, c.member.symbol, "recap")
-        : "";
+    let sections: Section[] = [];
+
+    // ── Compose-through-send: an outer claim-leak catch (#17 T2 review
+    //    Finding 2). getEventRow / renderHeadlineTable / briefingToHtml (or
+    //    anything else unexpected before the email is actually sent) must
+    //    never leak the fresh claims taken above into the 30-min
+    //    'in_progress' blackout — the never-throws contract. The inner
+    //    send-failure catch below has distinct semantics (a successful
+    //    compose followed by an SMTP failure) and is kept as-is, nested
+    //    inside this one.
+    try {
+      // ── Compose each. A per-member compose failure renders the scoreboard +
+      //    a retry note in place, releases that member's claim, writes no
+      //    audit row.
+      for (const c of claims) {
+        const event = getEventRow(db, c.member.eventId);
+        const scoreboard = event
+          ? renderHeadlineTable(event, c.member.symbol, "recap")
+          : "";
+        try {
+          const composed = await composeEarningsEmail(db, c.member.eventId, "recap");
+          sections.push({
+            member: c.member,
+            scoreboard,
+            aiMarkdown: composed.aiMarkdown,
+            promptHash: composed.promptHash,
+          });
+        } catch (err) {
+          console.warn(
+            `[wrap] compose failed for event ${c.member.eventId} (${c.member.symbol}); its individual recap will retry:`,
+            err instanceof Error ? err.message : err,
+          );
+          if (c.mode === "fresh" && c.token) {
+            releaseEarningsEmailClaim(db, c.member.eventId, "recap", c.token);
+          }
+          sections.push({ member: c.member, scoreboard, aiMarkdown: null, promptHash: null });
+        }
+      }
+
+      // ── Staple: combined scoreboard index, then a `# {SYM}` section per name.
+      const scoreboardIndex = sections
+        .map((s) => s.scoreboard)
+        .filter(Boolean)
+        .join("\n\n");
+      const bodyParts = sections.map((s) =>
+        s.aiMarkdown != null
+          ? `# ${s.member.symbol}\n\n${s.aiMarkdown}`
+          : `# ${s.member.symbol}\n\n${s.scoreboard}\n\n*Compose failed — its individual recap will retry.*`,
+      );
+      const waitingLine =
+        notReady.length > 0
+          ? `\n\n*Still waiting on actuals: ${notReady.map((m) => m.symbol).join(", ")}*`
+          : "";
+      const stapledMarkdown = `${scoreboardIndex}\n\n${bodyParts.join("\n\n")}${waitingLine}`;
+
+      const subject = `\u{1F4CA} Earnings wrap — ${slot} ${date} (${sections.length} names)`;
+      const title = `Earnings wrap — ${slot} ${date}`;
+      const html = briefingToHtml(stapledMarkdown, title);
+
       try {
-        const composed = await composeEarningsEmail(db, c.member.eventId, "recap");
-        sections.push({
-          member: c.member,
-          scoreboard,
-          aiMarkdown: composed.aiMarkdown,
-          promptHash: composed.promptHash,
-        });
+        await sendEmail({ to: recipient, subject, html, fromLocalPart: "earnings" });
       } catch (err) {
+        // The sweep must never fail on our account: release every fresh claim
+        // still held (composed ones), write no audit rows, return zeros. The
+        // next tick retries the whole wrap.
+        releaseFreshClaims(db, claims);
         console.warn(
-          `[wrap] compose failed for event ${c.member.eventId} (${c.member.symbol}); its individual recap will retry:`,
+          `[wrap] send failed for ${slot} ${date}; released ${claims.length} claim(s):`,
           err instanceof Error ? err.message : err,
         );
-        if (c.mode === "fresh" && c.token) {
-          releaseEarningsEmailClaim(db, c.member.eventId, "recap", c.token);
-        }
-        sections.push({ member: c.member, scoreboard, aiMarkdown: null, promptHash: null });
+        return noop(stillWaiting);
       }
-    }
-
-    // ── Staple: combined scoreboard index, then a `# {SYM}` section per name.
-    const scoreboardIndex = sections
-      .map((s) => s.scoreboard)
-      .filter(Boolean)
-      .join("\n\n");
-    const bodyParts = sections.map((s) =>
-      s.aiMarkdown != null
-        ? `# ${s.member.symbol}\n\n${s.aiMarkdown}`
-        : `# ${s.member.symbol}\n\n${s.scoreboard}\n\n*Compose failed — its individual recap will retry.*`,
-    );
-    const waitingLine =
-      notReady.length > 0
-        ? `\n\n*Still waiting on actuals: ${notReady.map((m) => m.symbol).join(", ")}*`
-        : "";
-    const stapledMarkdown = `${scoreboardIndex}\n\n${bodyParts.join("\n\n")}${waitingLine}`;
-
-    const subject = `\u{1F4CA} Earnings wrap — ${slot} ${date} (${ready.length} names)`;
-    const title = `Earnings wrap — ${slot} ${date}`;
-    const html = briefingToHtml(stapledMarkdown, title);
-
-    try {
-      await sendEmail({ to: recipient, subject, html, fromLocalPart: "earnings" });
     } catch (err) {
-      // The sweep must never fail on our account: release every fresh claim
-      // still held (composed ones), write no audit rows, return zeros. The
-      // next tick retries the whole wrap.
+      // Outer claim-leak defense: an unexpected throw anywhere in
+      // compose/staple/render before the send attempt above (the send's own
+      // failure is handled by the inner catch and never reaches here) must
+      // still release the fresh claims — this function must never throw.
       releaseFreshClaims(db, claims);
       console.warn(
-        `[wrap] send failed for ${slot} ${date}; released ${claims.length} claim(s):`,
+        `[wrap] unexpected error building ${slot} ${date}; released ${claims.length} claim(s):`,
         err instanceof Error ? err.message : err,
       );
       return noop(stillWaiting);
