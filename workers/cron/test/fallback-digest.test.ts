@@ -50,7 +50,12 @@ vi.mock("../src/resend", () => ({
   sendEmail: vi.fn(async () => ({ id: "mock-email-id" })),
 }));
 
-import { runFallbackDigest, composeDigestMarkdown, type ProcessedArticle } from "../src/fallback-digest";
+import {
+  runFallbackDigest,
+  composeDigestMarkdown,
+  normalizeThemes,
+  type ProcessedArticle,
+} from "../src/fallback-digest";
 import { loadLatestSnapshot } from "../src/state";
 import { sendEmail } from "../src/resend";
 
@@ -325,5 +330,81 @@ describe("composeDigestMarkdown — structured layout", () => {
     expect(md).toContain("VITAL KNOWLEDGE [RECAP]");
     expect(md).toContain("## Research Desk");
     expect(md!.indexOf("## Market Commentary")).toBeLessThan(md!.indexOf("## Research Desk"));
+  });
+
+  // ── Overnight block (2026-07-15) ──────────────────────────────────────────
+
+  const oneArticle: ProcessedArticle[] = [
+    {
+      source_name: "Vital Knowledge",
+      subject: "Vital Knowledge: Vital Market Recap for Tuesday June 9, 2026",
+      received_at: "2026-06-09 14:00:00",
+      source_url: null,
+      summary: "Market recap summary",
+      sentiment: "bullish",
+      key_themes: ["macro"],
+      portfolio_relevance: "Relevant",
+      gmail_message_id: "msg-vk-1",
+    },
+  ];
+
+  it("renders the overnight block above the article sections when provided", () => {
+    const md = composeDigestMarkdown(
+      oneArticle,
+      [],
+      "## Overnight\n\nKOSPI +0.8% · Bitcoin −2.1%",
+    );
+    expect(md).toContain("## Overnight");
+    expect(md).toContain("KOSPI +0.8% · Bitcoin −2.1%");
+    expect(md!.indexOf("## Overnight")).toBeLessThan(md!.indexOf("## Market Commentary"));
+  });
+
+  it("a null overnight block leaves the digest unchanged", () => {
+    const withNull = composeDigestMarkdown(oneArticle, [], null);
+    const without = composeDigestMarkdown(oneArticle, []);
+    expect(withNull).toBe(without);
+  });
+
+  it("an overnight block alone never produces an email (no_articles semantics stay)", () => {
+    expect(composeDigestMarkdown([], [], "## Overnight\n\nKOSPI +0.8%")).toBeNull();
+  });
+
+  // ── key_themes type-safety (2026-07-15 outage) ────────────────────────────
+  //
+  // jsonSchema() does NOT runtime-validate, so the model can return
+  // key_themes as a STRING. String.slice(0,5) survives processArticle's cap,
+  // then renderItem's `.join()` threw — every digest tick from 9:00 to 10:30
+  // ET crashed AFTER its ~10 Claude calls succeeded, burning the calls and
+  // sending nothing until a tick happened to get arrays for all articles.
+
+  it("a string key_themes from the model must never crash the compose", () => {
+    const corrupted = [
+      {
+        ...oneArticle[0],
+        // What the model actually emitted this morning, schema notwithstanding.
+        key_themes: "macro, rates" as unknown as string[],
+      },
+    ];
+    const md = composeDigestMarkdown(corrupted, []);
+    expect(md).toContain("## Market Commentary");
+  });
+});
+
+describe("normalizeThemes", () => {
+  it("passes arrays through, dropping non-strings and capping at 5", () => {
+    expect(normalizeThemes(["a", "b", 3, "c", "d", "e", "f"])).toEqual([
+      "a", "b", "c", "d", "e",
+    ]);
+  });
+
+  it("splits a comma-separated string into themes", () => {
+    expect(normalizeThemes("macro, rates , banks")).toEqual(["macro", "rates", "banks"]);
+  });
+
+  it("maps null/undefined/objects/empty to []", () => {
+    expect(normalizeThemes(null)).toEqual([]);
+    expect(normalizeThemes(undefined)).toEqual([]);
+    expect(normalizeThemes({ theme: "x" })).toEqual([]);
+    expect(normalizeThemes("   ")).toEqual([]);
   });
 });

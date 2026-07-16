@@ -30,11 +30,13 @@ import { generateWithFailover } from "./ai";
 import { briefingToHtml } from "./html";
 import { todayET } from "./dst";
 import { sourceKind, editionLabel } from "./editions";
+import { fetchOvernightMovesWorker, renderOvernightLines } from "./overnight";
 
 // Workers Free plan caps each invocation at 50 subrequests. The digest does
-// 1 list call per source + 2 calls per processed article (getMessage + Claude).
-// 28 active sources × 1 list + 10 articles × 2 = 48 — leaves headroom for
-// recipient resolution + Resend send. Bumping either constant risks the
+// 1 list call per source + 2 calls per processed article (getMessage + Claude)
+// + 1 Yahoo spark call for the Overnight block (2026-07-15).
+// 28 active sources × 1 list + 10 articles × 2 + 1 spark = 49 — the last
+// slot is spent by Resend/recipient work. Bumping any constant risks the
 // "Too many subrequests by single Worker invocation" failure that produced
 // the silent miss on 2026-05-20.
 const MAX_ARTICLES_PER_RUN = 10;
@@ -204,9 +206,13 @@ export async function runFallbackDigest(
   const { processed: newProcessed, listErrors, articleErrors, lastError } =
     await fetchAndProcessNewArticles(env, snapshot);
 
+  // Overnight scoreboard (numbers-only mirror of the Mac block) — ONE spark
+  // subrequest for all four symbols; a Yahoo failure degrades to no block.
+  const overnightBlock = renderOvernightLines(await fetchOvernightMovesWorker(todayET()));
+
   // Combine: newly-processed on top (fresh today), then snapshot meta as context.
   const snapshotRecent = filterTodayArticles(snapshot.recentArticlesMeta);
-  const digest = composeDigestMarkdown(newProcessed, snapshotRecent);
+  const digest = composeDigestMarkdown(newProcessed, snapshotRecent, overnightBlock);
   if (!digest) {
     if (articleErrors > 0 || listErrors > 0) {
       return {
@@ -254,6 +260,29 @@ const ARTICLE_SCHEMA = jsonSchema<{
   required: ["summary", "key_themes", "sentiment", "portfolio_relevance"],
 });
 
+/**
+ * Coerce the model's key_themes to a real string[] (2026-07-15 outage).
+ * jsonSchema() does NOT runtime-validate, so despite the array schema the
+ * model occasionally returns a comma-joined STRING — which survived
+ * `.slice(0, 5)` (strings have slice) and then crashed renderItem's
+ * `.join()`, failing every digest tick from 9:00–10:30 ET AFTER its ~10
+ * Claude calls had already succeeded. Arrays pass through (strings only,
+ * cap 5); a string splits on commas; anything else → [].
+ */
+export function normalizeThemes(v: unknown): string[] {
+  if (Array.isArray(v)) {
+    return v.filter((t): t is string => typeof t === "string").slice(0, 5);
+  }
+  if (typeof v === "string") {
+    return v
+      .split(",")
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0)
+      .slice(0, 5);
+  }
+  return [];
+}
+
 async function processArticle(
   env: FallbackEnv,
   source: Snapshot["researchSources"][number],
@@ -296,7 +325,7 @@ ${text}`;
     source_url: null,
     summary: object.summary || "",
     sentiment: object.sentiment || "neutral",
-    key_themes: (object.key_themes || []).slice(0, 5),
+    key_themes: normalizeThemes(object.key_themes),
     portfolio_relevance: object.portfolio_relevance || "",
   };
 }
@@ -322,7 +351,12 @@ interface RenderItem {
 
 export function composeDigestMarkdown(
   fresh: ProcessedArticle[],
-  snapshotMeta: RecentArticleMeta[]
+  snapshotMeta: RecentArticleMeta[],
+  /** Pre-rendered "## Overnight" block (numbers-only mirror of the Mac's) —
+   *  rendered above the article sections. Null/omitted = no block. An
+   *  overnight block alone never produces an email: no articles stays
+   *  kind:"no_articles" so the catch-up sweep keeps retrying for content. */
+  overnight?: string | null,
 ): string | null {
   const totalCount = fresh.length + snapshotMeta.length;
   if (totalCount === 0) return null;
@@ -335,7 +369,9 @@ export function composeDigestMarkdown(
       url: null,
       summary: a.summary || null,
       portfolio_relevance: a.portfolio_relevance || null,
-      themes: a.key_themes,
+      // Defense-in-depth for pre-normalization callers/older payloads — a
+      // non-array here crashed every digest tick on 2026-07-15 morning.
+      themes: normalizeThemes(a.key_themes),
     })),
     ...snapshotMeta.map((a) => ({
       source_name: a.source_name,
@@ -368,6 +404,13 @@ export function composeDigestMarkdown(
     "---",
     "",
   ];
+
+  if (overnight) {
+    lines.push(overnight);
+    lines.push("");
+    lines.push("---");
+    lines.push("");
+  }
 
   const renderItem = (i: RenderItem, withEdition: boolean) => {
     const tag = withEdition ? editionLabel(i.source_name, i.subject).toUpperCase() : "";
