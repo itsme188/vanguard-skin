@@ -56,6 +56,13 @@ vi.mock("@/lib/alerts/notify-pushover", () => ({
   sendPushover: (...a: unknown[]) => pushover(...a),
 }));
 
+const runWrapPass = vi.fn(
+  async (..._args: unknown[]) => ({ wrapsSent: 0, wrapped: 0, stillWaiting: [] as string[] }),
+);
+vi.mock("@/lib/earnings/wrap-send", () => ({
+  runWrapPass: (...a: unknown[]) => runWrapPass(...a),
+}));
+
 import { runEarningsEmailSweep, alertBlockedRecaps } from "@/lib/calendar/email-sweep";
 import { EarningsEmailError } from "@/lib/digest/send-earnings-email";
 import { setMutedEarningsSymbols } from "@/lib/queries/earnings-settings";
@@ -109,6 +116,55 @@ function seedHeldPreviewCandidate(db: Database.Database, symbol: string): number
   return result.lastInsertRowid as number;
 }
 
+/**
+ * Held AMC recap candidate: enrichment already landed (actual + enriched_at
+ * inside the 4h recap window relative to NOW), no audit row yet, so
+ * findEmailCandidates selects it as a recap candidate. event_time 'AMC'
+ * classifies it via wrapSlotFor's marker branch (highest priority, so the
+ * early release_time below doesn't affect slot classification). release_time
+ * is deliberately set to a value ALREADY PAST relative to NOW (2026-06-01
+ * 18:30 UTC) — a same-day 16:15 release_time would ALSO fall inside
+ * findEmailCandidates' preview window ([105,135] min out), producing a
+ * duplicate preview candidate for the same event and defeating the
+ * recap-only suppression this fixture is meant to isolate.
+ */
+function seedHeldRecapCandidate(db: Database.Database, symbol: string): number {
+  const accountId = seedAccount(db, `acct-${symbol}`);
+  const securityId = (
+    db
+      .prepare(
+        `INSERT INTO securities (symbol, security_type, asset_class, multiplier)
+         VALUES (?, 'stock', 'equity', 1) RETURNING id`,
+      )
+      .get(symbol) as { id: number }
+  ).id;
+  db.prepare(
+    `INSERT INTO holdings (account_id, security_id, quantity, as_of_date)
+     VALUES (?, ?, ?, date('now'))`,
+  ).run(accountId, securityId, 100);
+
+  const result = db
+    .prepare(
+      `INSERT INTO calendar_events (
+         source, event_type, event_date, event_time, release_time, title,
+         symbol, security_id, actual_value, enriched_at, source_key, week_of
+       ) VALUES ('finnhub','earnings',?,?,?,?,?,?,?,?,?,?)`,
+    )
+    .run(
+      "2026-06-01",
+      "AMC",
+      "08:00", // already past NOW (18:30 UTC) — keeps this out of the preview window
+      `${symbol} earnings`,
+      symbol,
+      securityId,
+      "EPS 1.00",
+      "2026-06-01 18:00:00", // inside [NOW-4h, NOW] = [14:30, 18:30]
+      `finnhub:${symbol}:2026-06-01`,
+      "2026-06-01",
+    );
+  return result.lastInsertRowid as number;
+}
+
 describe("runEarningsEmailSweep marker dance", () => {
   let db: Database.Database;
 
@@ -126,6 +182,8 @@ describe("runEarningsEmailSweep marker dance", () => {
     writeSent.mockClear();
     fetchCloudSent.mockClear();
     fetchCloudSent.mockResolvedValue([]);
+    runWrapPass.mockClear();
+    runWrapPass.mockResolvedValue({ wrapsSent: 0, wrapped: 0, stillWaiting: [] });
   });
 
   // ── Cloud-sent audit reconcile (2026-07-15) ─────────────────────────────
@@ -317,6 +375,87 @@ describe("runEarningsEmailSweep marker dance", () => {
     expect(r.ok).toBe(true);
     expect(r.skipped).toBe("claim-held");
     expect(r.status).toBe(409);
+  });
+});
+
+/**
+ * Wrap-mode suppression (#17 Task 3): a (date, slot) cluster whose expected-
+ * unsent recap count reaches WRAP_THRESHOLD should NOT have its members sent
+ * as individual recaps by the candidate loop — the wrap pass (Task 2) staples
+ * them into one email instead. The suppression gate MUST use the SAME raw
+ * getExpectedRecapCluster(...).length >= WRAP_THRESHOLD determination that
+ * runWrapPass uses internally (Task 2 reviewer's coordination rule) — never a
+ * post-exclusion count, or individuals get suppressed while the wrap sends
+ * nothing.
+ */
+describe("wrap-mode suppression (#17 T3)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+
+    sendPreview.mockClear();
+    sendRecap.mockClear();
+    reapStaleClaims.mockClear();
+    checkMarker.mockClear();
+    setRunning.mockClear();
+    clearRunning.mockClear();
+    writeSent.mockClear();
+    fetchCloudSent.mockClear();
+    fetchCloudSent.mockResolvedValue([]);
+    runWrapPass.mockClear();
+    runWrapPass.mockResolvedValue({ wrapsSent: 0, wrapped: 0, stillWaiting: [] });
+  });
+
+  it("suppresses all three ready AMC recap candidates when the cluster reaches WRAP_THRESHOLD, and runs the wrap pass once", async () => {
+    const ids = [
+      seedHeldRecapCandidate(db, "AAA"),
+      seedHeldRecapCandidate(db, "BBB"),
+      seedHeldRecapCandidate(db, "CCC"),
+    ];
+
+    const summary = await runEarningsEmailSweep(db, { now: NOW });
+
+    for (const id of ids) {
+      const r = summary.results.find((x) => x.eventId === id)!;
+      expect(r.ok).toBe(true);
+      expect(r.skipped).toBe("wrap-pending");
+    }
+    expect(sendRecap).not.toHaveBeenCalled();
+    expect(runWrapPass).toHaveBeenCalledTimes(1);
+    expect(runWrapPass).toHaveBeenCalledWith(db, { now: NOW });
+  });
+
+  it("does not suppress recap candidates when the cluster is below WRAP_THRESHOLD — individual sends happen", async () => {
+    const ids = [seedHeldRecapCandidate(db, "DDD"), seedHeldRecapCandidate(db, "EEE")];
+
+    const summary = await runEarningsEmailSweep(db, { now: NOW });
+
+    for (const id of ids) {
+      const r = summary.results.find((x) => x.eventId === id)!;
+      expect(r.skipped).toBeUndefined();
+    }
+    expect(sendRecap).toHaveBeenCalledTimes(2);
+    expect(summary.results.some((r) => r.skipped === "wrap-pending")).toBe(false);
+  });
+
+  it("never suppresses preview candidates, even when three would otherwise cluster", async () => {
+    const ids = [
+      seedHeldPreviewCandidate(db, "FFF"),
+      seedHeldPreviewCandidate(db, "GGG"),
+      seedHeldPreviewCandidate(db, "HHH"),
+    ];
+
+    const summary = await runEarningsEmailSweep(db, { now: NOW });
+
+    for (const id of ids) {
+      const r = summary.results.find((x) => x.eventId === id)!;
+      expect(r.skipped).toBeUndefined();
+      expect(r.ok).toBe(true);
+    }
+    expect(sendPreview).toHaveBeenCalledTimes(3);
   });
 });
 
