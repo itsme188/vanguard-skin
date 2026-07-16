@@ -232,6 +232,59 @@ describe("isSymbolMentioned (short-ticker collision guard)", () => {
   });
 });
 
+describe("isSymbolMentioned (gates on the ambiguous-word stoplist, not symbol length)", () => {
+  it("[regression #11 A2] the pre-fix length<=3 gate would have rejected plain TSM prose — RED then GREEN", () => {
+    // Reconstruction of the PRE-FIX predicate (length-gated at <= 3 chars)
+    // for documentation purposes only — this is NOT the code under test.
+    // It shows the old guard silently blocked real 3-char tickers (TSM,
+    // AMD, GS, IBM, CAT, ...) from ever matching in ordinary prose, because
+    // they were never a $cashtag or immediately followed by a finance cue.
+    const preFixLengthGated = (text: string, symbol: string): boolean => {
+      const escaped = symbol.toUpperCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const upperText = text.toUpperCase();
+      if (symbol.length > 3) return new RegExp(`\\b${escaped}\\b`).test(upperText);
+      const cashtagRe = new RegExp(`\\$${escaped}\\b`);
+      const contextRe = new RegExp(
+        `\\b${escaped}(?=\\s*(?:EARNINGS|REPORTS?|PRINTS?|EPS|Q[1-4])\\b)`
+      );
+      return cashtagRe.test(upperText) || contextRe.test(upperText);
+    };
+
+    const prose = "TSM beat on both lines";
+    // RED: the pre-fix length-based guard misses plain prose entirely.
+    expect(preFixLengthGated(prose, "TSM")).toBe(false);
+    // GREEN: the stoplist-based guard catches it — TSM isn't an ambiguous
+    // English word, so it gets the plain word-boundary test regardless of
+    // its 3-char length.
+    expect(isSymbolMentioned(prose, "TSM")).toBe(true);
+  });
+
+  it("matches a real 3-char ticker in plain prose with no cashtag or finance cue", () => {
+    expect(isSymbolMentioned("TSM beat on both lines", "TSM")).toBe(true);
+  });
+
+  it("matches multiple real 3-char tickers listed in plain prose", () => {
+    const text = "This week's prints: TSM, AMD, GS";
+    expect(isSymbolMentioned(text, "TSM")).toBe(true);
+    expect(isSymbolMentioned(text, "AMD")).toBe(true);
+    expect(isSymbolMentioned(text, "GS")).toBe(true);
+  });
+
+  it("matches a possessive mention (apostrophe is a word boundary)", () => {
+    expect(isSymbolMentioned("AMD's guidance disappointed", "AMD")).toBe(true);
+  });
+
+  it("still gates true stoplist collisions (IT/ALL) on prose-only mentions — unchanged", () => {
+    expect(isSymbolMentioned("This will help it a lot going forward.", "IT")).toBe(false);
+    expect(isSymbolMentioned("All in all, it was a rally.", "ALL")).toBe(false);
+  });
+
+  it("still matches stoplist symbols via cashtag or finance-cue — unchanged", () => {
+    expect(isSymbolMentioned("Watching $IT closely into the print.", "IT")).toBe(true);
+    expect(isSymbolMentioned("IT earnings are due Thursday.", "IT")).toBe(true);
+  });
+});
+
 describe("extractBogeysFromNewArticles", () => {
   it("1. article mentioning no upcoming reporter is marked scanned with zero AI calls", async () => {
     const db = makeDb();

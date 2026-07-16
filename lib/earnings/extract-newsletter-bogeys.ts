@@ -164,35 +164,51 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// Symbols this short collide with common English words often enough that a
-// bare \bSYMBOL\b test false-positives constantly (IT, ALL, ON, NOW, SO,
-// KEY, ...). Above this length, collisions with real English words are rare
-// enough that the plain boundary test is fine on its own.
-const SHORT_SYMBOL_MAX_LEN = 3;
+// Tickers that are also ordinary English words — a bare `\bSYMBOL\b` test on
+// these matches ordinary prose constantly, regardless of how short (or long)
+// the symbol is. Gating on LENGTH instead of this stoplist is wrong: it
+// silently gates real 3-char tickers too (TSM, AMD, GS, ...), leaving the
+// feature permanently silent for major holdings whose newsletter mentions
+// never carry a $cashtag or a finance-cue word. Curated to real collisions
+// only — every one of these is also an actual NYSE/Nasdaq ticker.
+export const AMBIGUOUS_TICKER_WORDS = new Set([
+  "A", "ALL", "AN", "ANY", "ARE", "AT", "BE", "BIG", "BY", "CAN", "CAR",
+  "COST", "DAY", "DO", "EAT", "FOR", "GO", "GOOD", "HAS", "HE", "IT", "KEY",
+  "LOVE", "MAIN", "MAN", "NEXT", "NICE", "NOW", "ON", "ONE", "OR", "OUT",
+  "PLAY", "REAL", "RUN", "SEE", "SO", "TELL", "TWO", "UP", "WELL", "YOU",
+]);
 
-// Finance-context cues that, immediately following a short symbol, make the
-// mention unambiguous even without a cashtag ("IT earnings", "IT reports").
-const SHORT_SYMBOL_CONTEXT_CUES = "EARNINGS|REPORTS?|PRINTS?|EPS|Q[1-4]";
+// Finance-context cues that, immediately following an ambiguous-word symbol,
+// make the mention unambiguous even without a cashtag ("IT earnings", "IT
+// reports").
+const AMBIGUOUS_TICKER_CONTEXT_CUES = "EARNINGS|REPORTS?|PRINTS?|EPS|Q[1-4]";
 
 /**
- * Pure symbol-mention test. Guards against common-English-word tickers
- * (IT, ALL, ON, NOW, SO, KEY, ...) at length <= 3: a bare `\bSYMBOL\b` test
- * on such a symbol matches ordinary prose constantly. For those short
- * symbols, require either a `$SYMBOL` cashtag or the symbol immediately
- * followed by a finance-context cue (earnings/reports/prints/EPS/Qn).
- * Symbols of length >= 4 use the plain word-boundary test — collisions with
- * real English words are rare at that length.
+ * Pure symbol-mention test. Guards against common-English-word tickers (IT,
+ * ALL, ON, NOW, SO, KEY, ...) via an explicit stoplist (`AMBIGUOUS_TICKER_WORDS`),
+ * NOT symbol length: length-gating every symbol <= 3 chars silently blocked
+ * real 3-char tickers (TSM, AMD, GS, IBM, CAT, ...) from ever matching in
+ * ordinary prose ("TSM beat on both lines"), leaving the feature permanently
+ * silent for exactly the major holdings it exists for.
+ *
+ * For a symbol IN the stoplist, require either a `$SYMBOL` cashtag or the
+ * symbol immediately followed by a finance-context cue (earnings/reports/
+ * prints/EPS/Qn). Every other symbol — regardless of length — uses a plain
+ * case-sensitive-in-uppercase-text word-boundary test.
  */
 export function isSymbolMentioned(text: string, symbol: string): boolean {
-  const escaped = escapeRegExp(symbol.toUpperCase());
+  const upperSymbol = symbol.toUpperCase();
+  const escaped = escapeRegExp(upperSymbol);
   const upperText = text.toUpperCase();
 
-  if (symbol.length > SHORT_SYMBOL_MAX_LEN) {
+  if (!AMBIGUOUS_TICKER_WORDS.has(upperSymbol)) {
     return new RegExp(`\\b${escaped}\\b`).test(upperText);
   }
 
   const cashtagRe = new RegExp(`\\$${escaped}\\b`);
-  const contextRe = new RegExp(`\\b${escaped}(?=\\s*(?:${SHORT_SYMBOL_CONTEXT_CUES})\\b)`);
+  const contextRe = new RegExp(
+    `\\b${escaped}(?=\\s*(?:${AMBIGUOUS_TICKER_CONTEXT_CUES})\\b)`
+  );
   return cashtagRe.test(upperText) || contextRe.test(upperText);
 }
 
