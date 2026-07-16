@@ -33,6 +33,7 @@ import { sendPushover } from "@/lib/alerts/notify-pushover";
 import { getEarningsSettings, shouldSendEarningsEmail } from "@/lib/queries/earnings-settings";
 import { getExpectedRecapCluster, wrapSlotFor, WRAP_THRESHOLD } from "@/lib/earnings/wrap";
 import { runWrapPass } from "@/lib/earnings/wrap-send";
+import { todayET } from "@/lib/calendar/date-utils";
 
 export interface SweepCandidateResult {
   eventId: number;
@@ -155,6 +156,16 @@ export async function runEarningsEmailSweep(
     // that runWrapPass uses internally — never a post-exclusion count, or
     // individuals get suppressed while the wrap sends nothing (Task 2
     // reviewer's coordination rule).
+    //
+    // Gated to TODAY's ET date (#17 final-review fix): runWrapPass only
+    // evaluates today's (date, slot) clusters (`date = todayET(now)` in
+    // wrap-send.ts), so a candidate whose event_date is NOT today can never
+    // be matched by any wrap pass — suppressing it here strands it in
+    // wrap-pending limbo forever (candidates vanish from the recap window
+    // at enriched_at+4h with no email ever sent). A same-day Finnhub outage
+    // where the user backfills actuals the next morning reopens recap
+    // candidates dated yesterday; those must fall through to individual
+    // sends, the correct degraded behavior.
     if (cand.phase === "recap") {
       const eventRow = db
         .prepare(
@@ -164,6 +175,7 @@ export async function runEarningsEmailSweep(
       const slot = eventRow ? wrapSlotFor(eventRow) : null;
       if (
         eventRow &&
+        eventRow.event_date === todayET(opts.now) &&
         slot !== null &&
         getExpectedRecapCluster(db, eventRow.event_date, slot).length >= WRAP_THRESHOLD
       ) {
