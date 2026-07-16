@@ -172,10 +172,11 @@ function escapeRegExp(s: string): string {
 // never carry a $cashtag or a finance-cue word. Curated to real collisions
 // only — every one of these is also an actual NYSE/Nasdaq ticker.
 export const AMBIGUOUS_TICKER_WORDS = new Set([
-  "A", "ALL", "AN", "ANY", "ARE", "AT", "BE", "BIG", "BY", "CAN", "CAR",
-  "COST", "DAY", "DO", "EAT", "FOR", "GO", "GOOD", "HAS", "HE", "IT", "KEY",
-  "LOVE", "MAIN", "MAN", "NEXT", "NICE", "NOW", "ON", "ONE", "OR", "OUT",
-  "PLAY", "REAL", "RUN", "SEE", "SO", "TELL", "TWO", "UP", "WELL", "YOU",
+  "A", "AIR", "ALL", "AM", "AN", "ANY", "ARE", "AT", "BE", "BIG", "BY",
+  "CAN", "CAR", "COST", "DAY", "DO", "EAT", "FOR", "GO", "GOOD", "HAS",
+  "HE", "IT", "KEY", "LOVE", "LOW", "MAIN", "MAN", "MET", "NEXT", "NICE",
+  "NOW", "ON", "ONE", "OR", "OUT", "PLAY", "PRO", "REAL", "RUN", "SEE",
+  "SO", "TAP", "TELL", "TWO", "UP", "WELL", "WIN", "YOU",
 ]);
 
 // Finance-context cues that, immediately following an ambiguous-word symbol,
