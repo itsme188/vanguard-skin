@@ -16,6 +16,8 @@ import { mondayOf } from "@/lib/calendar/date-utils";
 import { getEarningsForWeekDeduped } from "@/lib/queries/calendar";
 import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
 import { getEarningsSettings, shouldSendEarningsEmail } from "@/lib/queries/earnings-settings";
+import { issuerSiblings } from "@/lib/securities/issuer-family";
+import type { CalendarEvent } from "@/lib/types";
 
 export const WRAP_THRESHOLD = 3;
 
@@ -28,15 +30,26 @@ export const SLOT_DEADLINES_ET: Record<WrapSlot, string> = {
   AMC: "20:00",
 };
 
-/** Same precedence as the cockpit's laneFor / the digest block's slotFor. */
+/**
+ * Same precedence family as the cockpit's laneFor (lib/queries/earnings-cockpit.ts):
+ * event_time marker, then release_time. Deliberately diverges on ONE point —
+ * laneFor never inspects title, so it can't collide with a ticker; this adds
+ * a title fallback but matches ONLY the phrases "BEFORE MARKET" / "AFTER
+ * MARKET" (never bare "BMO"/"AMC" substrings), because a bare-token scan
+ * classified Bank of Montreal's "BMO earnings (After Market Close)" as BMO
+ * from the ticker sitting in the headline, not the actual release slot.
+ */
 export function wrapSlotFor(e: {
   event_time: string | null;
   title: string | null;
   release_time: string | null;
 }): WrapSlot | null {
-  const marker = `${e.event_time ?? ""} ${e.title ?? ""}`.toUpperCase();
-  if (marker.includes("BMO") || marker.includes("BEFORE MARKET")) return "BMO";
-  if (marker.includes("AMC") || marker.includes("AFTER MARKET")) return "AMC";
+  const marker = (e.event_time ?? "").trim().toUpperCase();
+  if (marker === "BMO") return "BMO";
+  if (marker === "AMC") return "AMC";
+  const title = (e.title ?? "").toUpperCase();
+  if (title.includes("BEFORE MARKET")) return "BMO";
+  if (title.includes("AFTER MARKET")) return "AMC";
   if (e.release_time) return e.release_time < "12:00" ? "BMO" : "AMC";
   return null; // TBD — never clusters
 }
@@ -47,6 +60,30 @@ export interface WrapClusterMember {
   releaseTime: string | null;
   /** Recap-ready: actual captured AND enrichment stamped complete. */
   ready: boolean;
+}
+
+/**
+ * Collapse rows whose symbols share an issuer family (e.g. a GOOG row from
+ * one source and a GOOGL row from another for the same print) down to one
+ * survivor. `getEarningsForWeekDeduped` partitions by UPPER(symbol), so
+ * cross-source dual-class duplicates for the SAME earnings event survive
+ * that pass and would otherwise double-count toward WRAP_THRESHOLD. Mirrors
+ * `dedupeCrossSourceRows` (lib/calendar/enrichment-runner.ts): finnhub wins
+ * over other sources, ties broken by lowest event id.
+ */
+function dedupeByFamily(events: CalendarEvent[]): CalendarEvent[] {
+  const rank = (e: CalendarEvent) => (e.source === "finnhub" ? 0 : 1);
+  const keyOf = (e: CalendarEvent) =>
+    [...issuerSiblings(e.symbol ?? "")].map((s) => s.toUpperCase()).sort().join(",");
+  const winners = new Map<string, CalendarEvent>();
+  for (const e of events) {
+    const key = keyOf(e);
+    const cur = winners.get(key);
+    if (!cur || rank(e) < rank(cur) || (rank(e) === rank(cur) && e.id < cur.id)) {
+      winners.set(key, e);
+    }
+  }
+  return events.filter((e) => winners.get(keyOf(e)) === e);
 }
 
 export function getExpectedRecapCluster(
@@ -78,20 +115,20 @@ export function getExpectedRecapCluster(
     ).all(...ids) as { event_id: number }[]).map((r) => r.event_id),
   );
 
-  return events
-    .filter((e) => {
-      const st = status[e.symbol!.toUpperCase()];
-      if (st !== "held" && st !== "watchlist") return false;
-      if (sentRecaps.has(e.id) || skipped.has(e.id)) return false;
-      if (!shouldSendEarningsEmail(settings, e.symbol!)) return false;
-      return true;
-    })
-    .map((e) => ({
-      eventId: e.id,
-      symbol: e.symbol!.toUpperCase(),
-      releaseTime: e.release_time ?? null,
-      ready: e.actual_value != null && e.enriched_at != null,
-    }));
+  const filtered = events.filter((e) => {
+    const st = status[e.symbol!.toUpperCase()];
+    if (st !== "held" && st !== "watchlist") return false;
+    if (sentRecaps.has(e.id) || skipped.has(e.id)) return false;
+    if (!shouldSendEarningsEmail(settings, e.symbol!)) return false;
+    return true;
+  });
+
+  return dedupeByFamily(filtered).map((e) => ({
+    eventId: e.id,
+    symbol: e.symbol!.toUpperCase(),
+    releaseTime: e.release_time ?? null,
+    ready: e.actual_value != null && e.enriched_at != null,
+  }));
 }
 
 export function etHHMM(now: Date): string {
