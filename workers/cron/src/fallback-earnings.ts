@@ -73,7 +73,12 @@ import {
   type CloudEnrichedPayload,
 } from "./cloud-enriched";
 import { isPlausibleEarnings } from "./plausibility";
-import { formatEtTimestamp } from "./dst";
+import {
+  formatEtTimestamp,
+  getCurrentETHour,
+  getCurrentETMinute,
+  todayET,
+} from "./dst";
 
 // Issuer-family map mirrored from lib/securities/issuer-family.ts. Worker
 // can't cross the Next.js path-alias boundary, so this is a hand copy.
@@ -190,6 +195,389 @@ const KV_PROBE_WINDOW_MS = 16 * 60 * 60 * 1000;
 // read, the IBKR live refresh, and recap-road-2 KV probes.
 const MAX_CANDIDATES_PER_RUN = 5;
 
+// ── EOD earnings wrap (#17 T4 — Worker mirror of lib/earnings/wrap.ts) ─────────
+//
+// When ≥ WRAP_THRESHOLD expected-unsent recaps share a (date, slot), the Worker
+// staples them into ONE email instead of N individual recap sends. The wrap
+// fires when every cluster member has reported OR the slot deadline passes with
+// ≥1 report. This is the cloud mirror of the Mac's lib/earnings/wrap.ts +
+// wrap-send.ts — the Worker has no claim table, so its dedup is the KV marker
+// system (mac-sent / cloud-sent / mac-running), not the earnings_emails claim
+// mutex.
+
+export const WRAP_THRESHOLD = 3;
+
+export type WrapSlot = "BMO" | "AMC";
+const WRAP_SLOTS: WrapSlot[] = ["BMO", "AMC"];
+
+// Parity with lib/earnings/wrap.ts::SLOT_DEADLINES_ET (user-set 2026-07-16): the
+// wrap fires no later than these ET wall-clock times. Keep BOTH files in sync.
+export const SLOT_DEADLINES_ET: Record<WrapSlot, string> = {
+  BMO: "12:00",
+  AMC: "20:00",
+};
+
+/**
+ * Slot classification mirroring lib/earnings/wrap.ts::wrapSlotFor EXACTLY —
+ * FIXED precedence: event_time exact "BMO"/"AMC" (after trim+uppercase) →
+ * title PHRASE "BEFORE MARKET"/"AFTER MARKET" only (never a bare "BMO"/"AMC"
+ * substring — a ticker like Bank of Montreal collides) → release_time < "12:00".
+ * Returns null for a TBD slot (never clusters).
+ */
+export function wrapSlotForCloud(e: {
+  event_time?: unknown;
+  title?: unknown;
+  release_time?: unknown;
+}): WrapSlot | null {
+  const marker = String(e.event_time ?? "").trim().toUpperCase();
+  if (marker === "BMO") return "BMO";
+  if (marker === "AMC") return "AMC";
+  const title = String(e.title ?? "").toUpperCase();
+  if (title.includes("BEFORE MARKET")) return "BMO";
+  if (title.includes("AFTER MARKET")) return "AMC";
+  const rt = e.release_time;
+  if (typeof rt === "string" && rt) return rt < "12:00" ? "BMO" : "AMC";
+  return null;
+}
+
+/**
+ * Has the slot's ET wall-clock deadline passed? Uses the file's existing ET
+ * helpers (getCurrentETHour / getCurrentETMinute) so the comparison is a plain
+ * minute-of-day one — no "24:00" string edge case. Mirrors the semantics of
+ * lib/earnings/wrap.ts::slotDeadlinePassed (>= deadline).
+ */
+export function cloudSlotDeadlinePassed(slot: WrapSlot, now: Date): boolean {
+  const [dh, dm] = SLOT_DEADLINES_ET[slot].split(":").map((n) => parseInt(n, 10));
+  const minuteOfDay = getCurrentETHour(now) * 60 + getCurrentETMinute(now);
+  return minuteOfDay >= dh * 60 + dm;
+}
+
+interface WrapMember {
+  eventId: number;
+  symbol: string;
+  event: CalendarEventRow;
+  releaseTime: string | null;
+  /** Reported: a non-deferred actual exists in the snapshot row OR its KV payload. */
+  ready: boolean;
+  /** Same-day cloud-enriched KV payload (B8 road-2 source), when present. */
+  payload: CloudEnrichedPayload | null;
+}
+
+/**
+ * Collapse rows whose symbols share an issuer family down to one survivor —
+ * mirrors lib/earnings/wrap.ts::dedupeByFamily (finnhub wins, ties → lowest id).
+ * getEarningsForWeekDeduped-style symbol partitioning on the Mac leaves
+ * cross-source dual-class duplicates (GOOG + GOOGL for the same print) that
+ * would otherwise double-count toward WRAP_THRESHOLD.
+ */
+function dedupeClusterByFamily(events: CalendarEventRow[]): CalendarEventRow[] {
+  const rank = (e: CalendarEventRow) => (e.source === "finnhub" ? 0 : 1);
+  const keyOf = (e: CalendarEventRow) =>
+    issuerSiblings((e.symbol as string) ?? "")
+      .map((s) => s.toUpperCase())
+      .sort()
+      .join(",");
+  const winners = new Map<string, CalendarEventRow>();
+  for (const e of events) {
+    const key = keyOf(e);
+    const cur = winners.get(key);
+    if (!cur || rank(e) < rank(cur) || (rank(e) === rank(cur) && e.id < cur.id)) {
+      winners.set(key, e);
+    }
+  }
+  return events.filter((e) => winners.get(keyOf(e)) === e);
+}
+
+/**
+ * The expected-unsent recap cluster for one (date, slot), from the snapshot:
+ * earnings rows for today (ET) in the slot, held/watchlist family-aware, not
+ * superseded, not muted, without a completed/sent-by-cloud recap audit row,
+ * family-deduped. Readiness (a reported actual) is resolved from the snapshot
+ * row or its same-day cloud-enriched KV payload.
+ *
+ * SKIPS DIVERGENCE: the R2 snapshot does NOT ship earnings_email_skips (a
+ * Mac-only table), so a per-(event,phase) recap skip can't be honored here.
+ * Accepted (do NOT add snapshot fields): a Mac-side skip already suppresses the
+ * Mac path, and the per-event mac-sent marker check in runSlotWrapSend covers
+ * the overlap once the Mac acts.
+ */
+async function buildWrapCluster(
+  snapshot: Snapshot,
+  slot: WrapSlot,
+  date: string,
+  now: Date,
+  kv: KVNamespace,
+): Promise<WrapMember[]> {
+  const nowMs = now.getTime();
+  const heldSet = new Set(snapshot.heldSymbols.map((s) => s.toUpperCase()));
+  const watchSet = new Set(
+    (snapshot.watchlistSymbols ?? []).map((s) => s.toUpperCase()),
+  );
+  const muted = new Set(
+    (snapshot.earningsSettings?.mutedSymbols ?? []).map((s) => s.toUpperCase()),
+  );
+  // Completed local send (error IS NULL) or sent-by-cloud rows suppress the
+  // wrap; a live 'in_progress' claim does NOT — nothing delivered yet.
+  const auditedRecap = new Set(
+    (snapshot.earningsEmails ?? [])
+      .filter((r) => r.phase === "recap" && r.error !== "in_progress")
+      .map((r) => r.event_id),
+  );
+
+  const raw: CalendarEventRow[] = [];
+  for (const e of snapshot.calendarEvents) {
+    if (e.event_type !== "earnings") continue;
+    if (!e.symbol) continue;
+    if (e.superseded) continue;
+    if (e.event_date !== date) continue;
+    if (wrapSlotForCloud(e) !== slot) continue;
+    const family = issuerSiblings(e.symbol).map((s) => s.toUpperCase());
+    if (!family.some((f) => heldSet.has(f) || watchSet.has(f))) continue;
+    if (family.some((f) => muted.has(f))) continue;
+    if (auditedRecap.has(e.id)) continue;
+    raw.push(e);
+  }
+
+  const members: WrapMember[] = [];
+  for (const e of dedupeClusterByFamily(raw)) {
+    const snapshotActual = (e.actual_value as string | null) ?? null;
+    let payload: CloudEnrichedPayload | null = null;
+    if (snapshotActual == null) {
+      // Probe the same-day cloud-enriched KV payload (B8 road-2 source) for an
+      // actual — bounded to the release band so KV reads stay cheap.
+      const rt = typeof e.release_time === "string" ? e.release_time : null;
+      const releaseInstant = rt ? composeReleaseInstant(e.event_date, rt) : null;
+      if (releaseInstant) {
+        const sinceRelease = nowMs - releaseInstant.getTime();
+        if (sinceRelease >= 0 && sinceRelease <= KV_PROBE_WINDOW_MS) {
+          try {
+            const rawPayload = await kv.get(cloudEnrichedKey(e.id));
+            if (rawPayload) payload = JSON.parse(rawPayload) as CloudEnrichedPayload;
+          } catch (err) {
+            console.warn(
+              `[fallback-earnings] wrap KV probe failed for event ${e.id}:`,
+              err,
+            );
+          }
+        }
+      }
+    }
+    const ready =
+      snapshotActual != null || (payload?.actual != null && payload?.deferred !== true);
+    members.push({
+      eventId: e.id,
+      symbol: (e.symbol as string).toUpperCase(),
+      event: e,
+      releaseTime: typeof e.release_time === "string" ? e.release_time : null,
+      ready,
+      payload,
+    });
+  }
+  return members;
+}
+
+/**
+ * Send (or hold) one slot's wrap. Marker dance drops already-delivered / mid-send
+ * members; fire when all remaining reported OR the deadline passed with ≥1
+ * report; staple the reported members that pass the B8 safety gate (closest
+ * releases first, capped at MAX_CANDIDATES_PER_RUN), send ONE email, write a
+ * cloud-sent marker per STAPLED member only. Not-reported members at the
+ * deadline become a "Still waiting on actuals" line (no marker).
+ */
+async function runSlotWrapSend(
+  env: FallbackEnv,
+  snapshot: Snapshot,
+  slot: WrapSlot,
+  date: string,
+  members: WrapMember[],
+  now: Date,
+  liveIbkr: LiveIbkrPosition[] | null,
+  ibkrAccountName: string,
+  dryRun: boolean,
+  result: EarningsFallbackResult,
+): Promise<void> {
+  result.swept += members.length;
+
+  const pushSkip = (m: WrapMember, reason: string) => {
+    result.skipped++;
+    result.details.push({
+      eventId: m.eventId,
+      symbol: m.symbol,
+      phase: "recap",
+      status: "skipped",
+      reason,
+    });
+  };
+
+  // Marker dance — a member already delivered (mac/cloud) or mid-send
+  // (mac-running) drops out of the staple. All dropped ⇒ nothing to wrap.
+  const remaining: WrapMember[] = [];
+  for (const m of members) {
+    const markers = await readEarningsMarkers(env.CRON_KV, "recap", m.eventId);
+    if (markers.mac || markers.cloud || markers.macRunning) {
+      pushSkip(
+        m,
+        markers.cloud ? "cloud-already-sent" : markers.mac ? "mac-already-sent" : "mac-running",
+      );
+      continue;
+    }
+    remaining.push(m);
+  }
+  if (remaining.length === 0) return;
+
+  const reported = remaining.filter((m) => m.ready);
+  const notReported = remaining.filter((m) => !m.ready);
+
+  // Fire when every remaining member has reported, OR the slot deadline passed
+  // with ≥1 report (never an empty wrap). Otherwise keep waiting — the members
+  // stay suppressed from individual sends this tick.
+  const fire =
+    reported.length >= 1 &&
+    (notReported.length === 0 || cloudSlotDeadlinePassed(slot, now));
+  if (!fire) {
+    for (const m of remaining) pushSkip(m, "wrap-pending");
+    return;
+  }
+
+  // Only reported members whose recap content passes the B8 safety gate are
+  // stapleable; the rest can't be rendered (skip markerless so the Mac's
+  // individual recap can retry once it is back).
+  const byRelease = (a: WrapMember, b: WrapMember) =>
+    (a.releaseTime ?? "99:99").localeCompare(b.releaseTime ?? "99:99") ||
+    a.symbol.localeCompare(b.symbol);
+  const gated = reported
+    .map((m) => ({ m, verdict: evaluateRecapContent(m.event, m.payload ?? null) }))
+    .sort((a, b) => byRelease(a.m, b.m));
+  const stapleable = gated.filter(
+    (g): g is { m: WrapMember; verdict: { send: true; implausible: boolean } } =>
+      g.verdict.send,
+  );
+  for (const g of gated) {
+    if (!g.verdict.send) pushSkip(g.m, g.verdict.reason);
+  }
+
+  // B13 cap: staple the 5 closest releases; defer the rest markerless so the
+  // next tick retries them (mirrors the individual-candidate cap).
+  const stapled = stapleable.slice(0, MAX_CANDIDATES_PER_RUN);
+  const deferred = stapleable.slice(MAX_CANDIDATES_PER_RUN);
+  if (deferred.length > 0) {
+    console.warn(
+      `[fallback-earnings] wrap cap: stapling ${stapled.length} of ${stapleable.length} ${slot} recaps, deferring ${deferred.length} to next tick`,
+    );
+    for (const g of deferred) pushSkip(g.m, "deferred-cap");
+  }
+  if (stapled.length === 0) return; // nothing renderable → no email, no markers
+
+  if (dryRun) {
+    for (const g of stapled) {
+      result.sent++;
+      result.details.push({
+        eventId: g.m.eventId,
+        symbol: g.m.symbol,
+        phase: "recap",
+        status: "sent",
+        reason: "dry-run",
+      });
+    }
+    for (const m of notReported) pushSkip(m, "wrap-still-waiting");
+    return;
+  }
+
+  if (!env.BRIEFING_EMAIL_TO || !env.RESEND_API_KEY || !env.RESEND_FROM_DOMAIN) {
+    for (const g of stapled) {
+      result.failed++;
+      result.lastError = "BRIEFING_EMAIL_TO / RESEND_* missing";
+      result.details.push({
+        eventId: g.m.eventId,
+        symbol: g.m.symbol,
+        phase: "recap",
+        status: "failed",
+        reason: result.lastError,
+      });
+    }
+    for (const m of notReported) pushSkip(m, "wrap-still-waiting");
+    return;
+  }
+
+  // Staple: a `# {SYM}` section per stapled member, reusing the same per-name
+  // renderer the individual recap path uses.
+  const memberSections = stapled.map((g) => {
+    const family = issuerSiblings(g.m.symbol);
+    const snapshotViews = resolvePositions(snapshot, family);
+    const positions = combineFamilyPositions(
+      snapshotViews,
+      liveIbkr,
+      family,
+      ibkrAccountName,
+    );
+    const cand: SnapshotCandidate = {
+      eventId: g.m.eventId,
+      symbol: g.m.symbol,
+      phase: "recap",
+      event: g.m.event,
+      payload: g.m.payload ?? null,
+    };
+    const rendered = renderCandidateSections(
+      snapshot,
+      cand,
+      positions,
+      liveIbkr !== null,
+      g.verdict.implausible,
+    );
+    return `# ${g.m.symbol}\n\n${rendered.sections}`;
+  });
+  const waitingLine =
+    notReported.length > 0
+      ? `\n\n*Still waiting on actuals: ${notReported
+          .map((m) => m.symbol)
+          .sort()
+          .join(", ")}*`
+      : "";
+  const body = `${memberSections.join("\n\n")}${waitingLine}`;
+  const title = `Earnings wrap — ${slot} ${date}`;
+  const footer = `Cloud EOD earnings wrap (state snapshot ${snapshot.snapshotDate}) — ${stapled.length} ${slot} name${stapled.length === 1 ? "" : "s"} stapled into one email because the Mac was offline. Analyst recs, transcripts, and sell-side web-search are only in the Mac primary version.`;
+  const html = briefingToHtml(body, title, footer);
+
+  try {
+    await sendEmail(env, {
+      to: env.BRIEFING_EMAIL_TO,
+      subject: `\u{1F4CA} Earnings wrap — ${slot} ${date} (${stapled.length} names)`,
+      html,
+      fromLocalPart: "earnings",
+    });
+  } catch (err) {
+    // Send failed — write NO markers so the next tick retries the whole wrap.
+    result.lastError = err instanceof Error ? err.message : String(err);
+    for (const g of stapled) {
+      result.failed++;
+      result.details.push({
+        eventId: g.m.eventId,
+        symbol: g.m.symbol,
+        phase: "recap",
+        status: "failed",
+        reason: result.lastError,
+      });
+    }
+    for (const m of notReported) pushSkip(m, "wrap-still-waiting");
+    return;
+  }
+
+  // Per-stapled-member cloud-sent marker (stapled members ONLY — never the
+  // still-waiting names, which have no delivered recap yet).
+  for (const g of stapled) {
+    await writeEarningsMarker(env.CRON_KV, "cloud", "recap", g.m.eventId);
+    result.sent++;
+    result.details.push({
+      eventId: g.m.eventId,
+      symbol: g.m.symbol,
+      phase: "recap",
+      status: "sent",
+      reason: "wrapped",
+    });
+  }
+  for (const m of notReported) pushSkip(m, "wrap-still-waiting");
+}
+
 /**
  * B13 priority order under the cap: previews first, closest release first,
  * recaps last. Rationale: the Worker preview window is one tick wide
@@ -237,7 +625,23 @@ export async function runEarningsFallback(
   }
 
   const now = opts.now ?? new Date();
-  const scan = await findCandidatesFromSnapshot(snapshot, now, env.CRON_KV);
+  const date = todayET(now);
+
+  // EOD wrap (#17 T4): build per-slot expected-recap clusters. A slot at/over
+  // WRAP_THRESHOLD is in WRAP MODE — its recap members are stapled into ONE
+  // email and suppressed from individual recap sends this tick (whether or not
+  // the staple actually fires — a not-yet-ready cluster still waits together).
+  const wrapBySlot = new Map<WrapSlot, WrapMember[]>();
+  const suppressedRecapIds = new Set<number>();
+  for (const slot of WRAP_SLOTS) {
+    const cluster = await buildWrapCluster(snapshot, slot, date, now, env.CRON_KV);
+    if (cluster.length >= WRAP_THRESHOLD) {
+      wrapBySlot.set(slot, cluster);
+      for (const m of cluster) suppressedRecapIds.add(m.eventId);
+    }
+  }
+
+  const scan = await findCandidatesFromSnapshot(snapshot, now, env.CRON_KV, suppressedRecapIds);
   const prioritized = prioritizeCandidates(scan.candidates, now);
   result.swept = prioritized.length; // ALL discovered candidates, incl. deferred
   for (const s of scan.skips) {
@@ -263,7 +667,7 @@ export async function runEarningsFallback(
       });
     }
   }
-  if (candidates.length === 0) return result;
+  if (candidates.length === 0 && wrapBySlot.size === 0) return result;
 
   // Tier 3 — live IBKR refresh. The snapshot's IBKR rows can be days stale while
   // the Mac is asleep (travel), so an earnings email might show a position the
@@ -352,6 +756,23 @@ export async function runEarningsFallback(
     }
   }
 
+  // EOD wrap sends — after the individual loop so liveIbkr is fetched once and
+  // reused. Each wrap-mode slot staples its ready recap members into one email.
+  for (const [slot, members] of wrapBySlot) {
+    await runSlotWrapSend(
+      env,
+      snapshot,
+      slot,
+      date,
+      members,
+      now,
+      liveIbkr,
+      ibkrAccountName,
+      opts.dryRun ?? false,
+      result,
+    );
+  }
+
   return result;
 }
 
@@ -359,6 +780,10 @@ async function findCandidatesFromSnapshot(
   snapshot: Snapshot,
   now: Date,
   kv: KVNamespace,
+  // Recap event ids claimed by a wrap-mode cluster (#17 T4) — their individual
+  // recap sends are suppressed (road-1 AND road-2), and road-2's KV probe is
+  // skipped so the wrap owns the only read. Defaults empty → no behavior change.
+  suppressedRecapIds: Set<number> = new Set(),
 ): Promise<{ candidates: SnapshotCandidate[]; skips: ScanSkip[] }> {
   const nowMs = now.getTime();
   const heldSet = new Set(snapshot.heldSymbols.map((s) => s.toUpperCase()));
@@ -418,6 +843,8 @@ async function findCandidatesFromSnapshot(
     // an actual being present — evaluateRecapContent re-checks at send time
     // (belt-and-suspenders), but gating here keeps a no-actual row out of
     // `swept` entirely and reports it as a scan-level skip.
+    // Wrap mode owns this event's recap — never send it individually.
+    if (suppressedRecapIds.has(e.id)) continue;
     const enrichedAt = (e as Record<string, unknown>).enriched_at as string | null | undefined;
     const recapAudited = auditedSet.has(auditKey(e.id, "recap"));
     if (enrichedAt && !recapAudited) {
@@ -496,21 +923,13 @@ async function composeAndSend(
   // verbatim (prior behavior).
   const snapshotViews = resolvePositions(snapshot, family);
   const positions = combineFamilyPositions(snapshotViews, liveIbkr, family, ibkrAccountName);
-  const intelCtx = resolveIntelCtx(snapshot, cand.eventId, cand.symbol);
-  const scoreboard = renderScoreboard(cand.event, cand.phase, cand.payload ?? null, implausible, intelCtx);
-  const positionsBlock = renderPositions(positions, cand.symbol, family, liveIbkr !== null);
-  // "## Past prints" — preview-only, same slot as the Mac (right after the
-  // scoreboard). "" (no history / recap phase) drops out of the body below.
-  const pastPrintsBlock =
-    cand.phase === "preview" ? renderPastPrintsBlock(intelCtx?.history?.rows ?? []) : "";
-
-  // v5 — the user's own thesis notes + curated bogeys (consensus/whisper).
-  // These are the cheaply-mirrorable parts of the Mac's rich context, so the
-  // cloud email is no longer purely "numbers only".
-  const notes = resolveNotesForFamily(snapshot, family);
-  const bogeys = resolveBogeysForEvent(snapshot, cand.eventId);
-  const notesBlock = renderNotesBlock(notes, cand.symbol);
-  const bogeysBlock = renderBogeysBlock(bogeys);
+  const { sections, hasNotes, hasBogeys } = renderCandidateSections(
+    snapshot,
+    cand,
+    positions,
+    liveIbkr !== null,
+    implausible,
+  );
 
   const release = cand.event.release_time
     ? ` ${cand.event.release_time} ET`
@@ -520,23 +939,17 @@ async function composeAndSend(
   const dateLabel = formatDate(cand.event.event_date);
   const title = `${cand.symbol} ${phaseLabel} — ${dateLabel}${release}`;
 
-  // Bogeys (curated consensus/whisper) and the user's prior notes slot between
-  // the scoreboard and the limited-context note, mirroring the Mac composer's
-  // ordering. Empty blocks drop out.
-  const body = [
-    scoreboard,
-    pastPrintsBlock,
-    positionsBlock,
-    bogeysBlock,
-    notesBlock,
-    renderNote(cand.phase, { hasNotes: notes.length > 0, hasBogeys: bogeys.length > 0 }),
-  ]
+  // Sections (scoreboard → past prints → positions → bogeys → notes) plus the
+  // per-candidate cloud-context note. Empty blocks already dropped inside
+  // renderCandidateSections; sections is always non-empty (scoreboard renders
+  // unconditionally), so the join is byte-identical to the prior 6-block join.
+  const body = [sections, renderNote(cand.phase, { hasNotes, hasBogeys })]
     .filter((s) => s && s.trim().length > 0)
     .join("\n\n");
 
   const included: string[] = [];
-  if (bogeys.length > 0) included.push("your curated bogeys");
-  if (notes.length > 0) included.push("your prior notes");
+  if (hasBogeys) included.push("your curated bogeys");
+  if (hasNotes) included.push("your prior notes");
   const includedNote =
     included.length > 0 ? ` ${included.join(" + ")} ARE included above.` : "";
   const footer = `Cloud fallback delivery (state snapshot ${snapshot.snapshotDate}) — Mac was offline.${includedNote} Analyst recs, transcripts, and sell-side web-search are only in the Mac primary version.`;
@@ -548,6 +961,42 @@ async function composeAndSend(
     html,
     fromLocalPart: "earnings",
   });
+}
+
+/**
+ * The per-name markdown body (scoreboard → past prints → positions → bogeys →
+ * notes) for one candidate, shared by the individual recap/preview path
+ * (composeAndSend) and the EOD wrap staple (runSlotWrapSend). Excludes the
+ * trailing cloud-context note + email footer so the wrap can staple many
+ * sections under one footer. `positions` is resolved by the caller (each path
+ * combines snapshot + live-IBKR the same way).
+ */
+function renderCandidateSections(
+  snapshot: Snapshot,
+  cand: SnapshotCandidate,
+  positions: PositionView[],
+  ibkrLive: boolean,
+  implausible: boolean,
+): { sections: string; hasNotes: boolean; hasBogeys: boolean } {
+  const family = issuerSiblings(cand.symbol);
+  const intelCtx = resolveIntelCtx(snapshot, cand.eventId, cand.symbol);
+  const scoreboard = renderScoreboard(cand.event, cand.phase, cand.payload ?? null, implausible, intelCtx);
+  const positionsBlock = renderPositions(positions, cand.symbol, family, ibkrLive);
+  // "## Past prints" — preview-only, same slot as the Mac (right after the
+  // scoreboard). "" (no history / recap phase) drops out of the join below.
+  const pastPrintsBlock =
+    cand.phase === "preview" ? renderPastPrintsBlock(intelCtx?.history?.rows ?? []) : "";
+
+  // v5 — the user's own thesis notes + curated bogeys (consensus/whisper).
+  const notes = resolveNotesForFamily(snapshot, family);
+  const bogeys = resolveBogeysForEvent(snapshot, cand.eventId);
+  const notesBlock = renderNotesBlock(notes, cand.symbol);
+  const bogeysBlock = renderBogeysBlock(bogeys);
+
+  const sections = [scoreboard, pastPrintsBlock, positionsBlock, bogeysBlock, notesBlock]
+    .filter((s) => s && s.trim().length > 0)
+    .join("\n\n");
+  return { sections, hasNotes: notes.length > 0, hasBogeys: bogeys.length > 0 };
 }
 
 // ── Position resolution from snapshot ─────────────────────────────

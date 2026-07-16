@@ -119,11 +119,19 @@ export function shouldRunCalendarEnrich(
 /**
  * Gate for the earnings cloud-fallback sweep. Wider than the
  * calendar-enrich gate so the AMC-recap window (release at 16:15 → recap
- * at ~18:15) is covered. Window: Mon–Fri 05:00–20:00 ET (covers BMO
+ * at ~18:15) is covered. Window: Mon–Fri 05:00–20:59 ET (covers BMO
  * preview at 06:00 → AMC recap at 18:15+, plus hour of slack on either
  * side for clock skew). Outside this window the Mac sweep is also idle
  * (TWS market session is 09:30–16:00 + extended hours) so there's
  * nothing to fall back ON.
+ *
+ * Upper bound 20:59 ET (extended from 20:00, #17 T4 — same B8 18:00→18:59
+ * precedent): the EOD earnings wrap's AMC deadline is 20:00 ET
+ * (SLOT_DEADLINES_ET / cloudSlotDeadlinePassed in fallback-earnings.ts), so
+ * the 20:00 tick — when a not-all-reported AMC cluster fires at deadline —
+ * must be INSIDE the gate. A `<= 20 * 60` bound would fire the sweep at 20:00
+ * but starve the 20:15/20:30/20:45 ticks that a slightly-late deadline pass
+ * still needs.
  */
 export function shouldRunEarningsFallback(
   now: { hour: number; minute: number; dow: number } = {
@@ -134,7 +142,7 @@ export function shouldRunEarningsFallback(
 ): boolean {
   if (now.dow < 1 || now.dow > 5) return false;
   const minuteOfDay = now.hour * 60 + now.minute;
-  return minuteOfDay >= 5 * 60 && minuteOfDay <= 20 * 60;
+  return minuteOfDay >= 5 * 60 && minuteOfDay <= 20 * 60 + 59;
 }
 
 // ── Slot keys ───────────────────────────────────────────────────────
