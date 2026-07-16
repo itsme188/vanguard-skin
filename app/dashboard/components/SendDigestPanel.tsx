@@ -11,6 +11,12 @@ interface DigestStatus {
   lastDigestSentAt: string | null;
   lastBriefingSentAt: string | null;
   defaultRecipient: string | null;
+  /** Today's Worker cloud marker (null when the Mac sent or nothing sent). */
+  cloudDigestToday?: {
+    sentBy: "mac" | "cloud" | null;
+    sentAt?: string | null;
+    via?: "sent" | "attempting";
+  } | null;
 }
 
 export function SendDigestPanel({ onClose }: { onClose: () => void }) {
@@ -206,6 +212,11 @@ export function SendDigestPanel({ onClose }: { onClose: () => void }) {
         {!result && lastSent && (
           <span className="text-xs text-ink-faint">
             Last sent: {formatDate(lastSent)}
+            {emailType === "digest" && status?.cloudDigestToday?.via === "sent" && (
+              // Refers to TODAY'S DIGEST specifically — lastDigestSentAt is the
+              // shared window pointer and may show a later Mac-sent evening send.
+              <> · today&apos;s digest via cloud fallback</>
+            )}
           </span>
         )}
       </div>

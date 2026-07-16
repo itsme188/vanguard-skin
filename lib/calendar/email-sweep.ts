@@ -26,6 +26,7 @@ import {
   setEarningsRunningMarker,
   clearEarningsRunningMarker,
   writeMacSentEarningsMarker,
+  fetchCloudSentEarnings,
 } from "@/lib/cron/earnings-marker-check";
 import { composeReleaseInstant } from "./reaction-snapshot";
 import { sendPushover } from "@/lib/alerts/notify-pushover";
@@ -48,6 +49,8 @@ export interface SweepSummary {
   skipped: number;
   failed: number;
   recapAlerts: number;
+  /** Audit rows backfilled from cloud-sent KV markers this sweep (2026-07-15). */
+  cloudReconciled: number;
   results: SweepCandidateResult[];
 }
 
@@ -56,17 +59,56 @@ export interface SweepSummary {
  * the local audit table so (a) findEmailCandidates stops re-selecting the
  * event every tick and (b) the EarningsHub chips show it as sent.
  * ai_output_md stays NULL — the viewer knows there's no local copy.
+ *
+ * `sentAt` (ISO, from the KV marker value) preserves the Worker's real send
+ * time; SQLite's datetime() normalizes it to the space-separated format every
+ * other sent_at uses, and NULLs (malformed marker) fall back to now.
+ * Returns 1 when a row was inserted, 0 when one already existed.
  */
 function recordCloudSentAudit(
   db: Database.Database,
   eventId: number,
   phase: "preview" | "recap",
-): void {
-  db.prepare(
-    `INSERT INTO earnings_emails (event_id, phase, recipient, ai_output_md, error)
-     VALUES (?, ?, 'cloud-fallback', NULL, 'sent-by-cloud')
-     ON CONFLICT(event_id, phase) DO NOTHING`,
-  ).run(eventId, phase);
+  sentAt?: string | null,
+): number {
+  const result = db
+    .prepare(
+      `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, ai_output_md, error)
+       VALUES (?, ?, 'cloud-fallback', COALESCE(datetime(?), datetime('now')), NULL, 'sent-by-cloud')
+       ON CONFLICT(event_id, phase) DO NOTHING`,
+    )
+    .run(eventId, phase, sentAt ?? null);
+  return result.changes;
+}
+
+/**
+ * Backfill audit rows for every live cloud-sent marker, INCLUDING events
+ * whose send windows have closed — findEmailCandidates can't see those, so
+ * the per-candidate marker check in the sweep loop never reaches them. A
+ * marker whose event was deleted (calendar sync cleanup) fails the FK and is
+ * skipped without failing the sweep.
+ */
+async function reconcileCloudSentAudits(db: Database.Database): Promise<number> {
+  const sends = await fetchCloudSentEarnings();
+  let reconciled = 0;
+  for (const s of sends) {
+    if (s.phase !== "preview" && s.phase !== "recap") continue;
+    if (!Number.isInteger(s.eventId)) continue;
+    try {
+      reconciled += recordCloudSentAudit(db, s.eventId, s.phase, s.sentAt);
+    } catch (err) {
+      console.warn(
+        `[earnings-sweep] cloud-sent reconcile skipped event ${s.eventId} (${s.phase}):`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+  if (reconciled > 0) {
+    console.log(
+      `[earnings-sweep] backfilled ${reconciled} sent-by-cloud audit row(s) from Worker markers`,
+    );
+  }
+  return reconciled;
 }
 
 export async function runEarningsEmailSweep(
@@ -83,6 +125,10 @@ export async function runEarningsEmailSweep(
       `[earnings-sweep] reaped ${reaped} stale in-progress claim(s) from a dead process`,
     );
   }
+
+  // Drain cloud-sent markers into audit rows BEFORE candidate selection so a
+  // freshly-backfilled row excludes its event from this very tick's candidates.
+  const cloudReconciled = await reconcileCloudSentAudits(db);
 
   const candidates = findEmailCandidates(db, opts);
   const results: SweepCandidateResult[] = [];
@@ -158,6 +204,7 @@ export async function runEarningsEmailSweep(
     skipped: results.filter((r) => r.skipped).length,
     failed: results.filter((r) => !r.ok).length,
     recapAlerts,
+    cloudReconciled,
     results,
   };
 }

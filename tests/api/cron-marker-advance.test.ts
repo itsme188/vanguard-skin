@@ -29,7 +29,14 @@ vi.mock("@/lib/db", () => ({ db: testDb }));
 vi.mock("@/lib/cron/marker-check", async (importOriginal) => {
   const mod =
     await importOriginal<typeof import("@/lib/cron/marker-check")>();
-  return { ...mod, checkCloudMarker: vi.fn() };
+  return {
+    ...mod,
+    checkCloudMarker: vi.fn(),
+    reconcileRecentCloudSends: vi.fn(async () => ({
+      advanced: false,
+      confirmedCloudSends: 0,
+    })),
+  };
 });
 
 vi.mock("@/lib/cron/running-marker", () => ({
@@ -57,7 +64,10 @@ vi.mock("@/lib/calendar/market-holidays", () => ({
   isMarketClosed: vi.fn(() => false),
 }));
 
-import { checkCloudMarker } from "@/lib/cron/marker-check";
+import {
+  checkCloudMarker,
+  reconcileRecentCloudSends,
+} from "@/lib/cron/marker-check";
 import {
   getLastDigestSentAt,
   setLastDigestSentAt,
@@ -130,6 +140,36 @@ describe.each([
       await post(req());
       // Current marker (18:00) is later than the cloud sentAt (13:01) — must not regress.
       expect(getLastDigestSentAt(testDb)).toBe("2026-06-09T18:00:00.000Z");
+    });
+
+    it("skips on an in-flight cloud attempt WITHOUT advancing the pointer", async () => {
+      // via=attempting means the fallback may still fail — advancing past its
+      // start would drop the articles it never summarized (2026-07-15).
+      setLastDigestSentAt(testDb, "2026-06-04T12:45:00.000Z");
+      vi.mocked(checkCloudMarker).mockResolvedValue({
+        sentBy: "cloud",
+        date: "2026-06-09",
+        sentAt: "2026-06-09T13:00:05.000Z",
+        via: "attempting",
+      });
+      const res = await post(req());
+      const body = await res.json();
+      expect(body.skipped).toBe(true);
+      expect(getLastDigestSentAt(testDb)).toBe("2026-06-04T12:45:00.000Z");
+    });
+
+    it("runs the on-wake reconcile before the today-marker skip decision", async () => {
+      // A Mac awake at send time may have slept through YESTERDAY's cloud
+      // sends — the reconcile advances the window pointer before composing.
+      vi.mocked(reconcileRecentCloudSends).mockClear();
+      vi.mocked(checkCloudMarker).mockResolvedValue({
+        sentBy: null,
+        date: "2026-06-09",
+        sentAt: null,
+      });
+      await post(req());
+      expect(reconcileRecentCloudSends).toHaveBeenCalledTimes(1);
+      expect(reconcileRecentCloudSends).toHaveBeenCalledWith(testDb);
     });
   }
 );

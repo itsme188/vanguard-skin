@@ -39,11 +39,16 @@ const checkMarker = vi.fn(async (..._args: unknown[]) => null as { sentBy: strin
 const setRunning = vi.fn(async (..._args: unknown[]) => null);
 const clearRunning = vi.fn(async (..._args: unknown[]) => null);
 const writeSent = vi.fn(async (..._args: unknown[]) => null);
+const fetchCloudSent = vi.fn(
+  async (..._args: unknown[]) =>
+    [] as { phase: "preview" | "recap"; eventId: number; sentAt: string | null }[],
+);
 vi.mock("@/lib/cron/earnings-marker-check", () => ({
   checkEarningsCloudMarker: (...a: unknown[]) => checkMarker(...a),
   setEarningsRunningMarker: (...a: unknown[]) => setRunning(...a),
   clearEarningsRunningMarker: (...a: unknown[]) => clearRunning(...a),
   writeMacSentEarningsMarker: (...a: unknown[]) => writeSent(...a),
+  fetchCloudSentEarnings: (...a: unknown[]) => fetchCloudSent(...a),
 }));
 
 const pushover = vi.fn(async (..._args: unknown[]) => ({ sent: true }));
@@ -119,6 +124,106 @@ describe("runEarningsEmailSweep marker dance", () => {
     setRunning.mockClear();
     clearRunning.mockClear();
     writeSent.mockClear();
+    fetchCloudSent.mockClear();
+    fetchCloudSent.mockResolvedValue([]);
+  });
+
+  // ── Cloud-sent audit reconcile (2026-07-15) ─────────────────────────────
+  //
+  // Worker preview/recap sends write only cloud-sent-earnings-{phase}-{id}
+  // KV markers. Pre-fix, the ONLY path that turned a marker into a local
+  // earnings_emails row was the per-candidate check above — which requires
+  // the event to still be inside findEmailCandidates' windows. A preview
+  // cloud-sent while the Mac slept vanished from the audit trail once the
+  // window closed (observed 7/14): no EarningsHub chip, no viewer entry, and
+  // the audit lost the send when the KV TTL expired.
+
+  it("backfills a sent-by-cloud audit row for a cloud send whose window has closed", async () => {
+    // Event released YESTERDAY — outside the preview window, so
+    // findEmailCandidates will not select it.
+    const eventId = seedHeldPreviewCandidate(db, "JPM");
+    db.prepare("UPDATE calendar_events SET event_date = '2026-05-31' WHERE id = ?").run(eventId);
+
+    fetchCloudSent.mockResolvedValue([
+      { phase: "preview", eventId, sentAt: "2026-05-31T10:00:12.000Z" },
+    ]);
+
+    const summary = await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(summary.cloudReconciled).toBe(1);
+    expect(sendPreview).not.toHaveBeenCalled();
+
+    const audit = db
+      .prepare(
+        "SELECT recipient, sent_at, ai_output_md, error FROM earnings_emails WHERE event_id = ? AND phase = 'preview'",
+      )
+      .get(eventId) as
+      | { recipient: string; sent_at: string; ai_output_md: string | null; error: string }
+      | undefined;
+    expect(audit?.error).toBe("sent-by-cloud");
+    expect(audit?.recipient).toBe("cloud-fallback");
+    expect(audit?.ai_output_md).toBeNull();
+    // The marker's real send time, not "now" — stored in SQLite's space-
+    // separated datetime format like every other sent_at.
+    expect(audit?.sent_at).toBe("2026-05-31 10:00:12");
+  });
+
+  it("reconcile is idempotent — the same marker on the next tick adds nothing", async () => {
+    const eventId = seedHeldPreviewCandidate(db, "GS");
+    db.prepare("UPDATE calendar_events SET event_date = '2026-05-31' WHERE id = ?").run(eventId);
+    fetchCloudSent.mockResolvedValue([
+      { phase: "preview", eventId, sentAt: "2026-05-31T10:00:12.000Z" },
+    ]);
+
+    await runEarningsEmailSweep(db, { now: NOW });
+    const second = await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(second.cloudReconciled).toBe(0);
+    const count = db
+      .prepare("SELECT COUNT(*) AS n FROM earnings_emails WHERE event_id = ?")
+      .get(eventId) as { n: number };
+    expect(count.n).toBe(1);
+  });
+
+  it("never overwrites an existing Mac audit row for the same (event, phase)", async () => {
+    const eventId = seedHeldPreviewCandidate(db, "BAC");
+    db.prepare("UPDATE calendar_events SET event_date = '2026-05-31' WHERE id = ?").run(eventId);
+    db.prepare(
+      `INSERT INTO earnings_emails (event_id, phase, recipient, ai_output_md, error)
+       VALUES (?, 'preview', 'user@example.com', '# Mac-composed preview', NULL)`,
+    ).run(eventId);
+
+    fetchCloudSent.mockResolvedValue([
+      { phase: "preview", eventId, sentAt: "2026-05-31T10:00:12.000Z" },
+    ]);
+
+    const summary = await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(summary.cloudReconciled).toBe(0);
+    const audit = db
+      .prepare("SELECT recipient, error FROM earnings_emails WHERE event_id = ?")
+      .get(eventId) as { recipient: string; error: string | null };
+    expect(audit.recipient).toBe("user@example.com");
+    expect(audit.error).toBeNull();
+  });
+
+  it("skips markers for events that no longer exist without failing the sweep", async () => {
+    const eventId = seedHeldPreviewCandidate(db, "WFC");
+    db.prepare("UPDATE calendar_events SET event_date = '2026-05-31' WHERE id = ?").run(eventId);
+
+    fetchCloudSent.mockResolvedValue([
+      { phase: "recap", eventId: 999999, sentAt: "2026-05-31T14:00:00.000Z" }, // deleted event
+      { phase: "preview", eventId, sentAt: "2026-05-31T10:00:12.000Z" },
+    ]);
+
+    const summary = await runEarningsEmailSweep(db, { now: NOW });
+
+    // The orphan marker is skipped; the real one still reconciles.
+    expect(summary.cloudReconciled).toBe(1);
+    const audit = db
+      .prepare("SELECT error FROM earnings_emails WHERE event_id = ?")
+      .get(eventId) as { error: string } | undefined;
+    expect(audit?.error).toBe("sent-by-cloud");
   });
 
   it("checks cloud marker, sets running, sends, writes mac-sent, clears running, in order", async () => {

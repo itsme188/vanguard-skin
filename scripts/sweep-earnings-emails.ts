@@ -19,6 +19,11 @@ import { runEarningsEmailSweep } from "../lib/calendar/email-sweep";
 
 async function main() {
   const summary = await runEarningsEmailSweep(db);
+  if (summary.cloudReconciled > 0) {
+    console.log(
+      `${new Date().toISOString()} — backfilled ${summary.cloudReconciled} sent-by-cloud audit row(s)`,
+    );
+  }
   if (summary.swept === 0) {
     console.log(`${new Date().toISOString()} — no email candidates`);
     return;

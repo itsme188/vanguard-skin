@@ -7,6 +7,7 @@ import {
 import {
   checkCloudMarker,
   advanceDigestMarkerAfterCloudSend,
+  reconcileRecentCloudSends,
 } from "@/lib/cron/marker-check";
 import {
   setRunningMarker,
@@ -67,11 +68,20 @@ export async function POST(request: Request) {
   }
 
   try {
+    // On-wake reconcile: advance last_digest_sent_at past any cloud sends the
+    // Mac slept through (e.g. this morning's cloud digest) BEFORE composing,
+    // so tonight's recap window starts where the reader's last email ended.
+    await reconcileRecentCloudSends(db);
+
     // Worker-side dedup: if the cloud fallback already delivered today's email,
     // don't regenerate. Gracefully no-ops when WORKER_MARKER_URL is unset.
     const marker = await checkCloudMarker("evening");
     if (marker?.sentBy === "cloud") {
-      advanceDigestMarkerAfterCloudSend(db, marker.sentAt);
+      // Confirmed sends only — an in-flight attempt (via="attempting") may
+      // still fail; advancing from it would drop its window's articles.
+      if (marker.via !== "attempting") {
+        advanceDigestMarkerAfterCloudSend(db, marker.sentAt);
+      }
       return Response.json({
         success: true,
         skipped: true,
