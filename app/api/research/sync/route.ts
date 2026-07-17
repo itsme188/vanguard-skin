@@ -3,6 +3,7 @@ import { isGmailConfigured, getGmailClient } from "@/lib/gmail/auth";
 import { fetchNewArticles, backfillArticleHtml, backfillSourceUrls } from "@/lib/gmail/fetch";
 import { processUnprocessedArticles } from "@/lib/gmail/process";
 import { extractLevelsFromNewArticles } from "@/lib/alerts/extract-newsletter-levels";
+import { extractBogeysFromNewArticles } from "@/lib/earnings/extract-newsletter-bogeys";
 import {
   reconcileCloudFetchedNewsletters,
   postMacRecentNewsletterSyncMarker,
@@ -122,6 +123,28 @@ export async function POST() {
             phase: "levels",
             status: "error",
             message: err instanceof Error ? err.message : "Level extraction failed",
+          });
+        }
+
+        // Phase 5: Extract earnings bogeys (EPS/rev consensus + whisper) for
+        // upcoming held/watchlist reporters from the same newly-processed
+        // articles. Same try/catch discipline as the levels step above — a
+        // bogey-extraction failure never fails the sync.
+        try {
+          send({ phase: "bogeys", status: "started" });
+          const bogeysResult = await extractBogeysFromNewArticles(db);
+          send({
+            phase: "bogeys",
+            status: "done",
+            articlesScanned: bogeysResult.articlesScanned,
+            bogeysStored: bogeysResult.bogeysStored,
+            eventsMatched: bogeysResult.eventsMatched,
+          });
+        } catch (err) {
+          send({
+            phase: "bogeys",
+            status: "error",
+            message: err instanceof Error ? err.message : "Bogey extraction failed",
           });
         }
 
