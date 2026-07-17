@@ -31,7 +31,12 @@ vi.mock("../src/pushover", () => ({
   sendPushover: vi.fn(async () => ({ sent: true, requestId: "req-1" })),
 }));
 
-import { runCloudFallback, isBenignEnrichOutcome, shouldRunCalendarEnrich } from "../src/calendar-enrich";
+import {
+  runCloudFallback,
+  isBenignEnrichOutcome,
+  shouldRunCalendarEnrich,
+  shouldRunEarningsFallback,
+} from "../src/calendar-enrich";
 import { loadLatestSnapshot } from "../src/state";
 import { fetchActualForEventCloud } from "../src/enrich-actuals";
 import { composeReleaseInstant } from "../src/reaction-matcher";
@@ -435,6 +440,25 @@ describe("shouldRunCalendarEnrich gate (B8: 18:59 upper bound for AMC reactions)
   it("stops at 19:00 ET and stays weekday-only", () => {
     expect(shouldRunCalendarEnrich({ hour: 19, minute: 0, dow: 3 })).toBe(false);
     expect(shouldRunCalendarEnrich({ hour: 18, minute: 30, dow: 6 })).toBe(false);
+  });
+});
+
+describe("shouldRunEarningsFallback gate (#17 T4: 20:59 upper bound for AMC wrap deadline)", () => {
+  it("runs at 20:30 ET on a weekday (the 20:00 AMC wrap deadline tick must be inside the gate)", () => {
+    expect(shouldRunEarningsFallback({ hour: 20, minute: 30, dow: 2 })).toBe(true);
+  });
+  it("runs at 20:00 and 20:59 ET on a weekday", () => {
+    expect(shouldRunEarningsFallback({ hour: 20, minute: 0, dow: 2 })).toBe(true);
+    expect(shouldRunEarningsFallback({ hour: 20, minute: 59, dow: 2 })).toBe(true);
+  });
+  it("does NOT run at 21:15 ET, and stays weekday-only", () => {
+    expect(shouldRunEarningsFallback({ hour: 21, minute: 15, dow: 2 })).toBe(false);
+    expect(shouldRunEarningsFallback({ hour: 20, minute: 30, dow: 6 })).toBe(false);
+    expect(shouldRunEarningsFallback({ hour: 20, minute: 30, dow: 0 })).toBe(false);
+  });
+  it("still gates the lower bound at 05:00 ET", () => {
+    expect(shouldRunEarningsFallback({ hour: 4, minute: 59, dow: 2 })).toBe(false);
+    expect(shouldRunEarningsFallback({ hour: 5, minute: 0, dow: 2 })).toBe(true);
   });
 });
 

@@ -969,6 +969,356 @@ describe("B13: per-run candidate cap", () => {
   });
 });
 
+// ── #17 T4: EOD earnings wrap (cloud mirror of lib/earnings/wrap.ts) ──────────
+//
+// A (date, AMC/BMO) cluster with ≥3 expected-unsent recaps is stapled into ONE
+// email instead of N individual recap sends. Fires when all members reported OR
+// the slot deadline passed (AMC 20:00 ET) with ≥1 report. Per-member cloud-sent
+// markers are written for stapled members only.
+
+describe("EOD earnings wrap (#17 T4)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (sendEmail as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "mock-email-id" });
+    vi.mocked(fetchLiveIbkrPositionsCached).mockResolvedValue([]);
+  });
+
+  const READY_ACTUAL = "EPS 1.60 · Rev 91000000000";
+
+  /** One AMC earnings row for EVENT_DATE. `actual`/`enriched_at` control readiness + individual-recap eligibility. */
+  function wrapEvent(o: {
+    id: number;
+    symbol: string;
+    release_time?: string;
+    actual?: string | null;
+    enriched_at?: string | null;
+    source?: string;
+  }): Record<string, unknown> {
+    return {
+      id: o.id,
+      week_of: EVENT_DATE,
+      event_date: EVENT_DATE,
+      event_type: "earnings",
+      title: `${o.symbol} earnings`,
+      description: null,
+      symbol: o.symbol,
+      event_time: "AMC",
+      release_time: o.release_time ?? "16:00",
+      expected_impact: "high",
+      source: o.source ?? "finnhub",
+      source_key: `finnhub:${o.symbol}:${EVENT_DATE}`,
+      raw_json: {},
+      enriched_at: o.enriched_at ?? null,
+      consensus_estimate: "EPS 1.50 · Rev 90000000000",
+      consensus_value: null,
+      actual_value: o.actual ?? null,
+      previous_value: null,
+      reaction_snapshot: null,
+    };
+  }
+
+  function wrapSnapshot(events: Record<string, unknown>[], held: string[]): Snapshot {
+    const snap = makeEarningsSnapshot() as unknown as {
+      calendarEvents: unknown[];
+      heldSymbols: string[];
+    };
+    snap.calendarEvents = events;
+    snap.heldSymbols = held;
+    return snap as unknown as Snapshot;
+  }
+
+  function subjectOfLastSend(): string {
+    const calls = (sendEmail as ReturnType<typeof vi.fn>).mock.calls;
+    return calls[calls.length - 1][1].subject as string;
+  }
+  function htmlOfLastSend(): string {
+    const calls = (sendEmail as ReturnType<typeof vi.fn>).mock.calls;
+    return calls[calls.length - 1][1].html as string;
+  }
+  const subjectsOfAllSends = () =>
+    (sendEmail as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[1].subject as string);
+
+  // 18:30 ET on EVENT_DATE — AMC deadline (20:00 ET) NOT passed.
+  const ALL_READY_NOW = new Date("2026-06-15T22:30:00Z");
+  // 20:15 ET on EVENT_DATE — past the AMC deadline.
+  const PAST_DEADLINE_NOW = new Date("2026-06-16T00:15:00Z");
+
+  it("clusters distinct families (GOOG/GOOGL count once) and staples one email at ≥3", async () => {
+    // 4 rows, but GOOG+GOOGL are one family → 3 members → wrap mode.
+    const events = [
+      wrapEvent({ id: 1, symbol: "GOOG", actual: READY_ACTUAL }),
+      wrapEvent({ id: 2, symbol: "GOOGL", actual: READY_ACTUAL }),
+      wrapEvent({ id: 3, symbol: "AAPL", actual: READY_ACTUAL }),
+      wrapEvent({ id: 4, symbol: "MSFT", actual: READY_ACTUAL }),
+    ];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      wrapSnapshot(events, ["GOOG", "AAPL", "MSFT"]),
+    );
+    const env = makeEnv();
+
+    const result = await runEarningsFallback(env, { now: ALL_READY_NOW });
+
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    expect(subjectOfLastSend()).toBe("\u{1F4CA} Earnings wrap — AMC 2026-06-15 (3 names)");
+    expect(result.sent).toBe(3);
+    // Per-member markers for the 3 surviving cluster members (GOOG wins the family).
+    expect(await env.CRON_KV.get("cloud-sent-earnings-recap-1")).not.toBeNull();
+    expect(await env.CRON_KV.get("cloud-sent-earnings-recap-3")).not.toBeNull();
+    expect(await env.CRON_KV.get("cloud-sent-earnings-recap-4")).not.toBeNull();
+    // GOOGL (id 2) was deduped OUT of the cluster — no marker.
+    expect(await env.CRON_KV.get("cloud-sent-earnings-recap-2")).toBeNull();
+  });
+
+  it("below threshold (2 families) → no wrap; individual recaps fire normally", async () => {
+    const now = new Date("2026-06-15T20:00:00Z"); // 16:00 ET
+    const events = [
+      wrapEvent({ id: 1, symbol: "AAPL", actual: READY_ACTUAL, enriched_at: "2026-06-15 19:45:00" }),
+      wrapEvent({ id: 2, symbol: "MSFT", actual: READY_ACTUAL, enriched_at: "2026-06-15 19:45:00" }),
+    ];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      wrapSnapshot(events, ["AAPL", "MSFT"]),
+    );
+
+    const result = await runEarningsFallback(makeEnv(), { now });
+
+    expect(sendEmail).toHaveBeenCalledTimes(2);
+    for (const s of subjectsOfAllSends()) expect(s).not.toMatch(/Earnings wrap/);
+    expect(result.sent).toBe(2);
+  });
+
+  it("suppresses individual recaps in wrap mode (3 road-1 recaps → one stapled email)", async () => {
+    const now = new Date("2026-06-15T20:00:00Z"); // 16:00 ET; all-ready → fires
+    // Every member is ALSO a road-1 individual recap candidate (enriched_at + actual).
+    const events = [
+      wrapEvent({ id: 1, symbol: "AAPL", actual: READY_ACTUAL, enriched_at: "2026-06-15 19:45:00" }),
+      wrapEvent({ id: 2, symbol: "MSFT", actual: READY_ACTUAL, enriched_at: "2026-06-15 19:45:00" }),
+      wrapEvent({ id: 3, symbol: "NVDA", actual: READY_ACTUAL, enriched_at: "2026-06-15 19:45:00" }),
+    ];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      wrapSnapshot(events, ["AAPL", "MSFT", "NVDA"]),
+    );
+
+    const result = await runEarningsFallback(makeEnv(), { now });
+
+    // Without suppression this would be 3 individual recap emails.
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    expect(subjectOfLastSend()).toContain("Earnings wrap — AMC");
+    expect(result.sent).toBe(3);
+  });
+
+  it("a member reported only via same-day KV payload counts as ready and is stapled", async () => {
+    const events = [
+      wrapEvent({ id: 1, symbol: "AAPL", actual: READY_ACTUAL }),
+      wrapEvent({ id: 2, symbol: "MSFT", actual: READY_ACTUAL }),
+      wrapEvent({ id: 3, symbol: "NVDA", actual: null }), // no snapshot actual — KV only
+    ];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      wrapSnapshot(events, ["AAPL", "MSFT", "NVDA"]),
+    );
+    const env = makeEnv();
+    await env.CRON_KV.put(
+      cloudEnrichedKey(3),
+      JSON.stringify({
+        eventId: 3,
+        source_key: "finnhub:NVDA:2026-06-15",
+        actual: READY_ACTUAL,
+        consensus: "EPS 1.50 · Rev 90000000000",
+        source: "finnhub",
+        reaction: { symbol: { delta_pct: 2.2 } },
+        fetchedAt: ALL_READY_NOW.toISOString(),
+      }),
+    );
+
+    const result = await runEarningsFallback(env, { now: ALL_READY_NOW });
+
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    expect(subjectOfLastSend()).toContain("(3 names)");
+    expect(result.sent).toBe(3);
+    expect(await env.CRON_KV.get("cloud-sent-earnings-recap-3")).not.toBeNull();
+  });
+
+  it("an actual-only KV payload (no reaction, before T+150 settle) is NOT ready — wrap holds pre-deadline (review fix #17 T4)", async () => {
+    // Same shape as the "counts as ready" test above, EXCEPT the KV payload
+    // carries an actual with NO reaction and is probed well before the T+150
+    // completeness settle. Pre-fix, `ready` only checked `payload.actual !=
+    // null`, so NVDA would count ready immediately and the wrap would fire
+    // ~2h early with NVDA's reaction column reading "—".
+    const release = composeReleaseInstant(EVENT_DATE, "16:00")!;
+    const now = new Date(release.getTime() + 60 * 60_000); // T+60min: well before T+150 settle, well before the 20:00 ET AMC deadline
+    const events = [
+      wrapEvent({ id: 1, symbol: "AAPL", actual: READY_ACTUAL }),
+      wrapEvent({ id: 2, symbol: "MSFT", actual: READY_ACTUAL }),
+      wrapEvent({ id: 3, symbol: "NVDA", actual: null }), // no snapshot actual — KV only
+    ];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      wrapSnapshot(events, ["AAPL", "MSFT", "NVDA"]),
+    );
+    const env = makeEnv();
+    await env.CRON_KV.put(
+      cloudEnrichedKey(3),
+      JSON.stringify({
+        eventId: 3,
+        source_key: "finnhub:NVDA:2026-06-15",
+        actual: READY_ACTUAL,
+        consensus: "EPS 1.50 · Rev 90000000000",
+        source: "finnhub",
+        reaction: null, // reaction not yet captured
+        fetchedAt: now.toISOString(),
+      }),
+    );
+
+    const result = await runEarningsFallback(env, { now });
+
+    // NVDA is not ready and the deadline hasn't passed → the whole cluster
+    // holds (AAPL/MSFT's individual road-1 candidacy is irrelevant here since
+    // neither has enriched_at set, but the wrap must not fire on 2-of-3).
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(result.sent).toBe(0);
+    expect(await env.CRON_KV.get("cloud-sent-earnings-recap-1")).toBeNull();
+    expect(await env.CRON_KV.get("cloud-sent-earnings-recap-3")).toBeNull();
+  });
+
+  it("an actual-only KV payload becomes ready once T+150 settle passes with no reaction ever arriving (review fix #17 T4)", async () => {
+    // Same payload as above (reaction: null) but probed AFTER the T+150
+    // completeness settle — isPayloadComplete's second branch (release ≥150min
+    // old) makes it ready even though no reaction ever showed up, matching
+    // road-2's individual-recap completeness bar exactly.
+    const release = composeReleaseInstant(EVENT_DATE, "16:00")!;
+    const now = new Date(release.getTime() + 150 * 60_000 + 60_000); // T+151min: past the settle
+    const events = [
+      wrapEvent({ id: 1, symbol: "AAPL", actual: READY_ACTUAL }),
+      wrapEvent({ id: 2, symbol: "MSFT", actual: READY_ACTUAL }),
+      wrapEvent({ id: 3, symbol: "NVDA", actual: null }),
+    ];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      wrapSnapshot(events, ["AAPL", "MSFT", "NVDA"]),
+    );
+    const env = makeEnv();
+    await env.CRON_KV.put(
+      cloudEnrichedKey(3),
+      JSON.stringify({
+        eventId: 3,
+        source_key: "finnhub:NVDA:2026-06-15",
+        actual: READY_ACTUAL,
+        consensus: "EPS 1.50 · Rev 90000000000",
+        source: "finnhub",
+        reaction: null,
+        fetchedAt: now.toISOString(),
+      }),
+    );
+
+    const result = await runEarningsFallback(env, { now });
+
+    // All 3 now ready (well before the 20:00 ET deadline — readiness alone
+    // drives the fire, not the deadline fallback).
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    expect(subjectOfLastSend()).toContain("(3 names)");
+    expect(result.sent).toBe(3);
+    expect(await env.CRON_KV.get("cloud-sent-earnings-recap-3")).not.toBeNull();
+  });
+
+  it("fires at the deadline with a still-waiting line and no marker for the waiting name", async () => {
+    const events = [
+      wrapEvent({ id: 1, symbol: "AAPL", actual: READY_ACTUAL }),
+      wrapEvent({ id: 2, symbol: "MSFT", actual: READY_ACTUAL }),
+      wrapEvent({ id: 3, symbol: "NVDA", actual: null }), // never reported
+    ];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      wrapSnapshot(events, ["AAPL", "MSFT", "NVDA"]),
+    );
+    const env = makeEnv();
+
+    const result = await runEarningsFallback(env, { now: PAST_DEADLINE_NOW });
+
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    expect(subjectOfLastSend()).toContain("(2 names)");
+    expect(htmlOfLastSend()).toContain("Still waiting on actuals: NVDA");
+    expect(result.sent).toBe(2);
+    expect(await env.CRON_KV.get("cloud-sent-earnings-recap-1")).not.toBeNull();
+    expect(await env.CRON_KV.get("cloud-sent-earnings-recap-2")).not.toBeNull();
+    // The still-waiting member gets NO marker — its recap can still land later.
+    expect(await env.CRON_KV.get("cloud-sent-earnings-recap-3")).toBeNull();
+  });
+
+  it("before the deadline with a not-reported member → holds (no send), individuals suppressed", async () => {
+    // AAPL + MSFT are road-1 individual candidates (enriched_at + actual); without
+    // wrap-mode suppression they'd send 2 individual recaps. Wrap holds them.
+    const events = [
+      wrapEvent({ id: 1, symbol: "AAPL", actual: READY_ACTUAL, enriched_at: "2026-06-15 22:15:00" }),
+      wrapEvent({ id: 2, symbol: "MSFT", actual: READY_ACTUAL, enriched_at: "2026-06-15 22:15:00" }),
+      wrapEvent({ id: 3, symbol: "NVDA", actual: null }), // not reported → wrap waits
+    ];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      wrapSnapshot(events, ["AAPL", "MSFT", "NVDA"]),
+    );
+    const env = makeEnv();
+
+    const result = await runEarningsFallback(env, { now: ALL_READY_NOW }); // 18:30 ET, pre-deadline
+
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(result.sent).toBe(0);
+    expect(await env.CRON_KV.get("cloud-sent-earnings-recap-1")).toBeNull();
+  });
+
+  it("caps the staple at 5 closest releases, defers the rest markerless with a warn", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // 7 distinct families, all reported. release_time ascending → the 2 LATEST
+    // (TSLA 16:00, NFLX 16:02) must be deferred.
+    const rows: Array<[number, string, string]> = [
+      [1, "AAPL", "15:50"],
+      [2, "MSFT", "15:52"],
+      [3, "NVDA", "15:54"],
+      [4, "AMZN", "15:56"],
+      [5, "META", "15:58"],
+      [6, "TSLA", "16:00"],
+      [7, "NFLX", "16:02"],
+    ];
+    const events = rows.map(([id, symbol, release_time]) =>
+      wrapEvent({ id, symbol, release_time, actual: READY_ACTUAL }),
+    );
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      wrapSnapshot(events, rows.map((r) => r[1])),
+    );
+    const env = makeEnv();
+
+    const result = await runEarningsFallback(env, { now: ALL_READY_NOW });
+
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    expect(subjectOfLastSend()).toContain("(5 names)");
+    expect(result.sent).toBe(5);
+    for (const id of [1, 2, 3, 4, 5]) {
+      expect(await env.CRON_KV.get(`cloud-sent-earnings-recap-${id}`)).not.toBeNull();
+    }
+    for (const id of [6, 7]) {
+      expect(await env.CRON_KV.get(`cloud-sent-earnings-recap-${id}`)).toBeNull();
+    }
+    const deferred = result.details.filter((d) => d.reason === "deferred-cap");
+    expect(deferred.map((d) => d.eventId).sort()).toEqual([6, 7]);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("all members already marked (mac/cloud sent) → no send", async () => {
+    const events = [
+      wrapEvent({ id: 1, symbol: "AAPL", actual: READY_ACTUAL }),
+      wrapEvent({ id: 2, symbol: "MSFT", actual: READY_ACTUAL }),
+      wrapEvent({ id: 3, symbol: "NVDA", actual: READY_ACTUAL }),
+    ];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      wrapSnapshot(events, ["AAPL", "MSFT", "NVDA"]),
+    );
+    const env = makeEnv();
+    await env.CRON_KV.put("cloud-sent-earnings-recap-1", new Date().toISOString());
+    await env.CRON_KV.put("mac-sent-earnings-recap-2", new Date().toISOString());
+    await env.CRON_KV.put("cloud-sent-earnings-recap-3", new Date().toISOString());
+
+    const result = await runEarningsFallback(env, { now: ALL_READY_NOW });
+
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(result.sent).toBe(0);
+  });
+});
+
 describe("superseded cross-source duplicate events (2026-07-14 JPM/BAC double-preview)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
