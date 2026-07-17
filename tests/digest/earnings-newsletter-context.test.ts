@@ -122,7 +122,17 @@ describe("getNewsletterContext — rank-ordered fill", () => {
     expect(result.map((r) => r.subject)).toEqual(["Two weeks old"]);
   });
 
-  it("caps at 6 articles, ranked sources winning the slots", () => {
+  it("caps at 4 articles under the per-source diversity cap (2 ranked + 2 pool)", () => {
+    // Pre-amendment this asserted 5 ranked + 1 pool (single fill loop, no
+    // per-source cap). Post-amendment (2026-07-17): pass 1 walks the
+    // trust-ordered rows and admits at most MAX_ARTICLES_PER_SOURCE (2)
+    // from each of Rank One and Pool Letter — Ranked 0/1 and Pool 0/1 —
+    // then skips every further row from either (both already at cap), so
+    // pass 1 ends at 4 selected. Pass 2 only refills when the symbol's
+    // WHOLE candidate pool is a single source (see the constant comment);
+    // here there are 2 distinct sources, so pass 2 is a no-op and the
+    // remaining 3 Ranked + 3 Pool rows stay unselected rather than
+    // re-inflating either source past its cap. 4 total, not 6.
     const sec = seedSecurity("AMD");
     const r1 = seedSource("Rank One", 1);
     const un = seedSource("Pool Letter", null);
@@ -130,9 +140,32 @@ describe("getNewsletterContext — rank-ordered fill", () => {
     for (let i = 0; i < 5; i++) seedArticle(un, sec, `Pool ${i}`, hoursAgo(i + 1));
 
     const result = getNewsletterContext(db, ["AMD"]);
+    expect(result).toHaveLength(4);
+    expect(result.filter((r) => r.source_name === "Rank One")).toHaveLength(2);
+    expect(result.filter((r) => r.source_name === "Pool Letter")).toHaveLength(2);
+  });
+
+  it("caps a prolific source so lower-ranked sources still get slots", () => {
+    const sec = seedSecurity("META");
+    const vk = seedSource("Rank One Daily", 1);
+    const tmt = seedSource("Rank Two Bogies", 2, "Bogies tables.");
+    for (let i = 0; i < 6; i++) seedArticle(vk, sec, `Daily ${i}`, hoursAgo(i * 5 + 1));
+    seedArticle(tmt, sec, "Bogies preview", hoursAgo(30));
+
+    const result = getNewsletterContext(db, ["META"]);
+    expect(result.filter((r) => r.source_name === "Rank One Daily")).toHaveLength(2);
+    expect(result.map((r) => r.source_name)).toContain("Rank Two Bogies");
+    // Trust order preserved: all Rank One entries before Rank Two.
+    const names = result.map((r) => r.source_name);
+    expect(names.lastIndexOf("Rank One Daily")).toBeLessThan(names.indexOf("Rank Two Bogies"));
+  });
+
+  it("refills past the per-source cap when only one source covers the symbol", () => {
+    const sec = seedSecurity("CROX");
+    const only = seedSource("Only Letter", 1);
+    for (let i = 0; i < 6; i++) seedArticle(only, sec, `Solo ${i}`, hoursAgo(i + 1));
+    const result = getNewsletterContext(db, ["CROX"]);
     expect(result).toHaveLength(6);
-    expect(result.filter((r) => r.source_name === "Rank One")).toHaveLength(5);
-    expect(result.filter((r) => r.source_name === "Pool Letter")).toHaveLength(1);
   });
 
   it("carries earnings_note + earnings_rank onto entries", () => {

@@ -102,3 +102,56 @@ Preview and recap share the rendering; only the existing phase-specific framing 
 - Briefing deep-read list unification.
 - AI pre-extraction or AI dedup passes.
 - Worker/cloud-fallback newsletter context (deliberately absent today; stays absent).
+
+## Amendment 2026-07-17 — per-source diversity cap (verification finding)
+
+**Real-data finding.** Running the rank-ordered fill (Section 2) against live
+data showed the plain "walk trust order, take 6" fill has a monopolization
+failure mode: a single prolific rank-1 source (Vital Knowledge, ~6
+articles/week for a big name like AAPL/META) fills all 6 slots by itself
+before the walk ever reaches a lower-ranked source. TMT Breakout's bogies
+coverage — this feature's original motivating case — never appeared in a
+composed prompt whenever Vital Knowledge had a busy week for the same
+symbol. Rank ordering alone solves *starvation by staleness* (the original
+bug this spec fixed) but not *starvation by volume* — a fresh, on-topic,
+high-volume source can crowd out a low-volume, high-signal one exactly the
+same way a stale one used to.
+
+**Fix — two-pass fill with a per-source cap.** `getNewsletterContext` now
+enforces `MAX_ARTICLES_PER_SOURCE = 2` in two passes over the same
+trust-ordered `rows`:
+
+1. **Pass 1 (diversity-capped).** Walk `rows` in trust order; skip (don't
+   stop on) any row whose source already has 2 selected; stop the walk
+   entirely once `MAX_NEWSLETTER_ARTICLES` (6) is reached or a row would
+   blow `TOTAL_CONTEXT_CAP` — same hard-stop semantics the original
+   single-pass loop had.
+2. **Pass 2 (single-source refill).** Runs ONLY when the symbol's entire
+   candidate pool (`rows`) is a single distinct source — i.e., there is
+   nothing to diversify away from. In that case it walks the still-unselected
+   rows in the same trust order, ignoring the per-source cap, until 6 slots
+   are filled or rows run out. When 2+ distinct sources cover the symbol,
+   pass 2 is deliberately a no-op: leaving slots under 6 unfilled is the cap
+   doing its job, not a bug — refilling from the already-capped majority
+   source would silently undo pass 1's entire point.
+
+Truncation to `ARTICLE_BODY_CAP` and the `TOTAL_CONTEXT_CAP` running total
+happen exactly once per row, in a shared `tryAdmit` helper used by both
+passes, so the char-cap semantics are identical to the pre-amendment
+single-pass loop. The final array is not re-sorted — it's built by filtering
+the original trust-ordered `rows` down to the selected ids, so a pass-2
+admission (which can land out of pass-1's walk order) still renders in
+correct trust order.
+
+**Verification (TDD, `tests/digest/earnings-newsletter-context.test.ts`):**
+red run against pre-amendment code — the new "caps a prolific source" test
+failed (6 slots all went to the single rank-1 source, 0 to rank-2); the new
+"refills past the per-source cap when only one source covers the symbol"
+test already passed (no cap existed pre-amendment, so a lone source
+trivially filled to 6). Green run after implementing the two-pass fill: all
+10 tests in the file pass, including an updated expectation on the
+pre-existing "caps at N articles" test (was 5 ranked + 1 pool under the old
+single-pass fill; is now 2 ranked + 2 pool = 4 total under the new cap,
+since that fixture has 2 distinct sources and pass 2 correctly declines to
+refill past the cap). Full suite: 3637 tests / 354 files, all green.
+`npx tsc --noEmit` clean.
