@@ -33,6 +33,10 @@ export interface ResearchSource {
   website_url: string | null;
   /** 1 = bypass the D3 off-topic relevance filter (migration 055; NULL on pre-055 rows = filter on). */
   allow_off_topic: number | null;
+  /** Non-NULL = in the earnings composer's trust hierarchy, ascending (migration 068). */
+  earnings_rank: number | null;
+  /** Per-source "how to read this" prompt guidance for earnings emails. */
+  earnings_note: string | null;
   created_at: string;
   article_count?: number;
 }
@@ -194,6 +198,31 @@ export function getResearchSources(
        ORDER BY s.name`
     )
     .all() as ResearchSource[];
+}
+
+export interface EarningsHierarchySource {
+  id: number;
+  name: string;
+  earnings_rank: number;
+  earnings_note: string | null;
+}
+
+/**
+ * Trust-ordered earnings source hierarchy (migration 068). Only ranked
+ * sources; duplicate ranks (possible after a mid-sequence PATCH failure)
+ * break by id ASC so ordering stays deterministic.
+ */
+export function getEarningsSourceHierarchy(
+  db: Database.Database
+): EarningsHierarchySource[] {
+  return db
+    .prepare(
+      `SELECT id, name, earnings_rank, earnings_note
+         FROM research_sources
+        WHERE earnings_rank IS NOT NULL
+        ORDER BY earnings_rank ASC, id ASC`
+    )
+    .all() as EarningsHierarchySource[];
 }
 
 export function getArticleById(
