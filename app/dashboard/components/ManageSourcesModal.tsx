@@ -116,6 +116,151 @@ export function ManageSourcesModal({
     [onSourcesChanged]
   );
 
+  // ── Earnings hierarchy (migration 068) ─────────────────────────────
+  // Ranked ascending; duplicate ranks (mid-sequence PATCH failure) break
+  // by id to match getEarningsSourceHierarchy's ORDER BY.
+  const hierarchy = sources
+    .filter((s) => s.earnings_rank != null)
+    .sort((a, b) => (a.earnings_rank! - b.earnings_rank!) || (a.id - b.id));
+
+  const [noteDrafts, setNoteDrafts] = useState<Record<number, string>>({});
+
+  const patchSource = useCallback(
+    async (id: number, fields: Record<string, unknown>): Promise<void> => {
+      const res = await fetch("/api/research/sources", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, ...fields }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.success === false) {
+        throw new Error(data?.error ?? `server returned ${res.status}`);
+      }
+    },
+    []
+  );
+
+  /** Write dense 1..N ranks for newOrder, PATCHing only changed rows. */
+  const applyRanks = useCallback(
+    async (newOrder: ResearchSource[]) => {
+      setMutationError(null);
+      const prevSources = sources;
+      const rankById = new Map(newOrder.map((s, i) => [s.id, i + 1]));
+      // Optimistic update
+      setSources((prev) =>
+        prev.map((s) =>
+          rankById.has(s.id) ? { ...s, earnings_rank: rankById.get(s.id)! } : s
+        )
+      );
+      try {
+        for (const s of newOrder) {
+          const newRank = rankById.get(s.id)!;
+          if (s.earnings_rank !== newRank) {
+            await patchSource(s.id, { earnings_rank: newRank });
+          }
+        }
+        onSourcesChanged();
+      } catch (err) {
+        setSources(prevSources);
+        setMutationError(
+          `Couldn't reorder the earnings hierarchy: ${err instanceof Error ? err.message : "network error"}. The order was reverted — reopen the modal to see the server state.`
+        );
+      }
+    },
+    [sources, patchSource, onSourcesChanged]
+  );
+
+  const handleAddToHierarchy = useCallback(
+    async (sourceId: number) => {
+      setMutationError(null);
+      const maxRank = hierarchy.reduce(
+        (m, s) => Math.max(m, s.earnings_rank ?? 0),
+        0
+      );
+      const newRank = maxRank + 1;
+      setSources((prev) =>
+        prev.map((s) => (s.id === sourceId ? { ...s, earnings_rank: newRank } : s))
+      );
+      try {
+        await patchSource(sourceId, { earnings_rank: newRank });
+        onSourcesChanged();
+      } catch (err) {
+        setSources((prev) =>
+          prev.map((s) => (s.id === sourceId ? { ...s, earnings_rank: null } : s))
+        );
+        setMutationError(
+          `Couldn't add the source to the earnings hierarchy: ${err instanceof Error ? err.message : "network error"}. The change was reverted.`
+        );
+      }
+    },
+    [hierarchy, patchSource, onSourcesChanged]
+  );
+
+  const handleRemoveFromHierarchy = useCallback(
+    async (sourceId: number) => {
+      setMutationError(null);
+      const prevSources = sources;
+      const remaining = hierarchy.filter((s) => s.id !== sourceId);
+      setSources((prev) =>
+        prev.map((s) => (s.id === sourceId ? { ...s, earnings_rank: null } : s))
+      );
+      try {
+        await patchSource(sourceId, { earnings_rank: null });
+        // Renumber survivors to dense 1..N (only changed rows PATCH).
+        await applyRanks(remaining);
+      } catch (err) {
+        setSources(prevSources);
+        setMutationError(
+          `Couldn't remove the source from the earnings hierarchy: ${err instanceof Error ? err.message : "network error"}. The change was reverted.`
+        );
+      }
+    },
+    [sources, hierarchy, patchSource, applyRanks]
+  );
+
+  const handleMove = useCallback(
+    (sourceId: number, dir: -1 | 1) => {
+      const idx = hierarchy.findIndex((s) => s.id === sourceId);
+      const swapWith = idx + dir;
+      if (idx < 0 || swapWith < 0 || swapWith >= hierarchy.length) return;
+      const newOrder = [...hierarchy];
+      [newOrder[idx], newOrder[swapWith]] = [newOrder[swapWith], newOrder[idx]];
+      void applyRanks(newOrder);
+    },
+    [hierarchy, applyRanks]
+  );
+
+  const handleNoteBlur = useCallback(
+    async (sourceId: number) => {
+      const draft = noteDrafts[sourceId];
+      if (draft === undefined) return;
+      const current =
+        sources.find((s) => s.id === sourceId)?.earnings_note ?? "";
+      const trimmed = draft.trim();
+      if (trimmed === current) return;
+      setMutationError(null);
+      setSources((prev) =>
+        prev.map((s) =>
+          s.id === sourceId ? { ...s, earnings_note: trimmed || null } : s
+        )
+      );
+      try {
+        await patchSource(sourceId, { earnings_note: trimmed || null });
+        onSourcesChanged();
+      } catch (err) {
+        setSources((prev) =>
+          prev.map((s) =>
+            s.id === sourceId ? { ...s, earnings_note: current || null } : s
+          )
+        );
+        setMutationError(
+          `Couldn't save the note: ${err instanceof Error ? err.message : "network error"}. The note was reverted.`
+        );
+      }
+    },
+    [noteDrafts, sources, patchSource, onSourcesChanged]
+  );
+
   const handleDelete = useCallback(
     async (sourceId: number) => {
       setMutationError(null);
@@ -253,6 +398,81 @@ export function ManageSourcesModal({
         </div>
 
         <div className="p-5 space-y-5">
+          {/* Earnings source hierarchy (migration 068) — trust order for the
+              earnings preview/recap composer. */}
+          <div className="space-y-2">
+            <p className="text-xs text-ink-faint uppercase tracking-wider">
+              Earnings Source Hierarchy
+            </p>
+            <p className="text-xs text-ink-dim">
+              Trust order for earnings emails — higher sources win prompt priority.
+              The note tells the AI how to read each source.
+            </p>
+            {hierarchy.length === 0 ? (
+              <p className="text-sm text-ink-dim py-2">
+                No ranked sources. Use &ldquo;+ earnings&rdquo; on a source below to add it.
+              </p>
+            ) : (
+              <div className="space-y-1">
+                {hierarchy.map((s, i) => (
+                  <div
+                    key={s.id}
+                    className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-raised/50"
+                  >
+                    <span className="mt-0.5 w-5 shrink-0 text-right font-mono text-xs text-ink-faint tabular-nums">
+                      {i + 1}.
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-sm font-medium text-ink">
+                          {s.name}
+                        </span>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleMove(s.id, -1)}
+                            disabled={i === 0}
+                            aria-label={`Move ${s.name} up`}
+                            className="relative text-[10px] font-medium px-1.5 py-0.5 rounded border border-edge text-ink-faint hover:text-ink-dim disabled:opacity-30 transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 pointer-coarse:after:content-['']"
+                          >
+                            ↑
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleMove(s.id, 1)}
+                            disabled={i === hierarchy.length - 1}
+                            aria-label={`Move ${s.name} down`}
+                            className="relative text-[10px] font-medium px-1.5 py-0.5 rounded border border-edge text-ink-faint hover:text-ink-dim disabled:opacity-30 transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 pointer-coarse:after:content-['']"
+                          >
+                            ↓
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleRemoveFromHierarchy(s.id)}
+                            aria-label={`Remove ${s.name} from earnings hierarchy`}
+                            className="relative text-[10px] font-medium px-1.5 py-0.5 rounded border border-edge text-ink-faint hover:text-down transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 pointer-coarse:after:content-['']"
+                          >
+                            remove
+                          </button>
+                        </div>
+                      </div>
+                      <input
+                        type="text"
+                        value={noteDrafts[s.id] ?? s.earnings_note ?? ""}
+                        onChange={(e) =>
+                          setNoteDrafts((prev) => ({ ...prev, [s.id]: e.target.value }))
+                        }
+                        onBlur={() => void handleNoteBlur(s.id)}
+                        placeholder="How to read this source (optional prompt note)"
+                        className="mt-1.5 w-full px-2 py-1 rounded-md bg-canvas border border-edge text-xs text-ink placeholder:text-ink-faint focus:outline-none focus:border-gold"
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           {/* Current sources */}
           <div className="space-y-2">
             <p className="text-xs text-ink-faint uppercase tracking-wider">
@@ -305,6 +525,18 @@ export function ManageSourcesModal({
                       >
                         off-topic OK
                       </button>
+                      {/* Earnings hierarchy (migration 068) — only offered
+                          while unranked; ranked sources are edited above. */}
+                      {s.earnings_rank == null && (
+                        <button
+                          type="button"
+                          onClick={() => void handleAddToHierarchy(s.id)}
+                          aria-label={`Add ${s.name} to earnings hierarchy`}
+                          className="relative text-[10px] font-medium px-1.5 py-0.5 rounded border border-edge text-ink-faint hover:text-ink-dim transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 pointer-coarse:after:content-['']"
+                        >
+                          + earnings
+                        </button>
+                      )}
                       {/* Toggle */}
                       <button
                         onClick={() => handleToggle(s.id, s.is_active)}
