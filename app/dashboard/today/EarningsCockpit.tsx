@@ -126,6 +126,18 @@ export function EarningsCockpit() {
     return () => clearInterval(id);
   }, [load]);
 
+  // Immediate refetch when an earnings mutation happens elsewhere on the
+  // page (add / delete / skip in the EarningsHub). Those handlers call
+  // router.refresh(), which re-renders the server-rendered Hub but never
+  // re-runs this component's client fetch — so the cockpit disagreed with
+  // the Hub for up to a POLL_MS minute after a delete (deep-QA 2026-07-13).
+  // Same custom-DOM-event idiom as toggle-mobile-chat / open-settings.
+  useEffect(() => {
+    const onChanged = () => void load();
+    window.addEventListener("earnings-data-changed", onChanged);
+    return () => window.removeEventListener("earnings-data-changed", onChanged);
+  }, [load]);
+
   // 1s countdown tick — only while something is upcoming.
   const hasUpcoming = !!payload?.nextRelease;
   useEffect(() => {
