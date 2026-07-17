@@ -87,9 +87,12 @@ if ! npx -y @playwright/mcp@latest --version >/dev/null 2>&1; then
 fi
 
 # Browser-process cleanup (2026-07-17): nightly runs were leaving daemon +
-# Chrome-for-Testing pairs alive indefinitely. Baseline BEFORE any browser
-# work; ab_cleanup chains into the single EXIT trap below (traps replace).
+# Chrome-for-Testing pairs alive indefinitely. Reap PPID-1 orphans from prior
+# killed runs FIRST (so they don't land in the baseline and survive forever),
+# then baseline BEFORE any browser work; ab_cleanup chains into the single
+# EXIT trap below (traps replace).
 source "$SCRIPT_DIR/lib/agent-browser-cleanup.sh"
+ab_reap_orphans
 ab_baseline
 
 bash "$SCRIPT_DIR/sandbox.sh" up || { notify_failure "sandbox boot failed"; exit 1; }
