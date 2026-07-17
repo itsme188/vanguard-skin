@@ -159,11 +159,24 @@ export async function fetchFinnhubEarningsForSymbols(
     const securityId = getSecurityIdForSymbol(db, symbol);
 
     const hourLabel = formatHour(entry.hour);
+    // Foreign-listing echo ⇒ figures untrusted. Finnhub resolves ADR
+    // queries to the LOCAL listing — querying "TSM" returns "2330.TW" with
+    // TWD-scale figures (epsEstimate 24.57, revenue 1.28 trillion; verified
+    // live 2026-07-16). The schedule (date/hour) is reliable either way,
+    // but a mismatched echo's estimates are local-currency and rendering
+    // them with "$" produced the "$1275.55B consensus" TSM bug. Consensus
+    // for these names comes from the Nasdaq scan or user bogeys instead.
+    const foreignEcho = entry.symbol !== queried;
+    if (foreignEcho) {
+      console.warn(
+        `[finnhub] ${queried} echoed as ${entry.symbol} — local-currency figures dropped, schedule kept`
+      );
+    }
     const consensusParts: string[] = [];
-    if (entry.epsEstimate != null) {
+    if (!foreignEcho && entry.epsEstimate != null) {
       consensusParts.push(`EPS ${entry.epsEstimate.toFixed(2)}`);
     }
-    if (entry.revenueEstimate != null) {
+    if (!foreignEcho && entry.revenueEstimate != null) {
       consensusParts.push(`Rev ${formatCount(entry.revenueEstimate)}`);
     }
     const consensus = consensusParts.join(" · ") || null;
