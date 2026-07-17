@@ -236,6 +236,33 @@ describe("findEarningsCoverageGaps", () => {
     ]);
   });
 
+  it("an option on an ETF-typed underlying is never a candidate (guard debut 2026-07-16: SPY/XLF/SOXX hedge options)", () => {
+    // The book carries hedge options on index/sector ETFs. An ETF never
+    // reports earnings, so its underlying must not reach the guard — the
+    // debut run flagged 16 ETF "no_history gaps" out of 21. The filter
+    // lives in getHeldOptionUnderlyingSymbols (shared with the Finnhub
+    // scan, where querying SPY for earnings is equally meaningless).
+    const acct = insertAccount(db);
+    insertSecurity(db, "SPY", "ETF"); // underlying row, correctly typed
+    insertOptionHolding(db, acct, "SPY", -3); // short hedge put
+    // no earnings events for SPY — would be a no_history gap pre-fix
+
+    expect(findEarningsCoverageGaps(db, { today: TODAY })).toEqual([]);
+  });
+
+  it("an option underlying with NO securities row (unknown type) stays a candidate", () => {
+    // NULL/missing type is "unknown", not "proven fund" — the TER-style
+    // stub case must keep surfacing so real single-name exposure is never
+    // silently dropped. (Same conservatism as the TER test above; this one
+    // pins it explicitly against the ETF filter.)
+    const acct = insertAccount(db);
+    insertOptionHolding(db, acct, "NEWCO", 2); // no NEWCO securities row
+
+    expect(findEarningsCoverageGaps(db, { today: TODAY })).toEqual([
+      { symbol: "NEWCO", kind: "no_history", lastEventDate: null, daysSinceLast: null },
+    ]);
+  });
+
   it("a far-future event (beyond the 45d horizon) suppresses the no_history mislabel", () => {
     const acct = insertAccount(db);
     const sec = insertSecurity(db, "SPCE");
