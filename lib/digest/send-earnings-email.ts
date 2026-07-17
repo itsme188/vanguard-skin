@@ -895,7 +895,11 @@ export function getNewsletterContext(
             AND a.processed_at IS NOT NULL
             AND COALESCE(a.is_relevant, 1) = 1
           GROUP BY a.id
-          ORDER BY a.received_at DESC
+          -- Pre-filter must stay rank-aware to agree with the JS comparator
+          -- below: a recency-only ORDER BY here would let a flood of
+          -- unranked articles evict a ranked source's older in-window
+          -- article before the LIMIT ever reaches the JS sort.
+          ORDER BY (rs.earnings_rank IS NULL) ASC, rs.earnings_rank ASC, a.received_at DESC
           LIMIT ${CANDIDATE_FETCH_LIMIT}`,
       )
       .all(...upperFamily) as CandidateRow[];

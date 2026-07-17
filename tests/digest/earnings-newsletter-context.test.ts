@@ -147,4 +147,17 @@ describe("getNewsletterContext — rank-ordered fill", () => {
   it("returns [] for an empty family", () => {
     expect(getNewsletterContext(db, [])).toEqual([]);
   });
+
+  it("a flood of recent unranked articles cannot evict a ranked source's older in-window article", () => {
+    const sec = seedSecurity("PLTR");
+    const ranked = seedSource("Ranked Letter", 1);
+    const flood = seedSource("Flood Letter", null);
+    seedArticle(ranked, sec, "Ranked but older", daysAgo(6));
+    for (let i = 0; i < 35; i++) {
+      seedArticle(flood, sec, `Flood ${i}`, hoursAgo(i + 1));
+    }
+    const result = getNewsletterContext(db, ["PLTR"]);
+    expect(result.map((r) => r.source_name)).toContain("Ranked Letter");
+    expect(result[0].source_name).toBe("Ranked Letter");
+  });
 });
