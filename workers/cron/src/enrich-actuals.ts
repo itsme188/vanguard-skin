@@ -227,6 +227,11 @@ async function fetchFinnhubActual(
   const res = await fetch(url);
   if (!res.ok) return { actual: null, consensus: null };
   const data = (await res.json()) as { earningsCalendar?: FinnhubEarningsEntry[] };
+  // Strict symbol match is the foreign-listing guard, not an accident:
+  // Finnhub resolves ADR queries to the LOCAL listing (querying "TSM"
+  // returns "2330.TW" with TWD-scale figures — verified live 2026-07-16).
+  // A mismatched echo's figures are local-currency and must never be
+  // stored as USD. Same rule on the Mac (lib/calendar/enrich-actuals.ts).
   const entry = data.earningsCalendar?.find((e) => e.date === date && e.symbol === symbol);
   if (!entry) return { actual: null, consensus: null };
 

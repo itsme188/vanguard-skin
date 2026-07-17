@@ -356,12 +356,53 @@ describe("fetchActualForEvent — dispatcher", () => {
     expect(result.consensus).toContain("EPS 0.60");
   });
 
-  it("matches Finnhub entries whose symbol carries a foreign-exchange suffix (GFL → GFL.TO)", async () => {
-    // Finnhub echoes the query "GFL" with entries stamped "GFL.TO" (the
-    // Toronto listing) — same behavior already handled on the sync side
-    // in lib/calendar/finnhub.ts. The query is already symbol-scoped via
-    // ?symbol=, so the actuals fetch must match on date only and never
-    // require the echoed symbol to equal the queried one.
+  it("drops figures when Finnhub echoes a foreign listing (TSM → 2330.TW): local currency is untrusted", async () => {
+    // Finnhub resolves ADR queries to the LOCAL listing: querying "TSM"
+    // returns symbol "2330.TW" with TWD-scale figures (verified live
+    // 2026-07-16 — epsActual 138.87, revenueEstimate 1.28 trillion). The
+    // schedule is trustworthy; the FIGURES are local-currency and must
+    // never be stored as USD. Supersedes the earlier date-only match
+    // (GFL → GFL.TO), which let TWD estimates reach the email scoreboard
+    // as "$1275.55B". Foreign-listed names now rely on the Nasdaq scan /
+    // bogeys for consensus and the blocked-recap → manual-actuals flow
+    // for actuals ("better no email than a wrong one").
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        earningsCalendar: [
+          {
+            symbol: "2330.TW",
+            date: "2026-07-16",
+            epsActual: 138.87,
+            epsEstimate: 24.5662,
+            revenueActual: 1295316420999,
+            revenueEstimate: 1279497062904,
+          },
+        ],
+      }),
+    });
+
+    const result = await fetchActualForEvent(db, {
+      id: 1,
+      source: "finnhub",
+      source_key: "finnhub:TSM:2026-07-16",
+      event_type: "earnings",
+      event_date: "2026-07-16",
+      release_time: "08:00",
+      symbol: "TSM",
+      title: "TSM earnings",
+      consensus_estimate: "EPS 3.80",
+      raw_json: null,
+    });
+
+    expect(result.source).toBe("finnhub");
+    // No TWD figures — actual stays null so the recap gate holds.
+    expect(result.actual).toBeNull();
+    // The row's existing consensus (Nasdaq-sourced USD) survives.
+    expect(result.consensus).toBe("EPS 3.80");
+  });
+
+  it("prefers the exact-symbol entry when Finnhub returns both listings on one date", async () => {
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true,
       json: async () => ({
@@ -369,7 +410,15 @@ describe("fetchActualForEvent — dispatcher", () => {
           {
             symbol: "GFL.TO",
             date: "2026-07-29",
-            epsActual: 0.31,
+            epsActual: 0.42, // CAD
+            epsEstimate: 0.38,
+            revenueActual: null,
+            revenueEstimate: null,
+          },
+          {
+            symbol: "GFL",
+            date: "2026-07-29",
+            epsActual: 0.31, // USD
             epsEstimate: 0.28,
             revenueActual: 2100000000,
             revenueEstimate: 2050000000,

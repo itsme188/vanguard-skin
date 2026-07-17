@@ -326,13 +326,27 @@ async function fetchFinnhubActual(
   const res = await fetch(url);
   if (!res.ok) return { actual: null, consensus: null };
   const data = (await res.json()) as { earningsCalendar?: FinnhubEarningsEntry[] };
-  // The query is already symbol-scoped (?symbol=), so every returned entry
-  // belongs to the queried issuer — but Finnhub may echo a foreign-exchange
-  // suffix (query "GFL" → entries with symbol "GFL.TO"; same behavior
-  // documented in lib/calendar/finnhub.ts). Match on date only; never
-  // require the echoed symbol to equal the queried one.
-  const entry = data.earningsCalendar?.find((e) => e.date === date);
-  if (!entry) return { actual: null, consensus: null };
+  // Exact-symbol entries only. Finnhub resolves ADR queries to the LOCAL
+  // listing — querying "TSM" returns "2330.TW" with TWD-scale figures
+  // (epsActual 138.87, revenue 1.28 trillion; verified live 2026-07-16) —
+  // so a mismatched echo's figures are local-currency and must never be
+  // stored as USD. This supersedes the earlier date-only match (GFL →
+  // GFL.TO): foreign-listed names get actuals via the blocked-recap
+  // Pushover → manual-actuals modal instead ("better no email than a
+  // wrong one"). Mirrors the Worker's strict match in
+  // workers/cron/src/enrich-actuals.ts.
+  const dateMatches = data.earningsCalendar?.filter((e) => e.date === date) ?? [];
+  const entry = dateMatches.find((e) => e.symbol === symbol);
+  if (!entry) {
+    if (dateMatches.length > 0) {
+      console.warn(
+        `[enrich-actuals] Finnhub echoed foreign listing ${dateMatches
+          .map((e) => e.symbol)
+          .join(", ")} for ${symbol} ${date} — local-currency figures dropped`
+      );
+    }
+    return { actual: null, consensus: null };
+  }
 
   const actualParts: string[] = [];
   if (entry.epsActual != null) actualParts.push(`EPS ${entry.epsActual.toFixed(2)}`);

@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { fetchFredSeriesLatest, formatFredValue, RELEASE_ID_TO_SERIES } from "../src/enrich-actuals";
+import { fetchActualForEventCloud, fetchFredSeriesLatest, formatFredValue, RELEASE_ID_TO_SERIES } from "../src/enrich-actuals";
 
 const obs = (value: number, priorValue: number | null = null) => ({
   value,
@@ -141,5 +141,84 @@ describe("fetchFredSeriesLatest — priorYear selection (Worker mirror)", () => 
 
     const result = await fetchFredSeriesLatest("test_key", "PPIACO", "2026-06-11", "2026-06-11");
     expect(result?.priorYearValue).toBe(260.491); // 2025-06, nearest in-window row
+  });
+});
+
+describe("fetchActualForEventCloud — Finnhub foreign-listing echo guard", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("drops figures when Finnhub echoes a foreign listing (TSM → 2330.TW)", async () => {
+    // Finnhub resolves ADR queries to the LOCAL listing with local-currency
+    // figures (verified live 2026-07-16: querying "TSM" returns "2330.TW"
+    // with TWD-scale epsEstimate 24.57 / revenue 1.28 trillion). The
+    // Worker's strict symbol match is the INTENTIONAL guard — figures from
+    // a mismatched echo are local-currency and must never be stored as USD.
+    // Mirrors the Mac-side rule in lib/calendar/enrich-actuals.ts (pinned
+    // in tests/calendar/enrich-actuals.test.ts).
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        earningsCalendar: [
+          {
+            symbol: "2330.TW",
+            date: "2026-07-16",
+            epsActual: 138.87,
+            epsEstimate: 24.5662,
+            revenueActual: 1295316420999,
+            revenueEstimate: 1279497062904,
+          },
+        ],
+      }),
+    });
+
+    const result = await fetchActualForEventCloud(
+      {
+        source_key: "finnhub:TSM:2026-07-16",
+        event_date: "2026-07-16",
+        consensus_estimate: "EPS 3.80",
+      },
+      { FINNHUB_API_KEY: "test_key" },
+    );
+
+    expect(result.source).toBe("finnhub");
+    expect(result.actual).toBeNull();
+    // The row's existing (USD) consensus survives the null fresh-consensus.
+    expect(result.consensus).toBe("EPS 3.80");
+  });
+
+  it("uses figures when Finnhub echoes the queried symbol exactly", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        earningsCalendar: [
+          {
+            symbol: "NVDA",
+            date: "2026-05-21",
+            epsActual: 0.65,
+            epsEstimate: 0.6,
+            revenueActual: 46000000000,
+            revenueEstimate: 43000000000,
+          },
+        ],
+      }),
+    });
+
+    const result = await fetchActualForEventCloud(
+      {
+        source_key: "finnhub:NVDA:2026-05-21",
+        event_date: "2026-05-21",
+        consensus_estimate: "EPS 0.60",
+      },
+      { FINNHUB_API_KEY: "test_key" },
+    );
+
+    expect(result.actual).toContain("EPS 0.65");
+    expect(result.consensus).toContain("EPS 0.60");
   });
 });
