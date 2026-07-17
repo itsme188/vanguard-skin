@@ -369,6 +369,24 @@ describe("composeDigestMarkdown — structured layout", () => {
     expect(composeDigestMarkdown([], [], "## Overnight\n\nKOSPI +0.8%")).toBeNull();
   });
 
+  it("renders the reporters block after overnight, above the article sections (#18)", () => {
+    const md = composeDigestMarkdown(
+      oneArticle,
+      [],
+      "## Overnight\n\nKOSPI +0.8%",
+      "## Today's reporters\n\n| BMO 08:00 | TSM | held | $3.80 | ±4.0% |",
+    );
+    expect(md).toContain("## Today's reporters");
+    expect(md!.indexOf("## Overnight")).toBeLessThan(md!.indexOf("## Today's reporters"));
+    expect(md!.indexOf("## Today's reporters")).toBeLessThan(md!.indexOf("## Market Commentary"));
+  });
+
+  it("a reporters block alone never produces an email (same rule as overnight)", () => {
+    expect(
+      composeDigestMarkdown([], [], null, "## Today's reporters\n\n| BMO | TSM | held | — | — |"),
+    ).toBeNull();
+  });
+
   // ── key_themes type-safety (2026-07-15 outage) ────────────────────────────
   //
   // jsonSchema() does NOT runtime-validate, so the model can return
