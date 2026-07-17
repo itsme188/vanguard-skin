@@ -310,6 +310,26 @@ describe("fetchSameDayTranscripts — AI desk-note summary (#12 B2)", () => {
     expect(row?.transcript).toBe("Full call transcript text here.");
   });
 
+  it("strips a chatty AI preamble before storing the desk-note summary (carry-over fix, B3)", async () => {
+    seedHeld("PPP");
+    const rel = hoursAgoEt(3);
+    seedEvent({ symbol: "PPP", date: rel.date, releaseTime: rel.time });
+    mockedFetch.mockResolvedValue({
+      transcript: fakeTranscript({ ticker: "PPP", source_key: "alpha_vantage:PPP:2026:2" }),
+      fromCache: false,
+    });
+    mockedGenerate.mockResolvedValue({
+      text: "Good, now I have enough to write the desk note.\n\n## Desk note\n- Guidance: raised full-year outlook",
+    } as never);
+
+    const result = await fetchSameDayTranscripts(db, { now: NOW });
+
+    expect(result).toEqual({ attempted: 1, fetched: 1 });
+    const row = getTranscriptRow("alpha_vantage:PPP:2026:2");
+    expect(row?.summary).toBe("## Desk note\n- Guidance: raised full-year outlook");
+    expect(row?.summary).not.toMatch(/^Good, now I have enough/);
+  });
+
   it("keeps the extractive summary when the AI summary call throws (no error surfaces)", async () => {
     seedHeld("KKK");
     const rel = hoursAgoEt(3);

@@ -5,6 +5,7 @@ import { synthesize, SynthesisEmptyError } from "@/lib/digest/synthesize";
 import { computeAnomalies, formatVanguardAnomaliesBlock } from "@/lib/digest/anomalies";
 import { splitLateArrivals, renderLateArrivalsBlock } from "@/lib/digest/late-arrivals";
 import { composeOvernightBlock } from "@/lib/digest/overnight";
+import { composeCallTranscriptsBlock } from "@/lib/digest/call-transcripts";
 import { splitEssays, renderResearchDesk, insertCrossFilePointers } from "@/lib/digest/research-desk";
 
 // ── Alerts block ────────────────────────────────────────────────────
@@ -452,6 +453,22 @@ export async function generateDigestSinceAdaptive(
     const overnightBlock = await composeOvernightBlock(db);
     if (overnightBlock) {
       lines.push(overnightBlock);
+      lines.push("");
+      lines.push("---");
+      lines.push("");
+    }
+  }
+
+  // ── 2.6 Call transcripts (morning only) ───────────────────────────────────
+  // Earnings-call transcripts fetched in the last 24h for held/watchlist
+  // tickers (#12 B3, lib/digest/call-transcripts.ts). Merge-order note: this
+  // should render directly after the Today's-reporters block (#12 #18,
+  // lib/digest/todays-reporters.ts) once that block lands in this worktree —
+  // for now it sits right after Overnight. Sync composer; never throws.
+  if (edition === "morning") {
+    const transcriptsBlock = composeCallTranscriptsBlock(db);
+    if (transcriptsBlock) {
+      lines.push(transcriptsBlock);
       lines.push("");
       lines.push("---");
       lines.push("");

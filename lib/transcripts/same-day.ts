@@ -45,6 +45,7 @@
 
 import type Database from "better-sqlite3";
 import { fetchTranscript, deriveFilingReportingQuarter } from "@/lib/transcripts/fetch";
+import { stripModelPreamble } from "@/lib/ai/strip-preamble";
 import { getCachedTranscript } from "@/lib/queries/transcripts";
 import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
 import { composeReleaseInstant } from "@/lib/calendar/reaction-snapshot";
@@ -92,7 +93,12 @@ export async function summarizeTranscript(
       prompt: buildSummaryPrompt(text),
       maxOutputTokens: SUMMARY_MAX_OUTPUT_TOKENS,
     });
-    const summary = res.text.trim();
+    // Guard against the known Sonnet failure mode of a leaked preamble
+    // ("Good, now I have enough to write the desk note...") ahead of the
+    // structured markdown — this summary is user-facing (rendered in the
+    // morning digest, #12 B3), so strip at STORE time. Mirrors the
+    // stripModelPreamble post-processor in lib/digest/send-earnings-email.ts.
+    const summary = stripModelPreamble(res.text.trim());
     if (!summary) return;
 
     upsertTranscript(db, {
