@@ -379,12 +379,44 @@ export async function runCloudFallback(
           const enabled = snapshot.earningsSettings?.enabled !== false;
           const covered = family.some((f) => heldSet.has(f) || watchSet.has(f));
           const isMuted = family.some((f) => muted.has(f));
-          if (enabled && covered && !isMuted && !(await readPrintPushMarker(env.CRON_KV, cand.id))) {
+          // #13: live read-through pairs widen the gate — a non-held reporter
+          // with a currently-held/watchlist TARGET still pushes, carrying
+          // "→ TARGET (status): hypothesis" lines. Mirrors the Mac's
+          // getLiveReadThroughsForReporter (family-aware both sides, weight
+          // DESC, cap 3). Snapshots ≤v9 lack readThroughPairs → [] → the
+          // gate stays held/watchlist-only.
+          const statusFor = (target: string): string | null => {
+            const tf = issuerSiblings(target).map((s) => s.toUpperCase());
+            if (tf.some((f) => heldSet.has(f))) return "held";
+            if (tf.some((f) => watchSet.has(f))) return "watchlist";
+            return null;
+          };
+          const readThroughs = (snapshot.readThroughPairs ?? [])
+            .filter((p) =>
+              issuerSiblings(p.reporter).some((f) => family.includes(f.toUpperCase())),
+            )
+            .sort((a, b) => b.weight - a.weight)
+            .map((p) => ({ pair: p, st: statusFor(p.target) }))
+            .filter((x): x is { pair: typeof x.pair; st: string } => x.st != null)
+            .slice(0, 3)
+            .map((x) => ({
+              target: x.pair.target.toUpperCase(),
+              targetStatus: x.st,
+              hypothesis: x.pair.hypothesis,
+            }));
+          if (
+            enabled &&
+            (covered || readThroughs.length > 0) &&
+            !isMuted &&
+            !(await readPrintPushMarker(env.CRON_KV, cand.id))
+          ) {
             const { title, message } = composePrintPushMessage({
               symbol: sym,
               actualValue: payload.actual,
               consensusValue: payload.consensus,
               reactionJson: payload.reaction ? JSON.stringify(payload.reaction) : null,
+              readThroughs,
+              readThroughOnly: !covered,
             });
             // Same link-base resolution as sendLevelAlertPush (pushover.ts) —
             // no MESH_HOSTNAME-independent hardcoded IP.

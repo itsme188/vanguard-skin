@@ -6,7 +6,10 @@
  */
 
 import { sendPushover } from "./notify-pushover";
-import { composePrintPushMessage } from "./print-push-message";
+import {
+  composePrintPushMessage,
+  type PrintPushReadThrough,
+} from "./print-push-message";
 import {
   checkPrintPushMarker,
   writePrintPushMarker,
@@ -18,6 +21,12 @@ export async function sendEarningsPrintPush(input: {
   actualValue: string;
   consensusValue: string | null;
   reactionJson: string | null;
+  /** Live read-through pairs for this reporter (#13) — rendered as
+   *  `→ TARGET (status): hypothesis` lines by the composer. */
+  readThroughs?: PrintPushReadThrough[];
+  /** The push exists only because of the read-through (reporter not
+   *  held/watchlisted) — flags the title. */
+  readThroughOnly?: boolean;
 }): Promise<{ pushed: boolean; reason?: string }> {
   const alreadyPushed = await checkPrintPushMarker(input.eventId);
   if (alreadyPushed) return { pushed: false, reason: "already_pushed" };

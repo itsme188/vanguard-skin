@@ -233,6 +233,8 @@ describe("push-at-print hook (Wave 1 §2, cloud reconcile path)", () => {
       actualValue: "EPS 1.42 · Rev 775,000,000",
       consensusValue: "EPS 1.35 · Rev 762,000,000",
       reactionJson: JSON.stringify({ source: "yahoo", spy: { delta_pct: 0.4 } }),
+      readThroughs: [],
+      readThroughOnly: false,
     });
   });
 
@@ -390,6 +392,8 @@ describe("push-at-print hook (Wave 1 §2, cloud reconcile path)", () => {
       // TWS reaction preserved (existing.reaction_snapshot) since the cloud
       // payload carried no reaction of its own.
       reactionJson: JSON.stringify({ source: "tws", spy: { delta_pct: 0.2 } }),
+      readThroughs: [],
+      readThroughOnly: false,
     });
   });
 

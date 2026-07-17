@@ -431,7 +431,12 @@ describe("earnings retry-until-complete (migration 062)", () => {
     };
   }
 
+  // Entries must echo the queried symbol: the foreign-listing guard
+  // (2026-07-16) drops figures from any entry whose symbol mismatches
+  // (Finnhub resolves ADR queries to the local listing, e.g. TSM → 2330.TW
+  // with TWD-scale figures).
   function mockFinnhubActual(entry: {
+    symbol: string;
     date: string;
     epsActual?: number | null;
     epsEstimate?: number | null;
@@ -527,7 +532,7 @@ describe("earnings retry-until-complete (migration 062)", () => {
     expect(getRow(eventId).enriched_at).toBeNull();
 
     // Attempt 2 at T+155: actual + reaction available → complete.
-    mockFinnhubActual({ date: FUTURE_DATE, epsActual: 2.5, epsEstimate: 2.3 });
+    mockFinnhubActual({ symbol: "YOTA", date: FUTURE_DATE, epsActual: 2.5, epsEstimate: 2.3 });
     await runEnrichment(db, {
       now: releasePlus(155),
       tws: realTwsFor(FUTURE_DATE) as any, // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -552,7 +557,7 @@ describe("earnings retry-until-complete (migration 062)", () => {
     });
     const eventId = Number(lastInsertRowid);
 
-    mockFinnhubActual({ date: FUTURE_DATE, epsActual: 1.1, epsEstimate: 1.0 });
+    mockFinnhubActual({ symbol: "XILA", date: FUTURE_DATE, epsActual: 1.1, epsEstimate: 1.0 });
     await runEnrichment(db, {
       now: releasePlus(20),
       tws: emptyTws as any, // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -851,7 +856,106 @@ describe("push-at-print hook (Wave 1 §2)", () => {
       actualValue: "EPS 1.42 · Rev 775,200,000",
       consensusValue: "EPS 1.35 · Rev 762,000,000",
       reactionJson: null,
+      readThroughs: [],
+      readThroughOnly: false,
     });
+  });
+
+  it("fires for a NON-held reporter with a live read-through pair (#13), flagged readThroughOnly", async () => {
+    // TER is not held/watchlisted — but PRTO (held) is a read-through target.
+    seedSecurity(db, 310, "PRTO", "Technology");
+    seedAccount(910, "RT Account");
+    seedHolding(910, 310, 40, "2026-04-20");
+    db.prepare(
+      `INSERT INTO read_through_pairs (reporter_symbol, target_symbol, weight, hypothesis)
+       VALUES ('TER', 'PRTO', 1.0, 'same input-cost cycle')`,
+    ).run();
+
+    mockFinnhubActual({
+      symbol: "TER",
+      date: "2026-04-24",
+      epsActual: 1.42,
+      epsEstimate: 1.35,
+    });
+
+    insertEvent(db, {
+      source: "finnhub",
+      source_key: "finnhub:TER:2026-04-24",
+      event_type: "earnings",
+      event_date: "2026-04-24",
+      release_time: "08:00",
+      symbol: "TER",
+    });
+
+    await runEnrichment(db, { now: new Date("2026-04-24T16:30:00Z") });
+
+    expect(mockSendEarningsPrintPush).toHaveBeenCalledTimes(1);
+    expect(mockSendEarningsPrintPush).toHaveBeenCalledWith(
+      expect.objectContaining({
+        symbol: "TER",
+        readThroughOnly: true,
+        readThroughs: [
+          { target: "PRTO", targetStatus: "held", hypothesis: "same input-cost cycle" },
+        ],
+      }),
+    );
+  });
+
+  it("does NOT fire for a read-through reporter whose target was exited (#13 gate stays narrow)", async () => {
+    seedSecurity(db, 311, "EXITED", "Technology"); // no holding row
+    db.prepare(
+      `INSERT INTO read_through_pairs (reporter_symbol, target_symbol, weight, hypothesis)
+       VALUES ('TER2', 'EXITED', 1.0, 'stale pair')`,
+    ).run();
+
+    mockFinnhubActual({ symbol: "TER2", date: "2026-04-24", epsActual: 1.0 });
+
+    insertEvent(db, {
+      source: "finnhub",
+      source_key: "finnhub:TER2:2026-04-24",
+      event_type: "earnings",
+      event_date: "2026-04-24",
+      release_time: "08:00",
+      symbol: "TER2",
+    });
+
+    await runEnrichment(db, { now: new Date("2026-04-24T16:30:00Z") });
+
+    expect(mockSendEarningsPrintPush).not.toHaveBeenCalled();
+  });
+
+  it("a HELD reporter with a live pair keeps the normal title semantics (readThroughOnly false) with lines attached", async () => {
+    seedSecurity(db, 312, "BOTH", "Technology");
+    seedSecurity(db, 313, "TGT2", "Technology");
+    seedAccount(912, "RT Account 2");
+    seedHolding(912, 312, 10, "2026-04-20");
+    seedHolding(912, 313, 20, "2026-04-20");
+    db.prepare(
+      `INSERT INTO read_through_pairs (reporter_symbol, target_symbol, weight, hypothesis)
+       VALUES ('BOTH', 'TGT2', 1.0, 'shared cycle')`,
+    ).run();
+
+    mockFinnhubActual({ symbol: "BOTH", date: "2026-04-24", epsActual: 2.0, epsEstimate: 1.8 });
+
+    insertEvent(db, {
+      source: "finnhub",
+      source_key: "finnhub:BOTH:2026-04-24",
+      event_type: "earnings",
+      event_date: "2026-04-24",
+      release_time: "08:00",
+      symbol: "BOTH",
+      security_id: 312,
+    });
+
+    await runEnrichment(db, { now: new Date("2026-04-24T16:30:00Z") });
+
+    expect(mockSendEarningsPrintPush).toHaveBeenCalledWith(
+      expect.objectContaining({
+        symbol: "BOTH",
+        readThroughOnly: false,
+        readThroughs: [{ target: "TGT2", targetStatus: "held", hypothesis: "shared cycle" }],
+      }),
+    );
   });
 
   it("does NOT fire on a retry tick where the actual was already stored", async () => {

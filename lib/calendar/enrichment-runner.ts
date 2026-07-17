@@ -17,6 +17,7 @@ import {
 } from "./reaction-snapshot";
 import { captureReactionFromYahoo } from "../../workers/cron/src/yahoo";
 import { sendEarningsPrintPush } from "@/lib/alerts/print-push";
+import { getLiveReadThroughsForReporter } from "@/lib/alerts/read-through-push";
 import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import {
@@ -353,7 +354,10 @@ export async function runEnrichment(
       );
 
       // Push-at-print (Wave 1 §2): fire exactly on the null→non-null actual
-      // transition for a covered, unmuted earnings name. Best-effort — a
+      // transition for a covered, unmuted earnings name. Since #13 the gate
+      // also opens for a NON-held reporter with ≥1 live read-through pair
+      // (target currently held/watchlist) — the push then carries the
+      // read-through lines and a "— read-through" title. Best-effort — a
       // push failure never affects enrichment.
       if (
         isEarnings &&
@@ -365,8 +369,10 @@ export async function runEnrichment(
           const sym = event.symbol.toUpperCase();
           const status = getSymbolStatus(db, [sym])[sym];
           const settings = getEarningsSettings(db);
+          const covered = status === "held" || status === "watchlist";
+          const readThroughs = getLiveReadThroughsForReporter(db, sym);
           if (
-            (status === "held" || status === "watchlist") &&
+            (covered || readThroughs.length > 0) &&
             shouldSendEarningsEmail(settings, sym)
           ) {
             await sendEarningsPrintPush({
@@ -377,6 +383,8 @@ export async function runEnrichment(
               reactionJson: reaction
                 ? JSON.stringify(reaction)
                 : event.reaction_snapshot,
+              readThroughs,
+              readThroughOnly: !covered,
             });
           }
         } catch (err) {
