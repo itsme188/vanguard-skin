@@ -157,6 +157,24 @@ describe("composeCallTranscriptsBlock", () => {
     expect(longSummary[withoutEllipsis.length]).toBe(" ");
   });
 
+  it("a cut landing inside a **bold** span closes the span (no literal ** in the email)", () => {
+    // The transcriptSummary prompt asks for **bold** section labels;
+    // briefingToHtml's inline regex needs the closing ** on the same line.
+    seedHeld("BBOLD");
+    // 24 × 23 = 552 chars of prose puts the 600-char cap ~48 chars INTO the
+    // bold span — the cut genuinely lands mid-span (pre-fix: dangling **).
+    const boldTail = `**Guidance raised materially on data-center demand and gross margin trajectory through fiscal 2027 and beyond**`;
+    const longSummary = `${"Solid quarter overall. ".repeat(24)}${boldTail}`;
+    insertTranscript({ ticker: "BBOLD", summary: longSummary, fetchedAt: hoursAgo(1) });
+
+    const block = composeCallTranscriptsBlock(db, { now: NOW })!;
+    const truncated = block.trim().split("\n\n").pop()!;
+    expect(truncated.endsWith("…")).toBe(true);
+    // Every ** must be paired — an odd count renders a dangling literal **.
+    const markers = (truncated.match(/\*\*/g) ?? []).length;
+    expect(markers % 2).toBe(0);
+  });
+
   it("omits the Guidance line when guidance is null", () => {
     seedHeld("GGG");
     insertTranscript({ ticker: "GGG", guidance: null, fetchedAt: hoursAgo(1) });
