@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { useToast } from "../components/Toast";
 import {
@@ -47,6 +47,22 @@ export function EarningsRowChips({
   // otherwise the user already has a path to view it (the sent ✓-chip)
   // or has explicitly muted it.
   const showGenerate = !recapSent && !recapSkipped;
+
+  // R9: the row's headline figures (RecapFigureButton cells) open the same
+  // viewer this component owns — they dispatch a scoped custom event rather
+  // than mounting a viewer of their own.
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const detail = (e as CustomEvent).detail as
+        | { eventId?: number; phase?: Phase }
+        | undefined;
+      if (detail?.eventId !== eventId) return;
+      setInlineData(null);
+      setOpenPhase(detail.phase === "preview" ? "preview" : "recap");
+    };
+    window.addEventListener("open-earnings-email", onOpen);
+    return () => window.removeEventListener("open-earnings-email", onOpen);
+  }, [eventId]);
 
   async function generateRecap() {
     if (generating) return;
@@ -197,6 +213,8 @@ function PhaseChip({ eventId, phase, sent, skipped, onView }: PhaseChipProps) {
         );
         return;
       }
+      // Cockpit is a client poller — signal it alongside the server refresh.
+      window.dispatchEvent(new Event("earnings-data-changed"));
       startTransition(() => router.refresh());
     } catch {
       toast(`Couldn't ${skipped ? "un-skip" : "skip"} the ${phase} email: could not reach the server.`, "error");
