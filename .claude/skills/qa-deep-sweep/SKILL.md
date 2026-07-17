@@ -12,6 +12,7 @@ You are orchestrating an exploratory QA sweep. The sandbox server MUST already b
 1. `curl -sf http://localhost:3097/api/summary` — if this fails, STOP and report "sandbox not running" (do not start it yourself; the cron wrapper owns the lifecycle).
 2. Read `qa/deep-qa-config.json`. Zone list: if the invocation passed `zones=…`, use those; else `mode:"all"` → all 7 zones; `mode:"rotate"` → the zone for today's weekday from `rotation`.
 3. Read `qa/findings/ledger.json` (create `{ "findings": [] }` if missing).
+4. **Resume check**: read `qa/findings/.sweep-progress.json` (`{ "date": "YYYY-MM-DD", "completedZones": [...] }`). If its `date` is today, drop the listed zones from this run's zone list and note "resuming — skipping N already-completed zones" in the run summary. If the date is older or the file is missing, ignore it (it gets overwritten at the first checkpoint).
 
 ## Zones
 
@@ -27,9 +28,11 @@ You are orchestrating an exploratory QA sweep. The sandbox server MUST already b
 
 ## Step 1 — Dispatch zone agents
 
-Dispatch one `agent-browser` subagent per zone, max `maxConcurrentAgents` concurrently per `qa/deep-qa-config.json` (currently 1 = SEQUENTIAL — all zone agents share one Playwright MCP browser, and concurrent agents steal each other's active page; the 2026-06-10 first full sweep saw agents bound to phantom pages, unable to click, falling back to API probes. Do not raise above 1 unless per-agent browser isolation is verified). Each agent gets this charter with its zone scope substituted:
+Dispatch one `agent-browser` subagent per zone, max `maxConcurrentAgents` concurrently per `qa/deep-qa-config.json` (currently 1 = SEQUENTIAL — all zone agents share one Playwright MCP browser, and concurrent agents steal each other's active page; the 2026-06-10 first full sweep saw agents bound to phantom pages, unable to click, falling back to API probes. **Do not raise above 1 — researched 2026-07-17 and confirmed structural**: subagents share the parent session's MCP server processes, so per-subagent browser isolation within one session is IMPOSSIBLE. True parallelism requires per-zone `claude -p` child processes, each with `--strict-mcp-config --mcp-config` spawning its own `@playwright/mcp --isolated` server — and would also need data-disjoint zone lanes, since zones mutate overlapping surfaces (today + security-detail both triage alerts; mobile revisits everything) and concurrent mutations read as false findings. Deliberately deferred; the nightly window makes sequential fine). Each agent gets this charter with its zone scope substituted:
 
 **Dispatch each zone agent as a BLOCKING call and wait for its result before dispatching the next — never as a background task.** Under the nightly cron (`claude -p`, headless) a backgrounded zone agent is killed at the 600s `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` ceiling and the sweep exits 0 mid-zone with no findings (silent truncation 6/29–7/1). The cron wrapper now lifts that ceiling to 6h as a hard backstop, but blocking dispatch is the intended shape regardless.
+
+**Checkpoint after EVERY zone agent returns — do not batch the merge to the end.** As soon as a zone's agent returns its findings JSON: (a) run the Step 2 merge for that zone's findings, (b) write `qa/findings/ledger.json` + regenerate `FINDINGS.md`, (c) update `qa/findings/.sweep-progress.json` with today's date and the zone appended to `completedZones`. An interrupted sweep then loses at most the in-flight zone, and a same-day re-invocation resumes from the next zone (preflight step 4). Historical motivation: ~a quarter of sweeps died mid-dispatch (interrupts, browser locks) and lost ALL completed zones' work because the merge only happened after every agent returned.
 
 > You are the owner of Portfolio Desk using the app for real at http://localhost:3097. This is a disposable sandbox: clicking, submitting, and deleting are safe and ENCOURAGED. Your zone: [ZONE SCOPE]. Click every control, open every modal/dropdown/expander, submit every form with plausible values, follow every flow to its end state, and watch the browser console throughout. After every mutation, verify the effect actually landed (re-read the UI or re-navigate) — a success toast with no effect is a finding.
 >
@@ -41,13 +44,15 @@ Dispatch one `agent-browser` subagent per zone, max `maxConcurrentAgents` concur
 >
 > Severity: high = flow-blocking, error-producing, or shows wrong/misleading data; medium = a feature is unusable or no-ops; low = polish/confusing-but-workable. `auto_fixable` = true ONLY for objective breakage: console error with stack, 4xx/5xx on user action, dead route, NaN/undefined/Invalid Date render. Judgment calls are auto_fixable: false.
 
-## Step 2 — Merge into the ledger
+## Step 2 — Merge into the ledger (runs per zone, at each checkpoint)
+
+This merge runs once per zone, immediately after that zone's agent returns (see the checkpoint rule in Step 1) — not as one batch at the end.
 
 For each returned finding, compute `id` = kebab-case of `surface--title` (strip punctuation). Compare against ledger entries on the same surface — if an existing entry describes the SAME symptom (judge semantically, not string-equal), it is the same finding:
 
 - Existing entry (any status except `fixed`): bump `last_seen` to today. `wontfix` stays `wontfix`. Otherwise status stays/becomes `known`.
 - No match: append with `status: "new"`, `first_seen`/`last_seen` = today, plus all schema fields.
-- For every ledger entry with status `new`/`known` whose surface belongs to a zone swept THIS run and which was NOT re-reported: set `status: "fixed"`, add `fixed_date`.
+- For every ledger entry with status `new`/`known` whose surface belongs to **the zone that just completed** and which was NOT re-reported by that zone's agent: set `status: "fixed"`, add `fixed_date`. (Zone-scoped by construction — never flip entries for zones not yet swept this run.)
 
 Write `qa/findings/ledger.json`, then regenerate `qa/findings/FINDINGS.md`: open findings (new + known) sorted high→low severity, each with repro steps, expected/actual, screenshot link, first_seen/last_seen; then a compact "Recently fixed" and "Wontfix" archive. Header note: "Findings are against the DEPLOYED Electron build (repo main may already be ahead)."
 
@@ -68,4 +73,4 @@ If there are no new auto_fixable findings, skip entirely (stay on main).
 
 ## Step 5 — Run summary
 
-Append `qa/findings/runs/YYYY-MM-DD.md`: zones swept, agents dispatched, new/known/fixed counts, fix-branch name + outcomes, start/end time. Final reply: one-paragraph summary with the same numbers.
+Append `qa/findings/runs/YYYY-MM-DD.md`: zones swept (note any skipped via resume), agents dispatched, new/known/fixed counts, fix-branch name + outcomes, start/end time. Final reply: one-paragraph summary with the same numbers. Leave `.sweep-progress.json` in place — it's date-keyed, so tomorrow's run ignores it automatically; a same-day manual re-run correctly skips completed zones.

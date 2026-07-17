@@ -33,7 +33,31 @@ ab_baseline() {
   AB_BASELINE_PIDS=$(pgrep -f "$AB_CLEANUP_PATTERN" 2>/dev/null | sort || true)
 }
 
+# Orphan reap (2026-07-17): baseline-diff only catches what THIS run spawns —
+# leftovers from a previously KILLED run are pre-existing at baseline and were
+# never touched (one such orphaned browser held the playwright profile lock and
+# stalled a sweep ~28 min; profile locks are gone now that the global playwright
+# MCP runs --isolated, but orphans still eat memory). Discriminator is
+# PARENTAGE, not age: a live playwright browser's parent is its MCP server
+# process; when the server dies the browser reparents to PID 1. PPID==1 +
+# pattern match = orphan with certainty — an evening interactive session's
+# 5-hour-old browser is still parented to its live server and never matches.
+# Deliberately EXCLUDES the agent-browser daemon patterns: that daemon is
+# PPID-1 by design even when in use (the 2 AM smoke run may still own it).
+AB_ORPHAN_PATTERN='playwright-mcp|ms-playwright'
+
+ab_reap_orphans() {
+  local pid ppid
+  for pid in $(pgrep -f "$AB_ORPHAN_PATTERN" 2>/dev/null || true); do
+    ppid=$(ps -p "$pid" -o ppid= 2>/dev/null | tr -d ' ')
+    [ "$ppid" = "1" ] || continue
+    echo "[ab-reap] killing orphaned PID $pid ($(ps -p "$pid" -o command= 2>/dev/null | cut -c1-80))"
+    kill "$pid" 2>/dev/null || true
+  done
+}
+
 ab_cleanup_init() {
+  ab_reap_orphans
   ab_baseline
   trap ab_cleanup EXIT
 }
