@@ -42,7 +42,7 @@ const CALENDAR_LOOKAHEAD_DAYS = 7;
 const SNAPSHOT_RETENTION_DAYS = 7;
 
 interface Snapshot {
-  schemaVersion: 9;
+  schemaVersion: 10;
   snapshotDate: string;
   generatedAt: string;
   heldSymbols: string[];
@@ -176,6 +176,13 @@ interface Snapshot {
       summary: { avgAbsMovePct: number | null; beatCount: number; missCount: number; quarterCount: number };
     }
   >;
+  // v10 — read-through pairs for the Worker's widened push-at-print gate (#13)
+  readThroughPairs: Array<{
+    reporter: string;
+    target: string;
+    weight: number;
+    hypothesis: string | null;
+  }>;
 }
 
 function today(): string {
@@ -610,7 +617,7 @@ function buildSnapshot(db: Database.Database): Snapshot {
   );
 
   return {
-    schemaVersion: 9,
+    schemaVersion: 10,
     snapshotDate: today(),
     generatedAt: new Date().toISOString(),
     heldSymbols: getHeldStockSymbolsRO(db),
@@ -663,6 +670,15 @@ function buildSnapshot(db: Database.Database): Snapshot {
     // "Expected move (options)" / "Avg move last 8 prints" rows.
     earningsIntel: getEarningsIntelForSnapshot(db, earningsIntelStartDate),
     earningsHistory: getEarningsHistoryForSnapshot(db, upcomingEarningsSymbols),
+    // v10 — read-through pairs (#13). The Worker's push-at-print hook widens
+    // its gate to non-held reporters with a live read-through target. Whole
+    // table shipped — it's small and user-curated.
+    readThroughPairs: db
+      .prepare(
+        `SELECT reporter_symbol AS reporter, target_symbol AS target, weight, hypothesis
+           FROM read_through_pairs ORDER BY weight DESC, reporter_symbol ASC`,
+      )
+      .all() as Snapshot["readThroughPairs"],
   };
 }
 

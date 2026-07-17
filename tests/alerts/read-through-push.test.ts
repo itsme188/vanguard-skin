@@ -1,0 +1,96 @@
+/**
+ * getLiveReadThroughsForReporter (#13) — the live-pairs helper feeding the
+ * widened push-at-print gate. A pair only counts when its TARGET is
+ * currently held/watchlist, so the gate stays narrow as positions exit.
+ *
+ * Spec: docs/superpowers/specs/2026-07-16-read-through-push-design.md
+ */
+
+import { describe, it, expect, beforeEach } from "vitest";
+import Database from "better-sqlite3";
+import { runMigrations } from "@/lib/db/migrate";
+import { getLiveReadThroughsForReporter } from "@/lib/alerts/read-through-push";
+
+let db: Database.Database;
+
+beforeEach(() => {
+  db = new Database(":memory:");
+  db.pragma("foreign_keys = ON");
+  runMigrations(db);
+});
+
+function seedSecurity(symbol: string): number {
+  return Number(
+    db
+      .prepare(`INSERT INTO securities (symbol, name, security_type) VALUES (?, ?, 'Stock')`)
+      .run(symbol, symbol).lastInsertRowid,
+  );
+}
+
+function seedHolding(securityId: number, quantity = 100) {
+  const acct = db
+    .prepare(`INSERT INTO accounts (name) VALUES (?)`)
+    .run(`Acct ${securityId}`).lastInsertRowid as number;
+  db.prepare(
+    `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+     VALUES (?, ?, ?, '2026-07-15', ?)`,
+  ).run(acct, securityId, quantity, `t:${acct}:${securityId}`);
+}
+
+function seedWatchlist(securityId: number) {
+  db.prepare(`INSERT INTO watchlist (security_id, is_active) VALUES (?, 1)`).run(securityId);
+}
+
+function seedPair(reporter: string, target: string, weight = 1.0, hypothesis: string | null = "why") {
+  db.prepare(
+    `INSERT INTO read_through_pairs (reporter_symbol, target_symbol, weight, hypothesis)
+     VALUES (?, ?, ?, ?)`,
+  ).run(reporter, target, weight, hypothesis);
+}
+
+describe("getLiveReadThroughsForReporter", () => {
+  it("returns held targets with hypothesis, weight-sorted", () => {
+    seedHolding(seedSecurity("PRTO"));
+    seedHolding(seedSecurity("XMTR"));
+    seedPair("TER", "XMTR", 0.5, "second");
+    seedPair("TER", "PRTO", 0.9, "first");
+
+    expect(getLiveReadThroughsForReporter(db, "TER")).toEqual([
+      { target: "PRTO", targetStatus: "held", hypothesis: "first" },
+      { target: "XMTR", targetStatus: "held", hypothesis: "second" },
+    ]);
+  });
+
+  it("drops pairs whose target is no longer held/watchlist (exited position)", () => {
+    seedSecurity("GONE"); // securities row exists but no holding
+    seedPair("TER", "GONE");
+    expect(getLiveReadThroughsForReporter(db, "TER")).toEqual([]);
+  });
+
+  it("watchlist targets get watchlist status; held wins when both", () => {
+    const wl = seedSecurity("WATCHED");
+    seedWatchlist(wl);
+    seedPair("TER", "WATCHED");
+    expect(getLiveReadThroughsForReporter(db, "TER")).toEqual([
+      { target: "WATCHED", targetStatus: "watchlist", hypothesis: "why" },
+    ]);
+  });
+
+  it("matches the reporter family-aware (pair under GOOG fires for a GOOGL print)", () => {
+    seedHolding(seedSecurity("TGT"));
+    seedPair("GOOG", "TGT");
+    expect(getLiveReadThroughsForReporter(db, "GOOGL")).toHaveLength(1);
+  });
+
+  it("caps at 3 live pairs", () => {
+    for (const t of ["A", "B", "C", "D"]) {
+      seedHolding(seedSecurity(t));
+      seedPair("TER", t, 1.0);
+    }
+    expect(getLiveReadThroughsForReporter(db, "TER")).toHaveLength(3);
+  });
+
+  it("no pairs → empty (the common non-read-through reporter)", () => {
+    expect(getLiveReadThroughsForReporter(db, "AAPL")).toEqual([]);
+  });
+});

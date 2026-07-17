@@ -38,11 +38,29 @@ function pct(v: number): string {
   return v >= 0 ? `+${s}%` : `${s}%`;
 }
 
+// Read-through lines (#13): target symbols + the user's own curated
+// hypothesis text — the ONLY non-public content the push may carry (never
+// quantities or values). Capped + truncated so a push stays glanceable.
+const READ_THROUGH_LINE_CAP = 3;
+const HYPOTHESIS_CHAR_CAP = 140;
+
+export interface PrintPushReadThrough {
+  target: string;
+  /** "held" | "watchlist" — resolved by the caller against current positions. */
+  targetStatus: string;
+  hypothesis: string | null;
+}
+
 export function composePrintPushMessage(input: {
   symbol: string;
   actualValue: string;
   consensusValue: string | null;
   reactionJson: string | null;
+  /** Live read-through pairs for this reporter (weight-sorted upstream). */
+  readThroughs?: PrintPushReadThrough[];
+  /** True when the push exists ONLY because of the read-through (the
+   *  reporter itself is neither held nor watchlisted) — flags the title. */
+  readThroughOnly?: boolean;
 }): { title: string; message: string } {
   const act = parseFigure(input.actualValue);
   const cons = parseFigure(input.consensusValue);
@@ -75,8 +93,17 @@ export function composePrintPushMessage(input: {
     }
   }
 
+  const lines = [parts.join(" · ")];
+  for (const rt of (input.readThroughs ?? []).slice(0, READ_THROUGH_LINE_CAP)) {
+    const hyp =
+      rt.hypothesis && rt.hypothesis.length > HYPOTHESIS_CHAR_CAP
+        ? `${rt.hypothesis.slice(0, HYPOTHESIS_CHAR_CAP)}…`
+        : rt.hypothesis;
+    lines.push(`→ ${rt.target.toUpperCase()} (${rt.targetStatus})${hyp ? `: ${hyp}` : ""}`);
+  }
+
   return {
-    title: `${input.symbol.toUpperCase()} reported`,
-    message: parts.join(" · "),
+    title: `${input.symbol.toUpperCase()} reported${input.readThroughOnly ? " — read-through" : ""}`,
+    message: lines.join("\n"),
   };
 }

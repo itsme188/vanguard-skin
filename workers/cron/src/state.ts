@@ -181,6 +181,7 @@ export interface SnapshotBogey {
  *   v7 — adds briefingHoldings (Vanguard-only, IBKR excluded) for the cloud
  *        briefing fallback
  *   v8 — adds watchlistSymbols for the push-at-print hook's watchlist coverage
+ *   v10 — adds readThroughPairs (#13 read-through push at print)
  *   v9 — adds earningsIntel (implied move per upcoming event) + earningsHistory
  *        (per-symbol surprise/reaction history) so the cloud scoreboard can
  *        render the same "Expected move (options)" / "Avg move last 8 prints"
@@ -244,7 +245,7 @@ export interface EarningsHistorySnapshotEntry {
 }
 
 export interface Snapshot {
-  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
+  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
   snapshotDate: string;
   generatedAt: string;
   heldSymbols: string[];
@@ -301,6 +302,18 @@ export interface Snapshot {
   // exactly the classic scoreboard (no "Expected move" / "Avg move" rows).
   earningsIntel?: EarningsIntelSnapshotRow[];
   earningsHistory?: Record<string, EarningsHistorySnapshotEntry>;
+  // v10 — read-through pairs (#13): the push-at-print hook widens its gate
+  // to non-held reporters with a live (held/watchlist) read-through target,
+  // and carries "→ TARGET (status): hypothesis" lines. Optional/additive:
+  // snapshots ≤v9 lack the field and the hook keeps held/watchlist-only.
+  readThroughPairs?: ReadThroughPairSnapshotRow[];
+}
+
+export interface ReadThroughPairSnapshotRow {
+  reporter: string;
+  target: string;
+  weight: number;
+  hypothesis: string | null;
 }
 
 /** Fetch the most recent snapshot (within 7d). Returns null if none exist. */

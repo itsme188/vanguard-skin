@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { sendEarningsPrintPush } from "@/lib/alerts/print-push";
+import { getLiveReadThroughsForReporter } from "@/lib/alerts/read-through-push";
 import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
 import {
   getEarningsSettings,
@@ -235,8 +236,12 @@ export async function reconcileCloudEnrichment(
           const sym = existing.symbol.toUpperCase();
           const status = getSymbolStatus(db, [sym])[sym];
           const settings = getEarningsSettings(db);
+          // #13: a non-held reporter with a live read-through pair also
+          // pushes — same widened gate as the enrichment runner.
+          const covered = status === "held" || status === "watchlist";
+          const readThroughs = getLiveReadThroughsForReporter(db, sym);
           if (
-            (status === "held" || status === "watchlist") &&
+            (covered || readThroughs.length > 0) &&
             shouldSendEarningsEmail(settings, sym)
           ) {
             await sendEarningsPrintPush({
@@ -251,6 +256,8 @@ export async function reconcileCloudEnrichment(
               reactionJson: payload.reaction
                 ? JSON.stringify(payload.reaction)
                 : existing.reaction_snapshot,
+              readThroughs,
+              readThroughOnly: !covered,
             });
           }
         } catch (err) {

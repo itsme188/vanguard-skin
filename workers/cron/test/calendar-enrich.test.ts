@@ -212,6 +212,7 @@ describe("runCloudFallback push-at-print hook", () => {
     mutedSymbols?: string[];
     enabled?: boolean;
     schemaVersion?: Snapshot["schemaVersion"];
+    readThroughPairs?: Snapshot["readThroughPairs"]; // undefined → omit (pre-v10 snapshot)
   } = {}): Snapshot {
     const snap: Snapshot = {
       schemaVersion: overrides.schemaVersion ?? 8,
@@ -244,6 +245,9 @@ describe("runCloudFallback push-at-print hook", () => {
     } as unknown as Snapshot;
     if (overrides.watchlistSymbols !== undefined) {
       (snap as unknown as { watchlistSymbols: string[] }).watchlistSymbols = overrides.watchlistSymbols;
+    }
+    if (overrides.readThroughPairs !== undefined) {
+      snap.readThroughPairs = overrides.readThroughPairs;
     }
     return snap;
   }
@@ -296,6 +300,62 @@ describe("runCloudFallback push-at-print hook", () => {
     await runCloudFallback(env, { nowMs: candidateWindowNowMs(), pacingMs: 0 });
 
     expect(sendPushover).toHaveBeenCalledTimes(1);
+  });
+
+  it("pushes for a NON-held reporter with a live read-through pair (#13), title flagged", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makePushSnapshot({
+        heldSymbols: ["PRTO"], // target held; the AAPL reporter itself is not
+        watchlistSymbols: [],
+        readThroughPairs: [
+          { reporter: "AAPL", target: "PRTO", weight: 1.0, hypothesis: "same cycle" },
+        ],
+      }),
+    );
+    mockCleanActual();
+
+    await runCloudFallback(env, { nowMs: candidateWindowNowMs(), pacingMs: 0 });
+
+    expect(sendPushover).toHaveBeenCalledTimes(1);
+    const [, msg] = (sendPushover as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(msg.title).toBe("AAPL reported — read-through");
+    expect(msg.message).toContain("→ PRTO (held): same cycle");
+  });
+
+  it("does NOT push when the pair's target is neither held nor watchlisted (#13 gate stays narrow)", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makePushSnapshot({
+        heldSymbols: [],
+        watchlistSymbols: [],
+        readThroughPairs: [
+          { reporter: "AAPL", target: "GONE", weight: 1.0, hypothesis: "stale" },
+        ],
+      }),
+    );
+    mockCleanActual();
+
+    await runCloudFallback(env, { nowMs: candidateWindowNowMs(), pacingMs: 0 });
+
+    expect(sendPushover).not.toHaveBeenCalled();
+  });
+
+  it("a held reporter's push carries read-through lines with the normal title", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makePushSnapshot({
+        heldSymbols: ["AAPL", "TGT"],
+        readThroughPairs: [{ reporter: "AAPL", target: "TGT", weight: 1.0, hypothesis: "why" }],
+      }),
+    );
+    mockCleanActual();
+
+    await runCloudFallback(env, { nowMs: candidateWindowNowMs(), pacingMs: 0 });
+
+    const [, msg] = (sendPushover as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(msg.title).toBe("AAPL reported");
+    expect(msg.message).toContain("→ TGT (held): why");
   });
 
   it("does not push when the symbol is in neither held nor watchlist", async () => {
