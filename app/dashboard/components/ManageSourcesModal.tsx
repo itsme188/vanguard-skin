@@ -124,6 +124,11 @@ export function ManageSourcesModal({
     .sort((a, b) => (a.earnings_rank! - b.earnings_rank!) || (a.id - b.id));
 
   const [noteDrafts, setNoteDrafts] = useState<Record<number, string>>({});
+  // In-flight lock for hierarchy mutations (reorder/add/remove/note-save) —
+  // without it a second click while a PATCH sequence is mid-flight can have
+  // its committed change silently stomped by the first call's catch-path
+  // revert to a stale `prevSources` snapshot.
+  const [hierarchyBusy, setHierarchyBusy] = useState(false);
 
   const patchSource = useCallback(
     async (id: number, fields: Record<string, unknown>): Promise<void> => {
@@ -140,8 +145,14 @@ export function ManageSourcesModal({
     []
   );
 
-  /** Write dense 1..N ranks for newOrder, PATCHing only changed rows. */
-  const applyRanks = useCallback(
+  /**
+   * Write dense 1..N ranks for newOrder, PATCHing only changed rows.
+   * Unlocked — callers that already hold `hierarchyBusy` (i.e.
+   * `handleRemoveFromHierarchy`) call this directly to avoid deadlocking
+   * on their own lock. External callers (`handleMove`) go through the
+   * locked `applyRanks` wrapper below instead.
+   */
+  const applyRanksCore = useCallback(
     async (newOrder: ResearchSource[]) => {
       setMutationError(null);
       const prevSources = sources;
@@ -170,8 +181,24 @@ export function ManageSourcesModal({
     [sources, patchSource, onSourcesChanged]
   );
 
+  /** Locked entry point for reorder — used by handleMove. */
+  const applyRanks = useCallback(
+    async (newOrder: ResearchSource[]) => {
+      if (hierarchyBusy) return;
+      setHierarchyBusy(true);
+      try {
+        await applyRanksCore(newOrder);
+      } finally {
+        setHierarchyBusy(false);
+      }
+    },
+    [hierarchyBusy, applyRanksCore]
+  );
+
   const handleAddToHierarchy = useCallback(
     async (sourceId: number) => {
+      if (hierarchyBusy) return;
+      setHierarchyBusy(true);
       setMutationError(null);
       const maxRank = hierarchy.reduce(
         (m, s) => Math.max(m, s.earnings_rank ?? 0),
@@ -191,13 +218,21 @@ export function ManageSourcesModal({
         setMutationError(
           `Couldn't add the source to the earnings hierarchy: ${err instanceof Error ? err.message : "network error"}. The change was reverted.`
         );
+      } finally {
+        setHierarchyBusy(false);
       }
     },
-    [hierarchy, patchSource, onSourcesChanged]
+    [hierarchy, patchSource, onSourcesChanged, hierarchyBusy]
   );
 
   const handleRemoveFromHierarchy = useCallback(
     async (sourceId: number) => {
+      // Manages the lock itself (rather than delegating to the locked
+      // `applyRanks`) because it needs to call the renumbering step
+      // internally — going through the locked wrapper here would either
+      // deadlock or require re-entrant locking.
+      if (hierarchyBusy) return;
+      setHierarchyBusy(true);
       setMutationError(null);
       const prevSources = sources;
       const remaining = hierarchy.filter((s) => s.id !== sourceId);
@@ -207,15 +242,17 @@ export function ManageSourcesModal({
       try {
         await patchSource(sourceId, { earnings_rank: null });
         // Renumber survivors to dense 1..N (only changed rows PATCH).
-        await applyRanks(remaining);
+        await applyRanksCore(remaining);
       } catch (err) {
         setSources(prevSources);
         setMutationError(
           `Couldn't remove the source from the earnings hierarchy: ${err instanceof Error ? err.message : "network error"}. The change was reverted.`
         );
+      } finally {
+        setHierarchyBusy(false);
       }
     },
-    [sources, hierarchy, patchSource, applyRanks]
+    [sources, hierarchy, patchSource, applyRanksCore, hierarchyBusy]
   );
 
   const handleMove = useCallback(
@@ -238,6 +275,10 @@ export function ManageSourcesModal({
         sources.find((s) => s.id === sourceId)?.earnings_note ?? "";
       const trimmed = draft.trim();
       if (trimmed === current) return;
+      // Only gate on the lock here — a no-op blur above never fires a PATCH,
+      // so it must never be blocked by an in-flight reorder/add/remove.
+      if (hierarchyBusy) return;
+      setHierarchyBusy(true);
       setMutationError(null);
       setSources((prev) =>
         prev.map((s) =>
@@ -247,18 +288,34 @@ export function ManageSourcesModal({
       try {
         await patchSource(sourceId, { earnings_note: trimmed || null });
         onSourcesChanged();
+        // Clear the draft so the input falls back to the server-confirmed
+        // value instead of shadowing future refreshes with a stale string.
+        setNoteDrafts((prev) => {
+          const next = { ...prev };
+          delete next[sourceId];
+          return next;
+        });
       } catch (err) {
         setSources((prev) =>
           prev.map((s) =>
             s.id === sourceId ? { ...s, earnings_note: current || null } : s
           )
         );
+        // Clear the draft here too — otherwise the input keeps showing the
+        // failed text even though the banner below says "reverted".
+        setNoteDrafts((prev) => {
+          const next = { ...prev };
+          delete next[sourceId];
+          return next;
+        });
         setMutationError(
           `Couldn't save the note: ${err instanceof Error ? err.message : "network error"}. The note was reverted.`
         );
+      } finally {
+        setHierarchyBusy(false);
       }
     },
-    [noteDrafts, sources, patchSource, onSourcesChanged]
+    [noteDrafts, sources, patchSource, onSourcesChanged, hierarchyBusy]
   );
 
   const handleDelete = useCallback(
@@ -431,7 +488,7 @@ export function ManageSourcesModal({
                           <button
                             type="button"
                             onClick={() => handleMove(s.id, -1)}
-                            disabled={i === 0}
+                            disabled={i === 0 || hierarchyBusy}
                             aria-label={`Move ${s.name} up`}
                             className="relative text-[10px] font-medium px-1.5 py-0.5 rounded border border-edge text-ink-faint hover:text-ink-dim disabled:opacity-30 transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 pointer-coarse:after:content-['']"
                           >
@@ -440,7 +497,7 @@ export function ManageSourcesModal({
                           <button
                             type="button"
                             onClick={() => handleMove(s.id, 1)}
-                            disabled={i === hierarchy.length - 1}
+                            disabled={i === hierarchy.length - 1 || hierarchyBusy}
                             aria-label={`Move ${s.name} down`}
                             className="relative text-[10px] font-medium px-1.5 py-0.5 rounded border border-edge text-ink-faint hover:text-ink-dim disabled:opacity-30 transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 pointer-coarse:after:content-['']"
                           >
@@ -449,8 +506,9 @@ export function ManageSourcesModal({
                           <button
                             type="button"
                             onClick={() => void handleRemoveFromHierarchy(s.id)}
+                            disabled={hierarchyBusy}
                             aria-label={`Remove ${s.name} from earnings hierarchy`}
-                            className="relative text-[10px] font-medium px-1.5 py-0.5 rounded border border-edge text-ink-faint hover:text-down transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 pointer-coarse:after:content-['']"
+                            className="relative text-[10px] font-medium px-1.5 py-0.5 rounded border border-edge text-ink-faint hover:text-down disabled:opacity-30 transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 pointer-coarse:after:content-['']"
                           >
                             remove
                           </button>
@@ -531,8 +589,9 @@ export function ManageSourcesModal({
                         <button
                           type="button"
                           onClick={() => void handleAddToHierarchy(s.id)}
+                          disabled={hierarchyBusy}
                           aria-label={`Add ${s.name} to earnings hierarchy`}
-                          className="relative text-[10px] font-medium px-1.5 py-0.5 rounded border border-edge text-ink-faint hover:text-ink-dim transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 pointer-coarse:after:content-['']"
+                          className="relative text-[10px] font-medium px-1.5 py-0.5 rounded border border-edge text-ink-faint hover:text-ink-dim disabled:opacity-30 transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 pointer-coarse:after:content-['']"
                         >
                           + earnings
                         </button>
