@@ -25,6 +25,7 @@
 
 ## Bugs / Quality
 
+- [ ] **Nightly smoke QA: portfolio-value extraction returns empty string** (seen in 2026-07-17 log: `ValueError: could not convert string to float` in run-qa.sh value comparison; page loads fine, extraction selector likely stale post-redesign). Surfaced while fixing the bash-3.2 heredoc parse death — smoke QA had never reached its footer, so this may have been broken silently for months.
 - [ ] **Earnings newsletter fill — single-ranked-source SQL flood hardening** (final-review Minor j, 2026-07-17). If ONE ranked source produces ≥30 family-matched rows in the 7-day window, the rank-aware `LIMIT 30` pre-filter in `getNewsletterContext` evicts every other source's candidates, `distinctSources` reads 1, and pass-2 refill re-monopolizes the slots. Theoretical today (VK ceiling ~21 rows/week/family). Fix options: per-source SQL cap via window function, or compute distinctSources from a separate `COUNT(DISTINCT source_id)` query.
 
 - [ ] **[FX] Watchlist current-price stays native for foreign names** (deferred by design, 2026-07-06 read-surface sweep). `getActiveWatchlist` renders `current_price` unconverted because the user-entered `target_price` is also native — converting only the live side breaks the upside-% and distance math. Zero foreign watchlist rows exist today. Revisit (convert BOTH for display, keep native for edit) if a foreign name is ever watchlisted.
