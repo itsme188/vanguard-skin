@@ -1508,23 +1508,30 @@ function formatPositionSummary(ctx: PreviewContext): string {
   return `**Combined exposure:** ${exposure} across ${ctx.positions.length} account-position(s). Each line above carries a percentage return suffix when computable — reason about asymmetry and direction in percentage terms; do not multiply contract counts by underlying prices to derive dollar exposure.`;
 }
 
-function renderNewslettersBlock(
+export function renderNewslettersBlock(
   ctx: PreviewContext,
   phase: "preview" | "recap",
 ): string {
   if (ctx.recentArticles.length === 0) {
     return `\n## Newsletter coverage\nNo recent newsletter articles mention ${ctx.symbol}. Use web_search to gather sell-side / buy-side commentary instead.\n`;
   }
+  const seenNoteSources = new Set<number>();
   const blocks = ctx.recentArticles.map((a) => {
     const sentSuffix = a.sentiment_score != null
       ? ` (sentiment score: ${a.sentiment_score.toFixed(2)})`
       : "";
-    return `### [${a.received_at.slice(0, 16).replace("T", " ")}] ${a.source_name} — ${a.subject}${sentSuffix}\n${a.body}`;
+    let noteLine = "";
+    if (a.earnings_note && !seenNoteSources.has(a.source_id)) {
+      seenNoteSources.add(a.source_id);
+      noteLine = `\n> How to read this source: ${a.earnings_note}`;
+    }
+    return `### [${a.received_at.slice(0, 16).replace("T", " ")}] ${a.source_name} — ${a.subject}${sentSuffix}${noteLine}\n${a.body}`;
   });
-  const framing = phase === "preview"
-    ? `These are the user's preferred newsletter feeds covering ${ctx.symbol} (or a sibling) in the last 7 days. Treat these as **bogies + buy-side / sell-side commentary** — quote authors by name, surface where they disagree, and note any specific numbers (EPS, revenue, segment splits, price targets) they mention.`
-    : `These are the user's preferred newsletter feeds covering ${ctx.symbol} in the last 7 days — context for how the position was being framed *into* the print. Reference these only where they're directly relevant to interpreting the actual.`;
-  return `\n## Newsletter coverage (preferred sources, last 7 days)\n${framing}\n\n${blocks.join("\n\n---\n\n")}\n`;
+  const phaseFraming = phase === "preview"
+    ? `Treat these as **bogies + buy-side / sell-side commentary** — quote authors by name, surface where they disagree, and note any specific numbers (EPS, revenue, segment splits, price targets) they mention.`
+    : `These frame how the position was being read *into* the print. Reference them only where they're directly relevant to interpreting the actual.`;
+  const framing = `Sources below appear in the user's trust order — when sources conflict, weight the earlier-listed source's framing more heavily, but always surface the disagreement. ${phaseFraming} Where multiple sources make the same factual claim (a bogey, a price target, a sell-side note), collapse it into one statement with multi-source attribution ("VK and TMT Breakout both flag the same whisper") rather than repeating it per source.`;
+  return `\n## Newsletter coverage (user's trust-ordered sources)\n${framing}\n\n${blocks.join("\n\n---\n\n")}\n`;
 }
 
 function renderAnalystBlock(ctx: PreviewContext): string {
