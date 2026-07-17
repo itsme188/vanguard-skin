@@ -818,6 +818,16 @@ interface CandidateRow {
 }
 
 const MAX_NEWSLETTER_ARTICLES = 6;
+/**
+ * Real-data finding (2026-07-17): one prolific ranked source (Vital
+ * Knowledge, ~6 articles/week per big name) was winning every slot under
+ * the plain rank-ordered fill, so lower-ranked sources — including TMT
+ * Breakout's bogies coverage, this feature's motivating case — never
+ * appeared. Pass 1 below enforces this cap per source; pass 2 refills any
+ * still-open slots so a single-source symbol still gets full coverage
+ * (there's nothing to diversify away from when only one source covers it).
+ */
+const MAX_ARTICLES_PER_SOURCE = 2;
 const CANDIDATE_FETCH_LIMIT = 30;
 
 /** ET calendar day of a received_at timestamp (ISO or SQLite space format, UTC). */
@@ -925,29 +935,81 @@ export function getNewsletterContext(
   });
 
   let totalChars = 0;
-  const result: NewsletterEntry[] = [];
-  for (const r of rows) {
-    if (result.length >= MAX_NEWSLETTER_ARTICLES) break;
-    const fullText = r.raw_text || r.summary || "";
-    const body =
-      fullText.length > ARTICLE_BODY_CAP
-        ? fullText.slice(0, ARTICLE_BODY_CAP) + "\n[...truncated...]"
-        : fullText;
-    if (totalChars + body.length > TOTAL_CONTEXT_CAP) break;
+  const selectedIds = new Set<number>();
+  const perSourceCount = new Map<number, number>();
+  const bodyById = new Map<number, string>();
+
+  function bodyFor(r: CandidateRow): string {
+    let cached = bodyById.get(r.id);
+    if (cached === undefined) {
+      const fullText = r.raw_text || r.summary || "";
+      cached =
+        fullText.length > ARTICLE_BODY_CAP
+          ? fullText.slice(0, ARTICLE_BODY_CAP) + "\n[...truncated...]"
+          : fullText;
+      bodyById.set(r.id, cached);
+    }
+    return cached;
+  }
+
+  /**
+   * Attempts to admit one row into the selection against the running
+   * char/slot budget. Truncation + char accounting happen here exactly
+   * once per selected row, shared by both passes below. Returns false when
+   * either hard limit (slot count or TOTAL_CONTEXT_CAP) is hit — the caller
+   * should stop walking immediately, same "break" semantics the original
+   * single-pass loop had.
+   */
+  function tryAdmit(r: CandidateRow): boolean {
+    if (selectedIds.size >= MAX_NEWSLETTER_ARTICLES) return false;
+    const body = bodyFor(r);
+    if (totalChars + body.length > TOTAL_CONTEXT_CAP) return false;
     totalChars += body.length;
-    result.push({
+    selectedIds.add(r.id);
+    perSourceCount.set(r.source_id, (perSourceCount.get(r.source_id) ?? 0) + 1);
+    return true;
+  }
+
+  // Pass 1: diversity-capped walk — skip (not stop on) any row whose source
+  // has already hit MAX_ARTICLES_PER_SOURCE, so a later-ranked source's rows
+  // still get a look.
+  for (const r of rows) {
+    if ((perSourceCount.get(r.source_id) ?? 0) >= MAX_ARTICLES_PER_SOURCE) continue;
+    if (!tryAdmit(r)) break;
+  }
+
+  // Pass 2: refill only when this symbol's ENTIRE candidate pool is a
+  // single source — the "single-source symbol still gets full coverage"
+  // case from the constant comment above. When 2+ distinct sources cover
+  // the symbol, leaving slots under MAX_NEWSLETTER_ARTICLES unfilled is the
+  // diversity cap working as intended, not a bug: refilling from the
+  // already-capped majority source would silently undo pass 1's whole
+  // point (the real-data monopolization finding this amendment fixes).
+  const distinctSources = new Set(rows.map((r) => r.source_id)).size;
+  if (distinctSources === 1 && selectedIds.size < MAX_NEWSLETTER_ARTICLES) {
+    for (const r of rows) {
+      if (selectedIds.has(r.id)) continue;
+      if (!tryAdmit(r)) break;
+    }
+  }
+
+  // Selection order is inherited from `rows` (already trust-ordered), not
+  // re-derived — pass 2 can admit rows out of walk order relative to pass
+  // 1's skips, so we filter the original sorted array rather than sort the
+  // result again.
+  return rows
+    .filter((r) => selectedIds.has(r.id))
+    .map((r) => ({
       source_name: r.source_name,
       subject: r.subject,
       received_at: r.received_at,
-      body,
+      body: bodyFor(r),
       sentiment: r.sentiment,
       sentiment_score: r.sentiment_score,
       source_id: r.source_id,
       earnings_rank: r.earnings_rank,
       earnings_note: r.earnings_note,
-    });
-  }
-  return result;
+    }));
 }
 
 // ── Analyst formatters ─────────────────────────────────────────────
