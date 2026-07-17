@@ -277,7 +277,15 @@ export function ManageSourcesModal({
       if (trimmed === current) return;
       // Only gate on the lock here — a no-op blur above never fires a PATCH,
       // so it must never be blocked by an in-flight reorder/add/remove.
-      if (hierarchyBusy) return;
+      if (hierarchyBusy) {
+        // A real change is stuck behind a lock — say so rather than
+        // silently dropping it. The draft is left intact so the text
+        // stays visible and the next blur retries the save.
+        setMutationError(
+          "The note wasn't saved yet — another hierarchy change is still in progress. Click outside the field again in a moment to save it."
+        );
+        return;
+      }
       setHierarchyBusy(true);
       setMutationError(null);
       setSources((prev) =>
@@ -289,8 +297,12 @@ export function ManageSourcesModal({
         await patchSource(sourceId, { earnings_note: trimmed || null });
         onSourcesChanged();
         // Clear the draft so the input falls back to the server-confirmed
-        // value instead of shadowing future refreshes with a stale string.
+        // value instead of shadowing future refreshes with a stale string —
+        // but only if the user hasn't retyped since this save began; if
+        // they have, `prev[sourceId]` no longer equals the captured
+        // `draft` and clearing it here would yank their in-progress text.
         setNoteDrafts((prev) => {
+          if (prev[sourceId] !== draft) return prev;
           const next = { ...prev };
           delete next[sourceId];
           return next;
@@ -302,8 +314,10 @@ export function ManageSourcesModal({
           )
         );
         // Clear the draft here too — otherwise the input keeps showing the
-        // failed text even though the banner below says "reverted".
+        // failed text even though the banner below says "reverted". Same
+        // guard as the success path: only clear if unchanged since capture.
         setNoteDrafts((prev) => {
+          if (prev[sourceId] !== draft) return prev;
           const next = { ...prev };
           delete next[sourceId];
           return next;
@@ -315,7 +329,7 @@ export function ManageSourcesModal({
         setHierarchyBusy(false);
       }
     },
-    [noteDrafts, sources, patchSource, onSourcesChanged, hierarchyBusy]
+    [noteDrafts, sources, patchSource, onSourcesChanged, hierarchyBusy, setMutationError]
   );
 
   const handleDelete = useCallback(
