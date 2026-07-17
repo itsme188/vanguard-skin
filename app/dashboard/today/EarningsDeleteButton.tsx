@@ -50,6 +50,9 @@ export function EarningsDeleteButton({
         return;
       }
       toast(`Removed manual earnings event${label}.`, "success");
+      // router.refresh() re-renders the server-rendered Hub; the cockpit is
+      // a client poller and needs its own signal to drop the row now.
+      window.dispatchEvent(new Event("earnings-data-changed"));
       startTransition(() => router.refresh());
     } catch {
       toast(

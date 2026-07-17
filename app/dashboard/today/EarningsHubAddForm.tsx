@@ -50,9 +50,11 @@ export function EarningsHubAddForm({ weekOf: _weekOf }: Props) {
         setSubmitting(false);
         return;
       }
-      // Reset + close + reload server component
+      // Reset + close + reload server component; the cockpit is a client
+      // poller and needs its own signal to pick up the new reporter now.
       setSymbol("");
       setOpen(false);
+      window.dispatchEvent(new Event("earnings-data-changed"));
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Network error");
