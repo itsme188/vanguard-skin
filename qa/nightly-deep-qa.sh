@@ -86,9 +86,15 @@ if ! npx -y @playwright/mcp@latest --version >/dev/null 2>&1; then
   exit 1
 fi
 
+# Browser-process cleanup (2026-07-17): nightly runs were leaving daemon +
+# Chrome-for-Testing pairs alive indefinitely. Baseline BEFORE any browser
+# work; ab_cleanup chains into the single EXIT trap below (traps replace).
+source "$SCRIPT_DIR/lib/agent-browser-cleanup.sh"
+ab_baseline
+
 bash "$SCRIPT_DIR/sandbox.sh" up || { notify_failure "sandbox boot failed"; exit 1; }
-# Single EXIT trap (bash traps replace, not stack): sandbox down + release lock.
-trap 'bash "$SCRIPT_DIR/sandbox.sh" down; rmdir "$LOCK_DIR" 2>/dev/null' EXIT
+# Single EXIT trap (bash traps replace, not stack): sandbox down + release lock + browser cleanup.
+trap 'bash "$SCRIPT_DIR/sandbox.sh" down; rmdir "$LOCK_DIR" 2>/dev/null; ab_cleanup' EXIT
 
 # --- Model selection: PROBE for the strongest CALLABLE model -----------------
 # Do NOT rely on `--model fable --fallback-model opus,sonnet`. That was the

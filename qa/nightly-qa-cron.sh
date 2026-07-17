@@ -29,6 +29,13 @@ mkdir -p "$LOG_DIR" "$REPORT_DIR"
 # --- Ensure PATH includes Homebrew and node ---
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
+# --- Browser-process cleanup (2026-07-17) ---
+# Every nightly run was leaving an agent-browser daemon + Chrome-for-Testing
+# pair alive indefinitely (close doesn't kill the daemon; abort paths skip
+# cleanup). Baseline-diff kill on EXIT — only processes this run spawned.
+source "$QA_DIR/lib/agent-browser-cleanup.sh"
+ab_cleanup_init
+
 # Self-gate: daily at 02:00 ET (10-min window). Plist now runs every 5 min.
 source /Users/Yitzi/code/vanguard-skin/scripts/lib/et-gate.sh
 in_et_window "1,2,3,4,5,6,7" 2 0 || exit 0
@@ -132,7 +139,12 @@ Screenshots of each page are in $QA_DIR/screenshots/.
 Instructions:
 1. Create a new branch: git checkout -b qa-fixes-$TODAY
 2. For each failure, read the relevant source file and attempt a fix.
-3. Maximum $MAX_FIX_ATTEMPTS attempts per issue. If you can't fix it in $MAX_FIX_ATTEMPTS tries, log what you tried and move on.
+3. Maximum $MAX_FIX_ATTEMPTS attempts per issue. If you cannot fix it in $MAX_FIX_ATTEMPTS tries, log what you tried and move on.
+   (Wording note: this heredoc must contain NO apostrophe / single-quote
+   characters — macOS /bin/bash 3.2 cannot parse one inside a cat-heredoc
+   command substitution and dies with unexpected EOF. One such character
+   killed this script at this line EVERY night: 115 runs, zero completions,
+   leaking the dev server + browser processes the cleanup below never reached.)
 4. After all fixes, re-run: bash $QA_DIR/run-qa.sh
 5. Commit any fixes with a descriptive message.
 6. Do NOT push — just leave the branch ready for review.
