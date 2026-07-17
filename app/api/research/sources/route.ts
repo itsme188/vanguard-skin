@@ -33,6 +33,28 @@ export async function PATCH(request: Request) {
     return Response.json({ error: "id is required" }, { status: 400 });
   }
   const { id, ...updates } = body;
+  if ("earnings_rank" in updates) {
+    const r = updates.earnings_rank;
+    if (r !== null && (!Number.isInteger(r) || r < 1)) {
+      return Response.json(
+        { error: "earnings_rank must be a positive integer or null" },
+        { status: 400 }
+      );
+    }
+  }
+  if ("earnings_note" in updates) {
+    const n = updates.earnings_note;
+    if (n !== null && typeof n !== "string") {
+      return Response.json(
+        { error: "earnings_note must be a string or null" },
+        { status: 400 }
+      );
+    }
+    if (typeof n === "string") {
+      const trimmed = n.trim();
+      updates.earnings_note = trimmed === "" ? null : trimmed;
+    }
+  }
   updateSource(db, id, updates);
   return Response.json({ success: true });
 }

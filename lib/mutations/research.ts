@@ -17,6 +17,8 @@ const UPDATABLE_SOURCE_COLUMNS = new Set([
   "processing_prompt",
   "website_url",
   "allow_off_topic",
+  "earnings_rank",
+  "earnings_note",
 ]);
 
 export function updateSource(
@@ -34,6 +36,10 @@ export function updateSource(
     website_url?: string | null;
     /** 1 = bypass the D3 off-topic relevance filter for this source (migration 055). */
     allow_off_topic?: number;
+    /** Trust-hierarchy position for earnings emails (migration 068); null removes from hierarchy. */
+    earnings_rank?: number | null;
+    /** Per-source prompt guidance for earnings emails; null clears. */
+    earnings_note?: string | null;
   }
 ): void {
   const fields: string[] = [];
