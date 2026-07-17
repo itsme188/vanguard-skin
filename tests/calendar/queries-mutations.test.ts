@@ -240,6 +240,35 @@ describe("getUpcomingEvents", () => {
     const limited = getUpcomingEvents(db, { limit: 3 });
     expect(limited).toHaveLength(3);
   });
+
+  it("excludes superseded rows (deep-QA 2026-07-16: HOOD/AAPL earnings rendered twice)", () => {
+    // One print, two source rows — reconcileEarningsDates marks the loser
+    // superseded=1. Every getUpcomingEvents consumer is a display surface
+    // (Security Detail Upcoming Events, UpcomingEventsCard, MorningBriefing,
+    // GET /api/calendar/events), so superseded rows must never surface —
+    // same rule getEventsByWeek already applies.
+    upsertCalendarEvents(db, [
+      makeEvent({
+        source: "finnhub",
+        source_key: "finnhub:HOOD:2026-07-29",
+        event_type: "earnings",
+        event_date: "2026-07-29",
+      }),
+      makeEvent({
+        source: "nasdaq",
+        source_key: "nasdaq:HOOD:2026-07-29",
+        event_type: "earnings",
+        event_date: "2026-07-29",
+      }),
+    ]);
+    db.prepare(
+      "UPDATE calendar_events SET superseded = 1 WHERE source_key = 'nasdaq:HOOD:2026-07-29'"
+    ).run();
+
+    const rows = getUpcomingEvents(db, { startDate: "2026-07-29", endDate: "2026-07-29" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].source).toBe("finnhub");
+  });
 });
 
 // ─── getEventsByWeek ─────────────────────────────────────────────
