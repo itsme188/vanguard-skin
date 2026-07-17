@@ -63,6 +63,18 @@ vi.mock("@/lib/earnings/wrap-send", () => ({
   runWrapPass: (...a: unknown[]) => runWrapPass(...a),
 }));
 
+// #12 B1: the same-day transcript step is best-effort and unrelated to the
+// marker-dance/wrap-suppression assertions this file pins — mock it out so
+// fixtures here (which coincidentally satisfy fetchSameDayTranscripts' own
+// held+actual+within-36h eligibility criteria) don't trigger a real
+// fetchTranscript call (network I/O to EDGAR/Alpha Vantage/API Ninjas).
+const fetchSameDayTranscripts = vi.fn(
+  async (..._args: unknown[]) => ({ attempted: 0, fetched: 0 }),
+);
+vi.mock("@/lib/transcripts/same-day", () => ({
+  fetchSameDayTranscripts: (...a: unknown[]) => fetchSameDayTranscripts(...a),
+}));
+
 import { runEarningsEmailSweep, alertBlockedRecaps } from "@/lib/calendar/email-sweep";
 import { EarningsEmailError } from "@/lib/digest/send-earnings-email";
 import { setMutedEarningsSymbols } from "@/lib/queries/earnings-settings";
@@ -238,6 +250,8 @@ describe("runEarningsEmailSweep marker dance", () => {
     fetchCloudSent.mockResolvedValue([]);
     runWrapPass.mockClear();
     runWrapPass.mockResolvedValue({ wrapsSent: 0, wrapped: 0, stillWaiting: [] });
+    fetchSameDayTranscripts.mockClear();
+    fetchSameDayTranscripts.mockResolvedValue({ attempted: 0, fetched: 0 });
   });
 
   // ── Cloud-sent audit reconcile (2026-07-15) ─────────────────────────────
@@ -461,6 +475,8 @@ describe("wrap-mode suppression (#17 T3)", () => {
     fetchCloudSent.mockResolvedValue([]);
     runWrapPass.mockClear();
     runWrapPass.mockResolvedValue({ wrapsSent: 0, wrapped: 0, stillWaiting: [] });
+    fetchSameDayTranscripts.mockClear();
+    fetchSameDayTranscripts.mockResolvedValue({ attempted: 0, fetched: 0 });
   });
 
   it("suppresses all three ready AMC recap candidates when the cluster reaches WRAP_THRESHOLD, and runs the wrap pass once", async () => {
