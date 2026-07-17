@@ -155,13 +155,23 @@ export function getSymbolStatus(
  * synced (Wave 1 B10 — a TER-LEAP-only book must still see TER's print).
  */
 export function getHeldOptionUnderlyingSymbols(db: Database.Database): string[] {
+  // Fund-type underlyings are excluded: both consumers (the Finnhub/Nasdaq
+  // earnings scan in lib/calendar/sync.ts and the coverage guard) are
+  // earnings surfaces, and an ETF/mutual-fund underlying never reports —
+  // the book's index-hedge options (SPY/XLF/SOXX puts) were producing
+  // guard "no_history gaps" and pointless Finnhub queries (guard debut
+  // triage, 2026-07-16). NULL / missing-row underlyings are KEPT: unknown
+  // is not proven-fund, and real single-name exposure must never be
+  // silently dropped.
   const rows = db
     .prepare(
       `SELECT DISTINCT UPPER(s.underlying_symbol) AS symbol
          FROM holdings h
          JOIN securities s ON s.id = h.security_id
+         LEFT JOIN securities u ON UPPER(u.symbol) = UPPER(s.underlying_symbol)
         WHERE LOWER(COALESCE(s.security_type, '')) = 'option'
           AND s.underlying_symbol IS NOT NULL AND s.underlying_symbol != ''
+          AND LOWER(COALESCE(u.security_type, '')) NOT IN ('etf', 'mutual fund')
           AND h.quantity != 0
           AND (s.expiration_date IS NULL OR s.expiration_date >= date('now'))
           AND h.as_of_date = (
