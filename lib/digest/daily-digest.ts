@@ -6,6 +6,7 @@ import { computeAnomalies, formatVanguardAnomaliesBlock } from "@/lib/digest/ano
 import { splitLateArrivals, renderLateArrivalsBlock } from "@/lib/digest/late-arrivals";
 import { composeOvernightBlock } from "@/lib/digest/overnight";
 import { composeTodaysReportersBlock } from "@/lib/digest/todays-reporters";
+import { composeCallTranscriptsBlock } from "@/lib/digest/call-transcripts";
 import { splitEssays, renderResearchDesk, insertCrossFilePointers } from "@/lib/digest/research-desk";
 
 // ── Alerts block ────────────────────────────────────────────────────
@@ -465,6 +466,19 @@ export async function generateDigestSinceAdaptive(
     const reportersBlock = composeTodaysReportersBlock(db);
     if (reportersBlock) {
       lines.push(reportersBlock);
+      lines.push("");
+      lines.push("---");
+      lines.push("");
+    }
+
+    // ── 2.7 Call transcripts (morning only, #12) ──────────────────────────
+    // Earnings-call transcripts fetched in the last 24h for held/watchlist
+    // tickers (lib/digest/call-transcripts.ts) — the morning read completes
+    // as overnight → who prints today → what last night's calls said.
+    // Sync composer; never throws.
+    const transcriptsBlock = composeCallTranscriptsBlock(db);
+    if (transcriptsBlock) {
+      lines.push(transcriptsBlock);
       lines.push("");
       lines.push("---");
       lines.push("");

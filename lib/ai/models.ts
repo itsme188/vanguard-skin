@@ -77,9 +77,18 @@ export const FEATURE_MODELS: Record<FeatureKey, string> = {
   // Must stay on Anthropic — native PDF content block.
   earningsBogeysExtraction: "anthropic/$workhorse",
 
+  // Newsletter-text bogey extraction (EPS/revenue consensus + whisper for
+  // upcoming reporters) — sibling of newsletterLevelExtraction but for
+  // earnings numbers instead of price levels.
+  newsletterBogeyExtraction: "anthropic/$workhorse",
+
   // Per-ETF GICS sector-weight look-through. Must stay on Anthropic — uses
   // Claude-native web_search (Finnhub ETF data is premium-gated).
   etfSectorWeights: "anthropic/$workhorse",
+
+  // AI desk-note summary (guidance / tone / surprises / key quotes) for a
+  // freshly-fetched earnings transcript — see lib/transcripts/same-day.ts.
+  transcriptSummary: "anthropic/$workhorse",
 
   // cheap (was Haiku)
   // Post-extraction verification of ticker mentions. Haiku is plenty for

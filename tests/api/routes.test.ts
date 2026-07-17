@@ -30,6 +30,11 @@ const hoisted = vi.hoisted(() => ({
     levels_extracted: 2,
     levels_inserted: 2,
   })),
+  extractBogeysFromNewArticles: vi.fn(async () => ({
+    articlesScanned: 2,
+    bogeysStored: 1,
+    eventsMatched: 1,
+  })),
   isGmailConfigured: vi.fn(() => false),
   getGmailClient: vi.fn(),
   fetchNewArticles: vi.fn(async () => ({ fetched: 0, sources: [] })),
@@ -46,6 +51,10 @@ vi.mock("@/lib/db", () => ({
 
 vi.mock("@/lib/alerts/extract-newsletter-levels", () => ({
   extractLevelsFromNewArticles: hoisted.extractLevelsFromNewArticles,
+}));
+
+vi.mock("@/lib/earnings/extract-newsletter-bogeys", () => ({
+  extractBogeysFromNewArticles: hoisted.extractBogeysFromNewArticles,
 }));
 
 vi.mock("@/lib/gmail/auth", () => ({
@@ -211,5 +220,60 @@ describe("POST /api/research/sync", () => {
     reader.cancel();
     expect(received).toContain("data:");
     expect(received).toMatch(/"phase":\s*"(fetch|process|backfill|urls|levels)"/);
+  });
+
+  it("runs bogey extraction immediately after level extraction, best-effort", async () => {
+    hoisted.isGmailConfigured.mockReturnValueOnce(true);
+    hoisted.getGmailClient.mockReturnValueOnce({} as unknown);
+
+    const mod = await import("@/app/api/research/sync/route");
+    const res = await mod.POST();
+
+    // Drain the whole stream to completion.
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let received = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      received += decoder.decode(value);
+    }
+
+    expect(hoisted.extractLevelsFromNewArticles).toHaveBeenCalledTimes(1);
+    expect(hoisted.extractBogeysFromNewArticles).toHaveBeenCalledTimes(1);
+    expect(received).toMatch(/"phase":\s*"bogeys",\s*"status":\s*"started"/);
+    expect(received).toContain('"phase":"bogeys","status":"done"');
+    expect(received).toContain('"bogeysStored":1');
+
+    // Order: the levels "done" frame must appear before the bogeys "started"
+    // frame — bogeys runs immediately AFTER levels, mirroring the same
+    // try/catch discipline.
+    const levelsDoneIdx = received.indexOf('"phase":"levels","status":"done"');
+    const bogeysStartedIdx = received.indexOf('"phase":"bogeys","status":"started"');
+    expect(levelsDoneIdx).toBeGreaterThan(-1);
+    expect(bogeysStartedIdx).toBeGreaterThan(levelsDoneIdx);
+  });
+
+  it("a bogey-extraction failure is caught and streamed as an error event without aborting the sync", async () => {
+    hoisted.isGmailConfigured.mockReturnValueOnce(true);
+    hoisted.getGmailClient.mockReturnValueOnce({} as unknown);
+    hoisted.extractBogeysFromNewArticles.mockRejectedValueOnce(new Error("claude down"));
+
+    const mod = await import("@/app/api/research/sync/route");
+    const res = await mod.POST();
+
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let received = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      received += decoder.decode(value);
+    }
+
+    expect(received).toContain('"phase":"bogeys","status":"error"');
+    expect(received).toContain('"message":"claude down"');
+    // The sync must still reach completion.
+    expect(received).toContain('"phase":"complete"');
   });
 });

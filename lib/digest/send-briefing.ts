@@ -19,6 +19,7 @@ import {
   markCoveragePushSent,
 } from "@/lib/calendar/coverage-guard";
 import { sendPushover } from "@/lib/alerts/notify-pushover";
+import { renderBogeysReminderLine } from "@/lib/earnings/bogeys-reminder";
 
 export class BriefingSendError extends Error {
   constructor(
@@ -196,6 +197,17 @@ export async function sendBriefingEmail(
     console.warn(`[coverage-guard] skipped: ${err instanceof Error ? err.message : String(err)}`);
   }
 
+  // Bogeys reminder (#11 A2): deterministic, no AI call — nudges the user
+  // to curate earnings bogeys before the week's prints when the whole
+  // week's held/watchlist reporter set is still completely uncovered.
+  // Best-effort: a throw here must never block the briefing.
+  let bogeysReminderLine: string | null = null;
+  try {
+    bogeysReminderLine = renderBogeysReminderLine(db, weekOf);
+  } catch (err) {
+    console.warn(`[bogeys-reminder] skipped: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
   // Narrative pre-generation. 4 scopes × 4 surfaces = 16 Sonnet calls,
   // run in parallel. Cached per (scope, surface, week_of) so the next
   // briefing-pipeline invocation is a no-op. Failures here MUST NOT block
@@ -287,11 +299,16 @@ export async function sendBriefingEmail(
   }
 
   const title = briefing.title || `Week of ${weekOf}`;
-  // Coverage block is appended at SEND time so it's always fresh — the
-  // cached calendar_briefings.content row stays pure AI output.
-  const contentForEmail = coverageGapsBlock
-    ? `${briefing.content}\n\n---\n\n${coverageGapsBlock}`
-    : briefing.content;
+  // Coverage block + bogeys reminder are both appended at SEND time so
+  // they're always fresh — the cached calendar_briefings.content row stays
+  // pure AI output.
+  let contentForEmail = briefing.content;
+  if (coverageGapsBlock) {
+    contentForEmail += `\n\n---\n\n${coverageGapsBlock}`;
+  }
+  if (bogeysReminderLine) {
+    contentForEmail += `\n\n---\n\n${bogeysReminderLine}`;
+  }
   const html = briefingToHtml(contentForEmail, title, opts.footerNote);
 
   try {
