@@ -44,6 +44,14 @@ export function getUpcomingEvents(
     params.push(filters.securityId);
   }
 
+  // Superseded rows never surface: one print can carry several source rows
+  // (finnhub + nasdaq + manual) and reconcileEarningsDates marks the losers
+  // superseded=1. Every consumer here is a display surface (Security Detail
+  // Upcoming Events, UpcomingEventsCard, MorningBriefing, GET
+  // /api/calendar/events) — same rule as getEventsByWeek. Deep-QA
+  // 2026-07-16: HOOD/AAPL earnings rendered twice without this.
+  conditions.push("COALESCE(superseded, 0) = 0");
+
   const where =
     conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
   const limit = filters.limit ?? 50;
