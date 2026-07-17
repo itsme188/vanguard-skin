@@ -5,6 +5,7 @@ import { synthesize, SynthesisEmptyError } from "@/lib/digest/synthesize";
 import { computeAnomalies, formatVanguardAnomaliesBlock } from "@/lib/digest/anomalies";
 import { splitLateArrivals, renderLateArrivalsBlock } from "@/lib/digest/late-arrivals";
 import { composeOvernightBlock } from "@/lib/digest/overnight";
+import { composeTodaysReportersBlock } from "@/lib/digest/todays-reporters";
 import { splitEssays, renderResearchDesk, insertCrossFilePointers } from "@/lib/digest/research-desk";
 
 // ── Alerts block ────────────────────────────────────────────────────
@@ -452,6 +453,18 @@ export async function generateDigestSinceAdaptive(
     const overnightBlock = await composeOvernightBlock(db);
     if (overnightBlock) {
       lines.push(overnightBlock);
+      lines.push("");
+      lines.push("---");
+      lines.push("");
+    }
+
+    // ── 2.6 Today's reporters (morning only, #18) ────────────────────────────
+    // Deterministic earnings schedule for today-ET — read order: what
+    // happened overnight, then who prints today. Self-quiets off-season
+    // (no reporters → null); never throws.
+    const reportersBlock = composeTodaysReportersBlock(db);
+    if (reportersBlock) {
+      lines.push(reportersBlock);
       lines.push("");
       lines.push("---");
       lines.push("");

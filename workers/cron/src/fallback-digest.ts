@@ -31,6 +31,7 @@ import { briefingToHtml } from "./html";
 import { todayET } from "./dst";
 import { sourceKind, editionLabel } from "./editions";
 import { fetchOvernightMovesWorker, renderOvernightLines } from "./overnight";
+import { buildTodaysReportersBlock } from "./todays-reporters";
 
 // Workers Free plan caps each invocation at 50 subrequests. The digest does
 // 1 list call per source + 2 calls per processed article (getMessage + Claude)
@@ -210,9 +211,12 @@ export async function runFallbackDigest(
   // subrequest for all four symbols; a Yahoo failure degrades to no block.
   const overnightBlock = renderOvernightLines(await fetchOvernightMovesWorker(todayET()));
 
+  // Today's reporters (#18) — snapshot-only, zero subrequests.
+  const reportersBlock = buildTodaysReportersBlock(snapshot, todayET());
+
   // Combine: newly-processed on top (fresh today), then snapshot meta as context.
   const snapshotRecent = filterTodayArticles(snapshot.recentArticlesMeta);
-  const digest = composeDigestMarkdown(newProcessed, snapshotRecent, overnightBlock);
+  const digest = composeDigestMarkdown(newProcessed, snapshotRecent, overnightBlock, reportersBlock);
   if (!digest) {
     if (articleErrors > 0 || listErrors > 0) {
       return {
@@ -357,6 +361,10 @@ export function composeDigestMarkdown(
    *  overnight block alone never produces an email: no articles stays
    *  kind:"no_articles" so the catch-up sweep keeps retrying for content. */
   overnight?: string | null,
+  /** Pre-rendered "## Today's reporters" block (snapshot mirror of the
+   *  Mac's, #18) — rendered directly after the overnight block. Same rule:
+   *  a reporters block alone never produces an email. */
+  reporters?: string | null,
 ): string | null {
   const totalCount = fresh.length + snapshotMeta.length;
   if (totalCount === 0) return null;
@@ -407,6 +415,13 @@ export function composeDigestMarkdown(
 
   if (overnight) {
     lines.push(overnight);
+    lines.push("");
+    lines.push("---");
+    lines.push("");
+  }
+
+  if (reporters) {
+    lines.push(reporters);
     lines.push("");
     lines.push("---");
     lines.push("");
