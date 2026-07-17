@@ -34,6 +34,7 @@ import { getEarningsSettings, shouldSendEarningsEmail } from "@/lib/queries/earn
 import { getExpectedRecapCluster, wrapSlotFor, WRAP_THRESHOLD } from "@/lib/earnings/wrap";
 import { runWrapPass } from "@/lib/earnings/wrap-send";
 import { todayET } from "@/lib/calendar/date-utils";
+import { fetchSameDayTranscripts } from "@/lib/transcripts/same-day";
 
 export interface SweepCandidateResult {
   eventId: number;
@@ -56,6 +57,8 @@ export interface SweepSummary {
   cloudReconciled: number;
   /** EOD wrap emails sent this pass (0–2, one per BMO/AMC slot; #17 T3). */
   wrapsSent: number;
+  /** Same-day transcript fetch attempts that succeeded this pass (#12 B1). */
+  transcriptsFetched: number;
   results: SweepCandidateResult[];
 }
 
@@ -267,6 +270,20 @@ export async function runEarningsEmailSweep(
     recapAlerts = 0;
   }
 
+  // ── Same-day transcript orchestrator (#12 B1) ─────────────────────────
+  // Best-effort, always last: kicks off fetchTranscript for held/watchlist
+  // prints whose actuals landed in the last 36h so a transcript is warm in
+  // cache before anyone asks for one. Never blocks the sweep — mirrors the
+  // wrap pass's + alertBlockedRecaps' try/catch above.
+  let transcriptsFetched = 0;
+  try {
+    const transcripts = await fetchSameDayTranscripts(db, { now: opts.now });
+    transcriptsFetched = transcripts.fetched;
+  } catch (err) {
+    console.warn("[earnings-sweep] same-day transcript pass failed:", err);
+    transcriptsFetched = 0;
+  }
+
   return {
     swept: candidates.length,
     sent: results.filter((r) => r.ok && !r.skipped).length,
@@ -275,6 +292,7 @@ export async function runEarningsEmailSweep(
     recapAlerts,
     cloudReconciled,
     wrapsSent,
+    transcriptsFetched,
     results,
   };
 }
