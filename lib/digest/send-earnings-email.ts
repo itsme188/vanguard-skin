@@ -36,18 +36,7 @@ import { getIntelForEvents, getReportHistoryForFamily } from "@/lib/queries/earn
 import { summarizeHistory, type HistorySummary } from "@/lib/earnings/report-history";
 import { ensureIntelForEvents } from "@/lib/earnings/intel";
 import type { ReportHistoryRow } from "@/lib/mutations/earnings-intel";
-
-// Preferred newsletter sources for pre-earnings color. Same list as
-// lib/calendar/briefing.ts deep-read with TMT Breakout (id=8) added —
-// TMT Breakout's Morning Wrap routinely carries sell-side bogies on
-// names it covers (AAPL, AMD, META, TSM, semis broadly).
-const PREFERRED_SOURCE_IDS = [
-  1,  // Vital Knowledge
-  8,  // TMT Breakout
-  18, // Eliant Capital
-  19, // Purple Drink's Market Musings
-  28, // Helene Meisler
-];
+import { classifyEdition } from "@/lib/digest/editions";
 
 const ARTICLE_BODY_CAP = 8_000;
 const TOTAL_CONTEXT_CAP = 80_000;
@@ -483,7 +472,7 @@ interface PositionEntry {
   multiplier: number | null;
 }
 
-interface NewsletterEntry {
+export interface NewsletterEntry {
   source_name: string;
   subject: string;
   received_at: string;
@@ -491,6 +480,8 @@ interface NewsletterEntry {
   sentiment: string | null;
   sentiment_score: number | null;
   source_id: number;
+  earnings_rank: number | null;
+  earnings_note: string | null;
 }
 
 interface PreviewContext {
@@ -812,67 +803,132 @@ export function getCrossAccountPositions(
 
 // ── Newsletter context ─────────────────────────────────────────────
 
-function getNewsletterContext(
+interface CandidateRow {
+  id: number;
+  source_id: number;
+  source_name: string;
+  earnings_rank: number | null;
+  earnings_note: string | null;
+  subject: string;
+  received_at: string;
+  raw_text: string | null;
+  summary: string | null;
+  sentiment: string | null;
+  sentiment_score: number | null;
+}
+
+const MAX_NEWSLETTER_ARTICLES = 6;
+const CANDIDATE_FETCH_LIMIT = 30;
+
+/** ET calendar day of a received_at timestamp (ISO or SQLite space format, UTC). */
+function receivedAtEtDay(receivedAt: string): string {
+  const iso = receivedAt.includes("T")
+    ? receivedAt
+    : receivedAt.replace(" ", "T") + (receivedAt.endsWith("Z") ? "" : "Z");
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return receivedAt.slice(0, 10);
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+  }).format(d);
+}
+
+/**
+ * Same-source same-ET-day edition supersedence: a VK Dawn dies to the
+ * Mid-Day Update (lib/digest/editions.ts). Runs BEFORE the fill loop so
+ * no slot or cap budget is spent on an article we're about to discard.
+ */
+function dropSupersededEditions(rows: CandidateRow[]): CandidateRow[] {
+  const groups = new Map<string, CandidateRow[]>();
+  for (const r of rows) {
+    const key = `${r.source_id}|${receivedAtEtDay(r.received_at)}`;
+    const g = groups.get(key);
+    if (g) g.push(r);
+    else groups.set(key, [r]);
+  }
+  const dropped = new Set<number>();
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const infos = group.map((r) => ({
+      r,
+      info: classifyEdition(r.source_name, r.subject),
+    }));
+    for (const { r, info } of infos) {
+      const superseded = infos.some(
+        (other) =>
+          other.r.id !== r.id && other.info.supersedes.includes(info.edition)
+      );
+      if (superseded) dropped.add(r.id);
+    }
+  }
+  return rows.filter((r) => !dropped.has(r.id));
+}
+
+/**
+ * Rank-ordered fill (spec 2026-07-17): one candidate query over ALL sources
+ * carrying the source's hierarchy rank, edition supersedence, then ranked
+ * sources first (rank asc, id asc on duplicate ranks) / unranked after,
+ * recency desc within — unranked articles fill remaining slots instead of
+ * requiring the ranked tier to be empty (the old starvation bug).
+ * Exported for tests.
+ */
+export function getNewsletterContext(
   db: Database.Database,
   family: readonly string[],
 ): NewsletterEntry[] {
   if (family.length === 0) return [];
   const placeholders = family.map(() => "?").join(",");
-  const sourcePlaceholders = PREFERRED_SOURCE_IDS.map(() => "?").join(",");
+  const upperFamily = family.map((s) => s.toUpperCase());
 
-  // Tier 1: preferred sources, last 7 days
-  const tier1 = db
-    .prepare(
-      `SELECT a.id, a.source_id, rs.name AS source_name, a.subject,
-              a.received_at, a.raw_text, a.summary, a.sentiment, a.sentiment_score
-         FROM research_articles a
-         JOIN research_article_securities ras ON ras.article_id = a.id
-         JOIN securities s ON s.id = ras.security_id
-         JOIN research_sources rs ON rs.id = a.source_id
-         WHERE UPPER(s.symbol) IN (${placeholders})
-           AND a.source_id IN (${sourcePlaceholders})
-           AND datetime(a.received_at) >= datetime('now', '-7 days')
-           AND a.processed_at IS NOT NULL
-           AND COALESCE(a.is_relevant, 1) = 1
-         GROUP BY a.id
-         ORDER BY a.received_at DESC
-         LIMIT 6`,
-    )
-    .all(
-      ...family.map((s) => s.toUpperCase()),
-      ...PREFERRED_SOURCE_IDS,
-    ) as NewsletterRow[];
-
-  // Tier 2 fallback: any source, last 30 days
-  let tier2: NewsletterRow[] = [];
-  if (tier1.length === 0) {
-    tier2 = db
+  const fetchWindow = (days: 7 | 30): CandidateRow[] =>
+    db
       .prepare(
-        `SELECT a.id, a.source_id, rs.name AS source_name, a.subject,
-                a.received_at, a.raw_text, a.summary, a.sentiment, a.sentiment_score
+        `SELECT a.id, a.source_id, rs.name AS source_name,
+                rs.earnings_rank, rs.earnings_note,
+                a.subject, a.received_at, a.raw_text, a.summary,
+                a.sentiment, a.sentiment_score
            FROM research_articles a
            JOIN research_article_securities ras ON ras.article_id = a.id
            JOIN securities s ON s.id = ras.security_id
            JOIN research_sources rs ON rs.id = a.source_id
-           WHERE UPPER(s.symbol) IN (${placeholders})
-             AND datetime(a.received_at) >= datetime('now', '-30 days')
-             AND a.processed_at IS NOT NULL
-             AND COALESCE(a.is_relevant, 1) = 1
-           GROUP BY a.id
-           ORDER BY a.received_at DESC
-           LIMIT 6`,
+          WHERE UPPER(s.symbol) IN (${placeholders})
+            AND datetime(a.received_at) >= datetime('now', '-${days} days')
+            AND a.processed_at IS NOT NULL
+            AND COALESCE(a.is_relevant, 1) = 1
+          GROUP BY a.id
+          ORDER BY a.received_at DESC
+          LIMIT ${CANDIDATE_FETCH_LIMIT}`,
       )
-      .all(...family.map((s) => s.toUpperCase())) as NewsletterRow[];
-  }
+      .all(...upperFamily) as CandidateRow[];
 
-  const rows = tier1.length > 0 ? tier1 : tier2;
+  // 7-day window; zero candidates → 30-day backstop (old tier-2 semantics).
+  let rows = fetchWindow(7);
+  if (rows.length === 0) rows = fetchWindow(30);
+
+  rows = dropSupersededEditions(rows);
+
+  const UNRANKED = Number.MAX_SAFE_INTEGER;
+  rows.sort((a, b) => {
+    const ra = a.earnings_rank ?? UNRANKED;
+    const rb = b.earnings_rank ?? UNRANKED;
+    if (ra !== rb) return ra - rb;
+    // Duplicate ranks across two sources: deterministic source id tie-break.
+    if (ra !== UNRANKED && a.source_id !== b.source_id)
+      return a.source_id - b.source_id;
+    const ta = a.received_at;
+    const tb = b.received_at;
+    if (ta !== tb) return ta < tb ? 1 : -1; // recency desc
+    return b.id - a.id;
+  });
+
   let totalChars = 0;
   const result: NewsletterEntry[] = [];
   for (const r of rows) {
+    if (result.length >= MAX_NEWSLETTER_ARTICLES) break;
     const fullText = r.raw_text || r.summary || "";
-    const body = fullText.length > ARTICLE_BODY_CAP
-      ? fullText.slice(0, ARTICLE_BODY_CAP) + "\n[...truncated...]"
-      : fullText;
+    const body =
+      fullText.length > ARTICLE_BODY_CAP
+        ? fullText.slice(0, ARTICLE_BODY_CAP) + "\n[...truncated...]"
+        : fullText;
     if (totalChars + body.length > TOTAL_CONTEXT_CAP) break;
     totalChars += body.length;
     result.push({
@@ -883,21 +939,11 @@ function getNewsletterContext(
       sentiment: r.sentiment,
       sentiment_score: r.sentiment_score,
       source_id: r.source_id,
+      earnings_rank: r.earnings_rank,
+      earnings_note: r.earnings_note,
     });
   }
   return result;
-}
-
-interface NewsletterRow {
-  id: number;
-  source_id: number;
-  source_name: string;
-  subject: string;
-  received_at: string;
-  raw_text: string | null;
-  summary: string | null;
-  sentiment: string | null;
-  sentiment_score: number | null;
 }
 
 // ── Analyst formatters ─────────────────────────────────────────────
