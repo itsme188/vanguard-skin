@@ -8,13 +8,21 @@ import { runMigrations } from "@/lib/db/migrate";
 import { fetchSameDayTranscripts } from "@/lib/transcripts/same-day";
 import { fetchTranscript } from "@/lib/transcripts/fetch";
 import { upsertTranscript } from "@/lib/mutations/transcripts";
+import { generateTextForFeature } from "@/lib/ai/generate";
+import type { EarningsTranscript } from "@/lib/types";
 
 vi.mock("@/lib/transcripts/fetch", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/transcripts/fetch")>()),
   fetchTranscript: vi.fn(),
 }));
 
+vi.mock("@/lib/ai/generate", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/ai/generate")>()),
+  generateTextForFeature: vi.fn(),
+}));
+
 const mockedFetch = vi.mocked(fetchTranscript);
+const mockedGenerate = vi.mocked(generateTextForFeature);
 
 let db: Database.Database;
 
@@ -37,6 +45,7 @@ beforeEach(() => {
   db.pragma("foreign_keys = ON");
   runMigrations(db);
   mockedFetch.mockReset();
+  mockedGenerate.mockReset();
 });
 
 function seedHeld(symbol: string): number {
@@ -98,6 +107,39 @@ function getAttemptedAt(eventId: number): string | null {
 
 function fakeFetchResult() {
   return { transcript: {} as never, fromCache: false };
+}
+
+function fakeTranscript(overrides: Partial<EarningsTranscript> = {}): EarningsTranscript {
+  return {
+    id: 1,
+    security_id: null,
+    ticker: "JJJ",
+    year: 2026,
+    quarter: 2,
+    call_date: "2026-07-16",
+    source: "alpha_vantage",
+    transcript: "Full call transcript text here.",
+    summary: "extractive summary from fetchTranscript",
+    guidance: "guidance paragraph, untouched by summarize",
+    risk_factors: "risk paragraph, untouched by summarize",
+    sentiment_score: 0.3,
+    sentiment_label: "bullish",
+    participants: null,
+    accession_number: null,
+    filing_url: null,
+    source_key: "alpha_vantage:JJJ:2026:2",
+    fetched_at: "2026-07-16 12:00:00",
+    created_at: "2026-07-16 12:00:00",
+    ...overrides,
+  };
+}
+
+function getTranscriptRow(sourceKey: string) {
+  return db
+    .prepare(`SELECT * FROM earnings_transcripts WHERE source_key = ?`)
+    .get(sourceKey) as
+    | { summary: string | null; guidance: string | null; transcript: string | null }
+    | undefined;
 }
 
 describe("fetchSameDayTranscripts", () => {
@@ -213,5 +255,100 @@ describe("fetchSameDayTranscripts", () => {
 
     expect(result).toEqual({ attempted: 1, fetched: 0 });
     expect(getAttemptedAt(eventId)).not.toBeNull();
+  });
+
+  // ─── B1 Minor hardening (reviewer-suggested) ───────────────────
+
+  it("skips an event whose release instant is in the future (negative age)", async () => {
+    seedHeld("MMM");
+    const rel = hoursAgoEt(-3); // release is 3 hours from now
+    seedEvent({ symbol: "MMM", date: rel.date, releaseTime: rel.time });
+
+    const result = await fetchSameDayTranscripts(db, { now: NOW });
+
+    expect(result).toEqual({ attempted: 0, fetched: 0 });
+    expect(mockedFetch).not.toHaveBeenCalled();
+  });
+
+  it("increments attempted but not fetched when fetchTranscript resolves null without throwing", async () => {
+    seedHeld("NNN");
+    const rel = hoursAgoEt(3);
+    const eventId = seedEvent({ symbol: "NNN", date: rel.date, releaseTime: rel.time });
+    mockedFetch.mockResolvedValue(null);
+
+    const result = await fetchSameDayTranscripts(db, { now: NOW });
+
+    expect(result).toEqual({ attempted: 1, fetched: 0 });
+    expect(getAttemptedAt(eventId)).not.toBeNull();
+    expect(mockedGenerate).not.toHaveBeenCalled();
+  });
+});
+
+describe("fetchSameDayTranscripts — AI desk-note summary (#12 B2)", () => {
+  it("calls the AI once and stores the desk-note summary over the cached row when the fetched transcript has text", async () => {
+    seedHeld("JJJ");
+    const rel = hoursAgoEt(3);
+    seedEvent({ symbol: "JJJ", date: rel.date, releaseTime: rel.time });
+    mockedFetch.mockResolvedValue({ transcript: fakeTranscript(), fromCache: false });
+    mockedGenerate.mockResolvedValue({
+      text: "## Desk note\n- Guidance: raised full-year outlook",
+    } as never);
+
+    const result = await fetchSameDayTranscripts(db, { now: NOW });
+
+    expect(result).toEqual({ attempted: 1, fetched: 1 });
+    expect(mockedGenerate).toHaveBeenCalledTimes(1);
+    expect(mockedGenerate).toHaveBeenCalledWith(
+      "transcriptSummary",
+      expect.objectContaining({ prompt: expect.any(String) }),
+    );
+
+    const row = getTranscriptRow("alpha_vantage:JJJ:2026:2");
+    expect(row?.summary).toBe("## Desk note\n- Guidance: raised full-year outlook");
+    // Everything else on the cached row is echoed back unchanged.
+    expect(row?.guidance).toBe("guidance paragraph, untouched by summarize");
+    expect(row?.transcript).toBe("Full call transcript text here.");
+  });
+
+  it("keeps the extractive summary when the AI summary call throws (no error surfaces)", async () => {
+    seedHeld("KKK");
+    const rel = hoursAgoEt(3);
+    seedEvent({ symbol: "KKK", date: rel.date, releaseTime: rel.time });
+    mockedFetch.mockResolvedValue({
+      transcript: fakeTranscript({ ticker: "KKK", source_key: "alpha_vantage:KKK:2026:2" }),
+      fromCache: false,
+    });
+    mockedGenerate.mockRejectedValue(new Error("model unavailable"));
+
+    await expect(fetchSameDayTranscripts(db, { now: NOW })).resolves.toEqual({
+      attempted: 1,
+      fetched: 1,
+    });
+
+    // summarizeTranscript's upsert never ran — no row was written by B2 code
+    // (fetchTranscript is mocked, so the real extractive-summary upsert from
+    // B1's pipeline also never ran here; the assertion that matters is that
+    // no *new* summary write happened as a side effect of the AI failure).
+    expect(getTranscriptRow("alpha_vantage:KKK:2026:2")).toBeUndefined();
+  });
+
+  it("does not call the AI when the fetched transcript has no text (metadata-only)", async () => {
+    seedHeld("LLL");
+    const rel = hoursAgoEt(3);
+    seedEvent({ symbol: "LLL", date: rel.date, releaseTime: rel.time });
+    mockedFetch.mockResolvedValue({
+      transcript: fakeTranscript({
+        ticker: "LLL",
+        source: "edgar_8k",
+        transcript: null,
+        source_key: "edgar_8k:LLL:2026:2",
+      }),
+      fromCache: false,
+    });
+
+    const result = await fetchSameDayTranscripts(db, { now: NOW });
+
+    expect(result).toEqual({ attempted: 1, fetched: 1 });
+    expect(mockedGenerate).not.toHaveBeenCalled();
   });
 });
