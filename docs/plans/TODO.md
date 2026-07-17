@@ -21,7 +21,7 @@
 
 ## Earnings (season-timed — banks kick off 2026-07-14)
 
-- [ ] **Earnings preview — source hierarchy work** (next phase, scope TBD per user 2026-04-27). Currently the composer treats all preferred sources equally and falls back to a wider net only when zero preferred articles match. Future: per-source weighting by historical hit-rate, per-source content-extraction profiles (TMT Breakout's "bogies" sections vs. VK's free-form prose vs. Eliant's options-heavy framing), and a deduplication step when multiple sources cover the same name. Multi-session — needs design doc.
+- [x] **Earnings preview — source hierarchy work** — shipped 2026-07-17 (migration 068: user-editable ranked hierarchy + per-source prompt notes; rank-ordered two-pass fill with per-source diversity cap replaces the zero-hit tier gate; edition supersedence + cross-source dedup instruction; ManageSourcesModal editor; spec `docs/superpowers/specs/2026-07-17-earnings-source-hierarchy-design.md`). Deferred by design: hit-rate-based automatic ranking (schema accommodates later).
 
 ## Bugs / Quality
 
