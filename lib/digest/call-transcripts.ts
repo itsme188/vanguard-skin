@@ -31,8 +31,13 @@ function truncateAtWordBoundary(text: string, maxChars: number): string {
   const lastSpace = slice.lastIndexOf(" ");
   // Only back off to the last space if it doesn't throw away most of the
   // slice (a summary with no spaces near the cap just hard-cuts).
-  const cut = lastSpace > maxChars * 0.6 ? slice.slice(0, lastSpace) : slice;
-  return `${cut.trimEnd()}…`;
+  const cut = (lastSpace > maxChars * 0.6 ? slice.slice(0, lastSpace) : slice).trimEnd();
+  // Markdown-span safety: the AI summary uses **bold** labels, and
+  // briefingToHtml's inline regex needs the closing marker on the same
+  // line — a cut inside an open span would render a literal "**" in the
+  // email. An odd number of "**" markers means one is dangling: close it.
+  const boldMarkers = (cut.match(/\*\*/g) ?? []).length;
+  return `${cut}${boldMarkers % 2 === 1 ? "**" : ""}…`;
 }
 
 function renderTranscriptSection(row: RecentTranscriptRow): string {
