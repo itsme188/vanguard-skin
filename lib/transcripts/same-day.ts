@@ -30,6 +30,17 @@
  * "attempt" — it doesn't stamp and doesn't count toward maxAttempts. Never
  * throws: a fetchTranscript failure is caught per-candidate so the rest of
  * the sweep (and any remaining candidates this tick) proceeds.
+ *
+ * AI desk-note summary (#12 B2): once a candidate's transcript is
+ * successfully fetched (i.e. `result` is non-null), `summarizeTranscript`
+ * regenerates a structured desk note (guidance / tone / surprises / key
+ * quotes) via the `transcriptSummary` feature key and stores it over the
+ * cached row's `summary` column — every other column is echoed back
+ * unchanged since `upsertTranscript` is a full-replace UPSERT keyed on
+ * `source_key`. No-ops (no AI call) when the transcript has no text. Never
+ * throws: an AI failure/refusal leaves fetchTranscript's own extractive
+ * summary in place, and is caught independently of the fetch-failure catch
+ * below so a summarize failure is never misreported as a fetch failure.
  */
 
 import type Database from "better-sqlite3";
@@ -38,10 +49,80 @@ import { getCachedTranscript } from "@/lib/queries/transcripts";
 import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
 import { composeReleaseInstant } from "@/lib/calendar/reaction-snapshot";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
+import { generateTextForFeature } from "@/lib/ai/generate";
+import { upsertTranscript } from "@/lib/mutations/transcripts";
+import type { EarningsTranscript } from "@/lib/types";
 
 const PACING_MS = 30 * 60 * 1000; // 30 minutes between attempts per event
 const DEADLINE_MS = 36 * 60 * 60 * 1000; // 36h same-day-ish window from release
 const DEFAULT_MAX_ATTEMPTS = 2;
+
+const SUMMARY_PROMPT_CHAR_CAP = 50_000;
+const SUMMARY_MAX_OUTPUT_TOKENS = 900;
+
+function buildSummaryPrompt(transcriptText: string): string {
+  const text = transcriptText.slice(0, SUMMARY_PROMPT_CHAR_CAP);
+  return `You are writing a structured desk note from an earnings call transcript, for a portfolio manager who already knows the company and just needs the highlights. Cover, in this order:
+
+- **Guidance**: what management said about forward guidance (raised / inline / lowered / not given — and the specifics if any were given)
+- **Tone**: management's overall tone on the call (confident, cautious, defensive, evasive, etc.)
+- **Surprises**: anything that surprised relative to expectations, positive or negative
+- **Key quotes**: 2-3 short direct quotes from the call that best support the above
+
+Plain markdown (short headers + bullets), no preamble, no closing commentary, nothing about the transcript itself — just the desk note. Keep the entire note to 300 words or fewer.
+
+Transcript:
+${text}`;
+}
+
+/**
+ * Regenerate the AI desk-note summary for a freshly-fetched transcript and
+ * store it over the cached row (see file header for the contract). Pure
+ * side effect on the DB; never throws.
+ */
+export async function summarizeTranscript(
+  db: Database.Database,
+  transcript: EarningsTranscript,
+): Promise<void> {
+  const text = transcript.transcript;
+  if (!text || text.trim().length === 0) return;
+
+  try {
+    const res = await generateTextForFeature("transcriptSummary", {
+      prompt: buildSummaryPrompt(text),
+      maxOutputTokens: SUMMARY_MAX_OUTPUT_TOKENS,
+    });
+    const summary = res.text.trim();
+    if (!summary) return;
+
+    upsertTranscript(db, {
+      security_id: transcript.security_id,
+      ticker: transcript.ticker,
+      year: transcript.year,
+      quarter: transcript.quarter,
+      call_date: transcript.call_date,
+      source: transcript.source,
+      transcript: transcript.transcript,
+      summary,
+      // Structured-output fields other than summary are deliberately left
+      // untouched (brief B2 #3) — the model's prose is stored whole in
+      // `summary` rather than parsed back apart into guidance/risk_factors.
+      guidance: transcript.guidance,
+      risk_factors: transcript.risk_factors,
+      sentiment_score: transcript.sentiment_score,
+      sentiment_label: transcript.sentiment_label,
+      participants: transcript.participants,
+      accession_number: transcript.accession_number,
+      filing_url: transcript.filing_url,
+      source_key: transcript.source_key,
+    });
+  } catch (err) {
+    console.warn(
+      `[same-day-transcripts] AI summary failed for ${transcript.ticker} ${transcript.year}Q${transcript.quarter} (extractive summary kept):`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
 
 interface CandidateRow {
   id: number;
@@ -154,7 +235,10 @@ export async function fetchSameDayTranscripts(
 
     try {
       const result = await fetchTranscript(db, symbol, year, quarter);
-      if (result) fetched += 1;
+      if (result) {
+        fetched += 1;
+        await summarizeTranscript(db, result.transcript);
+      }
     } catch (err) {
       console.warn(
         `[same-day-transcripts] fetch failed for event ${row.id} (${symbol} ${year}Q${quarter}):`,
