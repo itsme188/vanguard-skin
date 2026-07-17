@@ -26,6 +26,7 @@ import { isPlausibleEarnings } from "@/lib/digest/send-earnings-email";
 import type { CalendarEvent } from "@/lib/types";
 import { SymbolLink } from "../components/SymbolLink";
 import { EarningsHubAddForm } from "./EarningsHubAddForm";
+import { RecapFigureButton } from "./RecapFigureButton";
 import { EarningsHubRefreshButton } from "./EarningsHubRefreshButton";
 import { EarningsRowChips } from "./EarningsRowChips";
 import { EarningsDeleteButton } from "./EarningsDeleteButton";
@@ -350,10 +351,10 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
         </span>
       ) : (
         <>
-          <NumCell value={cons.eps} />
-          <NumCell value={act.eps} />
-          <NumCell value={cons.revenue} />
-          <NumCell value={act.revenue} />
+          <NumCell value={cons.eps} recapEventId={event.recapSent ? event.id : undefined} />
+          <NumCell value={act.eps} recapEventId={event.recapSent ? event.id : undefined} />
+          <NumCell value={cons.revenue} recapEventId={event.recapSent ? event.id : undefined} />
+          <NumCell value={act.revenue} recapEventId={event.recapSent ? event.id : undefined} />
         </>
       )}
       {implausible ? (
@@ -406,13 +407,22 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
  * Consensus / actual EPS + revenue are PUBLIC market data (any reader can
  * look them up) — they reveal nothing about the user's holdings, so they
  * render unmasked per the privacy-masks-portfolio-only rule (B16).
+ *
+ * On a recapped row (`recapEventId` set) a populated figure becomes a
+ * button opening the recap viewer (R9) — same viewer the "rec ✓" chip
+ * opens, via RecapFigureButton's scoped custom event.
  */
-function NumCell({ value }: { value: string | null }) {
+function NumCell({ value, recapEventId }: { value: string | null; recapEventId?: number }) {
+  const cls = `font-mono tabular-nums truncate ${value ? "text-ink-dim" : "text-ink-faint"}`;
+  if (recapEventId != null && value) {
+    return (
+      <RecapFigureButton eventId={recapEventId} className={cls} style={{ fontSize: "13px" }}>
+        {value}
+      </RecapFigureButton>
+    );
+  }
   return (
-    <span
-      className={`font-mono tabular-nums truncate ${value ? "text-ink-dim" : "text-ink-faint"}`}
-      style={{ fontSize: "13px" }}
-    >
+    <span className={cls} style={{ fontSize: "13px" }}>
       {value ?? "—"}
     </span>
   );
@@ -491,12 +501,21 @@ function MobileCard({ event }: { event: EnrichedRow }) {
           ) : (
             <>
               <span className="text-ink-faint">→</span>
-              <span className="text-ink-faint">
-                Act{" "}
-                <span className="text-ink-dim">
-                  {act.eps ?? "—"} · {act.revenue ?? "—"}
+              {event.recapSent ? (
+                <RecapFigureButton eventId={event.id} className="text-ink-faint">
+                  Act{" "}
+                  <span className="text-ink-dim">
+                    {act.eps ?? "—"} · {act.revenue ?? "—"}
+                  </span>
+                </RecapFigureButton>
+              ) : (
+                <span className="text-ink-faint">
+                  Act{" "}
+                  <span className="text-ink-dim">
+                    {act.eps ?? "—"} · {act.revenue ?? "—"}
+                  </span>
                 </span>
-              </span>
+              )}
               {delta && (
                 <span className={`font-semibold ${deltaToneClass(delta)}`}>{delta.label}</span>
               )}
