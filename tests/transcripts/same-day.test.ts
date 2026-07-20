@@ -98,6 +98,31 @@ function seedEvent(opts: {
   );
 }
 
+/** Seed a cached transcript row for 2026 Q2 (what July event dates derive to). */
+function seedCachedTranscript(
+  securityId: number | null,
+  ticker: string,
+  source: "edgar_8k" | "alpha_vantage" | "api_ninjas",
+  transcript = "cached body",
+): void {
+  upsertTranscript(db, {
+    security_id: securityId,
+    ticker,
+    year: 2026,
+    quarter: 2,
+    call_date: null,
+    source,
+    transcript,
+    summary: null,
+    guidance: null,
+    risk_factors: null,
+    sentiment_score: null,
+    sentiment_label: null,
+    participants: null,
+    source_key: `${source}:${ticker}:2026:2`,
+  });
+}
+
 function getAttemptedAt(eventId: number): string | null {
   const row = db
     .prepare(`SELECT transcript_attempted_at FROM calendar_events WHERE id = ?`)
@@ -198,28 +223,14 @@ describe("fetchSameDayTranscripts", () => {
     expect(mockedFetch).not.toHaveBeenCalled();
   });
 
-  it("skips an event whose (ticker, year, quarter) already has a cached transcript", async () => {
+  it("skips an event whose (ticker, year, quarter) already has a cached NON-EDGAR transcript", async () => {
     const secId = seedHeld("EEE");
     const rel = hoursAgoEt(3);
     seedEvent({ symbol: "EEE", date: rel.date, releaseTime: rel.time });
 
     // deriveFilingReportingQuarter("2026-07-xx") -> { year: 2026, quarter: 2 }
-    upsertTranscript(db, {
-      security_id: secId,
-      ticker: "EEE",
-      year: 2026,
-      quarter: 2,
-      call_date: null,
-      source: "edgar_8k",
-      transcript: "cached body",
-      summary: null,
-      guidance: null,
-      risk_factors: null,
-      sentiment_score: null,
-      sentiment_label: null,
-      participants: null,
-      source_key: "edgar_8k:EEE:2026:2",
-    });
+    // A real (alpha_vantage) transcript is terminal — nothing to upgrade.
+    seedCachedTranscript(secId, "EEE", "alpha_vantage");
 
     const result = await fetchSameDayTranscripts(db, { now: NOW });
 
@@ -281,6 +292,140 @@ describe("fetchSameDayTranscripts", () => {
     expect(result).toEqual({ attempted: 1, fetched: 0 });
     expect(getAttemptedAt(eventId)).not.toBeNull();
     expect(mockedGenerate).not.toHaveBeenCalled();
+  });
+});
+
+describe("fetchSameDayTranscripts — cached-EDGAR upgrade candidates (thin-8-K fix)", () => {
+  function hoursAgoUtcStamp(hours: number): string {
+    return new Date(NOW.getTime() - hours * 60 * 60 * 1000)
+      .toISOString()
+      .replace("T", " ")
+      .slice(0, 19);
+  }
+
+  it("attempts an upgrade fetch when the cached transcript is edgar_8k (never attempted)", async () => {
+    const secId = seedHeld("UPA");
+    const rel = hoursAgoEt(3);
+    const eventId = seedEvent({ symbol: "UPA", date: rel.date, releaseTime: rel.time });
+    seedCachedTranscript(secId, "UPA", "edgar_8k");
+    mockedFetch.mockResolvedValue({
+      transcript: fakeTranscript({ ticker: "UPA", source_key: "alpha_vantage:UPA:2026:2" }),
+      fromCache: false,
+    });
+    mockedGenerate.mockResolvedValue({ text: "## Desk note\n- upgraded" } as never);
+
+    const result = await fetchSameDayTranscripts(db, { now: NOW });
+
+    expect(result).toEqual({ attempted: 1, fetched: 1 });
+    expect(mockedFetch).toHaveBeenCalledWith(db, "UPA", 2026, 2);
+    expect(getAttemptedAt(eventId)).not.toBeNull();
+  });
+
+  it("counts a failed upgrade (fromCache=true edgar echo) as attempted but not fetched, and never re-summarizes", async () => {
+    const secId = seedHeld("UPB");
+    const rel = hoursAgoEt(3);
+    seedEvent({ symbol: "UPB", date: rel.date, releaseTime: rel.time });
+    seedCachedTranscript(secId, "UPB", "edgar_8k");
+    // fetchTranscript's internal AV upgrade found nothing → echoes the cached
+    // edgar row back with fromCache: true.
+    mockedFetch.mockResolvedValue({
+      transcript: fakeTranscript({
+        ticker: "UPB",
+        source: "edgar_8k",
+        source_key: "edgar_8k:UPB:2026:2",
+      }),
+      fromCache: true,
+    });
+
+    const result = await fetchSameDayTranscripts(db, { now: NOW });
+
+    expect(result).toEqual({ attempted: 1, fetched: 0 });
+    expect(mockedGenerate).not.toHaveBeenCalled();
+  });
+
+  it("upgrade candidates stay eligible past the 36h fresh deadline (5 days out)", async () => {
+    const secId = seedHeld("UPC");
+    const rel = hoursAgoEt(5 * 24);
+    seedEvent({ symbol: "UPC", date: rel.date, releaseTime: rel.time });
+    seedCachedTranscript(secId, "UPC", "edgar_8k");
+    mockedFetch.mockResolvedValue({
+      transcript: fakeTranscript({ ticker: "UPC", source_key: "alpha_vantage:UPC:2026:2" }),
+      fromCache: false,
+    });
+    mockedGenerate.mockResolvedValue({ text: "## Desk note\n- upgraded" } as never);
+
+    const result = await fetchSameDayTranscripts(db, { now: NOW });
+
+    expect(result).toEqual({ attempted: 1, fetched: 1 });
+  });
+
+  it("upgrade candidates expire at the 10-day upgrade deadline", async () => {
+    const secId = seedHeld("UPD");
+    const rel = hoursAgoEt(11 * 24);
+    seedEvent({ symbol: "UPD", date: rel.date, releaseTime: rel.time });
+    seedCachedTranscript(secId, "UPD", "edgar_8k");
+
+    const result = await fetchSameDayTranscripts(db, { now: NOW });
+
+    expect(result).toEqual({ attempted: 0, fetched: 0 });
+    expect(mockedFetch).not.toHaveBeenCalled();
+  });
+
+  it("upgrade attempts pace at 24h, not the fresh 30-min pacing", async () => {
+    const secId = seedHeld("UPE");
+    const rel = hoursAgoEt(30);
+    seedEvent({
+      symbol: "UPE",
+      date: rel.date,
+      releaseTime: rel.time,
+      transcriptAttemptedAt: hoursAgoUtcStamp(2), // 2h ago: past 30-min, inside 24h
+    });
+    seedCachedTranscript(secId, "UPE", "edgar_8k");
+
+    const result = await fetchSameDayTranscripts(db, { now: NOW });
+
+    expect(result).toEqual({ attempted: 0, fetched: 0 });
+    expect(mockedFetch).not.toHaveBeenCalled();
+  });
+
+  it("upgrade attempts re-arm once the last attempt is >= 24h old", async () => {
+    const secId = seedHeld("UPF");
+    const rel = hoursAgoEt(30);
+    seedEvent({
+      symbol: "UPF",
+      date: rel.date,
+      releaseTime: rel.time,
+      transcriptAttemptedAt: hoursAgoUtcStamp(25),
+    });
+    seedCachedTranscript(secId, "UPF", "edgar_8k");
+    mockedFetch.mockResolvedValue({
+      transcript: fakeTranscript({ ticker: "UPF", source_key: "alpha_vantage:UPF:2026:2" }),
+      fromCache: false,
+    });
+    mockedGenerate.mockResolvedValue({ text: "## Desk note\n- upgraded" } as never);
+
+    const result = await fetchSameDayTranscripts(db, { now: NOW });
+
+    expect(result).toEqual({ attempted: 1, fetched: 1 });
+  });
+
+  it("fresh candidates win the attempt budget over upgrade candidates", async () => {
+    seedHeld("FRE");
+    const upSec = seedHeld("UPG");
+    // Upgrade candidate released MORE recently so the SQL recency order would
+    // place it first — the fresh-first priority sort must still win.
+    const relFresh = hoursAgoEt(3);
+    const relUp = hoursAgoEt(2);
+    seedEvent({ symbol: "FRE", date: relFresh.date, releaseTime: relFresh.time });
+    seedEvent({ symbol: "UPG", date: relUp.date, releaseTime: relUp.time });
+    seedCachedTranscript(upSec, "UPG", "edgar_8k");
+    mockedFetch.mockResolvedValue(fakeFetchResult());
+
+    const result = await fetchSameDayTranscripts(db, { now: NOW, maxAttempts: 1 });
+
+    expect(result.attempted).toBe(1);
+    expect(mockedFetch).toHaveBeenCalledTimes(1);
+    expect(mockedFetch).toHaveBeenCalledWith(db, "FRE", 2026, 2);
   });
 });
 
