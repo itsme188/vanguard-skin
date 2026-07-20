@@ -18,6 +18,8 @@ interface RecentTranscriptRow {
   source: string;
   summary: string | null;
   guidance: string | null;
+  call_date: string | null;
+  security_id: number | null;
   fetched_at: string;
 }
 
@@ -44,6 +46,10 @@ function dedupeBestSource(rows: RecentTranscriptRow[]): RecentTranscriptRow[] {
       best.set(key, row);
     }
   }
+  // call_date / security_id coalescing across sibling rows (the AV upgrade
+  // lacks both; the 8-K row — often fetched days earlier, OUTSIDE the digest
+  // window — carries them) happens in the SELECT's correlated subqueries, so
+  // rows arrive here already metadata-complete.
   return rows.filter((row) => best.get(`${row.ticker.toUpperCase()}:${row.year}:${row.quarter}`) === row);
 }
 
@@ -83,10 +89,17 @@ function demoteEmbeddedHeadings(summary: string): string {
   return out.join("\n");
 }
 
-// ~4 rendered lines at typical email-line width; slicing to a char cap with
-// a word-boundary cut (never mid-word) is good enough — this is a teaser,
-// the full transcript/summary lives in-app.
+// Fallback cap for extractive (non-desk-note) summaries; slicing to a char
+// cap with a word-boundary cut (never mid-word) is good enough — the full
+// transcript lives in-app.
 const SUMMARY_RENDER_CHAR_CAP = 600;
+
+// Compact desk-note mode (user decision 2026-07-20): the email shows the
+// Guidance section + a one-line Tone digest, and points into the app for the
+// rest. Reactions/commentary carry the morning email; the transcript block is
+// a notice with the two takeaways that age well.
+const GUIDANCE_SECTION_CHAR_CAP = 900;
+const TONE_LINE_CHAR_CAP = 220;
 
 function truncateAtWordBoundary(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
@@ -103,20 +116,72 @@ function truncateAtWordBoundary(text: string, maxChars: number): string {
   return `${cut}${boldMarkers % 2 === 1 ? "**" : ""}…`;
 }
 
-function renderTranscriptSection(row: RecentTranscriptRow): string {
-  const lines = [`### ${row.ticker} — Q${row.quarter} ${row.year} call`, ""];
+/** "2026-07-16" → "Thu 7/16". Date-only math pinned to UTC noon so the
+ *  weekday never shifts with the composing machine's timezone. */
+function formatCallDate(isoDate: string): string | null {
+  const m = isoDate.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12));
+  const weekday = new Intl.DateTimeFormat("en-US", {
+    weekday: "short",
+    timeZone: "UTC",
+  }).format(d);
+  return `${weekday} ${Number(m[2])}/${Number(m[3])}`;
+}
 
-  // Demote BEFORE truncation so the bold-marker balancing in
-  // truncateAtWordBoundary sees the final marker set.
+/** Pull one `**Label**` section's body out of a (heading-demoted) desk note.
+ *  A section runs from its label line to the next lone bold-label line. */
+function extractDeskNoteSection(demotedSummary: string, label: string): string | null {
+  const lines = demotedSummary.split("\n");
+  const isLabelLine = (l: string) => /^\*\*[^*]+\*\*:?\s*$/.test(l.trim());
+  const wanted = label.toLowerCase();
+  const start = lines.findIndex((l) => {
+    const t = l.trim().toLowerCase();
+    return t === `**${wanted}**` || t === `**${wanted}**:`;
+  });
+  if (start === -1) return null;
+  const body: string[] = [];
+  for (let i = start + 1; i < lines.length; i++) {
+    if (isLabelLine(lines[i])) break;
+    body.push(lines[i]);
+  }
+  const text = body.join("\n").trim();
+  return text.length > 0 ? text : null;
+}
+
+function renderTranscriptSection(row: RecentTranscriptRow, linkBase: string | null): string {
+  const date = row.call_date ? formatCallDate(row.call_date) : null;
+  const header = `### ${row.ticker} — Q${row.quarter} ${row.year} call${date ? ` (${date})` : ""}`;
+  const lines = [header, ""];
+
+  // Demote BEFORE section extraction/truncation so heading-styled desk notes
+  // (## Guidance) and bold-labeled ones look identical to the parser, and the
+  // bold-marker balancing in truncateAtWordBoundary sees the final marker set.
   const summary = row.summary ? demoteEmbeddedHeadings(row.summary).trim() : undefined;
-  if (summary) {
+  const guidanceSection = summary ? extractDeskNoteSection(summary, "guidance") : null;
+
+  if (summary && guidanceSection) {
+    // Compact desk-note mode.
+    lines.push(`**Guidance**\n${truncateAtWordBoundary(guidanceSection, GUIDANCE_SECTION_CHAR_CAP)}`);
+    const tone = extractDeskNoteSection(summary, "tone");
+    if (tone) {
+      lines.push("", `Tone: ${truncateAtWordBoundary(tone.replace(/\s+/g, " "), TONE_LINE_CHAR_CAP)}`);
+    }
+  } else if (summary) {
     lines.push(truncateAtWordBoundary(summary, SUMMARY_RENDER_CHAR_CAP));
   }
+  // The raw `guidance` column is deliberately NOT rendered: extractGuidance
+  // keyword-matches transcript paragraphs and on real calls captures the
+  // safe-harbor boilerplate + opening Q&A (7/20 NFLX digest). The desk
+  // note's own Guidance section is the only guidance surface.
 
-  const guidance = row.guidance?.trim();
-  if (guidance) {
-    if (summary) lines.push("");
-    lines.push(`Guidance: ${guidance}`);
+  const label = guidanceSection ? "Full transcript + desk note" : "Full transcript";
+  if (summary) lines.push("");
+  if (linkBase && row.security_id) {
+    const base = linkBase.replace(/\/+$/, "");
+    lines.push(`${label} → [${row.ticker} in Portfolio Desk](${base}/dashboard/security/${row.security_id})`);
+  } else {
+    lines.push(`${label} in Portfolio Desk`);
   }
 
   return lines.join("\n");
@@ -129,10 +194,14 @@ function renderTranscriptSection(row: RecentTranscriptRow): string {
  */
 export function composeCallTranscriptsBlock(
   db: Database.Database,
-  opts: { now?: Date } = {},
+  opts: { now?: Date; linkBase?: string | null } = {},
 ): string | null {
   try {
     const now = opts.now ?? new Date();
+    // Same deep-link base the Pushover notifications use (Mesh-reachable from
+    // the phone). Absent → plain-text pointer, never a dead localhost link.
+    const linkBase =
+      opts.linkBase !== undefined ? opts.linkBase : (process.env.PUSHOVER_LINK_BASE ?? null);
     const cutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000)
       .toISOString()
       .replace("T", " ")
@@ -141,10 +210,21 @@ export function composeCallTranscriptsBlock(
     const rows = dedupeBestSource(
       db
         .prepare(
-          `SELECT ticker, year, quarter, source, summary, guidance, fetched_at
-             FROM earnings_transcripts
-            WHERE datetime(fetched_at) >= datetime(?)
-            ORDER BY datetime(fetched_at) DESC`,
+          `SELECT et.ticker, et.year, et.quarter, et.source, et.summary, et.guidance,
+                  COALESCE(et.call_date,
+                           (SELECT t2.call_date FROM earnings_transcripts t2
+                             WHERE t2.ticker = et.ticker AND t2.year = et.year
+                               AND t2.quarter = et.quarter AND t2.call_date IS NOT NULL
+                             ORDER BY datetime(t2.fetched_at) DESC LIMIT 1)) AS call_date,
+                  COALESCE(et.security_id,
+                           (SELECT t3.security_id FROM earnings_transcripts t3
+                             WHERE t3.ticker = et.ticker AND t3.year = et.year
+                               AND t3.quarter = et.quarter AND t3.security_id IS NOT NULL
+                             ORDER BY datetime(t3.fetched_at) DESC LIMIT 1)) AS security_id,
+                  et.fetched_at
+             FROM earnings_transcripts et
+            WHERE datetime(et.fetched_at) >= datetime(?)
+            ORDER BY datetime(et.fetched_at) DESC`,
         )
         .all(cutoff) as RecentTranscriptRow[],
     );
@@ -160,7 +240,7 @@ export function composeCallTranscriptsBlock(
 
     if (covered.length === 0) return null;
 
-    const sections = covered.map(renderTranscriptSection).join("\n\n");
+    const sections = covered.map((row) => renderTranscriptSection(row, linkBase)).join("\n\n");
     return ["## Call transcripts", "", sections].join("\n");
   } catch (err) {
     console.warn(

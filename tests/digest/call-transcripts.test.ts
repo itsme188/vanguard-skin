@@ -59,12 +59,14 @@ function insertTranscript(opts: {
   guidance?: string | null;
   fetchedAt?: string; // SQLite datetime() literal, space-separated
   source?: string;
+  callDate?: string | null;
+  securityId?: number | null;
 }): void {
   const source = opts.source ?? "alpha_vantage";
   db.prepare(
     `INSERT INTO earnings_transcripts
-       (ticker, year, quarter, source, summary, guidance, source_key, fetched_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       (ticker, year, quarter, source, summary, guidance, call_date, security_id, source_key, fetched_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     opts.ticker,
     opts.year ?? 2026,
@@ -72,6 +74,8 @@ function insertTranscript(opts: {
     source,
     opts.summary ?? "Extractive summary body.",
     opts.guidance ?? null,
+    opts.callDate ?? null,
+    opts.securityId ?? null,
     `${source}:${opts.ticker}:${opts.year ?? 2026}:${opts.quarter ?? 2}`,
     opts.fetchedAt ?? NOW.toISOString().replace("T", " ").slice(0, 19),
   );
@@ -103,7 +107,10 @@ describe("composeCallTranscriptsBlock", () => {
     expect(block).toContain("## Call transcripts");
     expect(block).toContain("### AAA — Q2 2026 call");
     expect(block).toContain("Management struck a confident tone on margin trajectory.");
-    expect(block).toContain("Guidance: Raised full-year revenue guidance by 3%.");
+    // The raw `guidance` column (keyword-extracted from the transcript) is
+    // never rendered — the desk note supersedes it, and for extractive-only
+    // rows it's usually safe-harbor boilerplate.
+    expect(block).not.toContain("Guidance: Raised full-year revenue guidance by 3%.");
   });
 
   it("returns null when nothing was fetched in the last 24h", () => {
@@ -151,8 +158,10 @@ describe("composeCallTranscriptsBlock", () => {
     // input and end with an ellipsis. The truncated text (ellipsis removed)
     // must be an exact prefix of the original AND the original's next
     // character at that cut point must be whitespace — i.e. the cut landed
-    // on a word boundary, never mid-word.
-    const truncated = block!.trim().split("\n\n").pop()!;
+    // on a word boundary, never mid-word. (The block's last paragraph is now
+    // the app pointer line, so find the truncated paragraph by its ellipsis.)
+    const truncated = block!.trim().split("\n\n").find((p) => p.endsWith("…"))!;
+    expect(truncated).toBeDefined();
     expect(truncated.length).toBeLessThan(longSummary.length);
     expect(truncated.endsWith("…")).toBe(true);
     const withoutEllipsis = truncated.slice(0, -1);
@@ -171,21 +180,30 @@ describe("composeCallTranscriptsBlock", () => {
     insertTranscript({ ticker: "BBOLD", summary: longSummary, fetchedAt: hoursAgo(1) });
 
     const block = composeCallTranscriptsBlock(db, { now: NOW })!;
-    const truncated = block.trim().split("\n\n").pop()!;
-    expect(truncated.endsWith("…")).toBe(true);
+    const truncated = block.trim().split("\n\n").find((p) => p.endsWith("…"))!;
+    expect(truncated).toBeDefined();
     // Every ** must be paired — an odd count renders a dangling literal **.
     const markers = (truncated.match(/\*\*/g) ?? []).length;
     expect(markers % 2).toBe(0);
   });
 
-  it("omits the Guidance line when guidance is null", () => {
+  it("never renders the raw guidance column, even when populated", () => {
+    // extractGuidance keyword-matches transcript paragraphs — on real calls it
+    // captures the safe-harbor boilerplate + opening Q&A (the 7/20 NFLX
+    // digest rendered exactly that). The desk note's own Guidance section is
+    // the only guidance surface.
     seedHeld("GGG");
-    insertTranscript({ ticker: "GGG", guidance: null, fetchedAt: hoursAgo(1) });
+    insertTranscript({
+      ticker: "GGG",
+      guidance: "I am the VP of finance. We will now take questions from analysts.",
+      fetchedAt: hoursAgo(1),
+    });
 
     const block = composeCallTranscriptsBlock(db, { now: NOW });
 
     expect(block).not.toBeNull();
     expect(block).not.toContain("Guidance:");
+    expect(block).not.toContain("We will now take questions");
   });
 
   it("dedupes edgar + alpha_vantage rows for the same (ticker, quarter) to one best-source section", () => {
@@ -231,13 +249,138 @@ describe("composeCallTranscriptsBlock", () => {
     expect(block).not.toContain("## Guidance");
     expect(block).not.toContain("## Tone");
     expect(block).toContain("**Guidance**");
-    expect(block).toContain("**Tone**");
+    // A demoted desk note enters compact mode: Tone renders as a prose line.
+    expect(block).toContain("Tone: Confident throughout the Q&A.");
     // Body content survives untouched.
     expect(block).toContain("- Raised full-year revenue outlook");
-    expect(block).toContain("Confident throughout the Q&A.");
     // The block's own structure is intact.
     expect(block).toContain("## Call transcripts");
     expect(block).toContain("### NFLX — Q2 2026 call");
+  });
+
+  it("desk-note summaries render compact: Guidance + Tone only, with a deep link", () => {
+    const sec = seedHeld("NOTE");
+    insertTranscript({
+      ticker: "NOTE",
+      securityId: sec,
+      callDate: "2026-07-16",
+      summary: [
+        "# NOTE Q2'26 Earnings — Desk Note",
+        "",
+        "**Guidance**",
+        "- Reaffirmed, not raised. Q3 +12% reported.",
+        "- FY26 13–14% reiterated.",
+        "",
+        "**Tone**",
+        "Confident, controlled, on-message throughout the call.",
+        "",
+        "**Surprises**",
+        "- Record buyback in the quarter.",
+        "",
+        "**Key Quotes**",
+        '- "We manage to the full year."',
+      ].join("\n"),
+      fetchedAt: hoursAgo(1),
+    });
+
+    const block = composeCallTranscriptsBlock(db, {
+      now: NOW,
+      linkBase: "http://100.96.0.1:3099",
+    })!;
+
+    expect(block).toContain("### NOTE — Q2 2026 call (Thu 7/16)");
+    expect(block).toContain("**Guidance**");
+    expect(block).toContain("- Reaffirmed, not raised. Q3 +12% reported.");
+    expect(block).toContain("Tone: Confident, controlled, on-message throughout the call.");
+    // Compact means compact: the back half stays in-app.
+    expect(block).not.toContain("Surprises");
+    expect(block).not.toContain("Record buyback");
+    expect(block).not.toContain("Key Quotes");
+    expect(block).toContain(
+      `Full transcript + desk note → [NOTE in Portfolio Desk](http://100.96.0.1:3099/dashboard/security/${sec})`,
+    );
+  });
+
+  it("caps a runaway Guidance section at a word boundary with an ellipsis", () => {
+    seedHeld("LONGG");
+    const bullets = Array.from(
+      { length: 30 },
+      (_, i) => `- Guidance detail number ${i} with several trailing words attached`,
+    ).join("\n");
+    insertTranscript({
+      ticker: "LONGG",
+      summary: `**Guidance**\n${bullets}\n\n**Tone**\nCalm.`,
+      fetchedAt: hoursAgo(1),
+    });
+
+    const block = composeCallTranscriptsBlock(db, { now: NOW })!;
+
+    const guidancePara = block.trim().split("\n\n").find((p) => p.includes("**Guidance**"))!;
+    expect(guidancePara.endsWith("…")).toBe(true);
+    expect(guidancePara.length).toBeLessThan(1100);
+  });
+
+  it("coalesces the call date from a superseded edgar row when the AV upgrade lacks it", () => {
+    // Alpha Vantage never supplies call_date; the same-day 8-K row always
+    // does. The dedupe keeps AV's content but must not lose the 8-K's date —
+    // exactly the NFLX 7/20 shape.
+    seedHeld("COAL");
+    insertTranscript({
+      ticker: "COAL",
+      source: "edgar_8k",
+      callDate: "2026-07-16",
+      summary: "Thin 8-K text.",
+      fetchedAt: hoursAgo(6),
+    });
+    insertTranscript({
+      ticker: "COAL",
+      source: "alpha_vantage",
+      callDate: null,
+      summary: "Real desk note body.",
+      fetchedAt: hoursAgo(1),
+    });
+
+    const block = composeCallTranscriptsBlock(db, { now: NOW })!;
+
+    expect(block).toContain("### COAL — Q2 2026 call (Thu 7/16)");
+    expect(block).toContain("Real desk note body.");
+    expect(block).not.toContain("Thin 8-K text.");
+  });
+
+  it("coalesces the call date from an OLDER out-of-window row for the same call", () => {
+    // The real Monday-upgrade shape: the 8-K row (with call_date) was fetched
+    // Thursday night — far outside the digest's 24h window — and only the AV
+    // upgrade row (call_date NULL) is in-window. The date must still surface.
+    seedHeld("XWIN");
+    insertTranscript({
+      ticker: "XWIN",
+      source: "edgar_8k",
+      callDate: "2026-07-16",
+      summary: "Thin 8-K text.",
+      fetchedAt: hoursAgo(73),
+    });
+    insertTranscript({
+      ticker: "XWIN",
+      source: "alpha_vantage",
+      callDate: null,
+      summary: "Real desk note body.",
+      fetchedAt: hoursAgo(1),
+    });
+
+    const block = composeCallTranscriptsBlock(db, { now: NOW })!;
+
+    expect(block).toContain("### XWIN — Q2 2026 call (Thu 7/16)");
+    expect(block).not.toContain("Thin 8-K text.");
+  });
+
+  it("renders a plain pointer without a markdown link when no linkBase is configured", () => {
+    seedHeld("PLAIN");
+    insertTranscript({ ticker: "PLAIN", fetchedAt: hoursAgo(1) });
+
+    const block = composeCallTranscriptsBlock(db, { now: NOW, linkBase: null })!;
+
+    expect(block).toContain("Full transcript in Portfolio Desk");
+    expect(block).not.toContain("](");
   });
 
   it("never throws — a DB error (dropped table) yields null", () => {
