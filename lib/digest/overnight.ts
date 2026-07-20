@@ -10,7 +10,11 @@
  */
 
 import type Database from "better-sqlite3";
-import { fetchYahooDailyCloses, type DailyClose } from "@/lib/quotes/yahoo-daily";
+import {
+  fetchYahooDailyCloses,
+  fetchYahooRolling24hPct,
+  type DailyClose,
+} from "@/lib/quotes/yahoo-daily";
 import { todayET, addDays, calendarDaysBetween } from "@/lib/calendar/date-utils";
 import { classifyEdition } from "./editions";
 import { generateTextForFeature } from "@/lib/ai/generate";
@@ -18,12 +22,22 @@ import { generateTextForFeature } from "@/lib/ai/generate";
 export interface OvernightInstrument {
   symbol: string;
   label: string;
+  /**
+   * "rolling24h" for 24/7 assets: latest hourly price vs ~24h earlier. The
+   * default daily-close pair measures only the partial UTC day at digest
+   * time for an always-open market (7/20: chip −0.1% vs VK's "dipped 75bp").
+   * The Worker mirror (workers/cron/src/overnight.ts) deliberately KEEPS the
+   * daily pair for BTC — its one-spark-request design sits at 49/50 of the
+   * free-tier subrequest cap, and the cloud block only runs when the Mac is
+   * asleep.
+   */
+  window?: "rolling24h";
 }
 
 /** Fixed display order per user spec: Korea → bitcoin → Japan → China. */
 export const OVERNIGHT_INSTRUMENTS: OvernightInstrument[] = [
   { symbol: "^KS11", label: "KOSPI" },
-  { symbol: "BTC-USD", label: "Bitcoin" },
+  { symbol: "BTC-USD", label: "Bitcoin", window: "rolling24h" },
   { symbol: "^N225", label: "Nikkei" },
   { symbol: "^HSI", label: "Hang Seng" },
 ];
@@ -45,16 +59,24 @@ const FETCH_WINDOW_DAYS = 10;
 export async function fetchOvernightMoves(
   opts: {
     fetcher?: typeof fetchYahooDailyCloses;
+    /** Rolling-24h fetcher for `window: "rolling24h"` instruments. */
+    fetch24h?: (symbol: string) => Promise<number | null>;
     /** YYYY-MM-DD (ET). Injectable for tests. */
     today?: string;
   } = {},
 ): Promise<OvernightMove[]> {
   const fetcher = opts.fetcher ?? fetchYahooDailyCloses;
+  const fetch24h = opts.fetch24h ?? ((symbol: string) => fetchYahooRolling24hPct(symbol));
   const today = opts.today ?? todayET();
   const from = addDays(today, -FETCH_WINDOW_DAYS);
 
   const results = await Promise.all(
     OVERNIGHT_INSTRUMENTS.map(async (inst): Promise<OvernightMove | null> => {
+      if (inst.window === "rolling24h") {
+        const pct = await fetch24h(inst.symbol);
+        if (pct === null || !Number.isFinite(pct)) return null; // drop the line
+        return { label: inst.label, pct };
+      }
       const closes: DailyClose[] = await fetcher(inst.symbol, from, today);
       if (closes.length < 2) return null; // fetch failure / not enough history → drop the line
       const last = closes[closes.length - 1];

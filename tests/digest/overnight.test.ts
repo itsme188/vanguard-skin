@@ -56,10 +56,10 @@ describe("fetchOvernightMoves", () => {
       today: TODAY,
       fetcher: stubFetcher({
         "^KS11": fresh(100, 100.8),
-        "BTC-USD": fresh(100000, 97900),
         "^N225": fresh(40000, 40480),
         "^HSI": fresh(20000, 19940),
       }),
+      fetch24h: async () => -2.1,
     });
 
     expect(moves).toHaveLength(4);
@@ -70,15 +70,34 @@ describe("fetchOvernightMoves", () => {
     expect((moves[3] as { pct: number }).pct).toBeCloseTo(-0.3, 5);
   });
 
+  it("Bitcoin uses the rolling-24h fetcher, never the daily-close pair", async () => {
+    // The 7/20 digest showed "Bitcoin −0.1%" against VK's "dipped 75bp": the
+    // daily pair measures a ~9h partial UTC day at digest time. 24/7 assets
+    // get a true rolling-24h window.
+    const dailySymbolsAsked: string[] = [];
+    const moves = await fetchOvernightMoves({
+      today: TODAY,
+      fetcher: async (symbol: string) => {
+        dailySymbolsAsked.push(symbol);
+        // Would produce a misleading partial-day number for BTC:
+        return { "^KS11": fresh(100, 101), "BTC-USD": fresh(100, 105), "^N225": fresh(100, 101), "^HSI": fresh(100, 101) }[symbol] ?? [];
+      },
+      fetch24h: async () => -0.75,
+    });
+
+    expect(moves[1]).toEqual({ label: "Bitcoin", pct: -0.75 });
+    expect(dailySymbolsAsked).not.toContain("BTC-USD");
+  });
+
   it("drops a symbol whose fetch fails or returns fewer than 2 closes", async () => {
     const moves = await fetchOvernightMoves({
       today: TODAY,
       fetcher: stubFetcher({
         "^KS11": fresh(100, 101),
-        // BTC-USD absent → []
         "^N225": [{ date: "2026-07-15", close: 40000 }], // only one close
         "^HSI": fresh(20000, 20100),
       }),
+      fetch24h: async () => null, // BTC 24h fetch failed → drop the line
     });
 
     expect(moves.map((m) => m.label)).toEqual(["KOSPI", "Hang Seng"]);
@@ -89,13 +108,13 @@ describe("fetchOvernightMoves", () => {
       today: TODAY,
       fetcher: stubFetcher({
         "^KS11": fresh(100, 101),
-        "BTC-USD": fresh(100, 101),
         "^N225": [
           { date: "2026-07-10", close: 39900 },
           { date: "2026-07-11", close: 40000 }, // 4 days before TODAY — holiday week
         ],
         "^HSI": fresh(100, 101),
       }),
+      fetch24h: async () => 1,
     });
 
     expect(moves[2]).toEqual({ label: "Nikkei", closed: true });
@@ -109,17 +128,21 @@ describe("fetchOvernightMoves", () => {
           { date: "2026-07-11", close: 100 },
           { date: "2026-07-12", close: 102 }, // Sat relative to Wed TODAY = 3 days
         ],
-        "BTC-USD": fresh(100, 101),
         "^N225": fresh(100, 101),
         "^HSI": fresh(100, 101),
       }),
+      fetch24h: async () => 1,
     });
 
     expect(moves[0]).toEqual({ label: "KOSPI", pct: expect.closeTo(2, 5) });
   });
 
   it("returns [] when every fetch fails", async () => {
-    const moves = await fetchOvernightMoves({ today: TODAY, fetcher: stubFetcher({}) });
+    const moves = await fetchOvernightMoves({
+      today: TODAY,
+      fetcher: stubFetcher({}),
+      fetch24h: async () => null,
+    });
     expect(moves).toEqual([]);
   });
 });
