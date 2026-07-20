@@ -70,16 +70,26 @@ parse_percent() {
   echo "$1" | sed 's/[+%]//g'
 }
 
-# Compare two numbers with a tolerance (as fraction, e.g., 0.02 = 2%)
+# Compare two numbers with a tolerance (as fraction, e.g., 0.02 = 2%).
+# Empty/non-numeric input prints INVALID instead of crashing: a bare
+# float('') ValueError exits python non-zero, and under `set -euo pipefail`
+# the RESULT=$(...) substitution killed the ENTIRE run at the first bad
+# extraction (2026-07-20 root cause — every tab after the first value check
+# silently never ran). Callers treat any non-OK result as a FAIL for that
+# one check and continue.
 compare_with_tolerance() {
   local actual="$1" expected="$2" tolerance="$3"
   python3 -c "
-a, e, t = float('$actual'), float('$expected'), float('$tolerance')
-if e == 0:
-    ok = abs(a) < 1.0
+try:
+    a, e, t = float('$actual'), float('$expected'), float('$tolerance')
+except ValueError:
+    print('INVALID')
 else:
-    ok = abs(a - e) / abs(e) <= t
-print('OK' if ok else 'MISMATCH')
+    if e == 0:
+        ok = abs(a) < 1.0
+    else:
+        ok = abs(a - e) / abs(e) <= t
+    print('OK' if ok else 'MISMATCH')
 "
 }
 
@@ -87,8 +97,12 @@ print('OK' if ok else 'MISMATCH')
 compare_absolute() {
   local actual="$1" expected="$2" tolerance="$3"
   python3 -c "
-a, e, t = float('$actual'), float('$expected'), float('$tolerance')
-print('OK' if abs(a - e) <= t else 'MISMATCH')
+try:
+    a, e, t = float('$actual'), float('$expected'), float('$tolerance')
+except ValueError:
+    print('INVALID')
+else:
+    print('OK' if abs(a - e) <= t else 'MISMATCH')
 "
 }
 
@@ -191,11 +205,15 @@ navigate_and_screenshot() {
 navigate_and_screenshot "overview" "/dashboard"
 check_page_errors "overview" || true
 
-# Extract portfolio value
-PORTFOLIO_VALUE=$(ab_eval <<'EVALEOF'
-(document.querySelector('.text-4xl.font-semibold.font-mono')?.textContent || '').trim()
-EVALEOF
-)
+# Extract portfolio value from /api/summary (the Electron-tray endpoint).
+# NOT scraped from the DOM: /dashboard has redirected to /dashboard/today
+# since the 2026-04-29 IA collapse, and the old selector
+# (.text-4xl.font-semibold.font-mono, from the now-unmounted
+# PerformanceMetrics component) matched nothing on ANY page — extraction
+# was empty every night. The API contract is redesign-proof and checks the
+# same invariant: portfolio total vs expected drift.
+PORTFOLIO_VALUE=$(curl -sf --max-time 10 "$BASE_URL/api/summary" \
+  | python3 -c "import json,sys; v=json.load(sys.stdin).get('totalValue'); print('' if v is None else v)" 2>/dev/null || echo "")
 log "INFO" "overview/portfolio-value" "Extracted: $PORTFOLIO_VALUE"
 
 EXPECTED_PV=$(json_get "overview.portfolioValue")
