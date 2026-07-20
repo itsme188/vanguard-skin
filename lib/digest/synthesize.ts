@@ -16,6 +16,7 @@ import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
 import { stripModelPreamble } from "@/lib/ai/strip-preamble";
 import { editionLabel } from "@/lib/digest/editions";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
+import { insertBeforeAlsoCovered } from "@/lib/digest/thin-coverage";
 import type { CompanyBucket } from "@/lib/digest/group-by-company";
 
 // ─── Error class ─────────────────────────────────────────────────────────────
@@ -231,13 +232,7 @@ export function enforceHeldSections(markdown: string, input: SynthesisInput): st
   );
 
   const stubBlock = stubs.join("\n\n");
-  const alsoMatch = markdown.match(/^## Also covered\s*$/m);
-  if (alsoMatch && alsoMatch.index !== undefined) {
-    return (
-      markdown.slice(0, alsoMatch.index) + stubBlock + "\n\n" + markdown.slice(alsoMatch.index)
-    );
-  }
-  return `${markdown.trimEnd()}\n\n${stubBlock}`;
+  return insertBeforeAlsoCovered(markdown, stubBlock);
 }
 
 // ─── Main export ──────────────────────────────────────────────────────────────

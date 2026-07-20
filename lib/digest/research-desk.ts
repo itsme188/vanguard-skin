@@ -68,18 +68,29 @@ export function renderResearchDesk(essays: EssayLike[]): string {
   return lines.join("\n").trimEnd() + "\n";
 }
 
+export interface CrossFileResult {
+  markdown: string;
+  /** Essays covering a held/watchlist symbol that had NO matching ## section. */
+  unfiled: Array<{ source_name: string; subject: string; symbols: string[] }>;
+}
+
 /**
  * For each essay covering a held/watchlist symbol, insert a pointer line
  * directly under the matching `## SYM …` section header in the AI output.
  * Symbol matching expands issuer families on BOTH sides (a GOOGL essay
  * cross-files into a GOOG section). At most one pointer per (essay, section).
+ * Essays that ARE held/watchlist-relevant but have no matching section are
+ * reported back via `unfiled` (never silently dropped).
  */
 export function insertCrossFilePointers(
   aiMarkdown: string,
   essays: EssayLike[],
   heldAndWatchlist: string[],
-): string {
-  if (essays.length === 0 || heldAndWatchlist.length === 0) return aiMarkdown;
+): CrossFileResult {
+  const unfiled: CrossFileResult["unfiled"] = [];
+  if (essays.length === 0 || heldAndWatchlist.length === 0) {
+    return { markdown: aiMarkdown, unfiled };
+  }
 
   const relevant = new Set(
     heldAndWatchlist.flatMap((s) => issuerSiblings(s)).map((s) => s.toUpperCase()),
@@ -90,7 +101,7 @@ export function insertCrossFilePointers(
     const symbols = parseJsonArray(essay.mentioned_symbols)
       .map((s) => s.toUpperCase())
       .filter((s) => relevant.has(s));
-    if (symbols.length === 0) continue;
+    if (symbols.length === 0) continue; // not held/watchlist-relevant: neither filed nor unfiled
 
     // All family variants this essay could file under.
     const fileUnder = new Set(symbols.flatMap((s) => issuerSiblings(s)).map((s) => s.toUpperCase()));
@@ -99,10 +110,13 @@ export function insertCrossFilePointers(
       const m = line.match(/^##\s+([A-Z][A-Z0-9.\-]*)\b/);
       return m !== null && fileUnder.has(m[1].toUpperCase());
     });
-    if (idx === -1) continue;
+    if (idx === -1) {
+      unfiled.push({ source_name: essay.source_name, subject: essay.subject, symbols });
+      continue;
+    }
 
     const pointer = `📄 *Deep dive today: **${essay.source_name}** — "${essay.subject}" (see Research Desk below)*`;
     lines = [...lines.slice(0, idx + 1), pointer, ...lines.slice(idx + 1)];
   }
-  return lines.join("\n");
+  return { markdown: lines.join("\n"), unfiled };
 }
