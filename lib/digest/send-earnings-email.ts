@@ -829,6 +829,23 @@ const MAX_NEWSLETTER_ARTICLES = 6;
  */
 const MAX_ARTICLES_PER_SOURCE = 2;
 const CANDIDATE_FETCH_LIMIT = 30;
+/**
+ * Per-source ceiling inside the candidate fetch (final-review Minor j,
+ * 2026-07-17): without it, one ranked source with ≥CANDIDATE_FETCH_LIMIT
+ * in-window rows consumes the whole rank-ordered pool — every other
+ * source's rows are evicted at the SQL layer, distinctSources reads 1,
+ * and the pass-2 single-source refill re-monopolizes all the slots.
+ * Derived, not picked: MAX_NEWSLETTER_ARTICLES × 3 (max editions per ET
+ * day among multi-edition sources — VK dawn/midday/recap). Edition
+ * supersedence runs in JS AFTER this fetch, so the cap must leave enough
+ * raw rows that a genuinely single-source symbol still yields
+ * MAX_NEWSLETTER_ARTICLES usable post-supersedence articles for pass 2.
+ * Because 18 < CANDIDATE_FETCH_LIMIT, a capped flooder leaves ≥12 pool
+ * slots for other sources, which also keeps distinctSources truthful
+ * (a 1-source pool now implies only one source actually covers the
+ * family in-window).
+ */
+const PER_SOURCE_FETCH_CAP = MAX_NEWSLETTER_ARTICLES * 3;
 
 /** ET calendar day of a received_at timestamp (ISO or SQLite space format, UTC). */
 function receivedAtEtDay(receivedAt: string): string {
@@ -892,24 +909,37 @@ export function getNewsletterContext(
   const fetchWindow = (days: 7 | 30): CandidateRow[] =>
     db
       .prepare(
-        `SELECT a.id, a.source_id, rs.name AS source_name,
-                rs.earnings_rank, rs.earnings_note,
-                a.subject, a.received_at, a.raw_text, a.summary,
-                a.sentiment, a.sentiment_score
-           FROM research_articles a
-           JOIN research_article_securities ras ON ras.article_id = a.id
-           JOIN securities s ON s.id = ras.security_id
-           JOIN research_sources rs ON rs.id = a.source_id
-          WHERE UPPER(s.symbol) IN (${placeholders})
-            AND datetime(a.received_at) >= datetime('now', '-${days} days')
-            AND a.processed_at IS NOT NULL
-            AND COALESCE(a.is_relevant, 1) = 1
-          GROUP BY a.id
+        `SELECT id, source_id, source_name, earnings_rank, earnings_note,
+                subject, received_at, raw_text, summary,
+                sentiment, sentiment_score
+           FROM (
+             SELECT a.id, a.source_id, rs.name AS source_name,
+                    rs.earnings_rank, rs.earnings_note,
+                    a.subject, a.received_at, a.raw_text, a.summary,
+                    a.sentiment, a.sentiment_score,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY a.source_id
+                      ORDER BY a.received_at DESC, a.id DESC
+                    ) AS src_rn
+               FROM research_articles a
+               JOIN research_article_securities ras ON ras.article_id = a.id
+               JOIN securities s ON s.id = ras.security_id
+               JOIN research_sources rs ON rs.id = a.source_id
+              WHERE UPPER(s.symbol) IN (${placeholders})
+                AND datetime(a.received_at) >= datetime('now', '-${days} days')
+                AND a.processed_at IS NOT NULL
+                AND COALESCE(a.is_relevant, 1) = 1
+              GROUP BY a.id
+           )
+          -- Per-source ceiling BEFORE the pool limit: one prolific source
+          -- must not consume the whole rank-ordered pool (see the
+          -- PER_SOURCE_FETCH_CAP constant comment).
+          WHERE src_rn <= ${PER_SOURCE_FETCH_CAP}
           -- Pre-filter must stay rank-aware to agree with the JS comparator
           -- below: a recency-only ORDER BY here would let a flood of
           -- unranked articles evict a ranked source's older in-window
           -- article before the LIMIT ever reaches the JS sort.
-          ORDER BY (rs.earnings_rank IS NULL) ASC, rs.earnings_rank ASC, a.received_at DESC
+          ORDER BY (earnings_rank IS NULL) ASC, earnings_rank ASC, received_at DESC
           LIMIT ${CANDIDATE_FETCH_LIMIT}`,
       )
       .all(...upperFamily) as CandidateRow[];
