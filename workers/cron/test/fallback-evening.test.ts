@@ -714,6 +714,38 @@ describe("enforceHeldSections (Worker mirror of the Mac backstop)", () => {
     expect(html).toContain("auto-surfaced");
     expect(html).toContain("example.com/aapl");
   });
+
+  it("listing-only held bucket is waived into the roster line, not stubbed", async () => {
+    const env = makeEnv();
+    const snapshot = makeV3Snapshot({ articleCount: 7 });
+    const arts = snapshot.recentArticlesMeta as Array<Record<string, unknown>>;
+    // Article 0 becomes a nine-symbol listing naming held AAPL.
+    arts[0].mentioned_symbols = JSON.stringify([
+      "AAPL", "MSFT", "HD", "GS", "JPM", "XOM", "RBRK", "NSC", "TXN",
+    ]);
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot);
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: false });
+    // This describe block has no per-test beforeEach reset (unlike the
+    // "runFallbackEvening" describe above), so sendEmail.mock.calls carries
+    // over from the preceding "wired into the synthesis path" test — clear it
+    // so mock.calls[0] below is THIS test's send, not the prior test's.
+    (sendEmail as ReturnType<typeof vi.fn>).mockClear();
+    (generateText as ReturnType<typeof vi.fn>).mockResolvedValue({
+      text:
+        "## The Session\n\n" +
+        "Broad rotation continued across sectors today with breadth improving " +
+        "into the close and multiple newsletters flagging positioning shifts " +
+        "ahead of the week's heavy earnings calendar across held names.\n\n" +
+        "## Also covered\n\nThin mentions.",
+      finishReason: "stop",
+    });
+
+    const result = await runFallbackEvening(env, {});
+    expect(result.kind).toBe("success");
+    const sent = JSON.stringify((sendEmail as ReturnType<typeof vi.fn>).mock.calls[0]);
+    expect(sent).toContain("On this week's calendar: AAPL");
+    expect(sent).not.toContain("auto-surfaced"); // no enforcement stub for AAPL
+  });
 });
 
 describe("buildSynthesisPrompt — timeframe/thread coherence", () => {
