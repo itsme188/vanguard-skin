@@ -181,6 +181,30 @@ describe("getNewsletterContext — rank-ordered fill", () => {
     expect(getNewsletterContext(db, [])).toEqual([]);
   });
 
+  it("a single ranked source flooding past the fetch limit cannot evict other sources or monopolize the fill", () => {
+    // Minor j (final review 2026-07-17): with ≥30 in-window rows from ONE
+    // ranked source, the rank-first ORDER BY + pool-wide LIMIT let that
+    // source consume the entire candidate pool — other sources vanished at
+    // the SQL layer, distinctSources read 1, and the pass-2 single-source
+    // refill re-monopolized all 6 slots.
+    const sec = seedSecurity("GOOGL");
+    const flood = seedSource("Flood Daily", 1);
+    const second = seedSource("Second Letter", 2);
+    const pool = seedSource("Pool Letter", null);
+    for (let i = 0; i < 32; i++) {
+      seedArticle(flood, sec, `Flood ${i}`, hoursAgo(i + 1));
+    }
+    seedArticle(second, sec, "Second preview", hoursAgo(2));
+    seedArticle(pool, sec, "Pool note", hoursAgo(3));
+
+    const result = getNewsletterContext(db, ["GOOGL"]);
+    const names = result.map((r) => r.source_name);
+    expect(names).toContain("Second Letter");
+    expect(names).toContain("Pool Letter");
+    // Diversity cap holds — the flooding source gets exactly its 2, not all 6.
+    expect(result.filter((r) => r.source_name === "Flood Daily")).toHaveLength(2);
+  });
+
   it("a flood of recent unranked articles cannot evict a ranked source's older in-window article", () => {
     const sec = seedSecurity("PLTR");
     const ranked = seedSource("Ranked Letter", 1);
