@@ -26,7 +26,7 @@ const sentimentColors: Record<string, string> = {
   bullish: "bg-up/20 text-up",
   bearish: "bg-down/20 text-down",
   neutral: "bg-raised text-ink-dim",
-  mixed: "bg-gold/20 text-gold",
+  mixed: "bg-gold/20 text-gold-ink",
 };
 
 const sentimentBorder: Record<string, string> = {
@@ -393,7 +393,7 @@ export function ResearchFeedsView({
             onClick={() => setSearchOpen(!searchOpen)}
             className={`sm:hidden inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium border transition-colors ${
               searchOpen || searchQuery
-                ? "bg-gold/10 border-gold/30 text-gold"
+                ? "bg-gold/10 border-gold/30 text-gold-ink"
                 : "border-edge text-ink-dim hover:text-ink hover:bg-raised"
             }`}
             title="Search articles"
@@ -440,7 +440,7 @@ export function ResearchFeedsView({
             onClick={() => setSendOpen(!sendOpen)}
             className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium border transition-colors ${
               sendOpen
-                ? "bg-gold/10 border-gold/30 text-gold"
+                ? "bg-gold/10 border-gold/30 text-gold-ink"
                 : "border-edge text-ink-dim hover:text-ink hover:bg-raised"
             }`}
             title="Send email"
@@ -476,7 +476,7 @@ export function ResearchFeedsView({
             onClick={() => setViewMode("filtered")}
             className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
               viewMode === "filtered"
-                ? "bg-gold/15 border-gold/40 text-gold"
+                ? "bg-gold/15 border-gold/40 text-gold-ink"
                 : "border-edge text-ink-dim hover:text-ink hover:bg-raised"
             }`}
             title="Articles flipped to is_relevant=0 by the D1/D2 short-circuit or D3 portfolio-relevance gate"
@@ -484,7 +484,7 @@ export function ResearchFeedsView({
             Filtered
             <span
               className={`inline-flex items-center justify-center min-w-[1.25rem] px-1.5 rounded-full text-[10px] font-mono ${
-                viewMode === "filtered" ? "bg-gold/20 text-gold" : "bg-raised text-ink-faint"
+                viewMode === "filtered" ? "bg-gold/20 text-gold-ink" : "bg-raised text-ink-faint"
               }`}
             >
               {filteredCount}
@@ -609,7 +609,7 @@ function ArticleCard({
       <div onClick={expanded ? undefined : onToggle}>
         {/* Meta line */}
         <div className="flex items-center gap-2.5 mb-2">
-          <span className="text-xs font-semibold text-gold uppercase tracking-wider">
+          <span className="text-xs font-semibold text-gold-ink uppercase tracking-wider">
             {article.source_name}
           </span>
           <span className="text-ink-faint">·</span>
@@ -683,7 +683,7 @@ function ArticleCard({
                       href={originalUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-gold hover:text-gold/80 not-italic"
+                      className="text-gold-ink hover:text-gold/80 not-italic"
                     >
                       open the original ↗
                     </a>
@@ -750,7 +750,7 @@ function FilteredArticlesList({
     <div className="max-w-3xl mx-auto space-y-6">
       {Array.from(buckets.entries()).map(([category, items]) => (
         <section key={category}>
-          <h3 className="text-xs font-semibold text-gold uppercase tracking-wider mb-3">
+          <h3 className="text-xs font-semibold text-gold-ink uppercase tracking-wider mb-3">
             {FILTERED_CATEGORY_LABEL[category] ?? category} · {items.length}
           </h3>
           <div className="divide-y divide-edge/50">

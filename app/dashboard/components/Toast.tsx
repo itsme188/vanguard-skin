@@ -64,7 +64,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                 ? "border-up/40 bg-up/20 text-up"
                 : t.type === "error"
                   ? "border-down/40 bg-down/20 text-down"
-                  : "border-gold/40 bg-gold/20 text-gold"
+                  : "border-gold/40 bg-gold/20 text-gold-ink"
             }`}
             role="status"
           >

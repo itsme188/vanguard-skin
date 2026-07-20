@@ -166,7 +166,7 @@ export function CommandPalette() {
                     : "hover:bg-raised/50"
                 }`}
               >
-                <div className="font-mono text-sm font-medium text-gold shrink-0 w-16">
+                <div className="font-mono text-sm font-medium text-gold-ink shrink-0 w-16">
                   {result.title}
                 </div>
                 <div className="text-xs text-ink-faint truncate flex-1">

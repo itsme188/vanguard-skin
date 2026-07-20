@@ -139,7 +139,7 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
           <button
             type="button"
             onClick={() => setDrillFilter({ kind: "risk", topN: 10 })}
-            className="text-xs text-gold hover:underline focus-ring rounded px-1"
+            className="text-xs text-gold-ink hover:underline focus-ring rounded px-1"
             aria-label="Open top 10 by risk in drill-down panel"
           >
             View top 10 by risk →

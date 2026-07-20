@@ -255,6 +255,22 @@ html {
   color: #d4d4d4;
 }
 
+/* OHLC crosshair legend inside the dark module (2026-07-20 HIG tail): the
+ * legend mixes text-ink values, text-ink-faint labels, and text-up/down
+ * close colors, so the single-color .chart-chrome override can't cover it.
+ * Instead re-map the underlying theme VARIABLES to dark-theme values within
+ * the legend scope — Tailwind utilities resolve var(--color-*) → var(--*)
+ * at use time, so every utility inside re-colors without specificity games.
+ * Light-theme --ink (#0a0a0a) was invisible on the panel's near-black
+ * toolbar. Pill groups elsewhere in the toolbar are OUTSIDE this scope and
+ * keep light tokens (they sit on light bg-raised groups). */
+.dark-module-chart .chart-legend {
+  --ink: #e5e5e5;
+  --ink-faint: #8a8a8a;
+  --up: #22c55e;
+  --down: #ef4444;
+}
+
 /* ACCESSIBILITY: respect the system Reduce Motion setting (2026-07-12
  * HIG audit). Quiets every CSS animation/transition — slide-up overlays,
  * skeleton pulses, chip transitions — to near-instant. 0.01ms rather than

@@ -79,7 +79,7 @@ export function MultiChart({
               onClick={() => setLayout(l.key)}
               className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
                 layout === l.key
-                  ? "bg-panel text-gold"
+                  ? "bg-panel text-gold-ink"
                   : "text-ink-faint hover:text-ink-dim"
               }`}
             >

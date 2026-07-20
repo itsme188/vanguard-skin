@@ -772,7 +772,10 @@ export function SecurityChart({
           was missable) that mirrors AccountsView's holdings-table pattern. */}
       <ScrollFade className="border-b border-edge">
         <div className="flex items-center gap-2 px-3 py-1.5 min-w-0">
-        <div className="flex items-center gap-2 shrink-0">
+        {/* chart-legend: inside the dark MarketDataPanel this scope re-maps
+            --ink/--ink-faint/--up/--down to dark-theme values (globals.css)
+            so the symbol + OHLC crosshair legend stay legible. */}
+        <div className="chart-legend flex items-center gap-2 shrink-0">
           {!compact && <span className="font-mono font-semibold text-ink text-lg">{symbol}</span>}
           {!compact && legend && (
             <div className="flex items-center gap-3 text-xs font-mono">
@@ -835,7 +838,7 @@ export function SecurityChart({
                 key={tf.label}
                 onClick={() => handleTimeframeChange(tf.label)}
                 className={`relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:inset-x-0 px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-                  activeTimeframe === tf.label ? "bg-panel text-gold" : "text-ink-faint hover:text-ink-dim"
+                  activeTimeframe === tf.label ? "bg-panel text-gold-ink" : "text-ink-faint hover:text-ink-dim"
                 }`}
               >
                 {tf.label}
@@ -851,7 +854,7 @@ export function SecurityChart({
                   key={d.label}
                   onClick={() => handleDurationChange(d.label)}
                   className={`relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:inset-x-0 px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-                    activeDuration === d.label ? "bg-panel text-gold" : "text-ink-faint hover:text-ink-dim"
+                    activeDuration === d.label ? "bg-panel text-gold-ink" : "text-ink-faint hover:text-ink-dim"
                   }`}
                 >
                   {d.label}
@@ -887,7 +890,7 @@ export function SecurityChart({
             <button
               onClick={() => setShowMarkers((v) => !v)}
               className={`relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:inset-x-0 px-2 py-1 text-xs font-medium rounded-md transition-colors ${
-                showMarkers ? "bg-panel text-gold" : "text-ink-faint hover:text-ink-dim"
+                showMarkers ? "bg-panel text-gold-ink" : "text-ink-faint hover:text-ink-dim"
               }`}
               title="Show BUY/SELL transaction markers"
             >
@@ -896,7 +899,7 @@ export function SecurityChart({
             <button
               onClick={() => setShowSuggested((v) => !v)}
               className={`relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:inset-x-0 px-2 py-1 text-xs font-medium rounded-md transition-colors ${
-                showSuggested ? "bg-panel text-gold" : "text-ink-faint hover:text-ink-dim"
+                showSuggested ? "bg-panel text-gold-ink" : "text-ink-faint hover:text-ink-dim"
               }`}
               title="Show computed support / resistance levels (pivot-based)"
             >
@@ -982,7 +985,10 @@ export function SecurityChart({
               <LegendDot color="#ef4444" label="resistance / stop" />
             </div>
           </div>
-          <span>{isIntraday ? `${activeTimeframe} intraday` : "Daily OHLCV"} via TWS</span>
+          {/* pr-14 keeps this right-edge label clear of the Notes FAB
+              (fixed bottom-right, ~72px corner zone) when the chart card
+              bottom lands at the viewport bottom. */}
+          <span className="pr-14">{isIntraday ? `${activeTimeframe} intraday` : "Daily OHLCV"} via TWS</span>
         </div>
       )}
     </div>

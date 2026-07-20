@@ -59,7 +59,7 @@ export function OptionsStrategies({ scope }: { scope?: string }) {
           >
             <div className="flex items-center justify-between">
               <div>
-                <span className="text-xs font-medium text-gold uppercase tracking-wide">
+                <span className="text-xs font-medium text-gold-ink uppercase tracking-wide">
                   {formatStrategyType(s.type)}
                 </span>
                 <p className="text-sm text-ink mt-0.5">{s.name}</p>

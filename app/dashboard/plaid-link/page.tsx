@@ -301,7 +301,7 @@ export default function PlaidLinkPage() {
             <p className="text-sm text-up">{state.message}</p>
             <a
               href="/dashboard/today"
-              className="inline-block text-sm text-gold hover:text-gold/80 underline"
+              className="inline-block text-sm text-gold-ink hover:text-gold/80 underline"
             >
               Back to Portfolio Desk
             </a>
@@ -312,7 +312,7 @@ export default function PlaidLinkPage() {
             <p className="text-sm text-down">{state.message}</p>
             <a
               href="/dashboard/today"
-              className="inline-block text-sm text-gold hover:text-gold/80 underline"
+              className="inline-block text-sm text-gold-ink hover:text-gold/80 underline"
             >
               Back to Portfolio Desk
             </a>

@@ -50,7 +50,7 @@ export function UpcomingEventsCard() {
       <div className="rounded-lg border border-dashed border-edge bg-panel p-4">
         <h3 className="text-sm font-medium text-ink mb-1">Upcoming Events</h3>
         <p className="text-sm text-ink-faint">
-          <Link href="/dashboard/calendar" className="text-gold hover:underline">
+          <Link href="/dashboard/calendar" className="text-gold-ink hover:underline">
             Sync the calendar
           </Link>{" "}
           to see upcoming earnings and macro events.
@@ -66,7 +66,7 @@ export function UpcomingEventsCard() {
           <h3 className="text-sm font-medium text-ink">Upcoming Events</h3>
           <Link
             href="/dashboard/calendar"
-            className="text-xs text-gold hover:text-gold/80 transition-colors"
+            className="text-xs text-gold-ink hover:text-gold/80 transition-colors"
           >
             Calendar &rarr;
           </Link>
@@ -75,7 +75,7 @@ export function UpcomingEventsCard() {
           No upcoming events.{" "}
           <Link
             href="/dashboard/calendar"
-            className="text-gold hover:underline"
+            className="text-gold-ink hover:underline"
           >
             Sync calendar
           </Link>{" "}
@@ -91,7 +91,7 @@ export function UpcomingEventsCard() {
         <h3 className="text-sm font-medium text-ink">Upcoming Events</h3>
         <Link
           href="/dashboard/calendar"
-          className="text-xs text-gold hover:text-gold/80 transition-colors"
+          className="text-xs text-gold-ink hover:text-gold/80 transition-colors"
         >
           View All &rarr;
         </Link>
@@ -111,10 +111,10 @@ export function UpcomingEventsCard() {
                     <SymbolLink
                       securityId={event.security_id}
                       symbol={event.symbol}
-                      className="text-xs font-mono font-medium text-gold"
+                      className="text-xs font-mono font-medium text-gold-ink"
                     />
                   ) : event.symbol ? (
-                    <span className="text-xs font-mono font-medium text-gold">
+                    <span className="text-xs font-mono font-medium text-gold-ink">
                       {event.symbol}
                     </span>
                   ) : null}

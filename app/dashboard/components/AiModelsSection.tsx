@@ -176,7 +176,7 @@ export function AiModelsSection() {
                     <label className="block text-[11px] text-ink-dim mb-0.5">
                       {row.key}
                       {row.override && (
-                        <span className="ml-1.5 text-[10px] text-gold">
+                        <span className="ml-1.5 text-[10px] text-gold-ink">
                           overridden
                         </span>
                       )}
@@ -214,7 +214,7 @@ export function AiModelsSection() {
                       type="button"
                       onClick={() => handleSave(row)}
                       disabled={isSaving}
-                      className="px-2 py-1 text-[11px] font-medium rounded bg-gold/20 text-gold hover:bg-gold/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+                      className="px-2 py-1 text-[11px] font-medium rounded bg-gold/20 text-gold-ink hover:bg-gold/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
                     >
                       {isSaving ? "Saving…" : "Save"}
                     </button>

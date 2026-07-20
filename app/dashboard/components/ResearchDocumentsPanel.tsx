@@ -63,7 +63,7 @@ export function ResearchDocumentsPanel({
               <div className="flex items-center gap-2.5 mb-1.5 flex-wrap">
                 {doc.source && (
                   <span
-                    className="font-mono uppercase font-semibold text-gold"
+                    className="font-mono uppercase font-semibold text-gold-ink"
                     style={{ fontSize: "11px", letterSpacing: "0.18em" }}
                   >
                     {doc.source}

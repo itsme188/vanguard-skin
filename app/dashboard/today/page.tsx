@@ -352,7 +352,7 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
             </p>
             <Link
               href="/dashboard/alerts?view=armed"
-              className="block text-[13px] font-medium text-gold hover:text-gold/80"
+              className="block text-[13px] font-medium text-gold-ink hover:text-gold/80"
             >
               View armed levels &rarr;
             </Link>

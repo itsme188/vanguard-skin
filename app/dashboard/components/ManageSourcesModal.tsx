@@ -588,7 +588,7 @@ export function ManageSourcesModal({
                         onClick={() => handleToggleOffTopic(s.id, s.allow_off_topic ?? 0)}
                         className={`text-[10px] font-medium px-1.5 py-0.5 rounded border transition-colors ${
                           s.allow_off_topic === 1
-                            ? "border-gold/40 text-gold bg-gold/10"
+                            ? "border-gold/40 text-gold-ink bg-gold/10"
                             : "border-edge text-ink-faint hover:text-ink-dim"
                         }`}
                         title={
@@ -655,7 +655,7 @@ export function ManageSourcesModal({
             <button
               onClick={handleDiscover}
               disabled={discovering}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium border border-gold/40 text-gold hover:bg-gold/10 transition-colors disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium border border-gold/40 text-gold-ink hover:bg-gold/10 transition-colors disabled:opacity-50"
             >
               {discovering ? (
                 <div className="w-3.5 h-3.5 border-2 border-gold border-t-transparent rounded-full animate-spin" />

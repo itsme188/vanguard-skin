@@ -61,7 +61,7 @@ function fmtSlot(eventTime: string | null, releaseTime: string | null): string {
 
 function statusChipClass(status: SymbolStatus): string {
   if (status === "held") return "text-up bg-up/15 border border-up/30";
-  if (status === "watchlist") return "text-gold bg-gold/15 border border-gold/30";
+  if (status === "watchlist") return "text-gold-ink bg-gold/15 border border-gold/30";
   return "text-ink-faint bg-raised border border-edge";
 }
 
@@ -186,13 +186,13 @@ export function EarningsHub() {
         <div className="flex items-baseline gap-2 font-mono" style={{ fontSize: "11px" }}>
           <span className="text-ink-faint">{events.length} {events.length === 1 ? "event" : "events"}</span>
           {heldCount > 0 && <span className="text-up">· {heldCount} held</span>}
-          {watchCount > 0 && <span className="text-gold">· {watchCount} watchlist</span>}
+          {watchCount > 0 && <span className="text-gold-ink">· {watchCount} watchlist</span>}
         </div>
       </div>
 
       {events.length === 0 ? (
         <p className="px-5 py-6 text-[14px] text-ink-faint">
-          No earnings events this week. Click <span className="text-gold">↻ Refresh from Finnhub</span> below
+          No earnings events this week. Click <span className="text-gold-ink">↻ Refresh from Finnhub</span> below
           or add one manually.
         </p>
       ) : (
@@ -359,7 +359,7 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
       )}
       {implausible ? (
         <span
-          className="font-mono text-gold cursor-help"
+          className="font-mono text-gold-ink cursor-help"
           title={IMPLAUSIBLE_TOOLTIP}
           style={{ fontSize: "12px", textAlign: "right" }}
         >
@@ -491,7 +491,7 @@ function MobileCard({ event }: { event: EnrichedRow }) {
             <>
               <span className="text-ink-faint">→</span>
               <span
-                className="text-gold italic cursor-help"
+                className="text-gold-ink italic cursor-help"
                 title={IMPLAUSIBLE_TOOLTIP}
                 style={{ fontSize: "12px" }}
               >

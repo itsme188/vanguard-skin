@@ -250,7 +250,7 @@ export function PlaidSection() {
           href={connectHref}
           target="_blank"
           rel="noreferrer"
-          className="px-2.5 py-1 text-[11px] font-medium rounded bg-gold/20 text-gold hover:bg-gold/30 transition-colors whitespace-nowrap"
+          className="px-2.5 py-1 text-[11px] font-medium rounded bg-gold/20 text-gold-ink hover:bg-gold/30 transition-colors whitespace-nowrap"
         >
           {connectLabel}
         </a>

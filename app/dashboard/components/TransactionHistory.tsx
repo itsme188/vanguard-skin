@@ -11,7 +11,7 @@ import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
 const TYPE_STYLES: Record<string, string> = {
   BUY: "bg-up/20 text-up",
   SELL: "bg-down/20 text-down",
-  DIVIDEND: "bg-gold/20 text-gold",
+  DIVIDEND: "bg-gold/20 text-gold-ink",
   INTEREST: "bg-blue/20 text-blue",
   FEE: "bg-down/20 text-down",
   COMMISSION: "bg-down/20 text-down",

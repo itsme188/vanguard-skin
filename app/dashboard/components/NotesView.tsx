@@ -47,7 +47,7 @@ const SENTIMENT_STYLES: Record<string, string> = {
   bullish: "bg-up/20 text-up",
   bearish: "bg-down/20 text-down",
   neutral: "bg-muted text-ink-dim",
-  cautious: "bg-gold/20 text-gold",
+  cautious: "bg-gold/20 text-gold-ink",
   confident: "bg-blue/20 text-blue",
 };
 
@@ -249,7 +249,7 @@ export function NotesView({
             aria-pressed={(opt.value || null) === currentType}
             className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap focus-ring ${
               (opt.value || null) === currentType
-                ? "bg-gold/20 text-gold"
+                ? "bg-gold/20 text-gold-ink"
                 : "text-ink-faint hover:text-ink hover:bg-panel"
             }`}
           >

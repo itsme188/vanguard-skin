@@ -90,14 +90,14 @@ export function TaxReportCard({ year }: { year: number }) {
           <button
             onClick={() => handleDownload("csv")}
             disabled={downloading}
-            className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gold/10 text-gold hover:bg-gold/20 border border-gold/20 transition-colors disabled:opacity-50"
+            className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gold/10 text-gold-ink hover:bg-gold/20 border border-gold/20 transition-colors disabled:opacity-50"
           >
             {downloading ? "Generating..." : "CSV"}
           </button>
           <button
             onClick={() => handleDownload("txf")}
             disabled={downloadingTxf}
-            className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gold/10 text-gold hover:bg-gold/20 border border-gold/20 transition-colors disabled:opacity-50"
+            className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gold/10 text-gold-ink hover:bg-gold/20 border border-gold/20 transition-colors disabled:opacity-50"
           >
             {downloadingTxf ? "Generating..." : "TXF (TurboTax)"}
           </button>

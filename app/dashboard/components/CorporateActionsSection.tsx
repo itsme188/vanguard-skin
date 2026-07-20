@@ -205,7 +205,7 @@ export function CorporateActionsSection({
                   {action.applied ? (
                     <span className="text-xs px-1.5 py-0.5 rounded-full bg-up/15 text-up">Applied</span>
                   ) : (
-                    <span className="text-xs px-1.5 py-0.5 rounded-full bg-gold/15 text-gold">Pending</span>
+                    <span className="text-xs px-1.5 py-0.5 rounded-full bg-gold/15 text-gold-ink">Pending</span>
                   )}
                 </div>
                 <div className="text-xs text-ink-faint font-mono">

@@ -136,7 +136,7 @@ export function AccountSummaryCards({
                   <span className="text-lg font-mono tabular-nums text-gold/80">
                     ~<Money value={account.estimatedValue} />
                   </span>
-                  <span className="text-[11px] font-mono font-medium text-gold">
+                  <span className="text-[11px] font-mono font-medium text-gold-ink">
                     est. +{daysAgo(account.canonicalDate!)}d
                   </span>
                 </div>

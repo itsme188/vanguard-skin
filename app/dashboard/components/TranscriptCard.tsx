@@ -4,7 +4,7 @@ import { useState } from "react";
 import type { TranscriptSummaryEntry } from "@/lib/queries/transcripts";
 
 const SOURCE_BADGES: Record<string, { label: string; className: string }> = {
-  edgar_8k: { label: "8-K", className: "bg-gold/20 text-gold" },
+  edgar_8k: { label: "8-K", className: "bg-gold/20 text-gold-ink" },
   motley_fool: { label: "MF", className: "bg-blue/20 text-blue" },
   api_ninjas: { label: "API", className: "bg-up/20 text-up" },
   alpha_vantage: { label: "AV", className: "bg-up/20 text-up" },
@@ -122,7 +122,7 @@ export function TranscriptCard({
             {t.summary.length > 300 && (
               <button
                 onClick={() => setExpanded(!expanded)}
-                className="ml-1 text-xs text-gold hover:text-gold/80"
+                className="ml-1 text-xs text-gold-ink hover:text-gold/80"
               >
                 {expanded ? "Show less" : "Read more"}
               </button>
@@ -162,7 +162,7 @@ export function TranscriptCard({
             <button
               onClick={loadFullTranscript}
               disabled={loadingFull}
-              className="text-xs text-gold hover:text-gold/80 disabled:opacity-40"
+              className="text-xs text-gold-ink hover:text-gold/80 disabled:opacity-40"
             >
               {loadingFull ? "Loading..." : "View Full Transcript"}
             </button>
@@ -265,7 +265,7 @@ export function FetchTranscriptButton({
       <button
         onClick={handleFetch}
         disabled={isFetching}
-        className="text-xs text-gold hover:text-gold/80 disabled:opacity-40"
+        className="text-xs text-gold-ink hover:text-gold/80 disabled:opacity-40"
       >
         {isFetching ? "Fetching..." : `Fetch ${ticker} Transcript`}
       </button>

@@ -290,7 +290,7 @@ export function NotificationBell() {
           {(conflictCount ?? 0) > 0 && (
             <div>
               <div className="px-3 py-1.5 bg-raised border-b border-edge border-t">
-                <span className="text-[9px] font-medium text-gold uppercase tracking-wider">
+                <span className="text-[9px] font-medium text-gold-ink uppercase tracking-wider">
                   Earnings date conflicts
                 </span>
               </div>

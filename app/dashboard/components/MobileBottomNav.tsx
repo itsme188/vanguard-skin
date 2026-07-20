@@ -122,7 +122,7 @@ function MobileBottomNavInner() {
                 <span className="flex items-center justify-center w-12 h-12 rounded-full bg-gold text-canvas shadow-lg shadow-gold/20">
                   {item.icon}
                 </span>
-                <span className="text-[10px] font-medium text-gold">
+                <span className="text-[10px] font-medium text-gold-ink">
                   {item.name}
                 </span>
               </button>
@@ -136,7 +136,7 @@ function MobileBottomNavInner() {
               key={item.href}
               href={item.href}
               className={`flex flex-col items-center gap-0.5 py-2 px-3 transition-colors ${
-                isActive ? "text-gold" : "text-ink-faint"
+                isActive ? "text-gold-ink" : "text-ink-faint"
               }`}
             >
               {item.icon}

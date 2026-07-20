@@ -225,7 +225,7 @@ export function DrillDownPanel({ open, onClose, scope, filter }: Props) {
                   <td className="px-4 py-2 font-mono">
                     <Link
                       href={`/dashboard/security/${r.securityId}`}
-                      className="text-gold hover:underline"
+                      className="text-gold-ink hover:underline"
                       onClick={onClose}
                     >
                       {r.symbol}

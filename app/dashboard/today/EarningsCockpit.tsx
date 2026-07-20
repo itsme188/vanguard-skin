@@ -162,7 +162,7 @@ export function EarningsCockpit() {
         </h2>
         <div className="flex items-center gap-2">
           {nextRelease && (
-            <span className="font-mono text-[12px] text-gold">
+            <span className="font-mono text-[12px] text-gold-ink">
               {nextRelease.symbol} in {fmtCountdown(Date.parse(nextRelease.releaseInstant) - nowMs)}
             </span>
           )}
@@ -239,7 +239,7 @@ function CockpitRowView({ row, onChanged }: { row: Row; onChanged: () => void })
         {row.securityId ? (
           <Link
             href={`/dashboard/security/${row.securityId}`}
-            className="font-mono text-[13px] font-semibold text-gold hover:underline"
+            className="font-mono text-[13px] font-semibold text-gold-ink hover:underline"
           >
             {row.symbol}
           </Link>

@@ -64,7 +64,7 @@ interface TradeReviewViewProps {
 const GRADE_STYLES: Record<string, string> = {
   A: "bg-up/25 text-up border-up/40",
   B: "bg-up/20 text-up border-up/30",
-  C: "bg-gold/25 text-gold border-gold/40",
+  C: "bg-gold/25 text-gold-ink border-gold/40",
   D: "bg-down/20 text-down border-down/30",
   F: "bg-down/25 text-down border-down/40",
 };
@@ -461,7 +461,7 @@ export function TradeReviewView({
           {questions.map((q) => (
             <div key={q.tradeNumber} className="space-y-1.5">
               <label className="text-xs text-ink">
-                <span className="font-mono font-medium text-gold">
+                <span className="font-mono font-medium text-gold-ink">
                   {q.symbol}
                 </span>{" "}
                 — {q.question}
@@ -709,7 +709,7 @@ function ReviewDetail({
         <div className="px-5 py-3 bg-gold/5 border-l-2 border-gold flex items-start gap-2">
           <span aria-hidden className="text-gold text-sm leading-5">⚠</span>
           <p className="text-xs text-ink-dim leading-5">
-            <span className="text-gold font-medium">
+            <span className="text-gold-ink font-medium">
               Dollar figures in this narrative are outdated.
             </span>{" "}
             The metrics above were corrected on 2026-07-04 (option P&L had been
@@ -1113,7 +1113,7 @@ function PatternsPanel({ review }: { review: TradeReview }) {
           <PatternSection
             title="Cumulative Patterns (across all reviews)"
             items={cumulative}
-            color="text-gold"
+            color="text-gold-ink"
           />
         </div>
       )}

@@ -651,7 +651,7 @@ function TwsPanel({
                       const saved = await streaming.saveSnapshot();
                       setResult(`Saved ${saved} prices to database`);
                     }}
-                    className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gold/20 text-gold hover:bg-gold/30 transition-colors"
+                    className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gold/20 text-gold-ink hover:bg-gold/30 transition-colors"
                     title="Save current streaming prices to database"
                   >
                     Save
@@ -685,7 +685,7 @@ function TwsPanel({
               <button
                 onClick={handleEnrich}
                 disabled={loading !== null}
-                className="flex-1 px-3 py-1.5 text-xs font-medium rounded-lg bg-gold/20 text-gold hover:bg-gold/30 disabled:opacity-50 transition-colors"
+                className="flex-1 px-3 py-1.5 text-xs font-medium rounded-lg bg-gold/20 text-gold-ink hover:bg-gold/30 disabled:opacity-50 transition-colors"
               >
                 {loading === "enrich" ? "Enriching..." : "Enrich Securities"}
               </button>

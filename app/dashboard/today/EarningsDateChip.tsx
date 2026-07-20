@@ -108,7 +108,7 @@ export function EarningsDateChip({
         type="button"
         onClick={() => setOpen((o) => !o)}
         disabled={pending}
-        className="text-[10px] font-mono px-1.5 py-0.5 rounded text-gold bg-gold/15 hover:bg-gold/25 disabled:opacity-50 cursor-pointer"
+        className="text-[10px] font-mono px-1.5 py-0.5 rounded text-gold-ink bg-gold/15 hover:bg-gold/25 disabled:opacity-50 cursor-pointer"
         title="Sources disagree on the date — confirm against IBKR"
       >
         ⚠ confirm

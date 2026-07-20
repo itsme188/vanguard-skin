@@ -116,7 +116,7 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
                 disabled={!data?.structuredHtml}
                 className={`px-2.5 py-1 ${
                   layout === "structured"
-                    ? "bg-gold/15 text-gold"
+                    ? "bg-gold/15 text-gold-ink"
                     : "text-ink-dim hover:bg-raised disabled:opacity-40"
                 }`}
               >
@@ -128,7 +128,7 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
                 disabled={!data?.bySourceHtml}
                 className={`px-2.5 py-1 border-l border-edge ${
                   layout === "by_source"
-                    ? "bg-gold/15 text-gold"
+                    ? "bg-gold/15 text-gold-ink"
                     : "text-ink-dim hover:bg-raised disabled:opacity-40"
                 }`}
               >
@@ -140,7 +140,7 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
                 disabled={!data?.byCompanyHtml}
                 className={`px-2.5 py-1 border-l border-edge ${
                   layout === "by_company"
-                    ? "bg-gold/15 text-gold"
+                    ? "bg-gold/15 text-gold-ink"
                     : "text-ink-dim hover:bg-raised disabled:opacity-40"
                 }`}
               >
@@ -185,7 +185,7 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
                 <button
                   type="button"
                   onClick={() => setLayout(layout === "structured" ? "by_source" : layout === "by_source" ? "by_company" : "structured")}
-                  className="block mx-auto mt-3 text-[12px] text-gold hover:text-gold/80"
+                  className="block mx-auto mt-3 text-[12px] text-gold-ink hover:text-gold/80"
                 >
                   Switch to the other view →
                 </button>

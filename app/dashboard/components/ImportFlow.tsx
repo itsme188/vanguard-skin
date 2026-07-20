@@ -273,12 +273,12 @@ export function ImportFlow() {
                   </span>
                 )}
                 {(result.skippedRows?.length ?? 0) > 0 && (
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-gold/15 text-gold font-medium">
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-gold/15 text-gold-ink font-medium">
                     {result.skippedRows!.length} skipped
                   </span>
                 )}
                 {(result.warnings?.length ?? 0) > 0 && !(result.skippedRows?.length) && (
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-gold/20 text-gold font-medium">
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-gold/20 text-gold-ink font-medium">
                     {result.warnings!.length} warning{result.warnings!.length !== 1 ? "s" : ""}
                   </span>
                 )}
@@ -315,7 +315,7 @@ export function ImportFlow() {
               {/* Skipped rows detail */}
               {result.skippedRows && result.skippedRows.length > 0 && (
                 <details className="mt-3 rounded-lg border border-gold/20 bg-gold/5">
-                  <summary className="px-3 py-2 text-xs font-medium text-gold cursor-pointer hover:bg-gold/10 transition-colors">
+                  <summary className="px-3 py-2 text-xs font-medium text-gold-ink cursor-pointer hover:bg-gold/10 transition-colors">
                     {result.skippedRows.length} row{result.skippedRows.length !== 1 ? "s" : ""} will be excluded (invalid data)
                   </summary>
                   <div className="px-3 pb-2 space-y-1">
@@ -338,7 +338,7 @@ export function ImportFlow() {
               {/* Warnings */}
               {result.warnings && result.warnings.length > 0 && (
                 <details className="mt-2">
-                  <summary className="text-xs text-gold cursor-pointer hover:text-gold/80">
+                  <summary className="text-xs text-gold-ink cursor-pointer hover:text-gold/80">
                     {result.warnings.length} warning{result.warnings.length !== 1 ? "s" : ""}
                   </summary>
                   <div className="mt-1 space-y-0.5">
@@ -434,11 +434,11 @@ export function ImportFlow() {
             href={`/dashboard/analysis?view=trade-reviews`}
             className="block rounded-lg border border-gold/20 bg-gold/5 px-4 py-3 text-sm text-ink-dim hover:bg-gold/10 transition-colors"
           >
-            <span className="text-gold font-medium">Trade reviews available</span>
+            <span className="text-gold-ink font-medium">Trade reviews available</span>
             {" — "}
             {state.newTradePeriods.length} month{state.newTradePeriods.length > 1 ? "s" : ""} with{" "}
             {state.newTradePeriods.reduce((s, p) => s + p.tradeCount, 0)} unreviewed trades.
-            <span className="text-gold ml-1">View →</span>
+            <span className="text-gold-ink ml-1">View →</span>
           </a>
         )}
 

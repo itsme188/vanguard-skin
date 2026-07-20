@@ -240,7 +240,7 @@ function FilterPill({
       onClick={onClick}
       className={`px-2.5 py-1 text-[11px] rounded transition-colors ${
         active
-          ? "bg-gold/20 text-gold font-medium"
+          ? "bg-gold/20 text-gold-ink font-medium"
           : "text-ink-faint hover:text-ink hover:bg-raised"
       }`}
     >

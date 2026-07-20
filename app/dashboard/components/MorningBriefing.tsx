@@ -141,10 +141,10 @@ export function MorningBriefing() {
                       <SymbolLink
                         securityId={event.security_id}
                         symbol={event.symbol}
-                        className="text-xs font-mono font-medium text-gold flex-shrink-0"
+                        className="text-xs font-mono font-medium text-gold-ink flex-shrink-0"
                       />
                     ) : event.symbol ? (
-                      <span className="text-xs font-mono font-medium text-gold flex-shrink-0">
+                      <span className="text-xs font-mono font-medium text-gold-ink flex-shrink-0">
                         {event.symbol}
                       </span>
                     ) : null}
@@ -183,7 +183,7 @@ export function MorningBriefing() {
             </p>
             <Link
               href="/dashboard/calendar"
-              className="text-xs text-gold hover:text-gold/80 transition-colors mt-1.5 inline-block"
+              className="text-xs text-gold-ink hover:text-gold/80 transition-colors mt-1.5 inline-block"
             >
               Read full briefing &rarr;
             </Link>

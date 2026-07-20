@@ -259,7 +259,7 @@ function FormatSection({ spec }: { spec: FormatSpec }) {
             </span>
             <CopyButton text={buildPromptBlock(spec)} label="prompt" />
           </div>
-          <code className="block text-xs font-mono text-gold bg-raised rounded-md px-3 py-2 overflow-x-auto">
+          <code className="block text-xs font-mono text-gold-ink bg-raised rounded-md px-3 py-2 overflow-x-auto">
             {spec.header}
           </code>
         </div>
@@ -280,7 +280,7 @@ function FormatSection({ spec }: { spec: FormatSpec }) {
                   <td className="py-1.5 pr-3 font-mono text-ink">{col.name}</td>
                   <td className="py-1.5 pr-3">
                     {col.required ? (
-                      <span className="text-gold">yes</span>
+                      <span className="text-gold-ink">yes</span>
                     ) : (
                       <span className="text-ink-faint">no</span>
                     )}

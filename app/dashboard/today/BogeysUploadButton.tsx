@@ -66,7 +66,7 @@ export function BogeysUploadButton({ weekOf }: Props) {
         type="button"
         onClick={() => fileInputRef.current?.click()}
         disabled={uploading}
-        className="text-gold hover:text-gold/80 font-medium disabled:opacity-50"
+        className="text-gold-ink hover:text-gold/80 font-medium disabled:opacity-50"
       >
         {uploading ? "Uploading…" : "+ Upload bogeys PDF"}
       </button>
