@@ -152,6 +152,23 @@ describe("runCloudFallback observability", () => {
     expect(summary.lastError).toBeUndefined();
   });
 
+  it("skips superseded sibling rows (never a candidate, even in-window)", async () => {
+    // One print = two calendar rows (finnhub + nasdaq); the Mac marks the
+    // non-canonical row superseded=1. A superseded row can never complete
+    // (its canonical sibling owns enrichment), so processing it every tick
+    // just burns subrequest budget — mirror of the ba1b39f fallback-earnings
+    // skip.
+    const env = makeEnv();
+    const snapshot = makeEnrichSnapshot();
+    (snapshot.calendarEvents as Array<Record<string, unknown>>)[0].superseded = 1;
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot);
+
+    const summary = await runCloudFallback(env, { nowMs: candidateWindowNowMs(), pacingMs: 0 });
+
+    expect(summary.kind).toBe("no_candidates");
+    expect(fetchActualForEventCloud).not.toHaveBeenCalled();
+  });
+
   it("returns no_candidates when nowMs is outside every candidate window", async () => {
     const env = makeEnv();
     (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
