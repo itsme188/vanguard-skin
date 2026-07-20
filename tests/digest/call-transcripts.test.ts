@@ -58,18 +58,21 @@ function insertTranscript(opts: {
   summary?: string | null;
   guidance?: string | null;
   fetchedAt?: string; // SQLite datetime() literal, space-separated
+  source?: string;
 }): void {
+  const source = opts.source ?? "alpha_vantage";
   db.prepare(
     `INSERT INTO earnings_transcripts
        (ticker, year, quarter, source, summary, guidance, source_key, fetched_at)
-     VALUES (?, ?, ?, 'alpha_vantage', ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     opts.ticker,
     opts.year ?? 2026,
     opts.quarter ?? 2,
+    source,
     opts.summary ?? "Extractive summary body.",
     opts.guidance ?? null,
-    `alpha_vantage:${opts.ticker}:${opts.year ?? 2026}:${opts.quarter ?? 2}`,
+    `${source}:${opts.ticker}:${opts.year ?? 2026}:${opts.quarter ?? 2}`,
     opts.fetchedAt ?? NOW.toISOString().replace("T", " ").slice(0, 19),
   );
 }
@@ -183,6 +186,58 @@ describe("composeCallTranscriptsBlock", () => {
 
     expect(block).not.toBeNull();
     expect(block).not.toContain("Guidance:");
+  });
+
+  it("dedupes edgar + alpha_vantage rows for the same (ticker, quarter) to one best-source section", () => {
+    // The upgrade path (thin-8-K fix) creates exactly this shape: the sweep
+    // caches an edgar_8k excerpt, then the AV upgrade lands within the same
+    // 24h digest window as a SECOND row for the same call.
+    seedHeld("DUP");
+    insertTranscript({
+      ticker: "DUP",
+      source: "edgar_8k",
+      summary: "Thin 8-K cover page text.",
+      fetchedAt: hoursAgo(5),
+    });
+    insertTranscript({
+      ticker: "DUP",
+      source: "alpha_vantage",
+      summary: "Real desk note from the upgraded transcript.",
+      fetchedAt: hoursAgo(1),
+    });
+
+    const block = composeCallTranscriptsBlock(db, { now: NOW })!;
+
+    const sections = block.match(/### DUP — Q2 2026 call/g) ?? [];
+    expect(sections).toHaveLength(1);
+    expect(block).toContain("Real desk note from the upgraded transcript.");
+    expect(block).not.toContain("Thin 8-K cover page text.");
+  });
+
+  it("demotes embedded desk-note headings: leading title dropped, section headings become bold", () => {
+    seedHeld("NFLX");
+    insertTranscript({
+      ticker: "NFLX",
+      summary:
+        "# Netflix (NFLX) – Q2 2026 Desk Note\n\n## Guidance\n- Raised full-year revenue outlook\n\n## Tone\nConfident throughout the Q&A.",
+      fetchedAt: hoursAgo(2),
+    });
+
+    const block = composeCallTranscriptsBlock(db, { now: NOW })!;
+
+    // The AI's own H1 title duplicates the block's section header — dropped.
+    expect(block).not.toContain("# Netflix (NFLX)");
+    // H2s must not compete with the digest's own heading scale.
+    expect(block).not.toContain("## Guidance");
+    expect(block).not.toContain("## Tone");
+    expect(block).toContain("**Guidance**");
+    expect(block).toContain("**Tone**");
+    // Body content survives untouched.
+    expect(block).toContain("- Raised full-year revenue outlook");
+    expect(block).toContain("Confident throughout the Q&A.");
+    // The block's own structure is intact.
+    expect(block).toContain("## Call transcripts");
+    expect(block).toContain("### NFLX — Q2 2026 call");
   });
 
   it("never throws — a DB error (dropped table) yields null", () => {

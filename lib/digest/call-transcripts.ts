@@ -15,9 +15,72 @@ interface RecentTranscriptRow {
   ticker: string;
   year: number;
   quarter: number;
+  source: string;
   summary: string | null;
   guidance: string | null;
   fetched_at: string;
+}
+
+// Same source-preference order as getCachedTranscript (lib/queries/transcripts)
+// — the upgrade path (thin-8-K fix in lib/transcripts/same-day.ts) can land an
+// edgar_8k row and its alpha_vantage upgrade inside the same 24h digest
+// window; the reader must collapse them to the best one, not render the same
+// call twice.
+const SOURCE_RANK: Record<string, number> = {
+  api_ninjas: 1,
+  alpha_vantage: 2,
+  motley_fool: 3,
+  edgar_8k: 4,
+};
+
+function dedupeBestSource(rows: RecentTranscriptRow[]): RecentTranscriptRow[] {
+  const best = new Map<string, RecentTranscriptRow>();
+  for (const row of rows) {
+    const key = `${row.ticker.toUpperCase()}:${row.year}:${row.quarter}`;
+    const cur = best.get(key);
+    // Rows arrive fetched_at DESC, so on equal rank the newer row wins by
+    // being seen first.
+    if (!cur || (SOURCE_RANK[row.source] ?? 9) < (SOURCE_RANK[cur.source] ?? 9)) {
+      best.set(key, row);
+    }
+  }
+  return rows.filter((row) => best.get(`${row.ticker.toUpperCase()}:${row.year}:${row.quarter}`) === row);
+}
+
+/**
+ * The AI desk note sometimes uses its own markdown headings (an H1 title +
+ * H2 section headers) despite the prompt asking for bold labels — rendered
+ * verbatim they compete with the digest's own `##`/`###` structure. Demote
+ * at RENDER time (cached rows keep their original text): a LEADING title
+ * heading is dropped outright (it duplicates this block's own
+ * "### TICKER — Qn YYYY call" header); any other heading line becomes a
+ * `**bold**` line.
+ */
+function demoteEmbeddedHeadings(summary: string): string {
+  const lines = summary.split("\n");
+  const out: string[] = [];
+  let seenContent = false;
+  let droppedTitle = false;
+  for (const line of lines) {
+    const m = line.match(/^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$/);
+    if (m) {
+      // Only the very FIRST heading, before any body content, is a title —
+      // a second heading before content (e.g. "## Guidance" right after the
+      // title) is a section header and must be demoted, not dropped.
+      if (!seenContent && !droppedTitle) {
+        droppedTitle = true;
+        continue;
+      }
+      out.push(`**${m[1]}**`);
+      seenContent = true;
+      continue;
+    }
+    if (line.trim().length > 0) seenContent = true;
+    out.push(line);
+  }
+  // Trim any blank lines left behind by a dropped leading title.
+  while (out.length > 0 && out[0].trim() === "") out.shift();
+  return out.join("\n");
 }
 
 // ~4 rendered lines at typical email-line width; slicing to a char cap with
@@ -43,7 +106,9 @@ function truncateAtWordBoundary(text: string, maxChars: number): string {
 function renderTranscriptSection(row: RecentTranscriptRow): string {
   const lines = [`### ${row.ticker} — Q${row.quarter} ${row.year} call`, ""];
 
-  const summary = row.summary?.trim();
+  // Demote BEFORE truncation so the bold-marker balancing in
+  // truncateAtWordBoundary sees the final marker set.
+  const summary = row.summary ? demoteEmbeddedHeadings(row.summary).trim() : undefined;
   if (summary) {
     lines.push(truncateAtWordBoundary(summary, SUMMARY_RENDER_CHAR_CAP));
   }
@@ -73,14 +138,16 @@ export function composeCallTranscriptsBlock(
       .replace("T", " ")
       .slice(0, 19);
 
-    const rows = db
-      .prepare(
-        `SELECT ticker, year, quarter, summary, guidance, fetched_at
-           FROM earnings_transcripts
-          WHERE datetime(fetched_at) >= datetime(?)
-          ORDER BY datetime(fetched_at) DESC`,
-      )
-      .all(cutoff) as RecentTranscriptRow[];
+    const rows = dedupeBestSource(
+      db
+        .prepare(
+          `SELECT ticker, year, quarter, source, summary, guidance, fetched_at
+             FROM earnings_transcripts
+            WHERE datetime(fetched_at) >= datetime(?)
+            ORDER BY datetime(fetched_at) DESC`,
+        )
+        .all(cutoff) as RecentTranscriptRow[],
+    );
 
     if (rows.length === 0) return null;
 

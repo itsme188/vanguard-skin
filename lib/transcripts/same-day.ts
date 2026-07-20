@@ -20,10 +20,26 @@
  *     dedupeCrossSourceRows, neither of which is exported)
  *   - held or watchlist (getSymbolStatus)
  *   - no cached transcript for the (ticker, filing-reporting year, quarter)
- *     derived from event_date via deriveFilingReportingQuarter
+ *     derived from event_date via deriveFilingReportingQuarter — EXCEPT a
+ *     cached `edgar_8k` row, which is an UPGRADE candidate (see below)
  *   - transcript_attempted_at is NULL or >=30 min old (pacing — compared via
  *     SQLite datetime() on both sides per repo convention, never raw string
  *     compare)
+ *
+ * Cached-EDGAR upgrade candidates (thin-8-K fix, 2026-07-19): an EDGAR 8-K
+ * row is a press-release excerpt, not a call transcript — and a THIN one
+ * (cover page only, exhibit missing — NFLX Q2 was 4,091 chars) is worthless.
+ * fetchTranscript already upgrades cached edgar rows via Alpha Vantage on
+ * every cache hit, but this orchestrator's own cache check used to `continue`
+ * before ever reaching it, so the first EDGAR fetch permanently excluded the
+ * event from all future candidate lists. Now a cached edgar row keeps the
+ * event a candidate on a SLOWER clock, because AV posts transcripts days
+ * after the call: 10-day deadline from release (vs 36h fresh) and 24h pacing
+ * (vs 30 min) so a name never costs more than ~1 AV call/day against the
+ * 25/day free tier. Fresh candidates win the shared per-tick attempt budget
+ * before upgrades. A FAILED upgrade (fetchTranscript echoes the cached edgar
+ * row back with fromCache: true) counts as attempted but NOT fetched, and
+ * must never re-run the AI desk note over the same edgar text.
  *
  * `transcript_attempted_at` is stamped BEFORE the fetchTranscript call so a
  * hung fetch can't hot-loop the sweep on the next tick. A cache hit is not an
@@ -56,6 +72,8 @@ import type { EarningsTranscript } from "@/lib/types";
 
 const PACING_MS = 30 * 60 * 1000; // 30 minutes between attempts per event
 const DEADLINE_MS = 36 * 60 * 60 * 1000; // 36h same-day-ish window from release
+const UPGRADE_PACING_MS = 24 * 60 * 60 * 1000; // cached-EDGAR upgrades: 1 AV try/day
+const UPGRADE_DEADLINE_MS = 10 * 24 * 60 * 60 * 1000; // …for up to 10 days from release
 const DEFAULT_MAX_ATTEMPTS = 2;
 
 const SUMMARY_PROMPT_CHAR_CAP = 50_000;
@@ -136,6 +154,13 @@ interface CandidateRow {
   event_date: string;
   release_time: string | null;
   source: string;
+  transcript_attempted_at: string | null;
+}
+
+/** Parse a SQLite datetime('now') stamp ("YYYY-MM-DD HH:MM:SS", UTC) to ms. */
+function parseUtcStamp(stamp: string): number | null {
+  const ms = Date.parse(stamp.replace(" ", "T") + "Z");
+  return Number.isNaN(ms) ? null : ms;
 }
 
 /**
@@ -174,17 +199,21 @@ export async function fetchSameDayTranscripts(
   const maxAttempts = opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
 
   // Cheap SQL pre-filter: earnings rows with actuals, not superseded, not
-  // recently attempted. event_date range mirrors enrichment-runner's
-  // findCandidates (3-day lookback covers the 36h deadline with slack for
-  // ET/UTC date-boundary drift). Final release-instant window check happens
-  // in JS below — release_time is ET wall-clock.
+  // recently attempted. event_date range covers the 10-day UPGRADE deadline
+  // with a day of slack for ET/UTC date-boundary drift; the 30-min pacing
+  // cutoff here is the LOOSE (fresh) bound — upgrade candidates apply their
+  // stricter 24h pacing in JS below, where the cache lookup tells the two
+  // classes apart. Final release-instant window check also happens in JS —
+  // release_time is ET wall-clock.
   const today = new Date(nowMs).toISOString().slice(0, 10);
-  const threeDaysAgo = new Date(nowMs - 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const rangeStart = new Date(nowMs - UPGRADE_DEADLINE_MS - 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
   const pacingCutoff = new Date(nowMs - PACING_MS).toISOString().replace("T", " ").slice(0, 19);
 
   const rows = db
     .prepare(
-      `SELECT id, symbol, event_date, release_time, source
+      `SELECT id, symbol, event_date, release_time, source, transcript_attempted_at
          FROM calendar_events
         WHERE (event_type = 'earnings' OR source = 'finnhub')
           AND COALESCE(superseded, 0) = 0
@@ -196,16 +225,17 @@ export async function fetchSameDayTranscripts(
                OR datetime(transcript_attempted_at) <= datetime(?))
         ORDER BY event_date DESC, release_time DESC`,
     )
-    .all(threeDaysAgo, today, pacingCutoff) as CandidateRow[];
+    .all(rangeStart, today, pacingCutoff) as CandidateRow[];
 
-  const inWindow = rows.filter((row) => {
+  const withAge = rows.flatMap((row) => {
     const releaseInstant = composeReleaseInstant(row.event_date, row.release_time!);
-    if (!releaseInstant) return false;
+    if (!releaseInstant) return [];
     const ageMs = nowMs - releaseInstant.getTime();
-    return ageMs >= 0 && ageMs <= DEADLINE_MS;
+    return ageMs >= 0 && ageMs <= UPGRADE_DEADLINE_MS ? [{ row, ageMs }] : [];
   });
 
-  const deduped = dedupeByFamily(inWindow);
+  const deduped = dedupeByFamily(withAge.map((c) => c.row));
+  const ageByRow = new Map(withAge.map((c) => [c.row, c.ageMs]));
   if (deduped.length === 0) return { attempted: 0, fetched: 0 };
 
   const symbols = Array.from(
@@ -217,6 +247,36 @@ export async function fetchSameDayTranscripts(
     return st === "held" || st === "watchlist";
   });
 
+  // Classify each candidate by cache state. A cached NON-edgar transcript is
+  // terminal (real call transcript — nothing to do, no attempt). A cached
+  // edgar_8k row makes this an UPGRADE candidate: eligible on the slower
+  // 10-day/24h clock. No cache at all is a FRESH candidate on the original
+  // 36h/30-min clock.
+  const candidates = covered.flatMap((row) => {
+    const symbol = row.symbol!.toUpperCase();
+    const { year, quarter } = deriveFilingReportingQuarter(row.event_date);
+    const cached = getCachedTranscript(db, symbol, year, quarter);
+    const ageMs = ageByRow.get(row)!;
+
+    if (cached && cached.source !== "edgar_8k") return [];
+    if (!cached) {
+      // Fresh: the wider SQL window means the 36h deadline moves here.
+      if (ageMs > DEADLINE_MS) return [];
+    } else {
+      // Upgrade: 24h pacing (the SQL cutoff only enforced 30 min).
+      const lastMs = row.transcript_attempted_at
+        ? parseUtcStamp(row.transcript_attempted_at)
+        : null;
+      if (lastMs !== null && nowMs - lastMs < UPGRADE_PACING_MS) return [];
+    }
+    return [{ row, symbol, year, quarter, isUpgrade: !!cached }];
+  });
+
+  // Fresh candidates spend the shared attempt budget first — a same-day
+  // transcript beats a days-old upgrade retry. Stable sort keeps the SQL
+  // recency order within each class.
+  candidates.sort((a, b) => Number(a.isUpgrade) - Number(b.isUpgrade));
+
   const stampAttempted = db.prepare(
     `UPDATE calendar_events SET transcript_attempted_at = datetime('now') WHERE id = ?`,
   );
@@ -224,15 +284,8 @@ export async function fetchSameDayTranscripts(
   let attempted = 0;
   let fetched = 0;
 
-  for (const row of covered) {
+  for (const { row, symbol, year, quarter } of candidates) {
     if (attempted >= maxAttempts) break;
-
-    const symbol = row.symbol!.toUpperCase();
-    const { year, quarter } = deriveFilingReportingQuarter(row.event_date);
-
-    // A cache hit is not an attempt — don't stamp, don't burn the budget.
-    const cached = getCachedTranscript(db, symbol, year, quarter);
-    if (cached) continue;
 
     // Stamp BEFORE the fetch attempt so a hung fetchTranscript call can't
     // hot-loop the next sweep tick.
@@ -241,7 +294,10 @@ export async function fetchSameDayTranscripts(
 
     try {
       const result = await fetchTranscript(db, symbol, year, quarter);
-      if (result) {
+      // fromCache: true means a FAILED upgrade (fetchTranscript echoed the
+      // cached edgar row back) — not a fetch, and re-summarizing the same
+      // edgar text would burn an AI call per attempt.
+      if (result && !result.fromCache) {
         fetched += 1;
         await summarizeTranscript(db, result.transcript);
       }
