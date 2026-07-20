@@ -15,6 +15,7 @@
 import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
 import { stripModelPreamble } from "@/lib/ai/strip-preamble";
 import { editionLabel } from "@/lib/digest/editions";
+import { issuerSiblings } from "@/lib/securities/issuer-family";
 import type { CompanyBucket } from "@/lib/digest/group-by-company";
 
 // ─── Error class ─────────────────────────────────────────────────────────────
@@ -156,6 +157,89 @@ function buildSynthesisPrompt(input: SynthesisInput): string {
   ].join("\n");
 }
 
+// ─── Held-ticker enforcement ─────────────────────────────────────────────────
+
+const STUB_SUMMARY_CHAR_CAP = 240;
+
+function truncateAtWord(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const slice = text.slice(0, maxChars);
+  const lastSpace = slice.lastIndexOf(" ");
+  return `${(lastSpace > maxChars * 0.6 ? slice.slice(0, lastSpace) : slice).trimEnd()}…`;
+}
+
+function renderHeldStub(bucket: CompanyBucket): string {
+  const heading = bucket.companyName
+    ? `## ${bucket.symbol} (${bucket.companyName})`
+    : `## ${bucket.symbol}`;
+  const lines = [heading, ""];
+  for (const article of bucket.articles) {
+    const url = article.source_url || article.website_url;
+    const cite = url ? `[${article.source_name}](${url})` : article.source_name;
+    const summary = truncateAtWord(
+      (article.summary ?? article.subject ?? "").replace(/\s+/g, " ").trim(),
+      STUB_SUMMARY_CHAR_CAP,
+    );
+    lines.push(`- ${cite}: ${summary}`);
+  }
+  lines.push("", "*Held-name coverage auto-surfaced from today's sources.*");
+  return lines.join("\n");
+}
+
+/**
+ * Deterministic backstop for the HELD-TICKER PRIORITIZATION prompt rule: the
+ * prompt REQUESTS a `##` section for every held name with bucket coverage,
+ * but the model intermittently relegates one to "## Also covered" anyway
+ * (7/20 digest: held CSX with two-article VK coverage). Prompts request;
+ * post-processing enforces — same philosophy as insertCrossFilePointers.
+ *
+ * Any held bucket (issuerSiblings-aware, so a GOOGL bucket is satisfied by a
+ * GOOG heading) with no matching `##` section gets a citation stub — the
+ * bucket's own source links + summary excerpts — inserted before
+ * "## Also covered" (or appended at the end when that close is absent).
+ * Pure; exported for tests.
+ */
+export function enforceHeldSections(markdown: string, input: SynthesisInput): string {
+  const heldSet = new Set(input.heldSymbols.map((s) => s.toUpperCase()));
+
+  // Every ticker-ish token appearing in a `##` heading before any "(".
+  const headingTokens = new Set<string>();
+  for (const line of markdown.split("\n")) {
+    const m = line.match(/^##\s+(.+)$/);
+    if (!m) continue;
+    for (const tok of m[1].split("(")[0].split(/[\s/,]+/)) {
+      const t = tok.trim().toUpperCase();
+      if (t.length > 0 && /^[A-Z0-9.\-]+$/.test(t)) headingTokens.add(t);
+    }
+  }
+
+  const stubs: string[] = [];
+  const missing: string[] = [];
+  for (const bucket of input.buckets) {
+    if (bucket.symbol === NO_SYMBOL_BUCKET) continue;
+    const family = issuerSiblings(bucket.symbol).map((s) => s.toUpperCase());
+    if (!family.some((s) => heldSet.has(s))) continue;
+    if (family.some((s) => headingTokens.has(s))) continue;
+    if (bucket.articles.length === 0) continue;
+    missing.push(bucket.symbol);
+    stubs.push(renderHeldStub(bucket));
+  }
+  if (stubs.length === 0) return markdown;
+
+  console.warn(
+    `[synthesize] held-ticker section missing for ${missing.join(", ")} — auto-surfaced citation stub(s)`,
+  );
+
+  const stubBlock = stubs.join("\n\n");
+  const alsoMatch = markdown.match(/^## Also covered\s*$/m);
+  if (alsoMatch && alsoMatch.index !== undefined) {
+    return (
+      markdown.slice(0, alsoMatch.index) + stubBlock + "\n\n" + markdown.slice(alsoMatch.index)
+    );
+  }
+  return `${markdown.trimEnd()}\n\n${stubBlock}`;
+}
+
 // ─── Main export ──────────────────────────────────────────────────────────────
 
 /**
@@ -220,5 +304,6 @@ export async function synthesize(input: SynthesisInput): Promise<string> {
     );
   }
 
-  return stripped;
+  // 5. Deterministic held-ticker backstop (prompt rule → enforced).
+  return enforceHeldSections(stripped, input);
 }
