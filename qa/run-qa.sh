@@ -199,127 +199,84 @@ navigate_and_screenshot() {
 }
 
 # ============================================================
-# TAB 1: OVERVIEW
+# TAB 1: TODAY (default landing since the 2026-04-29 IA collapse;
+# /dashboard redirects here. Rewritten 2026-07-20 against the 6-tab IA.)
+#
+# innerText gotcha (live-verified 2026-07-20): innerText returns RENDERED
+# text, so CSS text-transform:uppercase labels ("Week ahead" eyebrow,
+# "Max drawdown" KPI) read as all-caps at runtime. Every text check below
+# lowercases document.body.innerText before matching.
 # ============================================================
 
-navigate_and_screenshot "overview" "/dashboard"
-check_page_errors "overview" || true
+navigate_and_screenshot "today" "/dashboard/today"
+check_page_errors "today" || true
 
 # Extract portfolio value from /api/summary (the Electron-tray endpoint).
-# NOT scraped from the DOM: /dashboard has redirected to /dashboard/today
-# since the 2026-04-29 IA collapse, and the old selector
-# (.text-4xl.font-semibold.font-mono, from the now-unmounted
-# PerformanceMetrics component) matched nothing on ANY page — extraction
-# was empty every night. The API contract is redesign-proof and checks the
-# same invariant: portfolio total vs expected drift.
+# NOT scraped from the DOM: the API contract is redesign-proof and checks
+# the same invariant — portfolio total vs expected drift.
 PORTFOLIO_VALUE=$(curl -sf --max-time 10 "$BASE_URL/api/summary" \
   | python3 -c "import json,sys; v=json.load(sys.stdin).get('totalValue'); print('' if v is None else v)" 2>/dev/null || echo "")
-log "INFO" "overview/portfolio-value" "Extracted: $PORTFOLIO_VALUE"
+log "INFO" "today/portfolio-value" "Extracted: $PORTFOLIO_VALUE"
 
-EXPECTED_PV=$(json_get "overview.portfolioValue")
+EXPECTED_PV=$(json_get "today.portfolioValue")
 if [ "$EXPECTED_PV" = "FILL_IN" ]; then
-  log "SKIP" "overview/portfolio-value" "Expected not set (actual: $PORTFOLIO_VALUE)"
+  log "SKIP" "today/portfolio-value" "Expected not set (actual: $PORTFOLIO_VALUE)"
 else
   ACTUAL_NUM=$(parse_currency "$PORTFOLIO_VALUE")
   EXPECTED_NUM=$(parse_currency "$EXPECTED_PV")
-  TOLERANCE=$(json_get "overview.portfolioValueTolerance")
+  TOLERANCE=$(json_get "today.portfolioValueTolerance")
   RESULT=$(compare_with_tolerance "$ACTUAL_NUM" "$EXPECTED_NUM" "$TOLERANCE")
   if [ "$RESULT" = "OK" ]; then
-    log "PASS" "overview/portfolio-value" "Actual $PORTFOLIO_VALUE within ${TOLERANCE} of expected $EXPECTED_PV"
-    update_expected "overview.portfolioValue" "$PORTFOLIO_VALUE"
+    log "PASS" "today/portfolio-value" "Actual $PORTFOLIO_VALUE within ${TOLERANCE} of expected $EXPECTED_PV"
+    update_expected "today.portfolioValue" "$PORTFOLIO_VALUE"
   else
-    log "FAIL" "overview/portfolio-value" "Actual $PORTFOLIO_VALUE outside ${TOLERANCE} tolerance of expected $EXPECTED_PV"
+    log "FAIL" "today/portfolio-value" "Actual $PORTFOLIO_VALUE outside ${TOLERANCE} tolerance of expected $EXPECTED_PV"
   fi
 fi
 
-# Extract account card count
+# Account count from the Today portfolio hero strip ("N accounts · as of …").
+# The old per-account value cards live on Accounts now; this text carries
+# the same invariant (count should not change without an account change).
 ACCOUNT_COUNT=$(ab_eval <<'EVALEOF'
-document.querySelectorAll('.text-2xl.font-semibold.font-mono.tabular-nums').length
+(document.body.innerText.match(/(\d+) accounts/) || [,'0'])[1]
 EVALEOF
 )
-log "INFO" "overview/account-count" "Extracted: $ACCOUNT_COUNT"
+log "INFO" "today/account-count" "Extracted: $ACCOUNT_COUNT"
 
-EXPECTED_AC=$(json_get "overview.accountCount")
+EXPECTED_AC=$(json_get "today.accountCount")
 if [ "$EXPECTED_AC" = "FILL_IN" ]; then
-  log "SKIP" "overview/account-count" "Expected not set (actual: $ACCOUNT_COUNT)"
+  log "SKIP" "today/account-count" "Expected not set (actual: $ACCOUNT_COUNT)"
 elif [ "$ACCOUNT_COUNT" = "$EXPECTED_AC" ]; then
-  log "PASS" "overview/account-count" "Account count matches: $ACCOUNT_COUNT"
-  update_expected "overview.accountCount" "$ACCOUNT_COUNT"
+  log "PASS" "today/account-count" "Account count matches: $ACCOUNT_COUNT"
+  update_expected "today.accountCount" "$ACCOUNT_COUNT"
 else
-  log "FAIL" "overview/account-count" "Expected $EXPECTED_AC accounts, got $ACCOUNT_COUNT"
+  log "FAIL" "today/account-count" "Expected $EXPECTED_AC accounts, got $ACCOUNT_COUNT"
 fi
 
-# Extract TWR YTD (first period button should be YTD, default selected)
-TWR_YTD=$(ab_eval <<'EVALEOF'
-(() => {
-  const labels = document.querySelectorAll('.text-\\[11px\\].text-ink-faint.uppercase');
-  for (const el of labels) {
-    if (el.textContent.trim() === 'TWR') {
-      const val = el.parentElement?.querySelector('.text-lg.font-mono')
-      return val?.textContent?.trim() || 'NOT_FOUND'
-    }
-  }
-  return 'NOT_FOUND'
-})()
-EVALEOF
-)
-log "INFO" "overview/twr-ytd" "Extracted: $TWR_YTD"
-
-EXPECTED_TWR=$(json_get "overview.twrYtd")
-if [ "$EXPECTED_TWR" = "FILL_IN" ]; then
-  log "SKIP" "overview/twr-ytd" "Expected not set (actual: $TWR_YTD)"
-elif [ "$TWR_YTD" = "NOT_FOUND" ]; then
-  log "FAIL" "overview/twr-ytd" "TWR YTD element not found on page"
-else
-  ACTUAL_PCT=$(parse_percent "$TWR_YTD")
-  EXPECTED_PCT=$(parse_percent "$EXPECTED_TWR")
-  TWR_TOL=$(json_get "overview.twrYtdTolerance")
-  RESULT=$(compare_absolute "$ACTUAL_PCT" "$EXPECTED_PCT" "$TWR_TOL")
-  if [ "$RESULT" = "OK" ]; then
-    log "PASS" "overview/twr-ytd" "Actual $TWR_YTD within ${TWR_TOL}pp of expected $EXPECTED_TWR"
-    update_expected "overview.twrYtd" "$TWR_YTD"
-  else
-    log "FAIL" "overview/twr-ytd" "Actual $TWR_YTD outside ${TWR_TOL}pp tolerance of expected $EXPECTED_TWR"
-  fi
-fi
-
-# Check XIRR presence
-XIRR_PRESENT=$(ab_eval <<'EVALEOF'
-(() => {
-  const labels = document.querySelectorAll('.text-\\[11px\\].text-ink-faint.uppercase');
-  for (const el of labels) {
-    if (el.textContent.trim() === 'XIRR') return 'true'
-  }
-  return 'false'
-})()
-EVALEOF
-)
-if [ "$XIRR_PRESENT" = "true" ]; then
-  log "PASS" "overview/xirr-present" "XIRR metric is displayed"
-else
-  log "INFO" "overview/xirr-present" "XIRR metric not shown (may require cash-flow data)"
-fi
-
-# Check data freshness indicator
+# Data confidence indicator: now a <button> with a popover (replaced the old
+# a[href*="data-health"] anchor — that link only exists INSIDE the popover).
+# The button gets its title after the /api/data-confidence fetch resolves.
 FRESHNESS_TITLE=$(ab_eval <<'EVALEOF'
-(document.querySelector('a[href*="data-health"]')?.getAttribute('title') || 'NOT_FOUND')
+(document.querySelector('button[title^="Data confidence"]')?.getAttribute('title') || 'NOT_FOUND')
 EVALEOF
 )
 if [ "$FRESHNESS_TITLE" != "NOT_FOUND" ]; then
-  log "PASS" "overview/data-freshness" "Indicator present: $FRESHNESS_TITLE"
+  log "PASS" "today/data-confidence" "Indicator present: $FRESHNESS_TITLE"
 else
-  log "FAIL" "overview/data-freshness" "Data freshness indicator not found"
+  log "FAIL" "today/data-confidence" "Data confidence indicator not found"
 fi
 
-# Check portfolio chart
-CHART_PRESENT=$(ab_eval <<'EVALEOF'
-(document.querySelector('.recharts-responsive-container') !== null) ? 'true' : 'false'
+# IBKR holdings block (Today-specific content; replaces the old
+# portfolio-chart check — Today renders no chart by design, charts are
+# covered on the Charts tab).
+IBKR_BLOCK=$(ab_eval <<'EVALEOF'
+Array.from(document.querySelectorAll('h2')).some(h => h.textContent.trim() === 'IBKR today') ? 'true' : 'false'
 EVALEOF
 )
-if [ "$CHART_PRESENT" = "true" ]; then
-  log "PASS" "overview/portfolio-chart" "Portfolio chart rendered"
+if [ "$IBKR_BLOCK" = "true" ]; then
+  log "PASS" "today/ibkr-block" "IBKR today holdings block present"
 else
-  log "FAIL" "overview/portfolio-chart" "Portfolio chart not found"
+  log "FAIL" "today/ibkr-block" "IBKR today holdings block not found"
 fi
 
 # ============================================================
@@ -341,10 +298,13 @@ EVALEOF
 log "INFO" "accounts/tabs" "Account tabs: $ACCOUNTS_JSON"
 
 # ============================================================
-# TAB 3: HOLDINGS
+# TAB 3: CROSS-ACCOUNT HOLDINGS
+# (Holdings tab was absorbed into Accounts at the IA collapse;
+# /dashboard/holdings is a redirect stub to this URL — navigate the
+# real destination directly.)
 # ============================================================
 
-navigate_and_screenshot "holdings" "/dashboard/holdings"
+navigate_and_screenshot "holdings" "/dashboard/accounts?id=all#holdings"
 check_page_errors "holdings" || true
 
 # Extract position count
@@ -421,31 +381,93 @@ else
 fi
 
 # ============================================================
-# TAB 4: ANALYSIS
+# TAB 4: ANALYSIS (post-redesign sub-views — the old single-page
+# sections now live under ?view=. Risk metrics are on the Performance
+# view; factor + scenario cards are on the Diagnostics view. Checks
+# lowercase innerText because KPI eyebrow labels render CSS-uppercased.)
 # ============================================================
 
-navigate_and_screenshot "analysis" "/dashboard/analysis"
-check_page_errors "analysis" || true
+# --- 4a: Performance view (server-rendered: TWR/XIRR/drawdown/Sharpe) ---
 
-# Check for key sections by looking for headings/cards
-ANALYSIS_SECTIONS=$(ab_eval <<'EVALEOF'
-JSON.stringify({
-  riskMetrics: document.body.innerText.includes('Drawdown') || document.body.innerText.includes('Volatility') || document.body.innerText.includes('Sharpe'),
-  factorAnalysis: document.body.innerText.includes('Factor') || document.body.innerText.includes('Beta') || document.body.innerText.includes('Alpha'),
-  scenarioModeling: document.body.innerText.includes('Scenario') || document.body.innerText.includes('Stress'),
-  fixedIncome: document.body.innerText.includes('Bond') || document.body.innerText.includes('Duration') || document.body.innerText.includes('Fixed Income'),
-  allocationChart: document.querySelector('svg') !== null
-})
+navigate_and_screenshot "analysis-performance" "/dashboard/analysis?view=performance"
+check_page_errors "analysis-performance" || true
+
+RISK_PRESENT=$(ab_eval <<'EVALEOF'
+(() => {
+  const t = document.body.innerText.toLowerCase();
+  return (t.includes('drawdown') && t.includes('sharpe')) ? 'true' : 'false';
+})()
 EVALEOF
 )
-log "INFO" "analysis/sections" "Found: $ANALYSIS_SECTIONS"
+if [ "$RISK_PRESENT" = "true" ]; then
+  log "PASS" "analysis/riskMetrics" "Drawdown + Sharpe present on Performance view"
+else
+  log "FAIL" "analysis/riskMetrics" "Drawdown/Sharpe not found on Performance view"
+fi
 
-# Parse individual checks
-for section in riskMetrics factorAnalysis scenarioModeling; do
+# TWR (relocated from the old Overview page — KPI strip on Performance)
+TWR_YTD=$(ab_eval <<'EVALEOF'
+(() => {
+  const m = document.body.innerText.match(/TWR[^%]*?([+-]?\d+\.\d+%)/);
+  return m ? m[1] : 'NOT_FOUND';
+})()
+EVALEOF
+)
+log "INFO" "analysis/twr" "Extracted: $TWR_YTD"
+
+EXPECTED_TWR=$(json_get "performance.twrYtd")
+if [ "$EXPECTED_TWR" = "FILL_IN" ]; then
+  log "SKIP" "analysis/twr" "Expected not set (actual: $TWR_YTD)"
+elif [ "$TWR_YTD" = "NOT_FOUND" ]; then
+  log "FAIL" "analysis/twr" "TWR value not found on Performance view"
+else
+  ACTUAL_PCT=$(parse_percent "$TWR_YTD")
+  EXPECTED_PCT=$(parse_percent "$EXPECTED_TWR")
+  TWR_TOL=$(json_get "performance.twrYtdTolerance")
+  RESULT=$(compare_absolute "$ACTUAL_PCT" "$EXPECTED_PCT" "$TWR_TOL")
+  if [ "$RESULT" = "OK" ]; then
+    log "PASS" "analysis/twr" "Actual $TWR_YTD within ${TWR_TOL}pp of expected $EXPECTED_TWR"
+    update_expected "performance.twrYtd" "$TWR_YTD"
+  else
+    log "FAIL" "analysis/twr" "Actual $TWR_YTD outside ${TWR_TOL}pp tolerance of expected $EXPECTED_TWR"
+  fi
+fi
+
+# XIRR presence (informational — needs cash-flow data)
+XIRR_PRESENT=$(ab_eval <<'EVALEOF'
+document.body.innerText.toLowerCase().includes('xirr') ? 'true' : 'false'
+EVALEOF
+)
+if [ "$XIRR_PRESENT" = "true" ]; then
+  log "PASS" "analysis/xirr-present" "XIRR metric is displayed"
+else
+  log "INFO" "analysis/xirr-present" "XIRR metric not shown (may require cash-flow data)"
+fi
+
+# --- 4b: Diagnostics view (factor + scenario cards; client components
+# whose section HEADINGS render immediately post-hydration even while
+# their fetches are loading — stable smoke targets) ---
+
+navigate_and_screenshot "analysis-diagnostics" "/dashboard/analysis?view=diagnostics"
+check_page_errors "analysis-diagnostics" || true
+
+DIAG_SECTIONS=$(ab_eval <<'EVALEOF'
+(() => {
+  const t = document.body.innerText.toLowerCase();
+  return JSON.stringify({
+    factorAnalysis: t.includes('quantitative factor analysis'),
+    scenarioModeling: t.includes('scenario modeling')
+  });
+})()
+EVALEOF
+)
+log "INFO" "analysis/sections" "Found: $DIAG_SECTIONS"
+
+for section in factorAnalysis scenarioModeling; do
   PRESENT=$(python3 -c "
 import json, sys
 try:
-    data = json.loads('''$ANALYSIS_SECTIONS''')
+    data = json.loads('''$DIAG_SECTIONS''')
     print(data.get('$section', False))
 except:
     print('False')
@@ -476,25 +498,29 @@ else
 fi
 
 # ============================================================
-# TAB 6: CALENDAR
+# TAB 6: WEEK AHEAD (the Calendar tab was absorbed into Today at the
+# IA collapse; /dashboard/calendar is a redirect stub to this URL —
+# navigate the real destination directly.)
 # ============================================================
 
-navigate_and_screenshot "calendar" "/dashboard/calendar"
-check_page_errors "calendar" || true
+navigate_and_screenshot "week-ahead" "/dashboard/today?view=week-ahead"
+check_page_errors "week-ahead" || true
 
-# Check for week navigation (uses ←/This Week/→ buttons and date range)
-CALENDAR_NAV=$(ab_eval <<'EVALEOF'
+# WeekAheadView renders a "Week ahead" eyebrow (CSS-uppercased — match
+# lowercase) + an h1 with the week's date range ("Jul 20 – Jul 26, 2026").
+# The FIRST h1 on the page is the header wordmark, so scan all h1s.
+WEEK_AHEAD=$(ab_eval <<'EVALEOF'
 (() => {
-  const main = document.getElementById('main-content') || document.querySelector('main') || document.body;
-  const text = main.innerText;
-  return (text.includes('This Week') || text.includes('Week of') || (text.includes('←') && text.includes('→'))) ? 'true' : 'false';
+  const hasEyebrow = document.body.innerText.toLowerCase().includes('week ahead');
+  const hasRange = Array.from(document.querySelectorAll('h1')).some(h => /[A-Z][a-z]{2} \d+/.test(h.textContent));
+  return (hasEyebrow || hasRange) ? 'true' : 'false';
 })()
 EVALEOF
 )
-if [ "$CALENDAR_NAV" = "true" ]; then
-  log "PASS" "calendar/navigation" "Week navigation present"
+if [ "$WEEK_AHEAD" = "true" ]; then
+  log "PASS" "week-ahead/rendered" "Week-ahead view rendered with date range"
 else
-  log "FAIL" "calendar/navigation" "Week navigation not found"
+  log "FAIL" "week-ahead/rendered" "Week-ahead view not found"
 fi
 
 # ============================================================
@@ -549,11 +575,15 @@ fi
 echo "" >> "$REPORT"
 echo "# Summary" >> "$REPORT"
 
-PASS_COUNT=$(grep -c '^\[.*\] PASS:' "$REPORT" 2>/dev/null || echo "0")
-FAIL_COUNT=$(grep -c '^\[.*\] FAIL:' "$REPORT" 2>/dev/null || echo "0")
-SKIP_COUNT=$(grep -c '^\[.*\] SKIP:' "$REPORT" 2>/dev/null || echo "0")
-# Trim whitespace (grep -c can include trailing newline on some systems)
+# grep -c prints the count itself even on zero matches (exiting 1), so use
+# `|| true` — an `|| echo "0"` here appends a SECOND zero ("FAIL: 00").
+PASS_COUNT=$(grep -c '^\[.*\] PASS:' "$REPORT" 2>/dev/null || true)
+FAIL_COUNT=$(grep -c '^\[.*\] FAIL:' "$REPORT" 2>/dev/null || true)
+SKIP_COUNT=$(grep -c '^\[.*\] SKIP:' "$REPORT" 2>/dev/null || true)
+# Trim whitespace/newlines (grep -c can include trailing newline on some systems)
+PASS_COUNT="${PASS_COUNT//[^0-9]/}"
 FAIL_COUNT="${FAIL_COUNT//[^0-9]/}"
+SKIP_COUNT="${SKIP_COUNT//[^0-9]/}"
 
 echo "PASS: $PASS_COUNT | FAIL: $FAIL_COUNT | SKIP: $SKIP_COUNT" >> "$REPORT"
 
