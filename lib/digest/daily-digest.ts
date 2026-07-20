@@ -519,7 +519,7 @@ export async function generateDigestSinceAdaptive(
         anomalies,
         sessionHeading: edition === "evening" ? "The Session" : "Overnight & Setup",
       });
-      synth = insertCrossFilePointers(synth, essays, [...heldSymbols, ...watchlist]);
+      synth = insertCrossFilePointers(synth, essays, [...heldSymbols, ...watchlist]).markdown;
       lines.push(synth);
       lines.push("");
       lines.push("---");
