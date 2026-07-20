@@ -8,6 +8,11 @@ import { composeOvernightBlock } from "@/lib/digest/overnight";
 import { composeTodaysReportersBlock } from "@/lib/digest/todays-reporters";
 import { composeCallTranscriptsBlock } from "@/lib/digest/call-transcripts";
 import { splitEssays, renderResearchDesk, insertCrossFilePointers } from "@/lib/digest/research-desk";
+import {
+  partitionListingOnlyHeldBuckets,
+  renderThinCoverageLines,
+  insertBeforeAlsoCovered,
+} from "@/lib/digest/thin-coverage";
 
 // ── Alerts block ────────────────────────────────────────────────────
 
@@ -509,7 +514,11 @@ export async function generateDigestSinceAdaptive(
     }));
 
     const rawBuckets = bucketByCompany(commentary);
-    const buckets = enrichBucketCompanyNames(db, rawBuckets);
+    const enriched = enrichBucketCompanyNames(db, rawBuckets);
+    const { active: buckets, rosterSymbols } = partitionListingOnlyHeldBuckets(
+      enriched,
+      heldSymbols,
+    );
 
     try {
       let synth = await synthesize({
@@ -519,7 +528,10 @@ export async function generateDigestSinceAdaptive(
         anomalies,
         sessionHeading: edition === "evening" ? "The Session" : "Overnight & Setup",
       });
-      synth = insertCrossFilePointers(synth, essays, [...heldSymbols, ...watchlist]).markdown;
+      const crossFiled = insertCrossFilePointers(synth, essays, [...heldSymbols, ...watchlist]);
+      synth = crossFiled.markdown;
+      const thinLines = renderThinCoverageLines(rosterSymbols, crossFiled.unfiled);
+      if (thinLines) synth = insertBeforeAlsoCovered(synth, thinLines);
       lines.push(synth);
       lines.push("");
       lines.push("---");

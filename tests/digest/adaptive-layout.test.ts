@@ -192,6 +192,46 @@ describe("generateDigestSinceAdaptive — synthesis fallback", () => {
   });
 });
 
+describe("generateDigestSinceAdaptive — thin coverage wiring", () => {
+  it("listing-only held bucket → roster line, no synthesis bucket, no stub", async () => {
+    // Hold GS: seed account + security + holding (getHeldSymbols reads holdings⋈securities).
+    const acctId = (() => {
+      db.prepare("INSERT OR IGNORE INTO accounts (name) VALUES (?)").run("Vanguard Taxable");
+      return (db.prepare("SELECT id FROM accounts WHERE name = ?").get("Vanguard Taxable") as { id: number }).id;
+    })();
+    const secId = db
+      .prepare("INSERT INTO securities (symbol, name, security_type, asset_class, multiplier) VALUES ('GS', 'Goldman Sachs', 'stock', 'equity', 1)")
+      .run().lastInsertRowid as number;
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key) VALUES (?, ?, 100, '2026-07-20', 'test:gs')",
+    ).run(acctId, secId);
+
+    // 5 real AAPL articles (clears SYNTHESIS_MIN_ARTICLES) + 1 nine-symbol listing article naming GS.
+    seedArticles(5);
+    const srcId = (db.prepare("SELECT id FROM research_sources LIMIT 1").get() as { id: number }).id;
+    db.prepare(
+      `INSERT INTO research_articles
+         (source_id, subject, sender, received_at, raw_text, summary, sentiment, processed_at, mentioned_symbols)
+       VALUES (?, 'Week ahead calendar', 's@example.com', datetime('now'), 'Body', 'The week''s reporters.', 'neutral', datetime('now'), ?)`,
+    ).run(srcId, JSON.stringify(["MSFT", "HD", "GS", "JPM", "XOM", "RBRK", "NSC", "TXN", "VZ"]));
+
+    (synthesize as ReturnType<typeof vi.fn>).mockResolvedValue(
+      "## Overnight & Setup\n\nMacro.\n\n## AAPL (Apple)\n\nCovered.\n\n## Also covered\n\nThin.",
+    );
+
+    const out = await generateDigestSinceAdaptive(db, "2020-01-01");
+
+    // Roster line present, placed before ## Also covered.
+    expect(out).toContain("On this week's calendar: GS");
+    expect(out!.indexOf("On this week's calendar: GS")).toBeLessThan(out!.indexOf("## Also covered"));
+    // No GS section or stub was manufactured.
+    expect(out).not.toMatch(/^## GS\b/m);
+    // The listing-only GS bucket never reached the model.
+    const input = (synthesize as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(input.buckets.map((b: { symbol: string }) => b.symbol)).not.toContain("GS");
+  });
+});
+
 describe("generateDigestSinceAdaptive — anomaly block", () => {
   it("includes anomaly block when includeAnomalies is true AND anomalies exist", async () => {
     vi.mocked(formatVanguardAnomaliesBlock).mockReturnValue(
