@@ -73,7 +73,7 @@ function pushBucket(buckets: Map<string, ArticleLike[]>, key: string, article: A
   buckets.set(key, list);
 }
 
-function parseSymbolList(json: string | null): string[] {
+export function parseSymbolList(json: string | null): string[] {
   if (!json) return [];
   try {
     const arr = JSON.parse(json);
