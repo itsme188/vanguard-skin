@@ -42,8 +42,18 @@
  *     format /iserver/secdef/search returns in `sections[].months`.
  *     Response shape: `{ call: number[], put: number[] }` — two flat arrays
  *     of strike prices (floats), not paired/keyed objects.
- *     **WARM-UP QUIRK (new finding, not previously documented anywhere in
- *     this codebase for this endpoint)**: the very first call for a given
+ *     **WARM-UP QUIRK — REVISED 2026-07-20 (live probe, RTH)**: polling alone
+ *     is NOT a reliable warmer. On 2026-07-20 a fresh session returned the
+ *     empty shape for 9+ polls across BOTH JUL26 and AUG26; a single
+ *     /iserver/secdef/search?symbol=<SYM>&secType=STK call then made both
+ *     months populate on the FIRST poll. The 7/8 observation below ("retry
+ *     loop reliably got a populated response within 1-2 polls") held only
+ *     because that session's own /secdef/search verification calls had
+ *     already primed the server-side cache. This script and production
+ *     (lib/ibkr/option-chain.ts::resolveAtmContracts) now both issue the
+ *     search warm-up before the strikes loop; the retry loop stays as
+ *     defense. Original 7/8 finding for context:
+ *     the very first call for a given
  *     (conid, month) combination reliably returns `{"call":[],"put":[]}`
  *     with HTTP 200 (no error) even though /secdef/search confirms the
  *     month is valid and has strikes. This is NOT a session-freshness
@@ -164,6 +174,16 @@ async function main() {
   const month = now
     .toLocaleDateString("en-US", { month: "short", timeZone: "America/New_York" })
     .toUpperCase() + String(now.getFullYear()).slice(2);
+
+  // Cache warm-up (2026-07-20 finding): without this search call the strikes
+  // endpoint can return the empty shape indefinitely regardless of polling.
+  console.log(`── warm-up: /iserver/secdef/search symbol=${symbol} ──`);
+  const searchResp = await signedRequest(cfg, lst.token, "GET", "/iserver/secdef/search", {
+    symbol,
+    secType: "STK",
+  });
+  console.log(`search: HTTP ${searchResp.status}`);
+  await searchResp.text(); // drain
 
   console.log(`── strikes (conid=${conid}, month=${month}) ──`);
   // Live-probed 2026-07-08: /iserver/secdef/strikes can return {"call":[],"put":[]}

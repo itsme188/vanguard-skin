@@ -148,7 +148,7 @@ export async function ensureIntelForEvents(
           }
           if (lst != null) {
             const chain = await deps.resolveChain(cfg, lst, {
-              conid, eventDate: ev.event_date, eventTime, spot,
+              conid, symbol: ev.symbol, eventDate: ev.event_date, eventTime, spot,
             });
             if (chain) {
               const quotes = await deps.snapshot(cfg, lst, [chain.callConid, chain.putConid], {
