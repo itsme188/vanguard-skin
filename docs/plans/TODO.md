@@ -123,7 +123,10 @@ New open items from the same audit (added above): Worker synthesis held-ticker b
 
 - ✅ **Straddle road root-caused + fixed via live RTH probe** — see the closed live-watch entry above. The headline: it was never RTH timing; production never issued the `/iserver/secdef/search` call that warms IBKR's chain cache, so strikes polled empty forever. GOOG 7/22 now carries the first-ever `straddle` intel row (±5.82%), in time for this week's GOOGL/TSLA/INTC previews.
 - ✅ **Worker cloud-enrich superseded-sibling skip** + ✅ **Worker held-ticker synthesis backstop** (evening fallback only — morning cloud digest has no synthesis path by design; scope note in CLAUDE.md).
-- ✅ **Orphaned 7/18 QA fix cherry-picked to main** (Discover-from-Gmail outcome scrollIntoView).
+- ✅ **Orphaned 7/18 QA fix cherry-picked to main** (Discover-from-Gmail outcome scrollIntoView); all 7 `qa-deep-fixes-*` branches deleted after content-verification.
+- ✅ **Deploy-scoped `CLOUDFLARE_API_TOKEN`** created + deploy-verified (`db728296`); headless wrangler deploys no longer need a browser.
+- ✅ **Digest thin-coverage SHIPPED same-day** (brainstorm→spec `7518405`→plan `b061f39`→4-task SDD `2a943ea..65dde7b`→docs `82808bb`, final review READY 0C/0I, Worker deployed `da9028cb`) — calendar-listing-only held buckets → one roster line, unfiled essays → 📄 pointer line, Worker evening roster mirror + parity pin. E2E watch: 7/21 8:45 digest.
+- ✅ **Smoke-QA value extraction + run-death fixed** (`b333c31`) — API-based extraction + INVALID compare guard; first footer-reaching clean run in months (15P/7F/2S); 7 stale pre-redesign scenario checks surfaced + filed. **R1b Web API synced label** confirmed live incidentally.
 
 ### Closed this session (2026-07-08 evening — TODO trim + earnings intelligence tier #9/#10)
 
