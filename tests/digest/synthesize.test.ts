@@ -456,3 +456,112 @@ describe("edition-aware prompt (digest redesign)", () => {
     expect(prompt).toContain("Vital Knowledge [recap]");
   });
 });
+
+// ---------------------------------------------------------------------------
+// enforceHeldSections — deterministic held-ticker section enforcement
+// (the 7/20 digest relegated held CSX with two-article coverage to
+// "## Also covered" despite the HELD-TICKER prompt rule; prompts request,
+// post-processing enforces)
+// ---------------------------------------------------------------------------
+
+import { enforceHeldSections } from "@/lib/digest/synthesize";
+
+function inputWith(buckets: CompanyBucket[], heldSymbols: string[]): SynthesisInput {
+  return { buckets, heldSymbols, watchlist: [], anomalies: [] };
+}
+
+describe("enforceHeldSections", () => {
+  const csxBucket = makeBucket("CSX", "CSX Corp", [
+    makeArticle(1, "Vital Knowledge", "neutral", "CSX named among this week's earnings reporters.", "https://vk.example/weekend"),
+    makeArticle(2, "Vital Knowledge", "neutral", "Rails in focus into Wednesday's print.", "https://vk.example/dawn"),
+  ]);
+
+  const baseMarkdown = [
+    "## The Session",
+    "",
+    "Macro narrative here.",
+    "",
+    "## INTC (Intel Corp)",
+    "",
+    "Intel coverage. [Vital Knowledge](https://vk.example/weekend)",
+    "",
+    "## Also covered",
+    "",
+    "CSX and others were named in the weekend calendar.",
+  ].join("\n");
+
+  it("appends a citation stub before ## Also covered for a held bucket with no section", () => {
+    const out = enforceHeldSections(baseMarkdown, inputWith(
+      [csxBucket, makeBucket("INTC", "Intel Corp", [makeArticle(3, "Vital Knowledge")])],
+      ["CSX", "INTC"],
+    ));
+
+    expect(out).toContain("## CSX (CSX Corp)");
+    // Stub cites the bucket's articles with links + summary text.
+    expect(out).toContain("[Vital Knowledge](https://vk.example/weekend)");
+    expect(out).toContain("CSX named among this week's earnings reporters.");
+    // Inserted BEFORE the Also covered close.
+    expect(out.indexOf("## CSX")).toBeLessThan(out.indexOf("## Also covered"));
+    // Existing sections untouched.
+    expect(out).toContain("## INTC (Intel Corp)");
+  });
+
+  it("leaves output unchanged when every held bucket already has a section", () => {
+    const out = enforceHeldSections(baseMarkdown, inputWith(
+      [makeBucket("INTC", "Intel Corp", [makeArticle(3, "Vital Knowledge")])],
+      ["INTC"],
+    ));
+
+    expect(out).toBe(baseMarkdown);
+  });
+
+  it("does not add sections for non-held buckets", () => {
+    const out = enforceHeldSections(baseMarkdown, inputWith([csxBucket], ["INTC"]));
+
+    expect(out).toBe(baseMarkdown);
+  });
+
+  it("recognizes a dual-class heading via issuerSiblings (held GOOG, section GOOGL)", () => {
+    const md = baseMarkdown.replace(
+      "## INTC (Intel Corp)",
+      "## GOOGL (Alphabet)",
+    );
+    const out = enforceHeldSections(md, inputWith(
+      [makeBucket("GOOGL", "Alphabet", [makeArticle(4, "Vital Knowledge")])],
+      ["GOOG"],
+    ));
+
+    expect(out).toBe(md);
+  });
+
+  it("appends at the end when there is no ## Also covered section", () => {
+    const md = "## The Session\n\nMacro only.";
+    const out = enforceHeldSections(md, inputWith([csxBucket], ["CSX"]));
+
+    expect(out).toContain("## CSX (CSX Corp)");
+    expect(out.trimEnd().endsWith("*Held-name coverage auto-surfaced from today's sources.*")).toBe(true);
+  });
+
+  it("skips the macro (no symbol) bucket", () => {
+    const macro = makeBucket("(no symbol)", null, [makeArticle(9, "Vital Knowledge")]);
+    const out = enforceHeldSections(baseMarkdown, inputWith([macro], ["CSX"]));
+
+    expect(out).toBe(baseMarkdown);
+  });
+
+  it("synthesize() applies enforcement to the model output", async () => {
+    const mocked = vi.mocked(generateTextForFeature);
+    mocked.mockResolvedValue({
+      // Padded past the 200-char minimum-length guard in synthesize().
+      text: baseMarkdown.replace(
+        "Macro narrative here.",
+        "Macro narrative here with enough supporting detail about the session to satisfy the composer's minimum-length validation guard.",
+      ),
+      finishReason: "stop",
+    } as Awaited<ReturnType<typeof generateTextForFeature>>);
+
+    const result = await synthesize(inputWith([csxBucket], ["CSX"]));
+
+    expect(result).toContain("## CSX (CSX Corp)");
+  });
+});
