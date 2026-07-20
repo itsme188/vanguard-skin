@@ -33,6 +33,7 @@ export function ManageSourcesModal({
   const [addedEmails, setAddedEmails] = useState<Set<string>>(new Set());
   const [showManual, setShowManual] = useState(false);
   const manualFormRef = useRef<HTMLDivElement>(null);
+  const discoverResultsRef = useRef<HTMLDivElement>(null);
   const [manualName, setManualName] = useState("");
   const [manualEmail, setManualEmail] = useState("");
   const [adding, setAdding] = useState(false);
@@ -364,6 +365,7 @@ export function ManageSourcesModal({
     setDiscovering(true);
     setShowDiscover(true);
     setDiscoverError(null);
+    setTimeout(() => discoverResultsRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }), 50);
     try {
       const res = await fetch("/api/research/discover", { method: "POST" });
       const data = await res.json();
@@ -717,7 +719,7 @@ export function ManageSourcesModal({
             const alreadyAddedCount = discovered.length - newSenders.length;
 
             return (
-              <div className="space-y-2">
+              <div ref={discoverResultsRef} className="space-y-2">
                 <p className="text-xs text-ink-faint uppercase tracking-wider">
                   Found in Gmail
                 </p>
