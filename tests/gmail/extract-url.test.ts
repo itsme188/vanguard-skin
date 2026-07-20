@@ -102,8 +102,10 @@ Content follows...`;
     const html = `<div>Great piece by Soapbox: <a href="https://soapboxtrade.substack.com/p/chinas-export-surge">read it</a></div>`;
     const text = `A closer look at Europe.\n\nView in browser ( https://sharptext.net/2026/europes-final-warning/?access_token=abc )\n\nbody`;
     const sender = "Andrew Sharp <email@sharptext.net>";
+    // (access_token in the fixture URL is stripped by cleanUrl — see the
+    // credential-stripping tests below; what matters here is the DOMAIN.)
     expect(extractSourceUrl(html, text, sender)).toBe(
-      "https://sharptext.net/2026/europes-final-warning/?access_token=abc"
+      "https://sharptext.net/2026/europes-final-warning/"
     );
   });
 
@@ -168,5 +170,18 @@ Content follows...`;
     expect(extractSourceUrl(html)).toBe(
       "https://vitalknowledge.net/article/test"
     );
+  });
+
+  it("strips a personal access_token credential from the URL", () => {
+    // Stratechery "view in browser" links embed the subscriber's JWT as
+    // ?access_token=… — a credential that must never be stored or mailed
+    // onward (the 7/20 digest cc'd it to a second recipient).
+    const html = `<a href="https://stratechery.com/2026/whos-afraid/?access_token=eyJhb_Gci.abc_def">View in browser</a>`;
+    expect(extractSourceUrl(html)).toBe("https://stratechery.com/2026/whos-afraid/");
+  });
+
+  it("strips access_token while preserving other query params", () => {
+    const html = `<a href="https://example.com/post?a=1&amp;access_token=secret123&amp;b=2">Read online</a>`;
+    expect(extractSourceUrl(html)).toBe("https://example.com/post?a=1&b=2");
   });
 });

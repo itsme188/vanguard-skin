@@ -333,11 +333,19 @@ function convertMarkdown(md: string): string {
  * for clean reading.
  */
 function inlineFormat(text: string): string {
-  // Links first — must run before bold/italic so [**foo**](url) works
-  text = text.replace(
-    /\[([^\]]+)\]\(([^)]+)\)/g,
-    `<a href="$2" style="color:${COLORS.gold}; text-decoration:underline; text-underline-offset:2px;">$1</a>`,
-  );
+  // Links first — must run before bold/italic so [**foo**](url) works. The
+  // URL is swapped for a NUL-delimited (\u0000) index placeholder while the
+  // emphasis passes run: real-world hrefs (Stratechery ?access_token=<JWT>,
+  // beehiiv link-redirect JWTs) contain _ and *, and running `_(.+?)_` over
+  // the generated href injected <em> INSIDE the attribute — mail clients
+  // rejected the mangled anchor and leaked the raw token as visible text
+  // (2026-07-20 digest). A NUL byte cannot appear in email markdown, so the
+  // placeholder can never collide or be emphasized.
+  const urls: string[] = [];
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label: string, url: string) => {
+    const i = urls.push(url) - 1;
+    return `<a href="\u0000${i}\u0000" style="color:${COLORS.gold}; text-decoration:underline; text-underline-offset:2px;">${label}</a>`;
+  });
   text = text.replace(/\*\*(.+?)\*\*/g, `<strong style="color:${COLORS.ink};">$1</strong>`);
   text = text.replace(/__(.+?)__/g, `<strong style="color:${COLORS.ink};">$1</strong>`);
   text = text.replace(/\*(.+?)\*/g, "<em>$1</em>");
@@ -346,5 +354,6 @@ function inlineFormat(text: string): string {
     /`(.+?)`/g,
     `<code style="background:${COLORS.goldGlow}; color:${COLORS.inkDim}; padding:1px 6px; border-radius:3px; font-family:${FONT_MONO}; font-size:15px;">$1</code>`,
   );
+  text = text.replace(/\u0000(\d+)\u0000/g, (_m, i: string) => urls[Number(i)]);
   return text;
 }
