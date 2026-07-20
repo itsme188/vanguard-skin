@@ -554,9 +554,10 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
                     style={
                       scope === opt.value
                         ? {
+                            // color deliberately NOT set inline — it would
+                            // override the text-gold-ink contrast token.
                             background: "rgba(201,164,78,0.2)",
                             borderColor: "#c9a44e",
-                            color: "#c9a44e",
                           }
                         : undefined
                     }
