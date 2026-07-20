@@ -16,7 +16,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import type { FallbackEnv } from "../src/fallback-digest";
 import type { Snapshot } from "../src/state";
-import { evaluateAnomalies, fetchLast2ClosesBatch, buildSynthesisPrompt } from "../src/fallback-evening";
+import { evaluateAnomalies, fetchLast2ClosesBatch, buildSynthesisPrompt, enforceHeldSections } from "../src/fallback-evening";
 
 // ── Dependency mocks ─────────────────────────────────────────────────────────
 
@@ -635,6 +635,84 @@ describe("evaluateAnomalies (Worker two-gate parity)", () => {
     );
     expect((flags ?? [])[0].symbol).toBe("HIGHZ");
     expect((flags ?? [])[0].zScore).not.toBeNull();
+  });
+});
+
+describe("enforceHeldSections (Worker mirror of the Mac backstop)", () => {
+  const art = (over: Partial<Record<string, unknown>> = {}) => ({
+    id: 1,
+    source_id: 1,
+    source_name: "Vital Knowledge",
+    gmail_message_id: null,
+    received_at: "2026-07-20 12:00:00",
+    subject: "CSX quarter preview",
+    sender: "vk@example.com",
+    summary: "CSX volumes inflected; two sources see margin upside into the print.",
+    key_themes: null,
+    sentiment: null,
+    sentiment_score: null,
+    mentioned_symbols: JSON.stringify(["CSX"]),
+    portfolio_relevance: null,
+    source_url: "https://example.com/csx",
+    website_url: null,
+    ...over,
+  });
+
+  const md =
+    "## The Session\n\nMarkets chopped.\n\n## Also covered\n\nThin mentions everywhere.";
+
+  it("inserts a citation stub before ## Also covered for a held bucket with no section", () => {
+    const out = enforceHeldSections(md, { CSX: [art()] }, ["CSX"]);
+    const stubIdx = out.indexOf("## CSX");
+    const alsoIdx = out.indexOf("## Also covered");
+    expect(stubIdx).toBeGreaterThan(-1);
+    expect(stubIdx).toBeLessThan(alsoIdx);
+    expect(out).toContain("[Vital Knowledge](https://example.com/csx)");
+    expect(out).toContain("auto-surfaced");
+  });
+
+  it("is issuer-family aware — a GOOG heading satisfies a GOOGL bucket", () => {
+    const googl = art({ mentioned_symbols: JSON.stringify(["GOOGL"]), subject: "Alphabet" });
+    const withGoog = "## The Session\n\nX.\n\n## GOOG (Alphabet)\n\nCovered.\n\n## Also covered\n\nY.";
+    expect(enforceHeldSections(withGoog, { GOOGL: [googl] }, ["GOOGL"])).toBe(withGoog);
+  });
+
+  it("ignores non-held buckets and the (macro/other) bucket", () => {
+    const out = enforceHeldSections(md, { XYZ: [art()], "(macro/other)": [art()] }, ["CSX"]);
+    expect(out).toBe(md);
+  });
+
+  it("appends at the end when ## Also covered is absent", () => {
+    const noAlso = "## The Session\n\nMarkets chopped.";
+    const out = enforceHeldSections(noAlso, { CSX: [art()] }, ["CSX"]);
+    expect(out.indexOf("## CSX")).toBeGreaterThan(out.indexOf("## The Session"));
+  });
+
+  it("wired into the synthesis path: a buried held name reaches the sent email as a stub", async () => {
+    const env = makeEnv();
+    const snapshot = makeV3Snapshot({ articleCount: 7 });
+    const arts = snapshot.recentArticlesMeta as Array<Record<string, unknown>>;
+    arts[0].mentioned_symbols = JSON.stringify(["AAPL"]); // AAPL is held in the fixture
+    arts[0].source_url = "https://example.com/aapl";
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot);
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: false });
+    // Valid synthesis that BURIES the held name (no ## AAPL section).
+    (generateText as ReturnType<typeof vi.fn>).mockResolvedValue({
+      text:
+        "## The Session\n\n" +
+        "Markets digested a heavy macro calendar today with rotation out of " +
+        "megacap tech and into cyclicals; breadth improved into the close and " +
+        "several held names saw notable newsletter coverage across sources.\n\n" +
+        "## Also covered\n\nAAPL and others in passing.",
+      finishReason: "stop",
+    });
+
+    const result = await runFallbackEvening(env, {});
+    expect(result.kind).toBe("success");
+    const sendCall = (sendEmail as ReturnType<typeof vi.fn>).mock.calls[0];
+    const html = JSON.stringify(sendCall);
+    expect(html).toContain("auto-surfaced");
+    expect(html).toContain("example.com/aapl");
   });
 });
 

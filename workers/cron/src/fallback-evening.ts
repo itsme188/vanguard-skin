@@ -32,6 +32,7 @@ import {
   type ProcessedArticle,
 } from "./fallback-digest";
 import { editionLabel } from "./editions";
+import { issuerSiblings } from "./fallback-earnings";
 
 // Evening live-fetch cap, sized against the 50-subrequest Workers free-tier
 // ceiling AND the anomaly block's batched Yahoo calls:
@@ -334,6 +335,82 @@ function bucketByCompany(
   return buckets;
 }
 
+// ── Held-ticker enforcement backstop ─────────────────────────────────────────
+// Worker adaptation of lib/digest/synthesize.ts::enforceHeldSections (2026-07-20):
+// the prompt REQUESTS a ## section per held name with coverage, but the model
+// intermittently buries one in "## Also covered" (7/20 Mac digest: held CSX).
+// Prompts request; post-processing enforces. Not byte-parity — the Worker's
+// bucket shape (Record<symbol, RecentArticleMeta[]>) differs from the Mac's
+// CompanyBucket[], but the semantics mirror: any held bucket
+// (issuerSiblings-aware) with no matching ## heading gets a deterministic
+// citation stub inserted before "## Also covered".
+
+const STUB_SUMMARY_CHAR_CAP = 240;
+const NO_SYMBOL_BUCKET = "(macro/other)";
+
+function truncateStubText(text: string, cap: number): string {
+  if (text.length <= cap) return text;
+  const cut = text.slice(0, cap);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${(lastSpace > cap * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
+
+export function enforceHeldSections(
+  markdown: string,
+  buckets: Record<string, RecentArticleMeta[]>,
+  heldSymbols: string[],
+): string {
+  const heldSet = new Set(heldSymbols.map((s) => s.toUpperCase()));
+
+  // Every ticker-ish token appearing in a `##` heading before any "(".
+  const headingTokens = new Set<string>();
+  for (const line of markdown.split("\n")) {
+    const m = line.match(/^##\s+(.+)$/);
+    if (!m) continue;
+    for (const tok of m[1].split("(")[0].split(/[\s/,]+/)) {
+      const t = tok.trim().toUpperCase();
+      if (t.length > 0 && /^[A-Z0-9.\-]+$/.test(t)) headingTokens.add(t);
+    }
+  }
+
+  const stubs: string[] = [];
+  const missing: string[] = [];
+  for (const [symbol, articles] of Object.entries(buckets)) {
+    if (symbol === NO_SYMBOL_BUCKET) continue;
+    const family = issuerSiblings(symbol).map((s) => s.toUpperCase());
+    if (!family.some((s) => heldSet.has(s))) continue;
+    if (family.some((s) => headingTokens.has(s))) continue;
+    if (articles.length === 0) continue;
+    missing.push(symbol);
+    const lines = [`## ${symbol}`, ""];
+    for (const a of articles) {
+      const url = a.source_url || a.website_url;
+      const cite = url ? `[${a.source_name}](${url})` : a.source_name;
+      const summary = truncateStubText(
+        (a.summary ?? a.subject ?? "").replace(/\s+/g, " ").trim(),
+        STUB_SUMMARY_CHAR_CAP,
+      );
+      lines.push(`- ${cite}: ${summary}`);
+    }
+    lines.push("", "*Held-name coverage auto-surfaced from today's sources.*");
+    stubs.push(lines.join("\n"));
+  }
+  if (stubs.length === 0) return markdown;
+
+  console.warn(
+    `[fallback-evening] held-ticker section missing for ${missing.join(", ")} — auto-surfaced citation stub(s)`,
+  );
+
+  const stubBlock = stubs.join("\n\n");
+  const alsoMatch = markdown.match(/^## Also covered\s*$/m);
+  if (alsoMatch && alsoMatch.index !== undefined) {
+    return (
+      markdown.slice(0, alsoMatch.index) + stubBlock + "\n\n" + markdown.slice(alsoMatch.index)
+    );
+  }
+  return `${markdown.trimEnd()}\n\n${stubBlock}`;
+}
+
 // Exported for testability (pins the synthesis prompt's coherence rules).
 export function buildSynthesisPrompt(
   buckets: Record<string, RecentArticleMeta[]>,
@@ -443,7 +520,7 @@ async function synthesizeViaAI(
       return null;
     }
 
-    return stripped;
+    return enforceHeldSections(stripped, buckets, snap.heldSymbols ?? []);
   } catch (err) {
     console.warn("[fallback-evening] synthesis failed:", err);
     return null;
