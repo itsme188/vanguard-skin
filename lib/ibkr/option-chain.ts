@@ -27,6 +27,8 @@ export interface AtmContracts {
 
 interface ResolveArgs {
   conid: number;
+  /** Underlying ticker — required by the /iserver/secdef/search cache warm-up. */
+  symbol: string;
   eventDate: string;
   eventTime: "BMO" | "AMC" | null;
   spot: number;
@@ -108,6 +110,21 @@ export async function resolveAtmContracts(
   const delayMs = deps.delayMs ?? DEFAULT_STRIKES_RETRY_DELAY_MS;
   const maxStrikesRetries = deps.maxStrikesRetries ?? DEFAULT_MAX_STRIKES_RETRIES;
   try {
+    // Live-probed 2026-07-20 (RTH): /iserver/secdef/strikes can return the
+    // empty cold-cache shape indefinitely (9+ polls across two months) unless
+    // a /iserver/secdef/search for the underlying ran first — one search call
+    // makes strikes populate on the FIRST poll. The 7/8 probe's "retry warms
+    // it" observation held only because that session's own search calls had
+    // already primed the cache. Best-effort: a search failure must not kill
+    // the resolve (the retry loop below remains as defense).
+    try {
+      await request(cfg, lst, "GET", "/iserver/secdef/search", {
+        symbol: args.symbol, secType: "STK",
+      });
+    } catch (e) {
+      console.warn(`[earnings-intel] chain warm-up search failed for ${args.symbol}:`, e);
+    }
+
     for (const month of candidateMonths(args.eventDate)) {
       const strikesJson = await fetchStrikesWithRetry(
         request, cfg, lst, args.conid, month, maxStrikesRetries, delayMs,

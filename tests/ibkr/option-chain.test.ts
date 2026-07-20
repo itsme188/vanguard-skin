@@ -8,9 +8,13 @@ function respondJson(json: unknown) {
   return new Response(JSON.stringify(json), { status: 200 });
 }
 
-// Fake secdef surfaces: strikes for the month, info per right with maturityDates.
+// Fake secdef surfaces: search (cache warmer), strikes for the month, info per
+// right with maturityDates.
 function fakeRequest(overrides: Partial<Record<string, unknown>> = {}) {
   return vi.fn(async (_cfg, _lst, _m, path: string, query: Record<string, string>) => {
+    if (path.includes("secdef/search")) {
+      return respondJson([{ sections: [{ secType: "OPT", months: "JUL26;AUG26" }] }]);
+    }
     if (path.includes("secdef/strikes")) {
       return respondJson(overrides.strikes ?? { call: [120, 125, 130, 135], put: [120, 125, 130, 135] });
     }
@@ -30,7 +34,7 @@ describe("resolveAtmContracts", () => {
   it("picks ATM strike and the first strictly-post-print expiry (AMC)", async () => {
     const request = fakeRequest();
     const out = await resolveAtmContracts(CFG, "lst", {
-      conid: 265598, eventDate: "2026-07-14", eventTime: "AMC", spot: 128.9,
+      conid: 265598, symbol: "AAPL", eventDate: "2026-07-14", eventTime: "AMC", spot: 128.9,
     }, { request: request as never });
     expect(out).toEqual({ callConid: 9003, putConid: 9004, expiry: "2026-07-18", strike: 130 });
   });
@@ -40,7 +44,7 @@ describe("resolveAtmContracts", () => {
       info: [{ conid: 9001, maturityDate: "20260910" }],
     });
     const out = await resolveAtmContracts(CFG, "lst", {
-      conid: 265598, eventDate: "2026-07-14", eventTime: "AMC", spot: 128.9,
+      conid: 265598, symbol: "AAPL", eventDate: "2026-07-14", eventTime: "AMC", spot: 128.9,
     }, { request: request as never });
     expect(out).toBeNull();
   });
@@ -48,12 +52,12 @@ describe("resolveAtmContracts", () => {
   it("null on empty strikes / request failure", async () => {
     const request = vi.fn(async () => respondJson({ call: [], put: [] }));
     expect(await resolveAtmContracts(CFG, "lst", {
-      conid: 1, eventDate: "2026-07-14", eventTime: "AMC", spot: 100,
+      conid: 1, symbol: "X", eventDate: "2026-07-14", eventTime: "AMC", spot: 100,
     }, { request: request as never, delayMs: 0 })).toBeNull();
 
     const failing = vi.fn(async () => { throw new Error("boom"); });
     expect(await resolveAtmContracts(CFG, "lst", {
-      conid: 1, eventDate: "2026-07-14", eventTime: "AMC", spot: 100,
+      conid: 1, symbol: "X", eventDate: "2026-07-14", eventTime: "AMC", spot: 100,
     }, { request: failing as never, delayMs: 0 })).toBeNull();
   });
 
@@ -76,10 +80,61 @@ describe("resolveAtmContracts", () => {
     });
 
     const out = await resolveAtmContracts(CFG, "lst", {
-      conid: 265598, eventDate: "2026-07-14", eventTime: "AMC", spot: 128.9,
+      conid: 265598, symbol: "AAPL", eventDate: "2026-07-14", eventTime: "AMC", spot: 128.9,
     }, { request: request as never, delayMs: 0 });
 
     expect(strikesCalls).toBeGreaterThanOrEqual(2);
+    expect(out).toEqual({ callConid: 9003, putConid: 9004, expiry: "2026-07-18", strike: 130 });
+  });
+
+  it("warms the chain cache via secdef/search BEFORE the first strikes call (2026-07-20 probe)", async () => {
+    // Live-probed 2026-07-20 (RTH): without a prior /iserver/secdef/search for
+    // the underlying, /iserver/secdef/strikes returned {"call":[],"put":[]} on
+    // 9+ polls across two months; ONE search call made both months populate on
+    // the first poll. Retry-alone is not a reliable warmer.
+    const order: string[] = [];
+    const request = vi.fn(async (_cfg, _lst, _m, path: string, query: Record<string, string>) => {
+      if (path.includes("secdef/search")) {
+        order.push("search");
+        expect(query).toMatchObject({ symbol: "AAPL", secType: "STK" });
+        return respondJson([{ sections: [{ secType: "OPT", months: "JUL26" }] }]);
+      }
+      if (path.includes("secdef/strikes")) {
+        order.push("strikes");
+        return respondJson({ call: [120, 125, 130, 135], put: [120, 125, 130, 135] });
+      }
+      if (path.includes("secdef/info")) {
+        return respondJson([
+          { conid: query.right === "C" ? 9001 : 9002, maturityDate: "20260714" },
+          { conid: query.right === "C" ? 9003 : 9004, maturityDate: "20260718" },
+        ]);
+      }
+      throw new Error(`unexpected path ${path}`);
+    });
+    const out = await resolveAtmContracts(CFG, "lst", {
+      conid: 265598, symbol: "AAPL", eventDate: "2026-07-14", eventTime: "AMC", spot: 128.9,
+    }, { request: request as never, delayMs: 0 });
+    expect(order[0]).toBe("search");
+    expect(order).toContain("strikes");
+    expect(out).toEqual({ callConid: 9003, putConid: 9004, expiry: "2026-07-18", strike: 130 });
+  });
+
+  it("search warm-up failure is non-fatal — resolve proceeds to strikes", async () => {
+    const request = vi.fn(async (_cfg, _lst, _m, path: string, query: Record<string, string>) => {
+      if (path.includes("secdef/search")) throw new Error("search down");
+      if (path.includes("secdef/strikes")) {
+        return respondJson({ call: [120, 125, 130, 135], put: [120, 125, 130, 135] });
+      }
+      if (path.includes("secdef/info")) {
+        return respondJson([
+          { conid: query.right === "C" ? 9003 : 9004, maturityDate: "20260718" },
+        ]);
+      }
+      throw new Error(`unexpected path ${path}`);
+    });
+    const out = await resolveAtmContracts(CFG, "lst", {
+      conid: 265598, symbol: "AAPL", eventDate: "2026-07-14", eventTime: "AMC", spot: 128.9,
+    }, { request: request as never, delayMs: 0 });
     expect(out).toEqual({ callConid: 9003, putConid: 9004, expiry: "2026-07-18", strike: 130 });
   });
 
@@ -94,7 +149,7 @@ describe("resolveAtmContracts", () => {
       throw new Error(`unexpected path ${path}`);
     });
     const out = await resolveAtmContracts(CFG, "lst", {
-      conid: 265598, eventDate: "2026-07-14", eventTime: "AMC", spot: 128.9,
+      conid: 265598, symbol: "AAPL", eventDate: "2026-07-14", eventTime: "AMC", spot: 128.9,
     }, { request: request as never, delayMs: 0 });
     expect(out).toBeNull();
   });
@@ -110,7 +165,7 @@ describe("resolveAtmContracts", () => {
       throw new Error(`unexpected path ${path}`);
     });
     const out = await resolveAtmContracts(CFG, "lst", {
-      conid: 265598, eventDate: "2026-07-14", eventTime: "AMC", spot: 128.9,
+      conid: 265598, symbol: "AAPL", eventDate: "2026-07-14", eventTime: "AMC", spot: 128.9,
     }, { request: request as never, delayMs: 0 });
     expect(out).toBeNull();
   });
@@ -130,7 +185,7 @@ describe("resolveAtmContracts", () => {
       throw new Error(`unexpected path ${path}`);
     });
     const out = await resolveAtmContracts(CFG, "lst", {
-      conid: 265598, eventDate: "2026-07-14", eventTime: "AMC", spot: 128.9,
+      conid: 265598, symbol: "AAPL", eventDate: "2026-07-14", eventTime: "AMC", spot: 128.9,
     }, { request: request as never, delayMs: 0 });
     expect(out).toBeNull();
   });
