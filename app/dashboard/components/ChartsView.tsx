@@ -60,7 +60,7 @@ export function ChartsView({
             <button
               onClick={() => setViewMode("single")}
               className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                viewMode === "single" ? "bg-panel text-gold" : "text-ink-faint hover:text-ink-dim"
+                viewMode === "single" ? "bg-panel text-gold-ink" : "text-ink-faint hover:text-ink-dim"
               }`}
             >
               Single
@@ -68,7 +68,7 @@ export function ChartsView({
             <button
               onClick={() => setViewMode("multi")}
               className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                viewMode === "multi" ? "bg-panel text-gold" : "text-ink-faint hover:text-ink-dim"
+                viewMode === "multi" ? "bg-panel text-gold-ink" : "text-ink-faint hover:text-ink-dim"
               }`}
             >
               Watchlist

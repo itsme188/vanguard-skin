@@ -144,7 +144,7 @@ export function MobileNavDrawer() {
                 onClick={close}
                 className={`flex items-center px-4 py-3 text-sm font-medium transition-colors ${
                   isActive
-                    ? "text-gold bg-gold/5 border-l-2 border-gold"
+                    ? "text-gold-ink bg-gold/5 border-l-2 border-gold"
                     : "text-ink-dim hover:text-ink hover:bg-raised/50 border-l-2 border-transparent"
                 }`}
               >

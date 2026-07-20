@@ -94,7 +94,7 @@ export function PerformanceMetrics({
             <Money value={totals.totalValue} />
             {dataQuality === "estimated" && (
               <span
-                className="text-sm text-gold font-normal ml-2"
+                className="text-sm text-gold-ink font-normal ml-2"
                 title="Some account data is estimated from stale prices or old statements"
               >
                 est.
@@ -140,7 +140,7 @@ export function PerformanceMetrics({
                   aria-pressed={!customMode && i === selectedPeriod}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors focus-ring ${
                     !customMode && i === selectedPeriod
-                      ? "bg-gold/20 text-gold"
+                      ? "bg-gold/20 text-gold-ink"
                       : "text-ink-faint hover:text-ink hover:bg-panel"
                   }`}
                 >
@@ -152,7 +152,7 @@ export function PerformanceMetrics({
                 aria-pressed={customMode}
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors focus-ring ${
                   customMode
-                    ? "bg-gold/20 text-gold"
+                    ? "bg-gold/20 text-gold-ink"
                     : "text-ink-faint hover:text-ink hover:bg-panel"
                 }`}
               >

@@ -103,7 +103,7 @@ export function EarningsHubAddForm({ weekOf: _weekOf }: Props) {
       <button
         type="submit"
         disabled={submitting}
-        className="bg-gold/20 text-gold border border-gold/40 hover:bg-gold/30 disabled:opacity-50 rounded px-2.5 py-1 font-medium"
+        className="bg-gold/20 text-gold-ink border border-gold/40 hover:bg-gold/30 disabled:opacity-50 rounded px-2.5 py-1 font-medium"
       >
         {submitting ? "…" : "Add"}
       </button>

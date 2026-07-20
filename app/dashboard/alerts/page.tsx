@@ -537,7 +537,7 @@ function EmptyState({ filter }: { filter: StreamFilter }) {
         <p className="text-[11px] text-ink-faint mt-2">
           Levels you add (or approve from Review) arm automatically and show here with their
           distance to trigger. Add levels on any{" "}
-          <Link href="/dashboard/accounts?id=all#holdings" className="text-gold underline">
+          <Link href="/dashboard/accounts?id=all#holdings" className="text-gold-ink underline">
             security detail page
           </Link>
           .
@@ -562,7 +562,7 @@ function EmptyState({ filter }: { filter: StreamFilter }) {
       <p className="text-sm text-ink-dim">No {label} alerts.</p>
       <p className="text-[11px] text-ink-faint mt-2">
         Alerts fire when a price crosses a level you&apos;ve set. Add levels on any{" "}
-        <Link href="/dashboard/accounts?id=all#holdings" className="text-gold underline">
+        <Link href="/dashboard/accounts?id=all#holdings" className="text-gold-ink underline">
           security detail page
         </Link>
         .
@@ -699,7 +699,7 @@ function SplitPendingStream({
     <div className="space-y-5">
       {today.length > 0 && (
         <section>
-          <h2 className="text-[11px] font-medium text-gold uppercase tracking-wider mb-2">
+          <h2 className="text-[11px] font-medium text-gold-ink uppercase tracking-wider mb-2">
             Today&apos;s activity{" "}
             <span className="text-ink-faint font-mono ml-1">{today.length}</span>
           </h2>
@@ -811,7 +811,7 @@ function AlertRow({
 
   const isPending = alert.user_response === "pending";
   const responseLabel: Record<AlertResponse, { label: string; color: string }> = {
-    pending: { label: "Pending", color: "text-gold" },
+    pending: { label: "Pending", color: "text-gold-ink" },
     acted: { label: "Acted", color: "text-emerald-400" },
     ignored: { label: "Ignored", color: "text-ink-faint" },
     dismissed: { label: "Dismissed", color: "text-ink-faint" },
@@ -823,7 +823,7 @@ function AlertRow({
         <div className="flex-1 min-w-0">
           <div className="flex items-baseline gap-2 flex-wrap">
             <span
-              className="inline-block px-1.5 py-0.5 rounded text-[9px] bg-gold/15 text-gold uppercase tracking-wider"
+              className="inline-block px-1.5 py-0.5 rounded text-[9px] bg-gold/15 text-gold-ink uppercase tracking-wider"
               title="Fired alert — a level you set was crossed"
             >
               Alert
@@ -890,7 +890,7 @@ function AlertRow({
           )}
 
           {alert.suggested_action && (
-            <div className="mt-2 px-3 py-1.5 rounded border border-gold/20 bg-gold/5 text-[11px] text-gold">
+            <div className="mt-2 px-3 py-1.5 rounded border border-gold/20 bg-gold/5 text-[11px] text-gold-ink">
               {alert.suggested_action}
             </div>
           )}

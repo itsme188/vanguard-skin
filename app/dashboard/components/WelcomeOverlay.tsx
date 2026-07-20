@@ -56,7 +56,7 @@ export function WelcomeOverlay() {
             action={
               <button
                 onClick={() => window.dispatchEvent(new Event("open-settings"))}
-                className="px-3 py-1 text-xs font-medium rounded-lg bg-gold/20 text-gold hover:bg-gold/30 transition-colors"
+                className="px-3 py-1 text-xs font-medium rounded-lg bg-gold/20 text-gold-ink hover:bg-gold/30 transition-colors"
               >
                 Open Settings
               </button>
@@ -115,7 +115,7 @@ function SetupStep({
 }) {
   return (
     <div className="flex gap-3">
-      <div className="flex-shrink-0 w-6 h-6 rounded-full bg-gold/15 text-gold text-xs font-medium flex items-center justify-center mt-0.5">
+      <div className="flex-shrink-0 w-6 h-6 rounded-full bg-gold/15 text-gold-ink text-xs font-medium flex items-center justify-center mt-0.5">
         {number}
       </div>
       <div className="flex-1 space-y-1.5">

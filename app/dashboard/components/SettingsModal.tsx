@@ -280,7 +280,7 @@ export function SettingsModal() {
                               onChange={(e) => handleFieldChange(field.key, String(e.target.checked))}
                               className="accent-gold w-3.5 h-3.5"
                             />
-                            <span className={`text-[11px] ${isFieldDirty ? "text-gold" : "text-ink-dim"}`}>
+                            <span className={`text-[11px] ${isFieldDirty ? "text-gold-ink" : "text-ink-dim"}`}>
                               {field.label}
                             </span>
                           </label>
@@ -398,7 +398,7 @@ export function SettingsModal() {
                   <button
                     onClick={handleSave}
                     disabled={!hasDirtyFields}
-                    className="px-4 py-1.5 text-xs font-medium rounded-lg bg-gold/20 text-gold hover:bg-gold/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                    className="px-4 py-1.5 text-xs font-medium rounded-lg bg-gold/20 text-gold-ink hover:bg-gold/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                   >
                     Save Settings
                   </button>
@@ -414,7 +414,7 @@ export function SettingsModal() {
                     API key changes require a restart to take effect.{" "}
                     <button
                       onClick={handleRestart}
-                      className="text-gold hover:text-gold/80 underline"
+                      className="text-gold-ink hover:text-gold/80 underline"
                     >
                       Restart now
                     </button>

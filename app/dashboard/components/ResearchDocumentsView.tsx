@@ -164,7 +164,7 @@ function UploadZone({ onUploadComplete }: UploadZoneProps) {
             searchable from chat via <code className="font-mono">query_research_documents</code>.
           </div>
           {uploading && currentFilename && (
-            <div className="text-xs text-gold mt-2 flex items-center gap-2">
+            <div className="text-xs text-gold-ink mt-2 flex items-center gap-2">
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-gold animate-pulse" />
               <span className="flex-1 truncate">
                 {phaseFor(elapsed, currentFilename)}
@@ -504,7 +504,7 @@ function DocumentRow({
               {doc.publication_date && <span>· {doc.publication_date}</span>}
             </div>
             {doc.processing_state === "pending_body" && (
-              <div className="flex items-center gap-1.5 mt-1.5 text-[11px] font-medium text-gold">
+              <div className="flex items-center gap-1.5 mt-1.5 text-[11px] font-medium text-gold-ink">
                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-gold animate-pulse" />
                 Extracting full text…
               </div>
@@ -532,7 +532,7 @@ function DocumentRow({
                 {rowTags.slice(0, 5).map((t) => (
                   <span
                     key={`tag-${t}`}
-                    className="px-1.5 py-0.5 rounded-full bg-gold/15 text-gold text-[11px] font-medium"
+                    className="px-1.5 py-0.5 rounded-full bg-gold/15 text-gold-ink text-[11px] font-medium"
                   >
                     {t}
                   </span>
@@ -615,7 +615,7 @@ function DocumentRow({
               )}
               {detail.processing_state === "pending_body" ? (
                 <div className="pt-2 border-t border-edge">
-                  <div className="flex items-center gap-2 text-[11px] text-gold">
+                  <div className="flex items-center gap-2 text-[11px] text-gold-ink">
                     <span className="inline-block w-1.5 h-1.5 rounded-full bg-gold animate-pulse" />
                     <span>
                       Full text still extracting in the background. This

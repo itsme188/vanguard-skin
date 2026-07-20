@@ -315,7 +315,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
       <div className="border-t border-edge pt-4">
         <button
           onClick={() => setShowBuilder(!showBuilder)}
-          className="text-xs text-gold hover:brightness-125 transition-colors"
+          className="text-xs text-gold-ink hover:brightness-125 transition-colors"
         >
           {showBuilder ? "Hide" : "Build"} Custom Scenario{" "}
           <span aria-hidden style={{ letterSpacing: "0.1em" }}>•••</span>
@@ -370,7 +370,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
                       { sector: SECTORS[0], move: -10 },
                     ])
                   }
-                  className="text-[10px] text-gold hover:brightness-125"
+                  className="text-[10px] text-gold-ink hover:brightness-125"
                 >
                   + Add Sector
                 </button>

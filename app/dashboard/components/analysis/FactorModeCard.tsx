@@ -75,7 +75,7 @@ export function FactorModeCard({ factorHeatmap, factorCoverage, scope }: Props) 
           <button
             onClick={runFactorAutoClassify}
             disabled={factorClassifyLoading}
-            className="px-3 py-1 text-xs bg-gold/10 text-gold border border-gold/30 rounded hover:bg-gold/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-ring"
+            className="px-3 py-1 text-xs bg-gold/10 text-gold-ink border border-gold/30 rounded hover:bg-gold/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-ring"
           >
             {factorClassifyLoading ? "Classifying..." : "Auto-Classify Factors"}
           </button>

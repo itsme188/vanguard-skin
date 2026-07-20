@@ -59,7 +59,7 @@ const components: Components = {
     }
     return (
       <code
-        className="font-mono text-[0.85em] bg-raised border border-edge rounded px-1 py-0.5 text-gold"
+        className="font-mono text-[0.85em] bg-raised border border-edge rounded px-1 py-0.5 text-gold-ink"
         {...props}
       >
         {children}
@@ -101,7 +101,7 @@ const components: Components = {
   a({ node, ...props }) {
     return (
       <a
-        className="text-gold underline underline-offset-2 hover:brightness-125"
+        className="text-gold-ink underline underline-offset-2 hover:brightness-125"
         target="_blank"
         rel="noopener noreferrer"
         {...props}

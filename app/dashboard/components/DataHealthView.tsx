@@ -36,7 +36,7 @@ function StaleBadge({ days }: { days: number | null }) {
     );
   if (days <= 14)
     return (
-      <span className="text-xs px-2 py-0.5 rounded-full bg-gold/15 text-gold font-medium">
+      <span className="text-xs px-2 py-0.5 rounded-full bg-gold/15 text-gold-ink font-medium">
         {days}d
       </span>
     );
@@ -300,7 +300,7 @@ export function DataHealthView() {
             )}
             {gaps.securitiesNoTransactions.length > 0 && (
               <details>
-                <summary className="text-sm text-gold cursor-pointer hover:text-gold/80">
+                <summary className="text-sm text-gold-ink cursor-pointer hover:text-gold/80">
                   {gaps.securitiesNoTransactions.length} securities with no transactions
                 </summary>
                 <div className="mt-2 flex flex-wrap gap-2">
@@ -382,7 +382,7 @@ export function DataHealthView() {
                       <Money value={d.priceB} precise />
                     </td>
                     <td className="px-5 py-2 text-right">
-                      <span className={`font-mono tabular-nums ${d.diffPct > 5 ? "text-down" : "text-gold"}`}>
+                      <span className={`font-mono tabular-nums ${d.diffPct > 5 ? "text-down" : "text-gold-ink"}`}>
                         {d.diffPct.toFixed(1)}%
                       </span>
                     </td>

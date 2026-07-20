@@ -232,7 +232,7 @@ export function ReconciliationTable({
                             isMatch
                               ? "bg-up/20 text-up"
                               : isClose
-                                ? "bg-gold/20 text-gold"
+                                ? "bg-gold/20 text-gold-ink"
                                 : "bg-down/20 text-down"
                           }`}
                         >

@@ -167,7 +167,7 @@ export function EarningsEmailsSection() {
                 type="button"
                 onClick={addMute}
                 disabled={saving || !draft.trim()}
-                className="px-2.5 py-1 text-xs bg-gold/20 text-gold hover:bg-gold/30 disabled:opacity-30 rounded"
+                className="px-2.5 py-1 text-xs bg-gold/20 text-gold-ink hover:bg-gold/30 disabled:opacity-30 rounded"
               >
                 Mute
               </button>

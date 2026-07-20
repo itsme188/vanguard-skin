@@ -19,7 +19,7 @@ function TabDropdownFallback({ tab, isActive }: { tab: Tab; isActive: boolean })
       aria-selected={isActive}
       tabIndex={isActive ? 0 : -1}
       className={`relative px-4 py-2.5 text-sm font-medium whitespace-nowrap transition-colors ${
-        isActive ? "text-gold" : "text-ink-faint hover:text-ink-dim"
+        isActive ? "text-gold-ink" : "text-ink-faint hover:text-ink-dim"
       }`}
     >
       {tab.name}
@@ -97,7 +97,7 @@ export function TabNav() {
             tabIndex={isActive ? 0 : -1}
             className={`relative px-4 py-2.5 text-sm font-medium whitespace-nowrap transition-colors ${
               isActive
-                ? "text-gold"
+                ? "text-gold-ink"
                 : "text-ink-faint hover:text-ink-dim"
             }`}
           >

@@ -130,7 +130,7 @@ export function TabDropdown({ tab, isActive }: Props) {
           tabIndex={isActive ? 0 : -1}
           onKeyDown={onTabKeyDown}
           className={`relative pl-4 pr-1.5 py-2.5 text-sm font-medium whitespace-nowrap transition-colors ${
-            isActive ? "text-gold" : "text-ink-faint hover:text-ink-dim"
+            isActive ? "text-gold-ink" : "text-ink-faint hover:text-ink-dim"
           }`}
         >
           {tab.name}
@@ -180,7 +180,7 @@ export function TabDropdown({ tab, isActive }: Props) {
                 }}
                 tabIndex={-1}
                 className={`flex items-center justify-between px-3 py-1.5 pointer-coarse:py-2.5 text-sm transition-colors ${
-                  active ? "text-gold" : "text-ink-dim hover:text-ink hover:bg-raised"
+                  active ? "text-gold-ink" : "text-ink-dim hover:text-ink hover:bg-raised"
                 } focus:bg-raised focus:outline-none`}
               >
                 <span>{sv.name}</span>

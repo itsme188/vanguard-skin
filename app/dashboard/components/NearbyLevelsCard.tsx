@@ -74,7 +74,7 @@ export function NearbyLevelsCard({ levels }: { levels: LevelNearPrice[] }) {
 // own thesis determines whether "above" is good or bad.
 function distanceColor(pct: number): string {
   const abs = Math.abs(pct);
-  if (abs < 0.01) return "text-gold"; // <1% away — imminent
+  if (abs < 0.01) return "text-gold-ink"; // <1% away — imminent
   if (abs < 0.025) return "text-ink"; // <2.5% away — close
   return "text-ink-faint"; // >2.5% — further out
 }

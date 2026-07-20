@@ -143,7 +143,7 @@ export function EarningsEmailViewer({
               </p>
             )}
             {data && data.sentBy === "cloud" && (
-              <p className="text-[11px] text-gold font-mono mt-0.5 truncate">
+              <p className="text-[11px] text-gold-ink font-mono mt-0.5 truncate">
                 Delivered by cloud fallback — no local copy of the prose (scoreboard below is
                 still live-rebuilt)
               </p>

@@ -219,7 +219,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
       <div className="relative w-full max-w-xl mx-auto my-8 electron:mt-12 max-h-[85dvh] overflow-y-auto rounded-xl border border-edge bg-panel shadow-2xl">
         <div className="sticky top-0 z-10 flex items-baseline justify-between px-5 py-3.5 border-b border-edge bg-panel/95 backdrop-blur-sm rounded-t-xl">
           <h2 className="text-sm font-medium text-ink">
-            Bogeys for <span className="font-mono text-gold">{symbol}</span>
+            Bogeys for <span className="font-mono text-gold-ink">{symbol}</span>
           </h2>
           <button
             onClick={onClose}
@@ -416,7 +416,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
               <button
                 type="submit"
                 disabled={saving}
-                className="relative text-[14px] font-medium bg-gold/20 text-gold border border-gold/40 hover:bg-gold/30 disabled:opacity-50 rounded px-3 py-1 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
+                className="relative text-[14px] font-medium bg-gold/20 text-gold-ink border border-gold/40 hover:bg-gold/30 disabled:opacity-50 rounded px-3 py-1 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
               >
                 {saving ? "Saving…" : "Save"}
               </button>

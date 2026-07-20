@@ -231,7 +231,7 @@ function ConversationHistory({
         <div className="absolute top-full left-0 mt-1 w-64 bg-panel border border-edge rounded-lg shadow-xl z-50 py-1 max-h-72 overflow-y-auto">
           <button
             onClick={() => { onNew(); setOpen(false); }}
-            className="w-full text-left px-3 py-2 text-xs text-gold hover:bg-raised transition-colors flex items-center gap-2"
+            className="w-full text-left px-3 py-2 text-xs text-gold-ink hover:bg-raised transition-colors flex items-center gap-2"
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
               <line x1="12" y1="5" x2="12" y2="19" />
@@ -548,7 +548,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
                     aria-pressed={scope === opt.value}
                     className={`px-4 py-1.5 rounded-full text-xs border transition-[color,border-color] focus-ring ${
                       scope === opt.value
-                        ? "border-gold text-gold"
+                        ? "border-gold text-gold-ink"
                         : "border-edge text-ink-dim hover:text-ink hover:border-edge-strong"
                     }`}
                     style={

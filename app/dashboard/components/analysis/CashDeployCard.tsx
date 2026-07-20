@@ -63,7 +63,7 @@ export function CashDeployCard({ scope }: Props) {
         <button
           onClick={run}
           disabled={loading}
-          className="relative px-3 py-1.5 text-xs bg-gold/15 text-gold border border-gold/40 rounded hover:bg-gold/25 transition-colors disabled:opacity-50 focus-ring pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-1"
+          className="relative px-3 py-1.5 text-xs bg-gold/15 text-gold-ink border border-gold/40 rounded hover:bg-gold/25 transition-colors disabled:opacity-50 focus-ring pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-1"
         >
           {loading ? "Computing..." : "Suggest"}
         </button>
@@ -76,7 +76,7 @@ export function CashDeployCard({ scope }: Props) {
           <p className="text-xs text-ink-faint">
             Benchmark: <span className="font-mono text-ink">{result.benchmarkSymbol}</span>
             {result.mode === "heuristic" && (
-              <span className="ml-2 text-gold">heuristic mode (composition unavailable)</span>
+              <span className="ml-2 text-gold-ink">heuristic mode (composition unavailable)</span>
             )}
           </p>
 
@@ -104,7 +104,7 @@ export function CashDeployCard({ scope }: Props) {
                       <td className="text-right py-1 font-mono text-ink-dim">
                         {(g.targetWeight * 100).toFixed(1)}%
                       </td>
-                      <td className={`text-right py-1 font-mono ${g.gapPp < 0 ? "text-gold" : "text-ink-dim"}`}>
+                      <td className={`text-right py-1 font-mono ${g.gapPp < 0 ? "text-gold-ink" : "text-ink-dim"}`}>
                         {g.gapPp >= 0 ? "+" : ""}{g.gapPp.toFixed(1)}pp
                       </td>
                     </tr>
@@ -124,7 +124,7 @@ export function CashDeployCard({ scope }: Props) {
                   <div key={p.symbol} className="bg-canvas border border-edge/60 rounded-lg p-3">
                     <div className="flex items-center justify-between mb-1">
                       <div className="flex items-center gap-3">
-                        <span className="font-mono font-medium text-gold">{p.symbol}</span>
+                        <span className="font-mono font-medium text-gold-ink">{p.symbol}</span>
                         <span className="text-[11px] text-ink-faint">{p.sectorTarget}</span>
                       </div>
                       <span className="font-mono text-ink"><Money value={p.allocationDollars} /></span>

@@ -9,9 +9,9 @@ const EVENT_TYPE_CONFIG: Record<
   string,
   { icon: string; color: string; bgColor: string }
 > = {
-  earnings: { icon: "📊", color: "text-gold", bgColor: "bg-gold/20" },
-  analyst_meeting: { icon: "🎤", color: "text-gold", bgColor: "bg-gold/20" },
-  conference: { icon: "🏛", color: "text-gold", bgColor: "bg-gold/20" },
+  earnings: { icon: "📊", color: "text-gold-ink", bgColor: "bg-gold/20" },
+  analyst_meeting: { icon: "🎤", color: "text-gold-ink", bgColor: "bg-gold/20" },
+  conference: { icon: "🏛", color: "text-gold-ink", bgColor: "bg-gold/20" },
   split: { icon: "✂️", color: "text-blue", bgColor: "bg-blue/20" },
   fomc: { icon: "🏦", color: "text-down", bgColor: "bg-down/20" },
   cpi: { icon: "📈", color: "text-down", bgColor: "bg-down/20" },
@@ -64,7 +64,7 @@ export function EventCard({ event, compact = false }: EventCardProps) {
               {formatShortDate(event.event_date)}
             </span>
             {event.symbol && (
-              <span className="text-xs font-mono font-medium text-gold">
+              <span className="text-xs font-mono font-medium text-gold-ink">
                 {event.symbol}
               </span>
             )}
@@ -93,7 +93,7 @@ export function EventCard({ event, compact = false }: EventCardProps) {
               {formatTime(event)}
             </span>
             {event.symbol && (
-              <span className="text-xs font-mono font-semibold text-gold">
+              <span className="text-xs font-mono font-semibold text-gold-ink">
                 {event.symbol}
               </span>
             )}

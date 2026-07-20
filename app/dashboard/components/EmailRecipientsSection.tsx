@@ -224,7 +224,7 @@ export function EmailRecipientsSection() {
               <button
                 type="button"
                 onClick={saveAll}
-                className="px-3 py-1 text-xs font-medium rounded-lg bg-gold/20 text-gold hover:bg-gold/30 transition-colors"
+                className="px-3 py-1 text-xs font-medium rounded-lg bg-gold/20 text-gold-ink hover:bg-gold/30 transition-colors"
               >
                 Save Recipients
               </button>

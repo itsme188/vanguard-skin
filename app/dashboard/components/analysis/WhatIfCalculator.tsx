@@ -127,7 +127,7 @@ export function WhatIfCalculator({ scope }: Props) {
         <button
           onClick={run}
           disabled={loading}
-          className="relative px-3 py-1.5 text-xs bg-gold/15 text-gold border border-gold/40 rounded hover:bg-gold/25 transition-colors disabled:opacity-50 focus-ring pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-1"
+          className="relative px-3 py-1.5 text-xs bg-gold/15 text-gold-ink border border-gold/40 rounded hover:bg-gold/25 transition-colors disabled:opacity-50 focus-ring pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-1"
         >
           {loading ? "Computing..." : "Compute Δ"}
         </button>
@@ -143,7 +143,7 @@ export function WhatIfCalculator({ scope }: Props) {
               {delta.flags.map((flag) => (
                 <p
                   key={flag.metric + flag.message}
-                  className={`text-xs ${flag.severity === "error" ? "text-down" : "text-gold"}`}
+                  className={`text-xs ${flag.severity === "error" ? "text-down" : "text-gold-ink"}`}
                 >
                   ⚠ {flag.message}
                 </p>

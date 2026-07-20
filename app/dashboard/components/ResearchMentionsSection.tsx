@@ -140,7 +140,7 @@ function MentionRow({ mention }: { mention: ResearchMention }) {
       >
         <div className="flex items-center gap-2 mb-1 flex-wrap">
           <span
-            className="font-mono uppercase font-semibold text-gold"
+            className="font-mono uppercase font-semibold text-gold-ink"
             style={{ fontSize: "11px", letterSpacing: "0.05em" }}
           >
             {mention.source_name}

@@ -119,7 +119,7 @@ export function CallNoteModal({ eventId, symbol, open, onClose, onSaved }: Props
                 }
                 className={`rounded-full px-2.5 py-1 text-[12px] font-medium transition-colors ${
                   guidance === opt.value
-                    ? "bg-gold/20 text-gold"
+                    ? "bg-gold/20 text-gold-ink"
                     : "bg-raised text-ink-dim hover:text-ink"
                 }`}
               >

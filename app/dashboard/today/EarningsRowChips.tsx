@@ -135,7 +135,7 @@ export function EarningsRowChips({
           type="button"
           onClick={generateRecap}
           disabled={generating}
-          className="relative text-[10px] font-mono px-1.5 py-0.5 rounded text-gold bg-gold/15 hover:bg-gold/25 disabled:opacity-50 cursor-pointer pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
+          className="relative text-[10px] font-mono px-1.5 py-0.5 rounded text-gold-ink bg-gold/15 hover:bg-gold/25 disabled:opacity-50 cursor-pointer pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
           title="Compose a fresh recap now (runs enrichment + AI; ~30-60s)"
         >
           {generating ? "…" : "gen"}

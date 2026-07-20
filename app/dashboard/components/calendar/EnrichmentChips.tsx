@@ -55,7 +55,7 @@ export function EnrichmentRowSummary({
       {formatted && (
         <>
           <span className="text-ink-faint">actual</span>
-          <span className="text-gold font-semibold">{formatted}</span>
+          <span className="text-gold-ink font-semibold">{formatted}</span>
         </>
       )}
       {snapshot && (
@@ -110,7 +110,7 @@ export function EnrichmentDetail({
           </span>
         )}
       </div>
-      <div className="text-sm font-mono font-semibold text-gold mt-0.5">
+      <div className="text-sm font-mono font-semibold text-gold-ink mt-0.5">
         {actual ? formatFinnhubFigureCompact(actual) : "—"}
       </div>
 

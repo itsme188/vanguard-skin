@@ -198,7 +198,7 @@ export function AnalysisView({
     <div className="space-y-6">
       {/* Data coverage warning */}
       {dataCoverage.coveragePct < 90 && (
-        <div role="alert" className="bg-gold/5 border border-gold/20 rounded-lg px-4 py-3 text-sm text-gold">
+        <div role="alert" className="bg-gold/5 border border-gold/20 rounded-lg px-4 py-3 text-sm text-gold-ink">
           Analysis covers <PrivateText>{formatMoney(dataCoverage.holdingsTotal)}</PrivateText> of{" "}
           <PrivateText>{formatMoney(dataCoverage.snapshotTotal)}</PrivateText> (<PrivateText>{dataCoverage.coveragePct}%</PrivateText> of portfolio).
           {dataCoverage.missingAccounts.length > 0 && (
@@ -250,7 +250,7 @@ export function AnalysisView({
                 aria-pressed={opt.value === currentScope}
                 className={`px-3 py-1.5 text-sm rounded-lg font-medium transition-colors whitespace-nowrap focus-ring ${
                   opt.value === currentScope
-                    ? "bg-gold/15 text-gold"
+                    ? "bg-gold/15 text-gold-ink"
                     : "text-ink-faint hover:text-ink hover:bg-panel"
                 }`}
               >
@@ -269,7 +269,7 @@ export function AnalysisView({
               aria-pressed={dim === currentDimension}
               className={`px-3 py-1.5 text-sm rounded-full border transition-colors focus-ring ${
                 dim === currentDimension
-                  ? "bg-gold/10 border-gold text-gold"
+                  ? "bg-gold/10 border-gold text-gold-ink"
                   : "bg-panel border-edge text-ink-dim hover:text-ink hover:border-edge-strong"
               }`}
             >

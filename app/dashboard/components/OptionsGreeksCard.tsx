@@ -123,7 +123,7 @@ export function OptionsGreeksCard({ scope }: { scope?: string }) {
                         not a misleading literal $0.00. */}
                     {p.underlyingPrice > 0 ? `$${p.underlyingPrice.toFixed(2)}` : "—"}
                   </td>
-                  <td className={`text-right py-2 px-2 font-mono ${dte <= 7 ? "text-down" : dte <= 30 ? "text-gold" : "text-ink-dim"}`}>
+                  <td className={`text-right py-2 px-2 font-mono ${dte <= 7 ? "text-down" : dte <= 30 ? "text-gold-ink" : "text-ink-dim"}`}>
                     {dte}d
                   </td>
                   <td className="hidden md:table-cell text-right py-2 px-2 font-mono text-ink-dim">

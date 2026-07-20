@@ -230,7 +230,7 @@ function DimensionBar({ label, dim }: { label: string; dim: DimensionScore }) {
     score >= 50 ? "bg-gold" :
     score >= 20 ? "bg-orange-400" :
     "bg-down";
-  const guidanceColor = score >= 80 ? "text-ink-faint" : "text-gold";
+  const guidanceColor = score >= 80 ? "text-ink-faint" : "text-gold-ink";
 
   return (
     <div className="space-y-0.5">

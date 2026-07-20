@@ -522,7 +522,7 @@ export function CombinedPortfolioChart({
               onClick={() => setChartMode("$")}
               className={`px-2 py-0.5 text-xs transition-colors ${
                 chartMode === "$"
-                  ? "bg-gold/15 text-gold"
+                  ? "bg-gold/15 text-gold-ink"
                   : "text-ink-faint hover:text-ink-dim"
               }`}
             >
@@ -532,7 +532,7 @@ export function CombinedPortfolioChart({
               onClick={() => setChartMode("%")}
               className={`px-2 py-0.5 text-xs transition-colors ${
                 chartMode === "%"
-                  ? "bg-gold/15 text-gold"
+                  ? "bg-gold/15 text-gold-ink"
                   : "text-ink-faint hover:text-ink-dim"
               }`}
             >
@@ -591,7 +591,7 @@ export function CombinedPortfolioChart({
               onClick={() => setSelectedRange(range.label)}
               className={`px-2 py-0.5 text-xs rounded transition-colors ${
                 selectedRange === range.label
-                  ? "bg-gold/15 text-gold border border-gold/30"
+                  ? "bg-gold/15 text-gold-ink border border-gold/30"
                   : "text-ink-faint hover:text-ink-dim hover:bg-raised"
               }`}
             >

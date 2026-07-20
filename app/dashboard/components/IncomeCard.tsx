@@ -133,7 +133,7 @@ export function IncomeCard() {
       <div className="flex gap-6 text-xs">
         <div>
           <span className="text-ink-faint">Dividends</span>
-          <div className="font-mono font-medium text-gold mt-0.5">
+          <div className="font-mono font-medium text-gold-ink mt-0.5">
             <Money value={currentYear.dividends} />
           </div>
         </div>
