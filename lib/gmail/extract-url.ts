@@ -127,6 +127,13 @@ function cleanUrl(url: string): string {
   url = url.replace(/&amp;/g, "&");
   // Strip fromEmail tracking param (VK adds ?fromEmail=1)
   url = url.replace(/[?&]fromEmail=\d+/, "");
+  // Strip subscriber credentials: Stratechery-style ?access_token=<JWT>
+  // grants feed/article read access to the user's subscription — it must
+  // never be stored in source_url (digest emails cc other recipients; the
+  // 7/20 digest mailed one out). Deliberately NOT stripping generic `token`
+  // params: view-in-browser tokens are functional (the page 404s/paywalls
+  // without them) and are scoped to rendering that single email.
+  url = url.replace(/([?&])access_token=[^&\s]*&?/g, "$1").replace(/[?&]$/, "");
   // Remove trailing ? if params were stripped
   url = url.replace(/\?$/, "");
   return url;
