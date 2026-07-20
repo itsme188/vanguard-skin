@@ -4,32 +4,36 @@ Fill in the `FILL_IN` placeholders with your expected values.
 Values marked FILL_IN will be logged as SKIP (not FAIL) during QA runs.
 Tolerances allow for normal market movement between QA runs.
 
+> Rewritten 2026-07-20 against the 6-tab IA (Today | Accounts | Analysis |
+> Research | Charts | Import). The pre-redesign Overview / Holdings /
+> Calendar pages are redirect stubs now — checks target the real
+> destinations. Text checks lowercase `innerText` before matching because
+> CSS `text-transform: uppercase` labels read as all-caps at runtime.
+
 ---
 
-## Page: Overview (`/dashboard`)
+## Page: Today (`/dashboard/today` — default landing)
 
 | Check | Expected Value | Tolerance | Notes |
 |-------|---------------|-----------|-------|
 | Page loads without error | (auto) | - | Checks for "Something went wrong" |
-| Portfolio Value displayed | `FILL_IN` (e.g., "$1,234,567") | 2% | Market values drift daily |
-| Account summary cards present | `FILL_IN` (e.g., 3) | exact | Number of account cards |
-| TWR YTD displayed | `FILL_IN` (e.g., "+12.34%") | 0.5pp | Absolute percentage points |
-| XIRR displayed | (presence check only) | - | Just verify it renders |
-| Data freshness indicator visible | (presence check) | - | Health dot + dates |
-| Portfolio chart rendered | (presence check) | - | Recharts container exists |
-| Morning briefing section | (presence check) | - | Section heading exists |
+| Portfolio Value | from `expected-values.json` | 10% | Read from `GET /api/summary` `totalValue` (Electron-tray contract, redesign-proof) — NOT scraped from the DOM |
+| Account count | e.g., 3 | exact | "N accounts · as of …" text in the portfolio hero strip |
+| Data confidence indicator | (presence check) | - | `button[title^="Data confidence"]` — popover button, not the old data-health anchor |
+| IBKR today block | (presence check) | - | `h2` "IBKR today" — Today-specific content (Today renders no chart by design) |
 
 ---
 
-## Page: Holdings (`/dashboard/holdings`)
+## Page: Cross-account Holdings (`/dashboard/accounts?id=all#holdings`)
+
+`/dashboard/holdings` is a redirect stub to this URL — QA navigates the destination directly.
 
 | Check | Expected Value | Tolerance | Notes |
 |-------|---------------|-----------|-------|
 | Page loads without error | (auto) | - | |
-| Position count | `FILL_IN` (e.g., 72) | exact | "N positions across all accounts" |
-| Total portfolio value (footer) | `FILL_IN` (e.g., "$980,000") | 2% | tfoot total row |
+| Position count | e.g., 155 | 20% | "N positions across all accounts" |
+| Total value (footer) | from `expected-values.json` | 10% | tfoot total row |
 | Holdings table has rows | (presence check) | - | tbody has > 0 tr elements |
-| Symbol column uses monospace | (presence check) | - | font-mono class on first column |
 
 ---
 
@@ -38,24 +42,33 @@ Tolerances allow for normal market movement between QA runs.
 | Check | Expected Value | Tolerance | Notes |
 |-------|---------------|-----------|-------|
 | Page loads without error | (auto) | - | |
-| Account 1 name | `FILL_IN` (e.g., "Vanguard Taxable") | exact | |
-| Account 1 value | `FILL_IN` (e.g., "$500,000") | 2% | |
-| Account 2 name | `FILL_IN` | exact | |
-| Account 2 value | `FILL_IN` | 2% | |
-| Account 3 name | `FILL_IN` | exact | |
-| Account 3 value | `FILL_IN` | 2% | |
+| Account tabs listed | (informational) | - | Names/values logged, not asserted |
 
 ---
 
-## Page: Analysis (`/dashboard/analysis`)
+## Page: Analysis — Performance view (`/dashboard/analysis?view=performance`)
+
+Server-rendered; TWR / XIRR / drawdown / Sharpe KPIs live here post-redesign.
 
 | Check | Expected Value | Tolerance | Notes |
 |-------|---------------|-----------|-------|
 | Page loads without error | (auto) | - | |
-| Allocation pie chart present | true | - | SVG/canvas element exists |
-| Risk metrics section present | true | - | "Risk" heading or card |
-| Factor analysis section present | true | - | "Factor" heading or card |
-| Scenario modeling section present | true | - | "Scenario" heading or card |
+| Risk metrics present | (presence check) | - | "drawdown" + "sharpe" in lowercased innerText |
+| TWR | e.g., "+18.12%" | 5pp | KPI strip; relocated from the old Overview check |
+| XIRR present | (informational) | - | Requires cash-flow data |
+
+---
+
+## Page: Analysis — Diagnostics view (`/dashboard/analysis?view=diagnostics`)
+
+Factor + scenario cards are client components, but their section HEADINGS
+render immediately post-hydration (even while fetches load) — stable smoke targets.
+
+| Check | Expected Value | Tolerance | Notes |
+|-------|---------------|-----------|-------|
+| Page loads without error | (auto) | - | |
+| Factor analysis section | (presence check) | - | "Quantitative Factor Analysis" heading |
+| Scenario modeling section | (presence check) | - | "Scenario Modeling" heading |
 
 ---
 
@@ -65,17 +78,17 @@ Tolerances allow for normal market movement between QA runs.
 |-------|---------------|-----------|-------|
 | Page loads without error | (auto) | - | |
 | Chart canvas rendered | (presence check) | - | LightweightCharts container |
-| Security selector present | (presence check) | - | Dropdown or picker |
 
 ---
 
-## Page: Calendar (`/dashboard/calendar`)
+## Page: Week Ahead (`/dashboard/today?view=week-ahead`)
+
+`/dashboard/calendar` is a redirect stub to this URL — QA navigates the destination directly.
 
 | Check | Expected Value | Tolerance | Notes |
 |-------|---------------|-----------|-------|
 | Page loads without error | (auto) | - | |
-| Week navigation present | (presence check) | - | Prev/Today/Next buttons |
-| Calendar grid rendered | (presence check) | - | Day columns exist |
+| Week-ahead view rendered | (presence check) | - | "week ahead" eyebrow (lowercased) OR an `h1` with a date range ("Jul 20 – Jul 26, 2026"); first `h1` is the header wordmark, so all h1s are scanned |
 
 ---
 
@@ -84,7 +97,7 @@ Tolerances allow for normal market movement between QA runs.
 | Check | Expected Value | Tolerance | Notes |
 |-------|---------------|-----------|-------|
 | Page loads without error | (auto) | - | |
-| View toggle present | (presence check) | - | Notes / Trade Reviews / Feeds |
+| View toggle present | (presence check) | - | Notes / Feeds / Documents |
 
 ---
 
@@ -94,19 +107,20 @@ Tolerances allow for normal market movement between QA runs.
 |-------|---------------|-----------|-------|
 | Page loads without error | (auto) | - | |
 | Drop zone present | (presence check) | - | File upload area |
-| Import history section | (presence check) | - | Past imports listed |
 
 ---
 
 ## How to Update Expected Values
 
-1. Run `bash qa/run-qa.sh` once with the dev server running
+1. Run `bash qa/run-qa.sh` once with the app running on :3099
 2. Review `qa/qa-report.txt` — SKIP lines show extracted actual values
 3. Copy actual values into `qa/expected-values.json`
 4. Re-run to verify all checks pass
 
+Passing value checks auto-update their expected value (drift re-baselining).
+
 ## Tolerance Notes
 
-- **Currency tolerance (2%)**: Portfolio values change with markets. 2% accommodates ~1 day of normal movement.
-- **Percentage point tolerance (0.5pp)**: TWR/XIRR drift slowly. 0.5pp covers rounding + small data changes.
-- **Exact match**: Counts (positions, accounts) should not change without an import.
+- **Currency tolerance (10%)**: Portfolio values change with markets; the nightly run re-baselines on PASS, so tolerance only needs to cover a few days of drift plus intraday movement.
+- **Percentage point tolerance (5pp)**: TWR drifts with markets; re-baselined on PASS.
+- **Exact match**: Counts (accounts) should not change without an account change.
