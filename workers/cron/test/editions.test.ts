@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import * as worker from "../src/editions";
 import * as mac from "../../../lib/digest/editions";
 
@@ -25,5 +27,13 @@ describe("editions parity (Worker mirror of lib/digest/editions.ts)", () => {
       expect(worker.classifyEdition(src, subj)).toEqual(mac.classifyEdition(src, subj));
       expect(worker.editionLabel(src, subj)).toBe(mac.editionLabel(src, subj));
     }
+  });
+
+  it("LISTING_BREADTH_MIN parity (thin-coverage Worker mirror)", () => {
+    const mac = readFileSync(resolve(__dirname, "../../../lib/digest/thin-coverage.ts"), "utf8");
+    const worker = readFileSync(resolve(__dirname, "../src/fallback-evening.ts"), "utf8");
+    const grab = (s: string) => s.match(/LISTING_BREADTH_MIN = (\d+)/)?.[1];
+    expect(grab(mac)).toBe("8");
+    expect(grab(worker)).toBe(grab(mac));
   });
 });

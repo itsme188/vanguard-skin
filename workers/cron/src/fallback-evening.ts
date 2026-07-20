@@ -335,6 +335,45 @@ function bucketByCompany(
   return buckets;
 }
 
+// ── Thin-coverage mirror ─────────────────────────────────────────────────────
+// Worker adaptation of lib/digest/thin-coverage.ts (2026-07-20): held buckets
+// whose every article is a >=8-symbol listing are waived out of synthesis into
+// one roster line. Different bucket shape (Record<symbol, RecentArticleMeta[]>)
+// — semantic mirror, not byte-parity. Keep LISTING_BREADTH_MIN in sync with
+// the Mac module (parity-pinned by test/editions.test.ts).
+const LISTING_BREADTH_MIN = 8;
+
+function isListingArticle(a: { mentioned_symbols: string | null }): boolean {
+  return parseJsonArray(a.mentioned_symbols).length >= LISTING_BREADTH_MIN;
+}
+
+export function partitionListingOnlyHeldBuckets(
+  buckets: Record<string, RecentArticleMeta[]>,
+  heldSymbols: string[],
+): { active: Record<string, RecentArticleMeta[]>; rosterSymbols: string[] } {
+  const heldSet = new Set(heldSymbols.map((s) => s.toUpperCase()));
+  const active: Record<string, RecentArticleMeta[]> = {};
+  const rosterSymbols: string[] = [];
+  for (const [symbol, articles] of Object.entries(buckets)) {
+    const isHeld =
+      symbol !== NO_SYMBOL_BUCKET &&
+      issuerSiblings(symbol).some((s) => heldSet.has(s.toUpperCase()));
+    const allListing = articles.length > 0 && articles.every(isListingArticle);
+    if (isHeld && allListing) rosterSymbols.push(symbol);
+    else active[symbol] = articles;
+  }
+  rosterSymbols.sort();
+  return { active, rosterSymbols };
+}
+
+function insertBeforeAlsoCoveredWorker(markdown: string, block: string): string {
+  const alsoMatch = markdown.match(/^## Also covered\s*$/m);
+  if (alsoMatch && alsoMatch.index !== undefined) {
+    return markdown.slice(0, alsoMatch.index) + block + "\n\n" + markdown.slice(alsoMatch.index);
+  }
+  return `${markdown.trimEnd()}\n\n${block}`;
+}
+
 // ── Held-ticker enforcement backstop ─────────────────────────────────────────
 // Worker adaptation of lib/digest/synthesize.ts::enforceHeldSections (2026-07-20):
 // the prompt REQUESTS a ## section per held name with coverage, but the model
@@ -402,13 +441,7 @@ export function enforceHeldSections(
   );
 
   const stubBlock = stubs.join("\n\n");
-  const alsoMatch = markdown.match(/^## Also covered\s*$/m);
-  if (alsoMatch && alsoMatch.index !== undefined) {
-    return (
-      markdown.slice(0, alsoMatch.index) + stubBlock + "\n\n" + markdown.slice(alsoMatch.index)
-    );
-  }
-  return `${markdown.trimEnd()}\n\n${stubBlock}`;
+  return insertBeforeAlsoCoveredWorker(markdown, stubBlock);
 }
 
 // Exported for testability (pins the synthesis prompt's coherence rules).
@@ -483,7 +516,11 @@ async function synthesizeViaAI(
   articles: RecentArticleMeta[],
   snap: Snapshot,
 ): Promise<string | null> {
-  const buckets = bucketByCompany(articles);
+  const allBuckets = bucketByCompany(articles);
+  const { active: buckets, rosterSymbols } = partitionListingOnlyHeldBuckets(
+    allBuckets,
+    snap.heldSymbols ?? [],
+  );
   const prompt = buildSynthesisPrompt(buckets, snap);
   const catalog = snap.modelCatalog ?? [];
   try {
@@ -520,7 +557,14 @@ async function synthesizeViaAI(
       return null;
     }
 
-    return enforceHeldSections(stripped, buckets, snap.heldSymbols ?? []);
+    let out = enforceHeldSections(stripped, buckets, snap.heldSymbols ?? []);
+    if (rosterSymbols.length > 0) {
+      out = insertBeforeAlsoCoveredWorker(
+        out,
+        `On this week's calendar: ${rosterSymbols.join(" · ")}`,
+      );
+    }
+    return out;
   } catch (err) {
     console.warn("[fallback-evening] synthesis failed:", err);
     return null;
