@@ -223,6 +223,7 @@ interface SnapshotCalendarEvent {
   actual_value?: unknown;
   enriched_at?: unknown;
   reaction_snapshot?: unknown;
+  superseded?: unknown;
 }
 
 export interface RunCloudFallbackOpts {
@@ -264,6 +265,10 @@ export async function runCloudFallback(
 
   for (const ev of events) {
     if (ev.enriched_at != null) continue;
+    // Superseded sibling (finnhub+nasdaq dual rows — Mac reconciliation marks
+    // the non-canonical one): can never complete, so never a candidate.
+    // Mirror of the ba1b39f fallback-earnings skip.
+    if (ev.superseded) continue;
     if (typeof ev.release_time !== "string" || !ev.release_time) continue;
     if (typeof ev.event_date !== "string" || !ev.event_date) continue;
     if (typeof ev.source_key !== "string") continue;
