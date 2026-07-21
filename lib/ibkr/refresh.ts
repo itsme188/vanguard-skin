@@ -18,6 +18,7 @@ import {
   getPortfolioAccounts,
   getPositions,
   getLedger,
+  IbkrSessionYieldError,
 } from "./web-api";
 import { mapPosition, extractLedgerFxRates, type MappedPosition } from "./map-positions";
 import type { IbkrOAuthConfig } from "./oauth-client";
@@ -201,6 +202,18 @@ export async function refreshIbkrHoldingsFromWebApi(
     const snapshot = await fetchIbkrPortfolio(cfg);
     result = writeIbkrHoldings(db, snapshot);
   } catch (err) {
+    if (err instanceof IbkrSessionYieldError) {
+      // Not a failure worth surfacing as an error — TWS holds the one
+      // allowed brokerage session this pass. setSyncError still must run:
+      // setSyncPhase above already flipped the mutex to "syncing", and
+      // setSyncError is what releases it (lib/tws/sync-state.ts sets
+      // status="error", which flips isSyncing() back to false).
+      console.log(
+        "[ibkr] Web API refresh yielded to an active TWS session — skipping (TWS owns the session)",
+      );
+      setSyncError("IBKR Web API refresh skipped — yielded to an active TWS session");
+      return null;
+    }
     setSyncError(err instanceof Error ? err.message : "IBKR Web API refresh failed");
     throw err;
   }
@@ -218,7 +231,11 @@ export async function refreshIbkrHoldingsFromWebApi(
       `[ibkr] quote enrichment: ${q.securitiesUpdated} securities, ${q.pricesWritten} prices (${q.conidsRequested} conids)`,
     );
   } catch (err) {
-    console.warn("[ibkr] quote enrichment failed (non-fatal):", err);
+    if (err instanceof IbkrSessionYieldError) {
+      console.log("[ibkr] quote enrichment skipped — session yielded to TWS");
+    } else {
+      console.warn("[ibkr] quote enrichment failed (non-fatal):", err);
+    }
   }
 
   // Level-scan cycle on the fresh prices (best-effort, mirrors Step 6).

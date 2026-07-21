@@ -171,8 +171,21 @@ export async function ensureIntelForEvents(
         try {
           if (lst == null && !sessionTried) {
             sessionTried = true;
-            const sess = await deps.openSession(cfg);
-            lst = extractToken(sess);
+            try {
+              const sess = await deps.openSession(cfg);
+              lst = extractToken(sess);
+            } catch (e) {
+              // Match on the message sentinel (not instanceof) — intel's
+              // deps-injected openSession may be a test stub whose rejection
+              // is a plain Error, not a real IbkrSessionYieldError.
+              if (e instanceof Error && e.message.includes("ibkr-session-yield")) {
+                console.log(
+                  "[earnings-intel] Web API session yielded to TWS — Web API straddle road off this pass",
+                );
+              } else {
+                throw e; // existing per-event catch logs it as today
+              }
+            }
           }
           if (lst != null) {
             const chain = await deps.resolveChain(cfg, lst, {

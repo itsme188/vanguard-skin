@@ -21,13 +21,77 @@ export interface IbkrPortfolioAccount {
 /** Raw position row from /portfolio/{acct}/positions/{page} (fields vary). */
 export type RawPosition = Record<string, unknown>;
 
+/**
+ * IBKR allows exactly ONE brokerage session per username. compete:"false"
+ * means TWS wins the session when it's holding one — the Web API yields
+ * instead of evicting the desktop login, and must surface that yield
+ * observably (IbkrSessionYieldError) rather than silently degrading.
+ */
+export class IbkrSessionYieldError extends Error {
+  constructor(
+    message = "ibkr-session-yield: brokerage session yielded to an existing TWS session",
+  ) {
+    super(message);
+    this.name = "IbkrSessionYieldError";
+  }
+}
+
+/**
+ * Yield-detection predicate, keyed EXACTLY on the 2026-07-21 live probe
+ * (scripts/probe-ibkr-compete.ts — see its header for the full run log).
+ * With a live TWS session held, `ssodh/init {compete:"false",publish:"true"}`
+ * returned HTTP 200 with body
+ * `{"passed":false,"authenticated":false,"connected":true,"competing":false}`.
+ * The yield predicate is therefore: response.ok AND a parsed object body AND
+ * `body.authenticated === false` — NOT `competing:true`, which is the shape
+ * IBKR's docs suggest but the probe disproved. A missing/unparseable body,
+ * or a body missing the `authenticated` field, is NOT treated as a yield
+ * (lenient by design). Adjust this predicate ONLY from a fresh run of that
+ * probe script, never from docs alone.
+ */
+export function isSessionYield(status: number, ok: boolean, body: unknown): boolean {
+  if (!ok) return false;
+  if (body == null || typeof body !== "object") return false;
+  return (body as { authenticated?: unknown }).authenticated === false;
+}
+
 /** Mint an LST and open the brokerage session (required before /iserver + some /portfolio reads). */
-export async function openSession(cfg: IbkrOAuthConfig): Promise<LiveSessionToken> {
-  const lst = await getLiveSessionToken(cfg);
-  await signedRequest(cfg, lst.token, "POST", "/iserver/auth/ssodh/init", {
-    compete: "true",
+export async function openSession(
+  cfg: IbkrOAuthConfig,
+  deps: {
+    request?: typeof signedRequest;
+    getLst?: typeof getLiveSessionToken;
+  } = {},
+): Promise<LiveSessionToken> {
+  const request = deps.request ?? signedRequest;
+  const getLst = deps.getLst ?? getLiveSessionToken;
+
+  const lst = await getLst(cfg);
+  const res = await request(cfg, lst.token, "POST", "/iserver/auth/ssodh/init", {
+    compete: "false",
     publish: "true",
   });
+
+  let body: unknown = null;
+  try {
+    body = await res.json();
+  } catch {
+    body = null; // no/unparseable body — lenient, not a yield signal
+  }
+
+  if (isSessionYield(res.status, res.ok, body)) {
+    throw new IbkrSessionYieldError();
+  }
+  if (!res.ok) {
+    // Preserve today's lenient behavior for any other non-2xx: warn, but
+    // still hand back the LST (init failures here have historically been
+    // transient and the caller's downstream reads self-heal).
+    console.warn(
+      `[ibkr] ssodh/init returned HTTP ${res.status} (non-yield) — proceeding with LST anyway`,
+      body,
+    );
+  }
+
   return lst;
 }
 
