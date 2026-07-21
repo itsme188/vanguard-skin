@@ -117,6 +117,14 @@ New open items from the same audit (added above): Worker synthesis held-ticker b
 
 ---
 
+### Closed this session (2026-07-20 evening — TODO sweep: 3 sized items cleared)
+
+> User asked to "knock out" TODO items; all three sized-and-ready items shipped in one session. Tests 3698→3699, 4 feature commits `77a8f32..5806f21` + docs reconcile. Dev server left running on :3000.
+
+- ✅ **Earnings newsletter single-source flood hardening** (`77a8f32`) — window-function per-source cap (18 = 6 slots × 3 editions/day, derived not picked) in `getNewsletterContext`'s candidate fetch; distinctSources became truthful for free (cap < LIMIT means a 1-source pool now implies genuinely-1-source coverage). TDD: watched the 6×-flooder monopolization fail first. Landed before the GOOGL/TSLA/INTC preview week.
+- ✅ **Smoke-QA 7 stale checks rewritten** (`61946e0`) — first fully-green run ever (26P/0F/0S); see the detailed `- [x]` entry above. E2E: tonight's 2 AM run.
+- ✅ **HIG low-severity tail, all three items** (`cd93b5a` + `5806f21` follow-up) — 152-swap gold-ink sweep (4 parallel subagents + rulebook), crosshair-legend invisibility CONFIRMED + fixed via the `.chart-legend` CSS-var remap, FAB footer clearance. Judgment saves: LevelsPanel is EMBEDDED in the dark module (gold kept); one swap was dead under an inline `style` color (removed in `5806f21`).
+
 ### Closed this session (2026-07-20 pm — earnings-week hardening)
 
 > Session opened with a TODO accuracy audit (QA ledger regrown to 15, one truly-orphaned qa-fix branch found via content-level check) then ran the timed batch. Tests 3673→3681 Mac + 408→417 Worker, tsc clean both sides.
