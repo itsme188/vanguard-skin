@@ -105,6 +105,45 @@ describe("ensureIntelForEvents", () => {
     expect(deps.refreshHistory).toHaveBeenCalledTimes(5);
   });
 
+  it("in-flight dedup: overlapping calls don't duplicate chain or history work", async () => {
+    const { eventId } = seed("TER");
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const deps = mkDeps({
+      resolveChain: vi.fn(async () => {
+        await gate;
+        return { callConid: 9003, putConid: 9004, expiry: "2026-07-18", strike: 130 };
+      }),
+    });
+    const p1 = ensureIntelForEvents(db, [EV(eventId, "TER")], {}, deps as never);
+    const p2 = ensureIntelForEvents(db, [EV(eventId, "TER")], {}, deps as never);
+    await new Promise((r) => setTimeout(r, 10));
+    release();
+    await Promise.all([p1, p2]);
+    expect(deps.resolveChain).toHaveBeenCalledTimes(1);
+    expect(deps.refreshHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it("stale spot (>4 calendar days old) skips the straddle road and records null spot", async () => {
+    const { eventId, secId } = seed("TER", { iv: 0.43 });
+    // now = 2026-07-14T14:00Z; a 7/05 close is 9 days old — straddle denominator would be fiction.
+    db.prepare("UPDATE prices SET date = '2026-07-05' WHERE security_id = ?").run(secId);
+    const deps = mkDeps();
+    await ensureIntelForEvents(db, [EV(eventId, "TER")], {}, deps as never);
+    const intel = getIntelForEvents(db, [eventId]).get(eventId)!;
+    expect(deps.resolveChain).not.toHaveBeenCalled();
+    expect(intel.impliedMethod).toBe("iv_approx");
+    expect(intel.spot).toBeNull();
+  });
+
+  it("spot exactly 4 calendar days old still passes (Thu close on a long-weekend Tuesday)", async () => {
+    const { eventId, secId } = seed("TER");
+    db.prepare("UPDATE prices SET date = '2026-07-10' WHERE security_id = ?").run(secId);
+    const deps = mkDeps();
+    await ensureIntelForEvents(db, [EV(eventId, "TER")], {}, deps as never);
+    expect(getIntelForEvents(db, [eventId]).get(eventId)!.impliedMethod).toBe("straddle");
+  });
+
   it("never throws when everything explodes", async () => {
     const { eventId } = seed("TER");
     const deps = mkDeps({

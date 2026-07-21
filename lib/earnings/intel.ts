@@ -33,7 +33,19 @@ export const AV_FETCH_CAP_PER_RUN = 5;
 // In-process TTL so 60s cockpit polling costs at most one OAuth roundtrip per
 // event per 30 min (macro-themes limiter pattern). forceFresh bypasses.
 const lastComputedAt = new Map<number, number>();
-export function __resetIntelTtlForTests(): void { lastComputedAt.clear(); }
+// In-flight claims: the TTL stamps only AFTER a compute finishes, so a poll
+// arriving during a slow first compute would pass the TTL check and duplicate
+// the IBKR/AV work. Claim before the awaits, release in finally; the skipped
+// caller decorates from cache and self-heals on its next poll. forceFresh
+// (preview composer) bypasses the event claim — its freshness guarantee wins
+// over the rare duplicate.
+const inFlightEvents = new Set<number>();
+const inFlightFamilies = new Set<string>();
+export function __resetIntelTtlForTests(): void {
+  lastComputedAt.clear();
+  inFlightEvents.clear();
+  inFlightFamilies.clear();
+}
 
 interface IntelDeps {
   loadConfig: typeof loadIbkrConfig;
@@ -59,11 +71,20 @@ function normalizeEventTime(t: string | null): "BMO" | "AMC" | null {
   return t === "BMO" || t === "AMC" ? t : null;
 }
 
-function latestSpot(db: Database.Database, securityId: number): number | null {
+// A days-old close makes the straddle denominator (and pickAtmStrike input)
+// fiction — same 4-calendar-day tolerance as findCrossedLevels' stale-price
+// guard (Fri→Mon + long-weekend Mondays pass; longer gaps mean prices are
+// suspect). Stale → null → the straddle road is skipped, iv_approx still runs.
+const SPOT_MAX_AGE_DAYS = 4;
+
+function latestSpot(db: Database.Database, securityId: number, nowMs: number): number | null {
   const row = db.prepare(
-    "SELECT close_price AS p FROM prices WHERE security_id = ? ORDER BY date DESC LIMIT 1"
-  ).get(securityId) as { p: number } | undefined;
-  return row?.p ?? null;
+    "SELECT close_price AS p, date AS d FROM prices WHERE security_id = ? ORDER BY date DESC LIMIT 1"
+  ).get(securityId) as { p: number; d: string } | undefined;
+  if (!row) return null;
+  const ageDays = Math.floor((nowMs - Date.parse(`${row.d}T00:00:00Z`)) / 86400_000);
+  if (!Number.isFinite(ageDays) || ageDays > SPOT_MAX_AGE_DAYS) return null;
+  return row.p;
 }
 
 function conidFor(db: Database.Database, securityId: number): number | null {
@@ -103,10 +124,16 @@ export async function ensureIntelForEvents(
       const famKey = issuerSiblings(ev.symbol).map((s) => s.toUpperCase()).sort().join("|");
       if (seenFamilies.has(famKey)) continue;
       seenFamilies.add(famKey);
+      if (inFlightFamilies.has(famKey)) continue; // another overlapping call is fetching this family
       try {
         if (deps.historyStale(db, ev.symbol)) {
           avFetches++;
-          await deps.refreshHistory(db, ev.symbol);
+          inFlightFamilies.add(famKey);
+          try {
+            await deps.refreshHistory(db, ev.symbol);
+          } finally {
+            inFlightFamilies.delete(famKey);
+          }
         }
       } catch (e) {
         console.warn(`[earnings-intel] history refresh errored for ${ev.symbol}:`, e);
@@ -122,14 +149,15 @@ export async function ensureIntelForEvents(
   const cfg = (() => { try { return deps.loadConfig(); } catch { return null; } })();
 
   for (const ev of events) {
+    if (!opts.forceFresh) {
+      const last = lastComputedAt.get(ev.id);
+      if (last != null && nowMs - last < INTEL_TTL_MS) continue;
+      if (inFlightEvents.has(ev.id)) continue; // an overlapping poll is computing this event
+    }
+    inFlightEvents.add(ev.id);
     try {
-      if (!opts.forceFresh) {
-        const last = lastComputedAt.get(ev.id);
-        if (last != null && nowMs - last < INTEL_TTL_MS) continue;
-      }
-
       const securityId = getSecurityIdForSymbolWithSiblings(db, ev.symbol);
-      const spot = securityId != null ? latestSpot(db, securityId) : null;
+      const spot = securityId != null ? latestSpot(db, securityId, nowMs) : null;
       const eventTime = normalizeEventTime(ev.event_time);
 
       let impliedMovePct: number | null = null;
@@ -192,6 +220,8 @@ export async function ensureIntelForEvents(
       lastComputedAt.set(ev.id, nowMs);
     } catch (e) {
       console.warn(`[earnings-intel] intel failed for event ${ev.id} (${ev.symbol}):`, e);
+    } finally {
+      inFlightEvents.delete(ev.id);
     }
   }
 }

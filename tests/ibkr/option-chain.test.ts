@@ -138,6 +138,34 @@ describe("resolveAtmContracts", () => {
     expect(out).toEqual({ callConid: 9003, putConid: 9004, expiry: "2026-07-18", strike: 130 });
   });
 
+  it("fetches C and P secdef/info concurrently (not sequential awaits)", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const request = vi.fn(async (_cfg, _lst, _m, path: string, query: Record<string, string>) => {
+      if (path.includes("secdef/search")) {
+        return respondJson([{ sections: [{ secType: "OPT", months: "JUL26" }] }]);
+      }
+      if (path.includes("secdef/strikes")) {
+        return respondJson({ call: [120, 125, 130, 135], put: [120, 125, 130, 135] });
+      }
+      if (path.includes("secdef/info")) {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((r) => setTimeout(r, 5));
+        inFlight--;
+        return respondJson([
+          { conid: query.right === "C" ? 9003 : 9004, maturityDate: "20260718" },
+        ]);
+      }
+      throw new Error(`unexpected path ${path}`);
+    });
+    const out = await resolveAtmContracts(CFG, "lst", {
+      conid: 265598, symbol: "AAPL", eventDate: "2026-07-14", eventTime: "AMC", spot: 128.9,
+    }, { request: request as never, delayMs: 0 });
+    expect(out).toEqual({ callConid: 9003, putConid: 9004, expiry: "2026-07-18", strike: 130 });
+    expect(maxInFlight).toBe(2);
+  });
+
   it("null when /secdef/info returns non-ok status", async () => {
     const request = vi.fn(async (_cfg, _lst, _m, path: string) => {
       if (path.includes("secdef/strikes")) {

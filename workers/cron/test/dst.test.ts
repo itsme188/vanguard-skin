@@ -10,6 +10,7 @@ import {
   getCurrentETMinute,
   getCurrentETDayOfWeek,
   todayET,
+  formatEtTimestamp,
 } from "../src/dst";
 
 afterEach(() => vi.useRealTimers());
@@ -98,5 +99,30 @@ describe("todayET", () => {
     // Mon 2026-01-05 19:00 EST = Tue 2026-01-06 00:00 UTC
     vi.setSystemTime(new Date("2026-01-06T00:00:00Z"));
     expect(todayET()).toBe("2026-01-05"); // still Monday in ET
+  });
+});
+
+describe("formatEtTimestamp", () => {
+  it("maps a stored UTC space-separated timestamp to ET under EDT (UTC-4)", () => {
+    expect(formatEtTimestamp("2026-07-15 20:00:00")).toBe("Jul 15 16:00 ET");
+  });
+
+  it("maps to ET under EST (UTC-5)", () => {
+    expect(formatEtTimestamp("2026-01-15 21:00:00")).toBe("Jan 15 16:00 ET");
+  });
+
+  it("normalizes the Intl hour-24 midnight edge to 00, with the ET day (not UTC's)", () => {
+    // 04:00 UTC in July = 00:00 EDT the PREVIOUS-looking UTC day boundary: Jul 15 04:00Z → Jul 15 00:00 ET
+    expect(formatEtTimestamp("2026-07-15 04:00:00")).toBe("Jul 15 00:00 ET");
+    // Winter: Jan 15 05:00Z → Jan 15 00:00 ET
+    expect(formatEtTimestamp("2026-01-15 05:00:00")).toBe("Jan 15 00:00 ET");
+  });
+
+  it("accepts ISO-with-Z input identically", () => {
+    expect(formatEtTimestamp("2026-07-15T20:00:00Z")).toBe("Jul 15 16:00 ET");
+  });
+
+  it("returns unparseable input unchanged", () => {
+    expect(formatEtTimestamp("not a timestamp")).toBe("not a timestamp");
   });
 });

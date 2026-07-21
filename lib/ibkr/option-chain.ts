@@ -134,19 +134,19 @@ export async function resolveAtmContracts(
       if (strike == null) continue;
 
       const byRight: Record<"C" | "P", Map<string, number>> = { C: new Map(), P: new Map() };
-      for (const right of ["C", "P"] as const) {
+      await Promise.all((["C", "P"] as const).map(async (right) => {
         const infoResp = await request(cfg, lst, "GET", "/iserver/secdef/info", {
           conid: String(args.conid), sectype: "OPT", month, strike: String(strike), right, exchange: "SMART",
         });
-        if (!infoResp.ok) continue;
+        if (!infoResp.ok) return;
         const info = (await infoResp.json()) as Array<{ conid?: unknown; maturityDate?: unknown }>;
-        if (!Array.isArray(info)) continue;
+        if (!Array.isArray(info)) return;
         for (const c of info) {
           const iso = isoFromMaturity(c.maturityDate);
           const cid = typeof c.conid === "number" ? c.conid : Number(c.conid);
           if (iso && Number.isFinite(cid)) byRight[right].set(iso, cid);
         }
-      }
+      }));
       const shared = [...byRight.C.keys()].filter((e) => byRight.P.has(e));
       const expiry = pickPostPrintExpiry(shared, args.eventDate, args.eventTime);
       if (!expiry) continue;
