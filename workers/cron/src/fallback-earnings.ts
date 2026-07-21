@@ -404,7 +404,7 @@ async function runSlotWrapSend(
   date: string,
   members: WrapMember[],
   now: Date,
-  liveIbkr: LiveIbkrPosition[] | null,
+  getLiveIbkr: () => Promise<LiveIbkrPosition[] | null>,
   ibkrAccountName: string,
   dryRun: boolean,
   result: EarningsFallbackResult,
@@ -513,7 +513,10 @@ async function runSlotWrapSend(
   }
 
   // Staple: a `# {SYM}` section per stapled member, reusing the same per-name
-  // renderer the individual recap path uses.
+  // renderer the individual recap path uses. Resolved here — after every
+  // early-return above — so a wrap that never fires (still pending, nothing
+  // stapleable, dry-run, env missing) never triggers the live fetch.
+  const liveIbkr = await getLiveIbkr();
   const memberSections = stapled.map((g) => {
     const family = issuerSiblings(g.m.symbol);
     const snapshotViews = resolvePositions(snapshot, family);
@@ -684,24 +687,38 @@ export async function runEarningsFallback(
 
   // Tier 3 — live IBKR refresh. The snapshot's IBKR rows can be days stale while
   // the Mac is asleep (travel), so an earnings email might show a position the
-  // user has since exited or resized. Pull the current book ONCE for the whole
-  // run (one LST mint, reused across candidates). Best-effort: any failure
-  // degrades to the snapshot positions. Never run on dry-run (no network).
-  let liveIbkr: LiveIbkrPosition[] | null = null;
+  // user has since exited or resized. Lazy + memoized: only fetched the FIRST
+  // time a candidate or wrap staple actually composes, so a tick where every
+  // candidate is marker-skipped never opens an IBKR session for nothing (one
+  // LST mint per run, at most, reused across candidates AND the wrap send).
+  // Best-effort: any failure degrades to the snapshot positions. Never run on
+  // dry-run (no network).
   const ibkrAccountName = resolveIbkrAccountName(snapshot);
-  if (!opts.dryRun) {
+  let liveIbkrCache: LiveIbkrPosition[] | null = null;
+  let liveIbkrTried = false;
+  const getLiveIbkr = async (): Promise<LiveIbkrPosition[] | null> => {
+    if (liveIbkrTried) return liveIbkrCache;
+    liveIbkrTried = true;
+    if (opts.dryRun) return null;
     const ibkrCfg = ibkrConfigFromEnv(
       env as unknown as Record<string, string | undefined>,
     );
-    if (ibkrCfg) {
-      try {
-        liveIbkr = await fetchLiveIbkrPositionsCached(env.CRON_KV, ibkrCfg);
-        console.log(`[fallback-earnings] live IBKR refresh: ${liveIbkr.length} positions`);
-      } catch (err) {
+    if (!ibkrCfg) return null;
+    try {
+      liveIbkrCache = await fetchLiveIbkrPositionsCached(env.CRON_KV, ibkrCfg);
+      console.log(`[fallback-earnings] live IBKR refresh: ${liveIbkrCache.length} positions`);
+    } catch (err) {
+      // The sentinel-prefixed error is the Worker-side caller half of the
+      // polite-yield throw in ibkr-positions.ts (compete:"false" — an active
+      // TWS session wins, we degrade quietly rather than log it as a failure).
+      if (err instanceof Error && err.message.includes("ibkr-session-yield")) {
+        console.log("[fallback-earnings] IBKR session yielded to active TWS — using snapshot positions");
+      } else {
         console.warn("[fallback-earnings] live IBKR refresh failed, using snapshot:", err);
       }
     }
-  }
+    return liveIbkrCache;
+  };
 
   for (const cand of candidates) {
     const markers = await readEarningsMarkers(env.CRON_KV, cand.phase, cand.eventId);
@@ -747,6 +764,7 @@ export async function runEarningsFallback(
     }
 
     try {
+      const liveIbkr = await getLiveIbkr();
       await composeAndSend(env, snapshot, cand, liveIbkr, ibkrAccountName, implausible);
       await writeEarningsMarker(env.CRON_KV, "cloud", cand.phase, cand.eventId);
       result.sent++;
@@ -769,8 +787,11 @@ export async function runEarningsFallback(
     }
   }
 
-  // EOD wrap sends — after the individual loop so liveIbkr is fetched once and
-  // reused. Each wrap-mode slot staples its ready recap members into one email.
+  // EOD wrap sends — after the individual loop. Passes the getLiveIbkr getter
+  // (not a resolved value) so a wrap that ends up not firing (e.g. still
+  // pending, nothing stapleable) never triggers a fetch; the underlying fetch
+  // is memoized so a wrap that DOES staple shares the candidate loop's single
+  // fetch rather than opening a second session.
   for (const [slot, members] of wrapBySlot) {
     await runSlotWrapSend(
       env,
@@ -779,7 +800,7 @@ export async function runEarningsFallback(
       date,
       members,
       now,
-      liveIbkr,
+      getLiveIbkr,
       ibkrAccountName,
       opts.dryRun ?? false,
       result,

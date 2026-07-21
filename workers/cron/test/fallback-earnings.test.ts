@@ -474,6 +474,136 @@ describe("runEarningsFallback Tier 3 live-IBKR position refresh", () => {
   });
 });
 
+describe("runEarningsFallback lazy + memoized live-IBKR fetch (Task 3)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (sendEmail as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "mock-email-id" });
+  });
+
+  const IBKR_ENV: Partial<FallbackEnv> = {
+    IBKR_CONSUMER_KEY: "QAJVIHZHI",
+    IBKR_ACCESS_TOKEN: "tok",
+    IBKR_PREPEND: "deadbeef",
+    IBKR_DH_PRIME: "00cb",
+    IBKR_SIGNATURE_KEY_PKCS8: "cGtjczg=",
+  };
+
+  /** Snapshot carrying two held earnings events, both in the preview window at RELEASE_TIME. */
+  function twoCandidateSnapshot(): Snapshot {
+    const snap = makeEarningsSnapshot() as unknown as {
+      calendarEvents: unknown[];
+      heldSymbols: string[];
+    };
+    const second = {
+      ...(snap.calendarEvents[0] as Record<string, unknown>),
+      id: 2,
+      symbol: "MSFT",
+      title: "MSFT earnings",
+      source_key: "finnhub:MSFT:2026-06-15",
+    };
+    snap.calendarEvents = [snap.calendarEvents[0], second];
+    snap.heldSymbols = ["AAPL", "MSFT"];
+    return snap as unknown as Snapshot;
+  }
+
+  it("marker-skipped candidates do not trigger the live IBKR fetch", async () => {
+    const env = makeEnv(IBKR_ENV);
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(makeEarningsSnapshot());
+    // The single AAPL preview candidate (eventId 1) is already cloud-sent —
+    // the whole run should skip without ever touching IBKR.
+    await env.CRON_KV.put("cloud-sent-earnings-preview-1", new Date().toISOString());
+
+    const result = await runEarningsFallback(env, { now: previewWindowNow() });
+
+    expect(result.sent).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(fetchLiveIbkrPositionsCached).not.toHaveBeenCalled();
+  });
+
+  it("a composing candidate fetches live IBKR exactly once", async () => {
+    const env = makeEnv(IBKR_ENV);
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(twoCandidateSnapshot());
+    (fetchLiveIbkrPositionsCached as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+
+    const result = await runEarningsFallback(env, { now: previewWindowNow() });
+
+    expect(result.sent).toBe(2);
+    expect(fetchLiveIbkrPositionsCached).toHaveBeenCalledTimes(1);
+  });
+
+  it("fetches live IBKR at most once per run across a composing candidate AND a wrap-mode staple", async () => {
+    // 3 AMC recap members (wrap-eligible, released earlier today) + 1 separate
+    // BMO-tagged preview candidate whose release sits inside the preview
+    // window relative to `now`. Both paths compose in the same run.
+    const READY_ACTUAL = "EPS 1.60 · Rev 91000000000";
+    const now = new Date("2026-06-15T22:30:00Z"); // 18:30 ET on EVENT_DATE
+    const wrapMember = (id: number, symbol: string) => ({
+      id,
+      week_of: EVENT_DATE,
+      event_date: EVENT_DATE,
+      event_type: "earnings",
+      title: `${symbol} earnings`,
+      description: null,
+      symbol,
+      event_time: "AMC",
+      release_time: "16:00",
+      expected_impact: "high",
+      source: "finnhub",
+      source_key: `finnhub:${symbol}:${EVENT_DATE}`,
+      raw_json: {},
+      enriched_at: null,
+      consensus_estimate: "EPS 1.50 · Rev 90000000000",
+      consensus_value: null,
+      actual_value: READY_ACTUAL,
+      previous_value: null,
+      reaction_snapshot: null,
+    });
+    const previewMember = {
+      id: 4,
+      week_of: EVENT_DATE,
+      event_date: EVENT_DATE,
+      event_type: "earnings",
+      title: "GOOG earnings",
+      description: null,
+      symbol: "GOOG",
+      event_time: "BMO", // keeps it out of the AMC wrap cluster
+      release_time: "20:28", // 118 min after `now` → inside [105,120] preview window
+      expected_impact: "high",
+      source: "finnhub",
+      source_key: "finnhub:GOOG:2026-06-15",
+      raw_json: {},
+      enriched_at: null,
+      consensus_estimate: "EPS 1.50 · Rev 90000000000",
+      consensus_value: null,
+      actual_value: null,
+      previous_value: null,
+      reaction_snapshot: null,
+    };
+    const snap = makeEarningsSnapshot() as unknown as {
+      calendarEvents: unknown[];
+      heldSymbols: string[];
+    };
+    snap.calendarEvents = [
+      wrapMember(1, "AAPL"),
+      wrapMember(2, "MSFT"),
+      wrapMember(3, "NVDA"),
+      previewMember,
+    ];
+    snap.heldSymbols = ["AAPL", "MSFT", "NVDA", "GOOG"];
+
+    const env = makeEnv(IBKR_ENV);
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snap as unknown as Snapshot);
+    (fetchLiveIbkrPositionsCached as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+
+    const result = await runEarningsFallback(env, { now });
+
+    // 3 wrapped AMC recaps + 1 individually-sent BMO preview.
+    expect(result.sent).toBe(4);
+    expect(sendEmail).toHaveBeenCalledTimes(2); // one wrap email + one preview email
+    expect(fetchLiveIbkrPositionsCached).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("runEarningsFallback shorts surface (B7)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
