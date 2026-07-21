@@ -6,7 +6,7 @@
  * fetch is proven separately by the deployed Worker's /internal/ibkr-test.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   parseOcc,
   extractOccFromContractDesc,
@@ -16,6 +16,7 @@ import {
   liveSymbolsForContext,
   getCachedLiveSessionToken,
   fetchLiveIbkrPositionsCached,
+  fetchLiveIbkrPositions,
   type LiveIbkrPosition,
 } from "../src/ibkr-positions";
 import type { PositionView } from "../src/fallback-earnings";
@@ -292,6 +293,96 @@ describe("worker ibkr-positions — fetchLiveIbkrPositionsCached retry", () => {
     ).rejects.toThrow("network boom");
     expect(read).toHaveBeenCalledTimes(1);
     expect(getLst).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("worker ibkr-positions — fetchLiveIbkrPositions session yield (compete:false)", () => {
+  const LST = { token: "L1", expirationMs: NOW + DAY };
+
+  // Response stub factory — signedRequest() returns a fetch Response.
+  function jsonResponse(status: number, body: unknown): Response {
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      json: async () => body,
+    } as Response;
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("opens the brokerage session with compete:false", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes("/iserver/auth/ssodh/init")) {
+        return jsonResponse(200, { passed: true, authenticated: true, connected: true, competing: false });
+      }
+      if (url.includes("/portfolio/accounts")) {
+        return jsonResponse(200, [{ accountId: "U123" }]);
+      }
+      if (url.includes("/positions/")) {
+        return jsonResponse(200, []);
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchLiveIbkrPositions(CFG, { lst: LST });
+
+    const initCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).includes("/iserver/auth/ssodh/init"),
+    );
+    expect(initCall).toBeDefined();
+    const initUrl = String(initCall![0]);
+    expect(initUrl).toContain("compete=false");
+    expect(initUrl).not.toContain("compete=true");
+  });
+
+  it("throws the ibkr-session-yield sentinel on the probed yield body", async () => {
+    const yieldFetch = vi.fn(async (url: string) => {
+      if (url.includes("/iserver/auth/ssodh/init")) {
+        // Exact probed body (scripts/probe-ibkr-compete.ts, 2026-07-21 run).
+        return jsonResponse(200, {
+          passed: false,
+          authenticated: false,
+          connected: true,
+          competing: false,
+        });
+      }
+      throw new Error(`unexpected fetch during yield: ${url}`);
+    });
+    vi.stubGlobal("fetch", yieldFetch);
+
+    await expect(fetchLiveIbkrPositions(CFG, { lst: LST })).rejects.toThrow(
+      "ibkr-session-yield",
+    );
+    // Rejected before any downstream read — only the init call happened.
+    expect(yieldFetch).toHaveBeenCalledTimes(1);
+
+    // A normal (non-yield) init proceeds past the session-open step to the
+    // accounts read, proving the throw is gated on the yield body specifically.
+    const normalFetch = vi.fn(async (url: string) => {
+      if (url.includes("/iserver/auth/ssodh/init")) {
+        return jsonResponse(200, { passed: true, authenticated: true, connected: true, competing: false });
+      }
+      if (url.includes("/portfolio/accounts")) {
+        return jsonResponse(200, [{ accountId: "U123" }]);
+      }
+      if (url.includes("/positions/")) {
+        return jsonResponse(200, []);
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", normalFetch);
+
+    await expect(fetchLiveIbkrPositions(CFG, { lst: LST })).resolves.toEqual([]);
+    expect(normalFetch.mock.calls.some(([url]) => String(url).includes("/portfolio/accounts"))).toBe(
+      true,
+    );
   });
 });
 

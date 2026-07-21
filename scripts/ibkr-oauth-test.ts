@@ -5,7 +5,8 @@
  * Run AFTER the consumer key has activated (IBKR propagates registration
  * overnight; a fresh registration returns 401 "invalid consumer" until then):
  *
- *   npx tsx scripts/ibkr-oauth-test.ts
+ *   npx tsx scripts/ibkr-oauth-test.ts             # compete=false (polite yield to TWS)
+ *   npx tsx scripts/ibkr-oauth-test.ts --compete    # compete=true (old takeover behavior)
  *
  * Does the full headless handshake (no TWS, no Gateway, no browser):
  *   1. POST /oauth/live_session_token  → mint + validate the Live Session Token
@@ -52,15 +53,16 @@ async function readJson(res: Response): Promise<unknown> {
 }
 
 async function main() {
+  const compete = process.argv.includes("--compete") ? "true" : "false";
   const cfg = loadConfig();
 
   console.log("→ minting Live Session Token …");
   const lst = await getLiveSessionToken(cfg);
   console.log(`  ✓ LST valid, expires ${new Date(lst.expirationMs).toISOString()}`);
 
-  console.log("→ opening brokerage session (ssodh/init) …");
+  console.log(`→ opening brokerage session (ssodh/init) { compete: "${compete}" } …`);
   const init = await signedRequest(cfg, lst.token, "POST", "/iserver/auth/ssodh/init", {
-    compete: "true",
+    compete,
     publish: "true",
   });
   console.log("  ssodh/init:", init.status, JSON.stringify(await readJson(init)).slice(0, 200));
