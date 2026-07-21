@@ -191,7 +191,9 @@ describe("isTwsListeningLocally", () => {
   });
 
   it("resolves false on a connection timeout", async () => {
-    // RFC 5737 TEST-NET-1 — reserved for documentation, guaranteed non-routable,
+    // RFC 5737 TEST-NET-1 — reserved for documentation, expected non-routable
+    // (some networks fast-REJECT it instead: false arrives via the error path
+    // rather than the timeout path — either way the assertion holds),
     // so the connect attempt hangs until our own timeout fires (verified: ~300ms
     // for a 300ms budget in this sandbox, no external network required to pass).
     await expect(isTwsListeningLocally("192.0.2.1", 81, 200)).resolves.toBe(false);
