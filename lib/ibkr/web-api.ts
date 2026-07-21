@@ -3,6 +3,8 @@
  * portfolio/iserver endpoints + a session opener. All read-only.
  */
 
+import net from "node:net";
+import { getTwsStatus } from "@/lib/tws/client";
 import {
   getLiveSessionToken,
   signedRequest,
@@ -22,10 +24,18 @@ export interface IbkrPortfolioAccount {
 export type RawPosition = Record<string, unknown>;
 
 /**
- * IBKR allows exactly ONE brokerage session per username. compete:"false"
- * means TWS wins the session when it's holding one — the Web API yields
- * instead of evicting the desktop login, and must surface that yield
- * observably (IbkrSessionYieldError) rather than silently degrading.
+ * IBKR allows exactly ONE brokerage session per username, and this consumer
+ * key is provisioned with the "force-compete" capability — probe-verified
+ * 2026-07-21 (scripts/probe-ibkr-compete.ts, full four-row run log in that
+ * script's header): `compete:"false"` is REJECTED for this key in every
+ * scenario (TWS open OR closed — `auth/status` after init: `fail:"Force
+ * compete capability must be used together with compete flag"`), so it can
+ * never be used to open a session. `compete:"true"` DOES authenticate, and
+ * is safe here specifically because `openSession` gates it on a LOCAL TWS
+ * port check first — see `isTwsListeningLocally` below. When that gate
+ * fires (TWS is alive locally), the Web API yields (IbkrSessionYieldError)
+ * WITHOUT ever calling IBKR, so compete:"true" only reaches IBKR when TWS is
+ * confirmed absent and there is nothing to evict.
  */
 export class IbkrSessionYieldError extends Error {
   constructor(
@@ -46,8 +56,10 @@ export class IbkrSessionYieldError extends Error {
  * `body.authenticated === false` — NOT `competing:true`, which is the shape
  * IBKR's docs suggest but the probe disproved. A missing/unparseable body,
  * or a body missing the `authenticated` field, is NOT treated as a yield
- * (lenient by design). Adjust this predicate ONLY from a fresh run of that
- * probe script, never from docs alone.
+ * (lenient by design). Post-pivot (compete:"true" gated on the local TWS
+ * check) this predicate is a DEFENSIVE backstop only — the local gate is now
+ * the primary yield-detection mechanism. Adjust this predicate ONLY from a
+ * fresh run of the probe script, never from docs alone.
  */
 export function isSessionYield(status: number, ok: boolean, body: unknown): boolean {
   if (!ok) return false;
@@ -55,20 +67,81 @@ export function isSessionYield(status: number, ok: boolean, body: unknown): bool
   return (body as { authenticated?: unknown }).authenticated === false;
 }
 
-/** Mint an LST and open the brokerage session (required before /iserver + some /portfolio reads). */
+/**
+ * Probe whether something is listening on the local TWS API port (default
+ * 127.0.0.1:7496) via a raw TCP connect — resolves true on connect, false on
+ * any error or timeout. Always destroys the socket. This is the primary
+ * yield-detection mechanism for `openSession`: it answers "is TWS alive on
+ * this machine right now" independent of whether THIS process happens to
+ * hold an IBApiNext connection to it (a fresh process / a TWS started after
+ * this Node process booted would otherwise look falsely "closed").
+ *
+ * Single-machine assumption: this only sees TWS instances running on the
+ * SAME Mac as the Node process. A TWS running on a different machine (not
+ * this app's supported topology) would be invisible to this check.
+ */
+export function isTwsListeningLocally(
+  host: string,
+  port: number,
+  timeoutMs = 500,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.connect({ host, port });
+    let settled = false;
+    const finish = (result: boolean) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(result);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once("connect", () => finish(true));
+    socket.once("timeout", () => finish(false));
+    socket.once("error", () => finish(false));
+  });
+}
+
+async function defaultIsTwsListening(): Promise<boolean> {
+  const { host, port } = getTwsStatus();
+  return isTwsListeningLocally(host, port);
+}
+
+/**
+ * Open the brokerage session (required before /iserver reads; NOT required
+ * for /portfolio reads — see fetchIbkrPortfolio, which is sessionless).
+ *
+ * Order matters:
+ *   1. Local-TWS gate FIRST — if anything is listening on the local TWS API
+ *      port, throw IbkrSessionYieldError immediately. No LST mint, no IBKR
+ *      network call at all. This is the primary yield path post-pivot.
+ *   2. Otherwise mint an LST and POST ssodh/init with `compete:"true"` — safe
+ *      because step 1 already confirmed TWS is not running locally, so
+ *      compete:"true" has nothing to evict.
+ *   3. isSessionYield is kept as a defensive backstop: with compete:"true"
+ *      and no local TWS, init should return authenticated:true; if the body
+ *      is yield-shaped anyway, still throw (the session is unusable — any
+ *      /iserver call would 401) and warn loudly, since that would mean the
+ *      local gate and IBKR's own view disagree.
+ */
 export async function openSession(
   cfg: IbkrOAuthConfig,
   deps: {
     request?: typeof signedRequest;
     getLst?: typeof getLiveSessionToken;
+    isTwsListening?: () => Promise<boolean>;
   } = {},
 ): Promise<LiveSessionToken> {
   const request = deps.request ?? signedRequest;
   const getLst = deps.getLst ?? getLiveSessionToken;
+  const isTwsListening = deps.isTwsListening ?? defaultIsTwsListening;
+
+  if (await isTwsListening()) {
+    throw new IbkrSessionYieldError();
+  }
 
   const lst = await getLst(cfg);
   const res = await request(cfg, lst.token, "POST", "/iserver/auth/ssodh/init", {
-    compete: "false",
+    compete: "true",
     publish: "true",
   });
 
@@ -80,6 +153,14 @@ export async function openSession(
   }
 
   if (isSessionYield(res.status, res.ok, body)) {
+    // Should not happen post-pivot (the local gate already confirmed TWS is
+    // absent) — loud warning because it means the local check and IBKR's own
+    // view disagree, which is worth investigating rather than silently
+    // swallowing.
+    console.warn(
+      "[ibkr] ssodh/init returned a yield-shaped body even though the local TWS gate found nothing listening — treating as a session yield defensively",
+      body,
+    );
     throw new IbkrSessionYieldError();
   }
   if (!res.ok) {

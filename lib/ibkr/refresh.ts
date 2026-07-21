@@ -21,7 +21,7 @@ import {
   IbkrSessionYieldError,
 } from "./web-api";
 import { mapPosition, extractLedgerFxRates, type MappedPosition } from "./map-positions";
-import type { IbkrOAuthConfig } from "./oauth-client";
+import { getLiveSessionToken, type IbkrOAuthConfig } from "./oauth-client";
 import { getMarketDataSnapshot, type ParsedQuote } from "./market-data";
 import { getQuoteCandidateConids } from "../queries/security-quotes";
 import { upsertSecurityQuote } from "../mutations/security-quotes";
@@ -58,11 +58,21 @@ export interface IbkrWriteResult {
   cash: number | null;
 }
 
-/** Network: open a session and pull live positions + cost basis + account values. */
+/**
+ * Network: pull live positions + cost basis + account values. SESSIONLESS —
+ * probe-verified 2026-07-21 (scripts/probe-ibkr-compete.ts, scenario-b run):
+ * /portfolio/accounts, /portfolio/{acct}/positions/{page}, and
+ * /portfolio/{acct}/ledger all return HTTP 200 with full data using only a
+ * signed LST, with NO brokerage session opened at all (no ssodh/init). This
+ * path therefore never competes for or evicts the one-per-username brokerage
+ * session — it works in every scenario, TWS open or closed. Only
+ * /iserver-needing consumers (quote enrichment below, earnings-intel) call
+ * openSession.
+ */
 export async function fetchIbkrPortfolio(
   cfg: IbkrOAuthConfig,
 ): Promise<IbkrPortfolioSnapshot> {
-  const lst = await openSession(cfg);
+  const lst = await getLiveSessionToken(cfg);
   const accts = await getPortfolioAccounts(cfg, lst.token);
   const accountCode = accts[0].accountId;
 
@@ -203,11 +213,17 @@ export async function refreshIbkrHoldingsFromWebApi(
     result = writeIbkrHoldings(db, snapshot);
   } catch (err) {
     if (err instanceof IbkrSessionYieldError) {
-      // Not a failure worth surfacing as an error — TWS holds the one
-      // allowed brokerage session this pass. setSyncError still must run:
-      // setSyncPhase above already flipped the mutex to "syncing", and
-      // setSyncError is what releases it (lib/tws/sync-state.ts sets
-      // status="error", which flips isSyncing() back to false).
+      // DEFENSIVE, post-pivot (2026-07-21): fetchIbkrPortfolio no longer
+      // calls openSession (it's sessionless — see its doc comment), so this
+      // branch should be unreachable from a real invocation today. Kept
+      // because an LST-mint failure is a DIFFERENT error class (network/auth,
+      // not a session yield) and still needs to flow to the generic catch
+      // below; this branch only guards against a future refactor that
+      // reintroduces a session open on this path. setSyncError still must
+      // run if it ever does fire: setSyncPhase above already flipped the
+      // mutex to "syncing", and setSyncError is what releases it
+      // (lib/tws/sync-state.ts sets status="error", which flips isSyncing()
+      // back to false).
       console.log(
         "[ibkr] Web API refresh yielded to an active TWS session — skipping (TWS owns the session)",
       );
