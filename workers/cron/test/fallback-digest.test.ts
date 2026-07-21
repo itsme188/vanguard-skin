@@ -54,6 +54,7 @@ import {
   runFallbackDigest,
   composeDigestMarkdown,
   normalizeThemes,
+  sanitizeModelSummary,
   type ProcessedArticle,
 } from "../src/fallback-digest";
 import { loadLatestSnapshot } from "../src/state";
@@ -424,5 +425,19 @@ describe("normalizeThemes", () => {
     expect(normalizeThemes(undefined)).toEqual([]);
     expect(normalizeThemes({ theme: "x" })).toEqual([]);
     expect(normalizeThemes("   ")).toEqual([]);
+  });
+});
+
+describe("sanitizeModelSummary", () => {
+  it("cuts at the first tagged remnant, incl. the malformed <key_themes\"> variant", () => {
+    const poisoned =
+      'Tariff developments adding cost burdens.</summary>\n<key_themes">["Canada tariffs"]</key_themes>\n<sentiment>neutral</sentiment>';
+    expect(sanitizeModelSummary(poisoned)).toBe("Tariff developments adding cost burdens.");
+  });
+
+  it("strips a leading <summary> wrapper; clean prose passes through", () => {
+    expect(sanitizeModelSummary("<summary>Clean text.</summary>")).toBe("Clean text.");
+    expect(sanitizeModelSummary("Guidance for Q3 <10% growth.")).toBe("Guidance for Q3 <10% growth.");
+    expect(sanitizeModelSummary("")).toBe("");
   });
 });

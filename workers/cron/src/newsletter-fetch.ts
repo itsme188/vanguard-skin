@@ -33,7 +33,7 @@ import {
 } from "./gmail";
 import { loadLatestSnapshot, type Snapshot } from "./state";
 import { generateWithFailover } from "./ai";
-import { normalizeThemes } from "./fallback-digest";
+import { normalizeThemes, sanitizeModelSummary } from "./fallback-digest";
 import { getCurrentETHour, getCurrentETMinute } from "./dst";
 
 const MAX_ARTICLES_PER_RUN = 10;
@@ -356,9 +356,11 @@ ATTRIBUTION (provenance): If this piece is primarily RELAYING a third party's vi
   );
 
   return {
-    summary: object.summary || "",
-    // jsonSchema() doesn't runtime-validate — the model can return these
-    // array fields as strings (crashed the digest fallback 2026-07-15).
+    // sanitizeModelSummary + normalizeThemes: jsonSchema() doesn't runtime-
+    // validate — the model can return array fields as strings (crashed the
+    // digest fallback 2026-07-15) or dump its whole tagged response inside
+    // the summary string (9 poisoned rows, 2026-07-07..20).
+    summary: sanitizeModelSummary(object.summary || ""),
     key_themes: normalizeThemes(object.key_themes),
     sentiment: object.sentiment || "neutral",
     sentiment_score: object.sentiment_score || 0,

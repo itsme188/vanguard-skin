@@ -147,6 +147,16 @@ export function SettingsModal() {
     return () => window.removeEventListener("open-settings", handleOpenEvent);
   }, []);
 
+  // Escape closes, matching every other modal in the app (deep-QA finding).
+  useEffect(() => {
+    if (!open) return;
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [open]);
+
   function handleFieldChange(key: FieldKey, value: string) {
     setDirty((prev) => ({ ...prev, [key]: value }));
     setSaveStatus("idle");
