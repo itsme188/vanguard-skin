@@ -211,29 +211,21 @@ export function liveSymbolsForContext(positions: LiveIbkrPosition[]): string[] {
 // ── Network fetch (best-effort; proven live via /internal/ibkr-test) ─
 
 /**
- * Yield-detection predicate — a deliberate small mirror of
- * lib/ibkr/web-api.ts::isSessionYield. The Worker is a separate package (own
- * package.json, can't import Mac lib code), so this is a hand-kept duplicate,
- * same pattern as other Mac↔Worker mirrors in this repo (e.g. issuerSiblings,
- * plausibility.ts). Keyed EXACTLY on the 2026-07-21 live probe
- * (scripts/probe-ibkr-compete.ts, header — full run log there): with another
- * session (TWS) holding the username, `ssodh/init {compete:"false"}` returned
- * HTTP 200 with body `{"passed":false,"authenticated":false,"connected":true,"competing":false}`.
- * The yield shape is `authenticated:false` on a 2xx response — NOT
- * `competing:true`, which is what IBKR's docs suggest but the probe disproved.
- * A missing/unparseable body, or a body missing `authenticated`, is NOT a
- * yield (lenient by design). Adjust ONLY from a fresh probe run, never docs.
- */
-export function isSessionYield(ok: boolean, body: unknown): boolean {
-  if (!ok) return false;
-  if (body == null || typeof body !== "object") return false;
-  return (body as { authenticated?: unknown }).authenticated === false;
-}
-
-/**
- * Mint (or reuse a passed) LST, open the brokerage session, and read the current
- * positions for the first portfolio account. Best-effort: callers should swallow
- * errors and fall back to the snapshot. Returns mapped, non-zero positions.
+ * Mint (or reuse a passed) LST and read the current positions for the first
+ * portfolio account. SESSIONLESS — probe-verified 2026-07-21
+ * (scripts/probe-ibkr-compete.ts, scenario-b run, header has the full log):
+ * /portfolio/accounts and /portfolio/{acct}/positions/{page} both return
+ * HTTP 200 with full data using only a signed LST, with NO brokerage session
+ * opened (no ssodh/init POST at all). The Worker therefore NEVER opens a
+ * brokerage session and can never compete for or evict the one-per-username
+ * session that TWS holds on the Mac — live positions are always available
+ * from the cloud with zero eviction risk. (This consumer key can't use
+ * compete:"false" at all — probe-verified it's rejected outright for a
+ * force-compete-capability key — so there is no polite variant to fall back
+ * to; sessionless reads sidestep the whole problem instead.)
+ *
+ * Best-effort: callers should swallow errors and fall back to the snapshot.
+ * Returns mapped, non-zero positions.
  *
  * Pass `opts.lst` to reuse a cached Live Session Token (see
  * getCachedLiveSessionToken) and skip the rate-limited handshake; omit it to
@@ -244,26 +236,6 @@ export async function fetchLiveIbkrPositions(
   opts: { lst?: WorkerLiveSessionToken } = {},
 ): Promise<LiveIbkrPosition[]> {
   const lst = opts.lst ?? (await getLiveSessionToken(cfg));
-  // Brokerage session is required before /portfolio reads return live data.
-  // Re-asserted every run (cheap) so a reused LST still has a warm session.
-  // compete:"false" — IBKR allows exactly ONE brokerage session per username;
-  // this makes the Worker YIELD to an already-open TWS desktop session
-  // instead of evicting it. On a yielded init, surface that observably (throw
-  // the ibkr-session-yield sentinel) rather than silently reading a session
-  // that was never actually opened.
-  const initRes = await signedRequest(cfg, lst.token, "POST", "/iserver/auth/ssodh/init", {
-    compete: "false",
-    publish: "true",
-  });
-  let initBody: unknown;
-  try {
-    initBody = await initRes.json();
-  } catch {
-    initBody = undefined; // no/unparseable body — lenient, not a yield signal
-  }
-  if (isSessionYield(initRes.ok, initBody)) {
-    throw new Error("ibkr-session-yield: brokerage session yielded to an existing TWS session");
-  }
 
   const acctRes = await signedRequest(cfg, lst.token, "GET", "/portfolio/accounts");
   if (!acctRes.ok) throw new Error(`portfolio/accounts HTTP ${acctRes.status}`);

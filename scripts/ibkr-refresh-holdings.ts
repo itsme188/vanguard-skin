@@ -10,10 +10,13 @@
  * queries/upserts need zero changes — see lib/ibkr/refresh.ts. Writes today's
  * (ET) snapshot; prior dates untouched.
  *
- * Session note (2026-07-21): running this while TWS desktop is logged in no
- * longer evicts TWS's session — it now fails loudly with the
- * `ibkr-session-yield` sentinel (compete:"false") because open TWS owns the
- * brokerage session.
+ * Session note (2026-07-21 pivot): fetchIbkrPortfolio is SESSIONLESS — it
+ * reads only /portfolio/* endpoints, never opens a brokerage session (no
+ * ssodh/init), so running this while TWS desktop is logged in neither evicts
+ * TWS nor yields to it. It works identically whether TWS is open or closed.
+ * (compete:"false" is dead for this consumer key — see lib/ibkr/web-api.ts
+ * header — so there is no polite-yield variant here to fall back to; going
+ * sessionless sidesteps the brokerage-session contention entirely.)
  */
 
 import { db } from "@/lib/db";

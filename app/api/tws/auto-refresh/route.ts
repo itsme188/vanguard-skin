@@ -4,7 +4,6 @@ import { getIbApi } from "@/lib/tws/client";
 import { runAutoRefresh, type RefreshLevel } from "@/lib/tws/auto-refresh";
 import { loadIbkrConfig } from "@/lib/ibkr/config";
 import { refreshIbkrHoldingsFromWebApi } from "@/lib/ibkr/refresh";
-import { getSyncState } from "@/lib/tws/sync-state";
 
 export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => ({}));
@@ -20,23 +19,22 @@ export async function POST(request: NextRequest) {
     if (cfg) {
       try {
         const res = await refreshIbkrHoldingsFromWebApi(db, cfg);
-        // cfg is non-null here, so a null result means one of two things:
-        // (a) the sync-state mutex skipped the run (another refresh is
-        // mid-flight), or (b) the Web API session politely yielded to an
-        // active TWS session (compete:"false" — IbkrSessionYieldError,
-        // "ibkr-session-yield" sentinel). (b) is the primary designed
-        // scenario for this path, not an edge case, so distinguish it via
-        // sync-state's error field rather than reporting a generic
-        // "in progress" message.
-        const yielded = res === null && (getSyncState().error ?? "").includes("yielded");
+        // cfg is non-null here, so a null result means the sync-state mutex
+        // skipped the run (another refresh is mid-flight). Post-pivot
+        // (2026-07-21: sessionless /portfolio reads, compete:"true" gated on
+        // a local TWS port check) the positions fetch itself can no longer
+        // yield to TWS — it never opens a brokerage session — so the
+        // in-progress case is the only remaining reason for a null result.
+        // (The prior "yielded" message here is now dead: fetchIbkrPortfolio
+        // no longer calls openSession, so refreshIbkrHoldingsFromWebApi's
+        // IbkrSessionYieldError branch is unreachable from this call path —
+        // see its comment in lib/ibkr/refresh.ts.)
         return NextResponse.json({
           success: true,
           via: "ibkr-webapi",
           message: res
             ? `IBKR Web API refresh: ${res.positionsWritten} positions as of ${res.asOfDate}`
-            : yielded
-              ? "IBKR Web API refresh skipped — TWS owns the session (yielded)"
-              : "IBKR Web API refresh skipped — a sync is already in progress",
+            : "IBKR Web API refresh skipped — a sync is already in progress",
           result: res,
         });
       } catch (err) {

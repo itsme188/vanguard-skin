@@ -1,7 +1,8 @@
 #!/usr/bin/env tsx
 /**
- * Probe: /iserver/auth/ssodh/init with compete:"false" — what does IBKR
- * actually return when another session (TWS desktop) holds the username?
+ * Probe: /iserver/auth/ssodh/init with compete:"false" vs "true" — what does
+ * IBKR actually return in each TWS-open/closed combination, and do
+ * session-free /portfolio reads work regardless?
  *
  * Read-only. Never places orders, never writes to the DB.
  *
@@ -16,20 +17,43 @@
  * lib/ibkr/web-api.ts::isSessionYield and workers/cron/src/ibkr-positions.ts key
  * on this; adjust them ONLY from a fresh probe, never from docs alone):
  *
- * 2026-07-21 ~15:44 ET, scenario (a) TWS logged in, compete=false:
- *   - ssodh/init: HTTP 200 {"passed":false,"authenticated":false,"connected":true,"competing":false}
- *     → the YIELD SHAPE is authenticated:false (+ passed:false) on a 2xx init.
- *     NOT competing:true as IBKR docs suggest — key the predicate on authenticated.
- *   - auth/status after init: fail:"Force compete capability must be used together
- *     with compete flag" — confirms refusal because another session held the user.
- *     The probe could NOT take the session (TWS survives by construction).
- *   - /iserver/* after yield: 401 "not authenticated" — loud, fast, clean degrade.
- *   - SURPRISE: /portfolio/accounts + /portfolio/{acct}/positions/0 return HTTP 200
- *     with full data EVEN when yielded (no brokerage session). Future opportunity:
- *     position reads could proceed on yield (freshness unverified — not relied on).
+ * 2026-07-21 — FINAL FOUR-ROW VERDICT (this consumer key, all scenarios probed):
  *
- * Scenario (b) TWS closed: [pending — run before merge; expect authenticated:true
- * and working reads, proving compete:false does not break the away-from-desk path]
+ * | Scenario                      | compete | ssodh/init result                                                                 |
+ * |--------------------------------|---------|------------------------------------------------------------------------------------|
+ * | TWS logged in                  | "false" | 200 {"passed":false,"authenticated":false,"connected":true,"competing":false} — refused, TWS untouched |
+ * | TWS closed 10+ min              | "false" | IDENTICAL refusal — this consumer key can NEVER authenticate with compete:"false"  |
+ * | TWS closed                     | "true"  | 200 {"passed":true,"authenticated":true,...}; /iserver/accounts 200 with full payload |
+ * | ANY (no brokerage session at all) | —    | /portfolio/accounts 200, /portfolio/{acct}/positions/0 200, /portfolio/{acct}/ledger 200 — session-free |
+ *
+ * CAPABILITY CONCLUSION: `auth/status` after a compete:"false" init returns
+ * `fail:"Force compete capability must be used together with compete flag"`
+ * in BOTH the TWS-open AND TWS-closed runs — this key is provisioned with the
+ * force-compete capability and IBKR mandates the flag be "true" for it.
+ * compete:"false" is therefore DEAD for this key, permanently, not just while
+ * TWS holds the session — there is no polite variant available.
+ *
+ * SHIPPED DESIGN (2026-07-21 pivot, supersedes the original compete:"false"
+ * design): holdings reads (Mac fetchIbkrPortfolio, Worker
+ * fetchLiveIbkrPositions) go SESSIONLESS — /portfolio/* needs no ssodh/init at
+ * all (row 4 above), so they never open a session and can never evict
+ * anything, in every scenario. Only /iserver-needing consumers (earnings-intel
+ * Web API road, quote enrichment) call openSession, and openSession now uses
+ * compete:"true" (the only value this key accepts) gated behind a check of
+ * whether TWS is listening on the local API port — if it is, yield
+ * immediately without calling IBKR at all; if TWS is confirmed absent
+ * locally, compete:"true" has nothing to evict. See lib/ibkr/web-api.ts
+ * (openSession, isTwsListeningLocally) for the implementation.
+ *
+ * Earlier partial run (2026-07-21 ~15:44 ET, scenario (a) TWS logged in,
+ * compete=false) for reference — superseded by the four-row table above:
+ *   - ssodh/init: HTTP 200 {"passed":false,"authenticated":false,"connected":true,"competing":false}
+ *   - auth/status after init: fail:"Force compete capability must be used together
+ *     with compete flag".
+ *   - /iserver/* after yield: 401 "not authenticated" — loud, fast, clean degrade.
+ *   - /portfolio/accounts + /portfolio/{acct}/positions/0 returned HTTP 200 with
+ *     full data EVEN when yielded (no brokerage session) — this surprise is what
+ *     motivated the scenario-b run and the sessionless pivot above.
  */
 
 import fs from "node:fs";

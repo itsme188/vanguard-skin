@@ -7,7 +7,7 @@ Rules specific to the IBKR Trader Workstation integration. See root CLAUDE.md fo
 - **Port 7496** (live trading), **clientId 1** (Stock Contest uses clientId 2)
 - TWS must be running for any API connection to work
 - Uses `@stoqey/ib` package's `IBApiNext` (promise-based wrapper)
-- The IBKR Web API (`lib/ibkr/*`) is a polite co-tenant of this same single per-username brokerage session — it opens sessions with `compete:"false"` and yields to a logged-in TWS rather than evicting it. See root CLAUDE.md Conventions (`compete:"false"` bullet) + `scripts/probe-ibkr-compete.ts`.
+- The IBKR Web API (`lib/ibkr/*`) shares this same single per-username brokerage session, but its holdings reads (`fetchIbkrPortfolio`) are SESSIONLESS — they never call `ssodh/init`, so they can't evict or compete for anything regardless of TWS state. Only its `/iserver`-needing reads (quote enrichment, earnings-intel) open a session, and only when a local TCP probe finds nothing listening on this TWS instance's API port — see root CLAUDE.md Conventions (the "IBKR brokerage session" bullet) + `scripts/probe-ibkr-compete.ts`.
 
 ## State Management
 
