@@ -800,7 +800,12 @@ function ReviewDetail({
 
         {activeTab === "review" && (
           <div className="prose-sm max-w-none">
-            <MarkdownMessage content={review.review_markdown} />
+            {/* AI review prose embeds P&L dollars + portfolio-% at generation
+                time — no formatter can catch them, so the whole block masks
+                (NarrativeBlock precedent; deep-QA privacy finding). */}
+            <PrivateText>
+              <MarkdownMessage content={review.review_markdown} />
+            </PrivateText>
           </div>
         )}
 
@@ -962,18 +967,18 @@ function GroupedTradeCards({
                       Assessment
                     </h5>
                     <p className="text-xs text-ink-dim leading-relaxed">
-                      {trade.assessment}
+                      <PrivateText>{trade.assessment}</PrivateText>
                     </p>
                   </div>
                 )}
                 {trade.whatWorked && (
                   <p className="text-xs text-up/80">
-                    ✓ {trade.whatWorked}
+                    ✓ <PrivateText>{trade.whatWorked}</PrivateText>
                   </p>
                 )}
                 {trade.whatDidnt && (
                   <p className="text-xs text-down/80">
-                    ✗ {trade.whatDidnt}
+                    ✗ <PrivateText>{trade.whatDidnt}</PrivateText>
                   </p>
                 )}
 
@@ -1148,7 +1153,7 @@ function PatternSection({
         {items.map((item, i) => (
           <li key={i} className={`text-sm ${color}`}>
             {icon && <span className="mr-1.5">{icon}</span>}
-            {item}
+            <PrivateText>{item}</PrivateText>
           </li>
         ))}
       </ul>

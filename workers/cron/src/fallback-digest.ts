@@ -273,6 +273,23 @@ const ARTICLE_SCHEMA = jsonSchema<{
  * Claude calls had already succeeded. Arrays pass through (strings only,
  * cap 5); a string splits on commas; anything else → [].
  */
+/**
+ * Sibling guard: the model intermittently dumps its ENTIRE tagged response
+ * inside the `summary` string field ("...</summary>\n<key_themes">[...]").
+ * jsonSchema() can't catch it — the field IS a valid string. Cut at the first
+ * tagged remnant, strip a leading <summary> wrapper. Mac mirror:
+ * lib/gmail/process.ts::sanitizeModelSummary (semantic parity — change both).
+ */
+const SUMMARY_TAG_REMNANT =
+  /<\/?(?:summary|key_themes|sentiment_score|sentiment|mentioned_symbols|portfolio_relevance|is_portfolio_relevant)\b/i;
+
+export function sanitizeModelSummary(raw: string): string {
+  if (!raw) return "";
+  const s = raw.replace(/^\s*<summary[^>]*>\s*/i, "");
+  const cut = s.search(SUMMARY_TAG_REMNANT);
+  return (cut === -1 ? s : s.slice(0, cut)).trim();
+}
+
 export function normalizeThemes(v: unknown): string[] {
   if (Array.isArray(v)) {
     return v.filter((t): t is string => typeof t === "string").slice(0, 5);
@@ -327,7 +344,7 @@ ${text}`;
     received_at: detail.receivedAt,
     gmail_message_id: null, // set by the caller from the Gmail message id
     source_url: null,
-    summary: object.summary || "",
+    summary: sanitizeModelSummary(object.summary || ""),
     sentiment: object.sentiment || "neutral",
     key_themes: normalizeThemes(object.key_themes),
     portfolio_relevance: object.portfolio_relevance || "",

@@ -204,6 +204,22 @@ const ANALYSIS_SCHEMA = jsonSchema<ProcessedResult>({
   ],
 });
 
+// The model intermittently dumps its ENTIRE tagged response inside the
+// `summary` string field ("...</summary>\n<key_themes">[...]<sentiment>...").
+// jsonSchema() can't catch that — the field IS a valid string — so guard at
+// the storage boundary (same family as the key_themes-as-string normalize
+// below). Matches partial/malformed tags too (<key_themes"> was observed
+// live). Worker mirror: workers/cron/src/fallback-digest.ts.
+const SUMMARY_TAG_REMNANT =
+  /<\/?(?:summary|key_themes|sentiment_score|sentiment|mentioned_symbols|portfolio_relevance|is_portfolio_relevant)\b/i;
+
+export function sanitizeModelSummary(raw: string): string {
+  if (!raw) return "";
+  const s = raw.replace(/^\s*<summary[^>]*>\s*/i, "");
+  const cut = s.search(SUMMARY_TAG_REMNANT);
+  return (cut === -1 ? s : s.slice(0, cut)).trim();
+}
+
 async function extractWithClaude(
   article: UnprocessedArticle,
   holdingsContext: string
@@ -248,7 +264,7 @@ ATTRIBUTION (provenance): If this piece is primarily RELAYING a third party's vi
     ? object.mentioned_symbols.filter((s): s is string => typeof s === "string")
     : [];
   return {
-    summary: object.summary || "",
+    summary: sanitizeModelSummary(object.summary || ""),
     key_themes: themes.slice(0, 5),
     sentiment: object.sentiment || "neutral",
     sentiment_score: Math.max(-1, Math.min(1, object.sentiment_score || 0)),

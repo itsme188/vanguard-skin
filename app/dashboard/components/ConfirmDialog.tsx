@@ -51,7 +51,11 @@ export function ConfirmDialog({
   return (
     <dialog
       ref={dialogRef}
-      className="rounded-xl border border-edge bg-panel p-0 text-ink backdrop:bg-canvas/70 backdrop:backdrop-blur-sm max-w-sm w-full"
+      // m-auto restores the UA stylesheet's dialog centering (margin: auto),
+      // which Tailwind v4's universal preflight margin reset zeroes — without
+      // it the top-layer dialog pins to the viewport's top-left corner
+      // (deep-QA finding, recurrence — prior closure was non-repro only).
+      className="m-auto rounded-xl border border-edge bg-panel p-0 text-ink backdrop:bg-canvas/70 backdrop:backdrop-blur-sm max-w-sm w-full"
     >
       <div className="p-6">
         <h3 className="text-base font-medium mb-2">{title}</h3>

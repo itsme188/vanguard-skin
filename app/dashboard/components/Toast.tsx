@@ -53,7 +53,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {children}
       {/* Toast container */}
       <div
-        className="fixed bottom-6 right-6 z-[100] flex flex-col gap-2 pointer-events-none"
+        // max-md clearance: MobileBottomNav (md:hidden) owns the bottom edge on
+        // phones — toasts are pointer-events-auto and were intercepting nav taps
+        // (deep-QA finding, 4th occurrence). Desktop/Electron keep bottom-6.
+        className="fixed bottom-6 max-md:bottom-[calc(5.5rem+env(safe-area-inset-bottom))] right-6 z-[100] flex flex-col gap-2 pointer-events-none"
         aria-live="polite"
       >
         {toasts.map((t) => (
