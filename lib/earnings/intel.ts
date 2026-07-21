@@ -19,6 +19,8 @@ import { upsertEarningsIntel } from "@/lib/mutations/earnings-intel";
 import { getSecurityIdForSymbolWithSiblings } from "@/lib/queries/briefing-symbols";
 import { getSecurityQuote } from "@/lib/queries/security-quotes";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
+import { getIbApi } from "@/lib/tws/client";
+import { fetchTwsAtmStraddle } from "@/lib/tws/atm-straddle";
 
 export interface IntelEvent {
   id: number;
@@ -55,6 +57,8 @@ interface IntelDeps {
   refreshHistory: typeof refreshReportHistory;
   historyStale: typeof isHistoryStale;
   now: () => number;
+  twsConnected: () => boolean;
+  twsStraddle: typeof fetchTwsAtmStraddle;
 }
 
 const defaultDeps: IntelDeps = {
@@ -65,6 +69,8 @@ const defaultDeps: IntelDeps = {
   refreshHistory: refreshReportHistory,
   historyStale: isHistoryStale,
   now: Date.now,
+  twsConnected: () => getIbApi() != null,
+  twsStraddle: fetchTwsAtmStraddle,
 };
 
 function normalizeEventTime(t: string | null): "BMO" | "AMC" | null {
@@ -165,9 +171,34 @@ export async function ensureIntelForEvents(
       let expiryUsed: string | null = null;
       let straddleMid: number | null = null;
 
-      // Road 1: straddle via headless chain.
+      // Road 1a: straddle via TWS (preferred — rides the user's existing
+      // desktop session, never competes with it, and needs no OAuth config).
       const conid = securityId != null ? conidFor(db, securityId) : null;
-      if (cfg && conid != null && spot != null) {
+      if (deps.twsConnected() && conid != null && spot != null) {
+        try {
+          const result = await deps.twsStraddle({
+            symbol: ev.symbol, conid, eventDate: ev.event_date, eventTime, spot,
+          });
+          if (result) {
+            const callMid = computeMid(result.call.bid, result.call.ask, result.call.last);
+            const putMid = computeMid(result.put.bid, result.put.ask, result.put.last);
+            const pct = straddleImpliedMovePct(callMid, putMid, spot);
+            if (pct != null && pct <= IMPLIED_MOVE_CORRUPT_CEILING_PCT) {
+              impliedMovePct = pct;
+              impliedMethod = "straddle";
+              expiryUsed = result.expiry;
+              straddleMid = (callMid ?? 0) + (putMid ?? 0);
+              console.log(`[earnings-intel] straddle via TWS for ${ev.symbol} (expiry ${result.expiry})`);
+            }
+          }
+        } catch (e) {
+          console.warn(`[earnings-intel] TWS straddle road failed for ${ev.symbol}:`, e);
+        }
+      }
+
+      // Road 1b: straddle via the headless IBKR Web API chain — only when
+      // the TWS road above didn't produce a result.
+      if (impliedMethod == null && cfg && conid != null && spot != null) {
         try {
           if (lst == null && !sessionTried) {
             sessionTried = true;

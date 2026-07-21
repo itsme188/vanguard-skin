@@ -39,6 +39,8 @@ function mkDeps(over: Record<string, unknown> = {}) {
     refreshHistory: vi.fn(async () => true),
     historyStale: vi.fn(() => true),
     now: () => Date.parse("2026-07-14T14:00:00Z"),
+    twsConnected: vi.fn(() => false),
+    twsStraddle: vi.fn(async () => null),
     ...over,
   };
 }
@@ -153,5 +155,85 @@ describe("ensureIntelForEvents", () => {
     await expect(
       ensureIntelForEvents(db, [EV(eventId, "TER")], {}, deps as never)
     ).resolves.toBeUndefined();
+  });
+
+  it("TWS road wins when connected", async () => {
+    const { eventId } = seed("TER");
+    const deps = mkDeps({
+      twsConnected: vi.fn(() => true),
+      twsStraddle: vi.fn(async () => ({
+        expiry: "2026-07-24",
+        strike: 130,
+        call: { bid: 3.0, ask: 3.4, last: 3.2 },
+        put: { bid: 2.8, ask: 3.2, last: 3.0 },
+      })),
+    });
+    await ensureIntelForEvents(db, [EV(eventId, "TER")], {}, deps as never);
+    const intel = getIntelForEvents(db, [eventId]).get(eventId)!;
+    expect(intel.impliedMethod).toBe("straddle");
+    expect(intel.expiryUsed).toBe("2026-07-24");
+    expect(deps.openSession).not.toHaveBeenCalled();
+    expect(deps.resolveChain).not.toHaveBeenCalled();
+    expect(deps.snapshot).not.toHaveBeenCalled();
+  });
+
+  it("TWS road null falls through to the Web API road", async () => {
+    const { eventId } = seed("TER");
+    const deps = mkDeps({
+      twsConnected: vi.fn(() => true),
+      twsStraddle: vi.fn(async () => null),
+    });
+    await ensureIntelForEvents(db, [EV(eventId, "TER")], {}, deps as never);
+    const intel = getIntelForEvents(db, [eventId]).get(eventId)!;
+    expect(intel.impliedMethod).toBe("straddle");
+    expect(deps.resolveChain).toHaveBeenCalled();
+  });
+
+  it("corrupt TWS straddle (> 60% implied) falls through", async () => {
+    const { eventId } = seed("TER", { iv: 0.43, spot: 10 }); // straddle 6.2/10 = 62%
+    const deps = mkDeps({
+      twsConnected: vi.fn(() => true),
+      twsStraddle: vi.fn(async () => ({
+        expiry: "2026-07-24",
+        strike: 10,
+        call: { bid: 3.0, ask: 3.4, last: 3.2 },
+        put: { bid: 2.8, ask: 3.2, last: 3.0 },
+      })),
+    });
+    await ensureIntelForEvents(db, [EV(eventId, "TER")], {}, deps as never);
+    expect(deps.resolveChain).toHaveBeenCalled();
+  });
+
+  it("stale spot skips the TWS road too", async () => {
+    const { eventId, secId } = seed("TER", { iv: 0.43 });
+    db.prepare("UPDATE prices SET date = '2026-07-05' WHERE security_id = ?").run(secId);
+    const deps = mkDeps({
+      twsConnected: vi.fn(() => true),
+      twsStraddle: vi.fn(async () => ({
+        expiry: "2026-07-24",
+        strike: 130,
+        call: { bid: 3.0, ask: 3.4, last: 3.2 },
+        put: { bid: 2.8, ask: 3.2, last: 3.0 },
+      })),
+    });
+    await ensureIntelForEvents(db, [EV(eventId, "TER")], {}, deps as never);
+    expect(deps.twsStraddle).not.toHaveBeenCalled();
+  });
+
+  it("session yield degrades to iv_approx", async () => {
+    const { eventId: id1 } = seed("TER", { iv: 0.43 });
+    const { eventId: id2 } = seed("ABC", { conid: 222, iv: 0.5 });
+    const deps = mkDeps({
+      twsConnected: vi.fn(() => false),
+      openSession: vi.fn(async () => { throw new Error("ibkr-session-yield: TWS holds the session"); }),
+    });
+    await expect(
+      ensureIntelForEvents(db, [EV(id1, "TER"), EV(id2, "ABC")], {}, deps as never)
+    ).resolves.toBeUndefined();
+    expect(deps.openSession).toHaveBeenCalledTimes(1);
+    expect(deps.resolveChain).not.toHaveBeenCalled();
+    const intel = getIntelForEvents(db, [id1, id2]);
+    expect(intel.get(id1)!.impliedMethod).toBe("iv_approx");
+    expect(intel.get(id2)!.impliedMethod).toBe("iv_approx");
   });
 });
