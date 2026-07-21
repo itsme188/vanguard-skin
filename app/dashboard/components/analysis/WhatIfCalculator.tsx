@@ -137,6 +137,18 @@ export function WhatIfCalculator({ scope }: Props) {
 
       {delta && (
         <div className="mt-5 space-y-4">
+          {(delta.droppedLegs?.length ?? 0) > 0 && (
+            <div className="space-y-1">
+              {delta.droppedLegs.map((d) => (
+                <p key={d.symbol + d.reason} className="text-xs text-down">
+                  ⚠ {d.symbol}{" "}
+                  {d.reason === "unknown_symbol"
+                    ? "isn't a known security — leg ignored"
+                    : "isn't held in this scope — sell leg ignored"}
+                </p>
+              ))}
+            </div>
+          )}
           <DeltaTable delta={delta} />
           {delta.flags.length > 0 && (
             <div className="space-y-1">

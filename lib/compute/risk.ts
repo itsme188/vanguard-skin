@@ -49,6 +49,13 @@ export interface PortfolioRiskMetrics {
   top5Positions: PositionWeight[];
   positionCount: number;
   dataPoints: number; // number of daily valuations used
+  // Actual window of the valuation series the metrics were computed from.
+  // daily_valuations history starts 2026-03 (full-coverage floor ~2026-04-06),
+  // so a requested 3Y/All period computes over a much shorter window — the UI
+  // uses these to caption the metrics honestly instead of implying the label's
+  // period. Null when no valuations matched.
+  seriesStart: string | null;
+  seriesEnd: string | null;
 }
 
 export interface RiskOptions {
@@ -177,6 +184,8 @@ export function computeRiskMetrics(
     top5Positions,
     positionCount,
     dataPoints: valuations.length,
+    seriesStart: points.length > 0 ? points[0].date : null,
+    seriesEnd: points.length > 0 ? points[points.length - 1].date : null,
   };
 }
 

@@ -36,10 +36,19 @@ export interface ExposureFlag {
   capValue?: number;
 }
 
+export interface DroppedLeg {
+  symbol: string;
+  reason: "unknown_symbol" | "not_held";
+}
+
 export interface ExposureDelta {
   before: ExposureSnapshot;
   after: ExposureSnapshot;
   flags: ExposureFlag[];
+  // Legs that could not be modeled (ticker with no securities row, or a sell
+  // of a symbol not held in scope). Surfaced so the UI can explain the no-op
+  // instead of rendering a misleading Δ $0 — "explain no-ops" convention.
+  droppedLegs: DroppedLeg[];
 }
 
 export interface ConstructionCaps {
@@ -266,7 +275,8 @@ function applyLegs(
   current: HoldingRow[],
   legs: HypotheticalLeg[],
   resolve: (symbol: string) => HoldingRow | null
-): HoldingRow[] {
+): { rows: HoldingRow[]; dropped: DroppedLeg[] } {
+  const dropped: DroppedLeg[] = [];
   const next: HoldingRow[] = current.map((h) => ({ ...h }));
   const indexBy = new Map<string, number>();
   next.forEach((h, i) => indexBy.set(h.symbol.toUpperCase(), i));
@@ -295,9 +305,16 @@ function applyLegs(
       }
       h.marketValue = marketValue(h.quantity, h.price, h.securityType, h.multiplier, usdPerUnit);
     } else {
-      if (leg.action === "sell") continue; // can't sell what we don't hold
+      if (leg.action === "sell") {
+        // Can't sell what we don't hold in scope.
+        dropped.push({ symbol: upper, reason: "not_held" });
+        continue;
+      }
       const synth = resolve(leg.symbol);
-      if (!synth) continue; // unknown symbol — skip silently
+      if (!synth) {
+        dropped.push({ symbol: upper, reason: "unknown_symbol" });
+        continue;
+      }
       // Same USD-notional conversion as above — see comment there. Options
       // are USD-denominated in this app (securities.currency defaults to
       // 'USD' at ingestion unless a real non-USD currency was captured) —
@@ -319,7 +336,7 @@ function applyLegs(
   // snapshot a higher baseline than BEFORE by |sum of short MVs| (constant
   // ~$57.8k inflation of every what-if Total Value Δ). Only fully-zeroed
   // positions leave the book.
-  return next.filter((h) => h.quantity !== 0);
+  return { rows: next.filter((h) => h.quantity !== 0), dropped };
 }
 
 function getCaps(db: Database.Database, scope: string): ConstructionCaps {
@@ -418,9 +435,9 @@ export function computeExposureDelta(
       factors: sym.factors,
     };
   });
-  const after = snapshot(resolved);
+  const after = snapshot(resolved.rows);
   const caps = getCaps(db, scope);
   const flags = computeFlags(after, caps);
 
-  return { before, after, flags };
+  return { before, after, flags, droppedLegs: resolved.dropped };
 }

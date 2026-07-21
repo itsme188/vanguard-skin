@@ -300,3 +300,53 @@ describe("FX conversion (Task 9c — exposure-delta market value)", () => {
     expect(result.after.totalValue).toBeCloseTo(before.before.totalValue + 1500, 2);
   });
 });
+
+describe("droppedLegs surfacing (unknown / unheld legs must not silently no-op)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    seedBasicPortfolio(db);
+  });
+
+  it("reports an unknown-symbol BUY leg as dropped instead of returning a clean no-op", () => {
+    const result = computeExposureDelta(db, "all", undefined, [
+      { symbol: "ZZZZTESTXYZ", action: "buy", dollarAmount: 10000 },
+    ]);
+    expect(result.after.totalValue).toBeCloseTo(result.before.totalValue, 2);
+    expect(result.droppedLegs).toEqual([
+      { symbol: "ZZZZTESTXYZ", reason: "unknown_symbol" },
+    ]);
+  });
+
+  it("reports a SELL of a symbol not held in scope as dropped with reason not_held", () => {
+    // JNJ is held only in account 1 (Vanguard) — selling it in IBKR scope
+    // (account 3) hits the can't-sell-what-we-don't-hold skip.
+    const result = computeExposureDelta(db, "ibkr", [3], [
+      { symbol: "JNJ", action: "sell", dollarAmount: 500 },
+    ]);
+    expect(result.after.totalValue).toBeCloseTo(result.before.totalValue, 2);
+    expect(result.droppedLegs).toEqual([{ symbol: "JNJ", reason: "not_held" }]);
+  });
+
+  it("returns an empty droppedLegs array when every leg resolves", () => {
+    const result = computeExposureDelta(db, "all", undefined, [
+      { symbol: "AAPL", action: "buy", dollarAmount: 1000 },
+      { symbol: "JNJ", action: "sell", dollarAmount: 500 },
+    ]);
+    expect(result.droppedLegs).toEqual([]);
+  });
+
+  it("mixed basket: valid legs still apply while the unknown leg is reported", () => {
+    const result = computeExposureDelta(db, "all", undefined, [
+      { symbol: "AAPL", action: "buy", dollarAmount: 1000 },
+      { symbol: "ZZZZTESTXYZ", action: "buy", dollarAmount: 10000 },
+    ]);
+    expect(result.after.totalValue).toBeCloseTo(result.before.totalValue + 1000, 2);
+    expect(result.droppedLegs).toEqual([
+      { symbol: "ZZZZTESTXYZ", reason: "unknown_symbol" },
+    ]);
+  });
+});
