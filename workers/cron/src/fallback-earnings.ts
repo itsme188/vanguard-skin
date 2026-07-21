@@ -697,6 +697,7 @@ export async function runEarningsFallback(
   let liveIbkrCache: LiveIbkrPosition[] | null = null;
   let liveIbkrTried = false;
   const getLiveIbkr = async (): Promise<LiveIbkrPosition[] | null> => {
+    // Check-and-set memo is not re-entrant-safe; all callers await sequentially — do not parallelize without switching to a shared in-flight promise.
     if (liveIbkrTried) return liveIbkrCache;
     liveIbkrTried = true;
     if (opts.dryRun) return null;

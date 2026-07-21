@@ -9,6 +9,11 @@
  * no Gateway). The write mirrors the TWS sync (source='tws') so downstream
  * queries/upserts need zero changes — see lib/ibkr/refresh.ts. Writes today's
  * (ET) snapshot; prior dates untouched.
+ *
+ * Session note (2026-07-21): running this while TWS desktop is logged in no
+ * longer evicts TWS's session — it now fails loudly with the
+ * `ibkr-session-yield` sentinel (compete:"false") because open TWS owns the
+ * brokerage session.
  */
 
 import { db } from "@/lib/db";

@@ -214,7 +214,7 @@ export async function ensureIntelForEvents(
                   "[earnings-intel] Web API session yielded to TWS — Web API straddle road off this pass",
                 );
               } else {
-                throw e; // existing per-event catch logs it as today
+                throw e; // non-sentinel errors rethrow to the Road 1b catch below ("straddle road failed" at line ~243); impliedMethod stays null, so Road 2 still runs
               }
             }
           }
