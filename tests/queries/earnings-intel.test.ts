@@ -77,6 +77,33 @@ describe("earnings_report_history", () => {
   });
 });
 
+describe("migration 069 enum CHECK constraints", () => {
+  it("rejects an invalid implied_method; NULL and valid enums pass", () => {
+    const id = seedEvent();
+    expect(() =>
+      db.prepare(
+        "INSERT INTO earnings_intel (event_id, implied_method, computed_at) VALUES (?, 'vibes', '2026-07-21 14:00:00')"
+      ).run(id)
+    ).toThrow(/CHECK/);
+    // NULL method (no-data row) and both valid enums are unaffected.
+    upsertEarningsIntel(db, { eventId: id, impliedMovePct: null, impliedMethod: null,
+      expiryUsed: null, straddleMid: null, spot: null, computedAt: "2026-07-21 14:00:00" });
+    upsertEarningsIntel(db, { eventId: id, impliedMovePct: 4.8, impliedMethod: "iv_approx",
+      expiryUsed: null, straddleMid: null, spot: null, computedAt: "2026-07-21 14:05:00" });
+    expect(getIntelForEvents(db, [id]).get(id)?.impliedMethod).toBe("iv_approx");
+  });
+
+  it("rejects an invalid report_time; NULL and pre/post-market pass", () => {
+    expect(() =>
+      db.prepare(
+        "INSERT INTO earnings_report_history (symbol, reported_date, report_time) VALUES ('TER', '2026-04-22', 'midday')"
+      ).run()
+    ).toThrow(/CHECK/);
+    replaceReportHistory(db, "TER", [HIST(), HIST({ reportedDate: "2026-01-20", reportTime: null })]);
+    expect(getReportHistoryForFamily(db, "TER")).toHaveLength(2);
+  });
+});
+
 describe("decorateCockpitIntel", () => {
   it("attaches cached intel + history summary per row; null when absent", () => {
     const id = seedEvent();
@@ -99,6 +126,29 @@ describe("decorateCockpitIntel", () => {
       impliedMovePct: 4.8, impliedMethod: "straddle", histBeatCount: 1,
     });
     expect(payload.carryover[0].intel).toBeNull();
+  });
+
+  it("family-dedupes history reads: GOOG + GOOGL rows hit earnings_report_history once", () => {
+    replaceReportHistory(db, "GOOGL", [HIST()]);
+    const rowA = makeCockpitRow(21, "GOOG", "upcoming");
+    const rowB = makeCockpitRow(22, "GOOGL", "upcoming");
+    const payload = {
+      lanes: { bmo: [], unknown: [], amc: [rowA, rowB] },
+      carryover: [],
+    } as unknown as CockpitPayload;
+
+    let histPrepares = 0;
+    const origPrepare = db.prepare.bind(db);
+    (db as unknown as { prepare: (sql: string) => unknown }).prepare = (sql: string) => {
+      if (sql.includes("FROM earnings_report_history")) histPrepares++;
+      return origPrepare(sql);
+    };
+    decorateCockpitIntel(db, payload);
+
+    expect(histPrepares).toBe(1);
+    // Both rows still get the shared family history.
+    expect(rowA.intel?.histQuarterCount).toBe(1);
+    expect(rowB.intel?.histQuarterCount).toBe(1);
   });
 });
 

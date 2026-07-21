@@ -40,6 +40,10 @@ describe("pickPostPrintExpiry", () => {
   it("21-day ceiling: far-month-only chain → null", () => {
     expect(pickPostPrintExpiry(["2026-08-15"], "2026-07-14", "AMC")).toBeNull();
   });
+  it("boundary pin: dte exactly 21 is allowed, 22 is not", () => {
+    expect(pickPostPrintExpiry(["2026-08-04"], "2026-07-14", "AMC")).toBe("2026-08-04"); // 21d
+    expect(pickPostPrintExpiry(["2026-08-05"], "2026-07-14", "AMC")).toBeNull(); // 22d
+  });
 });
 
 describe("pickAtmStrike / computeMid", () => {
@@ -56,6 +60,14 @@ describe("pickAtmStrike / computeMid", () => {
   it("no bid → last; no last → null", () => {
     expect(computeMid(0, 3.4, 2.0)).toBe(2.0);
     expect(computeMid(null, null, null)).toBeNull();
+  });
+  it("boundary pin: spread exactly 0.5×mid is sane; just above falls to last", () => {
+    expect(computeMid(3.0, 5.0, 99)).toBe(4.0); // spread 2.0 == 0.5×4.0 → mid wins
+    expect(computeMid(2.99, 5.01, 2.5)).toBe(2.5); // spread 2.02 > 0.5×4.0 → last
+  });
+  it("boundary pin: equidistant strikes tie keeps the first in array order", () => {
+    expect(pickAtmStrike([95, 105], 100)).toBe(95);
+    expect(pickAtmStrike([105, 95], 100)).toBe(105);
   });
 });
 

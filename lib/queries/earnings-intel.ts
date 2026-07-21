@@ -113,9 +113,16 @@ export function decorateCockpitIntel(db: Database.Database, payload: CockpitPayl
   const rows = allCockpitRows(payload);
   if (rows.length === 0) return;
   const intelMap = getIntelForEvents(db, rows.map((r) => r.eventId));
+  // Family-level history cache: GOOG + GOOGL rows share one read.
+  const historyByFamily = new Map<string, ReportHistoryRow[]>();
   for (const row of rows) {
     const intel = intelMap.get(row.eventId);
-    const history = getReportHistoryForFamily(db, row.symbol, 8);
+    const famKey = issuerSiblings(row.symbol).map((s) => s.toUpperCase()).sort().join("|");
+    let history = historyByFamily.get(famKey);
+    if (!history) {
+      history = getReportHistoryForFamily(db, row.symbol, 8);
+      historyByFamily.set(famKey, history);
+    }
     if (!intel && history.length === 0) {
       row.intel = null;
       continue;
