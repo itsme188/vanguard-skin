@@ -228,7 +228,14 @@ export default async function SecurityDetailPage(props: {
         <Link href={`/dashboard/charts?id=${securityId}`} className={ACTION_BUTTON_CLASS}>
           Full Chart
         </Link>
-        <Link href={`/dashboard/research?security=${securityId}`} className={ACTION_BUTTON_CLASS}>
+        {/* type+symbol prefill the composer (it never reads ?security= — that
+            param only filters the notes list, which we keep for context).
+            A bare ?security= link saved orphaned journal notes with
+            security_id NULL — 4-time QA ledger finding. */}
+        <Link
+          href={`/dashboard/research?view=notes&type=trade_thesis&symbol=${encodeURIComponent(security.symbol)}&security=${securityId}`}
+          className={ACTION_BUTTON_CLASS}
+        >
           + Note
         </Link>
         <WatchlistButton

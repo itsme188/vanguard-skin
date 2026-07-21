@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { computeTwr } from "@/lib/compute/twr";
 import { computeXirr } from "@/lib/compute/xirr";
 import { computeRiskMetrics } from "@/lib/compute/risk";
+import { dataWindowNotice } from "@/lib/compute/data-window";
 import { reconcileTwrAgainstStatements } from "@/lib/compute/twr-reconcile";
 import { computePeriodAttribution } from "@/lib/compute/period-attribution";
 import { resolveScope, resolveScopeToSingleId } from "@/lib/queries/accounts";
@@ -313,6 +314,24 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
                 }
               />
             </div>
+            {/* Honest labeling: drawdown/Sharpe come from daily_valuations
+                (history starts 2026-03; risk further clamped to the
+                all-accounts-covered floor), so under 3Y/All they compute
+                over a much shorter window than the selected period — say so
+                instead of letting the label imply otherwise. TWR/XIRR read
+                multi-year monthly_snapshots and are unaffected. */}
+            {(() => {
+              const notice = dataWindowNotice(
+                startDate,
+                riskResult?.seriesStart ?? null,
+                riskResult?.seriesEnd ?? null,
+              );
+              return notice ? (
+                <p className="text-xs text-ink-faint mt-3">
+                  Max drawdown &amp; Sharpe: {notice.charAt(0).toLowerCase() + notice.slice(1)}
+                </p>
+              ) : null;
+            })()}
           </section>
 
           {/* Window summary */}
@@ -379,7 +398,23 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
 
           {/* Equity curve with benchmark overlay */}
           {equityCurveData.length > 0 && (
-            <PerformanceCurveChart data={equityCurveData} benchmarkSymbol={BENCHMARK_SYMBOL} />
+            <>
+              <PerformanceCurveChart data={equityCurveData} benchmarkSymbol={BENCHMARK_SYMBOL} />
+              {(() => {
+                // Same honesty caption as the KPI strip: the curve plots
+                // daily_valuations, which start 2026-03 regardless of the
+                // selected period (its floor differs slightly from risk's
+                // full-coverage floor, so compute from the curve's own rows).
+                const notice = dataWindowNotice(
+                  startDate,
+                  equityCurveData[0]?.date ?? null,
+                  equityCurveData[equityCurveData.length - 1]?.date ?? null,
+                );
+                return notice ? (
+                  <p className="text-xs text-ink-faint -mt-2">{notice}</p>
+                ) : null;
+              })()}
+            </>
           )}
 
           {attribution && (

@@ -267,6 +267,31 @@ describe("computeRiskMetrics", () => {
   });
 });
 
+describe("series window exposure (seriesStart/seriesEnd)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+  });
+
+  it("exposes the actual valuation window used for the metrics", () => {
+    seedDailyValuations(db, [100, 101, 102, 103, 104]);
+    const bounds = db
+      .prepare("SELECT MIN(valuation_date) AS lo, MAX(valuation_date) AS hi FROM daily_valuations")
+      .get() as { lo: string; hi: string };
+
+    const result = computeRiskMetrics(db);
+    expect(result.seriesStart).toBe(bounds.lo);
+    expect(result.seriesEnd).toBe(bounds.hi);
+  });
+
+  it("returns null window when there are no valuations", () => {
+    const result = computeRiskMetrics(db);
+    expect(result.seriesStart).toBeNull();
+    expect(result.seriesEnd).toBeNull();
+  });
+});
+
 describe("external cash-flow adjustment", () => {
   let db: Database.Database;
 
