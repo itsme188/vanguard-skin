@@ -1833,6 +1833,38 @@ function renderPriorTranscriptBlock(ctx: PreviewContext): string {
 
 // ── Anthropic call with web_search ─────────────────────────────────
 
+// B17/B17b: with the server-side web_search tool, max_tokens covers the WHOLE
+// agentic loop — the model's interstitial text between searches plus the final
+// briefing — so a heavily-covered mega-cap can overflow caps its final markdown
+// alone never approaches (GOOG 7/22 blew 8192 and the preview fell back to the
+// cloud compact email). Escalate through the ladder; if the TOP rung still
+// truncates, fail the send — better no email than a cut-off one (the sweep's
+// claim-release path preserves the retry).
+export const OUTPUT_TOKEN_LADDER: readonly number[] = [4096, 8192, 16384];
+
+export async function createWithTokenLadder<
+  T extends { stop_reason: string | null },
+>(
+  create: (maxTokens: number) => Promise<T>,
+  phase: "preview" | "recap",
+  ladder: readonly number[] = OUTPUT_TOKEN_LADDER,
+): Promise<T> {
+  let response = await create(ladder[0]);
+  for (let i = 1; i < ladder.length && response.stop_reason === "max_tokens"; i++) {
+    console.warn(
+      `[earnings-email] ${phase} output truncated at ${ladder[i - 1]} tokens — retrying at ${ladder[i]}`,
+    );
+    response = await create(ladder[i]);
+  }
+  if (response.stop_reason === "max_tokens") {
+    throw new EarningsEmailError(
+      `Claude output for ${phase} truncated even at ${ladder[ladder.length - 1]} tokens — refusing to send a cut-off email.`,
+      500,
+    );
+  }
+  return response;
+}
+
 async function callClaude(
   prompt: string,
   phase: "preview" | "recap",
@@ -1846,35 +1878,17 @@ async function callClaude(
     );
   }
   const client = getRawAnthropicClient(featureKey);
-  // B17: a heavy print (big bogies table + web_search citations) can hit the
-  // token cap and truncate mid-table — retry once at a doubled cap, and if
-  // that ALSO truncates, fail the send (better no email than a cut-off one;
-  // the sweep's claim-release path preserves the retry).
-  let response = await client.messages.create({
-    model: modelId,
-    max_tokens: 4096,
-    system: SYSTEM_PROMPT,
-    tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }],
-    messages: [{ role: "user", content: prompt }],
-  });
-  if (response.stop_reason === "max_tokens") {
-    console.warn(
-      `[earnings-email] ${phase} output truncated at 4096 tokens — retrying at 8192`,
-    );
-    response = await client.messages.create({
-      model: modelId,
-      max_tokens: 8192,
-      system: SYSTEM_PROMPT,
-      tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }],
-      messages: [{ role: "user", content: prompt }],
-    });
-    if (response.stop_reason === "max_tokens") {
-      throw new EarningsEmailError(
-        `Claude output for ${phase} truncated even at 8192 tokens — refusing to send a cut-off email.`,
-        500,
-      );
-    }
-  }
+  const response = await createWithTokenLadder(
+    (maxTokens) =>
+      client.messages.create({
+        model: modelId,
+        max_tokens: maxTokens,
+        system: SYSTEM_PROMPT,
+        tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }],
+        messages: [{ role: "user", content: prompt }],
+      }),
+    phase,
+  );
   // Guard against Fable-style refusals (stop_reason === "refusal" means the
   // content array is empty — reading content[0] blindly would throw).
   if (response.stop_reason === "refusal") {

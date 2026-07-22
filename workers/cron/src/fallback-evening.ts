@@ -730,7 +730,7 @@ export async function runFallbackEvening(
   // ── HTML + subject ────────────────────────────────────────────────────────
   const now = new Date();
   const title = `Evening Recap — ${formatDateForTitle(now)}`;
-  const footer = `(fallback delivery, state snapshot ${snap.snapshotDate}) — Mac was offline.`;
+  const footer = `(fallback delivery, state snapshot ${snap.snapshotDate}) — the Mac didn't complete this send in time.`;
   const html = briefingToHtml(fullMd, title, footer);
 
   if (opts.dryRun) {

@@ -229,7 +229,7 @@ export async function runFallbackDigest(
   }
 
   const title = `Morning Research Digest — ${todayET()}`;
-  const footer = `(fallback delivery, state snapshot ${snapshot.snapshotDate}) — Mac was offline.`;
+  const footer = `(fallback delivery, state snapshot ${snapshot.snapshotDate}) — the Mac didn't complete this send in time.`;
   const html = briefingToHtml(digest, title, footer);
 
   if (opts.dryRun) {
