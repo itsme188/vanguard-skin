@@ -551,7 +551,7 @@ async function runSlotWrapSend(
       : "";
   const body = `${memberSections.join("\n\n")}${waitingLine}`;
   const title = `Earnings wrap — ${slot} ${date}`;
-  const footer = `Cloud EOD earnings wrap (state snapshot ${snapshot.snapshotDate}) — ${stapled.length} ${slot} name${stapled.length === 1 ? "" : "s"} stapled into one email because the Mac was offline. Analyst recs, transcripts, and sell-side web-search are only in the Mac primary version.`;
+  const footer = `Cloud EOD earnings wrap (state snapshot ${snapshot.snapshotDate}) — ${stapled.length} ${slot} name${stapled.length === 1 ? "" : "s"} stapled into one email because the Mac didn't complete these sends in time. Analyst recs, transcripts, and sell-side web-search are only in the Mac primary version.`;
   const html = briefingToHtml(body, title, footer);
 
   try {
@@ -987,7 +987,7 @@ async function composeAndSend(
   if (hasNotes) included.push("your prior notes");
   const includedNote =
     included.length > 0 ? ` ${included.join(" + ")} ARE included above.` : "";
-  const footer = `Cloud fallback delivery (state snapshot ${snapshot.snapshotDate}) — Mac was offline.${includedNote} Analyst recs, transcripts, and sell-side web-search are only in the Mac primary version.`;
+  const footer = `Cloud fallback delivery (state snapshot ${snapshot.snapshotDate}) — the Mac didn't complete this send in time (asleep, unreachable, or its compose failed).${includedNote} Analyst recs, transcripts, and sell-side web-search are only in the Mac primary version.`;
   const html = briefingToHtml(body, title, footer);
 
   await sendEmail(env, {
@@ -1430,7 +1430,7 @@ function renderNote(
       : "";
 
   if (phase === "preview") {
-    return `## Note — cloud context\n\n${haveLine}Still Mac-only: analyst recommendation trend, prior-quarter transcript context, and sell-side first takes from web search. It ran from the nightly R2 snapshot because the Mac was unreachable — the fuller version will arrive once the Mac is back online (or skip; the next launchd tick dedups against the cloud-sent marker).`;
+    return `## Note — cloud context\n\n${haveLine}Still Mac-only: analyst recommendation trend, prior-quarter transcript context, and sell-side first takes from web search. It ran from the nightly R2 snapshot because the Mac didn't complete this send in time (asleep, unreachable, or its compose failed) — the Mac's next sweep dedups against the cloud-sent marker.`;
   }
   return `## Note — cloud context\n\n${haveLine}The numbers above are from Finnhub + Yahoo bars. Still Mac-only: sell-side first takes from web search, transcript quotes once Motley Fool posts, and analyst commentary.`;
 }

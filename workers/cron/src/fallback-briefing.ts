@@ -102,7 +102,7 @@ export async function runFallbackBriefing(
   if (!content) return { kind: "error", error: "Opus returned empty briefing" };
 
   const title = `Week of ${formatWeekTitle(weekOf)}`;
-  const footer = `(fallback delivery, state snapshot ${snapshot.snapshotDate}) — Mac was offline. Options + price-levels sections unavailable.`;
+  const footer = `(fallback delivery, state snapshot ${snapshot.snapshotDate}) — the Mac didn't complete this send in time. Options + price-levels sections unavailable.`;
   const html = briefingToHtml(content, title, footer);
 
   if (opts.dryRun) {

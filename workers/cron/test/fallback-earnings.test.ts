@@ -321,6 +321,20 @@ describe("runEarningsFallback v5 context (notes + bogeys)", () => {
     const result = await runEarningsFallback(env, { now: previewWindowNow() });
     expect(result.sent).toBe(1);
   });
+
+  it("never claims the Mac was offline — the Worker can't know why the Mac didn't send (GOOG 7/22: Mac was online, its compose failed)", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeEarningsSnapshot(),
+    );
+    const result = await runEarningsFallback(env, { now: previewWindowNow() });
+    expect(result.sent).toBe(1);
+
+    const html = htmlOfLastSend();
+    expect(html).not.toContain("Mac was offline");
+    expect(html).not.toContain("Mac was unreachable");
+    expect(html).toContain("didn't complete this send");
+  });
 });
 
 describe("renderPositions privacy (presence-only, no cost-basis leak)", () => {
