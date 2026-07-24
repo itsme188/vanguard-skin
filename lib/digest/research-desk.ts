@@ -11,6 +11,7 @@
 
 import { sourceKind } from "@/lib/digest/editions";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
+import { sanitizeThemeList } from "@/lib/gmail/process";
 
 export interface EssayLike {
   source_name: string;
@@ -59,7 +60,7 @@ export function renderResearchDesk(essays: EssayLike[]): string {
       lines.push(e.summary);
       lines.push("");
     }
-    const themes = parseJsonArray(e.key_themes);
+    const themes = sanitizeThemeList(parseJsonArray(e.key_themes));
     if (themes.length > 0) {
       lines.push(`*${themes.join(" · ")}*`);
       lines.push("");

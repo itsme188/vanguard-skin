@@ -33,7 +33,7 @@ vi.mock("@/lib/research/verify-mentions", () => ({
 }));
 
 import { generateObjectForFeature } from "@/lib/ai/generate";
-import { processUnprocessedArticles, sanitizeModelSummary } from "@/lib/gmail/process";
+import { processUnprocessedArticles, sanitizeModelSummary, sanitizeThemeList } from "@/lib/gmail/process";
 
 function makeDb(): Database.Database {
   const db = new Database(":memory:");
@@ -118,6 +118,53 @@ describe("sanitizeModelSummary (pure)", () => {
 
   it("empty/nullish-ish input → empty string", () => {
     expect(sanitizeModelSummary("")).toBe("");
+  });
+
+  it("cuts at a <parameter remnant too", () => {
+    expect(sanitizeModelSummary('Real prose here.<parameter name="key_themes">["x"]')).toBe(
+      "Real prose here.",
+    );
+  });
+});
+
+describe("sanitizeThemeList (pure)", () => {
+  it("cleans the 7/22 row-55380 shape: tag wrapper + stray brackets/quotes", () => {
+    const poisoned = [
+      '<parameter name="key_themes">["Google AI Overviews impact on publisher traffic"',
+      '"search/AI Mode reducing outbound clicks"',
+      '"publisher data licensing deals and long-tail disadvantage"',
+      '"antitrust/policy implications for search dominance"',
+      '"user experience vs. publisher traffic tradeoffs"]',
+    ];
+    expect(sanitizeThemeList(poisoned)).toEqual([
+      "Google AI Overviews impact on publisher traffic",
+      "search/AI Mode reducing outbound clicks",
+      "publisher data licensing deals and long-tail disadvantage",
+      "antitrust/policy implications for search dominance",
+      "user experience vs. publisher traffic tradeoffs",
+    ]);
+  });
+
+  it("keeps normal arrays untouched and caps at 5", () => {
+    expect(sanitizeThemeList(["fed policy", "tech earnings", "a", "b", "c", "d"])).toEqual([
+      "fed policy", "tech earnings", "a", "b", "c",
+    ]);
+  });
+
+  it("splits a comma-joined string (legacy model behavior)", () => {
+    expect(sanitizeThemeList("fed policy, tech earnings")).toEqual(["fed policy", "tech earnings"]);
+  });
+
+  it("drops elements that are pure tag debris; null/objects -> []", () => {
+    expect(sanitizeThemeList(['\n<par', "real theme"])).toEqual(["real theme"]);
+    expect(sanitizeThemeList(null)).toEqual([]);
+    expect(sanitizeThemeList({})).toEqual([]);
+  });
+
+  it("legit angle brackets in themes survive (rates <1%, >50% upside)", () => {
+    expect(sanitizeThemeList(["rates <1% scenario", ">50% upside case"])).toEqual([
+      "rates <1% scenario", ">50% upside case",
+    ]);
   });
 });
 

@@ -211,13 +211,45 @@ const ANALYSIS_SCHEMA = jsonSchema<ProcessedResult>({
 // below). Matches partial/malformed tags too (<key_themes"> was observed
 // live). Worker mirror: workers/cron/src/fallback-digest.ts.
 const SUMMARY_TAG_REMNANT =
-  /<\/?(?:summary|key_themes|sentiment_score|sentiment|mentioned_symbols|portfolio_relevance|is_portfolio_relevant)\b/i;
+  /<\/?(?:summary|key_themes|sentiment_score|sentiment|mentioned_symbols|portfolio_relevance|is_portfolio_relevant|parameter)\b/i;
 
 export function sanitizeModelSummary(raw: string): string {
   if (!raw) return "";
   const s = raw.replace(/^\s*<summary[^>]*>\s*/i, "");
   const cut = s.search(SUMMARY_TAG_REMNANT);
   return (cut === -1 ? s : s.slice(0, cut)).trim();
+}
+
+/**
+ * key_themes twin of sanitizeModelSummary: the model intermittently wraps a
+ * theme element in structured-output tag debris (`<parameter
+ * name="key_themes">["theme"` — the 2026-07-22 Research Desk leak, row
+ * 55380) or leaves stray brackets/quotes from a JSON-in-string dump. Every
+ * upstream guard only filtered NON-STRING elements, so contaminated strings
+ * sailed through to the rendered italics line. Clean per element at the
+ * storage boundary AND at render (old rows). Worker semantic mirror:
+ * workers/cron/src/fallback-digest.ts::normalizeThemes.
+ */
+const THEME_TAG_STRIP = /<\/?(?:summary|key_themes|sentiment_score|sentiment|mentioned_symbols|portfolio_relevance|is_portfolio_relevant|parameter)\b[^>]*>?/gi;
+
+function cleanThemeElement(raw: string): string {
+  const cleaned = raw
+    .replace(THEME_TAG_STRIP, " ")
+    .replace(/^[\s"'[\]]+|[\s"'[\]]+$/g, "")
+    .trim();
+  // A leftover incomplete tag opening (e.g. "<par" from a truncated
+  // "<parameter") is pure debris, not real theme content — drop it outright
+  // rather than let a bare tag fragment survive as a garbage theme string.
+  return /^<\/?[a-zA-Z_]*$/.test(cleaned) ? "" : cleaned;
+}
+
+export function sanitizeThemeList(v: unknown): string[] {
+  const parts = Array.isArray(v)
+    ? v.filter((t): t is string => typeof t === "string")
+    : typeof v === "string"
+      ? v.split(",")
+      : [];
+  return parts.map(cleanThemeElement).filter((t) => t.length > 0).slice(0, 5);
 }
 
 async function extractWithClaude(
@@ -255,17 +287,13 @@ ATTRIBUTION (provenance): If this piece is primarily RELAYING a third party's vi
   // fallback for 1.5h on 2026-07-15; same model, same schema shape).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const object = _rawObject as any as ProcessedResult;
-  const themes = Array.isArray(object.key_themes)
-    ? object.key_themes.filter((t): t is string => typeof t === "string")
-    : typeof (object.key_themes as unknown) === "string"
-      ? String(object.key_themes).split(",").map((t) => t.trim()).filter(Boolean)
-      : [];
+  const themes = sanitizeThemeList(object.key_themes);
   const symbols = Array.isArray(object.mentioned_symbols)
     ? object.mentioned_symbols.filter((s): s is string => typeof s === "string")
     : [];
   return {
     summary: sanitizeModelSummary(object.summary || ""),
-    key_themes: themes.slice(0, 5),
+    key_themes: themes,
     sentiment: object.sentiment || "neutral",
     sentiment_score: Math.max(-1, Math.min(1, object.sentiment_score || 0)),
     mentioned_symbols: symbols.map((s) => s.toUpperCase().trim()),

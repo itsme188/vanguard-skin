@@ -426,6 +426,27 @@ describe("normalizeThemes", () => {
     expect(normalizeThemes({ theme: "x" })).toEqual([]);
     expect(normalizeThemes("   ")).toEqual([]);
   });
+
+  it("cleans the 7/22 row-55380 shape: tag wrapper + stray brackets/quotes", () => {
+    const poisoned = [
+      '<parameter name="key_themes">["Google AI Overviews impact on publisher traffic"',
+      '"search/AI Mode reducing outbound clicks"',
+      '"publisher data licensing deals and long-tail disadvantage"',
+      '"antitrust/policy implications for search dominance"',
+      '"user experience vs. publisher traffic tradeoffs"]',
+    ];
+    expect(normalizeThemes(poisoned)).toEqual([
+      "Google AI Overviews impact on publisher traffic",
+      "search/AI Mode reducing outbound clicks",
+      "publisher data licensing deals and long-tail disadvantage",
+      "antitrust/policy implications for search dominance",
+      "user experience vs. publisher traffic tradeoffs",
+    ]);
+  });
+
+  it("drops elements that are pure tag debris", () => {
+    expect(normalizeThemes(['\n<par', "real theme"])).toEqual(["real theme"]);
+  });
 });
 
 describe("sanitizeModelSummary", () => {

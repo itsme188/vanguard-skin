@@ -281,7 +281,7 @@ const ARTICLE_SCHEMA = jsonSchema<{
  * lib/gmail/process.ts::sanitizeModelSummary (semantic parity — change both).
  */
 const SUMMARY_TAG_REMNANT =
-  /<\/?(?:summary|key_themes|sentiment_score|sentiment|mentioned_symbols|portfolio_relevance|is_portfolio_relevant)\b/i;
+  /<\/?(?:summary|key_themes|sentiment_score|sentiment|mentioned_symbols|portfolio_relevance|is_portfolio_relevant|parameter)\b/i;
 
 export function sanitizeModelSummary(raw: string): string {
   if (!raw) return "";
@@ -290,18 +290,36 @@ export function sanitizeModelSummary(raw: string): string {
   return (cut === -1 ? s : s.slice(0, cut)).trim();
 }
 
+/**
+ * key_themes twin of sanitizeModelSummary: the model intermittently wraps a
+ * theme element in structured-output tag debris (`<parameter
+ * name="key_themes">["theme"` — the 2026-07-22 Research Desk leak, row
+ * 55380) or leaves stray brackets/quotes from a JSON-in-string dump. Every
+ * upstream guard only filtered NON-STRING elements, so contaminated strings
+ * sailed through to the rendered italics line. Clean per element. Mac
+ * mirror: lib/gmail/process.ts::sanitizeThemeList (semantic parity — change
+ * both).
+ */
+const THEME_TAG_STRIP = /<\/?(?:summary|key_themes|sentiment_score|sentiment|mentioned_symbols|portfolio_relevance|is_portfolio_relevant|parameter)\b[^>]*>?/gi;
+
+function cleanThemeElement(raw: string): string {
+  const cleaned = raw
+    .replace(THEME_TAG_STRIP, " ")
+    .replace(/^[\s"'[\]]+|[\s"'[\]]+$/g, "")
+    .trim();
+  // A leftover incomplete tag opening (e.g. "<par" from a truncated
+  // "<parameter") is pure debris, not real theme content — drop it outright
+  // rather than let a bare tag fragment survive as a garbage theme string.
+  return /^<\/?[a-zA-Z_]*$/.test(cleaned) ? "" : cleaned;
+}
+
 export function normalizeThemes(v: unknown): string[] {
-  if (Array.isArray(v)) {
-    return v.filter((t): t is string => typeof t === "string").slice(0, 5);
-  }
-  if (typeof v === "string") {
-    return v
-      .split(",")
-      .map((t) => t.trim())
-      .filter((t) => t.length > 0)
-      .slice(0, 5);
-  }
-  return [];
+  const parts = Array.isArray(v)
+    ? v.filter((t): t is string => typeof t === "string")
+    : typeof v === "string"
+      ? v.split(",")
+      : [];
+  return parts.map(cleanThemeElement).filter((t) => t.length > 0).slice(0, 5);
 }
 
 async function processArticle(
@@ -405,7 +423,7 @@ export function composeDigestMarkdown(
       url: a.source_url || a.website_url,
       summary: a.summary,
       portfolio_relevance: a.portfolio_relevance,
-      themes: parseJsonArray(a.key_themes),
+      themes: normalizeThemes(parseJsonArray(a.key_themes)),
     })),
   ];
 
