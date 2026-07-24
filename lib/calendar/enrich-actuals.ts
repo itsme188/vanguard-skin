@@ -365,6 +365,23 @@ async function fetchFinnhubActual(
   };
 }
 
+/**
+ * Standalone probe: has Finnhub published an actual for (symbol, date)?
+ * Used by the email sweep's already-reported preview guard (2026-07-23
+ * IMAX case: a BMO reporter mis-slotted as AMC put the preview window
+ * AFTER the real print). Best-effort — missing API key, network failure,
+ * and the foreign-listing symbol-echo guard all return false (preview
+ * proceeds; false negatives are safe, false positives are not).
+ */
+export async function probeFinnhubActualExists(symbol: string, date: string): Promise<boolean> {
+  try {
+    const { actual } = await fetchFinnhubActual(symbol, date);
+    return actual !== null;
+  } catch {
+    return false;
+  }
+}
+
 // ── Claude + web_search fallback for non-FRED macro ─────────────────
 
 async function fetchNonFredActualViaClaude(

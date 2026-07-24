@@ -90,12 +90,21 @@ function allCockpitRows(payload: CockpitPayload): CockpitRow[] {
  * cockpit-stages.ts marks "released" via its isPastDay fallback even without
  * a known release time. "upcoming"/"unknown" rows have not released yet and
  * still flow through to ensureIntelForEvents.
+ *
+ * `r.stages.actual === "pending"` (2026-07-23, IMAX case) is a SECOND,
+ * independent guard: a wrong AMC/BMO slot from the calendar source reads
+ * "not released" from the recorded instant even after the real print has
+ * landed, so `released.state` alone can't be trusted. `actual` is a bare
+ * union ("captured" | "implausible" | "blocked" | "pending") — "blocked"
+ * already implies released (see deriveEventStages), so requiring "pending"
+ * here excludes any row with a captured/implausible actual regardless of
+ * what the recorded release slot says.
  */
 export function cockpitRowsToIntelEvents(
   payload: CockpitPayload
 ): { id: number; symbol: string; event_date: string; event_time: string | null }[] {
   return allCockpitRows(payload)
-    .filter((r) => r.stages.released.state !== "released")
+    .filter((r) => r.stages.released.state !== "released" && r.stages.actual === "pending")
     .map((r) => ({
       id: r.eventId,
       symbol: r.symbol,

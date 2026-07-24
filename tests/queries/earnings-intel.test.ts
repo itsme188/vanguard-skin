@@ -222,4 +222,22 @@ describe("cockpitRowsToIntelEvents", () => {
       { id: 10, symbol: "TER", event_date: "2026-07-14", event_time: "AMC" },
     ]);
   });
+
+  it("excludes a row whose released state is upcoming but whose actual stage is captured (IMAX 7/23 wrong-slot case)", () => {
+    const wrongSlot = makeCockpitRow(5, "IMAX", "upcoming");
+    wrongSlot.stages.actual = "captured";
+    const normalUpcoming = makeCockpitRow(6, "TER", "upcoming");
+
+    const payload: CockpitPayload = {
+      generatedAt: "2026-07-23T14:00:00.000Z",
+      nextRelease: null,
+      lanes: { bmo: [], amc: [wrongSlot, normalUpcoming], unknown: [] },
+      carryover: [],
+      skippedRows: 0,
+    };
+
+    const events = cockpitRowsToIntelEvents(payload);
+    expect(events.some((e) => e.id === 5)).toBe(false);
+    expect(events.some((e) => e.id === 6)).toBe(true);
+  });
 });

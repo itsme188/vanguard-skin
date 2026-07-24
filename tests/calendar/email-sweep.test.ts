@@ -63,6 +63,24 @@ vi.mock("@/lib/earnings/wrap-send", () => ({
   runWrapPass: (...a: unknown[]) => runWrapPass(...a),
 }));
 
+// Already-reported preview guard (2026-07-23, IMAX case): the sweep's guard
+// calls probeFinnhubActualExists as its live layer. Default resolves false so
+// every PRE-EXISTING preview test in this file (which never set an
+// actual_value and doesn't know about this mock) keeps sending unaffected —
+// only the new describe block below overrides it per-test.
+// enrichment-runner.ts (transitively loaded via findEmailCandidates, and NOT
+// itself mocked) also imports fetchActualForEvent from this same module —
+// importOriginal spreads the real exports through so that import stays a
+// real function, and only probeFinnhubActualExists is replaced.
+const probeFinnhubActualExists = vi.fn(async (..._args: unknown[]) => false);
+vi.mock("@/lib/calendar/enrich-actuals", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/calendar/enrich-actuals")>();
+  return {
+    ...actual,
+    probeFinnhubActualExists: (...a: unknown[]) => probeFinnhubActualExists(...a),
+  };
+});
+
 // #12 B1: the same-day transcript step is best-effort and unrelated to the
 // marker-dance/wrap-suppression assertions this file pins — mock it out so
 // fixtures here (which coincidentally satisfy fetchSameDayTranscripts' own
@@ -575,6 +593,103 @@ describe("wrap-mode suppression (#17 T3)", () => {
     // unconditionally) — it just can't match yesterday's cluster.
     expect(runWrapPass).toHaveBeenCalledTimes(1);
     expect(runWrapPass).toHaveBeenCalledWith(db, { now: NOW_NEXT_DAY });
+  });
+});
+
+/**
+ * Already-reported preview guard (2026-07-23, IMAX case): IMAX was tagged
+ * AMC 16:15 by both calendar sources but reported pre-market — the preview
+ * fired at 14:07 ET, hours after the real print, because the preview window
+ * is measured only against the RECORDED release instant. Two layers: the
+ * row's own actual_value (cheap), then a live Finnhub probe. On detection,
+ * a permanent per-event preview skip is recorded (recap is untouched — the
+ * IMAX recap still went out at 16:43) and the guard is best-effort (an
+ * error falls through to the normal send).
+ */
+describe("already-reported preview guard (IMAX 7/23 case)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+
+    sendPreview.mockClear();
+    sendRecap.mockClear();
+    reapStaleClaims.mockClear();
+    checkMarker.mockClear();
+    setRunning.mockClear();
+    clearRunning.mockClear();
+    writeSent.mockClear();
+    fetchCloudSent.mockClear();
+    fetchCloudSent.mockResolvedValue([]);
+    runWrapPass.mockClear();
+    runWrapPass.mockResolvedValue({ wrapsSent: 0, wrapped: 0, stillWaiting: [] });
+    fetchSameDayTranscripts.mockClear();
+    fetchSameDayTranscripts.mockResolvedValue({ attempted: 0, fetched: 0 });
+    probeFinnhubActualExists.mockClear();
+    probeFinnhubActualExists.mockResolvedValue(false);
+  });
+
+  it("skips the preview when the event row already has an actual_value", async () => {
+    const eventId = seedHeldPreviewCandidate(db, "IMAX");
+    db.prepare(`UPDATE calendar_events SET actual_value = 'EPS 0.43 · Rev 102,840,000' WHERE id = ?`).run(
+      eventId,
+    );
+
+    const summary = await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(sendPreview).not.toHaveBeenCalled();
+    const r = summary.results.find((x) => x.eventId === eventId)!;
+    expect(r.skipped).toBe("already-reported");
+    expect(r.ok).toBe(true);
+    expect(summary.skipped).toBeGreaterThanOrEqual(1);
+
+    // Permanent skip row recorded so the candidate never re-enters.
+    const skip = db
+      .prepare(`SELECT 1 FROM earnings_email_skips WHERE event_id = ? AND phase = 'preview'`)
+      .get(eventId);
+    expect(skip).toBeTruthy();
+
+    // Actual_value present → cheap-layer catch, no live probe needed.
+    expect(probeFinnhubActualExists).not.toHaveBeenCalled();
+  });
+
+  it("skips when the live Finnhub probe says the print is out", async () => {
+    const eventId = seedHeldPreviewCandidate(db, "IMAX");
+    probeFinnhubActualExists.mockResolvedValueOnce(true);
+
+    const summary = await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(sendPreview).not.toHaveBeenCalled();
+    expect(summary.results.find((x) => x.eventId === eventId)!.skipped).toBe("already-reported");
+  });
+
+  it("sends normally when neither layer detects a print", async () => {
+    seedHeldPreviewCandidate(db, "IMAX");
+    probeFinnhubActualExists.mockResolvedValueOnce(false);
+
+    await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(sendPreview).toHaveBeenCalledTimes(1);
+  });
+
+  it("a probe failure never blocks the send (guard is best-effort)", async () => {
+    seedHeldPreviewCandidate(db, "IMAX");
+    probeFinnhubActualExists.mockRejectedValueOnce(new Error("network"));
+
+    await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(sendPreview).toHaveBeenCalledTimes(1);
+  });
+
+  it("recap candidates are never probed", async () => {
+    seedHeldRecapCandidate(db, "IMAX");
+
+    await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(probeFinnhubActualExists).not.toHaveBeenCalled();
+    expect(sendRecap).toHaveBeenCalledTimes(1);
   });
 });
 
