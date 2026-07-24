@@ -447,6 +447,13 @@ describe("normalizeThemes", () => {
   it("drops elements that are pure tag debris", () => {
     expect(normalizeThemes(['\n<par', "real theme"])).toEqual(["real theme"]);
   });
+
+  it("preserves legitimate trailing apostrophes (scare quotes / possessives)", () => {
+    expect(normalizeThemes(["housing's 'shoreline problem'", "banks' pricing power"])).toEqual([
+      "housing's 'shoreline problem'",
+      "banks' pricing power",
+    ]);
+  });
 });
 
 describe("sanitizeModelSummary", () => {

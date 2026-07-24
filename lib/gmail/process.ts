@@ -4,6 +4,7 @@ import { generateObjectForFeature } from "@/lib/ai/generate";
 import { resolveFeatureModel } from "@/lib/ai/models";
 import { verifyMentions } from "@/lib/research/verify-mentions";
 import { truncateForPrompt } from "./prompt-caps";
+import { sanitizeModelSummary, sanitizeThemeList } from "@/lib/gmail/theme-sanitize";
 
 interface UnprocessedArticle {
   id: number;
@@ -204,53 +205,13 @@ const ANALYSIS_SCHEMA = jsonSchema<ProcessedResult>({
   ],
 });
 
-// The model intermittently dumps its ENTIRE tagged response inside the
-// `summary` string field ("...</summary>\n<key_themes">[...]<sentiment>...").
-// jsonSchema() can't catch that — the field IS a valid string — so guard at
-// the storage boundary (same family as the key_themes-as-string normalize
-// below). Matches partial/malformed tags too (<key_themes"> was observed
-// live). Worker mirror: workers/cron/src/fallback-digest.ts.
-const SUMMARY_TAG_REMNANT =
-  /<\/?(?:summary|key_themes|sentiment_score|sentiment|mentioned_symbols|portfolio_relevance|is_portfolio_relevant|parameter)\b/i;
-
-export function sanitizeModelSummary(raw: string): string {
-  if (!raw) return "";
-  const s = raw.replace(/^\s*<summary[^>]*>\s*/i, "");
-  const cut = s.search(SUMMARY_TAG_REMNANT);
-  return (cut === -1 ? s : s.slice(0, cut)).trim();
-}
-
-/**
- * key_themes twin of sanitizeModelSummary: the model intermittently wraps a
- * theme element in structured-output tag debris (`<parameter
- * name="key_themes">["theme"` — the 2026-07-22 Research Desk leak, row
- * 55380) or leaves stray brackets/quotes from a JSON-in-string dump. Every
- * upstream guard only filtered NON-STRING elements, so contaminated strings
- * sailed through to the rendered italics line. Clean per element at the
- * storage boundary AND at render (old rows). Worker semantic mirror:
- * workers/cron/src/fallback-digest.ts::normalizeThemes.
- */
-const THEME_TAG_STRIP = /<\/?(?:summary|key_themes|sentiment_score|sentiment|mentioned_symbols|portfolio_relevance|is_portfolio_relevant|parameter)\b[^>]*>?/gi;
-
-function cleanThemeElement(raw: string): string {
-  const cleaned = raw
-    .replace(THEME_TAG_STRIP, " ")
-    .replace(/^[\s"'[\]]+|[\s"'[\]]+$/g, "")
-    .trim();
-  // A leftover incomplete tag opening (e.g. "<par" from a truncated
-  // "<parameter") is pure debris, not real theme content — drop it outright
-  // rather than let a bare tag fragment survive as a garbage theme string.
-  return /^<\/?[a-zA-Z_]*$/.test(cleaned) ? "" : cleaned;
-}
-
-export function sanitizeThemeList(v: unknown): string[] {
-  const parts = Array.isArray(v)
-    ? v.filter((t): t is string => typeof t === "string")
-    : typeof v === "string"
-      ? v.split(",")
-      : [];
-  return parts.map(cleanThemeElement).filter((t) => t.length > 0).slice(0, 5);
-}
+// sanitizeModelSummary / sanitizeThemeList moved to lib/gmail/theme-sanitize.ts
+// (2026-07-23) — that module has zero imports (no better-sqlite3 / AI SDK),
+// so it's safe for a "use client" component (Research Feeds' ThemePills) to
+// import directly. Re-exported here so every existing server-side importer
+// (extractWithClaude below, digest render sites, repair scripts, tests)
+// keeps working unchanged.
+export { sanitizeModelSummary, sanitizeThemeList };
 
 async function extractWithClaude(
   article: UnprocessedArticle,

@@ -166,6 +166,13 @@ describe("sanitizeThemeList (pure)", () => {
       "rates <1% scenario", ">50% upside case",
     ]);
   });
+
+  it("preserves legitimate trailing apostrophes (scare quotes / possessives)", () => {
+    expect(sanitizeThemeList(["housing's 'shoreline problem'", "banks' pricing power"])).toEqual([
+      "housing's 'shoreline problem'",
+      "banks' pricing power",
+    ]);
+  });
 });
 
 describe("processUnprocessedArticles stores a sanitized summary", () => {

@@ -305,7 +305,7 @@ const THEME_TAG_STRIP = /<\/?(?:summary|key_themes|sentiment_score|sentiment|men
 function cleanThemeElement(raw: string): string {
   const cleaned = raw
     .replace(THEME_TAG_STRIP, " ")
-    .replace(/^[\s"'[\]]+|[\s"'[\]]+$/g, "")
+    .replace(/^[\s"[\]]+|[\s"[\]]+$/g, "")
     .trim();
   // A leftover incomplete tag opening (e.g. "<par" from a truncated
   // "<parameter") is pure debris, not real theme content — drop it outright
