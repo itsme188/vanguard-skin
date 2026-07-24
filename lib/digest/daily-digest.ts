@@ -8,6 +8,7 @@ import { composeOvernightBlock } from "@/lib/digest/overnight";
 import { composeTodaysReportersBlock } from "@/lib/digest/todays-reporters";
 import { composeCallTranscriptsBlock } from "@/lib/digest/call-transcripts";
 import { splitEssays, renderResearchDesk, insertCrossFilePointers } from "@/lib/digest/research-desk";
+import { sanitizeThemeList } from "@/lib/gmail/process";
 import {
   partitionListingOnlyHeldBuckets,
   renderThinCoverageLines,
@@ -190,7 +191,7 @@ export function generateDigestSince(db: Database.Database, sinceDate: string): s
     }
 
     // Themes
-    const themes = parseJsonArray(article.key_themes);
+    const themes = sanitizeThemeList(parseJsonArray(article.key_themes));
     if (themes.length > 0) {
       lines.push(`*${themes.join(" · ")}*`);
       lines.push("");
@@ -359,7 +360,7 @@ function renderPerSourceBody(
       lines.push("");
     }
 
-    const themes = parseJsonArray(article.key_themes);
+    const themes = sanitizeThemeList(parseJsonArray(article.key_themes));
     if (themes.length > 0) {
       lines.push(`*${themes.join(" · ")}*`);
       lines.push("");
