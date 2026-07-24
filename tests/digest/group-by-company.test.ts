@@ -123,4 +123,19 @@ describe("renderDigestByCompany", () => {
     const md = renderDigestByCompany(articles, "", "Friday");
     expect(md).toContain("## Macro / no-ticker (1)");
   });
+
+  it("cleans structured-output tag debris from key_themes before rendering", () => {
+    const articles = [
+      article(1, "Vital", "NVDA note", ["NVDA"], {
+        summary: "Mention",
+        key_themes: JSON.stringify([
+          '<parameter name="key_themes">["real theme"',
+          '"second theme"',
+        ]),
+      }),
+    ];
+    const md = renderDigestByCompany(articles, "", "Friday");
+    expect(md).toContain("*real theme · second theme*");
+    expect(md).not.toContain("<parameter");
+  });
 });

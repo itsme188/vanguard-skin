@@ -27,6 +27,7 @@ import { briefingToHtml } from "./html";
 import { todayET } from "./dst";
 import {
   fetchAndProcessNewArticles,
+  normalizeThemes,
   type FallbackEnv,
   type FallbackResult,
   type ProcessedArticle,
@@ -294,7 +295,7 @@ function renderPerSource(articles: RecentArticleMeta[]): string {
       lines.push(`> **Portfolio relevance**: ${a.portfolio_relevance}`);
       lines.push("");
     }
-    const themes = parseJsonArray(a.key_themes);
+    const themes = normalizeThemes(parseJsonArray(a.key_themes));
     if (themes.length > 0) {
       lines.push(`*${themes.join(" · ")}*`);
       lines.push("");

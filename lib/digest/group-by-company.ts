@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { getRecentArticles } from "@/lib/queries/research";
 import { formatTriggeredAlertsSection } from "./daily-digest";
+import { sanitizeThemeList } from "@/lib/gmail/process";
 
 export interface ArticleLike {
   id: number;
@@ -88,12 +89,17 @@ export function parseSymbolList(json: string | null): string[] {
 
 function parseThemes(json: string | null): string[] {
   if (!json) return [];
+  let arr: unknown;
   try {
-    const arr = JSON.parse(json);
-    return Array.isArray(arr) ? arr : [];
+    arr = JSON.parse(json);
   } catch {
     return [];
   }
+  // Same per-element tag-debris/mangled-string guard as the daily-digest and
+  // research-desk render sites — this table (research_articles.key_themes)
+  // can carry pre-guard rows contaminated with structured-output tag
+  // remnants (the 2026-07-22 Research Desk leak).
+  return sanitizeThemeList(arr);
 }
 
 /**
