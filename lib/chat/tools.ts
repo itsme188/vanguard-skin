@@ -25,6 +25,7 @@ import { detectStrategies, type PositionLeg } from "@/lib/compute/options-strate
 import { getActiveLevels, getAlerts, getLevelsForSecurity } from "@/lib/queries/security-levels";
 import { resolveLevelPrice } from "@/lib/alerts/resolve-level-price";
 import { getFilingSection } from "@/lib/apis/filing-extract";
+import { sanitizeThemeList } from "@/lib/gmail/process";
 import {
   searchResearchDocuments,
   type ResearchDocumentType,
@@ -1445,7 +1446,7 @@ export async function executeTool(
             subject: a.subject,
             summary: a.summary,
             sentiment: a.sentiment,
-            themes: a.key_themes ? JSON.parse(a.key_themes) : [],
+            themes: a.key_themes ? sanitizeThemeList(JSON.parse(a.key_themes)) : [],
             tickers: a.mentioned_symbols
               ? JSON.parse(a.mentioned_symbols)
               : [],
