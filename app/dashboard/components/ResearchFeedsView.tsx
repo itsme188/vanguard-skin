@@ -4,6 +4,7 @@ import { useState, useCallback, useRef } from "react";
 import Link from "next/link";
 import type { ResearchArticle, ResearchSource, FilteredArticle } from "@/lib/queries/research";
 import { trimEmailFooter } from "@/lib/gmail/sanitize";
+import { sanitizeThemeList } from "@/lib/gmail/theme-sanitize";
 import { ManageSourcesModal } from "./ManageSourcesModal";
 import { SendDigestPanel } from "./SendDigestPanel";
 import { DigestEmailViewer } from "./DigestEmailViewer";
@@ -99,7 +100,7 @@ function ThemePills({ themesJson }: { themesJson: string | null }) {
   try {
     const parsed = JSON.parse(themesJson);
     if (!Array.isArray(parsed)) return null;
-    themes = parsed;
+    themes = sanitizeThemeList(parsed);
   } catch { return null; }
   if (themes.length === 0) return null;
   return (
