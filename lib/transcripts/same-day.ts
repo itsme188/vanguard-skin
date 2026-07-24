@@ -53,10 +53,16 @@
  * quotes) via the `transcriptSummary` feature key and stores it over the
  * cached row's `summary` column — every other column is echoed back
  * unchanged since `upsertTranscript` is a full-replace UPSERT keyed on
- * `source_key`. No-ops (no AI call) when the transcript has no text. Never
- * throws: an AI failure/refusal leaves fetchTranscript's own extractive
- * summary in place, and is caught independently of the fetch-failure catch
- * below so a summarize failure is never misreported as a fetch failure.
+ * `source_key`. No-ops (no AI call) when the transcript has no text, or
+ * (2026-07-23) when it's under `MIN_TRANSCRIPT_CHARS_FOR_AI` — a thin 8-K
+ * cover page has nothing to summarize and the AI will say so. Never throws:
+ * an AI failure, a thrown error, OR a soft refusal that fails
+ * `isValidDeskNote` (store-time validation, 2026-07-23 — a bulleted
+ * "please provide the transcript" request survived both stripModelPreamble
+ * and the refusal finish-reason guard and shipped in the 7/23 digest)
+ * leaves fetchTranscript's own extractive summary in place, and is caught
+ * independently of the fetch-failure catch below so a summarize failure is
+ * never misreported as a fetch failure.
  */
 
 import type Database from "better-sqlite3";
@@ -78,6 +84,33 @@ const DEFAULT_MAX_ATTEMPTS = 2;
 
 const SUMMARY_PROMPT_CHAR_CAP = 50_000;
 const SUMMARY_MAX_OUTPUT_TOKENS = 900;
+
+/**
+ * A desk note the prompt actually asked for carries at least one of the
+ * mandated bold section labels. A soft refusal (model asking for its inputs
+ * — the 2026-07-22 CSX leak) carries none, and typically asks the operator
+ * to "please provide" content. stripModelPreamble can't catch this: the
+ * refusal opened with a `- ` list marker (valid markdown), and the refusal
+ * finish-reason guard can't either (finishReason was "stop").
+ */
+const DESK_NOTE_SECTION_RE = /\*\*(Guidance|Tone|Surprises|Key quotes)\*\*/i;
+const DESK_NOTE_REFUSAL_RE =
+  /please provide|provide the transcript|i(?:'|’)ll produce the|as specified[.,]?\s*$/im;
+
+export function looksLikeDeskNoteRefusal(text: string): boolean {
+  return DESK_NOTE_REFUSAL_RE.test(text);
+}
+
+export function isValidDeskNote(text: string): boolean {
+  if (!text) return false;
+  if (!DESK_NOTE_SECTION_RE.test(text)) return false;
+  if (looksLikeDeskNoteRefusal(text)) return false;
+  return true;
+}
+
+/** Below this, an 8-K is a bare cover page (observed thin covers: 3,774 and
+ * 4,091 chars) — there is nothing for the AI to summarize, so don't ask. */
+export const MIN_TRANSCRIPT_CHARS_FOR_AI = 5000;
 
 function buildSummaryPrompt(transcriptText: string): string {
   const text = transcriptText.slice(0, SUMMARY_PROMPT_CHAR_CAP);
@@ -103,8 +136,13 @@ export async function summarizeTranscript(
   db: Database.Database,
   transcript: EarningsTranscript,
 ): Promise<void> {
+  if (!transcript.transcript || transcript.transcript.length < MIN_TRANSCRIPT_CHARS_FOR_AI) {
+    console.log(
+      `[transcripts] Skipping AI desk note for ${transcript.ticker} Q${transcript.quarter}: transcript too thin (${transcript.transcript?.length ?? 0} chars)`,
+    );
+    return;
+  }
   const text = transcript.transcript;
-  if (!text || text.trim().length === 0) return;
 
   try {
     const res = await generateTextForFeature("transcriptSummary", {
@@ -117,7 +155,12 @@ export async function summarizeTranscript(
     // morning digest, #12 B3), so strip at STORE time. Mirrors the
     // stripModelPreamble post-processor in lib/digest/send-earnings-email.ts.
     const summary = stripModelPreamble(res.text.trim());
-    if (!summary) return;
+    if (!summary || !isValidDeskNote(summary)) {
+      console.warn(
+        `[transcripts] AI desk note for ${transcript.ticker} Q${transcript.quarter} rejected (not desk-note shaped) — extractive summary kept`,
+      );
+      return;
+    }
 
     upsertTranscript(db, {
       security_id: transcript.security_id,
