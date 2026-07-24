@@ -157,7 +157,7 @@ export async function processUnprocessedArticles(
 
 // ── Claude extraction ───────────────────────────────────────────────
 
-const ANALYSIS_SCHEMA = jsonSchema<ProcessedResult>({
+export const ANALYSIS_SCHEMA = jsonSchema<ProcessedResult>({
   type: "object",
   additionalProperties: false,
   properties: {
@@ -186,12 +186,13 @@ const ANALYSIS_SCHEMA = jsonSchema<ProcessedResult>({
     },
     portfolio_relevance: {
       type: "string",
-      description: "One sentence on how this article is relevant to the user's current portfolio holdings.",
+      description:
+        "One sentence on how this article is relevant to the current portfolio holdings, written in second person addressed to the portfolio owner ('relevant to your NVDA position') — never third-person voice.",
     },
     is_portfolio_relevant: {
       type: "boolean",
       description:
-        "TRUE when the article touches any held or watchlist ticker OR meaningfully shifts macro/sector context that already affects the portfolio (Fed policy, rates, broad indices, sector that the user holds). FALSE only for clearly off-topic content (single-stock pieces about names the user doesn't own and that don't read through to held names, crypto/coin-only commentary, lifestyle/non-finance). Default to TRUE when uncertain — prefer to under-filter.",
+        "TRUE when the article touches any held or watchlist ticker OR meaningfully shifts macro/sector context that already affects the portfolio (Fed policy, rates, broad indices, a sector held in the portfolio). FALSE only for clearly off-topic content (single-stock pieces about names not held in the portfolio and that don't read through to held names, crypto/coin-only commentary, lifestyle/non-finance). Default to TRUE when uncertain — prefer to under-filter.",
     },
   },
   required: [
@@ -237,7 +238,9 @@ ${article.processing_prompt ? `\nSource-specific instructions: ${article.process
 Article text:
 ${text}
 
-ATTRIBUTION (provenance): If this piece is primarily RELAYING a third party's views — a podcast guest, interview subject, or quoted analyst (e.g. the newsletter summarizing someone else's remarks) — the summary MUST name that originator and make the relaying explicit ("TMT Breakout summarizes Gavin Baker's podcast remarks: ..."), and never flatten their view into the newsletter's own first-person voice. When the views are the newsletter author's own, no attribution phrase is needed.`,
+ATTRIBUTION (provenance): If this piece is primarily RELAYING a third party's views — a podcast guest, interview subject, or quoted analyst (e.g. the newsletter summarizing someone else's remarks) — the summary MUST name that originator and make the relaying explicit ("TMT Breakout summarizes Gavin Baker's podcast remarks: ..."), and never flatten their view into the newsletter's own first-person voice. When the views are the newsletter author's own, no attribution phrase is needed.
+
+VOICE: the summary and portfolio_relevance fields are read directly by the portfolio owner in their morning email. Address them in second person ("your CSX position", "your semis exposure") or neutral prose; NEVER refer to "the user", "the client", or "the portfolio manager" in third person.`,
   });
 
   // Normalize. is_portfolio_relevant defaults to true on a missing/null

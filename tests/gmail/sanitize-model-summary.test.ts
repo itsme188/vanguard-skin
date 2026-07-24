@@ -33,7 +33,12 @@ vi.mock("@/lib/research/verify-mentions", () => ({
 }));
 
 import { generateObjectForFeature } from "@/lib/ai/generate";
-import { processUnprocessedArticles, sanitizeModelSummary, sanitizeThemeList } from "@/lib/gmail/process";
+import {
+  ANALYSIS_SCHEMA,
+  processUnprocessedArticles,
+  sanitizeModelSummary,
+  sanitizeThemeList,
+} from "@/lib/gmail/process";
 
 function makeDb(): Database.Database {
   const db = new Database(":memory:");
@@ -200,5 +205,11 @@ describe("processUnprocessedArticles stores a sanitized summary", () => {
     expect(row.summary).toBe("Vital Knowledge reports tariff developments adding cost burdens.");
     expect(row.summary).not.toContain("</summary>");
     expect(row.summary).not.toContain("<sentiment>");
+  });
+});
+
+describe("extraction voice — reader-facing fields must not say 'the user'", () => {
+  it("ANALYSIS_SCHEMA descriptions are second-person", () => {
+    expect(JSON.stringify(ANALYSIS_SCHEMA).toLowerCase()).not.toContain("the user");
   });
 });
