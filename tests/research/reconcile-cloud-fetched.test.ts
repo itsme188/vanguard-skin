@@ -134,6 +134,24 @@ describe("reconcileCloudFetchedNewsletters", () => {
     expect(row.is_relevant).toBe(1);
   });
 
+  it("sanitizes tag-contaminated key_themes before storing", async () => {
+    const db = makeDb();
+    mockWorker({
+      list: {
+        m1: {
+          ...BASE_PAYLOAD,
+          key_themes: ['<parameter name="key_themes">["fed policy"', "tech earnings"],
+        },
+      },
+    });
+
+    const result = await reconcileCloudFetchedNewsletters(db, "secret");
+
+    expect(result.reconciled).toBe(1);
+    const row = db.prepare(`SELECT key_themes FROM research_articles WHERE gmail_message_id = 'm1'`).get() as any;
+    expect(JSON.parse(row.key_themes)).toEqual(["fed policy", "tech earnings"]);
+  });
+
   it("applies the D3 gate when is_portfolio_relevant=false and source.allow_off_topic=0", async () => {
     const db = makeDb();
     mockWorker({

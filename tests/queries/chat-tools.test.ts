@@ -747,6 +747,25 @@ describe("executeTool dispatcher", () => {
     expect(result).toHaveProperty("error");
   });
 
+  it("query_research_feeds falls back to sanitizeThemeList when key_themes is not valid JSON", async () => {
+    // Simulates a mangled row (the tag-remnant leak class) where key_themes
+    // never made it into the DB as a JSON array — a bare JSON.parse would
+    // throw and crash the whole tool call. The guard should fall back to
+    // the raw string, which sanitizeThemeList comma-splits.
+    db.prepare(
+      `INSERT INTO research_articles
+         (source_id, received_at, subject, sender, raw_text, key_themes, processed_at)
+       VALUES (1, '2026-07-23 09:00:00', 'Morning note', 'feed@example.com', 'body',
+               'fed policy, tech earnings', '2026-07-23 09:05:00')`
+    ).run();
+
+    const result = await executeTool(db, "query_research_feeds", {}) as {
+      data: { articles: Array<{ themes: string[] }> };
+    };
+    expect(result.data.articles).toHaveLength(1);
+    expect(result.data.articles[0].themes).toEqual(["fed policy", "tech earnings"]);
+  });
+
   it("passes account_name to income summary", async () => {
     const sec = seedSecurity(db, "VTI");
     seedTransaction(db, 1, sec, { trade_date: "2025-06-15", type: "DIVIDEND", amount: 100 });

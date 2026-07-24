@@ -11,7 +11,7 @@
 
 import { sourceKind } from "@/lib/digest/editions";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
-import { sanitizeThemeList } from "@/lib/gmail/process";
+import { sanitizeThemeList } from "@/lib/gmail/theme-sanitize";
 
 export interface EssayLike {
   source_name: string;

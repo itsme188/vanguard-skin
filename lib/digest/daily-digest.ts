@@ -8,7 +8,7 @@ import { composeOvernightBlock } from "@/lib/digest/overnight";
 import { composeTodaysReportersBlock } from "@/lib/digest/todays-reporters";
 import { composeCallTranscriptsBlock } from "@/lib/digest/call-transcripts";
 import { splitEssays, renderResearchDesk, insertCrossFilePointers } from "@/lib/digest/research-desk";
-import { sanitizeThemeList } from "@/lib/gmail/process";
+import { sanitizeThemeList } from "@/lib/gmail/theme-sanitize";
 import {
   partitionListingOnlyHeldBuckets,
   renderThinCoverageLines,

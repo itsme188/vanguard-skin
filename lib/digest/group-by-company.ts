@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { getRecentArticles } from "@/lib/queries/research";
 import { formatTriggeredAlertsSection } from "./daily-digest";
-import { sanitizeThemeList } from "@/lib/gmail/process";
+import { sanitizeThemeList } from "@/lib/gmail/theme-sanitize";
 
 export interface ArticleLike {
   id: number;
