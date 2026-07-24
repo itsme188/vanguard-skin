@@ -56,6 +56,7 @@ export const SYMBOL_RELEASE_TIMES_ET: Record<string, string> = {
   AMZN: "16:01",
   GOOGL: "16:01",
   GOOG: "16:01",
+  IMAX: "07:30", // verified: Q2 2026 press release wire PUB 07/23/2026 07:30 AM ET (DISC 07:33 AM ET) — BusinessWire, corroborated by AOL + voiceofalexandria mirrors. BMO reporter; Finnhub+Nasdaq both mis-slotted it AMC (2026-07-23).
   META: "16:05",
   MSFT: "16:05",
 };
