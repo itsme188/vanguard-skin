@@ -653,6 +653,11 @@ describe("already-reported preview guard (IMAX 7/23 case)", () => {
 
     // Actual_value present → cheap-layer catch, no live probe needed.
     expect(probeFinnhubActualExists).not.toHaveBeenCalled();
+
+    // KV marker claimed too: the Worker's preview fallback can't see
+    // earnings_email_skips, so without this marker its later
+    // [105,120]-window tick would still ship the wrong-slot preview.
+    expect(writeSent).toHaveBeenCalledWith("preview", eventId);
   });
 
   it("skips when the live Finnhub probe says the print is out", async () => {

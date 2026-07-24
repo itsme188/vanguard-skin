@@ -33,10 +33,6 @@ vi.mock("@/lib/gmail/fetch", () => ({
 }));
 vi.mock("@/lib/gmail/process", () => ({
   processUnprocessedArticles: vi.fn().mockResolvedValue({ processed: 0, failed: 0 }),
-  // Lightweight stand-in — research-desk.ts imports the real one for
-  // rendering, and this suite doesn't feed poisoned key_themes fixtures.
-  sanitizeThemeList: (v: unknown) =>
-    Array.isArray(v) ? v.filter((t): t is string => typeof t === "string").slice(0, 5) : [],
 }));
 vi.mock("@/lib/email", () => ({
   sendEmail: vi.fn().mockResolvedValue(undefined),

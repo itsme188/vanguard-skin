@@ -238,6 +238,10 @@ export async function runEarningsEmailSweep(
           `[email-sweep] ${cand.symbol} preview skipped — already reported (recorded release slot looks wrong for event ${cand.eventId})`
         );
         recordEarningsEmailSkip(db, cand.eventId, "preview");
+        // Claim the (phase,event) in KV too: the Worker's preview fallback
+        // can't see earnings_email_skips — without this marker its later
+        // tick would ship the same wrong-slot preview from the cloud.
+        void writeMacSentEarningsMarker(cand.phase, cand.eventId);
         results.push({
           eventId: cand.eventId,
           symbol: cand.symbol,

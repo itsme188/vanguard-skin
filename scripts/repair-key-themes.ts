@@ -8,7 +8,7 @@
  */
 import Database from "better-sqlite3";
 import path from "path";
-import { sanitizeThemeList } from "../lib/gmail/process";
+import { sanitizeThemeList } from "../lib/gmail/theme-sanitize";
 
 const apply = process.argv.includes("--apply");
 const db = new Database(path.join(process.cwd(), "data", "vanguard.db"));

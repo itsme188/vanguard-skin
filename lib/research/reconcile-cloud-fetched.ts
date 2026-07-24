@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { sanitizeThemeList } from "@/lib/gmail/theme-sanitize";
 
 /**
  * Reconcile cloud-fetched newsletter articles.
@@ -176,7 +177,7 @@ export async function reconcileCloudFetchedNewsletters(
         payload.raw_text,
         payload.raw_html,
         payload.summary,
-        JSON.stringify(payload.key_themes),
+        JSON.stringify(sanitizeThemeList(payload.key_themes)),
         payload.sentiment,
         payload.sentiment_score,
         JSON.stringify(payload.mentioned_symbols),

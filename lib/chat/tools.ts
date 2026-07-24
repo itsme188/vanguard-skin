@@ -25,7 +25,7 @@ import { detectStrategies, type PositionLeg } from "@/lib/compute/options-strate
 import { getActiveLevels, getAlerts, getLevelsForSecurity } from "@/lib/queries/security-levels";
 import { resolveLevelPrice } from "@/lib/alerts/resolve-level-price";
 import { getFilingSection } from "@/lib/apis/filing-extract";
-import { sanitizeThemeList } from "@/lib/gmail/process";
+import { sanitizeThemeList } from "@/lib/gmail/theme-sanitize";
 import {
   searchResearchDocuments,
   type ResearchDocumentType,
@@ -40,6 +40,19 @@ import {
 import { syncAnalystCoverage } from "@/lib/apis/analyst-estimates";
 import { getRecentReleaseReactions } from "@/lib/queries/level-performance";
 import { getMarketSnapshot, fetchYahooQuotes } from "@/lib/queries/market-snapshot";
+
+// research_articles.key_themes is stored JSON, but a mangled row (the
+// tag-remnant leak sanitizeThemeList/sanitizeModelSummary now guard against
+// going forward) can be non-JSON. JSON.parse would throw and crash the tool
+// call — fall back to the raw string, which sanitizeThemeList already knows
+// how to comma-split.
+function parseKeyThemesField(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
 
 // ─── Tool Definitions ─────────────────────────────────────────────
 
@@ -1446,7 +1459,7 @@ export async function executeTool(
             subject: a.subject,
             summary: a.summary,
             sentiment: a.sentiment,
-            themes: a.key_themes ? sanitizeThemeList(JSON.parse(a.key_themes)) : [],
+            themes: a.key_themes ? sanitizeThemeList(parseKeyThemesField(a.key_themes)) : [],
             tickers: a.mentioned_symbols
               ? JSON.parse(a.mentioned_symbols)
               : [],
