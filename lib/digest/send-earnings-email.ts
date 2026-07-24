@@ -1448,6 +1448,8 @@ ${priorCallBlock}
 
 Use the structured context above as the source of truth for positions, consensus, and newsletter quotes. **For anything missing or thin, use web_search** — bogies for the print, sell-side notes published in the last 24-48 hours, recent buy-side commentary, expectations on segment-level metrics, prior-quarter takeaways. Cite source URLs inline as [Source Name](url).
 
+**Already-reported check:** if your web search shows ${ctx.symbol} has ALREADY released these results (figures published as actuals dated today or earlier), do NOT frame them as expectations. Open the briefing by stating plainly that the report is already out, label every published figure as an ACTUAL, and skip the "into the print" framing — the calendar slot for this event was wrong.
+
 **IMPORTANT — output structure.** A deterministic "scoreboard" headline table is rendered ABOVE your output by the system; do NOT repeat the headline metrics (EPS / Revenue / Expected move / Avg move / SPY reaction / QQQ reaction) — your output starts AFTER the scoreboard. The "## Past prints" section (if present above) is also rendered by the system, not by you — reference it in your analysis if useful, but do not re-list its rows. Lead with the line-by-line bogies table, then prose. Specifically:
 
 1. **\`## Line-by-line bogies\`** — a markdown table the user can print and fill in by hand during the call. Columns MUST be exactly:

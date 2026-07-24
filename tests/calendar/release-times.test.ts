@@ -161,6 +161,12 @@ describe("SYMBOL_RELEASE_TIMES_ET", () => {
     expect(SYMBOL_RELEASE_TIMES_ET.MSFT).toBe("16:05");
   });
 
+  it("IMAX overrides to its verified BMO wire time, not the generic BMO/AMC default", () => {
+    // Verified against the Q2 2026 BusinessWire release (PUB 07:30 AM ET) —
+    // Finnhub + Nasdaq both mis-slotted IMAX AMC on 2026-07-23.
+    expect(SYMBOL_RELEASE_TIMES_ET.IMAX).toBe("07:30");
+  });
+
   it("uses HH:MM format for every entry", () => {
     for (const [key, value] of Object.entries(SYMBOL_RELEASE_TIMES_ET)) {
       expect(value, `bad format for ${key}`).toMatch(/^\d{2}:\d{2}$/);
@@ -176,6 +182,11 @@ describe("earningsHourToReleaseTime — per-symbol overrides", () => {
   it("symbol overrides win over BMO/AMC even when hour disagrees", () => {
     // Defensive: even if Finnhub mislabels MSFT as BMO, the symbol map wins.
     expect(earningsHourToReleaseTime("bmo", "MSFT")).toBe("16:05");
+  });
+
+  it("IMAX symbol override wins even when Finnhub/Nasdaq mislabel it AMC", () => {
+    // Defensive: the 2026-07-23 incident this override exists to prevent.
+    expect(earningsHourToReleaseTime("amc", "IMAX")).toBe("07:30");
   });
 
   it("falls through to BMO/AMC defaults when symbol has no override", () => {
