@@ -5,7 +5,12 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
-import { fetchSameDayTranscripts } from "@/lib/transcripts/same-day";
+import {
+  fetchSameDayTranscripts,
+  isValidDeskNote,
+  looksLikeDeskNoteRefusal,
+  MIN_TRANSCRIPT_CHARS_FOR_AI,
+} from "@/lib/transcripts/same-day";
 import { fetchTranscript } from "@/lib/transcripts/fetch";
 import { upsertTranscript } from "@/lib/mutations/transcripts";
 import { generateTextForFeature } from "@/lib/ai/generate";
@@ -134,6 +139,11 @@ function fakeFetchResult() {
   return { transcript: {} as never, fromCache: false };
 }
 
+// A transcript long enough to clear MIN_TRANSCRIPT_CHARS_FOR_AI, so the AI
+// desk-note tests actually reach the AI call rather than being skipped by
+// the store-time length gate (lib/transcripts/same-day.ts).
+const LONG_TRANSCRIPT = "Full call transcript text here. ".repeat(200);
+
 function fakeTranscript(overrides: Partial<EarningsTranscript> = {}): EarningsTranscript {
   return {
     id: 1,
@@ -165,6 +175,34 @@ function getTranscriptRow(sourceKey: string) {
     .get(sourceKey) as
     | { summary: string | null; guidance: string | null; transcript: string | null }
     | undefined;
+}
+
+/**
+ * Pre-seed a transcript row exactly as the real (mocked-out in these tests)
+ * fetchTranscript would already have written it before summarizeTranscript
+ * runs — needed to assert "the extractive summary survives" against a real
+ * DB row, since summarizeTranscript is the only writer left once
+ * fetchTranscript is mocked.
+ */
+function seedExtractiveRow(fetched: EarningsTranscript): void {
+  upsertTranscript(db, {
+    security_id: fetched.security_id,
+    ticker: fetched.ticker,
+    year: fetched.year,
+    quarter: fetched.quarter,
+    call_date: fetched.call_date,
+    source: fetched.source,
+    transcript: fetched.transcript,
+    summary: fetched.summary,
+    guidance: fetched.guidance,
+    risk_factors: fetched.risk_factors,
+    sentiment_score: fetched.sentiment_score,
+    sentiment_label: fetched.sentiment_label,
+    participants: fetched.participants,
+    accession_number: fetched.accession_number,
+    filing_url: fetched.filing_url,
+    source_key: fetched.source_key,
+  });
 }
 
 describe("fetchSameDayTranscripts", () => {
@@ -434,9 +472,12 @@ describe("fetchSameDayTranscripts — AI desk-note summary (#12 B2)", () => {
     seedHeld("JJJ");
     const rel = hoursAgoEt(3);
     seedEvent({ symbol: "JJJ", date: rel.date, releaseTime: rel.time });
-    mockedFetch.mockResolvedValue({ transcript: fakeTranscript(), fromCache: false });
+    mockedFetch.mockResolvedValue({
+      transcript: fakeTranscript({ transcript: LONG_TRANSCRIPT }),
+      fromCache: false,
+    });
     mockedGenerate.mockResolvedValue({
-      text: "## Desk note\n- Guidance: raised full-year outlook",
+      text: "**Guidance**\n- Raised full-year outlook",
     } as never);
 
     const result = await fetchSameDayTranscripts(db, { now: NOW });
@@ -449,10 +490,10 @@ describe("fetchSameDayTranscripts — AI desk-note summary (#12 B2)", () => {
     );
 
     const row = getTranscriptRow("alpha_vantage:JJJ:2026:2");
-    expect(row?.summary).toBe("## Desk note\n- Guidance: raised full-year outlook");
+    expect(row?.summary).toBe("**Guidance**\n- Raised full-year outlook");
     // Everything else on the cached row is echoed back unchanged.
     expect(row?.guidance).toBe("guidance paragraph, untouched by summarize");
-    expect(row?.transcript).toBe("Full call transcript text here.");
+    expect(row?.transcript).toBe(LONG_TRANSCRIPT);
   });
 
   it("strips a chatty AI preamble before storing the desk-note summary (carry-over fix, B3)", async () => {
@@ -460,18 +501,22 @@ describe("fetchSameDayTranscripts — AI desk-note summary (#12 B2)", () => {
     const rel = hoursAgoEt(3);
     seedEvent({ symbol: "PPP", date: rel.date, releaseTime: rel.time });
     mockedFetch.mockResolvedValue({
-      transcript: fakeTranscript({ ticker: "PPP", source_key: "alpha_vantage:PPP:2026:2" }),
+      transcript: fakeTranscript({
+        ticker: "PPP",
+        transcript: LONG_TRANSCRIPT,
+        source_key: "alpha_vantage:PPP:2026:2",
+      }),
       fromCache: false,
     });
     mockedGenerate.mockResolvedValue({
-      text: "Good, now I have enough to write the desk note.\n\n## Desk note\n- Guidance: raised full-year outlook",
+      text: "Good, now I have enough to write the desk note.\n\n**Guidance**\n- Raised full-year outlook",
     } as never);
 
     const result = await fetchSameDayTranscripts(db, { now: NOW });
 
     expect(result).toEqual({ attempted: 1, fetched: 1 });
     const row = getTranscriptRow("alpha_vantage:PPP:2026:2");
-    expect(row?.summary).toBe("## Desk note\n- Guidance: raised full-year outlook");
+    expect(row?.summary).toBe("**Guidance**\n- Raised full-year outlook");
     expect(row?.summary).not.toMatch(/^Good, now I have enough/);
   });
 
@@ -480,7 +525,11 @@ describe("fetchSameDayTranscripts — AI desk-note summary (#12 B2)", () => {
     const rel = hoursAgoEt(3);
     seedEvent({ symbol: "KKK", date: rel.date, releaseTime: rel.time });
     mockedFetch.mockResolvedValue({
-      transcript: fakeTranscript({ ticker: "KKK", source_key: "alpha_vantage:KKK:2026:2" }),
+      transcript: fakeTranscript({
+        ticker: "KKK",
+        transcript: LONG_TRANSCRIPT,
+        source_key: "alpha_vantage:KKK:2026:2",
+      }),
       fromCache: false,
     });
     mockedGenerate.mockRejectedValue(new Error("model unavailable"));
@@ -490,6 +539,9 @@ describe("fetchSameDayTranscripts — AI desk-note summary (#12 B2)", () => {
       fetched: 1,
     });
 
+    // The AI call actually ran (long-enough transcript clears the length
+    // gate) and threw — summarizeTranscript's upsert never ran as a result.
+    expect(mockedGenerate).toHaveBeenCalledTimes(1);
     // summarizeTranscript's upsert never ran — no row was written by B2 code
     // (fetchTranscript is mocked, so the real extractive-summary upsert from
     // B1's pipeline also never ran here; the assertion that matters is that
@@ -515,5 +567,120 @@ describe("fetchSameDayTranscripts — AI desk-note summary (#12 B2)", () => {
 
     expect(result).toEqual({ attempted: 1, fetched: 1 });
     expect(mockedGenerate).not.toHaveBeenCalled();
+  });
+
+  it("stores a valid structured desk note (has **Guidance** section) unchanged", async () => {
+    const good =
+      '**Guidance**\n- Raised FY guide\n\n**Tone**\n- Confident\n\n**Surprises**\n- None\n\n**Key quotes**\n- "We can\'t predict rates."';
+    seedHeld("GGG");
+    const rel = hoursAgoEt(3);
+    seedEvent({ symbol: "GGG", date: rel.date, releaseTime: rel.time });
+    mockedFetch.mockResolvedValue({
+      transcript: fakeTranscript({
+        ticker: "GGG",
+        transcript: LONG_TRANSCRIPT,
+        source_key: "alpha_vantage:GGG:2026:2",
+      }),
+      fromCache: false,
+    });
+    mockedGenerate.mockResolvedValue({ text: good } as never);
+
+    const result = await fetchSameDayTranscripts(db, { now: NOW });
+
+    expect(result).toEqual({ attempted: 1, fetched: 1 });
+    const row = getTranscriptRow("alpha_vantage:GGG:2026:2");
+    expect(row?.summary).toBe(good);
+  });
+
+  it("rejects a soft-refusal AI output and keeps the extractive summary", async () => {
+    // Exact shape of the 2026-07-22 CSX poison: bulleted request-for-input.
+    const refusal = [
+      "- Exhibit 99.1 (press release with results)",
+      "- Exhibit 99.2 (Quarterly Financial Report)",
+      "- And/or the earnings call transcript itself (Q&A and prepared remarks)",
+      "",
+      "**Please provide the transcript text or the press release/financial report content**, and I'll produce the structured desk note as specified.",
+    ].join("\n");
+
+    seedHeld("CSX");
+    const rel = hoursAgoEt(3);
+    seedEvent({ symbol: "CSX", date: rel.date, releaseTime: rel.time });
+    const fetched = fakeTranscript({
+      ticker: "CSX",
+      source: "edgar_8k",
+      transcript: LONG_TRANSCRIPT,
+      summary: "Extractive summary text",
+      source_key: "edgar_8k:CSX:2026:2",
+    });
+    // Seed the row the way the real (mocked-here) fetchTranscript would have
+    // already written it, so we can assert it survives the rejected AI call.
+    seedExtractiveRow(fetched);
+    mockedFetch.mockResolvedValue({ transcript: fetched, fromCache: false });
+    mockedGenerate.mockResolvedValue({ text: refusal } as never);
+
+    const result = await fetchSameDayTranscripts(db, { now: NOW });
+
+    expect(result).toEqual({ attempted: 1, fetched: 1 });
+    expect(mockedGenerate).toHaveBeenCalledTimes(1);
+
+    const row = getTranscriptRow("edgar_8k:CSX:2026:2");
+    expect(row?.summary).toBe("Extractive summary text");
+  });
+
+  it("skips the AI call entirely for transcripts under MIN_TRANSCRIPT_CHARS_FOR_AI", async () => {
+    // 3,774 chars — the actual CSX thin-8-K cover-page length observed 2026-07-22.
+    const thin = "x".repeat(3_774);
+    expect(thin.length).toBeLessThan(MIN_TRANSCRIPT_CHARS_FOR_AI);
+
+    seedHeld("THN");
+    const rel = hoursAgoEt(3);
+    seedEvent({ symbol: "THN", date: rel.date, releaseTime: rel.time });
+    const fetched = fakeTranscript({
+      ticker: "THN",
+      source: "edgar_8k",
+      transcript: thin,
+      summary: "Extractive summary text",
+      source_key: "edgar_8k:THN:2026:2",
+    });
+    seedExtractiveRow(fetched);
+    mockedFetch.mockResolvedValue({ transcript: fetched, fromCache: false });
+
+    const result = await fetchSameDayTranscripts(db, { now: NOW });
+
+    expect(result).toEqual({ attempted: 1, fetched: 1 });
+    expect(mockedGenerate).not.toHaveBeenCalled();
+
+    const row = getTranscriptRow("edgar_8k:THN:2026:2");
+    expect(row?.summary).toBe("Extractive summary text");
+  });
+});
+
+describe("isValidDeskNote / looksLikeDeskNoteRefusal (pure)", () => {
+  it("CSX refusal shape: not valid, is refusal", () => {
+    const refusal = [
+      "- Exhibit 99.1 (press release with results)",
+      "- Exhibit 99.2 (Quarterly Financial Report)",
+      "- And/or the earnings call transcript itself (Q&A and prepared remarks)",
+      "",
+      "**Please provide the transcript text or the press release/financial report content**, and I'll produce the structured desk note as specified.",
+    ].join("\n");
+
+    expect(isValidDeskNote(refusal)).toBe(false);
+    expect(looksLikeDeskNoteRefusal(refusal)).toBe(true);
+  });
+
+  it("structured desk note: valid, not refusal", () => {
+    const good =
+      '**Guidance**\n- Raised FY guide\n\n**Tone**\n- Confident\n\n**Surprises**\n- None\n\n**Key quotes**\n- "We can\'t predict rates."';
+
+    expect(isValidDeskNote(good)).toBe(true);
+    expect(looksLikeDeskNoteRefusal(good)).toBe(false);
+  });
+
+  it("plain extractive prose (no bold labels): NOT valid, NOT refusal", () => {
+    const extractive =
+      "CSX reported second quarter results. Revenue was flat year over year and management discussed network performance.";
+    expect(isValidDeskNote(extractive)).toBe(false);
+    expect(looksLikeDeskNoteRefusal(extractive)).toBe(false);
   });
 });
