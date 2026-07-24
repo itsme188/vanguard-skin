@@ -29,19 +29,21 @@ import {
   fetchCloudSentEarnings,
 } from "@/lib/cron/earnings-marker-check";
 import { composeReleaseInstant } from "./reaction-snapshot";
+import { probeFinnhubActualExists } from "./enrich-actuals";
 import { sendPushover } from "@/lib/alerts/notify-pushover";
 import { getEarningsSettings, shouldSendEarningsEmail } from "@/lib/queries/earnings-settings";
 import { getExpectedRecapCluster, wrapSlotFor, WRAP_THRESHOLD } from "@/lib/earnings/wrap";
 import { runWrapPass } from "@/lib/earnings/wrap-send";
 import { todayET } from "@/lib/calendar/date-utils";
 import { fetchSameDayTranscripts } from "@/lib/transcripts/same-day";
+import { recordEarningsEmailSkip } from "@/lib/mutations/earnings-skips";
 
 export interface SweepCandidateResult {
   eventId: number;
   symbol: string;
   phase: "preview" | "recap";
   ok: boolean;
-  skipped?: "cloud-already-sent" | "claim-held" | "not-ready" | "wrap-pending";
+  skipped?: "cloud-already-sent" | "claim-held" | "not-ready" | "wrap-pending" | "already-reported";
   status?: number;
   message?: string;
   durationMs: number;
@@ -206,6 +208,46 @@ export async function runEarningsEmailSweep(
         durationMs: Date.now() - t0,
       });
       continue;
+    }
+
+    // Already-reported guard (2026-07-23, IMAX): a wrong AMC/BMO slot from
+    // the calendar source can put a preview candidate in-window AFTER the
+    // real print — the window is measured against the RECORDED release
+    // instant only. A post-print "preview" prices the actuals as estimates,
+    // which is worse than no preview. Two layers: the row's own
+    // actual_value (manual overrides / early enrichment), then a live
+    // Finnhub probe. On detection, record a permanent per-event preview
+    // skip (the recap path is untouched — enrichment still delivers it).
+    // Best-effort: any guard error falls through to the normal send.
+    if (cand.phase === "preview") {
+      let alreadyReported = false;
+      try {
+        const evRow = db
+          .prepare(`SELECT actual_value, event_date FROM calendar_events WHERE id = ?`)
+          .get(cand.eventId) as { actual_value: string | null; event_date: string } | undefined;
+        if (evRow?.actual_value) {
+          alreadyReported = true;
+        } else if (evRow) {
+          alreadyReported = await probeFinnhubActualExists(cand.symbol, evRow.event_date);
+        }
+      } catch (err) {
+        console.warn(`[email-sweep] already-reported guard errored for ${cand.symbol}:`, err);
+      }
+      if (alreadyReported) {
+        console.warn(
+          `[email-sweep] ${cand.symbol} preview skipped — already reported (recorded release slot looks wrong for event ${cand.eventId})`
+        );
+        recordEarningsEmailSkip(db, cand.eventId, "preview");
+        results.push({
+          eventId: cand.eventId,
+          symbol: cand.symbol,
+          phase: cand.phase,
+          ok: true,
+          skipped: "already-reported",
+          durationMs: Date.now() - t0,
+        });
+        continue;
+      }
     }
 
     void setEarningsRunningMarker(cand.phase, cand.eventId);

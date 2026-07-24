@@ -181,8 +181,12 @@ export async function composeEarningsEmail(
   // whatever's cached). Best-effort by contract (ensureIntelForEvents never
   // throws internally per its own doc comment) — wrapped here too so a
   // future change to that contract can never block the claim-mutexed send
-  // path below.
-  if (phase === "preview") {
+  // path below. `!event.actual_value` (2026-07-23, IMAX): a wrong-slot
+  // preview candidate that reaches this far (e.g. the sweep guard's
+  // best-effort layers both missed) must never force-refresh — that would
+  // overwrite the preview-time "priced-in" anchor with post-print
+  // crushed-IV pricing shown as the expected move.
+  if (phase === "preview" && !event.actual_value) {
     try {
       await ensureIntelForEvents(
         db,
