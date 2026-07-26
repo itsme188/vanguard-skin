@@ -9,5 +9,12 @@
     "Sat": "mobile",
     "Sun": "accounts-charts-calendar"
   },
-  "maxConcurrentAgents": 1
+  "maxConcurrentAgents": 1,
+  "fixer": {
+    "enabled": false,
+    "dryRun": false,
+    "maxFixesPerNight": 4,
+    "autoMergeSeverities": ["low"],
+    "verifyPort": 3096
+  }
 }
