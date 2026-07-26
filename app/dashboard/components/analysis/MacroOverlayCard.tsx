@@ -139,13 +139,22 @@ export function MacroOverlayCard({ scope }: { scope: string }) {
                     top: {t.top_contributors.map((c) => c.symbol).join(", ")}
                   </span>
                 )}
-                <button
-                  type="button"
-                  onClick={() => setDrawerOpenForThemeIdx(i)}
-                  className="relative ml-auto text-amber hover:text-amber/80 transition-colors pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-2"
-                >
-                  View sources →
-                </button>
+                {data.sourceSummary != null ? (
+                  <button
+                    type="button"
+                    onClick={() => setDrawerOpenForThemeIdx(i)}
+                    className="relative ml-auto text-amber hover:text-amber/80 transition-colors pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-2"
+                  >
+                    View sources →
+                  </button>
+                ) : (
+                  // The receipt drawer only renders with a sourceSummary; a
+                  // cached theme without one would make the button a dead
+                  // click, so say why there is nothing to open instead.
+                  <span className="ml-auto text-ink-faint italic">
+                    no sources recorded
+                  </span>
+                )}
               </div>
             </li>
           ))}

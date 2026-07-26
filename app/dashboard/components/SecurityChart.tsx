@@ -374,6 +374,10 @@ export function SecurityChart({
       disposed = true;
       resizeObserver?.disconnect();
       indicatorMapRef.current.clear();
+      // Detach (not just null) the markers plugin BEFORE removing the chart —
+      // an attached plugin with a pending internal update otherwise fires
+      // into the disposed instance ("Object is disposed" on mode switch).
+      try { markersPluginRef.current?.detach?.(); } catch { /* noop */ }
       markersPluginRef.current = null;
       chart?.remove();
       chartRef.current = null;
@@ -695,9 +699,10 @@ export function SecurityChart({
               chartRef.current?.removeSeries(series);
             }
             indicatorMapRef.current.clear();
-            // Clear transaction markers (not meaningful on intraday)
+            // Clear transaction markers (not meaningful on intraday) —
+            // detach so the plugin doesn't stay attached to the series
             if (markersPluginRef.current) {
-              markersPluginRef.current.setMarkers([]);
+              try { markersPluginRef.current.detach?.(); } catch { /* noop */ }
               markersPluginRef.current = null;
             }
             chartRef.current?.timeScale().fitContent();
@@ -1116,12 +1121,21 @@ function updateMarkers(
   privateMode = false,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): any {
-  // Remove old markers
-  if (existing) {
-    existing.setMarkers([]);
-  }
+  // When there is nothing to show, DETACH the old plugin rather than just
+  // emptying it. Every call used to create a fresh plugin while the emptied
+  // one stayed attached to the series — after a few toggles the series
+  // carried a stack of orphaned marker plugins whose pending internal
+  // updates could fire after chart.remove() ("Object is disposed").
+  const detachExisting = () => {
+    if (existing) {
+      try { existing.detach?.(); } catch { /* chart already disposed */ }
+    }
+  };
 
-  if (!show || transactions.length === 0) return null;
+  if (!show || transactions.length === 0) {
+    detachExisting();
+    return null;
+  }
 
   // Only mark trades that fall within the loaded bars: LightweightCharts
   // clamps markers older than the first bar onto the left edge with clipped
@@ -1134,7 +1148,10 @@ function updateMarkers(
   const visible = firstBarTime
     ? transactions.filter((t) => t.date >= firstBarTime)
     : transactions;
-  if (visible.length === 0) return null;
+  if (visible.length === 0) {
+    detachExisting();
+    return null;
+  }
 
   const isBuy = (t: string) =>
     t === "BUY" || t === "BUY_TO_OPEN" || t === "BUY_TO_CLOSE";
@@ -1149,5 +1166,10 @@ function updateMarkers(
     size: 1,
   }));
 
+  // Reuse the attached plugin when one exists — one plugin per series, ever.
+  if (existing) {
+    existing.setMarkers(markers);
+    return existing;
+  }
   return lc.createSeriesMarkers(candleSeries, markers);
 }
