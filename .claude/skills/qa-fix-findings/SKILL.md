@@ -95,6 +95,19 @@ Classify each successful fix commit:
 
 **Push policy — read before delivering:** auto-merged commits stay on LOCAL main. **The fixer NEVER runs `git push origin main`.** The user pushes at their next session (session-end convention already covers this repo). This is why the PR branch below cuts from `origin/main`, not local `main` — local `main` may already be carrying tonight's unpushed auto-merges, and a PR built off it would silently smuggle those commits into the PR diff.
 
+**Clean-checkout preflight (ARM precondition 4, 2026-07-26) — run BEFORE any delivery command.** Unattended cherry-picks under uncommitted session work are the 2026-07-05 shared-checkout failure class. From the main checkout:
+```bash
+if [ -n "$(git status --porcelain)" ] || [ "$(git branch --show-current)" != "main" ]; then
+  source qa/lib/pushover.sh
+  qa_pushover "QA fixer" "delivery aborted: main checkout is dirty or not on main ($(git branch --show-current)) — fixes remain on the worktree branch"
+  # Do NOT deliver. Record every fixed-in-worktree finding with a ledger note
+  # ("delivery blocked: dirty checkout — commits on <worktree branch>"), leave
+  # their status open, write the Step 6 fix-run log with `delivery: blocked`,
+  # and finish. A human delivers from the worktree branch next session.
+fi
+```
+Gitignored noise (qa/findings/*, data/*) does not appear in `git status --porcelain`, so a routine ledger-writing run passes this check; any TRACKED modification blocks.
+
 Delivery from the MAIN checkout:
 ```bash
 git fetch origin

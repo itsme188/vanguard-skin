@@ -51,6 +51,8 @@ This merge runs once per zone, immediately after that zone's agent returns (see 
 For each returned finding, compute `id` = kebab-case of `surface--title` (strip punctuation). Compare against ledger entries on the same surface — if an existing entry describes the SAME symptom (judge semantically, not string-equal), it is the same finding:
 
 - Existing entry (any status except `fixed`): bump `last_seen` to today. `wontfix` stays `wontfix`. Otherwise status stays/becomes `known`.
+- Existing entry with `status: "fixed"` whose `fix_status` is `"pr-open"` or `"merged-awaiting-deploy"`: **match-and-hold** (ARM precondition 3, 2026-07-26). The fix exists but has not reached the deployed build the sandbox serves, so the symptom re-appearing is EXPECTED — bump `last_seen` only; never append a duplicate finding and never flip the status. (Re-appending mints a fresh id the fixer's anti-strand `[qa:<id>]` trailer grep can't match, so the same bug gets a second fix on a second branch — the stranding disease.) The entry resolves for real when a sweep AFTER the fix deploys stops seeing the symptom.
+- Existing entry with `status: "fixed"` that should already be in the deployed build (`fix_status` `"merged"` or absent): a re-reported symptom is a true regression — append as a new finding with the `-regression-N` suffixed id (existing convention).
 - No match: append with `status: "new"`, `first_seen`/`last_seen` = today, plus all schema fields.
 - For every ledger entry with status `new`/`known` whose surface belongs to **the zone that just completed** and which was NOT re-reported by that zone's agent: set `status: "fixed"`, add `fixed_date`. (Zone-scoped by construction — never flip entries for zones not yet swept this run.)
 
