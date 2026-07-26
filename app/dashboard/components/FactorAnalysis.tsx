@@ -15,6 +15,7 @@ import {
   interpretBeta,
   interpretAlpha,
   interpretR2,
+  LOW_R2_THRESHOLD,
   interpretTrackingError,
 } from "@/lib/analysis/interpret";
 import type { DrillDownFilter } from "@/lib/queries/drill-down";
@@ -144,6 +145,20 @@ export function FactorAnalysisCard({ scope }: { scope?: string }) {
           <h4 className="text-xs text-ink-faint uppercase tracking-widest mb-3">
             Market Regression (vs {benchmark})
           </h4>
+          {/* Honest-labeling sibling of dataWindowNotice: at very low R² the
+              regression explains almost nothing, so narrating its beta/alpha
+              as fact is misleading (the QA finding's +63% "alpha" at R² 0.1%
+              was flow/stale-price noise, not selection skill). */}
+          {reg.rSquared < LOW_R2_THRESHOLD && (
+            <p className="text-xs bg-warn/15 text-warn rounded-md px-3 py-2 mb-3">
+              ⚠ Low explanatory power — R² of{" "}
+              {(reg.rSquared * 100).toFixed(1)}% means {benchmark} explains
+              almost none of this portfolio&apos;s daily variance over the
+              window. Treat beta and alpha here as noise, not signal; common
+              causes are stale prices in the valuation series or external
+              flows not yet imported.
+            </p>
+          )}
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
             <MetricCell
               label="Beta"
