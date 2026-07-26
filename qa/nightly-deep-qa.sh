@@ -147,5 +147,28 @@ if [ "$STATUS" -eq 0 ] && [ ! -f "$RUN_LOG" ]; then
   notify_failure "/qa-deep-sweep exited 0 but wrote no run log ($(basename "$RUN_LOG")) — sweep died before finalizing findings"
 fi
 
+# --- Auto-fix chain (spec 2026-07-26) ------------------------------------------
+# Runs ONLY after a verified-complete sweep (exit 0 AND run log present) and only
+# when armed via deep-qa-config.json fixer.enabled. Own model probe + own
+# completeness guard on the fix-run log (same exit-0-is-not-proof lesson as the
+# sweep). Fixer failure never changes the sweep's exit status.
+FIXER_ENABLED=$(python3 -c "import json;print(json.load(open('qa/deep-qa-config.json')).get('fixer',{}).get('enabled',False))" 2>/dev/null)
+if [ "$STATUS" -eq 0 ] && [ -f "$RUN_LOG" ] && [ "$FIXER_ENABLED" = "True" ]; then
+  echo "=== QA auto-fix chain starting $(date '+%H:%M:%S') ==="
+  FIX_MODEL="$(pick_model)"
+  if [ -z "$FIX_MODEL" ]; then
+    notify_failure "fixer: no callable model — auto-fix chain skipped"
+  else
+    claude -p "/qa-fix-findings" --model "$FIX_MODEL"
+    FIX_STATUS=$?
+    [ "$FIX_STATUS" -ne 0 ] && notify_failure "/qa-fix-findings exited $FIX_STATUS (model $FIX_MODEL)"
+    FIX_LOG="$SCRIPT_DIR/findings/fix-runs/$(date +%Y-%m-%d).md"
+    if [ "$FIX_STATUS" -eq 0 ] && [ ! -f "$FIX_LOG" ]; then
+      notify_failure "/qa-fix-findings exited 0 but wrote no fix-run log — fixer died before finalizing"
+    fi
+    echo "=== QA auto-fix chain finished (exit $FIX_STATUS) $(date '+%H:%M:%S') ==="
+  fi
+fi
+
 echo "=== Deep QA finished (claude exit $STATUS) $(date '+%Y-%m-%d %H:%M:%S') ==="
 exit $STATUS
