@@ -110,6 +110,16 @@ export function isValidTransactionType(type: string): boolean {
   return VALID_TRANSACTION_TYPES.has(type.toUpperCase());
 }
 
+/**
+ * Render a numeric field value for a user-facing skip reason. Parsers emit NaN
+ * for unparseable cells (parseStrictNumber returns NaN for comma-bearing
+ * strings), so the raw value must be described in words, never interpolated.
+ */
+function describeNumber(value: number | null | undefined): string {
+  if (value == null || Number.isFinite(value)) return String(value);
+  return "not a number (check for comma separators or non-numeric text)";
+}
+
 // ── Validation report ───────────────────────────────────────────────
 
 export interface SkippedRow {
@@ -180,7 +190,7 @@ export function validateParsedResult(
       skippedRows.push({
         category: "transaction",
         index: i,
-        reason: `Invalid quantity: ${txn.quantity}`,
+        reason: `Invalid quantity: ${describeNumber(txn.quantity)}`,
         symbol: txn.symbol,
       });
       skip = true;
@@ -190,7 +200,7 @@ export function validateParsedResult(
       skippedRows.push({
         category: "transaction",
         index: i,
-        reason: `Invalid amount: ${txn.amount}`,
+        reason: `Invalid amount: ${describeNumber(txn.amount)}`,
         symbol: txn.symbol,
       });
       skip = true;
@@ -238,7 +248,7 @@ export function validateParsedResult(
       skippedRows.push({
         category: "holding",
         index: i,
-        reason: `Invalid quantity: ${h.quantity}`,
+        reason: `Invalid quantity: ${describeNumber(h.quantity)}`,
         symbol: h.symbol,
       });
       skip = true;
@@ -311,7 +321,7 @@ export function validateParsedResult(
       skippedRows.push({
         category: "price",
         index: i,
-        reason: `Invalid price: ${p.closePrice}`,
+        reason: `Invalid price: ${describeNumber(p.closePrice)}`,
         symbol: p.symbol,
       });
       skip = true;
