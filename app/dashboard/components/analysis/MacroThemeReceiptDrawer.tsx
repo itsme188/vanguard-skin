@@ -46,7 +46,7 @@ export function MacroThemeReceiptDrawer({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex"
+      className="fixed inset-0 z-[55] flex"
       onClick={onClose}
       role="dialog"
       aria-label={`Sources for ${theme.name}`}
