@@ -288,6 +288,12 @@ export function MarketDataPanel({
                 "—"
               )
             }
+            // As-of of whichever 52wk source won the freshness arbitration
+            // (IBKR quote vs bars) — surfaces staleness instead of letting a
+            // back-shifted bars window contradict QuoteStats silently.
+            subvalue={
+              kpis.week52AsOf != null ? `as of ${kpis.week52AsOf}` : undefined
+            }
           />
           <KpiCell
             label="Volume"
