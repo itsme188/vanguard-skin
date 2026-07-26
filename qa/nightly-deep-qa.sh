@@ -59,14 +59,32 @@ echo "=== Deep QA run $(date '+%Y-%m-%d %H:%M:%S') ==="
 # that collided with an in-session manual sweep (shared browser + shared git
 # working tree). One sweep at a time, ever.
 LOCK_DIR="/tmp/vanguard-deep-qa.lock"
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+# PID-liveness (ARM precondition 2, 2026-07-26): the old age-only 180-min
+# takeover could tear down a LIVE run's sandbox mid-sweep and race the shared
+# main checkout. Rules: a lock whose recorded holder pid is ALIVE is never
+# taken over (Pushover if it's been held suspiciously long, so a truly hung
+# run gets a human, not a demolition); a dead holder is stale immediately; a
+# pid-less lock (pre-convention) keeps the old age-only semantics.
+if mkdir "$LOCK_DIR" 2>/dev/null; then
+  echo $$ > "$LOCK_DIR/pid"
+else
+  LOCK_PID=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo "")
   LOCK_AGE_MIN=$(( ($(date +%s) - $(stat -f %m "$LOCK_DIR" 2>/dev/null || echo 0)) / 60 ))
-  if [ "$LOCK_AGE_MIN" -lt 180 ]; then
-    echo "Another deep-QA run holds the lock (${LOCK_AGE_MIN}m old) — exiting."; exit 0
+  if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
+    if [ "$LOCK_AGE_MIN" -ge 180 ]; then
+      notify_failure "deep-QA lock held by LIVE pid $LOCK_PID for ${LOCK_AGE_MIN}m — not taking over; a hung run needs a human"
+    else
+      echo "Another deep-QA run holds the lock (pid $LOCK_PID, ${LOCK_AGE_MIN}m old) — exiting."
+    fi
+    exit 0
   fi
-  echo "Stale lock (${LOCK_AGE_MIN}m) — taking over."
+  if [ -z "$LOCK_PID" ] && [ "$LOCK_AGE_MIN" -lt 180 ]; then
+    echo "Another deep-QA run may hold the lock (no pid recorded, ${LOCK_AGE_MIN}m old) — exiting."; exit 0
+  fi
+  echo "Stale lock (holder pid ${LOCK_PID:-unrecorded} not running, ${LOCK_AGE_MIN}m old) — taking over."
+  echo $$ > "$LOCK_DIR/pid"
 fi
-trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
+trap 'rm -rf "$LOCK_DIR" 2>/dev/null' EXIT
 
 if ! command -v claude &>/dev/null; then
   notify_failure "claude CLI not on PATH — aborting"; exit 1
@@ -97,7 +115,7 @@ ab_baseline
 
 bash "$SCRIPT_DIR/sandbox.sh" up || { notify_failure "sandbox boot failed"; exit 1; }
 # Single EXIT trap (bash traps replace, not stack): sandbox down + release lock + browser cleanup.
-trap 'bash "$SCRIPT_DIR/sandbox.sh" down; rmdir "$LOCK_DIR" 2>/dev/null; ab_cleanup' EXIT
+trap 'bash "$SCRIPT_DIR/sandbox.sh" down; rm -rf "$LOCK_DIR" 2>/dev/null; ab_cleanup' EXIT
 
 # --- Model selection: PROBE for the strongest CALLABLE model -----------------
 # Do NOT rely on `--model fable --fallback-model opus,sonnet`. That was the
