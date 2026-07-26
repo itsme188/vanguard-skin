@@ -295,14 +295,14 @@ export function NotificationBell() {
                 </span>
               </div>
               <Link
-                href="/dashboard/today"
+                href="/dashboard/alerts?view=conflicts"
                 className="block px-3 py-2 hover:bg-raised"
               >
                 <span className="text-[11px] text-ink">
                   {conflictCount} name{conflictCount === 1 ? "" : "s"} with disagreeing sources
                 </span>
                 <p className="text-[10px] text-ink-faint mt-0.5">
-                  Confirm the date against IBKR on the Today view →
+                  Review and confirm against IBKR in the Conflicts tab →
                 </p>
               </Link>
             </div>

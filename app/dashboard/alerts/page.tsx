@@ -14,6 +14,8 @@ import { SortPicker } from "../components/SortPicker";
 import { SymbolLink } from "../components/SymbolLink";
 import { Chip } from "../components/Chip";
 import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
+import { EarningsDateChip } from "../today/EarningsDateChip";
+import type { EarningsDateConflict } from "@/lib/queries/calendar";
 
 // One armed level as returned by GET /api/levels/armed (mirrors ArmedLevel in
 // lib/queries/security-levels.ts). Prices here are PUBLIC market data.
@@ -97,12 +99,21 @@ interface PendingLevel {
   created_at: string;
 }
 
-type StreamFilter = "pending" | "review" | "armed" | "acted" | "ignored" | "dismissed" | "all";
+type StreamFilter =
+  | "pending"
+  | "review"
+  | "armed"
+  | "conflicts"
+  | "acted"
+  | "ignored"
+  | "dismissed"
+  | "all";
 
 const FILTER_OPTIONS: Array<{ label: string; value: StreamFilter }> = [
   { label: "Pending", value: "pending" },
   { label: "Review", value: "review" },
   { label: "Armed", value: "armed" },
+  { label: "Conflicts", value: "conflicts" },
   { label: "Acted", value: "acted" },
   { label: "Ignored", value: "ignored" },
   { label: "Dismissed", value: "dismissed" },
@@ -151,12 +162,19 @@ function AlertsPageInner() {
   // ?view=armed. Treat those as the matching filter on first render.
   const viewParam = searchParams.get("view");
   const initialFilter: StreamFilter =
-    viewParam === "review" ? "review" : viewParam === "armed" ? "armed" : "pending";
+    viewParam === "review"
+      ? "review"
+      : viewParam === "armed"
+        ? "armed"
+        : viewParam === "conflicts"
+          ? "conflicts"
+          : "pending";
 
   const [filter, setFilter] = useState<StreamFilter>(initialFilter);
   const [alerts, setAlerts] = useState<EnrichedAlert[]>([]);
   const [reviewLevels, setReviewLevels] = useState<PendingLevel[]>([]);
   const [armedLevels, setArmedLevels] = useState<ArmedLevelView[]>([]);
+  const [conflicts, setConflicts] = useState<EarningsDateConflict[]>([]);
   const [pendingAlertCount, setPendingAlertCount] = useState(0);
   const [loading, setLoading] = useState(false);
   const [detecting, setDetecting] = useState(false);
@@ -192,17 +210,20 @@ function AlertsPageInner() {
         ? `/api/alerts?response=${alertsResponseParam}`
         : "/api/alerts";
 
-      // Armed levels are fetched every refresh so the "Armed" pill badge stays
-      // live regardless of which filter is active.
-      const [alertsRes, reviewRes, armedRes] = await Promise.all([
+      // Armed levels + date conflicts are fetched every refresh so their
+      // pill badges stay live regardless of which filter is active (the
+      // conflicts badge must agree with the NotificationBell count).
+      const [alertsRes, reviewRes, armedRes, conflictsRes] = await Promise.all([
         fetch(alertsUrl),
         fetch("/api/levels/review"),
         fetch("/api/levels/armed"),
+        fetch("/api/earnings/conflicts"),
       ]);
-      const [alertsJson, reviewJson, armedJson] = await Promise.all([
+      const [alertsJson, reviewJson, armedJson, conflictsJson] = await Promise.all([
         alertsRes.json(),
         reviewRes.json(),
         armedRes.json(),
+        conflictsRes.json(),
       ]);
 
       if (alertsJson?.success) {
@@ -214,6 +235,9 @@ function AlertsPageInner() {
       }
       if (armedJson?.success) {
         setArmedLevels(armedJson.levels as ArmedLevelView[]);
+      }
+      if (conflictsJson?.success) {
+        setConflicts((conflictsJson.conflicts ?? []) as EarningsDateConflict[]);
       }
     } finally {
       setLoading(false);
@@ -355,8 +379,8 @@ function AlertsPageInner() {
 
   // Build the stream of items for the current filter.
   const streamItems = useMemo<StreamItem[]>(() => {
-    // Armed is its own view (a level list, not an alert/review stream).
-    if (filter === "armed") return [];
+    // Armed + Conflicts are their own views, not alert/review streams.
+    if (filter === "armed" || filter === "conflicts") return [];
     if (filter === "review") {
       return reviewLevels.map((l) => ({ kind: "review", recencyAt: l.created_at, level: l }));
     }
@@ -398,9 +422,11 @@ function AlertsPageInner() {
 
   const reviewCount = reviewLevels.length;
   const armedCount = armedLevels.length;
+  const conflictCount = conflicts.length;
   const isPending = filter === "pending";
   const isReview = filter === "review";
   const isArmed = filter === "armed";
+  const isConflicts = filter === "conflicts";
   const totalPending = pendingAlertCount + reviewCount;
 
   return (
@@ -456,7 +482,9 @@ function AlertsPageInner() {
                     ? reviewCount
                     : opt.value === "armed"
                       ? armedCount
-                      : 0;
+                      : opt.value === "conflicts"
+                        ? conflictCount
+                        : 0;
               return (
                 <button
                   key={opt.value}
@@ -489,11 +517,19 @@ function AlertsPageInner() {
         </div>
       )}
 
-      {!isArmed && sortedItems.length > 1 && (
+      {!isArmed && !isConflicts && sortedItems.length > 1 && (
         <SortPicker options={SORT_OPTIONS} sort={sort} onSort={setSort} />
       )}
 
-      {isArmed ? (
+      {isConflicts ? (
+        loading && conflicts.length === 0 ? (
+          <p className="text-[11px] text-ink-faint italic py-6 text-center">Loading...</p>
+        ) : conflicts.length === 0 ? (
+          <EmptyState filter={filter} />
+        ) : (
+          <ConflictsList conflicts={conflicts} onConfirmed={refresh} />
+        )
+      ) : isArmed ? (
         loading && armedLevels.length === 0 ? (
           <p className="text-[11px] text-ink-faint italic py-6 text-center">Loading...</p>
         ) : armedLevels.length === 0 ? (
@@ -556,6 +592,17 @@ function EmptyState({ filter }: { filter: StreamFilter }) {
       </div>
     );
   }
+  if (filter === "conflicts") {
+    return (
+      <div className="rounded-xl border border-edge bg-panel p-10 text-center">
+        <p className="text-sm text-ink-dim">No date conflicts.</p>
+        <p className="text-[11px] text-ink-faint mt-2">
+          Every upcoming earnings date agrees across Finnhub and Nasdaq. When they disagree,
+          the rows show up here for you to confirm against IBKR.
+        </p>
+      </div>
+    );
+  }
   const label = filter === "all" ? "" : filter;
   return (
     <div className="rounded-xl border border-edge bg-panel p-10 text-center">
@@ -568,6 +615,74 @@ function EmptyState({ filter }: { filter: StreamFilter }) {
         .
       </p>
     </div>
+  );
+}
+
+// ─── Earnings date conflicts view ───────────────────────────────────
+// The mobile-reachable surface for the NotificationBell's conflict count —
+// pre-fix those rows were only resolvable via the desktop EarningsHub, so on
+// touch the badge could never be cleared. Reuses EarningsDateChip verbatim
+// (its popover is the whole Nasdaq/Finnhub/custom confirm workflow).
+
+function fmtConflictDate(d: string): string {
+  const [y, m, day] = d.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, day)).toLocaleDateString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+function ConflictsList({
+  conflicts,
+  onConfirmed,
+}: {
+  conflicts: EarningsDateConflict[];
+  onConfirmed: () => void;
+}) {
+  return (
+    <ul className="space-y-2">
+      {conflicts.map((c) => {
+        const altDate = c.date_conflict_with?.split(":")[1] ?? null;
+        return (
+          <li
+            key={c.id}
+            className="rounded-xl border border-edge bg-panel px-4 py-3 flex items-center justify-between gap-3 flex-wrap"
+          >
+            <div className="min-w-0">
+              <div className="flex items-baseline gap-2">
+                <span className="font-mono text-[13px] font-medium text-ink">
+                  {c.symbol && c.security_id != null ? (
+                    <SymbolLink securityId={c.security_id} symbol={c.symbol} />
+                  ) : (
+                    c.symbol ?? "—"
+                  )}
+                </span>
+                <span className="text-[11px] text-ink-dim">
+                  Nasdaq {fmtConflictDate(c.event_date)}
+                  {altDate && altDate !== c.event_date && (
+                    <> · Finnhub {fmtConflictDate(altDate)}</>
+                  )}
+                </span>
+              </div>
+              <p className="text-[10px] text-ink-faint mt-0.5">
+                Sources disagree — confirm the date against IBKR.
+              </p>
+            </div>
+            <EarningsDateChip
+              symbol={c.symbol ?? ""}
+              eventDate={c.event_date}
+              releaseTime={c.release_time}
+              dateStatus="conflict"
+              dateConflictWith={c.date_conflict_with}
+              onConfirmed={onConfirmed}
+              popoverAlign="right"
+            />
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 

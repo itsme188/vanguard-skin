@@ -9,6 +9,21 @@ interface Props {
   releaseTime: string | null;
   dateStatus: "confirmed" | "conflict" | "single" | "user_confirmed" | null | undefined;
   dateConflictWith: string | null | undefined; // "finnhub:YYYY-MM-DD"
+  /**
+   * Called after a successful confirm, alongside router.refresh(). Client
+   * components holding the conflict list in fetch-state (the Alerts inbox
+   * Conflicts view) need this — router.refresh() only re-renders server
+   * components, so their list would stay stale without it.
+   */
+  onConfirmed?: () => void;
+  /**
+   * Which edge the confirm popover anchors to. Default "left" (EarningsHub —
+   * chip sits at the row's left, popover opens rightward). Pass "right" when
+   * the chip sits at a row's RIGHT edge (Alerts Conflicts view) — a rightward
+   * popover there runs off a 390px viewport and forces page-wide horizontal
+   * scroll.
+   */
+  popoverAlign?: "left" | "right";
 }
 
 function fmtShort(d: string): string {
@@ -37,6 +52,8 @@ export function EarningsDateChip({
   releaseTime,
   dateStatus,
   dateConflictWith,
+  onConfirmed,
+  popoverAlign = "left",
 }: Props) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -94,6 +111,7 @@ export function EarningsDateChip({
         return;
       }
       setOpen(false);
+      onConfirmed?.();
       startTransition(() => router.refresh());
     } catch {
       setConfirmError("Confirm failed: could not reach the server.");
@@ -114,7 +132,13 @@ export function EarningsDateChip({
         ⚠ confirm
       </button>
       {open && (
-        <div className="absolute z-50 top-full left-0 mt-1 w-60 rounded-lg border border-edge bg-panel p-2 shadow-lg text-left">
+        // z-[55]: must paint above the fixed chat rail (z-50) — same
+        // rail-tie family as the Analysis drawer fix (trust-strip precedent).
+        <div
+          className={`absolute z-[55] top-full mt-1 w-60 rounded-lg border border-edge bg-panel p-2 shadow-lg text-left ${
+            popoverAlign === "right" ? "right-0" : "left-0"
+          }`}
+        >
           <p className="text-[11px] text-ink-dim mb-1.5">
             Sources disagree — pick the IBKR date:
           </p>
