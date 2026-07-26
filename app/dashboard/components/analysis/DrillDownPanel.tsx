@@ -124,13 +124,13 @@ export function DrillDownPanel({ open, onClose, scope, filter }: Props) {
     <>
       {/* Backdrop — click anywhere outside the panel to dismiss. */}
       <div
-        className="fixed inset-0 bg-black/40 z-40"
+        className="fixed inset-0 bg-black/40 z-[54]"
         onClick={onClose}
         aria-hidden="true"
       />
       {/* Panel */}
       <aside
-        className="fixed right-0 top-0 bottom-0 z-50 w-full md:w-[480px] bg-canvas border-l border-edge overflow-y-auto"
+        className="fixed right-0 top-0 bottom-0 z-[55] w-full md:w-[480px] bg-canvas border-l border-edge overflow-y-auto"
         role="dialog"
         aria-modal="true"
         aria-label={title}
