@@ -171,6 +171,50 @@ export function countEarningsDateConflicts(
   return row.c;
 }
 
+export interface EarningsDateConflict {
+  id: number;
+  symbol: string | null;
+  security_id: number | null;
+  event_date: string;
+  release_time: string | null;
+  date_status: "conflict";
+  date_conflict_with: string | null;
+}
+
+/**
+ * The rows behind countEarningsDateConflicts — same predicate, same window —
+ * so the NotificationBell badge and the Alerts-inbox Conflicts view can never
+ * disagree. Powers the mobile-reachable conflict surface (pre-fix the badge
+ * counted conflicts that had NO surface anywhere on touch). security_id is
+ * sibling-filled the same way getEarningsForWeekDeduped does, so SymbolLink
+ * renders for dual-class tickers.
+ */
+export function getEarningsDateConflicts(
+  db: Database.Database,
+  today: string,
+): EarningsDateConflict[] {
+  const end = addDays(today, 14);
+  const rows = db
+    .prepare(
+      `SELECT id, symbol, security_id, event_date, release_time,
+              date_status, date_conflict_with
+         FROM calendar_events
+        WHERE event_type = 'earnings'
+          AND date_status = 'conflict'
+          AND COALESCE(superseded, 0) = 0
+          AND event_date BETWEEN ? AND ?
+        ORDER BY event_date ASC, symbol ASC`,
+    )
+    .all(today, end) as EarningsDateConflict[];
+
+  for (const r of rows) {
+    if (r.security_id == null && r.symbol) {
+      r.security_id = getSecurityIdForSymbolWithSiblings(db, r.symbol);
+    }
+  }
+  return rows;
+}
+
 export function getEventCountBySource(
   db: Database.Database,
   weekOf: string
