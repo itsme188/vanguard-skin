@@ -60,9 +60,14 @@ function formatRelative(timestamp: string | null): string {
   const iso = hasTimezone ? normalized : normalized + "Z";
   const d = new Date(iso);
   if (isNaN(d.getTime())) return timestamp;
-  const diffMs = Date.now() - d.getTime();
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-  if (diffDays === 0) return "today";
+  // Bucket by local calendar day, not 24h floors — a Thursday-noon run viewed
+  // Saturday 3am is ~39h elapsed (floor 1) but is two calendar days back.
+  const startOfDay = (x: Date) =>
+    new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diffDays = Math.round(
+    (startOfDay(new Date()) - startOfDay(d)) / (1000 * 60 * 60 * 24)
+  );
+  if (diffDays <= 0) return "today";
   if (diffDays === 1) return "yesterday";
   if (diffDays < 7) return `${diffDays}d ago`;
   if (diffDays < 30) return `${Math.floor(diffDays / 7)}w ago`;
