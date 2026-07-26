@@ -24,7 +24,8 @@ Spec: `docs/superpowers/specs/2026-07-26-qa-auto-fix-pipeline-design.md`. Ledger
 
 1. Read the `fixer` config block. Dry-run mode = `QA_FIX_DRY_RUN=1` env OR `fixer.dryRun: true`.
 2. **Anti-strand guard:** run `git branch --list 'qa-auto-fixes-*' --list 'qa-deep-fixes-*'` and both `gh pr list --state open --search "qa-auto-fixes"` and `gh pr list --state open --search "qa-deep-fixes"` from the main checkout. For every unmerged branch/PR: record it for the summary, and mark its findings SKIP for tonight (a fix already exists unmerged — re-fixing it forks the work). Identify covered findings by the `[qa:<finding-id>]` trailer in the branch's commit messages (`git log main..<branch> --format=%B`).
-3. Load `qa/findings/ledger.json`. Working set = findings with `status` in (`new`, `known`) that are not covered by an unmerged branch. Ignore `wontfix` and `fixed`.
+3. **Already-fixed-on-main reconcile:** before classifying, run `git log --since="14 days ago" --format="%h %s" main` and match commit subjects / `[qa:<id>]` trailers against open finding ids AND against the components each finding names. A finding whose fix already landed on main classifies `auto` with `disposition_plan: "already fixed on main @ <hash> — verify symptom gone, then close with that hash"` — never re-fix it.
+4. Load `qa/findings/ledger.json`. Working set = findings with `status` in (`new`, `known`) that are not covered by an unmerged branch. Ignore `wontfix` and `fixed`. **`ledger.json` is large (~350KB, exceeds the Read tool's limit) — load and edit it exclusively via python3 scripts; never attempt a whole-file Read.**
 
 ## Step 1 — Classify every finding in the working set
 
@@ -33,6 +34,12 @@ For each finding, read the referenced code (the ledger notes usually name compon
 - **`auto`** — the root cause is knowable from code + ledger notes, and the fix does not change product behavior beyond what the finding describes. Ledger notes that already prescribe the exact fix (a named component + named change) are the strongest signal.
 - **`needs-decision`** — fixing requires choosing between product alternatives (data-source choices, column additions vs relabels, UX redesigns). Write `decision_options`: 2–3 entries of `{option, tradeoff}` plus a `recommendation` string. NO code.
 - **`needs-repro`** — the ledger describes a symptom you cannot confirm against current code/data. Leave everything else untouched.
+
+**Data-mutation caveat:** a finding whose code fix requires a companion ONE-TIME data mutation on the live DB (cache purge, row repair, backfill) is `needs-decision`, not `auto` — the fixer never touches the live `data/vanguard.db` (Hard rule 5), so the data half needs the user. Name the repair-script path convention in `decision_options` (`scripts/repair-*.ts`, idempotent, dry-run default).
+
+**Precedent, to reduce judgment drift:** a broken existing behavior with an unambiguous expected outcome (search box ignored, stale count, clipped column) is `auto` even at MEDIUM severity. Any fix that changes WHAT is displayed rather than repairs HOW it displays (new column, different data source, relabel) is `needs-decision`.
+
+Every finding gets `disposition` + `disposition_date` (YYYY-MM-DD) written to the ledger. `auto` findings additionally get a one-line `disposition_plan` describing the fix. `needs-decision` findings get `decision_options` + `recommendation` as above.
 
 Write dispositions to the ledger immediately (checkpoint pattern — one python3 edit per finding, not one batch at the end). Then regenerate `qa/findings/DECISIONS-PENDING.md`: one section per `needs-decision` finding — title, one-paragraph problem statement, the options with trade-offs, your recommendation. Overwrite the whole file each run (it is derived state).
 
@@ -120,7 +127,7 @@ After delivery, update each finding: `status: "fixed"`, `fix_commit` = the MAIN-
 
 Run `npx vitest run` once more on main after cherry-picks (cherry-pick contexts can differ). Red ⇒ revert the cherry-picks (`git revert`), flip those findings back to `fix_status` absent + note, Pushover the failure.
 
-Before finishing this step, run `git log origin/main..main --oneline` — if non-empty, tonight leaves auto-merged commits on local main awaiting push. Carry that count into Step 6's fix-run log and Pushover summary.
+Before finishing this step, run `git log origin/main..main --oneline` — if non-empty, tonight leaves auto-merged commits on local main awaiting push. Carry that count into Step 6's fix-run log and Pushover summary, split per Step 6's `N from this run / M pre-existing unpushed` format (this run's count = tonight's surviving cherry-picks; pre-existing = whatever this range already contained before tonight's Step 2 worktree setup).
 
 ## Step 5 — Deploy (skip in dry-run; only when ≥1 of tonight's cherry-picks still present on main after any reverts)
 
@@ -153,8 +160,8 @@ This repo has a PreToolUse hook (`.claude/hooks/check-todo-reconciled.sh`) that 
    - skipped-pending-push: <finding-id> (depends on unpushed auto-merge <hash>) ...
    - failed attempts: <finding-id> (2 attempts, <one-line why>) ...
    - deploy: ok | failed | skipped
-   - push: N auto-merged commits on local main awaiting push
+   - push: N from this run / M pre-existing unpushed
    ```
-   This file is the chain's completeness signal — the wrapper alerts if the skill exits 0 without writing it. The `push:` line is REQUIRED whenever `git log origin/main..main --oneline` is non-empty (recall: auto-merged commits stay on LOCAL main — the fixer NEVER runs `git push origin main`; the user pushes at their next session, same as the session-end convention). Omit the line only when that range is empty.
-2. Pushover summary: `source qa/lib/pushover.sh; qa_pushover "QA fixer YYYY-MM-DD" "<counts: merged+deployed / PR awaiting review / needs-your-call / stranded branches>"` — append `"N auto-merged commits on local main awaiting push"` to the message whenever step 1's `push:` line is non-zero, for the same reason.
+   This file is the chain's completeness signal — the wrapper alerts if the skill exits 0 without writing it. The `push:` line is REQUIRED whenever `git log origin/main..main --oneline` is non-empty (recall: auto-merged commits stay on LOCAL main — the fixer NEVER runs `git push origin main`; the user pushes at their next session, same as the session-end convention). Omit the line only when that range is empty. Split the count: `N from this run` is tonight's cherry-picked auto-merges surviving Step 4's revert handling; `M pre-existing unpushed` is whatever was already ahead of `origin/main` before tonight started (a prior night's unpushed work — real, but not tonight's). **Dry-run always reports `0 from this run`** (no cherry-picks happen before Step 1's early exit) — any `pre-existing unpushed` count reported alongside it is informational carryover from prior nights.
+2. Pushover summary: `source qa/lib/pushover.sh; qa_pushover "QA fixer YYYY-MM-DD" "<counts: merged+deployed / PR awaiting review / needs-your-call / stranded branches>"` — append `"N from this run / M pre-existing unpushed commits on local main awaiting push"` to the message whenever step 1's `push:` line is non-zero, for the same reason.
 3. Worktree: leave intact on any crash/failure (inspection); on a clean run leave it too (persistent by design) but `git -C "$WT" checkout main` so tomorrow's `checkout -B` is clean.
