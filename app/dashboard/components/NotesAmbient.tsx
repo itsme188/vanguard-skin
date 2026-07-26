@@ -123,10 +123,10 @@ export function NotesAmbient() {
     return (
       <button
         onClick={() => setOpen(true)}
-        // xl:right-[500px] clears the persistent chat rail (480px wide
-        // + 20px gap). Without it the FAB would render underneath the chat
-        // panel at desktop ≥1280px.
-        className="fixed z-[55] bottom-20 right-4 md:bottom-6 md:right-6 xl:right-[500px] w-12 h-12 rounded-full bg-panel border border-edge shadow-lg hover:shadow-xl text-ink-dim hover:text-gold transition-[box-shadow,color,scale] active:scale-[0.96] flex items-center justify-center"
+        // At ≥1280px the offset tracks --chat-rail-width (480px open / 0
+        // collapsed / 720px expanded) so the FAB clears the chat rail when
+        // it's present but returns to the corner when the rail is collapsed.
+        className="fixed z-[55] bottom-20 right-4 md:bottom-6 md:right-6 xl:right-[calc(var(--chat-rail-width)_+_1.5rem)] w-12 h-12 rounded-full bg-panel border border-edge shadow-lg hover:shadow-xl text-ink-dim hover:text-gold transition-[box-shadow,color,scale] active:scale-[0.96] flex items-center justify-center"
         aria-label="Open ambient notes (or press ⌘;)"
         title="Notes (⌘;)"
       >
@@ -145,9 +145,9 @@ export function NotesAmbient() {
 
   return (
     <div
-      // xl:right-[500px] mirrors the FAB offset — keeps the panel out from
-      // under the persistent chat rail at desktop ≥1280px.
-      className="fixed z-[60] bottom-20 right-4 md:bottom-6 md:right-6 xl:right-[500px] w-[min(380px,calc(100vw-2rem))] rounded-xl border border-edge bg-panel shadow-xl"
+      // Mirrors the FAB offset — tracks --chat-rail-width so the panel sits
+      // beside the rail when open and at the corner when it's collapsed.
+      className="fixed z-[60] bottom-20 right-4 md:bottom-6 md:right-6 xl:right-[calc(var(--chat-rail-width)_+_1.5rem)] w-[min(380px,calc(100vw-2rem))] rounded-xl border border-edge bg-panel shadow-xl"
       role="dialog"
       aria-label="Ambient notes"
     >
