@@ -408,9 +408,11 @@ export function NotesView({
       ) : (
         <NotesList
           notes={initialNotes}
-          filtered={Boolean(
-            searchParams.get("search") || searchParams.get("symbol") || searchParams.get("type")
-          )}
+          filtered={notesListIsFiltered({
+            search: searchParams.get("search"),
+            symbol: searchParams.get("symbol"),
+            type: searchParams.get("type"),
+          })}
           editingId={editingId}
           editContent={editContent}
           onStartEdit={(id, content) => {
@@ -427,6 +429,18 @@ export function NotesView({
 }
 
 // ─── Notes List ──────────────────────────────────────────────────
+
+// A tab selection (?type=) is navigation, not a user filter — only search and
+// symbol may flip a zero-result into "No matching notes". A bare Stock Notes
+// tab on an empty journal must read "No notes yet", not blame a search the
+// user never typed.
+export function notesListIsFiltered(params: {
+  search?: string | null;
+  symbol?: string | null;
+  type?: string | null;
+}): boolean {
+  return Boolean(params.search || params.symbol);
+}
 
 function NotesList({
   notes,
