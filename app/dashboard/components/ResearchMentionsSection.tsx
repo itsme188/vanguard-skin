@@ -5,6 +5,7 @@ import Link from "next/link";
 import type { ResearchMention } from "@/lib/queries/research";
 import { Section } from "./Section";
 import { Chip, type ChipTone } from "./Chip";
+import { NewsletterArticleFrame } from "./NewsletterArticleFrame";
 
 interface ArticleDetail {
   id: number;
@@ -192,12 +193,10 @@ function ArticleBody({ article }: { article: ArticleDetail }) {
         </a>
       )}
       {article.raw_html ? (
-        <div
-          className="prose-newsletter"
-          // Same pattern as ResearchFeedsView — newsletter HTML is from
-          // user-configured sources only; sanitized at write-time.
-          dangerouslySetInnerHTML={{ __html: article.raw_html }}
-        />
+        // Same pattern as ResearchFeedsView — a sandboxed iframe, because an
+        // email's document-global <style> block restyles the whole app when
+        // injected via dangerouslySetInnerHTML (deep-QA style-leak finding).
+        <NewsletterArticleFrame html={article.raw_html} />
       ) : (
         <div className="prose-reader whitespace-pre-wrap">{article.raw_text}</div>
       )}
