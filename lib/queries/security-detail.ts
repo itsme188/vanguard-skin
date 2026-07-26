@@ -265,6 +265,13 @@ export function getClosedSalesBySecurity(
 
 /**
  * Get recent transactions for a specific security across all accounts.
+ *
+ * price_per_share / amount are stored in the security's NATIVE currency
+ * (FX convention) — the fx_rates join converts them to USD for this
+ * pure-display path, matching the tax-lot + hero queries on the same page.
+ * The converted aliases after t.* deliberately shadow the native columns
+ * (better-sqlite3 row objects are built in column order, so the last
+ * same-named column wins — pinned by the FX test).
  */
 export function getTransactionsBySecurity(
   db: Database.Database,
@@ -273,11 +280,15 @@ export function getTransactionsBySecurity(
 ): SecurityDetailTransaction[] {
   return db
     .prepare(
-      `SELECT t.*, s.symbol, s.name AS security_name, a.name AS account_name,
+      `SELECT t.*,
+              t.price_per_share * COALESCE(fx.usd_per_unit, 1) AS price_per_share,
+              t.amount * COALESCE(fx.usd_per_unit, 1) AS amount,
+              s.symbol, s.name AS security_name, a.name AS account_name,
               s.security_type, s.option_type, s.underlying_symbol,
               s.strike_price, s.expiration_date
       FROM transactions t
       LEFT JOIN securities s ON s.id = t.security_id
+      LEFT JOIN fx_rates fx ON fx.currency = s.currency
       JOIN accounts a ON a.id = t.account_id
       WHERE t.security_id = ?
       ORDER BY t.trade_date DESC
