@@ -236,6 +236,13 @@ export function interpretAlpha(alphaAnnual: number): Interpretation {
 }
 
 /** Regression R² (0-1). */
+/**
+ * Below this R², the regression explains so little variance that beta/alpha
+ * are noise — the UI shows an explicit low-confidence caption instead of
+ * narrating them as fact (honest-labeling sibling of dataWindowNotice).
+ */
+export const LOW_R2_THRESHOLD = 0.1;
+
 export function interpretR2(r2: number): Interpretation {
   if (r2 > 0.8) {
     return {
