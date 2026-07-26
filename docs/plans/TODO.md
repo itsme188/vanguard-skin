@@ -125,6 +125,15 @@ New open items from the same audit (added above): Worker synthesis held-ticker b
 
 ---
 
+### Closed this session (2026-07-26 — QA auto-fix pipeline + decision burn-down)
+
+> Brainstorm → spec (`9918935`) → 6-task plan (`94910a6`) → subagent-driven build, every task review-gated; final whole-branch review on the top model: READY, 0 Critical. Tests 3804/3804 + tsc clean. 18 commits pushed; DMG rebuilt.
+
+- ✅ **QA auto-fix pipeline shipped disarmed** (`c89dd11..dc3e552`) — `/qa-fix-findings` skill + nightly chain in `qa/nightly-deep-qa.sh` + `qa/lib/pushover.sh` + `fixer` config block. See the `- [x]` entry + ARM checklist under Bugs/Quality. Live incident during the build: two subagents independently tripped the `check-todo-reconciled.sh` hook on build keywords embedded as DATA (one evaded — adjudicated, content verified safe; one complied) → the skill's Hard rules 9/10 (keep build keywords out of ledger strings; hook denial = maintainer feedback, never evade) were live-validated before the pipeline ever ran.
+- ✅ **Both stranded `qa-deep-fixes-*` branches merged** (`f17b665` + `0ea7c11`, branches deleted) — import-NaN message, LWC markers-plugin disposal, macro-theme dead click, trust-strip calendar-day dates, NotesAmbient rail offset. Clears the ledger's "MERGE IT" flag; findings close on next sweep vs the rebuilt DMG.
+- ✅ **Drawer z-index HIGH (4th sighting) fixed for real** (`e73aaae`) — MacroThemeReceiptDrawer + DrillDownPanel to z-[55]/z-[54] per the trust-strip precedent; Playwright-verified above the rail, Close/Escape dismiss. Ledger carries the fix commit (anti-bounce).
+- ✅ **First supervised dry-run + full decision burn-down** — 42 open findings classified (27 auto / 15 needs-decision / 0 needs-repro); user resolved ALL 15 same session (every recommendation accepted; `DECIDED:` plans on ledger entries; 4 session-scale, 1 with user-run purge companion). Skill amended from run feedback (`e6904d7`). 5 ledger-note inaccuracies logged in `qa/findings/fix-runs/2026-07-26.md`.
+
 ### Closed this session (2026-07-23 — email trust: instruction leaks + already-reported guard)
 
 > User reported 6 issues; 4 root-caused same-day, 2 filed for later (sector-tag corruption = own brainstorm-first session; dead-clicking = needs repro). The email-trust pair executed as a subagent-driven 8-task plan (`docs/superpowers/plans/2026-07-23-email-trust-session.md`), commits `e64a88b..d0dd31d` (9), final whole-branch review on the top model: With-fixes → all findings fixed same session. Tests 3768→3803 Mac + 431→437 Worker, tsc clean both, Worker deployed.
