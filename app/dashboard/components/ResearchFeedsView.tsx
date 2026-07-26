@@ -6,6 +6,7 @@ import type { ResearchArticle, ResearchSource, FilteredArticle } from "@/lib/que
 import { trimEmailFooter } from "@/lib/gmail/sanitize";
 import { sanitizeThemeList } from "@/lib/gmail/theme-sanitize";
 import { ManageSourcesModal } from "./ManageSourcesModal";
+import { NewsletterArticleFrame } from "./NewsletterArticleFrame";
 import { SendDigestPanel } from "./SendDigestPanel";
 import { DigestEmailViewer } from "./DigestEmailViewer";
 import { useIsMobile } from "@/lib/hooks/useIsMobile";
@@ -664,10 +665,10 @@ function ArticleCard({
                 Loading full article...
               </div>
             ) : expandedHtml ? (
-              <div
-                className="prose-newsletter"
-                dangerouslySetInnerHTML={{ __html: expandedHtml }}
-              />
+              // Sandboxed iframe, NOT dangerouslySetInnerHTML: an email's
+              // document-global <style> block otherwise restyles the whole
+              // app (blue anchors, white background) until reload.
+              <NewsletterArticleFrame html={expandedHtml} />
             ) : expandedText ? (
               <div className="prose-reader">
                 {expandedText.split(/\n{2,}/).map((para, i) => (
