@@ -59,9 +59,13 @@ function daysBetween(dateA: string, dateB: string): number {
 
 export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
   return db.transaction(() => {
-    // Clear existing computed data
+    // Clear existing computed data — including the engine-owned synthetic
+    // RECONCILE_CLOSE transactions from prior runs. They are regenerated at
+    // the end of this run only where an orphan open lot still exists, so a
+    // later-imported real SELL naturally supersedes its synthetic stand-in.
     db.prepare("DELETE FROM tax_lot_sales").run();
     db.prepare("DELETE FROM tax_lots").run();
+    db.prepare("DELETE FROM transactions WHERE type = 'RECONCILE_CLOSE'").run();
 
     // ── Pre-processing: Compute premium adjustments for exercise/assignment ──
     const premiumAdjustments = computePremiumAdjustments(db);
@@ -145,7 +149,7 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
     let salesProcessed = 0;
     let totalRealizedGain = 0;
 
-    for (const sell of sells) {
+    const processSell = (sell: TransactionRow & { multiplier: number }) => {
       let remainingToSell = sell.quantity;
 
       // For EXERCISED/ASSIGNED/EXPIRED, the option closes at $0
@@ -216,6 +220,109 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
       }
 
       salesProcessed++;
+    };
+
+    for (const sell of sells) {
+      processSell(sell);
+    }
+
+    // ── Broker-close reconciliation pass ──
+    // A position the broker snapshot says is CLOSED (explicit quantity-0
+    // holdings row — the reconcileClosedEquityHoldings family writes these)
+    // can still carry open FIFO lots when the closing SELL hasn't been
+    // imported yet (statements lag). Synthesize an engine-owned
+    // RECONCILE_CLOSE transaction at the zero-row date and run it through
+    // the same FIFO path, so Open Tax Lots stops contradicting Positions
+    // with a phantom unrealized gain. Scope mirrors the equity reconciler:
+    // stocks/ETFs only (options expire via EXPIRED, bonds mature via
+    // REDEMPTION — their purge paths own those lifecycles). Skipped when the
+    // ledger is fresher than the snapshot (any position-changing transaction
+    // after the zero row means the snapshot is stale, not the ledger).
+    const hasHoldings = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'holdings'")
+      .get();
+    if (hasHoldings) {
+      const orphans = db
+        .prepare(
+          `SELECT tl.account_id, tl.security_id,
+                  SUM(tl.quantity_remaining) AS open_qty,
+                  SUM(tl.quantity_remaining * tl.acquisition_price) AS open_cost,
+                  h.as_of_date AS zero_date,
+                  COALESCE(s.multiplier, 1) AS multiplier
+             FROM tax_lots tl
+             JOIN securities s ON s.id = tl.security_id
+             JOIN holdings h
+               ON h.account_id = tl.account_id AND h.security_id = tl.security_id
+              AND h.as_of_date = (
+                SELECT MAX(h2.as_of_date) FROM holdings h2
+                 WHERE h2.account_id = tl.account_id AND h2.security_id = tl.security_id
+              )
+            WHERE tl.quantity_remaining > 0
+              AND h.quantity = 0
+              AND LOWER(COALESCE(s.security_type, '')) IN ('stock', 'etf')
+              AND NOT EXISTS (
+                SELECT 1 FROM transactions t2
+                 WHERE t2.account_id = tl.account_id
+                   AND t2.security_id = tl.security_id
+                   AND t2.trade_date > h.as_of_date
+                   AND LOWER(t2.type) IN ('buy', 'reinvestment', 'buy_to_open', 'sell_to_open',
+                                          'sell', 'sell_to_close', 'redemption', 'buy_to_cover',
+                                          'expired', 'exercised', 'assigned', 'buy_to_close')
+              )
+            GROUP BY tl.account_id, tl.security_id`
+        )
+        .all() as Array<{
+        account_id: number;
+        security_id: number;
+        open_qty: number;
+        open_cost: number;
+        zero_date: string;
+        multiplier: number;
+      }>;
+
+      const latestPriceStmt = db.prepare(
+        `SELECT close_price FROM prices
+          WHERE security_id = ? AND date <= ?
+          ORDER BY date DESC LIMIT 1`
+      );
+      const insertSynthetic = db.prepare(
+        `INSERT INTO transactions
+           (account_id, security_id, trade_date, type, quantity, price_per_share, amount, fees,
+            is_external_flow, source_key, notes)
+         VALUES (?, ?, ?, 'RECONCILE_CLOSE', ?, ?, ?, 0, 0, ?, ?)`
+      );
+
+      for (const orphan of orphans) {
+        const priceRow = latestPriceStmt.get(orphan.security_id, orphan.zero_date) as
+          | { close_price: number }
+          | undefined;
+        // No price at all → breakeven close at the open lots' weighted-average
+        // cost (records zero net gain rather than fabricating one).
+        const salePrice =
+          priceRow?.close_price ?? (orphan.open_qty > 0 ? orphan.open_cost / orphan.open_qty : 0);
+        const txnResult = insertSynthetic.run(
+          orphan.account_id,
+          orphan.security_id,
+          orphan.zero_date,
+          orphan.open_qty,
+          salePrice,
+          orphan.open_qty * salePrice * orphan.multiplier,
+          `reconcile:close:${orphan.account_id}:${orphan.security_id}:${orphan.zero_date}`,
+          "Synthesized close — broker snapshot shows this position flat with no matching SELL imported yet; superseded automatically when the real statement lands."
+        );
+        processSell({
+          id: txnResult.lastInsertRowid as number,
+          account_id: orphan.account_id,
+          security_id: orphan.security_id,
+          trade_date: orphan.zero_date,
+          type: "RECONCILE_CLOSE",
+          quantity: orphan.open_qty,
+          price_per_share: salePrice,
+          amount: orphan.open_qty * salePrice * orphan.multiplier,
+          fees: 0,
+          multiplier: orphan.multiplier,
+        });
+      }
     }
 
     return { lotsCreated, salesProcessed, totalRealizedGain };
