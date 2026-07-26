@@ -467,4 +467,42 @@ describe("validateParsedResult", () => {
     expect(validatedResult.prices[0].symbol).toBe("AAPL");
     expect(skippedRows).toHaveLength(1);
   });
+
+  it("never surfaces the raw NaN token in skip reasons (parseStrictNumber comma rows)", () => {
+    // parseStrictNumber() returns NaN for comma-bearing cells like "-2,105.00";
+    // the skip reason must explain that in words, not leak "NaN" to the user.
+    const parsed = makeParsedResult({
+      transactions: [
+        {
+          accountName: "IBKR",
+          tradeDate: "2025-03-15",
+          type: "BUY",
+          symbol: "AAPL",
+          quantity: NaN,
+          amount: NaN,
+          sourceKey: "test:nan",
+        },
+      ],
+      holdings: [
+        {
+          accountName: "IBKR",
+          symbol: "MSFT",
+          quantity: NaN,
+          asOfDate: "2025-03-15",
+          sourceKey: "test:hnan",
+        },
+      ],
+      prices: [{ symbol: "GOOG", date: "2025-03-15", closePrice: NaN, source: "ibkr" }],
+    });
+
+    const { skippedRows, validatedResult } = validateParsedResult(parsed);
+    expect(validatedResult.transactions).toHaveLength(0);
+    expect(validatedResult.holdings).toHaveLength(0);
+    expect(validatedResult.prices).toHaveLength(0);
+    expect(skippedRows.length).toBeGreaterThanOrEqual(3);
+    for (const row of skippedRows) {
+      expect(row.reason).not.toContain("NaN");
+      expect(row.reason).toContain("not a number");
+    }
+  });
 });
