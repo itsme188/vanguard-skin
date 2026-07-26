@@ -4,6 +4,7 @@ import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
 import { getFactorHeatmap, type FactorHeatmapRow } from "@/lib/queries/analysis";
+import { buildFlowAdjustedIndex, fetchNetFlowsByDate } from "@/lib/compute/flow-adjusted";
 
 // ─── Types ─────────────��────────────────────────────────────────
 
@@ -129,25 +130,41 @@ function computeMarketRegression(
     benchmarkByDate.set(b.date, b.close_price);
   }
 
-  // 3. Compute aligned daily returns
+  // 3. Compute aligned daily returns — FLOW-ADJUSTED on the portfolio side.
+  // Raw total_value log returns read every deposit/withdrawal as a market
+  // move: the live repro showed a -$100k IBKR withdrawal landing as a -20.9%
+  // "day", attenuating beta to 0.05 with a fake +63% alpha (2026-07-26 QA
+  // finding). Same r_t = (V_t − F_t)/V_{t−1} convention as computeRiskMetrics;
+  // flows between aligned dates accumulate into the (prev, curr] window.
   const allDates = [...portfolioByDate.keys()]
     .filter((d) => benchmarkByDate.has(d))
     .sort();
 
+  const alignedSeries = allDates.map((d) => ({
+    date: d,
+    value: portfolioByDate.get(d)!,
+  }));
+  const flows =
+    alignedSeries.length >= 2
+      ? fetchNetFlowsByDate(
+          db,
+          accountIds,
+          alignedSeries[0].date,
+          alignedSeries[alignedSeries.length - 1].date
+        )
+      : [];
+  const { returns: adjustedReturns } = buildFlowAdjustedIndex(alignedSeries, flows);
+
+  const dateIndex = new Map(allDates.map((d, i) => [d, i]));
   const portfolioReturns: number[] = [];
   const benchmarkReturns: number[] = [];
 
-  for (let i = 1; i < allDates.length; i++) {
-    const prevDate = allDates[i - 1];
-    const currDate = allDates[i];
-
-    const pPrev = portfolioByDate.get(prevDate)!;
-    const pCurr = portfolioByDate.get(currDate)!;
-    const bPrev = benchmarkByDate.get(prevDate)!;
-    const bCurr = benchmarkByDate.get(currDate)!;
-
-    if (pPrev > 0 && pCurr > 0 && bPrev > 0 && bCurr > 0) {
-      portfolioReturns.push(Math.log(pCurr / pPrev));
+  for (const r of adjustedReturns) {
+    const i = dateIndex.get(r.date)!;
+    const bPrev = benchmarkByDate.get(allDates[i - 1])!;
+    const bCurr = benchmarkByDate.get(allDates[i])!;
+    if (bPrev > 0 && bCurr > 0) {
+      portfolioReturns.push(r.logReturn);
       benchmarkReturns.push(Math.log(bCurr / bPrev));
     }
   }
