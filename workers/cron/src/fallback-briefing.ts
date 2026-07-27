@@ -83,11 +83,24 @@ export async function runFallbackBriefing(
   const catalog = snapshot.modelCatalog ?? [];
 
   let text: string;
+  let truncated = false;
   try {
     const result = await generateWithFailover(env, "fallbackBriefing", catalog, (model) =>
-      generateText({ model, maxOutputTokens: 8192, prompt }),
+      // 16384: the 7/26 briefing overran the old 8192 cap and shipped
+      // mid-sentence — a full week's briefing with deep-read synthesis
+      // regularly needs >8k output tokens.
+      generateText({ model, maxOutputTokens: 16384, prompt }),
     );
     text = result.text;
+    // A length-stop means the briefing ends mid-thought. Ship it anyway
+    // (a truncated briefing beats none on a Sunday), but disclose honestly
+    // instead of letting the cutoff read like a rendering bug.
+    truncated = result.finishReason === "length";
+    if (truncated) {
+      console.warn(
+        `[fallback-briefing] output truncated at the token cap (${text.length} chars) — appending disclosure`,
+      );
+    }
   } catch (err) {
     // The credit-exhaustion / rate-limit analog. Surface loudly as kind:"error"
     // instead of letting it throw raw through runJob's catch-all (which loses
@@ -98,8 +111,11 @@ export async function runFallbackBriefing(
     };
   }
 
-  const content = text.trim();
+  let content = text.trim();
   if (!content) return { kind: "error", error: "Opus returned empty briefing" };
+  if (truncated) {
+    content += `\n\n---\n\n*⚠️ This briefing was truncated at the model output limit — the final section may be incomplete.*`;
+  }
 
   const title = `Week of ${formatWeekTitle(weekOf)}`;
   const footer = `(fallback delivery, state snapshot ${snapshot.snapshotDate}) — the Mac didn't complete this send in time. Options + price-levels sections unavailable.`;
