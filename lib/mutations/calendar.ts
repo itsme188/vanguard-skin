@@ -51,8 +51,29 @@ export interface CalendarEventInput {
  */
 export function upsertCalendarEvents(
   db: Database.Database,
-  events: CalendarEventInput[]
+  rawEvents: CalendarEventInput[]
 ): UpsertResult {
+  if (rawEvents.length === 0) return { total: 0, inserted: 0, updated: 0 };
+
+  // User suppressions (migration 070): drop sync events whose (symbol, date,
+  // type) tuple the user explicitly removed — a wrong Finnhub/Nasdaq earnings
+  // date would otherwise re-insert on every sweep. Manual rows never flow
+  // through this function, but the source guard keeps it honest anyway.
+  const suppressed = getSuppressedEventTuples(db);
+  const events =
+    suppressed.size === 0
+      ? rawEvents
+      : rawEvents.filter(
+          (e) =>
+            e.source === "manual" ||
+            !e.symbol ||
+            !suppressed.has(suppressionKey(e.symbol, e.event_date, e.event_type)),
+        );
+  if (events.length < rawEvents.length) {
+    console.log(
+      `[calendar] Skipped ${rawEvents.length - events.length} sync event(s) matching user suppressions`,
+    );
+  }
   if (events.length === 0) return { total: 0, inserted: 0, updated: 0 };
 
   // Check which source_keys already exist so we can distinguish insert vs update
@@ -162,11 +183,101 @@ export function saveBriefing(
 
 // ─── Single-row CRUD for the Earnings Hub manual-add flow ─────────
 //
+// ─── Sync-event suppressions (migration 070) ──────────────────────
+
+function suppressionKey(symbol: string, eventDate: string, eventType: string): string {
+  return `${symbol.trim().toUpperCase()}|${eventDate}|${eventType}`;
+}
+
+/**
+ * Record a (symbol, event_date, event_type) tuple the sync upsert must skip.
+ * Idempotent (UNIQUE + DO NOTHING). Symbol stored uppercase.
+ */
+export function suppressCalendarEvent(
+  db: Database.Database,
+  params: { symbol: string; event_date: string; event_type?: string; reason?: string | null },
+): void {
+  db.prepare(
+    `INSERT INTO calendar_event_suppressions (symbol, event_date, event_type, reason)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(symbol, event_date, event_type) DO NOTHING`,
+  ).run(
+    params.symbol.trim().toUpperCase(),
+    params.event_date,
+    params.event_type ?? "earnings",
+    params.reason ?? null,
+  );
+}
+
+/**
+ * All suppressed tuples as `SYMBOL|date|type` keys. Returns an empty set when
+ * the table doesn't exist (minimal hand-built test DBs) — same tolerance
+ * pattern as the flow-adjusted risk lookup on a missing transactions table.
+ */
+function getSuppressedEventTuples(db: Database.Database): Set<string> {
+  try {
+    const rows = db
+      .prepare("SELECT symbol, event_date, event_type FROM calendar_event_suppressions")
+      .all() as { symbol: string; event_date: string; event_type: string }[];
+    return new Set(rows.map((r) => suppressionKey(r.symbol, r.event_date, r.event_type)));
+  } catch (err) {
+    if (err instanceof Error && /no such table/i.test(err.message)) return new Set();
+    throw err;
+  }
+}
+
+/**
+ * Delete a SYNC-OWNED event and suppress its tuple so the next sweep can't
+ * re-insert it — the user correction path for a wrong sync-sourced earnings
+ * date (delete the wrong row here, add the right one via insertCalendarEvent).
+ * Dependent audit rows (earnings_emails / skips / bogeys) CASCADE away with
+ * the row — acceptable, since the event was wrong to begin with.
+ *
+ * Throws on a symbol-less event: suppressions are symbol-keyed, and macro
+ * rows are corrected through their own source pipelines, never this path.
+ */
+export function deleteAndSuppressCalendarEvent(
+  db: Database.Database,
+  id: number,
+): { deleted: boolean; suppressed: { symbol: string; event_date: string; event_type: string } | null } {
+  const row = db
+    .prepare("SELECT symbol, event_date, event_type, source FROM calendar_events WHERE id = ?")
+    .get(id) as
+    | { symbol: string | null; event_date: string; event_type: string; source: string }
+    | undefined;
+  if (!row) return { deleted: false, suppressed: null };
+  if (!row.symbol) {
+    throw new Error(
+      "Cannot suppress an event without a symbol — macro events are owned by their source pipeline.",
+    );
+  }
+
+  const symbol = row.symbol.trim().toUpperCase();
+  const txn = db.transaction(() => {
+    suppressCalendarEvent(db, {
+      symbol,
+      event_date: row.event_date,
+      event_type: row.event_type,
+      reason: `user-deleted ${row.source} row #${id}`,
+    });
+    db.prepare("DELETE FROM calendar_events WHERE id = ?").run(id);
+  });
+  txn();
+
+  return {
+    deleted: true,
+    suppressed: { symbol, event_date: row.event_date, event_type: row.event_type },
+  };
+}
+
 // updateCalendarEvent / deleteCalendarEvent intentionally only operate on
 // rows where source='manual'. Manual rows are exclusively user-curated;
 // Finnhub/WSH/FRED rows are owned by their sync pipelines and a stray
 // PATCH/DELETE would corrupt the next sync's idempotency. Routes wrap
-// these and return 403 on attempts to touch non-manual rows.
+// these and return 403 on attempts to touch non-manual rows — EXCEPT the
+// DELETE route's sync-owned earnings branch, which goes through
+// deleteAndSuppressCalendarEvent above (delete + suppression, so the next
+// sync can't resurrect a wrong date).
 
 export interface ManualEarningsInput {
   symbol: string;

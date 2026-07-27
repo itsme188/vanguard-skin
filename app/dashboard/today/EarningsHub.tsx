@@ -393,11 +393,13 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
           previewSkipped={event.previewSkipped}
           recapSkipped={event.recapSkipped}
         />
-        {/* Manual rows only — sync-owned rows (finnhub/wsh/fred) are
-            guarded server-side too (DELETE returns 403). */}
-        {event.source === "manual" && (
-          <EarningsDeleteButton eventId={event.id} symbol={event.symbol} />
-        )}
+        {/* Manual rows delete directly; sync rows delete-with-suppression
+            (stays removed across syncs — the wrong-date correction path). */}
+        <EarningsDeleteButton
+          eventId={event.id}
+          symbol={event.symbol}
+          source={event.source}
+        />
       </span>
     </div>
   );
@@ -538,10 +540,12 @@ function MobileCard({ event }: { event: EnrichedRow }) {
           previewSkipped={event.previewSkipped}
           recapSkipped={event.recapSkipped}
         />
-        {/* Manual rows only — server-side source guard is the authority. */}
-        {event.source === "manual" && (
-          <EarningsDeleteButton eventId={event.id} symbol={event.symbol} />
-        )}
+        {/* Manual rows delete directly; sync rows delete-with-suppression. */}
+        <EarningsDeleteButton
+          eventId={event.id}
+          symbol={event.symbol}
+          source={event.source}
+        />
       </div>
     </div>
   );
