@@ -4,6 +4,7 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { parseImport, commitImport, undoImport } from "@/lib/import/engine";
+import { computeTaxLots } from "@/lib/compute/tax-lots";
 import { upsertSecurity } from "@/lib/mutations/securities";
 import { parseVanguardCostBasis } from "@/lib/import/parsers/vanguard-cost-basis";
 
@@ -268,6 +269,35 @@ describe("import engine", () => {
         }
       ).c;
       expect(holdings).toBe(result2.newHoldings);
+    });
+
+    it("regenerates tax lots and valuations after undo instead of leaving the derived layer wiped", async () => {
+      const parsed1 = await parseImport(
+        ibkrActivityCsv,
+        "IBKR 2025-01 activity.csv"
+      );
+      const parsed2 = await parseImport(
+        vanguardHoldingsCsv,
+        "vanguard-holdings.csv"
+      );
+      commitImport(db, parsed1);
+      const result2 = commitImport(db, parsed2);
+
+      computeTaxLots(db);
+      const lotsBefore = (
+        db.prepare("SELECT COUNT(*) as c FROM tax_lots").get() as { c: number }
+      ).c;
+      expect(lotsBefore).toBeGreaterThan(0);
+
+      // Undo the holdings batch — unrelated to the transactions that back the lots
+      undoImport(db, result2.batchId);
+
+      // deleteImportBatch wipes tax_lots wholesale; undoImport must regenerate
+      // them from the surviving transactions
+      const lotsAfter = (
+        db.prepare("SELECT COUNT(*) as c FROM tax_lots").get() as { c: number }
+      ).c;
+      expect(lotsAfter).toBe(lotsBefore);
     });
   });
 
