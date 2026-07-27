@@ -378,6 +378,16 @@ export function ManageSourcesModal({
       setDiscoverError(err instanceof Error ? err.message : "Failed to connect to Gmail");
     } finally {
       setDiscovering(false);
+      // Re-anchor once the response has grown the section: the result/error
+      // box renders ~126px below the point the pre-fetch scrollIntoView
+      // reached, and scroll anchoring leaves it hidden under the sticky
+      // footer (2026-07-27 sweep: only a 19px sliver of the error was
+      // readable behind the Done bar). block:"end" + scroll-mb on the
+      // section keeps the box clear of the footer overlay.
+      setTimeout(
+        () => discoverResultsRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }),
+        50
+      );
     }
   }, []);
 
@@ -719,7 +729,7 @@ export function ManageSourcesModal({
             const alreadyAddedCount = discovered.length - newSenders.length;
 
             return (
-              <div ref={discoverResultsRef} className="space-y-2">
+              <div ref={discoverResultsRef} className="space-y-2 scroll-mb-16">
                 <p className="text-xs text-ink-faint uppercase tracking-wider">
                   Found in Gmail
                 </p>
