@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import { ScrollFade } from "./ScrollFade";
 
 interface EmailContentResponse {
   title: string;
@@ -125,7 +126,7 @@ export function EarningsEmailViewer({
         onClick={onClose}
         aria-hidden="true"
       />
-      <div className="relative w-full max-w-3xl mx-auto my-8 electron:mt-12 max-h-[85dvh] overflow-y-auto rounded-xl border border-edge bg-panel shadow-2xl">
+      <div className="relative w-full max-w-4xl mx-auto my-8 electron:mt-12 max-h-[85dvh] overflow-y-auto rounded-xl border border-edge bg-panel shadow-2xl">
         {/* Sticky header */}
         <div className="sticky top-0 z-10 flex items-baseline justify-between px-5 py-3.5 border-b border-edge bg-panel/95 backdrop-blur-sm rounded-t-xl gap-3">
           <div className="flex flex-col min-w-0">
@@ -175,13 +176,22 @@ export function EarningsEmailViewer({
             </div>
           )}
           {data && (
-            <iframe
-              title={data.title}
-              srcDoc={data.fullHtml}
-              className="w-full block border-0 rounded-b-xl"
-              style={{ height: "75dvh", backgroundColor: "#1a1a1a" }}
-              sandbox="allow-same-origin"
-            />
+            /* The email's scoreboard table has a min-content width of ~820px
+               (fixed-width columns for print-and-fill), wider than both the
+               old max-w-3xl modal (768px) and any phone. Give the iframe that
+               natural width and let ScrollFade own the horizontal overflow —
+               without it the Δ (beat/miss) column silently clipped on desktop
+               and EVERY number was off-screen at rest on mobile (2026-07-27
+               sweep). */
+            <ScrollFade>
+              <iframe
+                title={data.title}
+                srcDoc={data.fullHtml}
+                className="w-full min-w-[860px] block border-0 rounded-b-xl"
+                style={{ height: "75dvh", backgroundColor: "#1a1a1a" }}
+                sandbox="allow-same-origin"
+              />
+            </ScrollFade>
           )}
         </div>
       </div>
