@@ -163,6 +163,34 @@ Output JSON array only. Example:
 Inputs:
 {INPUTS_JSON}`;
 
+// Parse the model's themes JSON. Trims a code-fence wrap, then defends against
+// raw control characters INSIDE string literals — Sonnet intermittently emits
+// unescaped newlines there, and JSON.parse rejects them ("Bad control character
+// in string literal"). Collapsing C0 controls to spaces is safe: in legal JSON
+// they only appear between tokens as whitespace, and an in-string control
+// becomes the whitespace the model meant. (2026-07-27 QA: a cold-cache request
+// 500'd and the raw parser message rendered inside the Macro-this-week card.)
+export function parseThemesJson(rawText: string): MacroThemeAi[] {
+  const jsonText = rawText.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
+  let raw: unknown;
+  try {
+    raw = JSON.parse(jsonText);
+  } catch (err) {
+    try {
+      raw = JSON.parse(jsonText.replace(/[\u0000-\u001f]+/g, " "));
+    } catch {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`AI returned malformed themes: ${msg}`);
+    }
+  }
+  try {
+    return MacroThemesSchema.parse(raw);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`AI returned malformed themes: ${msg}`);
+  }
+}
+
 export interface GenerateMacroThemesOpts {
   scope: string;
   weekOf: string;
@@ -238,17 +266,7 @@ export async function generateMacroThemes(
     throw new Error(`Sonnet macro-themes generation failed: ${msg}`);
   }
 
-  // Trim code-fence wrap if the model added one despite system-prompt instructions.
-  const jsonText = rawText.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
-
-  let parsed: MacroThemeAi[];
-  try {
-    const raw = JSON.parse(jsonText);
-    parsed = MacroThemesSchema.parse(raw);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`AI returned malformed themes: ${msg}`);
-  }
+  const parsed = parseThemesJson(rawText);
 
   // Post-process: attach per-scope exposure bucket + top-3 contributors from
   // computeFactorAnalysis().tilts (per-factor weighted exposure across the 9
