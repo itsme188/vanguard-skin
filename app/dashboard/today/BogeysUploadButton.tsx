@@ -17,8 +17,9 @@ interface UploadResponse {
 }
 
 /**
- * Drop-zone / file-picker for multi-symbol earnings bogeys PDFs (e.g.,
- * TMT Breakout's weekly preview page). Posts to
+ * Drop-zone / file-picker for multi-symbol earnings bogeys PDFs or
+ * screenshots (e.g., TMT Breakout's weekly preview page, or a phone
+ * screenshot of a bogeys table). Posts to
  * /api/earnings/bogeys/upload, which:
  *   1. Archives to R2.
  *   2. Sends to Claude for per-symbol extraction.
@@ -41,7 +42,7 @@ export function BogeysUploadButton({ weekOf }: Props) {
       const fd = new FormData();
       fd.append("file", file);
       fd.append("weekOf", weekOf);
-      fd.append("sourceLabel", `${file.name.replace(/\.pdf$/i, "")} ${weekOf}`);
+      fd.append("sourceLabel", `${file.name.replace(/\.(pdf|png|jpe?g|webp|gif)$/i, "")} ${weekOf}`);
       const res = await fetch("/api/earnings/bogeys/upload", {
         method: "POST",
         body: fd,
@@ -68,12 +69,12 @@ export function BogeysUploadButton({ weekOf }: Props) {
         disabled={uploading}
         className="text-gold-ink hover:text-gold/80 font-medium disabled:opacity-50"
       >
-        {uploading ? "Uploading…" : "+ Upload bogeys PDF"}
+        {uploading ? "Uploading…" : "+ Upload bogeys PDF/screenshot"}
       </button>
       <input
         ref={fileInputRef}
         type="file"
-        accept="application/pdf,.pdf"
+        accept="application/pdf,.pdf,image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif"
         className="hidden"
         onChange={(e) => {
           const f = e.target.files?.[0];

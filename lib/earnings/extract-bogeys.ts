@@ -84,13 +84,88 @@ Strict rules:
 - Do not invent companies not on the page.
 - If a company is mentioned but no bogeys are given, still include an entry with all numeric fields null and the qualitative info in "notes".`;
 
+/** Upload media types the extraction accepts (Claude document/image blocks). */
+export type BogeysUploadMediaType =
+  | "application/pdf"
+  | "image/png"
+  | "image/jpeg"
+  | "image/webp"
+  | "image/gif";
+
+const IMAGE_MEDIA_TYPES = new Set<BogeysUploadMediaType>([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+]);
+
+const EXTENSION_TO_MEDIA: Record<string, BogeysUploadMediaType> = {
+  pdf: "application/pdf",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+};
+
+/**
+ * Resolve an upload's media type from its MIME type, falling back to the file
+ * extension (browsers sometimes send an empty `File.type`). Returns null for
+ * anything the Claude API can't take as a document/image block — notably HEIC,
+ * which iPhone *photos* use; iPhone *screenshots* are PNG and are fine.
+ */
+export function resolveBogeysUploadMediaType(
+  fileName: string,
+  mimeType: string,
+): BogeysUploadMediaType | null {
+  const mime = mimeType.trim().toLowerCase();
+  if (mime === "application/pdf") return "application/pdf";
+  if (IMAGE_MEDIA_TYPES.has(mime as BogeysUploadMediaType)) {
+    return mime as BogeysUploadMediaType;
+  }
+  const ext = fileName.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+  // Only fall back to the extension when the MIME type is absent/generic —
+  // a *known* unsupported MIME (image/heic) must not sneak through via ".jpg".
+  if (mime === "" || mime === "application/octet-stream") {
+    return (ext && EXTENSION_TO_MEDIA[ext]) || null;
+  }
+  return null;
+}
+
+/** Back-compat wrapper — PDF-only callers keep their signature. */
 export async function extractBogeysFromPdf(
   pdfBytes: Uint8Array,
+): Promise<ExtractBogeysResult> {
+  return extractBogeysFromUpload(pdfBytes, "application/pdf");
+}
+
+export async function extractBogeysFromUpload(
+  fileBytes: Uint8Array,
+  mediaType: BogeysUploadMediaType,
 ): Promise<ExtractBogeysResult> {
   const feature = "earningsBogeysExtraction" as const;
   const { modelId } = resolveFeatureModel(feature);
   const client = getRawAnthropicClient(feature);
-  const base64 = Buffer.from(pdfBytes).toString("base64");
+  const base64 = Buffer.from(fileBytes).toString("base64");
+  const isImage = mediaType !== "application/pdf";
+
+  const fileBlock = isImage
+    ? {
+        type: "image" as const,
+        source: {
+          type: "base64" as const,
+          media_type: mediaType as Exclude<BogeysUploadMediaType, "application/pdf">,
+          data: base64,
+        },
+      }
+    : {
+        type: "document" as const,
+        source: {
+          type: "base64" as const,
+          media_type: "application/pdf" as const,
+          data: base64,
+        },
+      };
 
   const stream = client.messages.stream({
     model: modelId,
@@ -98,17 +173,7 @@ export async function extractBogeysFromPdf(
     messages: [
       {
         role: "user",
-        content: [
-          {
-            type: "document",
-            source: {
-              type: "base64",
-              media_type: "application/pdf",
-              data: base64,
-            },
-          },
-          { type: "text", text: EXTRACTION_PROMPT },
-        ],
+        content: [fileBlock, { type: "text", text: EXTRACTION_PROMPT }],
       },
     ],
   });
@@ -117,12 +182,14 @@ export async function extractBogeysFromPdf(
   try {
     response = await stream.finalMessage();
   } catch (err) {
-    // The only user-supplied input in this call is the PDF itself, so an
-    // upstream 400 means the document was rejected (corrupt / not a PDF).
+    // The only user-supplied input in this call is the file itself, so an
+    // upstream 400 means the document/image was rejected (corrupt/unreadable).
     console.error("Bogeys extraction upstream error:", err);
     if (err instanceof APIError && err.status === 400) {
       throw new BogeysExtractionError(
-        "That file couldn't be read as a PDF — try re-exporting it and uploading again.",
+        isImage
+          ? "That image couldn't be read — try a clearer screenshot (PNG/JPEG) and upload again."
+          : "That file couldn't be read as a PDF — try re-exporting it and uploading again.",
         400,
         "invalid_pdf",
       );
