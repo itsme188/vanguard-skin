@@ -331,6 +331,59 @@ describe("runFallbackBriefing", () => {
     expect(result.error).toMatch(/R2 unreachable/);
   });
 
+  // ── Truncation defense (2026-07-26 mid-sentence briefing) ─────────────────
+  // The 7/26 cloud briefing shipped cut off mid-sentence: generation stopped at
+  // the output-token cap and the only guard was `content` non-empty. These pin
+  // the finishReason check + honest disclosure.
+
+  it("appends an honest truncation notice when generation stops at the output-token cap", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeSnapshot("user@example.com")
+    );
+    (generateText as ReturnType<typeof vi.fn>).mockResolvedValue({
+      text: "## Week Overview\n\nThis briefing ends mid-sen",
+      finishReason: "length",
+    });
+
+    const result = await runFallbackBriefing(env);
+
+    expect(result.kind).toBe("success");
+    const sendCalls = (sendEmail as ReturnType<typeof vi.fn>).mock.calls;
+    const html = sendCalls[sendCalls.length - 1][1].html as string;
+    expect(html).toMatch(/truncated at the model/i);
+  });
+
+  it("does NOT append a truncation notice on a normal stop", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeSnapshot("user@example.com")
+    );
+    (generateText as ReturnType<typeof vi.fn>).mockResolvedValue({
+      text: "## Week Overview\n\nA complete briefing.",
+      finishReason: "stop",
+    });
+
+    const result = await runFallbackBriefing(env);
+
+    expect(result.kind).toBe("success");
+    const sendCalls = (sendEmail as ReturnType<typeof vi.fn>).mock.calls;
+    const html = sendCalls[sendCalls.length - 1][1].html as string;
+    expect(html).not.toMatch(/truncated at the model/i);
+  });
+
+  it("requests a 16384-token output budget (8192 truncated the 7/26 briefing)", async () => {
+    const env = makeEnv();
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeSnapshot("user@example.com")
+    );
+
+    await runFallbackBriefing(env);
+
+    const calls = (generateText as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls[calls.length - 1][0].maxOutputTokens).toBe(16384);
+  });
+
   it("returns kind:error with stage context when Claude generation throws (credit exhaustion analog)", async () => {
     const env = makeEnv();
     (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
