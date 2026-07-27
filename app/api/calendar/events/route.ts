@@ -4,6 +4,7 @@ import {
   insertCalendarEvent,
   updateCalendarEvent,
   deleteCalendarEvent,
+  deleteAndSuppressCalendarEvent,
 } from "@/lib/mutations/calendar";
 import { mondayOf, addDays } from "@/lib/calendar/date-utils";
 import { getSecurityIdForSymbol } from "@/lib/queries/briefing-symbols";
@@ -164,11 +165,16 @@ export async function PATCH(request: Request) {
 }
 
 /**
- * DELETE /api/calendar/events — Delete a manual calendar event.
+ * DELETE /api/calendar/events — Delete a calendar event.
  *
  * Body: { id }
  *
- * Same source='manual' guard as PATCH.
+ * Manual rows delete directly. Sync-owned EARNINGS rows (finnhub/nasdaq/wsh)
+ * delete via suppression (migration 070): the (symbol, date, type) tuple is
+ * recorded so the next sync sweep can't re-insert the same wrong date — the
+ * user correction path for a mis-dated source row (NET Jul 30 vs Aug 6).
+ * Sync-owned macro rows stay 403 (symbol-less; owned by their source
+ * pipeline).
  */
 export async function DELETE(request: Request) {
   const body = (await request.json().catch(() => ({}))) as { id?: number };
@@ -177,16 +183,27 @@ export async function DELETE(request: Request) {
   }
 
   const existing = db
-    .prepare("SELECT source FROM calendar_events WHERE id = ?")
-    .get(body.id) as { source: string } | undefined;
+    .prepare("SELECT source, event_type, symbol FROM calendar_events WHERE id = ?")
+    .get(body.id) as
+    | { source: string; event_type: string; symbol: string | null }
+    | undefined;
   if (!existing) return Response.json({ error: "Event not found." }, { status: 404 });
-  if (existing.source !== "manual") {
+
+  if (existing.source === "manual") {
+    const ok = deleteCalendarEvent(db, body.id);
+    return Response.json({ success: ok });
+  }
+
+  if (existing.event_type !== "earnings" || !existing.symbol) {
     return Response.json(
-      { error: `Cannot delete a ${existing.source}-sourced event via this endpoint.` },
+      { error: `Cannot delete a ${existing.source}-sourced ${existing.event_type} event — macro rows are owned by their sync pipeline.` },
       { status: 403 },
     );
   }
 
-  const ok = deleteCalendarEvent(db, body.id);
-  return Response.json({ success: ok });
+  const result = deleteAndSuppressCalendarEvent(db, body.id);
+  return Response.json({
+    success: result.deleted,
+    suppressed: result.suppressed,
+  });
 }
