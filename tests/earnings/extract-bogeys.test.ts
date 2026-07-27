@@ -3,6 +3,8 @@ import { APIError } from "@anthropic-ai/sdk";
 import {
   parseExtractionResponse,
   extractBogeysFromPdf,
+  extractBogeysFromUpload,
+  resolveBogeysUploadMediaType,
   BogeysExtractionError,
 } from "@/lib/earnings/extract-bogeys";
 import { getRawAnthropicClient } from "@/lib/ai/provider";
@@ -85,6 +87,95 @@ describe("parseExtractionResponse", () => {
 
   it("throws on non-array root", () => {
     expect(() => parseExtractionResponse('{"symbol": "GLW"}')).toThrow();
+  });
+});
+
+// ── Screenshot / image upload support (2026-07-26 user report) ──────────────
+// Bogeys pages often arrive as phone screenshots, not PDFs. The extraction
+// must send an `image` content block for image uploads and keep the
+// `document` block for PDFs.
+
+describe("resolveBogeysUploadMediaType", () => {
+  it("maps a PDF by MIME type", () => {
+    expect(resolveBogeysUploadMediaType("weekly.pdf", "application/pdf")).toBe(
+      "application/pdf",
+    );
+  });
+
+  it("maps a PNG screenshot by extension when the MIME type is empty", () => {
+    expect(resolveBogeysUploadMediaType("IMG_1234.PNG", "")).toBe("image/png");
+  });
+
+  it("maps JPEG and WebP by MIME type", () => {
+    expect(resolveBogeysUploadMediaType("shot.jpg", "image/jpeg")).toBe("image/jpeg");
+    expect(resolveBogeysUploadMediaType("shot.webp", "image/webp")).toBe("image/webp");
+  });
+
+  it("returns null for unsupported types (docx, HEIC photos)", () => {
+    expect(resolveBogeysUploadMediaType("notes.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")).toBe(null);
+    expect(resolveBogeysUploadMediaType("IMG_5678.HEIC", "image/heic")).toBe(null);
+  });
+});
+
+describe("extractBogeysFromUpload content blocks", () => {
+  function mockStreamCapturing() {
+    const calls: Array<Record<string, unknown>> = [];
+    vi.mocked(getRawAnthropicClient).mockReturnValue({
+      messages: {
+        stream: (args: Record<string, unknown>) => {
+          calls.push(args);
+          return {
+            finalMessage: () =>
+              Promise.resolve({ content: [{ type: "text", text: "[]" }] }),
+          };
+        },
+      },
+    } as never);
+    return calls;
+  }
+
+  it("sends an image content block for a PNG screenshot", async () => {
+    const calls = mockStreamCapturing();
+    await extractBogeysFromUpload(new Uint8Array([1, 2, 3]), "image/png");
+
+    const content = (calls[0].messages as Array<{ content: Array<Record<string, unknown>> }>)[0].content;
+    const block = content[0] as { type: string; source: { type: string; media_type: string } };
+    expect(block.type).toBe("image");
+    expect(block.source.media_type).toBe("image/png");
+  });
+
+  it("sends a document block for a PDF (back-compat via extractBogeysFromPdf)", async () => {
+    const calls = mockStreamCapturing();
+    await extractBogeysFromPdf(new Uint8Array([1, 2, 3]));
+
+    const content = (calls[0].messages as Array<{ content: Array<Record<string, unknown>> }>)[0].content;
+    const block = content[0] as { type: string; source: { type: string; media_type: string } };
+    expect(block.type).toBe("document");
+    expect(block.source.media_type).toBe("application/pdf");
+  });
+
+  it("upstream 400 on an image maps to a user-safe message naming images, not PDFs", async () => {
+    const rawPayload = {
+      type: "error",
+      error: { type: "invalid_request_error", message: "image could not be processed" },
+      request_id: "req_011Cd5TEST9",
+    };
+    vi.mocked(getRawAnthropicClient).mockReturnValue({
+      messages: {
+        stream: () => ({
+          finalMessage: () =>
+            Promise.reject(
+              new APIError(400, rawPayload, `400 ${JSON.stringify(rawPayload)}`, new Headers()),
+            ),
+        }),
+      },
+    } as never);
+
+    const err = await extractBogeysFromUpload(new Uint8Array([1]), "image/jpeg").catch((e) => e);
+    expect(err).toBeInstanceOf(BogeysExtractionError);
+    expect(err.status).toBe(400);
+    expect(err.message).toMatch(/image/i);
+    expect(err.message).not.toContain("req_011Cd5TEST9");
   });
 });
 

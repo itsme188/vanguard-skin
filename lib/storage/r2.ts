@@ -84,7 +84,8 @@ export function buildStatementKey(params: {
  */
 export async function uploadStatementPdf(
   key: string,
-  pdfBuffer: Buffer
+  pdfBuffer: Buffer,
+  contentType: string = "application/pdf"
 ): Promise<string | null> {
   const cfg = getR2Config();
   if (!cfg) return null;
@@ -94,7 +95,7 @@ export async function uploadStatementPdf(
   const res = await client.fetch(url, {
     method: "PUT",
     headers: {
-      "Content-Type": "application/pdf",
+      "Content-Type": contentType,
     },
     body: new Uint8Array(pdfBuffer),
   });

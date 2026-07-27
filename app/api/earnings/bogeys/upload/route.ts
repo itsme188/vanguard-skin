@@ -1,5 +1,9 @@
 import { db } from "@/lib/db";
-import { extractBogeysFromPdf, BogeysExtractionError } from "@/lib/earnings/extract-bogeys";
+import {
+  extractBogeysFromUpload,
+  resolveBogeysUploadMediaType,
+  BogeysExtractionError,
+} from "@/lib/earnings/extract-bogeys";
 import { upsertBogey } from "@/lib/mutations/earnings-bogeys";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { addDays } from "@/lib/calendar/date-utils";
@@ -14,8 +18,9 @@ const MAX_PDF_BYTES = 32 * 1024 * 1024;
  * POST /api/earnings/bogeys/upload (multipart/form-data)
  *
  * Form fields:
- *   - file: a PDF (≤32 MB) — the multi-symbol earnings preview, e.g.,
- *     TMT Breakout's weekly bogeys page.
+ *   - file: a PDF or image (PNG/JPEG/WebP/GIF, ≤32 MB) — the multi-symbol
+ *     earnings preview, e.g., TMT Breakout's weekly bogeys page or a phone
+ *     screenshot of it.
  *   - weekOf: YYYY-MM-DD (Monday). Match window is [weekOf-3d, weekOf+10d].
  *   - sourceLabel: optional free-text label (e.g., "TMT Breakout 2026-04-28").
  *
@@ -38,11 +43,15 @@ export async function POST(request: Request) {
   if (!(file instanceof File)) {
     return Response.json({ error: "Form field 'file' must be a file." }, { status: 400 });
   }
-  if (!file.type.includes("pdf") && !file.name.toLowerCase().endsWith(".pdf")) {
-    return Response.json({ error: "Only PDF files are accepted." }, { status: 400 });
+  const mediaType = resolveBogeysUploadMediaType(file.name, file.type);
+  if (!mediaType) {
+    return Response.json(
+      { error: "Only PDF or image files (PNG, JPEG, WebP, GIF) are accepted. iPhone photos in HEIC need converting first — screenshots are PNG and work directly." },
+      { status: 400 },
+    );
   }
   if (file.size > MAX_PDF_BYTES) {
-    return Response.json({ error: "PDF exceeds 32 MB." }, { status: 400 });
+    return Response.json({ error: "File exceeds 32 MB." }, { status: 400 });
   }
 
   const weekOf = form.get("weekOf");
@@ -67,7 +76,7 @@ export async function POST(request: Request) {
       sourceType: "earnings_bogeys_pdf",
       filename: `${weekOf}-${file.name}`,
     });
-    r2Key = await uploadStatementPdf(key, buffer);
+    r2Key = await uploadStatementPdf(key, buffer, mediaType);
   } catch (err) {
     // Disaster-recovery archival is non-blocking — log to response, keep going.
     console.warn("R2 upload failed during bogeys ingest:", err);
@@ -76,7 +85,7 @@ export async function POST(request: Request) {
   // ── Claude extraction ─────────────────────────────────────────────
   let extraction;
   try {
-    extraction = await extractBogeysFromPdf(buffer);
+    extraction = await extractBogeysFromUpload(buffer, mediaType);
   } catch (err) {
     if (err instanceof BogeysExtractionError) {
       return Response.json({ error: err.message }, { status: err.status });
