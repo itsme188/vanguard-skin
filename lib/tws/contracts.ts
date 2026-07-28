@@ -139,6 +139,7 @@ export async function enrichSecurities(
   const updateSecurity = db.prepare(`
     UPDATE securities
     SET sector = COALESCE(?, sector),
+        sector_source = CASE WHEN ? IS NOT NULL THEN 'tws_bloomberg' ELSE sector_source END,
         industry = COALESCE(NULLIF(industry,''), ?),
         exchange = COALESCE(?, exchange),
         ib_con_id = COALESCE(?, ib_con_id),
@@ -177,7 +178,7 @@ export async function enrichSecurities(
         const conId = detail.contract?.conId ?? null;
         const longName = detail.longName?.trim() || null;
 
-        updateSecurity.run(sector, industry, exchange, conId, longName, longName, sec.id);
+        updateSecurity.run(sector, sector, industry, exchange, conId, longName, longName, sec.id);
 
         results.push({
           symbol: sec.symbol,

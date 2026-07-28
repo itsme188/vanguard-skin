@@ -586,7 +586,11 @@ export function commitImport(
       `);
 
       const updateSectorIndustry = db.prepare(`
-        UPDATE securities SET sector = COALESCE(?, sector), industry = COALESCE(NULLIF(industry,''), ?) WHERE id = ?
+        UPDATE securities
+        SET sector = COALESCE(?, sector),
+            sector_source = CASE WHEN ? IS NOT NULL THEN 'csv_import' ELSE sector_source END,
+            industry = COALESCE(NULLIF(industry,''), ?)
+        WHERE id = ?
       `);
 
       for (const f of parsed.factors) {
@@ -617,8 +621,10 @@ export function commitImport(
 
         // Override sector/industry from CSV — normalize to GICS, preserve raw as industry fallback
         if (f.sector || f.industry) {
+          const gics = normalizeSector(f.sector ?? null);
           updateSectorIndustry.run(
-            normalizeSector(f.sector ?? null),
+            gics,
+            gics,
             f.industry ?? f.sector ?? null,
             sec.id
           );

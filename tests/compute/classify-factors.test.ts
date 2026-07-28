@@ -107,6 +107,12 @@ describe("classifyFactors — option underlying coverage", () => {
     expect(underlying).toBeDefined();
     expect(underlying!.sector).toBe("Technology");
 
+    const row = db
+      .prepare("SELECT sector_source, sector_verified_at FROM securities WHERE symbol = 'PANW'")
+      .get() as { sector_source: string | null; sector_verified_at: string | null };
+    expect(row.sector_source).toBe("ai_classify");
+    expect(row.sector_verified_at).toBeNull(); // the sweep alone owns this column
+
     const factors = db
       .prepare("SELECT growth_vs_value FROM security_factors WHERE security_id = ?")
       .get(underlying!.id) as { growth_vs_value: string } | undefined;
