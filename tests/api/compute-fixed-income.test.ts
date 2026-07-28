@@ -167,4 +167,54 @@ describe("GET /api/compute/fixed-income FX conversion", () => {
     expect(body.data.portfolioValue).toBeCloseTo(expectedPortfolioValue, 4);
     expect(body.data.totalBondValue).toBeCloseTo(9_850 + 734, 5);
   });
+
+  it("keeps statement-maintained bonds when the same account carries newer daily equity rows", async () => {
+    const db = state.db;
+    const accountId = 1;
+
+    // Treasuries stay statement-maintained (Plaid omits them), so the bond's
+    // newest holdings row lags the account's newest equity row. A per-ACCOUNT
+    // MAX(as_of_date) predicate drops every bond; the per-(account, security)
+    // latest-holdings convention keeps it.
+    const bond = seedSecurity(db, "TBLAG", {
+      security_type: "bond",
+      currency: "USD",
+      duration_years: 7,
+      credit_rating: "AAA",
+      coupon_rate: 4.0,
+      maturity_date: FUTURE_MATURITY,
+    });
+    seedHolding(db, accountId, bond, 15_000, "2026-06-30");
+    seedPrice(db, bond, "2026-06-30", 98.0);
+
+    const stock = seedSecurity(db, "EQDAILY", { security_type: "stock", currency: "USD" });
+    seedHolding(db, accountId, stock, 10, "2026-07-27");
+    seedPrice(db, stock, "2026-07-27", 100);
+
+    // A bond whose LATEST row is an explicit quantity-0 close stays excluded.
+    const closedBond = seedSecurity(db, "TBCLOSED", {
+      security_type: "bond",
+      currency: "USD",
+      duration_years: 2,
+      maturity_date: FUTURE_MATURITY,
+    });
+    seedHolding(db, accountId, closedBond, 5_000, "2026-05-31");
+    seedHolding(db, accountId, closedBond, 0, "2026-06-30");
+    seedPrice(db, closedBond, "2026-06-30", 99.0);
+
+    const { GET } = await import("@/app/api/compute/fixed-income/route");
+    const res = await GET(new Request("http://x/api/compute/fixed-income?scope=all") as never);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+
+    const symbols = body.data.bonds.map((b: { symbol: string }) => b.symbol);
+    expect(symbols).toContain("TBLAG");
+    expect(symbols).not.toContain("TBCLOSED");
+
+    const lag = body.data.bonds.find((b: { symbol: string }) => b.symbol === "TBLAG");
+    // 15,000 face @ 98.0 percent of par => $14,700.
+    expect(lag.marketValue).toBeCloseTo(14_700, 5);
+    // The portfolio denominator keeps the newer equity row too ($1,000).
+    expect(body.data.portfolioValue).toBeCloseTo(14_700 + 1_000, 4);
+  });
 });

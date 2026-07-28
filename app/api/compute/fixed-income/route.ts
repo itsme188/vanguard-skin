@@ -1,5 +1,6 @@
 import { db } from "@/lib/db";
 import { resolveScope } from "@/lib/queries/accounts";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
 export async function GET(request: Request) {
   try {
@@ -13,14 +14,9 @@ export async function GET(request: Request) {
     const bonds = db
       .prepare(
         `WITH latest_holdings AS (
-           SELECT h.security_id, h.account_id, SUM(h.quantity) AS total_qty
+           SELECT h.security_id, SUM(h.quantity) AS total_qty
            FROM holdings h
-           WHERE h.as_of_date = (
-             SELECT MAX(h2.as_of_date) FROM holdings h2
-             WHERE h2.account_id = h.account_id
-           )
-           AND h.quantity > 0
-           ${accountFilter}
+           WHERE ${latestHoldingsPredicate({ includeShorts: false, accountFilter })}
            GROUP BY h.security_id
          ),
          latest_prices AS (
@@ -63,12 +59,7 @@ export async function GET(request: Request) {
         `WITH latest_holdings AS (
            SELECT h.security_id, SUM(h.quantity) AS total_qty
            FROM holdings h
-           WHERE h.as_of_date = (
-             SELECT MAX(h2.as_of_date) FROM holdings h2
-             WHERE h2.account_id = h.account_id
-           )
-           AND h.quantity > 0
-           ${accountFilter}
+           WHERE ${latestHoldingsPredicate({ includeShorts: false, accountFilter })}
            GROUP BY h.security_id
          ),
          latest_prices AS (
