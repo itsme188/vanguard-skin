@@ -3,6 +3,7 @@
 import type { RankedExposure, HedgeScore, StandaloneBet, HedgeBadge } from "@/lib/compute/hedging";
 import { Money, Pct } from "@/lib/privacy/components";
 import { Chip, type ChipTone } from "./Chip";
+import { ScrollFade } from "./ScrollFade";
 import { SortableHeader } from "./SortableHeader";
 import { useSortParam, compareValues } from "@/lib/hooks/useSortParam";
 import { SymbolLink } from "./SymbolLink";
@@ -79,7 +80,7 @@ function MostExposedTable({
       {rows.length === 0 ? (
         <p className="text-sm text-ink-faint">No individual exposures to rank in this scope.</p>
       ) : (
-        <div className="overflow-x-auto">
+        <ScrollFade>
           <table className="w-full text-xs">
             <thead>
               <tr className="text-ink-faint border-b border-edge">
@@ -128,7 +129,7 @@ function MostExposedTable({
               })}
             </tbody>
           </table>
-        </div>
+        </ScrollFade>
       )}
     </section>
   );
@@ -150,7 +151,7 @@ function HedgeBookTable({ hedgeScores }: { hedgeScores: HedgeScore[] }) {
       {rows.length === 0 ? (
         <p className="text-sm text-ink-faint">No scored hedges in this scope.</p>
       ) : (
-        <div className="overflow-x-auto">
+        <ScrollFade>
           <table className="w-full text-xs">
             <thead>
               <tr className="text-ink-faint border-b border-edge">
@@ -198,7 +199,7 @@ function HedgeBookTable({ hedgeScores }: { hedgeScores: HedgeScore[] }) {
               ))}
             </tbody>
           </table>
-        </div>
+        </ScrollFade>
       )}
     </section>
   );

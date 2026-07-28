@@ -14,6 +14,7 @@ import type {
 import { FACTOR_LABELS, type FactorColumn, FACTOR_COLUMNS } from "@/lib/factors";
 import type { PortfolioExposureSummary } from "@/lib/compute/exposure";
 import { RiskMetrics } from "./RiskMetrics";
+import { ScrollFade } from "./ScrollFade";
 import { PositionRiskCard } from "./PositionRisk";
 import { FactorAnalysisCard } from "./FactorAnalysis";
 import { ScenarioModelingCard } from "./ScenarioModeling";
@@ -370,7 +371,11 @@ export function AnalysisView({
               </span>
             )}
           </div>
+          {/* ScrollFade nests INSIDE the vertical scroller: the fade tracks
+              the x-scroller it owns, while the max-h cap keeps vertical
+              scrolling on the outer div. */}
           <div className="overflow-y-auto max-h-[280px] md:max-h-[380px]">
+            <ScrollFade>
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-edge text-ink-faint">
@@ -424,6 +429,7 @@ export function AnalysisView({
                 ))}
               </tbody>
             </table>
+            </ScrollFade>
           </div>
         </div>
       </div>
