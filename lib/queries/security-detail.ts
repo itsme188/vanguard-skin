@@ -86,8 +86,10 @@ export interface SecurityDetailData {
   kpis: SecurityKpis | null;
   positions: SecurityPosition[];
   totalValue: number;
-  totalCostBasis: number;
-  totalUnrealizedGain: number;
+  /** null when every constituent position's cost basis is unknown */
+  totalCostBasis: number | null;
+  /** null when every constituent position's gain is unknown */
+  totalUnrealizedGain: number | null;
   openTaxLots: TaxLotWithSecurity[];
   closedSales: TaxLotSaleWithDetails[];
   recentTransactions: SecurityDetailTransaction[];
@@ -180,18 +182,29 @@ export function getHoldingsBySecurity(
   db: Database.Database,
   securityId: number
 ): SecurityPosition[] {
+  // Cost basis fallback — see getAllHoldings (lib/queries/holdings.ts) for the
+  // Plaid-NULL rationale; same pattern as getCrossAccountPositions.
+  const costBasisExpr = `COALESCE(
+        h.cost_basis,
+        (SELECT h3.cost_basis FROM holdings h3
+          WHERE h3.account_id = h.account_id
+            AND h3.security_id = h.security_id
+            AND h3.cost_basis IS NOT NULL
+          ORDER BY h3.as_of_date DESC LIMIT 1)
+      )`;
+
   return db
     .prepare(
       `SELECT
         h.account_id, a.name AS account_name,
-        h.quantity, h.cost_basis * COALESCE(fx.usd_per_unit, 1) AS cost_basis, h.as_of_date,
+        h.quantity, ${costBasisExpr} * COALESCE(fx.usd_per_unit, 1) AS cost_basis, h.as_of_date,
         s.security_type, COALESCE(s.multiplier, 1) AS multiplier,
         p.close_price AS current_price,
         CASE WHEN p.close_price IS NOT NULL
           THEN ${adjustedMarketValueSQL("h.quantity", "p.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
           ELSE NULL END AS current_value,
-        CASE WHEN p.close_price IS NOT NULL AND h.cost_basis IS NOT NULL
-          THEN ${adjustedMarketValueSQL("h.quantity", "p.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} - (h.cost_basis * COALESCE(fx.usd_per_unit, 1))
+        CASE WHEN p.close_price IS NOT NULL AND ${costBasisExpr} IS NOT NULL
+          THEN ${adjustedMarketValueSQL("h.quantity", "p.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} - (${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))
           ELSE NULL END AS unrealized_gain
       FROM holdings h
       JOIN accounts a ON a.id = h.account_id
@@ -534,13 +547,16 @@ export function getSecurityDetail(
     limit: 10,
   });
 
-  // Aggregate position totals
+  // Aggregate position totals. Cost basis / gain stay null when EVERY
+  // constituent is unknown — summing unknowns as $0 fabricated a "$0 cost,
+  // green $0 gain" TOTAL row on all-Plaid-sourced positions.
   const totalValue = positions.reduce((sum, p) => sum + (p.current_value ?? 0), 0);
-  const totalCostBasis = positions.reduce((sum, p) => sum + (p.cost_basis ?? 0), 0);
-  const totalUnrealizedGain = positions.reduce(
-    (sum, p) => sum + (p.unrealized_gain ?? 0),
-    0
-  );
+  const totalCostBasis = positions.some((p) => p.cost_basis != null)
+    ? positions.reduce((sum, p) => sum + (p.cost_basis ?? 0), 0)
+    : null;
+  const totalUnrealizedGain = positions.some((p) => p.unrealized_gain != null)
+    ? positions.reduce((sum, p) => sum + (p.unrealized_gain ?? 0), 0)
+    : null;
 
   return {
     security,
