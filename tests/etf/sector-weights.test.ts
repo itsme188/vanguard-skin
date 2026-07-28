@@ -3,9 +3,13 @@ import { validateSectorWeights } from "@/lib/etf/sector-weights";
 
 describe("validateSectorWeights", () => {
   it("accepts GICS-mapped weights summing to ~100", () => {
+    // "Communications" (the Bloomberg bucket) was demoted 2026-07-28 — no
+    // longer a safe 1:1 GICS alias — so this uses the canonical GICS label
+    // directly, matching what fetchEtfSectorWeights' prompt actually asks
+    // Claude to return (exact GICS-11 spellings).
     const r = validateSectorWeights([
       { sector: "Technology", weight_pct: 30 },
-      { sector: "Communications", weight_pct: 15 },
+      { sector: "Communication Services", weight_pct: 15 },
       { sector: "Financials", weight_pct: 55 },
     ]);
     expect(r.ok).toBe(true);

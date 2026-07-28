@@ -116,9 +116,13 @@ describe("resolveSectorEtf", () => {
     expect(resolveSectorEtf("earnings", "Healthcare")).toBe("XLV");
   });
 
-  it("resolves legacy pre-normalizer labels via normalizeSector defense", () => {
+  it("resolves legacy pre-normalizer labels via normalizeSector defense; demoted buckets no longer resolve", () => {
     expect(resolveSectorEtf("earnings", "Health Care")).toBe("XLV");
-    expect(resolveSectorEtf("earnings", "Financial")).toBe("XLF");
+    // "Financial" was demoted 2026-07-28 (ambiguous Bloomberg bucket — could
+    // be a REIT, which is GICS Real Estate, not Financials): normalizeSector
+    // no longer aliases it, so the SECTOR_TO_ETF lookup misses and this
+    // returns null rather than guessing XLF.
+    expect(resolveSectorEtf("earnings", "Financial")).toBeNull();
   });
 });
 

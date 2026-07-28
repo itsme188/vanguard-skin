@@ -187,7 +187,9 @@ export function classifySecurities(db: Database.Database): ClassificationResult 
 
 const AI_CLASSIFY_SYSTEM = `You classify securities. Return ONLY a JSON array, one object per input symbol, each:
 {"symbol":"...","fund_category":"...","geography":"US|International|Global|Emerging","market_cap_category":"Large|Mid|Small|null","style":"Growth|Value|Blend|null"}
-fund_category: for US single-name stocks and US sector funds use the scheme "US Sector Equity (<Sector>)" — e.g. "US Sector Equity (Technology)", "US Sector Equity (Semiconductors)", "US Sector Equity (Health Care)", "US Sector Equity (Financial)". Never emit a bare sector name like "Technology". Other valid examples: "US Large Cap Equity", "US Small Cap Equity", "International Equity", "Diversified Bond", "US Treasury". No prose, no code fences.`;
+fund_category: for US single-name stocks and US sector funds use the scheme "US Sector Equity (<Sector>)" — e.g. "US Sector Equity (Technology)", "US Sector Equity (Semiconductors)", "US Sector Equity (Health Care)", "US Sector Equity (Financial)". Never emit a bare sector name like "Technology". Other valid examples: "US Large Cap Equity", "US Small Cap Equity", "International Equity", "Diversified Bond", "US Treasury".
+Sector must be GICS-11, not Bloomberg: internet retail → Consumer Discretionary; interactive media/search/social → Communication Services; REITs → Real Estate; managed care/biotech/pharma → Healthcare; payment networks → Financials.
+No prose, no code fences.`;
 
 export interface AiFallbackResult { classified: number; errors: string[]; }
 

@@ -36,7 +36,7 @@ const TRAINING_EXAMPLES = [
   { symbol: "GOOG", sector: "Communication Services", industry: "Internet", interest_rate_sensitive: "Low", growth_vs_value: "Growth", cyclical: "Moderate", international_exposure: "Moderate", geopolitical_onshoring: "Low", tariff_exposure: "Moderate", ai_exposure: "Very High", crypto_adjacent: "No", regulatory_risk: "Very High" },
   { symbol: "HD", sector: "Consumer Discretionary", industry: "Home Improvement", interest_rate_sensitive: "High", growth_vs_value: "Value", cyclical: "High", international_exposure: "Low", geopolitical_onshoring: "Low", tariff_exposure: "High", ai_exposure: "Low", crypto_adjacent: "No", regulatory_risk: "Low" },
   { symbol: "MP", sector: "Materials", industry: "Mining", interest_rate_sensitive: "Moderate", growth_vs_value: "Value", cyclical: "High", international_exposure: "Low", geopolitical_onshoring: "Very High", tariff_exposure: "Low", ai_exposure: "Low", crypto_adjacent: "No", regulatory_risk: "Moderate" },
-  { symbol: "VRT", sector: "Technology", industry: "Data Centers", interest_rate_sensitive: "Moderate", growth_vs_value: "Growth", cyclical: "High", international_exposure: "Moderate", geopolitical_onshoring: "Moderate", tariff_exposure: "Low", ai_exposure: "Very High", crypto_adjacent: "Moderate", regulatory_risk: "Low" },
+  { symbol: "VRT", sector: "Industrials", industry: "Data Centers", interest_rate_sensitive: "Moderate", growth_vs_value: "Growth", cyclical: "High", international_exposure: "Moderate", geopolitical_onshoring: "Moderate", tariff_exposure: "Low", ai_exposure: "Very High", crypto_adjacent: "Moderate", regulatory_risk: "Low" },
   { symbol: "HOOD", sector: "Financials", industry: "Brokerage", interest_rate_sensitive: "Moderate", growth_vs_value: "Growth", cyclical: "High", international_exposure: "Low", geopolitical_onshoring: "Low", tariff_exposure: "Low", ai_exposure: "Moderate", crypto_adjacent: "Very High", regulatory_risk: "High" },
 ];
 
@@ -58,6 +58,8 @@ Factor value scales:
 - regulatory_risk: Low / Moderate / High / Very High
 
 Also provide sector (GICS level 1) and industry (more specific).
+
+Sector must be GICS-11, not Bloomberg: internet retail → Consumer Discretionary; interactive media/search/social → Communication Services; REITs → Real Estate; managed care/biotech/pharma → Healthcare; payment networks → Financials.
 
 Here are examples of how securities have been classified:
 

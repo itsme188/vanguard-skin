@@ -29,6 +29,24 @@ const PASSTHROUGH: Record<string, string> = {
   "fixed income": "Fixed Income",
 };
 
+/**
+ * DEMOTED Bloomberg buckets — deliberately ABSENT from ALIASES (2026-07-28).
+ * Bloomberg's taxonomy predates GICS's 2016 Real Estate split and 2018
+ * Communication Services reshuffle, so these buckets each span several GICS
+ * sectors and CANNOT be 1:1-mapped. Live-verified damage before demotion:
+ *   "Communications"           → AMZN (Cons Disc), HOOD (Financials),
+ *                                UBER (Industrials), SHOP/APP (Technology);
+ *                                only GOOG/META genuinely Comm Services.
+ *   "Consumer, Non-cyclical"   → UNH/OSCR/VRTX/ESTA/DHR (all Healthcare);
+ *                                only names like KO genuinely Staples.
+ *   "Consumer, Cyclical"       → IMAX (Comm Services); NKE/HD fine.
+ *   "Financial"                → LAND/KRC (REITs → Real Estate); GS/BAC fine.
+ * They return null so the COALESCE write sites leave sector blank for the
+ * context-aware Claude classify tail. Do NOT "restore" them as a cleanup.
+ * ("Industrial" singular is KEPT: every live row checked out; Bloomberg's
+ * Industrial bucket only marginally leaks toward GICS Materials.)
+ */
+
 /** lowercase-trimmed alias → canonical GICS label. */
 const ALIASES: Record<string, GicsSector> = {
   "energy": "Energy",
@@ -42,14 +60,7 @@ const ALIASES: Record<string, GicsSector> = {
   "communication services": "Communication Services",
   "utilities": "Utilities",
   "real estate": "Real Estate",
-  "communications": "Communication Services",
-  "financial": "Financials",
   "industrial": "Industrials",
-  "consumer, cyclical": "Consumer Discretionary",
-  "consumer cyclical": "Consumer Discretionary",
-  "consumer, non-cyclical": "Consumer Staples",
-  "consumer non-cyclical": "Consumer Staples",
-  "consumer non cyclical": "Consumer Staples",
   "basic materials": "Materials",
   "health care": "Healthcare",
   "information technology": "Technology",
