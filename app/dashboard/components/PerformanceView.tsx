@@ -126,9 +126,18 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
 
   // ── Equity curve data ───────────────────────────────────────────
   const effectiveStart = startDate ?? "2000-01-01";
+  // fullCoverageOnly: an indexed-to-100 curve is RETURN math, so the summed
+  // multi-account series must not "gain" an appearing account's whole value
+  // as a fake day (Apr 6 coverage onset read as +53%, contradicting the TWR
+  // on the same screen). Same guard computeRiskMetrics/regression use; the
+  // caption below self-adjusts because it reads the curve's own first row.
   const dailyVals = accountId !== undefined
     ? getDailyValuationsByAccount(db, accountId, { startDate: effectiveStart, endDate: today })
-    : getDailyValuationsCombined(db, { startDate: effectiveStart, endDate: today });
+    : getDailyValuationsCombined(db, {
+        startDate: effectiveStart,
+        endDate: today,
+        fullCoverageOnly: true,
+      });
 
   const benchmarkRows = db
     .prepare(
