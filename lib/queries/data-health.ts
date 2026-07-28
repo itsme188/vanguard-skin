@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { normalizeSector } from "@/lib/securities/normalize-sector";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -51,6 +52,14 @@ export interface SnapshotReconciliation {
   diffPct: number | null;
   holdingsCount: number | null;
   pricedCount: number | null;
+}
+
+export interface SectorDisagreement {
+  symbol: string;
+  sector: string | null;
+  fund_category: string;
+  industry: string | null;
+  impliedSector: string; // normalizeSector(X) from "US Sector Equity (X)"
 }
 
 export interface DataHealthSummary {
@@ -319,6 +328,38 @@ export function getSnapshotReconciliation(
       `,
     )
     .all() as SnapshotReconciliation[];
+}
+
+const SECTOR_SHAPE = /^US Sector Equity \((.+)\)$/;
+
+/**
+ * Stocks whose GICS `sector` tag disagrees with the sector implied by their
+ * `fund_category` ("US Sector Equity (X)" shape) and have NOT been verified
+ * by the sweep (`scripts/verify-sector-tags.ts`). Verified rows are legit
+ * divergences (e.g. GOOG: GICS Communication Services vs a Technology fund
+ * category) and stay suppressed via `sector_verified_at`.
+ */
+export function getSectorDisagreements(db: Database.Database): SectorDisagreement[] {
+  const rows = db
+    .prepare(
+      `SELECT symbol, sector, fund_category, industry
+       FROM securities
+       WHERE LOWER(security_type) IN ('stock','common stock')
+         AND fund_category LIKE 'US Sector Equity (%'
+         AND sector_verified_at IS NULL
+       ORDER BY symbol`
+    )
+    .all() as { symbol: string; sector: string | null; fund_category: string; industry: string | null }[];
+  const out: SectorDisagreement[] = [];
+  for (const r of rows) {
+    const m = SECTOR_SHAPE.exec(r.fund_category);
+    if (!m) continue;
+    const implied = normalizeSector(m[1]);
+    if (!implied) continue;             // "Semiconductors" etc — finer than GICS, not a disagreement
+    if (r.sector === implied) continue; // agrees
+    out.push({ ...r, impliedSector: implied });
+  }
+  return out;
 }
 
 /**
