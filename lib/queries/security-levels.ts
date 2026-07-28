@@ -28,7 +28,12 @@ export function getLevelsForSecurity(
   const activeOnly = opts.activeOnly ?? true;
   const conditions = ["security_id = ?"];
   const params: (string | number)[] = [securityId];
-  if (activeOnly) conditions.push("is_active = 1");
+  // activeOnly is the "armed" view (chart overlay, LevelsPanel default, chat
+  // tool). Rejecting a reviewed level flips review_status but leaves
+  // is_active=1, so the inclusive auto_approved whitelist (the same predicate
+  // every scan query uses) is what keeps rejected/pending levels from
+  // presenting as live S/R lines. activeOnly:false stays the full audit view.
+  if (activeOnly) conditions.push("is_active = 1", "review_status = 'auto_approved'");
   return db
     .prepare(
       `SELECT * FROM security_levels
