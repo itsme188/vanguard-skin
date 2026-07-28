@@ -38,10 +38,10 @@ export function EarningsRowChips({
   previewSkipped,
   recapSkipped,
 }: EarningsRowChipsProps) {
+  const { toast } = useToast();
   const [openPhase, setOpenPhase] = useState<Phase | null>(null);
   const [inlineData, setInlineData] = useState<InlineEmailData | null>(null);
   const [generating, setGenerating] = useState(false);
-  const [generateError, setGenerateError] = useState<string | null>(null);
 
   // Show "Generate" only when the recap hasn't fired and isn't skipped —
   // otherwise the user already has a path to view it (the sent ✓-chip)
@@ -67,7 +67,6 @@ export function EarningsRowChips({
   async function generateRecap() {
     if (generating) return;
     setGenerating(true);
-    setGenerateError(null);
     try {
       const res = await fetch("/api/earnings/recap-modal", {
         method: "POST",
@@ -85,7 +84,7 @@ export function EarningsRowChips({
       };
       if (json.notReady) {
         // Expected pre-report state — friendly copy, no thrown error.
-        setGenerateError(json.error ?? "Not reported yet.");
+        toast(json.error ?? "Not reported yet.", "info");
         return;
       }
       if (!res.ok || !json.success) {
@@ -100,9 +99,7 @@ export function EarningsRowChips({
       });
       setOpenPhase("recap");
     } catch (err) {
-      setGenerateError(
-        err instanceof Error ? err.message : "Generate failed",
-      );
+      toast(err instanceof Error ? err.message : "Generate failed", "error");
     } finally {
       setGenerating(false);
     }
@@ -141,14 +138,13 @@ export function EarningsRowChips({
           {generating ? "…" : "gen"}
         </button>
       )}
-      {generateError && (
-        <span
-          className="text-[10px] font-mono text-down truncate max-w-[12ch]"
-          title={generateError}
-        >
-          ✗ {generateError}
-        </span>
-      )}
+      {/* Generate outcomes surface as toasts, never as an inline span: the
+          message used to render INSIDE this fixed-width right-aligned cell,
+          which slid the pre/rec chip group left over the neighboring + BOG
+          button — whose taps then landed on the chips' invisible skip
+          overlays (2026-07-27 sweep: aiming at + BOG silently skipped the
+          recap email). A toast also shows the full sentence, which the old
+          span clipped to 12ch with a hover-only title. */}
       {openPhase && (
         <EarningsEmailViewer
           eventId={eventId}

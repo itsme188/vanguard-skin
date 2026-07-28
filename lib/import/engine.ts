@@ -20,6 +20,8 @@ import {
   completeImportBatch,
   deleteImportBatch,
 } from "@/lib/mutations/import-batches";
+import { computeTaxLots } from "@/lib/compute/tax-lots";
+import { computeDailyValuations } from "@/lib/compute/daily-valuation";
 import { purgeExpiredOptionHoldings } from "@/lib/mutations/expired-options";
 import { purgeMaturedBondHoldings } from "@/lib/mutations/matured-bonds";
 import { reconcileClosedEquityHoldings } from "@/lib/mutations/closed-equity";
@@ -741,4 +743,26 @@ export function commitImport(
 
 export function undoImport(db: Database.Database, batchId: number): void {
   deleteImportBatch(db, batchId);
+  // deleteImportBatch clears the derived layer (tax_lots, tax_lot_sales,
+  // daily_valuations) wholesale on the assumption that the caller regenerates
+  // it — do that here so every undo path leaves the derived data consistent
+  // with the surviving source records. Best-effort, mirroring the post-commit
+  // recompute in the import route: a recompute failure must not un-delete the
+  // batch or surface as an undo failure.
+  try {
+    computeTaxLots(db);
+  } catch (err) {
+    console.error(
+      "[undo] Tax lot recompute failed:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+  try {
+    computeDailyValuations(db);
+  } catch (err) {
+    console.error(
+      "[undo] Valuation recompute failed:",
+      err instanceof Error ? err.message : err,
+    );
+  }
 }
