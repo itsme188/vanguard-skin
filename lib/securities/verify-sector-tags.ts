@@ -70,7 +70,23 @@ export function getSweepCandidates(
  */
 export function parseVerdicts(text: string): SectorVerdict[] {
   const json = extractJsonArray(text);
-  const parsed = JSON.parse(json);
+  // The frontier model intermittently emits raw control characters (unescaped
+  // newlines) INSIDE string literals, which JSON.parse rejects ("Bad control
+  // character…") — observed on the first live sweep 2026-07-28, where it
+  // failed whole batches. Retry with C0 controls collapsed to spaces: legal
+  // JSON only carries them between tokens as whitespace, so valid input is
+  // unaffected and an in-string control becomes the whitespace the model
+  // meant. Same defense as lib/compute/macro-themes.ts::parseThemesJson.
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch (err) {
+    try {
+      parsed = JSON.parse(json.replace(/[\u0000-\u001f]+/g, " "));
+    } catch {
+      throw err;
+    }
+  }
   if (!Array.isArray(parsed)) {
     throw new Error(`Expected a JSON array of verdicts, got ${typeof parsed}`);
   }
