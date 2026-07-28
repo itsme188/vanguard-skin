@@ -246,9 +246,10 @@ export async function classifyFactors(
 
         // Also update sector/industry on the securities table
         if (result.sector || result.industry) {
+          const gics = normalizeSector(result.sector ?? null);
           db.prepare(
-            "UPDATE securities SET sector = COALESCE(?, sector), industry = COALESCE(NULLIF(industry,''), ?) WHERE id = ?"
-          ).run(normalizeSector(result.sector ?? null), result.industry ?? result.sector ?? null, secId);
+            "UPDATE securities SET sector = COALESCE(?, sector), sector_source = CASE WHEN ? IS NOT NULL THEN 'ai_classify' ELSE sector_source END, industry = COALESCE(NULLIF(industry,''), ?) WHERE id = ?"
+          ).run(gics, gics, result.industry ?? result.sector ?? null, secId);
         }
 
         classified++;
