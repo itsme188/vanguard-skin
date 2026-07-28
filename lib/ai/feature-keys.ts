@@ -27,6 +27,7 @@ export type FeatureKey =
   | "newsletterProcessing"
   | "factorClassification"
   | "securityClassification"
+  | "sectorVerification"
   | "analysisFactorNarrative"
   | "analysisMacroThemes"
   | "macroEnrichment"

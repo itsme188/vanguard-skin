@@ -86,6 +86,10 @@ export const FEATURE_MODELS: Record<FeatureKey, string> = {
   // Claude-native web_search (Finnhub ETF data is premium-gated).
   etfSectorWeights: "anthropic/$workhorse",
 
+  // One-time web-search-verified GICS sector sweep (Bloomberg-taxonomy
+  // repair). Frontier tier — accuracy over cost, this isn't a recurring call.
+  sectorVerification: "anthropic/$frontier",
+
   // AI desk-note summary (guidance / tone / surprises / key quotes) for a
   // freshly-fetched earnings transcript — see lib/transcripts/same-day.ts.
   transcriptSummary: "anthropic/$workhorse",
