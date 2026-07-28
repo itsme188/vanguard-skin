@@ -382,16 +382,18 @@ export default async function SecurityDetailPage(props: {
                       <Shares value={positions.reduce((sum, p) => sum + p.quantity, 0)} />
                     </td>
                     <td className={`${TD_MONO} text-right text-ink-dim`}>
-                      <Money value={detail.totalCostBasis} />
+                      <Money value={detail.totalCostBasis} fallback="–" />
                     </td>
                     <td className={`${TD_MONO} text-right font-semibold`}>
                       <Money value={detail.totalValue} />
                     </td>
                     <td className={`${TD_MONO} text-right font-semibold ${gainClass(detail.totalUnrealizedGain)}`}>
-                      <Money value={detail.totalUnrealizedGain} />
+                      <Money value={detail.totalUnrealizedGain} fallback="–" />
                     </td>
                     <td className={`${TD_MONO} text-right font-semibold ${gainClass(detail.totalUnrealizedGain)}`}>
-                      {detail.totalCostBasis > 0 ? (
+                      {detail.totalCostBasis != null &&
+                      detail.totalCostBasis > 0 &&
+                      detail.totalUnrealizedGain != null ? (
                         <Pct value={(detail.totalUnrealizedGain / detail.totalCostBasis) * 100} digits={2} signed />
                       ) : (
                         "–"
