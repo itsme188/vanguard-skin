@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { CalendarEvent } from "@/lib/types";
 import { addDays, formatWeekRange, todayET } from "@/lib/calendar/date-utils";
 import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
+import { actualsAreImplausible } from "./EarningsHub";
 
 interface WeekAheadViewProps {
   events: CalendarEvent[];
@@ -137,23 +138,38 @@ function DayCard({ day }: DayCardProps) {
   );
 }
 
-function EventRow({ event }: { event: CalendarEvent }) {
-  const time = fmtTime(event.release_time ?? event.event_time);
-  const symbol = event.symbol ?? null;
+// Earnings events store consensus + actual as Finnhub-shaped strings
+// ("EPS X.XX · Rev N"). Macro events (FRED/FOMC) store raw values
+// ("3.2%", "250K"). Only earnings need the compact formatter — and only
+// earnings get the plausibility gate: an implausible actual (bad Finnhub
+// scrape, fat-fingered manual override) renders null so the consensus
+// line (gated on !actualDisplay) survives, matching the EarningsHub row
+// on the same screen instead of contradicting it.
+export function eventFigureDisplays(
+  event: Pick<CalendarEvent, "event_type" | "consensus_estimate" | "actual_value">,
+): { consensusDisplay: string | null; actualDisplay: string | null } {
   const isEarnings = event.event_type === "earnings";
-  // Earnings events store consensus + actual as Finnhub-shaped strings
-  // ("EPS X.XX · Rev N"). Macro events (FRED/FOMC) store raw values
-  // ("3.2%", "250K"). Only earnings need the compact formatter.
   const consensusDisplay = event.consensus_estimate
     ? isEarnings
       ? formatFinnhubFigureCompact(event.consensus_estimate)
       : event.consensus_estimate
     : null;
-  const actualDisplay = event.actual_value
-    ? isEarnings
-      ? formatFinnhubFigureCompact(event.actual_value)
-      : event.actual_value
-    : null;
+  const implausible =
+    isEarnings &&
+    actualsAreImplausible(event.consensus_estimate, event.actual_value);
+  const actualDisplay =
+    event.actual_value && !implausible
+      ? isEarnings
+        ? formatFinnhubFigureCompact(event.actual_value)
+        : event.actual_value
+      : null;
+  return { consensusDisplay, actualDisplay };
+}
+
+function EventRow({ event }: { event: CalendarEvent }) {
+  const time = fmtTime(event.release_time ?? event.event_time);
+  const symbol = event.symbol ?? null;
+  const { consensusDisplay, actualDisplay } = eventFigureDisplays(event);
   const inner = (
     <div className="rounded-lg bg-raised border border-edge p-3 hover:border-edge-strong transition-colors">
       <div className="flex items-center gap-2 mb-1.5 flex-wrap">
