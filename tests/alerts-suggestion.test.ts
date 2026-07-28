@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   buildSuggestionPrompt,
+  normalizePositionContext,
   type SuggestionContext,
 } from "@/lib/alerts/generate-suggestion";
 
@@ -107,5 +108,51 @@ describe("buildSuggestionPrompt", () => {
     );
     expect(prompt).toContain("scale in");
     expect(prompt).toContain("new position");
+  });
+});
+
+describe("normalizePositionContext", () => {
+  it("passes a well-formed Mac-fired context through", () => {
+    const ctx = normalizePositionContext(
+      JSON.stringify({
+        held: [{ account: "Roth IRA", quantity: 40 }],
+        onWatchlist: true,
+        watchlistGroup: "vanguard_buy",
+      })
+    );
+    expect(ctx.held).toEqual([{ account: "Roth IRA", quantity: 40 }]);
+    expect(ctx.onWatchlist).toBe(true);
+    expect(ctx.watchlistGroup).toBe("vanguard_buy");
+  });
+
+  it("degrades a cloud_scan-shaped context to empty defaults instead of crashing", () => {
+    // reconcileCloudFiredLevels stores the Worker payload verbatim — a
+    // DIFFERENT schema. Pre-fix this replaced the defaults wholesale, ctx.held
+    // came out undefined, and buildSuggestionPrompt threw "Cannot read
+    // properties of undefined (reading 'length')" — every cloud-fired alert
+    // permanently failed suggestion generation
+    // (qa: alerts-inbox--suggest-all-reports-noop-when-all-failed).
+    const ctx = normalizePositionContext(
+      JSON.stringify({
+        source: "cloud_scan",
+        fired_at: "2026-07-23T13:30:14.000Z",
+        symbol: "SPY",
+        level_type: "support",
+        level_price: 740,
+      })
+    );
+    expect(ctx).toEqual({ held: [], onWatchlist: false, watchlistGroup: null });
+    // And the prompt builder must accept the normalized shape.
+    const prompt = buildSuggestionPrompt({ ...baseCtx(), ...ctx });
+    expect(prompt).toContain("Not currently held.");
+  });
+
+  it("handles null, malformed JSON, and non-array held", () => {
+    expect(normalizePositionContext(null)).toEqual({ held: [], onWatchlist: false, watchlistGroup: null });
+    expect(normalizePositionContext("not json{")).toEqual({ held: [], onWatchlist: false, watchlistGroup: null });
+    expect(normalizePositionContext("null")).toEqual({ held: [], onWatchlist: false, watchlistGroup: null });
+    expect(normalizePositionContext(JSON.stringify({ held: "yes" }))).toEqual({
+      held: [], onWatchlist: false, watchlistGroup: null,
+    });
   });
 });
