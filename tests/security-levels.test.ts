@@ -126,6 +126,28 @@ describe("security_levels — queries", () => {
     expect(levels.map((l) => l.price)).toEqual([170, 180, 220]);
   });
 
+  it("getLevelsForSecurity activeOnly mirrors the review whitelist — rejected/pending levels don't present as armed", () => {
+    // The chart overlay + LevelsPanel default view read this path. Rejected
+    // newsletter levels keep is_active=1 (reject only flips review_status),
+    // so filtering on is_active alone painted rejected levels as live S/R
+    // lines. The scan queries already use the inclusive
+    // review_status='auto_approved' whitelist — the display path must mirror it.
+    const secId = seedSecurity("INTC");
+    upsertLevel(db, { security_id: secId, level_type: "support", price: 40 });
+    const rejected = upsertLevel(db, { security_id: secId, level_type: "resistance", price: 75 });
+    setLevelReviewStatus(db, rejected, "rejected");
+    const pending = upsertLevel(db, { security_id: secId, level_type: "resistance", price: 80 });
+    setLevelReviewStatus(db, pending, "pending_review");
+
+    const armedView = getLevelsForSecurity(db, secId);
+    expect(armedView).toHaveLength(1);
+    expect(armedView[0].price).toBe(40);
+
+    // The management/audit view (activeOnly: false) still surfaces everything.
+    const auditView = getLevelsForSecurity(db, secId, { activeOnly: false });
+    expect(auditView).toHaveLength(3);
+  });
+
   it("getActiveLevels filters out expired levels by default", () => {
     const secId = seedSecurity("AAPL");
     upsertLevel(db, { security_id: secId, level_type: "entry", price: 180 });
