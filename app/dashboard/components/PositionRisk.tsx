@@ -8,6 +8,7 @@ import type {
 } from "@/lib/compute/risk";
 import { Pct } from "@/lib/privacy/components";
 import { NarrativeBlock } from "./analysis/NarrativeBlock";
+import { ScrollFade } from "./ScrollFade";
 import { DrillDownPanel } from "./analysis/DrillDownPanel";
 import { WeekOverWeekBadge } from "./analysis/WeekOverWeekBadge";
 import type { DrillDownFilter } from "@/lib/queries/drill-down";
@@ -150,7 +151,7 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
       <NarrativeBlock scope={scope ?? "all"} surfaceKey="position-risk" />
 
       {/* ── Position table ── */}
-      <div className="overflow-x-auto">
+      <ScrollFade>
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-edge text-ink-faint text-xs">
@@ -220,7 +221,7 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
             ))}
           </tbody>
         </table>
-      </div>
+      </ScrollFade>
 
       {/* ── Correlation matrix ── */}
       {corrSymbols.length >= 3 && (
@@ -228,7 +229,7 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
           <h4 className="text-xs text-ink-faint uppercase tracking-widest mb-3">
             Pairwise Correlations
           </h4>
-          <div className="overflow-x-auto">
+          <ScrollFade>
             <table className="text-xs">
               <thead>
                 <tr>
@@ -285,7 +286,7 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
                 ))}
               </tbody>
             </table>
-          </div>
+          </ScrollFade>
           <div className="flex items-center gap-4 mt-2 text-[10px] text-ink-faint">
             <span className="flex items-center gap-1">
               <span className="w-3 h-2 rounded-sm" style={{ background: "rgba(52, 211, 153, 0.2)" }} />
