@@ -333,6 +333,31 @@ export function getSnapshotReconciliation(
 const SECTOR_SHAPE = /^US Sector Equity \((.+)\)$/;
 
 /**
+ * fund_category-ONLY implied-sector aliases. `normalizeSector` deliberately
+ * demotes "Financial" / "Communications" (see normalize-sector.ts's DEMOTED
+ * comment) because a SECURITY tagged with one of those Bloomberg buckets is
+ * genuinely ambiguous (spans several GICS sectors). But a fund_category
+ * label like "US Sector Equity (Financial)" is a human-written THEME name,
+ * not a per-security classification — "Financial" here unambiguously means
+ * "Financials", not "could be Real Estate/Financials/whatever". So this
+ * panel consults its own alias map first, local to the fund_category
+ * context, rather than promoting these back into the global ALIASES (which
+ * would re-introduce the ambiguity the demotion exists to prevent). Keys are
+ * lowercase to match how fund_category labels are written/compared
+ * elsewhere in this module.
+ */
+const FUND_CATEGORY_SECTOR_ALIASES: Record<string, string> = {
+  "financial": "Financials",
+  "communications": "Communication Services",
+};
+
+function impliedSectorFromFundCategoryLabel(raw: string): string | null {
+  const alias = FUND_CATEGORY_SECTOR_ALIASES[raw.trim().toLowerCase()];
+  if (alias) return alias;
+  return normalizeSector(raw);
+}
+
+/**
  * Stocks whose GICS `sector` tag disagrees with the sector implied by their
  * `fund_category` ("US Sector Equity (X)" shape) and have NOT been verified
  * by the sweep (`scripts/verify-sector-tags.ts`). Verified rows are legit
@@ -354,7 +379,7 @@ export function getSectorDisagreements(db: Database.Database): SectorDisagreemen
   for (const r of rows) {
     const m = SECTOR_SHAPE.exec(r.fund_category);
     if (!m) continue;
-    const implied = normalizeSector(m[1]);
+    const implied = impliedSectorFromFundCategoryLabel(m[1]);
     if (!implied) continue;             // "Semiconductors" etc — finer than GICS, not a disagreement
     if (r.sector === implied) continue; // agrees
     out.push({ ...r, impliedSector: implied });

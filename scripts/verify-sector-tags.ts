@@ -9,11 +9,27 @@
 import { db } from "../lib/db";
 import { runSectorVerification } from "../lib/securities/verify-sector-tags";
 
+const KNOWN_FLAGS = new Set(["--apply", "--all"]);
+
 async function main() {
   const args = process.argv.slice(2);
+
+  // Any arg starting with "-" that isn't a recognized flag is almost
+  // certainly a typo (e.g. "-apply" for "--apply") rather than a symbol —
+  // real ticker symbols never start with a dash. Silently letting it fall
+  // through to the symbol filter means the sweep would run scoped to a
+  // single bogus "-apply" symbol instead of applying, with no error.
+  const unknownFlags = args.filter((a) => a.startsWith("-") && !KNOWN_FLAGS.has(a));
+  if (unknownFlags.length > 0) {
+    console.error(
+      `Unknown flag(s): ${unknownFlags.join(", ")}. Expected --apply and/or --all (single-dash typos like "-apply" are rejected, not treated as a symbol filter).`,
+    );
+    process.exit(1);
+  }
+
   const apply = args.includes("--apply");
   const all = args.includes("--all");
-  const symbols = args.filter((a) => !a.startsWith("--"));
+  const symbols = args.filter((a) => !a.startsWith("-"));
 
   console.log(
     `Running sector verification sweep (${apply ? "APPLY" : "dry-run"}${all ? ", all rows" : ""}${
@@ -45,7 +61,7 @@ async function main() {
     }
   }
 
-  console.log(`\noptionRowsUpdated: ${result.optionRowsUpdated}`);
+  console.log(`\noption rows synced: ${result.optionRowsUpdated}`);
 
   if (apply) {
     console.log(`

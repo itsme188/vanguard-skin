@@ -221,6 +221,28 @@ describe("getHoldingsForChat", () => {
     expect(roth[0].quantity).toBe(30);
   });
 
+  it("normalizes a Bloomberg-spelling sector filter to canonical GICS-11 before matching", () => {
+    // The chat model may still say "Financial" / "Health Care" even though
+    // securities.sector is pure GICS-11 post sector-tag-verification — the
+    // filter must normalize so these still match canonical rows.
+    const bac = seedSecurity(db, "BAC", { sector: "Financials" });
+    const unh = seedSecurity(db, "UNH", { sector: "Healthcare" });
+    seedHolding(db, 1, bac, 50, "2025-01-31");
+    seedHolding(db, 1, unh, 30, "2025-01-31");
+    seedPrice(db, bac, "2025-01-31", 40);
+    seedPrice(db, unh, "2025-01-31", 500);
+
+    const financial = getHoldingsForChat(db, { sector: "Financial" });
+    expect(financial.map((h) => h.symbol)).toEqual(["BAC"]);
+
+    const healthCare = getHoldingsForChat(db, { sector: "Health Care" });
+    expect(healthCare.map((h) => h.symbol)).toEqual(["UNH"]);
+
+    // Canonical spelling still works unchanged
+    const canonical = getHoldingsForChat(db, { sector: "Financials" });
+    expect(canonical.map((h) => h.symbol)).toEqual(["BAC"]);
+  });
+
   it("filters by symbol", () => {
     const aapl = seedSecurity(db, "AAPL");
     const msft = seedSecurity(db, "MSFT");
