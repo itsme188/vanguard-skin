@@ -22,6 +22,7 @@ import { getEarningsForWeekDeduped } from "@/lib/queries/calendar";
 import { getSymbolStatus, type SymbolStatus } from "@/lib/queries/briefing-symbols";
 import { getCurrentMonday, addDays } from "@/lib/calendar/date-utils";
 import { formatFinnhubFigure, parseFinnhubFigure } from "@/lib/format/finnhub-figure";
+import { effectiveConsensus } from "@/lib/calendar/consensus";
 import { isPlausibleEarnings } from "@/lib/digest/send-earnings-email";
 import type { CalendarEvent } from "@/lib/types";
 import { SymbolLink } from "../components/SymbolLink";
@@ -288,17 +289,18 @@ export function EarningsHub() {
 
 function DesktopRow({ event }: { event: EnrichedRow }) {
   const slot = fmtSlot(event.event_time, event.release_time);
-  const cons = formatFinnhubFigure(event.consensus_estimate);
+  const consensus = effectiveConsensus(event);
+  const cons = formatFinnhubFigure(consensus);
   const isPostRelease = !!event.enriched_at && !!event.actual_value;
   const implausible =
-    isPostRelease && actualsAreImplausible(event.consensus_estimate, event.actual_value);
+    isPostRelease && actualsAreImplausible(consensus, event.actual_value);
   const actRaw = isPostRelease
     ? formatFinnhubFigure(event.actual_value)
     : { eps: null, revenue: null, fallback: null };
   const act = implausible ? { eps: null, revenue: null, fallback: null } : actRaw;
   const delta =
     isPostRelease && !implausible
-      ? epsDelta(event.consensus_estimate, event.actual_value)
+      ? epsDelta(consensus, event.actual_value)
       : null;
   // When a pre-release event has no consensus at all (Finnhub hasn't
   // published estimates), the four numeric cells used to render as a row of
@@ -432,17 +434,18 @@ function NumCell({ value, recapEventId }: { value: string | null; recapEventId?:
 
 function MobileCard({ event }: { event: EnrichedRow }) {
   const slot = fmtSlot(event.event_time, event.release_time);
-  const cons = formatFinnhubFigure(event.consensus_estimate);
+  const consensus = effectiveConsensus(event);
+  const cons = formatFinnhubFigure(consensus);
   const isPostRelease = !!event.enriched_at && !!event.actual_value;
   const implausible =
-    isPostRelease && actualsAreImplausible(event.consensus_estimate, event.actual_value);
+    isPostRelease && actualsAreImplausible(consensus, event.actual_value);
   const actRaw = isPostRelease
     ? formatFinnhubFigure(event.actual_value)
     : { eps: null, revenue: null, fallback: null };
   const act = implausible ? { eps: null, revenue: null, fallback: null } : actRaw;
   const delta =
     isPostRelease && !implausible
-      ? epsDelta(event.consensus_estimate, event.actual_value)
+      ? epsDelta(consensus, event.actual_value)
       : null;
   const consensusMissing = !cons.eps && !cons.revenue && !isPostRelease;
 
