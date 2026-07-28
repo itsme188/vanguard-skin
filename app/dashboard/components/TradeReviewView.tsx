@@ -405,7 +405,7 @@ export function TradeReviewView({
               const countLabel =
                 p.reviewableCount < p.tradeCount
                   ? `${p.reviewableCount} of ${p.tradeCount} reviewable`
-                  : `${p.tradeCount} trades`;
+                  : `${p.tradeCount} trade${p.tradeCount !== 1 ? "s" : ""}`;
               return (
                 <option key={p.periodStart} value={p.periodStart}>
                   {formatMonthLabelShort(p.periodStart)} · {countLabel}
@@ -631,7 +631,7 @@ function ReviewCard({
           {review.profit_factor != null && (
             <span className="text-ink-dim">
               <span className="text-ink font-medium">
-                {review.profit_factor.toFixed(1)}x
+                {formatProfitFactor(review.profit_factor)}
               </span>{" "}
               profit factor
             </span>
@@ -735,7 +735,7 @@ function ReviewDetail({
         {review.profit_factor != null && (
           <MetricBadge
             label="Profit Factor"
-            value={`${review.profit_factor.toFixed(1)}x`}
+            value={formatProfitFactor(review.profit_factor)}
             color="text-ink"
           />
         )}
@@ -1166,6 +1166,13 @@ function PatternSection({
 function formatMonthLabel(periodStart: string): string {
   const d = new Date(periodStart + "T00:00:00");
   return d.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+}
+
+// computeTradeRoundtrips clamps profit factor at 99.9 when a period has no
+// gross losses — that's a sentinel for "no losing trades", not a measured
+// ratio, so render it as ∞ instead of "99.9x".
+function formatProfitFactor(profitFactor: number): string {
+  return profitFactor >= 99.9 ? "∞" : `${profitFactor.toFixed(1)}x`;
 }
 
 function formatMonthLabelShort(periodStart: string): string {
