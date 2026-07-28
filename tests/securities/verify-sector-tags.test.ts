@@ -107,3 +107,17 @@ describe("verify-sector-tags sweep", () => {
     expect(result.rows.find((r) => r.symbol === "AMZN")?.newSector).toBe("Consumer Discretionary");
   });
 });
+
+describe("parseVerdicts control-char defense (live-sweep 2026-07-28 failure)", () => {
+  it("survives raw newlines inside string literals (frontier model emits them intermittently)", () => {
+    const text =
+      '[{"symbol":"UNH","sector":"Healthcare","rationale":"UnitedHealth is a managed\ncare company per GICS"}]';
+    expect(parseVerdicts(text)).toEqual([
+      { symbol: "UNH", sector: "Healthcare", rationale: "UnitedHealth is a managed care company per GICS" },
+    ]);
+  });
+
+  it("still throws on genuinely malformed non-JSON", () => {
+    expect(() => parseVerdicts("not json at all")).toThrow();
+  });
+});
