@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
-import { MacroThemesSchema, type MacroThemeAi, buildMacroSignalBlob, generateMacroThemes } from "@/lib/compute/macro-themes";
+import { MacroThemesSchema, type MacroThemeAi, buildMacroSignalBlob, generateMacroThemes, parseThemesJson } from "@/lib/compute/macro-themes";
 import { upsertMacroThemes } from "@/lib/queries/analysis-macro-themes";
 
 describe("MacroThemesSchema", () => {
@@ -90,6 +90,36 @@ describe("buildMacroSignalBlob", () => {
     ).run();
     const blob = buildMacroSignalBlob(db, "all", "2026-05-04");
     expect(blob.underThreshold).toBe(true);
+  });
+});
+
+describe("parseThemesJson", () => {
+  const theme = {
+    name: "Tariff escalation",
+    factor_label: "tariff_exposure",
+    direction: "risk-off",
+    summary: "Trade-deal headlines pushed risk assets down through the week.",
+  };
+
+  it("parses clean JSON and a code-fenced wrap", () => {
+    const json = JSON.stringify([theme]);
+    expect(parseThemesJson(json)).toHaveLength(1);
+    expect(parseThemesJson("```json\n" + json + "\n```")).toHaveLength(1);
+  });
+
+  it("recovers from a raw control character inside a string literal", () => {
+    // Sonnet intermittently emits an unescaped newline mid-string — plain
+    // JSON.parse rejects it with "Bad control character in string literal"
+    // (the exact failure the 2026-07-27 sweep saw 500 on a cold cache).
+    const broken = `[{"name":"Tariff escalation","factor_label":"tariff_exposure","direction":"risk-off","summary":"Trade-deal headlines pushed\nrisk assets down through the week."}]`;
+    expect(() => JSON.parse(broken)).toThrow();
+    const parsed = parseThemesJson(broken);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].summary).toContain("pushed risk assets");
+  });
+
+  it("still throws the malformed-themes error for genuinely broken output", () => {
+    expect(() => parseThemesJson("not json at all")).toThrow(/malformed themes/);
   });
 });
 
