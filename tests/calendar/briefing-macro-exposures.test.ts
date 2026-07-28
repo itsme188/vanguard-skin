@@ -58,10 +58,10 @@ describe("buildMacroExposures", () => {
   it("includes XMTR under ISM Manufacturing — the user-reported bug", () => {
     // The original bug: §6 ISM Mfg listed XPO, NSC, CSX, PRIM, PWR, CLH,
     // GFL — "basically every industrial in the book" — but silently
-    // dropped XMTR (sector="Industrial", industry="Metal Fabricate/Hardware").
-    const xpo = seedSec("XPO", "Industrial", "Transportation");
-    const xmtr = seedSec("XMTR", "Industrial", "Metal Fabricate/Hardware");
-    const csx = seedSec("CSX", "Industrial", "Transportation");
+    // dropped XMTR (sector="Industrials", industry="Metal Fabricate/Hardware").
+    const xpo = seedSec("XPO", "Industrials", "Transportation");
+    const xmtr = seedSec("XMTR", "Industrials", "Metal Fabricate/Hardware");
+    const csx = seedSec("CSX", "Industrials", "Transportation");
     seedHolding(xpo, 60);
     seedHolding(xmtr, 600);
     seedHolding(csx, 50);
@@ -78,12 +78,12 @@ describe("buildMacroExposures", () => {
     expect(exp!.symbols).toContain("XPO");
     expect(exp!.symbols).toContain("CSX");
     expect(exp!.symbols).not.toContain("AAPL");
-    expect(exp!.basis).toMatch(/Industrial/);
+    expect(exp!.basis).toMatch(/Industrials/);
   });
 
   it("differentiates ISM Services from ISM Manufacturing", () => {
-    const xmtr = seedSec("XMTR", "Industrial");
-    const ko = seedSec("KO", "Consumer, Non-cyclical", "Beverages");
+    const xmtr = seedSec("XMTR", "Industrials");
+    const ko = seedSec("KO", "Consumer Staples", "Beverages");
     seedHolding(xmtr, 600);
     seedHolding(ko, 100);
 
@@ -93,9 +93,9 @@ describe("buildMacroExposures", () => {
     expect(exp!.symbols).not.toContain("XMTR");
   });
 
-  it("FOMC maps to Financial sector", () => {
-    const krc = seedSec("KRC", "Financial", "REITS");
-    const bac = seedSec("BAC", "Financial", "Banks");
+  it("FOMC maps to Financials + Real Estate sectors", () => {
+    const krc = seedSec("KRC", "Real Estate", "REITS");
+    const bac = seedSec("BAC", "Financials", "Banks");
     const aapl = seedSec("AAPL", "Technology");
     seedHolding(krc, 161);
     seedHolding(bac, 100);
@@ -110,8 +110,8 @@ describe("buildMacroExposures", () => {
 
   it("GDP returns broad equity (all sectors)", () => {
     const aapl = seedSec("AAPL", "Technology");
-    const bac = seedSec("BAC", "Financial");
-    const xmtr = seedSec("XMTR", "Industrial");
+    const bac = seedSec("BAC", "Financials");
+    const xmtr = seedSec("XMTR", "Industrials");
     seedHolding(aapl, 100);
     seedHolding(bac, 100);
     seedHolding(xmtr, 600);
@@ -122,8 +122,8 @@ describe("buildMacroExposures", () => {
   });
 
   it("Consumer Confidence (other_macro) maps to Consumer sectors", () => {
-    const ko = seedSec("KO", "Consumer, Non-cyclical");
-    const hd = seedSec("HD", "Consumer, Cyclical", "Retail");
+    const ko = seedSec("KO", "Consumer Staples");
+    const hd = seedSec("HD", "Consumer Discretionary", "Retail");
     const aapl = seedSec("AAPL", "Technology");
     seedHolding(ko, 100);
     seedHolding(hd, 50);
@@ -139,7 +139,7 @@ describe("buildMacroExposures", () => {
   });
 
   it("returns no entry for unmapped event types (earnings, unknown other_macro)", () => {
-    const xmtr = seedSec("XMTR", "Industrial");
+    const xmtr = seedSec("XMTR", "Industrials");
     seedHolding(xmtr, 600);
 
     const earnings = {
@@ -159,7 +159,7 @@ describe("buildMacroExposures", () => {
   });
 
   it("excludes positions with zero quantity from exposure lists", () => {
-    const xmtr = seedSec("XMTR", "Industrial");
+    const xmtr = seedSec("XMTR", "Industrials");
     seedHolding(xmtr, 0);
 
     const out = buildMacroExposures(db, [makeMacro(1, "pmi", "ISM Manufacturing")]);
@@ -167,7 +167,7 @@ describe("buildMacroExposures", () => {
   });
 
   it("only the latest as_of_date per account counts (no double-count)", () => {
-    const xmtr = seedSec("XMTR", "Industrial");
+    const xmtr = seedSec("XMTR", "Industrials");
     seedHolding(xmtr, 600, "2026-04-20");
     seedHolding(xmtr, 600, "2026-04-27");
 

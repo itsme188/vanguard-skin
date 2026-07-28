@@ -1,5 +1,35 @@
 import type Database from "better-sqlite3";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
+import { normalizeSector } from "@/lib/securities/normalize-sector";
+
+/**
+ * Chat sector-FILTER-only alias, on top of normalizeSector. normalizeSector
+ * deliberately demotes "Financial" (returns null — see normalize-sector.ts's
+ * DEMOTED comment) because tagging a SECURITY's `sector` column "Financial"
+ * is genuinely ambiguous (could be Real Estate). That risk is a WRITE-side
+ * concern; a chat model asking to FILTER holdings by "Financial" carries no
+ * such risk (worst case zero/extra rows, never a corrupted tag), so this
+ * query-only alias fills the gap normalizeSector leaves on purpose. Mirrors
+ * the fund_category-local alias in lib/queries/data-health.ts. Never promote
+ * this into the global ALIASES.
+ */
+const CHAT_SECTOR_FILTER_ALIASES: Record<string, string> = {
+  financial: "Financials",
+};
+
+/**
+ * Normalize an incoming chat sector filter to the canonical GICS-11
+ * spelling. A model may still say "Financial" or "Health Care" (Bloomberg
+ * spellings, pre-dating the sector-tag-verification sweep) even though
+ * `securities.sector` is now pure GICS-11 — normalize so those still match.
+ * Falls back to the raw value for open-vocabulary terms neither map
+ * recognizes (e.g. "Diversified").
+ */
+function normalizeSectorFilter(raw: string): string {
+  const alias = CHAT_SECTOR_FILTER_ALIASES[raw.trim().toLowerCase()];
+  if (alias) return alias;
+  return normalizeSector(raw) ?? raw;
+}
 
 // ─── Filter types ─────────────────────────────────────────────────
 
@@ -196,7 +226,7 @@ export function getHoldingsForChat(
   }
   if (sector) {
     conditions.push("s.sector = ?");
-    params.push(sector);
+    params.push(normalizeSectorFilter(sector));
   }
 
   const sortMap: Record<string, string> = {

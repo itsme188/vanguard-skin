@@ -539,7 +539,7 @@ export function buildMacroExposures(
  * For "broad" releases (GDP) we return an empty sectors array meaning
  * "all equity holdings."
  */
-function macroEventToSectors(
+export function macroEventToSectors(
   event: CalendarEvent,
 ): { sectors: string[]; basis: string } | null {
   const title = (event.title ?? "").toLowerCase();
@@ -548,30 +548,30 @@ function macroEventToSectors(
   if (type === "pmi" && title.includes("services")) {
     return {
       sectors: [
-        "Consumer, Cyclical",
-        "Consumer, Non-cyclical",
-        "Communications",
-        "Financial",
+        "Consumer Discretionary",
+        "Consumer Staples",
+        "Communication Services",
+        "Financials",
       ],
       basis: "ISM Services-sensitive sectors",
     };
   }
   if (type === "pmi") {
     return {
-      sectors: ["Industrial", "Basic Materials"],
-      basis: "ISM Manufacturing-sensitive sectors (Industrial + Basic Materials)",
+      sectors: ["Industrials", "Materials"],
+      basis: "ISM Manufacturing-sensitive sectors (Industrials + Materials)",
     };
   }
   if (type === "fomc") {
     return {
-      sectors: ["Financial"],
-      basis: "rate-sensitive (Financial sector incl. Banks + REITs)",
+      sectors: ["Financials", "Real Estate"],
+      basis: "rate-sensitive (Financials + Real Estate incl. Banks + REITs)",
     };
   }
   if (type === "cpi") {
     return {
-      sectors: ["Consumer, Non-cyclical", "Consumer, Cyclical", "Industrial"],
-      basis: "inflation-pass-through (Consumer + Industrial)",
+      sectors: ["Consumer Staples", "Consumer Discretionary", "Industrials"],
+      basis: "inflation-pass-through (Consumer + Industrials)",
     };
   }
   if (type === "gdp") {
@@ -582,20 +582,20 @@ function macroEventToSectors(
   }
   if (type === "jobs") {
     return {
-      sectors: ["Consumer, Cyclical", "Financial"],
-      basis: "labor-market-sensitive (Consumer Cyclical + Financial)",
+      sectors: ["Consumer Discretionary", "Financials"],
+      basis: "labor-market-sensitive (Consumer Discretionary + Financials)",
     };
   }
   if (type === "housing") {
     return {
-      sectors: ["Financial"],
-      basis: "housing/rate-sensitive (Financial sector incl. REITs + mortgage)",
+      sectors: ["Financials", "Real Estate"],
+      basis: "housing/rate-sensitive (Financials + Real Estate incl. REITs + mortgage)",
     };
   }
   if (type === "retail_sales") {
     return {
-      sectors: ["Consumer, Cyclical"],
-      basis: "Consumer Cyclical sector",
+      sectors: ["Consumer Discretionary"],
+      basis: "Consumer Discretionary sector",
     };
   }
   if (
@@ -605,7 +605,7 @@ function macroEventToSectors(
       title.includes("sentiment"))
   ) {
     return {
-      sectors: ["Consumer, Cyclical", "Consumer, Non-cyclical"],
+      sectors: ["Consumer Discretionary", "Consumer Staples"],
       basis: "consumer-sentiment-sensitive (Consumer sectors)",
     };
   }

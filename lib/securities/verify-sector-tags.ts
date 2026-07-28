@@ -251,9 +251,14 @@ export async function runSectorVerification(
 
   const rows: SweepRowResult[] = [];
   const unresolved: { symbol: string; reason: string }[] = [];
+  const totalBatches = Math.ceil(candidates.length / SWEEP_BATCH_SIZE);
 
   for (let i = 0; i < candidates.length; i += SWEEP_BATCH_SIZE) {
     const batch = candidates.slice(i, i + SWEEP_BATCH_SIZE);
+    const batchNum = i / SWEEP_BATCH_SIZE + 1;
+    console.log(
+      `[verify-sector-tags] batch ${batchNum}/${totalBatches} (${batch.length} symbols)...`,
+    );
     let verdicts: SectorVerdict[];
     try {
       const text = await fetcher(batch);

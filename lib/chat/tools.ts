@@ -81,7 +81,7 @@ export const CHAT_TOOLS: Anthropic.Tool[] = [
         sector: {
           type: "string",
           description:
-            "Filter by sector (e.g., 'Technology', 'Financial', 'Health Care'). Omit for all sectors.",
+            "Filter by sector (GICS-11 canonical spelling, e.g., 'Technology', 'Financials', 'Healthcare'). Omit for all sectors.",
         },
         sort_by: {
           type: "string",
