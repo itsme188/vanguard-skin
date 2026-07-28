@@ -215,10 +215,10 @@ function ConversationHistory({
   const displayTitle = currentConv?.title ?? "Current conversation";
 
   return (
-    <div className="relative" ref={dropdownRef}>
+    <div className="relative min-w-0" ref={dropdownRef}>
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1.5 text-xs text-ink-dim hover:text-ink transition-colors max-w-[200px] truncate"
+        className="flex items-center gap-1.5 text-xs text-ink-dim hover:text-ink transition-colors max-w-[min(200px,100%)] truncate"
         title={displayTitle}
       >
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
@@ -487,8 +487,12 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
       >
         {/* Conversation header (shown when conversation is active) */}
         {isLocked && (
-          <div className="flex items-center justify-between pb-3 mb-3 border-b border-edge">
-            <div className="flex items-center gap-2">
+          /* min-w-0 on the left group + the picker root: without it the
+             flex-child min-width:auto floor keeps the group at its content
+             width (scope pill + 200px title) and the long-title case
+             overpaints the New Conversation button at 390px viewports. */
+          <div className="flex items-center justify-between gap-2 pb-3 mb-3 border-b border-edge">
+            <div className="flex items-center gap-2 min-w-0">
               <span
                 className="px-3 py-1 rounded-full text-[11px] border shrink-0"
                 style={{
