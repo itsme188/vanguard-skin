@@ -26,6 +26,7 @@ import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { getArticlesForSecurity, type ResearchMention } from "@/lib/queries/research";
 import { getLatestDailyBar, get52WeekRange, getOhlcvBars } from "@/lib/queries/ohlcv";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
+import { getSecurityQuote } from "@/lib/queries/security-quotes";
 import { computeATR, type OhlcBar } from "@/lib/chart/indicators";
 
 // ─── Result types ──────────────────────────────────────────────
@@ -68,6 +69,13 @@ export interface SecurityKpis {
   volume: number | null;
   week52High: number | null;
   week52Low: number | null;
+  /**
+   * As-of date of whichever 52-week source won the freshness arbitration
+   * (IBKR quote vs daily bars) — bars anchor their trailing window to their
+   * own latest date, so stale bars back-shift the window and resurrect
+   * rolled-out extremes. Null when no range is available.
+   */
+  week52AsOf: string | null;
   /** 14-period ATR on daily bars (Wilder smoothing). Null if <15 bars. */
   atr14: number | null;
 }
@@ -265,6 +273,13 @@ export function getClosedSalesBySecurity(
 
 /**
  * Get recent transactions for a specific security across all accounts.
+ *
+ * price_per_share / amount are stored in the security's NATIVE currency
+ * (FX convention) — the fx_rates join converts them to USD for this
+ * pure-display path, matching the tax-lot + hero queries on the same page.
+ * The converted aliases after t.* deliberately shadow the native columns
+ * (better-sqlite3 row objects are built in column order, so the last
+ * same-named column wins — pinned by the FX test).
  */
 export function getTransactionsBySecurity(
   db: Database.Database,
@@ -273,11 +288,15 @@ export function getTransactionsBySecurity(
 ): SecurityDetailTransaction[] {
   return db
     .prepare(
-      `SELECT t.*, s.symbol, s.name AS security_name, a.name AS account_name,
+      `SELECT t.*,
+              t.price_per_share * COALESCE(fx.usd_per_unit, 1) AS price_per_share,
+              t.amount * COALESCE(fx.usd_per_unit, 1) AS amount,
+              s.symbol, s.name AS security_name, a.name AS account_name,
               s.security_type, s.option_type, s.underlying_symbol,
               s.strike_price, s.expiration_date
       FROM transactions t
       LEFT JOIN securities s ON s.id = t.security_id
+      LEFT JOIN fx_rates fx ON fx.currency = s.currency
       JOIN accounts a ON a.id = t.account_id
       WHERE t.security_id = ?
       ORDER BY t.trade_date DESC
@@ -379,6 +398,26 @@ export function getKpisForSecurity(
 
   const range = get52WeekRange(db, securityId);
 
+  // 52-week range: fresher source wins. get52WeekRange anchors its trailing
+  // window to the latest BAR date, so months-stale bars back-shift the window
+  // and re-include lows/highs that rolled out of the true 52-week window
+  // (HOOD showed a 15-month-old low while QuoteStats' IBKR quote was right).
+  // The quote goes stale as a whole but never shifts its window.
+  const quote = getSecurityQuote(db, securityId);
+  let week52High = range?.high ?? null;
+  let week52Low = range?.low ?? null;
+  let week52AsOf = range?.endDate ?? null;
+  if (
+    quote &&
+    quote.week52_high != null &&
+    quote.week52_low != null &&
+    (range == null || quote.as_of_date >= range.endDate)
+  ) {
+    week52High = quote.week52_high;
+    week52Low = quote.week52_low;
+    week52AsOf = quote.as_of_date;
+  }
+
   // ATR needs consecutive bars with prev-close. 30 is enough for a stable
   // Wilder-smoothed 14-period ATR and cheap to read.
   const recentBars = getOhlcvBars(db, securityId, "1 day", { limit: undefined })
@@ -402,8 +441,9 @@ export function getKpisForSecurity(
     dayHigh: latest.high,
     dayLow: latest.low,
     volume: latest.volume,
-    week52High: range?.high ?? null,
-    week52Low: range?.low ?? null,
+    week52High,
+    week52Low,
+    week52AsOf,
     atr14,
   };
 }
