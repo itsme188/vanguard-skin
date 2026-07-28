@@ -225,6 +225,26 @@ describe("getAccountCoverage", () => {
     const ibkr = result.find((r) => r.accountName === "IBKR");
     expect(ibkr!.holdingsWithCostBasis).toBe(1);
   });
+
+  it("falls back to the latest non-null cost basis when the newest row is NULL (Plaid daily sync)", () => {
+    // Plaid writes cost_basis NULL on every daily sync; the statement row a
+    // month earlier carries the real basis. Coverage must count it — pre-fix
+    // this permanently reported "Cost basis: 0/N" while the Accounts tab
+    // (getHoldingsByAccount's costBasisExpr) rendered real values.
+    const acct = seedAccount("Vanguard Taxable");
+    const vti = seedSecurity("VTI");
+    const brkb = seedSecurity("BRK/B");
+
+    seedHolding(acct, vti, 100, daysAgo(28), 37301.64); // statement row w/ basis
+    seedHolding(acct, brkb, 20, daysAgo(28), null); // never had basis
+    seedHolding(acct, vti, 100, today, null); // Plaid row, NULL basis
+    seedHolding(acct, brkb, 20, today, null); // Plaid row, NULL basis
+
+    const result = getAccountCoverage(db);
+    const vt = result.find((r) => r.accountName === "Vanguard Taxable");
+    expect(vt!.totalHoldings).toBe(2);
+    expect(vt!.holdingsWithCostBasis).toBe(1); // VTI via fallback; BRK/B genuinely missing
+  });
 });
 
 // ── getDataGaps ───────────────────────────────────────────────────
