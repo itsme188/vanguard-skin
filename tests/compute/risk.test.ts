@@ -774,3 +774,26 @@ describe("computeRiskMetrics coverage-jump guard", () => {
     expect(result.volatility!).toBeLessThan(0.01);
   });
 });
+
+describe("position-risk weight denominator (top-N subset bug)", () => {
+  it("weights are relative to the WHOLE portfolio, not the top-N subset", () => {
+    const db = createTestDb();
+    // Three positions: $60k, $30k, $10k → whole-portfolio total $100k.
+    // With topN=2, only the first two return — but their weights must still
+    // be 0.6 and 0.3 (pre-fix they renormalized to the subset: 0.667/0.333,
+    // presenting SPY-style 4% positions as 16%).
+    seedHoldings(db, [
+      { symbol: "BIG", quantity: 600, price: 100 },
+      { symbol: "MID", quantity: 300, price: 100 },
+      { symbol: "SML", quantity: 100, price: 100 },
+    ]);
+    const result = computePositionRisk(db, { topN: 2 });
+    expect(result.positions).toHaveLength(2);
+    const big = result.positions.find((p) => p.symbol === "BIG")!;
+    const mid = result.positions.find((p) => p.symbol === "MID")!;
+    expect(big.weight).toBeCloseTo(0.6, 5);
+    expect(mid.weight).toBeCloseTo(0.3, 5);
+    const weightSum = result.positions.reduce((s, p) => s + p.weight, 0);
+    expect(weightSum).toBeLessThan(1); // subset of a larger book can't sum to 100%
+  });
+});
