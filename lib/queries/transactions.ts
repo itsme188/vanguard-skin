@@ -7,15 +7,27 @@ export interface TransactionWithSecurity extends Transaction {
   account_name: string;
 }
 
+/**
+ * price_per_share / amount are stored in the security's NATIVE currency
+ * (FX convention) — the fx_rates join converts them to USD for this
+ * pure-display path, mirroring getTransactionsBySecurity on Security
+ * Detail (a703773). The converted aliases after t.* deliberately shadow
+ * the native columns (better-sqlite3 row objects are built in column
+ * order, so the last same-named column wins).
+ */
 export function getTransactionsByAccount(
   db: Database.Database,
   accountId: number,
   options?: { limit?: number; offset?: number; type?: string }
 ): TransactionWithSecurity[] {
   let sql = `
-    SELECT t.*, s.symbol, s.name as security_name, a.name as account_name
+    SELECT t.*,
+           t.price_per_share * COALESCE(fx.usd_per_unit, 1) as price_per_share,
+           t.amount * COALESCE(fx.usd_per_unit, 1) as amount,
+           s.symbol, s.name as security_name, a.name as account_name
     FROM transactions t
     LEFT JOIN securities s ON s.id = t.security_id
+    LEFT JOIN fx_rates fx ON fx.currency = s.currency
     JOIN accounts a ON a.id = t.account_id
     WHERE t.account_id = ?
   `;

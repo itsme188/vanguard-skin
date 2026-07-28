@@ -61,6 +61,17 @@ export function CallNoteModal({ eventId, symbol, open, onClose, onSaved }: Props
     };
   }, [open, eventId]);
 
+  // Escape dismisses, matching BogeysEditModal on the same page (deep-QA
+  // 2026-07-28: this was the one Today modal that ignored the key).
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
   if (!open || typeof document === "undefined") return null;
 
   async function save() {

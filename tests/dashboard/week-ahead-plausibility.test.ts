@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { eventFigureDisplays } from "@/app/dashboard/today/WeekAheadView";
+import { effectiveConsensus } from "@/lib/calendar/consensus";
 import type { CalendarEvent } from "@/lib/types";
 
 type FigureEvent = Pick<
@@ -51,5 +52,29 @@ describe("eventFigureDisplays (WeekAheadView Next-releases card)", () => {
     const d = eventFigureDisplays(earningsEvent(null, null));
     expect(d.actualDisplay).toBeNull();
     expect(d.consensusDisplay).toBeNull();
+  });
+
+  // Consensus precedence — consensus_value (enrichment-time) wins over
+  // consensus_estimate (sync-time). KRC 2026-07-27 repro: estimate 0.41 vs
+  // value 0.54; the stale estimate turned a +3.7% beat into a fake +36.6%.
+  it("prefers consensus_value over consensus_estimate for display AND the plausibility gate", () => {
+    const d = eventFigureDisplays({
+      event_type: "earnings",
+      consensus_estimate: "EPS 0.41 · Rev 271197756",
+      consensus_value: "EPS 0.54 · Rev 271197756",
+      actual_value: "EPS 0.56 · Rev 272000000",
+    });
+    expect(d.consensusDisplay).toContain("0.54");
+    expect(d.actualDisplay).not.toBeNull();
+  });
+
+  it("falls back to consensus_estimate when consensus_value is absent", () => {
+    expect(
+      effectiveConsensus({ consensus_estimate: "EPS 0.41", consensus_value: null }),
+    ).toBe("EPS 0.41");
+    expect(
+      effectiveConsensus({ consensus_estimate: "EPS 0.41", consensus_value: "EPS 0.54" }),
+    ).toBe("EPS 0.54");
+    expect(effectiveConsensus({ consensus_estimate: null })).toBeNull();
   });
 });
