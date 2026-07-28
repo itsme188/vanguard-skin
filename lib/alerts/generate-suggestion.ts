@@ -112,6 +112,33 @@ export function buildSuggestionPrompt(ctx: SuggestionContext): string {
 }
 
 /**
+ * Normalize a stored position_context JSON string into the shape the prompt
+ * builder needs. Alerts fired on the Mac store {held, onWatchlist,
+ * watchlistGroup}, but cloud-reconciled alerts (reconcileCloudFiredLevels)
+ * store the Worker's scan payload verbatim — a different schema. Pre-fix the
+ * parse replaced the defaults wholesale, ctx.held came out undefined, and
+ * every cloud-fired alert permanently failed suggestion generation with
+ * "Cannot read properties of undefined (reading 'length')".
+ */
+export function normalizePositionContext(
+  raw: string | null
+): Pick<SuggestionContext, "held" | "onWatchlist" | "watchlistGroup"> {
+  const defaults = { held: [], onWatchlist: false, watchlistGroup: null };
+  if (!raw) return defaults;
+  try {
+    const parsed = JSON.parse(raw);
+    return {
+      held: Array.isArray(parsed?.held) ? parsed.held : [],
+      onWatchlist: parsed?.onWatchlist === true,
+      watchlistGroup:
+        typeof parsed?.watchlistGroup === "string" ? parsed.watchlistGroup : null,
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+/**
  * Generate a suggestion for a single alert and persist it.
  * Returns the generated suggestion text, or null on any failure (Claude error, missing data).
  * Non-throwing — callers can run this against many alerts and ignore individual failures.
@@ -139,17 +166,7 @@ export async function generateSuggestionForAlert(
 
   if (!row) return null;
 
-  let positionContext: Pick<
-    SuggestionContext,
-    "held" | "onWatchlist" | "watchlistGroup"
-  > = { held: [], onWatchlist: false, watchlistGroup: null };
-  if (row.position_context) {
-    try {
-      positionContext = JSON.parse(row.position_context);
-    } catch {
-      // malformed — use empty defaults
-    }
-  }
+  const positionContext = normalizePositionContext(row.position_context);
 
   const ctx: SuggestionContext = {
     symbol: row.symbol,

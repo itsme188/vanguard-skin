@@ -9,6 +9,7 @@ import { Shares } from "@/lib/privacy/components";
 // data — they reveal nothing about what the user owns/earns, so they render
 // via pure formatters, never privacy-masked (held quantities still mask).
 import { formatPercent, formatUSDPrecise } from "@/lib/format";
+import { suggestOutcomeMessage } from "@/lib/alerts/suggest-message";
 import { useToast } from "../components/Toast";
 import { SortPicker } from "../components/SortPicker";
 import { SymbolLink } from "../components/SymbolLink";
@@ -348,11 +349,7 @@ function AlertsPageInner() {
       if (json.success && !alertId) {
         const { generated, failed } = json as { generated?: number; failed?: number };
         if (generated !== undefined) {
-          setActionStatus(
-            generated > 0
-              ? `Generated ${generated} suggestion${generated === 1 ? "" : "s"}${failed ? ` (${failed} failed)` : ""}.`
-              : "No pending alerts needed a suggestion."
-          );
+          setActionStatus(suggestOutcomeMessage(generated, failed));
         }
       } else if (!json.success) {
         setActionStatus(
