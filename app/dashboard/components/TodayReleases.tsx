@@ -4,6 +4,7 @@ import Link from "next/link";
 import type { CalendarEvent } from "@/lib/types";
 import { SymbolLink } from "./SymbolLink";
 import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
+import { effectiveConsensus } from "@/lib/calendar/consensus";
 import {
   EnrichmentRowSummary,
   parseReactionSnapshot,
@@ -99,8 +100,8 @@ export function TodayReleases({
                   />
                 ) : (
                   <span className="text-ink-faint">
-                    {event.consensus_estimate
-                      ? `Est: ${formatFinnhubFigureCompact(event.consensus_estimate)}`
+                    {effectiveConsensus(event)
+                      ? `Est: ${formatFinnhubFigureCompact(effectiveConsensus(event))}`
                       : "Pending release"}
                   </span>
                 )}

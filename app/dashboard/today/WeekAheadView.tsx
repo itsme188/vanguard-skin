@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { CalendarEvent } from "@/lib/types";
 import { addDays, formatWeekRange, todayET } from "@/lib/calendar/date-utils";
 import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
+import { effectiveConsensus } from "@/lib/calendar/consensus";
 import { actualsAreImplausible } from "./EarningsHub";
 
 interface WeekAheadViewProps {
@@ -146,17 +147,19 @@ function DayCard({ day }: DayCardProps) {
 // line (gated on !actualDisplay) survives, matching the EarningsHub row
 // on the same screen instead of contradicting it.
 export function eventFigureDisplays(
-  event: Pick<CalendarEvent, "event_type" | "consensus_estimate" | "actual_value">,
+  event: Pick<CalendarEvent, "event_type" | "consensus_estimate" | "actual_value"> &
+    Partial<Pick<CalendarEvent, "consensus_value">>,
 ): { consensusDisplay: string | null; actualDisplay: string | null } {
   const isEarnings = event.event_type === "earnings";
-  const consensusDisplay = event.consensus_estimate
+  const consensus = effectiveConsensus(event);
+  const consensusDisplay = consensus
     ? isEarnings
-      ? formatFinnhubFigureCompact(event.consensus_estimate)
-      : event.consensus_estimate
+      ? formatFinnhubFigureCompact(consensus)
+      : consensus
     : null;
   const implausible =
     isEarnings &&
-    actualsAreImplausible(event.consensus_estimate, event.actual_value);
+    actualsAreImplausible(consensus, event.actual_value);
   const actualDisplay =
     event.actual_value && !implausible
       ? isEarnings
