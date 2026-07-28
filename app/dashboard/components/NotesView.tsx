@@ -285,7 +285,11 @@ export function NotesView({
             <select
               value={formSymbol}
               onChange={(e) => setFormSymbol(e.target.value)}
-              className="bg-raised border border-edge rounded-lg px-3 py-1.5 text-sm text-ink focus:outline-none focus:border-gold"
+              // min-w-0 + max-w-full: a <select> sizes to its longest <option>,
+              // and securities.symbol holds 80+-char prediction-market names —
+              // unconstrained it blew the Notes page to 613px at a 390px
+              // viewport (deep-QA 2026-07-28).
+              className="min-w-0 max-w-full truncate bg-raised border border-edge rounded-lg px-3 py-1.5 text-sm text-ink focus:outline-none focus:border-gold"
             >
               <option value="">Select security...</option>
               {securities.map((s) => (
