@@ -150,7 +150,19 @@ export function getAccountCoverage(db: Database.Database): AccountCoverage[] {
           )
           ELSE 100.0
         END AS coveragePct,
-        COUNT(DISTINCT CASE WHEN h.cost_basis IS NOT NULL THEN h.security_id END) AS holdingsWithCostBasis,
+        -- Cost basis COALESCEs back to the latest non-null row: the Plaid
+        -- daily sync writes cost_basis NULL on every row, so the newest
+        -- as_of_date is always all-NULL and counting only that date reads a
+        -- permanent 0/N while the Accounts tab (getAllHoldings /
+        -- getCrossAccountPositions, same documented pattern) shows real basis.
+        COUNT(DISTINCT CASE WHEN COALESCE(
+          h.cost_basis,
+          (SELECT h3.cost_basis FROM holdings h3
+            WHERE h3.account_id = h.account_id
+              AND h3.security_id = h.security_id
+              AND h3.cost_basis IS NOT NULL
+            ORDER BY h3.as_of_date DESC LIMIT 1)
+        ) IS NOT NULL THEN h.security_id END) AS holdingsWithCostBasis,
         ms.latest_snapshot AS latestSnapshotDate,
         MAX(h.as_of_date) AS latestHoldingsDate
       FROM accounts a

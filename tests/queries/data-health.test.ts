@@ -225,6 +225,26 @@ describe("getAccountCoverage", () => {
     const ibkr = result.find((r) => r.accountName === "IBKR");
     expect(ibkr!.holdingsWithCostBasis).toBe(1);
   });
+
+  it("falls back to the latest non-null cost basis when the newest row is a NULL daily-sync row", () => {
+    // The Plaid daily sync writes cost_basis NULL on every row, so the newest
+    // as_of_date is always all-NULL and a newest-date-only count reads 0/N —
+    // contradicting the Accounts tab, which COALESCEs back to the statement
+    // row (documented getCrossAccountPositions / getAllHoldings pattern).
+    const acct = seedAccount("Vanguard Taxable");
+    const vti = seedSecurity("VTI");
+    const csx = seedSecurity("CSX");
+
+    seedHolding(acct, vti, 100, daysAgo(28), 37301.64); // statement row with basis
+    seedHolding(acct, vti, 100, today, null); // newer Plaid row, NULL basis
+    seedHolding(acct, csx, 50, daysAgo(28), null); // never had basis anywhere
+    seedHolding(acct, csx, 50, today, null);
+
+    const result = getAccountCoverage(db);
+    const vt = result.find((r) => r.accountName === "Vanguard Taxable");
+    expect(vt!.totalHoldings).toBe(2);
+    expect(vt!.holdingsWithCostBasis).toBe(1); // VTI via fallback; CSX genuinely uncovered
+  });
 });
 
 // ── getDataGaps ───────────────────────────────────────────────────
