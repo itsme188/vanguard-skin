@@ -74,16 +74,21 @@ export interface AnalysisDataCoverage {
 }
 
 // ─── Latest holdings CTE (reused across queries) ────────────────
-// Intentionally keyBy="account" + includeShorts=false: these allocation
-// queries fold per-security rows under outer SUM(), so stale snapshots from
-// older Vanguard statements wash out against fresher IBKR rows. See
-// CLAUDE.md "Per-(account, security) latest-holdings CTE pattern".
+// Per-(account, security) incl. shorts — the SAME universe the exposure /
+// Greeks surfaces use (user decision 2026-07-28, overruling the earlier
+// keyBy:"account" staleness-washing choice). keyBy:"account" dropped any
+// security whose newest row predates the account's newest row (live: 4 open
+// option positions vanished from allocation while listed two cards below)
+// and includeShorts:false dropped real short exposure, producing a false
+// "N of N (100%)" coverage badge. Closed positions are excluded by the
+// reconcilers' quantity-0 tombstone rows (quantity != 0 in the predicate),
+// so per-(account, security) no longer needs the account-date wash.
 
 const LATEST_HOLDINGS_CTE = `
   latest_holdings AS (
     SELECT h.*
     FROM holdings h
-    WHERE ${latestHoldingsPredicate({ keyBy: "account", includeShorts: false })}
+    WHERE ${latestHoldingsPredicate({ keyBy: "account_security", includeShorts: true })}
   ),
   latest_prices AS (
     SELECT p.security_id, p.close_price

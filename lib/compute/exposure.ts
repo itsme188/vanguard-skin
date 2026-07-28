@@ -91,7 +91,9 @@ export interface PortfolioExposureSummary {
 
 /**
  * Portfolio-level exposure headline. Same holdings universe as the
- * allocation queries (per-account latest snapshot, maturity-filtered).
+ * allocation queries: per-(account, security) latest rows INCLUDING shorts
+ * (user decision 2026-07-28 — the prior per-account/no-shorts universe made
+ * net == gross == 100% on a book holding shorts, an impossible headline).
  */
 export function getPortfolioExposureSummary(
   db: Database.Database,
@@ -110,7 +112,7 @@ export function getPortfolioExposureSummary(
     .prepare(
       `WITH latest_holdings AS (
         SELECT h.* FROM holdings h
-        WHERE ${latestHoldingsPredicate({ keyBy: "account", includeShorts: false })}
+        WHERE ${latestHoldingsPredicate({ keyBy: "account_security", includeShorts: true })}
       ),
       latest_prices AS (
         SELECT p.security_id, p.close_price
