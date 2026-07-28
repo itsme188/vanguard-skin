@@ -451,7 +451,36 @@ export function computePositionRisk(
     return { positions: [], correlations: [], portfolioVol: null };
   }
 
-  const totalValue = positions.reduce((s, p) => s + p.market_value, 0);
+  // Weight denominator = the WHOLE portfolio's value under the same
+  // predicate, NOT the top-N subset — subset-normalized weights sum to
+  // 100% and presented a 4% position as 16% (the card contradicted its
+  // own drawer). The internal portfolio-return proxy divides by
+  // coverageWeight, so it is invariant to this denominator change.
+  const totalRow = db
+    .prepare(
+      `WITH latest_holdings AS (
+         SELECT h.security_id, SUM(h.quantity) AS total_qty
+         FROM holdings h
+         WHERE ${predicate}
+         GROUP BY h.security_id
+       ),
+       latest_prices AS (
+         SELECT security_id, close_price
+         FROM prices
+         WHERE (security_id, date) IN (
+           SELECT security_id, MAX(date) FROM prices GROUP BY security_id
+         )
+       )
+       SELECT SUM(${adjustedMarketValueSQL("lh.total_qty", "COALESCE(lp.close_price, 0)", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}) AS total
+       FROM latest_holdings lh
+       JOIN securities s ON s.id = lh.security_id
+       LEFT JOIN latest_prices lp ON lp.security_id = lh.security_id
+       LEFT JOIN fx_rates fx ON fx.currency = s.currency
+       WHERE COALESCE(lp.close_price, 0) > 0`
+    )
+    .get(...accountParams) as { total: number | null };
+  const subsetValue = positions.reduce((s, p) => s + p.market_value, 0);
+  const totalValue = totalRow?.total && totalRow.total > 0 ? totalRow.total : subsetValue;
   const securityIds = positions.map((p) => p.security_id);
 
   // 2. Fetch daily prices for all top positions (last 1 year)
