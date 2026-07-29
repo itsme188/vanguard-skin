@@ -219,3 +219,26 @@ describe("composeTodaysReportersBlock", () => {
     warn.mockRestore();
   });
 });
+
+describe("consensus precedence (effectiveConsensus parity)", () => {
+  // 7/28 overnight-land review follow-up: the block read bare
+  // consensus_estimate, so an enrichment-corrected consensus_value (the same
+  // precedence renderHeadlineTable and the Today tab already apply) never
+  // reached the morning email — a superseded street number shipped instead.
+  it("prefers consensus_value over consensus_estimate in the rendered block", () => {
+    const eventId = seedEvent({ symbol: "KRC", consensus: "EPS 0.41" });
+    db.prepare(
+      `UPDATE calendar_events SET consensus_value = 'EPS 0.54' WHERE id = ?`,
+    ).run(eventId);
+
+    const block = composeTodaysReportersBlock(db, { today: TODAY });
+    expect(block).toContain("$0.54");
+    expect(block).not.toContain("$0.41");
+  });
+
+  it("falls back to consensus_estimate when consensus_value is absent", () => {
+    seedEvent({ symbol: "KRC", consensus: "EPS 0.41" });
+    const block = composeTodaysReportersBlock(db, { today: TODAY });
+    expect(block).toContain("$0.41");
+  });
+});

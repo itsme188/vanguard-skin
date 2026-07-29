@@ -7,6 +7,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
 import { Money, Pct, Shares, PrivateText } from "@/lib/privacy/components";
 import { isNarrativeStale } from "@/lib/trade-review/stale-narrative";
+import { formatProfitFactor } from "@/lib/format";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -1166,13 +1167,6 @@ function PatternSection({
 function formatMonthLabel(periodStart: string): string {
   const d = new Date(periodStart + "T00:00:00");
   return d.toLocaleDateString("en-US", { month: "long", year: "numeric" });
-}
-
-// computeTradeRoundtrips clamps profit factor at 99.9 when a period has no
-// gross losses — that's a sentinel for "no losing trades", not a measured
-// ratio, so render it as ∞ instead of "99.9x".
-function formatProfitFactor(profitFactor: number): string {
-  return profitFactor >= 99.9 ? "∞" : `${profitFactor.toFixed(1)}x`;
 }
 
 function formatMonthLabelShort(periodStart: string): string {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatCompactOptionSymbol,
   formatLargeNumber,
+  formatProfitFactor,
   formatLargeUSD,
   formatPercent,
   formatUSD,
@@ -195,5 +196,21 @@ describe("formatCompactOptionSymbol", () => {
   it("passes non-OCC symbols through unchanged", () => {
     expect(formatCompactOptionSymbol("AAPL")).toBe("AAPL");
     expect(formatCompactOptionSymbol("BRK/B")).toBe("BRK/B");
+  });
+});
+
+describe("formatProfitFactor", () => {
+  // 7/28 review follow-up: previously an untested private helper inside
+  // TradeReviewView — moved to lib/format.ts (number-rendering single source).
+  it("renders a measured ratio with one decimal and an x suffix", () => {
+    expect(formatProfitFactor(2.34)).toBe("2.3x");
+    expect(formatProfitFactor(0.8)).toBe("0.8x");
+  });
+
+  it("renders the 99.9 no-losing-trades sentinel as infinity", () => {
+    // computeTradeRoundtrips clamps at 99.9 when a period has no gross
+    // losses — a sentinel, not a measured ratio.
+    expect(formatProfitFactor(99.9)).toBe("∞");
+    expect(formatProfitFactor(120)).toBe("∞");
   });
 });

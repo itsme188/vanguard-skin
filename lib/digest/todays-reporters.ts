@@ -21,6 +21,7 @@ import { getEarningsForWeekDeduped } from "@/lib/queries/calendar";
 import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
 import { getReadThroughReporterSymbols } from "@/lib/queries/read-through-pairs";
 import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
+import { effectiveConsensus } from "@/lib/calendar/consensus";
 import {
   renderTodaysReportersBlock,
   type ReporterRowView,
@@ -76,7 +77,10 @@ export function composeTodaysReportersBlock(
       const sym = e.symbol!.toUpperCase();
       const st = status[sym];
       const chip = st === "held" ? "held" : st === "watchlist" ? "wl" : rtSet.has(sym) ? "rt" : "";
-      const consCompact = formatFinnhubFigureCompact(e.consensus_estimate);
+      // consensus_value (enrichment-corrected) wins over the sync-time
+      // consensus_estimate — same precedence as renderHeadlineTable + the
+      // Today tab (7/28 review follow-up: email-surface parity).
+      const consCompact = formatFinnhubFigureCompact(effectiveConsensus(e));
       const impl = intelById.has(e.id) ? `±${intelById.get(e.id)!.toFixed(1)}%` : null;
       return {
         slot: slotFor(e),

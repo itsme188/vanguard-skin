@@ -104,6 +104,15 @@ export function formatLargeNumber(value: number): string {
   return `${sign}${body}`;
 }
 
+// Trade-review profit factor (gross wins ÷ gross losses).
+// computeTradeRoundtrips clamps at 99.9 when a period has no gross losses —
+// that's a sentinel for "no losing trades", not a measured ratio, so it
+// renders as ∞ instead of "99.9x". Moved here from TradeReviewView 2026-07-28
+// (number-rendering single source).
+export function formatProfitFactor(profitFactor: number): string {
+  return profitFactor >= 99.9 ? "∞" : `${profitFactor.toFixed(1)}x`;
+}
+
 // Compact display form for OCC option symbols in narrow UI columns:
 // "KRE   270115C00070000" → "KRE $70C 1/15/27". Non-OCC symbols pass
 // through unchanged. Raw OCC stays the canonical stored form everywhere —
