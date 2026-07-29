@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { CalendarEvent } from "@/lib/types";
-import { addDays, formatWeekRange, todayET } from "@/lib/calendar/date-utils";
+import { addDays, formatWeekRange, todayET, getCurrentMonday } from "@/lib/calendar/date-utils";
 import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
 import { effectiveConsensus } from "@/lib/calendar/consensus";
 import { actualsAreImplausible } from "./EarningsHub";
@@ -36,6 +36,13 @@ function fmtTime(t: string | null): string | null {
 
 export function WeekAheadView({ events, weekOf }: WeekAheadViewProps) {
   const todayIso = todayET();
+  const currentMonday = getCurrentMonday();
+  const isCurrentWeek = weekOf === currentMonday;
+  const microLabel = isCurrentWeek
+    ? "Week ahead"
+    : weekOf < currentMonday
+      ? "Past week"
+      : "Upcoming week";
   const days = WEEKDAYS.map((label, idx) => {
     const date = addDays(weekOf, idx);
     return {
@@ -54,20 +61,43 @@ export function WeekAheadView({ events, weekOf }: WeekAheadViewProps) {
 
   const totalEvents = days.reduce((sum, d) => sum + d.events.length, 0);
 
+  // Prev/next chevrons — plain links (server component), each week is a URL
+  // so past enriched weeks are shareable/bookmarkable. Touch targets get the
+  // pointer-coarse hit extension with the narrow horizontal inset (adjacent
+  // controls sit within ~12px).
+  const weekHref = (monday: string) =>
+    `/dashboard/today?view=week-ahead&weekOf=${monday}`;
+  const chevronClass =
+    "relative text-[11px] text-ink-faint hover:text-gold border border-edge rounded-full px-2.5 py-1 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5";
+
   return (
     <div className="space-y-8">
       <header className="flex items-baseline justify-between flex-wrap gap-2">
         <div>
-          <p className="text-[11px] uppercase tracking-widest text-ink-faint mb-1">Week ahead</p>
+          <p className="text-[11px] uppercase tracking-widest text-ink-faint mb-1">{microLabel}</p>
           <h1 className="text-2xl text-gold tracking-tight font-medium">{formatWeekRange(weekOf)}</h1>
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[11px] text-ink-faint font-mono">
             {totalEvents} {totalEvents === 1 ? "event" : "events"}
           </span>
+          <Link href={weekHref(addDays(weekOf, -7))} className={chevronClass} title="Previous week">
+            ‹
+          </Link>
+          {!isCurrentWeek && (
+            <Link
+              href={weekHref(currentMonday)}
+              className="relative text-[11px] uppercase tracking-widest text-ink-faint hover:text-gold border border-edge rounded-full px-3 py-1 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
+            >
+              This week
+            </Link>
+          )}
+          <Link href={weekHref(addDays(weekOf, 7))} className={chevronClass} title="Next week">
+            ›
+          </Link>
           <Link
             href="/dashboard/today"
-            className="text-[11px] uppercase tracking-widest text-ink-faint hover:text-gold border border-edge rounded-full px-3 py-1"
+            className="relative text-[11px] uppercase tracking-widest text-ink-faint hover:text-gold border border-edge rounded-full px-3 py-1 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
           >
             ← Today
           </Link>
@@ -77,8 +107,9 @@ export function WeekAheadView({ events, weekOf }: WeekAheadViewProps) {
       {totalEvents === 0 ? (
         <section className="rounded-xl bg-panel p-4 sm:p-5 card-elev">
           <p className="text-[14px] text-ink-faint">
-            No events scheduled this week. Calendar sync may not have run yet — check Charts ›
-            Calendar (or trigger via the Sunday briefing).
+            {isCurrentWeek
+              ? "No events scheduled this week. Calendar sync may not have run yet — check Charts › Calendar (or trigger via the Sunday briefing)."
+              : `No events recorded for the week of ${weekOf}. Calendar sync covers roughly four weeks ahead and history since spring 2026.`}
           </p>
         </section>
       ) : (

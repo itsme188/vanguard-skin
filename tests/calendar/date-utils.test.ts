@@ -8,6 +8,7 @@ import {
   mondayOf,
   weekAgo,
   todayET,
+  resolveWeekOfParam,
 } from "@/lib/calendar/date-utils";
 
 // ── getCurrentMonday ─────────────────────────────────────────────
@@ -202,5 +203,30 @@ describe("weekAgo", () => {
 
   it("crosses month boundary correctly", () => {
     expect(weekAgo("2026-05-03")).toBe("2026-04-26");
+  });
+});
+
+describe("resolveWeekOfParam", () => {
+  // qa: today-week-ahead--no-week-navigation-weekof-ignored — the week-ahead
+  // surface must honor ?weekOf= so past enriched weeks (and future conflict
+  // weeks) are browsable. Forgiving: any valid date snaps to its Monday;
+  // garbage falls back to the current week rather than erroring.
+  it("returns the current Monday when the param is absent", () => {
+    expect(resolveWeekOfParam(undefined)).toBe(getCurrentMonday());
+  });
+
+  it("passes a valid Monday through", () => {
+    expect(resolveWeekOfParam("2026-07-20")).toBe("2026-07-20");
+  });
+
+  it("snaps a mid-week date to its Monday", () => {
+    expect(resolveWeekOfParam("2026-07-23")).toBe("2026-07-20"); // Thursday
+    expect(resolveWeekOfParam("2026-07-26")).toBe("2026-07-20"); // Sunday
+  });
+
+  it("falls back to the current Monday on garbage", () => {
+    expect(resolveWeekOfParam("not-a-date")).toBe(getCurrentMonday());
+    expect(resolveWeekOfParam("2026-13-99")).toBe(getCurrentMonday());
+    expect(resolveWeekOfParam("")).toBe(getCurrentMonday());
   });
 });
