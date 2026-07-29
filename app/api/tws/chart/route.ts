@@ -70,6 +70,20 @@ export async function POST(request: NextRequest) {
   // Fetch transactions for markers (lightweight, always from DB)
   const transactions = getTransactionsForSecurity(securityId);
 
+  // True latest close from the prices table, in the security's NATIVE
+  // currency (same currency the bars plot in — chart stays native per the
+  // FX convention). The candle series' built-in price line tracks the last
+  // cached BAR close, which can sit months stale while the header shows the
+  // fresh prices-table close on the same screen; the client overrides the
+  // amber "last price" line with this row when it is fresher than the bars.
+  const latestPrice =
+    (db
+      .prepare(
+        `SELECT close_price AS price, date FROM prices
+         WHERE security_id = ? ORDER BY date DESC LIMIT 1`,
+      )
+      .get(securityId) as { price: number; date: string } | undefined) ?? null;
+
   // --- Intraday path: always live from TWS, no caching ---
   if (INTRADAY_BAR_SIZES.includes(barSize as typeof INTRADAY_BAR_SIZES[number])) {
     if (!sec.ib_con_id) {
@@ -178,6 +192,7 @@ export async function POST(request: NextRequest) {
       stale: false,
       lastBarDate: latestDate,
       transactions,
+      latestPrice,
     });
   }
 
@@ -194,6 +209,7 @@ export async function POST(request: NextRequest) {
       lastBarDate: latestDate,
       warning: "No IB contract ID. Run Enrich Securities first.",
       transactions,
+      latestPrice,
     });
   }
 
@@ -214,6 +230,7 @@ export async function POST(request: NextRequest) {
           ? "TWS not connected. Showing cached data."
           : `TWS not connected — no cached data for ${sec.symbol}.`,
       transactions,
+      latestPrice,
     });
   }
 
@@ -238,6 +255,7 @@ export async function POST(request: NextRequest) {
           : null,
       barsInserted: result.barsInserted,
       transactions,
+      latestPrice,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
@@ -254,6 +272,7 @@ export async function POST(request: NextRequest) {
         lastBarDate: latestDate,
         warning: `TWS error: ${message}. Showing cached data.`,
         transactions,
+        latestPrice,
       });
     }
 

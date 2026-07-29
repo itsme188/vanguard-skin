@@ -31,6 +31,9 @@ interface ChartResponse {
   warning?: string;
   barsInserted?: number;
   transactions?: TransactionMarker[];
+  /** True latest close from the prices table (native currency), which can be
+   *  fresher than the last cached bar. Absent on intraday responses. */
+  latestPrice?: { price: number; date: string } | null;
 }
 
 const DURATIONS = [
@@ -152,6 +155,12 @@ export function SecurityChart({
     price: number;
   } | null>(null);
   const [latestClose, setLatestClose] = useState<number | null>(null);
+  // True latest close from the prices table (native currency) — can postdate
+  // the last cached bar by months when TWS hasn't refreshed bars.
+  const [latestPriceRow, setLatestPriceRow] = useState<{ price: number; date: string } | null>(null);
+  // Handle for the amber override line (see the true-last-price effect below).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const lastPriceLineRef = useRef<any>(null);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const suggestedLinesRef = useRef<any[]>([]);
@@ -197,9 +206,16 @@ export function SecurityChart({
         setLastDate(data.lastBarDate);
         currentBarsRef.current = data.bars;
         currentTransactionsRef.current = data.transactions ?? [];
-        if (data.bars.length > 0) {
-          setLatestClose(data.bars[data.bars.length - 1].close);
-        }
+        setLatestPriceRow(data.latestPrice ?? null);
+        // "Last price" prefers the prices-table close when it postdates the
+        // last cached bar — bars can be months stale while the page header
+        // shows the fresh close, and the two must agree on the same screen.
+        const lastBar = data.bars.length > 0 ? data.bars[data.bars.length - 1] : null;
+        const trueLast =
+          data.latestPrice && (!lastBar || data.latestPrice.date > lastBar.date)
+            ? data.latestPrice.price
+            : lastBar?.close ?? null;
+        if (trueLast != null) setLatestClose(trueLast);
         return data;
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Failed to load chart";
@@ -386,6 +402,46 @@ export function SecurityChart({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [securityId]);
+
+  // True-last-price override: the candle series' built-in price line tracks
+  // the last BAR close, which asserts a months-stale number as "last price"
+  // whenever the cached bars lag the prices table (the header on the same
+  // screen shows the fresh close). When the prices-table row postdates the
+  // last daily bar, hide the built-in line and draw the amber line at the
+  // true latest price instead. Intraday bars are live-fetched, so the
+  // built-in line is already current there.
+  useEffect(() => {
+    const series = candleSeriesRef.current;
+    if (!series) return;
+    if (lastPriceLineRef.current) {
+      try {
+        series.removePriceLine(lastPriceLineRef.current);
+      } catch {
+        /* series already disposed */
+      }
+      lastPriceLineRef.current = null;
+    }
+    const override =
+      !isIntraday &&
+      barCount > 0 &&
+      latestPriceRow != null &&
+      lastDate != null &&
+      latestPriceRow.date > lastDate;
+    // lastValueVisible is the SEPARATE built-in last-value axis pill — it
+    // inherits the amber priceLineColor and would keep asserting the stale
+    // bar close on the axis even with the line hidden.
+    series.applyOptions({ priceLineVisible: !override, lastValueVisible: !override });
+    if (override) {
+      lastPriceLineRef.current = series.createPriceLine({
+        price: latestPriceRow.price,
+        color: C.currentPrice,
+        lineWidth: 2,
+        lineStyle: 0, // solid — same treatment as the built-in line
+        axisLabelVisible: true,
+        title: "",
+      });
+    }
+  }, [latestPriceRow, lastDate, barCount, isIntraday]);
 
   // Reapply indicators when toggles change
   useEffect(() => {
