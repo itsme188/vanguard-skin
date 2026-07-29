@@ -14,6 +14,8 @@ import { RecentAlertsPanel } from "../../components/RecentAlertsPanel";
 import { TransactionsSection } from "../../components/TransactionsSection";
 import { ResearchMentionsSection } from "../../components/ResearchMentionsSection";
 import { Section } from "../../components/Section";
+import { SecurityEarningsEmails } from "../../components/SecurityEarningsEmails";
+import { getSentEarningsEmails } from "@/lib/queries/earnings-emails";
 import { Chip, type ChipTone } from "../../components/Chip";
 import { TranscriptsRefreshButton } from "./TranscriptsRefreshButton";
 import { FactorProfileSection } from "./FactorProfileSection";
@@ -718,6 +720,19 @@ export default async function SecurityDetailPage(props: {
           </div>
         </Section>
       )}
+
+      {/* Sent earnings emails — family-aware archive rows, rendered only
+          when at least one preview/recap was sent for this issuer family. */}
+      {(() => {
+        if (!security.symbol) return null;
+        const sentEmails = getSentEarningsEmails(db, { symbol: security.symbol });
+        if (sentEmails.length === 0) return null;
+        return (
+          <Section title={`Earnings Emails · ${sentEmails.length}`} dense>
+            <SecurityEarningsEmails emails={sentEmails} />
+          </Section>
+        );
+      })()}
 
       {/* Related Options (for stock securities that have option positions) */}
       {security.security_type?.toLowerCase() !== "option" && (() => {

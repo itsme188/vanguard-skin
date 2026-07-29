@@ -10,7 +10,11 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
-import { getEmailAudit, getSentPhasesForEvents } from "@/lib/queries/earnings-emails";
+import {
+  getEmailAudit,
+  getSentPhasesForEvents,
+  getSentEarningsEmails,
+} from "@/lib/queries/earnings-emails";
 
 let db: Database.Database;
 
@@ -91,5 +95,70 @@ describe("getSentPhasesForEvents", () => {
 
     const result = getSentPhasesForEvents(db, [eventId]);
     expect(result[eventId]).toEqual({ preview: false, recap: true });
+  });
+});
+
+describe("getSentEarningsEmails", () => {
+  function seedEventFor(symbol: string, date: string): number {
+    return db
+      .prepare(
+        `INSERT INTO calendar_events
+         (source, event_type, event_date, event_time, title, symbol, source_key, week_of)
+         VALUES ('finnhub', 'earnings', ?, 'AMC', ?, ?, ?, ?)`,
+      )
+      .run(date, `${symbol} earnings`, symbol, `finnhub:${symbol}:${date}`, date)
+      .lastInsertRowid as number;
+  }
+  function seedEmail(
+    eventId: number,
+    phase: string,
+    sentAt: string,
+    error: string | null = null,
+  ): void {
+    db.prepare(
+      `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, ai_output_md, error)
+       VALUES (?, ?, 'user@example.com', ?, CASE WHEN ? IS NULL THEN '# prose' ELSE NULL END, ?)`,
+    ).run(eventId, phase, sentAt, error, error);
+  }
+
+  it("returns sent emails newest-first with symbol, event date, and cloud flag", () => {
+    const glw = seedEventFor("GLW", "2026-07-14");
+    const spy = seedEventFor("SPY", "2026-07-21");
+    seedEmail(glw, "preview", "2026-07-14 12:00:00");
+    seedEmail(glw, "recap", "2026-07-14 20:00:00", "sent-by-cloud");
+    seedEmail(spy, "preview", "2026-07-21 12:00:00");
+
+    const rows = getSentEarningsEmails(db);
+    expect(rows.map((r) => [r.symbol, r.phase, r.sent_by_cloud])).toEqual([
+      ["SPY", "preview", 0],
+      ["GLW", "recap", 1],
+      ["GLW", "preview", 0],
+    ]);
+    expect(rows[0].event_date).toBe("2026-07-21");
+    expect(rows[0].event_id).toBe(spy);
+  });
+
+  it("excludes live 'in_progress' claim rows (tri-state convention)", () => {
+    const glw = seedEventFor("GLW", "2026-07-14");
+    seedEmail(glw, "preview", "2026-07-14 12:00:00", "in_progress");
+    expect(getSentEarningsEmails(db)).toEqual([]);
+  });
+
+  it("symbol filter is family-aware (GOOGL query finds GOOG events)", () => {
+    const goog = seedEventFor("GOOG", "2026-07-22");
+    const spy = seedEventFor("SPY", "2026-07-21");
+    seedEmail(goog, "recap", "2026-07-23 09:00:00");
+    seedEmail(spy, "preview", "2026-07-21 12:00:00");
+
+    const rows = getSentEarningsEmails(db, { symbol: "GOOGL" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].symbol).toBe("GOOG");
+  });
+
+  it("respects limit", () => {
+    const glw = seedEventFor("GLW", "2026-07-14");
+    seedEmail(glw, "preview", "2026-07-14 12:00:00");
+    seedEmail(glw, "recap", "2026-07-14 20:00:00");
+    expect(getSentEarningsEmails(db, { limit: 1 })).toHaveLength(1);
   });
 });

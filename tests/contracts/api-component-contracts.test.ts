@@ -24,6 +24,7 @@ import { buildCockpitPayload } from "@/lib/queries/earnings-cockpit";
 import { decorateCockpitIntel } from "@/lib/queries/earnings-intel";
 import { upsertCallNote } from "@/lib/mutations/earnings-call-notes";
 import { buildPlaidSettingsPayload } from "@/lib/queries/plaid-settings-payload";
+import { getSentEarningsEmails } from "@/lib/queries/earnings-emails";
 
 let db: Database.Database;
 
@@ -263,5 +264,34 @@ describe("PlaidSection contract", () => {
     expect(payload).toHaveProperty("plaidAccounts");
     expect(payload).toHaveProperty("accountMap");
     expect(payload).toHaveProperty("localAccounts");
+  });
+});
+
+// ─── Earnings email archive contract ─────────────────────────────────
+
+describe("EarningsEmailArchive contract", () => {
+  it("getSentEarningsEmails row shape matches what the alerts Emails tab and SecurityEarningsEmails read", () => {
+    const eventId = db
+      .prepare(
+        `INSERT INTO calendar_events
+         (source, event_type, event_date, event_time, title, symbol, source_key, week_of)
+         VALUES ('finnhub', 'earnings', '2026-07-21', 'AMC', 'SPY earnings', 'SPY', 'finnhub:SPY:2026-07-21', '2026-07-20')`
+      )
+      .run().lastInsertRowid as number;
+    db.prepare(
+      `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, ai_output_md, error)
+       VALUES (?, 'preview', 'user@example.com', '2026-07-21 12:00:00', '# prose', NULL)`
+    ).run(eventId);
+
+    const rows = getSentEarningsEmails(db);
+    expect(rows).toHaveLength(1);
+    // Components read: event_id + phase (viewer props), symbol (SymbolLink),
+    // event_date, sent_at (ET display), sent_by_cloud (cloud chip).
+    expect(rows[0]).toHaveProperty("event_id", eventId);
+    expect(rows[0]).toHaveProperty("phase", "preview");
+    expect(rows[0]).toHaveProperty("symbol", "SPY");
+    expect(rows[0]).toHaveProperty("event_date", "2026-07-21");
+    expect(rows[0]).toHaveProperty("sent_at");
+    expect(rows[0]).toHaveProperty("sent_by_cloud", 0);
   });
 });
