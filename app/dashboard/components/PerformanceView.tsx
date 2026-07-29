@@ -19,6 +19,7 @@ import {
   type Interpretation,
 } from "@/lib/analysis/interpret";
 import { PerformanceCurveChart, type PerformanceCurveData } from "./EquityCurveChart";
+import { buildEquityCurveData } from "@/lib/compute/equity-curve";
 import { PeriodAttributionSection } from "./PeriodAttributionSection";
 
 type Period = "ytd" | "1y" | "3y" | "5y" | "all";
@@ -147,25 +148,13 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
     )
     .all(BENCHMARK_SYMBOL, effectiveStart, today) as { date: string; close_price: number }[];
 
-  // Normalize both series to 100 at their respective first data point
-  let equityCurveData: PerformanceCurveData[] = [];
-  if (dailyVals.length >= 2 && benchmarkRows.length >= 2) {
-    const portBase = dailyVals[0].total_value;
-    const benchBase = benchmarkRows[0].close_price;
-    const benchByDate = new Map(benchmarkRows.map((b) => [b.date, b.close_price]));
-
-    equityCurveData = dailyVals
-      .map((v) => {
-        const benchPrice = benchByDate.get(v.valuation_date);
-        if (benchPrice == null || portBase <= 0 || benchBase <= 0) return null;
-        return {
-          date: v.valuation_date,
-          portfolio: (v.total_value / portBase) * 100,
-          benchmark: (benchPrice / benchBase) * 100,
-        };
-      })
-      .filter((d): d is PerformanceCurveData => d !== null);
-  }
+  // Both series indexed to 100 at the first PLOTTED date (pure helper —
+  // basing the benchmark at the selected-period start let SPY carry
+  // pre-window returns and contradict the alpha card on the same page).
+  const equityCurveData: PerformanceCurveData[] = buildEquityCurveData(
+    dailyVals,
+    benchmarkRows,
+  );
 
   // ── Period attribution ──────────────────────────────────────────
   // Pass the FULL scope: resolveScope's id set for a named scope, undefined
