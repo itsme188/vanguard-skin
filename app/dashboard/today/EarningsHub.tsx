@@ -17,6 +17,7 @@
  * Finnhub `"EPS X.XX · Rev N"` blob never reaches the user.
  */
 
+import Link from "next/link";
 import { db } from "@/lib/db";
 import { getEarningsForWeekDeduped } from "@/lib/queries/calendar";
 import { getSymbolStatus, type SymbolStatus } from "@/lib/queries/briefing-symbols";
@@ -188,6 +189,13 @@ export function EarningsHub() {
           <span className="text-ink-faint">{events.length} {events.length === 1 ? "event" : "events"}</span>
           {heldCount > 0 && <span className="text-up">· {heldCount} held</span>}
           {watchCount > 0 && <span className="text-gold-ink">· {watchCount} watchlist</span>}
+          <Link
+            href="/dashboard/alerts?view=emails"
+            className="relative text-ink-faint hover:text-ink pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
+            title="Archive of every sent earnings preview and recap email"
+          >
+            · All sent →
+          </Link>
         </div>
       </div>
 

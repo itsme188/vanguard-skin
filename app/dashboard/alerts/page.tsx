@@ -17,6 +17,8 @@ import { Chip } from "../components/Chip";
 import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
 import { EarningsDateChip } from "../today/EarningsDateChip";
 import type { EarningsDateConflict } from "@/lib/queries/calendar";
+import type { SentEarningsEmail } from "@/lib/queries/earnings-emails";
+import { EarningsEmailViewer } from "../components/EarningsEmailViewer";
 
 // One armed level as returned by GET /api/levels/armed (mirrors ArmedLevel in
 // lib/queries/security-levels.ts). Prices here are PUBLIC market data.
@@ -105,6 +107,7 @@ type StreamFilter =
   | "review"
   | "armed"
   | "conflicts"
+  | "emails"
   | "acted"
   | "ignored"
   | "dismissed"
@@ -115,6 +118,7 @@ const FILTER_OPTIONS: Array<{ label: string; value: StreamFilter }> = [
   { label: "Review", value: "review" },
   { label: "Armed", value: "armed" },
   { label: "Conflicts", value: "conflicts" },
+  { label: "Emails", value: "emails" },
   { label: "Acted", value: "acted" },
   { label: "Ignored", value: "ignored" },
   { label: "Dismissed", value: "dismissed" },
@@ -169,13 +173,17 @@ function AlertsPageInner() {
         ? "armed"
         : viewParam === "conflicts"
           ? "conflicts"
-          : "pending";
+          : viewParam === "emails"
+            ? "emails"
+            : "pending";
 
   const [filter, setFilter] = useState<StreamFilter>(initialFilter);
   const [alerts, setAlerts] = useState<EnrichedAlert[]>([]);
   const [reviewLevels, setReviewLevels] = useState<PendingLevel[]>([]);
   const [armedLevels, setArmedLevels] = useState<ArmedLevelView[]>([]);
   const [conflicts, setConflicts] = useState<EarningsDateConflict[]>([]);
+  const [sentEmails, setSentEmails] = useState<SentEarningsEmail[]>([]);
+  const [emailsLoaded, setEmailsLoaded] = useState(false);
   const [pendingAlertCount, setPendingAlertCount] = useState(0);
   const [loading, setLoading] = useState(false);
   const [detecting, setDetecting] = useState(false);
@@ -244,6 +252,30 @@ function AlertsPageInner() {
       setLoading(false);
     }
   }, [filter]);
+
+  // Archive tab data loads lazily on first activation — sent emails don't
+  // change while the page is open, so no need to refetch on every refresh
+  // like the live pill badges do (spec: 2026-07-28-earnings-email-archive).
+  useEffect(() => {
+    if (filter !== "emails" || emailsLoaded) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/earnings/emails");
+        const json = await res.json();
+        if (cancelled) return;
+        if (json?.success) {
+          setSentEmails((json.emails ?? []) as SentEarningsEmail[]);
+          setEmailsLoaded(true);
+        }
+      } catch {
+        // Leave emailsLoaded false — next tab activation retries.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [filter, emailsLoaded]);
 
   useEffect(() => {
     refresh();
@@ -376,8 +408,8 @@ function AlertsPageInner() {
 
   // Build the stream of items for the current filter.
   const streamItems = useMemo<StreamItem[]>(() => {
-    // Armed + Conflicts are their own views, not alert/review streams.
-    if (filter === "armed" || filter === "conflicts") return [];
+    // Armed + Conflicts + Emails are their own views, not alert/review streams.
+    if (filter === "armed" || filter === "conflicts" || filter === "emails") return [];
     if (filter === "review") {
       return reviewLevels.map((l) => ({ kind: "review", recencyAt: l.created_at, level: l }));
     }
@@ -424,6 +456,7 @@ function AlertsPageInner() {
   const isReview = filter === "review";
   const isArmed = filter === "armed";
   const isConflicts = filter === "conflicts";
+  const isEmails = filter === "emails";
   const totalPending = pendingAlertCount + reviewCount;
 
   return (
@@ -481,7 +514,9 @@ function AlertsPageInner() {
                       ? armedCount
                       : opt.value === "conflicts"
                         ? conflictCount
-                        : 0;
+                        : opt.value === "emails" && emailsLoaded
+                          ? sentEmails.length
+                          : 0;
               return (
                 <button
                   key={opt.value}
@@ -514,11 +549,19 @@ function AlertsPageInner() {
         </div>
       )}
 
-      {!isArmed && !isConflicts && sortedItems.length > 1 && (
+      {!isArmed && !isConflicts && !isEmails && sortedItems.length > 1 && (
         <SortPicker options={SORT_OPTIONS} sort={sort} onSort={setSort} />
       )}
 
-      {isConflicts ? (
+      {isEmails ? (
+        !emailsLoaded ? (
+          <p className="text-[11px] text-ink-faint italic py-6 text-center">Loading...</p>
+        ) : sentEmails.length === 0 ? (
+          <EmptyState filter={filter} />
+        ) : (
+          <SentEmailsList emails={sentEmails} />
+        )
+      ) : isConflicts ? (
         loading && conflicts.length === 0 ? (
           <p className="text-[11px] text-ink-faint italic py-6 text-center">Loading...</p>
         ) : conflicts.length === 0 ? (
@@ -589,6 +632,17 @@ function EmptyState({ filter }: { filter: StreamFilter }) {
       </div>
     );
   }
+  if (filter === "emails") {
+    return (
+      <div className="rounded-xl border border-edge bg-panel p-10 text-center">
+        <p className="text-sm text-ink-dim">No earnings emails sent yet.</p>
+        <p className="text-[11px] text-ink-faint mt-2">
+          Preview and recap emails sent for held or watchlisted reporters archive here —
+          click any row to re-read the full email.
+        </p>
+      </div>
+    );
+  }
   if (filter === "conflicts") {
     return (
       <div className="rounded-xl border border-edge bg-panel p-10 text-center">
@@ -611,6 +665,85 @@ function EmptyState({ filter }: { filter: StreamFilter }) {
         </Link>
         .
       </p>
+    </div>
+  );
+}
+
+// ─── Sent earnings emails archive view ──────────────────────────────
+// Every completed preview/recap send, newest-first, re-readable via the
+// existing viewer. Spec: docs/superpowers/specs/2026-07-28-earnings-email-
+// archive-design.md (qa: earnings-emails--unreachable-after-week-rollover).
+
+function fmtSentAt(sentAt: string): string {
+  // sent_at is SQLite datetime('now') — UTC with a space separator.
+  const d = new Date(sentAt.replace(" ", "T") + (sentAt.includes("Z") ? "" : "Z"));
+  if (isNaN(d.getTime())) return sentAt;
+  return d.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: "America/New_York",
+  });
+}
+
+function SentEmailsList({ emails }: { emails: SentEarningsEmail[] }) {
+  const [symbolFilter, setSymbolFilter] = useState("");
+  const [viewing, setViewing] = useState<SentEarningsEmail | null>(null);
+
+  const filtered = symbolFilter.trim()
+    ? emails.filter((e) =>
+        e.symbol.toUpperCase().includes(symbolFilter.trim().toUpperCase())
+      )
+    : emails;
+
+  return (
+    <div className="space-y-3">
+      <input
+        type="text"
+        value={symbolFilter}
+        onChange={(e) => setSymbolFilter(e.target.value)}
+        placeholder="Filter by symbol…"
+        className="w-full max-w-xs rounded-lg border border-edge bg-panel px-3 py-1.5 text-sm text-ink placeholder:text-ink-faint focus:outline-none focus:border-gold/50"
+      />
+      {filtered.length === 0 ? (
+        <p className="text-[11px] text-ink-faint italic py-6 text-center">
+          No sent emails match &ldquo;{symbolFilter.trim()}&rdquo;.
+        </p>
+      ) : (
+        <div className="rounded-xl border border-edge bg-panel divide-y divide-edge">
+          {filtered.map((e) => (
+            <button
+              key={`${e.event_id}-${e.phase}`}
+              onClick={() => setViewing(e)}
+              className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-raised transition-colors"
+              title={`Open the ${e.phase} email for ${e.symbol}`}
+            >
+              <span className="font-mono text-sm text-ink w-16 shrink-0">{e.symbol}</span>
+              <Chip tone={e.phase === "preview" ? "gold" : "info"} size="xs">
+                {e.phase}
+              </Chip>
+              <span className="text-[11px] text-ink-dim">
+                reports {e.event_date}
+              </span>
+              {e.sent_by_cloud === 1 && (
+                <Chip tone="neutral" size="xs">cloud</Chip>
+              )}
+              <span className="ml-auto text-[11px] text-ink-faint font-mono">
+                sent {fmtSentAt(e.sent_at)}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+      {viewing && (
+        <EarningsEmailViewer
+          eventId={viewing.event_id}
+          phase={viewing.phase}
+          open
+          onClose={() => setViewing(null)}
+        />
+      )}
     </div>
   );
 }

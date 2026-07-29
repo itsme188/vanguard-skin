@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import type { EmailSendState } from "@/lib/earnings/cockpit-stages";
+import { issuerSiblings } from "@/lib/securities/issuer-family";
 
 export interface EarningsEmailAudit {
   id: number;
@@ -82,6 +83,54 @@ export function getSentPhasesForEvents(
     out[r.event_id] = existing;
   }
   return out;
+}
+
+export interface SentEarningsEmail {
+  event_id: number;
+  phase: "preview" | "recap";
+  symbol: string;
+  event_date: string;
+  sent_at: string;
+  /** 1 = Worker-delivered ('sent-by-cloud') — viewer has no local prose copy */
+  sent_by_cloud: 0 | 1;
+}
+
+/**
+ * Archive listing of every completed earnings email send, newest-first —
+ * backs the alerts "Emails" tab + the Security Detail per-symbol section
+ * (spec: docs/superpowers/specs/2026-07-28-earnings-email-archive-design.md).
+ * Excludes live 'in_progress' claims (tri-state convention). The optional
+ * symbol filter is family-aware via issuerSiblings so a GOOG page finds
+ * GOOGL events and vice versa.
+ */
+export function getSentEarningsEmails(
+  db: Database.Database,
+  opts: { symbol?: string; limit?: number } = {},
+): SentEarningsEmail[] {
+  const limit = opts.limit ?? 500;
+  const conditions = [`(ee.error IS NULL OR ee.error != 'in_progress')`];
+  const params: (string | number)[] = [];
+
+  if (opts.symbol) {
+    const family = issuerSiblings(opts.symbol).map((s) => s.toUpperCase());
+    conditions.push(
+      `UPPER(ce.symbol) IN (${family.map(() => "?").join(",")})`,
+    );
+    params.push(...family);
+  }
+
+  return db
+    .prepare(
+      `SELECT
+         ee.event_id, ee.phase, ce.symbol, ce.event_date, ee.sent_at,
+         CASE WHEN ee.error = 'sent-by-cloud' THEN 1 ELSE 0 END AS sent_by_cloud
+       FROM earnings_emails ee
+       JOIN calendar_events ce ON ce.id = ee.event_id
+       WHERE ${conditions.join(" AND ")}
+       ORDER BY ee.sent_at DESC
+       LIMIT ?`,
+    )
+    .all(...params, limit) as SentEarningsEmail[];
 }
 
 /**
