@@ -797,3 +797,42 @@ describe("position-risk weight denominator (top-N subset bug)", () => {
     expect(weightSum).toBeLessThan(1); // subset of a larger book can't sum to 100%
   });
 });
+
+describe("computePositionRisk coverage gate under whole-portfolio weights", () => {
+  // Regression: qa:analysis-position-risk--corr-and-risk-contrib-blank-all-vanguard-scopes
+  // Weights are whole-portfolio-denominated, so in a diversified scope the
+  // top-N subset sums to well under 0.5 and the absolute coverage threshold
+  // discarded every date — portfolioVol / corr / riskContribution all null.
+  it("computes portfolioVol when the top-N subset is a minority of portfolio weight", () => {
+    const db = createTestDb();
+    const today = new Date();
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test')");
+    const asOf = today.toISOString().slice(0, 10);
+    for (let s = 1; s <= 6; s++) {
+      db.prepare("INSERT INTO securities (id, symbol, name) VALUES (?, ?, ?)").run(s, `SYM${s}`, `Sym ${s}`);
+      db.prepare(
+        "INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, ?, ?, 100)"
+      ).run(s, asOf);
+    }
+    for (let i = 0; i < 60; i++) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - 59 + i);
+      const date = d.toISOString().slice(0, 10);
+      for (let s = 1; s <= 6; s++) {
+        const price = 100 + Math.sin(i * 0.1 * s) * 5 + i * 0.05;
+        db.prepare(
+          "INSERT OR IGNORE INTO prices (security_id, date, close_price) VALUES (?, ?, ?)"
+        ).run(s, date, price);
+      }
+    }
+
+    const result = computePositionRisk(db, { topN: 2 });
+    expect(result.positions).toHaveLength(2);
+    // Six equal positions: each top-N weight ≈ 1/6 of the WHOLE portfolio.
+    expect(result.positions[0].weight).toBeGreaterThan(0.1);
+    expect(result.positions[0].weight).toBeLessThan(0.25);
+    expect(result.portfolioVol).not.toBeNull();
+    expect(result.positions[0].riskContribution).not.toBeNull();
+    expect(result.positions[0].correlationWithPortfolio).not.toBeNull();
+  });
+});
