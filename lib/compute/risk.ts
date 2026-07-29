@@ -547,6 +547,15 @@ export function computePositionRisk(
   }
 
   // Portfolio return for each date = sum(weight_i * return_i)
+  //
+  // The coverage gate is RELATIVE to the top-N subset's total weight: weights
+  // are whole-portfolio-denominated, so a diversified scope's top-10 can sum
+  // to well under 0.5 and an absolute threshold would discard every date
+  // (all/vanguard scopes computed null portfolioVol while the concentrated
+  // ibkr/roth books passed). The mean already divides by coverageWeight, so
+  // requiring "most of the subset priced that day" keeps the proxy honest
+  // regardless of how concentrated the portfolio is.
+  const subsetWeight = securityIds.reduce((sum, id) => sum + (weights.get(id) ?? 0), 0);
   const portfolioReturns = new Map<string, number>();
   for (const date of sortedDates.slice(1)) {
     let portfolioReturn = 0;
@@ -561,8 +570,8 @@ export function computePositionRisk(
         coverageWeight += w;
       }
     }
-    // Only include dates where we have reasonable coverage
-    if (coverageWeight > 0.5) {
+    // Only include dates where most of the subset has a return that day
+    if (subsetWeight > 0 && coverageWeight > 0.5 * subsetWeight) {
       portfolioReturns.set(date, portfolioReturn / coverageWeight);
     }
   }
