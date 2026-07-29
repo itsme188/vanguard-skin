@@ -147,6 +147,20 @@ export function weekAgo(dateStr: string): string {
   return addDays(dateStr, -7);
 }
 
+/**
+ * Resolve a user-supplied ?weekOf= query param to a Monday. Forgiving by
+ * design (it arrives from a URL, not a form): any valid date snaps to its
+ * week's Monday via mondayOf; absent or unparseable input falls back to the
+ * current Monday instead of erroring. Backs the week-ahead navigation
+ * (qa: today-week-ahead--no-week-navigation-weekof-ignored).
+ */
+export function resolveWeekOfParam(param: string | undefined): string {
+  if (!param || !/^\d{4}-\d{2}-\d{2}$/.test(param)) return getCurrentMonday();
+  const d = new Date(param + "T12:00:00");
+  if (isNaN(d.getTime())) return getCurrentMonday();
+  return mondayOf(param);
+}
+
 /** Format a Date as YYYY-MM-DD using local date parts (avoids UTC shift). */
 function formatDate(d: Date): string {
   const y = d.getFullYear();

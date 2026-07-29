@@ -7,7 +7,7 @@ import { getLevelsNearPrice } from "@/lib/queries/briefing-levels";
 import { getAccountByName } from "@/lib/queries/accounts";
 import { getPortfolioTotals } from "@/lib/queries/dashboard";
 import { getEventsByWeek } from "@/lib/queries/calendar";
-import { getCurrentMonday, todayET } from "@/lib/calendar/date-utils";
+import { getCurrentMonday, todayET, resolveWeekOfParam } from "@/lib/calendar/date-utils";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import type { LevelAlert, CalendarEvent } from "@/lib/types";
 import { NearbyLevelsCard } from "../components/NearbyLevelsCard";
@@ -83,15 +83,18 @@ function qualityChip(days: number, source: string | null): { label: string; clas
 }
 
 interface TodayPageProps {
-  searchParams: Promise<{ view?: string }>;
+  searchParams: Promise<{ view?: string; weekOf?: string }>;
 }
 
 export default async function TodayPage({ searchParams }: TodayPageProps) {
-  const { view } = await searchParams;
+  const { view, weekOf: weekOfParam } = await searchParams;
 
   // ── Sub-view dispatch: ?view=week-ahead absorbs the old Calendar tab ──
   if (view === "week-ahead") {
-    const weekOf = getCurrentMonday();
+    // ?weekOf= is honored (any date snaps to its Monday; garbage falls back
+    // to the current week) so past enriched weeks and future conflict weeks
+    // are browsable — the Calendar Living Record's only week-level UI.
+    const weekOf = resolveWeekOfParam(weekOfParam);
     const events = getEventsByWeek(db, weekOf);
     return <WeekAheadView events={events} weekOf={weekOf} />;
   }
