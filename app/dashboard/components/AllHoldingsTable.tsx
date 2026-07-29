@@ -63,6 +63,16 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
     [filtered],
   );
 
+  // Alloc % denominator stays anchored to the UNFILTERED set — the filter
+  // narrows which rows show, not what the portfolio is (pre-fix a 1.22%
+  // position read as 77% of its own two-row subset). The footer's Alloc %
+  // becomes the filtered subset's true share of the whole, not a hardcoded
+  // 100.00%.
+  const unfilteredTotal = useMemo(
+    () => holdings.reduce((sum, h) => sum + (h.current_value ?? 0), 0),
+    [holdings],
+  );
+
   const rows = useMemo(() => {
     const enriched = filtered.map((h) => ({
       ...h,
@@ -71,7 +81,9 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
           ? h.unrealized_gain / h.cost_basis
           : null,
       alloc_pct:
-        h.current_value !== null && totalValue > 0 ? h.current_value / totalValue : null,
+        h.current_value !== null && unfilteredTotal > 0
+          ? h.current_value / unfilteredTotal
+          : null,
     }));
 
     if (!sort.field) return enriched;
@@ -79,7 +91,7 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
     return [...enriched].sort((a, b) =>
       compareValues(a[field as keyof typeof a], b[field as keyof typeof b], sort.dir),
     );
-  }, [filtered, sort, totalValue]);
+  }, [filtered, sort, unfilteredTotal]);
 
   const holdingsWithCost = filtered.filter((h) => h.cost_basis !== null);
   const totalCostBasis = holdingsWithCost.reduce((sum, h) => sum + h.cost_basis!, 0);
@@ -148,6 +160,14 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
             </tr>
           </thead>
           <tbody>
+            {rows.length === 0 && isFiltered && (
+              <tr>
+                <td colSpan={9} className="px-4 py-8 text-center text-xs text-ink-faint">
+                  No positions match &ldquo;{filter.trim()}&rdquo; &mdash; clear the
+                  filter to see all {holdings.length}.
+                </td>
+              </tr>
+            )}
             {rows.map((h) => {
               const qtyDigits = Number.isInteger(h.quantity) ? 0 : 4;
               return (
@@ -219,7 +239,11 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
                 />
               </td>
               <td className="px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
-                100.00%
+                {unfilteredTotal > 0 ? (
+                  <Pct value={(totalValue / unfilteredTotal) * 100} digits={2} />
+                ) : (
+                  "—"
+                )}
               </td>
             </tr>
           </tfoot>
