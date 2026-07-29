@@ -163,10 +163,31 @@ describe("getAllocationByDimension option→underlying classification look-throu
     seedPrice(opt, 4); // $400
 
     const byClass = getAllocationByDimension(db, "asset_class");
-    expect(byClass.find((r) => r.group_name === "option")?.total_market_value).toBeCloseTo(400);
+    expect(byClass.find((r) => r.group_name === "Option")?.total_market_value).toBeCloseTo(400);
 
     const byType = getAllocationByDimension(db, "security_type");
     expect(byType.find((r) => r.group_name === "Option")?.total_market_value).toBeCloseTo(400);
+  });
+
+  it("asset_class buckets on canonical security_type, not raw vendor synonyms", () => {
+    // qa:analysis-asset-class--stock-split-across-three-buckets-no-normalizer —
+    // vendor asset_class values ('equity', 'STK') split one asset class into
+    // three parallel buckets and understated equity exposure by half.
+    const acct = seedAccount("Test");
+    const a = seedSecurity("AAA", { asset_class: "equity" }); // security_type Stock
+    const b = seedSecurity("BBB", { asset_class: "STK" });
+    const c = seedSecurity("CCC", { asset_class: null });
+    const d = seedSecurity("DDD", { security_type: "ETF", asset_class: "equity" });
+    for (const [id, price] of [[a, 100], [b, 100], [c, 100], [d, 50]] as const) {
+      seedHolding(acct, id, 1);
+      seedPrice(id, price);
+    }
+
+    const rows = getAllocationByDimension(db, "asset_class");
+    expect(rows.find((r) => r.group_name === "Stock")?.total_market_value).toBeCloseTo(300);
+    expect(rows.find((r) => r.group_name === "ETF")?.total_market_value).toBeCloseTo(50);
+    expect(rows.find((r) => r.group_name === "equity")).toBeUndefined();
+    expect(rows.find((r) => r.group_name === "STK")).toBeUndefined();
   });
 
   it("leaves non-option securities untouched in the inherited dimensions", () => {
@@ -177,5 +198,28 @@ describe("getAllocationByDimension option→underlying classification look-throu
 
     const rows = getAllocationByDimension(db, "fund_category");
     expect(rows.find((r) => r.group_name === "US Large Cap Equity")?.total_market_value).toBeCloseTo(1000);
+  });
+
+  it("never renders a literal 'null' bucket when the UNDERLYING carries the string 'null'", () => {
+    // qa:analysis-style-dimension--renders-literal-null-bucket — IBIT's style
+    // was stored as the literal string "null" by an AI classify pass; a held
+    // IBIT call inherited it through the look-through COALESCE, leaking a
+    // user-facing bucket labeled `null` alongside 'Unknown'.
+    const acct = seedAccount("Test");
+    seedSecurity("IBIT", { style: "null", market_cap_category: "null" });
+    const opt = seedSecurity("IBIT  270617C00060000", {
+      security_type: "Option",
+      style: null,
+      underlying_symbol: "IBIT",
+      multiplier: 100,
+    });
+    seedHolding(acct, opt, 1);
+    seedPrice(opt, 5.55); // $555
+
+    for (const dim of ["style", "market_cap_category"] as const) {
+      const rows = getAllocationByDimension(db, dim);
+      expect(rows.find((r) => r.group_name === "null")).toBeUndefined();
+      expect(rows.find((r) => r.group_name === "Unknown")?.total_market_value).toBeCloseTo(555);
+    }
   });
 });
