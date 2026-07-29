@@ -313,9 +313,11 @@ function FormatSection({ spec }: { spec: FormatSpec }) {
           <span className="text-xs font-medium text-ink-dim uppercase tracking-wide">
             Example
           </span>
+          {/* Single expression: JSX strips the whitespace-only text node
+              between two adjacent expression containers, which glued the
+              header to the first data row under whitespace-pre. */}
           <pre className="mt-1 text-xs font-mono text-ink-dim bg-raised rounded-md px-3 py-2 overflow-x-auto whitespace-pre">
-{spec.header}
-{spec.example}
+            {`${spec.header}\n${spec.example}`}
           </pre>
         </div>
       </div>
