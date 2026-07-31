@@ -36,6 +36,35 @@ function fmtDelta(pct: number | null | undefined): string {
   return `${sign}${pct.toFixed(2)}%`;
 }
 
+export interface ReactionPair {
+  label: string;
+  pct: number | null;
+}
+
+/**
+ * Which two deltas the collapsed summary line shows. Default is the
+ * Calendar-row treatment (SPY / QQQ). `preferEventSymbol` leads with the
+ * event's own stock when the snapshot captured one (earnings rows), so a
+ * week-view card can read "AMZN +9.09% / SPY +0.11%"; macro snapshots have
+ * no symbol reaction and degrade to SPY / QQQ.
+ */
+export function reactionSummaryPairs(
+  snapshot: ReactionSnapshot | null,
+  opts: { preferEventSymbol?: boolean } = {},
+): ReactionPair[] {
+  if (!snapshot) return [];
+  if (opts.preferEventSymbol && snapshot.symbol) {
+    return [
+      { label: snapshot.symbol.symbol, pct: snapshot.symbol.delta_pct ?? null },
+      { label: "SPY", pct: snapshot.spy?.delta_pct ?? null },
+    ];
+  }
+  return [
+    { label: "SPY", pct: snapshot.spy?.delta_pct ?? null },
+    { label: "QQQ", pct: snapshot.qqq?.delta_pct ?? null },
+  ];
+}
+
 /**
  * Inline summary for the collapsed event row.
  *
@@ -43,13 +72,25 @@ function fmtDelta(pct: number | null | undefined): string {
  */
 export function EnrichmentRowSummary({
   actual,
-  snapshot,
+  snapshot = null,
+  snapshotRaw = null,
+  preferEventSymbol = false,
 }: {
   actual: string | null;
-  snapshot: ReactionSnapshot | null;
+  /** Already-parsed snapshot (client callers). */
+  snapshot?: ReactionSnapshot | null;
+  /**
+   * Raw reaction_snapshot JSON — for SERVER-component callers, which can
+   * render this client component but cannot call parseReactionSnapshot()
+   * themselves. Parsed here, per this module's parse-on-the-client design.
+   */
+  snapshotRaw?: string | null;
+  preferEventSymbol?: boolean;
 }) {
-  if (!actual && !snapshot) return null;
+  const snap = snapshot ?? parseReactionSnapshot(snapshotRaw);
+  if (!actual && !snap) return null;
   const formatted = actual ? formatFinnhubFigureCompact(actual) : null;
+  const pairs = reactionSummaryPairs(snap, { preferEventSymbol });
   return (
     <span className="flex items-center gap-1.5 text-[11px] font-mono">
       {formatted && (
@@ -58,16 +99,17 @@ export function EnrichmentRowSummary({
           <span className="text-gold-ink font-semibold">{formatted}</span>
         </>
       )}
-      {snapshot && (
+      {pairs.length > 0 && (
         <>
           {actual && <span className="text-ink-faint">·</span>}
-          <span className={deltaClass(snapshot.spy?.delta_pct)}>
-            SPY {fmtDelta(snapshot.spy?.delta_pct)}
-          </span>
-          <span className="text-ink-faint">/</span>
-          <span className={deltaClass(snapshot.qqq?.delta_pct)}>
-            QQQ {fmtDelta(snapshot.qqq?.delta_pct)}
-          </span>
+          {pairs.map((p, i) => (
+            <span key={p.label} className="flex items-center gap-1.5">
+              {i > 0 && <span className="text-ink-faint">/</span>}
+              <span className={deltaClass(p.pct)}>
+                {p.label} {fmtDelta(p.pct)}
+              </span>
+            </span>
+          ))}
         </>
       )}
     </span>

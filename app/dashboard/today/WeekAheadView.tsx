@@ -4,6 +4,7 @@ import { addDays, formatWeekRange, todayET, getCurrentMonday } from "@/lib/calen
 import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
 import { effectiveConsensus } from "@/lib/calendar/consensus";
 import { actualsAreImplausible } from "./EarningsHub";
+import { EnrichmentRowSummary } from "../components/calendar/EnrichmentChips";
 
 interface WeekAheadViewProps {
   events: CalendarEvent[];
@@ -238,6 +239,19 @@ function EventRow({ event }: { event: CalendarEvent }) {
         <p className="text-[12px] font-mono text-ink-faint mt-1.5 truncate">
           Cons: {consensusDisplay}
         </p>
+      )}
+      {/* Captured market reaction (public data, unmasked) — the week view is
+          the Calendar Living Record's only week-level browse path, so enriched
+          past weeks surface their reactions here. Earnings rows lead with the
+          reporter's own move; macro rows show SPY/QQQ. */}
+      {event.reaction_snapshot && (
+        <div className="mt-1.5">
+          <EnrichmentRowSummary
+            actual={null}
+            snapshotRaw={event.reaction_snapshot}
+            preferEventSymbol
+          />
+        </div>
       )}
     </div>
   );
