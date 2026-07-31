@@ -615,13 +615,20 @@ export function SecurityChart({
   // default to avoid visual clutter. Dashed muted lines, distinct from the
   // user-created level colors above so the two don't get confused.
   useEffect(() => {
-    const series = candleSeriesRef.current;
-    if (!series) return;
+    if (!candleSeriesRef.current) return;
 
     // Always clear existing suggested lines when toggle flips or securityId changes.
+    // Re-read the ref instead of capturing the series: on chart re-creation the
+    // init cleanup has already disposed the chart and nulled the ref by the time
+    // this cleanup runs, and removePriceLine on a removed chart doesn't throw —
+    // it silently schedules a draw rAF that fires into the disposed canvas
+    // ("Object is disposed", uncaught). The disposal removed the lines anyway.
     const clear = () => {
-      for (const line of suggestedLinesRef.current) {
-        try { series.removePriceLine(line); } catch { /* noop */ }
+      const s = candleSeriesRef.current;
+      if (s) {
+        for (const line of suggestedLinesRef.current) {
+          try { s.removePriceLine(line); } catch { /* noop */ }
+        }
       }
       suggestedLinesRef.current = [];
     };
