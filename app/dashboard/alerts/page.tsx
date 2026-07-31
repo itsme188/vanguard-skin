@@ -4,7 +4,7 @@ import { Suspense, useEffect, useMemo, useState, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import type { LevelAlert, AlertResponse, LevelReviewStatus } from "@/lib/types";
-import { Shares } from "@/lib/privacy/components";
+import { PrivateText, Shares } from "@/lib/privacy/components";
 // Level prices, trigger prices, and current market prices are PUBLIC market
 // data — they reveal nothing about what the user owns/earns, so they render
 // via pure formatters, never privacy-masked (held quantities still mask).
@@ -1136,7 +1136,8 @@ function AlertRow({
 
           {alert.suggested_action && (
             <div className="mt-2 px-3 py-1.5 rounded border border-gold/20 bg-gold/5 text-[11px] text-gold-ink">
-              {alert.suggested_action}
+              {/* AI prose embeds portfolio figures at generation time — mask the whole block */}
+              <PrivateText>{alert.suggested_action}</PrivateText>
             </div>
           )}
 
