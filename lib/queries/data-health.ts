@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -402,52 +403,62 @@ export function getSectorDisagreements(db: Database.Database): SectorDisagreemen
 
 /**
  * Aggregate summary of data health for the dashboard header.
+ *
+ * Universe = CURRENTLY-held securities (latest per-(account,security) row,
+ * shorts included) and "priced" = a price row within the last 7 days — the
+ * same semantics as getAccountCoverage below, so the headline KPI can never
+ * contradict the page's own detail panels. Any-date holdings + any-age
+ * prices previously pinned the headline near 100% while three current
+ * holdings carried month-old prices.
  */
 export function getDataHealthSummary(
   db: Database.Database,
 ): DataHealthSummary {
   const today = new Date().toISOString().split("T")[0];
 
+  const heldCte = `held AS (
+        SELECT DISTINCT h.security_id FROM holdings h
+        WHERE ${latestHoldingsPredicate()}
+      )`;
+
   const secCounts = db
     .prepare(
       `
+      WITH ${heldCte}
       SELECT
         COUNT(*) AS total,
         COUNT(CASE WHEN EXISTS (
-          SELECT 1 FROM prices p WHERE p.security_id = s.id
+          SELECT 1 FROM prices p
+          WHERE p.security_id = held.security_id
+            AND CAST(julianday(?) - julianday(p.date) AS INTEGER) <= 7
         ) THEN 1 END) AS withPrices
-      FROM securities s
-      WHERE EXISTS (
-        SELECT 1 FROM holdings h WHERE h.security_id = s.id AND h.quantity > 0
-      )
+      FROM held
       `,
     )
-    .get() as { total: number; withPrices: number };
+    .get(today) as { total: number; withPrices: number };
 
   const staleness = db
     .prepare(
       `
+      WITH ${heldCte},
+      per_sec AS (
+        SELECT p.security_id,
+               CAST(julianday(?) - julianday(MAX(p.date)) AS INTEGER) AS days_stale
+        FROM prices p
+        JOIN held ON held.security_id = p.security_id
+        GROUP BY p.security_id
+      )
       SELECT
         AVG(days_stale) AS avgDays,
         MAX(days_stale) AS maxDays,
         (SELECT s2.symbol FROM securities s2
-         JOIN (
-           SELECT security_id, CAST(julianday(?) - julianday(MAX(date)) AS INTEGER) AS ds
-           FROM prices GROUP BY security_id
-         ) p2 ON p2.security_id = s2.id
-         WHERE EXISTS (SELECT 1 FROM holdings h WHERE h.security_id = s2.id AND h.quantity > 0)
-         ORDER BY p2.ds DESC LIMIT 1
+         JOIN per_sec p2 ON p2.security_id = s2.id
+         ORDER BY p2.days_stale DESC LIMIT 1
         ) AS worstSymbol
-      FROM (
-        SELECT CAST(julianday(?) - julianday(MAX(p.date)) AS INTEGER) AS days_stale
-        FROM prices p
-        JOIN securities s ON s.id = p.security_id
-        WHERE EXISTS (SELECT 1 FROM holdings h WHERE h.security_id = s.id AND h.quantity > 0)
-        GROUP BY p.security_id
-      )
+      FROM per_sec
       `,
     )
-    .get(today, today) as {
+    .get(today) as {
       avgDays: number | null;
       maxDays: number | null;
       worstSymbol: string | null;
