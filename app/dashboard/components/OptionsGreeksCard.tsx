@@ -124,7 +124,10 @@ export function OptionsGreeksCard({ scope }: { scope?: string }) {
                     {p.underlyingPrice > 0 ? `$${p.underlyingPrice.toFixed(2)}` : "—"}
                   </td>
                   <td className={`text-right py-2 px-2 font-mono ${dte <= 7 ? "text-down" : dte <= 30 ? "text-gold-ink" : "text-ink-dim"}`}>
-                    {dte}d
+                    {/* An expired contract can linger for a day before the
+                        purge sweep clears it — label it rather than showing
+                        a negative day count. */}
+                    {dte < 0 ? "expired" : `${dte}d`}
                   </td>
                   <td className="hidden md:table-cell text-right py-2 px-2 font-mono text-ink-dim">
                     {iv != null ? `${(iv * 100).toFixed(0)}%` : "—"}
