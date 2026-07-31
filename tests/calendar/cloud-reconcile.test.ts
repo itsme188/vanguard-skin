@@ -11,6 +11,11 @@ import { reconcileCloudEnrichment } from "@/lib/calendar/cloud-reconcile";
 
 const mockSendEarningsPrintPush = vi.mocked(sendEarningsPrintPush);
 
+// Always fresh relative to the wall clock — the push-at-print hook suppresses
+// payloads whose fetchedAt is >24h old, so a hardcoded date here silently
+// rots the "fires" assertions the day after it ages out (bit us 2026-07-29).
+const FRESH_FETCHED_AT = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
 function mockWorker(payloads: Record<string, unknown>) {
   globalThis.fetch = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
     if (init?.method === "DELETE") return new Response("{}", { status: 200 });
@@ -52,7 +57,7 @@ describe("reconcileCloudEnrichment data-preservation guards", () => {
         source: "cloud",
         deferred: true,
         reaction: null,
-        fetchedAt: "2026-07-28T21:00:00Z",
+        fetchedAt: FRESH_FETCHED_AT,
       },
     });
     const res = await reconcileCloudEnrichment(db, "secret");
@@ -72,7 +77,7 @@ describe("reconcileCloudEnrichment data-preservation guards", () => {
         consensus: null,
         source: "cloud",
         reaction: { source: "yahoo", spy: { delta_pct: 0.4 } },
-        fetchedAt: "2026-07-28T21:00:00Z",
+        fetchedAt: FRESH_FETCHED_AT,
       },
     });
     await reconcileCloudEnrichment(db, "secret");
@@ -99,7 +104,7 @@ describe("reconcileCloudEnrichment data-preservation guards", () => {
         consensus: null,
         source: "cloud",
         reaction: { source: "yahoo", spy: { delta_pct: 0.4 } },
-        fetchedAt: "2026-07-28T21:00:00Z",
+        fetchedAt: FRESH_FETCHED_AT,
       },
     });
     await reconcileCloudEnrichment(db, "secret");
@@ -129,7 +134,7 @@ describe("reconcileCloudEnrichment data-preservation guards", () => {
         consensus: null,
         source: "cloud",
         reaction: { source: "yahoo", spy: { delta_pct: 0.4 } },
-        fetchedAt: "2026-07-28T21:00:00Z",
+        fetchedAt: FRESH_FETCHED_AT,
       },
     });
     await reconcileCloudEnrichment(db, "secret");
@@ -220,7 +225,7 @@ describe("push-at-print hook (Wave 1 §2, cloud reconcile path)", () => {
         consensus: "EPS 1.35 · Rev 762,000,000",
         source: "cloud",
         reaction: { source: "yahoo", spy: { delta_pct: 0.4 } },
-        fetchedAt: "2026-07-28T21:00:00Z",
+        fetchedAt: FRESH_FETCHED_AT,
       },
     });
 
@@ -319,7 +324,7 @@ describe("push-at-print hook (Wave 1 §2, cloud reconcile path)", () => {
         consensus: null,
         source: "cloud",
         reaction: null,
-        fetchedAt: "2026-07-28T21:00:00Z",
+        fetchedAt: FRESH_FETCHED_AT,
       },
     });
 
@@ -345,7 +350,7 @@ describe("push-at-print hook (Wave 1 §2, cloud reconcile path)", () => {
         consensus: null,
         source: "cloud",
         reaction: null,
-        fetchedAt: "2026-07-28T21:00:00Z",
+        fetchedAt: FRESH_FETCHED_AT,
       },
     });
 
@@ -377,7 +382,7 @@ describe("push-at-print hook (Wave 1 §2, cloud reconcile path)", () => {
         consensus: "EPS 0.80 · Rev 290,000,000",
         source: "cloud",
         reaction: null,
-        fetchedAt: "2026-07-28T21:00:00Z",
+        fetchedAt: FRESH_FETCHED_AT,
       },
     });
 
@@ -413,7 +418,7 @@ describe("push-at-print hook (Wave 1 §2, cloud reconcile path)", () => {
         consensus: "3.1%",
         source: "cloud",
         reaction: { source: "yahoo", spy: { delta_pct: 0.1 } },
-        fetchedAt: "2026-07-28T21:00:00Z",
+        fetchedAt: FRESH_FETCHED_AT,
       },
     });
 
@@ -435,7 +440,7 @@ describe("push-at-print hook (Wave 1 §2, cloud reconcile path)", () => {
         consensus: null,
         source: "cloud",
         reaction: null,
-        fetchedAt: "2026-07-28T21:00:00Z",
+        fetchedAt: FRESH_FETCHED_AT,
       },
     });
 

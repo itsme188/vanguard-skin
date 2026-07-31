@@ -774,11 +774,14 @@ describe("executeTool dispatcher", () => {
     // never made it into the DB as a JSON array — a bare JSON.parse would
     // throw and crash the whole tool call. The guard should fall back to
     // the raw string, which sanitizeThemeList comma-splits.
+    // received_at must stay inside the tool's recency window relative to the
+    // wall clock — a hardcoded date here rots out of the lookback and the
+    // assertion below silently flips to an empty result (bit us 2026-07-30).
     db.prepare(
       `INSERT INTO research_articles
          (source_id, received_at, subject, sender, raw_text, key_themes, processed_at)
-       VALUES (1, '2026-07-23 09:00:00', 'Morning note', 'feed@example.com', 'body',
-               'fed policy, tech earnings', '2026-07-23 09:05:00')`
+       VALUES (1, datetime('now', '-1 day'), 'Morning note', 'feed@example.com', 'body',
+               'fed policy, tech earnings', datetime('now', '-1 day', '+5 minutes'))`
     ).run();
 
     const result = await executeTool(db, "query_research_feeds", {}) as {
