@@ -244,3 +244,59 @@ describe("computeDefenseAnalysis", () => {
     ).toBe(true);
   });
 });
+
+describe("computeDefenseAnalysis — held-sibling display labels", () => {
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  it("labels a BRK/B holding as BRK/B, never the internal family key BRK A", () => {
+    const acct = seedAccount("Taxable");
+    const brkb = seedSecurity("BRK/B", { sector: "Financials" });
+    seedHolding(acct, brkb, 116);
+    seedPrice(brkb, 500);
+
+    const result = computeDefenseAnalysis(db);
+    const labels = [
+      ...result.pairs.map((p) => p.underlying),
+      ...result.standaloneBets.map((b) => b.underlying),
+      ...result.rankedExposures.map((r) => r.underlying),
+      ...result.hedgeScores.map((h) => h.underlying),
+      ...result.hedgeScores.map((h) => h.protects),
+      ...result.proxies.map((p) => p.underlying),
+    ];
+    expect(labels).toContain("BRK/B");
+    expect(labels).not.toContain("BRK A");
+  });
+
+  it("a hedge on one sibling still groups with the core but shows the held share class", () => {
+    const acct = seedAccount("Taxable");
+    const goog = seedSecurity("GOOG", { sector: "Communication Services" });
+    seedHolding(acct, goog, 100);
+    seedPrice(goog, 200);
+    // Put on the GOOGL sibling — same issuer family, must pair with GOOG core
+    const expiry = daysFromNow(120);
+    const put = seedSecurity(`GOOGL ${expiry.replace(/-/g, "").slice(2)}P00190000`, {
+      type: "Option",
+      underlyingSymbol: "GOOGL",
+      optionType: "PUT",
+      strikePrice: 190,
+      expirationDate: expiry,
+      multiplier: 100,
+    });
+    seedHolding(acct, put, 1);
+    seedPrice(put, 5);
+
+    const result = computeDefenseAnalysis(db);
+    // Family grouping preserved: exactly one exposure row for the family...
+    const famRows = result.rankedExposures.filter((r) =>
+      ["GOOG", "GOOGL", "GOOG/GOOGL"].includes(r.underlying),
+    );
+    expect(famRows).toHaveLength(1);
+    // ...and its label leads with the actually-held GOOG share class.
+    expect(famRows[0].underlying).toContain("GOOG");
+    expect(famRows[0].underlying).not.toBe("GOOGL");
+  });
+});

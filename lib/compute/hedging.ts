@@ -745,6 +745,32 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
     if (meta.isEtf && meta.geography) etfGeography.set(canonical, meta.geography);
   }
 
+  // ─── Display labels for family keys ─────────────────────────────────
+  // The internal grouping key is issuerSiblings-sorted-first — "BRK A" for a
+  // BRK/B holding, a share class the user may not own. Grouping keeps the
+  // canonical key; every user-facing `underlying` gets relabeled at return
+  // to the sibling(s) actually present in the book, share/ETF rows winning
+  // over option-derived underlyings.
+  const heldRawsByCanonical = new Map<string, { core: Set<string>; any: Set<string> }>();
+  for (const row of rows) {
+    const raw = rawUnderlyingOf(row);
+    const canonical = canonicalUnderlying(raw);
+    let entry = heldRawsByCanonical.get(canonical);
+    if (!entry) {
+      entry = { core: new Set(), any: new Set() };
+      heldRawsByCanonical.set(canonical, entry);
+    }
+    entry.any.add(raw);
+    if ((row.security_type ?? "").toLowerCase() !== "option") entry.core.add(raw);
+  }
+  const displayByCanonical = new Map<string, string>();
+  for (const [canonical, { core, any }] of heldRawsByCanonical) {
+    const pick = core.size > 0 ? core : any;
+    const label = [...pick].sort().join("/");
+    if (label && label !== canonical) displayByCanonical.set(canonical, label);
+  }
+  const relabel = (u: string): string => displayByCanonical.get(u) ?? u;
+
   // ─── Note 3 + instrument assembly ──────────────────────────────────
   const instruments: DefenseInstrument[] = [];
   for (const row of rows) {
@@ -1029,14 +1055,36 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
   }
   rankedExposures.sort((a, b) => Math.abs(b.netExposure) - Math.abs(a.netExposure));
 
+  // Relabel at the boundary only — grouping, spill-index coupling, and score
+  // joins above all ran on canonical keys. `protects` may carry a route
+  // description ("sector: …", "book (β=…)"), which relabel() passes through.
+  const relabelInstruments = (insts: DefenseInstrument[]): DefenseInstrument[] =>
+    insts.map((i) => ({ ...i, underlying: relabel(i.underlying) }));
+
   return {
     summary,
-    pairs: classifyResult.pairs,
-    proxies,
+    pairs: classifyResult.pairs.map((p) => ({
+      ...p,
+      underlying: relabel(p.underlying),
+      instruments: relabelInstruments(p.instruments),
+    })),
+    proxies: proxies.map((p) => ({
+      ...p,
+      underlying: relabel(p.underlying),
+      instruments: relabelInstruments(p.instruments),
+    })),
     sectorCoverage,
-    standaloneBets: classifyResult.standaloneBets,
-    rankedExposures,
-    hedgeScores,
+    standaloneBets: classifyResult.standaloneBets.map((b) => ({
+      ...b,
+      underlying: relabel(b.underlying),
+      instruments: relabelInstruments(b.instruments),
+    })),
+    rankedExposures: rankedExposures.map((r) => ({ ...r, underlying: relabel(r.underlying) })),
+    hedgeScores: hedgeScores.map((h) => ({
+      ...h,
+      underlying: relabel(h.underlying),
+      protects: relabel(h.protects),
+    })),
     diagnostics,
   };
 }
