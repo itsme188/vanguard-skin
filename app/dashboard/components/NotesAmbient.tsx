@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 
 const STORAGE_KEY = "vgs:notes-ambient";
 const SAVE_DEBOUNCE_MS = 400;
@@ -21,6 +22,7 @@ export function NotesAmbient() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const router = useRouter();
 
   // Hydrate from localStorage on mount.
   useEffect(() => {
@@ -99,11 +101,14 @@ export function NotesAmbient() {
       }
       setSaveState("saved");
       setTimeout(() => setSaveState("idle"), 1800);
+      // Server components on the current route (e.g. the Notes list on
+      // /dashboard/research?view=notes) show the note without a manual reload.
+      router.refresh();
     } catch (err) {
       setSaveState("error");
       setErrorMsg(err instanceof Error ? err.message : "Save failed");
     }
-  }, [draft]);
+  }, [draft, router]);
 
   const handleClear = useCallback(() => {
     if (draft && !confirm("Clear this draft? This can't be undone.")) return;
