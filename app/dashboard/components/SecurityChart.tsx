@@ -378,6 +378,9 @@ export function SecurityChart({
       if (data && data.bars.length > 0 && !disposed) {
         const defaultDuration = DURATIONS.find((d) => d.label === "1Y")!;
         const visibleBars = filterBarsByWindow(data.bars, defaultDuration.months);
+        // Footer count must describe the PLOTTED window, not the 2Y payload
+        // fetched for SMA lookback — fetchChartData set the raw length.
+        setBarCount(visibleBars.length);
         applyBarsToChart(lc, candleSeries, volumeSeries, visibleBars);
         markersPluginRef.current = updateMarkers(lc, candleSeries, data.transactions ?? [], showMarkersRef.current, null, isPrivateRef.current);
         chart.timeScale().fitContent();
@@ -779,6 +782,7 @@ export function SecurityChart({
         if (data && data.bars.length > 0) {
           const visibleBars = filterBarsByWindow(data.bars, selected.months);
           const visibleStart = visibleBars.length > 0 ? visibleBars[0].date : undefined;
+          setBarCount(visibleBars.length);
           const lc = await import("lightweight-charts");
           if (candleSeriesRef.current && volumeSeriesRef.current) {
             applyBarsToChart(lc, candleSeriesRef.current, volumeSeriesRef.current, visibleBars);
@@ -813,6 +817,7 @@ export function SecurityChart({
     if (data && data.bars.length > 0) {
       const visibleBars = filterBarsByWindow(data.bars, selected.months);
       const visibleStart = visibleBars.length > 0 ? visibleBars[0].date : undefined;
+      setBarCount(visibleBars.length);
       import("lightweight-charts").then((lc) => {
         if (candleSeriesRef.current && volumeSeriesRef.current) {
           applyBarsToChart(lc, candleSeriesRef.current, volumeSeriesRef.current, visibleBars);
