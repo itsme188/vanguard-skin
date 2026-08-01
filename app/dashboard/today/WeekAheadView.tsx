@@ -175,9 +175,9 @@ function DayCard({ day }: DayCardProps) {
 // ("EPS X.XX · Rev N"). Macro events (FRED/FOMC) store raw values
 // ("3.2%", "250K"). Only earnings need the compact formatter — and only
 // earnings get the plausibility gate: an implausible actual (bad Finnhub
-// scrape, fat-fingered manual override) renders null so the consensus
-// line (gated on !actualDisplay) survives, matching the EarningsHub row
-// on the same screen instead of contradicting it.
+// scrape, fat-fingered manual override) renders null, matching the
+// EarningsHub row on the same screen instead of contradicting it. The
+// consensus line always renders when available so beat/miss is judgeable.
 export function eventFigureDisplays(
   event: Pick<CalendarEvent, "event_type" | "consensus_estimate" | "actual_value"> &
     Partial<Pick<CalendarEvent, "consensus_value">>,
@@ -235,7 +235,10 @@ function EventRow({ event }: { event: CalendarEvent }) {
         )}
       </div>
       <p className="text-[13px] text-ink-dim leading-snug line-clamp-2">{event.title}</p>
-      {consensusDisplay && !actualDisplay && (
+      {/* Consensus stays visible even after the actual lands — an enriched
+          past week is only useful if the print can be judged against the
+          street (a bare "actual $6.18" hides a 16% miss). */}
+      {consensusDisplay && (
         <p className="text-[12px] font-mono text-ink-faint mt-1.5 truncate">
           Cons: {consensusDisplay}
         </p>
