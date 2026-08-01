@@ -239,7 +239,16 @@ export function ImportFlow() {
     // Only successfully-parsed files are importable. An "Unknown file format"
     // preview with an enabled Import button is a contradictory affordance
     // (QA 2026-07-12, third recurrence) — gate the action on parse success.
-    const importableCount = state.results.filter((r) => r.success && r.preview).length;
+    // A file that parses but contains zero records is equally un-importable:
+    // committing it only creates an empty import_batches row (the 0-record
+    // rows in Import History that invite a pointless 95s Undo).
+    const previewRecordCount = (p: NonNullable<(typeof state.results)[number]["preview"]>) =>
+      p.transactionCount + p.securityCount + p.holdingCount + p.priceCount + p.snapshotCount;
+    const parsedResults = state.results.filter((r) => r.success && r.preview);
+    const importableCount = parsedResults.filter(
+      (r) => previewRecordCount(r.preview!) > 0
+    ).length;
+    const parsedButEmptyCount = parsedResults.length - importableCount;
     return (
       <div className="rounded-xl border border-edge bg-panel p-5 space-y-4">
         <div className="flex items-center justify-between">
@@ -364,7 +373,9 @@ export function ImportFlow() {
           </button>
           {importableCount === 0 && (
             <span className="text-xs text-ink-faint">
-              Nothing to import — no file matched a known format.
+              {parsedButEmptyCount > 0
+                ? `Nothing to import — the file${parsedButEmptyCount !== 1 ? "s" : ""} parsed but contain${parsedButEmptyCount === 1 ? "s" : ""} no records.`
+                : "Nothing to import — no file matched a known format."}
             </span>
           )}
           <button
