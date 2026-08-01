@@ -217,7 +217,9 @@ export function DataHealthView() {
           <h3 className="text-sm font-medium text-ink">
             Price Freshness
             <span className="text-ink-faint font-normal ml-2">
-              ({priceFreshness.filter((p) => p.hasHoldings).length} held securities)
+              {priceFreshness.filter((p) => p.hasHoldings).length > 50
+                ? `(50 stalest of ${priceFreshness.filter((p) => p.hasHoldings).length} held securities)`
+                : `(${priceFreshness.filter((p) => p.hasHoldings).length} held securities)`}
             </span>
           </h3>
         </div>
@@ -268,6 +270,13 @@ export function DataHealthView() {
             </tbody>
           </table>
         </div>
+        {priceFreshness.filter((p) => p.hasHoldings).length > 50 && (
+          <div className="px-5 py-2 border-t border-edge text-xs text-ink-faint">
+            Showing the 50 stalest rows —{" "}
+            {priceFreshness.filter((p) => p.hasHoldings).length - 50} fresher securities
+            hidden.
+          </div>
+        )}
       </section>
 
       {/* Data Gaps */}
