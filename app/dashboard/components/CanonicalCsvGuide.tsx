@@ -208,7 +208,7 @@ function CopyButton({ text, label }: { text: string; label: string }) {
     <button
       onClick={handleCopy}
       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-raised border border-edge hover:bg-muted hover:border-edge-strong transition-colors"
-      title={`Copy ${label} prompt to clipboard`}
+      title={`Copy ${label} to clipboard`}
     >
       {copied ? (
         <>
