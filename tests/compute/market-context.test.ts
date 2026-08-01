@@ -158,6 +158,7 @@ function makeGroupedTrade(overrides: Partial<GroupedTrade> = {}): GroupedTrade {
     totalProceeds: 2000,
     realizedPnl: 500,
     returnPct: 33.3,
+    usdPerUnit: 1,
     ...overrides,
   };
 }

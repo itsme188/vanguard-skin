@@ -24,6 +24,13 @@ export interface RoundTrip {
   returnPct: number;
   saleTransactionId: number;
   sellTransactionQty: number | null; // actual quantity from the SELL transaction
+  /**
+   * USD per unit of the security's native currency (1 for USD securities or
+   * when no broker-sourced fx_rates row exists — never fabricated). All dollar
+   * fields above are already converted to USD; divide by this to recover the
+   * native-currency figure (market context folds entry/exit into native bars).
+   */
+  usdPerUnit?: number;
 }
 
 export interface RoundTripSummary {
@@ -82,6 +89,8 @@ export interface GroupedTrade {
   totalProceeds: number;
   realizedPnl: number;
   returnPct: number;
+  /** USD per native-currency unit (1 for USD names) — see RoundTrip.usdPerUnit */
+  usdPerUnit: number;
 }
 
 /**
@@ -113,11 +122,13 @@ export function getRoundTrips(
         tls.holding_period_days AS holding_days,
         tls.realized_gain_loss AS realized_pnl,
         tls.sale_transaction_id,
-        ABS(sell_tx.quantity) AS sell_transaction_qty
+        ABS(sell_tx.quantity) AS sell_transaction_qty,
+        COALESCE(fx.usd_per_unit, 1) AS usd_per_unit
       FROM tax_lot_sales tls
       JOIN tax_lots tl ON tl.id = tls.tax_lot_id
       JOIN securities s ON s.id = tl.security_id
       LEFT JOIN transactions sell_tx ON sell_tx.id = tls.sale_transaction_id
+      LEFT JOIN fx_rates fx ON fx.currency = s.currency
       WHERE tl.account_id = ?
         AND tls.sale_date >= ?
         AND tls.sale_date <= ?
@@ -141,28 +152,36 @@ export function getRoundTrips(
     realized_pnl: number;
     sale_transaction_id: number;
     sell_transaction_qty: number | null;
+    usd_per_unit: number;
   }>;
 
-  return rows.map((r) => ({
-    accountId: r.account_id,
-    securityId: r.security_id,
-    symbol: r.symbol,
-    securityName: r.security_name,
-    securityType: r.security_type,
-    entryDate: r.entry_date,
-    entryPrice: r.entry_price,
-    entryQuantity: r.entry_quantity,
-    entryCost: r.entry_cost,
-    exitDate: r.exit_date,
-    exitPrice: r.exit_price,
-    exitQuantity: r.exit_quantity,
-    exitProceeds: r.exit_proceeds,
-    holdingDays: r.holding_days,
-    realizedPnl: r.realized_pnl,
-    returnPct: r.entry_cost !== 0 ? (r.realized_pnl / r.entry_cost) * 100 : 0,
-    saleTransactionId: r.sale_transaction_id,
-    sellTransactionQty: r.sell_transaction_qty,
-  }));
+  // tax_lot_sales dollar columns are stored in the security's NATIVE currency
+  // (foreign-currency convention: conversion happens at read time only) —
+  // convert here, before any cross-security aggregation sums mixed currencies.
+  return rows.map((r) => {
+    const fx = r.usd_per_unit > 0 ? r.usd_per_unit : 1;
+    return {
+      accountId: r.account_id,
+      securityId: r.security_id,
+      symbol: r.symbol,
+      securityName: r.security_name,
+      securityType: r.security_type,
+      entryDate: r.entry_date,
+      entryPrice: r.entry_price * fx,
+      entryQuantity: r.entry_quantity,
+      entryCost: r.entry_cost * fx,
+      exitDate: r.exit_date,
+      exitPrice: r.exit_price * fx,
+      exitQuantity: r.exit_quantity,
+      exitProceeds: r.exit_proceeds * fx,
+      holdingDays: r.holding_days,
+      realizedPnl: r.realized_pnl * fx,
+      returnPct: r.entry_cost !== 0 ? (r.realized_pnl / r.entry_cost) * 100 : 0,
+      saleTransactionId: r.sale_transaction_id,
+      sellTransactionQty: r.sell_transaction_qty,
+      usdPerUnit: fx,
+    };
+  });
 }
 
 /**
@@ -412,6 +431,7 @@ export function computeGroupedTrades(roundTrips: RoundTrip[]): GroupedTrade[] {
       totalProceeds,
       realizedPnl: totalPnl,
       returnPct: totalCost > 0 ? (totalPnl / totalCost) * 100 : 0,
+      usdPerUnit: lots[0].usdPerUnit ?? 1,
     };
   });
 }

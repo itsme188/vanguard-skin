@@ -76,13 +76,16 @@ export function getMarketContext(
   return groupedTrades.map((trade) => ({
     symbol: trade.symbol,
     exitDate: trade.exitDate,
+    // GroupedTrade prices are USD-converted; the bar series (ohlcv_bars/prices)
+    // is native-currency, so un-convert before folding entry/exit into the
+    // period range (ratios inside are scale-invariant — native throughout).
     stockContext: getStockPriceContext(
       db,
       trade.securityId,
       trade.earliestEntryDate,
       trade.exitDate,
-      trade.avgEntryPrice,
-      trade.exitPrice
+      trade.avgEntryPrice / (trade.usdPerUnit || 1),
+      trade.exitPrice / (trade.usdPerUnit || 1)
     ),
     benchmarkReturn: getBenchmarkReturn(
       db,
