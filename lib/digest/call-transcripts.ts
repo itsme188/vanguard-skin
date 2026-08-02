@@ -61,8 +61,13 @@ function dedupeBestSource(rows: RecentTranscriptRow[]): RecentTranscriptRow[] {
  * heading is dropped outright (it duplicates this block's own
  * "### TICKER — Qn YYYY call" header); any other heading line becomes a
  * `**bold**` line.
+ *
+ * Exported (2026-08-02) so other desk-note renderers — the morning
+ * earnings-debrief composer (lib/earnings/debrief.ts) — can share this
+ * exact demotion instead of forking a second copy of the same regex. This
+ * is the single source; do not copy the implementation elsewhere.
  */
-function demoteEmbeddedHeadings(summary: string): string {
+export function demoteEmbeddedHeadings(summary: string): string {
   const lines = summary.split("\n");
   const out: string[] = [];
   let seenContent = false;

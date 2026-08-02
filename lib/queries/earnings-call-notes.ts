@@ -71,3 +71,38 @@ export function getLatestCallNoteForFamily(
     .get(...params) as EarningsCallNote | undefined;
   return row ?? null;
 }
+
+/**
+ * Call note for the issuer family whose associated calendar event's
+ * `event_date` falls within `windowDays` of `eventDate` (either direction —
+ * a dual-class sibling can report a day or two off from the candidate's own
+ * print). Unlike `getLatestCallNoteForFamily` (which — absent a
+ * `beforeDate` — happily returns the family's single most recent note no
+ * matter how old), this must never misattribute a stale note from a prior
+ * quarter to the print currently being written about: no match inside the
+ * window returns null, it never falls back to "closest anyway".
+ *
+ * Ties (more than one family note inside the window — rare) break on
+ * closest event_date first, then most recently updated.
+ */
+export function getCallNoteNearDateForFamily(
+  db: Database.Database,
+  symbol: string,
+  eventDate: string,
+  windowDays = 5
+): EarningsCallNote | null {
+  const family = issuerSiblings(symbol).map((s) => s.toUpperCase());
+  if (family.length === 0) return null;
+  const placeholders = family.map(() => "?").join(",");
+  const row = db
+    .prepare(
+      `SELECT n.* FROM earnings_call_notes n
+       JOIN calendar_events ce ON ce.id = n.event_id
+       WHERE UPPER(n.symbol) IN (${placeholders})
+         AND ABS(julianday(ce.event_date) - julianday(?)) <= ?
+       ORDER BY ABS(julianday(ce.event_date) - julianday(?)) ASC, n.updated_at DESC
+       LIMIT 1`
+    )
+    .get(...family, eventDate, windowDays, eventDate) as EarningsCallNote | undefined;
+  return row ?? null;
+}
