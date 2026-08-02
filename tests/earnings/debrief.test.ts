@@ -617,8 +617,9 @@ describe("assembleDebriefMarkdown", () => {
     { symbol: "BBB", markdown: "### BBB section" },
   ];
 
-  it("AI synthesis first, then sections, then a roster line; roster omitted when empty", () => {
+  it("AI synthesis first, then sections, then a roster line with ET send times; roster omitted when empty", () => {
     const roster: DebriefRosterEntry[] = [
+      // sent_at is UTC (SQLite datetime('now')) — 20:00Z is 4:00 PM EDT.
       { symbol: "XXX", sentAt: "2026-08-01 20:00:00" },
       { symbol: "YYY", sentAt: "2026-08-02 06:00:00" },
     ];
@@ -627,14 +628,15 @@ describe("assembleDebriefMarkdown", () => {
       "# What changed overnight\n- bullet one",
       sections,
       roster,
-      "2026-08-02",
     );
 
     const aiIdx = result.indexOf("# What changed overnight");
     const scoreboardsIdx = result.indexOf("## The scoreboards");
     const aaaIdx = result.indexOf("### AAA section");
     const bbbIdx = result.indexOf("### BBB section");
-    const rosterIdx = result.indexOf("Recapped individually overnight: XXX · YYY");
+    const rosterIdx = result.indexOf(
+      "Recapped individually overnight: XXX 4:00 PM · YYY 2:00 AM",
+    );
 
     expect(aiIdx).toBe(0);
     expect(scoreboardsIdx).toBeGreaterThan(aiIdx);
@@ -643,13 +645,17 @@ describe("assembleDebriefMarkdown", () => {
     expect(rosterIdx).toBeGreaterThan(bbbIdx);
   });
 
+  it("a malformed sent_at degrades to a bare symbol rather than an Invalid Date", () => {
+    const result = assembleDebriefMarkdown("# lede", sections, [
+      { symbol: "ZZZ", sentAt: "not-a-timestamp" },
+    ]);
+
+    expect(result).toContain("Recapped individually overnight: ZZZ*");
+    expect(result).not.toContain("Invalid Date");
+  });
+
   it("omits the roster line entirely when roster is empty", () => {
-    const result = assembleDebriefMarkdown(
-      "# What changed overnight\n- bullet one",
-      sections,
-      [],
-      "2026-08-02",
-    );
+    const result = assembleDebriefMarkdown("# What changed overnight\n- bullet one", sections, []);
 
     expect(result).not.toContain("Recapped individually overnight");
   });

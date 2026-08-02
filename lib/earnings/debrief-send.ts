@@ -157,7 +157,7 @@ export async function runMorningDebrief(
     const generate = opts.generate ?? defaultGenerate;
     const rawAiText = await generate(prompt);
     const aiMarkdown = stripModelPreamble(rawAiText);
-    const markdown = assembleDebriefMarkdown(aiMarkdown, sections, alreadyRecapped, today);
+    const markdown = assembleDebriefMarkdown(aiMarkdown, sections, alreadyRecapped);
 
     const title = `Earnings Debrief — ${formatDebriefDateLabel(now)}`;
     const subject = `☕ ${title}`;
