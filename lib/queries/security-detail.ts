@@ -213,7 +213,7 @@ export function getHoldingsBySecurity(
       LEFT JOIN prices p ON p.security_id = h.security_id
         AND p.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = h.security_id)
       WHERE h.security_id = ?
-        AND ${latestHoldingsPredicate({ keyBy: "account_security", includeShorts: false })}
+        AND ${latestHoldingsPredicate({ keyBy: "account_security", includeShorts: true })}
       ORDER BY a.name`
     )
     .all(securityId) as SecurityPosition[];
