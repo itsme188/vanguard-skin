@@ -10,6 +10,7 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import {
   correctEarningsEventDate,
+  insertCalendarEvent,
   upsertCalendarEvents,
   type CalendarEventInput,
 } from "@/lib/mutations/calendar";
@@ -24,13 +25,19 @@ beforeEach(() => {
 });
 
 // helper: seed a finnhub earnings row
-function seedFinnhub(db: Database.Database, symbol: string, date: string): number {
+function seedFinnhub(
+  db: Database.Database,
+  symbol: string,
+  date: string,
+  opts?: { eventTime?: string | null; sourceKeySuffix?: string; source?: string },
+): number {
+  const sourceKey = `${opts?.source ?? "finnhub"}:${symbol}:${date}${opts?.sourceKeySuffix ?? ""}`;
   upsertCalendarEvents(db, [
     {
-      source: "finnhub",
+      source: (opts?.source ?? "finnhub") as CalendarEventInput["source"],
       event_type: "earnings",
       event_date: date,
-      event_time: null,
+      event_time: opts?.eventTime ?? null,
       title: `${symbol} earnings`,
       description: null,
       symbol,
@@ -39,16 +46,22 @@ function seedFinnhub(db: Database.Database, symbol: string, date: string): numbe
       consensus_estimate: "EPS 1.00",
       previous_value: null,
       raw_json: null,
-      source_key: `finnhub:${symbol}:${date}`,
+      source_key: sourceKey,
       week_of: "2026-08-03",
       release_time: "16:15",
     } as CalendarEventInput,
   ]);
   return (
-    db.prepare(`SELECT id FROM calendar_events WHERE source_key = ?`).get(`finnhub:${symbol}:${date}`) as {
+    db.prepare(`SELECT id FROM calendar_events WHERE source_key = ?`).get(sourceKey) as {
       id: number;
     }
   ).id;
+}
+
+function addBogey(db: Database.Database, eventId: number, label: string): void {
+  db.prepare(
+    `INSERT INTO earnings_bogeys (event_id, source, source_label, eps_consensus) VALUES (?, 'manual', ?, 0.5)`,
+  ).run(eventId, label);
 }
 
 describe("correctEarningsEventDate", () => {
@@ -155,6 +168,156 @@ describe("correctEarningsEventDate", () => {
       .prepare(`SELECT event_time FROM calendar_events WHERE source='manual' AND symbol='BMO1'`)
       .get() as { event_time: string };
     expect(manual.event_time).toBe("BMO");
+  });
+
+  // ── F1 (CRITICAL): the corrected row must never be in the delete set ──────
+  //
+  // On a SLOT correction wrongDate === correctDate, so every earnings row on
+  // that date is a "wrong row" — including a pre-existing manual row that the
+  // UNIQUE-collision fallback then adopts as newEventId. Without filtering the
+  // delete/migrate loops by `id !== newEventId`, step 3 deleted the corrected
+  // row itself AND suppressed its tuple, making the event unrecoverable
+  // (suppression blocks re-sync; the migrated bogeys died in the CASCADE).
+  it("never deletes the corrected row itself when a manual row already exists on correctDate", () => {
+    const manualId = insertCalendarEvent(db, {
+      symbol: "LLY",
+      event_date: "2026-08-05",
+      event_type: "earnings",
+      event_time: "AMC",
+      week_of: "2026-08-03",
+    }).id;
+    const vendorId = seedFinnhub(db, "LLY", "2026-08-05", { eventTime: "BMO" });
+    addBogey(db, vendorId, "vendor-bogey");
+
+    const res = correctEarningsEventDate(db, {
+      symbol: "LLY",
+      wrongDate: "2026-08-05",
+      correctDate: "2026-08-05",
+      slot: "AMC",
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.newEventId).toBe(manualId);
+    // ONLY the vendor row is deleted — the corrected row survives.
+    expect(res.deletedIds).toEqual([vendorId]);
+
+    const survivor = db.prepare(`SELECT id, event_date, event_time FROM calendar_events WHERE id = ?`).get(manualId) as
+      | { id: number; event_date: string; event_time: string }
+      | undefined;
+    expect(survivor).toBeDefined();
+    expect(survivor!.event_date).toBe("2026-08-05");
+
+    // Bogeys from the deleted vendor row landed on the survivor (not CASCADEd away).
+    const bogey = db.prepare(`SELECT event_id FROM earnings_bogeys WHERE source_label='vendor-bogey'`).get() as
+      | { event_id: number }
+      | undefined;
+    expect(bogey).toBeDefined();
+    expect(bogey!.event_id).toBe(manualId);
+  });
+
+  // ── Adoption (reviewer Recommendation 3) ─────────────────────────────────
+  it("adopts an existing non-manual row on correctDate whose slot agrees, clearing superseded", () => {
+    const wrongId = seedFinnhub(db, "MELI", "2026-08-03", { eventTime: "AMC" });
+    addBogey(db, wrongId, "meli-bogey");
+    const adoptId = seedFinnhub(db, "MELI", "2026-08-05", {
+      eventTime: "AMC",
+      source: "nasdaq",
+    });
+    db.prepare(`UPDATE calendar_events SET superseded = 1 WHERE id = ?`).run(adoptId);
+
+    const res = correctEarningsEventDate(db, {
+      symbol: "MELI",
+      wrongDate: "2026-08-03",
+      correctDate: "2026-08-05",
+      slot: "AMC",
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.newEventId).toBe(adoptId);
+    expect(res.deletedIds).toEqual([wrongId]);
+
+    // No manual row minted — the vendor row (and its finnhub enrichment road) is kept.
+    const manualCount = (
+      db
+        .prepare(`SELECT COUNT(*) c FROM calendar_events WHERE source='manual' AND symbol='MELI'`)
+        .get() as { c: number }
+    ).c;
+    expect(manualCount).toBe(0);
+
+    const adopted = db.prepare(`SELECT superseded FROM calendar_events WHERE id = ?`).get(adoptId) as {
+      superseded: number;
+    };
+    expect(adopted.superseded).toBe(0);
+
+    expect(res.bogeysMigrated).toBe(1);
+    const bogey = db.prepare(`SELECT event_id FROM earnings_bogeys WHERE source_label='meli-bogey'`).get() as {
+      event_id: number;
+    };
+    expect(bogey.event_id).toBe(adoptId);
+
+    // The wrong tuple is still suppressed so the next sync can't resurrect it.
+    const suppressed = (
+      db
+        .prepare(
+          `SELECT COUNT(*) c FROM calendar_event_suppressions WHERE symbol='MELI' AND event_date='2026-08-03'`,
+        )
+        .get() as { c: number }
+    ).c;
+    expect(suppressed).toBe(1);
+  });
+
+  it("mints a manual row (carrying vendor consensus) when the correctDate row's slot disagrees", () => {
+    const wrongId = seedFinnhub(db, "DOCN", "2026-08-04", { eventTime: "AMC" });
+    const disagreeingId = seedFinnhub(db, "DOCN", "2026-08-05", {
+      eventTime: "BMO",
+      source: "nasdaq",
+    });
+
+    const res = correctEarningsEventDate(db, {
+      symbol: "DOCN",
+      wrongDate: "2026-08-04",
+      correctDate: "2026-08-05",
+      slot: "AMC",
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.newEventId).not.toBe(disagreeingId);
+    expect(res.deletedIds).toEqual([wrongId]);
+
+    const manual = db
+      .prepare(
+        `SELECT id, event_time, consensus_estimate, expected_impact
+           FROM calendar_events WHERE source='manual' AND symbol='DOCN'`,
+      )
+      .get() as {
+      id: number;
+      event_time: string;
+      consensus_estimate: string | null;
+      expected_impact: string | null;
+    };
+    expect(manual.id).toBe(res.newEventId);
+    expect(manual.event_time).toBe("AMC");
+    // F3: the vendor's consensus rides along instead of being dropped.
+    expect(manual.consensus_estimate).toBe("EPS 1.00");
+    expect(manual.expected_impact).toBe("high");
+  });
+
+  // ── F3: consensus carry on the plain date-move path ──────────────────────
+  it("carries the wrong row's consensus_estimate onto the corrected manual row", () => {
+    seedFinnhub(db, "RRX", "2026-08-04");
+    db.prepare(`UPDATE calendar_events SET consensus_estimate = 'EPS 2.71 · Rev 1.2B' WHERE symbol='RRX'`).run();
+
+    const res = correctEarningsEventDate(db, {
+      symbol: "RRX",
+      wrongDate: "2026-08-04",
+      correctDate: "2026-08-05",
+    });
+
+    expect(res.ok).toBe(true);
+    const manual = db
+      .prepare(`SELECT consensus_estimate FROM calendar_events WHERE source='manual' AND symbol='RRX'`)
+      .get() as { consensus_estimate: string | null };
+    expect(manual.consensus_estimate).toBe("EPS 2.71 · Rev 1.2B");
   });
 
   it("falls back to AMC when there is no wrong row and no slot passed", () => {
