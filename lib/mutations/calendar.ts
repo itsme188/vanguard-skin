@@ -5,6 +5,8 @@ import type {
   CalendarEventSource,
 } from "@/lib/types";
 import { resolveReleaseTime, SYMBOL_RELEASE_TIMES_ET } from "@/lib/calendar/release-times";
+import { getSecurityIdForSymbol } from "@/lib/queries/briefing-symbols";
+import { mondayOf } from "@/lib/calendar/date-utils";
 
 // ─── Result types ─────────────────────────────────────────────────
 
@@ -279,6 +281,110 @@ export function deleteAndSuppressCalendarEvent(
     deleted: true,
     suppressed: { symbol, event_date: row.event_date, event_type: row.event_type },
   };
+}
+
+export interface CorrectEarningsDateResult {
+  ok: boolean;
+  newEventId?: number; // the corrected manual row (created or pre-existing)
+  deletedIds?: number[]; // wrong rows removed + suppressed
+  bogeysMigrated?: number;
+  refusedReason?: string; // set when ok=false (e.g. captured actuals)
+}
+
+/**
+ * Correct a WRONG sync-sourced earnings date (the NET case: Finnhub + the
+ * calendar carried 2026-07-30; the real print was Aug 6).
+ *
+ * For every earnings row of SYMBOL on WRONG_DATE: delete it and record a
+ * (symbol, date, type) suppression (migration 070) so the next sync sweep
+ * can't re-insert it — then insert a manual row on CORRECT_DATE. Extracted
+ * from scripts/correct-earnings-date.ts (originally a CLI-only flow) so the
+ * automated date verifier can call the same logic.
+ *
+ * Insert-before-delete: the corrected manual row is created FIRST so
+ * user-curated earnings_bogeys on the wrong rows can be re-pointed at the
+ * new event instead of dying in the delete CASCADE.
+ *
+ * Refuses (ok:false) when ANY wrong row already has captured actuals — that
+ * print really happened on wrongDate, so nothing is deleted. This check runs
+ * BEFORE any write.
+ *
+ * Idempotent: re-running with no wrong-date rows left just ensures the
+ * manual row exists (returns the same newEventId, empty deletedIds).
+ */
+export function correctEarningsEventDate(
+  db: Database.Database,
+  opts: { symbol: string; wrongDate: string; correctDate: string; slot?: "BMO" | "AMC" },
+): CorrectEarningsDateResult {
+  const symbol = opts.symbol.trim().toUpperCase();
+
+  const wrongRows = db
+    .prepare(
+      `SELECT id, source, source_key, event_time, actual_value
+         FROM calendar_events
+        WHERE UPPER(symbol) = ? AND event_date = ? AND event_type = 'earnings'`,
+    )
+    .all(symbol, opts.wrongDate) as Array<{
+    id: number;
+    source: string;
+    source_key: string;
+    event_time: string | null;
+    actual_value: string | null;
+  }>;
+
+  for (const row of wrongRows) {
+    if (row.actual_value) {
+      return {
+        ok: false,
+        refusedReason:
+          `Refusing: row #${row.id} (${row.source_key}) already has captured actuals — ` +
+          `that print really happened on ${opts.wrongDate}. Nothing deleted.`,
+      };
+    }
+  }
+
+  // ── 1. Ensure the corrected manual row exists FIRST ───────────────────────
+  const eventTime = opts.slot ?? wrongRows[0]?.event_time ?? "AMC";
+  let newEventId: number;
+  try {
+    const { id } = insertCalendarEvent(db, {
+      symbol,
+      event_date: opts.correctDate,
+      event_type: "earnings",
+      event_time: eventTime,
+      security_id: getSecurityIdForSymbol(db, symbol),
+      week_of: mondayOf(opts.correctDate),
+      description: `Date corrected from ${opts.wrongDate} (wrong sync-sourced date)`,
+    });
+    newEventId = id;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!/UNIQUE constraint failed/i.test(msg)) throw err;
+    const existing = db
+      .prepare(
+        `SELECT id FROM calendar_events
+          WHERE source = 'manual' AND UPPER(symbol) = ? AND event_date = ? AND event_type = 'earnings'`,
+      )
+      .get(symbol, opts.correctDate) as { id: number };
+    newEventId = existing.id;
+  }
+
+  // ── 2. Migrate user-curated bogeys off the doomed rows ─────────────────────
+  let bogeysMigrated = 0;
+  for (const row of wrongRows) {
+    bogeysMigrated += db
+      .prepare("UPDATE OR IGNORE earnings_bogeys SET event_id = ? WHERE event_id = ?")
+      .run(newEventId, row.id).changes;
+  }
+
+  // ── 3. Delete the wrong rows + suppress the tuple ──────────────────────────
+  const deletedIds: number[] = [];
+  for (const row of wrongRows) {
+    deleteAndSuppressCalendarEvent(db, row.id);
+    deletedIds.push(row.id);
+  }
+
+  return { ok: true, newEventId, deletedIds, bogeysMigrated };
 }
 
 // updateCalendarEvent / deleteCalendarEvent intentionally only operate on
