@@ -156,6 +156,40 @@ describe("findDebriefCandidates", () => {
     });
   });
 
+  /**
+   * Integration case for the 2026-08-02 rewire (Task 4): the EOD wrap was
+   * retired from the sweep, so a recap candidate whose (date, slot) cluster
+   * reached WRAP_THRESHOLD "yesterday" and got suppressed by the sweep's
+   * still-live wrap-pending branch (lib/calendar/email-sweep.ts) — the
+   * suppression just `continue`s the candidate loop, writing NO
+   * earnings_emails row and NO earnings_email_skips row for it — is
+   * indistinguishable, DB-wise, from any other never-sent recap. This
+   * morning's findDebriefCandidates call must pick it up as `unsent`: with
+   * no wrap pass left to ever fire for it, the morning debrief is now the
+   * only path that recaps it at all.
+   */
+  it("a recap candidate wrap-suppressed YESTERDAY (never sent — no earnings_emails/earnings_email_skips row) appears in this morning's debrief candidates", () => {
+    seedHeld("WRAPPED");
+    const wrapSuppressedId = seedEvent({
+      symbol: "WRAPPED",
+      date: YESTERDAY,
+      eventTime: "AMC",
+      releaseTime: "16:15",
+    });
+
+    const result = findDebriefCandidates(db, { now: NOW });
+
+    expect(result.unsent.map((c) => c.eventId)).toContain(wrapSuppressedId);
+    const wrapped = result.unsent.find((c) => c.symbol === "WRAPPED")!;
+    expect(wrapped).toMatchObject({
+      eventId: wrapSuppressedId,
+      symbol: "WRAPPED",
+      event_date: YESTERDAY,
+    });
+    // Not on the "already recapped" roster either — it was never sent.
+    expect(result.alreadyRecapped.find((r) => r.symbol === "WRAPPED")).toBeUndefined();
+  });
+
   it("excludes: no actuals; recap already sent (error NULL); sent-by-cloud; recap skip row; muted symbol; not held/watchlist; superseded", () => {
     seedHeld("NOACT");
     seedEvent({ symbol: "NOACT", actual: null });

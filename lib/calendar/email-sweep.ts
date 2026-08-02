@@ -33,7 +33,7 @@ import { probeFinnhubActualExists } from "./enrich-actuals";
 import { sendPushover } from "@/lib/alerts/notify-pushover";
 import { getEarningsSettings, shouldSendEarningsEmail } from "@/lib/queries/earnings-settings";
 import { getExpectedRecapCluster, wrapSlotFor, WRAP_THRESHOLD } from "@/lib/earnings/wrap";
-import { runWrapPass } from "@/lib/earnings/wrap-send";
+import { runMorningDebrief } from "@/lib/earnings/debrief-send";
 import { todayET } from "@/lib/calendar/date-utils";
 import { fetchSameDayTranscripts } from "@/lib/transcripts/same-day";
 import { recordEarningsEmailSkip } from "@/lib/mutations/earnings-skips";
@@ -57,8 +57,14 @@ export interface SweepSummary {
   recapAlerts: number;
   /** Audit rows backfilled from cloud-sent KV markers this sweep (2026-07-15). */
   cloudReconciled: number;
-  /** EOD wrap emails sent this pass (0–2, one per BMO/AMC slot; #17 T3). */
-  wrapsSent: number;
+  /**
+   * Result of the 7:45 ET morning debrief pass (2026-08-02, replaces the EOD
+   * wrap — see lib/earnings/debrief-send.ts). Null when the pass threw
+   * before returning (it never fails the sweep); otherwise reflects whether
+   * it actually sent this tick (its own window/once-per-day gate usually
+   * means most ticks report `sent: false`) and which symbols it covered.
+   */
+  debrief: { sent: boolean; covered: string[] } | null;
   /** Same-day transcript fetch attempts that succeeded this pass (#12 B1). */
   transcriptsFetched: number;
   results: SweepCandidateResult[];
@@ -294,18 +300,18 @@ export async function runEarningsEmailSweep(
     }
   }
 
-  // ── EOD wrap pass (#17 T3) ────────────────────────────────────────────
-  // Evaluates both slots (BMO, AMC) for today's ET date and fires a stapled
-  // wrap email wherever due. A wrap failure must never fail the sweep — the
-  // sweep's other responsibilities (sends, cloud reconcile, blocked-recap
-  // alerts) still need to complete.
-  let wrapsSent = 0;
+  // ── Morning debrief pass (2026-08-02, retires the EOD wrap) ───────────
+  // Runs unconditionally every tick — runMorningDebrief owns its own
+  // 07:45-08:20 ET window + once-per-day gate, so most ticks are a cheap
+  // no-op. A debrief failure must never fail the sweep — the sweep's other
+  // responsibilities (sends, cloud reconcile, blocked-recap alerts) still
+  // need to complete.
+  let debrief: { sent: boolean; covered: string[] } | null = null;
   try {
-    const wrap = await runWrapPass(db, { now: opts.now });
-    wrapsSent = wrap.wrapsSent;
+    const r = await runMorningDebrief(db, { now: opts.now });
+    debrief = { sent: r.sent, covered: r.covered };
   } catch (err) {
-    console.warn("[earnings-sweep] wrap pass failed:", err);
-    wrapsSent = 0;
+    console.warn("[earnings-sweep] morning debrief pass failed:", err);
   }
 
   let recapAlerts = 0;
@@ -337,7 +343,7 @@ export async function runEarningsEmailSweep(
     failed: results.filter((r) => !r.ok).length,
     recapAlerts,
     cloudReconciled,
-    wrapsSent,
+    debrief,
     transcriptsFetched,
     results,
   };
