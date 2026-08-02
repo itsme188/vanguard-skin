@@ -37,6 +37,10 @@ import { runMorningDebrief } from "@/lib/earnings/debrief-send";
 import { todayET } from "@/lib/calendar/date-utils";
 import { fetchSameDayTranscripts } from "@/lib/transcripts/same-day";
 import { recordEarningsEmailSkip } from "@/lib/mutations/earnings-skips";
+// Shared with lib/earnings/debrief-send.ts (which also drops cloud-delivered
+// members) — moved out of this file 2026-08-02 so both can use it without an
+// email-sweep ↔ debrief-send import cycle.
+import { recordCloudSentAudit } from "@/lib/mutations/earnings-emails";
 
 export interface SweepCandidateResult {
   eventId: number;
@@ -75,33 +79,6 @@ interface WrapClassifyRow {
   event_time: string | null;
   title: string | null;
   release_time: string | null;
-}
-
-/**
- * When the Worker fallback already delivered an email, mirror that fact into
- * the local audit table so (a) findEmailCandidates stops re-selecting the
- * event every tick and (b) the EarningsHub chips show it as sent.
- * ai_output_md stays NULL — the viewer knows there's no local copy.
- *
- * `sentAt` (ISO, from the KV marker value) preserves the Worker's real send
- * time; SQLite's datetime() normalizes it to the space-separated format every
- * other sent_at uses, and NULLs (malformed marker) fall back to now.
- * Returns 1 when a row was inserted, 0 when one already existed.
- */
-function recordCloudSentAudit(
-  db: Database.Database,
-  eventId: number,
-  phase: "preview" | "recap",
-  sentAt?: string | null,
-): number {
-  const result = db
-    .prepare(
-      `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, ai_output_md, error)
-       VALUES (?, ?, 'cloud-fallback', COALESCE(datetime(?), datetime('now')), NULL, 'sent-by-cloud')
-       ON CONFLICT(event_id, phase) DO NOTHING`,
-    )
-    .run(eventId, phase, sentAt ?? null);
-  return result.changes;
 }
 
 /**

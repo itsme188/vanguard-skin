@@ -15,12 +15,22 @@
  * the other ready names for one concurrent sender winning a race on a single
  * event would only delay debriefs that could have gone out fine.
  *
+ * Mac↔cloud marker dance (2026-08-02 fix wave, F2): because the debrief
+ * writes per-member `recap` audit rows, it owns the same KV coordination the
+ * wrap did — a cloud-marker READ per claimed member before compose (a recap
+ * the Worker already delivered is dropped, its claim released and a
+ * sent-by-cloud audit row recorded in its place) and a mac-sent WRITE per
+ * covered member after the send, so the Worker's recap fallback backs off.
+ * Both helpers no-op gracefully when WORKER_MARKER_URL is unset.
+ *
  * Gate: an Intl-derived ET wall-clock window (07:45–08:20) plus a
  * once-per-ET-day settings key (`last_debrief_date`), stamped BEFORE compose
  * — same stamp-before-push discipline as the daily date-verification gate in
  * lib/calendar/verify-earnings-dates.ts::maybeRunDailyDateVerification — so
  * the 15-min sweep tick can only ever produce one debrief attempt per
- * morning, even if composing/sending throws.
+ * morning, even if composing/sending throws. The stamp sits BELOW the
+ * no-candidates return (F4): a candidate-less tick must not burn the day,
+ * since actuals landing mid-window should still get this morning's debrief.
  */
 import type Database from "better-sqlite3";
 import {
@@ -34,6 +44,11 @@ import {
   claimEarningsEmailSlot,
   releaseEarningsEmailClaim,
 } from "@/lib/digest/send-earnings-email";
+import {
+  checkEarningsCloudMarker,
+  writeMacSentEarningsMarker,
+} from "@/lib/cron/earnings-marker-check";
+import { recordCloudSentAudit } from "@/lib/mutations/earnings-emails";
 import { generateTextForFeature } from "@/lib/ai/generate";
 import { stripModelPreamble } from "@/lib/ai/strip-preamble";
 import { sendEmail } from "@/lib/email";
@@ -107,8 +122,30 @@ export async function runMorningDebrief(
   for (const candidate of unsent) {
     const claim = claimEarningsEmailSlot(db, candidate.eventId, "recap", recipient);
     if (!claim.claimed || claim.mode !== "fresh" || !claim.token) continue;
+
+    // Symmetric cloud-marker read, mirroring the retired wrap's per-member
+    // exclusion (wrap-send.ts::runSlotWrap): the Worker fallback may have
+    // delivered this very recap while the Mac slept, and the sweep's KV→audit
+    // backfill may not have run yet — without this read the debrief would
+    // re-narrate a name the user already got an email about. A cloud-owned
+    // member releases the fresh claim taken a line ago and records the same
+    // sent-by-cloud audit row the sweep writes, which also keeps it out of
+    // tomorrow's candidate set.
+    const marker = await checkEarningsCloudMarker("recap", candidate.eventId).catch(() => null);
+    if (marker?.sentBy != null) {
+      releaseEarningsEmailClaim(db, candidate.eventId, "recap", claim.token);
+      // Only a CLOUD send needs a local audit row; sentBy "mac" means a local
+      // row already exists (or a stale marker) — dropping is enough.
+      if (marker.sentBy === "cloud") {
+        recordCloudSentAudit(db, candidate.eventId, "recap");
+      }
+      continue;
+    }
+
     claims.push({ candidate, token: claim.token });
   }
+  // Also the "every member was cloud-delivered" outcome — nothing left to
+  // narrate either way, and the day key above is already stamped.
   if (claims.length === 0) {
     return { sent: false, covered: [], skippedReason: "claims-conflict" };
   }
@@ -131,12 +168,17 @@ export async function runMorningDebrief(
     // Success: convert every fresh claim into a completed audit row. Every
     // covered name shares the same email, so every row shares the same
     // ai_output_md — the in-app viewer then shows the full debrief for
-    // whichever name the user opens.
+    // whichever name the user opens. Each name also gets its own mac-sent KV
+    // marker (same per-member choreography the retired wrap used) so the
+    // Worker's recap fallback backs off for a name the Mac just covered.
     for (const c of claims) {
       recordDebriefAudit(db, { eventId: c.candidate.eventId, recipient, aiOutputMd: markdown });
+      await writeMacSentEarningsMarker("recap", c.candidate.eventId).catch(() => null);
     }
 
-    return { sent: true, covered: claimedCandidates.map((c) => c.symbol) };
+    const covered = claimedCandidates.map((c) => c.symbol);
+    console.log(`[debrief] sent — covered ${covered.length} name(s): ${covered.join(", ")}`);
+    return { sent: true, covered };
   } catch (err) {
     // Never throw to the sweep: release every fresh claim so the members
     // return to candidacy on the next findDebriefCandidates call (tomorrow —
