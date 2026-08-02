@@ -1481,9 +1481,27 @@ export function renderRecapPrompt(ctx: RecapContext): string {
     ? `\n## Consensus going in\n${ctx.event.consensus_value ?? ctx.event.consensus_estimate}\n`
     : "";
 
-  const actualBlock = ctx.event.actual_value
-    ? `\n## Reported actual (from enrichment runner)\n${ctx.event.actual_value}\n`
-    : `\n## Reported actual\nEnrichment hasn't captured the actual yet. Use web_search to find the press-release values: EPS, revenue, segment splits, full-year guidance change. Cite source URLs.\n`;
+  // Mirror the scoreboard's plausibility gate (renderHeadlineTable): when the
+  // recorded actual is flagged implausible vs consensus, the deterministic
+  // scoreboard blanks it with a ⚠ warning — feeding the same values into the
+  // AI context makes the model's Line-by-line table restate exactly what the
+  // scoreboard withheld, contradicting the warning directly above it.
+  const recapCons = parseFinnhubFigure(
+    ctx.event.consensus_value ?? ctx.event.consensus_estimate
+  );
+  const recapActual = parseFinnhubFigure(ctx.event.actual_value);
+  const actualsPlausible = isPlausibleEarnings(
+    recapCons.eps,
+    recapActual.eps,
+    recapCons.revenue,
+    recapActual.revenue
+  );
+
+  const actualBlock = !ctx.event.actual_value
+    ? `\n## Reported actual\nEnrichment hasn't captured the actual yet. Use web_search to find the press-release values: EPS, revenue, segment splits, full-year guidance change. Cite source URLs.\n`
+    : actualsPlausible
+      ? `\n## Reported actual (from enrichment runner)\n${ctx.event.actual_value}\n`
+      : `\n## Reported actual\nOur database has a recorded actual for this print, but it was **flagged as implausible vs consensus** (likely a data-vendor scrape error) and has been withheld — the scoreboard above blanks it for the same reason. Do NOT state, infer, or reconstruct those withheld figures. Use web_search to find the actual reported EPS / revenue from the company's press release, cite source URLs, and use ONLY those verified figures in your Line-by-line table and prose.\n`;
 
   const reactionBlock = ctx.reactionSnapshotMarkdown
     ? `\n## Market reaction (T+2h, captured automatically)\n${ctx.reactionSnapshotMarkdown}\n`
