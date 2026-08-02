@@ -2,6 +2,7 @@
 
 import { useState, useEffect, type ReactNode } from "react";
 import { Pct, PrivateText } from "@/lib/privacy/components";
+import { formatCompactUSD } from "@/lib/format";
 import { EmptySection } from "./EmptySection";
 import {
   interpretDuration,
@@ -72,7 +73,7 @@ export function FixedIncomeCard({ scope }: { scope?: string }) {
           value={<Pct value={data.bondAllocationPct} digits={1} />}
           subtext={
             <PrivateText>
-              {`$${(data.totalBondValue / 1000).toFixed(0)}K of $${(data.portfolioValue / 1000).toFixed(0)}K`}
+              {`${formatCompactUSD(data.totalBondValue)} of ${formatCompactUSD(data.portfolioValue)}`}
             </PrivateText>
           }
         />
