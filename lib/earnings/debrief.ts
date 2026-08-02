@@ -290,8 +290,9 @@ export function renderDebriefSections(
       parts.push("", `**From the call** (desk note):\n\n${deskNoteExcerpt(tx.summary)}`);
     }
 
-    // Freshest call note for the family — deliberately NOT passing a
-    // Date-bounded, family-aware lookup — NOT getLatestCallNoteForFamily.
+    // Freshest call note for the family via a DATE-BOUNDED, family-aware
+    // lookup — deliberately getCallNoteNearDateForFamily, NOT
+    // getLatestCallNoteForFamily.
     // That helper (absent a `beforeDate`) returns the family's single most
     // recent note no matter its age; a debriefed print with no note yet
     // but a note from last quarter would then render that stale note as
@@ -327,20 +328,47 @@ ${sections.map((s) => s.markdown).join("\n\n---\n\n")}`;
 }
 
 /**
+ * `sent_at` is a UTC "YYYY-MM-DD HH:MM:SS" string (SQLite `datetime('now')`),
+ * so it needs the +"Z" idiom before parsing; rendered in ET because every
+ * user-facing time in this app is ET. Returns null for a missing/malformed
+ * stamp so the roster degrades to a bare symbol rather than "Invalid Date".
+ */
+function formatRosterTimeET(sentAt: string | null | undefined): string | null {
+  if (!sentAt) return null;
+  const iso = sentAt.replace(" ", "T") + (sentAt.endsWith("Z") ? "" : "Z");
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return null;
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(ms));
+}
+
+/**
  * Final assembly: AI synthesis first (the email's lede), then the
  * deterministic per-name scoreboards (so every number in the email is
  * independently verifiable against code-rendered data), then — only when
  * non-empty — a one-line roster of names the debrief is deliberately NOT
- * re-narrating because their recap already went out overnight.
+ * re-narrating because their recap already went out overnight. Each roster
+ * entry carries the ET send time ("GS 7:58 PM") so the reader can tell an
+ * email that landed after they went to bed from one they already read.
+ *
+ * No date parameter: the `Earnings Debrief — {date}` header is the email's
+ * title/subject (lib/earnings/debrief-send.ts), not body content.
  */
 export function assembleDebriefMarkdown(
   aiMarkdown: string,
   sections: DebriefSection[],
   roster: DebriefRosterEntry[],
-  dateStr: string,
 ): string {
-  void dateStr; // The `# Earnings Debrief — {dateStr}` header is the email title, not body content.
   const scoreboards = `${aiMarkdown}\n\n---\n\n## The scoreboards\n\n${sections.map((s) => s.markdown).join("\n\n")}`;
   if (roster.length === 0) return scoreboards;
-  return `${scoreboards}\n\n*Recapped individually overnight: ${roster.map((r) => r.symbol).join(" · ")}*`;
+  const names = roster
+    .map((r) => {
+      const time = formatRosterTimeET(r.sentAt);
+      return time ? `${r.symbol} ${time}` : r.symbol;
+    })
+    .join(" · ");
+  return `${scoreboards}\n\n*Recapped individually overnight: ${names}*`;
 }
