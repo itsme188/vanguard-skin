@@ -190,3 +190,36 @@ describe("syncCalendarForWeek — macro re-sync preserves enrichment", () => {
     expect(getRow("fred:55:2026-06-09")!.release_time).toBe("10:00");
   });
 });
+
+describe("upsertCalendarEvents — date-verification stamp clearing", () => {
+  /** A minimal finnhub earnings row, built on the existing macroEvent helper. */
+  function baseEvent(overrides: Partial<CalendarEventInput> = {}): CalendarEventInput {
+    return macroEvent("2026-08-05", "earnings", 0, {
+      source: "finnhub",
+      title: "LLY earnings",
+      source_key: "finnhub:LLY:x",
+      ...overrides,
+    });
+  }
+
+  it("a sync upsert that moves event_date clears the date-verification stamp", () => {
+    // Insert a finnhub row, stamp it verified, then re-upsert with a new date.
+    upsertCalendarEvents(db, [baseEvent({ source_key: "finnhub:LLY:x", event_date: "2026-08-05" })]);
+    db.prepare(
+      `UPDATE calendar_events SET date_verified_at = datetime('now'),
+         date_verification_note = 'confirmed' WHERE source_key = 'finnhub:LLY:x'`,
+    ).run();
+    upsertCalendarEvents(db, [baseEvent({ source_key: "finnhub:LLY:x", event_date: "2026-08-06" })]);
+    const row = db.prepare(
+      `SELECT date_verified_at, date_verification_note FROM calendar_events WHERE source_key = 'finnhub:LLY:x'`,
+    ).get() as { date_verified_at: string | null; date_verification_note: string | null };
+    expect(row.date_verified_at).toBeNull();
+    expect(row.date_verification_note).toBeNull();
+
+    // Same-date re-upsert keeps the stamp.
+    db.prepare(`UPDATE calendar_events SET date_verified_at = datetime('now') WHERE source_key='finnhub:LLY:x'`).run();
+    upsertCalendarEvents(db, [baseEvent({ source_key: "finnhub:LLY:x", event_date: "2026-08-06" })]);
+    const row2 = db.prepare(`SELECT date_verified_at FROM calendar_events WHERE source_key='finnhub:LLY:x'`).get() as { date_verified_at: string | null };
+    expect(row2.date_verified_at).not.toBeNull();
+  });
+});

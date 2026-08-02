@@ -48,6 +48,13 @@ export interface CalendarEventInput {
  * fresh input that resolves no release time (e.g. other_macro with a lost
  * event_time) can't clear a value that was backfilled and feeds the
  * enrichment window filter.
+ *
+ * Date-verification stamp (migration 072): date_verified_at /
+ * date_verification_note certify a SPECIFIC event_date + slot. When a source
+ * moves an event's date on re-sync, the old stamp is no longer true of the
+ * new date, so both columns are NULLed in that case (and preserved
+ * otherwise) — the opposite of the "never clear" rule above, because here
+ * the value being cleared is itself invalidated by the date change.
  */
 export function upsertCalendarEvents(
   db: Database.Database,
@@ -95,6 +102,10 @@ export function upsertCalendarEvents(
      ON CONFLICT(source_key) DO UPDATE SET
        event_type = excluded.event_type,
        event_date = excluded.event_date,
+       date_verified_at = CASE WHEN excluded.event_date != calendar_events.event_date
+                               THEN NULL ELSE calendar_events.date_verified_at END,
+       date_verification_note = CASE WHEN excluded.event_date != calendar_events.event_date
+                               THEN NULL ELSE calendar_events.date_verification_note END,
        event_time = excluded.event_time,
        release_time = COALESCE(excluded.release_time, calendar_events.release_time),
        title = excluded.title,
