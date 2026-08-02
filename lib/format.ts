@@ -90,6 +90,23 @@ export function formatLargeUSD(value: number): string {
   return `${sign}${body}`;
 }
 
+// Compact K/M/B money for allocation/coverage-style UI ("$48K of $1.9M").
+// Sign is hoisted OUTSIDE the "$" ("-$14K", never "$-14K") and dropped when
+// the rounded output is zero, mirroring formatLargeUSD. Differs from
+// formatLargeUSD in the $1k–$1M band: that one comma-groups the full figure
+// (scoreboard cells); this one abbreviates to K (dense analysis tables).
+export function formatCompactUSD(value: number): string {
+  if (!Number.isFinite(value)) return "—";
+  const abs = Math.abs(value);
+  let body: string;
+  if (abs >= 1_000_000_000) body = `$${(abs / 1_000_000_000).toFixed(2)}B`;
+  else if (abs >= 1_000_000) body = `$${(abs / 1_000_000).toFixed(1)}M`;
+  else if (abs >= 1_000) body = `$${(abs / 1_000).toFixed(0)}K`;
+  else body = `$${abs.toFixed(0)}`;
+  const sign = value < 0 && !rendersAsZero(body) ? "-" : "";
+  return `${sign}${body}`;
+}
+
 // Same scaling as formatLargeUSD but without the "$" glyph. For unit counts
 // (subscribers, contracts, etc.) and contexts that already supply currency.
 export function formatLargeNumber(value: number): string {

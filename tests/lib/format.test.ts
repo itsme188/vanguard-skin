@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   formatCompactOptionSymbol,
+  formatCompactUSD,
   formatLargeNumber,
   formatProfitFactor,
   formatLargeUSD,
@@ -196,6 +197,39 @@ describe("formatCompactOptionSymbol", () => {
   it("passes non-OCC symbols through unchanged", () => {
     expect(formatCompactOptionSymbol("AAPL")).toBe("AAPL");
     expect(formatCompactOptionSymbol("BRK/B")).toBe("BRK/B");
+  });
+});
+
+describe("formatCompactUSD", () => {
+  // QA 2026-08-02 pair: the Fixed Income denominator rendered "$1541K"
+  // instead of "$1.5M", and the Breakdown/Greeks tables rendered the sign
+  // INSIDE the dollar ("$-14K"). Compact scaling + sign-outside are pinned.
+  it("abbreviates to M at and above $1M", () => {
+    expect(formatCompactUSD(1_541_000)).toBe("$1.5M");
+    expect(formatCompactUSD(1_869_000)).toBe("$1.9M");
+  });
+
+  it("abbreviates to K in the $1k–$1M band", () => {
+    expect(formatCompactUSD(48_163)).toBe("$48K");
+  });
+
+  it("renders sub-$1k values whole-dollar", () => {
+    expect(formatCompactUSD(945.4)).toBe("$945");
+  });
+
+  it("hoists the negative sign outside the dollar glyph", () => {
+    expect(formatCompactUSD(-14_000)).toBe("-$14K");
+    expect(formatCompactUSD(-2_100_000)).toBe("-$2.1M");
+    expect(formatCompactUSD(-475)).toBe("-$475");
+  });
+
+  it("drops the sign when the rounded output is zero", () => {
+    expect(formatCompactUSD(-0.4)).toBe("$0");
+  });
+
+  it("renders non-finite input as an em dash", () => {
+    expect(formatCompactUSD(NaN)).toBe("—");
+    expect(formatCompactUSD(Infinity)).toBe("—");
   });
 });
 
