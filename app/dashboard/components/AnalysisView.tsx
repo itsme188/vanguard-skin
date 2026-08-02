@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { formatCompactUSD } from "@/lib/format";
 import type {
   AllocationEntry,
   ConcentrationMetrics,
@@ -90,10 +91,10 @@ const CHART_COLORS = [
 const OTHER_COLOR = "#64748B";
 const MAX_SLICES = 8;
 
+// Delegates to the shared compact formatter so negatives render "-$14K",
+// never "$-14K" (QA 2026-08-02: the Breakdown table's sign sat inside the $).
 function formatMoney(value: number): string {
-  if (Math.abs(value) >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`;
-  if (Math.abs(value) >= 1_000) return `$${(value / 1_000).toFixed(0)}K`;
-  return `$${value.toFixed(0)}`;
+  return formatCompactUSD(value);
 }
 
 function bucketAllocation(allocation: AllocationEntry[]): AllocationEntry[] {
