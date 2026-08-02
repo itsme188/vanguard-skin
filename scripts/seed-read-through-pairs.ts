@@ -12,6 +12,9 @@
  * Migration: lib/db/migrations/044_read_through_pairs.sql
  */
 
+import { config } from "dotenv";
+config({ path: ".env.local" });
+
 import { db } from "../lib/db";
 
 interface DirectedPair {
@@ -27,10 +30,15 @@ const dryRun = process.argv.includes("--dry-run");
 // ── Directed pairs (1 reporter → 1 target) ────────────────────────────
 const directed: DirectedPair[] = [
   {
-    reporter: "PRTO",
+    // Proto Labs is PRLB — this row shipped as "PRTO" (a defunct biotech) on
+    // 2026-05-02 and the calendar sweep silently scanned the dead ticker for
+    // three months; XMTR's canonical read-through never fired. Fixed
+    // 2026-08-02 (DB row updated in place). validateSymbols() below exists
+    // so a typo like this can never seed silently again.
+    reporter: "PRLB",
     target: "XMTR",
     hypothesis:
-      "Both run on-demand digital manufacturing platforms (CNC, 3D-printing, sheet metal). Their order books move on the same industrial-CapEx cycle and component-shortage signals; PRTO's beat/miss + guide are a leading read on XMTR's quarter.",
+      "Both run on-demand digital manufacturing platforms (CNC, 3D-printing, sheet metal). Their order books move on the same industrial-CapEx cycle and component-shortage signals; PRLB's beat/miss + guide are a leading read on XMTR's quarter.",
     weight: 1.0,
   },
   {
@@ -66,33 +74,84 @@ const allPairs: DirectedPair[] = [...directed, ...adClusterPairs];
 
 console.log(`[seed] ${allPairs.length} pairs queued (${directed.length} directed + ${adClusterPairs.length} cluster fan-out)`);
 
-if (dryRun) {
-  console.log("[seed] --dry-run — not writing");
-  for (const p of allPairs) {
-    console.log(
-      `  ${p.reporter} → ${p.target}` +
-        (p.groupLabel ? ` (${p.groupLabel}, w=${p.weight ?? 1})` : ` (w=${p.weight ?? 1})`),
+/**
+ * Validate every symbol against Finnhub before writing anything. A wrong
+ * reporter ticker fails SILENTLY downstream (the calendar sweep scans a
+ * dead symbol forever — the PRTO/PRLB bug, 2026-05-02 → 2026-08-02), so
+ * the seed must be the loud gate. Uses /stock/profile2: a real US listing
+ * returns a populated object; an unknown/defunct ticker returns {}.
+ * Fails CLOSED — if Finnhub is unreachable or the key is missing, the
+ * seed aborts rather than writing unvalidated symbols.
+ */
+async function validateSymbols(pairs: DirectedPair[]): Promise<void> {
+  const apiKey = process.env.FINNHUB_API_KEY;
+  if (!apiKey) {
+    console.error("[seed] FINNHUB_API_KEY missing — cannot validate symbols; aborting (fail closed)");
+    process.exit(1);
+  }
+  const symbols = Array.from(
+    new Set(pairs.flatMap((p) => [p.reporter.toUpperCase(), p.target.toUpperCase()])),
+  );
+  const bad: string[] = [];
+  for (const sym of symbols) {
+    const res = await fetch(
+      `https://finnhub.io/api/v1/stock/profile2?symbol=${sym}&token=${apiKey}`,
     );
+    if (!res.ok) {
+      console.error(`[seed] Finnhub HTTP ${res.status} validating ${sym} — aborting (fail closed)`);
+      process.exit(1);
+    }
+    const profile = (await res.json()) as { ticker?: string; name?: string };
+    if (!profile.ticker) {
+      bad.push(sym);
+      console.error(`[seed] ✗ ${sym} — Finnhub has no profile for this ticker`);
+    } else {
+      console.log(`[seed] ✓ ${sym} — ${profile.name ?? profile.ticker}`);
+    }
+    await new Promise((r) => setTimeout(r, 250)); // free-tier pacing
   }
-  process.exit(0);
-}
-
-const stmt = db.prepare(
-  `INSERT OR IGNORE INTO read_through_pairs
-     (reporter_symbol, target_symbol, hypothesis, group_label, weight)
-   VALUES (?, ?, ?, ?, ?)`,
-);
-
-let inserted = 0;
-let skipped = 0;
-for (const p of allPairs) {
-  const result = stmt.run(p.reporter, p.target, p.hypothesis, p.groupLabel ?? null, p.weight ?? 1.0);
-  if (result.changes > 0) {
-    inserted++;
-    console.log(`  + ${p.reporter} → ${p.target}`);
-  } else {
-    skipped++;
+  if (bad.length > 0) {
+    console.error(`[seed] aborting — unknown symbol(s): ${bad.join(", ")}. Fix the tickers and re-run.`);
+    process.exit(1);
   }
 }
 
-console.log(`[seed] inserted=${inserted} skipped=${skipped} (already present)`);
+async function main() {
+  await validateSymbols(allPairs);
+
+  if (dryRun) {
+    console.log("[seed] --dry-run — not writing");
+    for (const p of allPairs) {
+      console.log(
+        `  ${p.reporter} → ${p.target}` +
+          (p.groupLabel ? ` (${p.groupLabel}, w=${p.weight ?? 1})` : ` (w=${p.weight ?? 1})`),
+      );
+    }
+    return;
+  }
+
+  const stmt = db.prepare(
+    `INSERT OR IGNORE INTO read_through_pairs
+       (reporter_symbol, target_symbol, hypothesis, group_label, weight)
+     VALUES (?, ?, ?, ?, ?)`,
+  );
+
+  let inserted = 0;
+  let skipped = 0;
+  for (const p of allPairs) {
+    const result = stmt.run(p.reporter, p.target, p.hypothesis, p.groupLabel ?? null, p.weight ?? 1.0);
+    if (result.changes > 0) {
+      inserted++;
+      console.log(`  + ${p.reporter} → ${p.target}`);
+    } else {
+      skipped++;
+    }
+  }
+
+  console.log(`[seed] inserted=${inserted} skipped=${skipped} (already present)`);
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

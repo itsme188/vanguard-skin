@@ -7,8 +7,12 @@ import type Database from "better-sqlite3";
  * on TARGET's upcoming print updates." The earnings preview composer uses
  * `getReadThroughsForTargets` to pull pairs where the upcoming-print symbol
  * is the target; the calendar sweep uses `getReadThroughReporterSymbols` to
- * make sure non-held reporter symbols (e.g. PRTO, RDDT) reach
+ * make sure non-held reporter symbols (e.g. PRLB, RDDT) reach
  * `calendar_events` so their actual + reaction snapshot can be enriched.
+ * Reporter tickers MUST be Finnhub-valid — a wrong ticker fails silently
+ * (the sweep scans a dead symbol forever; the PRTO-for-PRLB bug cost the
+ * XMTR read-through its entire first season). scripts/seed-read-through-pairs.ts
+ * validates every symbol against Finnhub before writing.
  *
  * Design doc: docs/plans/2026-05-02-stock-to-stock-read-throughs.md.
  */
