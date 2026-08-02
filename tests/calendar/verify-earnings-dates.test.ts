@@ -242,6 +242,65 @@ describe("findDateVerificationCandidates", () => {
     expect(result[0].symbol).toBe("GOOG");
   });
 
+  // ── F7: user-authored manual rows are never the verifier's business ──────
+  it("never selects a source='manual' row (user-authored / verifier-minted)", () => {
+    const acct = getAccount("Vanguard Taxable");
+    const sec = seedSecurity("MANL");
+    seedHolding(acct, sec, 10);
+
+    seedEvent({ symbol: "MANL", event_date: "2026-08-04", source: "manual" });
+    seedEvent({ symbol: "MANL", event_date: "2026-08-05", source: "finnhub" });
+
+    const result = findDateVerificationCandidates(db, { now: NOW });
+    expect(result.map((r) => r.event_date)).toEqual(["2026-08-05"]);
+  });
+
+  // ── F5: near-print re-open (the OCUL shape) ──────────────────────────────
+  // A permanent stamp meant a row verified as "unconfirmed" at T-7 was never
+  // looked at again — even though the IR announcement usually exists by T-2.
+  // A stamped row whose print is within 2 days re-opens once the stamp is
+  // more than 2 days old.
+  it("re-opens a stamped row inside 2 days of the print when the stamp is stale", () => {
+    const acct = getAccount("Vanguard Taxable");
+    const sec = seedSecurity("OCUL");
+    seedHolding(acct, sec, 10);
+
+    // T-1 print, stamped over a week ago.
+    seedEvent({
+      symbol: "OCUL",
+      event_date: "2026-08-03",
+      date_verified_at: "2026-07-25 10:00:00",
+    });
+
+    const result = findDateVerificationCandidates(db, { now: NOW });
+    expect(result.map((r) => r.event_date)).toEqual(["2026-08-03"]);
+  });
+
+  it("keeps a stamped row excluded when the print is still 5 days out", () => {
+    const acct = getAccount("Vanguard Taxable");
+    const sec = seedSecurity("FARP");
+    seedHolding(acct, sec, 10);
+
+    seedEvent({
+      symbol: "FARP",
+      event_date: "2026-08-07",
+      date_verified_at: "2026-07-25 10:00:00",
+    });
+
+    expect(findDateVerificationCandidates(db, { now: NOW })).toEqual([]);
+  });
+
+  it("keeps a near-print row excluded while its stamp is still fresh", () => {
+    const acct = getAccount("Vanguard Taxable");
+    const sec = seedSecurity("FRSH");
+    seedHolding(acct, sec, 10);
+
+    const id = seedEvent({ symbol: "FRSH", event_date: "2026-08-03" });
+    db.prepare(`UPDATE calendar_events SET date_verified_at = datetime('now') WHERE id = ?`).run(id);
+
+    expect(findDateVerificationCandidates(db, { now: NOW })).toEqual([]);
+  });
+
   it("caps at limit ordered by event_date asc", () => {
     const acct = getAccount("Vanguard Taxable");
     for (const [symbol, date] of [
@@ -577,6 +636,83 @@ describe("applyVerdict", () => {
     expect(row.event_date).toBe("2026-08-05");
   });
 
+  // ── F2: sanity bound on confirmed_date ───────────────────────────────────
+  // The model can hallucinate a date from the WRONG quarter (last quarter's
+  // print, or a placeholder a year out). Either shape would move a live
+  // earnings row onto a date nothing else agrees with, so an out-of-bounds
+  // confirmed_date is treated as unconfirmed no matter how confident the
+  // verdict claims to be.
+  it("never corrects on a confirmed_date in the past (treated as unconfirmed)", () => {
+    const acct = getAccount("Vanguard Taxable");
+    const sec = seedSecurity("PAST");
+    seedHolding(acct, sec, 10);
+    const id = seedEvent({ symbol: "PAST", event_date: "2026-08-05", event_time: "BMO" });
+    const candidate = toCandidate(id);
+
+    const verdict: DateVerdict = {
+      symbol: "PAST",
+      confirmed_date: "2026-05-05", // last quarter's print
+      slot: "amc",
+      confidence: "confirmed",
+      source: "ir",
+    };
+
+    const outcome = applyVerdict(db, candidate, verdict, { apply: true, today: "2026-08-02" });
+
+    expect(outcome.action).toBe("unverifiable");
+    expect(outcome.detail).toContain("implausible confirmed_date 2026-05-05");
+
+    // Row untouched apart from the stamp — no correction, no suppression.
+    expect(countEventsForSymbol("PAST")).toBe(1);
+    const row = getEventRow(id)!;
+    expect(row.event_date).toBe("2026-08-05");
+    expect(row.date_verified_at).not.toBeNull();
+    expect(countSuppressions("PAST", "2026-08-05")).toBe(0);
+  });
+
+  it("never corrects on a confirmed_date far beyond the next quarter", () => {
+    const acct = getAccount("Vanguard Taxable");
+    const sec = seedSecurity("FUTR");
+    seedHolding(acct, sec, 10);
+    const id = seedEvent({ symbol: "FUTR", event_date: "2026-08-05", event_time: "BMO" });
+    const candidate = toCandidate(id);
+
+    const verdict: DateVerdict = {
+      symbol: "FUTR",
+      confirmed_date: "2027-08-05", // a year out
+      slot: "amc",
+      confidence: "confirmed",
+      source: "ir",
+    };
+
+    const outcome = applyVerdict(db, candidate, verdict, { apply: true, today: "2026-08-02" });
+
+    expect(outcome.action).toBe("unverifiable");
+    expect(outcome.detail).toContain("implausible confirmed_date 2027-08-05");
+    expect(countEventsForSymbol("FUTR")).toBe(1);
+    expect(getEventRow(id)!.event_date).toBe("2026-08-05");
+  });
+
+  it("still corrects a plausible next-quarter date inside the bound", () => {
+    const acct = getAccount("Vanguard Taxable");
+    const sec = seedSecurity("OKAY");
+    seedHolding(acct, sec, 10);
+    const id = seedEvent({ symbol: "OKAY", event_date: "2026-08-05", event_time: "BMO" });
+    const candidate = toCandidate(id);
+
+    const verdict: DateVerdict = {
+      symbol: "OKAY",
+      confirmed_date: "2026-08-20",
+      slot: "amc",
+      confidence: "confirmed",
+      source: "ir",
+    };
+
+    const outcome = applyVerdict(db, candidate, verdict, { apply: true, today: "2026-08-02" });
+
+    expect(outcome.action).toBe("date-corrected");
+  });
+
   it("apply:false (dry-run) → outcomes computed, zero DB writes", () => {
     const acct = getAccount("Vanguard Taxable");
     const sec = seedSecurity("DRYR");
@@ -614,7 +750,7 @@ describe("runEarningsDateVerification", () => {
       throw new Error("should never be called");
     });
 
-    const result = await runEarningsDateVerification(db, { now: NOW, fetchVerdicts });
+    const result = await runEarningsDateVerification(db, { now: NOW, apply: true, fetchVerdicts });
 
     expect(result).toEqual({ outcomes: [], corrections: 0 });
     expect(fetchVerdicts).not.toHaveBeenCalled();
@@ -638,7 +774,7 @@ describe("runEarningsDateVerification", () => {
       ]),
     );
 
-    const result = await runEarningsDateVerification(db, { now: NOW, fetchVerdicts });
+    const result = await runEarningsDateVerification(db, { now: NOW, apply: true, fetchVerdicts });
 
     expect(result.outcomes).toHaveLength(1);
     expect(result.outcomes[0].candidate.symbol).toBe("GOOG");
@@ -707,7 +843,7 @@ describe("runEarningsDateVerification", () => {
       throw new Error("network exploded");
     });
 
-    const result = await runEarningsDateVerification(db, { now: NOW, fetchVerdicts });
+    const result = await runEarningsDateVerification(db, { now: NOW, apply: true, fetchVerdicts });
 
     expect(result).toEqual({ outcomes: [], corrections: 0 });
   });
@@ -729,7 +865,7 @@ describe("maybeRunDailyDateVerification", () => {
 
     expect(result).toEqual({ ran: true });
     expect(runner).toHaveBeenCalledTimes(1);
-    expect(runner).toHaveBeenCalledWith(db, { now });
+    expect(runner).toHaveBeenCalledWith(db, { now, apply: true });
 
     const row = db
       .prepare(`SELECT value FROM settings WHERE key = ?`)

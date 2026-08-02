@@ -28,6 +28,11 @@ const DEFAULT_LIMIT = 25;
 // findDateVerificationCandidates' own default (25) — a daily verification
 // pass budgets a handful of AI calls, not the whole horizon at once.
 const DEFAULT_VERIFICATION_LIMIT = 8;
+// A confirmed_date this far past today is not "the next quarterly print" —
+// it's a hallucinated placeholder. Wide enough to absorb a genuine multi-week
+// slip (a company moving from early to late in its reporting window) without
+// admitting next quarter's date.
+const MAX_CONFIRMED_DATE_LOOKAHEAD_DAYS = 37;
 
 // ── Daily gate ───────────────────────────────────────────────────────────
 const DAILY_GATE_SETTINGS_KEY = "earnings_date_verify_last_run";
@@ -68,6 +73,21 @@ export interface DateVerdict {
  * could produce two diverging verdicts for one company. Rows arrive from SQL
  * already ordered event_date ASC, id ASC, so "keep the first occurrence per
  * family" naturally keeps the earliest-date/earliest-id row.
+ *
+ * `source = 'manual'` rows are NEVER candidates: manual rows are exclusively
+ * user-authored (the "+ Add ticker" flow) or verifier-authored corrections,
+ * and neither wants an AI second-guessing the date the user just set. The
+ * accepted consequence is that a corrected row is not re-verified later —
+ * including by the near-print re-open below. That is deliberate: the
+ * correction already carries a confirmed source, and an adopted vendor row
+ * (see correctEarningsEventDate) stays eligible anyway.
+ *
+ * Near-print re-open: a stamped row is normally excluded forever, but the
+ * stamp often records "unconfirmed — no announcement yet" from a T-7 pass,
+ * while the IR announcement typically exists by T-2 (the OCUL shape). So a
+ * row whose print is within 2 days re-enters candidacy once its last
+ * verification is more than 2 days old — one extra look right where it
+ * matters, without re-spending on the whole horizon daily.
  */
 export function findDateVerificationCandidates(
   db: Database.Database,
@@ -79,17 +99,22 @@ export function findDateVerificationCandidates(
 
   const rows = db
     .prepare(
-      `SELECT id, symbol, event_date, event_time, release_time, source
-         FROM calendar_events
-        WHERE event_type = 'earnings'
-          AND COALESCE(superseded, 0) = 0
-          AND symbol IS NOT NULL
-          AND actual_value IS NULL
-          AND date_verified_at IS NULL
-          AND event_date BETWEEN ? AND ?
-        ORDER BY event_date ASC, id ASC`,
+      `SELECT ce.id, ce.symbol, ce.event_date, ce.event_time, ce.release_time, ce.source
+         FROM calendar_events ce
+        WHERE ce.event_type = 'earnings'
+          AND COALESCE(ce.superseded, 0) = 0
+          AND ce.symbol IS NOT NULL
+          AND ce.actual_value IS NULL
+          AND ce.source != 'manual'
+          AND (
+            ce.date_verified_at IS NULL
+            OR (ce.event_date <= date(?, '+2 days')
+                AND datetime(ce.date_verified_at) <= datetime('now', '-2 days'))
+          )
+          AND ce.event_date BETWEEN ? AND ?
+        ORDER BY ce.event_date ASC, ce.id ASC`,
     )
-    .all(today, horizon) as DateVerificationCandidate[];
+    .all(today, today, horizon) as DateVerificationCandidate[];
 
   if (rows.length === 0) return [];
 
@@ -249,6 +274,8 @@ export interface VerificationOutcome {
  *
  * Apply-semantics matrix (see docs/superpowers/sdd/2026-08-02-earnings-date-verification):
  *   - no verdict OR confirmed_date null → stamp "unverifiable — <source|no source found>"
+ *   - confirmed_date outside [today, today+MAX_CONFIRMED_DATE_LOOKAHEAD_DAYS]
+ *                                       → stamp "implausible confirmed_date ..." (never corrects)
  *   - confidence !== "confirmed"        → stamp "unconfirmed — left as vendor date (...)"
  *   - date equal + slot agrees/unknown  → stamp "confirmed via <source>", action "verified"
  *   - date equal + slot differs         → correctEarningsEventDate (same date, new slot),
@@ -266,7 +293,7 @@ export function applyVerdict(
   db: Database.Database,
   candidate: DateVerificationCandidate,
   verdict: DateVerdict | undefined,
-  opts: { apply: boolean },
+  opts: { apply: boolean; today?: string },
 ): VerificationOutcome {
   const stamp = (note: string, eventId: number): void => {
     if (!opts.apply) return;
@@ -277,6 +304,22 @@ export function applyVerdict(
 
   if (!verdict || verdict.confirmed_date === null) {
     const note = `unverifiable — ${verdict?.source ?? "no source found"}`;
+    stamp(note, candidate.id);
+    return { candidate, action: "unverifiable", detail: note };
+  }
+
+  // Sanity bound BEFORE any branch that trusts the verdict. A model that
+  // surfaces last quarter's print (a past date) or a placeholder a year out
+  // would otherwise move a live earnings row onto a date nothing else agrees
+  // with — and the move is destructive (the old row is suppressed). Out of
+  // bounds is treated exactly like an unconfirmed verdict: stamped so the
+  // pass isn't re-spent daily, never corrected.
+  const today = opts.today ?? todayET();
+  const latestPlausible = addDays(today, MAX_CONFIRMED_DATE_LOOKAHEAD_DAYS);
+  if (verdict.confirmed_date < today || verdict.confirmed_date > latestPlausible) {
+    const note =
+      `implausible confirmed_date ${verdict.confirmed_date} — treated as unconfirmed ` +
+      `(outside ${today}..${latestPlausible})`;
     stamp(note, candidate.id);
     return { candidate, action: "unverifiable", detail: note };
   }
@@ -303,10 +346,14 @@ export function applyVerdict(
         correctDate: candidate.event_date,
         slot: verdict.slot.toUpperCase() as "BMO" | "AMC",
       });
-      if (!result.ok) {
-        return { candidate, action: "refused", detail: result.refusedReason ?? "correction refused" };
+      if (!result.ok || !result.newEventId) {
+        return {
+          candidate,
+          action: "refused",
+          detail: result.refusedReason ?? "correction returned no corrected event id",
+        };
       }
-      stamp(note, result.newEventId!);
+      stamp(note, result.newEventId);
       return { candidate, action: "slot-corrected", detail: note };
     }
 
@@ -326,10 +373,14 @@ export function applyVerdict(
     correctDate: verdict.confirmed_date,
     slot: verdict.slot ? (verdict.slot.toUpperCase() as "BMO" | "AMC") : undefined,
   });
-  if (!result.ok) {
-    return { candidate, action: "refused", detail: result.refusedReason ?? "correction refused" };
+  if (!result.ok || !result.newEventId) {
+    return {
+      candidate,
+      action: "refused",
+      detail: result.refusedReason ?? "correction returned no corrected event id",
+    };
   }
-  stamp(note, result.newEventId!);
+  stamp(note, result.newEventId);
   return { candidate, action: "date-corrected", detail: note };
 }
 
@@ -378,12 +429,17 @@ export async function defaultFetchDateVerdicts(prompt: string): Promise<string> 
  * driver where a bad AI response or a transient network error must not sink
  * the whole job. Whatever outcomes were computed before a failure are
  * returned as-is.
+ *
+ * `apply` is REQUIRED, deliberately: this function deletes and suppresses
+ * calendar rows, so "did the caller mean to write?" must never be answered by
+ * a default. Every call site states its intent (the CLI from its --apply
+ * flag, the daily gate with a literal true).
  */
 export async function runEarningsDateVerification(
   db: Database.Database,
-  opts?: {
+  opts: {
+    apply: boolean;
     now?: Date;
-    apply?: boolean;
     limit?: number;
     fetchVerdicts?: (prompt: string) => Promise<string>;
   },
@@ -393,13 +449,13 @@ export async function runEarningsDateVerification(
     outcomes.filter((o) => o.action === "date-corrected" || o.action === "slot-corrected").length;
 
   try {
-    const limit = opts?.limit ?? DEFAULT_VERIFICATION_LIMIT;
-    const candidates = findDateVerificationCandidates(db, { now: opts?.now, limit });
+    const limit = opts.limit ?? DEFAULT_VERIFICATION_LIMIT;
+    const candidates = findDateVerificationCandidates(db, { now: opts.now, limit });
     if (candidates.length === 0) return { outcomes, corrections: 0 };
 
-    const today = todayET(opts?.now);
+    const today = todayET(opts.now);
     const prompt = buildDateVerificationPrompt(candidates, today);
-    const fetcher = opts?.fetchVerdicts ?? defaultFetchDateVerdicts;
+    const fetcher = opts.fetchVerdicts ?? defaultFetchDateVerdicts;
 
     const text = await fetcher(prompt);
     const verdicts = parseDateVerdicts(text);
@@ -407,16 +463,15 @@ export async function runEarningsDateVerification(
     const verdictBySymbol = new Map<string, DateVerdict>();
     for (const v of verdicts) verdictBySymbol.set(v.symbol.toUpperCase(), v);
 
-    const applyFlag = opts?.apply !== false;
     for (const candidate of candidates) {
       const family = issuerSiblings(candidate.symbol.toUpperCase()).map((s) => s.toUpperCase());
       const verdict = family.map((sym) => verdictBySymbol.get(sym)).find((v) => v !== undefined);
-      outcomes.push(applyVerdict(db, candidate, verdict, { apply: applyFlag }));
+      outcomes.push(applyVerdict(db, candidate, verdict, { apply: opts.apply, today }));
     }
 
     const corrections = countCorrections();
 
-    if (corrections > 0 && opts?.apply !== false) {
+    if (corrections > 0 && opts.apply) {
       const correctionOutcomes = outcomes.filter(
         (o) => o.action === "date-corrected" || o.action === "slot-corrected",
       );
@@ -498,7 +553,7 @@ export async function maybeRunDailyDateVerification(
   setDailyGateLastRunDay(db, today);
 
   const runner = opts?.runner ?? runEarningsDateVerification;
-  await runner(db, { now });
+  await runner(db, { now, apply: true });
 
   return { ran: true };
 }
