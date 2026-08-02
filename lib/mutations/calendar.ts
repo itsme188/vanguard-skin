@@ -5,7 +5,7 @@ import type {
   CalendarEventSource,
 } from "@/lib/types";
 import { resolveReleaseTime, SYMBOL_RELEASE_TIMES_ET } from "@/lib/calendar/release-times";
-import { getSecurityIdForSymbol } from "@/lib/queries/briefing-symbols";
+import { getSecurityIdForSymbolWithSiblings } from "@/lib/queries/briefing-symbols";
 import { mondayOf } from "@/lib/calendar/date-utils";
 
 // ─── Result types ─────────────────────────────────────────────────
@@ -292,25 +292,66 @@ export interface CorrectEarningsDateResult {
 }
 
 /**
+ * The BMO/AMC slot a calendar row effectively sits in: the vendor's own
+ * event_time marker when it's one, else the release_time clock hour (before
+ * noon ET → bmo). Null when neither resolves.
+ *
+ * Deliberately a local copy of lib/calendar/verify-earnings-dates.ts's
+ * exported `effectiveSlot` rather than an import: that module imports
+ * correctEarningsEventDate from THIS file, so importing back would create a
+ * cycle. Keep the two in sync if the slot rules ever change.
+ */
+function rowSlot(row: { event_time: string | null; release_time: string | null }): "BMO" | "AMC" | null {
+  const et = row.event_time?.trim().toUpperCase();
+  if (et === "BMO") return "BMO";
+  if (et === "AMC") return "AMC";
+
+  const rt = row.release_time;
+  if (rt && /^\d{2}:\d{2}/.test(rt)) {
+    const hour = parseInt(rt.slice(0, 2), 10);
+    if (!Number.isNaN(hour)) return hour < 12 ? "BMO" : "AMC";
+  }
+  return null;
+}
+
+/**
  * Correct a WRONG sync-sourced earnings date (the NET case: Finnhub + the
  * calendar carried 2026-07-30; the real print was Aug 6).
  *
  * For every earnings row of SYMBOL on WRONG_DATE: delete it and record a
  * (symbol, date, type) suppression (migration 070) so the next sync sweep
- * can't re-insert it — then insert a manual row on CORRECT_DATE. Extracted
- * from scripts/correct-earnings-date.ts (originally a CLI-only flow) so the
- * automated date verifier can call the same logic.
+ * can't re-insert it — then point the correction at a row on CORRECT_DATE.
+ * Extracted from scripts/correct-earnings-date.ts (originally a CLI-only
+ * flow) so the automated date verifier can call the same logic.
  *
- * Insert-before-delete: the corrected manual row is created FIRST so
- * user-curated earnings_bogeys on the wrong rows can be re-pointed at the
- * new event instead of dying in the delete CASCADE.
+ * Resolve-before-delete: the corrected row is resolved FIRST so user-curated
+ * earnings_bogeys on the wrong rows can be re-pointed at it instead of dying
+ * in the delete CASCADE. Resolution order:
+ *   1. ADOPT an existing non-manual earnings row already sitting on
+ *      correctDate whose slot agrees with the requested one (clearing its
+ *      `superseded` flag). Adoption preserves the vendor's consensus, its
+ *      finnhub-source_key enrichment road, and sync freshness — and a later
+ *      vendor date-move re-opens verification via the migration-072 clause,
+ *      which is exactly the designed reopen. Only attempted when correctDate
+ *      differs from wrongDate: on a same-date slot fix the correction
+ *      suppresses that very (symbol, date) tuple, which would strand the
+ *      adopted vendor row (the next sync's delete-then-reinsert would remove
+ *      it and the suppression would block the re-insert).
+ *   2. Otherwise MINT a manual row (sync-immune), carrying the wrong row's
+ *      consensus_estimate + expected_impact so a correction never silently
+ *      downgrades the event to "no consensus". A slot DISAGREEMENT on
+ *      correctDate falls here on purpose — editing a vendor row's slot in
+ *      place gets re-clobbered by the next sync upsert.
  *
  * Refuses (ok:false) when ANY wrong row already has captured actuals — that
  * print really happened on wrongDate, so nothing is deleted. This check runs
  * BEFORE any write.
  *
  * Idempotent: re-running with no wrong-date rows left just ensures the
- * manual row exists (returns the same newEventId, empty deletedIds).
+ * corrected row exists (returns the same newEventId, empty deletedIds).
+ *
+ * All writes run inside ONE transaction (every step is synchronous), so a
+ * throw mid-way can't leave the wrong rows deleted with no corrected row.
  */
 export function correctEarningsEventDate(
   db: Database.Database,
@@ -320,7 +361,8 @@ export function correctEarningsEventDate(
 
   const wrongRows = db
     .prepare(
-      `SELECT id, source, source_key, event_time, actual_value
+      `SELECT id, source, source_key, event_time, release_time, actual_value,
+              consensus_estimate, expected_impact
          FROM calendar_events
         WHERE UPPER(symbol) = ? AND event_date = ? AND event_type = 'earnings'`,
     )
@@ -329,7 +371,10 @@ export function correctEarningsEventDate(
     source: string;
     source_key: string;
     event_time: string | null;
+    release_time: string | null;
     actual_value: string | null;
+    consensus_estimate: string | null;
+    expected_impact: string | null;
   }>;
 
   for (const row of wrongRows) {
@@ -343,48 +388,93 @@ export function correctEarningsEventDate(
     }
   }
 
-  // ── 1. Ensure the corrected manual row exists FIRST ───────────────────────
-  const eventTime = opts.slot ?? wrongRows[0]?.event_time ?? "AMC";
-  let newEventId: number;
-  try {
-    const { id } = insertCalendarEvent(db, {
-      symbol,
-      event_date: opts.correctDate,
-      event_type: "earnings",
-      event_time: eventTime,
-      security_id: getSecurityIdForSymbol(db, symbol),
-      week_of: mondayOf(opts.correctDate),
-      description: `Date corrected from ${opts.wrongDate} (wrong sync-sourced date)`,
-    });
-    newEventId = id;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (!/UNIQUE constraint failed/i.test(msg)) throw err;
-    const existing = db
-      .prepare(
-        `SELECT id FROM calendar_events
-          WHERE source = 'manual' AND UPPER(symbol) = ? AND event_date = ? AND event_type = 'earnings'`,
-      )
-      .get(symbol, opts.correctDate) as { id: number };
-    newEventId = existing.id;
-  }
+  const runCorrection = db.transaction((): CorrectEarningsDateResult => {
+    // ── 1. Resolve the corrected row FIRST (adopt, else mint) ───────────────
+    const eventTime = opts.slot ?? wrongRows[0]?.event_time ?? "AMC";
+    let newEventId: number | null = null;
 
-  // ── 2. Migrate user-curated bogeys off the doomed rows ─────────────────────
-  let bogeysMigrated = 0;
-  for (const row of wrongRows) {
-    bogeysMigrated += db
-      .prepare("UPDATE OR IGNORE earnings_bogeys SET event_id = ? WHERE event_id = ?")
-      .run(newEventId, row.id).changes;
-  }
+    if (opts.correctDate !== opts.wrongDate) {
+      const requestedSlot = rowSlot({ event_time: eventTime, release_time: null });
+      const onCorrectDate = db
+        .prepare(
+          `SELECT id, event_time, release_time
+             FROM calendar_events
+            WHERE UPPER(symbol) = ? AND event_date = ? AND event_type = 'earnings'
+              AND source != 'manual'
+            ORDER BY id ASC`,
+        )
+        .all(symbol, opts.correctDate) as Array<{
+        id: number;
+        event_time: string | null;
+        release_time: string | null;
+      }>;
 
-  // ── 3. Delete the wrong rows + suppress the tuple ──────────────────────────
-  const deletedIds: number[] = [];
-  for (const row of wrongRows) {
-    deleteAndSuppressCalendarEvent(db, row.id);
-    deletedIds.push(row.id);
-  }
+      const adoptable = onCorrectDate.find((r) => {
+        const existing = rowSlot(r);
+        // A null on either side is "no claim" — it agrees with anything.
+        return requestedSlot === null || existing === null || existing === requestedSlot;
+      });
 
-  return { ok: true, newEventId, deletedIds, bogeysMigrated };
+      if (adoptable) {
+        db.prepare("UPDATE calendar_events SET superseded = 0 WHERE id = ?").run(adoptable.id);
+        newEventId = adoptable.id;
+      }
+    }
+
+    if (newEventId === null) {
+      try {
+        const { id } = insertCalendarEvent(db, {
+          symbol,
+          event_date: opts.correctDate,
+          event_type: "earnings",
+          event_time: eventTime,
+          security_id: getSecurityIdForSymbolWithSiblings(db, symbol),
+          week_of: mondayOf(opts.correctDate),
+          description: `Date corrected from ${opts.wrongDate} (wrong sync-sourced date)`,
+          // Carry the vendor's figures — a correction moves the date, it does
+          // not discard what the sync row already knew about the print.
+          consensus_estimate: wrongRows[0]?.consensus_estimate ?? null,
+          expected_impact: wrongRows[0]?.expected_impact ?? null,
+        });
+        newEventId = id;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!/UNIQUE constraint failed/i.test(msg)) throw err;
+        const existing = db
+          .prepare(
+            `SELECT id FROM calendar_events
+              WHERE source = 'manual' AND UPPER(symbol) = ? AND event_date = ? AND event_type = 'earnings'`,
+          )
+          .get(symbol, opts.correctDate) as { id: number };
+        newEventId = existing.id;
+      }
+    }
+
+    // The corrected row can itself be one of the "wrong rows" (a slot fix has
+    // wrongDate === correctDate, so every row on that date is selected) —
+    // deleting it would suppress the tuple and destroy the very event this
+    // call exists to preserve. Everything below operates on the rest.
+    const doomedRows = wrongRows.filter((r) => r.id !== newEventId);
+
+    // ── 2. Migrate user-curated bogeys off the doomed rows ─────────────────
+    let bogeysMigrated = 0;
+    for (const row of doomedRows) {
+      bogeysMigrated += db
+        .prepare("UPDATE OR IGNORE earnings_bogeys SET event_id = ? WHERE event_id = ?")
+        .run(newEventId, row.id).changes;
+    }
+
+    // ── 3. Delete the wrong rows + suppress the tuple ──────────────────────
+    const deletedIds: number[] = [];
+    for (const row of doomedRows) {
+      deleteAndSuppressCalendarEvent(db, row.id);
+      deletedIds.push(row.id);
+    }
+
+    return { ok: true, newEventId, deletedIds, bogeysMigrated };
+  });
+
+  return runCorrection();
 }
 
 // updateCalendarEvent / deleteCalendarEvent intentionally only operate on
