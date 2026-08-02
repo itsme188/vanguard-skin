@@ -156,6 +156,24 @@ export async function runEarningsEmailSweep(
   const candidates = findEmailCandidates(db, opts);
   const results: SweepCandidateResult[] = [];
 
+  // ── Morning debrief pass (2026-08-02, retires the EOD wrap) ───────────
+  // Runs unconditionally every tick — runMorningDebrief owns its own
+  // 07:45-08:20 ET window + once-per-day gate, so most ticks are a cheap
+  // no-op. Deliberately BEFORE the per-candidate loop (F1b): an individual
+  // send is a 60-180s Claude call, so a sweep entering at 08:10 with three
+  // candidates would finish the loop past 08:20 and lose the debrief for the
+  // day (the day key is only stamped on a sending pass, but the window has
+  // closed by then). A debrief failure must never fail the sweep — the
+  // sweep's other responsibilities (sends, cloud reconcile, blocked-recap
+  // alerts) still need to complete.
+  let debrief: { sent: boolean; covered: string[] } | null = null;
+  try {
+    const r = await runMorningDebrief(db, { now: opts.now });
+    debrief = { sent: r.sent, covered: r.covered };
+  } catch (err) {
+    console.warn("[earnings-sweep] morning debrief pass failed:", err);
+  }
+
   for (const cand of candidates) {
     const t0 = Date.now();
 
@@ -298,20 +316,6 @@ export async function runEarningsEmailSweep(
     } finally {
       void clearEarningsRunningMarker(cand.phase, cand.eventId);
     }
-  }
-
-  // ── Morning debrief pass (2026-08-02, retires the EOD wrap) ───────────
-  // Runs unconditionally every tick — runMorningDebrief owns its own
-  // 07:45-08:20 ET window + once-per-day gate, so most ticks are a cheap
-  // no-op. A debrief failure must never fail the sweep — the sweep's other
-  // responsibilities (sends, cloud reconcile, blocked-recap alerts) still
-  // need to complete.
-  let debrief: { sent: boolean; covered: string[] } | null = null;
-  try {
-    const r = await runMorningDebrief(db, { now: opts.now });
-    debrief = { sent: r.sent, covered: r.covered };
-  } catch (err) {
-    console.warn("[earnings-sweep] morning debrief pass failed:", err);
   }
 
   let recapAlerts = 0;
