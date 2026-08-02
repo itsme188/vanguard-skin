@@ -15,7 +15,14 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
-import { findDebriefCandidates } from "@/lib/earnings/debrief";
+import {
+  findDebriefCandidates,
+  renderDebriefSections,
+  buildDebriefPrompt,
+  assembleDebriefMarkdown,
+  type DebriefSection,
+  type DebriefRosterEntry,
+} from "@/lib/earnings/debrief";
 import {
   setMutedEarningsSymbols,
   setEarningsEmailsEnabled,
@@ -93,6 +100,42 @@ function seedRecapSkip(eventId: number): void {
   db.prepare(`INSERT INTO earnings_email_skips (event_id, phase) VALUES (?, 'recap')`).run(
     eventId,
   );
+}
+
+let transcriptCounter = 0;
+function seedTranscript(opts: {
+  ticker: string;
+  summary: string;
+  fetchedAt: string;
+  year?: number;
+  quarter?: number;
+  source?: string;
+}): void {
+  transcriptCounter += 1;
+  db.prepare(
+    `INSERT INTO earnings_transcripts
+      (ticker, year, quarter, source, summary, source_key, fetched_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    opts.ticker,
+    opts.year ?? 2026,
+    opts.quarter ?? 2,
+    opts.source ?? "edgar_8k",
+    opts.summary,
+    `test:${opts.ticker}:${transcriptCounter}`,
+    opts.fetchedAt,
+  );
+}
+
+function seedCallNote(
+  eventId: number,
+  symbol: string,
+  opts: { guidance?: string | null; tone?: string | null; surprises?: string | null },
+): void {
+  db.prepare(
+    `INSERT INTO earnings_call_notes (event_id, symbol, guidance, tone, surprises)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(eventId, symbol, opts.guidance ?? null, opts.tone ?? null, opts.surprises ?? null);
 }
 
 describe("findDebriefCandidates", () => {
@@ -216,5 +259,177 @@ describe("findDebriefCandidates", () => {
       symbol: "DONE1",
       sentAt: "2026-08-01 20:05:00",
     });
+  });
+});
+
+describe("renderDebriefSections", () => {
+  it("renders per-name section: heading, scoreboard table, desk-note guidance excerpt when a fresh transcript summary exists", () => {
+    seedHeld("ZZZ");
+    // Released 06:00 ET, well before NOW (07:45 ET) → clears the 60-min
+    // recency filter in findDebriefCandidates.
+    seedEvent({ symbol: "ZZZ", date: TODAY, eventTime: "BMO", releaseTime: "06:00" });
+    seedTranscript({
+      ticker: "ZZZ",
+      summary:
+        "**Guidance**: Management raised full-year revenue guidance to $5B, citing strength in cloud.\n**Tone**: Confident, upbeat on demand.\n**Surprises**: Margin beat driven by mix shift.",
+      fetchedAt: `${TODAY} 06:00:00`,
+    });
+
+    const { unsent } = findDebriefCandidates(db, { now: NOW });
+    expect(unsent).toHaveLength(1);
+    const sections = renderDebriefSections(db, unsent);
+
+    expect(sections).toHaveLength(1);
+    const section = sections[0];
+    expect(section.symbol).toBe("ZZZ");
+    expect(section.markdown).toContain("### ZZZ — 2026-08-02 BMO");
+    expect(section.markdown).toContain("ZZZ scoreboard");
+    expect(section.markdown).toContain("| **EPS** |");
+    expect(section.markdown).toContain("**From the call** (desk note):");
+    expect(section.markdown).toContain("**Guidance:**");
+    expect(section.markdown).toContain(
+      "Management raised full-year revenue guidance to $5B, citing strength in cloud.",
+    );
+    expect(section.markdown).toContain("**Tone:** Confident, upbeat on demand.");
+    // Surprises text belongs to a different labelled span and must not leak
+    // into the guidance excerpt.
+    expect(section.markdown).not.toContain("Margin beat driven by mix shift.");
+  });
+
+  it("desk-note excerpt: caps the **Guidance** span at 900 chars, adds a Tone line when present; extractive-only summaries get a 600-char teaser; no transcript omits the block silently", () => {
+    // Case A: guidance span longer than 900 chars gets capped.
+    seedHeld("CAPD");
+    seedEvent({ symbol: "CAPD" });
+    const longGuidance = "Q".repeat(950);
+    seedTranscript({
+      ticker: "CAPD",
+      summary: `**Guidance**: ${longGuidance}\n**Tone**: steady`,
+      fetchedAt: `${TODAY} 05:00:00`,
+    });
+
+    // Case B: extractive-only summary (no **Guidance** marker) — 600-char teaser.
+    seedHeld("TEASE");
+    seedEvent({ symbol: "TEASE" });
+    const extractive = "Plain extractive summary text. ".repeat(30); // > 600 chars
+    seedTranscript({
+      ticker: "TEASE",
+      summary: extractive,
+      fetchedAt: `${TODAY} 05:00:00`,
+    });
+
+    // Case C: no transcript at all.
+    seedHeld("NOTX");
+    seedEvent({ symbol: "NOTX" });
+
+    const { unsent } = findDebriefCandidates(db, { now: NOW });
+    const sections = renderDebriefSections(db, unsent);
+    const byName = new Map(sections.map((s) => [s.symbol, s]));
+
+    const capd = byName.get("CAPD")!;
+    expect(capd.markdown).toContain("Q".repeat(900));
+    expect(capd.markdown).not.toContain("Q".repeat(901));
+    expect(capd.markdown).toContain("**Tone:** steady");
+
+    const tease = byName.get("TEASE")!;
+    expect(tease.markdown).toContain("**From the call** (desk note):");
+    expect(tease.markdown).toContain(extractive.slice(0, 600));
+    expect(tease.markdown).not.toContain(extractive.slice(0, 601));
+
+    const notx = byName.get("NOTX")!;
+    expect(notx.markdown).not.toContain("**From the call**");
+  });
+
+  it("includes the user's call note (guidance/tone/surprises) when one exists for the family", () => {
+    seedHeld("NOTE");
+    const eventId = seedEvent({ symbol: "NOTE" });
+    seedCallNote(eventId, "NOTE", {
+      guidance: "raised",
+      tone: "confident",
+      surprises: "beat on margins",
+    });
+
+    const { unsent } = findDebriefCandidates(db, { now: NOW });
+    const sections = renderDebriefSections(db, unsent);
+    const section = sections.find((s) => s.symbol === "NOTE")!;
+
+    expect(section.markdown).toContain("**Your call note:**");
+    expect(section.markdown).toContain("guidance raised");
+    expect(section.markdown).toContain("tone: confident");
+    expect(section.markdown).toContain("surprises: beat on margins");
+  });
+
+  it("omits the call-note block when none exists for the family", () => {
+    seedHeld("NONOTE");
+    seedEvent({ symbol: "NONOTE" });
+
+    const { unsent } = findDebriefCandidates(db, { now: NOW });
+    const sections = renderDebriefSections(db, unsent);
+    const section = sections.find((s) => s.symbol === "NONOTE")!;
+
+    expect(section.markdown).not.toContain("**Your call note:**");
+  });
+});
+
+describe("buildDebriefPrompt", () => {
+  it("embeds every section and instructs markdown-only output starting with #", () => {
+    const sections: DebriefSection[] = [
+      { symbol: "AAA", markdown: "AAA section data goes here" },
+      { symbol: "BBB", markdown: "BBB section data goes here" },
+    ];
+
+    const prompt = buildDebriefPrompt(sections, "2026-08-02");
+
+    expect(prompt).toContain(
+      "You are writing the morning earnings debrief for 2026-08-02.",
+    );
+    expect(prompt).toContain("first character of your reply must be '#'");
+    expect(prompt).toContain("# What changed overnight");
+    expect(prompt).toContain("AAA section data goes here");
+    expect(prompt).toContain("BBB section data goes here");
+    expect(prompt).toContain("AAA section data goes here\n\n---\n\nBBB section data goes here");
+  });
+});
+
+describe("assembleDebriefMarkdown", () => {
+  const sections: DebriefSection[] = [
+    { symbol: "AAA", markdown: "### AAA section" },
+    { symbol: "BBB", markdown: "### BBB section" },
+  ];
+
+  it("AI synthesis first, then sections, then a roster line; roster omitted when empty", () => {
+    const roster: DebriefRosterEntry[] = [
+      { symbol: "XXX", sentAt: "2026-08-01 20:00:00" },
+      { symbol: "YYY", sentAt: "2026-08-02 06:00:00" },
+    ];
+
+    const result = assembleDebriefMarkdown(
+      "# What changed overnight\n- bullet one",
+      sections,
+      roster,
+      "2026-08-02",
+    );
+
+    const aiIdx = result.indexOf("# What changed overnight");
+    const scoreboardsIdx = result.indexOf("## The scoreboards");
+    const aaaIdx = result.indexOf("### AAA section");
+    const bbbIdx = result.indexOf("### BBB section");
+    const rosterIdx = result.indexOf("Recapped individually overnight: XXX · YYY");
+
+    expect(aiIdx).toBe(0);
+    expect(scoreboardsIdx).toBeGreaterThan(aiIdx);
+    expect(aaaIdx).toBeGreaterThan(scoreboardsIdx);
+    expect(bbbIdx).toBeGreaterThan(aaaIdx);
+    expect(rosterIdx).toBeGreaterThan(bbbIdx);
+  });
+
+  it("omits the roster line entirely when roster is empty", () => {
+    const result = assembleDebriefMarkdown(
+      "# What changed overnight\n- bullet one",
+      sections,
+      [],
+      "2026-08-02",
+    );
+
+    expect(result).not.toContain("Recapped individually overnight");
   });
 });

@@ -35,6 +35,10 @@ import { getEarningsSettings, shouldSendEarningsEmail } from "@/lib/queries/earn
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
 import { composeReleaseInstant } from "@/lib/calendar/reaction-snapshot";
+import { loadIntelView, renderHeadlineTable } from "@/lib/digest/send-earnings-email";
+import { getLatestCallNoteForFamily } from "@/lib/queries/earnings-call-notes";
+import { wrapSlotFor } from "@/lib/earnings/wrap";
+import type { CalendarEvent } from "@/lib/types";
 
 export interface DebriefCandidate {
   eventId: number;
@@ -147,4 +151,147 @@ export function findDebriefCandidates(
     .all(yesterday, today) as DebriefRosterEntry[];
 
   return { unsent, alreadyRecapped };
+}
+
+// ── Task 2: deterministic per-name sections + prompt assembly ─────────────
+//
+// Everything below is a pure DB read / string builder — no AI calls, no
+// network. Task 3 (the sender) runs `buildDebriefPrompt`'s output through
+// Claude and hands the model's reply to `assembleDebriefMarkdown`.
+
+export interface DebriefSection {
+  symbol: string;
+  markdown: string;
+}
+
+/**
+ * Compact desk-note excerpt, mirroring the daily digest's call-transcripts
+ * compact-notice rule (lib/digest/call-transcripts.ts) — the raw `guidance`
+ * COLUMN on earnings_transcripts is never rendered (see the #12 convention
+ * in CLAUDE.md); only the AI-written `summary` is read, and only through
+ * this excerpt.
+ *
+ * NOTE: `lib/digest/call-transcripts.ts::demoteEmbeddedHeadings` is NOT
+ * exported, so unlike the digest we do not pre-demote embedded markdown
+ * headings inside `summary` before excerpting here (see task report — this
+ * is a deliberate, noted deviation from the digest's full pipeline, not an
+ * oversight; copying that function's implementation would fork a second
+ * copy of heading-demotion logic, which the repo's single-source
+ * conventions argue against).
+ */
+function deskNoteExcerpt(summary: string): string {
+  const m = summary.match(/\*\*Guidance\*\*[:\s]*([\s\S]*?)(?=\n\s*\*\*[A-Z]|$)/);
+  const guidance = m?.[1]?.trim();
+  const tone = summary.match(/\*\*Tone\*\*[:\s]*([^\n]+)/)?.[1]?.trim();
+  if (guidance) {
+    let out = `**Guidance:** ${guidance.slice(0, 900)}`;
+    if (tone) out += `\n\n**Tone:** ${tone}`;
+    return out;
+  }
+  return summary.slice(0, 600); // extractive-only teaser
+}
+
+/**
+ * One deterministic markdown section per candidate: heading, the same
+ * code-rendered scoreboard the recap email uses, and (when present) a
+ * compact desk-note excerpt from the freshest call transcript plus the
+ * user's own structured call note for the issuer family. No AI content —
+ * this is exactly what `buildDebriefPrompt` hands to Claude as "Data:".
+ */
+export function renderDebriefSections(
+  db: Database.Database,
+  unsent: DebriefCandidate[],
+): DebriefSection[] {
+  return unsent.map((candidate) => {
+    const event = db
+      .prepare(`SELECT * FROM calendar_events WHERE id = ?`)
+      .get(candidate.eventId) as CalendarEvent | undefined;
+
+    if (!event) {
+      // Should never happen — the candidate came straight from
+      // calendar_events — but a debrief must never throw on one bad row.
+      return {
+        symbol: candidate.symbol,
+        markdown: `### ${candidate.symbol} — ${candidate.event_date}\n\n_(event data unavailable)_`,
+      };
+    }
+
+    const slot = wrapSlotFor({
+      event_time: event.event_time,
+      title: event.title,
+      release_time: event.release_time,
+    });
+    const slotLabel = slot ? ` ${slot}` : "";
+
+    const intel = loadIntelView(db, candidate.eventId, candidate.symbol);
+    const scoreboard = renderHeadlineTable(event, candidate.symbol, "recap", intel);
+
+    const parts = [`### ${candidate.symbol} — ${candidate.event_date}${slotLabel}`, "", scoreboard];
+
+    const family = issuerSiblings(candidate.symbol.toUpperCase()).map((s) => s.toUpperCase());
+    const famPlaceholders = family.map(() => "?").join(",");
+    const tx = db
+      .prepare(
+        `SELECT summary, source, fetched_at FROM earnings_transcripts
+          WHERE UPPER(ticker) IN (${famPlaceholders})
+            AND summary IS NOT NULL AND summary != ''
+            AND datetime(fetched_at) >= datetime(?, '-5 days')
+          ORDER BY datetime(fetched_at) DESC LIMIT 1`,
+      )
+      .get(...family, `${candidate.event_date} 00:00:00`) as
+      | { summary: string; source: string; fetched_at: string }
+      | undefined;
+
+    if (tx) {
+      parts.push("", `**From the call** (desk note):\n\n${deskNoteExcerpt(tx.summary)}`);
+    }
+
+    // Freshest call note for the family — deliberately NOT passing a
+    // `beforeDate`: getLatestCallNoteForFamily's beforeDate arg is an
+    // EXCLUSIVE `< beforeDate` filter built for the preview composer's
+    // "prior quarter's note, never the current one" continuity use. The
+    // debrief wants the opposite: the note the user just took about
+    // yesterday's/today's call, which is why no date bound is passed here.
+    const callNote = getLatestCallNoteForFamily(db, candidate.symbol);
+    if (callNote && (callNote.guidance || callNote.tone || callNote.surprises)) {
+      const bits: string[] = [];
+      if (callNote.guidance) bits.push(`guidance ${callNote.guidance}`);
+      if (callNote.tone) bits.push(`tone: ${callNote.tone}`);
+      if (callNote.surprises) bits.push(`surprises: ${callNote.surprises}`);
+      parts.push("", `**Your call note:** ${bits.join("; ")}`);
+    }
+
+    return { symbol: candidate.symbol, markdown: parts.join("\n") };
+  });
+}
+
+/**
+ * Prompt text is verbatim per the design doc — do not editorialize it.
+ */
+export function buildDebriefPrompt(sections: DebriefSection[], todayStr: string): string {
+  return `You are writing the morning earnings debrief for ${todayStr}. The reader manages their own portfolio, watched yesterday's prints live, and already knows the headline numbers — do NOT restate beats/misses. Your job is what happened AFTER the print and what it means for today: the call (guidance, tone, surprises), the read-across between these names, and what to watch at today's open.
+
+Write GitHub markdown. The first character of your reply must be '#'. Open with '# What changed overnight' — 3 to 6 tight bullets across all names. Then one '## {SYMBOL}' section per name, 2-4 sentences each, focused on call content and today's setup. No preamble, no closing commentary, no invented numbers — if a figure is not in the data below, do not state one.
+
+Data:
+${sections.map((s) => s.markdown).join("\n\n---\n\n")}`;
+}
+
+/**
+ * Final assembly: AI synthesis first (the email's lede), then the
+ * deterministic per-name scoreboards (so every number in the email is
+ * independently verifiable against code-rendered data), then — only when
+ * non-empty — a one-line roster of names the debrief is deliberately NOT
+ * re-narrating because their recap already went out overnight.
+ */
+export function assembleDebriefMarkdown(
+  aiMarkdown: string,
+  sections: DebriefSection[],
+  roster: DebriefRosterEntry[],
+  dateStr: string,
+): string {
+  void dateStr; // The `# Earnings Debrief — {dateStr}` header is the email title, not body content.
+  const scoreboards = `${aiMarkdown}\n\n---\n\n## The scoreboards\n\n${sections.map((s) => s.markdown).join("\n\n")}`;
+  if (roster.length === 0) return scoreboards;
+  return `${scoreboards}\n\n*Recapped individually overnight: ${roster.map((r) => r.symbol).join(" · ")}*`;
 }
