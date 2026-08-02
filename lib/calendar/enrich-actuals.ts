@@ -298,6 +298,19 @@ export function parseSourceKey(sourceKey: string):
   if (finnhub) {
     return { kind: "finnhub", symbol: finnhub[1], date: finnhub[2] };
   }
+  // Manual EARNINGS rows take the same Finnhub symbol+date road as vendor
+  // earnings rows (`manual:<SYMBOL>:<YYYY-MM-DD>:earnings`, written by
+  // insertCalendarEvent). Two populations depend on it: the "+ Add ticker"
+  // flow, and every date/slot correction — corrections are minted manual
+  // precisely so the sync upsert can't clobber them, which previously also
+  // meant they fell through to "unknown" and never captured actuals (so no
+  // recap email and no push-at-print for the events the user hand-curated).
+  // Only event_type 'earnings' qualifies: a manual macro row has no Finnhub
+  // calendar entry to fetch.
+  const manualEarnings = /^manual:([^:]+):(\d{4}-\d{2}-\d{2}):earnings$/.exec(sourceKey);
+  if (manualEarnings) {
+    return { kind: "finnhub", symbol: manualEarnings[1], date: manualEarnings[2] };
+  }
   return { kind: "unknown" };
 }
 
@@ -449,6 +462,8 @@ export async function fetchActualForEvent(
   }
 
   if (parsed.kind === "finnhub") {
+    // Also reached by manual earnings rows (see parseSourceKey) — same
+    // symbol+date road, same strict symbol echo-match.
     const { actual, consensus: freshConsensus } = await fetchFinnhubActual(
       parsed.symbol,
       parsed.date,
