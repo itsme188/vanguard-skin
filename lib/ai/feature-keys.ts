@@ -36,9 +36,10 @@ export type FeatureKey =
   | "researchDocumentExtraction"
   | "researchMentionVerification"
   | "suggestedLevelNarrative"
+  | "earningsBogeysExtraction"
+  | "earningsDateVerification"
   | "earningsPreview"
   | "earningsRecap"
-  | "earningsBogeysExtraction"
   | "newsletterBogeyExtraction"
   | "etfSectorWeights"
   | "transcriptSummary";
