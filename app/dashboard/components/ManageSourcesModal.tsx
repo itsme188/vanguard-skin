@@ -680,7 +680,12 @@ export function ManageSourcesModal({
               onClick={() => {
                 setShowManual(!showManual);
                 if (!showManual) {
-                  setTimeout(() => manualFormRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }), 50);
+                  // block:"end" + scroll-mb on the form keeps the Add Source
+                  // submit clear of the sticky Done footer — with block:"nearest"
+                  // scroll anchoring left the button 100% under the footer, so
+                  // clicking it hit Done and discarded the typed form (same
+                  // occlusion class as the Discover results box above).
+                  setTimeout(() => manualFormRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }), 50);
                 }
               }}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium border border-edge text-ink-dim hover:text-ink hover:bg-raised transition-colors"
@@ -694,7 +699,7 @@ export function ManageSourcesModal({
 
           {/* Manual add form */}
           {showManual && (
-            <div ref={manualFormRef} className="space-y-2 p-3 rounded-lg border border-edge bg-raised/50">
+            <div ref={manualFormRef} className="space-y-2 p-3 rounded-lg border border-edge bg-raised/50 scroll-mb-16">
               <input
                 type="text"
                 placeholder="Source name (e.g. Morning Brew)"
