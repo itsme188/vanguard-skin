@@ -100,6 +100,11 @@ export const FEATURE_MODELS: Record<FeatureKey, string> = {
   // freshly-fetched earnings transcript — see lib/transcripts/same-day.ts.
   transcriptSummary: "anthropic/$workhorse",
 
+  // 7:45 ET morning debrief synthesis (what changed overnight, across
+  // yesterday's late-AMC + today's-so-far BMO prints) — see
+  // lib/earnings/debrief-send.ts.
+  earningsDebrief: "anthropic/$workhorse",
+
   // cheap (was Haiku)
   // Post-extraction verification of ticker mentions. Haiku is plenty for
   // yes/no judgments with short context snippets.
