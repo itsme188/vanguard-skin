@@ -69,11 +69,34 @@ export interface DebriefCandidates {
 const MIN_MINUTES_SINCE_RELEASE = 60;
 
 /**
+ * How far back the unsent lookback reaches. The send window is a narrow 35
+ * minutes (07:45–08:20 ET) and the Mac's `pmset repeat wakeorpoweron` fires
+ * WEEKDAYS at 08:40 — after it — with no weekend wake at all, so a morning
+ * with the Mac asleep is routine (a Friday-AMC cluster would be orphaned
+ * every Saturday). With the EOD wrap retired there is no other path that
+ * ever recaps a wrap-suppressed name, so a [yesterday, today] window would
+ * lose those emails permanently. Three days back makes a missed morning
+ * self-heal on the next one; already-sent names are excluded by the
+ * earnings_emails join, so a wider window can never re-narrate anything.
+ */
+const UNSENT_LOOKBACK_DAYS = 3;
+
+/**
  * Find candidates for the 7:45 ET morning debrief: held/watchlist earnings
- * events dated yesterday or today (ET) with captured actuals, no completed
- * or in-flight recap, not skipped/muted/superseded, released at least
- * `MIN_MINUTES_SINCE_RELEASE` minutes ago (or with unknown release_time,
- * which is never held back for lack of data), family-deduped.
+ * events dated within the last `UNSENT_LOOKBACK_DAYS` days through today
+ * (ET) with captured actuals, no completed or in-flight recap, not
+ * skipped/muted/superseded, released at least `MIN_MINUTES_SINCE_RELEASE`
+ * minutes ago (or with unknown release_time, which is never held back for
+ * lack of data), family-deduped.
+ *
+ * TODAY-dated rows additionally require a completed enrichment
+ * (`enriched_at IS NOT NULL`). Release-age alone is the wrong readiness
+ * proxy for a same-morning print: a 06:00 BMO release clears the 60-minute
+ * filter by 07:45 while its actuals/reaction capture may still be in
+ * flight, and the individual recap the enrichment unlocks is strictly
+ * richer than a debrief section. Yesterday-or-older rows keep the plain
+ * behavior — their recap window has long closed, so the debrief is their
+ * only remaining road.
  */
 export function findDebriefCandidates(
   db: Database.Database,
@@ -82,6 +105,7 @@ export function findDebriefCandidates(
   const now = opts.now ?? new Date();
   const today = todayET(now);
   const yesterday = addDays(today, -1);
+  const lookbackStart = addDays(today, -UNSENT_LOOKBACK_DAYS);
 
   // Any recap row at all — including a live 'in_progress' claim — excludes
   // an event from `unsent`: someone else is (or already did) send it.
@@ -95,11 +119,12 @@ export function findDebriefCandidates(
           AND COALESCE(ce.superseded, 0) = 0
           AND ce.symbol IS NOT NULL
           AND ce.actual_value IS NOT NULL
-          AND ce.event_date IN (?, ?)
+          AND ce.event_date BETWEEN ? AND ?
+          AND (ce.event_date < ? OR ce.enriched_at IS NOT NULL)
           AND ee.id IS NULL
           AND es.id IS NULL`,
     )
-    .all(yesterday, today) as DebriefCandidate[];
+    .all(lookbackStart, today, today) as DebriefCandidate[];
 
   const settings = getEarningsSettings(db);
   const status = getSymbolStatus(
@@ -139,6 +164,10 @@ export function findDebriefCandidates(
     unsent.push(c);
   }
 
+  // Roster window stays [yesterday, today] deliberately — it is a courtesy
+  // "these already went out overnight" line, and a 3-day roster would list
+  // names the reader got emails about days ago. Only the UNSENT lookback
+  // widens (nothing else recaps those).
   const alreadyRecapped = db
     .prepare(
       `SELECT ce.symbol, ee.sent_at AS sentAt

@@ -32,6 +32,10 @@ import {
 // resolves to EDT (August). NOW is 2026-08-02T11:45 UTC = 07:45 ET.
 const TODAY = "2026-08-02";
 const YESTERDAY = "2026-08-01";
+// The self-healing lookback edge (F1a): three days back is still in-window,
+// four days back is not.
+const THREE_DAYS_AGO = "2026-07-30";
+const FOUR_DAYS_AGO = "2026-07-29";
 const NOW = new Date("2026-08-02T11:45:00Z");
 
 let db: Database.Database;
@@ -66,25 +70,34 @@ function seedEvent(opts: {
   eventTime?: string | null;
   actual?: string | null;
   superseded?: number;
+  /**
+   * Defaults to a completed enrichment stamp — TODAY-dated rows require one
+   * (F3: an incomplete today print belongs to its richer individual recap,
+   * not the debrief), and every pre-existing fixture here means "ready".
+   * Pass `null` explicitly to model an in-flight enrichment.
+   */
+  enrichedAt?: string | null;
 }): number {
   eventCounter += 1;
+  const date = opts.date ?? TODAY;
   return Number(
     db
       .prepare(
         `INSERT INTO calendar_events
           (source, event_type, event_date, event_time, release_time, title, symbol,
-           actual_value, source_key, week_of, superseded)
-         VALUES ('finnhub', 'earnings', ?, ?, ?, ?, ?, ?, ?, '2026-07-27', ?)`,
+           actual_value, source_key, week_of, superseded, enriched_at)
+         VALUES ('finnhub', 'earnings', ?, ?, ?, ?, ?, ?, ?, '2026-07-27', ?, ?)`,
       )
       .run(
-        opts.date ?? TODAY,
+        date,
         opts.eventTime ?? null,
         opts.releaseTime === undefined ? null : opts.releaseTime,
         `${opts.symbol} earnings`,
         opts.symbol,
         opts.actual === undefined ? "EPS 1.00 · Rev 500M" : opts.actual,
-        `finnhub:${opts.symbol}:${opts.date ?? TODAY}:${eventCounter}`,
+        `finnhub:${opts.symbol}:${date}:${eventCounter}`,
         opts.superseded ?? 0,
+        opts.enrichedAt === undefined ? `${date} 12:00:00` : opts.enrichedAt,
       ).lastInsertRowid,
   );
 }
@@ -188,6 +201,68 @@ describe("findDebriefCandidates", () => {
     });
     // Not on the "already recapped" roster either — it was never sent.
     expect(result.alreadyRecapped.find((r) => r.symbol === "WRAPPED")).toBeUndefined();
+  });
+
+  /**
+   * Durability (F1a): the 07:45–08:20 ET window is narrow and the Mac's
+   * weekday pmset wake lands at 08:40 — AFTER it — with no Saturday wake at
+   * all, so a missed morning is routine, not exotic. A [yesterday, today]
+   * lookback would lose those recaps permanently (no wrap pass is left to
+   * fire for them). Three days back keeps a missed morning recoverable;
+   * already-sent names are excluded by the audit-row join, so the widened
+   * window can never re-narrate anything.
+   */
+  it("self-heals a missed morning: an unsent candidate from 3 days ago is still selected, 4 days ago is not", () => {
+    seedHeld("MISSED3");
+    const missedId = seedEvent({ symbol: "MISSED3", date: THREE_DAYS_AGO });
+    seedHeld("MISSED4");
+    seedEvent({ symbol: "MISSED4", date: FOUR_DAYS_AGO });
+
+    const result = findDebriefCandidates(db, { now: NOW });
+    const symbols = result.unsent.map((c) => c.symbol);
+
+    expect(symbols).toContain("MISSED3");
+    expect(symbols).not.toContain("MISSED4");
+    expect(result.unsent.find((c) => c.symbol === "MISSED3")!.eventId).toBe(missedId);
+  });
+
+  /**
+   * Preemption guard (F3): release-age alone is the wrong readiness proxy for
+   * a TODAY-dated print — a 06:00 BMO print is >60 min old at 07:45 but its
+   * enrichment (actuals + reaction snapshot) may still be mid-flight, and the
+   * individual recap that follows enrichment is strictly richer than a
+   * debrief section. Requiring `enriched_at` on today's rows only keeps the
+   * debrief out of the sweep's way while leaving yesterday-or-older rows
+   * (whose recap window has closed) fully covered.
+   */
+  it("a TODAY-dated print whose enrichment is incomplete (enriched_at NULL) is left to its individual recap; the same row with enriched_at is selected", () => {
+    seedHeld("MIDFLIGHT");
+    seedEvent({
+      symbol: "MIDFLIGHT",
+      date: TODAY,
+      releaseTime: "06:00",
+      enrichedAt: null,
+    });
+
+    expect(findDebriefCandidates(db, { now: NOW }).unsent.map((c) => c.symbol)).not.toContain(
+      "MIDFLIGHT",
+    );
+
+    db.prepare(`UPDATE calendar_events SET enriched_at = ? WHERE symbol = 'MIDFLIGHT'`).run(
+      `${TODAY} 07:15:00`,
+    );
+
+    expect(findDebriefCandidates(db, { now: NOW }).unsent.map((c) => c.symbol)).toContain(
+      "MIDFLIGHT",
+    );
+  });
+
+  it("a YESTERDAY-dated print with enriched_at NULL is still selected (only today's rows require complete enrichment)", () => {
+    seedHeld("STALLED");
+    const stalledId = seedEvent({ symbol: "STALLED", date: YESTERDAY, enrichedAt: null });
+
+    const result = findDebriefCandidates(db, { now: NOW });
+    expect(result.unsent.map((c) => c.eventId)).toContain(stalledId);
   });
 
   it("excludes: no actuals; recap already sent (error NULL); sent-by-cloud; recap skip row; muted symbol; not held/watchlist; superseded", () => {

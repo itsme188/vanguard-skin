@@ -60,22 +60,27 @@ function seedHeld(symbol: string): void {
 }
 
 let eventCounter = 0;
+// enriched_at is stamped by default: TODAY-dated rows only become debrief
+// candidates once their enrichment completed (F3 — an in-flight today print
+// belongs to its richer individual recap).
 function seedEvent(opts: { symbol: string; date?: string; releaseTime?: string | null }): number {
   eventCounter += 1;
+  const date = opts.date ?? TODAY;
   return Number(
     db
       .prepare(
         `INSERT INTO calendar_events
           (source, event_type, event_date, release_time, title, symbol,
-           actual_value, source_key, week_of, superseded)
-         VALUES ('finnhub', 'earnings', ?, ?, ?, ?, 'EPS 1.00 · Rev 500M', ?, '2026-07-27', 0)`,
+           actual_value, source_key, week_of, superseded, enriched_at)
+         VALUES ('finnhub', 'earnings', ?, ?, ?, ?, 'EPS 1.00 · Rev 500M', ?, '2026-07-27', 0, ?)`,
       )
       .run(
-        opts.date ?? TODAY,
+        date,
         opts.releaseTime === undefined ? null : opts.releaseTime,
         `${opts.symbol} earnings`,
         opts.symbol,
-        `finnhub:${opts.symbol}:${opts.date ?? TODAY}:${eventCounter}`,
+        `finnhub:${opts.symbol}:${date}:${eventCounter}`,
+        `${date} 07:00:00`,
       ).lastInsertRowid,
   );
 }
