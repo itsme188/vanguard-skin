@@ -132,7 +132,8 @@ describe("runMorningDebrief", () => {
   });
 
   it("force:true bypasses the window but not the once-per-day key", async () => {
-    // No candidates seeded — isolates the gate behavior from send behavior.
+    seedCandidate("AAA");
+
     const res1 = await runMorningDebrief(db, {
       now: NOW_BEFORE_WINDOW,
       force: true,
@@ -140,7 +141,7 @@ describe("runMorningDebrief", () => {
       generate: stubGenerate(),
     });
     expect(res1.skippedReason).not.toBe("outside-window");
-    expect(res1.skippedReason).toBe("no-candidates");
+    expect(res1.sent).toBe(true);
     expect(settingsValue("last_debrief_date")).toBe(TODAY);
 
     // Same ET day, still forced — the day key (not the window) now blocks it.
@@ -153,13 +154,15 @@ describe("runMorningDebrief", () => {
     expect(res2.skippedReason).toBe("already-ran-today");
   });
 
-  it("second run same ET day → already-ran-today (day key stamped on first run, before compose)", async () => {
+  it("second run same ET day → already-ran-today (day key stamped on the first SENDING run, before compose)", async () => {
+    seedCandidate("AAA");
+
     const res1 = await runMorningDebrief(db, {
       now: NOW_IN_WINDOW,
       recipient: RECIPIENT,
       generate: stubGenerate(),
     });
-    expect(res1.skippedReason).toBe("no-candidates");
+    expect(res1.sent).toBe(true);
     expect(settingsValue("last_debrief_date")).toBe(TODAY);
 
     const res2 = await runMorningDebrief(db, {
@@ -168,10 +171,16 @@ describe("runMorningDebrief", () => {
       generate: stubGenerate(),
     });
     expect(res2).toEqual({ sent: false, covered: [], skippedReason: "already-ran-today" });
-    expect(mockedSend).not.toHaveBeenCalled();
+    expect(mockedSend).toHaveBeenCalledTimes(1);
   });
 
-  it("no unsent candidates → stamps the day key, sends nothing, sent:false no-candidates", async () => {
+  /**
+   * F4: a candidate-less tick must NOT burn the day key. The sweep runs every
+   * 15 min, so the window holds two or three ticks — actuals that land at
+   * 07:52 (10 minutes after an empty 07:45 tick) must still get a debrief
+   * that same morning rather than waiting a full day.
+   */
+  it("no unsent candidates → does NOT stamp the day key; a later same-day tick can still send", async () => {
     const res = await runMorningDebrief(db, {
       now: NOW_IN_WINDOW,
       recipient: RECIPIENT,
@@ -179,9 +188,22 @@ describe("runMorningDebrief", () => {
     });
 
     expect(res).toEqual({ sent: false, covered: [], skippedReason: "no-candidates" });
-    expect(settingsValue("last_debrief_date")).toBe(TODAY);
+    expect(settingsValue("last_debrief_date")).toBeNull();
     expect(mockedSend).not.toHaveBeenCalled();
     expect(auditRows()).toHaveLength(0);
+
+    // Actuals land between ticks; the next tick inside the window sends.
+    seedCandidate("AAA");
+    const res2 = await runMorningDebrief(db, {
+      now: NOW_IN_WINDOW,
+      recipient: RECIPIENT,
+      generate: stubGenerate(),
+    });
+
+    expect(res2.sent).toBe(true);
+    expect(res2.covered).toEqual(["AAA"]);
+    expect(settingsValue("last_debrief_date")).toBe(TODAY);
+    expect(mockedSend).toHaveBeenCalledTimes(1);
   });
 
   it("happy path: claims every member, sends ONE email titled 'Earnings Debrief — {date}', writes a completed recap audit row per member, covered lists symbols", async () => {

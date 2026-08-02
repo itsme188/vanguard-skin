@@ -76,14 +76,20 @@ export async function runMorningDebrief(
   if (getDebriefLastRunDay(db) === today) {
     return { sent: false, covered: [], skippedReason: "already-ran-today" };
   }
-  // Stamp BEFORE compose: one attempt per ET day even if everything below
-  // throws — the next 15-min sweep tick must not retry into the digest window.
-  setDebriefLastRunDay(db, today);
 
   const { unsent, alreadyRecapped } = findDebriefCandidates(db, { now });
   if (unsent.length === 0) {
+    // Deliberately BEFORE the day-key stamp: a candidate-less tick must not
+    // burn the day. The sweep ticks every 15 min, so the window holds two or
+    // three passes — actuals landing at 07:52 after an empty 07:45 tick still
+    // get a debrief this morning instead of waiting a full day.
     return { sent: false, covered: [], skippedReason: "no-candidates" };
   }
+
+  // Stamp BEFORE compose: one debrief ATTEMPT per ET day even if everything
+  // below throws — the next 15-min sweep tick must not retry into the digest
+  // window.
+  setDebriefLastRunDay(db, today);
 
   const recipient = opts.recipient || process.env.BRIEFING_EMAIL_TO;
   if (!recipient) {
