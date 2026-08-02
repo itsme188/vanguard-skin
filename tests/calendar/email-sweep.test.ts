@@ -56,11 +56,14 @@ vi.mock("@/lib/alerts/notify-pushover", () => ({
   sendPushover: (...a: unknown[]) => pushover(...a),
 }));
 
-const runWrapPass = vi.fn(
-  async (..._args: unknown[]) => ({ wrapsSent: 0, wrapped: 0, stillWaiting: [] as string[] }),
+// Task 4 (2026-08-02 morning-debrief plan): the sweep no longer runs the EOD
+// wrap pass — it invokes the morning debrief pass instead (same "best-effort,
+// never fails the sweep" try/catch shape the wrap pass used).
+const runMorningDebrief = vi.fn(
+  async (..._args: unknown[]) => ({ sent: false, covered: [] as string[] }),
 );
-vi.mock("@/lib/earnings/wrap-send", () => ({
-  runWrapPass: (...a: unknown[]) => runWrapPass(...a),
+vi.mock("@/lib/earnings/debrief-send", () => ({
+  runMorningDebrief: (...a: unknown[]) => runMorningDebrief(...a),
 }));
 
 // Already-reported preview guard (2026-07-23, IMAX case): the sweep's guard
@@ -266,8 +269,8 @@ describe("runEarningsEmailSweep marker dance", () => {
     writeSent.mockClear();
     fetchCloudSent.mockClear();
     fetchCloudSent.mockResolvedValue([]);
-    runWrapPass.mockClear();
-    runWrapPass.mockResolvedValue({ wrapsSent: 0, wrapped: 0, stillWaiting: [] });
+    runMorningDebrief.mockClear();
+    runMorningDebrief.mockResolvedValue({ sent: false, covered: [] });
     fetchSameDayTranscripts.mockClear();
     fetchSameDayTranscripts.mockResolvedValue({ attempted: 0, fetched: 0 });
   });
@@ -491,13 +494,13 @@ describe("wrap-mode suppression (#17 T3)", () => {
     writeSent.mockClear();
     fetchCloudSent.mockClear();
     fetchCloudSent.mockResolvedValue([]);
-    runWrapPass.mockClear();
-    runWrapPass.mockResolvedValue({ wrapsSent: 0, wrapped: 0, stillWaiting: [] });
+    runMorningDebrief.mockClear();
+    runMorningDebrief.mockResolvedValue({ sent: false, covered: [] });
     fetchSameDayTranscripts.mockClear();
     fetchSameDayTranscripts.mockResolvedValue({ attempted: 0, fetched: 0 });
   });
 
-  it("suppresses all three ready AMC recap candidates when the cluster reaches WRAP_THRESHOLD, and runs the wrap pass once", async () => {
+  it("suppresses all three ready AMC recap candidates when the cluster reaches WRAP_THRESHOLD, and still runs the morning debrief pass once", async () => {
     const ids = [
       seedHeldRecapCandidate(db, "AAA"),
       seedHeldRecapCandidate(db, "BBB"),
@@ -512,8 +515,11 @@ describe("wrap-mode suppression (#17 T3)", () => {
       expect(r.skipped).toBe("wrap-pending");
     }
     expect(sendRecap).not.toHaveBeenCalled();
-    expect(runWrapPass).toHaveBeenCalledTimes(1);
-    expect(runWrapPass).toHaveBeenCalledWith(db, { now: NOW });
+    // The wrap-pending suppression math itself is unchanged (Task 4 scope
+    // guard) — only the pass that runs AFTER the candidate loop changed from
+    // runWrapPass to runMorningDebrief.
+    expect(runMorningDebrief).toHaveBeenCalledTimes(1);
+    expect(runMorningDebrief).toHaveBeenCalledWith(db, { now: NOW });
   });
 
   it("does not suppress recap candidates when the cluster is below WRAP_THRESHOLD — individual sends happen", async () => {
@@ -589,10 +595,82 @@ describe("wrap-mode suppression (#17 T3)", () => {
     }
     expect(sendRecap).toHaveBeenCalledTimes(3);
     expect(summary.results.some((r) => r.skipped === "wrap-pending")).toBe(false);
-    // The wrap pass still runs every tick (it evaluates TODAY's clusters
-    // unconditionally) — it just can't match yesterday's cluster.
-    expect(runWrapPass).toHaveBeenCalledTimes(1);
-    expect(runWrapPass).toHaveBeenCalledWith(db, { now: NOW_NEXT_DAY });
+    // The morning debrief pass still runs every tick (its own window/day gate
+    // decides whether it actually sends) — the sweep invokes it unconditionally.
+    expect(runMorningDebrief).toHaveBeenCalledTimes(1);
+    expect(runMorningDebrief).toHaveBeenCalledWith(db, { now: NOW_NEXT_DAY });
+  });
+});
+
+/**
+ * Morning debrief pass wiring (2026-08-02 plan, Task 4): the sweep retired
+ * its EOD wrap-send call in favor of the 7:45 ET morning debrief
+ * (lib/earnings/debrief-send.ts::runMorningDebrief). The pass runs
+ * unconditionally BEFORE the candidate loop (its own window/once-per-day gate
+ * decides whether it actually composes+sends) and must never fail the sweep.
+ */
+describe("morning debrief pass (Task 4)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+
+    sendPreview.mockClear();
+    sendRecap.mockClear();
+    reapStaleClaims.mockClear();
+    checkMarker.mockClear();
+    setRunning.mockClear();
+    clearRunning.mockClear();
+    writeSent.mockClear();
+    fetchCloudSent.mockClear();
+    fetchCloudSent.mockResolvedValue([]);
+    runMorningDebrief.mockClear();
+    runMorningDebrief.mockResolvedValue({ sent: false, covered: [] });
+    fetchSameDayTranscripts.mockClear();
+    fetchSameDayTranscripts.mockResolvedValue({ attempted: 0, fetched: 0 });
+  });
+
+  it("invokes runMorningDebrief once per sweep and reports its result under summary.debrief", async () => {
+    runMorningDebrief.mockResolvedValueOnce({ sent: true, covered: ["AAA", "BBB"] });
+
+    const summary = await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(runMorningDebrief).toHaveBeenCalledTimes(1);
+    expect(runMorningDebrief).toHaveBeenCalledWith(db, { now: NOW });
+    expect(summary.debrief).toEqual({ sent: true, covered: ["AAA", "BBB"] });
+  });
+
+  /**
+   * F1b (durability): the debrief pass must run BEFORE the per-candidate send
+   * loop. Individual sends are 60–180s Claude calls each, so a sweep that
+   * starts at 08:10 with three candidates would push the debrief past its
+   * 08:20 window close and lose the morning. The pass self-gates, so on 90+
+   * ticks a day this reordering costs one cheap settings read.
+   */
+  it("runs the debrief pass BEFORE the per-candidate send loop (long sends must not push it past its 08:20 window)", async () => {
+    seedHeldPreviewCandidate(db, "AAPL");
+
+    const summary = await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(summary.sent).toBe(1);
+    expect(runMorningDebrief).toHaveBeenCalledTimes(1);
+    expect(runMorningDebrief.mock.invocationCallOrder[0]).toBeLessThan(
+      sendPreview.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("summary.debrief is null and the sweep still completes when the debrief pass throws", async () => {
+    runMorningDebrief.mockRejectedValueOnce(new Error("AI Gateway timeout"));
+
+    const summary = await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(summary.debrief).toBeNull();
+    // The sweep's other responsibilities (candidate processing, blocked-recap
+    // alerts, transcript orchestration) still complete normally.
+    expect(summary.swept).toBe(0);
+    expect(summary.results).toEqual([]);
   });
 });
 
@@ -623,8 +701,8 @@ describe("already-reported preview guard (IMAX 7/23 case)", () => {
     writeSent.mockClear();
     fetchCloudSent.mockClear();
     fetchCloudSent.mockResolvedValue([]);
-    runWrapPass.mockClear();
-    runWrapPass.mockResolvedValue({ wrapsSent: 0, wrapped: 0, stillWaiting: [] });
+    runMorningDebrief.mockClear();
+    runMorningDebrief.mockResolvedValue({ sent: false, covered: [] });
     fetchSameDayTranscripts.mockClear();
     fetchSameDayTranscripts.mockResolvedValue({ attempted: 0, fetched: 0 });
     probeFinnhubActualExists.mockClear();

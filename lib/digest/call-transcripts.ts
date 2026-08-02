@@ -61,8 +61,13 @@ function dedupeBestSource(rows: RecentTranscriptRow[]): RecentTranscriptRow[] {
  * heading is dropped outright (it duplicates this block's own
  * "### TICKER — Qn YYYY call" header); any other heading line becomes a
  * `**bold**` line.
+ *
+ * Exported (2026-08-02) so other desk-note renderers — the morning
+ * earnings-debrief composer (lib/earnings/debrief.ts) — can share this
+ * exact demotion instead of forking a second copy of the same regex. This
+ * is the single source; do not copy the implementation elsewhere.
  */
-function demoteEmbeddedHeadings(summary: string): string {
+export function demoteEmbeddedHeadings(summary: string): string {
   const lines = summary.split("\n");
   const out: string[] = [];
   let seenContent = false;
@@ -101,7 +106,18 @@ const SUMMARY_RENDER_CHAR_CAP = 600;
 const GUIDANCE_SECTION_CHAR_CAP = 900;
 const TONE_LINE_CHAR_CAP = 220;
 
-function truncateAtWordBoundary(text: string, maxChars: number): string {
+/**
+ * Cap `text` at `maxChars`, cutting at a word boundary and closing any
+ * markdown bold span the cut left open, then append an ellipsis.
+ *
+ * Exported (2026-08-02, sibling of `demoteEmbeddedHeadings` above) so other
+ * desk-note renderers — the morning earnings-debrief composer
+ * (lib/earnings/debrief.ts) — share this exact truncation instead of a raw
+ * `.slice()`, which can strand an opening `**` and make briefingToHtml emit
+ * literal asterisks into the email. This is the single source; do not copy
+ * the implementation elsewhere.
+ */
+export function truncateAtWordBoundary(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
   const slice = text.slice(0, maxChars);
   const lastSpace = slice.lastIndexOf(" ");

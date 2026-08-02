@@ -204,6 +204,24 @@ describe("parseSourceKey", () => {
     expect(parseSourceKey("bogus:99")).toEqual({ kind: "unknown" });
     expect(parseSourceKey("")).toEqual({ kind: "unknown" });
   });
+
+  // Manual earnings rows — the "+ Add ticker" flow AND every date/slot
+  // correction (minted manual precisely so sync can't clobber it) — used to
+  // fall through to "unknown", so they never fetched actuals: no recap, no
+  // push-at-print, for exactly the events the user curated by hand. They ride
+  // the same Finnhub symbol+date road as a vendor earnings row.
+  it("routes manual EARNINGS keys down the finnhub road", () => {
+    expect(parseSourceKey("manual:RKT:2026-08-06:earnings")).toEqual({
+      kind: "finnhub",
+      symbol: "RKT",
+      date: "2026-08-06",
+    });
+  });
+
+  it("leaves non-earnings manual keys unknown", () => {
+    expect(parseSourceKey("manual:UMICH:2026-08-06:other_macro")).toEqual({ kind: "unknown" });
+    expect(parseSourceKey("manual:arbitrary-event")).toEqual({ kind: "unknown" });
+  });
 });
 
 describe("fetchActualForEvent — dispatcher", () => {
@@ -317,6 +335,45 @@ describe("fetchActualForEvent — dispatcher", () => {
     expect(result.actual).toBeNull();
     expect(result.consensus).toBe("keep me");
     expect(result.source).toBe("unknown");
+  });
+
+  it("fetches Finnhub actual for a MANUAL earnings row (corrected / hand-added)", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        earningsCalendar: [
+          {
+            symbol: "RKT",
+            date: "2026-08-06",
+            epsActual: 0.09,
+            epsEstimate: 0.07,
+            revenueActual: 1300000000,
+            revenueEstimate: 1250000000,
+          },
+        ],
+      }),
+    });
+
+    const result = await fetchActualForEvent(db, {
+      id: 1,
+      source: "manual",
+      source_key: "manual:RKT:2026-08-06:earnings",
+      event_type: "earnings",
+      event_date: "2026-08-06",
+      release_time: "16:15",
+      symbol: "RKT",
+      title: "RKT earnings (Manual entry)",
+      consensus_estimate: "EPS 0.07",
+      raw_json: null,
+    });
+
+    expect(result.source).toBe("finnhub");
+    expect(result.actual).toContain("EPS 0.09");
+    // The symbol+date came from the source_key, so the request targeted the
+    // corrected date — not the wrong vendor one the correction replaced.
+    const url = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    expect(url).toContain("symbol=RKT");
+    expect(url).toContain("from=2026-08-06");
   });
 
   it("fetches Finnhub actual for earnings events", async () => {

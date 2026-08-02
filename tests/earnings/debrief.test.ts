@@ -1,0 +1,662 @@
+/**
+ * Morning-debrief candidate selection (Task 1 of the 2026-08-02
+ * morning-debrief plan). Pure candidate-finding only — no prompt building,
+ * no sending. Later tasks (2 = sections/prompt, 3 = sender) import
+ * `DebriefCandidate` / `DebriefRosterEntry` / `DebriefCandidates` and
+ * `findDebriefCandidates` from lib/earnings/debrief.ts.
+ *
+ * Spec: this replaces the same-evening earnings "wrap" email with a
+ * 7:45 ET morning debrief — sibling logic to getExpectedRecapCluster in
+ * lib/earnings/wrap.ts, but windowed on [yesterday, today] instead of a
+ * same-day (date, slot) cluster, and honest about live in_progress claims
+ * (they exclude a candidate from `unsent` rather than counting it as a
+ * cluster member).
+ */
+import { describe, it, expect, beforeEach } from "vitest";
+import Database from "better-sqlite3";
+import { runMigrations } from "@/lib/db/migrate";
+import {
+  findDebriefCandidates,
+  renderDebriefSections,
+  buildDebriefPrompt,
+  assembleDebriefMarkdown,
+  type DebriefSection,
+  type DebriefRosterEntry,
+} from "@/lib/earnings/debrief";
+import {
+  setMutedEarningsSymbols,
+  setEarningsEmailsEnabled,
+} from "@/lib/queries/earnings-settings";
+
+// "Today" for every test — ET. Chosen so composeReleaseInstant's DST branch
+// resolves to EDT (August). NOW is 2026-08-02T11:45 UTC = 07:45 ET.
+const TODAY = "2026-08-02";
+const YESTERDAY = "2026-08-01";
+// The self-healing lookback edge (F1a): three days back is still in-window,
+// four days back is not.
+const THREE_DAYS_AGO = "2026-07-30";
+const FOUR_DAYS_AGO = "2026-07-29";
+const NOW = new Date("2026-08-02T11:45:00Z");
+
+let db: Database.Database;
+
+beforeEach(() => {
+  db = new Database(":memory:");
+  db.pragma("foreign_keys = ON");
+  runMigrations(db);
+});
+
+function seedHeld(symbol: string): number {
+  const sec = Number(
+    db
+      .prepare(`INSERT INTO securities (symbol, name, security_type) VALUES (?, ?, 'Stock')`)
+      .run(symbol, symbol).lastInsertRowid,
+  );
+  const acct = Number(
+    db.prepare(`INSERT INTO accounts (name) VALUES (?)`).run(`a-${symbol}`).lastInsertRowid,
+  );
+  db.prepare(
+    `INSERT INTO holdings (account_id, security_id, quantity, as_of_date, source_key)
+     VALUES (?, ?, 100, '2026-08-01', ?)`,
+  ).run(acct, sec, `t:${symbol}`);
+  return sec;
+}
+
+let eventCounter = 0;
+function seedEvent(opts: {
+  symbol: string;
+  date?: string;
+  releaseTime?: string | null;
+  eventTime?: string | null;
+  actual?: string | null;
+  superseded?: number;
+  /**
+   * Defaults to a completed enrichment stamp — TODAY-dated rows require one
+   * (F3: an incomplete today print belongs to its richer individual recap,
+   * not the debrief), and every pre-existing fixture here means "ready".
+   * Pass `null` explicitly to model an in-flight enrichment.
+   */
+  enrichedAt?: string | null;
+}): number {
+  eventCounter += 1;
+  const date = opts.date ?? TODAY;
+  return Number(
+    db
+      .prepare(
+        `INSERT INTO calendar_events
+          (source, event_type, event_date, event_time, release_time, title, symbol,
+           actual_value, source_key, week_of, superseded, enriched_at)
+         VALUES ('finnhub', 'earnings', ?, ?, ?, ?, ?, ?, ?, '2026-07-27', ?, ?)`,
+      )
+      .run(
+        date,
+        opts.eventTime ?? null,
+        opts.releaseTime === undefined ? null : opts.releaseTime,
+        `${opts.symbol} earnings`,
+        opts.symbol,
+        opts.actual === undefined ? "EPS 1.00 · Rev 500M" : opts.actual,
+        `finnhub:${opts.symbol}:${date}:${eventCounter}`,
+        opts.superseded ?? 0,
+        opts.enrichedAt === undefined ? `${date} 12:00:00` : opts.enrichedAt,
+      ).lastInsertRowid,
+  );
+}
+
+function seedRecapEmail(eventId: number, error: string | null, sentAt: string): void {
+  db.prepare(
+    `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, error)
+     VALUES (?, 'recap', 'x', ?, ?)`,
+  ).run(eventId, sentAt, error);
+}
+
+function seedRecapSkip(eventId: number): void {
+  db.prepare(`INSERT INTO earnings_email_skips (event_id, phase) VALUES (?, 'recap')`).run(
+    eventId,
+  );
+}
+
+let transcriptCounter = 0;
+function seedTranscript(opts: {
+  ticker: string;
+  summary: string;
+  fetchedAt: string;
+  year?: number;
+  quarter?: number;
+  source?: string;
+}): void {
+  transcriptCounter += 1;
+  db.prepare(
+    `INSERT INTO earnings_transcripts
+      (ticker, year, quarter, source, summary, source_key, fetched_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    opts.ticker,
+    opts.year ?? 2026,
+    opts.quarter ?? 2,
+    opts.source ?? "edgar_8k",
+    opts.summary,
+    `test:${opts.ticker}:${transcriptCounter}`,
+    opts.fetchedAt,
+  );
+}
+
+function seedCallNote(
+  eventId: number,
+  symbol: string,
+  opts: { guidance?: string | null; tone?: string | null; surprises?: string | null },
+): void {
+  db.prepare(
+    `INSERT INTO earnings_call_notes (event_id, symbol, guidance, tone, surprises)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(eventId, symbol, opts.guidance ?? null, opts.tone ?? null, opts.surprises ?? null);
+}
+
+describe("findDebriefCandidates", () => {
+  it("selects held earnings from yesterday+today with actuals and no recap audit row", () => {
+    seedHeld("AAA");
+    const todayId = seedEvent({ symbol: "AAA", date: TODAY });
+    seedHeld("BBB");
+    const yesterdayId = seedEvent({ symbol: "BBB", date: YESTERDAY });
+
+    const result = findDebriefCandidates(db, { now: NOW });
+    const ids = result.unsent.map((c) => c.eventId).sort((a, b) => a - b);
+    expect(ids).toEqual([todayId, yesterdayId].sort((a, b) => a - b));
+    const aaa = result.unsent.find((c) => c.symbol === "AAA")!;
+    expect(aaa).toMatchObject({
+      eventId: todayId,
+      symbol: "AAA",
+      event_date: TODAY,
+    });
+  });
+
+  /**
+   * Integration case for the 2026-08-02 rewire (Task 4): the EOD wrap was
+   * retired from the sweep, so a recap candidate whose (date, slot) cluster
+   * reached WRAP_THRESHOLD "yesterday" and got suppressed by the sweep's
+   * still-live wrap-pending branch (lib/calendar/email-sweep.ts) — the
+   * suppression just `continue`s the candidate loop, writing NO
+   * earnings_emails row and NO earnings_email_skips row for it — is
+   * indistinguishable, DB-wise, from any other never-sent recap. This
+   * morning's findDebriefCandidates call must pick it up as `unsent`: with
+   * no wrap pass left to ever fire for it, the morning debrief is now the
+   * only path that recaps it at all.
+   */
+  it("a recap candidate wrap-suppressed YESTERDAY (never sent — no earnings_emails/earnings_email_skips row) appears in this morning's debrief candidates", () => {
+    seedHeld("WRAPPED");
+    const wrapSuppressedId = seedEvent({
+      symbol: "WRAPPED",
+      date: YESTERDAY,
+      eventTime: "AMC",
+      releaseTime: "16:15",
+    });
+
+    const result = findDebriefCandidates(db, { now: NOW });
+
+    expect(result.unsent.map((c) => c.eventId)).toContain(wrapSuppressedId);
+    const wrapped = result.unsent.find((c) => c.symbol === "WRAPPED")!;
+    expect(wrapped).toMatchObject({
+      eventId: wrapSuppressedId,
+      symbol: "WRAPPED",
+      event_date: YESTERDAY,
+    });
+    // Not on the "already recapped" roster either — it was never sent.
+    expect(result.alreadyRecapped.find((r) => r.symbol === "WRAPPED")).toBeUndefined();
+  });
+
+  /**
+   * Durability (F1a): the 07:45–08:20 ET window is narrow and the Mac's
+   * weekday pmset wake lands at 08:40 — AFTER it — with no Saturday wake at
+   * all, so a missed morning is routine, not exotic. A [yesterday, today]
+   * lookback would lose those recaps permanently (no wrap pass is left to
+   * fire for them). Three days back keeps a missed morning recoverable;
+   * already-sent names are excluded by the audit-row join, so the widened
+   * window can never re-narrate anything.
+   */
+  it("self-heals a missed morning: an unsent candidate from 3 days ago is still selected, 4 days ago is not", () => {
+    seedHeld("MISSED3");
+    const missedId = seedEvent({ symbol: "MISSED3", date: THREE_DAYS_AGO });
+    seedHeld("MISSED4");
+    seedEvent({ symbol: "MISSED4", date: FOUR_DAYS_AGO });
+
+    const result = findDebriefCandidates(db, { now: NOW });
+    const symbols = result.unsent.map((c) => c.symbol);
+
+    expect(symbols).toContain("MISSED3");
+    expect(symbols).not.toContain("MISSED4");
+    expect(result.unsent.find((c) => c.symbol === "MISSED3")!.eventId).toBe(missedId);
+  });
+
+  /**
+   * Preemption guard (F3): release-age alone is the wrong readiness proxy for
+   * a TODAY-dated print — a 06:00 BMO print is >60 min old at 07:45 but its
+   * enrichment (actuals + reaction snapshot) may still be mid-flight, and the
+   * individual recap that follows enrichment is strictly richer than a
+   * debrief section. Requiring `enriched_at` on today's rows only keeps the
+   * debrief out of the sweep's way while leaving yesterday-or-older rows
+   * (whose recap window has closed) fully covered.
+   */
+  it("a TODAY-dated print whose enrichment is incomplete (enriched_at NULL) is left to its individual recap; the same row with enriched_at is selected", () => {
+    seedHeld("MIDFLIGHT");
+    seedEvent({
+      symbol: "MIDFLIGHT",
+      date: TODAY,
+      releaseTime: "06:00",
+      enrichedAt: null,
+    });
+
+    expect(findDebriefCandidates(db, { now: NOW }).unsent.map((c) => c.symbol)).not.toContain(
+      "MIDFLIGHT",
+    );
+
+    db.prepare(`UPDATE calendar_events SET enriched_at = ? WHERE symbol = 'MIDFLIGHT'`).run(
+      `${TODAY} 07:15:00`,
+    );
+
+    expect(findDebriefCandidates(db, { now: NOW }).unsent.map((c) => c.symbol)).toContain(
+      "MIDFLIGHT",
+    );
+  });
+
+  it("a YESTERDAY-dated print with enriched_at NULL is still selected (only today's rows require complete enrichment)", () => {
+    seedHeld("STALLED");
+    const stalledId = seedEvent({ symbol: "STALLED", date: YESTERDAY, enrichedAt: null });
+
+    const result = findDebriefCandidates(db, { now: NOW });
+    expect(result.unsent.map((c) => c.eventId)).toContain(stalledId);
+  });
+
+  it("excludes: no actuals; recap already sent (error NULL); sent-by-cloud; recap skip row; muted symbol; not held/watchlist; superseded", () => {
+    seedHeld("NOACT");
+    seedEvent({ symbol: "NOACT", actual: null });
+
+    seedHeld("SENTLOCAL");
+    const sentLocalId = seedEvent({ symbol: "SENTLOCAL" });
+    seedRecapEmail(sentLocalId, null, "2026-08-02 07:00:00");
+
+    seedHeld("SENTCLOUD");
+    const sentCloudId = seedEvent({ symbol: "SENTCLOUD" });
+    seedRecapEmail(sentCloudId, "sent-by-cloud", "2026-08-02 07:10:00");
+
+    seedHeld("SKIPPED");
+    const skippedId = seedEvent({ symbol: "SKIPPED" });
+    seedRecapSkip(skippedId);
+
+    seedHeld("MUTED");
+    seedEvent({ symbol: "MUTED" });
+    setMutedEarningsSymbols(db, ["MUTED"]);
+
+    // Not held, not watchlisted.
+    seedEvent({ symbol: "NOPOS" });
+
+    seedHeld("GONE");
+    seedEvent({ symbol: "GONE", superseded: 1 });
+
+    const result = findDebriefCandidates(db, { now: NOW });
+    expect(result.unsent).toEqual([]);
+  });
+
+  it("excludes every candidate when the master toggle is off", () => {
+    seedHeld("WOULDPASS");
+    seedEvent({ symbol: "WOULDPASS" });
+    setEarningsEmailsEnabled(db, false);
+
+    const result = findDebriefCandidates(db, { now: NOW });
+    expect(result.unsent).toEqual([]);
+  });
+
+  it("a live in_progress recap claim excludes the event (another process is sending it)", () => {
+    seedHeld("CLAIM");
+    const claimId = seedEvent({ symbol: "CLAIM" });
+    seedRecapEmail(claimId, "in_progress", "2026-08-02 07:00:00");
+
+    const result = findDebriefCandidates(db, { now: NOW });
+    expect(result.unsent).toEqual([]);
+    // Not a completed send either — must not appear on the roster.
+    expect(result.alreadyRecapped.find((r) => r.symbol === "CLAIM")).toBeUndefined();
+  });
+
+  it("released under 60 minutes ago is excluded (release_time known); a stale release or unknown release_time is included", () => {
+    // NOW = 07:45 ET. Released 07:00 ET → 45 min ago → excluded.
+    seedHeld("RECENT");
+    seedEvent({ symbol: "RECENT", releaseTime: "07:00" });
+
+    // Released 06:00 ET → 105 min ago → included.
+    seedHeld("OLD");
+    const oldId = seedEvent({ symbol: "OLD", releaseTime: "06:00" });
+
+    // No release_time on record → included (never held back for lack of data).
+    seedHeld("UNKNOWN");
+    const unknownId = seedEvent({ symbol: "UNKNOWN", releaseTime: null });
+
+    const result = findDebriefCandidates(db, { now: NOW });
+    const ids = result.unsent.map((c) => c.eventId).sort((a, b) => a - b);
+    expect(ids).toEqual([oldId, unknownId].sort((a, b) => a - b));
+  });
+
+  it("family dedupe: GOOG + GOOGL rows on the same date yield one candidate (lowest eventId wins)", () => {
+    seedHeld("GOOG");
+    const googId = seedEvent({ symbol: "GOOG" });
+    const googlId = seedEvent({ symbol: "GOOGL" });
+    expect(googId).toBeLessThan(googlId);
+
+    const result = findDebriefCandidates(db, { now: NOW });
+    expect(result.unsent).toHaveLength(1);
+    expect(result.unsent[0].eventId).toBe(googId);
+  });
+
+  it("alreadyRecapped lists yesterday+today's completed recaps (NULL error and sent-by-cloud both count, in_progress does not)", () => {
+    seedHeld("DONE1");
+    const done1Id = seedEvent({ symbol: "DONE1", date: YESTERDAY });
+    seedRecapEmail(done1Id, null, "2026-08-01 20:05:00");
+
+    seedHeld("DONE2");
+    const done2Id = seedEvent({ symbol: "DONE2", date: TODAY });
+    seedRecapEmail(done2Id, "sent-by-cloud", "2026-08-02 06:00:00");
+
+    seedHeld("PENDING");
+    const pendingId = seedEvent({ symbol: "PENDING", date: TODAY });
+    seedRecapEmail(pendingId, "in_progress", "2026-08-02 07:30:00");
+
+    // Outside the [yesterday, today] window — must not appear.
+    seedHeld("OLDNEWS");
+    const oldNewsId = seedEvent({ symbol: "OLDNEWS", date: "2026-07-30" });
+    seedRecapEmail(oldNewsId, null, "2026-07-30 20:00:00");
+
+    const result = findDebriefCandidates(db, { now: NOW });
+    expect(result.alreadyRecapped.map((r) => r.symbol)).toEqual(["DONE1", "DONE2"]);
+    expect(result.alreadyRecapped[0]).toMatchObject({
+      symbol: "DONE1",
+      sentAt: "2026-08-01 20:05:00",
+    });
+  });
+});
+
+describe("renderDebriefSections", () => {
+  it("renders per-name section: heading, scoreboard table, desk-note guidance excerpt when a fresh transcript summary exists", () => {
+    seedHeld("ZZZ");
+    // Released 06:00 ET, well before NOW (07:45 ET) → clears the 60-min
+    // recency filter in findDebriefCandidates.
+    seedEvent({ symbol: "ZZZ", date: TODAY, eventTime: "BMO", releaseTime: "06:00" });
+    seedTranscript({
+      ticker: "ZZZ",
+      summary:
+        "**Guidance**: Management raised full-year revenue guidance to $5B, citing strength in cloud.\n**Tone**: Confident, upbeat on demand.\n**Surprises**: Margin beat driven by mix shift.",
+      fetchedAt: `${TODAY} 06:00:00`,
+    });
+
+    const { unsent } = findDebriefCandidates(db, { now: NOW });
+    expect(unsent).toHaveLength(1);
+    const sections = renderDebriefSections(db, unsent);
+
+    expect(sections).toHaveLength(1);
+    const section = sections[0];
+    expect(section.symbol).toBe("ZZZ");
+    expect(section.markdown).toContain("### ZZZ — 2026-08-02 BMO");
+    expect(section.markdown).toContain("ZZZ scoreboard");
+    expect(section.markdown).toContain("| **EPS** |");
+    expect(section.markdown).toContain("**From the call** (desk note):");
+    expect(section.markdown).toContain("**Guidance:**");
+    expect(section.markdown).toContain(
+      "Management raised full-year revenue guidance to $5B, citing strength in cloud.",
+    );
+    expect(section.markdown).toContain("**Tone:** Confident, upbeat on demand.");
+    // Surprises text belongs to a different labelled span and must not leak
+    // into the guidance excerpt.
+    expect(section.markdown).not.toContain("Margin beat driven by mix shift.");
+  });
+
+  it("desk-note excerpt: caps the **Guidance** span at 900 chars, adds a Tone line when present; extractive-only summaries get a 600-char teaser; no transcript omits the block silently", () => {
+    // Case A: guidance span longer than 900 chars gets capped.
+    seedHeld("CAPD");
+    seedEvent({ symbol: "CAPD" });
+    const longGuidance = "Q".repeat(950);
+    seedTranscript({
+      ticker: "CAPD",
+      summary: `**Guidance**: ${longGuidance}\n**Tone**: steady`,
+      fetchedAt: `${TODAY} 05:00:00`,
+    });
+
+    // Case B: extractive-only summary (no **Guidance** marker) — 600-char teaser.
+    seedHeld("TEASE");
+    seedEvent({ symbol: "TEASE" });
+    const extractive = "Plain extractive summary text. ".repeat(30); // > 600 chars
+    seedTranscript({
+      ticker: "TEASE",
+      summary: extractive,
+      fetchedAt: `${TODAY} 05:00:00`,
+    });
+
+    // Case C: no transcript at all.
+    seedHeld("NOTX");
+    seedEvent({ symbol: "NOTX" });
+
+    const { unsent } = findDebriefCandidates(db, { now: NOW });
+    const sections = renderDebriefSections(db, unsent);
+    const byName = new Map(sections.map((s) => [s.symbol, s]));
+
+    const capd = byName.get("CAPD")!;
+    expect(capd.markdown).toContain("Q".repeat(900));
+    expect(capd.markdown).not.toContain("Q".repeat(901));
+    expect(capd.markdown).toContain("**Tone:** steady");
+
+    const tease = byName.get("TEASE")!;
+    expect(tease.markdown).toContain("**From the call** (desk note):");
+    // Cut at a word boundary at/below the 600 cap, with the digest's ellipsis.
+    expect(tease.markdown).toContain(extractive.slice(0, 500));
+    expect(tease.markdown).not.toContain(extractive.slice(0, 601));
+    expect(tease.markdown).toContain("…");
+
+    const notx = byName.get("NOTX")!;
+    expect(notx.markdown).not.toContain("**From the call**");
+  });
+
+  /**
+   * F5: the excerpt shares the digest's truncateAtWordBoundary rather than a
+   * raw .slice(), so a **bold** span straddling the cap can't ship a dangling
+   * marker — briefingToHtml's inline regex needs the closing marker on the
+   * same line, and an unbalanced one renders literal asterisks in the email.
+   */
+  it("a **bold** phrase straddling the 900-char guidance cap is closed, not left dangling", () => {
+    seedHeld("STRADDLE");
+    seedEvent({ symbol: "STRADDLE" });
+    const guidance = `${"A".repeat(890)} **bolded phrase that runs well past the guidance cap**`;
+    seedTranscript({
+      ticker: "STRADDLE",
+      summary: `**Guidance**: ${guidance}\n**Tone**: steady`,
+      fetchedAt: `${TODAY} 05:00:00`,
+    });
+
+    const { unsent } = findDebriefCandidates(db, { now: NOW });
+    const section = renderDebriefSections(db, unsent).find((s) => s.symbol === "STRADDLE")!;
+    const deskNote = section.markdown.split("**From the call** (desk note):")[1] ?? "";
+
+    expect(deskNote).toContain("…");
+    // Every ** marker in the rendered excerpt is paired.
+    expect((deskNote.match(/\*\*/g) ?? []).length % 2).toBe(0);
+    // The full closing marker never made it in — the cut closed the span.
+    expect(deskNote).not.toContain("bolded phrase that runs well past the guidance cap");
+  });
+
+  it("includes the user's call note (guidance/tone/surprises) when one exists for the family", () => {
+    seedHeld("NOTE");
+    const eventId = seedEvent({ symbol: "NOTE" });
+    seedCallNote(eventId, "NOTE", {
+      guidance: "raised",
+      tone: "confident",
+      surprises: "beat on margins",
+    });
+
+    const { unsent } = findDebriefCandidates(db, { now: NOW });
+    const sections = renderDebriefSections(db, unsent);
+    const section = sections.find((s) => s.symbol === "NOTE")!;
+
+    expect(section.markdown).toContain("**Your call note:**");
+    expect(section.markdown).toContain("guidance raised");
+    expect(section.markdown).toContain("tone: confident");
+    expect(section.markdown).toContain("surprises: beat on margins");
+  });
+
+  it("omits the call-note block when none exists for the family", () => {
+    seedHeld("NONOTE");
+    seedEvent({ symbol: "NONOTE" });
+
+    const { unsent } = findDebriefCandidates(db, { now: NOW });
+    const sections = renderDebriefSections(db, unsent);
+    const section = sections.find((s) => s.symbol === "NONOTE")!;
+
+    expect(section.markdown).not.toContain("**Your call note:**");
+  });
+
+  it("does NOT render a stale call note from a prior quarter's event (outside the date window)", () => {
+    seedHeld("PRIORQ");
+    seedEvent({ symbol: "PRIORQ", date: TODAY });
+    // A much older event for the same symbol, holding a note from a prior
+    // quarter's call — outside the window (2026-05-01 is ~90 days back).
+    const oldEventId = seedEvent({ symbol: "PRIORQ", date: "2026-05-01" });
+    seedCallNote(oldEventId, "PRIORQ", {
+      guidance: "lowered",
+      tone: "cautious last quarter",
+      surprises: "missed on margins",
+    });
+
+    const { unsent } = findDebriefCandidates(db, { now: NOW });
+    const sections = renderDebriefSections(db, unsent);
+    const section = sections.find((s) => s.symbol === "PRIORQ")!;
+
+    expect(section.markdown).not.toContain("**Your call note:**");
+    expect(section.markdown).not.toContain("cautious last quarter");
+  });
+
+  it("renders a call note attached to the debriefed event itself", () => {
+    seedHeld("THISQ");
+    const eventId = seedEvent({ symbol: "THISQ", date: TODAY });
+    seedCallNote(eventId, "THISQ", { guidance: "inline", tone: "steady tone" });
+
+    const { unsent } = findDebriefCandidates(db, { now: NOW });
+    const sections = renderDebriefSections(db, unsent);
+    const section = sections.find((s) => s.symbol === "THISQ")!;
+
+    expect(section.markdown).toContain("**Your call note:**");
+    expect(section.markdown).toContain("guidance inline");
+    expect(section.markdown).toContain("tone: steady tone");
+  });
+
+  it("dual-class: a note attached to the sibling's event row within the window renders for the deduped candidate", () => {
+    seedHeld("GOOG");
+    const googId = seedEvent({ symbol: "GOOG", date: TODAY });
+    const googlId = seedEvent({ symbol: "GOOGL", date: TODAY });
+    seedCallNote(googlId, "GOOGL", {
+      guidance: "raised",
+      tone: "sibling call tone",
+      surprises: "ad revenue beat",
+    });
+
+    const { unsent } = findDebriefCandidates(db, { now: NOW });
+    expect(unsent).toHaveLength(1);
+    expect(unsent[0].eventId).toBe(googId);
+
+    const sections = renderDebriefSections(db, unsent);
+    const section = sections.find((s) => s.symbol === "GOOG")!;
+
+    expect(section.markdown).toContain("**Your call note:**");
+    expect(section.markdown).toContain("guidance raised");
+    expect(section.markdown).toContain("tone: sibling call tone");
+    expect(section.markdown).toContain("surprises: ad revenue beat");
+  });
+
+  it("desk-note excerpt demotes an embedded raw markdown heading before excerpting — no heading line leaks into the section", () => {
+    seedHeld("HEAD");
+    seedEvent({ symbol: "HEAD" });
+    seedTranscript({
+      ticker: "HEAD",
+      summary:
+        "**Guidance**: They raised full-year guidance.\n## Segment detail\nCloud grew 40% while ads were flat.\n**Tone**: confident",
+      fetchedAt: `${TODAY} 05:00:00`,
+    });
+
+    const { unsent } = findDebriefCandidates(db, { now: NOW });
+    const sections = renderDebriefSections(db, unsent);
+    const section = sections.find((s) => s.symbol === "HEAD")!;
+
+    expect(section.markdown).toContain("**From the call** (desk note):");
+    expect(section.markdown).toContain("They raised full-year guidance.");
+    expect(section.markdown).toContain("**Tone:** confident");
+    expect(section.markdown).not.toContain("## Segment detail");
+
+    const deskNoteBlock = section.markdown.split("**From the call** (desk note):")[1] ?? "";
+    const rawHeadingLines = deskNoteBlock
+      .split("\n")
+      .filter((l) => /^#{1,6}\s/.test(l.trim()));
+    expect(rawHeadingLines).toEqual([]);
+  });
+});
+
+describe("buildDebriefPrompt", () => {
+  it("embeds every section and instructs markdown-only output starting with #", () => {
+    const sections: DebriefSection[] = [
+      { symbol: "AAA", markdown: "AAA section data goes here" },
+      { symbol: "BBB", markdown: "BBB section data goes here" },
+    ];
+
+    const prompt = buildDebriefPrompt(sections, "2026-08-02");
+
+    expect(prompt).toContain(
+      "You are writing the morning earnings debrief for 2026-08-02.",
+    );
+    expect(prompt).toContain("first character of your reply must be '#'");
+    expect(prompt).toContain("# What changed overnight");
+    expect(prompt).toContain("AAA section data goes here");
+    expect(prompt).toContain("BBB section data goes here");
+    expect(prompt).toContain("AAA section data goes here\n\n---\n\nBBB section data goes here");
+  });
+});
+
+describe("assembleDebriefMarkdown", () => {
+  const sections: DebriefSection[] = [
+    { symbol: "AAA", markdown: "### AAA section" },
+    { symbol: "BBB", markdown: "### BBB section" },
+  ];
+
+  it("AI synthesis first, then sections, then a roster line with ET send times; roster omitted when empty", () => {
+    const roster: DebriefRosterEntry[] = [
+      // sent_at is UTC (SQLite datetime('now')) — 20:00Z is 4:00 PM EDT.
+      { symbol: "XXX", sentAt: "2026-08-01 20:00:00" },
+      { symbol: "YYY", sentAt: "2026-08-02 06:00:00" },
+    ];
+
+    const result = assembleDebriefMarkdown(
+      "# What changed overnight\n- bullet one",
+      sections,
+      roster,
+    );
+
+    const aiIdx = result.indexOf("# What changed overnight");
+    const scoreboardsIdx = result.indexOf("## The scoreboards");
+    const aaaIdx = result.indexOf("### AAA section");
+    const bbbIdx = result.indexOf("### BBB section");
+    const rosterIdx = result.indexOf(
+      "Recapped individually overnight: XXX 4:00 PM · YYY 2:00 AM",
+    );
+
+    expect(aiIdx).toBe(0);
+    expect(scoreboardsIdx).toBeGreaterThan(aiIdx);
+    expect(aaaIdx).toBeGreaterThan(scoreboardsIdx);
+    expect(bbbIdx).toBeGreaterThan(aaaIdx);
+    expect(rosterIdx).toBeGreaterThan(bbbIdx);
+  });
+
+  it("a malformed sent_at degrades to a bare symbol rather than an Invalid Date", () => {
+    const result = assembleDebriefMarkdown("# lede", sections, [
+      { symbol: "ZZZ", sentAt: "not-a-timestamp" },
+    ]);
+
+    expect(result).toContain("Recapped individually overnight: ZZZ*");
+    expect(result).not.toContain("Invalid Date");
+  });
+
+  it("omits the roster line entirely when roster is empty", () => {
+    const result = assembleDebriefMarkdown("# What changed overnight\n- bullet one", sections, []);
+
+    expect(result).not.toContain("Recapped individually overnight");
+  });
+});
