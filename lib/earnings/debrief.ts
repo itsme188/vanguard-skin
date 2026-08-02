@@ -36,8 +36,9 @@ import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
 import { composeReleaseInstant } from "@/lib/calendar/reaction-snapshot";
 import { loadIntelView, renderHeadlineTable } from "@/lib/digest/send-earnings-email";
-import { getLatestCallNoteForFamily } from "@/lib/queries/earnings-call-notes";
+import { getCallNoteNearDateForFamily } from "@/lib/queries/earnings-call-notes";
 import { wrapSlotFor } from "@/lib/earnings/wrap";
+import { demoteEmbeddedHeadings } from "@/lib/digest/call-transcripts";
 import type { CalendarEvent } from "@/lib/types";
 
 export interface DebriefCandidate {
@@ -171,15 +172,19 @@ export interface DebriefSection {
  * in CLAUDE.md); only the AI-written `summary` is read, and only through
  * this excerpt.
  *
- * NOTE: `lib/digest/call-transcripts.ts::demoteEmbeddedHeadings` is NOT
- * exported, so unlike the digest we do not pre-demote embedded markdown
- * headings inside `summary` before excerpting here (see task report — this
- * is a deliberate, noted deviation from the digest's full pipeline, not an
- * oversight; copying that function's implementation would fork a second
- * copy of heading-demotion logic, which the repo's single-source
- * conventions argue against).
+ * Runs `demoteEmbeddedHeadings` first (single source, exported from
+ * lib/digest/call-transcripts.ts) — the transcriptSummary prompt permits
+ * "short headers" and isValidDeskNote doesn't forbid raw #/## lines, so a
+ * summary can legitimately contain e.g. "## Segment detail" mid-Guidance;
+ * left un-demoted, that line would render as a heading INSIDE the section
+ * markdown and compete with the email's own structure — the exact failure
+ * the digest's demotion pass exists to prevent. Demoting before the
+ * Guidance/Tone bold-label regexes run also matches the digest's own
+ * ordering (heading-styled and bold-labeled desk notes must look identical
+ * to the parser).
  */
-function deskNoteExcerpt(summary: string): string {
+function deskNoteExcerpt(rawSummary: string): string {
+  const summary = demoteEmbeddedHeadings(rawSummary);
   const m = summary.match(/\*\*Guidance\*\*[:\s]*([\s\S]*?)(?=\n\s*\*\*[A-Z]|$)/);
   const guidance = m?.[1]?.trim();
   const tone = summary.match(/\*\*Tone\*\*[:\s]*([^\n]+)/)?.[1]?.trim();
@@ -247,12 +252,17 @@ export function renderDebriefSections(
     }
 
     // Freshest call note for the family — deliberately NOT passing a
-    // `beforeDate`: getLatestCallNoteForFamily's beforeDate arg is an
-    // EXCLUSIVE `< beforeDate` filter built for the preview composer's
-    // "prior quarter's note, never the current one" continuity use. The
-    // debrief wants the opposite: the note the user just took about
-    // yesterday's/today's call, which is why no date bound is passed here.
-    const callNote = getLatestCallNoteForFamily(db, candidate.symbol);
+    // Date-bounded, family-aware lookup — NOT getLatestCallNoteForFamily.
+    // That helper (absent a `beforeDate`) returns the family's single most
+    // recent note no matter its age; a debriefed print with no note yet
+    // but a note from last quarter would then render that stale note as
+    // "Your call note" with no qualifier, misattributing it to this print.
+    // getCallNoteNearDateForFamily instead only matches a note whose
+    // calendar event lands within a few days of THIS candidate's
+    // event_date (either direction, so a dual-class sibling's note still
+    // counts) and renders nothing when there's no match in that window —
+    // silence beats misattribution.
+    const callNote = getCallNoteNearDateForFamily(db, candidate.symbol, candidate.event_date);
     if (callNote && (callNote.guidance || callNote.tone || callNote.surprises)) {
       const bits: string[] = [];
       if (callNote.guidance) bits.push(`guidance ${callNote.guidance}`);

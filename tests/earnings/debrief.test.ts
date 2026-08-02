@@ -368,6 +368,89 @@ describe("renderDebriefSections", () => {
 
     expect(section.markdown).not.toContain("**Your call note:**");
   });
+
+  it("does NOT render a stale call note from a prior quarter's event (outside the date window)", () => {
+    seedHeld("PRIORQ");
+    seedEvent({ symbol: "PRIORQ", date: TODAY });
+    // A much older event for the same symbol, holding a note from a prior
+    // quarter's call — outside the window (2026-05-01 is ~90 days back).
+    const oldEventId = seedEvent({ symbol: "PRIORQ", date: "2026-05-01" });
+    seedCallNote(oldEventId, "PRIORQ", {
+      guidance: "lowered",
+      tone: "cautious last quarter",
+      surprises: "missed on margins",
+    });
+
+    const { unsent } = findDebriefCandidates(db, { now: NOW });
+    const sections = renderDebriefSections(db, unsent);
+    const section = sections.find((s) => s.symbol === "PRIORQ")!;
+
+    expect(section.markdown).not.toContain("**Your call note:**");
+    expect(section.markdown).not.toContain("cautious last quarter");
+  });
+
+  it("renders a call note attached to the debriefed event itself", () => {
+    seedHeld("THISQ");
+    const eventId = seedEvent({ symbol: "THISQ", date: TODAY });
+    seedCallNote(eventId, "THISQ", { guidance: "inline", tone: "steady tone" });
+
+    const { unsent } = findDebriefCandidates(db, { now: NOW });
+    const sections = renderDebriefSections(db, unsent);
+    const section = sections.find((s) => s.symbol === "THISQ")!;
+
+    expect(section.markdown).toContain("**Your call note:**");
+    expect(section.markdown).toContain("guidance inline");
+    expect(section.markdown).toContain("tone: steady tone");
+  });
+
+  it("dual-class: a note attached to the sibling's event row within the window renders for the deduped candidate", () => {
+    seedHeld("GOOG");
+    const googId = seedEvent({ symbol: "GOOG", date: TODAY });
+    const googlId = seedEvent({ symbol: "GOOGL", date: TODAY });
+    seedCallNote(googlId, "GOOGL", {
+      guidance: "raised",
+      tone: "sibling call tone",
+      surprises: "ad revenue beat",
+    });
+
+    const { unsent } = findDebriefCandidates(db, { now: NOW });
+    expect(unsent).toHaveLength(1);
+    expect(unsent[0].eventId).toBe(googId);
+
+    const sections = renderDebriefSections(db, unsent);
+    const section = sections.find((s) => s.symbol === "GOOG")!;
+
+    expect(section.markdown).toContain("**Your call note:**");
+    expect(section.markdown).toContain("guidance raised");
+    expect(section.markdown).toContain("tone: sibling call tone");
+    expect(section.markdown).toContain("surprises: ad revenue beat");
+  });
+
+  it("desk-note excerpt demotes an embedded raw markdown heading before excerpting — no heading line leaks into the section", () => {
+    seedHeld("HEAD");
+    seedEvent({ symbol: "HEAD" });
+    seedTranscript({
+      ticker: "HEAD",
+      summary:
+        "**Guidance**: They raised full-year guidance.\n## Segment detail\nCloud grew 40% while ads were flat.\n**Tone**: confident",
+      fetchedAt: `${TODAY} 05:00:00`,
+    });
+
+    const { unsent } = findDebriefCandidates(db, { now: NOW });
+    const sections = renderDebriefSections(db, unsent);
+    const section = sections.find((s) => s.symbol === "HEAD")!;
+
+    expect(section.markdown).toContain("**From the call** (desk note):");
+    expect(section.markdown).toContain("They raised full-year guidance.");
+    expect(section.markdown).toContain("**Tone:** confident");
+    expect(section.markdown).not.toContain("## Segment detail");
+
+    const deskNoteBlock = section.markdown.split("**From the call** (desk note):")[1] ?? "";
+    const rawHeadingLines = deskNoteBlock
+      .split("\n")
+      .filter((l) => /^#{1,6}\s/.test(l.trim()));
+    expect(rawHeadingLines).toEqual([]);
+  });
 });
 
 describe("buildDebriefPrompt", () => {
