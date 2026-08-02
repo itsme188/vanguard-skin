@@ -29,6 +29,14 @@ const DEFAULT_LIMIT = 25;
 // pass budgets a handful of AI calls, not the whole horizon at once.
 const DEFAULT_VERIFICATION_LIMIT = 8;
 
+// ── Daily gate ───────────────────────────────────────────────────────────
+const DAILY_GATE_SETTINGS_KEY = "earnings_date_verify_last_run";
+// BMO earnings-preview emails start firing ~06:25 ET (the [105,135]-min
+// preview window off an early release_time) — verification of an incoming
+// wrong date/slot must land before that window opens, so the gate opens at
+// 05:00 ET, comfortably ahead of the first preview send.
+const DAILY_GATE_OPEN_HOUR_ET = 5;
+
 export interface DateVerificationCandidate {
   id: number;
   symbol: string;
@@ -426,4 +434,71 @@ export async function runEarningsDateVerification(
     console.error("[verify-earnings-dates] runEarningsDateVerification failed:", err);
     return { outcomes, corrections: countCorrections() };
   }
+}
+
+// ─── Daily gate ─────────────────────────────────────────────────────────────
+
+function getDailyGateLastRunDay(db: Database.Database): string | null {
+  try {
+    const row = db
+      .prepare(`SELECT value FROM settings WHERE key = ?`)
+      .get(DAILY_GATE_SETTINGS_KEY) as { value: string } | undefined;
+    return row?.value ?? null;
+  } catch {
+    return null; // settings table absent (minimal test DBs)
+  }
+}
+
+function setDailyGateLastRunDay(db: Database.Database, day: string): void {
+  try {
+    db.prepare(
+      `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+    ).run(DAILY_GATE_SETTINGS_KEY, day);
+  } catch {
+    // settings table absent (minimal test DBs) — best-effort, never throw
+  }
+}
+
+/**
+ * Once-per-ET-day gate for the daily verification pass, wired into the
+ * earnings-sweep cron route (which runs every 15 min). Opens at 05:00 ET
+ * (see DAILY_GATE_OPEN_HOUR_ET) so a bad vendor date/slot gets a chance to
+ * be corrected before the first BMO preview email fires.
+ *
+ * ET hour is read from an Intl wall clock, never the local clock — the Mac
+ * travels (see the ET-anchor convention in CLAUDE.md).
+ *
+ * Stamps the settings key BEFORE calling the runner — same stamp-before-push
+ * discipline as the coverage guard (lib/calendar/coverage-guard.ts): a run
+ * that throws or hangs still only gets one attempt per ET day, never a retry
+ * storm from the next 15-min cron tick. Table-existence-tolerant (minimal
+ * test DBs lacking a `settings` table): the gate degrades to "always eligible
+ * to run" rather than throwing.
+ */
+export async function maybeRunDailyDateVerification(
+  db: Database.Database,
+  opts?: { now?: Date; runner?: typeof runEarningsDateVerification },
+): Promise<{ ran: boolean }> {
+  const now = opts?.now ?? new Date();
+
+  const etHour = Number(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/New_York",
+      hour: "numeric",
+      hour12: false,
+    }).format(now),
+  ) % 24; // hour12:false can format midnight as "24" under some ICU builds
+
+  if (etHour < DAILY_GATE_OPEN_HOUR_ET) return { ran: false };
+
+  const today = todayET(now);
+  if (getDailyGateLastRunDay(db) === today) return { ran: false };
+
+  setDailyGateLastRunDay(db, today);
+
+  const runner = opts?.runner ?? runEarningsDateVerification;
+  await runner(db, { now });
+
+  return { ran: true };
 }

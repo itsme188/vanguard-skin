@@ -11,6 +11,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
+import { todayET } from "@/lib/calendar/date-utils";
 import {
   findDateVerificationCandidates,
   buildDateVerificationPrompt,
@@ -18,6 +19,7 @@ import {
   effectiveSlot,
   applyVerdict,
   runEarningsDateVerification,
+  maybeRunDailyDateVerification,
   type DateVerificationCandidate,
   type DateVerdict,
 } from "@/lib/calendar/verify-earnings-dates";
@@ -708,5 +710,57 @@ describe("runEarningsDateVerification", () => {
     const result = await runEarningsDateVerification(db, { now: NOW, fetchVerdicts });
 
     expect(result).toEqual({ outcomes: [], corrections: 0 });
+  });
+});
+
+// ── maybeRunDailyDateVerification ───────────────────────────────────────────
+// Once-per-ET-day gate wired into the earnings-sweep cron route. Gate opens
+// at 05:00 ET (BMO previews start firing ~06:25 ET, so verification must
+// precede them). Always injects `runner` so these tests never touch the real
+// orchestrator / network — same DI seam runEarningsDateVerification itself
+// uses for fetchVerdicts.
+
+describe("maybeRunDailyDateVerification", () => {
+  it("runs once per ET day after 05:00 ET and stamps settings key earnings_date_verify_last_run", async () => {
+    const runner = vi.fn(async () => ({ outcomes: [], corrections: 0 }));
+    const now = new Date("2026-08-02T10:00:00Z"); // 06:00 ET (EDT, UTC-4)
+
+    const result = await maybeRunDailyDateVerification(db, { now, runner });
+
+    expect(result).toEqual({ ran: true });
+    expect(runner).toHaveBeenCalledTimes(1);
+    expect(runner).toHaveBeenCalledWith(db, { now });
+
+    const row = db
+      .prepare(`SELECT value FROM settings WHERE key = ?`)
+      .get("earnings_date_verify_last_run") as { value: string } | undefined;
+    expect(row?.value).toBe(todayET(now));
+  });
+
+  it("second call same day is a no-op", async () => {
+    const runner = vi.fn(async () => ({ outcomes: [], corrections: 0 }));
+    const now = new Date("2026-08-02T10:00:00Z"); // 06:00 ET
+
+    const first = await maybeRunDailyDateVerification(db, { now, runner });
+    const second = await maybeRunDailyDateVerification(db, { now, runner });
+
+    expect(first).toEqual({ ran: true });
+    expect(second).toEqual({ ran: false });
+    expect(runner).toHaveBeenCalledTimes(1);
+  });
+
+  it("before 05:00 ET does not run (BMO previews start ~06:25 — verification must precede them, so the gate opens at 05:00)", async () => {
+    const runner = vi.fn(async () => ({ outcomes: [], corrections: 0 }));
+    const now = new Date("2026-08-02T08:00:00Z"); // 04:00 ET
+
+    const result = await maybeRunDailyDateVerification(db, { now, runner });
+
+    expect(result).toEqual({ ran: false });
+    expect(runner).not.toHaveBeenCalled();
+
+    const row = db
+      .prepare(`SELECT value FROM settings WHERE key = ?`)
+      .get("earnings_date_verify_last_run") as { value: string } | undefined;
+    expect(row).toBeUndefined();
   });
 });
