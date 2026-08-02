@@ -3,6 +3,7 @@
 import { useState, useEffect, type ReactNode } from "react";
 import type { PortfolioGreeks, PositionGreeks, GreeksDiagnostic } from "@/lib/compute/options-greeks";
 import { PrivateText } from "@/lib/privacy/components";
+import { formatUSDPrecise, rendersAsZero } from "@/lib/format";
 import { EmptySection } from "./EmptySection";
 import {
   interpretDelta,
@@ -140,14 +141,14 @@ export function OptionsGreeksCard({ scope }: { scope?: string }) {
                   </td>
                   <td className="text-right py-2 px-2 font-mono text-down">
                     {theta != null ? (
-                      <PrivateText>{`$${theta.toFixed(2)}`}</PrivateText>
+                      <PrivateText>{formatUSDPrecise(theta)}</PrivateText>
                     ) : (
                       "—"
                     )}
                   </td>
                   <td className="hidden md:table-cell text-right py-2 px-2 font-mono text-blue">
                     {vega != null ? (
-                      <PrivateText>{`$${vega.toFixed(2)}`}</PrivateText>
+                      <PrivateText>{formatUSDPrecise(vega)}</PrivateText>
                     ) : (
                       "—"
                     )}
@@ -226,8 +227,12 @@ function formatNum(n: number | null | undefined): string {
 
 function formatDollar(n: number | null | undefined): string {
   if (n == null || isNaN(n)) return "—";
-  if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(1)}K`;
-  return `$${n.toFixed(0)}`;
+  // Sign lives OUTSIDE the "$" ("-$2.1K", never "$-2.1K"); dropped when the
+  // rounded body is zero so a tiny negative theta can't render "-$0".
+  const abs = Math.abs(n);
+  const body = abs >= 1000 ? `$${(abs / 1000).toFixed(1)}K` : `$${abs.toFixed(0)}`;
+  const sign = n < 0 && !rendersAsZero(body) ? "-" : "";
+  return `${sign}${body}`;
 }
 
 function formatStrike(strike: number): string {
