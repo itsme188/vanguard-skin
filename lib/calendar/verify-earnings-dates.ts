@@ -1,24 +1,33 @@
 import type Database from "better-sqlite3";
+import type Anthropic from "@anthropic-ai/sdk";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
 import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
 import { getReadThroughReporterSymbols } from "@/lib/queries/read-through-pairs";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { extractJsonArray } from "@/lib/ai/extract-json";
+import { correctEarningsEventDate } from "@/lib/mutations/calendar";
+import { getRawAnthropicClient } from "@/lib/ai/provider";
+import { resolveFeatureModel } from "@/lib/ai/models";
+import { sendPushover } from "@/lib/alerts/notify-pushover";
 
 /**
- * Earnings date/slot verification (pure parts) — candidate selection, prompt
- * building, and verdict parsing for upcoming held/watchlist/read-through-
- * reporter earnings whose vendor-sourced date (Finnhub/Nasdaq/WSH) has never
- * been independently confirmed.
+ * Earnings date/slot verification — candidate selection, prompt building,
+ * verdict parsing (pure, Task 3) plus apply semantics + the orchestrator
+ * (Task 4) for upcoming held/watchlist/read-through-reporter earnings whose
+ * vendor-sourced date (Finnhub/Nasdaq/WSH) has never been independently
+ * confirmed.
  *
- * This file is deliberately network-free: no Claude calls, no orchestration.
- * The orchestrator (Task 4) calls findDateVerificationCandidates, builds the
- * prompt, makes the AI call, and feeds the response through parseDateVerdicts
- * before applying anything via lib/mutations/calendar.ts::correctEarningsEventDate.
+ * applyVerdict is pure DB — no AI calls. runEarningsDateVerification is the
+ * only network-calling entry point, and it goes through the fetchVerdicts DI
+ * seam so it's fully testable without hitting Anthropic.
  */
 
 const DEFAULT_HORIZON_DAYS = 7;
 const DEFAULT_LIMIT = 25;
+// The orchestrator passes this explicitly rather than relying on
+// findDateVerificationCandidates' own default (25) — a daily verification
+// pass budgets a handful of AI calls, not the whole horizon at once.
+const DEFAULT_VERIFICATION_LIMIT = 8;
 
 export interface DateVerificationCandidate {
   id: number;
@@ -210,4 +219,211 @@ export function parseDateVerdicts(text: string): DateVerdict[] {
     if (v) out.push(v);
   }
   return out;
+}
+
+// ─── Apply semantics ────────────────────────────────────────────────────────
+
+export type VerificationAction =
+  | "verified"
+  | "date-corrected"
+  | "slot-corrected"
+  | "unverifiable"
+  | "refused";
+
+export interface VerificationOutcome {
+  candidate: DateVerificationCandidate;
+  action: VerificationAction;
+  detail: string;
+}
+
+/**
+ * Applies a single verdict to a single candidate row. Pure DB — no AI calls.
+ *
+ * Apply-semantics matrix (see docs/superpowers/sdd/2026-08-02-earnings-date-verification):
+ *   - no verdict OR confirmed_date null → stamp "unverifiable — <source|no source found>"
+ *   - confidence !== "confirmed"        → stamp "unconfirmed — left as vendor date (...)"
+ *   - date equal + slot agrees/unknown  → stamp "confirmed via <source>", action "verified"
+ *   - date equal + slot differs         → correctEarningsEventDate (same date, new slot),
+ *                                          stamp the NEW row, action "slot-corrected"
+ *   - date differs                      → correctEarningsEventDate (new date [+ slot]),
+ *                                          stamp the NEW row, action "date-corrected"
+ *   - correctEarningsEventDate refuses  → action "refused", nothing stamped
+ *
+ * `opts.apply: false` is a dry run: every outcome is computed exactly as it
+ * would be applied, but nothing is written — neither the date_verified_at /
+ * date_verification_note stamp nor a correctEarningsEventDate call (which has
+ * no dry-run mode of its own, so a dry run must never call it at all).
+ */
+export function applyVerdict(
+  db: Database.Database,
+  candidate: DateVerificationCandidate,
+  verdict: DateVerdict | undefined,
+  opts: { apply: boolean },
+): VerificationOutcome {
+  const stamp = (note: string, eventId: number): void => {
+    if (!opts.apply) return;
+    db.prepare(
+      `UPDATE calendar_events SET date_verified_at = datetime('now'), date_verification_note = ? WHERE id = ?`,
+    ).run(note, eventId);
+  };
+
+  if (!verdict || verdict.confirmed_date === null) {
+    const note = `unverifiable — ${verdict?.source ?? "no source found"}`;
+    stamp(note, candidate.id);
+    return { candidate, action: "unverifiable", detail: note };
+  }
+
+  if (verdict.confidence !== "confirmed") {
+    const note = `unconfirmed — left as vendor date (${verdict.confirmed_date ?? "?"} ${verdict.slot ?? "?"} suggested)`;
+    stamp(note, candidate.id);
+    return { candidate, action: "unverifiable", detail: note };
+  }
+
+  const candidateSlot = effectiveSlot(candidate);
+  const dateEqual = verdict.confirmed_date === candidate.event_date;
+  const source = verdict.source ?? "web";
+
+  if (dateEqual) {
+    if (verdict.slot !== null && candidateSlot !== null && verdict.slot !== candidateSlot) {
+      // Both sides resolve to a slot and they disagree — same-date slot fix.
+      const note = `slot corrected ${candidateSlot}→${verdict.slot} via ${source}`;
+      if (!opts.apply) return { candidate, action: "slot-corrected", detail: note };
+
+      const result = correctEarningsEventDate(db, {
+        symbol: candidate.symbol,
+        wrongDate: candidate.event_date,
+        correctDate: candidate.event_date,
+        slot: verdict.slot.toUpperCase() as "BMO" | "AMC",
+      });
+      if (!result.ok) {
+        return { candidate, action: "refused", detail: result.refusedReason ?? "correction refused" };
+      }
+      stamp(note, result.newEventId!);
+      return { candidate, action: "slot-corrected", detail: note };
+    }
+
+    // Slot equal, or either side has no resolvable slot — confirmed as-is.
+    const note = `confirmed via ${source}`;
+    stamp(note, candidate.id);
+    return { candidate, action: "verified", detail: note };
+  }
+
+  // Date differs — correct it, carrying the verdict's slot when it has one.
+  const note = `date corrected ${candidate.event_date}→${verdict.confirmed_date} via ${source}`;
+  if (!opts.apply) return { candidate, action: "date-corrected", detail: note };
+
+  const result = correctEarningsEventDate(db, {
+    symbol: candidate.symbol,
+    wrongDate: candidate.event_date,
+    correctDate: verdict.confirmed_date,
+    slot: verdict.slot ? (verdict.slot.toUpperCase() as "BMO" | "AMC") : undefined,
+  });
+  if (!result.ok) {
+    return { candidate, action: "refused", detail: result.refusedReason ?? "correction refused" };
+  }
+  stamp(note, result.newEventId!);
+  return { candidate, action: "date-corrected", detail: note };
+}
+
+// ─── Orchestrator ───────────────────────────────────────────────────────────
+
+/**
+ * Default Claude + native web_search fetcher — mirrors
+ * lib/securities/verify-sector-tags.ts::defaultFetchVerdicts exactly (same
+ * provider guard, same tool block, same model-id derivation via
+ * resolveFeatureModel(featureKey)). Never called in tests (they always
+ * inject fetchVerdicts).
+ */
+export async function defaultFetchDateVerdicts(prompt: string): Promise<string> {
+  const featureKey = "earningsDateVerification";
+  const { provider, modelId } = resolveFeatureModel(featureKey);
+  if (provider !== "anthropic") {
+    throw new Error(
+      `Earnings date verification requires the Anthropic provider for native web_search; FEATURE_MODELS["${featureKey}"] resolves to ${provider}/${modelId}. Update lib/ai/models.ts.`,
+    );
+  }
+  const client = getRawAnthropicClient(featureKey);
+
+  const response = await client.messages.create({
+    model: modelId,
+    max_tokens: 4000,
+    tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 8 }],
+    messages: [{ role: "user", content: prompt }],
+  });
+  const textBlocks = response.content.filter(
+    (b): b is Anthropic.TextBlock => b.type === "text",
+  );
+  return textBlocks.map((b) => b.text).join("\n");
+}
+
+/**
+ * Orchestrates a full verification pass: candidates → prompt → AI fetch →
+ * parse → applyVerdict per candidate → (on real corrections) one Pushover
+ * summary.
+ *
+ * Verdict matching is family-aware: the AI may answer with a different
+ * share-class symbol than the one the candidate carries (e.g. a "GOOGL"
+ * verdict for a "GOOG" candidate) — matched via issuerSiblings, not a bare
+ * string comparison.
+ *
+ * Never throws into its caller — this is meant to run from a cron-style
+ * driver where a bad AI response or a transient network error must not sink
+ * the whole job. Whatever outcomes were computed before a failure are
+ * returned as-is.
+ */
+export async function runEarningsDateVerification(
+  db: Database.Database,
+  opts?: {
+    now?: Date;
+    apply?: boolean;
+    limit?: number;
+    fetchVerdicts?: (prompt: string) => Promise<string>;
+  },
+): Promise<{ outcomes: VerificationOutcome[]; corrections: number }> {
+  const outcomes: VerificationOutcome[] = [];
+  const countCorrections = () =>
+    outcomes.filter((o) => o.action === "date-corrected" || o.action === "slot-corrected").length;
+
+  try {
+    const limit = opts?.limit ?? DEFAULT_VERIFICATION_LIMIT;
+    const candidates = findDateVerificationCandidates(db, { now: opts?.now, limit });
+    if (candidates.length === 0) return { outcomes, corrections: 0 };
+
+    const today = todayET(opts?.now);
+    const prompt = buildDateVerificationPrompt(candidates, today);
+    const fetcher = opts?.fetchVerdicts ?? defaultFetchDateVerdicts;
+
+    const text = await fetcher(prompt);
+    const verdicts = parseDateVerdicts(text);
+
+    const verdictBySymbol = new Map<string, DateVerdict>();
+    for (const v of verdicts) verdictBySymbol.set(v.symbol.toUpperCase(), v);
+
+    const applyFlag = opts?.apply !== false;
+    for (const candidate of candidates) {
+      const family = issuerSiblings(candidate.symbol.toUpperCase()).map((s) => s.toUpperCase());
+      const verdict = family.map((sym) => verdictBySymbol.get(sym)).find((v) => v !== undefined);
+      outcomes.push(applyVerdict(db, candidate, verdict, { apply: applyFlag }));
+    }
+
+    const corrections = countCorrections();
+
+    if (corrections > 0 && opts?.apply !== false) {
+      const correctionOutcomes = outcomes.filter(
+        (o) => o.action === "date-corrected" || o.action === "slot-corrected",
+      );
+      // Prefix each line with the symbol — the outcome's own `detail` string
+      // (see applyVerdict) never carries it, and a push with no ticker in it
+      // is useless.
+      await sendPushover({
+        title: `Earnings dates corrected (${corrections})`,
+        message: correctionOutcomes.map((o) => `${o.candidate.symbol}: ${o.detail}`).join("\n"),
+      });
+    }
+
+    return { outcomes, corrections };
+  } catch (err) {
+    console.error("[verify-earnings-dates] runEarningsDateVerification failed:", err);
+    return { outcomes, corrections: countCorrections() };
+  }
 }

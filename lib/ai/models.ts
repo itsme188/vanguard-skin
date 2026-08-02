@@ -77,6 +77,12 @@ export const FEATURE_MODELS: Record<FeatureKey, string> = {
   // Must stay on Anthropic — native PDF content block.
   earningsBogeysExtraction: "anthropic/$workhorse",
 
+  // Daily earnings date/slot verification pass (web_search against
+  // company IR announcements) — sibling of sectorVerification but a
+  // recurring daily job over a small horizon-limited batch, not a one-time
+  // repair sweep, so workhorse tier over frontier.
+  earningsDateVerification: "anthropic/$workhorse",
+
   // Newsletter-text bogey extraction (EPS/revenue consensus + whisper for
   // upcoming reporters) — sibling of newsletterLevelExtraction but for
   // earnings numbers instead of price levels.

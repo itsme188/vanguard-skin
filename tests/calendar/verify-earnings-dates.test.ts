@@ -2,12 +2,13 @@
  * Task 3 of the earnings date-verification plan: pure candidate selection,
  * prompt building, and verdict parsing for lib/calendar/verify-earnings-dates.ts.
  *
- * No Claude calls / no orchestrator here — that's Task 4. This file tests only
- * the pure functions: findDateVerificationCandidates, buildDateVerificationPrompt,
- * parseDateVerdicts, effectiveSlot.
+ * Task 4 extends this file: applyVerdict (pure DB apply-semantics) and the
+ * runEarningsDateVerification orchestrator (candidates → prompt → AI fetch →
+ * parse → apply → pushover summary), both network-free in tests via the
+ * fetchVerdicts DI seam.
  */
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import {
@@ -15,8 +16,16 @@ import {
   buildDateVerificationPrompt,
   parseDateVerdicts,
   effectiveSlot,
+  applyVerdict,
+  runEarningsDateVerification,
   type DateVerificationCandidate,
+  type DateVerdict,
 } from "@/lib/calendar/verify-earnings-dates";
+
+const pushover = vi.fn(async (..._args: unknown[]) => ({ sent: true }));
+vi.mock("@/lib/alerts/notify-pushover", () => ({
+  sendPushover: (...a: unknown[]) => pushover(...a),
+}));
 
 let db: Database.Database;
 
@@ -25,6 +34,7 @@ beforeEach(() => {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   runMigrations(db);
+  pushover.mockClear();
 });
 
 // ── Seeding helpers (mirrors tests/queries/earnings-hub.test.ts idiom) ──────
@@ -100,6 +110,68 @@ function seedEvent(overrides: {
       sourceKey,
       "2026-08-03",
     ).lastInsertRowid as number;
+}
+
+function getEventRow(id: number):
+  | {
+      id: number;
+      symbol: string | null;
+      event_date: string;
+      event_time: string | null;
+      source: string;
+      actual_value: string | null;
+      date_verified_at: string | null;
+      date_verification_note: string | null;
+    }
+  | undefined {
+  return db
+    .prepare(
+      `SELECT id, symbol, event_date, event_time, source, actual_value,
+              date_verified_at, date_verification_note
+         FROM calendar_events WHERE id = ?`,
+    )
+    .get(id) as
+    | {
+        id: number;
+        symbol: string | null;
+        event_date: string;
+        event_time: string | null;
+        source: string;
+        actual_value: string | null;
+        date_verified_at: string | null;
+        date_verification_note: string | null;
+      }
+    | undefined;
+}
+
+function countEventsForSymbol(symbol: string): number {
+  return (
+    db
+      .prepare("SELECT COUNT(*) AS n FROM calendar_events WHERE UPPER(symbol) = ?")
+      .get(symbol.toUpperCase()) as { n: number }
+  ).n;
+}
+
+function countSuppressions(symbol: string, eventDate: string): number {
+  return (
+    db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM calendar_event_suppressions WHERE UPPER(symbol) = ? AND event_date = ?",
+      )
+      .get(symbol.toUpperCase(), eventDate) as { n: number }
+  ).n;
+}
+
+function toCandidate(id: number): DateVerificationCandidate {
+  const row = getEventRow(id)!;
+  return {
+    id: row.id,
+    symbol: row.symbol!,
+    event_date: row.event_date,
+    event_time: row.event_time,
+    release_time: null,
+    source: row.source,
+  };
 }
 
 const NOW = new Date("2026-08-02T14:00:00Z"); // ET Sunday-ish; horizon math uses todayET
@@ -316,5 +388,325 @@ describe("parseDateVerdicts", () => {
     const result = parseDateVerdicts(text);
     expect(result).toHaveLength(1);
     expect(result[0].symbol).toBe("GOOD");
+  });
+});
+
+// ── applyVerdict ─────────────────────────────────────────────────────────
+
+describe("applyVerdict", () => {
+  it("stamps date_verified_at + note on a confirmed match (date AND slot agree)", () => {
+    const acct = getAccount("Vanguard Taxable");
+    const sec = seedSecurity("HELD");
+    seedHolding(acct, sec, 100);
+    const id = seedEvent({ symbol: "HELD", event_date: "2026-08-05", event_time: "BMO" });
+    const candidate = toCandidate(id);
+
+    const verdict: DateVerdict = {
+      symbol: "HELD",
+      confirmed_date: "2026-08-05",
+      slot: "bmo",
+      confidence: "confirmed",
+      source: "ir.example.com",
+    };
+
+    const outcome = applyVerdict(db, candidate, verdict, { apply: true });
+
+    expect(outcome.action).toBe("verified");
+    expect(outcome.detail).toBe("confirmed via ir.example.com");
+
+    const row = getEventRow(id)!;
+    expect(row.date_verified_at).not.toBeNull();
+    expect(row.date_verification_note).toBe("confirmed via ir.example.com");
+    expect(row.event_date).toBe("2026-08-05");
+  });
+
+  it("date-match slot-mismatch (confirmed) → correctEarningsEventDate same date new slot; new manual row stamped verified", () => {
+    const acct = getAccount("Vanguard Taxable");
+    const sec = seedSecurity("SLOT");
+    seedHolding(acct, sec, 50);
+    const id = seedEvent({ symbol: "SLOT", event_date: "2026-08-05", event_time: "BMO" });
+    const candidate = toCandidate(id);
+
+    const verdict: DateVerdict = {
+      symbol: "SLOT",
+      confirmed_date: "2026-08-05",
+      slot: "amc",
+      confidence: "confirmed",
+      source: "ir",
+    };
+
+    const outcome = applyVerdict(db, candidate, verdict, { apply: true });
+
+    expect(outcome.action).toBe("slot-corrected");
+    expect(outcome.detail).toBe("slot corrected bmo→amc via ir");
+
+    // Original wrong-slot row is deleted by correctEarningsEventDate.
+    expect(getEventRow(id)).toBeUndefined();
+
+    const newRow = db
+      .prepare(
+        `SELECT id, event_time, date_verified_at, date_verification_note
+           FROM calendar_events WHERE UPPER(symbol) = 'SLOT' AND event_date = '2026-08-05' AND source = 'manual'`,
+      )
+      .get() as
+      | { id: number; event_time: string; date_verified_at: string | null; date_verification_note: string | null }
+      | undefined;
+    expect(newRow).toBeDefined();
+    expect(newRow!.event_time).toBe("AMC");
+    expect(newRow!.date_verified_at).not.toBeNull();
+    expect(newRow!.date_verification_note).toBe("slot corrected bmo→amc via ir");
+  });
+
+  it("date mismatch (confirmed) → correction to the new date; manual row stamped; suppression present", () => {
+    const acct = getAccount("Vanguard Taxable");
+    const sec = seedSecurity("MOVE");
+    seedHolding(acct, sec, 20);
+    const id = seedEvent({ symbol: "MOVE", event_date: "2026-08-05", event_time: "BMO" });
+    const candidate = toCandidate(id);
+
+    const verdict: DateVerdict = {
+      symbol: "MOVE",
+      confirmed_date: "2026-08-06",
+      slot: "amc",
+      confidence: "confirmed",
+      source: "wire story",
+    };
+
+    const outcome = applyVerdict(db, candidate, verdict, { apply: true });
+
+    expect(outcome.action).toBe("date-corrected");
+    expect(getEventRow(id)).toBeUndefined();
+
+    const newRow = db
+      .prepare(
+        `SELECT id, event_date, date_verified_at, date_verification_note
+           FROM calendar_events WHERE UPPER(symbol) = 'MOVE' AND source = 'manual'`,
+      )
+      .get() as
+      | { id: number; event_date: string; date_verified_at: string | null; date_verification_note: string | null }
+      | undefined;
+    expect(newRow).toBeDefined();
+    expect(newRow!.event_date).toBe("2026-08-06");
+    expect(newRow!.date_verified_at).not.toBeNull();
+
+    expect(countSuppressions("MOVE", "2026-08-05")).toBe(1);
+  });
+
+  it("unconfirmed verdict → stamps verified_at with 'unconfirmed' note, NEVER corrects (row untouched)", () => {
+    const acct = getAccount("Vanguard Taxable");
+    const sec = seedSecurity("UNSR");
+    seedHolding(acct, sec, 10);
+    const id = seedEvent({ symbol: "UNSR", event_date: "2026-08-05", event_time: "BMO" });
+    const candidate = toCandidate(id);
+
+    const verdict: DateVerdict = {
+      symbol: "UNSR",
+      confirmed_date: "2026-08-06",
+      slot: "amc",
+      confidence: "unconfirmed",
+      source: "a single unconfirmed blog post",
+    };
+
+    const outcome = applyVerdict(db, candidate, verdict, { apply: true });
+
+    expect(outcome.action).toBe("unverifiable");
+    expect(outcome.detail).toBe("unconfirmed — left as vendor date (2026-08-06 amc suggested)");
+
+    // Never corrects: row untouched aside from the stamp.
+    expect(countEventsForSymbol("UNSR")).toBe(1);
+    const row = getEventRow(id)!;
+    expect(row.event_date).toBe("2026-08-05");
+    expect(row.event_time).toBe("BMO");
+    expect(row.date_verified_at).not.toBeNull();
+    expect(row.date_verification_note).toBe(
+      "unconfirmed — left as vendor date (2026-08-06 amc suggested)",
+    );
+  });
+
+  it("missing verdict for a candidate → 'unverifiable', stamps with note so it is not retried daily", () => {
+    const acct = getAccount("Vanguard Taxable");
+    const sec = seedSecurity("MISS");
+    seedHolding(acct, sec, 10);
+    const id = seedEvent({ symbol: "MISS", event_date: "2026-08-05" });
+    const candidate = toCandidate(id);
+
+    const outcome = applyVerdict(db, candidate, undefined, { apply: true });
+
+    expect(outcome.action).toBe("unverifiable");
+    expect(outcome.detail).toBe("unverifiable — no source found");
+
+    const row = getEventRow(id)!;
+    expect(row.date_verified_at).not.toBeNull();
+    expect(row.date_verification_note).toBe("unverifiable — no source found");
+  });
+
+  it("correction refused (actuals landed between candidate selection and apply) → action 'refused', no stamp changes on original", () => {
+    const acct = getAccount("Vanguard Taxable");
+    const sec = seedSecurity("PRNT");
+    seedHolding(acct, sec, 10);
+    // Candidate was selected before actuals landed; simulate the race by
+    // seeding the row WITH an already-captured actual_value directly (this
+    // wouldn't pass findDateVerificationCandidates' own filter, but a stale
+    // in-flight candidate object can still reach applyVerdict).
+    const id = seedEvent({
+      symbol: "PRNT",
+      event_date: "2026-08-05",
+      event_time: "BMO",
+      actual_value: "EPS 2.10 · Rev 900M",
+    });
+    const candidate = toCandidate(id);
+
+    const verdict: DateVerdict = {
+      symbol: "PRNT",
+      confirmed_date: "2026-08-06",
+      slot: "amc",
+      confidence: "confirmed",
+      source: "ir",
+    };
+
+    const outcome = applyVerdict(db, candidate, verdict, { apply: true });
+
+    expect(outcome.action).toBe("refused");
+    expect(outcome.detail.length).toBeGreaterThan(0);
+
+    const row = getEventRow(id)!;
+    expect(row.date_verified_at).toBeNull();
+    expect(row.date_verification_note).toBeNull();
+    expect(row.event_date).toBe("2026-08-05");
+  });
+
+  it("apply:false (dry-run) → outcomes computed, zero DB writes", () => {
+    const acct = getAccount("Vanguard Taxable");
+    const sec = seedSecurity("DRYR");
+    seedHolding(acct, sec, 10);
+    const id = seedEvent({ symbol: "DRYR", event_date: "2026-08-05", event_time: "BMO" });
+    const candidate = toCandidate(id);
+
+    const verdict: DateVerdict = {
+      symbol: "DRYR",
+      confirmed_date: "2026-08-06",
+      slot: "amc",
+      confidence: "confirmed",
+      source: "ir",
+    };
+
+    const outcome = applyVerdict(db, candidate, verdict, { apply: false });
+
+    expect(outcome.action).toBe("date-corrected");
+
+    // Zero DB writes: original row untouched, no new row, no suppression.
+    expect(countEventsForSymbol("DRYR")).toBe(1);
+    const row = getEventRow(id)!;
+    expect(row.date_verified_at).toBeNull();
+    expect(row.date_verification_note).toBeNull();
+    expect(row.event_date).toBe("2026-08-05");
+    expect(countSuppressions("DRYR", "2026-08-05")).toBe(0);
+  });
+});
+
+// ── runEarningsDateVerification ─────────────────────────────────────────────
+
+describe("runEarningsDateVerification", () => {
+  it("no candidates → returns immediately without calling fetchVerdicts", async () => {
+    const fetchVerdicts = vi.fn(async () => {
+      throw new Error("should never be called");
+    });
+
+    const result = await runEarningsDateVerification(db, { now: NOW, fetchVerdicts });
+
+    expect(result).toEqual({ outcomes: [], corrections: 0 });
+    expect(fetchVerdicts).not.toHaveBeenCalled();
+  });
+
+  it("matches a verdict to a candidate via issuerSiblings family (GOOGL verdict, GOOG candidate)", async () => {
+    const acct = getAccount("Vanguard Taxable");
+    const sec = seedSecurity("GOOG");
+    seedHolding(acct, sec, 5);
+    seedEvent({ symbol: "GOOG", event_date: "2026-08-05", event_time: "BMO" });
+
+    const fetchVerdicts = vi.fn(async () =>
+      JSON.stringify([
+        {
+          symbol: "GOOGL",
+          confirmed_date: "2026-08-05",
+          slot: "bmo",
+          confidence: "confirmed",
+          source: "ir",
+        },
+      ]),
+    );
+
+    const result = await runEarningsDateVerification(db, { now: NOW, fetchVerdicts });
+
+    expect(result.outcomes).toHaveLength(1);
+    expect(result.outcomes[0].candidate.symbol).toBe("GOOG");
+    expect(result.outcomes[0].action).toBe("verified");
+    expect(result.corrections).toBe(0);
+  });
+
+  it("fires one pushover summary when corrections > 0 and apply is true, with one line per correction", async () => {
+    const acct = getAccount("Vanguard Taxable");
+    const secA = seedSecurity("MVA");
+    seedHolding(acct, secA, 5);
+    seedEvent({ symbol: "MVA", event_date: "2026-08-05", event_time: "BMO" });
+    const secB = seedSecurity("MVB");
+    seedHolding(acct, secB, 5);
+    seedEvent({ symbol: "MVB", event_date: "2026-08-06", event_time: "BMO" });
+
+    const fetchVerdicts = vi.fn(async () =>
+      JSON.stringify([
+        { symbol: "MVA", confirmed_date: "2026-08-07", slot: "amc", confidence: "confirmed", source: "ir-a" },
+        { symbol: "MVB", confirmed_date: "2026-08-08", slot: "amc", confidence: "confirmed", source: "ir-b" },
+      ]),
+    );
+
+    const result = await runEarningsDateVerification(db, { now: NOW, apply: true, fetchVerdicts });
+
+    expect(result.corrections).toBe(2);
+    expect(pushover).toHaveBeenCalledTimes(1);
+    const call = pushover.mock.calls[0][0] as { title: string; message: string };
+    expect(call.title).toBe("Earnings dates corrected (2)");
+    expect(call.message).toContain("MVA:");
+    expect(call.message).toContain("MVB:");
+    expect(call.message.split("\n")).toHaveLength(2);
+  });
+
+  it("does not push when apply is false, even though corrections would exist", async () => {
+    const acct = getAccount("Vanguard Taxable");
+    const sec = seedSecurity("NDRY");
+    seedHolding(acct, sec, 5);
+    seedEvent({ symbol: "NDRY", event_date: "2026-08-05", event_time: "BMO" });
+
+    const fetchVerdicts = vi.fn(async () =>
+      JSON.stringify([
+        {
+          symbol: "NDRY",
+          confirmed_date: "2026-08-07",
+          slot: "amc",
+          confidence: "confirmed",
+          source: "ir",
+        },
+      ]),
+    );
+
+    const result = await runEarningsDateVerification(db, { now: NOW, apply: false, fetchVerdicts });
+
+    expect(result.outcomes[0].action).toBe("date-corrected");
+    expect(pushover).not.toHaveBeenCalled();
+  });
+
+  it("wraps in try/catch — a throwing fetchVerdicts never throws into the caller, returns empty outcomes", async () => {
+    const acct = getAccount("Vanguard Taxable");
+    const sec = seedSecurity("BOOM");
+    seedHolding(acct, sec, 5);
+    seedEvent({ symbol: "BOOM", event_date: "2026-08-05" });
+
+    const fetchVerdicts = vi.fn(async () => {
+      throw new Error("network exploded");
+    });
+
+    const result = await runEarningsDateVerification(db, { now: NOW, fetchVerdicts });
+
+    expect(result).toEqual({ outcomes: [], corrections: 0 });
   });
 });
