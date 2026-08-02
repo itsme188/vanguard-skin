@@ -20,11 +20,29 @@ vi.mock("@/lib/earnings/debrief", async (importOriginal) => {
   return { ...actual, findDebriefCandidates: vi.fn(actual.findDebriefCandidates) };
 });
 vi.mock("@/lib/email", () => ({ sendEmail: vi.fn() }));
+// Mac↔cloud KV marker dance (F2) — same stub shape wrap-send.test.ts uses.
+// All helpers no-op in production when WORKER_MARKER_URL is unset; mocking
+// keeps the tests off the network and lets them pin the calls.
+vi.mock("@/lib/cron/earnings-marker-check", () => ({
+  checkEarningsCloudMarker: vi.fn().mockResolvedValue(null),
+  setEarningsRunningMarker: vi.fn().mockResolvedValue(null),
+  clearEarningsRunningMarker: vi.fn().mockResolvedValue(null),
+  writeMacSentEarningsMarker: vi.fn().mockResolvedValue(null),
+  fetchCloudSentEarnings: vi.fn().mockResolvedValue([]),
+  checkPrintPushMarker: vi.fn().mockResolvedValue(false),
+  writePrintPushMarker: vi.fn().mockResolvedValue(null),
+}));
 
 const mockedFindCandidates = vi.mocked(findDebriefCandidates);
 
 import { sendEmail } from "@/lib/email";
+import {
+  checkEarningsCloudMarker,
+  writeMacSentEarningsMarker,
+} from "@/lib/cron/earnings-marker-check";
 const mockedSend = vi.mocked(sendEmail);
+const mockedCloudMarker = vi.mocked(checkEarningsCloudMarker);
+const mockedMacSent = vi.mocked(writeMacSentEarningsMarker);
 
 const RECIPIENT = "desk@example.com";
 // 2026-08-02T11:45:00Z = 07:45 ET (EDT, UTC-4) — the window's opening minute.
@@ -42,6 +60,12 @@ beforeEach(() => {
   db.pragma("foreign_keys = ON");
   runMigrations(db);
   vi.clearAllMocks();
+  // clearAllMocks keeps implementations — reset the marker stubs explicitly so
+  // a per-test mockImplementation can't leak into the next test.
+  mockedCloudMarker.mockReset();
+  mockedCloudMarker.mockResolvedValue(null);
+  mockedMacSent.mockReset();
+  mockedMacSent.mockResolvedValue(null);
 });
 
 function seedHeld(symbol: string): void {
@@ -239,6 +263,82 @@ describe("runMorningDebrief", () => {
       // All members share the ONE debrief email's markdown.
       expect(r.ai_output_md).toBe(rows[0].ai_output_md);
     }
+  });
+
+  /**
+   * F2 (marker dance): the debrief writes per-member recap audit rows, so it
+   * owns the same Mac↔cloud coordination the retired wrap did — write
+   * mac-sent per covered member after the send, and read the cloud marker
+   * before composing so a recap the Worker already delivered (audit row not
+   * yet reconciled) is never re-sent.
+   */
+  it("writes a mac-sent recap marker per covered member after a successful send", async () => {
+    const aaa = seedCandidate("AAA");
+    const bbb = seedCandidate("BBB");
+
+    const res = await runMorningDebrief(db, {
+      now: NOW_IN_WINDOW,
+      recipient: RECIPIENT,
+      generate: stubGenerate(),
+    });
+
+    expect(res.sent).toBe(true);
+    expect(mockedMacSent).toHaveBeenCalledTimes(2);
+    expect(mockedMacSent).toHaveBeenCalledWith("recap", aaa);
+    expect(mockedMacSent).toHaveBeenCalledWith("recap", bbb);
+    // Marker write follows the send, never precedes it.
+    expect(mockedSend.mock.invocationCallOrder[0]).toBeLessThan(
+      mockedMacSent.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("no mac-sent markers are written when the send fails", async () => {
+    seedCandidate("AAA");
+    mockedSend.mockRejectedValueOnce(new Error("SMTP down"));
+
+    await runMorningDebrief(db, {
+      now: NOW_IN_WINDOW,
+      recipient: RECIPIENT,
+      generate: stubGenerate(),
+    });
+
+    expect(mockedMacSent).not.toHaveBeenCalled();
+  });
+
+  it("a member the cloud already recapped is dropped before compose: its fresh claim is released, a sent-by-cloud audit row is recorded, and it never reaches the email", async () => {
+    const aaa = seedCandidate("AAA");
+    const bbb = seedCandidate("BBB");
+
+    mockedCloudMarker.mockImplementation(async (_phase, eventId) =>
+      eventId === bbb ? { sentBy: "cloud" } : null,
+    );
+
+    const res = await runMorningDebrief(db, {
+      now: NOW_IN_WINDOW,
+      recipient: RECIPIENT,
+      generate: stubGenerate(),
+    });
+
+    expect(mockedCloudMarker).toHaveBeenCalledWith("recap", aaa);
+    expect(mockedCloudMarker).toHaveBeenCalledWith("recap", bbb);
+
+    expect(res.sent).toBe(true);
+    expect(res.covered).toEqual(["AAA"]);
+    // The cloud-delivered name is not narrated in the email.
+    expect(mockedSend.mock.calls[0][0].html).not.toContain("BBB");
+    // ...and gets no mac-sent marker (the cloud owns that key).
+    expect(mockedMacSent).toHaveBeenCalledTimes(1);
+    expect(mockedMacSent).toHaveBeenCalledWith("recap", aaa);
+
+    const rows = auditRows();
+    expect(rows).toHaveLength(2);
+    const bbbRow = rows.find((r) => r.event_id === bbb)!;
+    // Claim released, then the sent-by-cloud row recorded in its place —
+    // never a lingering 'in_progress' claim, never a local ai_output_md.
+    expect(bbbRow.error).toBe("sent-by-cloud");
+    expect(bbbRow.ai_output_md).toBeNull();
+    const aaaRow = rows.find((r) => r.event_id === aaa)!;
+    expect(aaaRow.error).toBeNull();
   });
 
   it("a member already claimed by another process is dropped from this debrief (not aborted) and NOT audited", async () => {
