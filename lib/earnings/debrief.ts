@@ -38,7 +38,7 @@ import { composeReleaseInstant } from "@/lib/calendar/reaction-snapshot";
 import { loadIntelView, renderHeadlineTable } from "@/lib/digest/send-earnings-email";
 import { getCallNoteNearDateForFamily } from "@/lib/queries/earnings-call-notes";
 import { wrapSlotFor } from "@/lib/earnings/wrap";
-import { demoteEmbeddedHeadings } from "@/lib/digest/call-transcripts";
+import { demoteEmbeddedHeadings, truncateAtWordBoundary } from "@/lib/digest/call-transcripts";
 import type { CalendarEvent } from "@/lib/types";
 
 export interface DebriefCandidate {
@@ -211,18 +211,28 @@ export interface DebriefSection {
  * Guidance/Tone bold-label regexes run also matches the digest's own
  * ordering (heading-styled and bold-labeled desk notes must look identical
  * to the parser).
+ *
+ * Truncation goes through `truncateAtWordBoundary` (the same single source in
+ * lib/digest/call-transcripts.ts) rather than a raw `.slice()`: a cut landing
+ * inside a `**bold**` span strands the opening marker, and briefingToHtml's
+ * inline regex needs the closing marker on the same line — an unbalanced span
+ * renders literal asterisks in the email.
  */
+const GUIDANCE_EXCERPT_CHAR_CAP = 900; // mirrors the digest's GUIDANCE_SECTION_CHAR_CAP
+const SUMMARY_EXCERPT_CHAR_CAP = 600; // mirrors the digest's SUMMARY_RENDER_CHAR_CAP
+
 function deskNoteExcerpt(rawSummary: string): string {
   const summary = demoteEmbeddedHeadings(rawSummary);
   const m = summary.match(/\*\*Guidance\*\*[:\s]*([\s\S]*?)(?=\n\s*\*\*[A-Z]|$)/);
   const guidance = m?.[1]?.trim();
   const tone = summary.match(/\*\*Tone\*\*[:\s]*([^\n]+)/)?.[1]?.trim();
   if (guidance) {
-    let out = `**Guidance:** ${guidance.slice(0, 900)}`;
+    let out = `**Guidance:** ${truncateAtWordBoundary(guidance, GUIDANCE_EXCERPT_CHAR_CAP)}`;
     if (tone) out += `\n\n**Tone:** ${tone}`;
     return out;
   }
-  return summary.slice(0, 600); // extractive-only teaser
+  // extractive-only teaser
+  return truncateAtWordBoundary(summary, SUMMARY_EXCERPT_CHAR_CAP);
 }
 
 /**

@@ -441,11 +441,40 @@ describe("renderDebriefSections", () => {
 
     const tease = byName.get("TEASE")!;
     expect(tease.markdown).toContain("**From the call** (desk note):");
-    expect(tease.markdown).toContain(extractive.slice(0, 600));
+    // Cut at a word boundary at/below the 600 cap, with the digest's ellipsis.
+    expect(tease.markdown).toContain(extractive.slice(0, 500));
     expect(tease.markdown).not.toContain(extractive.slice(0, 601));
+    expect(tease.markdown).toContain("…");
 
     const notx = byName.get("NOTX")!;
     expect(notx.markdown).not.toContain("**From the call**");
+  });
+
+  /**
+   * F5: the excerpt shares the digest's truncateAtWordBoundary rather than a
+   * raw .slice(), so a **bold** span straddling the cap can't ship a dangling
+   * marker — briefingToHtml's inline regex needs the closing marker on the
+   * same line, and an unbalanced one renders literal asterisks in the email.
+   */
+  it("a **bold** phrase straddling the 900-char guidance cap is closed, not left dangling", () => {
+    seedHeld("STRADDLE");
+    seedEvent({ symbol: "STRADDLE" });
+    const guidance = `${"A".repeat(890)} **bolded phrase that runs well past the guidance cap**`;
+    seedTranscript({
+      ticker: "STRADDLE",
+      summary: `**Guidance**: ${guidance}\n**Tone**: steady`,
+      fetchedAt: `${TODAY} 05:00:00`,
+    });
+
+    const { unsent } = findDebriefCandidates(db, { now: NOW });
+    const section = renderDebriefSections(db, unsent).find((s) => s.symbol === "STRADDLE")!;
+    const deskNote = section.markdown.split("**From the call** (desk note):")[1] ?? "";
+
+    expect(deskNote).toContain("…");
+    // Every ** marker in the rendered excerpt is paired.
+    expect((deskNote.match(/\*\*/g) ?? []).length % 2).toBe(0);
+    // The full closing marker never made it in — the cut closed the span.
+    expect(deskNote).not.toContain("bolded phrase that runs well past the guidance cap");
   });
 
   it("includes the user's call note (guidance/tone/surprises) when one exists for the family", () => {
