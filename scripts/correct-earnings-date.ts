@@ -13,15 +13,14 @@
  * Slot defaults to the deleted row's event_time (falling back to AMC).
  * Idempotent: re-running with no wrong-date rows left just ensures the
  * manual row exists.
+ *
+ * Thin CLI wrapper — the actual logic lives in
+ * lib/mutations/calendar.ts::correctEarningsEventDate so the automated date
+ * verifier can call it directly.
  */
 
 import { db } from "../lib/db";
-import {
-  deleteAndSuppressCalendarEvent,
-  insertCalendarEvent,
-} from "../lib/mutations/calendar";
-import { getSecurityIdForSymbol } from "../lib/queries/briefing-symbols";
-import { mondayOf } from "../lib/calendar/date-utils";
+import { correctEarningsEventDate } from "../lib/mutations/calendar";
 
 const [, , rawSymbol, wrongDate, correctDate, rawSlot] = process.argv;
 
@@ -39,77 +38,26 @@ if (slotArg && slotArg !== "BMO" && slotArg !== "AMC") {
   process.exit(1);
 }
 
-const wrongRows = db
-  .prepare(
-    `SELECT id, source, source_key, event_time, actual_value
-       FROM calendar_events
-      WHERE UPPER(symbol) = ? AND event_date = ? AND event_type = 'earnings'`,
-  )
-  .all(symbol, wrongDate) as Array<{
-  id: number;
-  source: string;
-  source_key: string;
-  event_time: string | null;
-  actual_value: string | null;
-}>;
+const result = correctEarningsEventDate(db, {
+  symbol,
+  wrongDate,
+  correctDate,
+  slot: slotArg as "BMO" | "AMC" | undefined,
+});
 
-for (const row of wrongRows) {
-  if (row.actual_value) {
-    console.error(
-      `Refusing: row #${row.id} (${row.source_key}) already has captured actuals — ` +
-        `that print really happened on ${wrongDate}. Nothing deleted.`,
-    );
-    process.exit(1);
-  }
+if (!result.ok) {
+  console.error(result.refusedReason);
+  process.exit(1);
 }
-if (wrongRows.length === 0) {
+
+if (result.deletedIds && result.deletedIds.length === 0) {
   console.log(`No earnings rows for ${symbol} on ${wrongDate} — nothing to delete.`);
 }
 
-// ── 1. Ensure the corrected manual row exists FIRST ─────────────────────────
-// Insert-before-delete so user-curated earnings_bogeys on the wrong rows can
-// be re-pointed at the new event instead of dying in the delete CASCADE.
-const eventTime = slotArg ?? wrongRows[0]?.event_time ?? "AMC";
-let newEventId: number;
-try {
-  const { id } = insertCalendarEvent(db, {
-    symbol,
-    event_date: correctDate,
-    event_type: "earnings",
-    event_time: eventTime,
-    security_id: getSecurityIdForSymbol(db, symbol),
-    week_of: mondayOf(correctDate),
-    description: `Date corrected from ${wrongDate} (wrong sync-sourced date)`,
-  });
-  newEventId = id;
-  console.log(`Inserted manual earnings event #${id}: ${symbol} ${correctDate} ${eventTime}.`);
-} catch (err) {
-  const msg = err instanceof Error ? err.message : String(err);
-  if (!/UNIQUE constraint failed/i.test(msg)) throw err;
-  const existing = db
-    .prepare(
-      `SELECT id FROM calendar_events
-        WHERE source = 'manual' AND UPPER(symbol) = ? AND event_date = ? AND event_type = 'earnings'`,
-    )
-    .get(symbol, correctDate) as { id: number };
-  newEventId = existing.id;
-  console.log(`Manual event for ${symbol} on ${correctDate} already exists (#${newEventId}).`);
+console.log(`Corrected event #${result.newEventId}: ${symbol} now on ${correctDate}.`);
+if (result.bogeysMigrated) {
+  console.log(`Migrated ${result.bogeysMigrated} bogeys row(s) onto event #${result.newEventId}.`);
 }
-
-// ── 2. Migrate user-curated bogeys off the doomed rows ──────────────────────
-// OR IGNORE: UNIQUE(event_id, source, source_label) — a bogey already present
-// on the corrected event wins, and its wrong-row duplicate cascades away.
-for (const row of wrongRows) {
-  const moved = db
-    .prepare("UPDATE OR IGNORE earnings_bogeys SET event_id = ? WHERE event_id = ?")
-    .run(newEventId, row.id).changes;
-  if (moved > 0) console.log(`Moved ${moved} bogeys row(s) from event #${row.id} → #${newEventId}.`);
-}
-
-// ── 3. Delete the wrong rows + suppress the tuple ───────────────────────────
-for (const row of wrongRows) {
-  const result = deleteAndSuppressCalendarEvent(db, row.id);
-  console.log(
-    `Deleted ${row.source_key} (#${row.id}); suppressed ${result.suppressed?.symbol} ${result.suppressed?.event_date} — the next sync can't re-insert it.`,
-  );
+for (const id of result.deletedIds ?? []) {
+  console.log(`Deleted + suppressed wrong row #${id} (${wrongDate}) — the next sync can't re-insert it.`);
 }

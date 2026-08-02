@@ -77,6 +77,12 @@ export const FEATURE_MODELS: Record<FeatureKey, string> = {
   // Must stay on Anthropic — native PDF content block.
   earningsBogeysExtraction: "anthropic/$workhorse",
 
+  // Daily earnings date/slot verification pass (web_search against
+  // company IR announcements) — sibling of sectorVerification but a
+  // recurring daily job over a small horizon-limited batch, not a one-time
+  // repair sweep, so workhorse tier over frontier.
+  earningsDateVerification: "anthropic/$workhorse",
+
   // Newsletter-text bogey extraction (EPS/revenue consensus + whisper for
   // upcoming reporters) — sibling of newsletterLevelExtraction but for
   // earnings numbers instead of price levels.
@@ -93,6 +99,11 @@ export const FEATURE_MODELS: Record<FeatureKey, string> = {
   // AI desk-note summary (guidance / tone / surprises / key quotes) for a
   // freshly-fetched earnings transcript — see lib/transcripts/same-day.ts.
   transcriptSummary: "anthropic/$workhorse",
+
+  // 7:45 ET morning debrief synthesis (what changed overnight, across
+  // yesterday's late-AMC + today's-so-far BMO prints) — see
+  // lib/earnings/debrief-send.ts.
+  earningsDebrief: "anthropic/$workhorse",
 
   // cheap (was Haiku)
   // Post-extraction verification of ticker mentions. Haiku is plenty for
