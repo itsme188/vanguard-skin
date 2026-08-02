@@ -606,7 +606,7 @@ describe("wrap-mode suppression (#17 T3)", () => {
  * Morning debrief pass wiring (2026-08-02 plan, Task 4): the sweep retired
  * its EOD wrap-send call in favor of the 7:45 ET morning debrief
  * (lib/earnings/debrief-send.ts::runMorningDebrief). The pass runs
- * unconditionally after the candidate loop (its own window/once-per-day gate
+ * unconditionally BEFORE the candidate loop (its own window/once-per-day gate
  * decides whether it actually composes+sends) and must never fail the sweep.
  */
 describe("morning debrief pass (Task 4)", () => {
@@ -640,6 +640,25 @@ describe("morning debrief pass (Task 4)", () => {
     expect(runMorningDebrief).toHaveBeenCalledTimes(1);
     expect(runMorningDebrief).toHaveBeenCalledWith(db, { now: NOW });
     expect(summary.debrief).toEqual({ sent: true, covered: ["AAA", "BBB"] });
+  });
+
+  /**
+   * F1b (durability): the debrief pass must run BEFORE the per-candidate send
+   * loop. Individual sends are 60–180s Claude calls each, so a sweep that
+   * starts at 08:10 with three candidates would push the debrief past its
+   * 08:20 window close and lose the morning. The pass self-gates, so on 90+
+   * ticks a day this reordering costs one cheap settings read.
+   */
+  it("runs the debrief pass BEFORE the per-candidate send loop (long sends must not push it past its 08:20 window)", async () => {
+    seedHeldPreviewCandidate(db, "AAPL");
+
+    const summary = await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(summary.sent).toBe(1);
+    expect(runMorningDebrief).toHaveBeenCalledTimes(1);
+    expect(runMorningDebrief.mock.invocationCallOrder[0]).toBeLessThan(
+      sendPreview.mock.invocationCallOrder[0],
+    );
   });
 
   it("summary.debrief is null and the sweep still completes when the debrief pass throws", async () => {
