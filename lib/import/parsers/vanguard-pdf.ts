@@ -152,7 +152,9 @@ export async function callClaudeForPdfExtraction(
   const stream = client.messages.stream({
     model: pdfModelId(),
     max_tokens: 64000,
-    temperature: 0,
+    // No `temperature` — tier-resolved models reject it as deprecated
+    // (live 400 "temperature is deprecated for this model"; same class as
+    // the 2026-07-07 classify-* fixes).
     messages: [
       {
         role: "user",
@@ -546,7 +548,7 @@ async function callClaudeWithPdf<T>(pdfBuffer: Buffer, prompt: string): Promise<
   const stream = client.messages.stream({
     model: pdfModelId(),
     max_tokens: 64000,
-    temperature: 0,
+    // No `temperature` — tier-resolved models reject it as deprecated.
     messages: [
       {
         role: "user",

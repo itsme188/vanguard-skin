@@ -38,3 +38,49 @@ describe("briefingToHtml inline links (Worker mirror)", () => {
     expect(html).not.toContain("<em>");
   });
 });
+
+describe("briefingToHtml multi-line table rows (Worker mirror)", () => {
+  // Mirror of tests/calendar/briefing-html-tables.test.ts (Mac side) —
+  // qa:email-html--multiline-table-row-spills-raw-markdown-pipes. The model
+  // intermittently emits one logical table row across several physical lines;
+  // the body parser must absorb them instead of spilling raw pipe paragraphs.
+
+  it("absorbs an unterminated row + fragment lines into one logical row", () => {
+    const md = `| Metric | Consensus | Actual |
+|---|---|---|
+| EPS | 0.70 | 0.72 |
+| Revenue | $12.5B | beat by
+6%
+vs consensus |
+| Margin | 32% | 33% |
+
+Prose after.`;
+    const html = briefingToHtml(md, "Test");
+    expect(html.match(/<thead>/g)?.length).toBe(1);
+    expect(html).not.toMatch(/<p[^>]*>\s*\|/);
+    expect(html).toContain("beat by 6% vs consensus");
+    expect(html).toContain("Prose after.");
+  });
+
+  it("glues a bare fragment between complete rows onto the previous row's last cell", () => {
+    const md = `| Metric | Value |
+|---|---|
+| Guidance | raised
+6% |
+| FCF | $2.1B |`;
+    const html = briefingToHtml(md, "Test");
+    expect(html.match(/<thead>/g)?.length).toBe(1);
+    expect(html).not.toMatch(/<p[^>]*>\s*\|/);
+    expect(html).toContain("FCF");
+  });
+
+  it("does not swallow trailing prose after the table", () => {
+    const md = `| Metric | Value |
+|---|---|
+| EPS | 0.70 |
+Closing thoughts follow here.`;
+    const html = briefingToHtml(md, "Test");
+    expect(html.match(/<thead>/g)?.length).toBe(1);
+    expect(html).toMatch(/<p[^>]*>Closing thoughts follow here\./);
+  });
+});
