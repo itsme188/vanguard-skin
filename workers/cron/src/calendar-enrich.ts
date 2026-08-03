@@ -126,12 +126,10 @@ export function shouldRunCalendarEnrich(
  * nothing to fall back ON.
  *
  * Upper bound 20:59 ET (extended from 20:00, #17 T4 — same B8 18:00→18:59
- * precedent): the EOD earnings wrap's AMC deadline is 20:00 ET
- * (SLOT_DEADLINES_ET / cloudSlotDeadlinePassed in fallback-earnings.ts), so
- * the 20:00 tick — when a not-all-reported AMC cluster fires at deadline —
- * must be INSIDE the gate. A `<= 20 * 60` bound would fire the sweep at 20:00
- * but starve the 20:15/20:30/20:45 ticks that a slightly-late deadline pass
- * still needs.
+ * precedent). Originally sized for the now-retired EOD wrap's 20:00 AMC
+ * deadline (2026-08-02: the cloud wrap is suppress-only, nothing fires at a
+ * deadline anymore); the extra hour is kept — late-AMC individual recaps on
+ * quiet nights still use the 20:00–20:59 ticks.
  */
 export function shouldRunEarningsFallback(
   now: { hour: number; minute: number; dow: number } = {

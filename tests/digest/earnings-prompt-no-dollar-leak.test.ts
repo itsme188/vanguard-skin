@@ -145,15 +145,19 @@ function makeShortStockPositionCtx(): EarningsPreviewContext {
   };
 }
 
-function assertNoDollarLeak(prompt: string): void {
+/** Extract the "## Positions" block (up to the next ## header). */
+function positionsBlockOf(prompt: string): string {
   const lines = prompt.split("\n");
   const posIdx = lines.findIndex((l) => l.startsWith("## Positions"));
   expect(posIdx).toBeGreaterThanOrEqual(0);
-  // Take the positions block up to the next ## section header
   const nextSection = lines.slice(posIdx + 1).findIndex((l) => l.startsWith("## "));
-  const positionsBlock = lines
+  return lines
     .slice(posIdx, nextSection === -1 ? undefined : posIdx + 1 + nextSection)
     .join("\n");
+}
+
+function assertNoDollarLeak(prompt: string): void {
+  const positionsBlock = positionsBlockOf(prompt);
 
   // No "cost basis", "mkt val", "market value", "notional"
   expect(positionsBlock.toLowerCase()).not.toContain("cost basis");
@@ -171,22 +175,28 @@ function assertNoDollarLeak(prompt: string): void {
 }
 
 describe("earnings prompt position-block — no $ amount leaks", () => {
-  it("preview prompt for stock position carries ownership + % but no $ amounts", () => {
+  it("preview prompt for stock position carries ownership but no counts / % / $ amounts", () => {
     const prompt = renderPreviewPrompt(makeStockPositionCtx());
     assertNoDollarLeak(prompt);
-    // Sanity: ownership and return % ARE present.
-    expect(prompt).toContain("500 sh AAPL");
-    expect(prompt).toContain("vanguard taxable");
-    expect(prompt).toMatch(/up ~\d+\.\d%/);
+    // Sanity: ownership IS present; counts + return % are NOT (2026-08-02:
+    // count × public price reconstructs $ exposure, so both were dropped).
+    // Count assertions scope to the positions block — the prompt's writing
+    // instructions legitimately contain digits like "Aim for 500-800 words".
+    const block = positionsBlockOf(prompt);
+    expect(block).toContain("long AAPL (vanguard taxable)");
+    expect(block).not.toContain("500");
+    expect(block).not.toMatch(/up ~\d+\.\d%/);
   });
 
-  it("preview prompt for option position carries strike + expiry but no $ cost basis", () => {
+  it("preview prompt for option position carries strike + expiry but no contract count", () => {
     const prompt = renderPreviewPrompt(makeOptionPositionCtx());
     assertNoDollarLeak(prompt);
-    // Strike + expiry + contract count ARE present.
-    expect(prompt).toContain("3 long AAPL $145 call");
-    expect(prompt).toContain("expiring 2026-06-19");
-    expect(prompt).toContain("ibkr");
+    // Strike + expiry ARE present (public market data); the count is not.
+    const block = positionsBlockOf(prompt);
+    expect(block).toContain("long AAPL $145 calls");
+    expect(block).toContain("exp 2026-06-19");
+    expect(block).toContain("ibkr");
+    expect(block).not.toContain("3 long AAPL");
   });
 
   it("recap prompt for stock position respects the same boundary", () => {
@@ -198,7 +208,9 @@ describe("earnings prompt position-block — no $ amount leaks", () => {
     };
     const prompt = renderRecapPrompt(ctx);
     assertNoDollarLeak(prompt);
-    expect(prompt).toContain("500 sh AAPL");
+    const block = positionsBlockOf(prompt);
+    expect(block).toContain("long AAPL (vanguard taxable)");
+    expect(block).not.toContain("500");
   });
 
   it("recap prompt §5 says 'percentage P&L impact' not '$ P&L impact'", () => {
@@ -215,9 +227,10 @@ describe("earnings prompt position-block — no $ amount leaks", () => {
     );
   });
 
-  it("combined-exposure summary omits 'notional shares' language", () => {
+  it("combined-exposure summary carries presence flags, no counts or notional language", () => {
     const prompt = renderPreviewPrompt(makeOptionPositionCtx());
-    expect(prompt).toContain("3 long option contract(s)");
+    expect(prompt).toContain("**Combined exposure:** long options");
+    expect(prompt).not.toContain("option contract(s)");
     expect(prompt.toLowerCase()).not.toContain("shares notional");
     expect(prompt.toLowerCase()).not.toContain("notional shares");
   });
@@ -225,11 +238,12 @@ describe("earnings prompt position-block — no $ amount leaks", () => {
   it("a short stock position surfaces in the preview context (not 'does not hold')", () => {
     const prompt = renderPreviewPrompt(makeShortStockPositionCtx());
     assertNoDollarLeak(prompt);
-    // Ownership + direction disclosed via formatPositionPresence.
-    expect(prompt).toContain("300 sh short AAPL");
-    expect(prompt).toContain("ibkr");
-    // Combined-exposure summary must bucket it as a short share count.
-    expect(prompt).toContain("300 short shares");
+    // Ownership + direction disclosed via formatPositionPresence — no count.
+    const block = positionsBlockOf(prompt);
+    expect(block).toContain("short AAPL (ibkr)");
+    expect(block).not.toContain("300");
+    // Combined-exposure summary must bucket it as short-share presence.
+    expect(block).toContain("short shares");
     // Must NOT claim the user holds no position.
     expect(prompt).not.toContain("does NOT currently hold");
   });

@@ -63,7 +63,12 @@ export interface DebriefResult {
   sent: boolean;
   /** Symbols that got a full section in the sent email. Empty when nothing sent. */
   covered: string[];
-  skippedReason?: "outside-window" | "already-ran-today" | "no-candidates" | "claims-conflict";
+  skippedReason?:
+    | "outside-window"
+    | "already-ran-today"
+    | "no-candidates"
+    | "no-recipient"
+    | "claims-conflict";
 }
 
 interface FreshClaim {
@@ -101,18 +106,22 @@ export async function runMorningDebrief(
     return { sent: false, covered: [], skippedReason: "no-candidates" };
   }
 
-  // Stamp BEFORE compose: one debrief ATTEMPT per ET day even if everything
-  // below throws — the next 15-min sweep tick must not retry into the digest
-  // window.
-  setDebriefLastRunDay(db, today);
-
+  // Recipient resolution BEFORE the day-key stamp (2026-08-02 parity fix): a
+  // misconfigured/missing BRIEFING_EMAIL_TO must no-op harmlessly, not burn
+  // the day — the debrief then retries as soon as the env is fixed instead of
+  // silently skipping a whole morning's coverage.
   const recipient = opts.recipient || process.env.BRIEFING_EMAIL_TO;
   if (!recipient) {
     console.warn(
       "[debrief] No recipient configured (opts.recipient / BRIEFING_EMAIL_TO env) — skipping send.",
     );
-    return { sent: false, covered: [] };
+    return { sent: false, covered: [], skippedReason: "no-recipient" };
   }
+
+  // Stamp BEFORE compose: one debrief ATTEMPT per ET day even if everything
+  // below throws — the next 15-min sweep tick must not retry into the digest
+  // window.
+  setDebriefLastRunDay(db, today);
 
   // Claim every candidate's recap slot BEFORE composing anything. A per-member
   // conflict (live 'in_progress' claim held by another process, or a refire —

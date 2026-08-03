@@ -39,7 +39,9 @@ describe("formatHoldingsList (A7 short-aware portfolio context)", () => {
     ];
     const out = formatHoldingsList(holdings, PRICES);
     expect(out).toContain("NET SHORT");
-    expect(out).toContain("3.1");
+    // 2026-08-02: the net quantity itself no longer renders (count × public
+    // price reconstructs $ exposure in a cc'd email).
+    expect(out).not.toContain("3.1");
     expect(out).toContain("cross-account net");
     expect(out).toContain("last $410.50 (2026-05-09)");
   });
@@ -72,7 +74,10 @@ describe("formatHoldingsList (A7 short-aware portfolio context)", () => {
       },
     ];
     const out = formatHoldingsList(holdings, PRICES);
-    expect(out).toContain("NET SHORT 50");
+    // 2026-08-02: direction flag only — the share count is reconstructable
+    // exposure (count × public price) and no longer renders.
+    expect(out).toContain("NET SHORT (cross-account net)");
+    expect(out).not.toContain("50");
     expect(out).toContain("no recent price");
     expect(out).toContain("N/A");
   });
@@ -98,6 +103,7 @@ describe("formatHoldingsList (A7 short-aware portfolio context)", () => {
     const lines = out.split("\n");
     expect(lines).toHaveLength(2);
     expect(lines[0]).toMatch(/^AAPL.*195\.00/);
-    expect(lines[1]).toMatch(/^MSFT.*NET SHORT 45/);
+    expect(lines[1]).toMatch(/^MSFT.*NET SHORT \(cross-account net\)/);
+    expect(lines[1]).not.toContain("45");
   });
 });
