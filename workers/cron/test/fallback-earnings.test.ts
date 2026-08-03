@@ -1289,6 +1289,44 @@ describe("EOD earnings wrap (suppress-only, 2026-08-02)", () => {
     expect(wrapSkipsOf(result)).toHaveLength(3);
   });
 
+  it("wrap mode suppresses a road-2 (KV-payload) recap candidate too — zero sends, payload untouched", async () => {
+    // Member 3 has NO snapshot actual/enriched_at but a COMPLETE cloud-enriched
+    // KV payload — without suppression it would send via the KV recap road.
+    const release = composeReleaseInstant(EVENT_DATE, "16:00")!;
+    const now = new Date(release.getTime() + 150 * 60_000);
+    const events = [
+      wrapEvent({ id: 1, symbol: "AAPL", actual: READY_ACTUAL, enriched_at: "2026-06-15 19:45:00" }),
+      wrapEvent({ id: 2, symbol: "MSFT", actual: READY_ACTUAL, enriched_at: "2026-06-15 19:45:00" }),
+      wrapEvent({ id: 3, symbol: "NVDA", actual: null }),
+    ];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      wrapSnapshot(events, ["AAPL", "MSFT", "NVDA"]),
+    );
+    const env = makeEnv();
+    await env.CRON_KV.put(
+      cloudEnrichedKey(3),
+      JSON.stringify({
+        eventId: 3,
+        source_key: `finnhub:NVDA:${EVENT_DATE}`,
+        actual: READY_ACTUAL,
+        consensus: "EPS 1.50 · Rev 90,000,000,000",
+        source: "finnhub",
+        reaction: { source: "yahoo", window_min: 120, symbol: { symbol: "NVDA", delta_pct: 4.1 }, spy: { delta_pct: 0.3 }, qqq: { delta_pct: 0.5 } },
+        fetchedAt: new Date(release.getTime() + 125 * 60_000).toISOString(),
+      }),
+    );
+
+    const result = await runEarningsFallback(env, { now });
+
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(result.sent).toBe(0);
+    expect(wrapSkipsOf(result).map((d) => d.eventId).sort()).toEqual([1, 2, 3]);
+    // No marker for the payload-backed member; the payload stays for the Mac
+    // reconcile (only the Mac deletes cloud-enriched keys).
+    expect(await env.CRON_KV.get("cloud-sent-earnings-recap-3")).toBeNull();
+    expect(await env.CRON_KV.get(cloudEnrichedKey(3))).not.toBeNull();
+  });
+
   it("members with a completed recap audit row don't count toward the threshold", async () => {
     const now = new Date("2026-06-15T20:00:00Z"); // 16:00 ET
     // 3 raw members, but id 3 already has a completed recap audit row ->

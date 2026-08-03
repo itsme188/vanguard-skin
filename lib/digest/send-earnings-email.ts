@@ -1551,7 +1551,7 @@ Rows: every segment, KPI, and guidance line ${ctx.symbol} reported — fill from
 
 4. **\`## Sell-side first takes\`** — web_search for analyst notes published in the last few hours. Quote the headline, flag price-target changes, name the firm. If nothing is out yet, say so.
 
-5. **\`## Position implications\`** — given the user's combined position (use §Positions verbatim), what's the immediate **percentage** P&L impact at the reaction-snapshot price? Express in percent terms only — do NOT multiply position counts by underlying prices to derive dollar exposure. Any hedging / IV-crush dynamics for option holdings? Should the thesis change?
+5. **\`## Position implications\`** — given the user's combined position (use §Positions verbatim), what does the print mean for each disclosed direction at the reaction-snapshot price? Reason qualitatively and in percentage terms only — never estimate or invent share counts, contract counts, or dollar exposure. Any hedging / IV-crush dynamics for option holdings? Should the thesis change?
 
 6. **\`## Sources\`** — newsletter articles cited + web URLs.
 
