@@ -311,6 +311,26 @@ describe("sendReporterRecapEmail", () => {
     ).toEqual({ n: 0 });
   });
 
+  it("withholds when actuals exist but the release instant is still in the future (pre-print typo floor)", async () => {
+    vi.useFakeTimers();
+    try {
+      // 06:00 ET on the print day — actuals recorded but the 07:30 release
+      // hasn't happened yet (manual-entry typo scenario).
+      vi.setSystemTime(new Date("2026-07-31T10:00:00Z"));
+      const eventId = seedFullScenario(); // release_time 07:30 ET = 11:30 UTC
+      await expect(
+        sendReporterRecapEmail(db, eventId, { recipient: "me@example.com" }),
+      ).rejects.toMatchObject({ status: 409, code: "not_ready" });
+      expect(mockedSend).not.toHaveBeenCalled();
+      // Past the release → the same event sends.
+      vi.setSystemTime(new Date("2026-07-31T12:30:00Z"));
+      const res = await sendReporterRecapEmail(db, eventId, { recipient: "me@example.com" });
+      expect(res.targets).toEqual(["XMTR"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("EarningsEmailError types are preserved for the sweep's benign-409 accounting", async () => {
     const eventId = seedFullScenario();
     db.prepare(`UPDATE calendar_events SET actual_value = NULL WHERE id = ?`).run(eventId);

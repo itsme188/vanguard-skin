@@ -21,6 +21,7 @@ import type Database from "better-sqlite3";
 import {
   claimEarningsEmailSlot,
   releaseEarningsEmailClaim,
+  recordEarningsEmailAudit,
   renderHeadlineTable,
   getCrossAccountPositions,
   EarningsEmailError,
@@ -53,9 +54,12 @@ export interface ReporterRecapContent {
 }
 
 /**
- * Every-actual-implausible gate: when the recorded print's captured figures
- * are ALL flagged implausible vs consensus (Finnhub drift / basis mismatch),
- * there is nothing trustworthy to report — better no email than a wrong one.
+ * Plausibility gate: ANY flagged figure withholds the whole email —
+ * isPlausibleEarnings is conjunctive (EPS ratio, EPS sign-flip, Rev ratio),
+ * so a plausible-EPS / implausible-Rev print is withheld entirely rather
+ * than shipping a partially-blanked scoreboard. Better no email than a
+ * wrong one; the benign not_ready retry ages out of the [yesterday, today]
+ * window silently (see the console.warn at the send site).
  */
 export function reporterActualsUsable(
   event: Pick<CalendarEvent, "consensus_estimate" | "consensus_value" | "actual_value">,
@@ -128,7 +132,8 @@ export function composeReporterRecap(
       : "";
     lines.push(`## Read-through: ${p.target} (${p.targetStatus})${next}`);
     if (p.hypothesis) {
-      lines.push(`> ${p.hypothesis}`);
+      // Multi-line hypotheses need every line quoted or the blockquote breaks.
+      lines.push(`> ${p.hypothesis.replace(/\n/g, "\n> ")}`);
     } else {
       lines.push(`> (no hypothesis recorded for this pair — add one on the read-through pair)`);
     }
@@ -160,6 +165,7 @@ export function getNextPrintForTarget(
           AND COALESCE(superseded, 0) = 0
           AND UPPER(symbol) IN (${placeholders})
           AND event_date >= ?
+          AND actual_value IS NULL
         ORDER BY event_date ASC
         LIMIT 1`,
     )
@@ -195,11 +201,35 @@ export async function sendReporterRecapEmail(
   if (!reporterActualsUsable(event)) {
     // Benign: flagged/empty actuals retry on later ticks (a manual override
     // or corrected Finnhub row re-opens the road). No audit row written.
+    // Loud breadcrumb: a real basis-mismatch print would otherwise age out
+    // of the [yesterday, today] window with zero operator trace (the
+    // blocked-recap Pushover only covers held names).
+    console.warn(
+      `[reporter-recap] ${symbol} withheld — actuals missing or flagged implausible (retries until the window closes).`,
+    );
     throw new EarningsEmailError(
       `Actuals for ${symbol} are missing or flagged implausible — reporter recap withheld.`,
       409,
       "not_ready",
     );
+  }
+
+  // Pre-print floor (review hardening): a manual actuals typo (or a wrong
+  // vendor actual) on an event whose recorded release instant is still in
+  // the FUTURE must not fire an email presenting it as a real print. The AI
+  // recap road gets this structurally from its enriched_at gate; this road
+  // fires on bare actual_value, so guard explicitly. Unknown release
+  // instants pass — actual_value on a date-windowed row is otherwise
+  // trusted, same assumption as the IMAX already-reported guard.
+  if (event.release_time) {
+    const release = composeReleaseInstant(event.event_date, event.release_time);
+    if (release && release.getTime() > Date.now()) {
+      throw new EarningsEmailError(
+        `${symbol} has actuals recorded but its release instant is in the future — likely a pre-print entry; withheld.`,
+        409,
+        "not_ready",
+      );
+    }
   }
 
   const live = getLiveReadThroughsForReporter(db, symbol);
@@ -267,17 +297,17 @@ export async function sendReporterRecapEmail(
       fromLocalPart: "earnings",
     });
 
-    // Complete the audit row in place (claim → completed; error NULL).
-    db.prepare(
-      `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, ai_input_hash, ai_output_md, error)
-       VALUES (?, 'recap', ?, datetime('now'), NULL, ?, NULL)
-       ON CONFLICT(event_id, phase) DO UPDATE SET
-         recipient = excluded.recipient,
-         sent_at = excluded.sent_at,
-         ai_input_hash = excluded.ai_input_hash,
-         ai_output_md = excluded.ai_output_md,
-         error = excluded.error`,
-    ).run(eventId, recipient, content.markdown);
+    // Complete the audit row in place (claim → completed; error NULL) via
+    // the shared helper — a hand-copied upsert would drift silently if the
+    // completion write ever gains a column.
+    recordEarningsEmailAudit(db, {
+      eventId,
+      phase: "recap",
+      recipient,
+      aiInputHash: null,
+      aiOutputMd: content.markdown,
+      error: null,
+    });
 
     return { subject: content.subject, targets: pairs.map((p) => p.target) };
   } catch (err) {
