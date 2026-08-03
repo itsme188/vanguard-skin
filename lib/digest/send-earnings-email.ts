@@ -437,12 +437,13 @@ interface AuditInput {
   eventId: number;
   phase: "preview" | "recap";
   recipient: string;
-  aiInputHash: string;
+  /** Null for deterministic sends (reporter recap) — no AI prompt to hash. */
+  aiInputHash: string | null;
   aiOutputMd: string;
   error: string | null;
 }
 
-function recordEarningsEmailAudit(
+export function recordEarningsEmailAudit(
   db: Database.Database,
   input: AuditInput,
 ): void {
