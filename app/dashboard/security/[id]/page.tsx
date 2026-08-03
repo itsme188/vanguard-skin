@@ -550,31 +550,17 @@ export default async function SecurityDetailPage(props: {
             </table>
           </div>
           {(() => {
-            // Resolve the AI's three text fields (assessment / what_worked /
-            // what_didnt) preferring post-migration columns and falling back
-            // to legacy. See migration 047 for the column-name history.
-            type GradeRow = (typeof tradeGrades)[number];
-            const resolveAssessment = (tg: GradeRow): string | null =>
-              tg.assessment ?? tg.entry_thesis;
-            const resolveWhatWorked = (tg: GradeRow): string | null =>
-              tg.assessment != null ? tg.what_went_well : tg.exit_assessment;
-            const resolveWhatDidnt = (tg: GradeRow): string | null =>
-              tg.assessment != null ? tg.what_went_wrong : tg.what_went_well;
-
             const visible = tradeGrades.filter(
-              (tg) =>
-                resolveAssessment(tg) ||
-                resolveWhatWorked(tg) ||
-                resolveWhatDidnt(tg)
+              (tg) => tg.assessment || tg.what_went_well || tg.what_went_wrong
             );
             if (visible.length === 0) return null;
 
             return (
               <div className="border-t border-edge px-5 py-4 flex flex-col gap-3">
                 {visible.map((tg, i) => {
-                  const assessment = resolveAssessment(tg);
-                  const whatWorked = resolveWhatWorked(tg);
-                  const whatDidnt = resolveWhatDidnt(tg);
+                  const assessment = tg.assessment;
+                  const whatWorked = tg.what_went_well;
+                  const whatDidnt = tg.what_went_wrong;
                   return (
                     <div key={i} className="text-sm leading-snug">
                       <div className="flex items-center gap-2 mb-1 flex-wrap">
