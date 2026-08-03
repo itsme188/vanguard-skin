@@ -83,6 +83,7 @@ function makeDb(): Database.Database {
       eps_whisper REAL,
       revenue_consensus_usd REAL,
       revenue_whisper_usd REAL,
+      expected_move_pct REAL,
       segment_breakdown_json TEXT,
       guidance_notes TEXT,
       notes TEXT,
@@ -177,8 +178,18 @@ describe("parseExtractionResponse", () => {
       eps_whisper: 4.0,
       revenue_consensus: 40_200_000_000,
       revenue_whisper: null,
+      expected_move_pct: null,
       notes: "street leaning higher",
     });
+  });
+
+  it("parses an author-stated expected move, tolerating percent strings (feedback #5)", () => {
+    const raw = JSON.stringify([
+      { symbol: "TSM", expected_move_pct: "±6.5%" },
+      { symbol: "AMD", expected_move_pct: 4 },
+    ]);
+    const out = parseExtractionResponse(raw);
+    expect(out.map((b) => b.expected_move_pct)).toEqual([6.5, 4]);
   });
 
   it("parses through preamble prose (extractJsonArray)", () => {
