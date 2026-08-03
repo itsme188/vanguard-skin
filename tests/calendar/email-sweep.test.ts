@@ -43,6 +43,11 @@ const fetchCloudSent = vi.fn(
   async (..._args: unknown[]) =>
     [] as { phase: "preview" | "recap"; eventId: number; sentAt: string | null }[],
 );
+const sendReporterRecap = vi.fn(async (..._args: unknown[]) => ({ subject: "s", targets: ["T"] }));
+vi.mock("@/lib/earnings/reporter-recap", () => ({
+  sendReporterRecapEmail: (...a: unknown[]) => sendReporterRecap(...a),
+}));
+
 vi.mock("@/lib/cron/earnings-marker-check", () => ({
   checkEarningsCloudMarker: (...a: unknown[]) => checkMarker(...a),
   setEarningsRunningMarker: (...a: unknown[]) => setRunning(...a),
@@ -271,6 +276,7 @@ describe("runEarningsEmailSweep marker dance", () => {
     fetchCloudSent.mockResolvedValue([]);
     runMorningDebrief.mockClear();
     runMorningDebrief.mockResolvedValue({ sent: false, covered: [] });
+    sendReporterRecap.mockClear();
     fetchSameDayTranscripts.mockClear();
     fetchSameDayTranscripts.mockResolvedValue({ attempted: 0, fetched: 0 });
   });
@@ -496,6 +502,7 @@ describe("wrap-mode suppression (#17 T3)", () => {
     fetchCloudSent.mockResolvedValue([]);
     runMorningDebrief.mockClear();
     runMorningDebrief.mockResolvedValue({ sent: false, covered: [] });
+    sendReporterRecap.mockClear();
     fetchSameDayTranscripts.mockClear();
     fetchSameDayTranscripts.mockResolvedValue({ attempted: 0, fetched: 0 });
   });
@@ -520,6 +527,59 @@ describe("wrap-mode suppression (#17 T3)", () => {
     // runWrapPass to runMorningDebrief.
     expect(runMorningDebrief).toHaveBeenCalledTimes(1);
     expect(runMorningDebrief).toHaveBeenCalledWith(db, { now: NOW });
+  });
+
+  it("a read-through reporter recap is EXEMPT from wrap suppression and dispatches its own sender (feedback #3)", async () => {
+    // Three held AMC recaps → wrap mode for the (date, AMC) slot…
+    const heldIds = [
+      seedHeldRecapCandidate(db, "AAA"),
+      seedHeldRecapCandidate(db, "BBB"),
+      seedHeldRecapCandidate(db, "CCC"),
+    ];
+    // …plus a pure read-through reporter in the SAME slot with first actuals
+    // (no enriched_at — the ASAP road) whose target is held.
+    const targetAcct = seedAccount(db, "acct-TGT");
+    const targetSec = (
+      db
+        .prepare(
+          `INSERT INTO securities (symbol, security_type, asset_class, multiplier)
+           VALUES ('TGT', 'stock', 'equity', 1) RETURNING id`,
+        )
+        .get() as { id: number }
+    ).id;
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, quantity, as_of_date)
+       VALUES (?, ?, 100, date('now'))`,
+    ).run(targetAcct, targetSec);
+    db.prepare(
+      `INSERT INTO read_through_pairs (reporter_symbol, target_symbol, weight, hypothesis)
+       VALUES ('RPT', 'TGT', 1.0, 'same cycle')`,
+    ).run();
+    const reporterId = (
+      db
+        .prepare(
+          `INSERT INTO calendar_events (
+             source, event_type, event_date, event_time, release_time, title,
+             symbol, actual_value, source_key, week_of
+           ) VALUES ('finnhub','earnings','2026-06-01','AMC','08:00','RPT earnings','RPT','EPS 1.10','finnhub:RPT:2026-06-01','2026-06-01')`,
+        )
+        .run() as { lastInsertRowid: number | bigint }
+    ).lastInsertRowid as number;
+
+    const summary = await runEarningsEmailSweep(db, { now: NOW });
+
+    // Held cluster suppressed as wrap-pending; the reporter recap SENDS.
+    for (const id of heldIds) {
+      expect(summary.results.find((x) => x.eventId === id)!.skipped).toBe("wrap-pending");
+    }
+    const rpt = summary.results.find((x) => x.eventId === reporterId)!;
+    expect(rpt.ok).toBe(true);
+    expect(rpt.skipped).toBeUndefined();
+    expect(sendReporterRecap).toHaveBeenCalledTimes(1);
+    expect(sendReporterRecap).toHaveBeenCalledWith(db, reporterId);
+    expect(sendRecap).not.toHaveBeenCalled(); // held ones stayed suppressed
+    // Marker dance ran for the reporter send.
+    expect(writeSent).toHaveBeenCalledWith("recap", reporterId);
   });
 
   it("does not suppress recap candidates when the cluster is below WRAP_THRESHOLD — individual sends happen", async () => {
@@ -628,6 +688,7 @@ describe("morning debrief pass (Task 4)", () => {
     fetchCloudSent.mockResolvedValue([]);
     runMorningDebrief.mockClear();
     runMorningDebrief.mockResolvedValue({ sent: false, covered: [] });
+    sendReporterRecap.mockClear();
     fetchSameDayTranscripts.mockClear();
     fetchSameDayTranscripts.mockResolvedValue({ attempted: 0, fetched: 0 });
   });
@@ -703,6 +764,7 @@ describe("already-reported preview guard (IMAX 7/23 case)", () => {
     fetchCloudSent.mockResolvedValue([]);
     runMorningDebrief.mockClear();
     runMorningDebrief.mockResolvedValue({ sent: false, covered: [] });
+    sendReporterRecap.mockClear();
     fetchSameDayTranscripts.mockClear();
     fetchSameDayTranscripts.mockResolvedValue({ attempted: 0, fetched: 0 });
     probeFinnhubActualExists.mockClear();

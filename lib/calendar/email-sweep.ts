@@ -34,6 +34,7 @@ import { sendPushover } from "@/lib/alerts/notify-pushover";
 import { getEarningsSettings, shouldSendEarningsEmail } from "@/lib/queries/earnings-settings";
 import { getExpectedRecapCluster, wrapSlotFor, WRAP_THRESHOLD } from "@/lib/earnings/wrap";
 import { runMorningDebrief } from "@/lib/earnings/debrief-send";
+import { sendReporterRecapEmail } from "@/lib/earnings/reporter-recap";
 import { todayET } from "@/lib/calendar/date-utils";
 import { fetchSameDayTranscripts } from "@/lib/transcripts/same-day";
 import { recordEarningsEmailSkip } from "@/lib/mutations/earnings-skips";
@@ -172,7 +173,11 @@ export async function runEarningsEmailSweep(
     // where the user backfills actuals the next morning reopens recap
     // candidates dated yesterday; those must fall through to individual
     // sends, the correct degraded behavior.
-    if (cand.phase === "recap") {
+    // Reporter recaps (feedback #3) are EXEMPT from wrap suppression: the
+    // cluster counts held/watchlist expected recaps, the debrief's candidate
+    // gate never covers a non-held reporter, and the read-through signal is
+    // only valuable while it's timely.
+    if (cand.phase === "recap" && !cand.reporterRecap) {
       const eventRow = db
         .prepare(
           `SELECT event_date, event_time, title, release_time FROM calendar_events WHERE id = ?`,
@@ -259,6 +264,10 @@ export async function runEarningsEmailSweep(
     try {
       if (cand.phase === "preview") {
         await sendEarningsPreview(db, cand.eventId);
+      } else if (cand.reporterRecap) {
+        // Lean deterministic read-through reporter recap (feedback #3) —
+        // fires at first actuals, zero AI, same claim + marker discipline.
+        await sendReporterRecapEmail(db, cand.eventId);
       } else {
         await sendEarningsRecap(db, cand.eventId);
       }

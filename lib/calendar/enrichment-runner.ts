@@ -520,6 +520,13 @@ export interface EmailCandidate {
   eventId: number;
   symbol: string;
   phase: "preview" | "recap";
+  /**
+   * Read-through reporter recap (feedback #3): the symbol is NOT
+   * held/watchlist but has ≥1 live read-through pair — the sweep sends the
+   * lean deterministic reporter recap instead of the AI recap, and the wrap
+   * suppression must NOT defer it (the debrief never covers non-held names).
+   */
+  reporterRecap?: boolean;
   reason?: string;
 }
 
@@ -651,10 +658,41 @@ export function findEmailCandidates(
     .all(recapCutoff) as RecapCandidateRow[];
   const recapCandidates = dedupeCrossSourceRows(recapRows);
 
+  // ── Read-through reporter recap scan (feedback #3) ──────────────
+  // Pure read-through reporters (NOT held/watchlist — those take the AI
+  // recap road below) whose print has FIRST ACTUALS captured. Deliberately
+  // no enriched_at requirement: the whole point is landing before the open
+  // (~T+15–30 min), hours before the reaction snapshot exists. Window is
+  // [yesterday, today] — self-healing for an asleep morning; older prints
+  // have decayed read-through value and are skipped silently. Scanned HERE
+  // so reporter symbols join the status map below — coverage must be
+  // resolved for them too (a held symbol whose recap was already audited is
+  // absent from recapCandidates, and an unresolved lookup would misread it
+  // as a pure reporter).
+  const yesterdayStr = new Date(nowMs - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const reporterScanRows = db
+    .prepare(
+      `SELECT ce.id, ce.symbol, ce.event_date, ce.enriched_at, ce.source
+         FROM calendar_events ce
+         LEFT JOIN earnings_emails ee
+           ON ee.event_id = ce.id AND ee.phase = 'recap'
+         LEFT JOIN earnings_email_skips es
+           ON es.event_id = ce.id AND es.phase = 'recap'
+        WHERE ce.event_type = 'earnings'
+          AND COALESCE(ce.superseded, 0) = 0
+          AND ce.actual_value IS NOT NULL
+          AND ce.event_date BETWEEN ? AND ?
+          AND ce.symbol IS NOT NULL
+          AND ee.id IS NULL
+          AND es.id IS NULL`,
+    )
+    .all(yesterdayStr, todayStr) as RecapCandidateRow[];
+  const reporterCandidates = dedupeCrossSourceRows(reporterScanRows);
+
   // ── Held|watchlist filter ───────────────────────────────────────
   const allSymbols = Array.from(
     new Set(
-      [...previewCandidates, ...recapCandidates]
+      [...previewCandidates, ...recapCandidates, ...reporterCandidates]
         .map((r) => r.symbol)
         .filter((s): s is string => !!s),
     ),
@@ -677,6 +715,17 @@ export function findEmailCandidates(
   for (const row of recapCandidates) {
     if (!row.symbol || !isCovered(row.symbol) || !isAllowed(row.symbol)) continue;
     out.push({ eventId: row.id, symbol: row.symbol, phase: "recap" });
+    if (out.length >= limit) return out;
+  }
+
+  // ── Read-through reporter recaps (feedback #3) ──────────────────
+  // NOT covered (pure read-through), reporter not muted, ≥1 live pair
+  // (target currently held/watchlist — the same self-narrowing rule as
+  // push-at-print).
+  for (const row of reporterCandidates) {
+    if (!row.symbol || isCovered(row.symbol) || !isAllowed(row.symbol)) continue;
+    if (getLiveReadThroughsForReporter(db, row.symbol).length === 0) continue;
+    out.push({ eventId: row.id, symbol: row.symbol, phase: "recap", reporterRecap: true });
     if (out.length >= limit) return out;
   }
   return out;
