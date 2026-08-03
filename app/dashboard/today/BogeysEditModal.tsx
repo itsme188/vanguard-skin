@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
-import { formatLargeUSD, parseLargeUSD } from "@/lib/format";
+import { coercePercent, formatLargeUSD, parseLargeUSD } from "@/lib/format";
 import type { EarningsBogey } from "@/lib/queries/earnings-bogeys";
 
 interface Props {
@@ -19,6 +19,7 @@ interface FormState {
   eps_whisper: string;
   revenue_consensus: string;
   revenue_whisper: string;
+  expected_move: string;
   guidance_notes: string;
   notes: string;
 }
@@ -34,6 +35,7 @@ const EMPTY: FormState = {
   eps_whisper: "",
   revenue_consensus: "",
   revenue_whisper: "",
+  expected_move: "",
   guidance_notes: "",
   notes: "",
 };
@@ -125,6 +127,9 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
       const revenue_whisper_usd = form.revenue_whisper.trim()
         ? parseLargeUSD(form.revenue_whisper)
         : null;
+      const expected_move_pct = form.expected_move.trim()
+        ? coercePercent(form.expected_move)
+        : null;
 
       const res = await fetch("/api/earnings/bogeys", {
         method: "POST",
@@ -136,6 +141,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
           eps_whisper,
           revenue_consensus_usd,
           revenue_whisper_usd,
+          expected_move_pct,
           guidance_notes: form.guidance_notes.trim() || null,
           notes: form.notes.trim() || null,
         }),
@@ -274,6 +280,9 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
                       {b.revenue_whisper_usd != null && (
                         <span>· rev whisper {formatLargeUSD(b.revenue_whisper_usd)}</span>
                       )}
+                      {b.expected_move_pct != null && (
+                        <span>· move ±{b.expected_move_pct.toFixed(1)}%</span>
+                      )}
                     </div>
                     {b.guidance_notes && (
                       <p className="text-[12px] text-ink-faint mt-1 italic">{b.guidance_notes}</p>
@@ -379,6 +388,15 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
                   value={form.revenue_whisper}
                   onChange={(e) => setForm({ ...form, revenue_whisper: e.target.value })}
                   placeholder="$3.90B"
+                  className="w-full bg-raised border border-edge rounded px-2 py-1.5 text-[14px] font-mono text-ink focus:outline-none focus:border-gold"
+                />
+              </Field>
+              <Field label="Expected move %">
+                <input
+                  type="text"
+                  value={form.expected_move}
+                  onChange={(e) => setForm({ ...form, expected_move: e.target.value })}
+                  placeholder="±6%"
                   className="w-full bg-raised border border-edge rounded px-2 py-1.5 text-[14px] font-mono text-ink focus:outline-none focus:border-gold"
                 />
               </Field>

@@ -18,7 +18,7 @@
 import { APIError } from "@anthropic-ai/sdk";
 import { getRawAnthropicClient } from "@/lib/ai/provider";
 import { resolveFeatureModel } from "@/lib/ai/models";
-import { parseLargeUSD } from "@/lib/format";
+import { coercePercent, parseLargeUSD } from "@/lib/format";
 
 /**
  * User-presentable extraction failure. `message` is safe to render
@@ -42,6 +42,8 @@ export interface ExtractedBogey {
   eps_whisper: number | null;
   revenue_consensus_usd: number | null;
   revenue_whisper_usd: number | null;
+  /** Absolute percent (a sheet's "±6%" → 6); null when the sheet gives none. */
+  expected_move_pct: number | null;
   segment_breakdown: Record<string, { consensus?: number; whisper?: number }> | null;
   guidance_notes: string | null;
   notes: string | null;
@@ -58,6 +60,7 @@ const EXTRACTION_PROMPT = `You are looking at a multi-symbol earnings preview / 
 Extract one entry per company mentioned. For each, capture the bogeys analysts and traders are watching for the upcoming print:
 - EPS consensus (Street average) and EPS whisper (above-consensus number traders are positioning for)
 - Revenue consensus and revenue whisper, in USD
+- The expected/implied earnings MOVE the sheet states for the name (e.g., "expected move ±6%", "options pricing a 5.5% move") as an absolute percent number
 - Any segment-level breakdown (e.g., GLW: Optical $1.5B / Display $0.9B)
 - Guidance bogeys (e.g., "FY26 revenue guide $19.5–20.0B")
 - Any other relevant notes (catalyst risk, key call topics)
@@ -71,6 +74,7 @@ Output ONLY a JSON array. No prose, no markdown fences. Each entry must have thi
     "eps_whisper": 0.50,
     "revenue_consensus_usd": 3850000000,
     "revenue_whisper_usd": 3900000000,
+    "expected_move_pct": 6.0,
     "segment_breakdown": {"Optical": {"consensus": 1500000000, "whisper": 1520000000}},
     "guidance_notes": "FY26 revenue guide $19.5–20.0B",
     "notes": "Key topic: optical fiber capacity expansion"
@@ -251,6 +255,7 @@ export function parseExtractionResponse(raw: string): ExtractedBogey[] {
       eps_whisper: coerceNumber(e.eps_whisper),
       revenue_consensus_usd: coerceNumber(e.revenue_consensus_usd),
       revenue_whisper_usd: coerceNumber(e.revenue_whisper_usd),
+      expected_move_pct: coercePercent(e.expected_move_pct),
       segment_breakdown: segments,
       guidance_notes: typeof e.guidance_notes === "string" ? e.guidance_notes : null,
       notes: typeof e.notes === "string" ? e.notes : null,
@@ -265,6 +270,7 @@ function coerceNumber(v: unknown): number | null {
   if (typeof v === "string") return parseLargeUSD(v);
   return null;
 }
+
 
 function parseSegments(
   v: unknown,

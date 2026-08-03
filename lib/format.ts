@@ -162,3 +162,21 @@ export function parseLargeUSD(input: string | number | null | undefined): number
   const multiplier = suffix === "b" ? 1_000_000_000 : suffix === "m" ? 1_000_000 : suffix === "k" ? 1_000 : 1;
   return sign * numeric * multiplier;
 }
+
+/**
+ * Percent coercer for expected-move fields: tolerates "6", "6%", "±6.0%",
+ * "+/-6%". Absolute value (a move is directionless); zero/negative/garbage →
+ * null. Distinct from parseLargeUSD — $-scale suffixes make no sense for a
+ * percent. Single source (feedback #5): PDF/newsletter bogey extraction and
+ * the BogeysEditModal manual input all parse through this.
+ */
+export function coercePercent(v: unknown): number | null {
+  let n: number | null = null;
+  if (typeof v === "number") n = v;
+  else if (typeof v === "string") {
+    const cleaned = v.replace(/[±%\s]|\+\/-/g, "");
+    if (cleaned !== "" && /^[-+]?\d*\.?\d+$/.test(cleaned)) n = Number(cleaned);
+  }
+  if (n == null || !Number.isFinite(n) || n === 0) return null;
+  return Math.abs(n);
+}

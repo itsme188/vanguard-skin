@@ -20,7 +20,8 @@ const HISTORY = [
 ];
 
 const INTEL: EarningsIntelView = {
-  impliedMovePct: 4.8, impliedMethod: "straddle", expiryUsed: "2026-07-18",
+  impliedMovePct: 4.8, impliedMethod: "straddle", sheetSourceLabel: null,
+  expiryUsed: "2026-07-18",
   history: HISTORY,
   summary: { avgAbsMovePct: 3.2, beatCount: 6, missCount: 2, quarterCount: 8 },
 };
@@ -35,6 +36,22 @@ describe("scoreboard intel rows", () => {
     const md = renderHeadlineTable(EVENT, "TER", "preview",
       { ...INTEL, impliedMethod: "iv_approx", impliedMovePct: 3.1 });
     expect(md).toContain("~±3.1% (IV approx)");
+  });
+  it("a sheet expected move renders with its source label (feedback #5)", () => {
+    const md = renderHeadlineTable(EVENT, "TER", "preview", {
+      ...INTEL,
+      impliedMethod: "sheet",
+      impliedMovePct: 6,
+      sheetSourceLabel: "TMT Breakout 7/28 weekly",
+    });
+    expect(md).toContain("±6.0% (TMT Breakout 7/28 weekly)");
+    expect(md).not.toContain("straddle");
+  });
+  it("a sheet move with no label falls back to the generic sheet wording", () => {
+    const md = renderHeadlineTable(EVENT, "TER", "preview", {
+      ...INTEL, impliedMethod: "sheet", impliedMovePct: 6, sheetSourceLabel: null,
+    });
+    expect(md).toContain("±6.0% (bogey sheet)");
   });
   it("missing intel renders dashes and stays 8 rows", () => {
     const md = renderHeadlineTable(EVENT, "TER", "preview",
