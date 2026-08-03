@@ -13,7 +13,7 @@ import type { LevelAlert, CalendarEvent } from "@/lib/types";
 import { NearbyLevelsCard } from "../components/NearbyLevelsCard";
 import { OpenChatButton } from "../components/OpenChatButton";
 import { SignificantMovesCard } from "./SignificantMovesCard";
-import { Money, Pct, Shares } from "@/lib/privacy/components";
+import { Money, Pct, PrivateText, Shares } from "@/lib/privacy/components";
 import { TodayReleases } from "../components/TodayReleases";
 import { MomentumPulse } from "../components/MomentumPulse";
 import { computeMomentumPulse } from "@/lib/compute/momentum-spread";
@@ -525,7 +525,8 @@ function AlertGroup({
             </Link>
             {a.suggested_action && (
               <p className="ml-16 mt-0.5 text-[12px] text-ink-faint italic">
-                {a.suggested_action}
+                {/* AI prose embeds portfolio figures at generation time — mask the whole block */}
+                <PrivateText>{a.suggested_action}</PrivateText>
               </p>
             )}
           </li>
