@@ -37,7 +37,7 @@ function fmtShort(d: string): string {
 }
 
 /**
- * Earnings date trust chip + conflict-confirm popover.
+ * Earnings date trust chip + popovers.
  *
  * - confirmed       → "✓ 2 src" (Finnhub + Nasdaq agree)
  * - single          → "1 src"
@@ -45,6 +45,13 @@ function fmtShort(d: string): string {
  * - conflict        → "⚠ confirm" → popover: pick Nasdaq / Finnhub / your own
  *                     date → POST /api/earnings/confirm-date → locked forever.
  * - null            → nothing (row not reconciled yet)
+ *
+ * Every non-null status is tappable (feedback #7, 2026-08-03): the three
+ * passive statuses open a "Date is wrong?" popover — date (pre-filled) +
+ * BMO/AMC + Fix date → POST /api/earnings/correct-date, which wraps
+ * correctEarningsEventDate (suppress+delete wrong rows, manual-row mint or
+ * vendor-row adoption, bogeys migration, refusal on captured actuals). The
+ * refusal message renders inline verbatim; the popover stays open on failure.
  */
 export function EarningsDateChip({
   symbol,
@@ -64,27 +71,120 @@ export function EarningsDateChip({
   const [customTime, setCustomTime] = useState<"bmo" | "amc">(
     releaseTime && releaseTime < "12:00" ? "bmo" : "amc",
   );
+  // Fix-date form (non-conflict statuses, feedback #7). Pre-filled with the
+  // current event date so a slot-only fix is one select away.
+  const [fixDate, setFixDate] = useState(eventDate);
+  const [fixSlot, setFixSlot] = useState<"bmo" | "amc">(
+    releaseTime && releaseTime < "12:00" ? "bmo" : "amc",
+  );
+
+  async function submitCorrection() {
+    if (submitting || !fixDate) return;
+    setSubmitting(true);
+    setConfirmError(null);
+    try {
+      const res = await fetch("/api/earnings/correct-date", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbol,
+          wrongDate: eventDate,
+          correctDate: fixDate,
+          slot: fixSlot,
+        }),
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok || !body?.success) {
+        // Keep the popover open — the server's reason (e.g. the
+        // captured-actuals refusal) must stay readable.
+        setConfirmError(body?.error ?? `Fix failed: server returned ${res.status}.`);
+        return;
+      }
+      setOpen(false);
+      onConfirmed?.();
+      startTransition(() => router.refresh());
+    } catch {
+      setConfirmError("Fix failed: could not reach the server.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   if (!dateStatus) return null;
 
-  if (dateStatus === "confirmed") {
+  if (dateStatus !== "conflict") {
+    const passive = {
+      confirmed: {
+        label: "✓ 2 src",
+        cls: "text-up/80",
+        line: "Confirmed by Finnhub + Nasdaq",
+      },
+      single: {
+        label: "1 src",
+        cls: "text-ink-faint",
+        line: "Only one calendar source has this date",
+      },
+      user_confirmed: {
+        label: "🔒",
+        cls: "text-ink-dim",
+        line: "You confirmed this date (locked)",
+      },
+    }[dateStatus];
+
     return (
-      <span className="text-[10px] font-mono text-up/80" title="Date confirmed by Finnhub + Nasdaq">
-        ✓ 2 src
-      </span>
-    );
-  }
-  if (dateStatus === "single") {
-    return (
-      <span className="text-[10px] font-mono text-ink-faint" title="Only one calendar source has this date">
-        1 src
-      </span>
-    );
-  }
-  if (dateStatus === "user_confirmed") {
-    return (
-      <span className="text-[10px] font-mono text-ink-dim" title="You confirmed this date (locked)">
-        🔒
+      <span className="relative inline-flex">
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          disabled={pending}
+          className={`text-[10px] font-mono cursor-pointer disabled:opacity-50 ${passive.cls} relative pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 pointer-coarse:after:content-['']`}
+          title={`${passive.line} — tap to fix a wrong date/slot`}
+        >
+          {passive.label}
+        </button>
+        {open && (
+          // z-[55]: must paint above the fixed chat rail (z-50) — same
+          // rail-tie family as the conflict popover below.
+          <div
+            className={`absolute z-[55] top-full mt-1 w-60 rounded-lg border border-edge bg-panel p-2 shadow-lg text-left ${
+              popoverAlign === "right" ? "right-0" : "left-0"
+            }`}
+          >
+            <p className="text-[11px] text-ink-dim">
+              {fmtShort(eventDate)} · {passive.line}
+            </p>
+            <p className="text-[11px] text-ink mt-1.5 mb-1">Date is wrong?</p>
+            <div className="flex items-center gap-1">
+              <input
+                type="date"
+                value={fixDate}
+                onChange={(e) => setFixDate(e.target.value)}
+                className="text-[10px] bg-raised rounded px-1 py-0.5 flex-1 min-w-0 text-ink"
+                aria-label="Corrected earnings date"
+              />
+              <select
+                value={fixSlot}
+                onChange={(e) => setFixSlot(e.target.value as "bmo" | "amc")}
+                className="text-[10px] bg-raised rounded px-0.5 py-0.5 text-ink"
+                aria-label="Corrected release slot"
+              >
+                <option value="bmo">BMO</option>
+                <option value="amc">AMC</option>
+              </select>
+              <button
+                type="button"
+                disabled={submitting || !fixDate}
+                onClick={submitCorrection}
+                className="text-[10px] font-mono px-1.5 py-0.5 rounded text-up bg-up/15 hover:bg-up/25 disabled:opacity-40 whitespace-nowrap"
+              >
+                Fix date
+              </button>
+            </div>
+            {confirmError && (
+              <p className="text-[10px] text-down pt-1">{confirmError}</p>
+            )}
+          </div>
+        )}
       </span>
     );
   }
