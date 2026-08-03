@@ -284,4 +284,21 @@ describe("IBKR activity parser", () => {
     expect(googPrice).toBeTruthy();
     expect(googPrice!.closePrice).toBe(140);
   });
+
+  it("disambiguates identical fills with an ordinal instead of dropping them", () => {
+    // Two genuinely identical fills (same date/symbol/qty/proceeds) collide on
+    // the `ibkr:trade:` source_key and the second is silently dropped by
+    // INSERT OR IGNORE at commit — annual statements (1,736 trade rows) raise
+    // the odds. Header copied verbatim from a real single-account IBKR annual
+    // statement's Trades section:
+    // grep "^Trades,Header" "2025 Annual IBKR.csv" | head -1
+    const dupTrades =
+      "Trades,Header,DataDiscriminator,Asset Category,Currency,Account,Symbol,Date/Time,Quantity,T. Price,C. Price,Proceeds,Comm/Fee,Basis,Realized P/L,MTM P/L,Code\n" +
+      'Trades,Data,Order,Stocks,USD,U99999999,AAPL,"2025-03-03, 10:00:00",100,200,200,-20000,-1,20001,0,0,O\n' +
+      'Trades,Data,Order,Stocks,USD,U99999999,AAPL,"2025-03-03, 10:00:05",100,200,200,-20000,-1,20001,0,0,O\n';
+    const result = parseIbkrActivity(dupTrades, "test.csv");
+    const keys = result.transactions.map((t) => t.sourceKey);
+    expect(new Set(keys).size).toBe(keys.length); // all unique
+    expect(keys[1]).toBe(keys[0] + ":#2");
+  });
 });
