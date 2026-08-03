@@ -15,6 +15,7 @@
  * Spec: docs/superpowers/specs/2026-07-16-todays-reporters-digest-block-design.md
  */
 
+import { resolveExpectedMove } from "./expected-move";
 import type { Snapshot, CalendarEventRow } from "./state";
 import { issuerSiblings } from "./fallback-earnings";
 import {
@@ -95,16 +96,44 @@ export function buildTodaysReportersBlock(
     const inFamily = (sym: string, set: Set<string>) =>
       issuerSiblings(sym).some((s) => set.has(s.toUpperCase()));
 
-    const intelById = new Map<number, number>();
+    const intelById = new Map<
+      number,
+      { pct: number; method: "straddle" | "iv_approx" | null }
+    >();
     for (const r of snapshot.earningsIntel ?? []) {
-      if (r.impliedMovePct != null) intelById.set(r.eventId, r.impliedMovePct);
+      if (r.impliedMovePct != null)
+        intelById.set(r.eventId, { pct: r.impliedMovePct, method: r.impliedMethod });
+    }
+    // Sheet > straddle > iv_approx (feedback #5) — mirrored resolver over the
+    // snapshot's bogey rows (pure, no extra subrequests). Pre-8/03 snapshots
+    // lack expected_move_pct → degrades to the market-derived number.
+    const bogeysByEvent = new Map<
+      number,
+      Array<{ expectedMovePct: number | null; sourceLabel: string | null; uploadedAt: string | null }>
+    >();
+    for (const b of snapshot.earningsBogeys ?? []) {
+      if ((b.expected_move_pct ?? null) == null) continue;
+      const list = bogeysByEvent.get(b.event_id) ?? [];
+      list.push({
+        expectedMovePct: b.expected_move_pct ?? null,
+        sourceLabel: b.source_label,
+        uploadedAt: b.uploaded_at,
+      });
+      bogeysByEvent.set(b.event_id, list);
     }
 
     const rows: ReporterRowView[] = [...byKey.values()].map((e) => {
       const sym = e.symbol!.toUpperCase();
       const releaseTime = (e as { release_time?: string | null }).release_time ?? null;
       const chip = inFamily(sym, held) ? "held" : inFamily(sym, watch) ? "wl" : "";
-      const impl = intelById.has(e.id) ? `±${intelById.get(e.id)!.toFixed(1)}%` : null;
+      const resolved = resolveExpectedMove({
+        bogeys: bogeysByEvent.get(e.id) ?? [],
+        impliedMovePct: intelById.get(e.id)?.pct ?? null,
+        impliedMethod: intelById.get(e.id)?.method ?? null,
+      });
+      const impl = resolved
+        ? `±${resolved.pct.toFixed(1)}%${resolved.method === "sheet" ? " (sheet)" : ""}`
+        : null;
       return {
         slot: slotFor({ event_time: e.event_time, title: e.title, release_time: releaseTime }),
         time: releaseTime,

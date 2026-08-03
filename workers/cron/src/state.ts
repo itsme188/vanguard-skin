@@ -159,6 +159,9 @@ export interface SnapshotBogey {
   eps_whisper: number | null;
   revenue_consensus_usd: number | null;
   revenue_whisper_usd: number | null;
+  /** Absolute percent — sheet-stated expected move (feedback #5). Optional:
+   * snapshots written before 2026-08-03 lack the field. */
+  expected_move_pct?: number | null;
   segment_breakdown_json: string | null;
   guidance_notes: string | null;
   notes: string | null;
@@ -184,7 +187,7 @@ export interface SnapshotBogey {
  *   v10 — adds readThroughPairs (#13 read-through push at print)
  *   v9 — adds earningsIntel (implied move per upcoming event) + earningsHistory
  *        (per-symbol surprise/reaction history) so the cloud scoreboard can
- *        render the same "Expected move (options)" / "Avg move last 8 prints"
+ *        render the same "Expected move" / "Avg move last 8 prints"
  *        rows as the Mac composer, with an as-of label since the cloud copy
  *        can be hours stale
  *

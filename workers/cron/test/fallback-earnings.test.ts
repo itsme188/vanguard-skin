@@ -981,10 +981,9 @@ describe("intel rows in cloud scoreboard (Task 9: snapshot v9)", () => {
     const event = baseEvent();
     const md = renderScoreboard(event, "preview", null, false, {
       intel: {
-        eventId: event.id,
-        sourceKey: event.source_key as unknown as string,
         impliedMovePct: 4.8,
         impliedMethod: "straddle",
+        sheetSourceLabel: null,
         expiryUsed: "2026-07-18",
         computedAt: "2026-07-14 06:00:00",
       },
@@ -996,22 +995,38 @@ describe("intel rows in cloud scoreboard (Task 9: snapshot v9)", () => {
         summary: { avgAbsMovePct: 3.2, beatCount: 6, missCount: 2, quarterCount: 8 },
       },
     });
-    expect(md).toContain("Expected move (options)");
+    expect(md).toContain("Expected move");
     expect(md).toContain("±4.8%");
     expect(md).toContain("as of");
     expect(md).toContain("Avg move last 8 prints");
   });
 
+  it("a sheet expected move renders with its source label and no staleness suffix (feedback #5)", () => {
+    const md = renderScoreboard(baseEvent(), "preview", null, false, {
+      intel: {
+        impliedMovePct: 6,
+        impliedMethod: "sheet",
+        sheetSourceLabel: "TMT Breakout 7/28 weekly",
+        expiryUsed: null,
+        computedAt: "2026-07-14 06:00:00",
+      },
+      history: null,
+    });
+    expect(md).toContain("±6.0% (TMT Breakout 7/28 weekly)");
+    expect(md).not.toContain("as of"); // a curated bogey doesn't decay
+    expect(md).not.toContain("straddle");
+  });
+
   it("pre-v9 snapshot (fields absent) renders the classic scoreboard unchanged", () => {
     const md = renderScoreboard(baseEvent(), "preview", null, false, undefined);
-    expect(md).not.toContain("Expected move (options)");
+    expect(md).not.toContain("Expected move");
     expect(md).not.toContain("Avg move last 8 prints");
   });
 
   it("v9-capable snapshot but no intel/history match for this event renders dash rows, not omitted", () => {
     const md = renderScoreboard(baseEvent(), "preview", null, false, { intel: null, history: null });
-    expect(md).toContain("Expected move (options)");
-    const row = md.split("\n").find((l) => l.includes("Expected move (options)"))!;
+    expect(md).toContain("Expected move");
+    const row = md.split("\n").find((l) => l.includes("Expected move"))!;
     expect(row).toContain("| — | — | — |");
     const histRow = md.split("\n").find((l) => l.includes("Avg move last 8 prints"))!;
     expect(histRow).toContain("| — | — | — |");
@@ -1029,7 +1044,7 @@ describe("intel rows in cloud scoreboard (Task 9: snapshot v9)", () => {
       },
       history: null,
     });
-    const row = md.split("\n").find((l) => l.includes("Expected move (options)"))!;
+    const row = md.split("\n").find((l) => l.includes("Expected move"))!;
     expect(row).toContain("inside");
   });
 });

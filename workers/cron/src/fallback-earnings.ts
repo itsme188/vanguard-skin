@@ -73,6 +73,7 @@ import {
   type CloudEnrichedPayload,
 } from "./cloud-enriched";
 import { isPlausibleEarnings } from "./plausibility";
+import { resolveExpectedMove } from "./expected-move";
 import { formatEtTimestamp, todayET } from "./dst";
 
 // Issuer-family map mirrored from lib/securities/issuer-family.ts. Worker
@@ -899,8 +900,19 @@ function effectiveConsensusRaw(
 // has no match (new event, intel not yet computed, no history cached), the
 // caller still passes `{ intel: null, history: null }` and the rows render
 // with "—" cells — same as the Mac's own no-data behavior.
+/** Snapshot intel resolved through the expected-move precedence (sheet >
+ * straddle > iv_approx, feedback #5) — `method: "sheet"` carries the winning
+ * bogey's label; computedAt/expiryUsed only apply to market-derived methods. */
+export interface ResolvedIntelView {
+  impliedMovePct: number | null;
+  impliedMethod: "sheet" | "straddle" | "iv_approx" | null;
+  sheetSourceLabel: string | null;
+  expiryUsed: string | null;
+  computedAt: string | null;
+}
+
 export interface RenderScoreboardIntelCtx {
-  intel: EarningsIntelSnapshotRow | null;
+  intel: ResolvedIntelView | null;
   history: EarningsHistorySnapshotEntry | null;
 }
 
@@ -910,9 +922,14 @@ function fmtExpiryShort(iso: string | null): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 }
 
-function fmtImplied(intel: EarningsIntelSnapshotRow | null | undefined): string {
+function fmtImplied(intel: ResolvedIntelView | null | undefined): string {
   if (!intel || intel.impliedMovePct == null || !intel.impliedMethod) return "—";
   const pct = intel.impliedMovePct.toFixed(1);
+  if (intel.impliedMethod === "sheet") {
+    // Analyst-sheet number — no staleness suffix (a curated bogey doesn't
+    // decay like options pricing does).
+    return `±${pct}% (${intel.sheetSourceLabel ?? "bogey sheet"})`;
+  }
   const asOf = intel.computedAt ? ` — as of ${formatEtTimestamp(intel.computedAt)}` : "";
   return intel.impliedMethod === "straddle"
     ? `±${pct}% (straddle, ${fmtExpiryShort(intel.expiryUsed)} exp${asOf})`
@@ -1021,7 +1038,7 @@ export function renderScoreboard(
     ? `\n\n*⚠ Reported actuals were flagged as implausible vs consensus — cells blanked (B19-style basis mismatch or scrape failure). Override via POST /api/earnings/actuals once the Mac is back.*`
     : "";
 
-  // Task 9 (snapshot v9): "Expected move (options)" + "Avg move last 8
+  // Task 9 (snapshot v9): "Expected move" + "Avg move last 8
   // prints" rows, positioned after Revenue and before Guidance — same slot
   // as the Mac's renderHeadlineTable. `intelCtx === undefined` is the pre-v9
   // signal (snapshot lacks both earningsIntel/earningsHistory entirely) —
@@ -1041,7 +1058,7 @@ export function renderScoreboard(
       }
     }
     intelRows =
-      `\n| **Expected move (options)** | ${impliedCell} | ${impliedActual} | ${impliedVerdict} |` +
+      `\n| **Expected move** | ${impliedCell} | ${impliedActual} | ${impliedVerdict} |` +
       `\n| **Avg move last 8 prints** | ${fmtHistSummary(intelCtx?.history)} | — | — |`;
   }
 
@@ -1176,8 +1193,32 @@ function resolveIntelCtx(
   if (snapshot.earningsIntel === undefined && snapshot.earningsHistory === undefined) {
     return undefined;
   }
+  const raw = (snapshot.earningsIntel ?? []).find((i) => i.eventId === eventId) ?? null;
+  // Sheet > straddle > iv_approx (feedback #5): a bogey-sheet expected move
+  // outranks the snapshot's market-derived number. Pre-2026-08-03 snapshots
+  // lack expected_move_pct on bogey rows — `?? null` degrades to market-only.
+  const resolved = resolveExpectedMove({
+    bogeys: (snapshot.earningsBogeys ?? [])
+      .filter((b) => b.event_id === eventId)
+      .map((b) => ({
+        expectedMovePct: b.expected_move_pct ?? null,
+        sourceLabel: b.source_label,
+        uploadedAt: b.uploaded_at,
+      })),
+    impliedMovePct: raw?.impliedMovePct ?? null,
+    impliedMethod: raw?.impliedMethod ?? null,
+  });
+  const intel: ResolvedIntelView | null = resolved
+    ? {
+        impliedMovePct: resolved.pct,
+        impliedMethod: resolved.method,
+        sheetSourceLabel: resolved.method === "sheet" ? resolved.sourceLabel : null,
+        expiryUsed: raw?.expiryUsed ?? null,
+        computedAt: raw?.computedAt ?? null,
+      }
+    : null;
   return {
-    intel: (snapshot.earningsIntel ?? []).find((i) => i.eventId === eventId) ?? null,
+    intel,
     history: snapshot.earningsHistory?.[symbol.toUpperCase()] ?? null,
   };
 }

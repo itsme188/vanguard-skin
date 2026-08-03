@@ -13,6 +13,8 @@ export interface UpsertBogeyInput {
   eps_whisper?: number | null;
   revenue_consensus_usd?: number | null;
   revenue_whisper_usd?: number | null;
+  /** Absolute percent (±6% → 6) — the sheet's stated expected earnings move. */
+  expected_move_pct?: number | null;
   segment_breakdown_json?: string | null;
   guidance_notes?: string | null;
   notes?: string | null;
@@ -44,9 +46,10 @@ export function upsertBogey(
     `INSERT INTO earnings_bogeys (
        event_id, source, source_label, source_url, raw_pdf_r2_key,
        research_document_id, research_article_id, eps_consensus, eps_whisper,
-       revenue_consensus_usd, revenue_whisper_usd, segment_breakdown_json,
-       guidance_notes, notes, uploaded_at, ai_extraction_model
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
+       revenue_consensus_usd, revenue_whisper_usd, expected_move_pct,
+       segment_breakdown_json, guidance_notes, notes, uploaded_at,
+       ai_extraction_model
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
      ON CONFLICT(event_id, source, source_label) DO UPDATE SET
        source_url = excluded.source_url,
        raw_pdf_r2_key = excluded.raw_pdf_r2_key,
@@ -56,6 +59,7 @@ export function upsertBogey(
        eps_whisper = excluded.eps_whisper,
        revenue_consensus_usd = excluded.revenue_consensus_usd,
        revenue_whisper_usd = excluded.revenue_whisper_usd,
+       expected_move_pct = excluded.expected_move_pct,
        segment_breakdown_json = excluded.segment_breakdown_json,
        guidance_notes = excluded.guidance_notes,
        notes = excluded.notes,
@@ -75,6 +79,7 @@ export function upsertBogey(
     input.eps_whisper ?? null,
     input.revenue_consensus_usd ?? null,
     input.revenue_whisper_usd ?? null,
+    input.expected_move_pct ?? null,
     input.segment_breakdown_json ?? null,
     input.guidance_notes ?? null,
     input.notes ?? null,

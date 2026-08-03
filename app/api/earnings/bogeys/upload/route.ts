@@ -150,6 +150,7 @@ export async function POST(request: Request) {
       eps_whisper: bogey.eps_whisper,
       revenue_consensus_usd: bogey.revenue_consensus_usd,
       revenue_whisper_usd: bogey.revenue_whisper_usd,
+      expected_move_pct: bogey.expected_move_pct,
       segment_breakdown_json: bogey.segment_breakdown
         ? JSON.stringify(bogey.segment_breakdown)
         : null,

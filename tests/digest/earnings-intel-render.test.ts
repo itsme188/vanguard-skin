@@ -20,7 +20,8 @@ const HISTORY = [
 ];
 
 const INTEL: EarningsIntelView = {
-  impliedMovePct: 4.8, impliedMethod: "straddle", expiryUsed: "2026-07-18",
+  impliedMovePct: 4.8, impliedMethod: "straddle", sheetSourceLabel: null,
+  expiryUsed: "2026-07-18",
   history: HISTORY,
   summary: { avgAbsMovePct: 3.2, beatCount: 6, missCount: 2, quarterCount: 8 },
 };
@@ -28,7 +29,7 @@ const INTEL: EarningsIntelView = {
 describe("scoreboard intel rows", () => {
   it("straddle row + history row on preview", () => {
     const md = renderHeadlineTable(EVENT, "TER", "preview", INTEL);
-    expect(md).toContain("| **Expected move (options)** | ±4.8% (straddle, Jul 18 exp) | — | — |");
+    expect(md).toContain("| **Expected move** | ±4.8% (straddle, Jul 18 exp) | — | — |");
     expect(md).toContain("| **Avg move last 8 prints** | ±3.2% · beat 6/8 | — | — |");
   });
   it("IV-approx renders the ~ label", () => {
@@ -36,15 +37,31 @@ describe("scoreboard intel rows", () => {
       { ...INTEL, impliedMethod: "iv_approx", impliedMovePct: 3.1 });
     expect(md).toContain("~±3.1% (IV approx)");
   });
+  it("a sheet expected move renders with its source label (feedback #5)", () => {
+    const md = renderHeadlineTable(EVENT, "TER", "preview", {
+      ...INTEL,
+      impliedMethod: "sheet",
+      impliedMovePct: 6,
+      sheetSourceLabel: "TMT Breakout 7/28 weekly",
+    });
+    expect(md).toContain("±6.0% (TMT Breakout 7/28 weekly)");
+    expect(md).not.toContain("straddle");
+  });
+  it("a sheet move with no label falls back to the generic sheet wording", () => {
+    const md = renderHeadlineTable(EVENT, "TER", "preview", {
+      ...INTEL, impliedMethod: "sheet", impliedMovePct: 6, sheetSourceLabel: null,
+    });
+    expect(md).toContain("±6.0% (bogey sheet)");
+  });
   it("missing intel renders dashes and stays 8 rows", () => {
     const md = renderHeadlineTable(EVENT, "TER", "preview",
       { ...INTEL, impliedMovePct: null, impliedMethod: null, summary: { avgAbsMovePct: null, beatCount: 0, missCount: 0, quarterCount: 0 } });
-    expect(md).toContain("| **Expected move (options)** | — | — | — |");
+    expect(md).toContain("| **Expected move** | — | — | — |");
     expect(md).toContain("| **Avg move last 8 prints** | — | — | — |");
   });
   it("undefined intel (no cache at all) keeps rows with dashes", () => {
     const md = renderHeadlineTable(EVENT, "TER", "preview", null);
-    expect(md).toContain("| **Expected move (options)** | — | — | — |");
+    expect(md).toContain("| **Expected move** | — | — | — |");
   });
   it("recap echoes implied vs realized with inside/outside verdict", () => {
     // Real reaction_snapshot shape (see readReactionDelta / ReactionSnapshot):
@@ -56,7 +73,7 @@ describe("scoreboard intel rows", () => {
       }),
     };
     const md = renderHeadlineTable(recapEvent, "TER", "recap", INTEL);
-    expect(md).toContain("**Expected move (options)**");
+    expect(md).toContain("**Expected move**");
     expect(md).toMatch(/±4\.8% \(straddle.*\|.*7\.2%.*\|.*outside/);
   });
 });

@@ -22,6 +22,7 @@ import {
 import { getCachedTranscript } from "@/lib/queries/transcripts";
 import { getNotesForFamily, type NoteWithContext } from "@/lib/queries/notes";
 import { getBogeysForEvent, type EarningsBogey } from "@/lib/queries/earnings-bogeys";
+import { resolveExpectedMove } from "@/lib/earnings/expected-move";
 import { getReadThroughsForTargets } from "@/lib/queries/read-through-pairs";
 import {
   getCallNoteForEvent,
@@ -101,7 +102,11 @@ export async function sendEarningsRecap(
 // never be able to block a send.
 export interface EarningsIntelView {
   impliedMovePct: number | null;
-  impliedMethod: "straddle" | "iv_approx" | null;
+  /** "sheet" = analyst-sheet expected move from earnings_bogeys (feedback #5)
+   * — outranks the market-derived straddle/iv_approx. */
+  impliedMethod: "sheet" | "straddle" | "iv_approx" | null;
+  /** The winning bogey's source_label when impliedMethod === "sheet". */
+  sheetSourceLabel: string | null;
   expiryUsed: string | null;
   history: ReportHistoryRow[];
   summary: HistorySummary;
@@ -114,9 +119,21 @@ export function loadIntelView(
 ): EarningsIntelView {
   const intel = getIntelForEvents(db, [eventId]).get(eventId) ?? null;
   const history = getReportHistoryForFamily(db, symbol, 8);
-  return {
+  // Sheet > straddle > iv_approx (feedback #5): an analyst sheet's stated
+  // expected move outranks the market-derived number, always source-labeled.
+  const resolved = resolveExpectedMove({
+    bogeys: getBogeysForEvent(db, eventId).map((b) => ({
+      expectedMovePct: b.expected_move_pct,
+      sourceLabel: b.source_label,
+      uploadedAt: b.uploaded_at,
+    })),
     impliedMovePct: intel?.impliedMovePct ?? null,
     impliedMethod: intel?.impliedMethod ?? null,
+  });
+  return {
+    impliedMovePct: resolved?.pct ?? null,
+    impliedMethod: resolved?.method ?? null,
+    sheetSourceLabel: resolved?.method === "sheet" ? resolved.sourceLabel : null,
     expiryUsed: intel?.expiryUsed ?? null,
     history,
     summary: summarizeHistory(history),
@@ -1249,7 +1266,7 @@ function readReactionDelta(json: string | null, key: "spy" | "qqq" | "tlt" | "sy
 
 // ── Earnings-intelligence scoreboard rows (Task 7) ─────────────────
 //
-// "Expected move (options)" + "Avg move last 8 prints" rows. Both are
+// "Expected move" + "Avg move last 8 prints" rows. Both are
 // code-rendered from the EarningsIntelView cache — never AI-generated —
 // same discipline as the rest of the scoreboard.
 
@@ -1262,6 +1279,11 @@ function fmtExpiryShort(iso: string | null): string {
 function fmtImplied(intel: EarningsIntelView | null | undefined): string {
   if (!intel || intel.impliedMovePct == null || !intel.impliedMethod) return "—";
   const pct = intel.impliedMovePct.toFixed(1);
+  if (intel.impliedMethod === "sheet") {
+    // Analyst-sheet expected move — label with its source so the reader knows
+    // this is the curated number, not options pricing.
+    return `±${pct}% (${intel.sheetSourceLabel ?? "bogey sheet"})`;
+  }
   return intel.impliedMethod === "straddle"
     ? `±${pct}% (straddle, ${fmtExpiryShort(intel.expiryUsed)} exp)`
     : `~±${pct}% (IV approx)`;
@@ -1359,7 +1381,9 @@ export function renderHeadlineTable(
   // Expected move: preview shows the implied cell only (Actual/Δ dashes —
   // there's nothing to compare against yet). Recap echoes the realized
   // |stock reaction| against the implied move and calls it inside/outside
-  // the priced-in range — never recomputed here, `intel.impliedMovePct` is
+  // the priced-in range. Market-derived methods stay preview-cached (never
+  // recomputed here); a sheet-resolved value re-resolves from live bogeys,
+  // which are stable by design post-print — `intel.impliedMovePct` is
   // whatever was cached at preview-compose time.
   const impliedCell = fmtImplied(intel);
   let impliedActual = "—";
@@ -1375,7 +1399,7 @@ export function renderHeadlineTable(
   const rows = [
     `| **EPS** | ${epsConsensus} | ${epsActual} | ${epsDelta} |`,
     `| **Revenue** | ${revConsensus} | ${revActual} | ${revDelta} |`,
-    `| **Expected move (options)** | ${impliedCell} | ${impliedActual} | ${impliedVerdict} |`,
+    `| **Expected move** | ${impliedCell} | ${impliedActual} | ${impliedVerdict} |`,
     `| **Avg move last 8 prints** | ${fmtHistSummary(intel)} | — | — |`,
     `| **Guidance (next quarter)** | — | — | — |`,
     `| **${symbol} @ T+2h** | — | ${stockReaction} | — |`,
@@ -1803,6 +1827,7 @@ function renderBogeysBlock(ctx: PreviewContext): string {
     if (b.eps_whisper != null) fields.push(`EPS **whisper ${b.eps_whisper.toFixed(2)}**`);
     if (b.revenue_consensus_usd != null) fields.push(`revenue consensus ${formatLargeUSD(b.revenue_consensus_usd)}`);
     if (b.revenue_whisper_usd != null) fields.push(`revenue **whisper ${formatLargeUSD(b.revenue_whisper_usd)}**`);
+    if (b.expected_move_pct != null) fields.push(`expected move ±${b.expected_move_pct.toFixed(1)}%`);
     const head = fields.length > 0 ? `\n${fields.join(" · ")}` : "";
     let segs = "";
     if (b.segment_breakdown_json) {
