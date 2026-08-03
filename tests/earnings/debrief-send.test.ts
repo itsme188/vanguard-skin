@@ -438,7 +438,7 @@ describe("runMorningDebrief", () => {
     expect(rows[0].ai_output_md).toContain("AAA beat estimates");
   });
 
-  it("missing recipient (no opts.recipient, no BRIEFING_EMAIL_TO) → sent:false, never throws, no claims taken", async () => {
+  it("missing recipient (no opts.recipient, no BRIEFING_EMAIL_TO) → no-recipient skip, day key NOT stamped, later tick still sends", async () => {
     const prev = process.env.BRIEFING_EMAIL_TO;
     delete process.env.BRIEFING_EMAIL_TO;
     try {
@@ -446,7 +446,10 @@ describe("runMorningDebrief", () => {
 
       const res = await runMorningDebrief(db, { now: NOW_IN_WINDOW, generate: stubGenerate() });
 
-      expect(res).toEqual({ sent: false, covered: [] });
+      expect(res).toEqual({ sent: false, covered: [], skippedReason: "no-recipient" });
+      // 2026-08-02 parity fix: recipient resolution moved ABOVE the day-key
+      // stamp — a misconfigured env must not burn the morning's debrief.
+      expect(settingsValue("last_debrief_date")).toBeNull();
       expect(mockedSend).not.toHaveBeenCalled();
       expect(auditRows()).toHaveLength(0);
       // No claim was ever taken for AAA.
@@ -456,6 +459,15 @@ describe("runMorningDebrief", () => {
     } finally {
       if (prev !== undefined) process.env.BRIEFING_EMAIL_TO = prev;
     }
+
+    // Env fixed (explicit recipient) → the same morning still sends.
+    const res2 = await runMorningDebrief(db, {
+      now: NOW_IN_WINDOW,
+      recipient: RECIPIENT,
+      generate: stubGenerate(),
+    });
+    expect(res2.sent).toBe(true);
+    expect(settingsValue("last_debrief_date")).toBe(TODAY);
   });
 
   it("uses process.env.BRIEFING_EMAIL_TO when opts.recipient is omitted", async () => {

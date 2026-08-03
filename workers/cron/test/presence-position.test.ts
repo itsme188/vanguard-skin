@@ -4,8 +4,9 @@
  * Next.js path-alias boundary, same constraint as the issuerSiblings copy).
  *
  * The point of this file: outbound emails are shared (brother on cc), so the
- * cloud earnings fallback must NEVER echo an exact cost-basis $ — only
- * presence-disclosure ("100 sh AAPL (ibkr, up ~12%)").
+ * cloud earnings fallback must NEVER echo reconstructable exposure. Since
+ * 2026-08-02 that includes share/contract counts and return % — only
+ * direction + account + option terms remain ("long AAPL (ibkr)").
  */
 
 import { describe, it, expect } from "vitest";
@@ -16,34 +17,28 @@ import {
 } from "../src/presence-position";
 
 describe("formatPositionPresence (Worker copy)", () => {
-  it("renders a long stock as presence + return %, never the cost basis", () => {
+  it("renders a long stock as direction only — no count, no return %", () => {
     const out = formatPositionPresence({
       symbol: "AAPL",
       accountName: "ibkr",
       quantity: 100,
       securityType: "stock",
-      costBasis: 18000, // $180/sh
-      latestPrice: 205, // → +13.9%
     });
-    expect(out).toBe("100 sh AAPL (ibkr, up ~13.9%)");
-    expect(out).not.toContain("18000");
-    expect(out).not.toContain("180");
+    expect(out).toBe("long AAPL (ibkr)");
+    expect(out).not.toMatch(/\d/);
   });
 
-  it("renders a short stock with no return % (sign convention varies)", () => {
+  it("renders a short stock", () => {
     const out = formatPositionPresence({
       symbol: "META",
       accountName: "ibkr",
       quantity: -200,
       securityType: "stock",
-      costBasis: 50000,
-      latestPrice: 240,
     });
-    expect(out).toBe("200 sh short META (ibkr)");
-    expect(out).not.toContain("50000");
+    expect(out).toBe("short META (ibkr)");
   });
 
-  it("renders a long option with strike/expiry (public) but no total cost", () => {
+  it("renders a long option with strike/expiry (public) but no contract count", () => {
     const out = formatPositionPresence({
       symbol: "AAPL  260619C00145000",
       accountName: "ibkr",
@@ -54,31 +49,14 @@ describe("formatPositionPresence (Worker copy)", () => {
         strikePrice: 145,
         expirationDate: "2026-06-19",
         optionType: "CALL",
-        multiplier: 100,
       },
-      costBasis: 4200, // $14/contract → current 18 → +28.6%
-      latestPrice: 18,
     });
-    expect(out).toBe("3 long AAPL $145 call expiring 2026-06-19 (ibkr, up ~28.6%)");
-    expect(out).not.toContain("4200");
-  });
-
-  it("omits the return % when latest price is missing (honest, no leak)", () => {
-    const out = formatPositionPresence({
-      symbol: "AAPL",
-      accountName: "vanguard taxable",
-      quantity: 50,
-      securityType: "stock",
-      costBasis: 9000,
-      latestPrice: null,
-    });
-    expect(out).toBe("50 sh AAPL (vanguard taxable)");
-    expect(out).not.toContain("9000");
+    expect(out).toBe("long AAPL $145 calls exp 2026-06-19 (ibkr)");
   });
 });
 
 describe("formatCombinedExposurePresence (Worker copy, B7)", () => {
-  it("buckets long and short shares separately — never a netted count", () => {
+  it("buckets long and short shares as presence flags — never counts", () => {
     const out = formatCombinedExposurePresence({
       positionCount: 2,
       longShares: 500,
@@ -86,8 +64,8 @@ describe("formatCombinedExposurePresence (Worker copy, B7)", () => {
       longContracts: 0,
       shortContracts: 0,
     });
-    expect(out).toBe("500 long shares + 300 short shares");
-    expect(out).not.toContain("200");
+    expect(out).toBe("long shares + short shares");
+    expect(out).not.toMatch(/\d/);
   });
 
   it("renders a short-only book as presence, not zero exposure", () => {
@@ -98,7 +76,7 @@ describe("formatCombinedExposurePresence (Worker copy, B7)", () => {
       longContracts: 0,
       shortContracts: 0,
     });
-    expect(out).toBe("300 short shares");
+    expect(out).toBe("short shares");
   });
 
   it("returns 'no live exposure' when there are no positions", () => {

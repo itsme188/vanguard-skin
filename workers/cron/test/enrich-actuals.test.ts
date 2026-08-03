@@ -10,13 +10,40 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { fetchActualForEventCloud, fetchFredSeriesLatest, formatFredValue, RELEASE_ID_TO_SERIES } from "../src/enrich-actuals";
+import { fetchActualForEventCloud, fetchFredSeriesLatest, formatFredValue, parseSourceKey, RELEASE_ID_TO_SERIES } from "../src/enrich-actuals";
 
 const obs = (value: number, priorValue: number | null = null) => ({
   value,
   date: "2026-06-06",
   priorValue,
   priorYearValue: null as number | null,
+});
+
+describe("parseSourceKey — manual earnings keys (Worker mirror, 2026-08-02 parity fix)", () => {
+  // Mirrors tests/calendar/enrich-actuals.test.ts: corrected/manual earnings
+  // rows (`manual:SYM:DATE:earnings`) ride the Finnhub road so cloud
+  // enrichment can capture their actuals while the Mac sleeps. Pre-fix the
+  // Worker returned "unknown" for them (Mac fixed 8/02 morning).
+  it("routes manual EARNINGS keys down the finnhub road", () => {
+    expect(parseSourceKey("manual:RKT:2026-08-06:earnings")).toEqual({
+      kind: "finnhub",
+      symbol: "RKT",
+      date: "2026-08-06",
+    });
+  });
+
+  it("leaves non-earnings manual keys unknown", () => {
+    expect(parseSourceKey("manual:UMICH:2026-08-06:other_macro")).toEqual({ kind: "unknown" });
+    expect(parseSourceKey("manual:arbitrary-event")).toEqual({ kind: "unknown" });
+  });
+
+  it("still parses vendor finnhub keys unchanged", () => {
+    expect(parseSourceKey("finnhub:NVDA:2026-05-21")).toEqual({
+      kind: "finnhub",
+      symbol: "NVDA",
+      date: "2026-05-21",
+    });
+  });
 });
 
 describe("formatFredValue — count/level semantics (Worker mirror)", () => {

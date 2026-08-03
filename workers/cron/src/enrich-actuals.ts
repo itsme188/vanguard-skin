@@ -202,6 +202,16 @@ export function parseSourceKey(sourceKey: string): ParsedSourceKey {
   if (nonfred) return { kind: "nonfred", shortName: nonfred[1].replace(/_/g, " "), date: nonfred[2] };
   const finnhub = /^finnhub:([^:]+):(\d{4}-\d{2}-\d{2})$/.exec(sourceKey);
   if (finnhub) return { kind: "finnhub", symbol: finnhub[1], date: finnhub[2] };
+  // Manual EARNINGS rows take the same Finnhub symbol+date road as vendor
+  // earnings rows (`manual:<SYMBOL>:<YYYY-MM-DD>:earnings`) — mirrors the Mac's
+  // lib/calendar/enrich-actuals.ts (2026-08-02 parity fix). Corrected/manual
+  // rows previously fell through to "unknown" here, so cloud enrichment never
+  // captured their actuals while the Mac slept. Only ':earnings' keys qualify:
+  // a manual macro row has no Finnhub calendar entry to fetch.
+  const manualEarnings = /^manual:([^:]+):(\d{4}-\d{2}-\d{2}):earnings$/.exec(sourceKey);
+  if (manualEarnings) {
+    return { kind: "finnhub", symbol: manualEarnings[1], date: manualEarnings[2] };
+  }
   return { kind: "unknown" };
 }
 

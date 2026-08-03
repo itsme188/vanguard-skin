@@ -3,17 +3,17 @@
  * lib/digest/presence-only-position.ts.
  *
  * The Worker can't cross the Next.js `@/` path-alias boundary, so (like the
- * issuerSiblings copy in fallback-earnings.ts) this is a byte-for-byte mirror.
- * Keep in sync with the Mac original; the logic is pure + slow-moving.
+ * issuerSiblings copy in fallback-earnings.ts) this is a byte-for-byte mirror
+ * below the OptionMeta interface. Keep in sync with the Mac original; the
+ * logic is pure + slow-moving. Parity is pinned by
+ * workers/cron/test/presence-position.test.ts.
  *
  * Why this exists: outbound emails (briefing / earnings / evening) are shared
- * with cc recipients, so any exact $ the composer writes into the body reaches
- * them verbatim. This helper discloses ownership ("100 sh AAPL (ibkr, up ~12%)")
- * without the cost-basis / market-value $.
- *
- * Relative % returns ARE kept (P&L direction/magnitude in % is fine); the $
- * exposure stays hidden. Strike + expiry on options are public market data.
- * Shorts: relative-return omitted (cost-basis sign convention varies).
+ * with cc recipients, so anything the composer writes into the body reaches
+ * them verbatim. 2026-08-02 (supersedes 2026-05-12): share/contract counts
+ * AND relative % returns are BOTH omitted — count × public price reconstructs
+ * the exact dollar exposure. Only direction, account, and option strike/expiry
+ * (public market data) remain: "long AAPL (ibkr)".
  */
 
 export interface OptionMeta {
@@ -21,86 +21,48 @@ export interface OptionMeta {
   strikePrice: number | null;
   expirationDate: string | null; // YYYY-MM-DD
   optionType: string | null; // "CALL" | "PUT"
-  multiplier: number | null; // typically 100
 }
 
 export interface PositionPresenceArgs {
   symbol: string;
   accountName: string;
-  quantity: number; // signed: negative = short
+  quantity: number; // signed — consumed ONLY for its sign (direction)
   securityType: string; // "stock" | "option" | "bond" | "etf" | ...
   optionMeta?: OptionMeta | null;
-  costBasis?: number | null; // total $ for the position
-  latestPrice?: number | null; // per-share for stocks, per-share (1× multiplier) for options
 }
 
 export function formatPositionPresence(args: PositionPresenceArgs): string {
   const isOption = args.securityType.toLowerCase() === "option";
   const direction = args.quantity >= 0 ? "long" : "short";
-  const qty = Math.abs(args.quantity);
-  const returnSuffix = formatReturnSuffix(args);
 
   if (isOption && args.optionMeta) {
-    const right = (args.optionMeta.optionType ?? "?").toLowerCase();
+    const right = pluralRight(args.optionMeta.optionType);
     const strike =
       args.optionMeta.strikePrice != null
         ? `$${args.optionMeta.strikePrice}`
         : "?";
     const expiry = args.optionMeta.expirationDate ?? "?";
     const underlying = args.optionMeta.underlyingSymbol ?? args.symbol;
-    return `${qty} ${direction} ${underlying} ${strike} ${right} expiring ${expiry} (${args.accountName}${returnSuffix})`;
+    return `${direction} ${underlying} ${strike} ${right} exp ${expiry} (${args.accountName})`;
   }
 
-  const qtyStr = formatQty(args.quantity);
-  const shortPrefix = direction === "short" ? "short " : "";
-  return `${qtyStr} sh ${shortPrefix}${args.symbol} (${args.accountName}${returnSuffix})`;
+  return `${direction} ${args.symbol} (${args.accountName})`;
+}
+
+/** "CALL" → "calls", "PUT" → "puts"; unknown right → "?" (never invent one). */
+function pluralRight(optionType: string | null): string {
+  if (!optionType) return "?";
+  const t = optionType.toLowerCase();
+  if (t === "call") return "calls";
+  if (t === "put") return "puts";
+  return t;
 }
 
 /**
- * Format the "(account, up ~12%)" tail. Returns empty string when:
- *   - cost basis or latest price is missing
- *   - position is short (sign convention varies — omit to avoid mislead)
- *   - cost basis is zero (would divide by zero or produce noise)
- */
-function formatReturnSuffix(args: PositionPresenceArgs): string {
-  if (args.quantity < 0) return ""; // short — omit return %
-  if (args.costBasis == null || args.latestPrice == null) return "";
-  if (args.costBasis === 0) return "";
-
-  const contracts = Math.abs(args.quantity);
-  if (contracts === 0) return "";
-
-  const isOption = args.securityType.toLowerCase() === "option";
-  let currentValue: number;
-  if (isOption) {
-    const mult = args.optionMeta?.multiplier ?? 100;
-    currentValue = args.latestPrice * contracts * mult;
-  } else {
-    currentValue = args.latestPrice * contracts;
-  }
-
-  const pnlPct =
-    ((currentValue - args.costBasis) / Math.abs(args.costBasis)) * 100;
-  if (!Number.isFinite(pnlPct)) return "";
-
-  const dir = pnlPct >= 0 ? "up" : "down";
-  return `, ${dir} ~${Math.abs(pnlPct).toFixed(1)}%`;
-}
-
-function formatQty(q: number): string {
-  const abs = Math.abs(q);
-  if (Number.isInteger(abs)) return abs.toString();
-  return abs.toFixed(2);
-}
-
-/**
- * Combined-positions summary for use in earnings-email prompts. Replaces the
- * old "Combined exposure: ${combinedShares} shares + ${contracts} option
- * contract(s) (~${notional} shares notional)" line that leaked the
- * derivable-from-price notional dollar exposure.
- *
- * Returns a presence-only summary: position counts + direction breakdown,
- * no derivable $.
+ * Combined-positions summary for use in earnings-email prompts. Presence
+ * flags only — the input counts are consumed as >0 booleans (signature kept
+ * so callers' long/short bucketing code is unchanged). Never emits a number:
+ * "500 long shares" was reconstructable exposure, "long shares" is not.
  */
 export function formatCombinedExposurePresence(args: {
   positionCount: number;
@@ -111,11 +73,9 @@ export function formatCombinedExposurePresence(args: {
 }): string {
   if (args.positionCount === 0) return "no live exposure";
   const parts: string[] = [];
-  if (args.longShares > 0) parts.push(`${args.longShares.toFixed(0)} long shares`);
-  if (args.shortShares > 0) parts.push(`${args.shortShares.toFixed(0)} short shares`);
-  if (args.longContracts > 0)
-    parts.push(`${args.longContracts.toFixed(0)} long option contract(s)`);
-  if (args.shortContracts > 0)
-    parts.push(`${args.shortContracts.toFixed(0)} short option contract(s)`);
+  if (args.longShares > 0) parts.push("long shares");
+  if (args.shortShares > 0) parts.push("short shares");
+  if (args.longContracts > 0) parts.push("long options");
+  if (args.shortContracts > 0) parts.push("short options");
   return parts.length > 0 ? parts.join(" + ") : "no live exposure";
 }
