@@ -159,6 +159,9 @@ export interface SnapshotBogey {
   eps_whisper: number | null;
   revenue_consensus_usd: number | null;
   revenue_whisper_usd: number | null;
+  /** Absolute percent — sheet-stated expected move (feedback #5). Optional:
+   * snapshots written before 2026-08-03 lack the field. */
+  expected_move_pct?: number | null;
   segment_breakdown_json: string | null;
   guidance_notes: string | null;
   notes: string | null;

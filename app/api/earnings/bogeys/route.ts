@@ -32,6 +32,8 @@ interface ManualBogeyBody {
   eps_whisper?: number | null;
   revenue_consensus_usd?: number | null;
   revenue_whisper_usd?: number | null;
+  /** Absolute percent (±6% → 6) — sheet/analyst expected earnings move. */
+  expected_move_pct?: number | null;
   guidance_notes?: string | null;
   notes?: string | null;
 }
@@ -53,6 +55,12 @@ export async function POST(request: Request) {
     eps_whisper: body.eps_whisper ?? null,
     revenue_consensus_usd: body.revenue_consensus_usd ?? null,
     revenue_whisper_usd: body.revenue_whisper_usd ?? null,
+    expected_move_pct:
+      typeof body.expected_move_pct === "number" &&
+      Number.isFinite(body.expected_move_pct) &&
+      body.expected_move_pct > 0
+        ? body.expected_move_pct
+        : null,
     guidance_notes: body.guidance_notes ?? null,
     notes: body.notes ?? null,
   });

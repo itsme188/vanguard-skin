@@ -19,7 +19,7 @@ import { generateTextForFeature } from "@/lib/ai/generate";
 import { resolveFeatureModel } from "@/lib/ai/models";
 import { upsertBogey } from "@/lib/mutations/earnings-bogeys";
 import { extractJsonArray } from "@/lib/ai/extract-json";
-import { parseLargeUSD } from "@/lib/format";
+import { coercePercent, parseLargeUSD } from "@/lib/format";
 import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { todayET, addDays } from "@/lib/calendar/date-utils";
@@ -58,6 +58,7 @@ export interface ExtractedBogey {
   eps_whisper: number | null;
   revenue_consensus: number | null;
   revenue_whisper: number | null;
+  expected_move_pct: number | null;
   notes: string | null;
 }
 
@@ -104,6 +105,7 @@ export function buildExtractionPrompt(
     `  "eps_whisper": number | null,         // above/below-consensus number traders are positioning for`,
     `  "revenue_consensus": number | null,   // RAW dollars, not abbreviated (e.g. 40200000000, not "$40.2B")`,
     `  "revenue_whisper": number | null,     // RAW dollars`,
+    `  "expected_move_pct": number | null,   // expected/implied earnings move the author states, as an absolute percent ("±6%" -> 6)`,
     `  "notes": string | null                // brief paraphrase of the author's reasoning, <200 chars`,
     `}`,
     ``,
@@ -147,6 +149,7 @@ export function parseExtractionResponse(raw: string): ExtractedBogey[] {
       eps_whisper: coerceNumber(obj.eps_whisper),
       revenue_consensus: coerceNumber(obj.revenue_consensus),
       revenue_whisper: coerceNumber(obj.revenue_whisper),
+      expected_move_pct: coercePercent(obj.expected_move_pct),
       notes: typeof obj.notes === "string" ? obj.notes.slice(0, 500) : null,
     });
   }
@@ -362,6 +365,7 @@ export async function extractBogeysFromArticle(
       eps_whisper: bogey.eps_whisper,
       revenue_consensus_usd: bogey.revenue_consensus,
       revenue_whisper_usd: bogey.revenue_whisper,
+      expected_move_pct: bogey.expected_move_pct,
       notes: bogey.notes,
       ai_extraction_model: modelId,
     });

@@ -20,7 +20,8 @@ interface Stages {
 }
 interface CockpitIntel {
   impliedMovePct: number | null;
-  impliedMethod: "straddle" | "iv_approx" | null;
+  impliedMethod: "sheet" | "straddle" | "iv_approx" | null;
+  sheetSourceLabel: string | null;
   histAvgAbsMovePct: number | null;
   histBeatCount: number;
   histQuarterCount: number;
@@ -259,9 +260,18 @@ function CockpitRowView({ row, onChanged }: { row: Row; onChanged: () => void })
       {row.intel && (row.intel.impliedMovePct != null || row.intel.histAvgAbsMovePct != null) && (
         <span className="text-[12px] text-ink-dim whitespace-nowrap">
           {row.intel.impliedMovePct != null && (
-            <>
+            <span
+              title={
+                row.intel.impliedMethod === "sheet"
+                  ? `Analyst-sheet expected move${row.intel.sheetSourceLabel ? ` — ${row.intel.sheetSourceLabel}` : ""}`
+                  : row.intel.impliedMethod === "straddle"
+                    ? "Options-implied move (ATM straddle)"
+                    : "Options-implied move (IV approximation)"
+              }
+            >
               impl {row.intel.impliedMethod === "iv_approx" ? "~" : ""}±{row.intel.impliedMovePct.toFixed(1)}%
-            </>
+              {row.intel.impliedMethod === "sheet" && " (sheet)"}
+            </span>
           )}
           {row.intel.impliedMovePct != null && row.intel.histAvgAbsMovePct != null && " · "}
           {row.intel.histAvgAbsMovePct != null && (

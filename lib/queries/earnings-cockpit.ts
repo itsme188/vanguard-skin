@@ -24,7 +24,9 @@ import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
 /** Implied-move + history-summary decoration for a cockpit row. */
 export interface CockpitIntel {
   impliedMovePct: number | null;
-  impliedMethod: "straddle" | "iv_approx" | null;
+  impliedMethod: "sheet" | "straddle" | "iv_approx" | null;
+  /** The winning bogey's source_label when impliedMethod === "sheet". */
+  sheetSourceLabel: string | null;
   histAvgAbsMovePct: number | null;
   histBeatCount: number;
   histQuarterCount: number;

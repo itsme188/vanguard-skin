@@ -121,6 +121,7 @@ interface Snapshot {
     eps_whisper: number | null;
     revenue_consensus_usd: number | null;
     revenue_whisper_usd: number | null;
+    expected_move_pct: number | null;
     segment_breakdown_json: string | null;
     guidance_notes: string | null;
     notes: string | null;
@@ -364,7 +365,8 @@ function getEarningsBogeysForSnapshot(
     .prepare(
       `SELECT b.id, b.event_id, b.source, b.source_label, b.eps_consensus,
               b.eps_whisper, b.revenue_consensus_usd, b.revenue_whisper_usd,
-              b.segment_breakdown_json, b.guidance_notes, b.notes, b.uploaded_at
+              b.expected_move_pct, b.segment_breakdown_json, b.guidance_notes,
+              b.notes, b.uploaded_at
          FROM earnings_bogeys b
          JOIN calendar_events e ON e.id = b.event_id
         WHERE e.event_date >= ? AND e.event_date <= ?

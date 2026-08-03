@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  coercePercent,
   formatCompactOptionSymbol,
   formatCompactUSD,
   formatLargeNumber,
@@ -246,5 +247,24 @@ describe("formatProfitFactor", () => {
     // losses — a sentinel, not a measured ratio.
     expect(formatProfitFactor(99.9)).toBe("∞");
     expect(formatProfitFactor(120)).toBe("∞");
+  });
+});
+
+describe("coercePercent (expected-move parsing, feedback #5)", () => {
+  it("parses plain numbers, percent strings, and ± prefixes", () => {
+    expect(coercePercent(6)).toBe(6);
+    expect(coercePercent("6")).toBe(6);
+    expect(coercePercent("6%")).toBe(6);
+    expect(coercePercent("±6.0%")).toBe(6);
+    expect(coercePercent("+/-6%")).toBe(6);
+    expect(coercePercent("-5.5")).toBe(5.5); // absolute — a move is directionless
+  });
+
+  it("rejects zero, garbage, and non-finite values", () => {
+    expect(coercePercent(0)).toBeNull();
+    expect(coercePercent("")).toBeNull();
+    expect(coercePercent("big move")).toBeNull();
+    expect(coercePercent(null)).toBeNull();
+    expect(coercePercent(Number.NaN)).toBeNull();
   });
 });

@@ -1,4 +1,6 @@
 import type Database from "better-sqlite3";
+import { resolveExpectedMove } from "@/lib/earnings/expected-move";
+import { getExpectedMoveBogeysForEvents } from "@/lib/queries/earnings-bogeys";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { parseStoredTimestamp } from "@/lib/format";
 import type { ReportHistoryRow } from "@/lib/mutations/earnings-intel";
@@ -122,6 +124,7 @@ export function decorateCockpitIntel(db: Database.Database, payload: CockpitPayl
   const rows = allCockpitRows(payload);
   if (rows.length === 0) return;
   const intelMap = getIntelForEvents(db, rows.map((r) => r.eventId));
+  const bogeyMoves = getExpectedMoveBogeysForEvents(db, rows.map((r) => r.eventId));
   // Family-level history cache: GOOG + GOOGL rows share one read.
   const historyByFamily = new Map<string, ReportHistoryRow[]>();
   for (const row of rows) {
@@ -132,14 +135,22 @@ export function decorateCockpitIntel(db: Database.Database, payload: CockpitPayl
       history = getReportHistoryForFamily(db, row.symbol, 8);
       historyByFamily.set(famKey, history);
     }
-    if (!intel && history.length === 0) {
+    // Sheet > straddle > iv_approx (feedback #5) — an analyst sheet's stated
+    // expected move outranks the market-derived number, source-labeled.
+    const resolved = resolveExpectedMove({
+      bogeys: bogeyMoves.get(row.eventId) ?? [],
+      impliedMovePct: intel?.impliedMovePct ?? null,
+      impliedMethod: intel?.impliedMethod ?? null,
+    });
+    if (!resolved && history.length === 0) {
       row.intel = null;
       continue;
     }
     const summary = summarizeHistory(history);
     row.intel = {
-      impliedMovePct: intel?.impliedMovePct ?? null,
-      impliedMethod: intel?.impliedMethod ?? null,
+      impliedMovePct: resolved?.pct ?? null,
+      impliedMethod: resolved?.method ?? null,
+      sheetSourceLabel: resolved?.method === "sheet" ? resolved.sourceLabel : null,
       histAvgAbsMovePct: summary.avgAbsMovePct,
       histBeatCount: summary.beatCount,
       histQuarterCount: summary.quarterCount,

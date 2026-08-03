@@ -22,6 +22,7 @@ import {
 import { getCachedTranscript } from "@/lib/queries/transcripts";
 import { getNotesForFamily, type NoteWithContext } from "@/lib/queries/notes";
 import { getBogeysForEvent, type EarningsBogey } from "@/lib/queries/earnings-bogeys";
+import { resolveExpectedMove } from "@/lib/earnings/expected-move";
 import { getReadThroughsForTargets } from "@/lib/queries/read-through-pairs";
 import {
   getCallNoteForEvent,
@@ -101,7 +102,11 @@ export async function sendEarningsRecap(
 // never be able to block a send.
 export interface EarningsIntelView {
   impliedMovePct: number | null;
-  impliedMethod: "straddle" | "iv_approx" | null;
+  /** "sheet" = analyst-sheet expected move from earnings_bogeys (feedback #5)
+   * — outranks the market-derived straddle/iv_approx. */
+  impliedMethod: "sheet" | "straddle" | "iv_approx" | null;
+  /** The winning bogey's source_label when impliedMethod === "sheet". */
+  sheetSourceLabel: string | null;
   expiryUsed: string | null;
   history: ReportHistoryRow[];
   summary: HistorySummary;
@@ -114,9 +119,21 @@ export function loadIntelView(
 ): EarningsIntelView {
   const intel = getIntelForEvents(db, [eventId]).get(eventId) ?? null;
   const history = getReportHistoryForFamily(db, symbol, 8);
-  return {
+  // Sheet > straddle > iv_approx (feedback #5): an analyst sheet's stated
+  // expected move outranks the market-derived number, always source-labeled.
+  const resolved = resolveExpectedMove({
+    bogeys: getBogeysForEvent(db, eventId).map((b) => ({
+      expectedMovePct: b.expected_move_pct,
+      sourceLabel: b.source_label,
+      uploadedAt: b.uploaded_at,
+    })),
     impliedMovePct: intel?.impliedMovePct ?? null,
     impliedMethod: intel?.impliedMethod ?? null,
+  });
+  return {
+    impliedMovePct: resolved?.pct ?? null,
+    impliedMethod: resolved?.method ?? null,
+    sheetSourceLabel: resolved?.method === "sheet" ? resolved.sourceLabel : null,
     expiryUsed: intel?.expiryUsed ?? null,
     history,
     summary: summarizeHistory(history),
@@ -1262,6 +1279,11 @@ function fmtExpiryShort(iso: string | null): string {
 function fmtImplied(intel: EarningsIntelView | null | undefined): string {
   if (!intel || intel.impliedMovePct == null || !intel.impliedMethod) return "—";
   const pct = intel.impliedMovePct.toFixed(1);
+  if (intel.impliedMethod === "sheet") {
+    // Analyst-sheet expected move — label with its source so the reader knows
+    // this is the curated number, not options pricing.
+    return `±${pct}% (${intel.sheetSourceLabel ?? "bogey sheet"})`;
+  }
   return intel.impliedMethod === "straddle"
     ? `±${pct}% (straddle, ${fmtExpiryShort(intel.expiryUsed)} exp)`
     : `~±${pct}% (IV approx)`;
