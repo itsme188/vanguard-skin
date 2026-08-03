@@ -77,6 +77,35 @@ interface Resolution {
   conflictWith: string | null;
 }
 
+/**
+ * A manual FUTURE row must never compete with a print that already happened
+ * (qa:today-earningshub-add-ticker--manual-future-event-supersedes-reported-quarter):
+ * pre-split, a "+ Add ticker" row up to CLUSTER_PROXIMITY_DAYS from the real
+ * print joined its cluster and won rung 1, superseding the reported quarter and
+ * migrating its actual/reaction/sent-email audit rows onto the future event —
+ * deleting the phantom then destroyed the audit trail via ON DELETE CASCADE.
+ *
+ * Split such a cluster in two: the reported rows resolve on their own (rung 2
+ * keeps the print canonical with all its data), and the manual row anchors the
+ * remaining future rows as its own event. Mirrors correctEarningsEventDate's
+ * refusal to touch rows with captured actuals. A manual row that IS the
+ * reported print (verifier/user correction post-print) keeps the whole cluster.
+ */
+function splitReportedFromManualCluster(
+  cluster: EarningsRow[],
+  today: string,
+): EarningsRow[][] {
+  const manual = cluster.find(
+    (r) => r.source === "manual" || r.date_status === "user_confirmed",
+  );
+  if (!manual) return [cluster];
+  const isReported = (r: EarningsRow) => r.event_date < today && hasActual(r);
+  if (isReported(manual)) return [cluster];
+  const reported = cluster.filter(isReported);
+  if (reported.length === 0) return [cluster];
+  return [reported, cluster.filter((r) => !isReported(r))];
+}
+
 /** Resolve one cluster of rows (all referring to the same reporting event). */
 function resolveCluster(rows: EarningsRow[], today: string): Resolution {
   // 1. A user-confirmed / manual row is authoritative and locked.
@@ -193,7 +222,8 @@ export function reconcileEarningsDates(
         }
       }
 
-      for (const cluster of clusters) {
+      for (const proximityCluster of clusters) {
+      for (const cluster of splitReportedFromManualCluster(proximityCluster, today)) {
         const res = resolveCluster(cluster, today);
         setCanonical.run(res.status, res.conflictWith, res.canonicalId);
         // Freshest-enriched donor first: with several superseded rows, the
@@ -217,6 +247,7 @@ export function reconcileEarningsDates(
         else if (res.status === "conflict") result.conflict++;
         else if (res.status === "single") result.single++;
         else result.userConfirmed++;
+      }
       }
     }
   });
