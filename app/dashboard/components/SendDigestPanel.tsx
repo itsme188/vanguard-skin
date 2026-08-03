@@ -41,8 +41,21 @@ export function SendDigestPanel({ onClose }: { onClose: () => void }) {
       .catch(() => {});
   }, []);
 
+  // A date-required range mode with a blank date must not send — the server
+  // silently substitutes a different window (last-24h / current Monday).
+  const missingDate =
+    emailType === "digest"
+      ? digestMode === "since_date" && !sinceDate
+      : briefingMode === "week_of" && !weekOfDate;
+
   const handleSend = useCallback(async () => {
     if (!recipient.trim()) return;
+    if (
+      (emailType === "digest" && digestMode === "since_date" && !sinceDate) ||
+      (emailType === "briefing" && briefingMode === "week_of" && !weekOfDate)
+    ) {
+      return;
+    }
     setSending(true);
     setResult(null);
 
@@ -190,7 +203,7 @@ export function SendDigestPanel({ onClose }: { onClose: () => void }) {
       <div className="flex items-center gap-3">
         <button
           onClick={handleSend}
-          disabled={sending || !recipient.trim()}
+          disabled={sending || !recipient.trim() || missingDate}
           className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-md text-sm font-medium bg-gold text-canvas hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {sending ? (
@@ -209,7 +222,11 @@ export function SendDigestPanel({ onClose }: { onClose: () => void }) {
           </span>
         )}
 
-        {!result && lastSent && (
+        {!result && missingDate && (
+          <span className="text-xs text-warn">Choose a date first</span>
+        )}
+
+        {!result && !missingDate && lastSent && (
           <span className="text-xs text-ink-faint">
             Last sent: {formatDate(lastSent)}
             {emailType === "digest" && status?.cloudDigestToday?.via === "sent" && (
