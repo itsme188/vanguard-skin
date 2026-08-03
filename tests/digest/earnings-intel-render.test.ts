@@ -29,7 +29,7 @@ const INTEL: EarningsIntelView = {
 describe("scoreboard intel rows", () => {
   it("straddle row + history row on preview", () => {
     const md = renderHeadlineTable(EVENT, "TER", "preview", INTEL);
-    expect(md).toContain("| **Expected move (options)** | ±4.8% (straddle, Jul 18 exp) | — | — |");
+    expect(md).toContain("| **Expected move** | ±4.8% (straddle, Jul 18 exp) | — | — |");
     expect(md).toContain("| **Avg move last 8 prints** | ±3.2% · beat 6/8 | — | — |");
   });
   it("IV-approx renders the ~ label", () => {
@@ -56,12 +56,12 @@ describe("scoreboard intel rows", () => {
   it("missing intel renders dashes and stays 8 rows", () => {
     const md = renderHeadlineTable(EVENT, "TER", "preview",
       { ...INTEL, impliedMovePct: null, impliedMethod: null, summary: { avgAbsMovePct: null, beatCount: 0, missCount: 0, quarterCount: 0 } });
-    expect(md).toContain("| **Expected move (options)** | — | — | — |");
+    expect(md).toContain("| **Expected move** | — | — | — |");
     expect(md).toContain("| **Avg move last 8 prints** | — | — | — |");
   });
   it("undefined intel (no cache at all) keeps rows with dashes", () => {
     const md = renderHeadlineTable(EVENT, "TER", "preview", null);
-    expect(md).toContain("| **Expected move (options)** | — | — | — |");
+    expect(md).toContain("| **Expected move** | — | — | — |");
   });
   it("recap echoes implied vs realized with inside/outside verdict", () => {
     // Real reaction_snapshot shape (see readReactionDelta / ReactionSnapshot):
@@ -73,7 +73,7 @@ describe("scoreboard intel rows", () => {
       }),
     };
     const md = renderHeadlineTable(recapEvent, "TER", "recap", INTEL);
-    expect(md).toContain("**Expected move (options)**");
+    expect(md).toContain("**Expected move**");
     expect(md).toMatch(/±4\.8% \(straddle.*\|.*7\.2%.*\|.*outside/);
   });
 });

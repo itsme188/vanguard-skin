@@ -187,7 +187,7 @@ export interface SnapshotBogey {
  *   v10 — adds readThroughPairs (#13 read-through push at print)
  *   v9 — adds earningsIntel (implied move per upcoming event) + earningsHistory
  *        (per-symbol surprise/reaction history) so the cloud scoreboard can
- *        render the same "Expected move (options)" / "Avg move last 8 prints"
+ *        render the same "Expected move" / "Avg move last 8 prints"
  *        rows as the Mac composer, with an as-of label since the cloud copy
  *        can be hours stale
  *
