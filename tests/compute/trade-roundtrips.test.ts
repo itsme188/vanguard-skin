@@ -26,7 +26,15 @@ function createTestDb(): Database.Database {
       symbol TEXT NOT NULL UNIQUE,
       name TEXT,
       security_type TEXT DEFAULT 'stock',
-      multiplier REAL DEFAULT 1
+      multiplier REAL DEFAULT 1,
+      currency TEXT DEFAULT 'USD'
+    );
+
+    CREATE TABLE fx_rates (
+      currency TEXT PRIMARY KEY,
+      usd_per_unit REAL NOT NULL,
+      as_of TEXT,
+      source TEXT
     );
 
     CREATE TABLE transactions (
@@ -947,5 +955,115 @@ describe("computeGroupedSummary", () => {
     const summary = computeGroupedSummary(grouped);
     // (31 + 10) / 2 = 20.5
     expect(summary.avgHoldingDays).toBeCloseTo(20.5);
+  });
+});
+
+describe("foreign-currency conversion (fx_rates)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+    // Korean listing priced in KRW (the 402340 trap: native prices read as USD)
+    db.exec(
+      "INSERT INTO securities (id, symbol, name, currency) VALUES (4, '402340', 'SK Square', 'KRW')"
+    );
+    db.exec(
+      "INSERT INTO securities (id, symbol, name, currency) VALUES (5, '005930', 'Samsung', 'KRW')"
+    );
+  });
+
+  it("converts all dollar fields to USD via fx_rates for a foreign-currency security", () => {
+    db.exec(
+      "INSERT INTO fx_rates (currency, usd_per_unit, as_of, source) VALUES ('KRW', 0.0007, '2026-07-10', 'ibkr_ledger')"
+    );
+    addRoundTrip(db, {
+      accountId: 1,
+      securityId: 4,
+      acquisitionDate: "2026-07-01",
+      saleDate: "2026-07-16",
+      quantity: 10,
+      acquisitionPrice: 1632000,
+      salePrice: 1190000,
+    });
+
+    const trips = getRoundTrips(db, 1, "2026-07-01", "2026-07-31");
+    expect(trips).toHaveLength(1);
+    const t = trips[0];
+    // native: cost 16,320,000 / proceeds 11,900,000 / pnl -4,420,000
+    expect(t.entryCost).toBeCloseTo(16320000 * 0.0007, 2);
+    expect(t.exitProceeds).toBeCloseTo(11900000 * 0.0007, 2);
+    expect(t.realizedPnl).toBeCloseTo(-4420000 * 0.0007, 2);
+    expect(t.entryPrice).toBeCloseTo(1632000 * 0.0007, 2);
+    expect(t.exitPrice).toBeCloseTo(1190000 * 0.0007, 2);
+    // percent return is currency-invariant
+    expect(t.returnPct).toBeCloseTo((-4420000 / 16320000) * 100, 4);
+    expect(t.usdPerUnit).toBeCloseTo(0.0007);
+  });
+
+  it("leaves USD securities untouched (rate 1)", () => {
+    addRoundTrip(db, {
+      accountId: 1,
+      securityId: 1,
+      acquisitionDate: "2026-07-01",
+      saleDate: "2026-07-16",
+      quantity: 10,
+      acquisitionPrice: 100,
+      salePrice: 110,
+    });
+    const trips = getRoundTrips(db, 1, "2026-07-01", "2026-07-31");
+    expect(trips[0].realizedPnl).toBeCloseTo(100);
+    expect(trips[0].entryCost).toBeCloseTo(1000);
+    expect(trips[0].usdPerUnit).toBe(1);
+  });
+
+  it("never fabricates a rate — foreign currency with no fx_rates row stays at 1", () => {
+    addRoundTrip(db, {
+      accountId: 1,
+      securityId: 5,
+      acquisitionDate: "2026-07-01",
+      saleDate: "2026-07-16",
+      quantity: 5,
+      acquisitionPrice: 60000,
+      salePrice: 66000,
+    });
+    const trips = getRoundTrips(db, 1, "2026-07-01", "2026-07-31");
+    expect(trips[0].realizedPnl).toBeCloseTo(30000);
+    expect(trips[0].usdPerUnit).toBe(1);
+  });
+
+  it("summary aggregates mix converted foreign and USD trades in one unit", () => {
+    db.exec(
+      "INSERT INTO fx_rates (currency, usd_per_unit) VALUES ('KRW', 0.0007)"
+    );
+    addRoundTrip(db, {
+      accountId: 1,
+      securityId: 4,
+      acquisitionDate: "2026-07-01",
+      saleDate: "2026-07-16",
+      quantity: 10,
+      acquisitionPrice: 1632000,
+      salePrice: 1190000,
+    });
+    addRoundTrip(db, {
+      accountId: 1,
+      securityId: 1,
+      acquisitionDate: "2026-07-02",
+      saleDate: "2026-07-20",
+      quantity: 10,
+      acquisitionPrice: 100,
+      salePrice: 150,
+    });
+
+    const grouped = computeGroupedTrades(
+      getRoundTrips(db, 1, "2026-07-01", "2026-07-31")
+    );
+    const summary = computeGroupedSummary(grouped);
+    // KRW trade: -4,420,000 * 0.0007 = -3,094 USD; AAPL trade: +500 USD
+    expect(summary.totalRealizedPnl).toBeCloseTo(-3094 + 500, 2);
+    expect(summary.worstTradePnl).toBeCloseTo(-3094, 2);
+    expect(summary.worstTradeSymbol).toBe("402340");
+    // grouped trade carries the rate for native-price consumers (market context)
+    const krw = grouped.find((g) => g.symbol === "402340")!;
+    expect(krw.usdPerUnit).toBeCloseTo(0.0007);
   });
 });
