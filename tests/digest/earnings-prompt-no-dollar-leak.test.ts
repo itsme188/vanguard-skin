@@ -213,7 +213,7 @@ describe("earnings prompt position-block — no $ amount leaks", () => {
     expect(block).not.toContain("500");
   });
 
-  it("recap prompt §5 says 'percentage P&L impact' not '$ P&L impact'", () => {
+  it("recap prompt §5 forbids inventing counts/dollar exposure and stays in % terms", () => {
     const ctx: EarningsRecapContext = {
       ...makeStockPositionCtx(),
       reactionSnapshotMarkdown: null,
@@ -221,10 +221,12 @@ describe("earnings prompt position-block — no $ amount leaks", () => {
       callNote: null,
     };
     const prompt = renderRecapPrompt(ctx);
-    expect(prompt).toMatch(/\*\*percentage\*\* P&L impact/);
+    expect(prompt).toContain("in percentage terms only");
     expect(prompt).toContain(
-      "do NOT multiply position counts by underlying prices",
+      "never estimate or invent share counts, contract counts, or dollar exposure",
     );
+    // The old phrasing implied position counts still exist in the prompt.
+    expect(prompt).not.toContain("do NOT multiply position counts");
   });
 
   it("combined-exposure summary carries presence flags, no counts or notional language", () => {
