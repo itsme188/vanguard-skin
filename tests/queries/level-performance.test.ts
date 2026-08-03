@@ -344,4 +344,35 @@ describe("getSectorEtfGaps", () => {
     const rows = getSectorEtfGaps(db);
     expect(rows.map((r) => r.symbol)).toEqual(["BETA", "GAMMA", "ACME"]);
   });
+
+  it("aggregates NULL-sector duplicate rows into one entry (PK never conflicts on NULL)", () => {
+    // The write-side upsert keys on (symbol, sector); SQLite treats NULLs as
+    // DISTINCT in the primary key, so each enrichment tick inserts a fresh
+    // count=1 row for the same unmapped symbol. The read must collapse them.
+    db.prepare(
+      `INSERT INTO sector_etf_gaps (symbol, sector, count, first_seen_at, last_seen_at)
+       VALUES ('DUPE', null, 1, '2026-04-20 10:00:00', '2026-04-20 10:00:00')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO sector_etf_gaps (symbol, sector, count, first_seen_at, last_seen_at)
+       VALUES ('DUPE', null, 1, '2026-04-21 10:00:00', '2026-04-21 10:00:00')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO sector_etf_gaps (symbol, sector, count, first_seen_at, last_seen_at)
+       VALUES ('DUPE', null, 1, '2026-04-22 10:00:00', '2026-04-22 10:00:00')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO sector_etf_gaps (symbol, sector, count, first_seen_at, last_seen_at)
+       VALUES ('OTHER', 'Energy', 2, '2026-04-19 10:00:00', '2026-04-19 10:00:00')`,
+    ).run();
+
+    const rows = getSectorEtfGaps(db);
+    expect(rows).toHaveLength(2);
+    const dupe = rows.find((r) => r.symbol === "DUPE")!;
+    expect(dupe.count).toBe(3);
+    expect(dupe.first_seen_at).toBe("2026-04-20 10:00:00");
+    expect(dupe.last_seen_at).toBe("2026-04-22 10:00:00");
+    // aggregated count ranks above the untouched (symbol, sector) row
+    expect(rows[0].symbol).toBe("DUPE");
+  });
 });

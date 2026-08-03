@@ -368,9 +368,9 @@ function AlertsPageInner() {
     }
   }
 
-  async function runSuggest(alertId?: number) {
+  async function runSuggest(alertId?: number, opts?: { silent?: boolean }) {
     setSuggesting(true);
-    setActionStatus(null);
+    if (!opts?.silent) setActionStatus(null);
     try {
       const res = await fetch("/api/alerts/suggest", {
         method: "POST",
@@ -378,6 +378,12 @@ function AlertsPageInner() {
         body: JSON.stringify(alertId ? { alertId } : {}),
       });
       const json = await res.json();
+      // The page-load auto-fill path is fire-and-forget: no banner on success
+      // OR failure — only a user-clicked Suggest all reports its outcome.
+      if (opts?.silent) {
+        await refresh();
+        return;
+      }
       if (json.success && !alertId) {
         const { generated, failed } = json as { generated?: number; failed?: number };
         if (generated !== undefined) {
@@ -401,7 +407,7 @@ function AlertsPageInner() {
       (a) => a.user_response === "pending" && !a.suggested_action
     );
     if (needsSuggestion && !suggesting) {
-      runSuggest();
+      runSuggest(undefined, { silent: true });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [alerts.length]);

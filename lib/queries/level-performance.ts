@@ -210,10 +210,19 @@ export interface SectorEtfGap {
 }
 
 export function getSectorEtfGaps(db: Database.Database): SectorEtfGap[] {
+  // The write-side upsert keys on PRIMARY KEY (symbol, sector), and SQLite
+  // treats NULLs as DISTINCT there — a NULL-sector symbol gains a fresh
+  // count=1 row per enrichment tick instead of incrementing. Aggregate at
+  // read time (GROUP BY treats NULLs as EQUAL) so duplicates collapse and
+  // the most common unmapped symbols actually rise to the top.
   return db
     .prepare(
-      `SELECT symbol, sector, first_seen_at, last_seen_at, count
+      `SELECT symbol, sector,
+              MIN(first_seen_at) AS first_seen_at,
+              MAX(last_seen_at) AS last_seen_at,
+              SUM(count) AS count
        FROM sector_etf_gaps
+       GROUP BY symbol, sector
        ORDER BY count DESC, last_seen_at DESC`,
     )
     .all() as SectorEtfGap[];
