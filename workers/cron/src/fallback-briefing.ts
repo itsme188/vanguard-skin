@@ -162,10 +162,10 @@ export function renderBriefingHoldings(snapshot: Snapshot): string {
   if (holdings && holdings.length > 0) {
     return holdings
       .map((h) => {
+        // Direction only — no share count (2026-08-02, mirrors the Mac's
+        // formatHoldingsList: count × public price reconstructs $ exposure).
         const shortSuffix =
-          h.netQty < 0
-            ? ` — NET SHORT ${Math.abs(h.netQty)} (cross-account net)`
-            : "";
+          h.netQty < 0 ? ` — NET SHORT (cross-account net)` : "";
         return `${h.symbol} (${h.name ?? "unknown"}, ${h.sector ?? "N/A"})${shortSuffix}`;
       })
       .join("\n");

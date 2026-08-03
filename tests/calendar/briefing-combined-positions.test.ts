@@ -199,7 +199,10 @@ describe("buildCombinedPositionsForEvents", () => {
 });
 
 describe("formatCombinedPosition", () => {
-  it("formats a stock+option combined position WITHOUT mkt val ($-amount stripped per 2026-05-12)", () => {
+  // 2026-08-02: direction-only — share/contract counts AND fractional-share
+  // fingerprints removed (count x public price reconstructs $ exposure in a
+  // cc'd email). Same idiom as lib/digest/presence-only-position.ts.
+  it("formats a stock+option combined position with no counts and no mkt val", () => {
     const cp: CombinedPosition = {
       family: ["GOOG", "GOOGL"],
       stockPositions: [
@@ -218,14 +221,16 @@ describe("formatCombinedPosition", () => {
       ],
     };
     const out = formatCombinedPosition(cp);
-    expect(out).toContain("65.50 sh GOOG");
+    expect(out).toContain("long GOOG (Vanguard)");
+    expect(out).not.toContain("65.5"); // fractional share count = fingerprint
+    expect(out).not.toContain("sh ");
     expect(out).not.toContain("mkt val");
     expect(out).not.toMatch(/\$\d{1,3}(,\d{3})+/); // no comma-grouped $ values
-    expect(out).toContain("1 long GOOGL 2027-01-15 $220 CALL (Vanguard)");
+    expect(out).toContain("long GOOGL $220 calls exp 2027-01-15 (Vanguard)");
     expect(out).toContain(" + ");
   });
 
-  it("renders integer share counts cleanly", () => {
+  it("stock lines carry no digits at all", () => {
     const cp: CombinedPosition = {
       family: ["AMZN"],
       stockPositions: [
@@ -234,11 +239,11 @@ describe("formatCombinedPosition", () => {
       optionPositions: [],
     };
     const out = formatCombinedPosition(cp);
-    expect(out).toContain("105 sh AMZN");
-    expect(out).not.toContain("105.00");
+    expect(out).toBe("long AMZN (Vanguard)");
+    expect(out).not.toMatch(/\d/);
   });
 
-  it("renders SHORT stock with 'short' prefix", () => {
+  it("renders SHORT stock with direction only", () => {
     const cp: CombinedPosition = {
       family: ["META"],
       stockPositions: [
@@ -247,15 +252,11 @@ describe("formatCombinedPosition", () => {
       optionPositions: [],
     };
     const out = formatCombinedPosition(cp);
-    // formatQty preserves the sign on stocks; the helper also adds "short"
-    // prefix. We assert presence of both signals — exact format is "−200 sh
-    // short META" or similar; what matters is "short" appears AND no $ leaks.
-    expect(out).toContain("short");
-    expect(out).toContain("META");
-    expect(out).not.toContain("mkt val");
+    expect(out).toBe("short META (IBKR)");
+    expect(out).not.toContain("200");
   });
 
-  it("renders SHORT options correctly", () => {
+  it("renders SHORT options without a contract count", () => {
     const cp: CombinedPosition = {
       family: ["MSFT"],
       stockPositions: [],
@@ -272,7 +273,8 @@ describe("formatCombinedPosition", () => {
       ],
     };
     const out = formatCombinedPosition(cp);
-    expect(out).toContain("2 short MSFT");
+    expect(out).toBe("short MSFT $450 calls exp 2026-05-16 (IBKR)");
+    expect(out).not.toContain("2 short");
   });
 
   it("does not emit mkt val even when latestClose is populated (privacy boundary)", () => {
@@ -284,7 +286,7 @@ describe("formatCombinedPosition", () => {
       optionPositions: [],
     };
     const out = formatCombinedPosition(cp);
-    expect(out).toContain("10 sh XYZ");
+    expect(out).toBe("long XYZ (IBKR)");
     expect(out).not.toContain("mkt val");
     expect(out).not.toContain("$12,345");
     expect(out).not.toContain("$123,456");

@@ -192,7 +192,11 @@ describe("runFallbackBriefing", () => {
 
     const prompt = promptOfLastGenerate();
     expect(prompt).toContain("AAPL (Apple Inc, Technology)");
-    expect(prompt).toContain("TSLA (Tesla Inc, Consumer Discretionary) — NET SHORT 25");
+    // 2026-08-02: direction flag only — no share count in outbound email.
+    expect(prompt).toContain(
+      "TSLA (Tesla Inc, Consumer Discretionary) — NET SHORT (cross-account net)",
+    );
+    expect(prompt).not.toContain("NET SHORT 25");
   });
 
   it("degrades to the heldSymbols flat list when briefingHoldings is absent (pre-v7 snapshot)", async () => {

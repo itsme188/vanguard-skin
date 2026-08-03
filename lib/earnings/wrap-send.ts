@@ -1,8 +1,11 @@
 /**
  * RETIRED from the sweep 2026-08-02 — the EOD wrap was replaced by the 7:45
- * ET morning debrief (lib/earnings/debrief-send.ts). Kept: the Worker
- * fallback mirrors these deadline constants (parity-pinned) and covers a Mac
- * asleep overnight; delete only together with the Worker path.
+ * ET morning debrief (lib/earnings/debrief-send.ts). The Worker's wrap-send
+ * fallback is ALSO retired (2026-08-02 evening, suppress-but-never-send —
+ * heavy-night names roll into the next Mac debrief instead of a cloud
+ * staple). Kept: the Worker still mirrors the wrap constants + slot
+ * classifier for cluster SUPPRESSION (parity-pinned via
+ * workers/cron/test/wrap-parity.test.ts); delete only together with that.
  *
  * EOD earnings-wrap SEND (#17 Task 2) — the action half of the wrap feature
  * whose pure cluster decisions live in lib/earnings/wrap.ts.

@@ -488,11 +488,12 @@ function getExpiringOptions(
 }
 
 function formatOptionForPrompt(o: ExpiringOption, index: number): string {
+  // Direction-only (2026-08-02): no contract count — count × public premium
+  // reconstructs $ exposure in a cc'd email. Strike/expiry stay (public).
   const side = (o.quantity ?? 0) > 0 ? "LONG" : "SHORT";
-  const qty = Math.abs(o.quantity);
   const strike = o.strike_price != null ? `$${o.strike_price}` : "?";
   const type = o.option_type ?? "?";
-  return `${index}. **${o.underlying_symbol ?? o.symbol}** ${type} ${strike} exp ${o.expiration_date} — ${side} ${qty} contract${qty === 1 ? "" : "s"} in ${o.account_name}`;
+  return `${index}. **${o.underlying_symbol ?? o.symbol}** ${type} ${strike} exp ${o.expiration_date} — ${side} in ${o.account_name}`;
 }
 
 // ── Macro-exposure helpers ─────────────────────────────────────────
@@ -736,10 +737,10 @@ export function formatHoldingsList(
       const priceSuffix = p
         ? ` — last $${p.close.toFixed(2)} (${p.date})`
         : ` — no recent price`;
+      // Direction only — no share count (2026-08-02: count × public price
+      // reconstructs exact $ exposure in a cc'd email).
       const directionSuffix =
-        h.net_qty < 0
-          ? ` — NET SHORT ${Math.abs(h.net_qty)} (cross-account net)`
-          : "";
+        h.net_qty < 0 ? ` — NET SHORT (cross-account net)` : "";
       return `${h.symbol} (${h.name ?? "unknown"}, ${h.sector ?? "N/A"})${directionSuffix}${priceSuffix}`;
     })
     .join("\n");
@@ -841,36 +842,35 @@ export function buildCombinedPositionsForEvents(
 }
 
 export function formatCombinedPosition(cp: CombinedPosition): string {
-  // Presence-only rendering: never include the position's mkt val in $ —
-  // outbound emails are shared with cc recipients per 2026-05-12 design
-  // decision. Strike + expiry + qty + direction stay visible (public-market
-  // metadata + ownership disclosure); what stays hidden is the dollar
-  // exposure derivable from qty × price. Briefing CombinedPosition lacks
-  // cost_basis, so relative-% returns are not available here (only the
-  // earnings emails carry that data) — emit ownership-only.
+  // Direction-only rendering (2026-08-02, supersedes the 2026-05-12
+  // presence-with-counts direction): outbound emails are shared with cc
+  // recipients and share/contract count × public price reconstructs the
+  // exact dollar exposure — counts were never presence-only (a fractional
+  // "637.42 sh" was even a uniquely identifying fingerprint). Only
+  // direction, symbol, account, and option strike/expiry (public market
+  // data) remain — same idiom as lib/digest/presence-only-position.ts.
   const parts: string[] = [];
   for (const s of cp.stockPositions) {
-    const side = s.quantity < 0 ? "short " : "";
-    parts.push(
-      `${formatQty(s.quantity)} sh ${side}${s.symbol} (${s.account})`,
-    );
+    const side = s.quantity < 0 ? "short" : "long";
+    parts.push(`${side} ${s.symbol} (${s.account})`);
   }
   for (const o of cp.optionPositions) {
     const side = o.quantity > 0 ? "long" : "short";
-    const qty = Math.abs(o.quantity);
     const strike = o.strike != null ? `$${o.strike}` : "?";
     parts.push(
-      `${qty} ${side} ${o.underlying} ${o.expiry} ${strike} ${o.optionType ?? "?"} (${o.account})`,
+      `${side} ${o.underlying} ${strike} ${pluralOptionRight(o.optionType)} exp ${o.expiry} (${o.account})`,
     );
   }
   return parts.join(" + ");
 }
 
-function formatQty(q: number): string {
-  // Integer-quantity stocks render cleanly; fractional shares (Vanguard
-  // dividend-reinvest etc.) get two decimals.
-  if (Number.isInteger(q)) return q.toString();
-  return q.toFixed(2);
+/** "CALL" → "calls", "PUT" → "puts"; unknown right → "?" (never invent one). */
+function pluralOptionRight(optionType: string | null | undefined): string {
+  if (!optionType) return "?";
+  const t = optionType.toLowerCase();
+  if (t === "call") return "calls";
+  if (t === "put") return "puts";
+  return t;
 }
 
 // ── Current-prices helpers ─────────────────────────────────────────
