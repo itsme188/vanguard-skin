@@ -26,6 +26,10 @@
  * instant a pending migration exists (this branch's own opening commit
  * ships migration 075, which drops two columns). The dry-run reads in
  * steps 1/3 don't depend on any pending migration being applied first.
+ * The call is ALSO placed AFTER step 2's backup succeeds (not immediately
+ * on DB open) — an apply run whose backup step fails must never have
+ * already migrated the schema; "abort HARD if backup fails" (step 2's
+ * comment) only actually holds if nothing else has mutated the DB first.
  *
  * NEVER proceeds past step 2 without a verified backup.
  *
@@ -334,14 +338,6 @@ async function main() {
   const db: Database.Database = new Database(dbPath);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
-  // Gated on --apply: a dry run must never write to the live DB, and
-  // runMigrations() applies any pending migration immediately (this
-  // branch's own opening commit ships migration 075, which drops two
-  // columns). Steps 1 and 3's reads (file preflight, batch-17 count) don't
-  // depend on any pending migration having run.
-  if (apply) {
-    runMigrations(db);
-  }
 
   // ── Step 2: backup ─────────────────────────────────────────────
   console.log("\n[2/8] Backing up database...");
@@ -359,6 +355,17 @@ async function main() {
     );
     db.close();
     process.exit(1);
+  }
+
+  // Gated on --apply, and deliberately placed AFTER the backup above
+  // succeeds: a dry run must never write to the live DB, and
+  // runMigrations() applies any pending migration immediately (this
+  // branch's own opening commit ships migration 075, which drops two
+  // columns) — an apply run whose backup step fails must never have
+  // already migrated the schema. Steps 1 and 3's reads (file preflight,
+  // batch-17 count) don't depend on any pending migration having run.
+  if (apply) {
+    runMigrations(db);
   }
 
   // ── Step 3: batch-17 sanity gate ───────────────────────────────

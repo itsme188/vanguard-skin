@@ -47,6 +47,34 @@ describe("ibkr-activity Transfers section", () => {
     expect(sqqqSec!.securityType).toBe("Stock");
   });
 
+  it("produces no warnings for an ordinary Stocks + Cash + Total transfers block", () => {
+    const withCash =
+      "Transfers,Header,Asset Category,Currency,Account,Symbol,Date,Type,Direction,Xfer Company,Xfer Account,Qty,Xfer Price,Market Value,Realized P/L,Cash Amount,Code\n" +
+      'Transfers,Data,Stocks,USD,U13643679,ABC,2024-06-01,ACATS,Out,--,999,100,--,"1,000.00",0.00,0.00,\n' +
+      "Transfers,Data,Cash,USD,U13643679,,2024-06-01,ACATS,In,--,999,,,,,500.00,\n" +
+      "Transfers,Data,Total,,,,,,,,,,,1000,0,0,\n";
+    const result = parseIbkrActivity(HEADER + withCash, "test.csv");
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it("warns (but doesn't drop the row silently) on a non-Stocks, non-Cash transfer leg it can't yet convert", () => {
+    // A hypothetical Bonds ACATS leg — not yet handled by this parser (only
+    // "Stocks" legs become TRANSFER_IN/TRANSFER_OUT). Must surface a warning
+    // instead of vanishing without a trace.
+    const bondLeg =
+      "Transfers,Header,Asset Category,Currency,Account,Symbol,Date,Type,Direction,Xfer Company,Xfer Account,Qty,Xfer Price,Market Value,Realized P/L,Cash Amount,Code\n" +
+      'Transfers,Data,Bonds,USD,U13643679,912828XX1,2024-06-01,ACATS,In,--,999,10,--,"9,800.00",0.00,0.00,\n' +
+      "Transfers,Data,Total,,,,,,,,,,,9800,0,0,\n";
+    const result = parseIbkrActivity(HEADER + bondLeg, "test.csv");
+
+    const xfers = result.transactions.filter((t) => t.type.startsWith("TRANSFER"));
+    expect(xfers).toHaveLength(0);
+
+    expect(
+      result.warnings.some((w) => w.includes("Bonds") && w.includes("912828XX1"))
+    ).toBe(true);
+  });
+
   describe("commitImport integration", () => {
     let db: Database.Database;
 
