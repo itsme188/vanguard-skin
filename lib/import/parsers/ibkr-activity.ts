@@ -137,6 +137,20 @@ export function parseIbkrActivity(
   const errors: string[] = [];
   const warnings: string[] = [];
 
+  // Tracks how many times each base source_key has appeared in THIS file, so
+  // two genuinely identical fills (same date/symbol/qty/proceeds — annual
+  // statements with 1,736 trade rows raise the odds) get a stable
+  // disambiguating suffix instead of the second silently dropping at commit
+  // via INSERT OR IGNORE. Mirrors the canonical-csv `:#N` convention: the
+  // first occurrence keeps the bare key (idempotent with historical imports),
+  // the Nth identical key gets `:#N` appended (N starting at 2).
+  const seenKeys = new Map<string, number>();
+  const uniqueKey = (base: string): string => {
+    const n = (seenKeys.get(base) ?? 0) + 1;
+    seenKeys.set(base, n);
+    return n === 1 ? base : `${base}:#${n}`;
+  };
+
   // Parse Change in NAV for snapshot
   let startingValue = 0;
   let markToMarket = 0;
@@ -268,7 +282,9 @@ export function parseIbkrActivity(
           amount: proceeds,
           pricePerShare: tradePrice,
           fees: Math.abs(commFee),
-          sourceKey: `ibkr:trade:${tradeDate}:${effectiveSymbol}:${quantity}:${proceeds}`,
+          sourceKey: uniqueKey(
+            `ibkr:trade:${tradeDate}:${effectiveSymbol}:${quantity}:${proceeds}`
+          ),
         });
 
         securitiesMap.set(effectiveSymbol, {
@@ -291,7 +307,9 @@ export function parseIbkrActivity(
           amount: proceeds,
           pricePerShare: tradePrice,
           fees: Math.abs(commFee),
-          sourceKey: `ibkr:trade:${tradeDate}:${symbol}:${quantity}:${proceeds}`,
+          sourceKey: uniqueKey(
+            `ibkr:trade:${tradeDate}:${symbol}:${quantity}:${proceeds}`
+          ),
         });
 
         securitiesMap.set(symbol, {
@@ -340,7 +358,7 @@ export function parseIbkrActivity(
       amount: marketValue,
       pricePerShare: isNaN(marketValue) ? undefined : marketValue / qty,
       fees: 0,
-      sourceKey: `ibkr:xfer:${date}:${symbol}:${qty}:${direction}`,
+      sourceKey: uniqueKey(`ibkr:xfer:${date}:${symbol}:${qty}:${direction}`),
     });
     securitiesMap.set(symbol, { symbol, securityType: "Stock" });
   }
