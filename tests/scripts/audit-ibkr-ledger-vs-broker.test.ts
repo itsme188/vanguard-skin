@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { auditLedgerVsBroker } from "@/scripts/audit-ibkr-ledger-vs-broker";
@@ -30,21 +30,25 @@ function ensureSecurity(db: Database.Database, symbol: string): number {
 let txnCounter = 0;
 
 /** Inserts one transaction row with an auto-generated unique source_key
- * (transactions.source_key is UNIQUE) — quantity/type/trade_date are the
- * only columns the audit reads. */
+ * (transactions.source_key is UNIQUE) — quantity/type/trade_date/
+ * price_per_share are the only columns the audit reads. `price` defaults to
+ * a non-NULL placeholder (1) so every pre-existing call site satisfies the
+ * engine's NULL-price guards without having to be touched; pass `null`
+ * explicitly to exercise the NULL-price exclusion path. */
 function txn(
   db: Database.Database,
   accountId: number,
   securityId: number,
   tradeDate: string,
   type: string,
-  quantity: number
+  quantity: number,
+  price: number | null = 1
 ): void {
   txnCounter++;
   db.prepare(
-    `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, source_key)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(accountId, securityId, tradeDate, type, quantity, `test:txn:${txnCounter}`);
+    `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, price_per_share, source_key)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(accountId, securityId, tradeDate, type, quantity, price, `test:txn:${txnCounter}`);
 }
 
 /** Inserts one broker-shaped holdings row. Caller controls the source_key
@@ -221,6 +225,101 @@ describe("auditLedgerVsBroker", () => {
     db.prepare("DELETE FROM accounts WHERE name = 'IBKR'").run();
     const r = auditLedgerVsBroker(db);
     expect(r).toEqual({ pairs: 0, clean: 0, gapped: [] });
+  });
+
+  it("ignores a NULL-priced buy-type row from the ledger sum (mirrors the engine's lot-creation guard)", () => {
+    const ibkr = getIbkrAccountId(db);
+    const sym = ensureSecurity(db, "NULLPX");
+
+    // Priced buy — the only row computeTaxLots would actually turn into a
+    // tax lot (its buy query requires price_per_share IS NOT NULL).
+    txn(db, ibkr, sym, "2026-01-01", "BUY", 100, 10);
+
+    // NULL-priced TRANSFER_IN (mirrors the live DB's CASH-symbol rows) —
+    // must NOT contribute to the ledger sum. If it did, the broker row
+    // below (100) would show a -5 gap instead of reconciling.
+    txn(db, ibkr, sym, "2026-01-15", "TRANSFER_IN", 5, null);
+
+    holding(db, ibkr, sym, 100, "2026-03-01", `tws-${ibkr}-${sym}-2026-03-01`);
+
+    const r = auditLedgerVsBroker(db);
+
+    expect(r.gapped).toHaveLength(0); // clean ONLY because the NULL row is ignored
+    expect(r.clean).toBe(1);
+  });
+
+  it("ignores a NULL-priced sell-type row unless it's in the zero-price-close trio", () => {
+    const ibkr = getIbkrAccountId(db);
+    const sym = ensureSecurity(db, "NULLSELL");
+
+    txn(db, ibkr, sym, "2026-01-01", "BUY", 100, 10);
+    // NULL-priced SELL is not one of the zero-price-close types (expired/
+    // exercised/assigned) — computeTaxLots's sell query would exclude it,
+    // so this audit must too, or the ledger sum would read 60 instead of
+    // 100 and falsely report a gap against the broker's 100.
+    txn(db, ibkr, sym, "2026-01-20", "SELL", 40, null);
+    holding(db, ibkr, sym, 100, "2026-03-01", `tws-${ibkr}-${sym}-2026-03-01`);
+
+    const r = auditLedgerVsBroker(db);
+
+    expect(r.gapped).toHaveLength(0);
+    expect(r.clean).toBe(1);
+  });
+
+  it("still counts a NULL-priced EXPIRED/EXERCISED/ASSIGNED row (the zero-price-close exemption)", () => {
+    const ibkr = getIbkrAccountId(db);
+    const sym = ensureSecurity(db, "OPTEXP");
+
+    txn(db, ibkr, sym, "2026-01-01", "BUY_TO_OPEN", 10, 2);
+    // EXPIRED closes at $0 — NULL price is EXPECTED here, and the engine
+    // still processes it (computeTaxLots's `isZeroPriceClose` branch).
+    txn(db, ibkr, sym, "2026-02-01", "EXPIRED", 10, null);
+    holding(db, ibkr, sym, 0, "2026-03-01", `tws-${ibkr}-${sym}-2026-03-01`);
+
+    const r = auditLedgerVsBroker(db);
+
+    expect(r.gapped).toHaveLength(0);
+    expect(r.clean).toBe(1);
+  });
+
+  it("ignores RECONCILE_CLOSE rows entirely (engine-owned synthetic; must never move the ledger sum)", () => {
+    const ibkr = getIbkrAccountId(db);
+    const sym = ensureSecurity(db, "RCLOSE");
+
+    txn(db, ibkr, sym, "2026-01-01", "BUY", 100);
+    // Engine-owned synthetic close (computeTaxLots's own reconciliation
+    // pass writes these) — must NOT subtract from the ledger sum. If it
+    // did, this pair would show a spurious -100 gap against the broker's
+    // 100.
+    txn(db, ibkr, sym, "2026-02-01", "RECONCILE_CLOSE", 100);
+
+    holding(db, ibkr, sym, 100, "2026-03-01", `tws-${ibkr}-${sym}-2026-03-01`);
+
+    const r = auditLedgerVsBroker(db);
+
+    expect(r.gapped).toHaveLength(0);
+    expect(r.clean).toBe(1);
+  });
+
+  it("warns (but still resolves to the first match) when multiple accounts match name-contains-ibkr", () => {
+    const ibkr = getIbkrAccountId(db);
+    db.prepare("INSERT INTO accounts (name) VALUES ('IBKR Old')").run();
+
+    const sym = ensureSecurity(db, "MULTIACCT");
+    txn(db, ibkr, sym, "2026-01-01", "BUY", 100);
+    holding(db, ibkr, sym, 100, "2026-03-01", `tws-${ibkr}-${sym}-2026-03-01`);
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const r = auditLedgerVsBroker(db);
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toMatch(/Multiple accounts match "ibkr"/);
+    // still resolves to the original IBKR account's real data, not a
+    // silently-empty result under the ambiguity.
+    expect(r.pairs).toBe(1);
+    expect(r.clean).toBe(1);
+
+    warnSpy.mockRestore();
   });
 
   it("sorts gapped rows by |gap| descending", () => {

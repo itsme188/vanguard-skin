@@ -27,6 +27,14 @@
  * the LATEST broker row, plus the row nearest 2026-06-30 (the last date with
  * full statement coverage across every account as of the 2026-08-03 audit).
  *
+ * `tax_lot_sales` is deliberately NOT read here even though it's part of the
+ * brief's "Consumes" list: net position quantity is fully determined by
+ * summing buy-/sell-list transaction quantities directly (a straight ledger
+ * balance), and `tax_lot_sales` only carries FIFO-matched realized
+ * gain/loss detail (cost basis, proceeds, holding period) that has no
+ * bearing on position math. Reading it would mean re-deriving FIFO matching
+ * redundantly with `computeTaxLots` for no additional signal.
+ *
  * CLI usage:
  *   npx tsx scripts/audit-ibkr-ledger-vs-broker.ts                (all broker rows)
  *   npx tsx scripts/audit-ibkr-ledger-vs-broker.ts --as-of 2026-07-31   (tolerate later lag)
@@ -84,6 +92,16 @@ const SELL_TYPES = [
   "buy_to_close",
 ] as const;
 
+/**
+ * The zero-price-close trio — copied VERBATIM from `computeTaxLots`'s sell
+ * query (lib/compute/tax-lots.ts:135-137), where these three types are the
+ * ONLY sell-list types allowed to have a NULL `price_per_share` (an option
+ * closing at $0 has no real fill price to record). Every other sell-list
+ * type requires a non-NULL price to be treated as a real lot-closing
+ * transaction — see `computeLedgerQty`'s guards below.
+ */
+const ZERO_PRICE_CLOSE_TYPES = ["expired", "exercised", "assigned"] as const;
+
 // ─── Types ─────────────────────────────────────────────────────────
 
 export interface AuditLedgerOptions {
@@ -123,14 +141,25 @@ const AS_OF_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 /** Resolves the IBKR account id the same way the rest of the app does —
  * name-contains-"ibkr", case-insensitive (mirrors lib/chat/ibkr-context.ts
  * and lib/trade-review/questions.ts) rather than an exact-match on 'IBKR',
- * so a differently-cased or -suffixed account name still resolves. */
+ * so a differently-cased or -suffixed account name still resolves. Only one
+ * IBKR account is ever expected; if more than one name matches, the first
+ * (insertion order) still wins but a warning is printed so a silently wrong
+ * resolution doesn't go unnoticed. */
 function resolveIbkrAccountId(db: Database.Database): number | null {
   const accounts = db.prepare("SELECT id, name FROM accounts").all() as Array<{
     id: number;
     name: string;
   }>;
-  const ibkr = accounts.find((a) => a.name.toLowerCase().includes("ibkr"));
-  return ibkr ? ibkr.id : null;
+  const matches = accounts.filter((a) => a.name.toLowerCase().includes("ibkr"));
+  if (matches.length > 1) {
+    console.warn(
+      `[audit-ibkr-ledger-vs-broker] Multiple accounts match "ibkr" ` +
+        `(${matches.map((a) => `${a.name}#${a.id}`).join(", ")}) — using the first ` +
+        `(${matches[0].name}#${matches[0].id}). Only one IBKR account is expected; ` +
+        `investigate if this is unexpected.`
+    );
+  }
+  return matches.length > 0 ? matches[0].id : null;
 }
 
 /**
@@ -169,6 +198,21 @@ function getBrokerHoldingsRows(
  * pair. `inclusive` controls whether trades ON `asOfDate` itself count
  * (`<=`) or not (`<`) — the two calls this feeds the same-day ambiguity
  * check.
+ *
+ * Both SUM queries carry the SAME NULL guards `computeTaxLots` applies
+ * before it will create a lot / process a sale — a row the engine would
+ * silently skip must be skipped here too, or this audit "reconciles"
+ * against a ledger the engine will never actually produce:
+ *   - buy side: `price_per_share IS NOT NULL AND quantity IS NOT NULL`
+ *     (tax-lots.ts:85-86).
+ *   - sell side: `quantity IS NOT NULL AND (price_per_share IS NOT NULL OR
+ *     LOWER(type) IN (zero-price-close trio))` (tax-lots.ts:135-137).
+ * `quantity IS NOT NULL` doesn't change `SUM()`'s numeric result (SUM
+ * already ignores NULL addends) but is kept explicit for engine-parity —
+ * the point is matching WHICH ROWS are considered, not just the count.
+ * Verified live: the current DB already has NULL-priced TRANSFER_IN rows
+ * (symbol CASH) that would have silently inflated the buy sum without this
+ * guard.
  */
 function computeLedgerQty(
   db: Database.Database,
@@ -180,13 +224,15 @@ function computeLedgerQty(
   const cmp = inclusive ? "<=" : "<";
   const buyPlaceholders = BUY_TYPES.map(() => "?").join(",");
   const sellPlaceholders = SELL_TYPES.map(() => "?").join(",");
+  const zeroPriceClosePlaceholders = ZERO_PRICE_CLOSE_TYPES.map(() => "?").join(",");
 
   const buyQty = (
     db
       .prepare(
         `SELECT COALESCE(SUM(quantity), 0) AS q FROM transactions
           WHERE account_id = ? AND security_id = ? AND trade_date ${cmp} ?
-            AND LOWER(type) IN (${buyPlaceholders})`
+            AND LOWER(type) IN (${buyPlaceholders})
+            AND price_per_share IS NOT NULL AND quantity IS NOT NULL`
       )
       .get(accountId, securityId, asOfDate, ...BUY_TYPES) as { q: number }
   ).q;
@@ -196,9 +242,17 @@ function computeLedgerQty(
       .prepare(
         `SELECT COALESCE(SUM(quantity), 0) AS q FROM transactions
           WHERE account_id = ? AND security_id = ? AND trade_date ${cmp} ?
-            AND LOWER(type) IN (${sellPlaceholders})`
+            AND LOWER(type) IN (${sellPlaceholders})
+            AND quantity IS NOT NULL
+            AND (price_per_share IS NOT NULL OR LOWER(type) IN (${zeroPriceClosePlaceholders}))`
       )
-      .get(accountId, securityId, asOfDate, ...SELL_TYPES) as { q: number }
+      .get(
+        accountId,
+        securityId,
+        asOfDate,
+        ...SELL_TYPES,
+        ...ZERO_PRICE_CLOSE_TYPES
+      ) as { q: number }
   ).q;
 
   return buyQty - sellQty;
