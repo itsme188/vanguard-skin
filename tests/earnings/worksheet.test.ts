@@ -215,3 +215,38 @@ describe("worksheet flags + auto-print pass", () => {
     expect(print).not.toHaveBeenCalled();
   });
 });
+
+describe("composeWorksheet — adversarial layout invariants (review probes)", () => {
+  it("a runaway source_label never pushes the header past 80 cols", () => {
+    const text = composeWorksheet({
+      ...BASE_INPUTS,
+      expectedMove: {
+        pct: 6,
+        method: "sheet",
+        sourceLabel: "TMT Breakout weekly earnings preview special edition August 2026 extended",
+      },
+    });
+    for (const l of text.trimEnd().split("\n")) expect(l.length).toBeLessThanOrEqual(80);
+  });
+
+  it("a 60-segment JSON stays one page WITH the footer + scratch surviving", () => {
+    const segs: Record<string, { consensus: number }> = {};
+    for (let i = 0; i < 60; i++) segs[`Segment ${i}`] = { consensus: 1_000_000 };
+    const text = composeWorksheet({
+      ...BASE_INPUTS,
+      bogeys: [
+        bogey({
+          segment_breakdown_json: JSON.stringify(segs),
+          guidance_notes: "FY26 guide",
+        }),
+      ],
+    });
+    const lines = text.trimEnd().split("\n");
+    expect(lines.length).toBeLessThanOrEqual(62);
+    expect(text).toContain("GUIDANCE");
+    expect(text).toContain("SCRATCH");
+    expect(lines[lines.length - 1]).toContain("deterministic worksheet");
+    // Segments are capped, not dumped.
+    expect(text).not.toContain("Segment 9 "); // slice(0,8) keeps 0-7 only
+  });
+});

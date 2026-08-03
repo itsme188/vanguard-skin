@@ -26,11 +26,19 @@ export async function POST(request: Request) {
   if (typeof body.eventId !== "number" || !Number.isInteger(body.eventId)) {
     return Response.json({ success: false, error: "eventId must be an integer" }, { status: 400 });
   }
-  const exists = db
-    .prepare(`SELECT 1 FROM calendar_events WHERE id = ?`)
-    .get(body.eventId);
-  if (!exists) {
+  const row = db
+    .prepare(`SELECT event_type, symbol FROM calendar_events WHERE id = ?`)
+    .get(body.eventId) as { event_type: string; symbol: string | null } | undefined;
+  if (!row) {
     return Response.json({ success: false, error: `Event ${body.eventId} not found` }, { status: 404 });
+  }
+  // Worksheets are per-EARNINGS-print artifacts — a symbol-less macro row
+  // would loop fail-prints in the auto pass (loadWorksheetInputs → null).
+  if (row.event_type !== "earnings" || !row.symbol) {
+    return Response.json(
+      { success: false, error: "Worksheets are only available for symbol-bearing earnings events." },
+      { status: 400 },
+    );
   }
 
   switch (body.action) {

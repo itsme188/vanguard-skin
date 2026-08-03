@@ -99,7 +99,14 @@ export function composeWorksheet(inputs: WorksheetInputs): string {
 
   const lines: string[] = [];
   const title = `${symbol} — ${fmtShortDate(event.event_date)}${slot}`;
-  lines.push(title + move.padStart(Math.max(0, WIDTH - title.length)));
+  // Clamp: source_label is arbitrary newsletter text — padStart never
+  // truncates, and a 100-char header wraps on the printer and shoves every
+  // later line down (review probe: 104 cols).
+  const moveClamped =
+    title.length + move.length + 2 > WIDTH
+      ? move.slice(0, Math.max(0, WIDTH - title.length - 3)) + "…"
+      : move;
+  lines.push(title + moveClamped.padStart(Math.max(0, WIDTH - title.length)));
   lines.push("─".repeat(WIDTH));
 
   // Scoreboard: METRIC 24 | CONS 12 | WHISPER 12 | ACTUAL 14 | Δ 8
@@ -124,7 +131,10 @@ export function composeWorksheet(inputs: WorksheetInputs): string {
   if (segJson) {
     try {
       const segs = JSON.parse(segJson) as Record<string, { consensus?: number; whisper?: number }>;
-      for (const [name, vals] of Object.entries(segs)) {
+      // Cap: every other section is bounded (guidance 4, notes 6) — an
+      // unbounded segment dump would truncate GUIDANCE/NOTES/SCRATCH and the
+      // footer past the 62-line page (review probe: 60-segment JSON).
+      for (const [name, vals] of Object.entries(segs).slice(0, 8)) {
         lines.push(row(`  ${name}`, figure(vals.consensus ?? null, false), figure(vals.whisper ?? null, false)));
       }
     } catch {
@@ -155,10 +165,11 @@ export function composeWorksheet(inputs: WorksheetInputs): string {
   const scratchCount = Math.max(3, MAX_LINES - lines.length - 2);
   for (let i = 0; i < scratchCount; i++) lines.push(`  ${"_".repeat(WIDTH - 4)}`);
 
+  // Footer is appended AFTER the page cap so it survives any worst case.
   const src = bogeys.find((b) => b.source_label)?.source_label;
-  lines.push(pad(`[${src ? `bogeys: ${src} · ` : ""}deterministic worksheet]`, WIDTH));
-
-  return lines.slice(0, MAX_LINES).join("\n") + "\n";
+  const body = lines.slice(0, MAX_LINES - 1);
+  body.push(pad(`[${src ? `bogeys: ${src} · ` : ""}deterministic worksheet]`, WIDTH));
+  return body.join("\n") + "\n";
 }
 
 /** Assemble WorksheetInputs from the DB for one event. */
@@ -206,11 +217,31 @@ export function printViaLp(
     if (opts.title) args.push("-t", opts.title);
     const child = spawn("lp", args, { stdio: ["pipe", "ignore", "pipe"] });
     let stderr = "";
+    let settled = false;
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+    // A wedged cupsd is the one lp failure mode that hangs instead of
+    // failing fast (live-probed: offline printers queue-and-exit, bad
+    // destinations reject immediately) — and this runs ahead of the sweep's
+    // load-bearing preview loop, so kill after 20s.
+    const timer = setTimeout(() => {
+      child.kill();
+      settle(() => reject(new Error("lp timed out after 20s (cupsd wedged?)")));
+    }, 20_000);
     child.stderr.on("data", (d) => (stderr += String(d)));
-    child.on("error", reject);
+    // lp can exit before draining stdin — without this listener the EPIPE
+    // surfaces as an uncaught stream error that bypasses the promise.
+    child.stdin.on("error", () => {});
+    child.on("error", (err) => settle(() => reject(err)));
     child.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`lp exited ${code}: ${stderr.trim()}`));
+      settle(() => {
+        if (code === 0) resolve();
+        else reject(new Error(`lp exited ${code}: ${stderr.trim()}`));
+      });
     });
     child.stdin.write(text);
     child.stdin.end();
