@@ -36,6 +36,7 @@ import { EarningsDateChip } from "./EarningsDateChip";
 import { BogeysUploadButton } from "./BogeysUploadButton";
 import { BogeysEditButton } from "./BogeysEditButton";
 import { getSkippedPhasesForEvents } from "@/lib/queries/earnings-skips";
+import { getWorksheetFlagsForEvents } from "@/lib/queries/earnings-worksheet-flags";
 import { getSentPhasesForEvents } from "@/lib/queries/earnings-emails";
 
 type EnrichedRow = CalendarEvent & {
@@ -43,6 +44,8 @@ type EnrichedRow = CalendarEvent & {
   previewSent: boolean;
   recapSent: boolean;
   previewSkipped: boolean;
+  worksheetArmed: boolean;
+  worksheetPrinted: boolean;
   recapSkipped: boolean;
   hasBogeys: boolean;
 };
@@ -144,6 +147,7 @@ export function EarningsHub() {
   }
 
   const skipMap = getSkippedPhasesForEvents(db, events.map((e) => e.id));
+  const worksheetMap = getWorksheetFlagsForEvents(db, events.map((e) => e.id));
 
   const enriched: EnrichedRow[] = events.map((e) => ({
     ...e,
@@ -152,6 +156,8 @@ export function EarningsHub() {
     recapSent: sentPhases[e.id]?.recap ?? false,
     previewSkipped: skipMap[e.id]?.preview ?? false,
     recapSkipped: skipMap[e.id]?.recap ?? false,
+    worksheetArmed: worksheetMap.has(e.id),
+    worksheetPrinted: worksheetMap.get(e.id)?.printedAt != null,
     hasBogeys: bogeysSet.has(e.id),
   }));
 
@@ -402,6 +408,8 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
           recapSent={event.recapSent}
           previewSkipped={event.previewSkipped}
           recapSkipped={event.recapSkipped}
+          worksheetArmed={event.worksheetArmed}
+          worksheetPrinted={event.worksheetPrinted}
         />
         {/* Manual rows delete directly; sync rows delete-with-suppression
             (stays removed across syncs — the wrong-date correction path). */}
@@ -550,6 +558,8 @@ function MobileCard({ event }: { event: EnrichedRow }) {
           recapSent={event.recapSent}
           previewSkipped={event.previewSkipped}
           recapSkipped={event.recapSkipped}
+          worksheetArmed={event.worksheetArmed}
+          worksheetPrinted={event.worksheetPrinted}
         />
         {/* Manual rows delete directly; sync rows delete-with-suppression. */}
         <EarningsDeleteButton
