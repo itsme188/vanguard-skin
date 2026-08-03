@@ -11,17 +11,37 @@
  * UCO 350 = 200+150), so this is a pure lot-shape refinement, not a
  * quantity change.
  *
+ * The 4 auto rows are TOMBSTONED in place (quantity=0, amount=0,
+ * price_per_share=NULL), never DELETEd. A DELETE frees the row's
+ * `ibkr:xfer:2024-01-05:{symbol}:{qty}:In` source_key — since source_key
+ * is UNIQUE and the IBKR-activity parser INSERT-OR-IGNOREs on it, a future
+ * re-import of `IBKR 2024 activity.csv` would recreate the freed row
+ * alongside the 9 curated lots, silently doubling the opening position
+ * (SQQQ's 2500-share ACATS arrival would read as 5000). Tombstoning keeps
+ * the source_key permanently occupied so INSERT OR IGNORE always no-ops on
+ * re-import. The NULL price_per_share is also what excludes the tombstone
+ * from lot creation: `computeTaxLots`'s buy query
+ * (lib/compute/tax-lots.ts:85) requires `price_per_share IS NOT NULL AND
+ * quantity IS NOT NULL`, and the acceptance audit's ledger-quantity query
+ * (scripts/audit-ibkr-ledger-vs-broker.ts:235) carries the identical guard
+ * — both silently skip a NULL-priced row, so the tombstone is invisible to
+ * position math on both sides without needing a type change or a special
+ * "ignore this row" flag anywhere else in the codebase.
+ *
  * Idempotent: curated rows carry a deterministic
  * `ibkr:xferlot:{acqDate}:{symbol}:{qty}` source_key (INSERT OR IGNORE), and
- * the auto-row delete only fires when a matching row is still present. A
- * second run reports deleted:0, inserted:0.
+ * the auto-row lookup requires `quantity != 0` — an already-tombstoned row
+ * (quantity=0) no longer matches, so a second run reports deleted:0,
+ * inserted:0 instead of re-tombstoning (a no-op write, but a false
+ * "deleted:4" report) every time.
  *
  * Runs as step 6 of the ledger rebuild driver (scripts/rebuild-ibkr-ledger.ts,
  * BEFORE computeTaxLots/computeDailyValuations), and is independently
  * runnable as a standalone repair.
  *
  * CLI usage:
- *   npx tsx scripts/repair-acats-opening-lots.ts            (dry run)
+ *   npx tsx scripts/repair-acats-opening-lots.ts            (dry run — never
+ *     runs pending migrations; see the isMain block below)
  *   npx tsx scripts/repair-acats-opening-lots.ts --apply     (executes +
  *     recomputes tax lots and daily valuations)
  */
@@ -31,6 +51,10 @@ import type Database from "better-sqlite3";
 // ─── Types ────────────────────────────────────────────────────────
 
 export interface AcatsRepairResult {
+  /** Count of auto ACATS rows TOMBSTONED (quantity/amount zeroed,
+   * price_per_share nulled) — kept as the field name `deleted` for
+   * compatibility with the CLI wrapper and the rebuild driver's reporting,
+   * even though the rows are no longer removed from the table. */
   deleted: number;
   inserted: number;
   skipped: string[];
@@ -63,6 +87,7 @@ const ACATS_LOTS: readonly AcatsLot[] = [
 const XFER_DATE = "2024-01-05";
 const IBKR_ACCOUNT_NAME = "IBKR";
 const NOTES = "ACATS from Robinhood 2024-01-05; basis per IBKR Form 8949 worksheet 2024";
+const TOMBSTONE_NOTES = "superseded by ibkr:xferlot:* worksheet lots (ACATS repair)";
 
 // ─── Core repair function ─────────────────────────────────────────
 
@@ -104,8 +129,12 @@ export function repairAcatsOpeningLots(
   }
 
   const selectSecurity = db.prepare("SELECT id FROM securities WHERE symbol = ?");
+  // `quantity != 0` excludes already-tombstoned rows from a prior run —
+  // without it, a second invocation would re-match the same 4 rows (the
+  // LIKE pattern matches on source_key text, which is unaffected by
+  // tombstoning) and report a false deleted:4 every time.
   const selectAutoRows = db.prepare(
-    `SELECT id FROM transactions WHERE account_id = ? AND source_key LIKE ?`
+    `SELECT id FROM transactions WHERE account_id = ? AND source_key LIKE ? AND quantity != 0`
   );
   const selectExistingLot = db.prepare("SELECT 1 FROM transactions WHERE source_key = ?");
 
@@ -147,7 +176,17 @@ export function repairAcatsOpeningLots(
   }
 
   if (opts.apply && plan.length > 0) {
-    const deleteRow = db.prepare("DELETE FROM transactions WHERE id = ?");
+    // Tombstone, never DELETE — see the file header for why (re-import
+    // safety: a DELETE would free the source_key for a future INSERT OR
+    // IGNORE to recreate). quantity=0 + price_per_share=NULL together
+    // guarantee the row contributes nothing to position math anywhere that
+    // mirrors computeTaxLots's NULL guards (the tax-lot engine itself and
+    // the acceptance audit).
+    const tombstoneRow = db.prepare(
+      `UPDATE transactions
+         SET quantity = 0, amount = 0, price_per_share = NULL, notes = ?
+       WHERE id = ?`
+    );
     const insertLot = db.prepare(
       `INSERT OR IGNORE INTO transactions
          (account_id, security_id, trade_date, type, quantity, amount, price_per_share,
@@ -160,14 +199,18 @@ export function repairAcatsOpeningLots(
     const run = db.transaction(() => {
       // A FIRST standalone invocation can land here after computeTaxLots has
       // already run on the auto rows (e.g. the normal /api/import
-      // post-commit hook fired before this script did) — tax_lots.
-      // acquisition_transaction_id has no ON DELETE CASCADE, so with
-      // foreign_keys=ON the transactions DELETE below would otherwise throw
-      // a FK constraint violation. Clear the derived layer first; both the
-      // CLI wrapper (post-apply) and the Task-5 driver recompute tax lots
-      // right after this runs, so the derived rows regenerate either way. A
-      // second standalone run is a true no-op — the auto rows are already
-      // gone by then — so this guard only ever fires once.
+      // post-commit hook fired before this script did) — the auto rows'
+      // tax_lots would otherwise linger with quantity/price data that no
+      // longer matches the about-to-be-tombstoned transaction row until the
+      // caller's next computeTaxLots pass. Clearing here (rather than
+      // relying solely on that later recompute) keeps the DB never
+      // observably inconsistent between this script's write and the
+      // caller's recompute. Since tombstoning is an UPDATE (not a DELETE),
+      // there is no FK constraint risk either way — this is pure derived-
+      // data hygiene, not an FK-avoidance workaround. A second standalone
+      // run is a true no-op (the auto rows are already tombstoned and no
+      // longer match the `quantity != 0` lookup), so this guard only ever
+      // does real work once.
       if (allAutoRowIds.length > 0) {
         const placeholders = allAutoRowIds.map(() => "?").join(",");
         const deletedSales = db
@@ -193,7 +236,7 @@ export function repairAcatsOpeningLots(
 
       for (const p of plan) {
         for (const id of p.autoRowIds) {
-          deleteRow.run(id);
+          tombstoneRow.run(TOMBSTONE_NOTES, id);
         }
         for (const lot of p.lotsToInsert) {
           const sourceKey = `ibkr:xferlot:${lot.acqDate}:${lot.symbol}:${lot.qty}`;
@@ -248,7 +291,14 @@ if (isMain) {
     const db = new BetterSqlite3(dbPath);
     db.pragma("journal_mode = WAL");
     db.pragma("foreign_keys = ON");
-    runMigrations(db);
+    // Gated on --apply (mirrors scripts/rebuild-ibkr-ledger.ts): a standalone
+    // dry run against the live DB must never write to it, and
+    // runMigrations() is a write the instant a pending migration exists
+    // (this branch's own opening commit ships migration 075, which drops two
+    // columns).
+    if (apply) {
+      runMigrations(db);
+    }
 
     console.log(
       `Repairing ACATS opening lots (Jan 2024 transfer) ${apply ? "[APPLY]" : "[DRY RUN]"}`
@@ -264,13 +314,13 @@ if (isMain) {
 
     if (!apply) {
       console.log(
-        `\nDRY RUN — would delete ${result.deleted}, would insert ${result.inserted}. Re-run with --apply to execute.`
+        `\nDRY RUN — would tombstone ${result.deleted} auto row(s), would insert ${result.inserted}. Re-run with --apply to execute.`
       );
       db.close();
       return;
     }
 
-    console.log(`\nDeleted ${result.deleted} auto row(s), inserted ${result.inserted} lot(s).`);
+    console.log(`\nTombstoned ${result.deleted} auto row(s), inserted ${result.inserted} lot(s).`);
 
     console.log("\nRecomputing tax lots…");
     const taxLotResult = computeTaxLots(db);

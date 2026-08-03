@@ -337,7 +337,23 @@ export function parseIbkrActivity(
   for (const row of rows) {
     if (row.section !== "Transfers" || row.discriminator !== "Data") continue;
     const assetCategory = row.fields[xCol["Asset Category"] ?? 0];
-    if (assetCategory !== "Stocks") continue; // skips Total + Cash rows
+    if (assetCategory !== "Stocks") {
+      // "Cash" legs already arrive via Deposits & Withdrawals, and the
+      // section's own "Total" row is expected — both stay silent. Any OTHER
+      // Asset Category (e.g. an Options or Bonds ACATS leg) has no in-kind
+      // transfer handling in this parser and would otherwise be silently
+      // dropped — warn so a future non-stock transfer leg is noticed
+      // instead of vanishing without a trace.
+      if (assetCategory && assetCategory !== "Cash" && assetCategory !== "Total") {
+        const symbolForWarning = row.fields[xCol["Symbol"] ?? 3];
+        warnings.push(
+          `Transfers: skipped "${assetCategory}" leg` +
+            (symbolForWarning ? ` (symbol ${symbolForWarning})` : "") +
+            ` — only Stocks transfers are converted to TRANSFER_IN/TRANSFER_OUT`
+        );
+      }
+      continue; // skips Total + Cash rows (and now-warned other categories)
+    }
     const symbol = row.fields[xCol["Symbol"] ?? 3];
     const date = row.fields[xCol["Date"] ?? 4];
     const direction = row.fields[xCol["Direction"] ?? 6];

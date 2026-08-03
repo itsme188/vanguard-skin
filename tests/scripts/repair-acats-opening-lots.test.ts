@@ -53,6 +53,33 @@ function transferInRows(db: Database.Database) {
     .all() as Array<{ trade_date: string; quantity: number; amount: number; source_key: string; notes: string | null }>;
 }
 
+/** Only the 9 curated worksheet lots (excludes the tombstoned auto rows,
+ * which are still TRANSFER_IN and would otherwise pollute a straight
+ * `type='TRANSFER_IN'` count). */
+function curatedLotRows(db: Database.Database) {
+  return db
+    .prepare(
+      "SELECT trade_date, quantity, amount, source_key, notes FROM transactions WHERE source_key LIKE 'ibkr:xferlot:%' ORDER BY trade_date, quantity"
+    )
+    .all() as Array<{ trade_date: string; quantity: number; amount: number; source_key: string; notes: string | null }>;
+}
+
+/** The (up to) 4 auto ACATS rows post-repair — expected to still EXIST
+ * (tombstoned: quantity=0, amount=0, price_per_share=NULL), never deleted. */
+function tombstonedAutoRows(db: Database.Database) {
+  return db
+    .prepare(
+      "SELECT quantity, amount, price_per_share, notes, source_key FROM transactions WHERE source_key LIKE 'ibkr:xfer:2024-01-05:%:In' ORDER BY source_key"
+    )
+    .all() as Array<{
+    quantity: number;
+    amount: number;
+    price_per_share: number | null;
+    notes: string | null;
+    source_key: string;
+  }>;
+}
+
 describe("repairAcatsOpeningLots", () => {
   let db: Database.Database;
 
@@ -67,7 +94,7 @@ describe("repairAcatsOpeningLots", () => {
     expect(r1.inserted).toBe(9);
     expect(r1.skipped).toHaveLength(0);
 
-    const lots = transferInRows(db);
+    const lots = curatedLotRows(db);
     expect(lots).toHaveLength(9);
 
     // spot-check one: SQQQ 500 @ 2023-12-22, basis 8873.79
@@ -85,26 +112,75 @@ describe("repairAcatsOpeningLots", () => {
     expect(ttdLots.some((l) => l.quantity === 50 && Math.abs(l.amount - 3762.5) < 0.01)).toBe(true);
     expect(ttdLots.some((l) => l.quantity === 100 && Math.abs(l.amount - 7525.0) < 0.01)).toBe(true);
 
-    // the 4 auto rows are gone
-    const autoRemaining = db
-      .prepare("SELECT COUNT(*) AS n FROM transactions WHERE source_key LIKE 'ibkr:xfer:2024-01-05:%:In'")
-      .get() as { n: number };
-    expect(autoRemaining.n).toBe(0);
+    // the 4 auto rows are TOMBSTONED — still present (never deleted), but
+    // zeroed out so they contribute nothing to position/lot math.
+    const tombstones = tombstonedAutoRows(db);
+    expect(tombstones).toHaveLength(4);
+    for (const t of tombstones) {
+      expect(t.quantity).toBe(0);
+      expect(t.amount).toBe(0);
+      expect(t.price_per_share).toBeNull();
+      expect(t.notes).toBe("superseded by ibkr:xferlot:* worksheet lots (ACATS repair)");
+    }
 
-    // idempotent: second run is a no-op
+    // idempotent: second run is a no-op (the tombstoned rows no longer
+    // match the auto-row lookup's `quantity != 0` guard)
     const r2 = repairAcatsOpeningLots(db, { apply: true });
     expect(r2.deleted).toBe(0);
     expect(r2.inserted).toBe(0);
-    expect(transferInRows(db)).toHaveLength(9);
+    expect(curatedLotRows(db)).toHaveLength(9);
+    expect(tombstonedAutoRows(db)).toHaveLength(4);
+  });
+
+  it("re-import after repair is a no-op — INSERT OR IGNORE collides with the tombstoned source_key", () => {
+    // Simulates the exact scenario this fix defends against: a FUTURE
+    // re-import of `IBKR 2024 activity.csv` tries to recreate the same auto
+    // TRANSFER_IN row the parser produced originally. Before this fix, the
+    // repair DELETEd the row, freeing its source_key — a re-import would
+    // have recreated it alongside the 9 curated lots, doubling SQQQ's
+    // opening position to 5,000 shares.
+    seedAutoAcatsRows(db);
+    repairAcatsOpeningLots(db, { apply: true });
+
+    const ibkrId = getIbkrAccountId(db);
+    const secId = ensureSecurity(db, "SQQQ");
+    const insertResult = db
+      .prepare(
+        `INSERT OR IGNORE INTO transactions
+           (account_id, security_id, trade_date, type, quantity, amount, price_per_share,
+            is_external_flow, source_key)
+         VALUES (?, ?, '2024-01-05', 'TRANSFER_IN', 2500, 37100.0, 14.84, 1, ?)`
+      )
+      .run(ibkrId, secId, "ibkr:xfer:2024-01-05:SQQQ:2500:In");
+
+    expect(insertResult.changes).toBe(0);
+
+    // Total TRANSFER_IN quantity for SQQQ stays at the curated 2500
+    // (100+100+500+1800) — never doubled by a re-inserted 2500-share auto
+    // row landing alongside the curated lots.
+    const totalQty = db
+      .prepare(
+        `SELECT COALESCE(SUM(t.quantity), 0) AS total FROM transactions t
+           JOIN securities s ON s.id = t.security_id
+          WHERE t.type = 'TRANSFER_IN' AND s.symbol = 'SQQQ'`
+      )
+      .get() as { total: number };
+    expect(totalQty.total).toBe(2500);
   });
 
   it("computes price_per_share as basis/qty for every inserted lot", () => {
     seedAutoAcatsRows(db);
     repairAcatsOpeningLots(db, { apply: true });
-    const rows = db
-      .prepare("SELECT quantity, amount, price_per_share FROM transactions WHERE type='TRANSFER_IN'")
+    // Curated rows only — the tombstoned auto rows deliberately have
+    // price_per_share=NULL (quantity=0), which would make amount/quantity a
+    // NaN division here.
+    const priced = db
+      .prepare(
+        "SELECT quantity, amount, price_per_share FROM transactions WHERE source_key LIKE 'ibkr:xferlot:%'"
+      )
       .all() as Array<{ quantity: number; amount: number; price_per_share: number }>;
-    for (const r of rows) {
+    expect(priced).toHaveLength(9);
+    for (const r of priced) {
       expect(r.price_per_share).toBeCloseTo(r.amount / r.quantity, 6);
     }
   });
@@ -178,7 +254,7 @@ describe("repairAcatsOpeningLots", () => {
     const result = repairAcatsOpeningLots(db, { apply: true });
     expect(result.deleted).toBe(4);
     expect(result.inserted).toBe(9);
-    expect(transferInRows(db)).toHaveLength(9);
+    expect(curatedLotRows(db)).toHaveLength(9);
   });
 
   it("reports a missing IBKR account gracefully instead of throwing", () => {
