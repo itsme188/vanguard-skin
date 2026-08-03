@@ -362,4 +362,40 @@ describe("tax lot computation (FIFO)", () => {
     expect(result.salesProcessed).toBe(1);
     expect(result.totalRealizedGain).toBeCloseTo(90); // 3 * (130 - 100)
   });
+
+  it("creates a tax lot from a TRANSFER_IN (ACATS in-kind) transaction", () => {
+    const secId = seedSecurity(db, "XYZ", "Transferred Fund");
+    seedTransaction(db, {
+      account_id: ACCOUNT_ID,
+      security_id: secId,
+      trade_date: "2024-01-05",
+      type: "TRANSFER_IN",
+      quantity: 2500,
+      price_per_share: 14.84,
+      amount: 37100,
+    });
+    seedTransaction(db, {
+      account_id: ACCOUNT_ID,
+      security_id: secId,
+      trade_date: "2024-01-09",
+      type: "SELL",
+      quantity: 2500,
+      price_per_share: 15.0,
+      amount: 37500,
+    });
+
+    computeTaxLots(db);
+
+    const lots = db
+      .prepare("SELECT * FROM tax_lots WHERE account_id = ? AND security_id = ?")
+      .all(ACCOUNT_ID, secId) as any[];
+    expect(lots).toHaveLength(1);
+    expect(lots[0].acquisition_date).toBe("2024-01-05");
+    expect(lots[0].cost_basis).toBeCloseTo(37100, 0);
+    expect(lots[0].is_short).toBe(0);
+
+    const sales = db.prepare("SELECT * FROM tax_lot_sales").all() as any[];
+    expect(sales).toHaveLength(1);
+    expect(sales[0].holding_period_days).toBe(4); // no more negative pairing
+  });
 });

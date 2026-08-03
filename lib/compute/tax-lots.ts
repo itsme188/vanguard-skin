@@ -71,12 +71,16 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
     const premiumAdjustments = computePremiumAdjustments(db);
 
     // ── Create tax lots from BUY-like transactions ──
-    // Includes: BUY, REINVESTMENT, BUY_TO_OPEN (long option), SELL_TO_OPEN (short option)
+    // Includes: BUY, REINVESTMENT, BUY_TO_OPEN (long option), SELL_TO_OPEN (short option),
+    // TRANSFER_IN (ACATS in-kind arrival — the security physically arrived from another
+    // broker, so it opens a real FIFO lot at its transferred cost basis). Deliberately
+    // does NOT include TRANSFER_OUT on the sell side below — outbound security transfers
+    // (e.g. donated-in-kind shares) are the R4 donation-tracking workstream, not a sale.
     const buys = db
       .prepare(
         `SELECT id, account_id, security_id, trade_date, type, quantity, price_per_share, amount, fees
          FROM transactions
-         WHERE LOWER(type) IN ('buy', 'reinvestment', 'buy_to_open', 'sell_to_open')
+         WHERE LOWER(type) IN ('buy', 'reinvestment', 'buy_to_open', 'sell_to_open', 'transfer_in')
            AND security_id IS NOT NULL
            AND price_per_share IS NOT NULL AND quantity IS NOT NULL
          ORDER BY trade_date, id`
