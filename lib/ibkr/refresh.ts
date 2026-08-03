@@ -11,6 +11,7 @@ import type Database from "better-sqlite3";
 import { upsertSecurity } from "../mutations/securities";
 import { computeDailyValuations } from "../compute/daily-valuation";
 import { todayET } from "../calendar/date-utils";
+import { isMarketClosed } from "../calendar/market-holidays";
 import { upsertFxRate } from "../mutations/fx-rates";
 import { loadIbkrConfig } from "./config";
 import {
@@ -358,6 +359,14 @@ export async function fetchAndStoreQuotes(
     `INSERT OR REPLACE INTO prices (security_id, date, close_price, source) VALUES (?,?,?,'tws')`,
   );
 
+  // Trading-day guard, mirroring fetchSnapshotPrices: every consumer treats
+  // the latest `prices` row per date as that date's close, so a weekend or
+  // holiday date must never get a row (a stale last price stamped on a
+  // non-trading day made the Today view's move pairing read 0.00% across the
+  // board). The IV/HV/52wk quote cache below is dated metadata, not a close —
+  // it still updates on any day.
+  const isTradingDay = !isMarketClosed(asOf);
+
   let securitiesUpdated = 0;
   let pricesWritten = 0;
   db.transaction(() => {
@@ -383,7 +392,7 @@ export async function fetchAndStoreQuotes(
         });
         securitiesUpdated++;
       }
-      if (q.last != null && q.last > 0) {
+      if (isTradingDay && q.last != null && q.last > 0) {
         upsertPrice.run(securityId, asOf, q.last);
         pricesWritten++;
       }
