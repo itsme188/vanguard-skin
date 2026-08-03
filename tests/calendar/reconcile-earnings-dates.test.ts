@@ -261,3 +261,86 @@ describe("reconcileEarningsDates — enrichment carry-forward", () => {
     expect(oldRow.ai_output_md).toBe("old-md");
   });
 });
+
+describe("reconcileEarningsDates — manual future row vs reported quarter (qa:today-earningshub-add-ticker--manual-future-event-supersedes-reported-quarter)", () => {
+  it("a manual FUTURE row never supersedes a reported print in the same proximity cluster", () => {
+    // META really printed 2026-06-01 (actual captured); the user then adds a
+    // manual 2026-06-10 row for "next quarter" — 9 days apart, so proximity
+    // clustering would have merged them and the manual rung would have stolen
+    // the actual/reaction/audit rows onto the future event.
+    const reported = seed({
+      source: "finnhub",
+      symbol: "META",
+      date: "2026-06-01",
+      actualValue: "EPS 6.18 \u00b7 Rev 60.80B",
+      epsActual: 6.18,
+    });
+    const manual = seed({ source: "manual", symbol: "META", date: "2026-06-10" });
+    db.prepare(
+      "INSERT INTO earnings_emails (event_id, phase, recipient, ai_output_md) VALUES (?, 'recap', 'x@y.com', 'md')",
+    ).run(reported);
+
+    reconcileEarningsDates(db, { today: TODAY });
+
+    // The reported quarter stays canonical with its own data + audit rows.
+    expect(row(reported).superseded).toBe(0);
+    expect(row(reported).date_status).toBe("confirmed");
+    const rep = db
+      .prepare("SELECT actual_value FROM calendar_events WHERE id = ?")
+      .get(reported) as { actual_value: string | null };
+    expect(rep.actual_value).toContain("6.18");
+    expect(
+      (db.prepare("SELECT event_id FROM earnings_emails WHERE phase='recap'").get() as { event_id: number })
+        .event_id,
+    ).toBe(reported);
+
+    // The user's future event survives as its own cluster, not superseded,
+    // and carries NO migrated enrichment from last quarter.
+    expect(row(manual).superseded).toBe(0);
+    expect(row(manual).date_status).toBe("user_confirmed");
+    const man = db
+      .prepare("SELECT actual_value, reaction_snapshot FROM calendar_events WHERE id = ?")
+      .get(manual) as { actual_value: string | null; reaction_snapshot: string | null };
+    expect(man.actual_value).toBeNull();
+    expect(man.reaction_snapshot).toBeNull();
+
+    // Idempotent on re-run.
+    reconcileEarningsDates(db, { today: TODAY });
+    expect(row(reported).superseded).toBe(0);
+    expect(row(manual).superseded).toBe(0);
+  });
+
+  it("a manual row that is ITSELF the reported print still wins the whole cluster", () => {
+    // Verifier/user-corrected rows land as source='manual'; once the print is
+    // captured on them they remain the locked canonical over vendor dups.
+    const manual = seed({
+      source: "manual",
+      symbol: "WMT",
+      date: "2026-06-04",
+      actualValue: "EPS 0.61 \u00b7 Rev 168B",
+    });
+    const finn = seed({ source: "finnhub", symbol: "WMT", date: "2026-06-05" });
+
+    reconcileEarningsDates(db, { today: TODAY });
+
+    expect(row(manual).superseded).toBe(0);
+    expect(row(manual).date_status).toBe("user_confirmed");
+    expect(row(finn).superseded).toBe(1);
+  });
+
+  it("a vendor future ghost still folds into the reported row when no manual row exists (RBRK class preserved)", () => {
+    const reported = seed({
+      source: "finnhub",
+      symbol: "RBRK",
+      date: "2026-06-04",
+      epsActual: 0.33,
+    });
+    const ghost = seed({ source: "nasdaq", symbol: "RBRK", date: "2026-06-12" });
+
+    reconcileEarningsDates(db, { today: TODAY });
+
+    expect(row(reported).superseded).toBe(0);
+    expect(row(reported).date_status).toBe("confirmed");
+    expect(row(ghost).superseded).toBe(1);
+  });
+});

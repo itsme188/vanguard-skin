@@ -8,7 +8,7 @@ import { getAccountByName } from "@/lib/queries/accounts";
 import { getPortfolioTotals } from "@/lib/queries/dashboard";
 import { getEventsByWeek } from "@/lib/queries/calendar";
 import { getCurrentMonday, todayET, resolveWeekOfParam } from "@/lib/calendar/date-utils";
-import { adjustedMarketValueSQL } from "@/lib/valuation";
+import { getIbkrTodayHoldings, type TodayHolding } from "@/lib/queries/today-holdings";
 import type { LevelAlert, CalendarEvent } from "@/lib/types";
 import { NearbyLevelsCard } from "../components/NearbyLevelsCard";
 import { OpenChatButton } from "../components/OpenChatButton";
@@ -29,20 +29,6 @@ interface EnrichedAlert extends LevelAlert {
   level_type: string | null;
   level_price: number | null;
   source_author: string | null;
-}
-
-interface TodayHolding {
-  security_id: number;
-  symbol: string;
-  security_name: string | null;
-  quantity: number;
-  current_price: number | null;
-  current_value: number | null;
-  prior_close: number | null;
-  today_gain: number | null;
-  today_pct: number | null;
-  price_date: string | null;
-  price_source: string | null;
 }
 
 function fmtShortDate(iso: string): string {
@@ -134,59 +120,9 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
   let latestPriceDate: string | null = null;
 
   if (ibkrAccount) {
-    const marketValueCurrent = adjustedMarketValueSQL(
-      "h.quantity",
-      "p_today.close_price",
-      "s.security_type",
-      "COALESCE(s.multiplier, 1)",
-      "COALESCE(fx.usd_per_unit, 1)",
-    );
-    const marketValuePrior = adjustedMarketValueSQL(
-      "h.quantity",
-      "p_prior.close_price",
-      "s.security_type",
-      "COALESCE(s.multiplier, 1)",
-      "COALESCE(fx.usd_per_unit, 1)",
-    );
-    // Rank every price row per security so we can pull the top two.
-    // rn=1 is the most recent close, rn=2 is the prior — today's move is
-    // the delta between them. When a security has only one price row,
-    // p_prior joins null and today_gain/today_pct fall through to null.
-    holdings = db
-      .prepare(
-        `WITH ranked_prices AS (
-           SELECT security_id, date, close_price, source,
-                  ROW_NUMBER() OVER (PARTITION BY security_id ORDER BY date DESC) AS rn
-           FROM prices
-         )
-         SELECT
-           h.security_id,
-           s.symbol,
-           s.name AS security_name,
-           h.quantity,
-           p_today.close_price * COALESCE(fx.usd_per_unit, 1) AS current_price,
-           p_today.date AS price_date,
-           p_today.source AS price_source,
-           p_prior.close_price * COALESCE(fx.usd_per_unit, 1) AS prior_close,
-           CASE WHEN p_today.close_price IS NOT NULL THEN ${marketValueCurrent} ELSE NULL END AS current_value,
-           CASE WHEN p_today.close_price IS NOT NULL AND p_prior.close_price IS NOT NULL
-             THEN ${marketValueCurrent} - ${marketValuePrior} ELSE NULL END AS today_gain,
-           CASE WHEN p_today.close_price IS NOT NULL AND p_prior.close_price IS NOT NULL
-                  AND p_prior.close_price != 0
-             THEN (p_today.close_price - p_prior.close_price) / p_prior.close_price ELSE NULL END AS today_pct
-         FROM holdings h
-         JOIN securities s ON s.id = h.security_id
-         LEFT JOIN ranked_prices p_today ON p_today.security_id = h.security_id AND p_today.rn = 1
-         LEFT JOIN ranked_prices p_prior ON p_prior.security_id = h.security_id AND p_prior.rn = 2
-         LEFT JOIN fx_rates fx ON fx.currency = s.currency
-         WHERE h.account_id = ?
-           AND h.quantity > 0
-           AND h.as_of_date = (SELECT MAX(as_of_date) FROM holdings WHERE account_id = ?)
-           AND (s.maturity_date IS NULL OR s.maturity_date >= date('now')
-                OR LOWER(s.security_type) = 'bond')
-         ORDER BY ABS(COALESCE(${marketValueCurrent} - ${marketValuePrior}, 0)) DESC`,
-      )
-      .all(ibkrAccount.id, ibkrAccount.id) as TodayHolding[];
+    // Trading-day-pair move computation lives in lib/queries/today-holdings —
+    // never a bare rn=1/rn=2 pairing (weekend phantom rows read as 0.00%).
+    holdings = getIbkrTodayHoldings(db, ibkrAccount.id);
 
     latestPriceDate =
       holdings

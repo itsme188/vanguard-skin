@@ -220,4 +220,32 @@ describe("fetchAndStoreQuotes", () => {
     const px = db.prepare("SELECT COUNT(*) AS c FROM prices WHERE security_id = ?").get(aapl) as { c: number };
     expect(px.c).toBe(0);
   });
+
+  it("skips the prices write on a non-trading day but still caches the quote (weekend phantom guard)", async () => {
+    // qa:today-ibkr-holdings--todays-move-all-zero-nontrading-price-pair —
+    // quote enrichment wrote source='tws' price rows on weekends/holidays
+    // carrying the stale last price, unlike fetchSnapshotPrices which is
+    // isMarketClosed-guarded. Every consumer treats the latest prices row per
+    // date as that date's close, so a non-trading date must never get a row.
+    const acct = getIbkrAccount();
+    const aapl = seedSecurity("AAPL", 265598);
+    hold(acct, aapl, 100);
+    const stub = async (): Promise<ParsedQuote[]> => [
+      { conid: 265598, last: 302.94, bid: null, ask: null, ivUnderlying: 0.24, hv30d: 0.23, week52High: 316, week52Low: 194 },
+    ];
+
+    // 2026-08-02 is a Sunday.
+    const res = await fetchAndStoreQuotes(db, CFG, "lst", {
+      asOfDate: "2026-08-02",
+      fetchSnapshot: stub,
+      fetchYields: async () => ({}),
+    });
+
+    expect(res.pricesWritten).toBe(0);
+    const px = db.prepare("SELECT COUNT(*) AS c FROM prices WHERE security_id = ?").get(aapl) as { c: number };
+    expect(px.c).toBe(0);
+    // IV/HV/52wk cache is dated metadata, not a close — still written.
+    expect(res.securitiesUpdated).toBe(1);
+    expect(getSecurityQuote(db, aapl)!.week52_high).toBe(316);
+  });
 });

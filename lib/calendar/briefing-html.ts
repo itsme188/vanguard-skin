@@ -194,6 +194,70 @@ function renderTable(headers: string[], rows: string[][]): string {
 }
 
 // ── Markdown body ───────────────────────────────────────────────────
+/**
+ * Consume a table body starting at `j` (first line after the separator),
+ * absorbing model-emitted MULTI-LINE logical rows
+ * (qa:email-html--multiline-table-row-spills-raw-markdown-pipes): an
+ * unterminated `| a | b` start accumulates physical lines until its closing
+ * pipe, and a bare fragment line BETWEEN pipe rows glues onto the previous
+ * row's last cell. A fragment with no further pipe line before the next blank
+ * ends the table instead (trailing prose stays prose). Pre-fix, the first
+ * non-pipe line closed the parser and every later |-line spilled as a literal
+ * pipe paragraph in the delivered email.
+ */
+function consumeTableBody(
+  lines: string[],
+  startIdx: number,
+): { dataRows: string[][]; nextIndex: number } {
+  const dataRows: string[][] = [];
+  let pending = "";
+  let j = startIdx;
+  while (j < lines.length) {
+    const t = lines[j].trim();
+    if (t === "") break;
+    if (pending !== "") {
+      pending = `${pending} ${t}`;
+      if (tableRowRe.test(pending)) {
+        if (!tableSeparatorRe.test(pending)) dataRows.push(parseTableRow(pending));
+        pending = "";
+      }
+      j++;
+      continue;
+    }
+    if (tableRowRe.test(t)) {
+      if (!tableSeparatorRe.test(t)) dataRows.push(parseTableRow(t));
+      j++;
+      continue;
+    }
+    if (t.startsWith("|")) {
+      pending = t;
+      j++;
+      continue;
+    }
+    // Bare fragment: only table content when another pipe line follows before
+    // the next blank — otherwise it is ordinary prose after the table.
+    let continues = false;
+    for (let k = j + 1; k < lines.length; k++) {
+      const u = lines[k].trim();
+      if (u === "") break;
+      if (u.startsWith("|")) { continues = true; break; }
+    }
+    if (!continues || dataRows.length === 0) break;
+    const last = dataRows[dataRows.length - 1];
+    last[last.length - 1] = `${last[last.length - 1]} ${t}`.trim();
+    j++;
+  }
+  if (pending !== "") {
+    // Dangling partial row at table end — close it best-effort rather than
+    // spilling raw pipes.
+    const closed = pending.endsWith("|") ? pending : `${pending} |`;
+    if (tableRowRe.test(closed) && !tableSeparatorRe.test(closed)) {
+      dataRows.push(parseTableRow(closed));
+    }
+  }
+  return { dataRows, nextIndex: j };
+}
+
 function convertMarkdown(md: string): string {
   const lines = md.split("\n");
   const output: string[] = [];
@@ -209,15 +273,9 @@ function convertMarkdown(md: string): string {
     ) {
       if (inList) { output.push("</ul>"); inList = false; }
       const headerCells = parseTableRow(line);
-      let j = i + 2;
-      const dataRows: string[][] = [];
-      while (j < lines.length && tableRowRe.test(lines[j].trim())) {
-        const cells = parseTableRow(lines[j]);
-        if (!tableSeparatorRe.test(lines[j].trim())) dataRows.push(cells);
-        j++;
-      }
+      const { dataRows, nextIndex } = consumeTableBody(lines, i + 2);
       output.push(renderTable(headerCells, dataRows));
-      i = j - 1;
+      i = nextIndex - 1;
       continue;
     }
 
