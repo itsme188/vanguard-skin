@@ -59,6 +59,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
   const [actualsEnrichedAt, setActualsEnrichedAt] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [printing, setPrinting] = useState(false);
+  const [printedOk, setPrintedOk] = useState(false);
   const [savingActuals, setSavingActuals] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -120,6 +121,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
   async function printNow() {
     if (printing) return;
     setPrinting(true);
+    setPrintedOk(false);
     setError(null);
     try {
       const res = await fetch("/api/earnings/worksheet", {
@@ -132,6 +134,8 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
         setError(data?.error ?? `Print failed: server returned ${res.status}.`);
         return;
       }
+      // lp exit 0 means QUEUED, not paper-out — say exactly that.
+      setPrintedOk(true);
     } catch {
       setError("Print failed: could not reach the server.");
     } finally {
@@ -455,7 +459,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
                 className="relative mr-auto text-[13px] font-mono text-ink-dim hover:text-ink border border-edge rounded px-2 py-1 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
                 title="Print the one-page desk worksheet on the default printer now"
               >
-                {printing ? "Printing…" : "⎙ Print worksheet"}
+                {printing ? "Printing…" : printedOk ? "Sent to printer queue ✓" : "⎙ Print worksheet"}
               </button>
               <button
                 type="button"

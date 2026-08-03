@@ -28,7 +28,9 @@ export function getUnprintedWorksheetEvents(
          FROM earnings_worksheet_flags f
          JOIN calendar_events ce ON ce.id = f.event_id
         WHERE f.printed_at IS NULL
-          AND COALESCE(ce.superseded, 0) = 0`,
+          AND COALESCE(ce.superseded, 0) = 0
+          AND ce.event_type = 'earnings'
+          AND ce.symbol IS NOT NULL`,
     )
     .all() as Array<{
     eventId: number;
