@@ -58,6 +58,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
   const [actuals, setActuals] = useState<ActualsState>(EMPTY_ACTUALS);
   const [actualsEnrichedAt, setActualsEnrichedAt] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [printing, setPrinting] = useState(false);
   const [savingActuals, setSavingActuals] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -113,6 +114,30 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [open, onClose]);
+
+  // Print the deterministic desk worksheet immediately (feedback #6) —
+  // independent of the auto-print arm; honest outcome via inline error.
+  async function printNow() {
+    if (printing) return;
+    setPrinting(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/earnings/worksheet", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ eventId, action: "print" }),
+      });
+      const data = (await res.json().catch(() => null)) as { success?: boolean; error?: string } | null;
+      if (!res.ok || !data?.success) {
+        setError(data?.error ?? `Print failed: server returned ${res.status}.`);
+        return;
+      }
+    } catch {
+      setError("Print failed: could not reach the server.");
+    } finally {
+      setPrinting(false);
+    }
+  }
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
@@ -423,6 +448,15 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
               <p className="text-[12px] text-down">{error}</p>
             )}
             <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={printNow}
+                disabled={printing}
+                className="relative mr-auto text-[13px] font-mono text-ink-dim hover:text-ink border border-edge rounded px-2 py-1 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
+                title="Print the one-page desk worksheet on the default printer now"
+              >
+                {printing ? "Printing…" : "⎙ Print worksheet"}
+              </button>
               <button
                 type="button"
                 onClick={onClose}
