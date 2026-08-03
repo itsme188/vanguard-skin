@@ -116,14 +116,10 @@ export interface TradeGradeEntry {
   realized_pnl: number;
   return_pct: number;
   holding_days: number;
-  // Cleanly-named (post-migration 047). Null for rows written before the migration.
+  // Column semantics per migration 047 (legacy scrambled columns dropped in 075).
   assessment: string | null;
   what_went_well: string | null;
   what_went_wrong: string | null;
-  // Legacy columns — only populated on rows pre-migration; readers should fall
-  // back to these when `assessment` is null.
-  entry_thesis: string | null;
-  exit_assessment: string | null;
   review_period: string;
 }
 
@@ -469,27 +465,12 @@ export function getTradeGradesBySecurity(
   db: Database.Database,
   securityId: number
 ): TradeGradeEntry[] {
-  // SELECT *-style: include both new (post-migration 047) and legacy columns
-  // so readers can fall back when querying pre-migration rows.
-  // Detect the new column at runtime — in-memory test DBs may not have it.
-  const hasAssessmentCol = db
-    .prepare(
-      "SELECT COUNT(*) as cnt FROM pragma_table_info('trade_roundtrips') WHERE name = 'assessment'"
-    )
-    .get() as { cnt: number };
-
-  const assessmentSelect =
-    hasAssessmentCol.cnt > 0
-      ? "tr.assessment, tr.what_went_well, tr.what_went_wrong,"
-      : "NULL AS assessment, tr.what_went_well, tr.what_went_wrong,";
-
   return db
     .prepare(
       `SELECT
         tr.grade, tr.entry_date, tr.exit_date,
         tr.realized_pnl, tr.return_pct, tr.holding_days,
-        ${assessmentSelect}
-        tr.entry_thesis, tr.exit_assessment,
+        tr.assessment, tr.what_went_well, tr.what_went_wrong,
         rv.period_start AS review_period
       FROM trade_roundtrips tr
       JOIN trade_reviews rv ON rv.id = tr.review_id
