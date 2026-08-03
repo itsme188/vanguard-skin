@@ -1266,7 +1266,7 @@ function readReactionDelta(json: string | null, key: "spy" | "qqq" | "tlt" | "sy
 
 // ── Earnings-intelligence scoreboard rows (Task 7) ─────────────────
 //
-// "Expected move (options)" + "Avg move last 8 prints" rows. Both are
+// "Expected move" + "Avg move last 8 prints" rows. Both are
 // code-rendered from the EarningsIntelView cache — never AI-generated —
 // same discipline as the rest of the scoreboard.
 
@@ -1381,7 +1381,9 @@ export function renderHeadlineTable(
   // Expected move: preview shows the implied cell only (Actual/Δ dashes —
   // there's nothing to compare against yet). Recap echoes the realized
   // |stock reaction| against the implied move and calls it inside/outside
-  // the priced-in range — never recomputed here, `intel.impliedMovePct` is
+  // the priced-in range. Market-derived methods stay preview-cached (never
+  // recomputed here); a sheet-resolved value re-resolves from live bogeys,
+  // which are stable by design post-print — `intel.impliedMovePct` is
   // whatever was cached at preview-compose time.
   const impliedCell = fmtImplied(intel);
   let impliedActual = "—";
@@ -1397,7 +1399,7 @@ export function renderHeadlineTable(
   const rows = [
     `| **EPS** | ${epsConsensus} | ${epsActual} | ${epsDelta} |`,
     `| **Revenue** | ${revConsensus} | ${revActual} | ${revDelta} |`,
-    `| **Expected move (options)** | ${impliedCell} | ${impliedActual} | ${impliedVerdict} |`,
+    `| **Expected move** | ${impliedCell} | ${impliedActual} | ${impliedVerdict} |`,
     `| **Avg move last 8 prints** | ${fmtHistSummary(intel)} | — | — |`,
     `| **Guidance (next quarter)** | — | — | — |`,
     `| **${symbol} @ T+2h** | — | ${stockReaction} | — |`,
@@ -1825,6 +1827,7 @@ function renderBogeysBlock(ctx: PreviewContext): string {
     if (b.eps_whisper != null) fields.push(`EPS **whisper ${b.eps_whisper.toFixed(2)}**`);
     if (b.revenue_consensus_usd != null) fields.push(`revenue consensus ${formatLargeUSD(b.revenue_consensus_usd)}`);
     if (b.revenue_whisper_usd != null) fields.push(`revenue **whisper ${formatLargeUSD(b.revenue_whisper_usd)}**`);
+    if (b.expected_move_pct != null) fields.push(`expected move ±${b.expected_move_pct.toFixed(1)}%`);
     const head = fields.length > 0 ? `\n${fields.join(" · ")}` : "";
     let segs = "";
     if (b.segment_breakdown_json) {

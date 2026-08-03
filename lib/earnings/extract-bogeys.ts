@@ -271,7 +271,6 @@ function coerceNumber(v: unknown): number | null {
   return null;
 }
 
-
 function parseSegments(
   v: unknown,
 ): Record<string, { consensus?: number; whisper?: number }> | null {

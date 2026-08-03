@@ -1038,7 +1038,7 @@ export function renderScoreboard(
     ? `\n\n*⚠ Reported actuals were flagged as implausible vs consensus — cells blanked (B19-style basis mismatch or scrape failure). Override via POST /api/earnings/actuals once the Mac is back.*`
     : "";
 
-  // Task 9 (snapshot v9): "Expected move (options)" + "Avg move last 8
+  // Task 9 (snapshot v9): "Expected move" + "Avg move last 8
   // prints" rows, positioned after Revenue and before Guidance — same slot
   // as the Mac's renderHeadlineTable. `intelCtx === undefined` is the pre-v9
   // signal (snapshot lacks both earningsIntel/earningsHistory entirely) —
@@ -1058,7 +1058,7 @@ export function renderScoreboard(
       }
     }
     intelRows =
-      `\n| **Expected move (options)** | ${impliedCell} | ${impliedActual} | ${impliedVerdict} |` +
+      `\n| **Expected move** | ${impliedCell} | ${impliedActual} | ${impliedVerdict} |` +
       `\n| **Avg move last 8 prints** | ${fmtHistSummary(intelCtx?.history)} | — | — |`;
   }
 

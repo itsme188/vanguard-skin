@@ -15,6 +15,8 @@
  * Spec: docs/superpowers/specs/2026-07-16-todays-reporters-digest-block-design.md
  */
 
+import { resolveExpectedMove } from "@/lib/earnings/expected-move";
+import { getExpectedMoveBogeysForEvents } from "@/lib/queries/earnings-bogeys";
 import type Database from "better-sqlite3";
 import { todayET, mondayOf } from "@/lib/calendar/date-utils";
 import { getEarningsForWeekDeduped } from "@/lib/queries/calendar";
@@ -63,15 +65,26 @@ export function composeTodaysReportersBlock(
     const status = getSymbolStatus(db, symbols);
     const rtSet = new Set(getReadThroughReporterSymbols(db).map((s) => s.toUpperCase()));
 
-    const intelById = new Map<number, number>();
+    const intelById = new Map<
+      number,
+      { pct: number; method: "straddle" | "iv_approx" | null }
+    >();
     const placeholders = events.map(() => "?").join(",");
     const intelRows = db
       .prepare(
-        `SELECT event_id, implied_move_pct FROM earnings_intel
+        `SELECT event_id, implied_move_pct, implied_method FROM earnings_intel
           WHERE event_id IN (${placeholders}) AND implied_move_pct IS NOT NULL`,
       )
-      .all(...events.map((e) => e.id)) as { event_id: number; implied_move_pct: number }[];
-    for (const r of intelRows) intelById.set(r.event_id, r.implied_move_pct);
+      .all(...events.map((e) => e.id)) as {
+      event_id: number;
+      implied_move_pct: number;
+      implied_method: "straddle" | "iv_approx" | null;
+    }[];
+    for (const r of intelRows)
+      intelById.set(r.event_id, { pct: r.implied_move_pct, method: r.implied_method });
+    // Sheet > straddle > iv_approx (feedback #5) — this is the line the user
+    // reads BEFORE the print, the exact surface from the AAPL ±1.5% incident.
+    const bogeyMoves = getExpectedMoveBogeysForEvents(db, events.map((e) => e.id));
 
     const rows: ReporterRowView[] = events.map((e) => {
       const sym = e.symbol!.toUpperCase();
@@ -81,7 +94,14 @@ export function composeTodaysReportersBlock(
       // consensus_estimate — same precedence as renderHeadlineTable + the
       // Today tab (7/28 review follow-up: email-surface parity).
       const consCompact = formatFinnhubFigureCompact(effectiveConsensus(e));
-      const impl = intelById.has(e.id) ? `±${intelById.get(e.id)!.toFixed(1)}%` : null;
+      const resolved = resolveExpectedMove({
+        bogeys: bogeyMoves.get(e.id) ?? [],
+        impliedMovePct: intelById.get(e.id)?.pct ?? null,
+        impliedMethod: intelById.get(e.id)?.method ?? null,
+      });
+      const impl = resolved
+        ? `±${resolved.pct.toFixed(1)}%${resolved.method === "sheet" ? " (sheet)" : ""}`
+        : null;
       return {
         slot: slotFor(e),
         time: e.release_time ?? null,
