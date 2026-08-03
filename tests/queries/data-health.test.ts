@@ -394,9 +394,11 @@ describe("getDataHealthSummary", () => {
 
     const summary = getDataHealthSummary(db);
     expect(summary.totalSecurities).toBe(3);
-    expect(summary.securitiesWithPrices).toBe(2);
-    expect(summary.securitiesWithoutPrices).toBe(1);
-    expect(summary.overallCoveragePct).toBeCloseTo(67, 0);
+    // MSFT's only price is 10 days old — stale prices don't count as coverage
+    // (same 7-day recency window as getAccountCoverage on the same page).
+    expect(summary.securitiesWithPrices).toBe(1);
+    expect(summary.securitiesWithoutPrices).toBe(2);
+    expect(summary.overallCoveragePct).toBeCloseTo(33, 0);
     expect(summary.avgStaleDays).toBeGreaterThanOrEqual(0);
     expect(summary.maxStaleDays).toBeGreaterThanOrEqual(9);
     expect(summary.totalGaps).toBeGreaterThanOrEqual(1); // NOPRICE has no prices
@@ -406,5 +408,53 @@ describe("getDataHealthSummary", () => {
     const summary = getDataHealthSummary(db);
     expect(summary.overallCoveragePct).toBe(100);
     expect(summary.totalSecurities).toBe(0);
+  });
+
+  it("excludes closed positions — a newest qty-0 row removes the security from the universe", () => {
+    const acct = seedAccount("Test");
+    const aapl = seedSecurity("AAPL");
+    const sold = seedSecurity("SOLD");
+
+    seedHolding(acct, aapl, 10, today);
+    seedHolding(acct, sold, 25, daysAgo(60)); // once held...
+    seedHolding(acct, sold, 0, daysAgo(30)); // ...closed a month ago
+
+    seedPrice(aapl, today, 150);
+    // SOLD's last price is from when it was held — very stale
+    seedPrice(sold, daysAgo(60), 40);
+
+    const summary = getDataHealthSummary(db);
+    expect(summary.totalSecurities).toBe(1);
+    expect(summary.securitiesWithPrices).toBe(1);
+    expect(summary.overallCoveragePct).toBe(100);
+    // Staleness must not cite the closed position either
+    expect(summary.worstStaleSymbol).not.toBe("SOLD");
+    expect(summary.maxStaleDays).toBeLessThan(30);
+  });
+
+  it("counts short positions in the universe (exposure is exposure)", () => {
+    const acct = seedAccount("Test");
+    const shrt = seedSecurity("SHRT");
+    seedHolding(acct, shrt, -5, today);
+    seedPrice(shrt, today, 90);
+
+    const summary = getDataHealthSummary(db);
+    expect(summary.totalSecurities).toBe(1);
+    expect(summary.securitiesWithPrices).toBe(1);
+  });
+
+  it("a stale TWS intra-day row in one account does not mask an older statement holding in another", () => {
+    const a1 = seedAccount("IBKR");
+    const a2 = seedAccount("Vanguard");
+    const sec = seedSecurity("BOTH");
+    // IBKR row is newer, Vanguard statement row older — per-(account,security)
+    // latest semantics keep both accounts' rows in play.
+    seedHolding(a1, sec, 5, today);
+    seedHolding(a2, sec, 10, daysAgo(20));
+    seedPrice(sec, today, 55);
+
+    const summary = getDataHealthSummary(db);
+    expect(summary.totalSecurities).toBe(1);
+    expect(summary.securitiesWithPrices).toBe(1);
   });
 });
