@@ -35,6 +35,7 @@ import { getEarningsSettings, shouldSendEarningsEmail } from "@/lib/queries/earn
 import { getExpectedRecapCluster, wrapSlotFor, WRAP_THRESHOLD } from "@/lib/earnings/wrap";
 import { runMorningDebrief } from "@/lib/earnings/debrief-send";
 import { sendReporterRecapEmail } from "@/lib/earnings/reporter-recap";
+import { printArmedWorksheets } from "@/lib/earnings/worksheet";
 import { todayET } from "@/lib/calendar/date-utils";
 import { fetchSameDayTranscripts } from "@/lib/transcripts/same-day";
 import { recordEarningsEmailSkip } from "@/lib/mutations/earnings-skips";
@@ -151,6 +152,13 @@ export async function runEarningsEmailSweep(
   } catch (err) {
     console.warn("[earnings-sweep] morning debrief pass failed:", err);
   }
+
+  // ── Worksheet auto-print pass (feedback #6) ───────────────────────────
+  // Armed events print their monospace desk sheet when the release instant
+  // enters [now−30m, now+135m] — deliberately independent of the email
+  // candidate set (a preview already sent, skipped, or AI-failed must not
+  // block the deterministic paper). printArmedWorksheets never throws.
+  await printArmedWorksheets(db, { now: opts.now });
 
   for (const cand of candidates) {
     const t0 = Date.now();

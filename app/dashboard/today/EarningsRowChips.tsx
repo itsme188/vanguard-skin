@@ -14,6 +14,8 @@ interface EarningsRowChipsProps {
   recapSent: boolean;
   previewSkipped: boolean;
   recapSkipped: boolean;
+  worksheetArmed: boolean;
+  worksheetPrinted: boolean;
 }
 
 type Phase = "preview" | "recap";
@@ -37,9 +39,47 @@ export function EarningsRowChips({
   recapSent,
   previewSkipped,
   recapSkipped,
+  worksheetArmed,
+  worksheetPrinted,
 }: EarningsRowChipsProps) {
   const { toast } = useToast();
+  const router = useRouter();
   const [openPhase, setOpenPhase] = useState<Phase | null>(null);
+  const [sheetBusy, setSheetBusy] = useState(false);
+
+  // Worksheet chip (feedback #6): tap toggles the auto-print arm; the armed
+  // state prints once at the preview tick (printed → ✓ styling). Honest
+  // feedback per convention — every outcome reaches a toast.
+  async function toggleWorksheet() {
+    if (sheetBusy) return;
+    setSheetBusy(true);
+    try {
+      const res = await fetch("/api/earnings/worksheet", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ eventId, action: worksheetArmed ? "disarm" : "arm" }),
+      });
+      const data = (await res.json().catch(() => null)) as { success?: boolean; error?: string } | null;
+      if (!res.ok || !data?.success) {
+        toast(
+          `Couldn't ${worksheetArmed ? "disarm" : "arm"} the worksheet (${data?.error ?? `server returned ${res.status}`}).`,
+          "error",
+        );
+        return;
+      }
+      toast(
+        worksheetArmed
+          ? "Worksheet disarmed."
+          : "Worksheet armed — prints automatically at the preview tick.",
+        "success",
+      );
+      router.refresh();
+    } catch {
+      toast("Couldn't reach the server to toggle the worksheet.", "error");
+    } finally {
+      setSheetBusy(false);
+    }
+  }
   const [inlineData, setInlineData] = useState<InlineEmailData | null>(null);
   const [generating, setGenerating] = useState(false);
 
@@ -127,6 +167,28 @@ export function EarningsRowChips({
           setOpenPhase("recap");
         }}
       />
+      <button
+        type="button"
+        onClick={toggleWorksheet}
+        disabled={sheetBusy}
+        className={`relative text-[10px] font-mono px-1 py-0.5 rounded disabled:opacity-50 cursor-pointer pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 ${
+          worksheetPrinted
+            ? "text-up/80 bg-up/10"
+            : worksheetArmed
+              ? "text-gold-ink bg-gold/20"
+              : "text-ink-faint bg-raised hover:bg-muted"
+        }`}
+        title={
+          worksheetPrinted
+            ? "Worksheet printed — tap to disarm/reset"
+            : worksheetArmed
+              ? "Worksheet armed (auto-prints at the preview tick) — tap to disarm"
+              : "Arm the printable worksheet for this print"
+        }
+        aria-label="Toggle printable earnings worksheet"
+      >
+        ⎙
+      </button>
       {showGenerate && (
         <button
           type="button"
