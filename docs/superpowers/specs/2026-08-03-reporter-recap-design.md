@@ -29,7 +29,7 @@ Post-filters (JS): symbol **NOT** held/watchlist (`getSymbolStatus` — covered 
 - Per-pair block (weight-ordered): target symbol + held/wl status + hypothesis text verbatim + the target's own next scheduled print when on the calendar ("XMTR reports Tue Aug 4 (BMO) — this print lands first").
 - Target positions in the direction-only presence format (`formatPositionPresence` — cc-recipient privacy convention).
 - Footer notes the email is fully deterministic (no AI interpretation — the hypothesis is the user's own).
-- **Plausibility hard gate**: when EVERY captured actual is flagged implausible vs consensus, do NOT send and do NOT write an audit row — return the benign `not_ready` 409 so a corrected actual retries (better no email than a wrong one; retry noise is the same benign-skip class as `wrap-pending`).
+- **Plausibility hard gate**: ANY flagged figure withholds the whole email (`isPlausibleEarnings` is conjunctive — a plausible-EPS / implausible-Rev print is withheld entirely, never a partially-blanked scoreboard). No send, no audit row — the benign `not_ready` 409 retries until the window closes (a `console.warn` breadcrumb marks each withhold). Review hardening: a **pre-print floor** also withholds when actuals exist but the recorded release instant is still in the future (manual-entry typo scenario — the AI recap road gets this structurally from its `enriched_at` gate).
 
 ### Send path — `sendReporterRecapEmail(db, eventId)`
 
