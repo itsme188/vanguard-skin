@@ -736,10 +736,10 @@ export function formatHoldingsList(
       const priceSuffix = p
         ? ` — last $${p.close.toFixed(2)} (${p.date})`
         : ` — no recent price`;
+      // Direction only — no share count (2026-08-02: count × public price
+      // reconstructs exact $ exposure in a cc'd email).
       const directionSuffix =
-        h.net_qty < 0
-          ? ` — NET SHORT ${Math.abs(h.net_qty)} (cross-account net)`
-          : "";
+        h.net_qty < 0 ? ` — NET SHORT (cross-account net)` : "";
       return `${h.symbol} (${h.name ?? "unknown"}, ${h.sector ?? "N/A"})${directionSuffix}${priceSuffix}`;
     })
     .join("\n");
