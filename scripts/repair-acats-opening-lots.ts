@@ -118,6 +118,9 @@ export function repairAcatsOpeningLots(
       continue;
     }
 
+    // Assumes the auto row carries no `:#N` ordinal disambiguator (the
+    // parser's ordinal only fires on same-key collisions; each of these 4
+    // symbols produces exactly one distinct-key auto row for this transfer).
     const likePattern = `ibkr:xfer:${XFER_DATE}:${symbol}:%:In`;
     const autoRows = selectAutoRows.all(account.id, likePattern) as Array<{ id: number }>;
 
@@ -152,7 +155,42 @@ export function repairAcatsOpeningLots(
        VALUES (?, ?, ?, 'TRANSFER_IN', ?, ?, ?, 1, ?, ?)`
     );
 
+    const allAutoRowIds = plan.flatMap((p) => p.autoRowIds);
+
     const run = db.transaction(() => {
+      // A FIRST standalone invocation can land here after computeTaxLots has
+      // already run on the auto rows (e.g. the normal /api/import
+      // post-commit hook fired before this script did) — tax_lots.
+      // acquisition_transaction_id has no ON DELETE CASCADE, so with
+      // foreign_keys=ON the transactions DELETE below would otherwise throw
+      // a FK constraint violation. Clear the derived layer first; both the
+      // CLI wrapper (post-apply) and the Task-5 driver recompute tax lots
+      // right after this runs, so the derived rows regenerate either way. A
+      // second standalone run is a true no-op — the auto rows are already
+      // gone by then — so this guard only ever fires once.
+      if (allAutoRowIds.length > 0) {
+        const placeholders = allAutoRowIds.map(() => "?").join(",");
+        const deletedSales = db
+          .prepare(
+            `DELETE FROM tax_lot_sales WHERE tax_lot_id IN (
+               SELECT id FROM tax_lots WHERE acquisition_transaction_id IN (${placeholders})
+             )`
+          )
+          .run(...allAutoRowIds);
+        const deletedLots = db
+          .prepare(
+            `DELETE FROM tax_lots WHERE acquisition_transaction_id IN (${placeholders})`
+          )
+          .run(...allAutoRowIds);
+        if (deletedLots.changes > 0 || deletedSales.changes > 0) {
+          console.log(
+            `  (cleared ${deletedLots.changes} derived tax_lots row(s) and ` +
+              `${deletedSales.changes} tax_lot_sales row(s) referencing the auto rows — ` +
+              `will regenerate on the next computeTaxLots)`
+          );
+        }
+      }
+
       for (const p of plan) {
         for (const id of p.autoRowIds) {
           deleteRow.run(id);

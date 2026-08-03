@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
+import { computeTaxLots } from "@/lib/compute/tax-lots";
 import { repairAcatsOpeningLots } from "@/scripts/repair-acats-opening-lots";
 
 /** The 4 auto rows the Jan-2024 ACATS import creates (Task 1's parser). */
@@ -161,6 +162,23 @@ describe("repairAcatsOpeningLots", () => {
 
     const lots = transferInRows(db);
     expect(lots.every((l) => !l.source_key.includes("TQQQ"))).toBe(true);
+  });
+
+  it("succeeds (doesn't throw a FK violation) when tax_lots already reference the auto rows", () => {
+    // Simulates a standalone invocation run AFTER the normal
+    // /api/import post-commit hook already ran computeTaxLots on the auto
+    // TRANSFER_IN rows — tax_lots.acquisition_transaction_id now points at
+    // the auto rows, and that column has no ON DELETE CASCADE.
+    seedAutoAcatsRows(db);
+    computeTaxLots(db);
+
+    const lotsBefore = db.prepare("SELECT COUNT(*) AS n FROM tax_lots").get() as { n: number };
+    expect(lotsBefore.n).toBeGreaterThan(0);
+
+    const result = repairAcatsOpeningLots(db, { apply: true });
+    expect(result.deleted).toBe(4);
+    expect(result.inserted).toBe(9);
+    expect(transferInRows(db)).toHaveLength(9);
   });
 
   it("reports a missing IBKR account gracefully instead of throwing", () => {
