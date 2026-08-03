@@ -302,6 +302,49 @@ export function parseIbkrActivity(
     }
   }
 
+  // Parse Transfers (ACATS in-kind security legs). The Jan-2024 Robinhood
+  // ACATS positions were invisible to the old canonical backfill — every
+  // subsequent sale of those shares overshot the ledger (2026-08-03 audit).
+  // Cash legs already arrive via Deposits & Withdrawals; only security rows
+  // (Asset Category "Stocks") are transactions here. Basis: transfer-date
+  // market value / qty — refined for the 4 known ACATS positions by
+  // scripts/repair-acats-opening-lots.ts (worksheet-verified original lots).
+  const xferHeader = rows.find(
+    (r) => r.section === "Transfers" && r.discriminator === "Header"
+  );
+  const xCol: Record<string, number> = {};
+  xferHeader?.fields.forEach((name, i) => {
+    xCol[name] = i;
+  });
+  for (const row of rows) {
+    if (row.section !== "Transfers" || row.discriminator !== "Data") continue;
+    const assetCategory = row.fields[xCol["Asset Category"] ?? 0];
+    if (assetCategory !== "Stocks") continue; // skips Total + Cash rows
+    const symbol = row.fields[xCol["Symbol"] ?? 3];
+    const date = row.fields[xCol["Date"] ?? 4];
+    const direction = row.fields[xCol["Direction"] ?? 6];
+    const qty = Math.abs(
+      parseFloat((row.fields[xCol["Qty"] ?? 9] ?? "").replace(/,/g, ""))
+    );
+    const marketValue = Math.abs(
+      parseFloat((row.fields[xCol["Market Value"] ?? 11] ?? "").replace(/,/g, ""))
+    );
+    if (!symbol || !date || isNaN(qty) || qty === 0) continue;
+
+    transactions.push({
+      accountName: "IBKR",
+      tradeDate: date,
+      type: direction === "Out" ? "TRANSFER_OUT" : "TRANSFER_IN",
+      symbol,
+      quantity: qty,
+      amount: marketValue,
+      pricePerShare: isNaN(marketValue) ? undefined : marketValue / qty,
+      fees: 0,
+      sourceKey: `ibkr:xfer:${date}:${symbol}:${qty}:${direction}`,
+    });
+    securitiesMap.set(symbol, { symbol, securityType: "Stock" });
+  }
+
   // Parse Dividends
   for (const row of rows) {
     if (
