@@ -323,9 +323,11 @@ describe("ensureBackup", () => {
     expect(result.created).toBe(true);
     expect(result.path).toBe(backupPath);
     expect(fs.existsSync(backupPath)).toBe(true);
+    expect(result.sizeBytes).toBeGreaterThan(0);
+    expect(result.sizeBytes).toBe(fs.statSync(backupPath).size);
   });
 
-  it("treats an already-existing backup file as satisfied instead of failing", () => {
+  it("treats an already-existing VALID backup file as satisfied instead of failing", () => {
     // VACUUM INTO throws "output file already exists" on a second write to
     // the same path — this is exactly the same-ET-day dry-run-then-apply
     // scenario Task 7's runbook produces.
@@ -336,5 +338,29 @@ describe("ensureBackup", () => {
     const second = ensureBackup(db, backupPath);
     expect(second.created).toBe(false);
     expect(second.path).toBe(backupPath);
+    expect(second.sizeBytes).toBe(first.sizeBytes);
+  });
+
+  it("throws instead of trusting a 0-byte existing backup file (interrupted prior write)", () => {
+    // A 0-byte file opens fine as a valid *empty* SQLite database and
+    // PRAGMA integrity_check reports "ok" on it (verified live) — the
+    // explicit size check is what catches this case; integrity_check
+    // alone would not.
+    const backupPath = path.join(tmpDir, "backups", "pre-ibkr-rebuild-2026-08-03.db");
+    fs.mkdirSync(path.dirname(backupPath), { recursive: true });
+    fs.writeFileSync(backupPath, "");
+
+    expect(() => ensureBackup(db, backupPath)).toThrow(/0 bytes/i);
+  });
+
+  it("throws instead of trusting a corrupted (non-empty, non-SQLite) existing backup file", () => {
+    const backupPath = path.join(tmpDir, "backups", "pre-ibkr-rebuild-2026-08-03.db");
+    fs.mkdirSync(path.dirname(backupPath), { recursive: true });
+    fs.writeFileSync(
+      backupPath,
+      "this is not a sqlite database, just garbage bytes padding the file to nonzero size"
+    );
+
+    expect(() => ensureBackup(db, backupPath)).toThrow(/not a database|integrity_check/i);
   });
 });

@@ -11,14 +11,21 @@
  * 4 approximate Jan-2024 ACATS legs into the 9 worksheet-exact original
  * lots, and tax lots + daily valuations recompute once at the end.
  *
- * Dry-run by default: preflight, backup, and the batch-17 sanity check
- * (steps 1-3) always run for real — none of them mutate `data/vanguard.db`
- * (preflight only reads statement files; the backup writes a SEPARATE
- * file; the sanity check is a read-only SELECT). Steps 4-8 (delete,
- * reimport, repair, recompute, closing census) only PRINT their plan
- * unless `--apply` is passed — except step 5's per-file parse + validate
- * + dedup-precheck reporting, which is itself pure/read-only and so runs
+ * Dry-run by default: preflight and the batch-17 sanity check (steps 1
+ * and 3) always run for real — neither mutates `data/vanguard.db`
+ * (preflight only reads statement files; the sanity check is a read-only
+ * SELECT). Step 2's backup file write also always happens for real (it
+ * writes a SEPARATE file, never the live DB). Steps 4-8 (delete, reimport,
+ * repair, recompute, closing census) only PRINT their plan unless
+ * `--apply` is passed — except step 5's per-file parse + validate +
+ * dedup-precheck reporting, which is itself pure/read-only and so runs
  * for real in BOTH modes to give a genuinely informative dry run.
+ *
+ * `runMigrations(db)` is gated on `--apply` (NOT unconditional) — a dry
+ * run must never write to the live DB, and `runMigrations` is a write the
+ * instant a pending migration exists (this branch's own opening commit
+ * ships migration 075, which drops two columns). The dry-run reads in
+ * steps 1/3 don't depend on any pending migration being applied first.
  *
  * NEVER proceeds past step 2 without a verified backup.
  *
@@ -29,7 +36,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import type Database from "better-sqlite3";
+import Database from "better-sqlite3";
 import type { ParsedImportResult } from "@/lib/import/types";
 
 // ─── Config ──────────────────────────────────────────────────────
@@ -161,6 +168,49 @@ export function getBatchSanity(
 export interface BackupResult {
   created: boolean;
   path: string;
+  sizeBytes: number;
+}
+
+/**
+ * A same-day backup file already exists on disk. Before trusting it as
+ * "the backup is satisfied," verify it wasn't left behind by an
+ * interrupted prior VACUUM INTO (Mac slept, disk filled, process killed
+ * mid-write) — a 0-byte or truncated file must never be silently accepted
+ * as a real backup, since "NEVER proceed unbacked" is the whole point of
+ * this step. Two checks, because neither alone is sufficient (verified
+ * live): a 0-byte file opens fine as a valid *empty* SQLite database and
+ * `PRAGMA integrity_check` reports "ok" on it — the explicit size check
+ * is what catches that case. A non-empty but corrupted/garbage file fails
+ * `PRAGMA integrity_check` (or fails to open at all) — that's what the
+ * size check alone would miss.
+ */
+function assertValidBackupFile(backupPath: string): number {
+  const size = fs.statSync(backupPath).size;
+  if (size === 0) {
+    throw new Error(
+      `existing backup file is 0 bytes (an interrupted prior VACUUM INTO) — ` +
+        `delete it and re-run for a fresh backup`
+    );
+  }
+
+  let check: Database.Database | undefined;
+  try {
+    check = new Database(backupPath, { readonly: true });
+    const rows = check.pragma("integrity_check(1)") as Array<
+      Record<string, string>
+    >;
+    const verdict = rows[0]?.integrity_check;
+    if (verdict !== "ok") {
+      throw new Error(
+        `existing backup file failed integrity_check ("${verdict ?? "unknown"}") — ` +
+          `delete it and re-run for a fresh backup`
+      );
+    }
+  } finally {
+    check?.close();
+  }
+
+  return size;
 }
 
 /**
@@ -170,11 +220,11 @@ export interface BackupResult {
  * (they never mutate the live DB), and Task 7's runbook does a dry-run
  * followed by an --apply on the same ET day — so the second invocation
  * would otherwise hit that error and (per "abort HARD if backup fails")
- * refuse to proceed even though a same-day backup already exists. Treat an
- * existing file at the target path as "already satisfied" rather than a
- * failure; only a genuine write failure (permissions, disk full, a
- * mid-write crash from a PRIOR run leaving a non-existent path unusable —
- * anything that isn't "the file is already there") aborts.
+ * refuse to proceed even though a same-day backup already exists. Treat a
+ * VALID existing file at the target path as "already satisfied" rather
+ * than a failure (see `assertValidBackupFile` for what "valid" means);
+ * only a genuine write failure (permissions, disk full) or an invalid
+ * existing file aborts.
  */
 export function ensureBackup(
   db: Database.Database,
@@ -183,11 +233,13 @@ export function ensureBackup(
   fs.mkdirSync(path.dirname(backupPath), { recursive: true });
 
   if (fs.existsSync(backupPath)) {
-    return { created: false, path: backupPath };
+    const sizeBytes = assertValidBackupFile(backupPath);
+    return { created: false, path: backupPath, sizeBytes };
   }
 
   db.prepare("VACUUM INTO ?").run(backupPath);
-  return { created: true, path: backupPath };
+  const sizeBytes = fs.statSync(backupPath).size;
+  return { created: true, path: backupPath, sizeBytes };
 }
 
 // ─── Step 8 helper: closing census ───────────────────────────────
@@ -228,7 +280,6 @@ export function getClosingCensus(db: Database.Database): ClosingCensus {
 // ─── CLI orchestration ────────────────────────────────────────────
 
 async function main() {
-  const { default: BetterSqlite3 } = await import("better-sqlite3");
   const { runMigrations } = await import("@/lib/db/migrate");
   const { parseImport, commitImport } = await import("@/lib/import/engine");
   const { deleteImportBatch } = await import("@/lib/mutations/import-batches");
@@ -280,10 +331,17 @@ async function main() {
     console.error(`\nABORT — database not found at ${dbPath}`);
     process.exit(1);
   }
-  const db: Database.Database = new BetterSqlite3(dbPath);
+  const db: Database.Database = new Database(dbPath);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
-  runMigrations(db);
+  // Gated on --apply: a dry run must never write to the live DB, and
+  // runMigrations() applies any pending migration immediately (this
+  // branch's own opening commit ships migration 075, which drops two
+  // columns). Steps 1 and 3's reads (file preflight, batch-17 count) don't
+  // depend on any pending migration having run.
+  if (apply) {
+    runMigrations(db);
+  }
 
   // ── Step 2: backup ─────────────────────────────────────────────
   console.log("\n[2/8] Backing up database...");
@@ -292,8 +350,8 @@ async function main() {
     const backup = ensureBackup(db, backupPath);
     console.log(
       backup.created
-        ? `  Backup created: ${backup.path}`
-        : `  Backup for today already exists — reusing: ${backup.path}`
+        ? `  Backup created: ${backup.path} (${backup.sizeBytes} bytes)`
+        : `  Backup for today already exists — verified valid, reusing: ${backup.path} (${backup.sizeBytes} bytes)`
     );
   } catch (err) {
     console.error(
@@ -344,6 +402,13 @@ async function main() {
 
     const parsed: ParsedImportResult = await parseImport(content, basename);
 
+    // Deliberately asymmetric with step 1: preflight collects every
+    // file's failure before aborting (nothing has been touched yet, so
+    // there's no cost to reporting the full picture up front); here the
+    // DB may already reflect prior files in this same loop (batch 17
+    // deleted, earlier files committed under --apply), so stopping at the
+    // FIRST offending file avoids reasoning about a partially-imported,
+    // hard-to-describe mid-rebuild state.
     if (parsed.sourceType !== "ibkr-activity") {
       console.error(
         `\nABORT — ${basename} was auto-detected as source type "${parsed.sourceType}", ` +
