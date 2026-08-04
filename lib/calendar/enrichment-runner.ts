@@ -24,6 +24,8 @@ import {
   getEarningsSettings,
   shouldSendEarningsEmail,
 } from "@/lib/queries/earnings-settings";
+import { runWireProbePass } from "./wire-probe";
+import { recordWireObservation } from "@/lib/earnings/wire-times";
 
 // Macro releases (FRED/FOMC/nonfred): data is typically published within
 // minutes of release, and the reaction window is the immediate 2-hour
@@ -72,6 +74,7 @@ interface EnrichmentCandidate {
   actual_value: string | null;
   reaction_snapshot: string | null;
   enrichment_attempted_at: string | null;
+  wire_probe_empty_at: string | null;
 }
 
 export interface EnrichOptions {
@@ -124,7 +127,8 @@ function findCandidates(
       .prepare(
         `SELECT id, source, source_key, event_type, event_date, release_time,
                 symbol, title, consensus_estimate, raw_json, security_id,
-                actual_value, reaction_snapshot, enrichment_attempted_at
+                actual_value, reaction_snapshot, enrichment_attempted_at,
+                wire_probe_empty_at
          FROM calendar_events
          WHERE id = ?`,
       )
@@ -148,7 +152,8 @@ function findCandidates(
     .prepare(
       `SELECT id, source, source_key, event_type, event_date, release_time,
               symbol, title, consensus_estimate, raw_json, security_id,
-              actual_value, reaction_snapshot, enrichment_attempted_at
+              actual_value, reaction_snapshot, enrichment_attempted_at,
+              wire_probe_empty_at
        FROM calendar_events
        WHERE enriched_at IS NULL
          AND release_time IS NOT NULL
@@ -251,7 +256,25 @@ export async function runEnrichment(
     return runTwsReactionUpgrade(db, opts);
   }
 
+  // Wire-time probe (spec 2026-08-04): pre-release Finnhub check for
+  // held/watchlist/reporter earnings inside T−90m. Early prints get their
+  // release_time pulled to now and enter THIS tick's candidate list (the
+  // normal window filter would make them wait for the next tick).
+  let probePrinted: number[] = [];
+  if (opts.eventId == null) {
+    try {
+      probePrinted = (await runWireProbePass(db, { now: opts.now })).printedEventIds;
+    } catch (err) {
+      console.warn("[enrichment] wire-probe pass failed:", err);
+    }
+  }
+
   const candidates = findCandidates(db, opts);
+  for (const id of probePrinted) {
+    if (candidates.some((c) => c.id === id)) continue;
+    const row = findCandidates(db, { ...opts, eventId: id })[0];
+    if (row) candidates.unshift(row);
+  }
   if (candidates.length === 0) return [];
 
   const update = updateEnrichment(db);
@@ -369,6 +392,29 @@ export async function runEnrichment(
         complete ? 1 : 0,
         event.id,
       );
+
+      // Wire-time observation (spec 2026-08-04): record the first-seen
+      // instant on the null→non-null actual transition — covers both the
+      // probe road (bounded via wire_probe_empty_at) and the plain
+      // post-release road (typically unbounded). Best-effort.
+      if (
+        isEarnings &&
+        event.symbol &&
+        event.actual_value == null &&
+        actualResult.actual != null
+      ) {
+        try {
+          recordWireObservation(db, {
+            symbol: event.symbol,
+            eventDate: event.event_date,
+            eventId: event.id,
+            firstSeenAt: (opts.now ?? new Date()).toISOString(),
+            lastEmptyProbeAt: event.wire_probe_empty_at ?? null,
+          });
+        } catch (err) {
+          console.warn(`[wire-probe] observation record failed for ${event.id}:`, err);
+        }
+      }
 
       // Push-at-print (Wave 1 §2): fire exactly on the null→non-null actual
       // transition for a covered, unmuted earnings name. Since #13 the gate
