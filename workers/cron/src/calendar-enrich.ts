@@ -341,12 +341,18 @@ export async function runCloudFallback(
       // NEVER gated (immediate partial capture is by design).
       const reactionAllowed =
         !isEarnings || nowMs - cand.releaseInstant.getTime() >= REACTION_READY_MS;
+      // Earnings rows anchor t_pre to the prior regular-session close
+      // (2026-08-04 Mac parity) — pass the 16:00-ET-of-event-day instant.
+      const earningsCloseMs = isEarnings
+        ? (composeReleaseInstant(cand.event_date, "16:00")?.getTime() ?? null)
+        : null;
       const reaction =
         existing?.reaction ??
         (reactionAllowed
           ? await captureReactionFromYahoo(cand.releaseInstant, sectorEtf, {
               pacingMs,
               eventSymbol: cand.event_type === "earnings" ? cand.symbol : null,
+              earningsCloseMs,
             })
           : null);
 

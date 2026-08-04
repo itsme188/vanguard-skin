@@ -37,6 +37,10 @@ export interface ReactionSnapshot {
   // the benchmarks. Optional because cloud + Mac paths both degrade
   // gracefully when bars for the event symbol are unavailable.
   symbol?: BenchmarkReaction & { symbol: string };
+  // Mirror of the Mac-side field: present ("prior_close") when every t_pre
+  // is the last regular-session close before the release (earnings rows,
+  // 2026-08-04) rather than the near-release bar.
+  pre_anchor?: "prior_close";
 }
 
 export interface TimedClose {
@@ -122,16 +126,46 @@ export function findNearestBar(
   return best;
 }
 
+/** Latest bar at or before a target timestamp; null when none precedes it.
+ *  Mirror of the Mac-side helper (lib/calendar/reaction-snapshot.ts). */
+export function lastBarAtOrBefore(
+  bars: TimedClose[],
+  targetMs: number,
+): TimedClose | null {
+  let best: TimedClose | null = null;
+  for (const bar of bars) {
+    if (bar.tMs <= targetMs && (!best || bar.tMs > best.tMs)) {
+      best = bar;
+    }
+  }
+  return best;
+}
+
+// `preAnchorClose` mirrors the Mac-side semantics (2026-08-04): when
+// provided (earnings rows), it becomes t_pre verbatim — the prior
+// regular-session close — and no pre bar is required. Macro rows never
+// pass an anchor. See lib/calendar/reaction-snapshot.ts for the full
+// rationale (wire-beats-the-slot + humans read prints vs prior close).
 export function matchBarsToReaction(
   bars: TimedClose[],
   releaseInstantMs: number,
+  preAnchorClose?: number | null,
 ): BenchmarkReaction | null {
   if (bars.length === 0) return null;
-  const preTarget = releaseInstantMs - 5 * 60 * 1000;
   const postTarget = releaseInstantMs + 120 * 60 * 1000;
-  const pre = findNearestBar(bars, preTarget);
   const post = findNearestBar(bars, postTarget);
-  if (!pre || !post || pre.close === 0) return null;
+  if (!post) return null;
+  if (preAnchorClose != null && preAnchorClose > 0) {
+    const deltaPct = ((post.close - preAnchorClose) / preAnchorClose) * 100;
+    return {
+      t_pre: Number(preAnchorClose.toFixed(4)),
+      t_post: Number(post.close.toFixed(4)),
+      delta_pct: Number(deltaPct.toFixed(2)),
+    };
+  }
+  const preTarget = releaseInstantMs - 5 * 60 * 1000;
+  const pre = findNearestBar(bars, preTarget);
+  if (!pre || pre.close === 0) return null;
   const deltaPct = ((post.close - pre.close) / pre.close) * 100;
   return {
     t_pre: Number(pre.close.toFixed(4)),

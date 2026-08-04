@@ -35,6 +35,11 @@ export interface ReactionSnapshot {
   // SPY +0.1%" instead of just the benchmark deltas. Optional because it
   // gracefully degrades if bars for the event symbol aren't available.
   symbol?: BenchmarkReaction & { symbol: string };
+  // Present (as "prior_close") when every t_pre in this snapshot is the last
+  // regular-session close before the release instead of the near-release bar
+  // (earnings rows, 2026-08-04). Absent on macro rows and pre-fix snapshots —
+  // renderers use it to label deltas honestly ("vs prior close").
+  pre_anchor?: "prior_close";
 }
 
 /** A single time/close pair — format-agnostic across data sources. */
@@ -128,20 +133,53 @@ export function findNearestBar(
   return best;
 }
 
+/** Latest bar at or before a target timestamp; null when none precedes it. */
+export function lastBarAtOrBefore(
+  bars: TimedClose[],
+  targetMs: number,
+): TimedClose | null {
+  let best: TimedClose | null = null;
+  for (const bar of bars) {
+    if (bar.tMs <= targetMs && (!best || bar.tMs > best.tMs)) {
+      best = bar;
+    }
+  }
+  return best;
+}
+
 /**
  * Given a sorted list of bars and a release instant, compute t_pre
  * (bar closest to T-5min) and t_post (bar closest to T+120min).
+ *
+ * `preAnchorClose` (2026-08-04, earnings rows): when provided, it becomes
+ * t_pre verbatim — the prior regular-session close — and no pre bar is
+ * required at all. The nearest-bar pre is wrong for earnings twice over:
+ * the wire routinely beats the recorded slot (XMTR printed 7:05 against an
+ * 8:00 slot, so the "pre" bar was already +8% post-news and the email
+ * reported the fade as a -4.8% "reaction"), and humans read a print against
+ * yesterday's close anyway. Macro rows never pass an anchor — an 8:30 CPI
+ * pre bar really is pre.
  */
 export function matchBarsToReaction(
   bars: TimedClose[],
   releaseInstantMs: number,
+  preAnchorClose?: number | null,
 ): BenchmarkReaction | null {
   if (bars.length === 0) return null;
-  const preTarget = releaseInstantMs - 5 * 60 * 1000;
   const postTarget = releaseInstantMs + 120 * 60 * 1000;
-  const pre = findNearestBar(bars, preTarget);
   const post = findNearestBar(bars, postTarget);
-  if (!pre || !post || pre.close === 0) return null;
+  if (!post) return null;
+  if (preAnchorClose != null && preAnchorClose > 0) {
+    const deltaPct = ((post.close - preAnchorClose) / preAnchorClose) * 100;
+    return {
+      t_pre: Number(preAnchorClose.toFixed(4)),
+      t_post: Number(post.close.toFixed(4)),
+      delta_pct: Number(deltaPct.toFixed(2)),
+    };
+  }
+  const preTarget = releaseInstantMs - 5 * 60 * 1000;
+  const pre = findNearestBar(bars, preTarget);
+  if (!pre || pre.close === 0) return null;
   const deltaPct = ((post.close - pre.close) / pre.close) * 100;
   return {
     t_pre: Number(pre.close.toFixed(4)),
@@ -230,7 +268,13 @@ async function fetchTwsBars(
     currency: "USD",
   };
   const endDateTime = formatTwsEndDateTime(endInstant);
-  // "9000 S" = 2.5 hours of 1-minute bars
+  // "9000 S" = 2.5 hours of 1-minute bars.
+  // useRTH=0 (2026-08-04): extended-hours bars are REQUIRED. RTH-only bars
+  // start at 9:30 ET, so every BMO t_pre (7-9am), every AMC t_post (~18:15),
+  // and even the 8:30 macro pre bar sat >10min from the nearest bar and the
+  // whole capture returned null — the "TWS-always-wins" road silently lost
+  // to the Yahoo fallback (which passes includePrePost=true) for every
+  // off-hours release. Only mid-session releases (FOMC 14:00) ever worked.
   const bars = (await Promise.race([
     api.getHistoricalData(
       contract,
@@ -238,7 +282,7 @@ async function fetchTwsBars(
       "9000 S",
       BarSizeSetting.MINUTES_ONE,
       "TRADES",
-      1,
+      0,
       1,
     ),
     new Promise<never>((_, reject) =>
@@ -257,17 +301,75 @@ async function fetchTwsBars(
 }
 
 /**
+ * Last completed daily close strictly before the event date — the BMO
+ * earnings anchor. Daily bars stamp `time` as bare "YYYYMMDD"; the request
+ * may include the event day's partial bar, which must never be the anchor.
+ */
+async function fetchTwsPriorDailyClose(
+  api: IBApiNext,
+  symbol: string,
+  endInstant: Date,
+  eventDate: string,
+  timeoutMs = 20_000,
+): Promise<number | null> {
+  const contract = {
+    symbol,
+    secType: SecType.STK,
+    exchange: "SMART",
+    currency: "USD",
+  };
+  const bars = (await Promise.race([
+    api.getHistoricalData(
+      contract,
+      formatTwsEndDateTime(endInstant),
+      "5 D",
+      BarSizeSetting.DAYS_ONE,
+      "TRADES",
+      1,
+      1,
+    ),
+    new Promise<never>((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`TWS daily bars timeout for ${symbol}`)),
+        timeoutMs,
+      ),
+    ),
+  ])) as TwsBar[];
+
+  const cutoff = eventDate.replace(/-/g, "");
+  let prior: number | null = null;
+  for (const bar of bars) {
+    const day = (bar.time ?? "").slice(0, 8);
+    if (!/^\d{8}$/.test(day) || day >= cutoff || bar.close == null) continue;
+    // Bars arrive oldest-first; keep overwriting so the LAST pre-event day wins.
+    prior = Number(bar.close);
+  }
+  return prior != null && prior > 0 ? prior : null;
+}
+
+/**
  * Primary (Mac-side) reaction capture via TWS.
  *
  * Returns null when TWS can't produce bars for even the core benchmarks.
  * Partial failures (sector ETF missing) degrade gracefully — the snapshot
  * still publishes SPY/QQQ/TLT.
+ *
+ * `opts.earnings` (2026-08-04): earnings rows anchor every ticker's t_pre to
+ * the last regular-session close before the release — the prior day's close
+ * for BMO (via a daily-bars request), the event day's ~16:00 bar for AMC
+ * (already inside the intraday window). Callers pass
+ * `{ closeMs: composeReleaseInstant(event_date, "16:00").getTime(), eventDate }`.
+ * Macro rows omit it and keep pure release-window semantics.
  */
 export async function captureReactionFromTws(
   api: IBApiNext,
   releaseInstant: Date,
   sectorEtf: string | null,
-  opts: { pacingMs?: number; eventSymbol?: string | null } = {},
+  opts: {
+    pacingMs?: number;
+    eventSymbol?: string | null;
+    earnings?: { closeMs: number; eventDate: string } | null;
+  } = {},
 ): Promise<ReactionSnapshot | null> {
   const pacingMs = opts.pacingMs ?? 500;
   const eventSymbol = opts.eventSymbol?.trim().toUpperCase() || null;
@@ -282,9 +384,14 @@ export async function captureReactionFromTws(
     symbols.push(eventSymbol);
   }
 
+  const releaseMs = releaseInstant.getTime();
+  const earnings = opts.earnings ?? null;
+  const isBmo = earnings != null && releaseMs < earnings.closeMs;
+
   // TWS must fetch bars up to at least T+120min, plus a small buffer.
-  const endInstant = new Date(releaseInstant.getTime() + 125 * 60 * 1000);
+  const endInstant = new Date(releaseMs + 125 * 60 * 1000);
   const barsMap: Record<string, TimedClose[]> = {};
+  const anchorMap: Record<string, number | null> = {};
 
   for (const sym of symbols) {
     try {
@@ -294,12 +401,36 @@ export async function captureReactionFromTws(
     }
     // Pacing between requests (production: 500ms to stay inside IBKR 60/10min window)
     if (pacingMs > 0) await new Promise((r) => setTimeout(r, pacingMs));
+
+    if (earnings) {
+      if (isBmo) {
+        // BMO: prior session's daily close (never in the 2.5h intraday window).
+        try {
+          anchorMap[sym] = await fetchTwsPriorDailyClose(
+            api,
+            sym,
+            releaseInstant,
+            earnings.eventDate,
+          );
+        } catch {
+          anchorMap[sym] = null;
+        }
+        if (pacingMs > 0) await new Promise((r) => setTimeout(r, pacingMs));
+      } else {
+        // AMC: the event day's official close — last bar at/before 16:00 ET.
+        // Never a later after-hours bar: the wire can beat the recorded slot,
+        // and a post-16:00 bar may already carry the reaction.
+        anchorMap[sym] = lastBarAtOrBefore(barsMap[sym], earnings.closeMs)?.close ?? null;
+      }
+    }
   }
 
-  const releaseMs = releaseInstant.getTime();
-  const spy = matchBarsToReaction(barsMap.SPY ?? [], releaseMs);
-  const qqq = matchBarsToReaction(barsMap.QQQ ?? [], releaseMs);
-  const tlt = matchBarsToReaction(barsMap.TLT ?? [], releaseMs);
+  const anchorFor = (sym: string): number | null =>
+    earnings ? (anchorMap[sym] ?? null) : null;
+
+  const spy = matchBarsToReaction(barsMap.SPY ?? [], releaseMs, anchorFor("SPY"));
+  const qqq = matchBarsToReaction(barsMap.QQQ ?? [], releaseMs, anchorFor("QQQ"));
+  const tlt = matchBarsToReaction(barsMap.TLT ?? [], releaseMs, anchorFor("TLT"));
 
   // If all three core benchmarks are null, treat the snapshot as a miss.
   if (!spy && !qqq && !tlt) return null;
@@ -312,16 +443,26 @@ export async function captureReactionFromTws(
     qqq: qqq ?? { t_pre: 0, t_post: 0, delta_pct: 0 },
     tlt: tlt ?? { t_pre: 0, t_post: 0, delta_pct: 0 },
   };
+  // Label only when an anchor was actually applied — if every anchor lookup
+  // failed, the matcher silently fell back to window semantics and labeling
+  // the snapshot "prior_close" would misdescribe the numbers.
+  if (earnings && Object.values(anchorMap).some((v) => v != null && v > 0)) {
+    snapshot.pre_anchor = "prior_close";
+  }
 
   if (sectorEtf && barsMap[sectorEtf]) {
-    const sector = matchBarsToReaction(barsMap[sectorEtf], releaseMs);
+    const sector = matchBarsToReaction(barsMap[sectorEtf], releaseMs, anchorFor(sectorEtf));
     if (sector) {
       snapshot.sector = { symbol: sectorEtf, ...sector };
     }
   }
 
   if (eventSymbol && barsMap[eventSymbol]) {
-    const symbolReaction = matchBarsToReaction(barsMap[eventSymbol], releaseMs);
+    const symbolReaction = matchBarsToReaction(
+      barsMap[eventSymbol],
+      releaseMs,
+      anchorFor(eventSymbol),
+    );
     if (symbolReaction) {
       snapshot.symbol = { symbol: eventSymbol, ...symbolReaction };
     }
