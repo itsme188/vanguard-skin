@@ -90,6 +90,10 @@ export function EarningsDateChip({
   const slotParam = releaseTime && releaseTime < "12:00" ? "bmo" : "amc";
 
   async function loadReleaseTime() {
+    // Every popover open starts message-clean — otherwise a stale
+    // success/error from a prior save lingers beside freshly-fetched data
+    // after close → reopen.
+    setRtMsg(null);
     try {
       const res = await fetch(
         `/api/earnings/release-time?symbol=${encodeURIComponent(symbol)}&slot=${slotParam}`,
