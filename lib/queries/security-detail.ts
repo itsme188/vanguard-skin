@@ -11,7 +11,7 @@ import type {
   CalendarEvent,
   EarningsTranscript,
 } from "@/lib/types";
-import { adjustedMarketValueSQL } from "@/lib/valuation";
+import { adjustedMarketValueSQL, scaledCostBasisFallbackSQL } from "@/lib/valuation";
 import { getNotesForSecurity, type NoteWithContext } from "@/lib/queries/notes";
 import type {
   TaxLotWithSecurity,
@@ -179,15 +179,9 @@ export function getHoldingsBySecurity(
   securityId: number
 ): SecurityPosition[] {
   // Cost basis fallback — see getAllHoldings (lib/queries/holdings.ts) for the
-  // Plaid-NULL rationale; same pattern as getCrossAccountPositions.
-  const costBasisExpr = `COALESCE(
-        h.cost_basis,
-        (SELECT h3.cost_basis FROM holdings h3
-          WHERE h3.account_id = h.account_id
-            AND h3.security_id = h.security_id
-            AND h3.cost_basis IS NOT NULL
-          ORDER BY h3.as_of_date DESC LIMIT 1)
-      )`;
+  // Plaid-NULL rationale. Scaled per-share to the current quantity and signed
+  // like the position (scaledCostBasisFallbackSQL header has the short case).
+  const costBasisExpr = scaledCostBasisFallbackSQL("h", "h3");
 
   return db
     .prepare(
