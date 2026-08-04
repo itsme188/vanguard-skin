@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { calendarDaysBetween } from "@/lib/calendar/date-utils";
+import { SIGNED_EXTERNAL_FLOW_SQL } from "@/lib/compute/flow-adjusted";
 import {
   getDailyValuationsCombined,
   getDailyValuationsForAccounts,
@@ -86,7 +87,7 @@ function computeBetaForPeriod(
   const flowFilter = accountFilter(accountIds, "account_id");
   const flowRows = db
     .prepare(
-      `SELECT trade_date, SUM(amount) AS amount
+      `SELECT trade_date, SUM(${SIGNED_EXTERNAL_FLOW_SQL}) AS amount
        FROM transactions
        WHERE is_external_flow = 1 AND amount IS NOT NULL
          AND trade_date BETWEEN ? AND ?${flowFilter.sql}
