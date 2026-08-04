@@ -23,13 +23,20 @@ type Phase = "preview" | "recap";
 /**
  * Right-side chip cluster on each EarningsHub row.
  *
+ * Two wrap groups (2026-08-04 legibility pass — labels are full words and
+ * the worksheet chip SAYS its state instead of only tinting the glyph):
+ * emails ("preview" / "recap") and actions ("⎙ arm|armed|printed",
+ * "gen recap"). The root flex-wraps between groups only (each group is
+ * shrink-0), so in the 160px Email grid column the cluster breaks into two
+ * neat lines instead of mashing; in the roomier mobile card it stays inline.
+ *
  * - Sent → solid green chip, opens the email viewer.
- * - Pending + not skipped → faint chip with hover-revealed × button to skip
+ * - Pending + not skipped → faint chip with hover-revealed skip button
  *   (skip POSTs to /api/earnings/skip and the next 15-min sweep excludes it).
  *   On coarse pointers the overlay is removed entirely and an always-visible
  *   ✕ renders beside the chip instead (hover doesn't exist on touch, and an
  *   invisible opacity-0 overlay would eat stray taps).
- * - Skipped → muted chip showing "skipped" with an undo affordance.
+ * - Skipped → muted strikethrough chip with an undo affordance.
  *
  * Skipping never disables the symbol globally — it's a per-event mark.
  */
@@ -146,60 +153,73 @@ export function EarningsRowChips({
   }
 
   return (
-    <span className="flex items-center gap-1 shrink-0">
-      <PhaseChip
-        eventId={eventId}
-        phase="preview"
-        sent={previewSent}
-        skipped={previewSkipped}
-        onView={() => {
-          setInlineData(null);
-          setOpenPhase("preview");
-        }}
-      />
-      <PhaseChip
-        eventId={eventId}
-        phase="recap"
-        sent={recapSent}
-        skipped={recapSkipped}
-        onView={() => {
-          setInlineData(null);
-          setOpenPhase("recap");
-        }}
-      />
-      <button
-        type="button"
-        onClick={toggleWorksheet}
-        disabled={sheetBusy}
-        className={`relative text-[10px] font-mono px-1 py-0.5 rounded disabled:opacity-50 cursor-pointer pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 ${
-          worksheetPrinted
-            ? "text-up/80 bg-up/10"
-            : worksheetArmed
-              ? "text-gold-ink bg-gold/20"
-              : "text-ink-faint bg-raised hover:bg-muted"
-        }`}
-        title={
-          worksheetPrinted
-            ? "Worksheet printed — tap to disarm/reset"
-            : worksheetArmed
-              ? "Worksheet armed (auto-prints at the preview tick) — tap to disarm"
-              : "Arm the printable worksheet for this print"
-        }
-        aria-label="Toggle printable earnings worksheet"
-      >
-        ⎙
-      </button>
-      {showGenerate && (
+    /* min-w-0 + NO shrink-0 on the root: the root must be allowed to shrink
+       to its grid cell so flex-wrap actually engages. A shrink-0 root sizes
+       to max-content (~236px), never wraps, and spills leftward over the
+       Bogeys button — an invisible click-stealer on pending rows (the exact
+       2026-07-27 "+ BOG silently skipped the recap" bug, re-caught by
+       elementFromPoint verification 2026-08-04). */
+    <span className="flex flex-wrap items-center justify-end gap-x-1.5 gap-y-1 min-w-0">
+      {/* Group 1 — email lifecycle chips. shrink-0 so wrapping only ever
+          happens BETWEEN groups, never mid-group. */}
+      <span className="inline-flex items-center gap-1.5 shrink-0">
+        <PhaseChip
+          eventId={eventId}
+          phase="preview"
+          sent={previewSent}
+          skipped={previewSkipped}
+          onView={() => {
+            setInlineData(null);
+            setOpenPhase("preview");
+          }}
+        />
+        <PhaseChip
+          eventId={eventId}
+          phase="recap"
+          sent={recapSent}
+          skipped={recapSkipped}
+          onView={() => {
+            setInlineData(null);
+            setOpenPhase("recap");
+          }}
+        />
+      </span>
+      {/* Group 2 — actions: worksheet arm toggle + on-demand recap compose. */}
+      <span className="inline-flex items-center gap-1.5 shrink-0">
         <button
           type="button"
-          onClick={generateRecap}
-          disabled={generating}
-          className="relative text-[10px] font-mono px-1.5 py-0.5 rounded text-gold-ink bg-gold/15 hover:bg-gold/25 disabled:opacity-50 cursor-pointer pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
-          title="Compose a fresh recap now (runs enrichment + AI; ~30-60s)"
+          onClick={toggleWorksheet}
+          disabled={sheetBusy}
+          className={`relative text-[10px] font-mono px-1.5 py-0.5 rounded whitespace-nowrap disabled:opacity-50 cursor-pointer active:scale-[0.96] transition-transform pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 ${
+            worksheetPrinted
+              ? "text-up bg-up/15 hover:bg-up/25"
+              : worksheetArmed
+                ? "text-gold-ink bg-gold/20 hover:bg-gold/30"
+                : "text-ink-faint bg-raised hover:bg-muted"
+          }`}
+          title={
+            worksheetPrinted
+              ? "Worksheet printed — tap to disarm/reset"
+              : worksheetArmed
+                ? "Worksheet armed — auto-prints ~30 min before the release. Tap to disarm."
+                : "Not armed. Tap to arm the printable one-page worksheet for this print."
+          }
+          aria-label="Toggle printable earnings worksheet"
         >
-          {generating ? "…" : "gen"}
+          {worksheetPrinted ? "⎙ printed" : worksheetArmed ? "⎙ armed" : "⎙ arm"}
         </button>
-      )}
+        {showGenerate && (
+          <button
+            type="button"
+            onClick={generateRecap}
+            disabled={generating}
+            className="relative text-[10px] font-mono px-1.5 py-0.5 rounded whitespace-nowrap text-gold-ink bg-gold/15 hover:bg-gold/25 disabled:opacity-50 cursor-pointer active:scale-[0.96] transition-transform pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
+            title="Compose a fresh recap email right now (runs enrichment + AI, ~30–60s) instead of waiting for the next sweep"
+          >
+            {generating ? "…" : "gen recap"}
+          </button>
+        )}
+      </span>
       {/* Generate outcomes surface as toasts, never as an inline span: the
           message used to render INSIDE this fixed-width right-aligned cell,
           which slid the pre/rec chip group left over the neighboring + BOG
@@ -237,15 +257,17 @@ function PhaseChip({ eventId, phase, sent, skipped, onView }: PhaseChipProps) {
   const router = useRouter();
   const { toast } = useToast();
   const [pending, startTransition] = useTransition();
-  const label = phase === "preview" ? "pre" : "rec";
+  // Full-word labels (2026-08-04): "pre"/"rec" read as noise in a four-chip
+  // cluster — the label IS the affordance in a 10px chip, so spell it out.
+  const label = phase;
 
   if (sent) {
     return (
       <button
         type="button"
         onClick={onView}
-        className="relative text-[10px] font-mono px-1.5 py-0.5 rounded text-up bg-up/15 hover:bg-up/25 cursor-pointer pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
-        title={`View ${phase} email`}
+        className="relative text-[10px] font-mono px-1.5 py-0.5 rounded whitespace-nowrap text-up bg-up/15 hover:bg-up/25 cursor-pointer active:scale-[0.96] transition-transform pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
+        title={`${phase} email sent — click to read it`}
       >
         ✓ {label}
       </button>
@@ -285,8 +307,8 @@ function PhaseChip({ eventId, phase, sent, skipped, onView }: PhaseChipProps) {
         type="button"
         onClick={toggleSkip}
         disabled={pending}
-        className="relative text-[10px] font-mono px-1.5 py-0.5 rounded text-ink-faint bg-raised hover:bg-muted disabled:opacity-50 cursor-pointer line-through pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
-        title={`${phase} skipped — click to un-skip`}
+        className="relative text-[10px] font-mono px-1.5 py-0.5 rounded whitespace-nowrap text-ink-faint bg-raised hover:bg-muted disabled:opacity-50 cursor-pointer line-through active:scale-[0.96] transition-transform pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5"
+        title={`${phase} email skipped for this event — click to un-skip`}
       >
         {label}
       </button>
@@ -297,8 +319,8 @@ function PhaseChip({ eventId, phase, sent, skipped, onView }: PhaseChipProps) {
     <span className="inline-flex items-center gap-0.5">
       <span className="group relative inline-flex">
         <span
-          className="text-[10px] font-mono px-1.5 py-0.5 rounded text-ink-faint bg-raised group-hover:opacity-30 transition-opacity"
-          title={`${phase} pending`}
+          className="text-[10px] font-mono px-1.5 py-0.5 rounded whitespace-nowrap text-ink-faint bg-raised group-hover:opacity-30 transition-opacity"
+          title={`${phase} email pending — sends automatically; hover to skip`}
         >
           {label}
         </span>
