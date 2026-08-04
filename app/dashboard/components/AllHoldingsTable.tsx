@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { unrealizedGainRatio } from "@/lib/format";
 import { SymbolLink } from "./SymbolLink";
 import { ScrollFade } from "./ScrollFade";
 import { SortableHeader } from "./SortableHeader";
@@ -76,10 +77,7 @@ export function AllHoldingsTable({ holdings }: { holdings: AllHoldingsRow[] }) {
   const rows = useMemo(() => {
     const enriched = filtered.map((h) => ({
       ...h,
-      gain_pct:
-        h.unrealized_gain !== null && h.cost_basis !== null && h.cost_basis !== 0
-          ? h.unrealized_gain / h.cost_basis
-          : null,
+      gain_pct: unrealizedGainRatio(h.unrealized_gain, h.cost_basis),
       alloc_pct:
         h.current_value !== null && unfilteredTotal > 0
           ? h.current_value / unfilteredTotal

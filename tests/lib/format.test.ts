@@ -12,6 +12,7 @@ import {
   parseLargeUSD,
   parseStoredTimestamp,
   rendersAsZero,
+  unrealizedGainRatio,
 } from "../../lib/format";
 
 // ── Negative-zero guard ──────────────────────────────────────────────
@@ -268,3 +269,24 @@ describe("coercePercent (expected-move parsing, feedback #5)", () => {
     expect(coercePercent(Number.NaN)).toBeNull();
   });
 });
+
+describe("unrealizedGainRatio", () => {
+  // Short positions carry a NEGATIVE cost basis (short proceeds) — the gain
+  // ratio's sign must follow the DOLLAR gain, never flip on the denominator
+  // (qa:security-detail-positions--short-gain-pct-sign-inverted).
+  it("long position: +10% gain", () => {
+    expect(unrealizedGainRatio(1000, 10000)).toBeCloseTo(0.1, 6);
+  });
+  it("short position losing money: negative ratio despite negative basis", () => {
+    expect(unrealizedGainRatio(-730, -11009)).toBeCloseTo(-730 / 11009, 6);
+  });
+  it("short position making money: positive ratio", () => {
+    expect(unrealizedGainRatio(76, -33000)).toBeCloseTo(76 / 33000, 6);
+  });
+  it("null/zero basis or null gain -> null", () => {
+    expect(unrealizedGainRatio(null, 10000)).toBeNull();
+    expect(unrealizedGainRatio(100, null)).toBeNull();
+    expect(unrealizedGainRatio(100, 0)).toBeNull();
+  });
+});
+
