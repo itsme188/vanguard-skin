@@ -14,6 +14,7 @@
 import type Database from "better-sqlite3";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { resolveReleaseTime } from "@/lib/calendar/release-times";
+import { todayET } from "@/lib/calendar/date-utils";
 
 export const BOUNDED_MAX_GAP_MS = 30 * 60 * 1000;
 export const OBSERVATION_LOOKBACK_DAYS = 400; // ~4 quarters + slack
@@ -248,6 +249,10 @@ export function clearUserReleaseTime(db: Database.Database, symbol: string): boo
 }
 
 function lookbackSinceDate(): string {
+  // UTC-sliced (not ET-anchored): on a 400-day window this is at most a
+  // ~1-day fuzz at either boundary, which can only ever admit one extra
+  // stale observation or exclude one marginal one — never material to the
+  // cascade's conclusions. Deliberate; don't "fix" this in an ET-anchor sweep.
   const d = new Date(Date.now() - OBSERVATION_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
   return d.toISOString().slice(0, 10);
 }
@@ -303,6 +308,13 @@ export function resolveEarningsReleaseTime(
 ): string | null {
   if (row.event_time && /^\d{2}:\d{2}$/.test(row.event_time)) return row.event_time;
   if (row.event_type !== "earnings" || !row.symbol) return resolveReleaseTime(row);
+  // "TAS" ("during trading" — no specific release time) is a distinct
+  // category from BMO/AMC, not merely "unknown". Mirrors deriveReleaseTime's
+  // conservative choice (lib/mutations/calendar.ts): a TAS row never
+  // consults the symbol cascade — a standing user/web override for the
+  // symbol's usual BMO/AMC slot says nothing about a TAS print, and
+  // slot=null would otherwise bypass the sameSideOfNoon guard entirely.
+  if (row.event_time?.trim().toUpperCase() === "TAS") return resolveReleaseTime(row);
 
   const slot = ((): "bmo" | "amc" | null => {
     const et = row.event_time?.trim().toUpperCase();
@@ -340,7 +352,7 @@ export function applyResolvedReleaseTimeToUpcomingEvents(
   symbol: string,
   opts: { today?: string } = {},
 ): number {
-  const today = opts.today ?? new Date().toISOString().slice(0, 10);
+  const today = opts.today ?? todayET();
   let rows: Array<{
     id: number; event_type: string; event_time: string | null;
     raw_json: string | null; symbol: string | null; release_time: string | null;
