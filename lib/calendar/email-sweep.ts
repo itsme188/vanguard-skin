@@ -185,6 +185,12 @@ export async function runEarningsEmailSweep(
     // cluster counts held/watchlist expected recaps, the debrief's candidate
     // gate never covers a non-held reporter, and the read-through signal is
     // only valuable while it's timely.
+    // BMO clusters are EXEMPT too (2026-08-04 decision): the defer-to-
+    // next-morning-debrief rationale is AMC-specific — a BMO cluster's
+    // individual recaps land the SAME morning the user is following the
+    // prints, so suppression buys nothing and costs a full day (the 8/04
+    // DOCN/XMTR/WIX cluster had to be recapped manually). Only AMC
+    // clusters suppress. Worker mirror: fallback-earnings.ts.
     if (cand.phase === "recap" && !cand.reporterRecap) {
       const eventRow = db
         .prepare(
@@ -195,7 +201,7 @@ export async function runEarningsEmailSweep(
       if (
         eventRow &&
         eventRow.event_date === todayET(opts.now) &&
-        slot !== null &&
+        slot === "AMC" &&
         getExpectedRecapCluster(db, eventRow.event_date, slot).length >= WRAP_THRESHOLD
       ) {
         results.push({

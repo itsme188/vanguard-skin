@@ -208,7 +208,6 @@ const MAX_CANDIDATES_PER_RUN = 5;
 export const WRAP_THRESHOLD = 3;
 
 export type WrapSlot = "BMO" | "AMC";
-const WRAP_SLOTS: WrapSlot[] = ["BMO", "AMC"];
 
 // Parity with lib/earnings/wrap.ts::SLOT_DEADLINES_ET (user-set 2026-07-16).
 // No longer consulted by the suppress-only wrap (nothing fires at a deadline
@@ -380,9 +379,12 @@ export async function runEarningsFallback(
   // a slot at/over WRAP_THRESHOLD is in WRAP MODE — its recap members are
   // suppressed from individual cloud recap sends and NOTHING replaces them
   // from the cloud; the names roll into the Mac's next morning debrief.
+  // AMC ONLY (2026-08-04 decision, parity with lib/calendar/email-sweep.ts):
+  // the defer-to-debrief rationale is AMC-specific — a BMO cluster's
+  // individual recaps land the same morning, so BMO never suppresses.
   const suppressedRecapIds = new Set<number>();
-  for (const slot of WRAP_SLOTS) {
-    const cluster = buildWrapCluster(snapshot, slot, date);
+  {
+    const cluster = buildWrapCluster(snapshot, "AMC", date);
     if (cluster.length >= WRAP_THRESHOLD) {
       for (const m of cluster) {
         suppressedRecapIds.add(m.eventId);
