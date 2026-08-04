@@ -311,6 +311,16 @@ export function parseSourceKey(sourceKey: string):
   if (manualEarnings) {
     return { kind: "finnhub", symbol: manualEarnings[1], date: manualEarnings[2] };
   }
+  // Nasdaq-sourced earnings rows are a normal recurring population (names
+  // Finnhub's calendar misses but Nasdaq's catches — RKT 7/30, XMTR/WIX
+  // 8/04). They take the same Finnhub symbol+date road; before this, they
+  // fell through to "unknown" and the runner retried every tick without
+  // ever fetching an actual — so the recap gate never opened and every
+  // Nasdaq-only print ended in a blocked-recap Pushover instead of a recap.
+  const nasdaq = /^nasdaq:([^:]+):(\d{4}-\d{2}-\d{2})$/.exec(sourceKey);
+  if (nasdaq) {
+    return { kind: "finnhub", symbol: nasdaq[1], date: nasdaq[2] };
+  }
   return { kind: "unknown" };
 }
 

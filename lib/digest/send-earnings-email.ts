@@ -1191,10 +1191,18 @@ export function formatReactionSnapshot(json: string | null): string | null {
       tlt?: { delta_pct?: number };
       sector?: { symbol?: string; delta_pct?: number };
       symbol?: { symbol?: string; delta_pct?: number };
+      pre_anchor?: string;
     };
     const lines: string[] = [];
     const win = snap.window_min ?? 120;
-    lines.push(`- Window: T+${win} minutes from release (source: ${snap.source ?? "?"})`);
+    // pre_anchor snapshots (earnings, 2026-08-04) measure each move from the
+    // prior regular-session close, not from the release-time bar — say so, or
+    // the reader compares these against day-change numbers and calls them off.
+    const basis =
+      snap.pre_anchor === "prior_close"
+        ? `moves vs prior close, measured at T+${win} minutes`
+        : `T+${win} minutes from release`;
+    lines.push(`- Window: ${basis} (source: ${snap.source ?? "?"})`);
     if (snap.symbol && snap.symbol.delta_pct != null) {
       lines.push(`- ${snap.symbol.symbol ?? "stock"}: ${pctSign(snap.symbol.delta_pct)}`);
     }

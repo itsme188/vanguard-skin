@@ -212,6 +212,13 @@ export function parseSourceKey(sourceKey: string): ParsedSourceKey {
   if (manualEarnings) {
     return { kind: "finnhub", symbol: manualEarnings[1], date: manualEarnings[2] };
   }
+  // Nasdaq-sourced earnings rows ride the Finnhub road too — mirrors the
+  // Mac's lib/calendar/enrich-actuals.ts (2026-08-04 XMTR/WIX incident:
+  // Nasdaq-only names fell to "unknown" and never captured actuals).
+  const nasdaq = /^nasdaq:([^:]+):(\d{4}-\d{2}-\d{2})$/.exec(sourceKey);
+  if (nasdaq) {
+    return { kind: "finnhub", symbol: nasdaq[1], date: nasdaq[2] };
+  }
   return { kind: "unknown" };
 }
 

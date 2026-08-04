@@ -222,7 +222,7 @@ export function EarningsHub() {
             <div
               className="grid items-baseline px-5 py-2 border-b border-edge font-mono uppercase bg-raised text-ink-faint"
               style={{
-                gridTemplateColumns: "84px 64px 92px 1fr 1fr 1fr 1fr 64px 80px 96px",
+                gridTemplateColumns: DESKTOP_GRID_COLUMNS,
                 gap: "16px",
                 fontSize: "10px",
                 letterSpacing: "0.22em",
@@ -301,6 +301,13 @@ export function EarningsHub() {
   );
 }
 
+// Single source for the desktop table's column template (header + rows must
+// never drift). Email column is 160px (was 96px, 2026-08-04): it holds up to
+// five controls — preview/recap chips, worksheet arm, gen recap, delete — and
+// at 96px they mashed into an illegible pile. Width came from Δ (64→56) and
+// Bogeys (80→64); the 1fr numeric columns absorb the rest.
+const DESKTOP_GRID_COLUMNS = "84px 64px 92px 1fr 1fr 1fr 1fr 56px 64px 160px";
+
 function DesktopRow({ event }: { event: EnrichedRow }) {
   const slot = fmtSlot(event.event_time, event.release_time);
   const consensus = effectiveConsensus(event);
@@ -326,7 +333,7 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
     <div
       className="grid items-baseline px-5 py-2.5 border-b border-edge transition-colors hover:bg-muted"
       style={{
-        gridTemplateColumns: "84px 64px 92px 1fr 1fr 1fr 1fr 64px 80px 96px",
+        gridTemplateColumns: DESKTOP_GRID_COLUMNS,
         gap: "16px",
         fontSize: "13px",
       }}
@@ -399,7 +406,7 @@ function DesktopRow({ event }: { event: EnrichedRow }) {
         )}
       </span>
       <span
-        className="inline-flex items-center justify-end gap-1"
+        className="inline-flex items-center justify-end gap-1 min-w-0"
         style={{ textAlign: "right" }}
       >
         <EarningsRowChips

@@ -44,6 +44,22 @@ describe("parseSourceKey — manual earnings keys (Worker mirror, 2026-08-02 par
       date: "2026-05-21",
     });
   });
+
+  // Nasdaq-only earnings rows (2026-08-04 XMTR/WIX incident) ride the
+  // Finnhub road too — mirrors the Mac-side fix in
+  // lib/calendar/enrich-actuals.ts, same parity family as the manual: fix.
+  it("routes nasdaq keys down the finnhub road", () => {
+    expect(parseSourceKey("nasdaq:XMTR:2026-08-04")).toEqual({
+      kind: "finnhub",
+      symbol: "XMTR",
+      date: "2026-08-04",
+    });
+  });
+
+  it("leaves malformed nasdaq keys unknown", () => {
+    expect(parseSourceKey("nasdaq:XMTR")).toEqual({ kind: "unknown" });
+    expect(parseSourceKey("nasdaq:XMTR:not-a-date")).toEqual({ kind: "unknown" });
+  });
 });
 
 describe("formatFredValue — count/level semantics (Worker mirror)", () => {
