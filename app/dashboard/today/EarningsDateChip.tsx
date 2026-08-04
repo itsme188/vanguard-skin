@@ -77,6 +77,61 @@ export function EarningsDateChip({
   const [fixSlot, setFixSlot] = useState<"bmo" | "amc">(
     releaseTime && releaseTime < "12:00" ? "bmo" : "amc",
   );
+  // "Reports at" wire-time editor (spec 2026-08-04, Task 5): standing
+  // per-symbol release-time override, fetched lazily on popover open.
+  const [rt, setRt] = useState<{
+    resolved: { time: string; source: string } | null;
+    override: { source: string; release_time: string } | null;
+  } | null>(null);
+  const [rtEdit, setRtEdit] = useState("");
+  const [rtSaving, setRtSaving] = useState(false);
+  const [rtMsg, setRtMsg] = useState<string | null>(null);
+
+  const slotParam = releaseTime && releaseTime < "12:00" ? "bmo" : "amc";
+
+  async function loadReleaseTime() {
+    try {
+      const res = await fetch(
+        `/api/earnings/release-time?symbol=${encodeURIComponent(symbol)}&slot=${slotParam}`,
+      );
+      const body = await res.json().catch(() => null);
+      if (body?.success) {
+        setRt(body.data);
+        setRtEdit(body.data.override?.release_time ?? body.data.resolved?.time ?? releaseTime ?? "");
+      }
+    } catch {
+      /* popover shows the stored releaseTime fallback */
+    }
+  }
+
+  async function saveReleaseTime(value: string | null) {
+    if (rtSaving) return;
+    setRtSaving(true);
+    setRtMsg(null);
+    try {
+      const res = await fetch("/api/earnings/release-time", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol, releaseTime: value }),
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok || !body?.success) {
+        setRtMsg(body?.error ?? `Save failed: server returned ${res.status}.`);
+        return;
+      }
+      setRtMsg(
+        value === null
+          ? `Override cleared · ${body.data.updatedEvents} upcoming event(s) re-resolved`
+          : `Saved · ${body.data.updatedEvents} upcoming event(s) updated`,
+      );
+      await loadReleaseTime();
+      startTransition(() => router.refresh());
+    } catch {
+      setRtMsg("Save failed: could not reach the server.");
+    } finally {
+      setRtSaving(false);
+    }
+  }
 
   async function submitCorrection() {
     if (submitting || !fixDate) return;
@@ -135,7 +190,10 @@ export function EarningsDateChip({
       <span className="relative inline-flex">
         <button
           type="button"
-          onClick={() => setOpen((o) => !o)}
+          onClick={() => {
+            setOpen((o) => !o);
+            if (!open) void loadReleaseTime();
+          }}
           disabled={pending}
           className={`text-[10px] font-mono cursor-pointer disabled:opacity-50 ${passive.cls} relative pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-0.5 pointer-coarse:after:content-['']`}
           title={`${passive.line} — tap to fix a wrong date/slot`}
@@ -179,6 +237,43 @@ export function EarningsDateChip({
               >
                 Fix date
               </button>
+            </div>
+            <div className="mt-2 pt-1.5 border-t border-edge">
+              <p className="text-[11px] text-ink mb-1">
+                Reports at{" "}
+                <span className="font-mono">{rt?.resolved?.time ?? releaseTime ?? "—"}</span>
+                {rt?.resolved && (
+                  <span className="text-ink-faint"> · {rt.resolved.source}</span>
+                )}
+              </p>
+              <div className="flex items-center gap-1">
+                <input
+                  type="time"
+                  value={rtEdit}
+                  onChange={(e) => setRtEdit(e.target.value)}
+                  className="text-[10px] bg-raised rounded px-1 py-0.5 flex-1 min-w-0 text-ink"
+                  aria-label="Standing release-time override (ET)"
+                />
+                <button
+                  type="button"
+                  disabled={rtSaving || !rtEdit}
+                  onClick={() => saveReleaseTime(rtEdit)}
+                  className="text-[10px] font-mono px-1.5 py-0.5 rounded text-up bg-up/15 hover:bg-up/25 disabled:opacity-40 whitespace-nowrap"
+                >
+                  Save
+                </button>
+                {rt?.override?.source === "user" && (
+                  <button
+                    type="button"
+                    disabled={rtSaving}
+                    onClick={() => saveReleaseTime(null)}
+                    className="text-[10px] font-mono px-1.5 py-0.5 rounded text-ink-dim bg-raised hover:bg-muted disabled:opacity-40"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              {rtMsg && <p className="text-[10px] text-ink-dim pt-1">{rtMsg}</p>}
             </div>
             {confirmError && (
               <p className="text-[10px] text-down pt-1">{confirmError}</p>
