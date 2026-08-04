@@ -166,7 +166,11 @@ function seedHeldPreviewCandidate(db: Database.Database, symbol: string): number
  * duplicate preview candidate for the same event and defeating the
  * recap-only suppression this fixture is meant to isolate.
  */
-function seedHeldRecapCandidate(db: Database.Database, symbol: string): number {
+function seedHeldRecapCandidate(
+  db: Database.Database,
+  symbol: string,
+  slot: "AMC" | "BMO" = "AMC",
+): number {
   const accountId = seedAccount(db, `acct-${symbol}`);
   const securityId = (
     db
@@ -190,7 +194,7 @@ function seedHeldRecapCandidate(db: Database.Database, symbol: string): number {
     )
     .run(
       "2026-06-01",
-      "AMC",
+      slot,
       "08:00", // already past NOW (18:30 UTC) — keeps this out of the preview window
       `${symbol} earnings`,
       symbol,
@@ -580,6 +584,32 @@ describe("wrap-mode suppression (#17 T3)", () => {
     expect(sendRecap).not.toHaveBeenCalled(); // held ones stayed suppressed
     // Marker dance ran for the reporter send.
     expect(writeSent).toHaveBeenCalledWith("recap", reporterId);
+  });
+
+  /**
+   * BMO exemption (2026-08-04 decision): wrap suppression defers a cluster's
+   * recaps to the NEXT-MORNING 07:45 debrief — a rationale built for AMC
+   * prints (evening recaps land when the user is done for the day). For BMO
+   * prints the individual recap window IS the same morning, so suppression
+   * buys nothing and costs a full day (the 8/04 DOCN/XMTR/WIX cluster had
+   * to be recapped manually). Only AMC clusters suppress.
+   */
+  it("a BMO cluster at WRAP_THRESHOLD is EXEMPT from wrap suppression — individual same-morning recaps fire (2026-08-04 decision)", async () => {
+    const ids = [
+      seedHeldRecapCandidate(db, "AAA", "BMO"),
+      seedHeldRecapCandidate(db, "BBB", "BMO"),
+      seedHeldRecapCandidate(db, "CCC", "BMO"),
+    ];
+
+    const summary = await runEarningsEmailSweep(db, { now: NOW });
+
+    for (const id of ids) {
+      const r = summary.results.find((x) => x.eventId === id)!;
+      expect(r.ok).toBe(true);
+      expect(r.skipped).toBeUndefined();
+    }
+    expect(sendRecap).toHaveBeenCalledTimes(3);
+    expect(summary.results.some((r) => r.skipped === "wrap-pending")).toBe(false);
   });
 
   it("does not suppress recap candidates when the cluster is below WRAP_THRESHOLD — individual sends happen", async () => {

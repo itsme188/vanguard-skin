@@ -1164,10 +1164,11 @@ describe("EOD earnings wrap (suppress-only, 2026-08-02)", () => {
 
   const READY_ACTUAL = "EPS 1.60 · Rev 91000000000";
 
-  /** One AMC earnings row for EVENT_DATE. `actual`/`enriched_at` control individual-recap eligibility. */
+  /** One AMC earnings row for EVENT_DATE (override `event_time`/`release_time` for BMO). `actual`/`enriched_at` control individual-recap eligibility. */
   function wrapEvent(o: {
     id: number;
     symbol: string;
+    event_time?: string;
     release_time?: string;
     actual?: string | null;
     enriched_at?: string | null;
@@ -1181,7 +1182,7 @@ describe("EOD earnings wrap (suppress-only, 2026-08-02)", () => {
       title: `${o.symbol} earnings`,
       description: null,
       symbol: o.symbol,
-      event_time: "AMC",
+      event_time: o.event_time ?? "AMC",
       release_time: o.release_time ?? "16:00",
       expected_impact: "high",
       source: o.source ?? "finnhub",
@@ -1340,6 +1341,30 @@ describe("EOD earnings wrap (suppress-only, 2026-08-02)", () => {
     // reconcile (only the Mac deletes cloud-enriched keys).
     expect(await env.CRON_KV.get("cloud-sent-earnings-recap-3")).toBeNull();
     expect(await env.CRON_KV.get(cloudEnrichedKey(3))).not.toBeNull();
+  });
+
+  /**
+   * BMO exemption (2026-08-04 decision, parity with the Mac sweep): wrap
+   * suppression's defer-to-next-morning-debrief rationale is AMC-specific —
+   * a BMO cluster's individual recaps land the SAME morning, so suppressing
+   * them costs a full day. Only AMC clusters suppress on the cloud path too.
+   */
+  it("a BMO cluster at WRAP_THRESHOLD is EXEMPT — individual same-morning cloud recaps fire (2026-08-04 decision)", async () => {
+    const now = new Date("2026-06-15T15:00:00Z"); // 11:00 ET, same morning
+    const events = [
+      wrapEvent({ id: 1, symbol: "AAPL", event_time: "BMO", release_time: "08:00", actual: READY_ACTUAL, enriched_at: "2026-06-15 14:45:00" }),
+      wrapEvent({ id: 2, symbol: "MSFT", event_time: "BMO", release_time: "08:00", actual: READY_ACTUAL, enriched_at: "2026-06-15 14:45:00" }),
+      wrapEvent({ id: 3, symbol: "NVDA", event_time: "BMO", release_time: "08:00", actual: READY_ACTUAL, enriched_at: "2026-06-15 14:45:00" }),
+    ];
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      wrapSnapshot(events, ["AAPL", "MSFT", "NVDA"]),
+    );
+
+    const result = await runEarningsFallback(makeEnv(), { now });
+
+    expect(sendEmail).toHaveBeenCalledTimes(3);
+    expect(result.sent).toBe(3);
+    expect(wrapSkipsOf(result)).toHaveLength(0);
   });
 
   it("members with a completed recap audit row don't count toward the threshold", async () => {
