@@ -30,6 +30,7 @@
 
 import {
   matchBarsToReaction,
+  lastBarAtOrBefore,
   CORE_BENCHMARKS,
   type ReactionSnapshot,
   type TimedClose,
@@ -37,6 +38,7 @@ import {
 
 interface YahooChartResult {
   timestamp?: number[];
+  meta?: { chartPreviousClose?: number };
   indicators?: {
     quote?: Array<{ close?: Array<number | null> }>;
   };
@@ -49,11 +51,11 @@ interface YahooChartResponse {
   };
 }
 
-async function fetchYahooBars(
+async function fetchYahooChart(
   symbol: string,
   fromSec: number,
   toSec: number,
-): Promise<TimedClose[]> {
+): Promise<{ bars: TimedClose[]; prevClose: number | null }> {
   // includePrePost=true is required for earnings releases that land outside
   // regular session (pre-market 04:00–09:30 ET or after-hours 16:00–20:00 ET).
   // Without it, a 16:15 ET earnings release returns zero post-window bars and
@@ -68,14 +70,22 @@ async function fetchYahooBars(
   const res = await fetch(url, {
     headers: { "User-Agent": "Mozilla/5.0" },
   });
-  if (!res.ok) return [];
+  if (!res.ok) return { bars: [], prevClose: null };
 
   const data = (await res.json()) as YahooChartResponse;
   const result = data.chart?.result?.[0];
-  if (!result) return [];
+  if (!result) return { bars: [], prevClose: null };
+  // chartPreviousClose = the last regular-session close BEFORE the requested
+  // window — for a premarket window this is the prior day's official close,
+  // which is exactly the BMO earnings anchor.
+  const rawPrev = result.meta?.chartPreviousClose;
+  const prevClose =
+    typeof rawPrev === "number" && Number.isFinite(rawPrev) && rawPrev > 0
+      ? rawPrev
+      : null;
   const ts = result.timestamp ?? [];
   const close = result.indicators?.quote?.[0]?.close ?? [];
-  if (ts.length === 0 || close.length === 0) return [];
+  if (ts.length === 0 || close.length === 0) return { bars: [], prevClose };
 
   const bars: TimedClose[] = [];
   for (let i = 0; i < ts.length; i++) {
@@ -83,7 +93,15 @@ async function fetchYahooBars(
     if (c == null) continue;
     bars.push({ tMs: ts[i] * 1000, close: c });
   }
-  return bars;
+  return { bars, prevClose };
+}
+
+async function fetchYahooBars(
+  symbol: string,
+  fromSec: number,
+  toSec: number,
+): Promise<TimedClose[]> {
+  return (await fetchYahooChart(symbol, fromSec, toSec)).bars;
 }
 
 /**
@@ -124,13 +142,29 @@ export async function fetchYahooLastPrice(
 export async function captureReactionFromYahoo(
   releaseInstant: Date,
   sectorEtf: string | null,
-  opts: { pacingMs?: number; eventSymbol?: string | null } = {},
+  opts: {
+    pacingMs?: number;
+    eventSymbol?: string | null;
+    // Earnings rows (2026-08-04): the 16:00-ET-of-event-day instant, in epoch
+    // ms. When provided, every t_pre anchors to the last regular-session
+    // close before the release — BMO uses each symbol's chartPreviousClose
+    // from the Yahoo meta, AMC uses the event day's ~16:00 bar. Mirrors
+    // captureReactionFromTws's `earnings` option.
+    earningsCloseMs?: number | null;
+  } = {},
 ): Promise<ReactionSnapshot | null> {
   const pacingMs = opts.pacingMs ?? 200;
   const eventSymbol = opts.eventSymbol?.trim().toUpperCase() || null;
   const releaseMs = releaseInstant.getTime();
-  // Window covers pre (T-5min) and post (T+120min) with buffer.
-  const fromSec = Math.floor((releaseMs - 15 * 60 * 1000) / 1000);
+  const earningsCloseMs = opts.earningsCloseMs ?? null;
+  const isAmc = earningsCloseMs != null && releaseMs >= earningsCloseMs;
+  // Window covers pre (T-5min) and post (T+120min) with buffer. For AMC
+  // earnings, extend the head so the 16:00 close bar (the anchor) is inside
+  // the window even when the recorded release is 16:30+.
+  let fromSec = Math.floor((releaseMs - 15 * 60 * 1000) / 1000);
+  if (isAmc) {
+    fromSec = Math.min(fromSec, Math.floor((earningsCloseMs - 10 * 60 * 1000) / 1000));
+  }
   const toSec = Math.ceil((releaseMs + 125 * 60 * 1000) / 1000);
 
   const symbols: string[] = [...CORE_BENCHMARKS];
@@ -138,9 +172,16 @@ export async function captureReactionFromYahoo(
   if (eventSymbol && !symbols.includes(eventSymbol)) symbols.push(eventSymbol);
 
   const barsMap: Record<string, TimedClose[]> = {};
+  const anchorMap: Record<string, number | null> = {};
   for (const sym of symbols) {
     try {
-      barsMap[sym] = await fetchYahooBars(sym, fromSec, toSec);
+      const { bars, prevClose } = await fetchYahooChart(sym, fromSec, toSec);
+      barsMap[sym] = bars;
+      if (earningsCloseMs != null) {
+        anchorMap[sym] = isAmc
+          ? (lastBarAtOrBefore(bars, earningsCloseMs)?.close ?? null)
+          : prevClose;
+      }
     } catch {
       barsMap[sym] = [];
     }
@@ -149,9 +190,12 @@ export async function captureReactionFromYahoo(
     }
   }
 
-  const spy = matchBarsToReaction(barsMap.SPY ?? [], releaseMs);
-  const qqq = matchBarsToReaction(barsMap.QQQ ?? [], releaseMs);
-  const tlt = matchBarsToReaction(barsMap.TLT ?? [], releaseMs);
+  const anchorFor = (sym: string): number | null =>
+    earningsCloseMs != null ? (anchorMap[sym] ?? null) : null;
+
+  const spy = matchBarsToReaction(barsMap.SPY ?? [], releaseMs, anchorFor("SPY"));
+  const qqq = matchBarsToReaction(barsMap.QQQ ?? [], releaseMs, anchorFor("QQQ"));
+  const tlt = matchBarsToReaction(barsMap.TLT ?? [], releaseMs, anchorFor("TLT"));
 
   if (!spy && !qqq && !tlt) return null;
 
@@ -163,14 +207,27 @@ export async function captureReactionFromYahoo(
     qqq: qqq ?? { t_pre: 0, t_post: 0, delta_pct: 0 },
     tlt: tlt ?? { t_pre: 0, t_post: 0, delta_pct: 0 },
   };
+  // Same honesty rule as the TWS path: label only when an anchor actually
+  // applied — an all-null anchor map means the matcher fell back to window
+  // semantics.
+  if (
+    earningsCloseMs != null &&
+    Object.values(anchorMap).some((v) => v != null && v > 0)
+  ) {
+    snapshot.pre_anchor = "prior_close";
+  }
 
   if (sectorEtf && barsMap[sectorEtf]) {
-    const sector = matchBarsToReaction(barsMap[sectorEtf], releaseMs);
+    const sector = matchBarsToReaction(barsMap[sectorEtf], releaseMs, anchorFor(sectorEtf));
     if (sector) snapshot.sector = { symbol: sectorEtf, ...sector };
   }
 
   if (eventSymbol && barsMap[eventSymbol]) {
-    const symbolReaction = matchBarsToReaction(barsMap[eventSymbol], releaseMs);
+    const symbolReaction = matchBarsToReaction(
+      barsMap[eventSymbol],
+      releaseMs,
+      anchorFor(eventSymbol),
+    );
     if (symbolReaction) snapshot.symbol = { symbol: eventSymbol, ...symbolReaction };
   }
 

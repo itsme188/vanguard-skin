@@ -9,6 +9,7 @@ import { describe, it, expect } from "vitest";
 import type { IBApiNext } from "@stoqey/ib";
 import {
   findNearestBar,
+  lastBarAtOrBefore,
   matchBarsToReaction,
   composeReleaseInstant,
   resolveSectorEtf,
@@ -73,6 +74,61 @@ describe("matchBarsToReaction", () => {
       { tMs: release + 120 * 60 * 1000, close: 100 },
     ];
     expect(matchBarsToReaction(bars, release)).toBeNull();
+  });
+});
+
+describe("lastBarAtOrBefore", () => {
+  it("picks the latest bar at or before the target", () => {
+    const bars: TimedClose[] = [
+      { tMs: 100, close: 1 },
+      { tMs: 200, close: 2 },
+      { tMs: 300, close: 3 },
+    ];
+    expect(lastBarAtOrBefore(bars, 250)?.close).toBe(2);
+    expect(lastBarAtOrBefore(bars, 300)?.close).toBe(3);
+  });
+
+  it("returns null when every bar is after the target", () => {
+    expect(lastBarAtOrBefore([{ tMs: 500, close: 1 }], 400)).toBeNull();
+    expect(lastBarAtOrBefore([], 400)).toBeNull();
+  });
+});
+
+describe("matchBarsToReaction — prior-close anchor (earnings)", () => {
+  const release = Date.UTC(2026, 7, 4, 12, 0, 0); // BMO 08:00 EDT
+
+  it("uses the anchor as t_pre and computes delta vs the anchor", () => {
+    // XMTR 2026-08-04 shape: prior close 87.01, premarket already +8% at the
+    // recorded release, T+120 at 89.52. Window-based matching reported -4.81%;
+    // anchored matching must report the true print-day move (+2.88%).
+    const bars: TimedClose[] = [
+      { tMs: release - 5 * 60 * 1000, close: 94.04 },
+      { tMs: release + 120 * 60 * 1000, close: 89.52 },
+    ];
+    const r = matchBarsToReaction(bars, release, 87.01);
+    expect(r?.t_pre).toBe(87.01);
+    expect(r?.t_post).toBe(89.52);
+    expect(r?.delta_pct).toBe(2.88);
+  });
+
+  it("still requires a T+120 bar within tolerance", () => {
+    const bars: TimedClose[] = [{ tMs: release - 5 * 60 * 1000, close: 94.04 }];
+    expect(matchBarsToReaction(bars, release, 87.01)).toBeNull();
+  });
+
+  it("does NOT require a pre bar when anchored (thin premarket)", () => {
+    const bars: TimedClose[] = [{ tMs: release + 120 * 60 * 1000, close: 89.52 }];
+    const r = matchBarsToReaction(bars, release, 87.01);
+    expect(r?.delta_pct).toBe(2.88);
+  });
+
+  it("falls back to legacy nearest-bar behavior for null/zero anchors", () => {
+    const bars: TimedClose[] = [
+      { tMs: release - 5 * 60 * 1000, close: 100 },
+      { tMs: release + 120 * 60 * 1000, close: 101 },
+    ];
+    expect(matchBarsToReaction(bars, release, null)?.t_pre).toBe(100);
+    expect(matchBarsToReaction(bars, release, 0)?.t_pre).toBe(100);
   });
 });
 
@@ -270,5 +326,115 @@ describe("captureReactionFromTws", () => {
     expect(snap!.spy.delta_pct).toBeGreaterThan(0);
     // TLT fell back to the zero-filled sentinel
     expect(snap!.tlt.t_pre).toBe(0);
+  });
+});
+
+describe("captureReactionFromTws — earnings prior-close anchor + extended-hours bars", () => {
+  // BMO: 08:00 EDT release on 2026-08-04 → close instant is 16:00 EDT (20:00Z)
+  const bmoRelease = new Date("2026-08-04T12:00:00Z");
+  const closeMs = Date.UTC(2026, 7, 4, 20, 0, 0);
+  const eventDate = "2026-08-04";
+
+  function fmtTws(ms: number): string {
+    const etMs = ms - 4 * 60 * 60 * 1000; // EDT
+    const d = new Date(etMs);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return (
+      `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}  ` +
+      `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`
+    );
+  }
+
+  function intradayBars(base: number, preClose: number, postClose: number) {
+    return [
+      { time: fmtTws(base - 5 * 60 * 1000), close: preClose },
+      { time: fmtTws(base + 120 * 60 * 1000), close: postClose },
+    ];
+  }
+
+  function makeEarningsApi(rthCalls: Array<number | boolean>) {
+    return {
+      getHistoricalData: async (
+        contract: { symbol: string },
+        _end: string,
+        _duration: string,
+        barSize: string,
+        _what: string,
+        useRTH: number | boolean,
+      ) => {
+        if (String(barSize).includes("day")) {
+          // Daily bars: prior session close 87.01, partial today ignored.
+          return [
+            { time: "20260801", close: 86.5 },
+            { time: "20260803", close: 87.01 },
+            { time: "20260804", close: 94.9 },
+          ];
+        }
+        rthCalls.push(useRTH);
+        const base = bmoRelease.getTime();
+        if (contract.symbol === "XMTR") return intradayBars(base, 94.04, 89.52);
+        return intradayBars(base, 100, 101);
+      },
+    } as unknown as IBApiNext;
+  }
+
+  it("BMO: anchors every ticker to its prior daily close and flags the snapshot", async () => {
+    const rthCalls: Array<number | boolean> = [];
+    const snap = await captureReactionFromTws(makeEarningsApi(rthCalls), bmoRelease, null, {
+      pacingMs: 0,
+      eventSymbol: "XMTR",
+      earnings: { closeMs, eventDate },
+    });
+    expect(snap).not.toBeNull();
+    expect(snap!.pre_anchor).toBe("prior_close");
+    // Symbol anchored to the prior close 87.01, NOT the premarket 94.04 bar.
+    expect(snap!.symbol?.t_pre).toBe(87.01);
+    expect(snap!.symbol?.delta_pct).toBe(2.88);
+    expect(snap!.spy.t_pre).toBe(87.01);
+    // Intraday fetches must request extended-hours bars (useRTH=0) — RTH-only
+    // bars start at 9:30 and made every premarket t_pre unfindable.
+    expect(rthCalls.length).toBeGreaterThan(0);
+    for (const u of rthCalls) expect(u).toBe(0);
+  });
+
+  it("AMC: anchors to the event day's 16:00 close bar from the intraday window", async () => {
+    const amcRelease = new Date("2026-08-04T20:15:00Z"); // 16:15 EDT
+    const base = amcRelease.getTime();
+    const mockApi = {
+      getHistoricalData: async (
+        contract: { symbol: string },
+        _end: string,
+        _duration: string,
+        barSize: string,
+      ) => {
+        if (String(barSize).includes("day")) {
+          return [{ time: "20260803", close: 50 }];
+        }
+        return [
+          { time: fmtTws(closeMs - 60 * 1000), close: 87.5 }, // 15:59 RTH close bar
+          { time: fmtTws(base - 5 * 60 * 1000), close: 91.0 }, // 16:10 AH, post-wire risk
+          { time: fmtTws(base + 120 * 60 * 1000), close: 90.0 },
+        ];
+      },
+    } as unknown as IBApiNext;
+
+    const snap = await captureReactionFromTws(mockApi, amcRelease, null, {
+      pacingMs: 0,
+      earnings: { closeMs, eventDate },
+    });
+    expect(snap).not.toBeNull();
+    expect(snap!.pre_anchor).toBe("prior_close");
+    // Anchor is the last bar at/before 16:00 — never the 16:10 after-hours bar.
+    expect(snap!.spy.t_pre).toBe(87.5);
+  });
+
+  it("macro rows (no earnings opts) keep the release-window semantics unflagged", async () => {
+    const rthCalls: Array<number | boolean> = [];
+    const snap = await captureReactionFromTws(makeEarningsApi(rthCalls), bmoRelease, null, {
+      pacingMs: 0,
+    });
+    expect(snap).not.toBeNull();
+    expect(snap!.pre_anchor).toBeUndefined();
+    expect(snap!.spy.t_pre).toBe(100); // nearest-bar pre, not a daily close
   });
 });
