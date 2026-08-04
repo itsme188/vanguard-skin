@@ -137,3 +137,35 @@ describe("runEnrichment wire-probe integration", () => {
     expect(obs[0].last_empty_probe_at).toBe("2026-06-01T10:45:00.000Z"); // bounded
   });
 });
+
+describe("runEnrichment caps the combined candidate list to opts.limit", () => {
+  it("keeps probe-printed events first when the merge would exceed opts.limit", async () => {
+    // Probe-eligible: pre-release (08:00 ET slot, "now" is 07:00 ET — 60m out).
+    const probeId = seedHeldEarnings("XMTR");
+    // Three "normal" candidates already past release (06:00 ET, 1h old at
+    // 07:00 ET) — deliberately more than opts.limit so findCandidates' own
+    // internal cap is exercised BEFORE the probe-printed merge runs.
+    const normalIds: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      normalIds.push(seedHeldEarnings(`NRM${i}`, "06:00"));
+    }
+
+    vi.spyOn(enrichActuals, "probeFinnhubActualExists").mockImplementation(
+      async (sym: string) => sym === "XMTR",
+    );
+    vi.spyOn(enrichActuals, "fetchActualForEvent").mockResolvedValue({
+      actual: "EPS 0.05",
+      consensus: null,
+      source: "finnhub",
+    });
+
+    const results = await runEnrichment(db, { now: NOW_IN_WINDOW, limit: 2 });
+
+    // Without the post-merge re-cap this would be 3 (findCandidates already
+    // returns 2 normal rows at limit=2, then the probe-printed row is
+    // unshifted on top) — the fix trims the combined list back to `limit`.
+    expect(results).toHaveLength(2);
+    expect(results[0].eventId).toBe(probeId); // probe-printed stays first
+    expect(normalIds).toContain(results[1].eventId);
+  });
+});

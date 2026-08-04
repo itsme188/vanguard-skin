@@ -269,12 +269,20 @@ export async function runEnrichment(
     }
   }
 
+  const limit = opts.limit ?? 20;
   const candidates = findCandidates(db, opts);
   for (const id of probePrinted) {
     if (candidates.some((c) => c.id === id)) continue;
     const row = findCandidates(db, { ...opts, eventId: id })[0];
     if (row) candidates.unshift(row);
   }
+  // Re-cap to opts.limit: findCandidates already applied it internally, but
+  // the probe-printed unshifts above can push the combined list past it.
+  // Probe-printed rows stay FIRST (unshifted) — they're the most
+  // time-sensitive (an early print, captured this tick) — so the trim drops
+  // from the tail; any dropped normal candidate re-enters on the next
+  // 15-min tick via the ordinary window filter.
+  if (candidates.length > limit) candidates.splice(limit);
   if (candidates.length === 0) return [];
 
   const update = updateEnrichment(db);
