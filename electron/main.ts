@@ -14,6 +14,7 @@ import fs from "node:fs";
 import { setupIpcHandlers } from "./ipc-handlers";
 import { createTray } from "./tray";
 import { getSettings, bootstrapFromEnvLocal } from "./settings-store";
+import { openServerLog, serverLogLine } from "./server-log";
 
 // ─── Find System Node.js ────────────────────────────────────────
 
@@ -78,6 +79,20 @@ function getDataDir(): string {
 
 let mainWindow: BrowserWindow | null = null;
 let serverProcess: ChildProcess | null = null;
+/**
+ * Durable sink for the Next server's stdout/stderr (2026-08-04): a
+ * Finder-launched .app discards Electron main's console, so without this
+ * file server-side warnings leave no trace (the useRTH reaction failure
+ * needed a live probe to diagnose). Null = console-only (logging must
+ * never block the app).
+ */
+let serverLogStream: ReturnType<typeof openServerLog> = null;
+
+function getServerLogDir(): string {
+  // macOS-only app (DMG/launchd); matches Console.app's per-app log folder.
+  const homeDir = process.env.HOME || "/Users/Yitzi";
+  return path.join(homeDir, "Library", "Logs", APP_NAME);
+}
 
 // ─── Server Lifecycle ───────────────────────────────────────────
 
@@ -147,6 +162,11 @@ function startServer(): Promise<void> {
     console.log(`Starting server: ${serverScript}`);
     console.log(`Data directory: ${dataDir}`);
 
+    serverLogStream = openServerLog(getServerLogDir());
+    serverLogStream?.write(
+      serverLogLine("[electron]", `Starting server: ${serverScript} (data: ${dataDir})`),
+    );
+
     // Use system Node.js (not Electron's) to avoid native module ABI mismatch.
     // better-sqlite3 was compiled for system Node.js and won't load in Electron's runtime.
     const nodePath = findSystemNode();
@@ -167,6 +187,7 @@ function startServer(): Promise<void> {
     serverProcess.stdout?.on("data", (data: Buffer) => {
       const line = data.toString();
       console.log(`[server] ${line.trim()}`);
+      serverLogStream?.write(serverLogLine("[server]", line));
 
       // Detect when Next.js is ready
       if (!started && (line.includes("Ready in") || line.includes(`localhost:${PORT}`))) {
@@ -177,11 +198,16 @@ function startServer(): Promise<void> {
     });
 
     serverProcess.stderr?.on("data", (data: Buffer) => {
-      console.error(`[server:err] ${data.toString().trim()}`);
+      const line = data.toString();
+      console.error(`[server:err] ${line.trim()}`);
+      serverLogStream?.write(serverLogLine("[server:err]", line));
     });
 
     serverProcess.on("exit", (code) => {
       console.log(`Server process exited with code ${code}`);
+      serverLogStream?.write(serverLogLine("[electron]", `Server process exited with code ${code}`));
+      serverLogStream?.end();
+      serverLogStream = null;
       serverProcess = null;
       if (!started) {
         clearTimeout(timeout);
