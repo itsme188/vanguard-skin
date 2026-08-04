@@ -18,11 +18,18 @@ import {
   parseDateVerdicts,
   effectiveSlot,
   applyVerdict,
+  applyExactTimeVerdict,
+  needsExactTime,
   runEarningsDateVerification,
   maybeRunDailyDateVerification,
   type DateVerificationCandidate,
   type DateVerdict,
 } from "@/lib/calendar/verify-earnings-dates";
+import {
+  upsertSymbolReleaseTime,
+  recordWireObservation,
+  getSymbolReleaseTimeRow,
+} from "@/lib/earnings/wire-times";
 
 const pushover = vi.fn(async (..._args: unknown[]) => ({ sent: true }));
 vi.mock("@/lib/alerts/notify-pushover", () => ({
@@ -387,6 +394,7 @@ describe("parseDateVerdicts", () => {
         slot: "bmo",
         confidence: "confirmed",
         source: "ir.example.com",
+        exact_time: null,
       },
     ]);
   });
@@ -405,7 +413,14 @@ describe("parseDateVerdicts", () => {
       ]);
     const result = parseDateVerdicts(text);
     expect(result).toEqual([
-      { symbol: "WTCH", confirmed_date: null, slot: null, confidence: "unconfirmed", source: null },
+      {
+        symbol: "WTCH",
+        confirmed_date: null,
+        slot: null,
+        confidence: "unconfirmed",
+        source: null,
+        exact_time: null,
+      },
     ]);
   });
 
@@ -468,6 +483,7 @@ describe("applyVerdict", () => {
       slot: "bmo",
       confidence: "confirmed",
       source: "ir.example.com",
+      exact_time: null,
     };
 
     const outcome = applyVerdict(db, candidate, verdict, { apply: true });
@@ -494,6 +510,7 @@ describe("applyVerdict", () => {
       slot: "amc",
       confidence: "confirmed",
       source: "ir",
+      exact_time: null,
     };
 
     const outcome = applyVerdict(db, candidate, verdict, { apply: true });
@@ -531,6 +548,7 @@ describe("applyVerdict", () => {
       slot: "amc",
       confidence: "confirmed",
       source: "wire story",
+      exact_time: null,
     };
 
     const outcome = applyVerdict(db, candidate, verdict, { apply: true });
@@ -566,6 +584,7 @@ describe("applyVerdict", () => {
       slot: "amc",
       confidence: "unconfirmed",
       source: "a single unconfirmed blog post",
+      exact_time: null,
     };
 
     const outcome = applyVerdict(db, candidate, verdict, { apply: true });
@@ -623,6 +642,7 @@ describe("applyVerdict", () => {
       slot: "amc",
       confidence: "confirmed",
       source: "ir",
+      exact_time: null,
     };
 
     const outcome = applyVerdict(db, candidate, verdict, { apply: true });
@@ -655,6 +675,7 @@ describe("applyVerdict", () => {
       slot: "amc",
       confidence: "confirmed",
       source: "ir",
+      exact_time: null,
     };
 
     const outcome = applyVerdict(db, candidate, verdict, { apply: true, today: "2026-08-02" });
@@ -683,6 +704,7 @@ describe("applyVerdict", () => {
       slot: "amc",
       confidence: "confirmed",
       source: "ir",
+      exact_time: null,
     };
 
     const outcome = applyVerdict(db, candidate, verdict, { apply: true, today: "2026-08-02" });
@@ -706,6 +728,7 @@ describe("applyVerdict", () => {
       slot: "amc",
       confidence: "confirmed",
       source: "ir",
+      exact_time: null,
     };
 
     const outcome = applyVerdict(db, candidate, verdict, { apply: true, today: "2026-08-02" });
@@ -726,6 +749,7 @@ describe("applyVerdict", () => {
       slot: "amc",
       confidence: "confirmed",
       source: "ir",
+      exact_time: null,
     };
 
     const outcome = applyVerdict(db, candidate, verdict, { apply: false });
@@ -898,5 +922,88 @@ describe("maybeRunDailyDateVerification", () => {
       .prepare(`SELECT value FROM settings WHERE key = ?`)
       .get("earnings_date_verify_last_run") as { value: string } | undefined;
     expect(row).toBeUndefined();
+  });
+});
+
+// ── Exact-time jump-start (wire-time spec 2026-08-04, Task 4) ──────────────
+
+describe("exact-time jump-start (wire-time spec 2026-08-04)", () => {
+  it("needsExactTime: true when no override, no bounded obs, no fresh web row", () => {
+    expect(needsExactTime(db, "XMTR", "2026-11-05")).toBe(true);
+  });
+
+  it("needsExactTime: false with a user override / bounded obs / fresh web row", () => {
+    upsertSymbolReleaseTime(db, { symbol: "AAA", releaseTime: "07:00", source: "user" });
+    expect(needsExactTime(db, "AAA", "2026-11-05")).toBe(false);
+
+    recordWireObservation(db, {
+      symbol: "BBB", eventDate: "2026-08-04", eventId: null,
+      firstSeenAt: "2026-08-04T11:15:00.000Z",
+      lastEmptyProbeAt: "2026-08-04T11:00:00.000Z",
+    });
+    expect(needsExactTime(db, "BBB", "2026-11-05")).toBe(false);
+
+    upsertSymbolReleaseTime(db, {
+      symbol: "CCC", releaseTime: "07:10", source: "web_verified", verifiedForDate: "2026-11-05",
+    });
+    expect(needsExactTime(db, "CCC", "2026-11-05")).toBe(false);
+    // stale web row (verified for an EARLIER print) → true again
+    expect(needsExactTime(db, "CCC", "2027-02-10")).toBe(true);
+  });
+
+  it("prompt asks for exact_time only for flagged symbols and names EarningsWhispers", () => {
+    const candidates = [
+      { id: 1, symbol: "XMTR", event_date: "2026-11-05", event_time: "BMO", release_time: "08:00", source: "finnhub" },
+      { id: 2, symbol: "AAPL", event_date: "2026-11-06", event_time: "AMC", release_time: "16:30", source: "finnhub" },
+    ];
+    const prompt = buildDateVerificationPrompt(candidates, "2026-11-01", new Set(["XMTR"]));
+    expect(prompt).toContain("exact_time");
+    expect(prompt).toContain("EarningsWhispers");
+    expect(prompt).toContain("XMTR — vendor says 2026-11-05, bmo (also find the exact expected report time)");
+    expect(prompt).not.toContain("AAPL — vendor says 2026-11-06, amc (also find");
+  });
+
+  it("parseDateVerdicts carries a valid exact_time through and nulls garbage", () => {
+    const text = `[
+      {"symbol":"XMTR","confirmed_date":"2026-11-05","slot":"bmo","confidence":"confirmed","source":"ew","exact_time":"07:05"},
+      {"symbol":"WIX","confirmed_date":null,"slot":null,"confidence":"unconfirmed","source":null,"exact_time":"25:99"}
+    ]`;
+    const v = parseDateVerdicts(text);
+    expect(v[0].exact_time).toBe("07:05");
+    expect(v[1].exact_time).toBeNull();
+  });
+
+  it("applyExactTimeVerdict upserts web_verified and re-resolves upcoming rows; rejects out-of-range; never touches a user row", () => {
+    const candidate = { id: 1, symbol: "XMTR", event_date: "2026-11-05", event_time: "BMO", release_time: "08:00", source: "finnhub" };
+    // seed the upcoming event row so the apply pass has something to update
+    db.prepare(
+      `INSERT INTO calendar_events (source, event_type, event_date, event_time, release_time, symbol, title, source_key, week_of)
+       VALUES ('finnhub','earnings','2026-11-05','BMO','08:00','XMTR','XMTR earnings','finnhub:XMTR:2026-11-05','2026-11-02')`,
+    ).run();
+
+    const ok = applyExactTimeVerdict(
+      db,
+      { symbol: "XMTR", confirmed_date: "2026-11-05", slot: "bmo", confidence: "confirmed", source: "EarningsWhispers", exact_time: "07:05" },
+      candidate,
+    );
+    expect(ok).toBe(true);
+    expect(getSymbolReleaseTimeRow(db, "XMTR")).toMatchObject({
+      release_time: "07:05", source: "web_verified", verified_for_date: "2026-11-05",
+    });
+    expect(
+      (db.prepare("SELECT release_time FROM calendar_events WHERE symbol='XMTR'").get() as { release_time: string }).release_time,
+    ).toBe("07:05");
+
+    // out-of-range time rejected
+    expect(
+      applyExactTimeVerdict(db, { symbol: "WIX", confirmed_date: null, slot: null, confidence: "unconfirmed", source: null, exact_time: "02:00" },
+        { ...candidate, symbol: "WIX" }),
+    ).toBe(false);
+
+    // user row never overwritten
+    upsertSymbolReleaseTime(db, { symbol: "AAA", releaseTime: "07:00", source: "user" });
+    applyExactTimeVerdict(db, { symbol: "AAA", confirmed_date: null, slot: "bmo", confidence: "confirmed", source: "ew", exact_time: "06:30" },
+      { ...candidate, symbol: "AAA" });
+    expect(getSymbolReleaseTimeRow(db, "AAA")).toMatchObject({ release_time: "07:00", source: "user" });
   });
 });
