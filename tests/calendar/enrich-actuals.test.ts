@@ -222,6 +222,24 @@ describe("parseSourceKey", () => {
     expect(parseSourceKey("manual:UMICH:2026-08-06:other_macro")).toEqual({ kind: "unknown" });
     expect(parseSourceKey("manual:arbitrary-event")).toEqual({ kind: "unknown" });
   });
+
+  // Nasdaq-only earnings rows (Finnhub's calendar missed the name, Nasdaq's
+  // caught it — the RKT 7/30 / XMTR+WIX 8/04 population) used to fall through
+  // to "unknown": the runner retried every tick but never fetched an actual,
+  // so the recap gate never opened and the blocked-recap Pushover fired 2h
+  // after every such print. Same disease, same cure as the manual: keys.
+  it("routes nasdaq keys down the finnhub road", () => {
+    expect(parseSourceKey("nasdaq:XMTR:2026-08-04")).toEqual({
+      kind: "finnhub",
+      symbol: "XMTR",
+      date: "2026-08-04",
+    });
+  });
+
+  it("leaves malformed nasdaq keys unknown", () => {
+    expect(parseSourceKey("nasdaq:XMTR")).toEqual({ kind: "unknown" });
+    expect(parseSourceKey("nasdaq:XMTR:not-a-date")).toEqual({ kind: "unknown" });
+  });
 });
 
 describe("fetchActualForEvent — dispatcher", () => {
