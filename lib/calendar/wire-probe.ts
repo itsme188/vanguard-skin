@@ -42,8 +42,7 @@ export function findProbeCandidates(
       .prepare(
         `SELECT id, symbol, event_date, release_time, wire_probe_empty_at, source, event_type
          FROM calendar_events
-         WHERE (source = 'finnhub' OR event_type = 'earnings')
-           AND event_type = 'earnings'
+         WHERE event_type = 'earnings'
            AND symbol IS NOT NULL
            AND actual_value IS NULL
            AND enriched_at IS NULL
@@ -60,7 +59,9 @@ export function findProbeCandidates(
     const release = composeReleaseInstant(r.event_date, r.release_time);
     if (!release) return false;
     const delta = release.getTime() - nowMs; // >0 = pre-release
-    return delta > 0 && delta <= PROBE_WINDOW_MS;
+    // Strictly inside (release-90m, release) — a delta of exactly
+    // PROBE_WINDOW_MS (T-90m on the nose) is the boundary, not the window.
+    return delta > 0 && delta < PROBE_WINDOW_MS;
   });
   if (inWindow.length === 0) return [];
 
