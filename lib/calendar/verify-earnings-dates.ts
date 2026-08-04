@@ -9,6 +9,14 @@ import { correctEarningsEventDate } from "@/lib/mutations/calendar";
 import { getRawAnthropicClient } from "@/lib/ai/provider";
 import { resolveFeatureModel } from "@/lib/ai/models";
 import { sendPushover } from "@/lib/alerts/notify-pushover";
+import {
+  EARLIEST_PLAUSIBLE_ET,
+  LATEST_PLAUSIBLE_ET,
+  hasBoundedObservations,
+  getSymbolReleaseTimeRow,
+  upsertSymbolReleaseTime,
+  applyResolvedReleaseTimeToUpcomingEvents,
+} from "@/lib/earnings/wire-times";
 
 /**
  * Earnings date/slot verification — candidate selection, prompt building,
@@ -57,6 +65,7 @@ export interface DateVerdict {
   slot: "bmo" | "amc" | null;
   confidence: "confirmed" | "unconfirmed";
   source: string | null;
+  exact_time: string | null; // "HH:MM" ET, only requested for flagged symbols
 }
 
 /**
@@ -172,11 +181,25 @@ export function effectiveSlot(c: {
 export function buildDateVerificationPrompt(
   candidates: DateVerificationCandidate[],
   todayStr: string,
+  needTimeSymbols?: Set<string>,
 ): string {
+  const flagged = needTimeSymbols ?? new Set<string>();
   const lines = candidates.map((c) => {
     const slot = effectiveSlot(c) ?? "unknown slot";
-    return `- ${c.symbol} — vendor says ${c.event_date}, ${slot}`;
+    const suffix = flagged.has(c.symbol) ? " (also find the exact expected report time)" : "";
+    return `- ${c.symbol} — vendor says ${c.event_date}, ${slot}${suffix}`;
   });
+
+  const schemaLine =
+    flagged.size > 0
+      ? `[{"symbol":"XYZ","confirmed_date":"YYYY-MM-DD","slot":"bmo","confidence":"confirmed","source":"<url or short citation>","exact_time":"HH:MM"}]`
+      : `[{"symbol":"XYZ","confirmed_date":"YYYY-MM-DD","slot":"bmo","confidence":"confirmed","source":"<url or short citation>"}]`;
+
+  const exactTimeRule =
+    flagged.size > 0
+      ? ` For symbols marked "(also find the exact expected report time)", also report "exact_time" as the expected wall-clock ET time of the press release in 24h "HH:MM" (e.g. "07:05"). EarningsWhispers (earningswhispers.com) is the preferred source for expected report times; a company IR announcement or prior-quarter BusinessWire timestamps also count. If you cannot find a specific time, set "exact_time" to null — NEVER guess one.`
+      : "";
+
   return `You are verifying upcoming earnings report dates. Today is ${todayStr}.
 
 For EACH company below, find the CONFIRMED date and timing of its next quarterly earnings report. Prefer the company's own investor-relations announcement or press release ("X to report results on ..."). A wire story or two agreeing independent calendars also count as confirmation. bmo = before the market opens, amc = after the market closes.
@@ -187,9 +210,9 @@ Candidates:
 ${lines.join("\n")}
 
 Respond ONLY with a JSON array, one object per candidate symbol, no prose:
-[{"symbol":"XYZ","confirmed_date":"YYYY-MM-DD","slot":"bmo","confidence":"confirmed","source":"<url or short citation>"}]
+${schemaLine}
 
-Rules: "confidence":"confirmed" ONLY with an explicit company announcement or two agreeing independent sources. If you cannot confirm, use "confidence":"unconfirmed" and set "confirmed_date" to your best finding or null. NEVER invent a date.`;
+Rules: "confidence":"confirmed" ONLY with an explicit company announcement or two agreeing independent sources. If you cannot confirm, use "confidence":"unconfirmed" and set "confirmed_date" to your best finding or null. NEVER invent a date.${exactTimeRule}`;
 }
 
 function normalizeVerdict(raw: unknown): DateVerdict | null {
@@ -219,7 +242,17 @@ function normalizeVerdict(raw: unknown): DateVerdict | null {
   const confidence: "confirmed" | "unconfirmed" = r.confidence === "confirmed" ? "confirmed" : "unconfirmed";
   const source = typeof r.source === "string" ? r.source : null;
 
-  return { symbol: r.symbol.trim(), confirmed_date, slot, confidence, source };
+  let exact_time: string | null = null;
+  if (
+    typeof r.exact_time === "string" &&
+    /^\d{2}:\d{2}$/.test(r.exact_time) &&
+    r.exact_time >= EARLIEST_PLAUSIBLE_ET &&
+    r.exact_time <= LATEST_PLAUSIBLE_ET
+  ) {
+    exact_time = r.exact_time;
+  }
+
+  return { symbol: r.symbol.trim(), confirmed_date, slot, confidence, source, exact_time };
 }
 
 /**
@@ -384,6 +417,83 @@ export function applyVerdict(
   return { candidate, action: "date-corrected", detail: note };
 }
 
+// ─── Exact-time jump-start (2026-08-04 wire-time spec, Task 4) ─────────────
+//
+// The wire-time cascade (lib/earnings/wire-times.ts) already resolves a
+// per-symbol release time from bounded first-seen observations once a couple
+// of quarters have been watched — but a symbol the system has never seen
+// print has no observations yet. Rather than wait a full quarter to learn a
+// new symbol's slot from scratch, the daily date-verification pass (which
+// already spends an AI call with web_search per candidate) piggybacks one
+// extra ask: find the EXACT expected report time via EarningsWhispers (the
+// same source the wire-time spec treats as authoritative), so newly-held or
+// newly-watchlisted symbols get a real time immediately instead of the
+// generic 08:00/16:15 BMO/AMC default.
+
+/**
+ * True when `symbol` still needs an exact-time lookup for `eventDate`:
+ *   - a bounded wire observation already exists → the cascade has direct
+ *     evidence, an AI-sourced time would be redundant (and could regress it).
+ *   - a standing user override exists → never second-guess an explicit user
+ *     decision.
+ *   - a web_verified row exists whose verified_for_date already covers this
+ *     print (>= eventDate) → still fresh, no need to re-ask.
+ * Otherwise (no override, no bounded observations, or a STALE web row
+ * verified for an earlier print) → true.
+ */
+export function needsExactTime(
+  db: Database.Database,
+  symbol: string,
+  eventDate: string,
+): boolean {
+  if (hasBoundedObservations(db, symbol)) return false;
+  const row = getSymbolReleaseTimeRow(db, symbol);
+  if (row?.source === "user") return false;
+  if (row?.source === "web_verified" && row.verified_for_date && row.verified_for_date >= eventDate) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Applies a verdict's `exact_time` (when present and in-range) as a
+ * web_verified symbol_release_times row, then re-resolves any untouched
+ * upcoming earnings rows for the symbol's issuer family so the new time takes
+ * effect immediately (not just on the next enrichment pass).
+ *
+ * Independent of applyVerdict's date/slot correction — a verdict can carry a
+ * confirmed exact_time even when the date itself was already correct (the
+ * common case: date verification only asks about NEW symbols' dates when
+ * unverified, but the exact-time ask piggybacks regardless of the date
+ * outcome for any symbol flagged by needsExactTime).
+ *
+ * Never overwrites a standing 'user' override (belt-and-braces on top of
+ * upsertSymbolReleaseTime's own precedence guard against 'user' rows — see
+ * Task 2). Rejects an out-of-range or malformed time (defense in depth on
+ * top of normalizeVerdict's own regex+range guard, since callers could in
+ * principle construct a DateVerdict by hand).
+ */
+export function applyExactTimeVerdict(
+  db: Database.Database,
+  verdict: DateVerdict,
+  candidate: DateVerificationCandidate,
+): boolean {
+  const t = verdict.exact_time;
+  if (!t || !/^\d{2}:\d{2}$/.test(t)) return false;
+  if (t < EARLIEST_PLAUSIBLE_ET || t > LATEST_PLAUSIBLE_ET) return false;
+  const existing = getSymbolReleaseTimeRow(db, verdict.symbol);
+  if (existing?.source === "user") return false;
+  upsertSymbolReleaseTime(db, {
+    symbol: verdict.symbol,
+    releaseTime: t,
+    source: "web_verified",
+    note: verdict.source ? `verified via ${verdict.source}` : "date-verification pass",
+    verifiedForDate: verdict.confirmed_date ?? candidate.event_date,
+  });
+  applyResolvedReleaseTimeToUpcomingEvents(db, verdict.symbol);
+  return true;
+}
+
 // ─── Orchestrator ───────────────────────────────────────────────────────────
 
 /**
@@ -454,7 +564,13 @@ export async function runEarningsDateVerification(
     if (candidates.length === 0) return { outcomes, corrections: 0 };
 
     const today = todayET(opts.now);
-    const prompt = buildDateVerificationPrompt(candidates, today);
+    // Symbols whose release time is still unresolved (no bounded observation
+    // history, no standing override, no fresh web-sourced note) — these get
+    // an extra ask in the same prompt/AI call (see needsExactTime).
+    const needTime = new Set(
+      candidates.filter((c) => needsExactTime(db, c.symbol, c.event_date)).map((c) => c.symbol),
+    );
+    const prompt = buildDateVerificationPrompt(candidates, today, needTime);
     const fetcher = opts.fetchVerdicts ?? defaultFetchDateVerdicts;
 
     const text = await fetcher(prompt);
@@ -467,6 +583,21 @@ export async function runEarningsDateVerification(
       const family = issuerSiblings(candidate.symbol.toUpperCase()).map((s) => s.toUpperCase());
       const verdict = family.map((sym) => verdictBySymbol.get(sym)).find((v) => v !== undefined);
       outcomes.push(applyVerdict(db, candidate, verdict, { apply: opts.apply, today }));
+    }
+
+    // Exact-time application is independent of the date/slot outcome above —
+    // respects the same apply flag: dry-run only logs what would be stored,
+    // it never writes (same discipline as applyVerdict's opts.apply guard).
+    for (const v of verdicts) {
+      const candidate = candidates.find((x) => x.symbol === v.symbol);
+      if (!candidate || !needTime.has(v.symbol)) continue;
+      if (opts.apply) {
+        applyExactTimeVerdict(db, v, candidate);
+      } else if (v.exact_time) {
+        console.log(
+          `[verify-earnings-dates] dry-run: would store exact_time ${v.exact_time} for ${v.symbol} (source: ${v.source ?? "web"})`,
+        );
+      }
     }
 
     const corrections = countCorrections();
