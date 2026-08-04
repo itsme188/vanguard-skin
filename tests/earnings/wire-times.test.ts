@@ -203,6 +203,17 @@ describe("resolveEarningsReleaseTime full cascade", () => {
       resolveEarningsReleaseTime(db, { event_type: "earnings", event_time: "AMC", raw_json: null, symbol: "AAPL" }),
     ).toBe("16:30");
   });
+
+  it("TAS rows never consult the symbol cascade, even with a standing user override", () => {
+    upsertSymbolReleaseTime(db, { symbol: "XMTR", releaseTime: "07:00", source: "user" });
+    // TAS ("during trading") has no BMO/AMC slot, so slot=null would
+    // otherwise bypass the sameSideOfNoon guard and let the user's morning
+    // override leak into a print that isn't BMO/AMC at all. resolveReleaseTime
+    // itself returns null for a bare TAS earnings row with no raw_json.
+    expect(
+      resolveEarningsReleaseTime(db, { event_type: "earnings", event_time: "TAS", raw_json: null, symbol: "XMTR" }),
+    ).toBeNull();
+  });
 });
 
 describe("applyResolvedReleaseTimeToUpcomingEvents", () => {
