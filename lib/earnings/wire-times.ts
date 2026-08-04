@@ -13,6 +13,7 @@
  */
 import type Database from "better-sqlite3";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
+import { resolveReleaseTime } from "@/lib/calendar/release-times";
 
 export const BOUNDED_MAX_GAP_MS = 30 * 60 * 1000;
 export const OBSERVATION_LOOKBACK_DAYS = 400; // ~4 quarters + slack
@@ -110,4 +111,263 @@ export function getObservationsForFamily(
   } catch {
     return [];
   }
+}
+
+// ─── Release-time resolution cascade ──────────────────────────────
+//
+// Layers, most authoritative first:
+//   1. user override (symbol_release_times, source='user')
+//   2. web_verified override — honored only while ZERO bounded
+//      observations exist for the symbol (a bounded observation is direct
+//      evidence and supersedes a stale web-sourced note)
+//   3. observed-derived — earliest bounded first_seen minus a 10-min
+//      margin, rounded DOWN to the nearest :05, floored at 04:00 ET
+//   4. legacy per-symbol constant / BMO-AMC default (resolveReleaseTime)
+//   5. pull-down — ANY observation (bounded or not) earlier than a
+//      layer-4 default is direct evidence the default is late; never
+//      applied when layers 1-2 already resolved (a standing user/web
+//      override is deliberate, not a data gap)
+//
+// An explicit "HH:MM" event_time on the row always wins over everything
+// (layer 0) — it's the caller stating a known fact for THIS print, not a
+// general symbol default.
+
+export const RESOLUTION_MARGIN_MIN = 10;
+export const EARLIEST_PLAUSIBLE_ET = "04:00";
+export const LATEST_PLAUSIBLE_ET = "20:00";
+
+export interface SymbolReleaseTimeRow {
+  symbol: string;
+  release_time: string;
+  source: string; // 'user' | 'web_verified'
+  note: string | null;
+  verified_for_date: string | null;
+  updated_at: string;
+}
+
+/** ET wall-clock HH:MM for an ISO UTC instant (DST-aware, 24:00 normalized). */
+export function etTimeOfInstant(isoUtc: string): string | null {
+  const ms = Date.parse(isoUtc);
+  if (!Number.isFinite(ms)) return null;
+  const hhmm = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(ms));
+  return hhmm.replace(/^24/, "00");
+}
+
+function minusMarginFloored(hhmm: string): string {
+  const [h, m] = hhmm.split(":").map(Number);
+  let total = h * 60 + m - RESOLUTION_MARGIN_MIN;
+  total = Math.floor(total / 5) * 5; // round DOWN to :05
+  const [fh, fm] = EARLIEST_PLAUSIBLE_ET.split(":").map(Number);
+  total = Math.max(total, fh * 60 + fm);
+  const hh = String(Math.floor(total / 60)).padStart(2, "0");
+  const mm = String(total % 60).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
+function sameSideOfNoon(hhmm: string, slot: "bmo" | "amc" | null): boolean {
+  if (slot === null) return true;
+  const isMorning = hhmm < "12:00";
+  return slot === "bmo" ? isMorning : !isMorning;
+}
+
+export function getSymbolReleaseTimeRow(
+  db: Database.Database,
+  symbol: string,
+): SymbolReleaseTimeRow | null {
+  try {
+    const family = issuerSiblings(symbol).map((s) => s.toUpperCase());
+    const ph = family.map(() => "?").join(",");
+    return (
+      (db
+        .prepare(
+          `SELECT symbol, release_time, source, note, verified_for_date, updated_at
+           FROM symbol_release_times WHERE symbol IN (${ph})
+           ORDER BY CASE source WHEN 'user' THEN 0 ELSE 1 END LIMIT 1`,
+        )
+        .get(...family) as SymbolReleaseTimeRow | undefined) ?? null
+    );
+  } catch {
+    return null;
+  }
+}
+
+export function upsertSymbolReleaseTime(
+  db: Database.Database,
+  input: {
+    symbol: string;
+    releaseTime: string;
+    source: "user" | "web_verified";
+    note?: string | null;
+    verifiedForDate?: string | null;
+  },
+): void {
+  const symbol = input.symbol.trim().toUpperCase();
+  // Source precedence (single-row-per-symbol PK): a web_verified write must
+  // never downgrade an existing user override — the row is one slot, so
+  // without this guard a later web-sourced note would silently clobber a
+  // standing user decision. A user write always wins and always proceeds.
+  if (input.source === "web_verified") {
+    const existing = db
+      .prepare(`SELECT source FROM symbol_release_times WHERE symbol = ?`)
+      .get(symbol) as { source: string } | undefined;
+    if (existing?.source === "user") return;
+  }
+  db.prepare(
+    `INSERT INTO symbol_release_times (symbol, release_time, source, note, verified_for_date, updated_at)
+     VALUES (?, ?, ?, ?, ?, datetime('now'))
+     ON CONFLICT(symbol) DO UPDATE SET
+       release_time = excluded.release_time,
+       source = excluded.source,
+       note = excluded.note,
+       verified_for_date = excluded.verified_for_date,
+       updated_at = datetime('now')`,
+  ).run(
+    symbol,
+    input.releaseTime,
+    input.source,
+    input.note ?? null,
+    input.verifiedForDate ?? null,
+  );
+}
+
+export function clearUserReleaseTime(db: Database.Database, symbol: string): boolean {
+  try {
+    return (
+      db
+        .prepare(`DELETE FROM symbol_release_times WHERE symbol = ? AND source = 'user'`)
+        .run(symbol.trim().toUpperCase()).changes > 0
+    );
+  } catch {
+    return false;
+  }
+}
+
+function lookbackSinceDate(): string {
+  const d = new Date(Date.now() - OBSERVATION_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
+  return d.toISOString().slice(0, 10);
+}
+
+export function hasBoundedObservations(db: Database.Database, symbol: string): boolean {
+  return getObservationsForFamily(db, symbol, lookbackSinceDate()).some((o) =>
+    isBoundedObservation(o.first_seen_at, o.last_empty_probe_at),
+  );
+}
+
+/** Cascade layers 1–3 (user → web_verified → observed-derived). */
+export function resolveSymbolReleaseTime(
+  db: Database.Database,
+  symbol: string,
+  slot: "bmo" | "amc" | null,
+): { time: string; source: "user" | "web_verified" | "observed" } | null {
+  const row = getSymbolReleaseTimeRow(db, symbol);
+  const bounded = getObservationsForFamily(db, symbol, lookbackSinceDate()).filter((o) =>
+    isBoundedObservation(o.first_seen_at, o.last_empty_probe_at),
+  );
+
+  if (row?.source === "user" && sameSideOfNoon(row.release_time, slot)) {
+    return { time: row.release_time, source: "user" };
+  }
+  if (row?.source === "web_verified" && bounded.length === 0 && sameSideOfNoon(row.release_time, slot)) {
+    return { time: row.release_time, source: "web_verified" };
+  }
+  const times = bounded
+    .map((o) => etTimeOfInstant(o.first_seen_at))
+    .filter((t): t is string => t !== null)
+    .filter((t) => sameSideOfNoon(t, slot));
+  if (times.length > 0) {
+    const earliest = times.reduce((a, b) => (a < b ? a : b));
+    return { time: minusMarginFloored(earliest), source: "observed" };
+  }
+  return null;
+}
+
+/**
+ * Full release-time resolution for one earnings row: explicit HH:MM
+ * event_time → layers 1–3 → legacy constant + BMO/AMC defaults
+ * (resolveReleaseTime) → pull-down rule (any observation earlier than a
+ * layer-≥3 resolution pulls it down; user/web layers are never pulled).
+ */
+export function resolveEarningsReleaseTime(
+  db: Database.Database,
+  row: {
+    event_type: string;
+    event_time: string | null;
+    raw_json: string | null;
+    symbol?: string | null;
+  },
+): string | null {
+  if (row.event_time && /^\d{2}:\d{2}$/.test(row.event_time)) return row.event_time;
+  if (row.event_type !== "earnings" || !row.symbol) return resolveReleaseTime(row);
+
+  const slot = ((): "bmo" | "amc" | null => {
+    const et = row.event_time?.trim().toUpperCase();
+    if (et === "BMO") return "bmo";
+    if (et === "AMC") return "amc";
+    return null;
+  })();
+
+  const fromSymbol = resolveSymbolReleaseTime(db, row.symbol, slot);
+  if (fromSymbol?.source === "user" || fromSymbol?.source === "web_verified") {
+    return fromSymbol.time;
+  }
+
+  let resolved = fromSymbol?.time ?? resolveReleaseTime(row);
+  if (!resolved) return null;
+
+  // Pull-down: ANY observation (bounded or not) earlier than the resolved
+  // time is direct evidence — layers ≥3 only (we're past user/web above).
+  const allTimes = getObservationsForFamily(db, row.symbol, lookbackSinceDate())
+    .map((o) => etTimeOfInstant(o.first_seen_at))
+    .filter((t): t is string => t !== null)
+    .filter((t) => sameSideOfNoon(t, slot));
+  const earliestSeen = allTimes.length
+    ? allTimes.reduce((a, b) => (a < b ? a : b))
+    : null;
+  if (earliestSeen && earliestSeen < resolved) {
+    resolved = minusMarginFloored(earliestSeen);
+  }
+  return resolved;
+}
+
+/** Re-resolve release_time for future, untouched family earnings rows. */
+export function applyResolvedReleaseTimeToUpcomingEvents(
+  db: Database.Database,
+  symbol: string,
+  opts: { today?: string } = {},
+): number {
+  const today = opts.today ?? new Date().toISOString().slice(0, 10);
+  let rows: Array<{
+    id: number; event_type: string; event_time: string | null;
+    raw_json: string | null; symbol: string | null; release_time: string | null;
+  }>;
+  try {
+    const family = issuerSiblings(symbol).map((s) => s.toUpperCase());
+    const ph = family.map(() => "?").join(",");
+    rows = db
+      .prepare(
+        `SELECT id, event_type, event_time, raw_json, symbol, release_time
+         FROM calendar_events
+         WHERE event_type = 'earnings' AND UPPER(symbol) IN (${ph})
+           AND event_date >= ? AND actual_value IS NULL AND enriched_at IS NULL
+           AND COALESCE(superseded, 0) = 0`,
+      )
+      .all(...family, today) as typeof rows;
+  } catch {
+    return 0;
+  }
+  let updated = 0;
+  const upd = db.prepare(`UPDATE calendar_events SET release_time = ? WHERE id = ?`);
+  for (const r of rows) {
+    const resolved = resolveEarningsReleaseTime(db, r);
+    if (resolved && resolved !== r.release_time) {
+      upd.run(resolved, r.id);
+      updated++;
+    }
+  }
+  return updated;
 }

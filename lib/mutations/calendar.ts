@@ -5,6 +5,7 @@ import type {
   CalendarEventSource,
 } from "@/lib/types";
 import { resolveReleaseTime, SYMBOL_RELEASE_TIMES_ET } from "@/lib/calendar/release-times";
+import { resolveEarningsReleaseTime, resolveSymbolReleaseTime } from "@/lib/earnings/wire-times";
 import { getSecurityIdForSymbolWithSiblings } from "@/lib/queries/briefing-symbols";
 import { mondayOf } from "@/lib/calendar/date-utils";
 
@@ -123,7 +124,7 @@ export function upsertCalendarEvents(
     let inserted = 0;
     let updated = 0;
     for (const e of events) {
-      const releaseTime = resolveReleaseTime({
+      const releaseTime = resolveEarningsReleaseTime(db, {
         event_type: e.event_type,
         event_time: e.event_time ?? null,
         raw_json: e.raw_json ?? null,
@@ -522,7 +523,7 @@ export function insertCalendarEvent(
   const symbol = input.symbol.trim().toUpperCase();
   const eventType = input.event_type ?? "earnings";
   const eventTime = input.event_time ?? "AMC";
-  const releaseTime = input.release_time ?? deriveReleaseTime(eventTime, symbol);
+  const releaseTime = input.release_time ?? deriveReleaseTime(db, eventTime, symbol);
   const sourceKey = `manual:${symbol}:${input.event_date}:${eventType}`;
   const title = `${symbol} earnings (Manual entry)`;
 
@@ -633,6 +634,7 @@ export function deleteCalendarEvent(
 }
 
 function deriveReleaseTime(
+  db: Database.Database,
   eventTime: string | null | undefined,
   symbol?: string | null,
 ): string | null {
@@ -641,6 +643,15 @@ function deriveReleaseTime(
   // If the caller passed "HH:MM" through event_time, treat that as the release_time too.
   if (/^\d{1,2}:\d{2}$/.test(eventTime)) return eventTime;
   if (t === "TAS") return null; // "during trading" — no specific release time
+
+  // Wire-time cascade (user override → web-verified → observed-derived)
+  // wins over the static per-symbol constant + BMO/AMC defaults below.
+  if (symbol) {
+    const slot = t === "BMO" ? "bmo" : t === "AMC" ? "amc" : null;
+    const fromCascade = resolveSymbolReleaseTime(db, symbol, slot);
+    if (fromCascade) return fromCascade.time;
+  }
+
   // Per-symbol overrides win over BMO/AMC defaults (e.g. AAPL=16:30 not 16:15).
   if (symbol) {
     const override = SYMBOL_RELEASE_TIMES_ET[symbol.trim().toUpperCase()];
