@@ -137,6 +137,20 @@ export function parseIbkrActivity(
   const errors: string[] = [];
   const warnings: string[] = [];
 
+  // Tracks how many times each base source_key has appeared in THIS file, so
+  // two genuinely identical fills (same date/symbol/qty/proceeds — annual
+  // statements with 1,736 trade rows raise the odds) get a stable
+  // disambiguating suffix instead of the second silently dropping at commit
+  // via INSERT OR IGNORE. Mirrors the canonical-csv `:#N` convention: the
+  // first occurrence keeps the bare key (idempotent with historical imports),
+  // the Nth identical key gets `:#N` appended (N starting at 2).
+  const seenKeys = new Map<string, number>();
+  const uniqueKey = (base: string): string => {
+    const n = (seenKeys.get(base) ?? 0) + 1;
+    seenKeys.set(base, n);
+    return n === 1 ? base : `${base}:#${n}`;
+  };
+
   // Parse Change in NAV for snapshot
   let startingValue = 0;
   let markToMarket = 0;
@@ -268,7 +282,9 @@ export function parseIbkrActivity(
           amount: proceeds,
           pricePerShare: tradePrice,
           fees: Math.abs(commFee),
-          sourceKey: `ibkr:trade:${tradeDate}:${effectiveSymbol}:${quantity}:${proceeds}`,
+          sourceKey: uniqueKey(
+            `ibkr:trade:${tradeDate}:${effectiveSymbol}:${quantity}:${proceeds}`
+          ),
         });
 
         securitiesMap.set(effectiveSymbol, {
@@ -291,7 +307,9 @@ export function parseIbkrActivity(
           amount: proceeds,
           pricePerShare: tradePrice,
           fees: Math.abs(commFee),
-          sourceKey: `ibkr:trade:${tradeDate}:${symbol}:${quantity}:${proceeds}`,
+          sourceKey: uniqueKey(
+            `ibkr:trade:${tradeDate}:${symbol}:${quantity}:${proceeds}`
+          ),
         });
 
         securitiesMap.set(symbol, {
@@ -300,6 +318,65 @@ export function parseIbkrActivity(
         });
       }
     }
+  }
+
+  // Parse Transfers (ACATS in-kind security legs). The Jan-2024 Robinhood
+  // ACATS positions were invisible to the old canonical backfill — every
+  // subsequent sale of those shares overshot the ledger (2026-08-03 audit).
+  // Cash legs already arrive via Deposits & Withdrawals; only security rows
+  // (Asset Category "Stocks") are transactions here. Basis: transfer-date
+  // market value / qty — refined for the 4 known ACATS positions by
+  // scripts/repair-acats-opening-lots.ts (worksheet-verified original lots).
+  const xferHeader = rows.find(
+    (r) => r.section === "Transfers" && r.discriminator === "Header"
+  );
+  const xCol: Record<string, number> = {};
+  xferHeader?.fields.forEach((name, i) => {
+    xCol[name] = i;
+  });
+  for (const row of rows) {
+    if (row.section !== "Transfers" || row.discriminator !== "Data") continue;
+    const assetCategory = row.fields[xCol["Asset Category"] ?? 0];
+    if (assetCategory !== "Stocks") {
+      // "Cash" legs already arrive via Deposits & Withdrawals, and the
+      // section's own "Total" row is expected — both stay silent. Any OTHER
+      // Asset Category (e.g. an Options or Bonds ACATS leg) has no in-kind
+      // transfer handling in this parser and would otherwise be silently
+      // dropped — warn so a future non-stock transfer leg is noticed
+      // instead of vanishing without a trace.
+      if (assetCategory && assetCategory !== "Cash" && assetCategory !== "Total") {
+        const symbolForWarning = row.fields[xCol["Symbol"] ?? 3];
+        warnings.push(
+          `Transfers: skipped "${assetCategory}" leg` +
+            (symbolForWarning ? ` (symbol ${symbolForWarning})` : "") +
+            ` — only Stocks transfers are converted to TRANSFER_IN/TRANSFER_OUT`
+        );
+      }
+      continue; // skips Total + Cash rows (and now-warned other categories)
+    }
+    const symbol = row.fields[xCol["Symbol"] ?? 3];
+    const date = row.fields[xCol["Date"] ?? 4];
+    const direction = row.fields[xCol["Direction"] ?? 6];
+    const qty = Math.abs(
+      parseFloat((row.fields[xCol["Qty"] ?? 9] ?? "").replace(/,/g, ""))
+    );
+    const marketValue = Math.abs(
+      parseFloat((row.fields[xCol["Market Value"] ?? 11] ?? "").replace(/,/g, ""))
+    );
+    if (!symbol || !date || isNaN(qty) || qty === 0) continue;
+
+    transactions.push({
+      accountName: "IBKR",
+      tradeDate: date,
+      type: direction === "Out" ? "TRANSFER_OUT" : "TRANSFER_IN",
+      symbol,
+      quantity: qty,
+      amount: marketValue,
+      pricePerShare: isNaN(marketValue) ? undefined : marketValue / qty,
+      fees: 0,
+      sourceKey: uniqueKey(`ibkr:xfer:${date}:${symbol}:${qty}:${direction}`),
+    });
+    securitiesMap.set(symbol, { symbol, securityType: "Stock" });
   }
 
   // Parse Dividends
