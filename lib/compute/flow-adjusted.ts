@@ -20,6 +20,18 @@ export interface SeriesPoint {
 }
 
 /**
+ * Signed external-flow amount expression. Security transfers store the
+ * transfer-date market value as a positive magnitude — the TYPE carries the
+ * direction (same convention as quantity-always-positive) — so TRANSFER_OUT
+ * must be signed negative here or a paired internal journal (equal
+ * TRANSFER_IN + TRANSFER_OUT legs) reads as double inflow and every
+ * flow-consuming metric (TWR, XIRR, flow-adjusted index, attribution)
+ * drifts. -ABS keeps an already-negative row negative.
+ */
+export const SIGNED_EXTERNAL_FLOW_SQL =
+  "CASE WHEN type = 'TRANSFER_OUT' THEN -ABS(amount) ELSE amount END";
+
+/**
  * Net external flows (deposits positive, withdrawals negative) per trade_date
  * for the scoped accounts, bounded to (startDate, endDate]. Flows on/before
  * the first valuation date are already baked into the starting value; flows
@@ -46,13 +58,13 @@ export function fetchNetFlowsByDate(
 
   return db
     .prepare(
-      `SELECT trade_date AS date, SUM(amount) AS net
+      `SELECT trade_date AS date, SUM(${SIGNED_EXTERNAL_FLOW_SQL}) AS net
        FROM transactions
        WHERE is_external_flow = 1
          AND trade_date > ? AND trade_date <= ?
          ${accountFilter}
        GROUP BY trade_date
-       HAVING SUM(amount) != 0
+       HAVING SUM(${SIGNED_EXTERNAL_FLOW_SQL}) != 0
        ORDER BY trade_date ASC`
     )
     .all(startDate, endDate, ...(accountIds ?? [])) as { date: string; net: number }[];

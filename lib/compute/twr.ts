@@ -1,5 +1,10 @@
 import type Database from "better-sqlite3";
 import { excludeLiveSnapshotsSql } from "@/lib/db/live-sources";
+import { SIGNED_EXTERNAL_FLOW_SQL } from "@/lib/compute/flow-adjusted";
+import {
+  SNAPSHOT_FIRSTS_CTE,
+  EXPECTED_ACCOUNTS_SQL,
+} from "@/lib/compute/snapshot-coverage";
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -56,6 +61,14 @@ interface AggregatedSnapshotRow {
   month_end_date: string;
   total_value: number;
   total_deposits_withdrawals: number;
+  present_accounts: number;
+  expected_accounts: number;
+}
+
+/** AggregatedSnapshotRow that survived the full-coverage filter, carrying
+ *  any skipped months' deposits forward so Dietz flows aren't lost. */
+interface CoveredSnapshotRow extends AggregatedSnapshotRow {
+  carried_deposits: number;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -157,7 +170,7 @@ export function computeTwr(
   );
 
   const cashFlowStmt = db.prepare(
-    `SELECT trade_date, amount
+    `SELECT trade_date, ${SIGNED_EXTERNAL_FLOW_SQL} AS amount
      FROM transactions
      WHERE account_id = ?
        AND is_external_flow = 1
@@ -358,35 +371,44 @@ export function computeTwr(
   // Aggregate snapshots across accounts per month
   const aggSnapshots = db
     .prepare(
-      `SELECT month_end_date,
-              SUM(total_value) AS total_value,
-              SUM(COALESCE(deposits_withdrawals, 0)) AS total_deposits_withdrawals
-       FROM monthly_snapshots
-       WHERE month_end_date >= ? AND month_end_date <= ?
-         AND ${excludeLiveSnapshotsSql("source")}
-       GROUP BY month_end_date
-       ORDER BY month_end_date ASC`
+      `WITH ${SNAPSHOT_FIRSTS_CTE}
+       SELECT ms.month_end_date,
+              SUM(ms.total_value) AS total_value,
+              SUM(COALESCE(ms.deposits_withdrawals, 0)) AS total_deposits_withdrawals,
+              COUNT(*) AS present_accounts,
+              ${EXPECTED_ACCOUNTS_SQL} AS expected_accounts
+       FROM monthly_snapshots ms
+       WHERE ms.month_end_date >= ? AND ms.month_end_date <= ?
+         AND ${excludeLiveSnapshotsSql("ms.source")}
+       GROUP BY ms.month_end_date
+       ORDER BY ms.month_end_date ASC`
     )
     .all(effectiveStart, effectiveEnd) as AggregatedSnapshotRow[];
 
   // Get aggregated prior snapshot
   const aggPriorRow = db
     .prepare(
-      `SELECT SUM(total_value) AS total_value
-       FROM monthly_snapshots
-       WHERE month_end_date = (
-         SELECT MAX(month_end_date)
-         FROM monthly_snapshots
-         WHERE month_end_date < ?
-           AND ${excludeLiveSnapshotsSql("source")}
+      `WITH ${SNAPSHOT_FIRSTS_CTE},
+       agg AS (
+         SELECT ms.month_end_date,
+                SUM(ms.total_value) AS total_value,
+                COUNT(*) AS present_accounts,
+                ${EXPECTED_ACCOUNTS_SQL} AS expected_accounts
+         FROM monthly_snapshots ms
+         WHERE ms.month_end_date < ?
+           AND ${excludeLiveSnapshotsSql("ms.source")}
+         GROUP BY ms.month_end_date
        )
-         AND ${excludeLiveSnapshotsSql("source")}`
+       SELECT total_value FROM agg
+       WHERE present_accounts >= expected_accounts
+       ORDER BY month_end_date DESC
+       LIMIT 1`
     )
     .get(effectiveStart) as { total_value: number | null } | undefined;
 
   // All external flows across all accounts for the range
   const allFlowStmt = db.prepare(
-    `SELECT trade_date, SUM(amount) AS amount
+    `SELECT trade_date, SUM(${SIGNED_EXTERNAL_FLOW_SQL}) AS amount
      FROM transactions
      WHERE is_external_flow = 1
        AND trade_date >= ? AND trade_date <= ?
@@ -456,12 +478,29 @@ export function computeTwr(
   const portfolioReturns: number[] = [];
   let portfolioPartial = false;
 
-  for (let i = 0; i < aggSnapshots.length; i++) {
-    const snap = aggSnapshots[i];
+  // Full-coverage filter: a month missing an already-born account's row is
+  // statement lag — summing it would read the absent account's whole value
+  // as a return. Skipped months' deposits carry into the next covered month
+  // so multi-month Dietz periods keep their flows.
+  const coveredSnapshots: CoveredSnapshotRow[] = [];
+  let carriedDeposits = 0;
+  for (const snap of aggSnapshots) {
+    if (snap.present_accounts < snap.expected_accounts) {
+      portfolioPartial = true;
+      const correction = decemberCorrections.get(snap.month_end_date) ?? 0;
+      carriedDeposits += snap.total_deposits_withdrawals - correction;
+      continue;
+    }
+    coveredSnapshots.push({ ...snap, carried_deposits: carriedDeposits });
+    carriedDeposits = 0;
+  }
+
+  for (let i = 0; i < coveredSnapshots.length; i++) {
+    const snap = coveredSnapshots[i];
 
     let vStart: number | null = null;
     if (i > 0) {
-      vStart = aggSnapshots[i - 1].total_value;
+      vStart = coveredSnapshots[i - 1].total_value;
     } else if (aggPriorRow?.total_value) {
       vStart = aggPriorRow.total_value;
     }
@@ -475,7 +514,8 @@ export function computeTwr(
 
     // Use aggregated deposits_withdrawals, corrected for December annual rows
     const correction = decemberCorrections.get(snap.month_end_date) ?? 0;
-    const effectiveDeposits = snap.total_deposits_withdrawals - correction;
+    const effectiveDeposits =
+      snap.total_deposits_withdrawals - correction + snap.carried_deposits;
 
     let weightedFlows: { amount: number; weight: number }[];
 
@@ -512,10 +552,12 @@ export function computeTwr(
       : 0;
 
   const portfolioFirstDate =
-    aggSnapshots.length > 0 ? aggSnapshots[0].month_end_date : effectiveStart;
+    coveredSnapshots.length > 0
+      ? coveredSnapshots[0].month_end_date
+      : effectiveStart;
   const portfolioLastDate =
-    aggSnapshots.length > 0
-      ? aggSnapshots[aggSnapshots.length - 1].month_end_date
+    coveredSnapshots.length > 0
+      ? coveredSnapshots[coveredSnapshots.length - 1].month_end_date
       : effectiveEnd;
   const portfolioTotalDays = daysBetween(
     aggPriorRow?.total_value
