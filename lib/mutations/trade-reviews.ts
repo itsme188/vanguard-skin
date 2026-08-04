@@ -177,11 +177,6 @@ export function saveTradeRoundtrips(
     assessment?: string;
     what_worked?: string;
     what_didnt?: string;
-    // Legacy fields for backward compat
-    entry_thesis?: string;
-    exit_assessment?: string;
-    what_went_well?: string;
-    what_went_wrong?: string;
   }>
 ): number {
   // Clear existing roundtrips for this review
@@ -194,28 +189,15 @@ export function saveTradeRoundtrips(
     )
     .get() as { cnt: number };
 
-  // Detect whether migration 047 has run (adds `assessment` column).
-  // Post-migration writers populate cleanly-named columns:
+  // Column semantics per migration 047 (legacy scrambled columns dropped in 075):
   //   assessment       ← AI's `assessment`
   //   what_went_well   ← AI's `what_worked`
   //   what_went_wrong  ← AI's `what_didnt`
-  // Pre-migration (in-memory test DBs without the migration runner) keeps the
-  // legacy scrambled mapping so existing tests / code paths still work.
-  const hasAssessmentCol = db
-    .prepare(
-      "SELECT COUNT(*) as cnt FROM pragma_table_info('trade_roundtrips') WHERE name = 'assessment'"
-    )
-    .get() as { cnt: number };
+  const gradeCols = "grade, assessment, what_went_well, what_went_wrong";
 
-  const useNewCols = hasAssessmentCol.cnt > 0;
-
-  const gradeCols = useNewCols
-    ? "grade, assessment, what_went_well, what_went_wrong"
-    : "grade, entry_thesis, exit_assessment, what_went_well, what_went_wrong";
-
-  // 15 base placeholders + grade columns + optional sale_transaction_id
+  // 15 base placeholders + 4 grade columns + optional sale_transaction_id
   const baseCount = 15;
-  const gradeCount = useNewCols ? 4 : 5;
+  const gradeCount = 4;
   const totalCount = baseCount + gradeCount + (hasSaleTxCol.cnt > 0 ? 1 : 0);
   const placeholders = Array(totalCount).fill("?").join(", ");
 
@@ -263,12 +245,9 @@ export function saveTradeRoundtrips(
         );
       }
 
-      const assessmentVal =
-        matched?.assessment ?? matched?.entry_thesis ?? null;
-      const whatWorkedVal =
-        matched?.what_worked ?? matched?.exit_assessment ?? null;
-      const whatDidntVal =
-        matched?.what_didnt ?? matched?.what_went_well ?? null;
+      const assessmentVal = matched?.assessment ?? null;
+      const whatWorkedVal = matched?.what_worked ?? null;
+      const whatDidntVal = matched?.what_didnt ?? null;
 
       const baseParams: unknown[] = [
         reviewId,
@@ -288,22 +267,13 @@ export function saveTradeRoundtrips(
         rt.returnPct,
       ];
 
-      const params: unknown[] = useNewCols
-        ? [
-            ...baseParams,
-            matched?.grade ?? null,
-            assessmentVal,        // → assessment
-            whatWorkedVal,        // → what_went_well (semantically correct)
-            whatDidntVal,         // → what_went_wrong (semantically correct)
-          ]
-        : [
-            ...baseParams,
-            matched?.grade ?? null,
-            assessmentVal,        // → entry_thesis (legacy)
-            whatWorkedVal,        // → exit_assessment (legacy)
-            whatDidntVal,         // → what_went_well (legacy scramble — kept for in-memory test DBs)
-            matched?.what_went_wrong ?? null, // → what_went_wrong (always NULL pre-mig)
-          ];
+      const params: unknown[] = [
+        ...baseParams,
+        matched?.grade ?? null,
+        assessmentVal,        // → assessment
+        whatWorkedVal,        // → what_went_well
+        whatDidntVal,         // → what_went_wrong
+      ];
 
       if (hasSaleTxCol.cnt > 0) {
         params.push(rt.saleTransactionId);
