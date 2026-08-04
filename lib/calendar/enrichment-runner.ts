@@ -297,13 +297,26 @@ export async function runEnrichment(
           const reactionReady =
             !isEarnings || captureAgeMs >= REACTION_READY_MS;
 
+          // Earnings rows anchor t_pre to the prior regular-session close
+          // (2026-08-04) — see captureReactionFromTws. Macro rows keep pure
+          // release-window semantics (earnings stays null).
+          const earningsAnchor =
+            isEarnings
+              ? (() => {
+                  const closeInstant = composeReleaseInstant(event.event_date, "16:00");
+                  return closeInstant
+                    ? { closeMs: closeInstant.getTime(), eventDate: event.event_date }
+                    : null;
+                })()
+              : null;
+
           // Prefer TWS — superior intraday TRADES bars, no upstream rate limit.
           if (opts.tws && reactionReady) {
             reaction = await captureReactionFromTws(
               opts.tws,
               releaseInstant,
               sectorEtf,
-              { pacingMs: opts.pacingMs, eventSymbol },
+              { pacingMs: opts.pacingMs, eventSymbol, earnings: earningsAnchor },
             );
           }
 
@@ -317,7 +330,11 @@ export async function runEnrichment(
               reaction = await captureReactionFromYahoo(
                 releaseInstant,
                 sectorEtf,
-                { pacingMs: opts.pacingMs, eventSymbol },
+                {
+                  pacingMs: opts.pacingMs,
+                  eventSymbol,
+                  earningsCloseMs: earningsAnchor?.closeMs ?? null,
+                },
               );
             } catch (err) {
               console.warn(
@@ -455,6 +472,18 @@ async function runTwsReactionUpgrade(
     sectorEtf = resolveSectorEtf(row.event_type, null);
   }
 
+  // Same prior-close anchor as the main path — a TWS re-capture must not
+  // silently revert an earnings row to window semantics.
+  const upgradeAnchor =
+    row.event_type === "earnings"
+      ? (() => {
+          const closeInstant = composeReleaseInstant(row.event_date, "16:00");
+          return closeInstant
+            ? { closeMs: closeInstant.getTime(), eventDate: row.event_date }
+            : null;
+        })()
+      : null;
+
   const reaction = await captureReactionFromTws(
     opts.tws,
     releaseInstant,
@@ -462,6 +491,7 @@ async function runTwsReactionUpgrade(
     {
       pacingMs: opts.pacingMs,
       eventSymbol: row.event_type === "earnings" ? row.symbol : null,
+      earnings: upgradeAnchor,
     },
   );
 
