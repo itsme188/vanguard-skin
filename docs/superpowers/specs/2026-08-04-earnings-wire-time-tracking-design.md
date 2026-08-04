@@ -107,5 +107,5 @@ TDD throughout, `:memory:` DBs:
 
 - **No Worker probe** (v1): Mac pmset wake is 07:40 weekdays; a pre-7:40 print records as an unbounded observation honestly. Revisit only if live coverage disappoints.
 - **No EDGAR refiner** (v1): `source` column leaves the door open.
-- **WSH subscription** (user): enable in IBKR Account Management; if 10276 clears, WSH expected times become a candidate cascade layer.
+- **WSH subscription — PASSED for now (user decision 2026-08-04)**: evaluated early in the project and too expensive at current tax status; revisit ~next year when it can be written off. If ever enabled (10276 clears), WSH expected times become a candidate cascade layer.
 - Weekend/holiday probing inherits the existing enrichment scheduler (24/7 ticks) — no new gating.
