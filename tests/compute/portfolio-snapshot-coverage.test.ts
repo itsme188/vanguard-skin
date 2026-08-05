@@ -16,13 +16,14 @@ function seedSnapshot(
   db: Database.Database,
   accountId: number,
   monthEndDate: string,
-  totalValue: number
+  totalValue: number,
+  deposits = 0
 ): void {
   db.prepare(
     `INSERT OR REPLACE INTO monthly_snapshots
-       (account_id, month_end_date, total_value, source)
-     VALUES (?, ?, ?, 'manual')`
-  ).run(accountId, monthEndDate, totalValue);
+       (account_id, month_end_date, total_value, deposits_withdrawals, source)
+     VALUES (?, ?, ?, ?, 'manual')`
+  ).run(accountId, monthEndDate, totalValue, deposits);
 }
 
 describe("portfolio aggregation skips partially-covered months", () => {
@@ -60,6 +61,24 @@ describe("portfolio aggregation skips partially-covered months", () => {
     // Liquidation value must be Feb's 165k (both accounts), never March's
     // account-1-only 121k, which reads as an -88%-style loss vs the 140k start.
     expect(result!.currentValue).toBeCloseTo(165000, 0);
+    expect(result!.xirr).toBeGreaterThan(0);
+  });
+
+  it("XIRR excludes flows the terminal value cannot see (lag-month deposit)", () => {
+    // A deposit landing in the UNCOVERED March month sits after Feb's covered
+    // terminal value. Booking it as committed capital while liquidating at
+    // Feb's value reads the deposit as a loss — the same failure class the
+    // coverage guard fixes, reintroduced at the end-of-window boundary.
+    seedSnapshot(db, 1, "2026-03-31", 161000, 40000);
+    const result = computeXirr(db, {
+      startDate: "2026-01-15",
+      endDate: "2026-03-31",
+    });
+    expect(result).not.toBeNull();
+    expect(result!.currentValue).toBeCloseTo(165000, 0);
+    // The 40k March deposit must NOT count as invested capital against the
+    // February terminal value, and XIRR must stay positive.
+    expect(result!.totalInvested).toBeLessThan(40000);
     expect(result!.xirr).toBeGreaterThan(0);
   });
 
