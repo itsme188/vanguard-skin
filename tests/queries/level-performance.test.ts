@@ -376,3 +376,49 @@ describe("getSectorEtfGaps", () => {
     expect(rows[0].symbol).toBe("DUPE");
   });
 });
+
+// ── Regression pin (qa 2026-08-05): hit-rate denominator whitelist ──
+// The levels_created denominator must count only review_status='auto_approved'
+// rows (the scan-filter inclusive-whitelist convention): user-REJECTED and
+// pending_review extractions can never fire an alert, so counting them ranked
+// sources by how often the user rejected them (James Bulltard read 9.3% off
+// 183 levels of which 134 were rejected).
+describe("getSourcePerformance denominator whitelist", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  it("excludes rejected and pending_review levels from levels_created and hit_rate", () => {
+    seedSecurity(db, 1, "AAPL");
+    // 2 armed levels, 1 fired
+    insertLevel(db, { id: 1, securityId: 1, source: "newsletter", source_author: "Bulltard", price: 150 });
+    insertLevel(db, { id: 2, securityId: 1, source: "newsletter", source_author: "Bulltard", price: 140 });
+    // 3 rejected + 1 pending — never armed, must not dilute the denominator
+    for (const [id, status] of [
+      [3, "rejected"],
+      [4, "rejected"],
+      [5, "rejected"],
+      [6, "pending_review"],
+    ] as const) {
+      insertLevel(db, { id, securityId: 1, source: "newsletter", source_author: "Bulltard", price: 100 + id });
+      db.prepare("UPDATE security_levels SET review_status = ? WHERE id = ?").run(status, id);
+    }
+    insertAlert(db, {
+      levelId: 1,
+      securityId: 1,
+      triggeredAt: "2026-07-01 14:00:00",
+      triggeredPrice: 150,
+      response: "acted",
+    });
+
+    const rows = getSourcePerformance(db);
+    const bulltard = rows.find((r) => r.source_author === "Bulltard");
+    expect(bulltard).toBeDefined();
+    expect(bulltard!.levels_created).toBe(2);
+    expect(bulltard!.hit_rate).toBe(50.0);
+  });
+});
