@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import type { Holding } from "@/lib/types";
-import { adjustedMarketValueSQL } from "@/lib/valuation";
+import { adjustedMarketValueSQL, scaledCostBasisFallbackSQL } from "@/lib/valuation";
 
 export interface HoldingWithSecurity extends Holding {
   symbol: string;
@@ -49,14 +49,7 @@ export function getAllHoldings(db: Database.Database): AllHoldingsRow[] {
   // "-" cost basis and NULL unrealized gain after the first Plaid sync.
   // Mirrors the identical pattern in getCrossAccountPositions
   // (lib/digest/send-earnings-email.ts).
-  const costBasisExpr = `COALESCE(
-        h.cost_basis,
-        (SELECT h3.cost_basis FROM holdings h3
-          WHERE h3.account_id = h.account_id
-            AND h3.security_id = h.security_id
-            AND h3.cost_basis IS NOT NULL
-          ORDER BY h3.as_of_date DESC LIMIT 1)
-      )`;
+  const costBasisExpr = scaledCostBasisFallbackSQL("h", "h3");
 
   const sql = `
     SELECT
@@ -102,14 +95,7 @@ export function getHoldingsByAccount(
 ): HoldingWithSecurity[] {
   // Cost basis fallback — see getAllHoldings above for the Plaid-NULL
   // rationale; same pattern as getCrossAccountPositions.
-  const costBasisExpr = `COALESCE(
-        h.cost_basis,
-        (SELECT h2.cost_basis FROM holdings h2
-          WHERE h2.account_id = h.account_id
-            AND h2.security_id = h.security_id
-            AND h2.cost_basis IS NOT NULL
-          ORDER BY h2.as_of_date DESC LIMIT 1)
-      )`;
+  const costBasisExpr = scaledCostBasisFallbackSQL("h", "h2");
 
   let sql = `
     SELECT h.*, s.symbol, s.name as security_name, s.security_type, a.name as account_name,

@@ -80,9 +80,11 @@ export async function POST(request: Request) {
   });
 
   if (!result.ok) {
+    // A no-change submission is caller error (400), not a domain conflict.
+    const status = result.code === "no_change" ? 400 : 409;
     return Response.json(
       { success: false, error: result.refusedReason ?? "correction refused" },
-      { status: 409 },
+      { status },
     );
   }
 

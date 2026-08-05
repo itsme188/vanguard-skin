@@ -320,6 +320,56 @@ describe("correctEarningsEventDate", () => {
     expect(manual.consensus_estimate).toBe("EPS 2.71 · Rev 1.2B");
   });
 
+  it("refuses an unchanged date+slot submission without touching the vendor row", () => {
+    // WIX case (qa:today-earningshub-fix-date--unchanged-submit-destroys-vendor-row):
+    // popover submitted with the pre-filled date and the row's own slot —
+    // nothing to change, so nothing may be deleted, suppressed, or re-minted.
+    const id = seedFinnhub(db, "WIX", "2026-08-04", { eventTime: "AMC" });
+    const result = correctEarningsEventDate(db, {
+      symbol: "WIX",
+      wrongDate: "2026-08-04",
+      correctDate: "2026-08-04",
+      slot: "AMC",
+    });
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("no_change");
+
+    const survivor = db
+      .prepare(`SELECT id, source FROM calendar_events WHERE symbol = 'WIX'`)
+      .get() as { id: number; source: string };
+    expect(survivor).toEqual({ id, source: "finnhub" });
+    const suppressed = db
+      .prepare(`SELECT COUNT(*) AS n FROM calendar_event_suppressions WHERE symbol = 'WIX'`)
+      .get() as { n: number };
+    expect(suppressed.n).toBe(0);
+  });
+
+  it("refuses a same-date submission with no slot at all", () => {
+    const id = seedFinnhub(db, "WIX", "2026-08-04");
+    const result = correctEarningsEventDate(db, {
+      symbol: "WIX",
+      wrongDate: "2026-08-04",
+      correctDate: "2026-08-04",
+    });
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("no_change");
+    const survivor = db
+      .prepare(`SELECT id FROM calendar_events WHERE symbol = 'WIX'`)
+      .get() as { id: number };
+    expect(survivor.id).toBe(id);
+  });
+
+  it("still performs a genuine same-date slot flip", () => {
+    seedFinnhub(db, "IMAX", "2026-08-04", { eventTime: "AMC" });
+    const result = correctEarningsEventDate(db, {
+      symbol: "IMAX",
+      wrongDate: "2026-08-04",
+      correctDate: "2026-08-04",
+      slot: "BMO",
+    });
+    expect(result.ok).toBe(true);
+  });
+
   it("falls back to AMC when there is no wrong row and no slot passed", () => {
     const res = correctEarningsEventDate(db, {
       symbol: "ZZZ",

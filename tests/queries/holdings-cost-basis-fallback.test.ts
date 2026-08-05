@@ -63,8 +63,10 @@ describe("holdings cost_basis fallback (F1)", () => {
     // Latest-date row wins for quantity/as_of_date (Plaid row).
     expect(row!.quantity).toBe(105);
     expect(row!.as_of_date).toBe("2026-07-10");
-    // But cost_basis falls back to the last known non-null value.
-    expect(row!.cost_basis).toBe(1000);
+    // But cost_basis falls back to the last known non-null value, scaled
+    // per-share to the CURRENT quantity (105/100 x 1000) — a stale row's
+    // whole basis must never serve a different share count verbatim.
+    expect(row!.cost_basis).toBeCloseTo(1050, 6);
   });
 
   it("getHoldingsByAccount falls back to the latest non-null statement cost_basis when the latest (Plaid) row has NULL", () => {
@@ -79,7 +81,7 @@ describe("holdings cost_basis fallback (F1)", () => {
     expect(row).toBeTruthy();
     expect(row!.quantity).toBe(105);
     expect(row!.as_of_date).toBe("2026-07-10");
-    expect(row!.cost_basis).toBe(1000);
+    expect(row!.cost_basis).toBeCloseTo(1050, 6);
   });
 
   it("getAllHoldings returns null cost_basis when no prior row has one (never fabricates)", () => {

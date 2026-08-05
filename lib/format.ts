@@ -170,6 +170,21 @@ export function parseLargeUSD(input: string | number | null | undefined): number
  * percent. Single source (feedback #5): PDF/newsletter bogey extraction and
  * the BogeysEditModal manual input all parse through this.
  */
+/**
+ * Unrealized gain as a fraction of the position's basis MAGNITUDE.
+ * Short positions carry a negative cost basis (short proceeds) — dividing by
+ * the signed basis flips the percent against its own dollar gain, so the
+ * denominator is |costBasis| and the sign always follows the gain.
+ * Returns null when either side is missing or the basis is zero.
+ */
+export function unrealizedGainRatio(
+  gain: number | null | undefined,
+  costBasis: number | null | undefined
+): number | null {
+  if (gain == null || costBasis == null || costBasis === 0) return null;
+  return gain / Math.abs(costBasis);
+}
+
 export function coercePercent(v: unknown): number | null {
   let n: number | null = null;
   if (typeof v === "number") n = v;

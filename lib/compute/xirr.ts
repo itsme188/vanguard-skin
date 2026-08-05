@@ -16,6 +16,11 @@
 
 import type Database from "better-sqlite3";
 import { excludeLiveSnapshotsSql } from "@/lib/db/live-sources";
+import { SIGNED_EXTERNAL_FLOW_SQL } from "@/lib/compute/flow-adjusted";
+import {
+  SNAPSHOT_FIRSTS_CTE,
+  EXPECTED_ACCOUNTS_SQL,
+} from "@/lib/compute/snapshot-coverage";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -252,7 +257,7 @@ export function computeXirr(
 
   // Prepare statements
   const externalFlowStmt = db.prepare(
-    `SELECT trade_date, amount
+    `SELECT trade_date, ${SIGNED_EXTERNAL_FLOW_SQL} AS amount
      FROM transactions
      WHERE account_id = ?
        AND is_external_flow = 1
@@ -492,32 +497,31 @@ export function computeXirr(
   let aggStartValue: number | null = null;
   let aggStartDateStr: string | null = null;
 
+  // Coverage-aware: the start boundary must be a month every already-born
+  // account reported (see snapshot-coverage.ts — statement-lag guard).
   const monthlyAggStart = db
     .prepare(
-      `SELECT SUM(total_value) AS total_value
-       FROM monthly_snapshots
-       WHERE month_end_date = (
-         SELECT MAX(month_end_date)
-         FROM monthly_snapshots
-         WHERE month_end_date < ?
-           AND ${excludeLiveSnapshotsSql("source")}
+      `WITH ${SNAPSHOT_FIRSTS_CTE},
+       agg AS (
+         SELECT ms.month_end_date AS d,
+                SUM(ms.total_value) AS total_value,
+                COUNT(*) AS present_accounts,
+                ${EXPECTED_ACCOUNTS_SQL} AS expected_accounts
+         FROM monthly_snapshots ms
+         WHERE ms.month_end_date < ?
+           AND ${excludeLiveSnapshotsSql("ms.source")}
+         GROUP BY ms.month_end_date
        )
-         AND ${excludeLiveSnapshotsSql("source")}`
+       SELECT d, total_value FROM agg
+       WHERE present_accounts >= expected_accounts
+       ORDER BY d DESC
+       LIMIT 1`
     )
-    .get(effectiveStart) as { total_value: number | null } | undefined;
+    .get(effectiveStart) as { d: string; total_value: number | null } | undefined;
 
-  const monthlyAggStartDate = db
-    .prepare(
-      `SELECT MAX(month_end_date) AS d
-       FROM monthly_snapshots
-       WHERE month_end_date < ?
-         AND ${excludeLiveSnapshotsSql("source")}`
-    )
-    .get(effectiveStart) as { d: string | null } | undefined;
-
-  if (monthlyAggStart?.total_value && monthlyAggStart.total_value > 0 && monthlyAggStartDate?.d) {
+  if (monthlyAggStart?.total_value && monthlyAggStart.total_value > 0 && monthlyAggStart.d) {
     aggStartValue = monthlyAggStart.total_value;
-    aggStartDateStr = monthlyAggStartDate.d;
+    aggStartDateStr = monthlyAggStart.d;
   } else {
     // Fallback to daily valuations
     const dailyAggStart = db
@@ -638,17 +642,26 @@ export function computeXirr(
   // Ending total portfolio value — try monthly snapshots, fall back to daily valuations
   let currentValue = 0;
 
+  // Coverage-aware: the "liquidation" value must come from the latest month
+  // every already-born account reported — a statement-lag month drops a
+  // whole account from the terminal value and fabricates a huge loss.
   const aggEndRow = db
     .prepare(
-      `SELECT SUM(total_value) AS total_value
-       FROM monthly_snapshots
-       WHERE month_end_date = (
-         SELECT MAX(month_end_date)
-         FROM monthly_snapshots
-         WHERE month_end_date <= ?
-           AND ${excludeLiveSnapshotsSql("source")}
+      `WITH ${SNAPSHOT_FIRSTS_CTE},
+       agg AS (
+         SELECT ms.month_end_date AS d,
+                SUM(ms.total_value) AS total_value,
+                COUNT(*) AS present_accounts,
+                ${EXPECTED_ACCOUNTS_SQL} AS expected_accounts
+         FROM monthly_snapshots ms
+         WHERE ms.month_end_date <= ?
+           AND ${excludeLiveSnapshotsSql("ms.source")}
+         GROUP BY ms.month_end_date
        )
-         AND ${excludeLiveSnapshotsSql("source")}`
+       SELECT total_value FROM agg
+       WHERE present_accounts >= expected_accounts
+       ORDER BY d DESC
+       LIMIT 1`
     )
     .get(effectiveEnd) as { total_value: number | null } | undefined;
 
