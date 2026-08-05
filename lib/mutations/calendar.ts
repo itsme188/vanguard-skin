@@ -290,6 +290,7 @@ export interface CorrectEarningsDateResult {
   deletedIds?: number[]; // wrong rows removed + suppressed
   bogeysMigrated?: number;
   refusedReason?: string; // set when ok=false (e.g. captured actuals)
+  code?: "no_change"; // discriminates a benign no-op refusal from a hard one
 }
 
 /**
@@ -385,6 +386,33 @@ export function correctEarningsEventDate(
         refusedReason:
           `Refusing: row #${row.id} (${row.source_key}) already has captured actuals — ` +
           `that print really happened on ${opts.wrongDate}. Nothing deleted.`,
+      };
+    }
+  }
+
+  // No-op guard: an unchanged date+slot submission (the popover's pre-filled
+  // form submitted as-is) must never run the correction — the same-date path
+  // would doom the vendor row, write a permanent sync suppression, and clear
+  // the verification stamp for zero semantic change. Unchanged = no slot
+  // requested, or every row with a KNOWN slot already agrees with it.
+  // Slot-less rows deliberately accept a slot-set (that adds information);
+  // the popover's client-side disable covers the defaulted-form case there.
+  if (opts.correctDate === opts.wrongDate && wrongRows.length > 0) {
+    const requestedSlot = opts.slot ?? null;
+    const knownSlots = wrongRows
+      .map((r) => rowSlot(r))
+      .filter((s): s is "BMO" | "AMC" => s !== null);
+    const unchanged =
+      requestedSlot === null ||
+      (knownSlots.length > 0 && knownSlots.every((s) => s === requestedSlot));
+    if (unchanged) {
+      return {
+        ok: false,
+        code: "no_change",
+        refusedReason:
+          `Nothing to change — ${symbol} already sits on ${opts.wrongDate}` +
+          (requestedSlot ? ` ${requestedSlot}` : "") +
+          `. Edit the date or slot before fixing.`,
       };
     }
   }

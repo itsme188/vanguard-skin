@@ -73,3 +73,38 @@ export function adjustedMarketValueSQL(
     ELSE ${quantityExpr} * ${priceExpr} * COALESCE(${multiplierExpr}, 1)
   END) * COALESCE(${fxExpr}, 1)`;
 }
+
+/**
+ * Cost-basis expression with a per-share-scaled stale-row fallback.
+ *
+ * Plaid/TWS sync rows carry cost_basis = NULL; the rescue is the latest
+ * non-null statement row for the same (account, security). That row can
+ * belong to a DIFFERENT share count (and stores short bases with varying
+ * sign conventions), so serving its basis verbatim renders impossible
+ * gains — a -50-share short inheriting a -80-share row's whole basis showed
+ * a loss 2.4x its notional. The fallback therefore serves per-share basis
+ * magnitude x current quantity, signed like the current position (long
+ * basis positive, short proceeds negative). When either quantity is zero
+ * the raw stale value passes through (nothing to scale by).
+ *
+ * @param outer  alias of the holdings row being displayed (e.g. "h")
+ * @param inner  alias for the fallback subquery row (e.g. "h3")
+ */
+export function scaledCostBasisFallbackSQL(outer: string, inner: string): string {
+  const o = outer;
+  const i = inner;
+  return `COALESCE(
+        ${o}.cost_basis,
+        (SELECT CASE
+            WHEN ${o}.quantity = 0 OR ${i}.quantity = 0 OR ${i}.quantity IS NULL
+              THEN ${i}.cost_basis
+            ELSE (CASE WHEN ${o}.quantity < 0 THEN -1 ELSE 1 END)
+                 * ABS(${i}.cost_basis) * ABS(${o}.quantity) / ABS(${i}.quantity)
+          END
+          FROM holdings ${i}
+          WHERE ${i}.account_id = ${o}.account_id
+            AND ${i}.security_id = ${o}.security_id
+            AND ${i}.cost_basis IS NOT NULL
+          ORDER BY ${i}.as_of_date DESC LIMIT 1)
+      )`;
+}

@@ -1,6 +1,7 @@
 export const dynamic = "force-dynamic";
 
 import { db } from "@/lib/db";
+import { unrealizedGainRatio } from "@/lib/format";
 import { getSecurityDetail } from "@/lib/queries/security-detail";
 import { isOnWatchlist, getWatchlistItem } from "@/lib/queries/watchlist";
 import { getResearchDocumentsForSymbol } from "@/lib/queries/research-documents";
@@ -348,10 +349,8 @@ export default async function SecurityDetailPage(props: {
               </thead>
               <tbody>
                 {positions.map((p) => {
-                  const pct =
-                    p.cost_basis && p.unrealized_gain
-                      ? (p.unrealized_gain / p.cost_basis) * 100
-                      : null;
+                  const ratio = unrealizedGainRatio(p.unrealized_gain, p.cost_basis);
+                  const pct = ratio !== null ? ratio * 100 : null;
                   return (
                     <tr key={p.account_id}>
                       <td className={TD_CLASS}>{p.account_name}</td>
@@ -393,10 +392,12 @@ export default async function SecurityDetailPage(props: {
                       <Money value={detail.totalUnrealizedGain} fallback="–" />
                     </td>
                     <td className={`${TD_MONO} text-right font-semibold ${gainClass(detail.totalUnrealizedGain)}`}>
-                      {detail.totalCostBasis != null &&
-                      detail.totalCostBasis > 0 &&
-                      detail.totalUnrealizedGain != null ? (
-                        <Pct value={(detail.totalUnrealizedGain / detail.totalCostBasis) * 100} digits={2} signed />
+                      {unrealizedGainRatio(detail.totalUnrealizedGain, detail.totalCostBasis) !== null ? (
+                        <Pct
+                          value={unrealizedGainRatio(detail.totalUnrealizedGain, detail.totalCostBasis)! * 100}
+                          digits={2}
+                          signed
+                        />
                       ) : (
                         "–"
                       )}

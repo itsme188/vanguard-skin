@@ -79,6 +79,26 @@ describe("getHoldingsBySecurity includes shorts", () => {
     expect(quantities).toEqual([-50, 100]);
   });
 
+  it("scales a stale statement basis per-share for a short whose size changed", () => {
+    // PAYC shape (qa:security-detail-positions--short-stale-cost-basis-fallback-impossible-loss):
+    // statement row -80 sh with basis stored +10,282.15; current Plaid row
+    // -50 sh, basis NULL. The fallback must serve per-share basis x current
+    // quantity, signed like the position (short proceeds are negative), never
+    // the -80-row's whole basis — which rendered a -170% "loss" 2.4x the
+    // position's entire notional.
+    const payc = seedSecurity(db, "PAYC");
+    seedHolding(db, VANGUARD, payc, -80, "2026-06-30", 10282.15, "canonical:hold:PAYC:2026-06-30");
+    seedHolding(db, VANGUARD, payc, -50, "2026-08-03", null, "plaid:1:PAYC:2026-08-03");
+    seedPrice(db, payc, "2026-08-03", 144);
+
+    const rows = getHoldingsBySecurity(db, payc);
+    expect(rows).toHaveLength(1);
+    const perShare = 10282.15 / 80; // 128.53
+    expect(rows[0].cost_basis).toBeCloseTo(-perShare * 50, 2); // ~ -6,426.34
+    // Loss = liability grew from ~128.53/sh to 144/sh on 50 shares.
+    expect(rows[0].unrealized_gain).toBeCloseTo(-50 * 144 - -(perShare * 50), 2); // ~ -773.66
+  });
+
   it("still excludes closed (quantity 0) tombstone rows", () => {
     const gme = seedSecurity(db, "GME");
     seedHolding(db, VANGUARD, gme, 0, "2026-07-10", null, "canonical:hold:GME:2026-07-10");

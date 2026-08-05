@@ -137,6 +137,11 @@ export function EarningsDateChip({
     }
   }
 
+  // Submitting the pre-filled form unchanged used to doom the vendor row and
+  // write a permanent sync suppression for zero semantic change — the server
+  // now 400s it (code no_change) and the button stays disabled client-side.
+  const noChange = fixDate === eventDate && fixSlot === slotParam;
+
   async function submitCorrection() {
     if (submitting || !fixDate) return;
     setSubmitting(true);
@@ -235,7 +240,8 @@ export function EarningsDateChip({
               </select>
               <button
                 type="button"
-                disabled={submitting || !fixDate}
+                disabled={submitting || !fixDate || noChange}
+                title={noChange ? "Change the date or slot first" : undefined}
                 onClick={submitCorrection}
                 className="text-[10px] font-mono px-1.5 py-0.5 rounded text-up bg-up/15 hover:bg-up/25 disabled:opacity-40 whitespace-nowrap"
               >

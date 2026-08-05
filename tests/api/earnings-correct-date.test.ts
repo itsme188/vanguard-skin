@@ -162,6 +162,25 @@ describe("POST /api/earnings/correct-date", () => {
     expect(suppressed.n).toBe(1);
   });
 
+  it("400s an unchanged date+slot submission and leaves the vendor row alone", async () => {
+    const id = seedFinnhub(hoisted.db, "WIX", "2026-08-04"); // seeded AMC
+    const res = await POST(
+      makeRequest({ symbol: "WIX", wrongDate: "2026-08-04", correctDate: "2026-08-04", slot: "amc" }),
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+
+    const survivor = hoisted.db
+      .prepare(`SELECT id FROM calendar_events WHERE symbol = 'WIX'`)
+      .get() as { id: number };
+    expect(survivor.id).toBe(id);
+    const suppressed = hoisted.db
+      .prepare(`SELECT COUNT(*) AS n FROM calendar_event_suppressions WHERE symbol = 'WIX'`)
+      .get() as { n: number };
+    expect(suppressed.n).toBe(0);
+  });
+
   it("slot-only fix (same date) keeps the event and flips the slot", async () => {
     seedFinnhub(hoisted.db, "IMAX", "2026-08-06"); // seeded AMC
     const res = await POST(
