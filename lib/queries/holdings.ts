@@ -67,7 +67,7 @@ export function getAllHoldings(db: Database.Database): AllHoldingsRow[] {
       CASE WHEN p.close_price IS NOT NULL
         THEN ${marketValueExpr}
         ELSE NULL END AS current_value,
-      CASE WHEN p.close_price IS NOT NULL AND ${costBasisExpr} IS NOT NULL
+      CASE WHEN p.close_price IS NOT NULL AND NULLIF(${costBasisExpr}, 0) IS NOT NULL
         THEN ${marketValueExpr} - (${costBasisExpr} * COALESCE(fx.usd_per_unit, 1))
         ELSE NULL END AS unrealized_gain
     FROM holdings h
