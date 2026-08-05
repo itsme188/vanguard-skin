@@ -11,7 +11,7 @@
  * retry pacing); the 15-min enrichment tick is the probe's pacing.
  */
 import type Database from "better-sqlite3";
-import { probeFinnhubActualExists } from "./enrich-actuals";
+import { probeFinnhubActualExistsStrict } from "./enrich-actuals";
 import { composeReleaseInstant } from "./reaction-snapshot";
 import { getSymbolStatus } from "@/lib/queries/briefing-symbols";
 import { getReadThroughReporterSymbols } from "@/lib/queries/read-through-pairs";
@@ -99,7 +99,7 @@ export async function runWireProbePass(
   } = {},
 ): Promise<{ printedEventIds: number[] }> {
   const now = opts.now ?? new Date();
-  const probe = opts.probe ?? probeFinnhubActualExists;
+  const probe = opts.probe ?? probeFinnhubActualExistsStrict;
   const printedEventIds: number[] = [];
 
   for (const cand of findProbeCandidates(db, now)) {

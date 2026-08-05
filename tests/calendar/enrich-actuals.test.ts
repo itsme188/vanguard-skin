@@ -14,6 +14,8 @@ import {
   fetchFredSeriesLatest,
   formatFredValue,
   RELEASE_ID_TO_SERIES,
+  probeFinnhubActualExists,
+  probeFinnhubActualExistsStrict,
 } from "@/lib/calendar/enrich-actuals";
 
 // ── formatFredValue — units + level/delta semantics ──────────────────
@@ -562,5 +564,115 @@ describe("fetchActualForEvent — dispatcher", () => {
     expect(result.actual).toBeNull();
     expect(result.consensus).toBe("3.2%");
     expect(result.source).toBe("fred");
+  });
+});
+
+// I2 (final review, 2026-08-04): probeFinnhubActualExists swallows EVERY
+// error (network, non-ok HTTP, missing API key) into `false` — the correct
+// fail-open behavior for its preview-guard consumer (better a redundant
+// preview than a blocked one). But the wire-probe pre-release pass
+// interprets a `false` as verified-empty evidence and stamps
+// wire_probe_empty_at, feeding the release-time calibration cascade — a
+// swallowed 429/outage would fabricate bounded-observation evidence out of
+// a probe that never actually ran. probeFinnhubActualExistsStrict is the
+// error-propagating sibling built for that consumer.
+describe("probeFinnhubActualExistsStrict — error-propagating probe (I2)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+    process.env.FINNHUB_API_KEY = "test_finnhub_key";
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.FINNHUB_API_KEY;
+  });
+
+  it("returns true when Finnhub has published actual figures", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        earningsCalendar: [
+          { symbol: "XMTR", date: "2026-08-04", epsActual: 0.1, epsEstimate: 0.05, revenueActual: 1000, revenueEstimate: 900 },
+        ],
+      }),
+    });
+    await expect(probeFinnhubActualExistsStrict("XMTR", "2026-08-04")).resolves.toBe(true);
+  });
+
+  it("returns false (not a thrown error) when the calendar entry has no actual yet — legitimate empty", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        earningsCalendar: [
+          { symbol: "XMTR", date: "2026-08-04", epsActual: null, epsEstimate: 0.05, revenueActual: null, revenueEstimate: 900 },
+        ],
+      }),
+    });
+    await expect(probeFinnhubActualExistsStrict("XMTR", "2026-08-04")).resolves.toBe(false);
+  });
+
+  it("returns false (not a thrown error) when Finnhub's calendar has nothing for the date", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ earningsCalendar: [] }),
+    });
+    await expect(probeFinnhubActualExistsStrict("XMTR", "2026-08-04")).resolves.toBe(false);
+  });
+
+  it("THROWS on a non-ok HTTP response instead of swallowing it (429/outage)", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: false, status: 429 });
+    await expect(probeFinnhubActualExistsStrict("XMTR", "2026-08-04")).rejects.toThrow();
+  });
+
+  it("THROWS on a network failure instead of swallowing it", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("network down"));
+    await expect(probeFinnhubActualExistsStrict("XMTR", "2026-08-04")).rejects.toThrow("network down");
+  });
+
+  it("THROWS when FINNHUB_API_KEY is missing instead of reporting empty", async () => {
+    delete process.env.FINNHUB_API_KEY;
+    await expect(probeFinnhubActualExistsStrict("XMTR", "2026-08-04")).rejects.toThrow();
+  });
+});
+
+// Regression guard: probeFinnhubActualExists (the email-sweep already-
+// reported preview guard's consumer) must keep its existing fail-open
+// behavior unchanged by the I2 fix above.
+describe("probeFinnhubActualExists — unchanged fail-open behavior (regression guard)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+    process.env.FINNHUB_API_KEY = "test_finnhub_key";
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.FINNHUB_API_KEY;
+  });
+
+  it("still returns false (never throws) on a non-ok HTTP response", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: false, status: 500 });
+    await expect(probeFinnhubActualExists("XMTR", "2026-08-04")).resolves.toBe(false);
+  });
+
+  it("still returns false (never throws) on a network failure", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("network down"));
+    await expect(probeFinnhubActualExists("XMTR", "2026-08-04")).resolves.toBe(false);
+  });
+
+  it("still returns false (never throws) when FINNHUB_API_KEY is missing", async () => {
+    delete process.env.FINNHUB_API_KEY;
+    await expect(probeFinnhubActualExists("XMTR", "2026-08-04")).resolves.toBe(false);
+  });
+
+  it("still returns true when Finnhub has published actual figures", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        earningsCalendar: [
+          { symbol: "XMTR", date: "2026-08-04", epsActual: 0.1, epsEstimate: 0.05, revenueActual: 1000, revenueEstimate: 900 },
+        ],
+      }),
+    });
+    await expect(probeFinnhubActualExists("XMTR", "2026-08-04")).resolves.toBe(true);
   });
 });

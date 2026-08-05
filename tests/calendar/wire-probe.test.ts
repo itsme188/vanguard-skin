@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { findProbeCandidates, runWireProbePass } from "@/lib/calendar/wire-probe";
@@ -108,6 +108,35 @@ describe("runWireProbePass", () => {
     expect(r.printedEventIds).toEqual([]);
     expect(probe).toHaveBeenCalledTimes(2);
   });
+
+  // I2 (final review, 2026-08-04): the DEFAULT probe used to be
+  // probeFinnhubActualExists, which swallows every error (network, HTTP,
+  // missing API key) into `false` — indistinguishable from "Finnhub really
+  // has nothing yet". runWireProbePass then stamped wire_probe_empty_at as
+  // verified-empty evidence feeding the release-time calibration cascade,
+  // fabricating bounded-observation evidence out of an outage. This test
+  // exercises the REAL default (no `probe` DI override) against a real
+  // failure mode (missing FINNHUB_API_KEY) and pins that it can never stamp.
+  describe("real default probe error never stamps (I2)", () => {
+    const originalKey = process.env.FINNHUB_API_KEY;
+    beforeEach(() => {
+      delete process.env.FINNHUB_API_KEY;
+    });
+    afterEach(() => {
+      if (originalKey === undefined) delete process.env.FINNHUB_API_KEY;
+      else process.env.FINNHUB_API_KEY = originalKey;
+    });
+
+    it("a real probe error (missing FINNHUB_API_KEY) never stamps wire_probe_empty_at", async () => {
+      const id = seedHeldEarnings("XMTR");
+      const r = await runWireProbePass(db, { now: NOW_IN_WINDOW }); // no DI — real default probe
+      expect(r.printedEventIds).toEqual([]);
+      const row = db
+        .prepare("SELECT wire_probe_empty_at FROM calendar_events WHERE id = ?")
+        .get(id) as { wire_probe_empty_at: string | null };
+      expect(row.wire_probe_empty_at).toBeNull();
+    });
+  });
 });
 
 describe("runEnrichment wire-probe integration", () => {
@@ -116,7 +145,7 @@ describe("runEnrichment wire-probe integration", () => {
     // Prior tick stamped an empty probe at 06:45 ET.
     db.prepare("UPDATE calendar_events SET wire_probe_empty_at = ? WHERE id = ?")
       .run("2026-06-01T10:45:00.000Z", id);
-    vi.spyOn(enrichActuals, "probeFinnhubActualExists").mockResolvedValue(true);
+    vi.spyOn(enrichActuals, "probeFinnhubActualExistsStrict").mockResolvedValue(true);
     vi.spyOn(enrichActuals, "fetchActualForEvent").mockResolvedValue({
       actual: "EPS 0.10 · Rev 120000000",
       consensus: null,
@@ -150,7 +179,7 @@ describe("runEnrichment caps the combined candidate list to opts.limit", () => {
       normalIds.push(seedHeldEarnings(`NRM${i}`, "06:00"));
     }
 
-    vi.spyOn(enrichActuals, "probeFinnhubActualExists").mockImplementation(
+    vi.spyOn(enrichActuals, "probeFinnhubActualExistsStrict").mockImplementation(
       async (sym: string) => sym === "XMTR",
     );
     vi.spyOn(enrichActuals, "fetchActualForEvent").mockResolvedValue({

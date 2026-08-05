@@ -214,6 +214,38 @@ describe("resolveEarningsReleaseTime full cascade", () => {
       resolveEarningsReleaseTime(db, { event_type: "earnings", event_time: "TAS", raw_json: null, symbol: "XMTR" }),
     ).toBeNull();
   });
+
+  // I1 (final review, 2026-08-04): Finnhub and Nasdaq both write
+  // event_time: null with the slot living in raw_json.entry.hour — the
+  // dominant vendor-row shape. Before this fix, the slot IIFE only read
+  // event_time, so slot was ALWAYS null on these rows and the
+  // sameSideOfNoon guard was permanently inert: a morning user
+  // override/observation history could apply to an AMC vendor row.
+  describe("slot guard reads raw_json.entry.hour when event_time is null (vendor rows)", () => {
+    it("AMC slot from raw_json.entry.hour blocks a morning user override", () => {
+      upsertSymbolReleaseTime(db, { symbol: "XMTR", releaseTime: "07:00", source: "user" });
+      const vendorRow = {
+        event_type: "earnings",
+        event_time: null,
+        raw_json: JSON.stringify({ entry: { hour: "amc" } }),
+        symbol: "XMTR",
+      };
+      // Override does NOT apply (07:00 is not same-side-of-noon as amc) —
+      // falls through to resolveReleaseTime's raw_json-derived AMC default.
+      expect(resolveEarningsReleaseTime(db, vendorRow)).toBe("16:15");
+    });
+
+    it("BMO slot from raw_json.entry.hour applies a matching morning user override", () => {
+      upsertSymbolReleaseTime(db, { symbol: "XMTR", releaseTime: "07:00", source: "user" });
+      const vendorRow = {
+        event_type: "earnings",
+        event_time: null,
+        raw_json: JSON.stringify({ entry: { hour: "bmo" } }),
+        symbol: "XMTR",
+      };
+      expect(resolveEarningsReleaseTime(db, vendorRow)).toBe("07:00");
+    });
+  });
 });
 
 describe("applyResolvedReleaseTimeToUpcomingEvents", () => {
