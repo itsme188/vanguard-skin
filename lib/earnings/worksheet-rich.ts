@@ -188,3 +188,115 @@ export function renderMonospaceTable(
   }
   return out;
 }
+
+export const WIDTH = 80;
+export const MAX_LINES = 62;
+export const MAX_PAGES = 3;
+export const MAX_BOGIES_ROWS = 20;
+
+export const BOGIES_LAYOUT: TableLayout = { widths: [16, 41, 13, 6], fillIn: [2, 3] };
+export const SCOREBOARD_LAYOUT: TableLayout = { widths: [26, 22, 18, 10], fillIn: [2, 3] };
+export const PAST_PRINTS_LAYOUT: TableLayout = { widths: [12, 20, 12, 16] };
+
+export interface RichWorksheetInputs {
+  event: { symbol: string | null; event_date: string; event_time: string | null };
+  scoreboardMd: string;
+  pastPrintsMd: string;
+  sections: PreviewSections;
+  noteLines: string[];
+  sentAt: string | null;
+  expectedMoveLabel: string;
+}
+
+function fmtShortDate(iso: string): string {
+  const [y, m, day] = iso.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, day)).toLocaleDateString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+/** Table block from renderer markdown: uppercase title + monospace table +
+ * trailing prose (footnotes) as plain text. Empty md → []. */
+function tableBlock(title: string, md: string, layout: TableLayout, keepAfter: boolean): string[] {
+  if (!md.trim()) return [];
+  const { table, after } = extractFirstTable(md);
+  if (!table) return [];
+  const out = ["", title, ...renderMonospaceTable(table, layout)];
+  if (keepAfter) {
+    const note = mdToPlainText(after);
+    // Drop heading-only remnants (the source md's ## title precedes the table
+    // and is replaced by our own title; `after` holds only what FOLLOWS).
+    if (note.length > 0) out.push(...note);
+  }
+  return out;
+}
+
+export function composeRichWorksheet(inputs: RichWorksheetInputs): string {
+  const { event, sections, noteLines } = inputs;
+  const symbol = (event.symbol ?? "").toUpperCase();
+  const slot = event.event_time && /^(BMO|AMC)$/i.test(event.event_time.trim())
+    ? ` (${event.event_time.trim().toUpperCase()})`
+    : "";
+  const title = `${symbol} — ${fmtShortDate(event.event_date)}${slot}`;
+  const move = inputs.expectedMoveLabel;
+  const moveClamped =
+    title.length + move.length + 2 > WIDTH
+      ? move.slice(0, Math.max(0, WIDTH - title.length - 3)) + "…"
+      : move;
+
+  const fixed: string[] = [];
+  fixed.push(title + moveClamped.padStart(Math.max(0, WIDTH - title.length)));
+  fixed.push("─".repeat(WIDTH));
+
+  fixed.push(...tableBlock("SCOREBOARD", inputs.scoreboardMd, SCOREBOARD_LAYOUT, false));
+  fixed.push(...tableBlock("PAST PRINTS", inputs.pastPrintsMd, PAST_PRINTS_LAYOUT, true));
+
+  if (sections.bogiesTable) {
+    const capped: ParsedMarkdownTable = {
+      header: sections.bogiesTable.header,
+      rows: sections.bogiesTable.rows.slice(0, MAX_BOGIES_ROWS),
+    };
+    fixed.push("", "LINE-BY-LINE BOGIES", ...renderMonospaceTable(capped, BOGIES_LAYOUT));
+    const dropped = sections.bogiesTable.rows.length - capped.rows.length;
+    if (dropped > 0) fixed.push(`(+${dropped} more rows — see email)`);
+  }
+
+  const notes: string[] = [];
+  if (noteLines.length > 0) {
+    notes.push("", "NOTES (YOURS)");
+    for (const n of noteLines.slice(0, 4)) notes.push(`  · ${n}`.slice(0, WIDTH));
+  }
+
+  const footer = `[from preview email sent ${inputs.sentAt ?? "—"} · fill-in worksheet]`;
+
+  // Commentary flexes into whatever the 3-page budget leaves (1 line reserved
+  // for the footer). Section titles inside the commentary are its own
+  // uppercase headings (THE SETUP, BULL CASE / BEAR CASE, …).
+  const budget = MAX_LINES * MAX_PAGES - 1 - fixed.length - notes.length - 1; // −1 leading blank
+  let commentary = sections.commentary.trim() ? mdToPlainText(sections.commentary) : [];
+  if (commentary.length > budget) {
+    commentary = [...commentary.slice(0, Math.max(0, budget - 1)), "… (full text in the preview email)"];
+  }
+  if (commentary.length > 0) commentary = ["", ...commentary];
+
+  const body = [...fixed, ...commentary, ...notes];
+
+  // Scratch fills the remainder of the final page when there's real room.
+  const used = body.length + 1; // + footer
+  const free = MAX_LINES - (used % MAX_LINES === 0 ? MAX_LINES : used % MAX_LINES);
+  if (free >= 5) {
+    body.push("", "SCRATCH");
+    for (let i = 0; i < free - 3; i++) body.push(`  ${"_".repeat(WIDTH - 4)}`);
+  }
+  body.push(footer);
+
+  // Deterministic pagination: form feed after every 62 lines.
+  const pages: string[] = [];
+  for (let i = 0; i < body.length; i += MAX_LINES) {
+    pages.push(body.slice(i, i + MAX_LINES).join("\n"));
+  }
+  return pages.join("\f") + "\n";
+}

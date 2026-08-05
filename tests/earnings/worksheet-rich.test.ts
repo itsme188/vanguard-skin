@@ -190,3 +190,113 @@ describe("renderMonospaceTable", () => {
     for (const l of lines) expect(l.length).toBe(9);
   });
 });
+
+// Task 3: composeRichWorksheet
+
+import {
+  composeRichWorksheet,
+  MAX_LINES,
+  MAX_PAGES,
+  type RichWorksheetInputs,
+} from "@/lib/earnings/worksheet-rich";
+
+const SCOREBOARD_MD = `## AMZN scoreboard — into the print
+
+| Metric | Consensus | Actual | Δ |
+|---|---|---|---|
+| **EPS** | 1.84 | — | — |
+| **Revenue** | $196.9B | — | — |
+| **Expected move** | ±6.0% | — | — |
+
+*Empty cells in a preview are intentional — print this, fill them in live.*`;
+
+const PAST_PRINTS_MD = `## Past prints
+
+| Reported | EPS act / est | Surprise | Next-day move |
+|---|---|---|---|
+| 2026-05-01 | 1.59 / 1.36 | +16.9% | +3.2% |
+
+*Next-day move is close-over-close around the print.*`;
+
+function richInputs(overrides: Partial<RichWorksheetInputs> = {}): RichWorksheetInputs {
+  return {
+    event: { symbol: "AMZN", event_date: "2026-08-06", event_time: "AMC" },
+    scoreboardMd: SCOREBOARD_MD,
+    pastPrintsMd: PAST_PRINTS_MD,
+    sections: extractPreviewSections(PREVIEW_MD),
+    noteLines: ["Watching AWS margin."],
+    sentAt: "2026-08-06 12:05:00",
+    expectedMoveLabel: "exp move ±6.0% (TMT Breakout weekly)",
+    ...overrides,
+  };
+}
+
+describe("composeRichWorksheet", () => {
+  it("orders sections: header, scoreboard, past prints, bogies, commentary, notes", () => {
+    const text = composeRichWorksheet(richInputs());
+    const idx = (s: string) => text.indexOf(s);
+    expect(idx("AMZN — ")).toBe(0);
+    expect(idx("SCOREBOARD")).toBeGreaterThan(0);
+    expect(idx("PAST PRINTS")).toBeGreaterThan(idx("SCOREBOARD"));
+    expect(idx("LINE-BY-LINE BOGIES")).toBeGreaterThan(idx("PAST PRINTS"));
+    expect(idx("THE SETUP")).toBeGreaterThan(idx("LINE-BY-LINE BOGIES"));
+    expect(idx("NOTES (YOURS)")).toBeGreaterThan(idx("THE SETUP"));
+  });
+
+  it("no line exceeds 80 chars and pages are ≤62 lines split by form feeds", () => {
+    const text = composeRichWorksheet(richInputs());
+    const pages = text.split("\f");
+    expect(pages.length).toBeLessThanOrEqual(MAX_PAGES);
+    for (const page of pages) {
+      const lines = page.replace(/\n$/, "").split("\n");
+      expect(lines.length).toBeLessThanOrEqual(MAX_LINES);
+      for (const l of lines) expect(l.length).toBeLessThanOrEqual(80);
+    }
+  });
+
+  it("scoreboard preview dashes become blank fill-in boxes", () => {
+    const text = composeRichWorksheet(richInputs());
+    const epsLine = text.split("\n").find((l) => l.startsWith("EPS"));
+    expect(epsLine).toBeDefined();
+    expect(epsLine!).toContain("1.84");
+    expect(epsLine!.split("│")[2].trim()).toBe("");
+  });
+
+  it("omits PAST PRINTS when history is empty", () => {
+    const text = composeRichWorksheet(richInputs({ pastPrintsMd: "" }));
+    expect(text).not.toContain("PAST PRINTS");
+  });
+
+  it("caps the bogies table at 20 rows with an overflow note", () => {
+    const rows = Array.from({ length: 30 }, (_, i) => [`Metric ${i}`, "cons", "—", "—"]);
+    const sections = {
+      bogiesTable: { header: ["Metric", "Consensus / Prior", "Actual", "Δ"], rows },
+      commentary: "## The setup\n\nprose",
+    };
+    const text = composeRichWorksheet(richInputs({ sections }));
+    expect(text).toContain("Metric 19");
+    expect(text).not.toContain("Metric 20");
+    expect(text).toContain("(+10 more rows — see email)");
+  });
+
+  it("truncates commentary to fit 3 pages with an ellipsis note", () => {
+    const commentary = "## The setup\n\n" + "word ".repeat(6000);
+    const sections = { ...extractPreviewSections(PREVIEW_MD), commentary };
+    const text = composeRichWorksheet(richInputs({ sections }));
+    expect(text.split("\f").length).toBeLessThanOrEqual(MAX_PAGES);
+    expect(text).toContain("… (full text in the preview email)");
+  });
+
+  it("footer carries the preview send timestamp on the last line", () => {
+    const text = composeRichWorksheet(richInputs());
+    const last = text.trimEnd().split("\n").pop()!;
+    expect(last).toContain("2026-08-06 12:05:00");
+  });
+
+  it("skips the bogies section entirely when the table is null", () => {
+    const sections = { bogiesTable: null, commentary: "## The setup\n\nprose" };
+    const text = composeRichWorksheet(richInputs({ sections }));
+    expect(text).not.toContain("LINE-BY-LINE BOGIES");
+    expect(text).toContain("THE SETUP");
+  });
+});
