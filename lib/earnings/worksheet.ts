@@ -1,19 +1,31 @@
 /**
- * Printable one-page earnings worksheet (feedback #6, 2026-08-03).
+ * Printable earnings worksheet (feedback #6, 2026-08-03; rich preview-derived
+ * sheet added 2026-08-05).
  *
- * A fixed-width (80-col) monospace desk sheet for following a live print by
- * hand: scoreboard rows with blank ACTUAL/Δ columns, segment splits,
- * guidance bogeys with fill-in blanks, the user's own notes, scratch lines.
- * Printed via `lp` (CUPS) — zero rendering dependencies, reliable from the
- * launchd sweep, always exactly one page (hard line cap).
+ * The primary sheet is the RICH one: `composeWorksheetForEvent` re-renders
+ * the LOCAL preview email's stored prose (bogies table + commentary via
+ * `lib/earnings/worksheet-rich.ts`) plus the code-rendered scoreboard/past-
+ * prints markdown as a ruled monospace desk sheet with pen-sized blank
+ * ACTUAL/Δ boxes. When no local preview exists yet (`loadRichWorksheetInputs`
+ * → null — not sent yet, or a `'sent-by-cloud'` row with no stored prose),
+ * it falls back to the deterministic sheet below (`composeWorksheet`):
+ * scoreboard rows with blank ACTUAL/Δ columns, segment splits, guidance
+ * bogeys with fill-in blanks, the user's own notes, scratch lines. Printed
+ * via `lp` (CUPS) — zero rendering dependencies, reliable from the launchd
+ * sweep.
  *
  * Auto-print: arming an event's flag (earnings_worksheet_flags) prints at
  * the sweep tick where the release instant sits inside [now−30m, now+135m]
- * — the preview window plus a grace band for late arming — exactly once
- * (printed_at stamp). "Print now" (POST /api/earnings/worksheet) bypasses
- * the window and the stamp entirely.
+ * — the preview window plus a grace band for late arming — AND a local
+ * preview email is available (wait-for-preview gate, 2026-08-05 spec: the
+ * rich sheet needs the preview's prose, so an armed-but-not-yet-previewed
+ * event waits rather than auto-printing the thinner deterministic sheet) —
+ * exactly once (printed_at stamp). "Print now" (POST /api/earnings/worksheet)
+ * bypasses the window and the stamp entirely, and uses whichever sheet
+ * (rich or deterministic) is available at that instant.
  *
- * Spec: docs/superpowers/specs/2026-08-03-worksheet-print-design.md
+ * Spec: docs/superpowers/specs/2026-08-03-worksheet-print-design.md,
+ * docs/superpowers/specs/2026-08-05-worksheet-rich-preview-print-design.md
  */
 
 import { spawn } from "node:child_process";
@@ -30,6 +42,17 @@ import { formatLargeUSD } from "@/lib/format";
 import { composeReleaseInstant } from "@/lib/calendar/reaction-snapshot";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import type { CalendarEvent } from "@/lib/types";
+import {
+  composeRichWorksheet,
+  extractPreviewSections,
+  type RichWorksheetInputs,
+} from "@/lib/earnings/worksheet-rich";
+import { getEmailAudit } from "@/lib/queries/earnings-emails";
+import {
+  loadIntelView,
+  renderHeadlineTable,
+  renderPastPrintsBlock,
+} from "@/lib/digest/send-earnings-email";
 
 const WIDTH = 80;
 const MAX_LINES = 62; // one US-letter page at 12cpi with margins
@@ -193,6 +216,88 @@ export function loadWorksheetInputs(db: Database.Database, eventId: number): Wor
   return { event, bogeys, expectedMove, noteLines };
 }
 
+/**
+ * Rich-sheet inputs from the LOCAL preview email. Null when the preview
+ * hasn't been sent from this Mac (not yet, or 'sent-by-cloud' — those store
+ * no prose) or its stored prose yields neither a bogies table nor
+ * commentary. The auto-print pass treats null as "wait" (user decision,
+ * 2026-08-05 spec); Print-now falls back to the deterministic sheet.
+ */
+export function loadRichWorksheetInputs(
+  db: Database.Database,
+  eventId: number,
+): RichWorksheetInputs | null {
+  const event = db
+    .prepare(`SELECT * FROM calendar_events WHERE id = ?`)
+    .get(eventId) as CalendarEvent | undefined;
+  if (!event || !event.symbol) return null;
+
+  const audit = getEmailAudit(db, eventId, "preview");
+  if (!audit?.ai_output_md) return null;
+
+  const sections = extractPreviewSections(audit.ai_output_md);
+  if (!sections.bogiesTable && !sections.commentary.trim()) return null;
+
+  const symbol = event.symbol.toUpperCase();
+  const intelView = loadIntelView(db, eventId, symbol);
+  const scoreboardMd = renderHeadlineTable(event, symbol, "preview", intelView);
+  const pastPrintsMd = renderPastPrintsBlock(intelView.history);
+
+  const expectedMoveLabel = intelView.impliedMovePct != null
+    ? `exp move ±${intelView.impliedMovePct.toFixed(1)}% (${
+        intelView.impliedMethod === "sheet"
+          ? intelView.sheetSourceLabel ?? "bogey sheet"
+          : intelView.impliedMethod === "straddle"
+            ? "straddle"
+            : "IV approx"
+      })`
+    : "";
+
+  const noteLines = getNotesForFamily(db, [...issuerSiblings(event.symbol)])
+    .slice(0, 4)
+    .map((n) => n.content.replace(/\s+/g, " ").trim().slice(0, 74));
+
+  return {
+    event: {
+      symbol: event.symbol,
+      event_date: event.event_date,
+      event_time: event.event_time,
+    },
+    scoreboardMd,
+    pastPrintsMd,
+    sections,
+    noteLines,
+    sentAt: audit.sent_at,
+    expectedMoveLabel,
+  };
+}
+
+/**
+ * One entry point for "what would this event's worksheet look like":
+ * rich (preview-derived) when available, deterministic fallback otherwise.
+ * Null for missing/symbol-less events.
+ */
+export function composeWorksheetForEvent(
+  db: Database.Database,
+  eventId: number,
+): { text: string; rich: boolean; symbol: string } | null {
+  const rich = loadRichWorksheetInputs(db, eventId);
+  if (rich) {
+    return {
+      text: composeRichWorksheet(rich),
+      rich: true,
+      symbol: (rich.event.symbol ?? "").toUpperCase(),
+    };
+  }
+  const det = loadWorksheetInputs(db, eventId);
+  if (!det) return null;
+  return {
+    text: composeWorksheet(det),
+    rich: false,
+    symbol: (det.event.symbol ?? "").toUpperCase(),
+  };
+}
+
 /** Optional named printer (settings key worksheet_printer_name; blank = default). */
 function printerName(db: Database.Database): string | null {
   try {
@@ -253,14 +358,13 @@ export async function printWorksheetNow(
   db: Database.Database,
   eventId: number,
 ): Promise<{ symbol: string }> {
-  const inputs = loadWorksheetInputs(db, eventId);
-  if (!inputs) throw new Error(`Event ${eventId} not found or symbol-less.`);
-  const text = composeWorksheet(inputs);
-  await printViaLp(text, {
+  const composed = composeWorksheetForEvent(db, eventId);
+  if (!composed) throw new Error(`Event ${eventId} not found or symbol-less.`);
+  await printViaLp(composed.text, {
     printer: printerName(db),
-    title: `${(inputs.event.symbol ?? "").toUpperCase()} earnings worksheet`,
+    title: `${composed.symbol} earnings worksheet`,
   });
-  return { symbol: (inputs.event.symbol ?? "").toUpperCase() };
+  return { symbol: composed.symbol };
 }
 
 /**
@@ -287,6 +391,18 @@ export async function printArmedWorksheets(
       if (!release) continue;
       const until = release.getTime() - nowMs;
       if (until < AUTO_PRINT_MIN_MS || until > AUTO_PRINT_MAX_MS) continue;
+      // Wait-for-preview gate (2026-08-05 spec, user decision): the rich
+      // sheet needs the LOCAL preview email's prose. No local preview yet →
+      // leave the flag unstamped and retry next tick; the window closing at
+      // release+30m naturally ends retries. Cloud-sent previews never
+      // auto-print (Mac was asleep — nobody home to collect paper);
+      // "Print now" covers those via the deterministic fallback.
+      if (loadRichWorksheetInputs(db, f.eventId) === null) {
+        console.log(
+          `[worksheet] ${f.symbol ?? f.eventId} armed but no local preview yet — waiting`,
+        );
+        continue;
+      }
       try {
         await doPrint(db, f.eventId);
         stampWorksheetPrinted(db, f.eventId);

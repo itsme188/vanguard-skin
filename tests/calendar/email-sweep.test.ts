@@ -101,6 +101,18 @@ vi.mock("@/lib/transcripts/same-day", () => ({
   fetchSameDayTranscripts: (...a: unknown[]) => fetchSameDayTranscripts(...a),
 }));
 
+// Task 5 (2026-08-05, sweep ordering): {printed: 0} matches the real
+// no-armed-flags behavior every pre-existing fixture in this file produces
+// (nothing here sets earnings_worksheet_flags.armed=1), so mocking this out
+// doesn't change any other test's outcome — it only lets the new ordering
+// test below observe invocationCallOrder against sendPreview.
+const printArmed = vi.hoisted(() =>
+  vi.fn(async (..._args: unknown[]) => ({ printed: 0 })),
+);
+vi.mock("@/lib/earnings/worksheet", () => ({
+  printArmedWorksheets: (...a: unknown[]) => printArmed(...a),
+}));
+
 import { runEarningsEmailSweep, alertBlockedRecaps } from "@/lib/calendar/email-sweep";
 import { EarningsEmailError } from "@/lib/digest/send-earnings-email";
 import { setMutedEarningsSymbols } from "@/lib/queries/earnings-settings";
@@ -278,6 +290,7 @@ describe("runEarningsEmailSweep marker dance", () => {
     writeSent.mockClear();
     fetchCloudSent.mockClear();
     fetchCloudSent.mockResolvedValue([]);
+    printArmed.mockClear();
     runMorningDebrief.mockClear();
     runMorningDebrief.mockResolvedValue({ sent: false, covered: [] });
     sendReporterRecap.mockClear();
@@ -414,6 +427,24 @@ describe("runEarningsEmailSweep marker dance", () => {
     expect(writeSentOrder).toBeLessThan(clearRunningOrder);
   });
 
+  // Task 5 (2026-08-05, rich-preview-print plan): the worksheet auto-print
+  // pass moved from BEFORE the candidate loop to AFTER it, because the rich
+  // sheet is composed from the LOCAL preview email's stored prose — a tick
+  // that sends a preview must also be the tick that prints it, or the
+  // worksheet waits a full 15-min cycle for no reason.
+  it("runs the worksheet auto-print pass AFTER the send loop so the tick that sends a preview can print it", async () => {
+    seedHeldPreviewCandidate(db, "AAPL");
+
+    await runEarningsEmailSweep(db, { now: NOW });
+
+    expect(sendPreview).toHaveBeenCalled();
+    expect(printArmed).toHaveBeenCalledTimes(1);
+    // vitest global invocation ordering: send must precede print.
+    expect(printArmed.mock.invocationCallOrder[0]).toBeGreaterThan(
+      sendPreview.mock.invocationCallOrder[0],
+    );
+  });
+
   it("skips the send when the cloud already delivered, and records a local audit row", async () => {
     seedHeldPreviewCandidate(db, "MSFT");
     checkMarker.mockResolvedValueOnce({ sentBy: "cloud" });
@@ -504,6 +535,7 @@ describe("wrap-mode suppression (#17 T3)", () => {
     writeSent.mockClear();
     fetchCloudSent.mockClear();
     fetchCloudSent.mockResolvedValue([]);
+    printArmed.mockClear();
     runMorningDebrief.mockClear();
     runMorningDebrief.mockResolvedValue({ sent: false, covered: [] });
     sendReporterRecap.mockClear();
@@ -716,6 +748,7 @@ describe("morning debrief pass (Task 4)", () => {
     writeSent.mockClear();
     fetchCloudSent.mockClear();
     fetchCloudSent.mockResolvedValue([]);
+    printArmed.mockClear();
     runMorningDebrief.mockClear();
     runMorningDebrief.mockResolvedValue({ sent: false, covered: [] });
     sendReporterRecap.mockClear();
@@ -792,6 +825,7 @@ describe("already-reported preview guard (IMAX 7/23 case)", () => {
     writeSent.mockClear();
     fetchCloudSent.mockClear();
     fetchCloudSent.mockResolvedValue([]);
+    printArmed.mockClear();
     runMorningDebrief.mockClear();
     runMorningDebrief.mockResolvedValue({ sent: false, covered: [] });
     sendReporterRecap.mockClear();
