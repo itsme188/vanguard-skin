@@ -130,7 +130,7 @@ export function EarningsEmailViewer({
         {/* Sticky header */}
         <div className="sticky top-0 z-10 flex items-baseline justify-between px-5 py-3.5 border-b border-edge bg-panel/95 backdrop-blur-sm rounded-t-xl gap-3">
           <div className="flex flex-col min-w-0">
-            <h2 className="text-sm font-medium text-ink truncate">
+            <h2 className="text-sm font-medium text-ink truncate whitespace-nowrap!">
               {data?.title ?? "Earnings email"}
             </h2>
             {data && data.sentAt && data.sentTo && (
