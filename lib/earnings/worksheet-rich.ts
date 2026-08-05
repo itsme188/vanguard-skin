@@ -270,14 +270,19 @@ export function composeRichWorksheet(inputs: RichWorksheetInputs): string {
     for (const n of noteLines.slice(0, 4)) notes.push(`  · ${n}`.slice(0, WIDTH));
   }
 
-  const footer = `[from preview email sent ${inputs.sentAt ?? "—"} · fill-in worksheet]`;
+  function clampLineWidth(line: string): string {
+    return line.length > WIDTH ? line.slice(0, WIDTH - 1) + "…" : line;
+  }
+
+  const footer = clampLineWidth(`[from preview email sent ${inputs.sentAt ?? "—"} · fill-in worksheet]`);
 
   // Commentary flexes into whatever the 3-page budget leaves (1 line reserved
   // for the footer). Section titles inside the commentary are its own
   // uppercase headings (THE SETUP, BULL CASE / BEAR CASE, …).
   const budget = MAX_LINES * MAX_PAGES - 1 - fixed.length - notes.length - 1; // −1 leading blank
   let commentary = sections.commentary.trim() ? mdToPlainText(sections.commentary) : [];
-  if (commentary.length > budget) {
+  // Only truncate when commentary is non-empty AND actually longer than budget
+  if (commentary.length > 0 && commentary.length > budget) {
     commentary = [...commentary.slice(0, Math.max(0, budget - 1)), "… (full text in the preview email)"];
   }
   if (commentary.length > 0) commentary = ["", ...commentary];
@@ -291,12 +296,15 @@ export function composeRichWorksheet(inputs: RichWorksheetInputs): string {
     body.push("", "SCRATCH");
     for (let i = 0; i < free - 3; i++) body.push(`  ${"_".repeat(WIDTH - 4)}`);
   }
-  body.push(footer);
+
+  // Hard cap at 3 pages: footer is appended AFTER the page cap so it survives.
+  const cappedBody = body.slice(0, MAX_LINES * MAX_PAGES - 1);
+  cappedBody.push(footer);
 
   // Deterministic pagination: form feed after every 62 lines.
   const pages: string[] = [];
-  for (let i = 0; i < body.length; i += MAX_LINES) {
-    pages.push(body.slice(i, i + MAX_LINES).join("\n"));
+  for (let i = 0; i < cappedBody.length; i += MAX_LINES) {
+    pages.push(cappedBody.slice(i, i + MAX_LINES).join("\n"));
   }
   return pages.join("\f") + "\n";
 }
