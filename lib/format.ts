@@ -164,13 +164,6 @@ export function parseLargeUSD(input: string | number | null | undefined): number
 }
 
 /**
- * Percent coercer for expected-move fields: tolerates "6", "6%", "±6.0%",
- * "+/-6%". Absolute value (a move is directionless); zero/negative/garbage →
- * null. Distinct from parseLargeUSD — $-scale suffixes make no sense for a
- * percent. Single source (feedback #5): PDF/newsletter bogey extraction and
- * the BogeysEditModal manual input all parse through this.
- */
-/**
  * Unrealized gain as a fraction of the position's basis MAGNITUDE.
  * Short positions carry a negative cost basis (short proceeds) — dividing by
  * the signed basis flips the percent against its own dollar gain, so the
@@ -185,6 +178,13 @@ export function unrealizedGainRatio(
   return gain / Math.abs(costBasis);
 }
 
+/**
+ * Percent coercer for expected-move fields: tolerates "6", "6%", "±6.0%",
+ * "+/-6%". Absolute value (a move is directionless); zero/negative/garbage →
+ * null. Distinct from parseLargeUSD — $-scale suffixes make no sense for a
+ * percent. Single source (feedback #5): PDF/newsletter bogey extraction and
+ * the BogeysEditModal manual input all parse through this.
+ */
 export function coercePercent(v: unknown): number | null {
   let n: number | null = null;
   if (typeof v === "number") n = v;

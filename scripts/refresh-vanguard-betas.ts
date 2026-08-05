@@ -16,6 +16,7 @@
 import type Database from "better-sqlite3";
 import { upsertBeta } from "@/lib/mutations/security-betas";
 import { calendarDaysBetween } from "@/lib/calendar/date-utils";
+import { isSplitSignatureReturnPair } from "@/lib/compute/risk";
 
 // ─── Constants ────────────────────────────────────────────────────
 
@@ -95,6 +96,11 @@ function computeBeta(
     const bCurr = spyPrices.get(curr)!;
 
     if (sPrev > 0 && sCurr > 0 && bPrev > 0 && bCurr > 0) {
+      // Sibling of computePositionRisk's guard: an unadjusted stock split
+      // (VGT 8:1) would inject a phantom −87.5% "daily return" into the
+      // regression, corrupting beta + residual_std (the anomaly σ inputs).
+      // This script covers stocks/ETFs only, so no option exemption needed.
+      if (isSplitSignatureReturnPair(sPrev, sCurr)) continue;
       stockReturns.push(Math.log(sCurr / sPrev));
       spyReturns.push(Math.log(bCurr / bPrev));
     }

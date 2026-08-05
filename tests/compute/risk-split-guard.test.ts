@@ -142,6 +142,42 @@ describe("computePositionRisk split-signature guard", () => {
     expect(vgt!.annualizedVol!).toBeLessThan(0.5);
   });
 
+  it("exempts options: a premium that exactly halves stays in the series", () => {
+    // Option premiums legitimately double/halve day-over-day (ratio 2.0 sits
+    // dead-center in the guard's band) and options never split in-series —
+    // the guard must not silently understate option risk.
+    const db = createTestDb();
+    db.prepare(
+      "INSERT INTO securities (id, symbol, name, security_type, multiplier) VALUES (3, 'INTC  260717C00030000', 'INTC call', 'Option', 100)",
+    ).run();
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 3, '2026-06-01', 10)",
+    ).run();
+
+    const closes: number[] = [];
+    let p = 15.6;
+    for (let i = 0; i < 60; i++) {
+      p = p * (i % 2 === 0 ? 1.01 : 0.99);
+      closes.push(Number(p.toFixed(2)));
+    }
+    const preDrop = closes[closes.length - 1];
+    let q = preDrop / 2; // exact 2.0 ratio — split-shaped, but a real premium move
+    closes.push(Number(q.toFixed(2)));
+    for (let i = 0; i < 60; i++) {
+      q = q * (i % 2 === 0 ? 1.01 : 0.99);
+      closes.push(Number(q.toFixed(2)));
+    }
+    insertDailySeries(db, 3, closes);
+
+    const result = computePositionRisk(db, { topN: 5 });
+    const opt = result.positions.find((pos) => pos.symbol.startsWith("INTC "));
+    expect(opt).toBeDefined();
+    expect(opt!.annualizedVol).not.toBeNull();
+    // With the halving day KEPT, vol is far above the mild-series baseline.
+    // (If the split guard wrongly applied, this sits under 0.5.)
+    expect(opt!.annualizedVol!).toBeGreaterThan(0.5);
+  });
+
   it("keeps a genuine large one-day move in the volatility", () => {
     const db = createTestDb();
     db.prepare(

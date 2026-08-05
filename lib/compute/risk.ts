@@ -449,6 +449,7 @@ export function computePositionRisk(
          lh.security_id,
          s.symbol,
          s.name AS security_name,
+         s.security_type,
          ${adjustedMarketValueSQL("lh.total_qty", "COALESCE(lp.close_price, 0)", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")} AS market_value
        FROM latest_holdings lh
        JOIN securities s ON s.id = lh.security_id
@@ -462,6 +463,7 @@ export function computePositionRisk(
     security_id: number;
     symbol: string;
     security_name: string | null;
+    security_type: string | null;
     market_value: number;
   }[];
 
@@ -537,12 +539,23 @@ export function computePositionRisk(
   // Compute daily log returns per security
   const returnsBySecId = new Map<number, { dates: string[]; returns: number[] }>();
 
+  // Options are EXEMPT from the split guard: premiums legitimately double or
+  // halve day-over-day (live data has 10+ real pairs inside the guard's 2x
+  // band), and options don't split in-series — same reasoning as the levels
+  // plausibility guard's documented option exemption.
+  const optionSecIds = new Set(
+    positions
+      .filter((p) => p.security_type?.toLowerCase() === "option")
+      .map((p) => p.security_id)
+  );
+
   for (const secId of securityIds) {
     const prices = priceMap.get(secId);
     if (!prices) continue;
 
     const dates: string[] = [];
     const returns: number[] = [];
+    const splitGuardApplies = !optionSecIds.has(secId);
 
     for (let i = 1; i < sortedDates.length; i++) {
       // Skip pairs spanning a price gap (statement-anchor / sync discontinuity).
@@ -552,7 +565,7 @@ export function computePositionRisk(
       if (prev && curr && prev > 0 && curr > 0) {
         // Unadjusted-split guard: an integer-multiple discontinuity is a
         // series artifact, not a return (see isSplitSignatureReturnPair).
-        if (isSplitSignatureReturnPair(prev, curr)) continue;
+        if (splitGuardApplies && isSplitSignatureReturnPair(prev, curr)) continue;
         dates.push(sortedDates[i]);
         returns.push(Math.log(curr / prev));
       }

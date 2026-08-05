@@ -618,28 +618,9 @@ export function computeXirr(
     xirrDecCorrections.set(ds.month_end_date, existing + correction);
   }
 
-  let totalInvested = 0;
-  let totalWithdrawn = 0;
-
-  for (const sf of aggSnapshotFlows) {
-    const correction = xirrDecCorrections.get(sf.month_end_date) ?? 0;
-    const effectiveDeps = sf.total_deps - correction;
-    if (effectiveDeps === 0) continue;
-
-    const midMonth = sf.month_end_date.slice(0, 8) + "15";
-    portfolioCashFlows.push({
-      date: midMonth,
-      amount: -effectiveDeps,
-    });
-
-    if (effectiveDeps > 0) {
-      totalInvested += effectiveDeps;
-    } else {
-      totalWithdrawn += Math.abs(effectiveDeps);
-    }
-  }
-
-  // Ending total portfolio value — try monthly snapshots, fall back to daily valuations
+  // Ending total portfolio value — try monthly snapshots, fall back to daily
+  // valuations. Computed BEFORE the flow loop: flows dated after the terminal
+  // value's anchor date must be excluded (below), so we need that date first.
   let currentValue = 0;
 
   // Coverage-aware: the "liquidation" value must come from the latest month
@@ -658,19 +639,26 @@ export function computeXirr(
            AND ${excludeLiveSnapshotsSql("ms.source")}
          GROUP BY ms.month_end_date
        )
-       SELECT total_value FROM agg
+       SELECT d, total_value FROM agg
        WHERE present_accounts >= expected_accounts
        ORDER BY d DESC
        LIMIT 1`
     )
-    .get(effectiveEnd) as { total_value: number | null } | undefined;
+    .get(effectiveEnd) as { d: string; total_value: number | null } | undefined;
+
+  // The date the terminal value is anchored to. A flow that postdates it is
+  // invisible to that value — booking it as committed capital would read a
+  // statement-lag deposit as a loss (the same failure class the coverage
+  // guard exists for, reintroduced at the end-of-window boundary).
+  let terminalDate = effectiveEnd;
 
   if (aggEndRow?.total_value && aggEndRow.total_value > 0) {
     currentValue = aggEndRow.total_value;
+    terminalDate = aggEndRow.d;
   } else {
     const dailyAggEnd = db
       .prepare(
-        `SELECT SUM(total_value) AS total_value
+        `SELECT valuation_date, SUM(total_value) AS total_value
          FROM daily_valuations
          WHERE valuation_date = (
            SELECT MAX(valuation_date)
@@ -678,14 +666,40 @@ export function computeXirr(
            WHERE valuation_date <= ?
          )`
       )
-      .get(effectiveEnd) as { total_value: number | null } | undefined;
+      .get(effectiveEnd) as
+      | { valuation_date: string; total_value: number | null }
+      | undefined;
 
     currentValue = dailyAggEnd?.total_value ?? 0;
+    if (dailyAggEnd?.total_value) terminalDate = dailyAggEnd.valuation_date;
+  }
+
+  let totalInvested = 0;
+  let totalWithdrawn = 0;
+
+  for (const sf of aggSnapshotFlows) {
+    const correction = xirrDecCorrections.get(sf.month_end_date) ?? 0;
+    const effectiveDeps = sf.total_deps - correction;
+    if (effectiveDeps === 0) continue;
+
+    const midMonth = sf.month_end_date.slice(0, 8) + "15";
+    // Terminal alignment: skip flows the terminal value cannot see.
+    if (midMonth > terminalDate) continue;
+    portfolioCashFlows.push({
+      date: midMonth,
+      amount: -effectiveDeps,
+    });
+
+    if (effectiveDeps > 0) {
+      totalInvested += effectiveDeps;
+    } else {
+      totalWithdrawn += Math.abs(effectiveDeps);
+    }
   }
 
   if (currentValue > 0) {
     portfolioCashFlows.push({
-      date: effectiveEnd,
+      date: terminalDate,
       amount: currentValue,
     });
   }

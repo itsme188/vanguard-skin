@@ -191,6 +191,10 @@ function main(): void {
     total_value: number;
   }[];
 
+  // The residual re-detect runs INSIDE the transaction: if the signature
+  // survives the adjustment (a mis-detected ratio), the throw rolls every
+  // UPDATE back. The pre-fix ordering committed first, so a tripped check
+  // left the DB partially adjusted while the error implied nothing happened.
   const tx = db.transaction(() => {
     db.prepare(
       "UPDATE prices SET close_price = close_price * ? WHERE security_id = ? AND date < ?",
@@ -214,17 +218,24 @@ function main(): void {
     db.prepare(
       "UPDATE holdings SET quantity = quantity * ? WHERE security_id = ? AND as_of_date < ?",
     ).run(qtyFactor, sec.id, split.splitDate);
-  });
-  tx();
 
-  // Verify idempotency precondition now holds: the signature must be gone.
-  const residual = detectNewestSplit(db, sec.id);
-  if (residual && residual.splitDate === split.splitDate) {
-    console.error(
-      "ERROR: split signature still present after adjustment — inspect manually.",
-    );
+    const stillThere = detectNewestSplit(db, sec.id);
+    if (stillThere && stillThere.splitDate === split.splitDate) {
+      throw new Error(
+        "split signature still present after adjustment — transaction rolled back, no changes were written.",
+      );
+    }
+  });
+  try {
+    tx();
+  } catch (err) {
+    console.error(`ERROR: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
   }
+
+  // Any signature that remains now is an OLDER split (the target one was
+  // verified gone inside the transaction).
+  const residual = detectNewestSplit(db, sec.id);
 
   // Recompute valuations and verify. Outside each account's healing window
   // (see header) the qty x price product is preserved, so deltas must be ~0;
