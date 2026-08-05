@@ -104,12 +104,17 @@ export function getSourcePerformance(
 ): SourcePerformance[] {
   const minAlerts = opts.minAlerts ?? 1;
 
+  // Inclusive whitelist (scan-filter convention): only auto_approved levels
+  // ever arm, so only they belong in the hit-rate denominator. Counting
+  // rejected/pending extractions ranked sources by how often the user
+  // REJECTED them (a 1-alert source showed a 2.1% "hit rate" off 47 levels).
   const levels = db
     .prepare(
       `SELECT id, security_id, COALESCE(source_author, source) AS source_author,
               is_active, triggered_at, triggered_price
        FROM security_levels
-       WHERE source_author IS NOT NULL OR source = 'user'`,
+       WHERE (source_author IS NOT NULL OR source = 'user')
+         AND review_status = 'auto_approved'`,
     )
     .all() as LevelRow[];
 
