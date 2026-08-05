@@ -122,6 +122,23 @@ export function writeMacSentEarningsMarker(
   return workerFetch("/internal/earnings-sent-marker", params, "POST");
 }
 
+/**
+ * Post the Mac-aliveness marker after a successful sweep tick (2026-08-05).
+ * The Worker's earnings fallback skips PREVIEW candidates while this is
+ * fresh (25-min KV TTL, Worker-side) — closes the launchd-drift race where
+ * an awake Mac's tick slid 2 min past the Worker's fixed :00/:15 grid and
+ * the cloud sent a lean preview the Mac would have sent rich (APP/MELI
+ * 8/05). Fire-and-forget: workerFetch already swallows unreachability, and
+ * a missed marker only costs one lean-preview race, never a send.
+ */
+export function postMacRecentEarningsSweepMarker(): Promise<Response | null> {
+  return workerFetch(
+    "/internal/mac-recent-earnings-sweep",
+    new URLSearchParams(),
+    "POST",
+  );
+}
+
 export interface CloudSentEarningsMarker {
   phase: EarningsPhase;
   eventId: number;

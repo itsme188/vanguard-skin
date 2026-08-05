@@ -1427,3 +1427,67 @@ describe("superseded cross-source duplicate events (2026-07-14 JPM/BAC double-pr
     expect(result.details.filter((d) => d.status === "sent").map((d) => d.eventId)).toEqual([1]);
   });
 });
+
+// ── Mac-aliveness gate for previews (2026-08-05) ─────────────────────────────
+//
+// The 8/05 APP/MELI race: an AWAKE Mac's launchd tick drifted 2 min past the
+// Worker's fixed :00/:15 grid (StartInterval re-anchors to job completion,
+// and a 155s LFMD compose ate the margin) — the Worker cloud-sent lean
+// previews the Mac would have sent rich moments later. The Mac now posts a
+// `mac-recent-earnings-sweep` KV marker after every successful sweep tick;
+// a fresh marker means the Mac is alive and its wider [105,135] window will
+// cover the preview. PREVIEWS ONLY — recaps/actuals-capture are additive,
+// not race-prone, and must keep flowing while the Mac is awake.
+
+describe("mac-recent-earnings-sweep aliveness gate (2026-08-05)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (sendEmail as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "mock-email-id" });
+    vi.mocked(fetchLiveIbkrPositionsCached).mockResolvedValue([]);
+  });
+
+  it("fresh marker → preview candidates skipped markerless; recap still sends", async () => {
+    const recap = makeCapEvent({
+      id: 99,
+      release_time: "13:00", // release past → recap road
+      enriched_at: "2026-06-15 17:30:00", // 30 min before `now` → inside recap window
+      actual_value: "EPS 1.60 · Rev 92000000000",
+      consensus_value: "EPS 1.50 · Rev 90000000000",
+    });
+    const preview = makeCapEvent({ id: 1 });
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeSnapshotWithEvents([recap, preview]),
+    );
+    const env = makeEnv();
+    await env.CRON_KV.put("mac-recent-earnings-sweep", new Date().toISOString());
+
+    const result = await runEarningsFallback(env, { now: previewWindowNow() });
+
+    const gated = result.details.filter((d) => d.reason === "mac-recently-swept");
+    expect(gated).toHaveLength(1);
+    expect(gated[0]).toMatchObject({ eventId: 1, phase: "preview", status: "skipped" });
+
+    // Recap is unaffected by the gate.
+    expect(result.sent).toBe(1);
+    expect(result.details.find((d) => d.status === "sent")?.phase).toBe("recap");
+
+    // The skipped preview stays markerless — if the Mac dies and the marker
+    // expires while the window is still open, a later tick can retry.
+    const putKeys = (env.CRON_KV.put as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c: unknown[]) => c[0],
+    );
+    expect(putKeys).not.toContain("cloud-sent-earnings-preview-1");
+  });
+
+  it("absent marker → previews send exactly as before", async () => {
+    (loadLatestSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeSnapshotWithEvents([makeCapEvent({ id: 1 })]),
+    );
+    const env = makeEnv();
+
+    const result = await runEarningsFallback(env, { now: previewWindowNow() });
+
+    expect(result.sent).toBe(1);
+    expect(result.details.some((d) => d.reason === "mac-recently-swept")).toBe(false);
+  });
+});

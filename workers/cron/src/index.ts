@@ -586,6 +586,21 @@ export default {
       return Response.json({ ok: true });
     }
 
+    // Mac posts this after every successful earnings-sweep tick; the earnings
+    // fallback skips PREVIEW candidates while it's fresh (recaps un-gated).
+    // TTL is deliberately TIGHT (25 min ≈ one drifted launchd cadence + margin,
+    // vs mac-recent-scan's 90): the Worker's preview window is only 15 min
+    // wide, so a stale-marker skip forfeits the cloud's one shot at that
+    // preview — the marker must vouch for a Mac tick that genuinely just ran.
+    // (2026-08-05: an awake Mac lost the APP/MELI previews to the fixed grid
+    // by 2 min of launchd drift; this marker closes that race.)
+    if (request.method === "POST" && url.pathname === "/internal/mac-recent-earnings-sweep") {
+      await env.CRON_KV.put("mac-recent-earnings-sweep", new Date().toISOString(), {
+        expirationTtl: 25 * 60,
+      });
+      return Response.json({ ok: true });
+    }
+
     // Cloud-fetched newsletters — Mac polls on wake, inserts each payload
     // into research_articles (INSERT OR IGNORE on gmail_message_id), applies
     // the D3 portfolio-relevance gate against local research_sources.allow_off_topic,

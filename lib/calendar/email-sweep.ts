@@ -27,6 +27,7 @@ import {
   clearEarningsRunningMarker,
   writeMacSentEarningsMarker,
   fetchCloudSentEarnings,
+  postMacRecentEarningsSweepMarker,
 } from "@/lib/cron/earnings-marker-check";
 import { composeReleaseInstant } from "./reaction-snapshot";
 import { probeFinnhubActualExists } from "./enrich-actuals";
@@ -340,6 +341,19 @@ export async function runEarningsEmailSweep(
   } catch (err) {
     console.warn("[earnings-sweep] same-day transcript pass failed:", err);
     transcriptsFetched = 0;
+  }
+
+  // ── Mac-aliveness marker (2026-08-05, the APP/MELI preview race) ──────
+  // Posted after EVERY completed tick — quiet ones included — so the
+  // Worker's preview fallback (25-min KV TTL) knows the Mac is alive and
+  // defers previews to the Mac's wider [105,135] window. Recaps stay
+  // un-gated cloud-side. Fire-and-forget: workerFetch swallows
+  // unreachability, and a missed post only re-opens the lean-preview race
+  // for one tick — never blocks or fails the sweep.
+  try {
+    await postMacRecentEarningsSweepMarker();
+  } catch (err) {
+    console.warn("[earnings-sweep] aliveness-marker post failed (ignored):", err);
   }
 
   return {
