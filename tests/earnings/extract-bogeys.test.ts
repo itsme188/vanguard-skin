@@ -238,3 +238,75 @@ describe("extractBogeysFromPdf upstream error mapping", () => {
     expect(err.message).toContain("connection error");
   });
 });
+
+// ── Regression pins (qa 2026-08-05): multi-symbol truncation + parse hardening ──
+
+describe("parseExtractionResponse hardening", () => {
+  it("tolerates a prose preamble before the array (extractJsonArray isolation)", () => {
+    const raw =
+      'Here are the extracted bogeys from the sheet:\n[{"symbol": "glw", "eps_consensus": 0.46}]\nLet me know if you need more.';
+    const out = parseExtractionResponse(raw);
+    expect(out).toHaveLength(1);
+    expect(out[0].symbol).toBe("GLW");
+  });
+
+  it("retries with control characters collapsed when a string literal embeds a raw newline", () => {
+    const raw = '[{"symbol": "GLW", "eps_consensus": 0.46, "notes": "brok' + "\n" + 'en"}]';
+    const out = parseExtractionResponse(raw);
+    expect(out).toHaveLength(1);
+    expect(out[0].notes).toBe("brok en");
+  });
+});
+
+describe("extractBogeysFromUpload truncation + parse failure mapping", () => {
+  function mockStreamWith(final: Record<string, unknown>) {
+    const calls: Array<Record<string, unknown>> = [];
+    vi.mocked(getRawAnthropicClient).mockReturnValue({
+      messages: {
+        stream: (args: Record<string, unknown>) => {
+          calls.push(args);
+          return { finalMessage: () => Promise.resolve(final) };
+        },
+      },
+    } as never);
+    return calls;
+  }
+
+  it("requests enough output budget for a multi-symbol grid (>= 16k tokens)", async () => {
+    const calls = mockStreamWith({
+      content: [{ type: "text", text: "[]" }],
+      stop_reason: "end_turn",
+    });
+    await extractBogeysFromUpload(new Uint8Array([1]), "image/png");
+    expect(calls[0].max_tokens as number).toBeGreaterThanOrEqual(16_384);
+  });
+
+  it("maps output truncation (stop_reason max_tokens) to a friendly typed error, never the parse blob", async () => {
+    mockStreamWith({
+      content: [{ type: "text", text: '[{"symbol": "AAPL", "eps_cons' }],
+      stop_reason: "max_tokens",
+    });
+    const err = await extractBogeysFromUpload(new Uint8Array([1]), "image/png").catch(
+      (e) => e,
+    );
+    expect(err).toBeInstanceOf(BogeysExtractionError);
+    expect(err.code).toBe("truncated");
+    expect(err.message).toMatch(/fewer symbols|split/i);
+    expect(err.message).not.toContain("eps_cons");
+    expect(err.message).not.toMatch(/JSON/);
+  });
+
+  it("maps unparseable model output to a friendly typed error without echoing the raw text", async () => {
+    mockStreamWith({
+      content: [{ type: "text", text: "I could not find any bogeys on this page." }],
+      stop_reason: "end_turn",
+    });
+    const err = await extractBogeysFromUpload(new Uint8Array([1]), "image/png").catch(
+      (e) => e,
+    );
+    expect(err).toBeInstanceOf(BogeysExtractionError);
+    expect(err.code).toBe("unparseable");
+    expect(err.message).not.toContain("could not find any bogeys");
+    expect(err.message).not.toContain("First 200 chars");
+  });
+});
