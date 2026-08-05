@@ -101,7 +101,7 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
           style={{ backgroundColor: "var(--panel)" }}
         >
           <div className="flex flex-col min-w-0">
-            <h2 className="text-sm font-medium text-ink truncate">Morning Research Digest</h2>
+            <h2 className="text-sm font-medium text-ink truncate whitespace-nowrap!">Morning Research Digest</h2>
             {data && !data.empty && (
               <p className="text-[11px] text-ink-faint font-mono mt-0.5 truncate">
                 Since {formatSince(data.since)}
