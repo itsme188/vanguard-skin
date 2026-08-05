@@ -10,6 +10,8 @@ import {
   composeWorksheet,
   loadWorksheetInputs,
   printArmedWorksheets,
+  loadRichWorksheetInputs,
+  composeWorksheetForEvent,
   type WorksheetInputs,
 } from "@/lib/earnings/worksheet";
 import {
@@ -45,6 +47,33 @@ function seedEvent(symbol: string, date: string, releaseTime: string | null = "1
       date,
       "EPS 1.35 · Rev 750,000,000",
     ).lastInsertRowid as number;
+}
+
+const PREVIEW_AI_MD = `## Line-by-line bogies
+
+| Metric | Consensus / Prior | Actual | Δ |
+|---|---|---|---|
+| Revenue | Street ~$196.9B vs. guide $194–199B | — | — |
+| AWS revenue | $40.5B, ~31% y/y | — | — |
+
+## The setup
+
+Into the print up 4% over 30 days.
+
+## Sources
+
+- TMT Breakout 8/1
+`;
+
+function seedPreviewEmail(
+  eventId: number,
+  aiOutputMd: string | null,
+  error: string | null = null,
+): void {
+  db.prepare(
+    `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, ai_output_md, error)
+     VALUES (?, 'preview', 'me@example.com', '2026-08-06 12:05:00', ?, ?)`,
+  ).run(eventId, aiOutputMd, error);
 }
 
 function bogey(overrides: Partial<EarningsBogey>): EarningsBogey {
@@ -145,6 +174,60 @@ describe("loadWorksheetInputs", () => {
   });
 });
 
+describe("loadRichWorksheetInputs", () => {
+  it("returns null when no preview email exists", () => {
+    const id = seedEvent("AAPL", "2026-08-06");
+    expect(loadRichWorksheetInputs(db, id)).toBeNull();
+  });
+
+  it("returns null for a cloud-sent preview (no local prose)", () => {
+    const id = seedEvent("AAPL", "2026-08-06");
+    seedPreviewEmail(id, null, "sent-by-cloud");
+    expect(loadRichWorksheetInputs(db, id)).toBeNull();
+  });
+
+  it("returns null when ai_output_md yields neither table nor commentary", () => {
+    const id = seedEvent("AAPL", "2026-08-06");
+    seedPreviewEmail(id, "## Sources\n\n- only sources");
+    expect(loadRichWorksheetInputs(db, id)).toBeNull();
+  });
+
+  it("assembles inputs from a local preview", () => {
+    const id = seedEvent("AAPL", "2026-08-06");
+    seedPreviewEmail(id, PREVIEW_AI_MD);
+    const inputs = loadRichWorksheetInputs(db, id);
+    expect(inputs).not.toBeNull();
+    expect(inputs!.sections.bogiesTable!.rows).toHaveLength(2);
+    expect(inputs!.scoreboardMd).toContain("scoreboard");
+    expect(inputs!.sentAt).toBe("2026-08-06 12:05:00");
+  });
+});
+
+describe("composeWorksheetForEvent", () => {
+  it("falls back to the deterministic sheet without a preview", () => {
+    const id = seedEvent("AAPL", "2026-08-06");
+    const r = composeWorksheetForEvent(db, id);
+    expect(r).not.toBeNull();
+    expect(r!.rich).toBe(false);
+    expect(r!.text).toContain("SCRATCH");
+    expect(r!.text).toContain("WHISPER"); // deterministic layout marker
+  });
+
+  it("composes the rich sheet when a local preview exists", () => {
+    const id = seedEvent("AAPL", "2026-08-06");
+    seedPreviewEmail(id, PREVIEW_AI_MD);
+    const r = composeWorksheetForEvent(db, id);
+    expect(r!.rich).toBe(true);
+    expect(r!.text).toContain("LINE-BY-LINE BOGIES");
+    expect(r!.text).toContain("AWS revenue");
+    expect(r!.text).toContain("THE SETUP");
+  });
+
+  it("returns null for a missing or symbol-less event", () => {
+    expect(composeWorksheetForEvent(db, 9999)).toBeNull();
+  });
+});
+
 describe("worksheet flags + auto-print pass", () => {
   const NOW = new Date("2026-08-06T18:30:00Z"); // 14:30 ET — 105m before a 16:15 AMC release
 
@@ -163,6 +246,7 @@ describe("worksheet flags + auto-print pass", () => {
   it("prints an armed event inside the window exactly once (stamp blocks the second tick)", async () => {
     const eventId = seedEvent("AAPL", "2026-08-06");
     armWorksheet(db, eventId);
+    seedPreviewEmail(eventId, PREVIEW_AI_MD);
     const print = vi.fn(async () => ({}));
 
     const first = await printArmedWorksheets(db, { now: NOW, print });
@@ -177,6 +261,7 @@ describe("worksheet flags + auto-print pass", () => {
   it("holds outside the window: too early stays armed, prints when the window opens", async () => {
     const eventId = seedEvent("AAPL", "2026-08-06");
     armWorksheet(db, eventId);
+    seedPreviewEmail(eventId, PREVIEW_AI_MD);
     const print = vi.fn(async () => ({}));
 
     // 09:00 ET — release is 7h+ away, outside [−30m, +135m].
@@ -192,6 +277,8 @@ describe("worksheet flags + auto-print pass", () => {
     const good = seedEvent("MSFT", "2026-08-06");
     armWorksheet(db, bad);
     armWorksheet(db, good);
+    seedPreviewEmail(bad, PREVIEW_AI_MD);
+    seedPreviewEmail(good, PREVIEW_AI_MD);
     const print = vi.fn(async (_db: Database.Database, id: number) => {
       if (id === bad) throw new Error("printer offline");
       return {};
@@ -211,6 +298,34 @@ describe("worksheet flags + auto-print pass", () => {
     armWorksheet(db, eventId);
     const print = vi.fn(async () => ({}));
     const r = await printArmedWorksheets(db, { now: NOW, print });
+    expect(r.printed).toBe(0);
+    expect(print).not.toHaveBeenCalled();
+  });
+});
+
+describe("printArmedWorksheets wait-for-preview gate", () => {
+  it("skips without stamping when no local preview exists, prints once it lands", async () => {
+    const id = seedEvent("AAPL", "2026-08-06", "16:15");
+    armWorksheet(db, id);
+    const print = vi.fn(async () => {});
+    const NOW = new Date("2026-08-06T19:00:00Z"); // 16:15 ET release ≈ 75 min out
+
+    const before = await printArmedWorksheets(db, { now: NOW, print });
+    expect(before.printed).toBe(0);
+    expect(print).not.toHaveBeenCalled();
+
+    seedPreviewEmail(id, PREVIEW_AI_MD);
+    const after = await printArmedWorksheets(db, { now: NOW, print });
+    expect(after.printed).toBe(1);
+    expect(print).toHaveBeenCalledTimes(1);
+  });
+
+  it("never prints for a cloud-sent preview", async () => {
+    const id = seedEvent("AAPL", "2026-08-06", "16:15");
+    armWorksheet(db, id);
+    seedPreviewEmail(id, null, "sent-by-cloud");
+    const print = vi.fn(async () => {});
+    const r = await printArmedWorksheets(db, { now: new Date("2026-08-06T19:00:00Z"), print });
     expect(r.printed).toBe(0);
     expect(print).not.toHaveBeenCalled();
   });
