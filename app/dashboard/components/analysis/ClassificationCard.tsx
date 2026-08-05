@@ -39,7 +39,10 @@ export function ClassificationCard({ concentration, coverage }: Props) {
       if (data.success) {
         if (data.classified === 0 && !data.unresolvedCount) {
           // Explain the no-op — "Classified 0" with no why reads as a broken button.
-          toast(`Nothing to classify — all ${data.skipped} held securities already have sector/fund classifications.`, "info");
+          // No count: data.skipped is the engine's whole-table skip tally (every
+          // securities row ever seen, ~1.3k), not the held universe — quoting it
+          // as "held securities" contradicted the coverage card's 137.
+          toast("Nothing to classify — every held security already has sector/fund classifications.", "info");
         } else {
           const parts = [`Classified ${data.classified}`, `${data.skipped} already done`];
           if (data.unresolvedCount > 0) parts.push(`${data.unresolvedCount} couldn't be auto-classified`);
