@@ -130,7 +130,7 @@ export function mdToPlainText(md: string, width = 78): string[] {
     const heading = line.match(/^#{1,6}\s+(.*)$/);
     if (heading) {
       pushBlank();
-      out.push(stripInline(heading[1]).toUpperCase());
+      for (const w of wrapText(stripInline(heading[1]).toUpperCase(), width)) out.push(w);
       continue;
     }
     if (line.trim() === "") {
