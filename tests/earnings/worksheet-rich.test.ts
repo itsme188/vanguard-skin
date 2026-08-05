@@ -299,4 +299,49 @@ describe("composeRichWorksheet", () => {
     expect(text).not.toContain("LINE-BY-LINE BOGIES");
     expect(text).toContain("THE SETUP");
   });
+
+  it("enforces hard 3-page cap even with verbose bogies", () => {
+    // 20-row bogies table with ~100-char Consensus/Prior cells (wraps to 3 lines each)
+    const verboseRows = Array.from({ length: 20 }, (_, i) => [
+      `Metric ${i}`,
+      `This is a long consensus/prior line that is approximately 100 chars and will definitely wrap when rendered at 41-col width like the real spec.`,
+      "—",
+      "—",
+    ]);
+    const sections = {
+      bogiesTable: { header: ["Metric", "Consensus / Prior", "Actual", "Δ"], rows: verboseRows },
+      commentary:
+        "## The setup\n\n" +
+        "Detailed commentary about the earnings print that explains the market context, prior guidance, and what we're watching for in this print.\n\n" +
+        "## Bull case\n\nReasons to be bullish on this earnings print.",
+    };
+    const text = composeRichWorksheet(richInputs({ sections }));
+    const pages = text.split("\f");
+    expect(pages.length).toBeLessThanOrEqual(MAX_PAGES);
+    for (const page of pages) {
+      const lines = page.replace(/\n$/, "").split("\n");
+      expect(lines.length).toBeLessThanOrEqual(MAX_LINES);
+    }
+    const lastLine = text.trimEnd().split("\n").pop()!;
+    expect(lastLine).toContain("from preview email sent");
+  });
+
+  it("does not add ellipsis note when commentary is empty despite negative budget", () => {
+    // Oversized bogies table that exhausts the budget, empty commentary
+    const rows = Array.from({ length: 30 }, (_, i) => [`Metric ${i}`, "cons", "—", "—"]);
+    const sections = {
+      bogiesTable: { header: ["Metric", "Consensus / Prior", "Actual", "Δ"], rows },
+      commentary: "", // empty — should NOT produce a false truncation note
+    };
+    const text = composeRichWorksheet(richInputs({ sections }));
+    expect(text).not.toContain("… (full text in the preview email)");
+    expect(text.split("\f").length).toBeLessThanOrEqual(MAX_PAGES);
+  });
+
+  it("footer line is width-clamped and always the last line", () => {
+    const text = composeRichWorksheet(richInputs());
+    const lastLine = text.trimEnd().split("\n").pop()!;
+    expect(lastLine.length).toBeLessThanOrEqual(80);
+    expect(lastLine).toContain("from preview email sent");
+  });
 });
