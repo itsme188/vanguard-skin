@@ -13,7 +13,7 @@
  */
 import type Database from "better-sqlite3";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
-import { resolveReleaseTime } from "@/lib/calendar/release-times";
+import { resolveReleaseTime, normalizeEarningsHour } from "@/lib/calendar/release-times";
 import { todayET } from "@/lib/calendar/date-utils";
 
 export const BOUNDED_MAX_GAP_MS = 30 * 60 * 1000;
@@ -176,6 +176,36 @@ function sameSideOfNoon(hhmm: string, slot: "bmo" | "amc" | null): boolean {
   return slot === "bmo" ? isMorning : !isMorning;
 }
 
+/**
+ * BMO/AMC slot for the sameSideOfNoon guard (I1 fix, 2026-08-04). An
+ * explicit "BMO"/"AMC" event_time is authoritative when present (manual /
+ * curated rows carry it directly), but the DOMINANT vendor path — Finnhub
+ * (lib/calendar/finnhub.ts) and Nasdaq (lib/calendar/nasdaq.ts) — always
+ * writes event_time: null and encodes the slot in raw_json.entry.hour
+ * instead. Reading event_time alone left slot permanently null on every
+ * vendor row, making the guard inert: a standing user override or
+ * observation history could silently apply to the wrong half of the day
+ * whenever a symbol flips BMO/AMC between quarters. "dmh"/unknown/missing
+ * still resolve to null — correct, there genuinely is no side-of-noon to
+ * guard against.
+ */
+function deriveKnownSlot(row: {
+  event_time: string | null;
+  raw_json: string | null;
+}): "bmo" | "amc" | null {
+  const et = row.event_time?.trim().toUpperCase();
+  if (et === "BMO") return "bmo";
+  if (et === "AMC") return "amc";
+  if (!row.raw_json) return null;
+  try {
+    const parsed = JSON.parse(row.raw_json) as { entry?: { hour?: unknown } };
+    const hour = normalizeEarningsHour(parsed.entry?.hour);
+    return hour === "bmo" || hour === "amc" ? hour : null;
+  } catch {
+    return null;
+  }
+}
+
 export function getSymbolReleaseTimeRow(
   db: Database.Database,
   symbol: string,
@@ -316,12 +346,7 @@ export function resolveEarningsReleaseTime(
   // slot=null would otherwise bypass the sameSideOfNoon guard entirely.
   if (row.event_time?.trim().toUpperCase() === "TAS") return resolveReleaseTime(row);
 
-  const slot = ((): "bmo" | "amc" | null => {
-    const et = row.event_time?.trim().toUpperCase();
-    if (et === "BMO") return "bmo";
-    if (et === "AMC") return "amc";
-    return null;
-  })();
+  const slot = deriveKnownSlot(row);
 
   const fromSymbol = resolveSymbolReleaseTime(db, row.symbol, slot);
   if (fromSymbol?.source === "user" || fromSymbol?.source === "web_verified") {

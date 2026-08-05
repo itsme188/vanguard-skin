@@ -94,7 +94,7 @@ export function earningsHourToReleaseTime(
   }
 }
 
-function normalizeEarningsHour(value: unknown): "bmo" | "amc" | "dmh" | null {
+export function normalizeEarningsHour(value: unknown): "bmo" | "amc" | "dmh" | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim().toLowerCase();
   if (normalized === "bmo" || normalized === "amc" || normalized === "dmh") {

@@ -335,19 +335,32 @@ interface FinnhubEarningsEntry {
   revenueEstimate: number | null;
 }
 
-async function fetchFinnhubActual(
+/**
+ * Fetch the raw Finnhub calendar entry for (symbol, date), or null when
+ * Finnhub genuinely has nothing to report (no calendar entry, or only a
+ * mismatched foreign-listing echo). Unlike fetchFinnhubActual below, this
+ * THROWS on a configuration or transport failure — missing API key,
+ * non-ok HTTP response, or a network-level fetch() rejection — so callers
+ * that need to distinguish "Finnhub said no" from "the probe never ran"
+ * can do so (see probeFinnhubActualExistsStrict).
+ */
+async function fetchFinnhubEntry(
   symbol: string,
   date: string,
-): Promise<{ actual: string | null; consensus: string | null }> {
+): Promise<FinnhubEarningsEntry | null> {
   const apiKey = process.env.FINNHUB_API_KEY;
-  if (!apiKey) return { actual: null, consensus: null };
+  if (!apiKey) {
+    throw new Error("[enrich-actuals] FINNHUB_API_KEY not configured");
+  }
 
   const url =
     `https://finnhub.io/api/v1/calendar/earnings` +
     `?from=${date}&to=${date}&symbol=${encodeURIComponent(symbol)}&token=${apiKey}`;
 
   const res = await fetch(url);
-  if (!res.ok) return { actual: null, consensus: null };
+  if (!res.ok) {
+    throw new Error(`[enrich-actuals] Finnhub HTTP ${res.status} for ${symbol} ${date}`);
+  }
   const data = (await res.json()) as { earningsCalendar?: FinnhubEarningsEntry[] };
   // Exact-symbol entries only. Finnhub resolves ADR queries to the LOCAL
   // listing — querying "TSM" returns "2330.TW" with TWD-scale figures
@@ -368,8 +381,27 @@ async function fetchFinnhubActual(
           .join(", ")} for ${symbol} ${date} — local-currency figures dropped`
       );
     }
+    return null;
+  }
+  return entry;
+}
+
+/** True when a Finnhub calendar entry carries a published actual figure. */
+function entryHasActual(entry: FinnhubEarningsEntry | null): boolean {
+  return entry != null && (entry.epsActual != null || entry.revenueActual != null);
+}
+
+async function fetchFinnhubActual(
+  symbol: string,
+  date: string,
+): Promise<{ actual: string | null; consensus: string | null }> {
+  let entry: FinnhubEarningsEntry | null;
+  try {
+    entry = await fetchFinnhubEntry(symbol, date);
+  } catch {
     return { actual: null, consensus: null };
   }
+  if (!entry) return { actual: null, consensus: null };
 
   const actualParts: string[] = [];
   if (entry.epsActual != null) actualParts.push(`EPS ${entry.epsActual.toFixed(2)}`);
@@ -403,6 +435,22 @@ export async function probeFinnhubActualExists(symbol: string, date: string): Pr
   } catch {
     return false;
   }
+}
+
+/**
+ * Strict sibling of probeFinnhubActualExists (I2 fix, 2026-08-04): same
+ * existence check, but lets a missing API key / non-ok HTTP response /
+ * network failure PROPAGATE instead of collapsing into `false`. Built for
+ * the wire-probe pre-release pass (lib/calendar/wire-probe.ts), which
+ * interprets a `false` result as verified-empty evidence and stamps
+ * wire_probe_empty_at — feeding the release-time observation cascade. A
+ * swallowed outage there would fabricate bounded-observation evidence out
+ * of a probe that never actually ran; runWireProbePass's own try/catch is
+ * the place that turns a thrown error into a no-op skip (never a stamp).
+ */
+export async function probeFinnhubActualExistsStrict(symbol: string, date: string): Promise<boolean> {
+  const entry = await fetchFinnhubEntry(symbol, date);
+  return entryHasActual(entry);
 }
 
 // ── Claude + web_search fallback for non-FRED macro ─────────────────
