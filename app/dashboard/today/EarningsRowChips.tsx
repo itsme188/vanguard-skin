@@ -145,6 +145,10 @@ export function EarningsRowChips({
         phase: "recap",
       });
       setOpenPhase("recap");
+      // runEnrichmentFirst may have just captured consensus/actuals/reaction —
+      // re-render the server-side hub row so it agrees with the modal instead
+      // of showing "no actuals" until a manual reload.
+      router.refresh();
     } catch (err) {
       toast(err instanceof Error ? err.message : "Generate failed", "error");
     } finally {
