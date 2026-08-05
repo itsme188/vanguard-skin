@@ -82,6 +82,28 @@ describe("holdings cost_basis fallback (F1)", () => {
     expect(row!.cost_basis).toBe(1000);
   });
 
+  it("getAllHoldings treats a zero cost_basis as unknown — never renders market value as pure gain", () => {
+    // QA 2026-08-05 (accounts-holdings--zero-cost-basis-phantom-gain): one
+    // UBER statement row carried cost_basis = 0.0 (not NULL), so the IS NOT
+    // NULL guard passed and unrealized_gain evaluated MV − 0 = the whole
+    // market value — a +$7,300 phantom gain on a position actually at a loss.
+    // A basis of 0 is "unknown", not "free": gain must suppress to NULL,
+    // matching the Gain % column's existing !== 0 guard in AllHoldingsTable.
+    const uber = seedSecurity(db, "UBER");
+    seedHolding(db, ACCOUNT_ID, uber, 100, "2026-03-27", 0, "canonical:hold:UBER:2026-03-27");
+    seedHolding(db, ACCOUNT_ID, uber, 100, "2026-07-10", null, "plaid:hold:UBER:2026-07-10");
+    db.prepare(
+      "INSERT INTO prices (security_id, date, close_price, source) VALUES (?, '2026-07-10', 73, 'tws')"
+    ).run(uber);
+
+    const rows = getAllHoldings(db);
+    const row = rows.find((r) => r.symbol === "UBER");
+
+    expect(row).toBeTruthy();
+    expect(row!.current_value).toBe(7300);
+    expect(row!.unrealized_gain).toBeNull();
+  });
+
   it("getAllHoldings returns null cost_basis when no prior row has one (never fabricates)", () => {
     const bnd = seedSecurity(db, "BND");
     seedHolding(db, ACCOUNT_ID, bnd, 50, "2026-07-10", null, "plaid:hold:BND:2026-07-10");
