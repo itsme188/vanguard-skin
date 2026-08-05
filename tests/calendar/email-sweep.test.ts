@@ -43,6 +43,7 @@ const fetchCloudSent = vi.fn(
   async (..._args: unknown[]) =>
     [] as { phase: "preview" | "recap"; eventId: number; sentAt: string | null }[],
 );
+const postAliveMarker = vi.fn(async (..._args: unknown[]) => null);
 const sendReporterRecap = vi.fn(async (..._args: unknown[]) => ({ subject: "s", targets: ["T"] }));
 vi.mock("@/lib/earnings/reporter-recap", () => ({
   sendReporterRecapEmail: (...a: unknown[]) => sendReporterRecap(...a),
@@ -54,6 +55,7 @@ vi.mock("@/lib/cron/earnings-marker-check", () => ({
   clearEarningsRunningMarker: (...a: unknown[]) => clearRunning(...a),
   writeMacSentEarningsMarker: (...a: unknown[]) => writeSent(...a),
   fetchCloudSentEarnings: (...a: unknown[]) => fetchCloudSent(...a),
+  postMacRecentEarningsSweepMarker: (...a: unknown[]) => postAliveMarker(...a),
 }));
 
 const pushover = vi.fn(async (..._args: unknown[]) => ({ sent: true }));
@@ -1189,5 +1191,33 @@ describe("alertBlockedRecaps", () => {
       expect(summary.recapAlerts).toBe(1);
       expect(pushover).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+// ── Mac-aliveness marker (2026-08-05, the APP/MELI preview race) ─────────────
+// Every completed sweep tick posts `mac-recent-earnings-sweep` so the Worker's
+// preview fallback knows the Mac is alive — QUIET ticks included (most ticks
+// have no candidates; aliveness is about the sweep running, not sending).
+
+describe("runEarningsEmailSweep mac-aliveness marker", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    vi.clearAllMocks();
+  });
+  afterEach(() => db.close());
+
+  it("posts the marker after a quiet tick (zero candidates)", async () => {
+    const summary = await runEarningsEmailSweep(db, { now: NOW });
+    expect(summary.swept).toBe(0);
+    expect(postAliveMarker).toHaveBeenCalledTimes(1);
+  });
+
+  it("posts the marker after a sending tick too", async () => {
+    seedHeldPreviewCandidate(db, "AAPL");
+    await runEarningsEmailSweep(db, { now: NOW });
+    expect(postAliveMarker).toHaveBeenCalledTimes(1);
   });
 });

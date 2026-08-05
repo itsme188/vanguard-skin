@@ -103,6 +103,11 @@ export function issuerSiblings(symbol: string): readonly string[] {
   return fam ?? [symbol.toUpperCase()];
 }
 
+// Mac-aliveness marker key — written by the Mac after every successful
+// earnings-sweep tick (POST /internal/mac-recent-earnings-sweep, 25-min TTL).
+// Sibling of level-scan's `mac-recent-scan`. Consulted for PREVIEWS only.
+const KV_MAC_SWEEP_MARKER = "mac-recent-earnings-sweep";
+
 const PREVIEW_WINDOW_MIN_MS = 105 * 60 * 1000;
 // Mac-first tick offset (final-review fix pass): the Mac primary sweep's
 // candidate window is the FULL [105,135] min-until-release band (both sides
@@ -402,7 +407,41 @@ export async function runEarningsFallback(
   }
 
   const scan = await findCandidatesFromSnapshot(snapshot, now, env.CRON_KV, suppressedRecapIds);
-  const prioritized = prioritizeCandidates(scan.candidates, now);
+
+  // Mac-aliveness gate — PREVIEWS ONLY (2026-08-05, the APP/MELI race). The
+  // Mac posts `mac-recent-earnings-sweep` (25-min TTL) after every successful
+  // sweep tick; a fresh marker means the Mac is alive and its wider [105,135]
+  // preview window will cover the send — without this, launchd drift (the
+  // StartInterval re-anchor after a 60-180s compose) lets the Worker's fixed
+  // :00/:15 grid tick cloud-send a lean preview the awake Mac would have sent
+  // rich minutes later. Recaps + actuals-capture stay UN-gated: they're
+  // additive (per-event markers already dedup them) and time-critical after a
+  // print. Gated previews stay markerless so a later tick retries if the Mac
+  // dies and the marker expires while the window is still open.
+  let candidateList = scan.candidates;
+  const macSweptAt = await env.CRON_KV.get(KV_MAC_SWEEP_MARKER);
+  if (macSweptAt) {
+    const gatedPreviews = candidateList.filter((c) => c.phase === "preview");
+    if (gatedPreviews.length > 0) {
+      candidateList = candidateList.filter((c) => c.phase !== "preview");
+      console.log(
+        `[fallback-earnings] mac-recent-earnings-sweep marker present (${macSweptAt}) — skipping ${gatedPreviews.length} preview candidate(s)`,
+      );
+      for (const g of gatedPreviews) {
+        result.swept++;
+        result.skipped++;
+        result.details.push({
+          eventId: g.eventId,
+          symbol: g.symbol,
+          phase: "preview",
+          status: "skipped",
+          reason: "mac-recently-swept",
+        });
+      }
+    }
+  }
+
+  const prioritized = prioritizeCandidates(candidateList, now);
   // ALL discovered candidates, incl. deferred (+= keeps the wrap-suppressed
   // members counted above).
   result.swept += prioritized.length;
