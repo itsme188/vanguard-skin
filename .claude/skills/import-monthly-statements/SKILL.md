@@ -33,6 +33,13 @@ Turn the three monthly statements (Vanguard Taxable PDF, Vanguard Roth PDF, IBKR
 
 Extract text: `pdftotext -layout "<statement>.pdf" <scratch>/vb.txt` (statements are text-based; never eyeball-transcribe from rendered pages).
 
+### Expanded statement details (July 2026 onward)
+
+Vanguard's "Back by request: expanded statement details" change means EVERY monthly statement's holdings tables now carry the columns **[Unrealized Gains/Losses, Total Cost Basis, Quantity, Price, prior Balance, current Balance]** — cost basis is no longer quarter-end-only. Each holding also gets an `Est. annual income: $X; Est. yield: Y%` sub-line (skip these when parsing — they are informational, not data rows; EAI/EY are NOT stored anywhere) and each section a `Total Est. annual income …` footer line. Two EAI/EY disclosure pages were appended at the back. Consequences:
+
+- **Extract `cost_basis` every month.** A `-` in the Total Cost Basis column (average-cost mutual funds like VSMAX/VVIAX, unavailable-basis rows like UBER) → leave the CSV cell blank, exactly as before.
+- Free integrity check: statement `Unrealized G/L = current Balance − Total Cost Basis` per row — verify a few rows to confirm you're reading the right columns.
+
 Build 4 CSVs per account (headers per `docs/canonical-csv-guide.md`). Write them to `~/Desktop/Trading - Local/canonical/{YYYY-MM}/` with names like `Vanguard_Roth_IRA_transactions_{YYYYMM}.csv` — **these exact files are what gets imported and what stays archived** (provenance: the files on disk must be the files in the DB).
 
 ### Quarterly-statement rule (March / June / September / December)
@@ -58,6 +65,11 @@ The statement's amount column is already the signed cash effect for most rows �
 | Funds received / EFT (+) | DEPOSIT | keep | symbol `CASH` |
 | Withdrawal (−) | WITHDRAWAL | keep | symbol `CASH` |
 | Share journal / gift (no cash) | TRANSFER_IN / TRANSFER_OUT | amount `0` | one row per journal line, never merged |
+| Stock Split (+N shares/contracts) | SPLIT | amount `0`, qty = additional units | on the POST-split symbol; VGT 2026-04 + CRWD-option 2026-07 precedents |
+| Security Exchange (option exercised) | EXERCISED | amount `0`, qty = contracts | pairs with a normal Buy of the stock at strike; computeTaxLots rolls premium into stock basis |
+| Expired (option) | EXPIRED | amount `0`, qty = abs(contracts) | note `Expired worthless` |
+| CUSIP Change / name change (± same qty, $0) | **skip both rows** | — | same ticker in DB → pure no-op (XOM 2026-07 precedent); only record if the SYMBOL actually changes |
+| ADR Custody Fee (−) | FEE | keep (negative) | symbol = the ADR's ticker, note names the fee |
 
 ⚠️ **BUY amounts are NEGATIVE** (statement-import convention, April 2026 onward). Three artifacts will try to talk you out of this — all are known-wrong:
 - `docs/canonical-csv-guide.md`'s BUY example row shows a positive amount (contradicts its own "negative = outflow" prose);
@@ -70,7 +82,8 @@ Other row rules: quantity always positive; options in OCC format (`XLE   270617C
 
 ### Holdings, prices, snapshots
 
-- **Holdings**: one row per position at month-end, **including `cost_basis`** — quarter-end statements print it; do not leave the column blank like the old Co-Work files did.
+- **Holdings**: one row per position at month-end, **including `cost_basis`** — every monthly statement prints it since July 2026 (quarter-end only before that); do not leave the column blank like the old Co-Work files did. Merge cash/margin sub-account duplicate rows (VSMAX/VVIAX appear twice) into ONE row summing quantity + balances. Exclude unpriced rows (price `-`: Pershing SPARC rights, escrow, delisted ADRs) — the statement excludes them from totals too. Shorts import as negative quantity with the printed (negative) balance. For an option replaced by a split, add a **quantity-0 tombstone row for the OLD OCC symbol** (mv 0, cost_basis blank) — options have no snapshot-diff reconciler, so without it the pre-split contract lingers as a phantom until expiry (CRWD $470→$117.50 2026-07 precedent).
+- **Margin credit is NOT a holding**: the statement's total account value = holdings + `Margin summary → margin credit`. The holdings-sum gate ties to (statement total − margin credit); the margin credit lands in inferred cash at the month-end anchor, where a residual roughly equal to it (± bond accrued interest and option-mark rounding) is CORRECT, not drift.
 - **Prices**: month-end close per symbol from the holdings section.
 - **Monthly snapshot** — construct, don't transcribe:
 
@@ -97,6 +110,7 @@ Other row rules: quantity always positive; options in OCC format (`XLE   270617C
 ## Phase 4 — Import
 
 - Per account: preview → inspect (counts, zero unexplained warnings, **no unexpected new-security symbols** — a new symbol for an existing position means convention drift) → commit. Record batch ids for undo.
+- **Commit calls can exceed curl's 2-minute default** — the post-commit hooks (tax lots, classification, daily valuations) run synchronously inside the request. Use `curl -m 570` (and a matching tool timeout). A timed-out curl does NOT mean a failed commit: check `import_batches` for the new batch ids before retrying — re-POSTing after a server-side success just no-ops on source keys, but you'd misread the run (July 2026: Roth commit landed fine behind a 2-min curl timeout).
 - The API route recomputes daily valuations post-commit. **If any step is ever done via script instead, call `computeDailyValuations(db)` explicitly** — `commitImport` alone does not.
 - **After committing canonical HOLDINGS files, run the closed-equity sweep explicitly** — `canonical-csv` is not in `HOLDINGS_SNAPSHOT_SOURCES` (`lib/import/engine.ts`), so positions sold during the month linger as phantoms at their last nonzero date until the next full TWS refresh. One-off: a tiny tsx script calling `reconcileClosedEquityHoldings(db)` then `computeDailyValuations(db)` (June 2026 precedent: zeroed sold Roth ACWV/EEMV).
 
@@ -107,6 +121,8 @@ Other row rules: quantity always positive; options in OCC format (`XLE   270617C
 3. Duplicate-security check: `scripts/merge-duplicate-securities.ts` only replays its known hardcoded pairs — the real drift gate is that every `newSecurities` count in the commit results is explained (genuinely new positions), plus the foreign-symbol check from Phase 1.
 4. Daily-valuation sanity: no negative totals, no inferred-cash spike at the new month-end anchor (the option price-unit-drift signature).
 5. Report a per-account reconciliation table (statement value vs DB value, delta) — zero delta on every account — plus batch ids and the backup path. (Write "zero delta", not a dollar-zero literal: `$0` collides with the skill runner's positional-arg substitution.)
+6. **Last-trading-day-sale / Plaid trap**: a position fully sold on the month's last trading day is ABSENT from statement holdings (trade-date basis), so no statement row overwrites that morning's pre-sale Plaid row — the month-end daily valuation then carries a phantom position and inferred cash swings low by its value (HUN 2026-07: −$651 residual instead of +$9,758 margin credit). Check the anchor-date inferred cash against the margin credit; if off by ≈ one position's value, find the same-day `plaid:` holdings row and UPDATE its quantity to the trade-date-correct value, then recompute valuations.
+7. **Unsettled activity section stays OUT of this month's CSVs**: trades executed on the last day(s) but settling next month appear under "Unsettled activity" — they reappear as Completed transactions in NEXT month's statement and import then (identical trade_date + amount → but a leading `-$` sign difference is impossible since values match, so source keys dedup). Importing them now double-counts nothing only if formats match exactly — safer to skip, as the sweep balance also only reflects settled activity. Statement holdings DO already reflect these trades (trade-date basis) — that asymmetry is expected.
 
 ## Red flags — STOP, you are about to repeat a past mistake
 
@@ -115,7 +131,8 @@ Other row rules: quantity always positive; options in OCC format (`XLE   270617C
 - "I'll convert the IBKR CSV to canonical format" → discards sections the native parser needs.
 - "Sweep reconciliation is off by a few cents but everything else ties" → a sign or a missed row; find it.
 - "Skip the backup, imports are idempotent" → source-key edge cases have caused silent loss four separate months; back up first.
-- "Cost basis column is blank, like last month" → the statement prints it; extract it.
+- "Cost basis column is blank, like last month" → every statement (monthly since 2026-07, quarter-end before) prints it; extract it.
+- "Holdings sum is ~$10k off the statement total" → you forgot the margin credit (subtract it from the statement total before comparing), OR a last-trading-day sale left a stale same-day Plaid holdings row (see Phase 5 step 6).
 - Import commit before all Phase-3 gates pass → never.
 
 ## Quick reference
@@ -124,7 +141,7 @@ Other row rules: quantity always positive; options in OCC format (`XLE   270617C
 |---|---|
 | Statements | `~/Desktop/Trading - Local/` |
 | Archived canonical CSVs | `~/Desktop/Trading - Local/canonical/{YYYY-MM}/` |
-| Import API | `POST /api/import?mode=preview\|commit`, multipart field `files` |
+| Import API | `POST /api/import?mode=preview\|commit`, multipart field `files` — commit needs `curl -m 570` (sync post-commit hooks) |
 | Format spec | `docs/canonical-csv-guide.md` (BUY example sign is wrong — see table above) |
 | Validators | `scripts/validate-canonical-csv.ts`, `scripts/audit-twr-vs-statements.ts`, `scripts/merge-duplicate-securities.ts` |
 | Prior-month values | `monthly_snapshots` (never a statement's quarter-start column) |
