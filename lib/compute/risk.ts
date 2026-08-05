@@ -15,6 +15,24 @@ import { calendarDaysBetween } from "@/lib/calendar/date-utils";
 // day or two; larger is a discontinuity, not a real return.
 const MAX_RETURN_GAP_DAYS = 7;
 
+// Sibling of the gap guard: drop per-position return pairs that carry an
+// unadjusted stock-split signature. Vendor daily rows are not back-adjusted
+// when a split lands (VGT's 8:1 printed an exact -87.5% "daily return" and a
+// 407% volatility), so a pair qualifies only when it is SPLIT-SHAPED — the
+// price ratio sits within tolerance of an integer multiple >= 2 in either
+// direction. Magnitude alone never qualifies: a genuine -30% crash day stays.
+const SPLIT_MIN_MULTIPLE = 2;
+const SPLIT_MAX_MULTIPLE = 100;
+const SPLIT_RATIO_TOLERANCE = 0.02;
+
+export function isSplitSignatureReturnPair(prev: number, curr: number): boolean {
+  if (!(prev > 0) || !(curr > 0)) return false;
+  const ratio = prev > curr ? prev / curr : curr / prev;
+  const nearest = Math.round(ratio);
+  if (nearest < SPLIT_MIN_MULTIPLE || nearest > SPLIT_MAX_MULTIPLE) return false;
+  return Math.abs(ratio - nearest) <= nearest * SPLIT_RATIO_TOLERANCE;
+}
+
 // ─── Types ──────────────────────────────────────────────────────
 
 export interface DrawdownInfo {
@@ -532,6 +550,9 @@ export function computePositionRisk(
       const prev = prices.get(sortedDates[i - 1]);
       const curr = prices.get(sortedDates[i]);
       if (prev && curr && prev > 0 && curr > 0) {
+        // Unadjusted-split guard: an integer-multiple discontinuity is a
+        // series artifact, not a return (see isSplitSignatureReturnPair).
+        if (isSplitSignatureReturnPair(prev, curr)) continue;
         dates.push(sortedDates[i]);
         returns.push(Math.log(curr / prev));
       }
