@@ -19,6 +19,7 @@ import { APIError } from "@anthropic-ai/sdk";
 import { getRawAnthropicClient } from "@/lib/ai/provider";
 import { resolveFeatureModel } from "@/lib/ai/models";
 import { coercePercent, parseLargeUSD } from "@/lib/format";
+import { extractJsonArray } from "@/lib/ai/extract-json";
 
 /**
  * User-presentable extraction failure. `message` is safe to render
@@ -29,7 +30,7 @@ export class BogeysExtractionError extends Error {
   constructor(
     message: string,
     public readonly status: number,
-    public readonly code: "invalid_pdf" | "upstream",
+    public readonly code: "invalid_pdf" | "upstream" | "truncated" | "unparseable",
   ) {
     super(message);
     this.name = "BogeysExtractionError";
@@ -173,7 +174,10 @@ export async function extractBogeysFromUpload(
 
   const stream = client.messages.stream({
     model: modelId,
-    max_tokens: 4_096,
+    // 16k output budget: a ~20-ticker week grid at ~600-800 tokens/entry
+    // overflowed the old 4_096 cap, truncating the JSON mid-array (the
+    // 2026-08-05 regression). Output tokens bill only as used.
+    max_tokens: 16_384,
     messages: [
       {
         role: "user",
@@ -209,8 +213,33 @@ export async function extractBogeysFromUpload(
     throw new Error("Bogeys extraction returned no text block.");
   }
 
+  // Output truncation produces syntactically-broken JSON that would otherwise
+  // surface as a raw parse diagnostic — detect it from stop_reason instead.
+  if (response.stop_reason === "max_tokens") {
+    console.error(
+      `Bogeys extraction truncated at max_tokens (${textBlock.text.length} chars returned).`,
+    );
+    throw new BogeysExtractionError(
+      "The sheet had more content than one extraction pass can return — split the upload into fewer symbols per page and try again.",
+      422,
+      "truncated",
+    );
+  }
+
   const raw = textBlock.text;
-  const bogeys = parseExtractionResponse(raw);
+  let bogeys: ExtractedBogey[];
+  try {
+    bogeys = parseExtractionResponse(raw);
+  } catch (err) {
+    // The raw model output can embed anything — log it server-side, never
+    // surface it (the route renders BogeysExtractionError.message verbatim).
+    console.error("Bogeys extraction unparseable output:", err, "raw:", raw.slice(0, 500));
+    throw new BogeysExtractionError(
+      "The AI's extraction output couldn't be read. This is usually transient — try the upload again.",
+      502,
+      "unparseable",
+    );
+  }
   return { bogeys, modelId, rawResponse: raw };
 }
 
@@ -221,19 +250,25 @@ export async function extractBogeysFromUpload(
  * parseLargeUSD so a sloppy model output doesn't lose the data.
  */
 export function parseExtractionResponse(raw: string): ExtractedBogey[] {
-  const trimmed = raw
-    .trim()
-    .replace(/^\s*```(?:json)?\s*/i, "")
-    .replace(/\s*```\s*$/i, "")
-    .trim();
+  // extractJsonArray strips fences AND isolates first-[..last-] so a model
+  // preamble ("Here are the bogeys:") can't break JSON.parse (LLM-JSON
+  // parsing convention — both defenses required at every parse site).
+  const trimmed = extractJsonArray(raw);
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(trimmed);
   } catch (err) {
-    throw new Error(
-      `Bogeys extraction returned non-JSON: ${(err as Error).message}. First 200 chars: ${trimmed.slice(0, 200)}`,
-    );
+    // Companion defense: models intermittently emit RAW control characters
+    // inside string literals; collapsing C0 controls to spaces is safe (in
+    // legal JSON they only appear between tokens as whitespace).
+    try {
+      parsed = JSON.parse(trimmed.replace(/[\u0000-\u001f]+/g, " "));
+    } catch {
+      throw new Error(
+        `Bogeys extraction returned non-JSON: ${(err as Error).message}. First 200 chars: ${trimmed.slice(0, 200)}`,
+      );
+    }
   }
   if (!Array.isArray(parsed)) {
     throw new Error("Bogeys extraction did not return an array.");
