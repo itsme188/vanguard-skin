@@ -102,6 +102,28 @@ export function getLatestPrice(
 }
 
 /**
+ * NATIVE-frame sibling of getLatestPrice — no FX conversion. prices rows are
+ * stored in the security's native currency, so this is the frame ohlcv_bars
+ * live in. Use it whenever the price feeds math AGAINST bars (pivot levels,
+ * ATR, distance %) per the chart-adjacent display pattern: compute native,
+ * convert only at dollar-text render sites via usdPerUnit.
+ */
+export function getLatestPriceNative(
+  db: Database.Database,
+  securityId: number,
+): { close_price: number; date: string } | null {
+  return (
+    db
+      .prepare(
+        `SELECT close_price, date FROM prices
+         WHERE security_id = ?
+         ORDER BY date DESC LIMIT 1`,
+      )
+      .get(securityId) as { close_price: number; date: string } | undefined
+  ) ?? null;
+}
+
+/**
  * Get the most recent daily bar for a security. "Today" here means "the
  * freshest bar we have" — the table usually lags by one close, and on
  * weekends/holidays it may lag by several days. Callers should show the

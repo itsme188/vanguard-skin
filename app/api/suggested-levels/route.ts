@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { getOhlcvBars, getLatestPrice } from "@/lib/queries/ohlcv";
+import { getOhlcvBars, getLatestPriceNative } from "@/lib/queries/ohlcv";
+import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 import { computeSuggestedLevels } from "@/lib/chart/suggested-levels";
 import { getOrGenerateNarrative } from "@/lib/chart/narrate-levels";
 
@@ -16,6 +17,16 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  // Everything below runs in the security's NATIVE currency frame — bars are
+  // native, so the current price must be too (the pre-fix USD-converted
+  // getLatestPrice put a KRW name +199,687% "away" from its own pivots).
+  // usdPerUnit ships alongside so the client converts at dollar-TEXT sites
+  // only (chart-adjacent display pattern); it is 1 for USD securities.
+  const secRow = db
+    .prepare(`SELECT currency FROM securities WHERE id = ?`)
+    .get(securityId) as { currency: string | null } | undefined;
+  const usdPerUnit = getUsdPerUnit(db, secRow?.currency ?? null);
+
   // Daily bars only for now; a ~500-bar lookback (~2 years) is plenty for
   // pivot detection without pulling the entire history on every call.
   const bars = getOhlcvBars(db, securityId, "1 day", { limit: 500 });
@@ -24,13 +35,14 @@ export async function GET(req: NextRequest) {
       levels: [],
       atr: null,
       currentPrice: null,
+      usdPerUnit,
       barsAnalyzed: 0,
       computedAt: new Date().toISOString(),
       warning: "No OHLCV history for this security. Run a chart sync first.",
     });
   }
 
-  const priceRow = getLatestPrice(db, securityId);
+  const priceRow = getLatestPriceNative(db, securityId);
   const currentPrice =
     priceRow?.close_price ??
     (bars.length > 0 ? bars[bars.length - 1].close : null);
@@ -40,6 +52,7 @@ export async function GET(req: NextRequest) {
       levels: [],
       atr: null,
       currentPrice,
+      usdPerUnit,
       barsAnalyzed: bars.length,
       computedAt: new Date().toISOString(),
       warning: "Could not resolve a current price for this security.",
@@ -70,8 +83,8 @@ export async function GET(req: NextRequest) {
       ...level,
       narrative: narratives[i],
     }));
-    return Response.json({ ...result, levels: enriched });
+    return Response.json({ ...result, levels: enriched, usdPerUnit });
   }
 
-  return Response.json(result);
+  return Response.json({ ...result, usdPerUnit });
 }

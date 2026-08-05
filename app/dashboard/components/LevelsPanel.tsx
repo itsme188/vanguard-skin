@@ -102,7 +102,12 @@ interface SuggestedLevel {
 interface SuggestedLevelsResponse {
   levels: SuggestedLevel[];
   atr: number | null;
+  /** NATIVE currency frame (the bars' frame) — display converts via usdPerUnit. */
   currentPrice: number | null;
+  /** USD per native unit (1 for USD securities). Dollar-TEXT sites multiply
+   *  by this; the POST body when accepting a level stays NATIVE (levels are
+   *  stored in the security's native currency). */
+  usdPerUnit?: number;
   barsAnalyzed: number;
   warning?: string;
 }
@@ -125,6 +130,8 @@ function SuggestedLevels({
   const [loading, setLoading] = useState(true);
   const [accepting, setAccepting] = useState<number | null>(null);
   const [expanded, setExpanded] = useState(true);
+  // Suggested prices/ATR arrive NATIVE; convert at dollar-text sites only.
+  const usd = data?.usdPerUnit ?? 1;
 
   useEffect(() => {
     let cancelled = false;
@@ -184,7 +191,7 @@ function SuggestedLevels({
         toast(`Failed to add level: ${json.error ?? "unknown"}`, "error");
         return;
       }
-      toast(`${symbol} ${sug.type} at $${sug.price.toFixed(2)} added`, "success");
+      toast(`${symbol} ${sug.type} at $${(sug.price * usd).toFixed(2)} added`, "success");
       onAccepted();
     } finally {
       setAccepting(null);
@@ -242,7 +249,7 @@ function SuggestedLevels({
             {filtered.length} Suggested · Auto-detected
             {data.atr != null && (
               <span style={{ color: "#555", marginLeft: "1em" }}>
-                · ATR ≈ ${data.atr.toFixed(2)}
+                · ATR ≈ ${(data.atr * usd).toFixed(2)}
               </span>
             )}
           </span>
@@ -294,7 +301,7 @@ function SuggestedLevels({
                           letterSpacing: "-0.01em",
                         }}
                       >
-                        ${sug.price.toFixed(2)}
+                        ${(sug.price * usd).toFixed(2)}
                       </span>
                       {/* Distance — colored to match side */}
                       <span
@@ -385,7 +392,7 @@ function SuggestedLevels({
           {filtered.length === 1 ? "" : "s"}
           {data.atr != null && (
             <span className="text-ink-faint ml-2">
-              · ATR ≈ ${data.atr.toFixed(2)}
+              · ATR ≈ ${(data.atr * usd).toFixed(2)}
             </span>
           )}
         </span>
@@ -405,7 +412,7 @@ function SuggestedLevels({
                       sug.type === "resistance" ? "text-down" : "text-up"
                     }`}
                   >
-                    ${sug.price.toFixed(2)}
+                    ${(sug.price * usd).toFixed(2)}
                   </span>
                   <Chip tone={sug.type === "resistance" ? "down" : "up"} size="xs" uppercase>
                     {sug.type}
