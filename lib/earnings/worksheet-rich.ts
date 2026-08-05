@@ -92,3 +92,99 @@ export function extractPreviewSections(aiOutputMd: string): PreviewSections {
   const { table, after } = extractFirstTable(fromHeading);
   return { bogiesTable: table, commentary: after.trim() };
 }
+
+/** Word-wrap; words longer than width hard-split. Always ≥1 line. */
+export function wrapText(text: string, width: number): string[] {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [""];
+  const lines: string[] = [];
+  let cur = "";
+  for (let word of words) {
+    while (word.length > width) {
+      if (cur) {
+        lines.push(cur);
+        cur = "";
+      }
+      lines.push(word.slice(0, width));
+      word = word.slice(width);
+    }
+    if (!cur) cur = word;
+    else if (cur.length + 1 + word.length <= width) cur += " " + word;
+    else {
+      lines.push(cur);
+      cur = word;
+    }
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+
+/** Markdown → wrapped plain-text lines for the printer. */
+export function mdToPlainText(md: string, width = 78): string[] {
+  const out: string[] = [];
+  const pushBlank = () => {
+    if (out.length > 0 && out[out.length - 1] !== "") out.push("");
+  };
+  for (const raw of md.split("\n")) {
+    const line = raw.trimEnd();
+    const heading = line.match(/^#{1,6}\s+(.*)$/);
+    if (heading) {
+      pushBlank();
+      out.push(stripInline(heading[1]).toUpperCase());
+      continue;
+    }
+    if (line.trim() === "") {
+      pushBlank();
+      continue;
+    }
+    const bullet = line.match(/^\s*[-*]\s+(.*)$/);
+    if (bullet) {
+      const wrapped = wrapText(stripInline(bullet[1]), width - 2);
+      out.push("- " + wrapped[0]);
+      for (const w of wrapped.slice(1)) out.push("  " + w);
+      continue;
+    }
+    for (const w of wrapText(stripInline(line), width)) out.push(w);
+  }
+  while (out.length > 0 && out[out.length - 1] === "") out.pop();
+  while (out.length > 0 && out[0] === "") out.shift();
+  return out;
+}
+
+export interface TableLayout {
+  widths: number[];
+  fillIn?: number[];
+}
+
+/** Ruled fixed-width table. See spec: blank fill-in boxes for "—" cells. */
+export function renderMonospaceTable(
+  table: ParsedMarkdownTable,
+  layout: TableLayout,
+): string[] {
+  const { widths } = layout;
+  const fillIn = new Set(layout.fillIn ?? []);
+  const sep = widths.map((w) => "─".repeat(w)).join("┼");
+
+  const renderRow = (cells: string[], isHeader: boolean): string[] => {
+    const wrapped = widths.map((w, i) => {
+      let cell = cells[i] ?? "";
+      if (!isHeader && fillIn.has(i) && (cell === "—" || cell === "")) cell = "";
+      return wrapText(cell, w);
+    });
+    const height = Math.max(...wrapped.map((c) => c.length));
+    const lines: string[] = [];
+    for (let li = 0; li < height; li++) {
+      lines.push(widths.map((w, i) => (wrapped[i][li] ?? "").padEnd(w)).join("│"));
+    }
+    return lines;
+  };
+
+  const out: string[] = [];
+  out.push(...renderRow(table.header, true));
+  out.push(sep);
+  for (const row of table.rows) {
+    out.push(...renderRow(row, false));
+    out.push(sep);
+  }
+  return out;
+}

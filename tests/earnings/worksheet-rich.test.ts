@@ -7,6 +7,9 @@ import {
   parseMarkdownTable,
   extractFirstTable,
   extractPreviewSections,
+  wrapText,
+  mdToPlainText,
+  renderMonospaceTable,
 } from "@/lib/earnings/worksheet-rich";
 
 const PREVIEW_MD = `## Line-by-line bogies
@@ -103,5 +106,87 @@ describe("extractPreviewSections", () => {
     const s = extractPreviewSections("");
     expect(s.bogiesTable).toBeNull();
     expect(s.commentary).toBe("");
+  });
+});
+
+describe("wrapText", () => {
+  it("word-wraps at the width", () => {
+    expect(wrapText("alpha beta gamma delta", 11)).toEqual(["alpha beta", "gamma delta"]);
+  });
+  it("hard-splits words longer than the width", () => {
+    expect(wrapText("abcdefghij", 4)).toEqual(["abcd", "efgh", "ij"]);
+  });
+  it("empty input → single empty line", () => {
+    expect(wrapText("", 10)).toEqual([""]);
+  });
+});
+
+describe("mdToPlainText", () => {
+  it("renders headings as uppercase titles and strips inline markers", () => {
+    const lines = mdToPlainText("## The setup\n\nAMZN is **up** 4% ([note](https://x.com)).");
+    expect(lines).toContain("THE SETUP");
+    expect(lines.join("\n")).toContain("AMZN is up 4% (note).");
+    expect(lines.join("\n")).not.toContain("**");
+    expect(lines.join("\n")).not.toContain("https://x.com");
+  });
+  it("keeps bullets with hang indent on wrapped lines", () => {
+    const lines = mdToPlainText("- " + "word ".repeat(30).trim(), 40);
+    expect(lines[0].startsWith("- ")).toBe(true);
+    expect(lines[1].startsWith("  ")).toBe(true);
+  });
+  it("collapses blank-line runs", () => {
+    const lines = mdToPlainText("a\n\n\n\nb");
+    expect(lines).toEqual(["a", "", "b"]);
+  });
+});
+
+describe("renderMonospaceTable", () => {
+  const TABLE = {
+    header: ["Metric", "Consensus / Prior", "Actual", "Δ"],
+    rows: [
+      ["Revenue", "Street ~$196.9B vs. company guide $194–199B; Finnhub shows $200.3B", "—", "—"],
+      ["EPS", "$1.82–1.86", "—", "—"],
+    ],
+  };
+  const LAYOUT = { widths: [16, 41, 13, 6], fillIn: [2, 3] };
+
+  it("every line is exactly the total table width", () => {
+    const lines = renderMonospaceTable(TABLE, LAYOUT);
+    const total = 16 + 41 + 13 + 6 + 3;
+    for (const l of lines) expect(l.length).toBe(total);
+  });
+
+  it("wraps long cells across lines within their column", () => {
+    const lines = renderMonospaceTable(TABLE, LAYOUT);
+    const revenueLines = lines.filter((l) => l.includes("$196.9B") || l.includes("$200.3B"));
+    expect(revenueLines.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("renders — as blank space in fill-in columns but keeps it elsewhere", () => {
+    const t = {
+      header: ["M", "C", "A", "D"],
+      rows: [["x", "—", "—", "—"]],
+    };
+    const lines = renderMonospaceTable(t, LAYOUT);
+    const rowLine = lines.find((l) => l.startsWith("x"))!;
+    const cells = rowLine.split("│");
+    expect(cells[1]).toContain("—"); // consensus col: not fill-in
+    expect(cells[2].trim()).toBe(""); // actual: blank box
+    expect(cells[3].trim()).toBe(""); // delta: blank box
+  });
+
+  it("draws a ruled separator between rows with ┼ at column joints", () => {
+    const lines = renderMonospaceTable(TABLE, LAYOUT);
+    const seps = lines.filter((l) => l.includes("┼"));
+    // header separator + one after each row
+    expect(seps.length).toBe(1 + TABLE.rows.length);
+    expect(seps[0]).toBe("─".repeat(16) + "┼" + "─".repeat(41) + "┼" + "─".repeat(13) + "┼" + "─".repeat(6));
+  });
+
+  it("drops extra cells and blanks missing cells", () => {
+    const t = { header: ["A", "B"], rows: [["1"], ["1", "2", "3"]] };
+    const lines = renderMonospaceTable(t, { widths: [4, 4] });
+    expect(lines.some((l) => l.includes("3"))).toBe(false);
+    for (const l of lines) expect(l.length).toBe(9);
   });
 });
