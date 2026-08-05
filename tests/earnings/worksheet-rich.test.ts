@@ -138,6 +138,13 @@ describe("mdToPlainText", () => {
     const lines = mdToPlainText("a\n\n\n\nb");
     expect(lines).toEqual(["a", "", "b"]);
   });
+  it("wraps headings longer than the width", () => {
+    const long = "## " + "GUIDANCE ".repeat(20).trim();
+    const lines = mdToPlainText(long, 40);
+    expect(lines.length).toBeGreaterThan(1);
+    for (const l of lines) expect(l.length).toBeLessThanOrEqual(40);
+    expect(lines.join(" ")).toContain("GUIDANCE");
+  });
 });
 
 describe("renderMonospaceTable", () => {

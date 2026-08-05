@@ -109,7 +109,10 @@ In `lib/earnings/worksheet.ts`:
   15-min tick; the window closing at release+30m naturally ends retries).
   Otherwise print the rich sheet and stamp. Consequence (accepted): an event
   whose preview was cloud-sent never auto-prints — the Mac was asleep at
-  preview time, so nobody was home to collect paper; "Print now" covers it.
+  preview time, so nobody was home to collect paper; "Print now" covers it. The
+  same holds for any armed event whose preview never sends at all — muted symbol,
+  per-event skip row, or the already-reported guard — no preview means no
+  derived sheet; "Print now" (deterministic fallback) is the road for those too.
 
 - **`printWorksheetNow` (manual)** — prefers the rich sheet; falls back to the
   existing deterministic composer when no local preview exists. An explicit
