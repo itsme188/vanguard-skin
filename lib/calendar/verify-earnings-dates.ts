@@ -35,7 +35,10 @@ const DEFAULT_LIMIT = 25;
 // The orchestrator passes this explicitly rather than relying on
 // findDateVerificationCandidates' own default (25) — a daily verification
 // pass budgets a handful of AI calls, not the whole horizon at once.
-const DEFAULT_VERIFICATION_LIMIT = 8;
+// 8 → 12 (2026-08-05, user decision): the pass hit the cap of 8 on 3 of the
+// first 4 live days (earnings-season saturation); nearest-first ordering
+// kept the queue honest, but candidates were deferring daily.
+const DEFAULT_VERIFICATION_LIMIT = 12;
 // A confirmed_date this far past today is not "the next quarterly print" —
 // it's a hallucinated placeholder. Wide enough to absorb a genuine multi-week
 // slip (a company moving from early to late in its reporting window) without
