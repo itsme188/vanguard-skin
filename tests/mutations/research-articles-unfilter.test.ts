@@ -130,4 +130,50 @@ describe("D5 getFilteredArticles query", () => {
 
     expect(getFilteredArticleCount(db)).toBe(2);
   });
+
+  // qa:research-feeds-filtered--search-and-source-controls-noop — the Filtered
+  // audit tab must honor the same search + source controls as the main feed
+  // (DECIDED: extend the API rather than disable the controls).
+  describe("search + sourceId options", () => {
+    function seedTwoSources(db: Database.Database) {
+      db.prepare(`INSERT INTO research_sources (id, name) VALUES (2, 'Other Source')`).run();
+      db.prepare(
+        `INSERT INTO research_articles (id, source_id, subject, sender, raw_text, received_at, is_relevant, excluded_category, excluded_reason, summary)
+         VALUES (10, 1, 'Spotify deep dive', 'mbi@substack.com', 'body', '2026-08-01 10:00:00', 0, 'off_topic', 'streaming coverage, no held names', 'Spotify Q2 recap')`,
+      ).run();
+      db.prepare(
+        `INSERT INTO research_articles (id, source_id, subject, sender, raw_text, received_at, is_relevant, excluded_category, excluded_reason, summary)
+         VALUES (11, 2, 'Payment receipt', 'billing@substack.com', 'body', '2026-08-02 10:00:00', 0, 'receipt', 'admin mail', NULL)`,
+      ).run();
+    }
+
+    it("filters by sourceId", () => {
+      const db = makeDb();
+      seedTwoSources(db);
+
+      const rows = getFilteredArticles(db, { sourceId: 2 });
+      expect(rows.map((r) => r.id)).toEqual([11]);
+    });
+
+    it("filters by search across subject / sender / summary / excluded_reason", () => {
+      const db = makeDb();
+      seedTwoSources(db);
+
+      expect(getFilteredArticles(db, { search: "spotify" }).map((r) => r.id)).toEqual([10]);
+      expect(getFilteredArticles(db, { search: "billing@" }).map((r) => r.id)).toEqual([11]);
+      expect(getFilteredArticles(db, { search: "Q2 recap" }).map((r) => r.id)).toEqual([10]);
+      expect(getFilteredArticles(db, { search: "admin mail" }).map((r) => r.id)).toEqual([11]);
+      expect(getFilteredArticles(db, { search: "zzqqnothingmatchesxx" })).toEqual([]);
+    });
+
+    it("combines search + sourceId and honors limit", () => {
+      const db = makeDb();
+      seedTwoSources(db);
+
+      expect(
+        getFilteredArticles(db, { search: "substack", sourceId: 1 }).map((r) => r.id),
+      ).toEqual([10]);
+      expect(getFilteredArticles(db, { limit: 1 }).map((r) => r.id)).toEqual([11]);
+    });
+  });
 });

@@ -304,8 +304,27 @@ export interface FilteredArticle {
 
 export function getFilteredArticles(
   db: Database.Database,
-  limit = 100,
+  options?: { limit?: number; sourceId?: number; search?: string },
 ): FilteredArticle[] {
+  const conditions = ["a.is_relevant = 0"];
+  const params: (string | number)[] = [];
+
+  if (options?.sourceId) {
+    conditions.push("a.source_id = ?");
+    params.push(options.sourceId);
+  }
+  // Search spans the fields audit rows actually carry — pre-AI rows
+  // (D1/D2 short-circuit) have no summary, so subject/sender/reason matter.
+  if (options?.search) {
+    conditions.push(
+      "(a.subject LIKE ? OR a.sender LIKE ? OR a.summary LIKE ? OR a.excluded_reason LIKE ?)",
+    );
+    const term = `%${options.search}%`;
+    params.push(term, term, term, term);
+  }
+
+  params.push(options?.limit ?? 100);
+
   return db
     .prepare(
       `SELECT a.id, a.source_id, s.name as source_name, a.subject, a.sender,
@@ -313,11 +332,11 @@ export function getFilteredArticles(
               a.processed_at
          FROM research_articles a
          JOIN research_sources s ON a.source_id = s.id
-        WHERE a.is_relevant = 0
+        WHERE ${conditions.join(" AND ")}
         ORDER BY a.received_at DESC
         LIMIT ?`,
     )
-    .all(limit) as FilteredArticle[];
+    .all(...params) as FilteredArticle[];
 }
 
 /**

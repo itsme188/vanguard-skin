@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import Link from "next/link";
 import type { ResearchArticle, ResearchSource, FilteredArticle } from "@/lib/queries/research";
 import { trimEmailFooter } from "@/lib/gmail/sanitize";
@@ -172,6 +172,31 @@ export function ResearchFeedsView({
       toast("Unfilter may not have reached the server — check the Filtered tab after the next sync.", "info");
     }
   }, [toast]);
+
+  // qa:research-feeds-filtered--search-and-source-controls-noop — the Filtered
+  // audit list honors the same toolbar controls as the main feed. Refetch
+  // whenever the tab is active and search/source change (the API's filtered=1
+  // branch now accepts both params). A failed refetch keeps the current list.
+  useEffect(() => {
+    if (viewMode !== "filtered") return;
+    // Match the main list's 2-char search threshold (single char = too noisy).
+    if (searchQuery.length === 1) return;
+    const params = new URLSearchParams({ filtered: "1", limit: "100" });
+    if (sourceFilter) params.set("sourceId", String(sourceFilter));
+    if (searchQuery.length >= 2) params.set("search", searchQuery);
+    let cancelled = false;
+    fetch(`/api/research/articles?${params}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (!cancelled && data.success) setFilteredArticles(data.data ?? []);
+      })
+      .catch(() => {
+        /* keep the current list — the empty state explains active filters */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [viewMode, searchQuery, sourceFilter]);
 
   const refreshArticles = useCallback(
     async (overrides?: { sourceId?: number | null; search?: string }) => {
@@ -522,6 +547,7 @@ export function ResearchFeedsView({
         <FilteredArticlesList
           articles={filteredArticles}
           onUnfilter={handleUnfilter}
+          hasActiveFilter={searchQuery.length >= 2 || sourceFilter !== null}
         />
       ) : articles.length === 0 && (searchQuery.length > 0 || sourceFilter !== null) ? (
         // Zero results under an active search/filter is a no-match state,
@@ -721,11 +747,27 @@ const FILTERED_CATEGORY_LABEL: Record<string, string> = {
 function FilteredArticlesList({
   articles,
   onUnfilter,
+  hasActiveFilter = false,
 }: {
   articles: FilteredArticle[];
   onUnfilter: (id: number) => void;
+  hasActiveFilter?: boolean;
 }) {
   if (articles.length === 0) {
+    // Distinguish "no matches under the active controls" from "nothing has
+    // been filtered" — the wrong copy makes the controls look broken.
+    if (hasActiveFilter) {
+      return (
+        <div className="rounded-xl border border-edge bg-panel p-10 text-center max-w-2xl mx-auto">
+          <p className="text-ink-dim">
+            No filtered articles match the current search or source selection.
+          </p>
+          <p className="text-ink-faint text-sm mt-1">
+            Try a different search term or clear the source filter.
+          </p>
+        </div>
+      );
+    }
     return (
       <div className="rounded-xl border border-edge bg-panel p-10 text-center max-w-2xl mx-auto">
         <p className="text-ink-dim">Nothing filtered right now.</p>

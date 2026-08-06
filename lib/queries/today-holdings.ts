@@ -32,6 +32,53 @@ export interface TodayHolding {
  * a weekend row carrying Friday's true close is the best value estimate even
  * though it must never form a move pair.
  */
+/**
+ * An option's stored pair-date close can be a stale pre-move intraday quote
+ * stamped on the same date as the underlying's true (post-move) close — the
+ * pair dates are consecutive, so the trading-day pair can't catch it, and
+ * magnitude thresholds are off the table (premiums legitimately double).
+ * The tell is an arbitrage violation: an option close sitting far below its
+ * intrinsic value at the SAME date's underlying close. Differencing against
+ * such a row books the underlying's whole gap as "today" (the APP $390 put
+ * showed +208% while APP itself moved +0.43%). The 10% margin tolerates the
+ * small legitimate below-intrinsic discount deep-ITM American options carry.
+ */
+const INTRINSIC_VIOLATION_FRACTION = 0.9;
+
+function violatesIntrinsic(
+  optionClose: number | null,
+  optionType: string | null,
+  strike: number | null,
+  underlyingClose: number | null,
+): boolean {
+  if (
+    optionClose == null ||
+    underlyingClose == null ||
+    strike == null ||
+    !optionType
+  ) {
+    return false;
+  }
+  const type = optionType.toLowerCase();
+  const intrinsic =
+    type === "put"
+      ? strike - underlyingClose
+      : type === "call"
+        ? underlyingClose - strike
+        : 0;
+  if (intrinsic <= 0) return false;
+  return optionClose < intrinsic * INTRINSIC_VIOLATION_FRACTION;
+}
+
+interface TodayHoldingRow extends TodayHolding {
+  option_type: string | null;
+  strike_price: number | null;
+  pair_latest_close: number | null;
+  pair_prior_close: number | null;
+  underlying_pair_close: number | null;
+  underlying_prior_close: number | null;
+}
+
 export function getIbkrTodayHoldings(
   db: Database.Database,
   accountId: number,
@@ -63,7 +110,7 @@ export function getIbkrTodayHoldings(
     "COALESCE(fx.usd_per_unit, 1)",
   );
 
-  return db
+  const rows = db
     .prepare(
       `WITH ranked_prices AS (
          SELECT security_id, date, close_price, source,
@@ -75,10 +122,16 @@ export function getIbkrTodayHoldings(
          s.symbol,
          s.name AS security_name,
          h.quantity,
+         s.option_type,
+         s.strike_price,
          p_today.close_price * COALESCE(fx.usd_per_unit, 1) AS current_price,
          p_today.date AS price_date,
          p_today.source AS price_source,
          p_prior.close_price * COALESCE(fx.usd_per_unit, 1) AS prior_close,
+         p_pair.close_price AS pair_latest_close,
+         p_prior.close_price AS pair_prior_close,
+         pu_pair.close_price AS underlying_pair_close,
+         pu_prior.close_price AS underlying_prior_close,
          CASE WHEN p_today.close_price IS NOT NULL THEN ${marketValueCurrent} ELSE NULL END AS current_value,
          CASE WHEN p_pair.close_price IS NOT NULL AND p_prior.close_price IS NOT NULL
            THEN ${marketValuePairLatest} - ${marketValuePairPrior} ELSE NULL END AS today_gain,
@@ -90,6 +143,9 @@ export function getIbkrTodayHoldings(
        LEFT JOIN ranked_prices p_today ON p_today.security_id = h.security_id AND p_today.rn = 1
        LEFT JOIN prices p_pair ON p_pair.security_id = h.security_id AND p_pair.date = ?
        LEFT JOIN prices p_prior ON p_prior.security_id = h.security_id AND p_prior.date = ?
+       LEFT JOIN securities s_u ON LOWER(s.security_type) = 'option' AND s_u.symbol = s.underlying_symbol
+       LEFT JOIN prices pu_pair ON pu_pair.security_id = s_u.id AND pu_pair.date = ?
+       LEFT JOIN prices pu_prior ON pu_prior.security_id = s_u.id AND pu_prior.date = ?
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
        WHERE h.account_id = ?
          AND h.quantity > 0
@@ -98,5 +154,37 @@ export function getIbkrTodayHoldings(
               OR LOWER(s.security_type) = 'bond')
        ORDER BY ABS(COALESCE(today_gain, 0)) DESC`,
     )
-    .all(pairLatest, pairPrior, accountId, accountId) as TodayHolding[];
+    .all(
+      pairLatest,
+      pairPrior,
+      pairLatest,
+      pairPrior,
+      accountId,
+      accountId,
+    ) as TodayHoldingRow[];
+
+  const cleaned = rows.map((row) => {
+    const {
+      option_type,
+      strike_price,
+      pair_latest_close,
+      pair_prior_close,
+      underlying_pair_close,
+      underlying_prior_close,
+      ...holding
+    } = row;
+    const staleQuote =
+      violatesIntrinsic(pair_prior_close, option_type, strike_price, underlying_prior_close) ||
+      violatesIntrinsic(pair_latest_close, option_type, strike_price, underlying_pair_close);
+    if (staleQuote) {
+      holding.today_gain = null;
+      holding.today_pct = null;
+    }
+    return holding;
+  });
+
+  // Re-sort: a suppressed move must not keep its pre-suppression rank.
+  return cleaned.sort(
+    (a, b) => Math.abs(b.today_gain ?? 0) - Math.abs(a.today_gain ?? 0),
+  );
 }

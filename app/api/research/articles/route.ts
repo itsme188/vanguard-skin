@@ -9,7 +9,8 @@ import {
  * GET /api/research/articles — Query research articles with filters.
  * Params: sourceId, securityId, startDate, endDate, search, limit
  *   filtered=1 — D5 audit fetch: returns is_relevant=0 rows (no symbolMap
- *                needed, no source/security filters honored).
+ *                needed). Honors sourceId + search + limit so the Filtered
+ *                tab's toolbar controls work like the main feed's.
  */
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -17,7 +18,13 @@ export async function GET(request: Request) {
 
   if (filteredMode) {
     const limit = url.searchParams.get("limit");
-    const data = getFilteredArticles(db, limit ? Number(limit) : 100);
+    const sourceId = url.searchParams.get("sourceId");
+    const search = url.searchParams.get("search");
+    const data = getFilteredArticles(db, {
+      limit: limit ? Number(limit) : 100,
+      sourceId: sourceId ? Number(sourceId) : undefined,
+      search: search || undefined,
+    });
     return Response.json({ success: true, data });
   }
 
