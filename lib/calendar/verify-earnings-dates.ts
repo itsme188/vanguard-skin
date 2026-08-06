@@ -588,14 +588,21 @@ export async function runEarningsDateVerification(
     // Exact-time application is independent of the date/slot outcome above —
     // respects the same apply flag: dry-run only logs what would be stored,
     // it never writes (same discipline as applyVerdict's opts.apply guard).
-    for (const v of verdicts) {
-      const candidate = candidates.find((x) => x.symbol === v.symbol);
-      if (!candidate || !needTime.has(v.symbol)) continue;
+    // Matching is family-aware + case-insensitive, mirroring the date/slot
+    // matching above (issuerSiblings + verdictBySymbol's uppercase keys) — a
+    // GOOGL verdict's exact_time must apply to a GOOG candidate exactly like
+    // a date/slot verdict does, and a lowercase symbol in the model's answer
+    // must still match.
+    for (const candidate of candidates) {
+      if (!needTime.has(candidate.symbol)) continue;
+      const family = issuerSiblings(candidate.symbol.toUpperCase()).map((s) => s.toUpperCase());
+      const verdict = family.map((sym) => verdictBySymbol.get(sym)).find((v) => v !== undefined);
+      if (!verdict) continue;
       if (opts.apply) {
-        applyExactTimeVerdict(db, v, candidate);
-      } else if (v.exact_time) {
+        applyExactTimeVerdict(db, verdict, candidate);
+      } else if (verdict.exact_time) {
         console.log(
-          `[verify-earnings-dates] dry-run: would store exact_time ${v.exact_time} for ${v.symbol} (source: ${v.source ?? "web"})`,
+          `[verify-earnings-dates] dry-run: would store exact_time ${verdict.exact_time} for ${candidate.symbol} (source: ${verdict.source ?? "web"})`,
         );
       }
     }

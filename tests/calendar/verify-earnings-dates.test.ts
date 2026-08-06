@@ -806,6 +806,72 @@ describe("runEarningsDateVerification", () => {
     expect(result.corrections).toBe(0);
   });
 
+  // ── Task 2 (2026-08-05 follow-ups): exact-time verdict matching must be
+  // family-aware + case-insensitive, same as the date/slot matching above.
+  it("applies an exact-time verdict for one share class to the sibling class's event row (GOOGL verdict, GOOG candidate)", async () => {
+    const acct = getAccount("Vanguard Taxable");
+    const sec = seedSecurity("GOOG");
+    seedHolding(acct, sec, 5);
+    seedEvent({ symbol: "GOOG", event_date: "2026-08-05", event_time: "BMO" });
+
+    // GOOG has no bounded observations / override / fresh web row yet, so it
+    // is flagged needsExactTime — the AI answers with the sibling class's
+    // symbol, as it's free to do (same earnings print).
+    const fetchVerdicts = vi.fn(async () =>
+      JSON.stringify([
+        {
+          symbol: "GOOGL",
+          confirmed_date: "2026-08-05",
+          slot: "bmo",
+          confidence: "confirmed",
+          source: "ir",
+          exact_time: "07:05",
+        },
+      ]),
+    );
+
+    const result = await runEarningsDateVerification(db, { now: NOW, apply: true, fetchVerdicts });
+
+    expect(result.outcomes[0].action).toBe("verified");
+    expect(getSymbolReleaseTimeRow(db, "GOOG")).toMatchObject({
+      release_time: "07:05",
+      source: "web_verified",
+    });
+  });
+
+  it("matches a lowercase symbol in the model verdict to the exact-time candidate (case-insensitive)", async () => {
+    const acct = getAccount("Vanguard Taxable");
+    const sec = seedSecurity("XMTR");
+    seedHolding(acct, sec, 5);
+    const verifyNow = new Date("2026-11-01T14:00:00Z");
+    seedEvent({ symbol: "XMTR", event_date: "2026-11-05", event_time: "BMO" });
+
+    const fetchVerdicts = vi.fn(async () =>
+      JSON.stringify([
+        {
+          symbol: "xmtr",
+          confirmed_date: "2026-11-05",
+          slot: "bmo",
+          confidence: "confirmed",
+          source: "ew",
+          exact_time: "07:05",
+        },
+      ]),
+    );
+
+    const result = await runEarningsDateVerification(db, {
+      now: verifyNow,
+      apply: true,
+      fetchVerdicts,
+    });
+
+    expect(result.outcomes[0].action).toBe("verified");
+    expect(getSymbolReleaseTimeRow(db, "XMTR")).toMatchObject({
+      release_time: "07:05",
+      source: "web_verified",
+    });
+  });
+
   it("fires one pushover summary when corrections > 0 and apply is true, with one line per correction", async () => {
     const acct = getAccount("Vanguard Taxable");
     const secA = seedSecurity("MVA");
