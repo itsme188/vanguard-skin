@@ -567,6 +567,94 @@ describe("fetchActualForEvent — dispatcher", () => {
   });
 });
 
+// Task 1 (wire-time follow-ups, 2026-08-05): fetchFinnhubActual — the
+// ACTUALS road reached via fetchActualForEvent/parsed.kind === "finnhub" —
+// wrapped the shared fetchFinnhubEntry helper (which THROWS on a missing
+// API key / non-ok HTTP response / network failure, precisely so a caller
+// can distinguish "Finnhub answered, nothing published yet" from "the fetch
+// never really happened") in its own try/catch and collapsed every one of
+// those failures into { actual: null, consensus: null } — identical to a
+// genuine empty result. Earnings retry-until-complete (migration 062)
+// absorbs the behavioral consequence (the row is just retried next tick),
+// but the loud error reason is lost, contradicting the bubble-upstream-
+// failures convention: a Finnhub outage during the actuals road silently
+// looks like "nothing new yet" in every log. Restore propagation so
+// runEnrichment's per-event try/catch (lib/calendar/enrichment-runner.ts)
+// can log the real reason and skip stamping enrichment_attempted_at, the
+// same as it already does for a thrown FRED fetch failure (see "records
+// fetch failures without marking the row enriched" in
+// tests/calendar/enrichment-runner.test.ts).
+describe("fetchActualForEvent — Finnhub actuals road surfaces errors (Task 1)", () => {
+  let db: Database.Database;
+
+  const finnhubEvent = {
+    id: 1,
+    source: "finnhub",
+    source_key: "finnhub:XMTR:2026-08-04",
+    event_type: "earnings",
+    event_date: "2026-08-04",
+    release_time: "08:00",
+    symbol: "XMTR",
+    title: "XMTR earnings",
+    consensus_estimate: "EPS 0.05",
+    raw_json: null,
+  };
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    vi.stubGlobal("fetch", vi.fn());
+    process.env.FINNHUB_API_KEY = "test_finnhub_key";
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.FINNHUB_API_KEY;
+  });
+
+  it("propagates a network failure instead of reporting a legitimate empty", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("network down"),
+    );
+    await expect(fetchActualForEvent(db, finnhubEvent)).rejects.toThrow("network down");
+  });
+
+  it("propagates a non-ok HTTP response instead of reporting a legitimate empty", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: false, status: 429 });
+    await expect(fetchActualForEvent(db, finnhubEvent)).rejects.toThrow(/429/);
+  });
+
+  it("propagates a missing FINNHUB_API_KEY instead of reporting a legitimate empty", async () => {
+    delete process.env.FINNHUB_API_KEY;
+    await expect(fetchActualForEvent(db, finnhubEvent)).rejects.toThrow(/FINNHUB_API_KEY/);
+  });
+
+  it("still returns a legitimate empty when Finnhub genuinely has no calendar entry", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ earningsCalendar: [] }),
+    });
+    const result = await fetchActualForEvent(db, finnhubEvent);
+    expect(result.actual).toBeNull();
+    expect(result.source).toBe("finnhub");
+  });
+
+  it("still returns a legitimate empty when the entry exists but has no actual figures yet", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        earningsCalendar: [
+          { symbol: "XMTR", date: "2026-08-04", epsActual: null, epsEstimate: 0.05, revenueActual: null, revenueEstimate: 900 },
+        ],
+      }),
+    });
+    const result = await fetchActualForEvent(db, finnhubEvent);
+    expect(result.actual).toBeNull();
+    expect(result.source).toBe("finnhub");
+  });
+});
+
 // I2 (final review, 2026-08-04): probeFinnhubActualExists swallows EVERY
 // error (network, non-ok HTTP, missing API key) into `false` — the correct
 // fail-open behavior for its preview-guard consumer (better a redundant

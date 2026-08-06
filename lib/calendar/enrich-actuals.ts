@@ -338,11 +338,14 @@ interface FinnhubEarningsEntry {
 /**
  * Fetch the raw Finnhub calendar entry for (symbol, date), or null when
  * Finnhub genuinely has nothing to report (no calendar entry, or only a
- * mismatched foreign-listing echo). Unlike fetchFinnhubActual below, this
- * THROWS on a configuration or transport failure — missing API key,
- * non-ok HTTP response, or a network-level fetch() rejection — so callers
- * that need to distinguish "Finnhub said no" from "the probe never ran"
- * can do so (see probeFinnhubActualExistsStrict).
+ * mismatched foreign-listing echo). THROWS on a configuration or transport
+ * failure — missing API key, non-ok HTTP response, or a network-level
+ * fetch() rejection — so callers that need to distinguish "Finnhub said no"
+ * from "the fetch never really happened" can do so (fetchFinnhubActual,
+ * probeFinnhubActualExistsStrict). The one caller that wants the old
+ * fail-open behavior (probeFinnhubActualExists, the best-effort preview
+ * guard) wraps its own call in a try/catch instead of relying on this
+ * function to swallow anything.
  */
 async function fetchFinnhubEntry(
   symbol: string,
@@ -391,16 +394,39 @@ function entryHasActual(entry: FinnhubEarningsEntry | null): boolean {
   return entry != null && (entry.epsActual != null || entry.revenueActual != null);
 }
 
+/**
+ * Actuals-road fetch: unlike probeFinnhubActualExists (the best-effort
+ * preview-guard consumer, which must fail open), this LETS a config/
+ * transport failure from fetchFinnhubEntry (missing API key, non-ok HTTP,
+ * network failure) PROPAGATE instead of swallowing it into a legitimate
+ * empty result (Task 1, wire-time follow-ups, 2026-08-05).
+ *
+ * The 8/04 I2 refactor (see fetchFinnhubEntry above) built exactly this
+ * throw/null distinction for probeFinnhubActualExistsStrict but left this
+ * function wrapping fetchFinnhubEntry in its own try/catch-and-swallow "to
+ * keep its exact prior fail-open behavior" — which un-did the distinction
+ * for the actuals road specifically (probeFinnhubActualExists downstream of
+ * this function still fails open on its own, see below, so nothing there
+ * needed preserving here). A swallowed error surfaced at
+ * runEnrichment's per-event try/catch (lib/calendar/enrichment-runner.ts)
+ * as an ordinary `{ actual: null }` result, identical to "Finnhub answered,
+ * nothing published yet" — the retry-until-complete design absorbs the
+ * behavior but the loud failure reason (and the fact that
+ * enrichment_attempted_at is deliberately left unstamped on a genuine
+ * error, so the next tick retries immediately instead of waiting out the
+ * 10-min retry-pacing window) was lost. Letting the throw propagate here
+ * restores that visibility — this also matches the true pre-8/04 shape for
+ * a raw network-level fetch() rejection, which had no try/catch around it
+ * at all and always propagated uncaught.
+ *
+ * probeFinnhubActualExists still fails open: it wraps this call in its own
+ * try/catch (see below), so it is unaffected by removing the swallow here.
+ */
 async function fetchFinnhubActual(
   symbol: string,
   date: string,
 ): Promise<{ actual: string | null; consensus: string | null }> {
-  let entry: FinnhubEarningsEntry | null;
-  try {
-    entry = await fetchFinnhubEntry(symbol, date);
-  } catch {
-    return { actual: null, consensus: null };
-  }
+  const entry = await fetchFinnhubEntry(symbol, date);
   if (!entry) return { actual: null, consensus: null };
 
   const actualParts: string[] = [];
