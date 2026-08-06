@@ -157,6 +157,15 @@ New open items from the same audit (added above): Worker synthesis held-ticker b
 
 ---
 
+### Closed this session (2026-08-05 late evening — wire-time follow-ups batch + small-item cleanup)
+
+> Second half of the evening session, user-picked off the "what else" menu. Subagent-driven build (6 tasks, 1 fix round), final whole-branch review READY; suites 4,362 Mac + 457 Worker green; commits `87f524f..25a9f6b` pushed; DMG rebuilt at session end.
+
+- ✅ **Wire-time follow-ups (a)–(f)** — see the ticked entry above for the full breakdown (error propagation, family-aware verdicts, cascade on conflict-confirm, conflict-popover editor, earlier-wins upsert guard, protective probe stamp).
+- ✅ **Negative-hpd "short" chip** — four surfaces via shared `<HoldingPeriodBadge>`; review fix round caught the snake_case Trade Grades surface + the unreachable header branch.
+- ✅ **Stale legacy-columns TODO closed** (migration 075 had shipped 2026-08-03 unreconciled) + ✅ **`DEFAULT_VERIFICATION_LIMIT` 8→12** (user decision on cap-saturation data).
+- ✅ **CLAUDE.md reconcile** (`25a9f6b`): wire-time batch conventions, split-signature guard + repair-script entry, scope-all TWR/XIRR coverage-guard + signed-transfer-flow + cost-basis-fallback conventions.
+
 ### Closed this session (2026-08-05 evening — QA landing sweep: PRs #30/#31 + sweep branch merged with review fixes, VGT repair executed, all 5 decisions resolved)
 
 > Session focus chosen by the user from the open-items briefing. Every stranded fixer output landed in one pass; suite 4,345 green (3 env-only worktree failures pass with the dummy key), tsc clean, pushed `4bf3fad..56777fd`.
