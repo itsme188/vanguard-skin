@@ -20,8 +20,11 @@ export async function GET(req: NextRequest) {
   // Everything below runs in the security's NATIVE currency frame — bars are
   // native, so the current price must be too (the pre-fix USD-converted
   // getLatestPrice put a KRW name +199,687% "away" from its own pivots).
-  // usdPerUnit ships alongside so the client converts at dollar-TEXT sites
-  // only (chart-adjacent display pattern); it is 1 for USD securities.
+  // usdPerUnit ships alongside for the ATR text ONLY (it mirrors
+  // MarketDataPanel's USD KPI-row ATR); it is 1 for USD securities.
+  // Suggested PRICES render NATIVE by user decision (2026-08-05, re-affirmed
+  // 2026-08-06) — they must match the accepted-levels list in the same panel,
+  // which is documented intentionally-native. Do not convert them client-side.
   const secRow = db
     .prepare(`SELECT currency FROM securities WHERE id = ?`)
     .get(securityId) as { currency: string | null } | undefined;
