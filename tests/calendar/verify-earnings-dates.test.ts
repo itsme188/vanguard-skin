@@ -486,7 +486,7 @@ describe("applyVerdict", () => {
       exact_time: null,
     };
 
-    const outcome = applyVerdict(db, candidate, verdict, { apply: true });
+    const outcome = applyVerdict(db, candidate, verdict, { apply: true, today: "2026-08-02" });
 
     expect(outcome.action).toBe("verified");
     expect(outcome.detail).toBe("confirmed via ir.example.com");
@@ -513,7 +513,7 @@ describe("applyVerdict", () => {
       exact_time: null,
     };
 
-    const outcome = applyVerdict(db, candidate, verdict, { apply: true });
+    const outcome = applyVerdict(db, candidate, verdict, { apply: true, today: "2026-08-02" });
 
     expect(outcome.action).toBe("slot-corrected");
     expect(outcome.detail).toBe("slot corrected bmo→amc via ir");
@@ -551,7 +551,7 @@ describe("applyVerdict", () => {
       exact_time: null,
     };
 
-    const outcome = applyVerdict(db, candidate, verdict, { apply: true });
+    const outcome = applyVerdict(db, candidate, verdict, { apply: true, today: "2026-08-02" });
 
     expect(outcome.action).toBe("date-corrected");
     expect(getEventRow(id)).toBeUndefined();
@@ -587,7 +587,7 @@ describe("applyVerdict", () => {
       exact_time: null,
     };
 
-    const outcome = applyVerdict(db, candidate, verdict, { apply: true });
+    const outcome = applyVerdict(db, candidate, verdict, { apply: true, today: "2026-08-02" });
 
     expect(outcome.action).toBe("unverifiable");
     expect(outcome.detail).toBe("unconfirmed — left as vendor date (2026-08-06 amc suggested)");
@@ -645,7 +645,7 @@ describe("applyVerdict", () => {
       exact_time: null,
     };
 
-    const outcome = applyVerdict(db, candidate, verdict, { apply: true });
+    const outcome = applyVerdict(db, candidate, verdict, { apply: true, today: "2026-08-02" });
 
     expect(outcome.action).toBe("refused");
     expect(outcome.detail.length).toBeGreaterThan(0);
@@ -752,7 +752,7 @@ describe("applyVerdict", () => {
       exact_time: null,
     };
 
-    const outcome = applyVerdict(db, candidate, verdict, { apply: false });
+    const outcome = applyVerdict(db, candidate, verdict, { apply: false, today: "2026-08-02" });
 
     expect(outcome.action).toBe("date-corrected");
 
