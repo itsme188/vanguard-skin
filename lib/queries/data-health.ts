@@ -285,6 +285,10 @@ export function getCrossSourceDiscrepancies(
   // current price source against what a different source would have provided.
   // For now, compare the prices table against the most recent ohlcv_bars close
   // price for the same security on the same date (TWS chart data vs import data).
+  // Both stored prices are in the security's NATIVE currency; the UI renders
+  // these through <Money> with a $ prefix, so convert here (a KRW row rendered
+  // "$919,000.00" for a ~$611 stock — ~1,500x overstated). diffPct is
+  // currency-invariant and needs no factor.
   return db
     .prepare(
       `
@@ -292,13 +296,14 @@ export function getCrossSourceDiscrepancies(
         s.symbol,
         p.date,
         p.source AS sourceA,
-        p.close_price AS priceA,
+        p.close_price * COALESCE(fx.usd_per_unit, 1) AS priceA,
         'ohlcv' AS sourceB,
-        ob.close AS priceB,
+        ob.close * COALESCE(fx.usd_per_unit, 1) AS priceB,
         ROUND(ABS(p.close_price - ob.close) / NULLIF(p.close_price, 0) * 100, 2) AS diffPct
       FROM prices p
       JOIN securities s ON s.id = p.security_id
       JOIN ohlcv_bars ob ON ob.security_id = p.security_id AND ob.bar_date = p.date
+      LEFT JOIN fx_rates fx ON fx.currency = s.currency
       WHERE ABS(p.close_price - ob.close) / NULLIF(p.close_price, 0) > 0.02
       ORDER BY diffPct DESC
       LIMIT 50

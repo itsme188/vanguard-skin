@@ -336,6 +336,30 @@ describe("getCrossSourceDiscrepancies", () => {
     const result = getCrossSourceDiscrepancies(db);
     expect(result.length).toBe(0);
   });
+
+  it("converts native-currency prices to USD via fx_rates (diffPct unchanged)", () => {
+    // KRW security: stored prices are native (919,000 KRW ≈ $611); the UI
+    // renders priceA/priceB through <Money> with a $ prefix, so the query
+    // must apply the fx factor — pre-fix the page showed "$919,000.00".
+    const sec = seedSecurity("402340");
+    db.prepare("UPDATE securities SET currency = 'KRW' WHERE id = ?").run(sec);
+    db.prepare(
+      `INSERT INTO fx_rates (currency, usd_per_unit, as_of, source)
+       VALUES ('KRW', 0.0006648, '2026-07-10', 'ibkr_ledger')`,
+    ).run();
+    seedPrice(sec, "2026-07-30", 919000, "tws");
+    db.prepare(
+      `INSERT INTO ohlcv_bars (security_id, bar_date, bar_size, open, high, low, close, volume)
+       VALUES (?, '2026-07-30', '1 day', 800000, 930000, 790000, 799000, 1000)`,
+    ).run(sec);
+
+    const result = getCrossSourceDiscrepancies(db);
+    expect(result.length).toBe(1);
+    expect(result[0].priceA).toBeCloseTo(919000 * 0.0006648, 2);
+    expect(result[0].priceB).toBeCloseTo(799000 * 0.0006648, 2);
+    // diffPct is currency-invariant
+    expect(result[0].diffPct).toBeCloseTo(13.06, 1);
+  });
 });
 
 // ── getSnapshotReconciliation ─────────────────────────────────────
