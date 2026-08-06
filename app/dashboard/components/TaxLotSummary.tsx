@@ -38,27 +38,36 @@ export function TaxLotSummaryCards({
   year: number;
 }) {
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-      <GainCard
-        label="Unrealized"
-        value={summary.totalUnrealizedGain}
-        sublabel={`${summary.totalOpenLots} open lot${summary.totalOpenLots !== 1 ? "s" : ""}`}
-      />
-      <GainCard
-        label={`${year} Realized`}
-        value={summary.totalRealizedGain}
-        sublabel={`${summary.totalClosedSales} sale${summary.totalClosedSales !== 1 ? "s" : ""}`}
-      />
-      <GainCard
-        label={`${year} Long-Term`}
-        value={summary.longTermGain}
-        sublabel="> 365 days"
-      />
-      <GainCard
-        label={`${year} Short-Term`}
-        value={summary.shortTermGain}
-        sublabel="calendar year"
-      />
+    <div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <GainCard
+          label="Unrealized"
+          value={summary.totalUnrealizedGain}
+          sublabel={`${summary.totalOpenLots} open lot${summary.totalOpenLots !== 1 ? "s" : ""}`}
+        />
+        <GainCard
+          label={`${year} Realized`}
+          value={summary.totalRealizedGain}
+          sublabel={`${summary.totalClosedSales} sale${summary.totalClosedSales !== 1 ? "s" : ""}`}
+        />
+        <GainCard
+          label={`${year} Long-Term`}
+          value={summary.longTermGain}
+          sublabel="> 365 days"
+        />
+        <GainCard
+          label={`${year} Short-Term`}
+          value={summary.shortTermGain}
+          sublabel="calendar year"
+        />
+      </div>
+      {summary.excludedNonUsdSales > 0 && (
+        <p className="text-xs text-ink-faint mt-2">
+          USD totals exclude {summary.excludedNonUsdSales} non-USD sale
+          {summary.excludedNonUsdSales !== 1 ? "s" : ""} — shown in native
+          currency in Closed Sales below.
+        </p>
+      )}
     </div>
   );
 }
@@ -103,6 +112,9 @@ export function AccountSummaryCards({
                   <>
                     {" "}· LT: <Money value={acct.longTermGain} signed />
                   </>
+                )}
+                {acct.excludedNonUsdSales > 0 && (
+                  <> · excludes {acct.excludedNonUsdSales} non-USD</>
                 )}
               </div>
             </div>

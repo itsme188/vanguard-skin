@@ -37,6 +37,7 @@ export interface TaxLotSaleWithDetails {
   realized_gain_loss: number;
   is_long_term: number;
   holding_period_days: number;
+  currency: string;
 }
 
 export interface TaxLotSummary {
@@ -46,6 +47,8 @@ export interface TaxLotSummary {
   totalRealizedGain: number;
   longTermGain: number;
   shortTermGain: number;
+  /** Sales on non-USD securities excluded from the USD realized totals above (never fabricate an FX vintage on tax rows). */
+  excludedNonUsdSales: number;
 }
 
 export interface AccountTaxSummary {
@@ -55,7 +58,11 @@ export interface AccountTaxSummary {
   totalRealizedGain: number;
   longTermGain: number;
   shortTermGain: number;
+  excludedNonUsdSales: number;
 }
+
+/** Realized G/L is stored native per security; only USD rows may sum into USD totals. */
+const USD_ONLY = `COALESCE(s.currency, 'USD') = 'USD'`;
 
 export function getOpenTaxLots(db: Database.Database): TaxLotWithSecurity[] {
   return db
@@ -98,7 +105,8 @@ export function getClosedTaxLotSales(
         tls.quantity_sold, tl.acquisition_price,
         tls.sale_price, tls.proceeds,
         tls.cost_basis_allocated, tls.realized_gain_loss,
-        tls.is_long_term, tls.holding_period_days
+        tls.is_long_term, tls.holding_period_days,
+        COALESCE(s.currency, 'USD') AS currency
       FROM tax_lot_sales tls
       JOIN tax_lots tl ON tl.id = tls.tax_lot_id
       JOIN accounts a ON a.id = tl.account_id
@@ -139,19 +147,23 @@ export function getTaxLotSummary(
 
   const closedSalesSql = `SELECT
         COUNT(*) AS totalClosedSales,
-        COALESCE(SUM(realized_gain_loss), 0) AS totalRealizedGain,
-        COALESCE(SUM(CASE WHEN is_long_term = 1 THEN realized_gain_loss ELSE 0 END), 0) AS longTermGain,
-        COALESCE(SUM(CASE WHEN is_long_term = 0 THEN realized_gain_loss ELSE 0 END), 0) AS shortTermGain
-      FROM tax_lot_sales`;
+        COALESCE(SUM(CASE WHEN ${USD_ONLY} THEN tls.realized_gain_loss ELSE 0 END), 0) AS totalRealizedGain,
+        COALESCE(SUM(CASE WHEN ${USD_ONLY} AND tls.is_long_term = 1 THEN tls.realized_gain_loss ELSE 0 END), 0) AS longTermGain,
+        COALESCE(SUM(CASE WHEN ${USD_ONLY} AND tls.is_long_term = 0 THEN tls.realized_gain_loss ELSE 0 END), 0) AS shortTermGain,
+        COALESCE(SUM(CASE WHEN NOT (${USD_ONLY}) THEN 1 ELSE 0 END), 0) AS excludedNonUsdSales
+      FROM tax_lot_sales tls
+      JOIN tax_lots tl ON tl.id = tls.tax_lot_id
+      JOIN securities s ON s.id = tl.security_id`;
 
   const closedSales = (year
-    ? db.prepare(`${closedSalesSql} WHERE sale_date >= ? AND sale_date <= ?`).get(`${year}-01-01`, `${year}-12-31`)
+    ? db.prepare(`${closedSalesSql} WHERE tls.sale_date >= ? AND tls.sale_date <= ?`).get(`${year}-01-01`, `${year}-12-31`)
     : db.prepare(closedSalesSql).get()
   ) as {
       totalClosedSales: number;
       totalRealizedGain: number;
       longTermGain: number;
       shortTermGain: number;
+      excludedNonUsdSales: number;
     };
 
   return {
@@ -161,6 +173,7 @@ export function getTaxLotSummary(
     totalRealizedGain: closedSales.totalRealizedGain,
     longTermGain: closedSales.longTermGain,
     shortTermGain: closedSales.shortTermGain,
+    excludedNonUsdSales: closedSales.excludedNonUsdSales,
   };
 }
 
@@ -174,12 +187,14 @@ export function getTaxLotSummaryByAccount(
         tl.account_id,
         a.name AS account_name,
         COUNT(*) AS totalClosedSales,
-        COALESCE(SUM(tls.realized_gain_loss), 0) AS totalRealizedGain,
-        COALESCE(SUM(CASE WHEN tls.is_long_term = 1 THEN tls.realized_gain_loss ELSE 0 END), 0) AS longTermGain,
-        COALESCE(SUM(CASE WHEN tls.is_long_term = 0 THEN tls.realized_gain_loss ELSE 0 END), 0) AS shortTermGain
+        COALESCE(SUM(CASE WHEN ${USD_ONLY} THEN tls.realized_gain_loss ELSE 0 END), 0) AS totalRealizedGain,
+        COALESCE(SUM(CASE WHEN ${USD_ONLY} AND tls.is_long_term = 1 THEN tls.realized_gain_loss ELSE 0 END), 0) AS longTermGain,
+        COALESCE(SUM(CASE WHEN ${USD_ONLY} AND tls.is_long_term = 0 THEN tls.realized_gain_loss ELSE 0 END), 0) AS shortTermGain,
+        COALESCE(SUM(CASE WHEN NOT (${USD_ONLY}) THEN 1 ELSE 0 END), 0) AS excludedNonUsdSales
       FROM tax_lot_sales tls
       JOIN tax_lots tl ON tl.id = tls.tax_lot_id
       JOIN accounts a ON a.id = tl.account_id
+      JOIN securities s ON s.id = tl.security_id
       WHERE tls.sale_date >= ? AND tls.sale_date <= ?
       GROUP BY tl.account_id
       ORDER BY a.name`
