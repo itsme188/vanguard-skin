@@ -223,3 +223,76 @@ describe("upsertCalendarEvents — date-verification stamp clearing", () => {
     expect(row2.date_verified_at).not.toBeNull();
   });
 });
+
+describe("upsertCalendarEvents — earnings release_time earlier-wins on re-sync", () => {
+  /** A minimal finnhub earnings row with a symbol (required by the wire-time cascade). */
+  function earningsEvent(overrides: Partial<CalendarEventInput> = {}): CalendarEventInput {
+    return macroEvent("2026-08-05", "earnings", 0, {
+      source: "finnhub",
+      symbol: "XYZ",
+      title: "XYZ earnings",
+      source_key: "finnhub:XYZ:2026-08-05",
+      event_time: "AMC",
+      ...overrides,
+    });
+  }
+
+  it("preserves an existing release_time that is EARLIER than the freshly-resolved incoming value", () => {
+    // First sync resolves the plain AMC default (16:15 — no wire history yet).
+    upsertCalendarEvents(db, [earningsEvent()]);
+    expect(getRow("finnhub:XYZ:2026-08-05")!.release_time).toBe("16:15");
+
+    // The T-90m wire probe (lib/calendar/wire-probe.ts) writes an earlier
+    // observed release_time DIRECTLY to the row, outside upsertCalendarEvents.
+    db.prepare(
+      `UPDATE calendar_events SET release_time = '14:05' WHERE source_key = 'finnhub:XYZ:2026-08-05'`,
+    ).run();
+
+    // A later re-sync ("Refresh from Finnhub") re-upserts the same event.
+    // With no recorded wire OBSERVATION yet (that only lands once actuals are
+    // captured), the cascade recomputes the same AMC default — strictly
+    // later than the probe's direct evidence. The upsert must not clobber
+    // the probe-pulled value back to the cascade output.
+    upsertCalendarEvents(db, [earningsEvent()]);
+
+    expect(getRow("finnhub:XYZ:2026-08-05")!.release_time).toBe("14:05");
+  });
+
+  it("still fills a NULL existing release_time from the incoming resolved value", () => {
+    // First sync resolves nothing (no event_time slot, no raw_json hour).
+    upsertCalendarEvents(db, [earningsEvent({ event_time: null })]);
+    expect(getRow("finnhub:XYZ:2026-08-05")!.release_time).toBeNull();
+
+    // A later sync learns the AMC slot.
+    upsertCalendarEvents(db, [earningsEvent({ event_time: "AMC" })]);
+
+    expect(getRow("finnhub:XYZ:2026-08-05")!.release_time).toBe("16:15");
+  });
+
+  it("still applies a genuinely EARLIER incoming value (fresh info moving the time earlier is not blocked)", () => {
+    upsertCalendarEvents(db, [earningsEvent()]); // AMC → 16:15
+    expect(getRow("finnhub:XYZ:2026-08-05")!.release_time).toBe("16:15");
+
+    // The slot flips to BMO on a later sync — the incoming value (08:00) is
+    // earlier than the existing (16:15), so it should apply normally.
+    upsertCalendarEvents(db, [earningsEvent({ event_time: "BMO" })]);
+
+    expect(getRow("finnhub:XYZ:2026-08-05")!.release_time).toBe("08:00");
+  });
+
+  it("macro rows keep exact current semantics — a non-null incoming value always wins regardless of earlier/later", () => {
+    upsertCalendarEvents(db, [macroEvent("2026-08-05", "cpi", 42)]);
+    expect(getRow("fred:42:2026-08-05")!.release_time).toBe("08:30");
+
+    // Macro rows have no probe-pull mechanism, but the upsert clause must
+    // not special-case them the way it does earnings rows — plain COALESCE
+    // (incoming wins whenever non-null) stays byte-identical.
+    db.prepare(
+      `UPDATE calendar_events SET release_time = '07:00' WHERE source_key = 'fred:42:2026-08-05'`,
+    ).run();
+
+    upsertCalendarEvents(db, [macroEvent("2026-08-05", "cpi", 42)]);
+
+    expect(getRow("fred:42:2026-08-05")!.release_time).toBe("08:30");
+  });
+});

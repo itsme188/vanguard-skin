@@ -59,6 +59,23 @@ describe("deleteUnenrichedEventsForWeek preserves rows with children", () => {
     expect(db.prepare("SELECT id FROM calendar_events WHERE id = ?").get(kept)).toBeTruthy();
   });
 
+  it("keeps events with a stamped wire_probe_empty_at (bounding observation)", () => {
+    // A stamped empty pre-release probe bounds a future wire-time
+    // observation (migration 076). A mid-window manual "Refresh from
+    // Finnhub" must not drop that stamp — losing it degrades the symbol's
+    // release-time cascade honestly to unbounded, but discards a real probe.
+    const kept = insertEvent(db, "finnhub:PROBED:2026-07-28");
+    db.prepare(`UPDATE calendar_events SET wire_probe_empty_at = ? WHERE id = ?`).run(
+      "2026-07-28T12:00:00.000Z",
+      kept,
+    );
+
+    const deleted = deleteUnenrichedEventsForWeek(db, "2026-07-27", "finnhub");
+
+    expect(deleted).toBe(0);
+    expect(db.prepare("SELECT id FROM calendar_events WHERE id = ?").get(kept)).toBeTruthy();
+  });
+
   it("still deletes unprotected unenriched events", () => {
     const gone = insertEvent(db, "finnhub:UNPROTECTED:2026-07-28");
 
