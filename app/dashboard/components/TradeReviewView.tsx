@@ -5,9 +5,10 @@ import type { TradeReview } from "@/lib/types";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
+import { Chip } from "./Chip";
 import { Money, Pct, Shares, PrivateText } from "@/lib/privacy/components";
 import { isNarrativeStale } from "@/lib/trade-review/stale-narrative";
-import { formatProfitFactor } from "@/lib/format";
+import { formatHoldingPeriod, formatProfitFactor } from "@/lib/format";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -77,6 +78,20 @@ const GRADE_COLORS: Record<string, string> = {
   D: "bg-down/60",
   F: "bg-down",
 };
+
+// A negative holding period is a genuine short round-trip (sale paired with
+// a later cover, 1099-B-consistent) — not a defect. Display-only: renders
+// "short" as an info chip instead of the confusing "-Nd" text.
+function HoldingPeriodBadge({ days }: { days: number }) {
+  if (days < 0) {
+    return (
+      <Chip tone="info" size="xs">
+        {formatHoldingPeriod(days)}
+      </Chip>
+    );
+  }
+  return <>{formatHoldingPeriod(days)}</>;
+}
 
 function GradeBadge({ grade }: { grade: string | null }) {
   if (!grade) return <span className="text-ink-faint">—</span>;
@@ -920,7 +935,7 @@ function GroupedTradeCards({
                     <span
                       title="FIFO holding period — time between the oldest matched tax lot's acquisition and the sale. For actively traded names this may overstate how long the trader actually held the position."
                     >
-                      {trade.maxHoldingDays}d hold
+                      <HoldingPeriodBadge days={trade.maxHoldingDays} /> hold
                     </span>
                     <span>
                       <Shares
@@ -1013,7 +1028,7 @@ function GroupedTradeCards({
                                 : "shares"}
                             </span>
                             <span className="text-ink-faint">
-                              {lot.holdingDays}d
+                              <HoldingPeriodBadge days={lot.holdingDays} />
                             </span>
                             <Money
                               value={lot.realizedPnl}

@@ -3,6 +3,7 @@ import {
   coercePercent,
   formatCompactOptionSymbol,
   formatCompactUSD,
+  formatHoldingPeriod,
   formatLargeNumber,
   formatProfitFactor,
   formatLargeUSD,
@@ -267,6 +268,22 @@ describe("coercePercent (expected-move parsing, feedback #5)", () => {
     expect(coercePercent("big move")).toBeNull();
     expect(coercePercent(null)).toBeNull();
     expect(coercePercent(Number.NaN)).toBeNull();
+  });
+});
+
+describe("formatHoldingPeriod", () => {
+  // tax_lot_sales.holding_period_days goes negative for genuine short
+  // round-trips (sale paired with a later cover, 1099-B-consistent) — not
+  // a defect. "-1d" reads as a bug; "short" reads as the truth.
+  it("renders a negative holding period as 'short'", () => {
+    expect(formatHoldingPeriod(-1)).toBe("short");
+    expect(formatHoldingPeriod(-42)).toBe("short");
+  });
+
+  it("renders a non-negative holding period as 'Nd'", () => {
+    expect(formatHoldingPeriod(0)).toBe("0d");
+    expect(formatHoldingPeriod(1)).toBe("1d");
+    expect(formatHoldingPeriod(365)).toBe("365d");
   });
 });
 
