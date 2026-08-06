@@ -371,6 +371,41 @@ describe("runEnrichment", () => {
       .get() as { enriched_at: string | null };
     expect(row.enriched_at).toBeNull();
   });
+
+  // Task 1 (wire-time follow-ups, 2026-08-05): the Finnhub actuals road
+  // (fetchFinnhubActual, reached via the finnhub:/manual:/nasdaq: source_key
+  // roads) used to swallow a network/HTTP/missing-key failure into a
+  // legitimate-looking `{ actual: null }` — indistinguishable in this
+  // runner's results from "Finnhub genuinely has nothing yet". Sibling of
+  // the FRED case above: a thrown Finnhub fetch failure must surface the
+  // same way (results[].reason populated, enriched_at NOT stamped) instead
+  // of silently looking like an ordinary empty retry.
+  it("records Finnhub fetch failures without marking the row enriched", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+      throw new Error("finnhub network down");
+    });
+
+    insertEvent(db, {
+      source: "finnhub",
+      source_key: "finnhub:ACME:2026-05-15",
+      event_type: "earnings",
+      event_date: "2026-05-15",
+      release_time: "08:00",
+      symbol: "ACME",
+    });
+
+    const now = new Date("2026-05-15T13:00:00Z"); // 1h after 08:00 ET release
+    const results = await runEnrichment(db, { now });
+    expect(results).toHaveLength(1);
+    expect(results[0].enriched).toBe(false);
+    expect(results[0].reason).toMatch(/finnhub network down/);
+
+    const row = db
+      .prepare("SELECT enriched_at, actual_value FROM calendar_events")
+      .get() as { enriched_at: string | null; actual_value: string | null };
+    expect(row.enriched_at).toBeNull();
+    expect(row.actual_value).toBeNull();
+  });
 });
 
 describe("earnings retry-until-complete (migration 062)", () => {
