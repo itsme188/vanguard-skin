@@ -101,6 +101,8 @@ export default function LevelPerformancePage() {
                     {" · "}
                     <span className="text-ink-dim">{r.responses.ignored}i</span>
                     {" · "}
+                    <span className="text-down">{r.responses.dismissed}d</span>
+                    {" · "}
                     <span className="text-ink-faint">
                       {r.responses.pending}p
                     </span>

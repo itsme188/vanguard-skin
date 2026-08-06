@@ -78,7 +78,7 @@ Vanguard Taxable,2025-07-15,,TAX_WITHHELD,VXUS,Vanguard Total International Stoc
 Vanguard Taxable,2025-06-10,,TRANSFER,VMFXX,Vanguard Federal Money Market Fund,Mutual Fund,,,1000.00,,Sweep Into Settlement Fund
 Vanguard Taxable,2025-06-12,,TRANSFER,VMFXX,Vanguard Federal Money Market Fund,Mutual Fund,,,-250.00,,Sweep Out Of Settlement Fund
 Vanguard Taxable,2025-07-10,,TRANSFER_IN,XMTR,Xometry Inc Cl A,Stock,100,,0,,Shares journaled in
-Vanguard Taxable,2025-07-10,,TRANSFER_OUT,XMTR,Xometry Inc Cl A,Stock,100,,0,,Gifted shares (journal out, amount 0)
+Vanguard Taxable,2025-07-10,,TRANSFER_OUT,XMTR,Xometry Inc Cl A,Stock,100,,0,,Gifted shares (journal out; amount 0)
 IBKR,2025-06-18,2025-06-20,SELL,VTI,Vanguard Total Stock Market ETF,ETF,20,242.50,4850.00,1.00,Rebalancing
 ```
 

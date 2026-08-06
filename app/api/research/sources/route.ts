@@ -19,8 +19,38 @@ export async function POST(request: Request) {
   if (!body.name) {
     return Response.json({ error: "name is required" }, { status: 400 });
   }
+  const emailError = validateSenderEmail(body);
+  if (emailError) {
+    return Response.json({ error: emailError }, { status: 400 });
+  }
   const id = createSource(db, body);
   return Response.json({ success: true, id });
+}
+
+/**
+ * A malformed sender_email creates a permanently dead ACTIVE source — the
+ * Gmail query becomes `from:<garbage>` and silently matches nothing on every
+ * future sync. Validate the shape here because the modal has no <form>
+ * wrapper, so the input's native type="email" constraint never fires.
+ * Trims in place; empty string normalizes to undefined (sender_email is optional).
+ */
+function validateSenderEmail(body: {
+  sender_email?: unknown;
+}): string | null {
+  if (body.sender_email == null) return null;
+  if (typeof body.sender_email !== "string") {
+    return "sender_email must be a string";
+  }
+  const trimmed = body.sender_email.trim();
+  if (trimmed === "") {
+    body.sender_email = undefined;
+    return null;
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+    return `"${trimmed}" is not a valid email address — this source would never match any Gmail message`;
+  }
+  body.sender_email = trimmed;
+  return null;
 }
 
 /**
@@ -33,6 +63,12 @@ export async function PATCH(request: Request) {
     return Response.json({ error: "id is required" }, { status: 400 });
   }
   const { id, ...updates } = body;
+  if ("sender_email" in updates) {
+    const emailError = validateSenderEmail(updates);
+    if (emailError) {
+      return Response.json({ error: emailError }, { status: 400 });
+    }
+  }
   if ("earnings_rank" in updates) {
     const r = updates.earnings_rank;
     if (r !== null && (!Number.isInteger(r) || r < 1)) {

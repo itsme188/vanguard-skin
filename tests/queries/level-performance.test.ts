@@ -421,4 +421,48 @@ describe("getSourcePerformance denominator whitelist", () => {
     expect(bulltard!.levels_created).toBe(2);
     expect(bulltard!.hit_rate).toBe(50.0);
   });
+
+  it("hit_rate can never exceed 100% — alerts from non-approved levels don't count, repeat fires count once", () => {
+    seedSecurity(db, 1, "AAPL");
+    // The live Eliant shape: 1 armed (auto_approved) level that never fired,
+    // plus alerts that all came from levels later rejected → 3/1 = "300.0%".
+    insertLevel(db, { id: 1, securityId: 1, source: "newsletter", source_author: "Eliant", price: 150 });
+    for (const id of [2, 3, 4]) {
+      insertLevel(db, { id, securityId: 1, source: "newsletter", source_author: "Eliant", price: 100 + id });
+      db.prepare("UPDATE security_levels SET review_status = 'rejected' WHERE id = ?").run(id);
+      insertAlert(db, {
+        levelId: id,
+        securityId: 1,
+        triggeredAt: "2026-07-01 14:00:00",
+        triggeredPrice: 100 + id,
+        response: "pending",
+      });
+    }
+
+    const rows = getSourcePerformance(db);
+    const eliant = rows.find((r) => r.source_author === "Eliant");
+    expect(eliant).toBeDefined();
+    expect(eliant!.alerts_fired).toBe(3); // all-time alert count stays honest
+    expect(eliant!.levels_created).toBe(1);
+    expect(eliant!.hit_rate).toBe(0); // none of the ARMED levels fired
+
+    // A re-activated level firing twice counts as ONE fired level.
+    insertAlert(db, {
+      levelId: 1,
+      securityId: 1,
+      triggeredAt: "2026-07-02 14:00:00",
+      triggeredPrice: 150,
+      response: "pending",
+    });
+    insertAlert(db, {
+      levelId: 1,
+      securityId: 1,
+      triggeredAt: "2026-07-03 14:00:00",
+      triggeredPrice: 150,
+      response: "pending",
+    });
+    const rows2 = getSourcePerformance(db);
+    const eliant2 = rows2.find((r) => r.source_author === "Eliant");
+    expect(eliant2!.hit_rate).toBe(100); // 1 of 1 armed levels fired — capped, not 200%
+  });
 });

@@ -195,7 +195,7 @@ function SuggestedLevels({
         toast(`Failed to add level: ${json.error ?? "unknown"}`, "error");
         return;
       }
-      toast(`${symbol} ${sug.type} at $${sug.price.toFixed(2)} added`, "success");
+      toast(`${symbol} ${sug.type} at $${(sug.price * usd).toFixed(2)} added`, "success");
       onAccepted();
     } finally {
       setAccepting(null);
@@ -305,7 +305,7 @@ function SuggestedLevels({
                           letterSpacing: "-0.01em",
                         }}
                       >
-                        ${sug.price.toFixed(2)}
+                        ${(sug.price * usd).toFixed(2)}
                       </span>
                       {/* Distance — colored to match side */}
                       <span
@@ -416,7 +416,7 @@ function SuggestedLevels({
                       sug.type === "resistance" ? "text-down" : "text-up"
                     }`}
                   >
-                    ${sug.price.toFixed(2)}
+                    ${(sug.price * usd).toFixed(2)}
                   </span>
                   <Chip tone={sug.type === "resistance" ? "down" : "up"} size="xs" uppercase>
                     {sug.type}

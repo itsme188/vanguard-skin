@@ -8,7 +8,11 @@ import { PrivateText, Shares } from "@/lib/privacy/components";
 // Level prices, trigger prices, and current market prices are PUBLIC market
 // data — they reveal nothing about what the user owns/earns, so they render
 // via pure formatters, never privacy-masked (held quantities still mask).
-import { formatPercent, formatUSDPrecise } from "@/lib/format";
+import {
+  formatCompactOptionSymbol,
+  formatPercent,
+  formatUSDPrecise,
+} from "@/lib/format";
 import { suggestOutcomeMessage } from "@/lib/alerts/suggest-message";
 import { useToast } from "../components/Toast";
 import { SortPicker } from "../components/SortPicker";
@@ -866,8 +870,14 @@ function ArmedLevelRow({ level: l }: { level: ArmedLevelView }) {
 
   return (
     <li className="py-2.5 px-3 flex items-start gap-3">
-      <div className="w-16 shrink-0 pt-0.5 font-mono text-[12px] font-medium text-ink">
-        <SymbolLink securityId={l.security_id} symbol={l.symbol} />
+      {/* OCC symbols render compact ("GOOGL $220C 1/15/27") — the raw 21-char
+          form's unbroken second token overflowed this 64px cell horizontally
+          and overpainted the source line ("270115C00220000eep Dives:"). */}
+      <div className="w-16 shrink-0 pt-0.5 font-mono text-[12px] font-medium text-ink break-words">
+        <SymbolLink
+          securityId={l.security_id}
+          symbol={formatCompactOptionSymbol(l.symbol)}
+        />
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-baseline gap-2 flex-wrap">
