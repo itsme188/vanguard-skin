@@ -3,7 +3,7 @@
 import { useMemo } from "react";
 import type { TaxLotWithSecurity, TaxLotSaleWithDetails } from "@/lib/queries/tax-lots";
 import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
-import { Money, Shares } from "@/lib/privacy/components";
+import { Money, PrivateText, Shares } from "@/lib/privacy/components";
 import { HoldingPeriodBadge } from "./HoldingPeriodBadge";
 import { ScrollFade } from "./ScrollFade";
 import { SortableHeader } from "./SortableHeader";
@@ -30,17 +30,53 @@ type ClosedField =
   | "is_long_term"
   | "holding_period_days";
 
-function GainCell({ value }: { value: number | null }) {
+// Non-USD sale rows render native with a currency label — a native figure behind a
+// "$" glyph is how the KRW −3.98M loss masqueraded as USD. Tax rows never convert
+// (no FX vintage fabrication); the USD headline totals exclude them with disclosure.
+function NativeAmount({
+  value,
+  currency,
+  signed = false,
+  className = "font-mono tabular-nums text-ink",
+}: {
+  value: number;
+  currency: string;
+  signed?: boolean;
+  className?: string;
+}) {
+  const formatted = value.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  const prefix = signed && value > 0 ? "+" : "";
+  return (
+    <PrivateText className={className}>
+      {`${prefix}${formatted} ${currency}`}
+    </PrivateText>
+  );
+}
+
+function GainCell({ value, currency = "USD" }: { value: number | null; currency?: string }) {
   if (value === null) return <span className="text-ink-faint">&mdash;</span>;
   const isPositive = value >= 0;
+  const toneClass =
+    value === 0 ? "text-ink-dim" : isPositive ? "text-up" : "text-down";
+  if (currency !== "USD") {
+    return (
+      <NativeAmount
+        value={value}
+        currency={currency}
+        signed
+        className={`font-mono tabular-nums ${toneClass}`}
+      />
+    );
+  }
   return (
     <Money
       value={value}
       precise
       signed
-      className={`font-mono tabular-nums ${
-        value === 0 ? "text-ink-dim" : isPositive ? "text-up" : "text-down"
-      }`}
+      className={`font-mono tabular-nums ${toneClass}`}
     />
   );
 }
@@ -282,13 +318,25 @@ export function ClosedSalesTable({
                       <Shares value={sale.quantity_sold} digits={qtyDigits} />
                     </td>
                     <td className="hidden md:table-cell px-4 py-3 text-right font-mono tabular-nums text-ink">
-                      <Money value={sale.proceeds} precise />
+                      {sale.currency === "USD" ? (
+                        <Money value={sale.proceeds} precise />
+                      ) : (
+                        <NativeAmount value={sale.proceeds} currency={sale.currency} />
+                      )}
                     </td>
                     <td className="hidden md:table-cell px-4 py-3 text-right font-mono tabular-nums text-ink-dim">
-                      <Money value={sale.cost_basis_allocated} precise />
+                      {sale.currency === "USD" ? (
+                        <Money value={sale.cost_basis_allocated} precise />
+                      ) : (
+                        <NativeAmount
+                          value={sale.cost_basis_allocated}
+                          currency={sale.currency}
+                          className="font-mono tabular-nums text-ink-dim"
+                        />
+                      )}
                     </td>
                     <td className="px-4 py-3 text-right">
-                      <GainCell value={sale.realized_gain_loss} />
+                      <GainCell value={sale.realized_gain_loss} currency={sale.currency} />
                     </td>
                     <td className="px-4 py-3">
                       <span

@@ -18,7 +18,8 @@ function createTestDb(): Database.Database {
       symbol TEXT NOT NULL UNIQUE,
       name TEXT,
       security_type TEXT DEFAULT 'stock',
-      multiplier REAL DEFAULT 1
+      multiplier REAL DEFAULT 1,
+      currency TEXT NOT NULL DEFAULT 'USD'
     );
 
     CREATE TABLE tax_lots (

@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { upsertFxRate } from "@/lib/mutations/fx-rates";
-import { getOpenTaxLots, getTaxLotSummary } from "@/lib/queries/tax-lots";
+import {
+  getOpenTaxLots,
+  getTaxLotSummary,
+  getTaxLotSummaryByAccount,
+  getClosedTaxLotSales,
+} from "@/lib/queries/tax-lots";
 
 // ─── Seed helpers (mirrors tests/queries/security-detail-fx.test.ts) ──────
 
@@ -179,6 +184,108 @@ describe("tax-lots FX conversion", () => {
       // Must NOT be dominated by the won-notional phantom gain
       // (would be ~17,290,000 if KRW were treated as raw USD).
       expect(summary.totalUnrealizedGain).toBeLessThan(10_000);
+    });
+  });
+
+  // ─── Closed sales: native-currency realized G/L must never sum into USD totals ───
+
+  function seedSale(
+    dbi: Database.Database,
+    accountId: number,
+    securityId: number,
+    saleDate: string,
+    opts: {
+      proceeds: number;
+      costBasis: number;
+      realized: number;
+      isLongTerm?: number;
+    }
+  ): void {
+    const lot = dbi
+      .prepare(
+        `INSERT INTO tax_lots (account_id, security_id, acquisition_date, acquisition_price, quantity_acquired, quantity_remaining, cost_basis)
+         VALUES (?, ?, '2025-01-01', 1, 10, 0, ?)`
+      )
+      .run(accountId, securityId, opts.costBasis);
+    const txn = dbi
+      .prepare(
+        `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, amount)
+         VALUES (?, ?, ?, 'SELL', 10, ?)`
+      )
+      .run(accountId, securityId, saleDate, opts.proceeds);
+    dbi
+      .prepare(
+        `INSERT INTO tax_lot_sales (tax_lot_id, sale_transaction_id, quantity_sold, sale_price, proceeds, cost_basis_allocated, realized_gain_loss, is_long_term, holding_period_days, sale_date)
+         VALUES (?, ?, 10, ?, ?, ?, ?, ?, 100, ?)`
+      )
+      .run(
+        lot.lastInsertRowid,
+        txn.lastInsertRowid,
+        opts.proceeds / 10,
+        opts.proceeds,
+        opts.costBasis,
+        opts.realized,
+        opts.isLongTerm ?? 0,
+        saleDate
+      );
+  }
+
+  describe("closed-sale realized totals with a non-USD sale", () => {
+    const YEAR = 2026;
+
+    beforeEach(() => {
+      // USD sale: +5,000 short-term
+      const aapl = seedSecurity(db, "AAPL", { currency: "USD" });
+      seedSale(db, ACCOUNT_ID, aapl, "2026-07-12", {
+        proceeds: 25_000,
+        costBasis: 20_000,
+        realized: 5_000,
+      });
+      // KRW sale: native −3,980,000 (≈ −$2,646) — must NOT sum as USD
+      const krw = seedSecurity(db, "402340", { currency: "KRW" });
+      seedSale(db, ACCOUNT_ID, krw, "2026-07-12", {
+        proceeds: 12_340_000,
+        costBasis: 16_320_000,
+        realized: -3_980_000,
+      });
+      upsertFxRate(db, {
+        currency: "KRW",
+        usdPerUnit: 0.0006648,
+        asOf: "2026-07-12",
+        source: "test",
+      });
+    });
+
+    it("getTaxLotSummary excludes the non-USD sale from USD realized totals and discloses the exclusion", () => {
+      const summary = getTaxLotSummary(db, YEAR);
+      // count still covers every sale
+      expect(summary.totalClosedSales).toBe(2);
+      // USD headline totals: never a native-KRW figure summed as dollars
+      expect(summary.totalRealizedGain).toBe(5_000);
+      expect(summary.shortTermGain).toBe(5_000);
+      expect(summary.longTermGain).toBe(0);
+      // the exclusion is disclosed, not silent
+      expect(summary.excludedNonUsdSales).toBe(1);
+    });
+
+    it("getTaxLotSummaryByAccount excludes the non-USD sale per account and discloses it", () => {
+      const rows = getTaxLotSummaryByAccount(db, YEAR);
+      const acct = rows.find((r) => r.account_id === ACCOUNT_ID);
+      expect(acct).toBeTruthy();
+      expect(acct!.totalClosedSales).toBe(2);
+      expect(acct!.totalRealizedGain).toBe(5_000);
+      expect(acct!.shortTermGain).toBe(5_000);
+      expect(acct!.excludedNonUsdSales).toBe(1);
+    });
+
+    it("getClosedTaxLotSales rows carry the security's currency so the UI can label native values", () => {
+      const sales = getClosedTaxLotSales(db, YEAR);
+      const krwSale = sales.find((s) => s.symbol === "402340");
+      const usdSale = sales.find((s) => s.symbol === "AAPL");
+      expect(krwSale?.currency).toBe("KRW");
+      expect(usdSale?.currency).toBe("USD");
+      // row values stay native (never fabricate an FX vintage on tax rows)
+      expect(krwSale?.realized_gain_loss).toBe(-3_980_000);
     });
   });
 });

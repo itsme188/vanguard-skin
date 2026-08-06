@@ -95,9 +95,11 @@ export default async function TaxLotsPage(props: {
                 totalOpenLots: openLots.length,
                 totalClosedSales: activeSummary?.totalClosedSales ?? closedSales.length,
                 totalUnrealizedGain: openLots.reduce((sum, l) => sum + (l.unrealized_gain ?? 0), 0),
-                totalRealizedGain: activeSummary?.totalRealizedGain ?? closedSales.reduce((sum, s) => sum + s.realized_gain_loss, 0),
-                longTermGain: activeSummary?.longTermGain ?? closedSales.filter(s => s.is_long_term).reduce((sum, s) => sum + s.realized_gain_loss, 0),
-                shortTermGain: activeSummary?.shortTermGain ?? closedSales.filter(s => !s.is_long_term).reduce((sum, s) => sum + s.realized_gain_loss, 0),
+                // USD totals only — non-USD sales are native figures (excluded + disclosed)
+                totalRealizedGain: activeSummary?.totalRealizedGain ?? closedSales.reduce((sum, s) => sum + (s.currency === "USD" ? s.realized_gain_loss : 0), 0),
+                longTermGain: activeSummary?.longTermGain ?? closedSales.filter(s => s.is_long_term && s.currency === "USD").reduce((sum, s) => sum + s.realized_gain_loss, 0),
+                shortTermGain: activeSummary?.shortTermGain ?? closedSales.filter(s => !s.is_long_term && s.currency === "USD").reduce((sum, s) => sum + s.realized_gain_loss, 0),
+                excludedNonUsdSales: activeSummary?.excludedNonUsdSales ?? closedSales.filter(s => s.currency !== "USD").length,
               }}
               year={selectedYear}
             />
