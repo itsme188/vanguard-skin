@@ -97,6 +97,7 @@ export async function IncomeYieldSection({ scope }: IncomeYieldSectionProps) {
                 <th className="text-left font-medium pb-2">Account</th>
                 <th className="text-right font-medium pb-2">Dividends</th>
                 <th className="text-right font-medium pb-2">Interest</th>
+                <th className="text-right font-medium pb-2">Fees</th>
                 <th className="text-right font-medium pb-2">Total</th>
               </tr>
             </thead>
@@ -109,6 +110,15 @@ export async function IncomeYieldSection({ scope }: IncomeYieldSectionProps) {
                   </td>
                   <td className="py-2 text-right font-mono tabular-nums text-ink-dim">
                     <Money value={a.interest} />
+                  </td>
+                  {/* Total nets fees out — the column makes that arithmetic visible
+                      (Total = Dividends + Interest − Fees), matching the KPI row. */}
+                  <td
+                    className={`py-2 text-right font-mono tabular-nums ${
+                      a.fees > 0 ? "text-down" : "text-ink-dim"
+                    }`}
+                  >
+                    <Money value={-a.fees} />
                   </td>
                   <td className="py-2 text-right font-mono tabular-nums text-ink">
                     <Money value={a.dividends + a.interest - a.fees} />
