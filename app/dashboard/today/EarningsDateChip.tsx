@@ -36,6 +36,73 @@ function fmtShort(d: string): string {
   });
 }
 
+interface ReleaseTimeState {
+  resolved: { time: string; source: string } | null;
+  override: { source: string; release_time: string } | null;
+}
+
+/**
+ * "Reports at" wire-time editor (spec 2026-08-04, Task 5; hoisted for Task 4
+ * so both the passive-status popover AND the conflict popover can render it
+ * without a component-in-component remount trap). Pure display + delegates
+ * to the parent's loadReleaseTime/saveReleaseTime — no fetch logic here.
+ */
+function ReleaseTimeEditor({
+  rt,
+  releaseTime,
+  rtEdit,
+  onRtEditChange,
+  rtSaving,
+  rtMsg,
+  onSave,
+}: {
+  rt: ReleaseTimeState | null;
+  releaseTime: string | null;
+  rtEdit: string;
+  onRtEditChange: (value: string) => void;
+  rtSaving: boolean;
+  rtMsg: string | null;
+  onSave: (value: string | null) => void;
+}) {
+  return (
+    <div className="mt-2 pt-1.5 border-t border-edge">
+      <p className="text-[11px] text-ink mb-1">
+        Reports at{" "}
+        <span className="font-mono">{rt?.resolved?.time ?? releaseTime ?? "—"}</span>
+        {rt?.resolved && <span className="text-ink-faint"> · {rt.resolved.source}</span>}
+      </p>
+      <div className="flex items-center gap-1">
+        <input
+          type="time"
+          value={rtEdit}
+          onChange={(e) => onRtEditChange(e.target.value)}
+          className="text-[10px] bg-raised rounded px-1 py-0.5 flex-1 min-w-0 text-ink"
+          aria-label="Standing release-time override (ET)"
+        />
+        <button
+          type="button"
+          disabled={rtSaving || !rtEdit}
+          onClick={() => onSave(rtEdit)}
+          className="text-[10px] font-mono px-1.5 py-0.5 rounded text-up bg-up/15 hover:bg-up/25 disabled:opacity-40 whitespace-nowrap"
+        >
+          Save
+        </button>
+        {rt?.override?.source === "user" && (
+          <button
+            type="button"
+            disabled={rtSaving}
+            onClick={() => onSave(null)}
+            className="text-[10px] font-mono px-1.5 py-0.5 rounded text-ink-dim bg-raised hover:bg-muted disabled:opacity-40"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+      {rtMsg && <p className="text-[10px] text-ink-dim pt-1">{rtMsg}</p>}
+    </div>
+  );
+}
+
 /**
  * Earnings date trust chip + popovers.
  *
@@ -79,10 +146,7 @@ export function EarningsDateChip({
   );
   // "Reports at" wire-time editor (spec 2026-08-04, Task 5): standing
   // per-symbol release-time override, fetched lazily on popover open.
-  const [rt, setRt] = useState<{
-    resolved: { time: string; source: string } | null;
-    override: { source: string; release_time: string } | null;
-  } | null>(null);
+  const [rt, setRt] = useState<ReleaseTimeState | null>(null);
   const [rtEdit, setRtEdit] = useState("");
   const [rtSaving, setRtSaving] = useState(false);
   const [rtMsg, setRtMsg] = useState<string | null>(null);
@@ -248,43 +312,15 @@ export function EarningsDateChip({
                 Fix date
               </button>
             </div>
-            <div className="mt-2 pt-1.5 border-t border-edge">
-              <p className="text-[11px] text-ink mb-1">
-                Reports at{" "}
-                <span className="font-mono">{rt?.resolved?.time ?? releaseTime ?? "—"}</span>
-                {rt?.resolved && (
-                  <span className="text-ink-faint"> · {rt.resolved.source}</span>
-                )}
-              </p>
-              <div className="flex items-center gap-1">
-                <input
-                  type="time"
-                  value={rtEdit}
-                  onChange={(e) => setRtEdit(e.target.value)}
-                  className="text-[10px] bg-raised rounded px-1 py-0.5 flex-1 min-w-0 text-ink"
-                  aria-label="Standing release-time override (ET)"
-                />
-                <button
-                  type="button"
-                  disabled={rtSaving || !rtEdit}
-                  onClick={() => saveReleaseTime(rtEdit)}
-                  className="text-[10px] font-mono px-1.5 py-0.5 rounded text-up bg-up/15 hover:bg-up/25 disabled:opacity-40 whitespace-nowrap"
-                >
-                  Save
-                </button>
-                {rt?.override?.source === "user" && (
-                  <button
-                    type="button"
-                    disabled={rtSaving}
-                    onClick={() => saveReleaseTime(null)}
-                    className="text-[10px] font-mono px-1.5 py-0.5 rounded text-ink-dim bg-raised hover:bg-muted disabled:opacity-40"
-                  >
-                    Clear
-                  </button>
-                )}
-              </div>
-              {rtMsg && <p className="text-[10px] text-ink-dim pt-1">{rtMsg}</p>}
-            </div>
+            <ReleaseTimeEditor
+              rt={rt}
+              releaseTime={releaseTime}
+              rtEdit={rtEdit}
+              onRtEditChange={setRtEdit}
+              rtSaving={rtSaving}
+              rtMsg={rtMsg}
+              onSave={saveReleaseTime}
+            />
             {confirmError && (
               <p className="text-[10px] text-down pt-1">{confirmError}</p>
             )}
@@ -329,7 +365,10 @@ export function EarningsDateChip({
     <span className="relative inline-flex">
       <button
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => {
+          setOpen((o) => !o);
+          if (!open) void loadReleaseTime();
+        }}
         disabled={pending}
         className="text-[10px] font-mono px-1.5 py-0.5 rounded text-gold-ink bg-gold/15 hover:bg-gold/25 disabled:opacity-50 cursor-pointer"
         title="Sources disagree on the date — confirm against IBKR"
@@ -392,10 +431,19 @@ export function EarningsDateChip({
                 ok
               </button>
             </div>
-            {confirmError && (
-              <p className="text-[10px] text-down pt-1">{confirmError}</p>
-            )}
           </div>
+          <ReleaseTimeEditor
+            rt={rt}
+            releaseTime={releaseTime}
+            rtEdit={rtEdit}
+            onRtEditChange={setRtEdit}
+            rtSaving={rtSaving}
+            rtMsg={rtMsg}
+            onSave={saveReleaseTime}
+          />
+          {confirmError && (
+            <p className="text-[10px] text-down pt-1">{confirmError}</p>
+          )}
         </div>
       )}
     </span>
