@@ -52,6 +52,22 @@ export interface CalendarEventInput {
  * event_time) can't clear a value that was backfilled and feeds the
  * enrichment window filter.
  *
+ * Earnings earlier-wins (2026-08-05): the T-90m wire probe
+ * (lib/calendar/wire-probe.ts) writes an earlier observed release_time
+ * DIRECTLY to a row, outside this function. A later re-sync (e.g. "Refresh
+ * from Finnhub") recomputes release_time from the wire-time cascade fresh —
+ * without the actuals-transition observation that would feed the cascade's
+ * own pull-down rule, that recompute lands back on the plain BMO/AMC
+ * default, which is strictly LATER than the probe's direct evidence. For
+ * earnings rows only (event_type='earnings', the same gate
+ * resolveEarningsReleaseTime uses), the conflict clause keeps the existing
+ * release_time when it is earlier than the incoming value — the probe only
+ * ever pulls times earlier, so an existing-earlier-than-incoming reading is
+ * always better information. A NULL existing value still gets filled, and a
+ * genuinely earlier incoming value (e.g. a BMO/AMC slot correction) still
+ * applies. Macro rows are untouched — plain COALESCE(incoming, existing),
+ * byte-identical to before.
+ *
  * Date-verification stamp (migration 072): date_verified_at /
  * date_verification_note certify a SPECIFIC event_date + slot. When a source
  * moves an event's date on re-sync, the old stamp is no longer true of the
@@ -110,7 +126,14 @@ export function upsertCalendarEvents(
        date_verification_note = CASE WHEN excluded.event_date != calendar_events.event_date
                                THEN NULL ELSE calendar_events.date_verification_note END,
        event_time = excluded.event_time,
-       release_time = COALESCE(excluded.release_time, calendar_events.release_time),
+       release_time = CASE
+                         WHEN excluded.event_type = 'earnings'
+                              AND calendar_events.release_time IS NOT NULL
+                              AND excluded.release_time IS NOT NULL
+                              AND calendar_events.release_time < excluded.release_time
+                         THEN calendar_events.release_time
+                         ELSE COALESCE(excluded.release_time, calendar_events.release_time)
+                       END,
        title = excluded.title,
        description = excluded.description,
        expected_impact = excluded.expected_impact,
@@ -713,6 +736,14 @@ function deriveReleaseTime(
  * on the next sync pass) gets a NEW id that orphans any KV/snapshot refs
  * keyed on the old one (B4). Sync may only replace rows nothing else points
  * at.
+ *
+ * wire_probe_empty_at (migration 076) is the same class of protected state:
+ * a stamped empty pre-release probe BOUNDS a future wire-time observation
+ * (earnings/wire-times.ts's bounded-vs-unbounded distinction). A mid-window
+ * manual "Refresh from Finnhub" that deletes-then-reinserts the row would
+ * silently drop the stamp — the symbol's release-time cascade would still
+ * degrade honestly to unbounded, but a real observation is lost for good.
+ * Treated the same as the four enrichment columns: a stamped row survives.
  */
 export function deleteUnenrichedEventsForWeek(
   db: Database.Database,
@@ -727,6 +758,7 @@ export function deleteUnenrichedEventsForWeek(
           AND consensus_value IS NULL
           AND reaction_snapshot IS NULL
           AND enriched_at IS NULL
+          AND wire_probe_empty_at IS NULL
           AND id NOT IN (SELECT event_id FROM earnings_emails)
           AND id NOT IN (SELECT event_id FROM earnings_email_skips)
           AND id NOT IN (SELECT event_id FROM earnings_bogeys)`
