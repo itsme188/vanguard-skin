@@ -130,6 +130,14 @@ export function formatProfitFactor(profitFactor: number): string {
   return profitFactor >= 99.9 ? "∞" : `${profitFactor.toFixed(1)}x`;
 }
 
+// tax_lot_sales.holding_period_days is signed acquisition→sale day-count.
+// Negative values are genuine short round-trips (sale paired with a LATER
+// cover, 1099-B-consistent) — not a data defect, so "-1d" must never render.
+// Display-only: the underlying pairing/computation is untouched.
+export function formatHoldingPeriod(days: number): string {
+  return days < 0 ? "short" : `${days}d`;
+}
+
 // Compact display form for OCC option symbols in narrow UI columns:
 // "KRE   270115C00070000" → "KRE $70C 1/15/27". Non-OCC symbols pass
 // through unchanged. Raw OCC stays the canonical stored form everywhere —

@@ -4,6 +4,8 @@ import { useMemo } from "react";
 import type { TaxLotWithSecurity, TaxLotSaleWithDetails } from "@/lib/queries/tax-lots";
 import { SymbolLink } from "@/app/dashboard/components/SymbolLink";
 import { Money, Shares } from "@/lib/privacy/components";
+import { formatHoldingPeriod } from "@/lib/format";
+import { Chip } from "./Chip";
 import { ScrollFade } from "./ScrollFade";
 import { SortableHeader } from "./SortableHeader";
 import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
@@ -301,7 +303,13 @@ export function ClosedSalesTable({
                       </span>
                     </td>
                     <td className="hidden md:table-cell px-4 py-3 text-right font-mono tabular-nums text-ink-faint text-xs">
-                      {sale.holding_period_days}
+                      {sale.holding_period_days < 0 ? (
+                        <Chip tone="info" size="xs">
+                          {formatHoldingPeriod(sale.holding_period_days)}
+                        </Chip>
+                      ) : (
+                        formatHoldingPeriod(sale.holding_period_days)
+                      )}
                     </td>
                   </tr>
                 );
