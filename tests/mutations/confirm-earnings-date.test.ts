@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { confirmEarningsDate } from "@/lib/mutations/confirm-earnings-date";
+import { upsertSymbolReleaseTime } from "@/lib/earnings/wire-times";
 
 let db: Database.Database;
 
@@ -67,5 +68,38 @@ describe("confirmEarningsDate", () => {
     const rows = db.prepare("SELECT release_time FROM calendar_events WHERE source='manual' AND symbol='NVDA'").all() as { release_time: string }[];
     expect(rows).toHaveLength(1);
     expect(rows[0].release_time).toBe("08:00"); // bmo on the re-confirm
+  });
+
+  it("routes through the release-time cascade: a standing user override wins over the BMO/AMC default", () => {
+    seedSync("finnhub", "2026-06-11");
+    upsertSymbolReleaseTime(db, { symbol: "NVDA", releaseTime: "07:15", source: "user" });
+
+    confirmEarningsDate(db, {
+      symbol: "NVDA",
+      confirmedDate: "2026-06-12",
+      confirmedTime: "bmo",
+      today: "2026-06-08",
+    });
+
+    const manual = db
+      .prepare("SELECT release_time FROM calendar_events WHERE source='manual' AND symbol='NVDA'")
+      .get() as { release_time: string };
+    expect(manual.release_time).toBe("07:15"); // the user override, not the 08:00 bmo default
+  });
+
+  it("a symbol with no wire data still resolves to the cascade's BMO/AMC default", () => {
+    seedSync("finnhub", "2026-07-01");
+
+    confirmEarningsDate(db, {
+      symbol: "NVDA",
+      confirmedDate: "2026-07-02",
+      confirmedTime: "amc",
+      today: "2026-06-28",
+    });
+
+    const manual = db
+      .prepare("SELECT release_time FROM calendar_events WHERE source='manual' AND symbol='NVDA'")
+      .get() as { release_time: string };
+    expect(manual.release_time).toBe("16:15"); // amc default, no wire data / override for NVDA
   });
 });
