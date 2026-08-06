@@ -778,7 +778,8 @@ function NoteCard({
               <div className="flex gap-2">
                 <button
                   onClick={() => onSaveEdit(note.id)}
-                  className="px-3 py-1 bg-gold text-canvas rounded text-xs font-medium hover:bg-gold/90"
+                  disabled={!editContent.trim()}
+                  className="px-3 py-1 bg-gold text-canvas rounded text-xs font-medium hover:bg-gold/90 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   Save
                 </button>
