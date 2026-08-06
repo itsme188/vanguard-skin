@@ -79,7 +79,7 @@ export default async function ResearchPage({ searchParams }: PageProps) {
       feedArticles = getRecentArticles(db, { processedOnly: true, limit: 50 });
       feedSources = getResearchSources(db);
       feedSymbolMap = getSymbolSecurityMap(db, feedArticles.map((a) => a.id));
-      filteredArticles = getFilteredArticles(db, 100);
+      filteredArticles = getFilteredArticles(db, { limit: 100 });
       filteredCount = getFilteredArticleCount(db);
     } catch {
       // Non-blocking — feeds table may not exist yet (pre-migration)
