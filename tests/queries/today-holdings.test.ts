@@ -110,6 +110,104 @@ describe("getIbkrTodayHoldings", () => {
     expect(a.today_gain).toBeCloseTo(4 * (214.2 - 210), 4);
   });
 
+  // Regression pin for qa:today-ibkr-holdings--option-move-books-earnings-gap-as-today.
+  // An option's stored pair-date close can be a stale pre-move intraday quote
+  // stamped on the same date as the underlying's true (post-move) close — the
+  // dates are consecutive, so the trading-day pair can't catch it. The tell is
+  // an arbitrage violation: a put trading far below (strike − underlying close)
+  // on the SAME date. Differencing against such a row books the underlying's
+  // whole gap as "today", so the move must be suppressed (null), never shown.
+  function seedOption(
+    symbol: string,
+    underlying: string,
+    optionType: "PUT" | "CALL",
+    strike: number,
+  ): number {
+    return db
+      .prepare(
+        `INSERT INTO securities (symbol, name, security_type, asset_class, underlying_symbol, option_type, strike_price, multiplier, currency)
+         VALUES (?, ?, 'Option', 'option', ?, ?, ?, 100, 'USD')`,
+      )
+      .run(symbol, `${symbol} opt`, underlying, optionType, strike).lastInsertRowid as number;
+  }
+
+  it("suppresses an option's move when its prior stored close violates intrinsic vs the underlying's same-date close", () => {
+    const acct = ibkrAccountId();
+    const spy = seedSecurity("SPY", "ETF");
+    const app = seedSecurity("APP");
+    const put = seedOption("APP   260814P00390000", "APP", "PUT", 390);
+    hold(acct, spy, 1);
+    hold(acct, app, 15);
+    hold(acct, put, 1);
+
+    price(spy, "2026-08-05", 630);
+    price(spy, "2026-08-06", 631);
+    // Underlying: post-earnings closes on both pair dates
+    price(app, "2026-08-05", 350.0);
+    price(app, "2026-08-06", 351.51);
+    // Put: 8/05 row is a stale PRE-earnings intraday quote — $15.75 is far
+    // below intrinsic ($390 − $350 = $40) at the same date's underlying close.
+    price(put, "2026-08-05", 15.75);
+    price(put, "2026-08-06", 48.52);
+
+    const rows = getIbkrTodayHoldings(db, acct);
+    const p = rows.find((r) => r.symbol.includes("P00390000"))!;
+    // The +208% phantom must not render as "today's move"
+    expect(p.today_gain).toBeNull();
+    expect(p.today_pct).toBeNull();
+    // Position value still shows from the freshest row
+    expect(p.current_value).toBeCloseTo(48.52 * 100, 2);
+    // Underlying row unaffected
+    const a = rows.find((r) => r.symbol === "APP")!;
+    expect(a.today_pct).toBeCloseTo((351.51 - 350.0) / 350.0, 6);
+  });
+
+  it("keeps a legitimate option premium multi-bagger (no intrinsic violation)", () => {
+    const acct = ibkrAccountId();
+    const spy = seedSecurity("SPY", "ETF");
+    const hood = seedSecurity("HOOD");
+    const call = seedOption("HOOD  261218C00110000", "HOOD", "CALL", 110);
+    hold(acct, spy, 1);
+    hold(acct, hood, 10);
+    hold(acct, call, 2);
+
+    price(spy, "2026-08-05", 630);
+    price(spy, "2026-08-06", 631);
+    price(hood, "2026-08-05", 100);
+    price(hood, "2026-08-06", 106);
+    // OTM call triples on the underlying pop — intrinsic is 0 both days, no
+    // violation. Options legitimately double/halve; magnitude is never a gate.
+    price(call, "2026-08-05", 2.0);
+    price(call, "2026-08-06", 6.0);
+
+    const rows = getIbkrTodayHoldings(db, acct);
+    const c = rows.find((r) => r.symbol.includes("C00110000"))!;
+    expect(c.today_pct).toBeCloseTo(2.0, 6); // +200%
+    expect(c.today_gain).toBeCloseTo((6.0 - 2.0) * 100 * 2, 4);
+  });
+
+  it("keeps an ITM option move whose stored closes respect intrinsic", () => {
+    const acct = ibkrAccountId();
+    const spy = seedSecurity("SPY", "ETF");
+    const xyz = seedSecurity("XYZ");
+    const put = seedOption("XYZ   261218P00390000", "XYZ", "PUT", 390);
+    hold(acct, spy, 1);
+    hold(acct, xyz, 5);
+    hold(acct, put, 1);
+
+    price(spy, "2026-08-05", 630);
+    price(spy, "2026-08-06", 631);
+    price(xyz, "2026-08-05", 350);
+    price(xyz, "2026-08-06", 351.51);
+    // Consistent quotes: at/above intrinsic on both dates
+    price(put, "2026-08-05", 42.0);
+    price(put, "2026-08-06", 40.5);
+
+    const rows = getIbkrTodayHoldings(db, acct);
+    const p = rows.find((r) => r.symbol.includes("P00390000"))!;
+    expect(p.today_pct).toBeCloseTo((40.5 - 42.0) / 42.0, 6);
+  });
+
   it("omits the move for a security missing a close on either pair date", () => {
     const acct = ibkrAccountId();
     const spy = seedSecurity("SPY", "ETF");
