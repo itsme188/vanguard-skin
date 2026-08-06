@@ -146,6 +146,17 @@ export function getSourcePerformance(
   for (const [source, group] of bySource) {
     if (group.alerts.length < minAlerts) continue;
 
+    // Hit rate = fraction of this source's armed (auto_approved) levels that
+    // fired at least once. Both sides must come from the same level set:
+    // alerts from levels OUTSIDE the denominator (rejected after firing,
+    // pre-review era) made the ratio uncomputable (3 alerts / 1 armed level
+    // rendered "300.0%"), and a re-activated level can fire twice, so the
+    // numerator counts distinct fired levels, never raw alerts.
+    const alertedLevelIds = new Set(group.alerts.map((a) => a.level_id));
+    const firedLevels = group.levels.filter((l) =>
+      alertedLevelIds.has(l.id),
+    ).length;
+
     const responses = {
       acted:     group.alerts.filter((a) => a.user_response === "acted").length,
       ignored:   group.alerts.filter((a) => a.user_response === "ignored").length,
@@ -186,9 +197,7 @@ export function getSourcePerformance(
       levels_created: group.levels.length,
       hit_rate:
         group.levels.length > 0
-          ? Number(
-              ((group.alerts.length / group.levels.length) * 100).toFixed(1),
-            )
+          ? Number(((firedLevels / group.levels.length) * 100).toFixed(1))
           : 0,
       responses,
       pnl_acted_30d,
