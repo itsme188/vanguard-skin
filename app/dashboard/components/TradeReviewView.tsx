@@ -5,10 +5,10 @@ import type { TradeReview } from "@/lib/types";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
-import { Chip } from "./Chip";
+import { HoldingPeriodBadge } from "./HoldingPeriodBadge";
 import { Money, Pct, Shares, PrivateText } from "@/lib/privacy/components";
 import { isNarrativeStale } from "@/lib/trade-review/stale-narrative";
-import { formatHoldingPeriod, formatProfitFactor } from "@/lib/format";
+import { formatProfitFactor } from "@/lib/format";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -78,20 +78,6 @@ const GRADE_COLORS: Record<string, string> = {
   D: "bg-down/60",
   F: "bg-down",
 };
-
-// A negative holding period is a genuine short round-trip (sale paired with
-// a later cover, 1099-B-consistent) — not a defect. Display-only: renders
-// "short" as an info chip instead of the confusing "-Nd" text.
-function HoldingPeriodBadge({ days }: { days: number }) {
-  if (days < 0) {
-    return (
-      <Chip tone="info" size="xs">
-        {formatHoldingPeriod(days)}
-      </Chip>
-    );
-  }
-  return <>{formatHoldingPeriod(days)}</>;
-}
 
 function GradeBadge({ grade }: { grade: string | null }) {
   if (!grade) return <span className="text-ink-faint">—</span>;
@@ -904,6 +890,16 @@ function GroupedTradeCards({
             ? `tx:${trade.saleTransactionId}`
             : `${trade.symbol}:${trade.exitDate}:${idx}`;
         const isExpanded = expandedTrade === tradeKey;
+        // The API's `maxHoldingDays` is a quantity-weighted average of each
+        // lot's holding_days CLAMPED at 0 (app/api/trade-review/route.ts) —
+        // it can never itself be negative, so it can never trigger the short
+        // chip below. Detect an all-short grouped trade (every constituent
+        // lot a genuine short round-trip) straight from the unclamped
+        // per-lot `holdingDays` the view already has, and force the chip —
+        // "0d hold" would otherwise misreport an all-short trade as a
+        // same-day hold.
+        const allLotsShort =
+          trade.lots.length > 0 && trade.lots.every((l) => l.holdingDays < 0);
 
         return (
           <div
@@ -935,7 +931,10 @@ function GroupedTradeCards({
                     <span
                       title="FIFO holding period — time between the oldest matched tax lot's acquisition and the sale. For actively traded names this may overstate how long the trader actually held the position."
                     >
-                      <HoldingPeriodBadge days={trade.maxHoldingDays} /> hold
+                      <HoldingPeriodBadge
+                        days={allLotsShort ? -1 : trade.maxHoldingDays}
+                      />{" "}
+                      hold
                     </span>
                     <span>
                       <Shares

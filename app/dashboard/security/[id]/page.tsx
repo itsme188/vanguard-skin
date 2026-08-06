@@ -18,6 +18,7 @@ import { Section } from "../../components/Section";
 import { SecurityEarningsEmails } from "../../components/SecurityEarningsEmails";
 import { getSentEarningsEmails } from "@/lib/queries/earnings-emails";
 import { Chip, type ChipTone } from "../../components/Chip";
+import { HoldingPeriodBadge } from "../../components/HoldingPeriodBadge";
 import { TranscriptsRefreshButton } from "./TranscriptsRefreshButton";
 import { FactorProfileSection } from "./FactorProfileSection";
 import { computeSecurityFactorShare } from "@/lib/compute/factors";
@@ -538,7 +539,9 @@ export default async function SecurityDetailPage(props: {
                     </td>
                     <td className={`${TD_MONO} text-ink-dim`}>{tg.entry_date}</td>
                     <td className={`${TD_MONO} text-ink-dim`}>{tg.exit_date}</td>
-                    <td className={`${TD_MONO} text-right text-ink-dim`}>{tg.holding_days}</td>
+                    <td className={`${TD_MONO} text-right text-ink-dim`}>
+                      <HoldingPeriodBadge days={tg.holding_days} className="font-sans" />
+                    </td>
                     <td className={`${TD_MONO} text-right ${gainClass(tg.realized_pnl)}`}>
                       <Money value={tg.realized_pnl} />
                     </td>
