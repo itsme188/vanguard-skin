@@ -16,6 +16,7 @@ interface TaxReportSummary {
     lossAmount: number;
     description: string;
   }[];
+  excludedNonUsdSales?: number;
 }
 
 function formatMoney(value: number): string {
@@ -141,6 +142,14 @@ export function TaxReportCard({ year }: { year: number }) {
             </div>
           </div>
         </div>
+
+        {(report.excludedNonUsdSales ?? 0) > 0 && (
+          <p className="text-[10px] text-ink-faint italic">
+            USD totals exclude {report.excludedNonUsdSales} non-USD sale
+            {report.excludedNonUsdSales === 1 ? "" : "s"} (realized figures are
+            native per security; the CSV/TXF exports keep the raw rows).
+          </p>
+        )}
 
         {/* Wash sale warnings */}
         {hasWashSales && (
