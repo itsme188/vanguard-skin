@@ -49,7 +49,7 @@ export async function POST(request: Request) {
     case "print":
       try {
         const r = await printWorksheetNow(db, body.eventId);
-        return Response.json({ success: true, printed: r.symbol });
+        return Response.json({ success: true, printed: r.symbol, road: r.road });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return Response.json(

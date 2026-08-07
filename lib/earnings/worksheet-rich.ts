@@ -267,7 +267,13 @@ export function composeRichWorksheet(inputs: RichWorksheetInputs): string {
   const notes: string[] = [];
   if (noteLines.length > 0) {
     notes.push("", "NOTES (YOURS)");
-    for (const n of noteLines.slice(0, 4)) notes.push(`  · ${n}`.slice(0, WIDTH));
+    for (const n of noteLines) {
+      const wrapped = wrapText(n, 74);
+      notes.push(`  · ${wrapped[0]}`);
+      for (let i = 1; i < wrapped.length; i++) {
+        notes.push(`    ${wrapped[i]}`);
+      }
+    }
   }
 
   function clampLineWidth(line: string): string {

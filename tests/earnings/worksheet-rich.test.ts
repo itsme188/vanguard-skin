@@ -351,4 +351,13 @@ describe("composeRichWorksheet", () => {
     expect(lastLine.length).toBeLessThanOrEqual(80);
     expect(lastLine).toContain("from preview email sent");
   });
+
+  it("renders full note text wrapped, never the 74-char chop", () => {
+    const longNote = "thesis ".repeat(60).trim(); // ~420 chars
+    const text = composeRichWorksheet(richInputs({ noteLines: [longNote] }));
+    const flat = text.replace(/\n\s*/g, " ");
+    expect(flat).toContain("thesis thesis thesis thesis thesis thesis thesis thesis thesis thesis");
+    const count = (text.match(/thesis/g) ?? []).length;
+    expect(count).toBe(60); // every word survived
+  });
 });

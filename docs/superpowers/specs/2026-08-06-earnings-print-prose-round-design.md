@@ -85,7 +85,8 @@ Before touching the prompt, read the last handful of stored preview `ai_output_m
 | Chrome hang | 30s kill → fallback |
 | PDF unparseable / 0 bytes | Fallback |
 | PDF > 2 pages | Drop Past prints, re-render once; still >2 → print anyway (notes win) |
-| `lp` non-zero exit | Same as today: no stamp, retry next tick |
+| `lp` fails on the PDF road | Monospace fallback prints; stamp on its success (never-silent wins — decided 2026-08-07) |
+| `lp` fails on the monospace road | No stamp, retry next tick (unchanged) |
 | No curated bogeys | Sheet-bogeys block absent; email/sheet otherwise unchanged |
 | Malformed segment JSON | Segment rows skipped for that source |
 | No local preview (cloud-sent / muted) | Existing deterministic monospace road, unchanged |

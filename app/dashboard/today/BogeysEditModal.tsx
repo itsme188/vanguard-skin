@@ -60,6 +60,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
   const [saving, setSaving] = useState(false);
   const [printing, setPrinting] = useState(false);
   const [printedOk, setPrintedOk] = useState(false);
+  const [printedRoad, setPrintedRoad] = useState<"pdf" | "monospace" | null>(null);
   const [savingActuals, setSavingActuals] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -70,6 +71,10 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
     setForm(EMPTY);
     setActuals(EMPTY_ACTUALS);
     setActualsEnrichedAt(null);
+    // A reopened modal must not show a stale "Sent to printer queue" claim
+    // from a previous open/close cycle.
+    setPrintedOk(false);
+    setPrintedRoad(null);
     Promise.all([
       fetch(`/api/earnings/bogeys?eventId=${eventId}`).then(
         (res) => res.json() as Promise<{ bogeys?: EarningsBogey[]; error?: string }>,
@@ -122,6 +127,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
     if (printing) return;
     setPrinting(true);
     setPrintedOk(false);
+    setPrintedRoad(null);
     setError(null);
     try {
       const res = await fetch("/api/earnings/worksheet", {
@@ -129,13 +135,20 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ eventId, action: "print" }),
       });
-      const data = (await res.json().catch(() => null)) as { success?: boolean; error?: string } | null;
+      const data = (await res.json().catch(() => null)) as {
+        success?: boolean;
+        error?: string;
+        road?: "pdf" | "monospace";
+      } | null;
       if (!res.ok || !data?.success) {
         setError(data?.error ?? `Print failed: server returned ${res.status}.`);
         return;
       }
-      // lp exit 0 means QUEUED, not paper-out — say exactly that.
+      // lp exit 0 means QUEUED, not paper-out — say exactly that, and say
+      // which sheet went out: the email-identical PDF road, or the plain
+      // text fallback (no local preview yet, or Chrome/PDF render failed).
       setPrintedOk(true);
+      setPrintedRoad(data.road ?? null);
     } catch {
       setError("Print failed: could not reach the server.");
     } finally {
@@ -459,7 +472,17 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
                 className="relative mr-auto text-[13px] font-mono text-ink-dim hover:text-ink border border-edge rounded px-2 py-1 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
                 title="Print the one-page desk worksheet on the default printer now"
               >
-                {printing ? "Printing…" : printedOk ? "Sent to printer queue ✓" : "⎙ Print worksheet"}
+                {printing
+                  ? "Printing…"
+                  : printedOk
+                    ? `Sent to printer queue ✓${
+                        printedRoad === "pdf"
+                          ? " (email-fidelity sheet)"
+                          : printedRoad === "monospace"
+                            ? " (plain text sheet)"
+                            : ""
+                      }`
+                    : "⎙ Print worksheet"}
               </button>
               <button
                 type="button"

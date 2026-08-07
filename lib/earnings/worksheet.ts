@@ -24,11 +24,29 @@
  * bypasses the window and the stamp entirely, and uses whichever sheet
  * (rich or deterministic) is available at that instant.
  *
+ * `printWorksheetNow` additionally prefers an email-identical PDF road
+ * (2026-08-06 print/prose round) over the monospace sheets above:
+ * `loadPrintSheetInputs` + `composePrintSheetHtml` (lib/earnings/print-sheet.ts)
+ * re-render the local preview email's own HTML, `renderHtmlToPdf`
+ * (lib/earnings/print-pdf.ts) turns it into a PDF via headless Chrome, and
+ * `printPdfViaLp` sends it duplex. Any failure along that road — no Chrome,
+ * no local preview prose, a render/print error — falls back to the sheets
+ * above, so a print always produces paper. **This is not a Print-now-only
+ * path**: `printArmedWorksheets`' default `print` seam IS `printWorksheetNow`,
+ * so the launchd auto-print sweep takes the PDF road too whenever a local
+ * preview is available — that's the spec's primary goal, not a side effect.
+ * `printArmedWorksheets` itself (its wait-gate + stamp/retry control flow) is
+ * unchanged; only the sheet its default seam produces changed.
+ *
  * Spec: docs/superpowers/specs/2026-08-03-worksheet-print-design.md,
- * docs/superpowers/specs/2026-08-05-worksheet-rich-preview-print-design.md
+ * docs/superpowers/specs/2026-08-05-worksheet-rich-preview-print-design.md,
+ * docs/superpowers/specs/2026-08-06-earnings-print-prose-round-design.md
  */
 
 import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { getBogeysForEvent, getExpectedMoveBogeysForEvents, type EarningsBogey } from "@/lib/queries/earnings-bogeys";
 import { getIntelForEvents } from "@/lib/queries/earnings-intel";
@@ -45,14 +63,29 @@ import type { CalendarEvent } from "@/lib/types";
 import {
   composeRichWorksheet,
   extractPreviewSections,
+  wrapText,
   type RichWorksheetInputs,
 } from "@/lib/earnings/worksheet-rich";
+import { repairCitationLineBreaks } from "@/lib/earnings/repair-citation-linebreaks";
 import { getEmailAudit } from "@/lib/queries/earnings-emails";
 import {
   loadIntelView,
   renderHeadlineTable,
   renderPastPrintsBlock,
+  renderSheetBogeysBlock,
 } from "@/lib/digest/send-earnings-email";
+import {
+  composePrintSheetHtml,
+  extractBogiesTableMarkdown,
+  type PrintSheetInputs,
+  type PrintSheetNote,
+} from "@/lib/earnings/print-sheet";
+import {
+  chromeBinaryPath,
+  countPdfPages,
+  printPdfViaLp,
+  renderHtmlToPdf,
+} from "@/lib/earnings/print-pdf";
 
 const WIDTH = 80;
 const MAX_LINES = 62; // one US-letter page at 12cpi with margins
@@ -179,7 +212,11 @@ export function composeWorksheet(inputs: WorksheetInputs): string {
   if (noteLines.length > 0) {
     lines.push("");
     lines.push("NOTES (yours)");
-    for (const n of noteLines.slice(0, 6)) lines.push(pad(`  · ${n}`, WIDTH));
+    for (const n of noteLines) {
+      const wrapped = wrapText(n, 74);
+      lines.push(`  · ${wrapped[0]}`);
+      for (let i = 1; i < wrapped.length; i++) lines.push(`    ${wrapped[i]}`);
+    }
   }
 
   // Scratch lines fill the remaining page (min 3, floor at MAX_LINES − 1).
@@ -209,9 +246,9 @@ export function loadWorksheetInputs(db: Database.Database, eventId: number): Wor
     impliedMovePct: intel?.impliedMovePct ?? null,
     impliedMethod: intel?.impliedMethod ?? null,
   });
-  const noteLines = getNotesForFamily(db, [...issuerSiblings(event.symbol)])
-    .slice(0, 6)
-    .map((n) => n.content.replace(/\s+/g, " ").trim().slice(0, 74));
+  const noteLines = getNotesForFamily(db, [...issuerSiblings(event.symbol)]).map((n) =>
+    n.content.replace(/\s+/g, " ").trim(),
+  );
 
   return { event, bogeys, expectedMove, noteLines };
 }
@@ -235,7 +272,9 @@ export function loadRichWorksheetInputs(
   const audit = getEmailAudit(db, eventId, "preview");
   if (!audit?.ai_output_md) return null;
 
-  const sections = extractPreviewSections(audit.ai_output_md);
+  // Display/print-time repair only (never at send/compose time) — see
+  // lib/earnings/repair-citation-linebreaks.ts.
+  const sections = extractPreviewSections(repairCitationLineBreaks(audit.ai_output_md));
   if (!sections.bogiesTable && !sections.commentary.trim()) return null;
 
   const symbol = event.symbol.toUpperCase();
@@ -254,8 +293,7 @@ export function loadRichWorksheetInputs(
     : "";
 
   const noteLines = getNotesForFamily(db, [...issuerSiblings(event.symbol)])
-    .slice(0, 4)
-    .map((n) => n.content.replace(/\s+/g, " ").trim().slice(0, 74));
+    .map((n) => n.content.replace(/\s+/g, " ").trim());
 
   return {
     event: {
@@ -269,6 +307,59 @@ export function loadRichWorksheetInputs(
     noteLines,
     sentAt: audit.sent_at,
     expectedMoveLabel,
+  };
+}
+
+/**
+ * Email-identical print-sheet inputs (2026-08-06 print/prose round). Null
+ * when there's no LOCAL preview email yet (not sent, or a 'sent-by-cloud'
+ * row with no stored prose — same nullness as `loadRichWorksheetInputs`) or
+ * its stored prose has no verbatim "## Line-by-line bogies" table (the PDF
+ * road re-renders exactly what the email said; a table-less preview has
+ * nothing worth an email-fidelity reproduction, so `printWorksheetNow` falls
+ * back to the deterministic sheet instead).
+ */
+export function loadPrintSheetInputs(
+  db: Database.Database,
+  eventId: number,
+): PrintSheetInputs | null {
+  const event = db
+    .prepare(`SELECT * FROM calendar_events WHERE id = ?`)
+    .get(eventId) as CalendarEvent | undefined;
+  if (!event || !event.symbol) return null;
+
+  const audit = getEmailAudit(db, eventId, "preview");
+  if (!audit?.ai_output_md) return null;
+
+  // Same display/print-time repair as loadRichWorksheetInputs, applied
+  // BEFORE extracting the table — see lib/earnings/repair-citation-linebreaks.ts.
+  const repaired = repairCitationLineBreaks(audit.ai_output_md);
+  const bogiesTableMd = extractBogiesTableMarkdown(repaired);
+  if (!bogiesTableMd) return null;
+
+  const symbol = event.symbol.toUpperCase();
+  const intelView = loadIntelView(db, eventId, symbol);
+  const notes: PrintSheetNote[] = getNotesForFamily(db, [...issuerSiblings(event.symbol)]).map(
+    (n) => ({
+      // Mirrors renderUserNotesBlock's date choice (send-earnings-email.ts)
+      // and its `n.symbol ?? <event symbol>` fallback for family-linked notes.
+      date: n.event_date ?? n.created_at.slice(0, 10),
+      noteType: n.note_type,
+      symbol: n.symbol ?? symbol,
+      content: n.content,
+    }),
+  );
+
+  return {
+    symbol,
+    eventDate: event.event_date,
+    eventTime: event.event_time,
+    scoreboardMd: renderHeadlineTable(event, symbol, "preview", intelView),
+    sheetBogeysMd: renderSheetBogeysBlock(getBogeysForEvent(db, eventId)),
+    bogiesTableMd,
+    notes,
+    pastPrintsMd: renderPastPrintsBlock(intelView.history),
+    sentAt: audit.sent_at,
   };
 }
 
@@ -353,18 +444,105 @@ export function printViaLp(
   });
 }
 
-/** Compose + print one event's worksheet immediately (Print now path). */
+/**
+ * Compose + print one event's worksheet. Called directly for "Print now"
+ * (POST /api/earnings/worksheet) AND as `printArmedWorksheets`' default
+ * `print` seam — i.e. this is ALSO the launchd auto-print sweep's road, not
+ * a manual-only path.
+ *
+ * Two roads: PDF (email-identical — the same markdown → HTML renderer as the
+ * preview email, headless-Chrome to PDF, duplex `lp`) is preferred whenever a
+ * local preview's prose is available AND Chrome is installed (or a test seam
+ * stands in for it). Any failure along that road — no Chrome binary, an
+ * unparseable/0-page render, a print error — falls back to the
+ * deterministic/rich monospace sheet (`composeWorksheetForEvent`,
+ * unchanged), so a print always produces SOME paper. One-sheet rule: if the
+ * first PDF render comes out longer than 2 pages, retry ONCE without the
+ * "Past prints" section (the flexible, lowest-priority block) and print
+ * whatever that yields — notes and the bogies table never truncate to force
+ * a page count.
+ *
+ * Stamp semantics (2026-08-07 decision, supersedes the spec's original
+ * error-table row): a PDF-road `lp` failure falls through to the monospace
+ * road rather than surfacing as a print failure, and `printArmedWorksheets`
+ * stamps on THAT road's success. A PDF-specific CUPS failure would otherwise
+ * fail every retry until the auto-print window closes with zero paper ever
+ * printed; a monospace success at least gets something on the desk. Only a
+ * failure of BOTH roads (printer-level, e.g. offline/wedged cupsd) leaves
+ * the event stampless for the next tick's retry.
+ */
 export async function printWorksheetNow(
   db: Database.Database,
   eventId: number,
-): Promise<{ symbol: string }> {
+  seams: {
+    renderPdf?: typeof renderHtmlToPdf;
+    printPdf?: typeof printPdfViaLp;
+    printText?: typeof printViaLp;
+  } = {},
+): Promise<{ symbol: string; road: "pdf" | "monospace" }> {
+  const renderPdf = seams.renderPdf ?? renderHtmlToPdf;
+  const printPdf = seams.printPdf ?? printPdfViaLp;
+  const printText = seams.printText ?? printViaLp;
+
+  // loadPrintSheetInputs does DB reads + markdown assembly — best-effort,
+  // same as every other lookup this function chains: a failure here must
+  // degrade to the monospace road, never abort the print entirely.
+  let sheet: PrintSheetInputs | null = null;
+  try {
+    sheet = loadPrintSheetInputs(db, eventId);
+  } catch (err) {
+    console.warn(`[worksheet] loadPrintSheetInputs failed for event ${eventId} — falling back to monospace:`, err);
+  }
+
+  if (sheet && (seams.renderPdf || chromeBinaryPath())) {
+    try {
+      let html = composePrintSheetHtml(sheet);
+      let pdf = await renderPdf(html);
+      let pages = countPdfPages(pdf);
+      // A 0-page count means the renderer produced something unparseable
+      // (garbage bytes, a truncated file) — 0 is NOT <= 2 in a way that
+      // should ever be trusted as "fits on one sheet"; treat it as a render
+      // failure so it lands in the catch below and degrades to monospace.
+      if (pages === 0) throw new Error("unparseable PDF (no /Type /Page objects)");
+      if (pages > 2) {
+        // One-sheet rule: drop Past prints and try once more. If notes alone
+        // still push it past 2 pages, print anyway — notes never truncate.
+        html = composePrintSheetHtml(sheet, { includePastPrints: false });
+        pdf = await renderPdf(html);
+        pages = countPdfPages(pdf);
+        if (pages === 0) throw new Error("unparseable PDF (no /Type /Page objects)");
+      }
+      const dir = mkdtempSync(join(tmpdir(), "vgs-sheet-"));
+      const pdfPath = join(dir, `${sheet.symbol}-sheet.pdf`);
+      try {
+        writeFileSync(pdfPath, pdf);
+        await printPdf(pdfPath, { printer: printerName(db), title: `${sheet.symbol} earnings sheet` });
+      } finally {
+        // Best-effort: a cleanup throw here must NOT be caught by the outer
+        // try — that would re-enter the monospace fallback AFTER lp already
+        // accepted the PDF job (double paper) and misreport `road`.
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch (err) {
+          console.warn(`[worksheet] temp-dir cleanup failed for ${dir}:`, err);
+        }
+      }
+      return { symbol: sheet.symbol, road: "pdf" };
+    } catch (err) {
+      // PDF-road lp failure deliberately falls through to monospace — paper
+      // now beats stampless retries of a road that will keep failing;
+      // decision 2026-08-07, supersedes the spec's original error-table row.
+      console.warn(`[worksheet] PDF road failed for ${sheet.symbol} — falling back to monospace:`, err);
+    }
+  }
+
   const composed = composeWorksheetForEvent(db, eventId);
   if (!composed) throw new Error(`Event ${eventId} not found or symbol-less.`);
-  await printViaLp(composed.text, {
+  await printText(composed.text, {
     printer: printerName(db),
     title: `${composed.symbol} earnings worksheet`,
   });
-  return { symbol: composed.symbol };
+  return { symbol: composed.symbol, road: "monospace" };
 }
 
 /**
