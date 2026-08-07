@@ -40,7 +40,7 @@ All content runs through the same **`briefingToHtml`** the email uses (pixel-ide
 
 **Print:** `lp -d <printer> -o sides=two-sided-long-edge -t <title> <file>.pdf` — CUPS accepts PDF natively. The duplex option is harmless on a 1-page PDF. Printer name via the existing `worksheet_printer_name` setting. (Implementation verifies the live printer advertises duplex via `lpoptions -l`; if not, the job still prints — on two sheets — and the composer is unaffected.)
 
-**One-sheet enforcement:** after rendering, read the PDF page count (parse `/Count` from the PDF bytes — no new dependency). If > 2 pages: drop Past prints and re-render **once**. If still > 2 (notes alone exceed the back), **print anyway** — the user's explicit rule is notes never truncate; at that extreme, complete beats one-sheet. Expected rare (~6–8k chars of notes fit on the back).
+**One-sheet enforcement (2026-08-07: extended to a 3-render ladder, capped — never loops):** after rendering, read the PDF page count (parse `/Count` from the PDF bytes — no new dependency). If > 2 pages: drop Past prints and re-render. If still > 2, re-render **once more** with a compaction option (`composePrintSheetHtml(sheet, { compact: true })`, stacked on the already-dropped Past prints) — smaller base font-size, tighter line-height, reduced table/cell padding and margins — which shrinks the layout to fit **without truncating any content**. If still > 2 after compaction (notes alone exceed the back even compacted), **print anyway** — the user's explicit rule is notes never truncate; at that extreme, complete beats one-sheet. Expected rare (~6–8k chars of notes fit on the back, and compaction buys meaningfully more).
 
 **Failure = downgrade, never silence:** Chrome missing / spawn error / timeout / zero-byte or unparseable PDF → the existing monospace sheet (`composeRichWorksheet` → `printViaLp`) prints instead, unchanged. `printed_at` stamps only after a successful queue on **either** road; failures retry stampless next tick — exactly today's semantics in `printArmedWorksheets`. Manual "Print now" uses the same road; events with no local preview keep the current deterministic monospace composer (`composeWorksheetForEvent`) — that behavior is untouched.
 
@@ -84,7 +84,7 @@ Before touching the prompt, read the last handful of stored preview `ai_output_m
 | Chrome binary missing | Monospace fallback prints; `console.warn` breadcrumb |
 | Chrome hang | 30s kill → fallback |
 | PDF unparseable / 0 bytes | Fallback |
-| PDF > 2 pages | Drop Past prints, re-render once; still >2 → print anyway (notes win) |
+| PDF > 2 pages | Drop Past prints, re-render; still >2 → compact layout, re-render once more; still >2 → print anyway (notes win) |
 | `lp` fails on the PDF road | Monospace fallback prints; stamp on its success (never-silent wins — decided 2026-08-07) |
 | `lp` fails on the monospace road | No stamp, retry next tick (unchanged) |
 | No curated bogeys | Sheet-bogeys block absent; email/sheet otherwise unchanged |
@@ -106,6 +106,13 @@ Before touching the prompt, read the last handful of stored preview `ai_output_m
 - Arming stays opt-in per event (⎙ chip); wait-for-preview gate; cloud-sent previews never auto-print; recaps never auto-print; no Worker involvement.
 - Item (d) — post-print automation (auto-fetch/fill actuals, fewer manual touchpoints) — separate brainstorm.
 - The 2026-08-05 "worksheet rich-print deferred minors" list: items touching the monospace renderer remain deferred (that renderer becomes fallback-only); the notes-chop item is superseded by this design.
+
+## Addendum — 2026-08-07 user feedback (post-ship, from live printed sheets)
+
+Two reports after the first live rich auto-prints:
+
+1. **"Blank background, just black on white without the colored background."** The sheet was printing the outbound-email envelope's amber/cream palette verbatim (cream canvas body, amber-tinted table headers, gold headings/links, gold-glow blockquote/code fill — `lib/calendar/briefing-html.ts`'s `COLORS`/`TABLE_COLORS`). Fixed in `lib/earnings/print-sheet.ts`'s `PRINT_CSS`: a `@media print` block forces every inline background the envelope emits (body, both wrapper tables, table cells, headings, blockquote, code, links) to white and all text to black, with `!important` on every declaration (inline styles otherwise win — `briefingToHtml` is inline-styles-only by design, no id/class to hook, and it is NOT modified — it's shared by every outbound email). Table header cells keep a light-gray tint (`#eeeeee`) rather than going pure white, so the header row still reads as a header once the amber tint is gone. Table BORDERS are untouched — the ruled grid is what makes the sheet fillable by hand.
+2. **"It did not quite make it to one double-sided page. A second page printed with just 'from preview email sent at...'."** Two defects, both fixed: (a) the footer block (`briefingToHtml`'s "Portfolio Desk · Generated ..." + the `footerNote` line) was landing on its own orphan page — its inline 64px top spacer plus the ancestor table's `break-inside: avoid` left no room for it at the bottom of the prior page, so the browser pushed the whole block to a fresh page. Fixed by targeting the footer's unique inline-style substrings (`td[style*="padding:64px 0 0"]`, `div[style*="border-top:1px solid"]`) with a shrunk top spacer and a `break-before: avoid` + `break-inside: avoid` ban so it can't start a page alone. (b) The one-sheet ladder only had one fallback rung (drop Past prints); extended to a third rung — a `{ compact: true }` re-render (smaller font, tighter spacing, `lib/earnings/print-sheet.ts`'s `COMPACT_CSS`) — so overflow that survives dropping Past prints gets one more, notes-preserving shot at fitting before the "print anyway" floor. See the updated One-sheet enforcement paragraph and error-handling table above.
 
 ## Why reopening HTML→PDF is safe now
 

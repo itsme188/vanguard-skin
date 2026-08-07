@@ -322,6 +322,8 @@ describe("printWorksheetNow", () => {
     expect(calls).toEqual(["text"]);
   });
 
+  // One-sheet ladder, step (i): 3-page → drop past prints → 1-page. Prints
+  // the SECOND render (2 renders total).
   it("re-renders without past prints when the PDF exceeds 2 pages, then prints", async () => {
     seedReportHistory("AAPL", "2026-05-01");
     const seen: string[] = [];
@@ -346,15 +348,45 @@ describe("printWorksheetNow", () => {
     expect(printedBytes).toEqual(onePager);
   });
 
-  it("still prints when notes alone exceed 2 pages (notes never truncate)", async () => {
+  // One-sheet ladder, step (ii): 3-page → still 3-page without past prints →
+  // compact → 1-page. Prints the THIRD render (3 renders total).
+  it("re-renders compacted when dropping past prints still exceeds 2 pages, then prints", async () => {
+    seedReportHistory("AAPL", "2026-05-01");
+    const seen: string[] = [];
+    const threePager = Buffer.from("%PDF\n<</Type /Page>><</Type /Page>><</Type /Page>>");
+    const onePager = Buffer.from("%PDF\n<</Type /Page>>");
+    let call = 0;
+    let printedBytes: Buffer | null = null;
+    const res = await printWorksheetNow(db, eventId, {
+      renderPdf: async (html) => { seen.push(html); call++; return call <= 2 ? threePager : onePager; },
+      printPdf: async (path) => { printedBytes = readFileSync(path); },
+      printText: async () => {},
+    });
+    expect(res.road).toBe("pdf");
+    expect(seen).toHaveLength(3);
+    expect(seen[0]).toContain("Past prints");
+    expect(seen[1]).not.toContain("Past prints");
+    expect(seen[1]).not.toContain("compact-print-sheet");
+    expect(seen[2]).not.toContain("Past prints");
+    expect(seen[2]).toContain("compact-print-sheet");
+    // The file actually sent to lp is the THIRD (compact, one-pager) render.
+    expect(printedBytes).toEqual(onePager);
+  });
+
+  // One-sheet ladder, step (iii): all three renders stay >2 pages — prints
+  // anyway (notes win), exactly 3 renders, never a 4th.
+  it("still prints when notes alone exceed 2 pages even after dropping past prints + compacting (notes never truncate)", async () => {
+    const seen: string[] = [];
     const threePager = Buffer.from("%PDF\n<</Type /Page>><</Type /Page>><</Type /Page>>");
     const printPdf = vi.fn(async () => {});
     const res = await printWorksheetNow(db, eventId, {
-      renderPdf: async () => threePager,
+      renderPdf: async (html) => { seen.push(html); return threePager; },
       printPdf,
       printText: async () => {},
     });
     expect(res.road).toBe("pdf");
+    expect(seen).toHaveLength(3);
+    expect(seen[2]).toContain("compact-print-sheet");
     expect(printPdf).toHaveBeenCalledTimes(1);
   });
 

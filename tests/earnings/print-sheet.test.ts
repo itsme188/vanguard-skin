@@ -78,4 +78,54 @@ describe("composePrintSheetHtml", () => {
     const html = composePrintSheetHtml(inputs({ sheetBogeysMd: "" }));
     expect(html).not.toContain("Sheet bogeys");
   });
+
+  // FEEDBACK 1 (2026-08-07): "blank background, just black on white" — the
+  // sheet must override every inline background the amber email envelope
+  // emits, force text to black, and keep table borders untouched.
+  it("forces a white background and black text with !important, leaving table borders untouched", () => {
+    const html = composePrintSheetHtml(inputs());
+    // Blanket override on every tag the envelope actually emits inline
+    // colors on (body/tables/cells/headings/blockquote/code/links/lists).
+    expect(html).toMatch(
+      /body, table, thead, tbody, tr, td, th, div, p, ul, li,\s*\n\s*h1, h2, h3, blockquote, code, a, strong, em, span \{[^}]*background-color:\s*#ffffff\s*!important;[^}]*color:\s*#000000\s*!important;/,
+    );
+    // Header row keeps a light-gray tint, not pure white.
+    expect(html).toMatch(/th\s*\{\s*background-color:\s*#eeeeee\s*!important;\s*\}/);
+    // Table borders (the fillable ruled grid) are never touched.
+    expect(html).toContain(`border:1px solid ${"#777777"}`);
+    expect(html).not.toMatch(/border[^:]*:\s*none\s*!important/);
+  });
+
+  // FEEDBACK 2a (2026-08-07): the footer must never be able to start its own
+  // page — target it by its unique inline-style substrings (briefingToHtml
+  // has no id/class to hook) with a break-before ban + minimal top spacer.
+  it("bans a page break before the footer and shrinks its top spacer", () => {
+    const html = composePrintSheetHtml(inputs());
+    expect(html).toMatch(
+      /td\[style\*="padding:64px 0 0"\]\s*\{[^}]*padding-top:\s*8px\s*!important;[^}]*break-before:\s*avoid\s*!important;[^}]*break-inside:\s*avoid\s*!important;/,
+    );
+    expect(html).toMatch(
+      /div\[style\*="border-top:1px solid"\]\s*\{[^}]*break-before:\s*avoid\s*!important;[^}]*break-inside:\s*avoid\s*!important;/,
+    );
+  });
+
+  // Compaction step (worksheet one-sheet ladder, step 3).
+  it("emits the compaction block only when compact:true is passed", () => {
+    const normal = composePrintSheetHtml(inputs());
+    expect(normal).not.toContain("compact-print-sheet");
+
+    const compact = composePrintSheetHtml(inputs(), { compact: true });
+    expect(compact).toContain("compact-print-sheet");
+    expect(compact).toContain("font-size: 90% !important");
+    expect(compact).toMatch(/th, td \{ padding: 4px 6px !important; \}/);
+    // Compaction is additive — the base white/black + footer overrides still
+    // apply, it doesn't replace PRINT_CSS.
+    expect(compact).toContain("background-color: #ffffff !important;");
+  });
+
+  it("stacks compact with includePastPrints:false (step 3 of the one-sheet ladder)", () => {
+    const html = composePrintSheetHtml(inputs(), { includePastPrints: false, compact: true });
+    expect(html).not.toContain("Past prints");
+    expect(html).toContain("compact-print-sheet");
+  });
 });

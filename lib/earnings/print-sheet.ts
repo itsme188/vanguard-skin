@@ -76,21 +76,92 @@ const PRINT_CSS = `<style>
   @page { size: letter; margin: 12mm 14mm; }
   @media print {
     table[width="680"] { max-width: 100% !important; width: 100% !important; }
+    /* FEEDBACK 1 (2026-08-07): "blank background, just black on white" — the
+       envelope is the outbound-email amber theme (COLORS.canvas cream body,
+       COLORS.gold headings/links, TABLE_COLORS.headerBg amber-tinted th, the
+       goldGlow blockquote/code fill) — see lib/calendar/briefing-html.ts:37-64.
+       Every one of those is an INLINE style (briefingToHtml renders
+       Outlook-safe inline styles only, no classes/ids to hook), so inline
+       specificity beats any unqualified CSS rule and every override below
+       needs !important. Table BORDERS are left untouched — the ruled grid
+       (TABLE_COLORS.border, #777) is what makes the sheet fillable by hand. */
+    body, table, thead, tbody, tr, td, th, div, p, ul, li,
+    h1, h2, h3, blockquote, code, a, strong, em, span {
+      background: #ffffff !important;
+      background-color: #ffffff !important;
+      color: #000000 !important;
+    }
+    /* Header row keeps a light-gray tint instead of the email's amber
+       #f4efe0 — it still reads as "gray, not white" on a B/W printer, so the
+       header row stays visually distinct from fill-in body cells even
+       though its own border (kept above) already separates them either way. */
+    th {
+      background-color: #eeeeee !important;
+    }
   }
   /* A table never splits across the sheet boundary; notes flow. */
   table { break-inside: avoid; page-break-inside: avoid; }
   h2 { break-after: avoid; page-break-after: avoid; }
   body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  /* FEEDBACK 2a (2026-08-07): the footer ("Portfolio Desk · Generated ..." +
+     "from preview email sent ...") was landing on its own orphan page — its
+     inline padding:64px top spacer plus the ancestor table's break-inside:
+     avoid left the browser no room to fit it at the bottom of the prior
+     page, so it pushed the whole block to a fresh page instead. Target it by
+     its unique inline-style substrings — briefingToHtml has no id/class to
+     hook (see lib/calendar/briefing-html.ts:111-121) and this file must not
+     edit that renderer (it's shared by every outbound email). Shrink the top
+     spacer AND ban a break directly before it so it stays attached to
+     whatever content precedes it.
+  */
+  td[style*="padding:64px 0 0"] {
+    padding-top: 8px !important;
+    break-before: avoid !important;
+    page-break-before: avoid !important;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+  div[style*="border-top:1px solid"] {
+    break-before: avoid !important;
+    page-break-before: avoid !important;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+</style>`;
+
+/**
+ * Step 3 of the one-sheet ladder (`printWorksheetNow`, lib/earnings/worksheet.ts):
+ * shrinks the layout to fit WITHOUT truncating any content — smaller base
+ * font-size, tighter line-height, reduced table/cell padding and margins.
+ * Applied only when dropping "Past prints" alone wasn't enough. Same
+ * !important requirement as PRINT_CSS (inline styles throughout the
+ * envelope). The leading HTML comment is a stable, content-independent
+ * marker so callers/tests can detect whether a given render used compaction
+ * without depending on the exact tuned values below.
+ */
+const COMPACT_CSS = `<!-- compact-print-sheet -->
+<style>
+  @media print {
+    body { font-size: 90% !important; }
+    p, li { margin: 10px 0 !important; line-height: 1.35 !important; }
+    h1 { margin: 0 0 12px !important; }
+    h2 { margin: 24px 0 10px !important; padding-bottom: 6px !important; }
+    h3 { margin: 18px 0 8px !important; }
+    ul { margin: 10px 0 !important; }
+    table { margin: 10px 0 !important; }
+    th, td { padding: 4px 6px !important; }
+    blockquote { margin: 12px 0 !important; padding: 8px 12px !important; }
+  }
 </style>`;
 
 export function composePrintSheetHtml(inputs: PrintSheetInputs): string;
 export function composePrintSheetHtml(
   inputs: PrintSheetInputs,
-  opts: { includePastPrints?: boolean },
+  opts: { includePastPrints?: boolean; compact?: boolean },
 ): string;
 export function composePrintSheetHtml(
   inputs: PrintSheetInputs,
-  opts: { includePastPrints?: boolean } = {},
+  opts: { includePastPrints?: boolean; compact?: boolean } = {},
 ): string {
   const includePast = opts.includePastPrints !== false;
   const slot = inputs.eventTime ? ` (${inputs.eventTime.toUpperCase()})` : "";
@@ -110,5 +181,6 @@ export function composePrintSheetHtml(
     .join("\n\n");
   const title = `${inputs.symbol} earnings sheet — ${inputs.eventDate}${slot}`;
   const html = briefingToHtml(md, title, `from preview email sent ${inputs.sentAt} · fill-in sheet`);
-  return html.replace("</body>", `${PRINT_CSS}\n</body>`);
+  const css = opts.compact ? `${PRINT_CSS}\n${COMPACT_CSS}` : PRINT_CSS;
+  return html.replace("</body>", `${css}\n</body>`);
 }

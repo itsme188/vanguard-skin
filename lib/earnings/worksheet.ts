@@ -456,11 +456,17 @@ export function printViaLp(
  * stands in for it). Any failure along that road — no Chrome binary, an
  * unparseable/0-page render, a print error — falls back to the
  * deterministic/rich monospace sheet (`composeWorksheetForEvent`,
- * unchanged), so a print always produces SOME paper. One-sheet rule: if the
- * first PDF render comes out longer than 2 pages, retry ONCE without the
- * "Past prints" section (the flexible, lowest-priority block) and print
- * whatever that yields — notes and the bogies table never truncate to force
- * a page count.
+ * unchanged), so a print always produces SOME paper. One-sheet rule
+ * (2026-08-07: extended to a 3-render ladder, capped — never loops): if the
+ * first PDF render comes out longer than 2 pages, re-render WITHOUT the
+ * "Past prints" section (the flexible, lowest-priority block); if THAT is
+ * still longer than 2 pages, re-render once more with `{ compact: true }`
+ * (smaller font, tighter spacing — see `lib/earnings/print-sheet.ts`'s
+ * COMPACT_CSS) stacked on top of the dropped Past prints, shrinking the
+ * layout to fit WITHOUT truncating anything. Whichever render is LAST
+ * attempted is what prints — notes and the bogies table never truncate to
+ * force a page count, so a stubborn overflow (3 renders, still >2 pages)
+ * prints anyway rather than cutting content.
  *
  * Stamp semantics (2026-08-07 decision, supersedes the spec's original
  * error-table row): a PDF-road `lp` failure falls through to the monospace
@@ -505,12 +511,24 @@ export async function printWorksheetNow(
       // failure so it lands in the catch below and degrades to monospace.
       if (pages === 0) throw new Error("unparseable PDF (no /Type /Page objects)");
       if (pages > 2) {
-        // One-sheet rule: drop Past prints and try once more. If notes alone
-        // still push it past 2 pages, print anyway — notes never truncate.
+        // Step 2 of the one-sheet ladder: drop Past prints (the flexible,
+        // lowest-priority block) and try again.
         html = composePrintSheetHtml(sheet, { includePastPrints: false });
         pdf = await renderPdf(html);
         pages = countPdfPages(pdf);
         if (pages === 0) throw new Error("unparseable PDF (no /Type /Page objects)");
+        if (pages > 2) {
+          // Step 3: still doesn't fit — compact the layout (smaller font,
+          // tighter spacing) instead of truncating anything, stacked on top
+          // of the already-dropped Past prints. If this is STILL >2 pages,
+          // fall through and print it anyway — notes and the bogies table
+          // never truncate to force a page count. Capped here: never a
+          // fourth render.
+          html = composePrintSheetHtml(sheet, { includePastPrints: false, compact: true });
+          pdf = await renderPdf(html);
+          pages = countPdfPages(pdf);
+          if (pages === 0) throw new Error("unparseable PDF (no /Type /Page objects)");
+        }
       }
       const dir = mkdtempSync(join(tmpdir(), "vgs-sheet-"));
       const pdfPath = join(dir, `${sheet.symbol}-sheet.pdf`);
