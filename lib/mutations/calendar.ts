@@ -312,6 +312,7 @@ export interface CorrectEarningsDateResult {
   newEventId?: number; // the corrected manual row (created or pre-existing)
   deletedIds?: number[]; // wrong rows removed + suppressed
   bogeysMigrated?: number;
+  auditRowsMigrated?: number; // earnings_emails + earnings_email_skips repointed
   refusedReason?: string; // set when ok=false (e.g. captured actuals)
   code?: "no_change"; // discriminates a benign no-op refusal from a hard one
 }
@@ -508,12 +509,25 @@ export function correctEarningsEventDate(
     // call exists to preserve. Everything below operates on the rest.
     const doomedRows = wrongRows.filter((r) => r.id !== newEventId);
 
-    // ── 2. Migrate user-curated bogeys off the doomed rows ─────────────────
+    // ── 2. Migrate user-curated bogeys + email audit off the doomed rows ────
+    // earnings_emails / earnings_email_skips repoint alongside bogeys (the
+    // reconcile-earnings-dates.ts sibling already carries this exact list):
+    // a correction moves the event, it does not unsend the preview — losing
+    // the audit row destroys the archived email AND re-opens the event as a
+    // findEmailCandidates send candidate (duplicate-preview risk). UPDATE OR
+    // IGNORE keeps the corrected row's own (event_id, phase) row on a UNIQUE
+    // collision; the doomed duplicate then dies in the delete CASCADE.
     let bogeysMigrated = 0;
+    let auditRowsMigrated = 0;
     for (const row of doomedRows) {
       bogeysMigrated += db
         .prepare("UPDATE OR IGNORE earnings_bogeys SET event_id = ? WHERE event_id = ?")
         .run(newEventId, row.id).changes;
+      for (const table of ["earnings_emails", "earnings_email_skips"]) {
+        auditRowsMigrated += db
+          .prepare(`UPDATE OR IGNORE ${table} SET event_id = ? WHERE event_id = ?`)
+          .run(newEventId, row.id).changes;
+      }
     }
 
     // ── 3. Delete the wrong rows + suppress the tuple ──────────────────────
@@ -523,7 +537,7 @@ export function correctEarningsEventDate(
       deletedIds.push(row.id);
     }
 
-    return { ok: true, newEventId, deletedIds, bogeysMigrated };
+    return { ok: true, newEventId, deletedIds, bogeysMigrated, auditRowsMigrated };
   });
 
   return runCorrection();

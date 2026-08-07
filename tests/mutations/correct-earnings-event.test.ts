@@ -370,6 +370,94 @@ describe("correctEarningsEventDate", () => {
     expect(result.ok).toBe(true);
   });
 
+  // ── Sent-email audit preservation (QA 2026-08-07) ─────────────────────────
+  // A date/slot correction must carry earnings_emails + earnings_email_skips
+  // onto the corrected row the same way earnings_bogeys migrate — pre-fix the
+  // delete CASCADE destroyed the archived email and made the event a send
+  // candidate again (duplicate-preview risk via findEmailCandidates).
+
+  function addSentEmail(db2: import("better-sqlite3").Database, eventId: number, phase: string, md: string): void {
+    db2.prepare(
+      `INSERT INTO earnings_emails (event_id, phase, recipient, ai_output_md) VALUES (?, ?, 'me@example.com', ?)`,
+    ).run(eventId, phase, md);
+  }
+
+  it("migrates earnings_emails audit rows onto the corrected row on a date change", () => {
+    const wrongId = seedFinnhub(db, "VRTX", "2026-08-03");
+    addSentEmail(db, wrongId, "preview", "# VRTX preview prose");
+    db.prepare(`INSERT INTO earnings_email_skips (event_id, phase) VALUES (?, 'recap')`).run(wrongId);
+
+    const res = correctEarningsEventDate(db, {
+      symbol: "VRTX",
+      wrongDate: "2026-08-03",
+      correctDate: "2026-08-05",
+      slot: "AMC",
+    });
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+
+    const email = db
+      .prepare(`SELECT event_id, ai_output_md FROM earnings_emails WHERE phase='preview'`)
+      .get() as { event_id: number; ai_output_md: string };
+    expect(email.event_id).toBe(res.newEventId);
+    expect(email.ai_output_md).toBe("# VRTX preview prose");
+
+    const skip = db
+      .prepare(`SELECT event_id FROM earnings_email_skips WHERE phase='recap'`)
+      .get() as { event_id: number };
+    expect(skip.event_id).toBe(res.newEventId);
+  });
+
+  it("preserves the sent-email audit through a slot-only (same-date) correction", () => {
+    const wrongId = seedFinnhub(db, "VRTX", "2026-08-03", { eventTime: "AMC" });
+    addSentEmail(db, wrongId, "preview", "# VRTX preview prose");
+
+    const res = correctEarningsEventDate(db, {
+      symbol: "VRTX",
+      wrongDate: "2026-08-03",
+      correctDate: "2026-08-03",
+      slot: "BMO",
+    });
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+
+    const email = db
+      .prepare(`SELECT event_id, ai_output_md FROM earnings_emails WHERE phase='preview'`)
+      .get() as { event_id: number; ai_output_md: string };
+    expect(email.event_id).toBe(res.newEventId);
+    expect(email.ai_output_md).toBe("# VRTX preview prose");
+  });
+
+  it("keeps the corrected row's own audit row on a UNIQUE collision (doomed duplicate cascades)", () => {
+    const wrongId = seedFinnhub(db, "MELI", "2026-08-03");
+    const rightId = seedFinnhub(db, "MELI", "2026-08-05", {
+      eventTime: "AMC",
+      sourceKeySuffix: ":right",
+    });
+    addSentEmail(db, wrongId, "preview", "# wrong-row prose");
+    addSentEmail(db, rightId, "preview", "# right-row prose");
+
+    const res = correctEarningsEventDate(db, {
+      symbol: "MELI",
+      wrongDate: "2026-08-03",
+      correctDate: "2026-08-05",
+      slot: "AMC",
+    });
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.newEventId).toBe(rightId); // adoption path
+
+    const emails = db
+      .prepare(`SELECT event_id, ai_output_md FROM earnings_emails WHERE phase='preview'`)
+      .all() as Array<{ event_id: number; ai_output_md: string }>;
+    expect(emails).toHaveLength(1);
+    expect(emails[0].event_id).toBe(rightId);
+    expect(emails[0].ai_output_md).toBe("# right-row prose");
+  });
+
   it("falls back to AMC when there is no wrong row and no slot passed", () => {
     const res = correctEarningsEventDate(db, {
       symbol: "ZZZ",
