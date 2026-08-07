@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useLayoutEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 
 interface Props {
@@ -151,6 +151,55 @@ export function EarningsDateChip({
   const [rtSaving, setRtSaving] = useState(false);
   const [rtMsg, setRtMsg] = useState<string | null>(null);
 
+  // Viewport-aware popover alignment (QA 2026-08-07): popoverAlign is a
+  // static hint from the call site, but the chip's actual position decides
+  // whether that edge fits — a conflict chip near the LEFT gutter with
+  // popoverAlign="right" pushed the 240px popover to x=-142 on a 390px
+  // viewport, leaving the date options unreadable mid-correction. Measure on
+  // open and flip the alignment when the requested edge would overflow while
+  // the opposite edge fits.
+  const wrapRef = useRef<HTMLSpanElement | null>(null);
+  const [alignOverride, setAlignOverride] = useState<"left" | "right" | null>(null);
+  const POPOVER_W = 240; // matches w-60
+  const EDGE_PAD = 8;
+  useLayoutEffect(() => {
+    if (!open) {
+      setAlignOverride(null);
+      return;
+    }
+    const measure = () => {
+      const rect = wrapRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const vw = window.innerWidth;
+      if (
+        popoverAlign === "right" &&
+        rect.right - POPOVER_W < EDGE_PAD &&
+        rect.left + POPOVER_W <= vw - EDGE_PAD
+      ) {
+        setAlignOverride("left");
+      } else if (
+        popoverAlign === "left" &&
+        rect.left + POPOVER_W > vw - EDGE_PAD &&
+        rect.right - POPOVER_W >= EDGE_PAD
+      ) {
+        setAlignOverride("right");
+      } else {
+        setAlignOverride(null);
+      }
+    };
+    measure();
+    // Re-measure while open: phone rotation changes the viewport under a
+    // popover that has no dismiss handler, re-creating the offscreen bug
+    // with a stale alignment.
+    window.addEventListener("resize", measure);
+    window.addEventListener("orientationchange", measure);
+    return () => {
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("orientationchange", measure);
+    };
+  }, [open, popoverAlign]);
+  const resolvedAlign = alignOverride ?? popoverAlign;
+
   const slotParam = releaseTime && releaseTime < "12:00" ? "bmo" : "amc";
 
   async function loadReleaseTime() {
@@ -260,7 +309,7 @@ export function EarningsDateChip({
     }[dateStatus];
 
     return (
-      <span className="relative inline-flex">
+      <span ref={wrapRef} className="relative inline-flex">
         <button
           type="button"
           onClick={() => {
@@ -278,7 +327,7 @@ export function EarningsDateChip({
           // rail-tie family as the conflict popover below.
           <div
             className={`absolute z-[55] top-full mt-1 w-60 rounded-lg border border-edge bg-panel p-2 shadow-lg text-left ${
-              popoverAlign === "right" ? "right-0" : "left-0"
+              resolvedAlign === "right" ? "right-0" : "left-0"
             }`}
           >
             <p className="text-[11px] text-ink-dim">
@@ -362,7 +411,7 @@ export function EarningsDateChip({
   }
 
   return (
-    <span className="relative inline-flex">
+    <span ref={wrapRef} className="relative inline-flex">
       <button
         type="button"
         onClick={() => {
@@ -380,7 +429,7 @@ export function EarningsDateChip({
         // rail-tie family as the Analysis drawer fix (trust-strip precedent).
         <div
           className={`absolute z-[55] top-full mt-1 w-60 rounded-lg border border-edge bg-panel p-2 shadow-lg text-left ${
-            popoverAlign === "right" ? "right-0" : "left-0"
+            resolvedAlign === "right" ? "right-0" : "left-0"
           }`}
         >
           <p className="text-[11px] text-ink-dim mb-1.5">
