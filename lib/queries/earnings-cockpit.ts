@@ -183,7 +183,13 @@ export function buildCockpitPayload(
         releaseTime: r.release_time,
         symbolStatus: status as "held" | "watchlist",
         consensus: formatFinnhubFigureCompact(r.consensus_value ?? r.consensus_estimate),
-        actual: r.actual_value ? formatFinnhubFigureCompact(r.actual_value) : null,
+        // An implausible Finnhub actual is withheld from the cons→actual
+        // figures line (the "act ⚠" stage chip carries the flag) — same
+        // guard-at-the-consumer treatment as the EarningsHub's blanked cells.
+        actual:
+          r.actual_value && stages.actual !== "implausible"
+            ? formatFinnhubFigureCompact(r.actual_value)
+            : null,
         stages,
         netExposure: exposureMap[r.symbol] ?? 0,
         isTopExposure: false, // set per-lane below

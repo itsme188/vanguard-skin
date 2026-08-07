@@ -146,6 +146,49 @@ describe("buildCockpitPayload", () => {
     expect(payload.lanes.amc[0].hasCallNote).toBe(true);
   });
 
+  // QA 2026-08-07: the hub blanks implausible Finnhub actuals; the cockpit
+  // must not render the same rejected figure as a cons→actual print result.
+  it("withholds an implausible actual from the figures line (stage carries the flag)", () => {
+    seedAccountAndHolding("AMN");
+    const ev = seedEvent({
+      symbol: "AMN",
+      eventDate: "2026-07-08",
+      eventTime: "BMO",
+      releaseTime: "08:00",
+      actual: "EPS 0.77 · Rev 673240000",
+    });
+    db.prepare("UPDATE calendar_events SET consensus_estimate = ? WHERE id = ?").run(
+      "EPS 0.19 · Rev 634637984",
+      ev
+    );
+
+    const payload = buildCockpitPayload(db, NOW);
+    const row = payload.lanes.bmo[0];
+    expect(row.stages.actual).toBe("implausible");
+    expect(row.actual).toBeNull(); // withheld, like the hub's blanked cells
+    expect(row.consensus).toContain("$0.19");
+  });
+
+  it("keeps a plausible actual on the figures line", () => {
+    seedAccountAndHolding("JPM");
+    const ev = seedEvent({
+      symbol: "JPM",
+      eventDate: "2026-07-08",
+      eventTime: "BMO",
+      releaseTime: "08:00",
+      actual: "EPS 0.21 · Rev 640000000",
+    });
+    db.prepare("UPDATE calendar_events SET consensus_estimate = ? WHERE id = ?").run(
+      "EPS 0.19 · Rev 634637984",
+      ev
+    );
+
+    const payload = buildCockpitPayload(db, NOW);
+    const row = payload.lanes.bmo[0];
+    expect(row.stages.actual).toBe("captured");
+    expect(row.actual).toContain("$0.21");
+  });
+
   it("returns empty lanes + null nextRelease on a quiet day", () => {
     const payload = buildCockpitPayload(db, NOW);
     expect(payload.lanes.bmo).toEqual([]);
