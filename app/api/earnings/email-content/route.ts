@@ -6,6 +6,7 @@ import {
   loadIntelView,
 } from "@/lib/digest/send-earnings-email";
 import { getEmailAudit } from "@/lib/queries/earnings-emails";
+import { repairCitationLineBreaks } from "@/lib/earnings/repair-citation-linebreaks";
 import type { CalendarEvent } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -83,7 +84,10 @@ export async function GET(request: Request) {
   }
 
   const scoreboardMd = renderHeadlineTable(event, symbol, phase, intelView);
-  const aiMarkdown = audit.ai_output_md ?? "";
+  // Display-time repair only (never at send/compose time) for pre-fix rows
+  // whose stored prose has citation-split bare-newline fragments — see
+  // lib/earnings/repair-citation-linebreaks.ts.
+  const aiMarkdown = repairCitationLineBreaks(audit.ai_output_md ?? "");
   const fullMarkdown = `${scoreboardMd}\n\n${aiMarkdown}`;
   const fullHtml = briefingToHtml(fullMarkdown, title);
 

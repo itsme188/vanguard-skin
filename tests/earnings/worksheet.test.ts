@@ -4,6 +4,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import {
@@ -12,6 +13,8 @@ import {
   printArmedWorksheets,
   loadRichWorksheetInputs,
   composeWorksheetForEvent,
+  loadPrintSheetInputs,
+  printWorksheetNow,
   type WorksheetInputs,
 } from "@/lib/earnings/worksheet";
 import {
@@ -74,6 +77,14 @@ function seedPreviewEmail(
     `INSERT INTO earnings_emails (event_id, phase, recipient, sent_at, ai_output_md, error)
      VALUES (?, 'preview', 'me@example.com', '2026-08-06 12:05:00', ?, ?)`,
   ).run(eventId, aiOutputMd, error);
+}
+
+function seedReportHistory(symbol: string, reportedDate: string): void {
+  db.prepare(
+    `INSERT INTO earnings_report_history
+       (symbol, reported_date, eps_actual, eps_estimate, surprise_pct, post_print_move_pct)
+     VALUES (?, ?, 1.30, 1.25, 4.0, 2.1)`,
+  ).run(symbol, reportedDate);
 }
 
 function bogey(overrides: Partial<EarningsBogey>): EarningsBogey {
@@ -157,6 +168,15 @@ describe("composeWorksheet", () => {
     expect(text).not.toContain("NOTES (yours)");
     expect(text).not.toContain("exp move");
   });
+
+  it("renders full note text wrapped, never the 74-char chop", () => {
+    const longNote = "thesis ".repeat(60).trim(); // ~420 chars
+    const text = composeWorksheet({ ...BASE_INPUTS, noteLines: [longNote] });
+    const count = (text.match(/thesis/g) ?? []).length;
+    expect(count).toBe(60); // every word survived — no 74-char slice, no 6-note cap
+    const lines = text.trimEnd().split("\n");
+    for (const l of lines) expect(l.length).toBeLessThanOrEqual(80);
+  });
 });
 
 describe("loadWorksheetInputs", () => {
@@ -225,6 +245,130 @@ describe("composeWorksheetForEvent", () => {
 
   it("returns null for a missing or symbol-less event", () => {
     expect(composeWorksheetForEvent(db, 9999)).toBeNull();
+  });
+});
+
+describe("loadPrintSheetInputs", () => {
+  it("returns null when no preview email exists", () => {
+    const id = seedEvent("AAPL", "2026-08-06");
+    expect(loadPrintSheetInputs(db, id)).toBeNull();
+  });
+
+  it("returns null for a cloud-sent preview (no local prose)", () => {
+    const id = seedEvent("AAPL", "2026-08-06");
+    seedPreviewEmail(id, null, "sent-by-cloud");
+    expect(loadPrintSheetInputs(db, id)).toBeNull();
+  });
+
+  it("returns null when the preview prose has no bogies table", () => {
+    const id = seedEvent("AAPL", "2026-08-06");
+    seedPreviewEmail(id, "## The setup\n\nNo table under this heading.");
+    expect(loadPrintSheetInputs(db, id)).toBeNull();
+  });
+
+  it("assembles print-sheet inputs from a local preview", () => {
+    const id = seedEvent("AAPL", "2026-08-06");
+    seedPreviewEmail(id, PREVIEW_AI_MD);
+    const inputs = loadPrintSheetInputs(db, id);
+    expect(inputs).not.toBeNull();
+    expect(inputs!.symbol).toBe("AAPL");
+    expect(inputs!.eventDate).toBe("2026-08-06");
+    expect(inputs!.bogiesTableMd).toContain("Line-by-line bogies");
+    expect(inputs!.bogiesTableMd).toContain("AWS revenue");
+    expect(inputs!.scoreboardMd).toContain("scoreboard");
+    expect(inputs!.sentAt).toBe("2026-08-06 12:05:00");
+  });
+});
+
+describe("printWorksheetNow", () => {
+  let eventId: number;
+
+  beforeEach(() => {
+    eventId = seedEvent("AAPL", "2026-08-06");
+    seedPreviewEmail(eventId, PREVIEW_AI_MD);
+  });
+
+  it("takes the PDF road when preview + chrome available", async () => {
+    const calls: string[] = [];
+    const res = await printWorksheetNow(db, eventId, {
+      renderPdf: async () => Buffer.from("%PDF-1.4\n1 0 obj << /Type /Page >>\n%%EOF"),
+      printPdf: async () => { calls.push("pdf"); },
+      printText: async () => { calls.push("text"); },
+    });
+    expect(res.road).toBe("pdf");
+    expect(res.symbol).toBe("AAPL");
+    expect(calls).toEqual(["pdf"]);
+  });
+
+  it("falls back to monospace when the PDF render throws", async () => {
+    const calls: string[] = [];
+    const res = await printWorksheetNow(db, eventId, {
+      renderPdf: async () => { throw new Error("chrome missing"); },
+      printPdf: async () => { calls.push("pdf"); },
+      printText: async () => { calls.push("text"); },
+    });
+    expect(res.road).toBe("monospace");
+    expect(calls).toEqual(["text"]);
+  });
+
+  it("falls back to monospace when the rendered PDF is unparseable (0 pages)", async () => {
+    const calls: string[] = [];
+    const res = await printWorksheetNow(db, eventId, {
+      renderPdf: async () => Buffer.from("not a pdf at all — garbage bytes"),
+      printPdf: async () => { calls.push("pdf"); },
+      printText: async () => { calls.push("text"); },
+    });
+    expect(res.road).toBe("monospace");
+    expect(calls).toEqual(["text"]);
+  });
+
+  it("re-renders without past prints when the PDF exceeds 2 pages, then prints", async () => {
+    seedReportHistory("AAPL", "2026-05-01");
+    const seen: string[] = [];
+    const threePager = Buffer.from("%PDF\n<</Type /Page>><</Type /Page>><</Type /Page>>");
+    const onePager = Buffer.from("%PDF\n<</Type /Page>>");
+    let call = 0;
+    let printedBytes: Buffer | null = null;
+    const res = await printWorksheetNow(db, eventId, {
+      renderPdf: async (html) => { seen.push(html); return call++ === 0 ? threePager : onePager; },
+      // Read the file back WHILE it still exists — printWorksheetNow cleans
+      // up its temp dir right after this resolves, so reading from the test
+      // body afterward would race the rmSync.
+      printPdf: async (path) => { printedBytes = readFileSync(path); },
+      printText: async () => {},
+    });
+    expect(res.road).toBe("pdf");
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toContain("Past prints");
+    expect(seen[1]).not.toContain("Past prints");
+    // The file actually sent to lp is the SECOND (one-pager) render, not the
+    // first, oversized one.
+    expect(printedBytes).toEqual(onePager);
+  });
+
+  it("still prints when notes alone exceed 2 pages (notes never truncate)", async () => {
+    const threePager = Buffer.from("%PDF\n<</Type /Page>><</Type /Page>><</Type /Page>>");
+    const printPdf = vi.fn(async () => {});
+    const res = await printWorksheetNow(db, eventId, {
+      renderPdf: async () => threePager,
+      printPdf,
+      printText: async () => {},
+    });
+    expect(res.road).toBe("pdf");
+    expect(printPdf).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the deterministic monospace road when no local preview exists (unchanged)", async () => {
+    const bareId = seedEvent("MSFT", "2026-08-06");
+    const calls: string[] = [];
+    const res = await printWorksheetNow(db, bareId, {
+      renderPdf: async () => Buffer.from("%PDF\n<</Type /Page>>"),
+      printPdf: async () => { calls.push("pdf"); },
+      printText: async () => { calls.push("text"); },
+    });
+    expect(res.road).toBe("monospace");
+    expect(res.symbol).toBe("MSFT");
+    expect(calls).toEqual(["text"]);
   });
 });
 
@@ -328,6 +472,76 @@ describe("printArmedWorksheets wait-for-preview gate", () => {
     const r = await printArmedWorksheets(db, { now: new Date("2026-08-06T19:00:00Z"), print });
     expect(r.printed).toBe(0);
     expect(print).not.toHaveBeenCalled();
+  });
+});
+
+describe("printArmedWorksheets — real printWorksheetNow seam (PDF road integration)", () => {
+  // The auto-print sweep's default `print` seam IS printWorksheetNow — these
+  // tests wire printArmedWorksheets to the REAL function (with DI seams for
+  // renderPdf/printPdf/printText) to prove the PDF road's stamp/retry
+  // semantics hold end-to-end, not just in isolation.
+  const NOW = new Date("2026-08-06T18:30:00Z"); // 14:30 ET — 105m before a 16:15 AMC release
+
+  it("PDF road success stamps printed_at", async () => {
+    const eventId = seedEvent("AAPL", "2026-08-06");
+    armWorksheet(db, eventId);
+    seedPreviewEmail(eventId, PREVIEW_AI_MD);
+    const printPdf = vi.fn(async () => {});
+    const printText = vi.fn(async () => {});
+    const seams = {
+      renderPdf: async () => Buffer.from("%PDF-1.4\n1 0 obj << /Type /Page >>\n%%EOF"),
+      printPdf,
+      printText,
+    };
+
+    const r = await printArmedWorksheets(db, {
+      now: NOW,
+      print: (d, id) => printWorksheetNow(d, id, seams),
+    });
+    expect(r.printed).toBe(1);
+    expect(printPdf).toHaveBeenCalledTimes(1);
+    expect(printText).not.toHaveBeenCalled();
+    expect(getWorksheetFlagsForEvents(db, [eventId]).get(eventId)!.printedAt).not.toBeNull();
+  });
+
+  it("PDF render failure falls back to monospace and STILL stamps", async () => {
+    const eventId = seedEvent("AAPL", "2026-08-06");
+    armWorksheet(db, eventId);
+    seedPreviewEmail(eventId, PREVIEW_AI_MD);
+    const printPdf = vi.fn(async () => {});
+    const printText = vi.fn(async () => {});
+    const seams = {
+      renderPdf: async () => { throw new Error("chrome missing"); },
+      printPdf,
+      printText,
+    };
+
+    const r = await printArmedWorksheets(db, {
+      now: NOW,
+      print: (d, id) => printWorksheetNow(d, id, seams),
+    });
+    expect(r.printed).toBe(1);
+    expect(printPdf).not.toHaveBeenCalled();
+    expect(printText).toHaveBeenCalledTimes(1);
+    expect(getWorksheetFlagsForEvents(db, [eventId]).get(eventId)!.printedAt).not.toBeNull();
+  });
+
+  it("both roads failing leaves the flag unstamped for the next tick's retry", async () => {
+    const eventId = seedEvent("AAPL", "2026-08-06");
+    armWorksheet(db, eventId);
+    seedPreviewEmail(eventId, PREVIEW_AI_MD);
+    const seams = {
+      renderPdf: async () => { throw new Error("chrome missing"); },
+      printPdf: async () => {},
+      printText: async () => { throw new Error("printer offline"); },
+    };
+
+    const r = await printArmedWorksheets(db, {
+      now: NOW,
+      print: (d, id) => printWorksheetNow(d, id, seams),
+    });
+    expect(r.printed).toBe(0);
+    expect(getWorksheetFlagsForEvents(db, [eventId]).get(eventId)!.printedAt).toBeNull();
   });
 });
 

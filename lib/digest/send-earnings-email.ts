@@ -240,10 +240,13 @@ export async function composeEarningsEmail(
   // AI-generated) — the recap doesn't repeat it.
   const pastPrintsBlock =
     phase === "preview" ? renderPastPrintsBlock(intelView?.history ?? []) : "";
-  const markdown = pastPrintsBlock
-    ? `${headlineTable}\n\n${pastPrintsBlock}\n\n${aiMarkdown}`
-    : `${headlineTable}\n\n${aiMarkdown}`;
-
+  const sheetBogeysBlock = renderSheetBogeysBlock(getBogeysForEvent(db, event.id));
+  const markdown = assembleEmailMarkdown([
+    headlineTable,
+    pastPrintsBlock || null,
+    sheetBogeysBlock || null,
+    aiMarkdown,
+  ]);
   const dateStr = formatDateLong(event.event_date);
   const releaseTimeStr = event.release_time ? ` ${event.release_time} ET` : "";
   const phaseLabel = phase === "preview" ? "Earnings Preview" : "Earnings Recap";
@@ -1494,15 +1497,19 @@ Use the structured context above as the source of truth for positions, consensus
 
 Rows: every segment, KPI, and guidance metric the Street is watching for ${ctx.symbol} specifically — pulled from the prior-quarter transcript / sell-side notes / press releases in the context above (or web_search if context is thin). Examples for a tech name: revenue by segment, gross margin, operating margin, FCF, capex, ARR / billings, customer count, guide for next quarter, full-year guide. Examples for a consumer name: organic revenue growth, unit case volume by region, operating margin by segment. **Use \`—\` (em-dash) in the Actual + Δ columns** — this is a preview, the user writes in the actuals during the call. Aim for 8–15 rows; segment-rich names get more, narrow-business names get fewer.
 
-2. **\`## The setup\`** — 2-3 sentences. Where does ${ctx.symbol} go into the print? Stock action over the past 30 days. Posture into the call.
+**Sheet-bogey attribution:** a deterministic "## Sheet bogeys — by source" table is rendered by the system between Past prints and your output — do NOT re-list its rows. In YOUR line-by-line table, when a row's Consensus / Prior number comes from a user-uploaded sheet, cite the source label in-cell — \`4.42 (TMTB w)\` — and when sources disagree on a metric, show both and never merge or average them: \`$4.34B TMTB / $4.40B FundaAI\`.
+
+2. **\`## The setup\`** — 2-3 sentences. Where does ${ctx.symbol} go into the print? Stock action over the past 30 days. Posture into the call. Open with one sentence in your own words framing where the name sits going into the print, before citing any supporting figure or source.
 
 3. **\`## Bull case / bear case\`** — concise. What sets up a beat-and-raise; what triggers a sell-off. Reference newsletter views by author when applicable.
 
-4. **\`## What to watch on the call\`** — guidance change, segment commentary, capex, any specific issue current sell-side notes are pushing for.
+4. **\`## What to watch on the call\`** — Format this section as a numbered markdown list (\`1. **Label** — detail\`), one line per watch item — never inline parenthetical numbering ("(1)...(2)...") inside a run-on paragraph, and never a dash-bulleted list. Match the list style already used in the "Line-by-line bogies" table\'s row density: aim for 4-7 items. Cover guidance change, segment commentary, capex, any specific issue current sell-side notes are pushing for.
 
 5. **\`## Position implications\`** — given the user's combined position (use the §Positions block verbatim), what's the asymmetry? Hedged or naked? If there are option positions in the data, mention assignment / IV-crush risk explicitly.
 
 6. **\`## Sources\`** — a footer listing the newsletter article subjects + dates we cited, plus any web URLs.
+
+**Section style (strict):** each prose section is 1–3 flowing paragraphs that read as one analyst's narrative — sections build on one another, never restart the story. Bullets ONLY for genuinely enumerable items (max 4 bullets, never a bulleted wall — except where a numbered list is explicitly specified above (the What-to-watch numbered list keeps its own 4-7 item count)). No orphan bold-line fragments standing in for sentences. No filler openers ("Investors will be watching…", "It remains to be seen…") — start every section with a substantive claim.
 
 **Number formatting (strict):** Quote large monetary values in compact form — \`$4.34B\` for billions (2dp), \`$245M\` for millions (1dp), \`$0.91\` for EPS-scale dollars (2dp), \`12.3M units\` for unit counts (1dp). Never write out full digits with commas like \`4,345,870,107\` or \`$11,000,000,000\` — they're hard to read on a phone and impossible to print legibly. Percentages stay as \`±N.N%\` (1dp). Apply this rule everywhere: tables, prose, scenarios.
 
@@ -1591,6 +1598,8 @@ Use the structured context above as the source of truth. **For anything missing 
 \`\`\`
 
 Rows: every segment, KPI, and guidance line ${ctx.symbol} reported — fill from the press release (use web_search to find it if not in the press-release context above). Mirror the bogies the prior-quarter transcript called out so the recap visually overlays the preview. **Fill in the Actual + Δ columns** with the reported values; use \`—\` only when truly unavailable (e.g., a metric the company didn't break out this quarter). Aim for 8–15 rows.
+
+**Sheet-bogey attribution:** a deterministic "## Sheet bogeys — by source" table is rendered by the system ABOVE your output, directly under the scoreboard — do NOT re-list its rows. In YOUR line-by-line table, when a row's Consensus / Prior number comes from a user-uploaded sheet, cite the source label in-cell — \`4.42 (TMTB w)\` — and when sources disagree on a metric, show both and never merge or average them: \`$4.34B TMTB / $4.40B FundaAI\`.
 
 2. **\`## The reaction\`** — stock move vs. SPY/QQQ/sector. If a transcript or call quotes are available via web_search, lead with the one or two quotes that explain the move. If not, note "transcript not yet posted — recap will update if a follow-up runs."
 
@@ -1827,6 +1836,83 @@ export function renderPriorCallNoteBlock(note: EarningsCallNote | null): string 
   return `\n## Last quarter's call, in your words\n${lines.join("\n")}\n`;
 }
 
+/** Assemble email markdown blocks with falsy-filtering and newline joining. */
+export function assembleEmailMarkdown(parts: (string | null | undefined | false)[]): string {
+  return parts.filter(Boolean).join("\n\n");
+}
+
+/**
+ * Escapes markdown-table-breaking pipe characters in a cell/label that may
+ * carry AI-extracted free text (a bogey's `source_label`, or a
+ * `segment_breakdown_json` key) — an unescaped "|" shifts every column after
+ * it in the row it lands in, silently corrupting the sheet-bogeys table.
+ */
+function escapeCell(text: string): string {
+  return text.replace(/\|/g, "\\|");
+}
+
+/**
+ * Deterministic per-source bogeys table (user decision 2026-08-06): when
+ * curated sheets disagree, each source's numbers must be visible — the AI's
+ * single Consensus/Prior column merges them. Code-rendered from
+ * earnings_bogeys rows; the AI is told this table is system-rendered.
+ * Columns = sources (most recent first, cap 3); rows = EPS / Revenue /
+ * Expected move (only when >=1 source carries the value) + unioned segments.
+ * Whispers render bold with a `w` mark. Empty input → "" (email unchanged).
+ */
+export function renderSheetBogeysBlock(bogeys: EarningsBogey[]): string {
+  if (bogeys.length === 0) return "";
+  const sorted = [...bogeys].sort((a, b) => b.uploaded_at.localeCompare(a.uploaded_at));
+  const shown = sorted.slice(0, 3);
+  const older = sorted.length - shown.length;
+
+  const cell = (cons: string | null, whisper: string | null): string => {
+    const parts: string[] = [];
+    if (cons) parts.push(cons);
+    if (whisper) parts.push(`**w ${whisper}**`);
+    return parts.length ? parts.join(" · ") : "—";
+  };
+  const segs = (b: EarningsBogey): Record<string, { consensus?: number; whisper?: number }> => {
+    if (!b.segment_breakdown_json) return {};
+    try { return JSON.parse(b.segment_breakdown_json); } catch { return {}; }
+  };
+
+  type Row = { label: string; cells: string[] };
+  const rows: Row[] = [];
+  const pushIfAny = (label: string, cells: string[]) => {
+    if (cells.some((c) => c !== "—")) rows.push({ label, cells });
+  };
+  pushIfAny("EPS", shown.map((b) => cell(
+    b.eps_consensus != null ? b.eps_consensus.toFixed(2) : null,
+    b.eps_whisper != null ? b.eps_whisper.toFixed(2) : null)));
+  pushIfAny("Revenue", shown.map((b) => cell(
+    b.revenue_consensus_usd != null ? formatLargeUSD(b.revenue_consensus_usd) : null,
+    b.revenue_whisper_usd != null ? formatLargeUSD(b.revenue_whisper_usd) : null)));
+  pushIfAny("Expected move", shown.map((b) =>
+    b.expected_move_pct != null ? `±${b.expected_move_pct.toFixed(1)}%` : "—"));
+
+  const segNames = [...new Set(shown.flatMap((b) => Object.keys(segs(b))))];
+  for (const name of segNames) {
+    pushIfAny(`${escapeCell(name)} (seg)`, shown.map((b) => {
+      const v = segs(b)[name];
+      return cell(
+        v?.consensus != null ? formatLargeUSD(v.consensus) : null,
+        v?.whisper != null ? formatLargeUSD(v.whisper) : null);
+    }));
+  }
+  if (rows.length === 0) return "";
+
+  const day = (b: EarningsBogey) => {
+    const d = b.uploaded_at.slice(0, 10);
+    return `${Number(d.slice(5, 7))}/${d.slice(8, 10)}`;
+  };
+  const header = `| Metric | ${shown.map((b) => `${escapeCell(b.source_label ?? b.source)} (${day(b)})`).join(" | ")} |`;
+  const sep = `|---|${shown.map(() => "---").join("|")}|`;
+  const body = rows.map((r) => `| ${r.label} | ${r.cells.join(" | ")} |`).join("\n");
+  const olderLine = older > 0 ? `\n\n*(+${older} older sheet${older > 1 ? "s" : ""} not shown)*` : "";
+  return `## Sheet bogeys — by source\n\n${header}\n${sep}\n${body}${olderLine}`;
+}
+
 function renderBogeysBlock(ctx: PreviewContext): string {
   if (ctx.bogeys.length === 0) return "";
   const lines = ctx.bogeys.map((b, i) => {
@@ -1920,6 +2006,52 @@ export async function createWithTokenLadder<
   return response;
 }
 
+/**
+ * Concatenates Claude's response text blocks into one continuous string.
+ *
+ * IMPORTANT — join with "" (no separator), never "\n" or " ". When the
+ * server-side web_search tool cites a source, Anthropic splits the
+ * response's prose across multiple adjacent TextBlocks around the cited
+ * span; the full text is reconstructed by concatenating blocks in order.
+ * Whatever whitespace the model intended between fragments already lives
+ * INSIDE each block's own .text (a trailing space before the citation, a
+ * "\n\n" paragraph break inside a single block) — inserting our own
+ * separator between blocks manufactures whitespace that was never there.
+ *
+ * Pre-fix this joined with "\n", which planted a literal mid-sentence line
+ * break at every citation boundary with no blank line around it.
+ * briefingToHtml's line-based paragraph parser then rendered each fragment
+ * as its own one-line <p>, or — inside a numbered/bulleted list — closed
+ * the list early around the orphan fragment and reopened a second one.
+ * Verified across 6 recent live preview sends: all mid-prose text-block
+ * boundaries examined showed this pattern in every prose section — the root cause of
+ * the "doesn't flow" complaint (docs/superpowers/plans/
+ * 2026-08-06-artifact-catalog.md). Confirmed empirically: all 117
+ * mid-prose TextBlock boundaries across those 6 live rows reconstruct
+ * correctly with join("") and incorrectly with join("\n").
+ *
+ * Already-stored rows written before this fix landed still have the bad
+ * newlines baked into `ai_output_md` — those are repaired at the DISPLAY
+ * boundary only, via lib/earnings/repair-citation-linebreaks.ts, never
+ * here and never in the shared briefingToHtml renderer (which is used by
+ * three other composers that rely on its original per-line paragraph
+ * behavior — see tests/calendar/briefing-html-continuation-lines.test.ts).
+ *
+ * Caveat: callers must pass only TEXT blocks, already filtered from the
+ * raw `response.content` (as callClaude does via
+ * `.filter((b): b is Anthropic.TextBlock => b.type === "text")` before
+ * calling this). Non-text blocks — `server_tool_use` (the search
+ * invocation) and `web_search_tool_result` (its results) — must be
+ * dropped first. Two text blocks that were non-adjacent in the raw
+ * content array (separated by a tool-use/tool-result pair) still
+ * concatenate correctly once filtered: the whitespace on either side of
+ * the search call already lives inside the surrounding text blocks' own
+ * .text, not in the removed tool blocks.
+ */
+export function joinClaudeTextBlocks(blocks: { text: string }[]): string {
+  return blocks.map((b) => b.text).join("").trim();
+}
+
 async function callClaude(
   prompt: string,
   phase: "preview" | "recap",
@@ -1952,7 +2084,7 @@ async function callClaude(
   const textBlocks = response.content.filter(
     (b): b is Anthropic.TextBlock => b.type === "text",
   );
-  const text = textBlocks.map((b) => b.text).join("\n").trim();
+  const text = joinClaudeTextBlocks(textBlocks);
   if (!text) {
     throw new EarningsEmailError(
       `Claude returned empty content for ${phase}.`,
