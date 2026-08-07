@@ -66,7 +66,12 @@ export function formatPercent(value: number, digits = 1): string {
 
 export function formatShares(value: number, digits = 0): string {
   if (!Number.isFinite(value)) return "—";
-  if (digits === 0) return numberFormatter.format(Math.round(value));
+  if (digits === 0) {
+    // A fractional DRIP lot rounded to "0" reads as an empty lot beside its
+    // real cost basis — keep up to 4 fraction digits for non-integer counts.
+    if (Number.isInteger(value)) return numberFormatter.format(value);
+    return value.toLocaleString("en-US", { maximumFractionDigits: 4 });
+  }
   return value.toLocaleString("en-US", {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
