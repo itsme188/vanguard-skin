@@ -20,6 +20,7 @@ import { explodeHoldingBySector } from "./explode-sector";
 import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import { marketValue } from "@/lib/valuation";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
+import { formatLargeUSD } from "@/lib/format";
 
 export type CashDeployMode = "benchmark" | "factor_balance" | "heuristic";
 
@@ -317,7 +318,7 @@ export function suggestAllocation(
       "Couldn't match watchlist names to any benchmark gaps. Consider adding tickers in underweight sectors."
     );
   } else if (cashRemaining > 0.01) {
-    notes.push(`${formatCash(cashRemaining)} unallocated — no remaining underweight matches.`);
+    notes.push(`${formatLargeUSD(cashRemaining)} unallocated — no remaining underweight matches.`);
   }
 
   return {
@@ -331,11 +332,6 @@ export function suggestAllocation(
     cashRemaining,
     notes,
   };
-}
-
-function formatCash(n: number): string {
-  if (n >= 1000) return `$${(n / 1000).toFixed(1)}k`;
-  return `$${n.toFixed(0)}`;
 }
 
 // ---------------------------------------------------------------------------
