@@ -306,9 +306,11 @@ export function suggestAllocation(
     });
 
     cashRemaining -= allocation;
-    // Reduce the gap so subsequent candidates targeting the same sector don't double-fill
-    matchingGap.dollarGap += allocation; // dollarGap was negative for underweight; pushing toward 0
-    matchingGap.gapPp = -Math.abs(matchingGap.dollarGap) / projectedTotal * 100;
+    // Reduce the gap so subsequent candidates targeting the same sector don't double-fill.
+    // dollarGap is POSITIVE for an underweight sector (dollars needed to close);
+    // gapPp is NEGATIVE — both move toward 0 as cash lands in the sector.
+    matchingGap.dollarGap -= allocation;
+    matchingGap.gapPp += (allocation / projectedTotal) * 100;
   }
 
   const totalAllocated = picks.reduce((s, p) => s + p.allocationDollars, 0);
