@@ -69,7 +69,7 @@ export function getEventsByWeek(
   db: Database.Database,
   weekOf: string
 ): CalendarEvent[] {
-  return db
+  const events = db
     .prepare(
       `SELECT * FROM calendar_events
        WHERE week_of = ?
@@ -77,6 +77,17 @@ export function getEventsByWeek(
        ORDER BY event_date ASC, event_time ASC NULLS LAST, title ASC`
     )
     .all(weekOf) as CalendarEvent[];
+
+  // Dual-class fallback, same post-process as getEarningsForWeekDeduped: a
+  // sync row can carry security_id NULL even when the security (or a sibling
+  // share class) exists, which left week-ahead cards linkless/inert. Pure
+  // post-process — doesn't mutate the calendar_events row.
+  for (const e of events) {
+    if (e.security_id == null && e.symbol) {
+      e.security_id = getSecurityIdForSymbolWithSiblings(db, e.symbol);
+    }
+  }
+  return events;
 }
 
 export function getEventsForSecurity(
