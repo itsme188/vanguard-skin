@@ -153,7 +153,7 @@ describe("Marker dedup system", () => {
       expect(kv.put).toHaveBeenCalledWith(
         "mac-running-briefing-2026-05-08",
         expect.any(String),
-        expect.objectContaining({ expirationTtl: 10 * 60 })
+        expect.objectContaining({ expirationTtl: 15 * 60 })
       );
     });
 
@@ -162,14 +162,20 @@ describe("Marker dedup system", () => {
       expect(kv.put).toHaveBeenCalledWith(
         "mac-running-evening-2026-05-08",
         expect.any(String),
-        expect.objectContaining({ expirationTtl: 10 * 60 })
+        expect.objectContaining({ expirationTtl: 15 * 60 })
       );
     });
 
-    it("should use 10-minute TTL for running markers", async () => {
+    // 15 min, not 10 (2026-08-09). The Mac heartbeats this marker every 2 min
+    // for the lifetime of a send, so this TTL only has to outlive ONE starved
+    // gap — not the whole pipeline. The old 10 min was sized against a 5-min
+    // pipeline that has since grown to 13-17, and it expired before the
+    // Worker's dispatch on every job: digest (Mac 8:45 → expiry 8:55 → Worker
+    // 9:00), evening, and briefing alike.
+    it("should use 15-minute TTL for running markers", async () => {
       await setRunningMarker(kv, "digest", "2026-05-08");
       const putCall = (kv.put as any).mock.calls[0];
-      expect(putCall[2].expirationTtl).toBe(10 * 60);
+      expect(putCall[2].expirationTtl).toBe(15 * 60);
     });
   });
 

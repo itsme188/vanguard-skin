@@ -61,6 +61,56 @@ export function clearRunningMarker(type: "briefing" | "digest" | "evening"): Pro
   return callRunningMarkerEndpoint(type, "clear");
 }
 
+/** How often the marker is re-posted while a send pipeline is running. */
+const HEARTBEAT_MS = 2 * 60 * 1000;
+
+/**
+ * Hold `mac-running-{type}` for exactly the lifetime of `fn`.
+ *
+ * Two things this fixes, either of which alone loses the send race to the
+ * Worker's cloud fallback (both fired on the 2026-08-09 Sunday briefing):
+ *
+ *  1. The initial set is AWAITED. Callers used to fire `void setRunningMarker()`
+ *     and immediately enter the pipeline, whose synchronous better-sqlite3 work
+ *     starves the event loop for minutes — the un-awaited fetch never got a turn
+ *     and its own 3s AbortController killed it, so the marker was never written.
+ *     (The awaited `checkCloudMarker` one line earlier succeeded on the same
+ *     tick, which is how we know the network was never at fault.) Route entry is
+ *     before any heavy work, so awaiting here costs at most the 3s timeout.
+ *
+ *  2. The marker is RENEWED every 2 minutes. The Worker-side TTL is a fixed
+ *     constant, and a fixed constant silently ages out as the pipeline grows —
+ *     the original 10 min was sized against a 5-min pipeline that is now 13-17.
+ *     Heartbeating means no constant has to predict the pipeline's length; the
+ *     TTL only has to outlive a single starved gap.
+ *
+ * Never blocks delivery on Worker RTT: a failed set or beat is swallowed by
+ * callRunningMarkerEndpoint, and `fn` runs regardless.
+ */
+export async function withRunningMarker<T>(
+  type: "briefing" | "digest" | "evening",
+  fn: () => Promise<T>,
+  opts?: { heartbeatMs?: number },
+): Promise<T> {
+  await setRunningMarker(type);
+
+  const beat = setInterval(() => {
+    void setRunningMarker(type);
+  }, opts?.heartbeatMs ?? HEARTBEAT_MS);
+  // Never let the heartbeat hold the Node process open on its own.
+  (beat as { unref?: () => void }).unref?.();
+
+  try {
+    return await fn();
+  } finally {
+    clearInterval(beat);
+    // Awaited so the mac-sent → mac-running handoff ordering is deterministic:
+    // callers write mac-sent inside `fn`, so it has already landed by the time
+    // the running marker goes away. Bounded by the same 3s timeout.
+    await clearRunningMarker(type);
+  }
+}
+
 /**
  * Tell the Worker the Mac just successfully shipped {type} for today.
  *
