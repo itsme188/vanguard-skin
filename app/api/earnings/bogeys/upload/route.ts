@@ -7,8 +7,8 @@ import {
 import { upsertBogey } from "@/lib/mutations/earnings-bogeys";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { addDays } from "@/lib/calendar/date-utils";
+import { buildBogeyEventMap } from "@/lib/queries/bogey-event-match";
 import { buildStatementKey, uploadStatementPdf } from "@/lib/storage/r2";
-import type { CalendarEvent } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -102,26 +102,11 @@ export async function POST(request: Request) {
   }
 
   // ── Fan-out match against calendar_events ─────────────────────────
+  // Live (non-superseded) rows only — attaching to a superseded sibling
+  // makes the sheet invisible on every surface while claiming a match.
   const startDate = addDays(weekOf, -3);
   const endDate = addDays(weekOf, 10);
-  const candidateEvents = db
-    .prepare(
-      `SELECT id, symbol, event_date FROM calendar_events
-        WHERE event_type = 'earnings'
-          AND event_date >= ? AND event_date <= ?
-          AND symbol IS NOT NULL`,
-    )
-    .all(startDate, endDate) as Pick<CalendarEvent, "id" | "symbol" | "event_date">[];
-
-  const eventBySymbol = new Map<string, number>();
-  for (const e of candidateEvents) {
-    if (!e.symbol) continue;
-    // ROW_NUMBER would be cleaner here, but the candidate set is small
-    // (≤30 events for a typical week); first-write-wins is fine.
-    if (!eventBySymbol.has(e.symbol.toUpperCase())) {
-      eventBySymbol.set(e.symbol.toUpperCase(), e.id);
-    }
-  }
+  const eventBySymbol = buildBogeyEventMap(db, startDate, endDate);
 
   const results: Array<{ symbol: string; eventId: number | null; bogeyId?: number }> = [];
 
