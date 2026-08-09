@@ -27,12 +27,15 @@ export async function POST(request: Request) {
     return Response.json({ error: "confirmedDate must be YYYY-MM-DD" }, { status: 400 });
   }
 
-  confirmEarningsDate(db, {
+  const result = confirmEarningsDate(db, {
     symbol: body.symbol.trim(),
     confirmedDate: body.confirmedDate,
     confirmedTime: body.confirmedTime ?? null,
     today: todayET(),
   });
+  if (!result.ok) {
+    return Response.json({ error: result.refusedReason }, { status: 409 });
+  }
 
   return Response.json({ ok: true });
 }

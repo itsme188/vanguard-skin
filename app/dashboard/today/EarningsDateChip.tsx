@@ -2,6 +2,7 @@
 
 import { useLayoutEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { todayET } from "@/lib/calendar/date-utils";
 
 interface Props {
   symbol: string;
@@ -382,6 +383,10 @@ export function EarningsDateChip({
   // conflict
   const finnDate = dateConflictWith?.split(":")[1] ?? null;
   const defaultTime = customTime;
+  // A stale prior-quarter vendor date is not a live option — offering it lets
+  // one tap move an upcoming print into the past (the server refuses too).
+  const todayIso = todayET();
+  const isPast = (d: string) => d < todayIso;
 
   async function confirm(date: string, time: "bmo" | "amc") {
     if (submitting) return;
@@ -438,20 +443,22 @@ export function EarningsDateChip({
           <div className="space-y-1">
             <button
               type="button"
-              disabled={submitting}
+              disabled={submitting || isPast(eventDate)}
               onClick={() => confirm(eventDate, defaultTime)}
+              title={isPast(eventDate) ? "Past date — stale prior-quarter entry, not a live option" : undefined}
               className="w-full text-left text-[11px] font-mono px-2 py-1 rounded bg-raised hover:bg-muted disabled:opacity-50"
             >
-              Nasdaq · {fmtShort(eventDate)}
+              Nasdaq · {fmtShort(eventDate)}{isPast(eventDate) ? " (past)" : ""}
             </button>
             {finnDate && (
               <button
                 type="button"
-                disabled={submitting}
+                disabled={submitting || isPast(finnDate)}
                 onClick={() => confirm(finnDate, defaultTime)}
+                title={isPast(finnDate) ? "Past date — stale prior-quarter entry, not a live option" : undefined}
                 className="w-full text-left text-[11px] font-mono px-2 py-1 rounded bg-raised hover:bg-muted disabled:opacity-50"
               >
-                Finnhub · {fmtShort(finnDate)}
+                Finnhub · {fmtShort(finnDate)}{isPast(finnDate) ? " (past)" : ""}
               </button>
             )}
             <div className="flex items-center gap-1 pt-1.5 mt-1 border-t border-edge">
@@ -473,7 +480,7 @@ export function EarningsDateChip({
               </select>
               <button
                 type="button"
-                disabled={submitting || !customDate}
+                disabled={submitting || !customDate || isPast(customDate)}
                 onClick={() => customDate && confirm(customDate, customTime)}
                 className="text-[10px] font-mono px-1.5 py-0.5 rounded text-up bg-up/15 hover:bg-up/25 disabled:opacity-40"
               >
