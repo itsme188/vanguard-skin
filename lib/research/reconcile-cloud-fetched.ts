@@ -1,5 +1,8 @@
 import type Database from "better-sqlite3";
 import { sanitizeThemeList } from "@/lib/gmail/theme-sanitize";
+import { subjectSymbolBackstop } from "@/lib/gmail/subject-symbol-backstop";
+import { getHeldStockSymbols } from "@/lib/queries/briefing-symbols";
+import { getActiveWatchlistStockSymbols } from "@/lib/queries/watchlist";
 
 /**
  * Reconcile cloud-fetched newsletter articles.
@@ -135,6 +138,20 @@ export async function reconcileCloudFetchedNewsletters(
     `SELECT id FROM securities WHERE symbol = ? LIMIT 1`,
   );
 
+  // Sibling of the deterministic subject-line backstop in
+  // lib/gmail/process.ts (subjectSymbolBackstop) — parity-pinned, change
+  // both together. The Worker's own extraction (workers/cron/src/
+  // newsletter-fetch.ts::defaultAnalyze) never links securities itself (no
+  // DB access from a Worker); this reconcile step is where cloud-fetched
+  // mentions actually become research_article_securities rows, so it needs
+  // the same catch as the direct-fetch path or a model-dropped ticker in a
+  // Worker-sourced article would stay invisible forever.
+  const knownSymbols = new Set(
+    [...getHeldStockSymbols(db), ...getActiveWatchlistStockSymbols(db)].map((s) =>
+      s.toUpperCase(),
+    ),
+  );
+
   let reconciled = 0;
   let skippedAlreadyInDb = 0;
   let skippedSourceMissing = 0;
@@ -168,6 +185,15 @@ export async function reconcileCloudFetchedNewsletters(
             : "Claude judged article off-topic";
       }
 
+      // Deterministic subject-line backstop (see lib/gmail/subject-symbol-
+      // backstop.ts) — union'd in before storage, same as the direct-fetch
+      // path. Bypasses AI verification entirely; only exact-case matches
+      // against the held/watchlist universe survive.
+      const backstopHits = subjectSymbolBackstop(payload.subject, knownSymbols).filter(
+        (s) => !payload.mentioned_symbols.includes(s),
+      );
+      const mentionedSymbols = [...payload.mentioned_symbols, ...backstopHits];
+
       const info = insertArticle.run(
         payload.source_id,
         payload.gmail_message_id,
@@ -180,7 +206,7 @@ export async function reconcileCloudFetchedNewsletters(
         JSON.stringify(sanitizeThemeList(payload.key_themes)),
         payload.sentiment,
         payload.sentiment_score,
-        JSON.stringify(payload.mentioned_symbols),
+        JSON.stringify(mentionedSymbols),
         payload.portfolio_relevance,
         payload.ai_model,
         isRelevant,
@@ -207,6 +233,17 @@ export async function reconcileCloudFetchedNewsletters(
         const sec = findSecurity.get(symbol) as { id: number } | undefined;
         if (sec) {
           linkSecurity.run(articleId, sec.id, "cloud-fetched mention", payload.sentiment);
+        }
+      }
+      for (const symbol of backstopHits) {
+        const sec = findSecurity.get(symbol) as { id: number } | undefined;
+        if (sec) {
+          linkSecurity.run(
+            articleId,
+            sec.id,
+            `Subject-line backstop match: "${payload.subject.slice(0, 300)}"`,
+            payload.sentiment,
+          );
         }
       }
 

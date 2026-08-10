@@ -72,7 +72,8 @@ function makeDb(allowOffTopic = 0): Database.Database {
     CREATE TABLE securities (
       id INTEGER PRIMARY KEY,
       symbol TEXT NOT NULL UNIQUE,
-      name TEXT
+      name TEXT,
+      security_type TEXT
     );
     CREATE TABLE holdings (
       id INTEGER PRIMARY KEY,
@@ -80,6 +81,11 @@ function makeDb(allowOffTopic = 0): Database.Database {
       security_id INTEGER NOT NULL,
       quantity REAL NOT NULL,
       as_of_date TEXT NOT NULL
+    );
+    CREATE TABLE watchlist (
+      id INTEGER PRIMARY KEY,
+      security_id INTEGER NOT NULL,
+      is_active INTEGER NOT NULL DEFAULT 1
     );
   `);
   db.prepare(

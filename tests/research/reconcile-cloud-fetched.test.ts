@@ -52,11 +52,30 @@ function makeDb(): Database.Database {
       sentiment TEXT,
       UNIQUE(article_id, security_id)
     );
-    CREATE TABLE securities (id INTEGER PRIMARY KEY, symbol TEXT NOT NULL, name TEXT);
+    CREATE TABLE securities (id INTEGER PRIMARY KEY, symbol TEXT NOT NULL, name TEXT, security_type TEXT);
+    CREATE TABLE holdings (
+      id INTEGER PRIMARY KEY,
+      account_id INTEGER NOT NULL,
+      security_id INTEGER NOT NULL,
+      quantity REAL NOT NULL,
+      as_of_date TEXT NOT NULL
+    );
+    CREATE TABLE watchlist (
+      id INTEGER PRIMARY KEY,
+      security_id INTEGER NOT NULL,
+      is_active INTEGER NOT NULL DEFAULT 1
+    );
   `);
   db.prepare(`INSERT INTO research_sources (id, name, allow_off_topic) VALUES (1, 'Strict', 0)`).run();
   db.prepare(`INSERT INTO research_sources (id, name, allow_off_topic) VALUES (2, 'Loose', 1)`).run();
   db.prepare(`INSERT INTO securities (id, symbol, name) VALUES (1, 'AAPL', 'Apple')`).run();
+  // Held stock for the subject-line backstop tests below (id 2, "U").
+  db.prepare(
+    `INSERT INTO securities (id, symbol, name, security_type) VALUES (2, 'U', 'Unity Software', 'Stock')`,
+  ).run();
+  db.prepare(
+    `INSERT INTO holdings (account_id, security_id, quantity, as_of_date) VALUES (1, 2, 100, '2026-08-01')`,
+  ).run();
   return db;
 }
 
@@ -233,6 +252,33 @@ describe("reconcileCloudFetchedNewsletters", () => {
     const links = db.prepare(`SELECT security_id FROM research_article_securities`).all() as { security_id: number }[];
     expect(links).toHaveLength(1);
     expect(links[0].security_id).toBe(1);
+  });
+
+  it("subject-line backstop: unions a held ticker the Worker's extraction dropped, and links it", async () => {
+    const db = makeDb();
+    mockWorker({
+      list: {
+        m1: {
+          ...BASE_PAYLOAD,
+          subject: "Review|APP & U 2Q26: D28 IAA Is Now the Core Battleground",
+          mentioned_symbols: ["APP"], // Worker's Claude call dropped "U" — same live bug
+        },
+      },
+    });
+
+    await reconcileCloudFetchedNewsletters(db, "secret");
+
+    const row = db
+      .prepare(`SELECT mentioned_symbols FROM research_articles WHERE gmail_message_id = 'm1'`)
+      .get() as { mentioned_symbols: string };
+    const symbols = JSON.parse(row.mentioned_symbols) as string[];
+    expect(symbols).toContain("U");
+    expect(symbols).toContain("APP");
+
+    const link = db
+      .prepare(`SELECT security_id FROM research_article_securities WHERE security_id = 2`)
+      .get();
+    expect(link).toBeTruthy();
   });
 
   it("DELETEs the worker KV entry after a successful insert", async () => {

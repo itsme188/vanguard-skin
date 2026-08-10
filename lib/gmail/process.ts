@@ -5,6 +5,9 @@ import { resolveFeatureModel } from "@/lib/ai/models";
 import { verifyMentions } from "@/lib/research/verify-mentions";
 import { truncateForPrompt } from "./prompt-caps";
 import { sanitizeModelSummary, sanitizeThemeList } from "@/lib/gmail/theme-sanitize";
+import { subjectSymbolBackstop } from "@/lib/gmail/subject-symbol-backstop";
+import { getHeldStockSymbols } from "@/lib/queries/briefing-symbols";
+import { getActiveWatchlistStockSymbols } from "@/lib/queries/watchlist";
 
 interface UnprocessedArticle {
   id: number;
@@ -67,6 +70,16 @@ export async function processUnprocessedArticles(
     .map((h) => `${h.symbol}${h.name ? ` (${h.name})` : ""}`)
     .join(", ");
 
+  // Held + watchlist symbol universe for the deterministic subject-line
+  // backstop (subjectSymbolBackstop) — same held/watchlist shape as
+  // lib/calendar/sync.ts's scan-set union. Computed once for the whole
+  // batch since it doesn't vary per article.
+  const knownSymbols = new Set(
+    [...getHeldStockSymbols(db), ...getActiveWatchlistStockSymbols(db)].map((s) =>
+      s.toUpperCase()
+    )
+  );
+
   const updateArticle = db.prepare(`
     UPDATE research_articles
     SET summary = ?, key_themes = ?, sentiment = ?, sentiment_score = ?,
@@ -114,7 +127,17 @@ export async function processUnprocessedArticles(
         article.subject,
         article.raw_text,
       );
-      const verifiedSymbols = verified.map((v) => v.symbol);
+
+      // Deterministic subject-line backstop, union'd in AFTER verifyMentions
+      // rather than before: bypasses the AI verification gate entirely
+      // (Haiku would happily drop a bare "U" as too ambiguous — exactly the
+      // failure mode this backstop exists to catch). See
+      // lib/gmail/subject-symbol-backstop.ts for the full story.
+      const alreadyVerified = new Set(verified.map((v) => v.symbol));
+      const backstopHits = subjectSymbolBackstop(article.subject, knownSymbols).filter(
+        (s) => !alreadyVerified.has(s)
+      );
+      const verifiedSymbols = [...verified.map((v) => v.symbol), ...backstopHits];
 
       updateArticle.run(
         result.summary,
@@ -139,6 +162,17 @@ export async function processUnprocessedArticles(
         const sec = findSecurity.get(symbol) as { id: number } | undefined;
         if (sec) {
           linkSecurity.run(article.id, sec.id, context, result.sentiment);
+        }
+      }
+      for (const symbol of backstopHits) {
+        const sec = findSecurity.get(symbol) as { id: number } | undefined;
+        if (sec) {
+          linkSecurity.run(
+            article.id,
+            sec.id,
+            `Subject-line backstop match: "${article.subject.slice(0, 300)}"`,
+            result.sentiment
+          );
         }
       }
 
