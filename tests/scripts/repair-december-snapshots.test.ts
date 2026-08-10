@@ -236,6 +236,29 @@ describe("parseSnapshotCsv", () => {
     expect(parsed.rows).toHaveLength(0);
     expect(parsed.malformedRowNumbers).toEqual([2]);
   });
+
+  it("trims leading/trailing whitespace off a padded account column", () => {
+    const content = [
+      CSV_HEADER,
+      csvLine([
+        "  Vanguard Taxable  ",
+        "2022-12-31",
+        328285.46,
+        351126.94,
+        0.0,
+        "",
+        "",
+        "",
+        "",
+        -22841.48,
+        -0.065052,
+      ]),
+    ].join("\n");
+    const parsed = parseSnapshotCsv(content);
+    expect(parsed.malformedRowNumbers).toHaveLength(0);
+    expect(parsed.rows).toHaveLength(1);
+    expect(parsed.rows[0].account).toBe("Vanguard Taxable");
+  });
 });
 
 // ─── findSnapshotMismatches (audit phase, ALL rows) ────────────────
@@ -638,5 +661,82 @@ describe("repairDecemberSnapshots", () => {
     const result = repairDecemberSnapshots(db, rows, { apply: true, today: TODAY });
     expect(result.unknownDecemberAccounts).toHaveLength(0);
     expect(result.updated).toBe(4);
+  });
+
+  it("resolves and repairs a December row even when the CSV account column is padded with whitespace", () => {
+    // Real-world CSV export/copy-paste whitespace, not just the exact-name
+    // happy path — "Vanguard Taxable" here means "  Vanguard Taxable  ".
+    const csvPath = writeTempCsv(
+      [
+        CSV_HEADER,
+        csvLine([
+          "  Vanguard Taxable  ",
+          "2022-12-31",
+          328285.46,
+          351126.94,
+          0.0,
+          "",
+          "",
+          "",
+          "",
+          -22841.48,
+          -0.065052,
+        ]),
+      ].join("\n"),
+    );
+    const rows = readCsvRows(csvPath);
+    expect(rows[0].account).toBe("Vanguard Taxable"); // parsed + trimmed already
+
+    const result = repairDecemberSnapshots(db, rows, { apply: true, today: TODAY });
+    expect(result.unresolved).toHaveLength(0);
+    expect(result.updated).toBe(1);
+
+    const s2022 = readSnapshot(db, taxableId, "2022-12-31");
+    expect(s2022.totalValue).toBeCloseTo(328285.46, 2);
+    expect(s2022.startingValue).toBeCloseTo(351126.94, 2);
+    expect(s2022.twr).toBeCloseTo(-0.065052, 6);
+  });
+
+  it("rolls back the ENTIRE December batch when the post-write verification catches a real mismatch", () => {
+    // Force a genuine post-write mismatch (not a mock): a real SQLite
+    // trigger corrupts `twr` on the row that's updated LAST in iteration
+    // order (2025-12-31 — CANONICAL_DECEMBER_ROWS is in ascending-date
+    // order, and findSnapshotMismatches/repairDecemberSnapshots preserve
+    // CSV row order) immediately after its UPDATE lands. The in-transaction
+    // verification re-read must then see a real mismatch, throw, and
+    // better-sqlite3's transaction wrapper must roll back the WHOLE batch —
+    // including 2022/2023/2024, whose own UPDATE + individual verify both
+    // already ran cleanly earlier in the same transaction.
+    db.exec(`
+      CREATE TRIGGER corrupt_2025_twr_after_repair_write
+      AFTER UPDATE OF total_value ON monthly_snapshots
+      WHEN NEW.account_id = ${taxableId} AND NEW.month_end_date = '2025-12-31'
+      BEGIN
+        UPDATE monthly_snapshots SET twr = -999 WHERE id = NEW.id;
+      END;
+    `);
+
+    const rows = buildFixtureCsvRows();
+    const before = {
+      "2022-12-31": readSnapshot(db, taxableId, "2022-12-31"),
+      "2023-12-31": readSnapshot(db, taxableId, "2023-12-31"),
+      "2024-12-31": readSnapshot(db, taxableId, "2024-12-31"),
+      "2025-12-31": readSnapshot(db, taxableId, "2025-12-31"),
+    };
+
+    expect(() =>
+      repairDecemberSnapshots(db, rows, { apply: true, today: TODAY }),
+    ).toThrow(/verification failed/);
+
+    // Full-batch rollback: EVERY December row — including the three whose
+    // UPDATE and individual verify both succeeded before the transaction
+    // hit the corrupted 2025 row — must still hold its ORIGINAL poisoned
+    // value. A partial commit here would mean an operator re-running
+    // --apply after a "verification failed" error inherits a half-repaired
+    // December chain without knowing it.
+    expect(readSnapshot(db, taxableId, "2022-12-31")).toEqual(before["2022-12-31"]);
+    expect(readSnapshot(db, taxableId, "2023-12-31")).toEqual(before["2023-12-31"]);
+    expect(readSnapshot(db, taxableId, "2024-12-31")).toEqual(before["2024-12-31"]);
+    expect(readSnapshot(db, taxableId, "2025-12-31")).toEqual(before["2025-12-31"]);
   });
 });
