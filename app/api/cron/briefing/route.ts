@@ -5,11 +5,7 @@ import {
   BriefingSendError,
 } from "@/lib/digest/send-briefing";
 import { checkCloudMarker } from "@/lib/cron/marker-check";
-import {
-  setRunningMarker,
-  clearRunningMarker,
-  confirmMacSent,
-} from "@/lib/cron/running-marker";
+import { withRunningMarker } from "@/lib/cron/running-marker";
 import { tryAcquireSendLock, releaseSendLock } from "@/lib/cron/send-mutex";
 import { shouldSendBriefingToday } from "@/lib/calendar/market-holidays";
 import { todayET } from "@/lib/calendar/date-utils";
@@ -95,22 +91,28 @@ export async function POST(request: Request) {
       });
     }
 
-    // Signal to Worker that we're starting — fallback path will skip while
-    // this marker is set. Fire-and-forget; never block delivery on Worker RTT.
-    void setRunningMarker("briefing");
-
-    const result = await sendBriefingEmail(db, {
-      weekOf: body.weekOf as string | undefined,
-      recipient: body.to as string | undefined,
-      force: body.force === true,
+    // Hold `mac-running-briefing` for the WHOLE pipeline — awaited initial set
+    // plus a 2-min heartbeat — so the Worker's fallback skips while we work.
+    // The briefing is the longest pipeline (13-17 min), which is exactly why
+    // the old set-once-at-entry marker had always expired by 16:45.
+    // confirmSent() runs inside the wrapper so mac-sent lands before
+    // mac-running is released; if it never gets acked, the wrapper leaves
+    // mac-running in place (TTL-expire) instead of clearing on a gap.
+    const result = await withRunningMarker("briefing", async ({ confirmSent }) => {
+      const sent = await sendBriefingEmail(db, {
+        weekOf: body.weekOf as string | undefined,
+        recipient: body.to as string | undefined,
+        force: body.force === true,
+      });
+      // Tell the Worker we actually shipped a briefing today, so its catch-up
+      // retry sweep won't fire a duplicate. Skip the confirmation when the
+      // route short-circuited (e.g. cloud already sent, or no content) — both
+      // paths set skipped:true.
+      if (sent && (sent as { success?: boolean }).success && !(sent as { skipped?: boolean }).skipped) {
+        await confirmSent();
+      }
+      return sent;
     });
-    // Tell the Worker we actually shipped a briefing today, so its catch-up
-    // retry sweep won't fire a duplicate. Skip the confirmation when the
-    // route short-circuited (e.g. cloud already sent, or no content) — both
-    // paths set skipped:true.
-    if (result && (result as { success?: boolean }).success && !(result as { skipped?: boolean }).skipped) {
-      void confirmMacSent("briefing");
-    }
     return Response.json(result);
   } catch (err) {
     if (err instanceof BriefingSendError) {
@@ -122,8 +124,10 @@ export async function POST(request: Request) {
       { status: 500 }
     );
   } finally {
+    // withRunningMarker clears the marker in its own finally (even on error,
+    // and skipping the clear entirely if confirmSent() was called but never
+    // acked); the send lock is all that is left to release here.
     releaseSendLock("briefing");
-    void clearRunningMarker("briefing");
   }
 }
 

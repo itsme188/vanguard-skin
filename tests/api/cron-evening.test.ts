@@ -30,9 +30,16 @@ const hoisted = vi.hoisted(() => ({
   checkCloudMarker: vi.fn(
     async (): Promise<{ sentBy: string; date: string } | null> => null
   ),
-  setRunningMarker: vi.fn(async () => {}),
-  clearRunningMarker: vi.fn(async () => {}),
-  confirmMacSent: vi.fn(async () => {}),
+  // Typed with the job-type arg they are actually called with, so the
+  // withRunningMarker stub below can forward it.
+  setRunningMarker: vi.fn(async (_type: "briefing" | "digest" | "evening") => {}),
+  clearRunningMarker: vi.fn(async (_type: "briefing" | "digest" | "evening") => {}),
+  // Returns boolean (acked/not) per the confirmMacSent contract; defaults to
+  // acked so the mocked withRunningMarker's clear-on-ack path stays the same
+  // as before for every test that doesn't explicitly override it.
+  confirmMacSent: vi.fn(
+    async (_type: "briefing" | "digest" | "evening"): Promise<boolean> => true
+  ),
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -62,6 +69,36 @@ vi.mock("@/lib/cron/running-marker", () => ({
   setRunningMarker: hoisted.setRunningMarker,
   clearRunningMarker: hoisted.clearRunningMarker,
   confirmMacSent: hoisted.confirmMacSent,
+  // Mirrors the real wrapper's contract (set → fn → clear) against the mocked
+  // primitives, so the existing set-before-send / clear-in-finally assertions
+  // stay meaningful. The wrapper's own behaviour — awaited initial set and the
+  // heartbeat — is unit-tested in tests/cron/running-marker.test.ts.
+  // Mirrors the real wrapper's confirm-then-clear contract: `fn` receives a
+  // `confirmSent()` that wraps confirmMacSent and records whether it was
+  // attempted/acked, and the marker is only cleared when confirmation was
+  // never attempted OR came back acked — matching withRunningMarker's own
+  // "leave mac-running to TTL-expire on a failed confirm" behavior, which is
+  // unit-tested in full (heartbeat + ack tracking) in
+  // tests/cron/running-marker.test.ts.
+  withRunningMarker: async (
+    type: "briefing" | "digest" | "evening",
+    fn: (ctx: { confirmSent: () => Promise<void> }) => Promise<unknown>
+  ) => {
+    await hoisted.setRunningMarker(type);
+    let confirmAttempted = false;
+    let confirmAcked = false;
+    const confirmSent = async () => {
+      confirmAttempted = true;
+      confirmAcked = await hoisted.confirmMacSent(type);
+    };
+    try {
+      return await fn({ confirmSent });
+    } finally {
+      if (!(confirmAttempted && !confirmAcked)) {
+        await hoisted.clearRunningMarker(type);
+      }
+    }
+  },
 }));
 
 // Import the route handler AFTER mocks are set up
@@ -276,6 +313,38 @@ describe("POST /api/cron/evening", () => {
 
     expect(hoisted.setRunningMarker).toHaveBeenCalledWith("evening");
     expect(hoisted.clearRunningMarker).toHaveBeenCalledWith("evening");
+  });
+
+  it("finishes confirmMacSent before clearing the running marker", async () => {
+    // Ordering matters: mac-sent must land while mac-running is still held.
+    // Fire-and-forget confirmMacSent + fire-and-forget clearRunningMarker can
+    // interleave so that neither marker exists for a moment, and a Worker tick
+    // landing in that window fires a duplicate fallback.
+    const callOrder: string[] = [];
+    hoisted.confirmMacSent.mockImplementation(async (): Promise<boolean> => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      callOrder.push("confirmMacSent");
+      return true; // acked — clearRunningMarker must still be called after this.
+    });
+    hoisted.clearRunningMarker.mockImplementation(async () => {
+      callOrder.push("clearRunningMarker");
+    });
+    hoisted.sendEveningEmail.mockResolvedValue({
+      success: true,
+      sentTo: "t@t.com",
+      synced: { fetched: 0, processed: 0 },
+      title: "Evening Recap",
+      twsSynced: false,
+    });
+
+    const req = makeRequest({ secret: "test-secret" });
+    await POST(req);
+    // Drain any still-pending fire-and-forget microtasks before asserting.
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+
+    expect(callOrder).toEqual(["confirmMacSent", "clearRunningMarker"]);
   });
 
   // ── Error handling ───────────────────────────────────────────────
