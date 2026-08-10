@@ -18,6 +18,7 @@ export interface Form8949Row {
   accountName: string;
   holdingPeriodDays: number;
   isWashSale: boolean;
+  currency: string; // realized figures are native per security (8949 FX out of scope)
 }
 
 export interface WashSaleWarning {
@@ -36,6 +37,13 @@ export interface TaxReportResult {
   shortTermTotal: { proceeds: number; costBasis: number; adjustments: number; gainLoss: number };
   longTermTotal: { proceeds: number; costBasis: number; adjustments: number; gainLoss: number };
   washSaleWarnings: WashSaleWarning[];
+  /**
+   * Sales on non-USD securities excluded from the USD totals above (same
+   * convention as TaxLotSummary.excludedNonUsdSales — realized figures are
+   * stored native per security and no FX vintage is ever fabricated on tax
+   * rows). The row arrays still carry them for the raw 8949 export.
+   */
+  excludedNonUsdSales: number;
 }
 
 // ─── Date helpers ───────────────────────────────────────────────
@@ -161,6 +169,7 @@ export function generateTaxReport(
       accountName: sale.account_name,
       holdingPeriodDays: sale.holding_period_days,
       isWashSale: isWash,
+      currency: sale.currency,
     };
 
     if (sale.is_long_term === 1) {
@@ -170,15 +179,22 @@ export function generateTaxReport(
     }
   }
 
-  // Compute totals
+  // Compute totals — USD rows only. Realized figures are native per
+  // security (a KRW won amount must never sum behind a $ glyph); non-USD
+  // rows stay in the row arrays for the raw export and are disclosed via
+  // excludedNonUsdSales, mirroring getTaxLotSummary.
   function sumRows(rows: Form8949Row[]) {
+    const usd = rows.filter((r) => r.currency === "USD");
     return {
-      proceeds: rows.reduce((s, r) => s + r.proceeds, 0),
-      costBasis: rows.reduce((s, r) => s + r.costBasis, 0),
-      adjustments: rows.reduce((s, r) => s + r.adjustmentAmount, 0),
-      gainLoss: rows.reduce((s, r) => s + r.gainOrLoss, 0),
+      proceeds: usd.reduce((s, r) => s + r.proceeds, 0),
+      costBasis: usd.reduce((s, r) => s + r.costBasis, 0),
+      adjustments: usd.reduce((s, r) => s + r.adjustmentAmount, 0),
+      gainLoss: usd.reduce((s, r) => s + r.gainOrLoss, 0),
     };
   }
+  const excludedNonUsdSales =
+    shortTermRows.filter((r) => r.currency !== "USD").length +
+    longTermRows.filter((r) => r.currency !== "USD").length;
 
   return {
     year,
@@ -187,6 +203,7 @@ export function generateTaxReport(
     shortTermTotal: sumRows(shortTermRows),
     longTermTotal: sumRows(longTermRows),
     washSaleWarnings: washWarnings,
+    excludedNonUsdSales,
   };
 }
 

@@ -103,3 +103,46 @@ describe("confirmEarningsDate", () => {
     expect(manual.release_time).toBe("16:15"); // amc default, no wire data / override for NVDA
   });
 });
+
+// ── Past-date refusal (qa: conflict popover offers a prior-quarter date) ──
+// A stale prior-quarter vendor date can appear as a conflict candidate;
+// confirming it would silently move an upcoming held print into the past and
+// off every forward-looking surface. Mirror applyVerdict's guard: a past
+// confirmedDate is refused, never written.
+describe("confirmEarningsDate past-date guard", () => {
+  it("refuses a confirmedDate before today and writes nothing", () => {
+    const finn = seedSync("finnhub", "2026-06-11");
+    void finn;
+
+    const result = confirmEarningsDate(db, {
+      symbol: "NVDA",
+      confirmedDate: "2026-05-28", // prior-quarter stale date
+      confirmedTime: "amc",
+      today: "2026-06-08",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.refusedReason).toMatch(/past/i);
+
+    const manual = db
+      .prepare("SELECT COUNT(*) AS c FROM calendar_events WHERE source='manual' AND symbol='NVDA'")
+      .get() as { c: number };
+    expect(manual.c).toBe(0);
+    // The sync row is untouched — not superseded by a refused confirm.
+    const sync = db
+      .prepare("SELECT COALESCE(superseded,0) AS s FROM calendar_events WHERE source='finnhub'")
+      .get() as { s: number };
+    expect(sync.s).toBe(0);
+  });
+
+  it("accepts today's date (an AMC print confirmed on the day)", () => {
+    seedSync("finnhub", "2026-06-08");
+    const result = confirmEarningsDate(db, {
+      symbol: "NVDA",
+      confirmedDate: "2026-06-08",
+      confirmedTime: "amc",
+      today: "2026-06-08",
+    });
+    expect(result.ok).toBe(true);
+  });
+});

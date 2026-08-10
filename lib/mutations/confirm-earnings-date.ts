@@ -34,10 +34,24 @@ function toCascadeEventTime(time: string | null | undefined): string {
  * supersedes the Finnhub/Nasdaq rows. Future syncs never revert it (the
  * reconciler always defers to the manual row). Idempotent on the source_key.
  */
+export type ConfirmEarningsDateResult =
+  | { ok: true }
+  | { ok: false; refusedReason: string };
+
 export function confirmEarningsDate(
   db: Database.Database,
   input: ConfirmEarningsDateInput,
-): { ok: true } {
+): ConfirmEarningsDateResult {
+  // A conflict candidate can be a stale prior-quarter vendor date; locking it
+  // would silently move an upcoming print into the past and off every
+  // forward-looking surface. Mirror applyVerdict's guard: never accept a
+  // past date (today's own date is fine — an AMC print confirmed on the day).
+  if (input.confirmedDate < input.today) {
+    return {
+      ok: false,
+      refusedReason: `${input.confirmedDate} is in the past — that looks like the stale prior-quarter source date, not the upcoming print. Pick the future date or enter the real one.`,
+    };
+  }
   const symbol = input.symbol.toUpperCase();
   const securityId = getSecurityIdForSymbolWithSiblings(db, symbol);
   const cascadeEventTime = toCascadeEventTime(input.confirmedTime);
