@@ -108,6 +108,7 @@ Detail: `docs/reference/conventions-detail.md`, `docs/reference/earnings-pipelin
 
 **Symbols & classification**
 - Options use OCC symbols; `upsertSecurity` refuses stock↔option merges.
+- IBKR labels every STK contract 'Stock' (ETFs included) — an incoming 'Stock' is WEAK evidence: `upsertSecurity` never downgrades a fund-family type, and enrich promotes 'Stock'→'ETF' from contract-details `stockType`. Repair: `scripts/repair-etf-types.ts`.
 - Compare security types case-insensitively; `mapSecurityType()` is the single source.
 - Share classes roll up via `issuerSiblings()` — never symbol-string-equal.
 - Sectors via `normalizeSector` (GICS-11: `"Technology"`, not `"Information Technology"`); fund categories via `normalizeFundCategory`. Never bucket a raw vendor string.
@@ -230,7 +231,7 @@ When debugging data issues, investigate root causes rather than applying smoothi
 
 ## Testing
 
-- Run tests: `npx vitest run`
+- Run tests: `PATH=/opt/homebrew/opt/node@20/bin:$PATH npx vitest run` — the better-sqlite3 binary is built for Node 20; the shell-default node 26 dies with ERR_DLOPEN_FAILED (never `npm rebuild` — protects the Electron binary). Same prefix for `npx tsx scripts/*.ts`.
 - All tests use in-memory SQLite (`:memory:`) for isolation
 - Test fixtures in `tests/fixtures/` (anonymized)
 - Real data fixtures in `tests/fixtures/real/` (gitignored)
