@@ -26,6 +26,25 @@ export function todayET(now = new Date()): string {
   }).format(now);
 }
 
+/**
+ * The given instant's wall-clock time in ET (America/New_York), as HH:MM
+ * (24-hour, zero-padded — safe to compare lexically against e.g. "09:30").
+ *
+ * `hourCycle: "h23"` is deliberate: `hour12: false` on some ICU builds emits
+ * "24:00" for midnight instead of "00:00", which would break a lexical
+ * range check straddling midnight. Single source of truth for any
+ * intraday-session gate (e.g. TWS regular-trading-hours tick priority) —
+ * never derive ET clock time from local-time `Date` math.
+ */
+export function nowET(now = new Date()): string {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: ET_ZONE,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(now);
+}
+
 /** Day of week of the given instant in ET. 0=Sun, 1=Mon, ..., 6=Sat. */
 function etDayOfWeek(now: Date): number {
   const wd = new Intl.DateTimeFormat("en-US", {
