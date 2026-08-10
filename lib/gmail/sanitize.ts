@@ -406,3 +406,41 @@ function trimTrailingStructural(html: string): string {
     "",
   );
 }
+
+// ─── Blank-render detection (read-time expand fallback) ──────────────────────
+
+/**
+ * Approximate length of the text an email HTML body actually RENDERS —
+ * style/script/head/comment blocks and tags contribute nothing; entities
+ * collapse to whitespace (slight undercount, fine for a threshold check).
+ * Pure regex like everything else in this module.
+ */
+export function visibleHtmlTextLength(html: string): number {
+  const stripped = html
+    .replace(/<(style|script|head|title)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&[a-zA-Z#0-9]{2,8};/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return stripped.length;
+}
+
+/**
+ * True when the stored HTML renders so little of the article that showing it
+ * would blank the expand panel while substantial raw_text exists — some
+ * senders' templates survive sanitize/normalize as style-only shells (live
+ * cases: 4–429 rendered chars against thousands of stored raw_text chars).
+ * Callers should then fall back to rendering raw_text.
+ */
+export function htmlHidesStoredText(
+  html: string | null,
+  rawText: string | null,
+): boolean {
+  if (!html) return false;
+  const rawLen = rawText ? rawText.trim().length : 0;
+  if (rawLen === 0) return false; // nothing better to show
+  const textLen = visibleHtmlTextLength(html);
+  if (textLen < 200) return true;
+  return textLen < 2000 && textLen < rawLen * 0.25;
+}
