@@ -2,21 +2,55 @@ import type Database from "better-sqlite3";
 import { MarketDataType, SecType, IBApiTickType } from "@stoqey/ib";
 import { getIbApi } from "./client";
 import { mapSecurityType } from "./security-type-map";
-import { todayET } from "@/lib/calendar/date-utils";
+import { todayET, nowET } from "@/lib/calendar/date-utils";
 import { isMarketClosed } from "@/lib/calendar/market-holidays";
 import type { PriceFetchProgress, SnapshotPriceResult } from "./types";
 
 /**
- * Price extraction priority. During market hours LAST is the current trade
- * price; after hours CLOSE is the session close. DELAYED_* variants fire
- * when the user lacks real-time subscriptions for that exchange.
+ * Price extraction priority — TIME-AWARE (qa: net-2026-08-06-ah-close-poisoning).
+ *
+ * During the 09:30-16:00 ET regular session LAST is the current live trade
+ * price and should win. But the 30-min background sync also runs AFTER the
+ * close (and before the open), when LAST is a stale/after-hours print, NOT
+ * the official session close — CLOSE must win there, or an after-hours tape
+ * print gets stored as "the day's close" via `INSERT OR REPLACE`. Verified
+ * damage before this fix: NET 2026-08-06 stored 330.00 (an after-earnings AH
+ * spike) vs the real 284.43 RTH close, a +15.9% error; ~14 (symbol, date)
+ * rows were >1% off across 3 weeks. This poisoned the evening-email anomaly
+ * engine, valuations, betas, and charts.
+ *
+ * `tickPriorityFor` is the single source of truth for the ordering and is a
+ * pure function of the ET wall-clock time, so it's unit-testable without
+ * TWS. DELAYED_* variants fire when the user lacks real-time subscriptions
+ * for that exchange and keep the same relative ordering as their real-time
+ * counterpart in both regimes.
+ *
+ * Foreign listings (e.g. the KRX-listed 402340) run their own sessions, but
+ * this fix keys on US RTH only — it still improves them, since their
+ * contamination came from the same blanket LAST-first preference. Building
+ * per-exchange session logic is out of scope; see repair script header for
+ * the one-time backfill of already-poisoned rows.
  */
-const TICK_PRIORITY: Array<{ tick: number; label: string }> = [
-  { tick: IBApiTickType.LAST, label: "LAST" },
-  { tick: IBApiTickType.CLOSE, label: "CLOSE" },
-  { tick: IBApiTickType.DELAYED_LAST, label: "DELAYED_LAST" },
-  { tick: IBApiTickType.DELAYED_CLOSE, label: "DELAYED_CLOSE" },
-];
+export function tickPriorityFor(nowEt: string): Array<{ tick: number; label: string }> {
+  const RTH_ORDER: Array<{ tick: number; label: string }> = [
+    { tick: IBApiTickType.LAST, label: "LAST" },
+    { tick: IBApiTickType.CLOSE, label: "CLOSE" },
+    { tick: IBApiTickType.DELAYED_LAST, label: "DELAYED_LAST" },
+    { tick: IBApiTickType.DELAYED_CLOSE, label: "DELAYED_CLOSE" },
+  ];
+  const OUTSIDE_RTH_ORDER: Array<{ tick: number; label: string }> = [
+    { tick: IBApiTickType.CLOSE, label: "CLOSE" },
+    { tick: IBApiTickType.DELAYED_CLOSE, label: "DELAYED_CLOSE" },
+    { tick: IBApiTickType.LAST, label: "LAST" },
+    { tick: IBApiTickType.DELAYED_LAST, label: "DELAYED_LAST" },
+  ];
+  // Half-open [09:30, 16:00) — safe as a plain string compare because nowEt
+  // is always zero-padded HH:MM on a 24h clock (see nowET()). At exactly
+  // 16:00 the closing print is authoritative, so the boundary itself counts
+  // as OUTSIDE regular trading hours (CLOSE-first).
+  const inRth = nowEt >= "09:30" && nowEt < "16:00";
+  return inRth ? RTH_ORDER : OUTSIDE_RTH_ORDER;
+}
 
 /** Max concurrent snapshot requests — well under IB's ~100 market data line limit. */
 const BATCH_SIZE = 10;
@@ -43,6 +77,8 @@ export async function fetchSnapshotPrices(
     onProgress?: (progress: PriceFetchProgress) => void;
     /** ET market date to stamp + guard on. Defaults to todayET(); injectable for tests. */
     asOfDate?: string;
+    /** ET wall-clock HH:MM used to pick tick priority. Defaults to nowET(); injectable for tests. */
+    nowEt?: string;
   },
 ): Promise<SnapshotPriceResult[]> {
   const api = getIbApi();
@@ -70,6 +106,10 @@ export async function fetchSnapshotPrices(
   // correctly-dated frozen close is sound. Official-bar capture is the next
   // accuracy increment if byte-perfect closes are ever needed.)
   api.setMarketDataType(MarketDataType.DELAYED_FROZEN);
+
+  // Computed ONCE per run (not per security) — the whole batch shares the
+  // same instant's RTH/outside-RTH regime.
+  const tickPriority = tickPriorityFor(options?.nowEt ?? nowET());
 
   let securities: SecurityRow[];
   if (options?.securityIds?.length) {
@@ -141,7 +181,7 @@ export async function fetchSnapshotPrices(
         let price: number | null = null;
         let tickLabel = "";
 
-        for (const { tick, label } of TICK_PRIORITY) {
+        for (const { tick, label } of tickPriority) {
           const entry = snapshot.get(tick);
           if (entry?.value != null && entry.value > 0) {
             price = entry.value;

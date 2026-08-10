@@ -9,7 +9,7 @@ vi.mock("@/lib/tws/client", () => ({
 }));
 
 import { getIbApi } from "@/lib/tws/client";
-import { fetchSnapshotPrices } from "@/lib/tws/snapshot";
+import { fetchSnapshotPrices, tickPriorityFor } from "@/lib/tws/snapshot";
 
 const mockedGetIbApi = vi.mocked(getIbApi);
 
@@ -17,6 +17,13 @@ const mockedGetIbApi = vi.mocked(getIbApi);
 // market-closed guard in fetchSnapshotPrices is deterministic regardless of
 // when the suite runs (it would otherwise early-return on a weekend/holiday).
 const TRADING_DAY = "2026-01-02";
+
+// Fixed ET wall-clock times so tick-priority tests are deterministic
+// regardless of when the suite actually runs (it would otherwise flip
+// between RTH/outside-RTH ordering depending on real time-of-day).
+const RTH_TIME = "10:00"; // inside 09:30-16:00 ET
+const AFTER_CLOSE_TIME = "17:30"; // outside — after the close
+const PRE_OPEN_TIME = "08:00"; // outside — before the open
 
 function seedSecurity(
   db: Database.Database,
@@ -146,7 +153,7 @@ describe("fetchSnapshotPrices", () => {
     expect(results[0].tickType).toBe("DELAYED_CLOSE");
   });
 
-  it("prefers LAST over CLOSE when both present", async () => {
+  it("prefers LAST over CLOSE when both present, during RTH", async () => {
     const secId = seedSecurity(db, "GOOG", { conId: 400 });
 
     const mockApi = {
@@ -160,9 +167,62 @@ describe("fetchSnapshotPrices", () => {
     };
     mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
 
-    const results = await fetchSnapshotPrices(db, { securityIds: [secId], asOfDate: TRADING_DAY });
+    const results = await fetchSnapshotPrices(db, {
+      securityIds: [secId],
+      asOfDate: TRADING_DAY,
+      nowEt: RTH_TIME,
+    });
     expect(results[0].price).toBe(175.50);
     expect(results[0].tickType).toBe("LAST");
+  });
+
+  it("prefers CLOSE over LAST when both present, after the close (AH poisoning fix)", async () => {
+    const secId = seedSecurity(db, "NET", { conId: 401 });
+
+    // Mirrors the verified live bug: an after-hours LAST print (330.00, an
+    // AH earnings spike) must NOT beat the real RTH CLOSE (284.43) once the
+    // 30-min background sync runs post-market.
+    const mockApi = {
+      setMarketDataType: vi.fn(),
+      getMarketDataSnapshot: vi.fn().mockResolvedValue(
+        mockMarketData([
+          { type: IBApiTickType.LAST, value: 330.0 },
+          { type: IBApiTickType.CLOSE, value: 284.43 },
+        ]),
+      ),
+    };
+    mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+
+    const results = await fetchSnapshotPrices(db, {
+      securityIds: [secId],
+      asOfDate: TRADING_DAY,
+      nowEt: AFTER_CLOSE_TIME,
+    });
+    expect(results[0].price).toBe(284.43);
+    expect(results[0].tickType).toBe("CLOSE");
+  });
+
+  it("prefers CLOSE over LAST when both present, before the open", async () => {
+    const secId = seedSecurity(db, "NET", { conId: 402 });
+
+    const mockApi = {
+      setMarketDataType: vi.fn(),
+      getMarketDataSnapshot: vi.fn().mockResolvedValue(
+        mockMarketData([
+          { type: IBApiTickType.LAST, value: 330.0 },
+          { type: IBApiTickType.CLOSE, value: 284.43 },
+        ]),
+      ),
+    };
+    mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+
+    const results = await fetchSnapshotPrices(db, {
+      securityIds: [secId],
+      asOfDate: TRADING_DAY,
+      nowEt: PRE_OPEN_TIME,
+    });
+    expect(results[0].price).toBe(284.43);
+    expect(results[0].tickType).toBe("CLOSE");
   });
 
   it("reports no_price when snapshot returns empty map", async () => {
@@ -359,5 +419,66 @@ describe("fetchSnapshotPrices", () => {
     const count = db.prepare("SELECT COUNT(*) as c FROM prices").get() as { c: number };
     expect(count.c).toBe(0);
     expect(mockApi.getMarketDataSnapshot).not.toHaveBeenCalled();
+  });
+});
+
+describe("tickPriorityFor", () => {
+  const labels = (order: Array<{ tick: number; label: string }>) => order.map((o) => o.label);
+
+  it("puts LAST first during regular trading hours", () => {
+    expect(labels(tickPriorityFor("09:30"))).toEqual([
+      "LAST",
+      "CLOSE",
+      "DELAYED_LAST",
+      "DELAYED_CLOSE",
+    ]);
+    expect(labels(tickPriorityFor("12:00"))).toEqual([
+      "LAST",
+      "CLOSE",
+      "DELAYED_LAST",
+      "DELAYED_CLOSE",
+    ]);
+    expect(labels(tickPriorityFor("15:59"))).toEqual([
+      "LAST",
+      "CLOSE",
+      "DELAYED_LAST",
+      "DELAYED_CLOSE",
+    ]);
+  });
+
+  it("puts CLOSE first before the open", () => {
+    expect(labels(tickPriorityFor("00:00"))).toEqual([
+      "CLOSE",
+      "DELAYED_CLOSE",
+      "LAST",
+      "DELAYED_LAST",
+    ]);
+    expect(labels(tickPriorityFor("09:29"))).toEqual([
+      "CLOSE",
+      "DELAYED_CLOSE",
+      "LAST",
+      "DELAYED_LAST",
+    ]);
+  });
+
+  it("puts CLOSE first at and after the 16:00 close (boundary is OUTSIDE RTH)", () => {
+    expect(labels(tickPriorityFor("16:00"))).toEqual([
+      "CLOSE",
+      "DELAYED_CLOSE",
+      "LAST",
+      "DELAYED_LAST",
+    ]);
+    expect(labels(tickPriorityFor("20:00"))).toEqual([
+      "CLOSE",
+      "DELAYED_CLOSE",
+      "LAST",
+      "DELAYED_LAST",
+    ]);
+    expect(labels(tickPriorityFor("23:59"))).toEqual([
+      "CLOSE",
+      "DELAYED_CLOSE",
+      "LAST",
+      "DELAYED_LAST",
+    ]);
   });
 });
