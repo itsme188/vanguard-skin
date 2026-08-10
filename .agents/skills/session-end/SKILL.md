@@ -30,6 +30,7 @@ Read `docs/plans/TODO.md` and reconcile it against what actually shipped this se
 - Match the file's existing convention: completed items move from "Open items" to the "Closed this session" block with `✅`, today's date, and commit hash(es). Do NOT introduce a new convention.
 - Add any new TODOs discovered this session (bugs found, deferred work, follow-ups the user mentioned) to "Open items" with enough context (files, ~time estimate, why) that next session can pick them up cold.
 - If the session closed a roadmap-level theme (Theme A / Theme D / etc.), update the "Backlog themes" list too.
+- **GitHub issue closeout:** if the session fixed anything tracked as a GitHub issue, close each fixed issue with a comment linking the commit hash(es). Issues triaged into TODO.md stay open until their fix ships.
 
 ## 5. Update auto-memory
 
@@ -63,7 +64,11 @@ If notarization is skipped because `APPLE_API_KEY` env vars aren't in shell, tha
 
 Skip this step if the session was docs-only / memory-only / `.claude/` or `.agents/` config-only.
 
-## 8. Summary
+## 8. Session handoff — write `docs/HANDOFF.md` (after the deploy finishes)
+
+Runs AFTER step 7 so it reports the final deploy result and true ending process state. Overwrite `docs/HANDOFF.md` (rolling file; git history is the archive) with the five items listed in `.claude/session-end.md` step 8: goal + exact files changed; tests/E2E run + results + deploy outcome; open concerns / rejected approaches / user decisions; uncommitted or live-process state after the deploy; session link if applicable (Codex sessions: name the tool + date instead). **Sanitization (public repo):** code terms only — no dollar amounts, share counts, position counts, or portfolio-derived figures. Commit it as its own final `chore: session handoff` commit (ask the user before pushing, per Codex convention).
+
+## 9. Summary
 
 Print a tight summary (≤150 words):
 - What shipped this session (commit hash + 1-line takeaway per item)
