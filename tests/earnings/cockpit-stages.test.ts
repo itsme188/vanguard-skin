@@ -129,3 +129,52 @@ describe("deriveEventStages", () => {
     expect(s2.recap).toBe("blocked");
   });
 });
+
+describe("deriveEventStages — reaction gated on the release having happened", () => {
+  // OCUL 2026-08-10: the event row carried a stale PRIOR-quarter
+  // reaction_snapshot while today's print was still 13h away — the cockpit
+  // rendered "rxn ✓" beside "released: upcoming", asserting a post-release
+  // fact for an unreleased print.
+  const SNAPSHOT = JSON.stringify({ source: "yahoo", t0_utc: "2026-08-04T20:15:00.000Z" });
+
+  it("pre-release (upcoming instant): a stale reaction_snapshot renders pending, not captured", () => {
+    const now = new Date("2026-08-10T06:00:00-04:00");
+    const s = deriveEventStages(
+      { ...AMC_EVENT, event_date: "2026-08-10", release_time: "15:15", reaction_snapshot: SNAPSHOT },
+      NO_EMAILS, NO_SKIPS, false, now, "2026-08-10"
+    );
+    expect(s.released.state).toBe("upcoming");
+    expect(s.reaction.state).toBe("pending");
+    expect(s.reaction.readyAt).not.toBeNull();
+  });
+
+  it("future-day event with no release time: snapshot renders pending", () => {
+    const now = new Date("2026-08-10T06:00:00-04:00");
+    const s = deriveEventStages(
+      { ...AMC_EVENT, event_date: "2026-08-12", release_time: null, reaction_snapshot: SNAPSHOT },
+      NO_EMAILS, NO_SKIPS, false, now, "2026-08-10"
+    );
+    expect(s.reaction.state).toBe("pending");
+  });
+
+  it("post-release: a snapshot still renders captured with its source", () => {
+    const now = new Date("2026-08-10T20:00:00-04:00");
+    const s = deriveEventStages(
+      { ...AMC_EVENT, event_date: "2026-08-10", release_time: "15:15", reaction_snapshot: SNAPSHOT },
+      NO_EMAILS, NO_SKIPS, false, now, "2026-08-10"
+    );
+    expect(s.released.state).toBe("released");
+    expect(s.reaction.state).toBe("captured");
+    expect(s.reaction.source).toBe("yahoo");
+  });
+
+  it("same-day event with unknown release time keeps captured semantics", () => {
+    const now = new Date("2026-08-10T12:00:00-04:00");
+    const s = deriveEventStages(
+      { ...AMC_EVENT, event_date: "2026-08-10", release_time: null, reaction_snapshot: SNAPSHOT },
+      NO_EMAILS, NO_SKIPS, false, now, "2026-08-10"
+    );
+    expect(s.released.state).toBe("unknown");
+    expect(s.reaction.state).toBe("captured");
+  });
+});

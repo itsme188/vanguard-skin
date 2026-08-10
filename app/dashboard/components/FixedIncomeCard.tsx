@@ -23,6 +23,9 @@ interface BondHolding {
 interface FixedIncomeData {
   bonds: BondHolding[];
   totalBondValue: number;
+  measuredBondValue?: number;
+  unmeasuredBondValue?: number;
+  unmeasuredBondCount?: number;
   portfolioValue: number;
   bondAllocationPct: number;
   weightedAvgDuration: number | null;
@@ -62,6 +65,19 @@ export function FixedIncomeCard({ scope }: { scope?: string }) {
     );
   }
 
+  // The weighted average covers only bonds with duration data; the rate
+  // sensitivity therefore weights by the MEASURED sleeve's portfolio share
+  // (duration × measured/portfolio), never the full bond allocation — the
+  // unmeasured bonds' contribution is unknown, not zero.
+  const measuredValue = data.measuredBondValue ?? data.totalBondValue;
+  const unmeasuredValue = data.unmeasuredBondValue ?? 0;
+  const unmeasuredPct =
+    data.totalBondValue > 0 ? (unmeasuredValue / data.totalBondValue) * 100 : 0;
+  const rateSensitivity =
+    data.weightedAvgDuration != null && data.portfolioValue > 0
+      ? data.weightedAvgDuration * (measuredValue / data.portfolioValue)
+      : null;
+
   return (
     <div className="bg-panel rounded-xl p-4 sm:p-5 card-elev space-y-4">
       <h3 className="text-sm font-medium text-ink">Fixed Income Exposure</h3>
@@ -86,9 +102,17 @@ export function FixedIncomeCard({ scope }: { scope?: string }) {
           }
           subtext={
             data.weightedAvgDuration != null ? (
-              <span className={toneClass(interpretDuration(data.weightedAvgDuration).tone)}>
-                {interpretDuration(data.weightedAvgDuration).text}
-              </span>
+              <>
+                <span className={toneClass(interpretDuration(data.weightedAvgDuration).tone)}>
+                  {interpretDuration(data.weightedAvgDuration).text}
+                </span>
+                {unmeasuredPct > 0 && (
+                  <span className="block text-warn">
+                    excludes <Pct value={unmeasuredPct} digits={0} /> of bond
+                    value with no duration data
+                  </span>
+                )}
+              </>
             ) : (
               "No duration data"
             )
@@ -101,25 +125,15 @@ export function FixedIncomeCard({ scope }: { scope?: string }) {
         />
         <MetricCell
           label="Rate Sensitivity"
-          value={
-            data.weightedAvgDuration != null
-              ? `${(data.weightedAvgDuration * data.bondAllocationPct / 100).toFixed(2)} yr`
-              : "N/A"
-          }
+          value={rateSensitivity != null ? `${rateSensitivity.toFixed(2)} yr` : "N/A"}
           subtext={
-            data.weightedAvgDuration != null ? (
+            rateSensitivity != null ? (
               <span
                 className={toneClass(
-                  interpretPortfolioRateSensitivity(
-                    (data.weightedAvgDuration * data.bondAllocationPct) / 100,
-                  ).tone,
+                  interpretPortfolioRateSensitivity(rateSensitivity).tone,
                 )}
               >
-                {
-                  interpretPortfolioRateSensitivity(
-                    (data.weightedAvgDuration * data.bondAllocationPct) / 100,
-                  ).text
-                }
+                {interpretPortfolioRateSensitivity(rateSensitivity).text}
               </span>
             ) : (
               "portfolio duration contribution"
