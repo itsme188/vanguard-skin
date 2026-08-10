@@ -124,26 +124,37 @@ function resolveCluster(rows: EarningsRow[], today: string): Resolution {
     return { canonicalId: occurred[0].id, status: "confirmed", conflictWith: null };
   }
 
-  const finnhub = rows.find((r) => r.source === "finnhub");
-  const nasdaq = rows.find((r) => r.source === "nasdaq");
+  // Rows arrive date-sorted ASC, so find-first picks the OLDEST claim per
+  // source. A wrong-date prior-quarter row exactly CLUSTER_PROXIMITY_DAYS
+  // before the real print clusters with it and must not shadow the current
+  // claim (NBIS 2026-08-10: finnhub 07-29 phantom vs finnhub+nasdaq 08-12
+  // agreeing — find-first manufactured a conflict between agreeing sources).
+  const finnhubRows = rows.filter((r) => r.source === "finnhub");
+  const nasdaqRows = rows.filter((r) => r.source === "nasdaq");
 
   // 3 & 4. Both calendars present.
-  if (finnhub && nasdaq) {
-    if (finnhub.event_date === nasdaq.event_date) {
-      // Agree → confirmed. Keep Finnhub canonical (richer raw_json/history that
-      // the earnings-email composer already relies on); supersede the Nasdaq dup.
-      return { canonicalId: finnhub.id, status: "confirmed", conflictWith: null };
+  if (finnhubRows.length > 0 && nasdaqRows.length > 0) {
+    // Agreement-first: ANY finnhub/nasdaq pair sharing a date is a
+    // confirmation. Keep Finnhub canonical (richer raw_json/history that
+    // the earnings-email composer already relies on); supersede the rest.
+    for (const n of nasdaqRows) {
+      const agreeing = finnhubRows.find((f) => f.event_date === n.event_date);
+      if (agreeing) {
+        return { canonicalId: agreeing.id, status: "confirmed", conflictWith: null };
+      }
     }
-    // Disagree → Nasdaq provisional, flagged for the user to confirm vs IBKR.
+    // Genuine disagreement → Nasdaq provisional, flagged for the user to
+    // confirm vs IBKR — against the LATEST finnhub claim, never a phantom.
+    const latestFinnhub = finnhubRows[finnhubRows.length - 1];
     return {
-      canonicalId: nasdaq.id,
+      canonicalId: nasdaqRows[0].id,
       status: "conflict",
-      conflictWith: `finnhub:${finnhub.event_date}`,
+      conflictWith: `finnhub:${latestFinnhub.event_date}`,
     };
   }
 
   // 5. Single source.
-  const only = finnhub ?? nasdaq ?? rows[0];
+  const only = finnhubRows[0] ?? nasdaqRows[0] ?? rows[0];
   return { canonicalId: only.id, status: "single", conflictWith: null };
 }
 

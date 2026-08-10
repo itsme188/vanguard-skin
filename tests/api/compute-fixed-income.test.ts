@@ -218,3 +218,75 @@ describe("GET /api/compute/fixed-income FX conversion", () => {
     expect(body.data.portfolioValue).toBeCloseTo(14_700 + 1_000, 4);
   });
 });
+
+describe("GET /api/compute/fixed-income weighted duration with unknown-duration bonds", () => {
+  const AS_OF = "2026-06-15";
+  const FUTURE_MATURITY = "2032-01-01";
+
+  beforeEach(() => {
+    state.db = new Database(":memory:");
+    state.db.pragma("foreign_keys = ON");
+    runMigrations(state.db);
+  });
+
+  it("excludes null-duration bonds from the weighted-average denominator and discloses the unmeasured sleeve", async () => {
+    const db = state.db;
+    const accountId = 1;
+
+    // Measured bond: $10,000 face @ par => MV $10,000, duration 9.
+    const measured = seedSecurity(db, "TBMEAS", {
+      security_type: "bond",
+      currency: "USD",
+      duration_years: 9,
+      credit_rating: "AAA",
+      maturity_date: FUTURE_MATURITY,
+    });
+    seedHolding(db, accountId, measured, 10_000, AS_OF);
+    seedPrice(db, measured, AS_OF, 100);
+
+    // Unknown-duration bond: $30,000 face @ par => MV $30,000, duration NULL.
+    // Pre-fix its value sat in the denominator as if duration were ZERO,
+    // dragging the average from 9.0 to 2.25.
+    const unmeasured = seedSecurity(db, "TBNULL", {
+      security_type: "bond",
+      currency: "USD",
+      maturity_date: FUTURE_MATURITY,
+    });
+    seedHolding(db, accountId, unmeasured, 30_000, AS_OF);
+    seedPrice(db, unmeasured, AS_OF, 100);
+
+    const { GET } = await import("@/app/api/compute/fixed-income/route");
+    const res = await GET(new Request("http://x/api/compute/fixed-income?scope=all") as never);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+
+    // The average is over MEASURED bonds only: 9.0, never 90000/40000 = 2.25.
+    expect(body.data.weightedAvgDuration).toBeCloseTo(9.0, 6);
+
+    // Disclosure fields so the card can caption the excluded share.
+    expect(body.data.measuredBondValue).toBeCloseTo(10_000, 5);
+    expect(body.data.unmeasuredBondValue).toBeCloseTo(30_000, 5);
+    expect(body.data.unmeasuredBondCount).toBe(1);
+    expect(body.data.totalBondValue).toBeCloseTo(40_000, 5);
+  });
+
+  it("reports zero unmeasured value when every bond has a duration", async () => {
+    const db = state.db;
+    const a = seedSecurity(db, "TBA", {
+      security_type: "bond",
+      currency: "USD",
+      duration_years: 4,
+      maturity_date: FUTURE_MATURITY,
+    });
+    seedHolding(db, 1, a, 10_000, AS_OF);
+    seedPrice(db, a, AS_OF, 100);
+
+    const { GET } = await import("@/app/api/compute/fixed-income/route");
+    const body = await (await GET(new Request("http://x/api/compute/fixed-income") as never)).json();
+    expect(body.data.weightedAvgDuration).toBeCloseTo(4.0, 6);
+    expect(body.data.measuredBondValue).toBeCloseTo(10_000, 5);
+    expect(body.data.unmeasuredBondValue).toBeCloseTo(0, 5);
+    expect(body.data.unmeasuredBondCount).toBe(0);
+  });
+});

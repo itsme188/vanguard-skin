@@ -99,8 +99,14 @@ export function deriveEventStages(
   }
 
   // ── reaction ──
+  // A reaction is a POST-release fact. A row can carry a stale prior-quarter
+  // reaction_snapshot (date-corrected/re-synced events), so a snapshot alone
+  // must never flip the chip while the release is still upcoming or the event
+  // day is in the future — that contradicts the released stage beside it.
+  const releaseMayHaveHappened =
+    hasReleased || (released.state === "unknown" && ev.event_date <= todayEt);
   let reaction: ReactionStage;
-  if (ev.reaction_snapshot) {
+  if (ev.reaction_snapshot && releaseMayHaveHappened) {
     let source: string | null = null;
     try {
       const parsed = JSON.parse(ev.reaction_snapshot) as { source?: string };
