@@ -3,7 +3,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import Link from "next/link";
 import type { ResearchArticle, ResearchSource, FilteredArticle } from "@/lib/queries/research";
-import { trimEmailFooter } from "@/lib/gmail/sanitize";
+import { trimEmailFooter, htmlHidesStoredText } from "@/lib/gmail/sanitize";
 import { sanitizeThemeList } from "@/lib/gmail/theme-sanitize";
 import { ManageSourcesModal } from "./ManageSourcesModal";
 import { NewsletterArticleFrame } from "./NewsletterArticleFrame";
@@ -366,8 +366,12 @@ export function ResearchFeedsView({
       const res = await fetch(`/api/research/articles/${articleId}`);
       const data = await res.json();
       if (data.success) {
-        setExpandedText(data.data.raw_text ? trimEmailFooter(data.data.raw_text) : null);
-        setExpandedHtml(data.data.raw_html ? trimEmailFooter(data.data.raw_html) : null);
+        const text = data.data.raw_text ? trimEmailFooter(data.data.raw_text) : null;
+        const html = data.data.raw_html ? trimEmailFooter(data.data.raw_html) : null;
+        setExpandedText(text);
+        // Some senders' templates survive sanitize as style-only shells that
+        // render a blank panel — prefer the stored raw_text in that case.
+        setExpandedHtml(html && htmlHidesStoredText(html, text) ? null : html);
       }
     } catch { /* ignore */ } finally {
       setLoadingExpand(false);
@@ -697,8 +701,11 @@ function ArticleCard({
               <NewsletterArticleFrame html={expandedHtml} />
             ) : expandedText ? (
               <div className="prose-reader">
-                {expandedText.split(/\n{2,}/).map((para, i) => (
-                  <p key={i}>{para}</p>
+                {/* CRLF-tolerant paragraph split (some senders' raw_text is
+                    pure \r\n — a bare \n{2,} never matches); pre-line keeps
+                    single-newline structure (headings, one-per-line entries). */}
+                {expandedText.split(/(?:\r?\n){2,}/).map((para, i) => (
+                  <p key={i} className="whitespace-pre-line">{para.replace(/\r\n/g, "\n")}</p>
                 ))}
               </div>
             ) : (

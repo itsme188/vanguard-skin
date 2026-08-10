@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   sanitizeNewsletterHtml,
   normalizeNewsletterHtml,
+  visibleHtmlTextLength,
+  htmlHidesStoredText,
 } from "@/lib/gmail/sanitize";
 
 /**
@@ -271,5 +273,42 @@ describe("normalizeNewsletterHtml", () => {
       const twice = normalizeNewsletterHtml(once);
       expect(twice).toBe(once);
     });
+  });
+});
+
+describe("visibleHtmlTextLength / htmlHidesStoredText (blank expand-panel fallback)", () => {
+  it("counts only rendered text — style/script/head blocks and tags are invisible", () => {
+    const html =
+      "<html><head><title>t</title><style>.a{color:red}</style></head>" +
+      "<body><style>p{margin:0}</style><p>Hello&nbsp;world</p><script>x()</script></body></html>";
+    const len = visibleHtmlTextLength(html);
+    expect(len).toBeGreaterThan(5);
+    expect(len).toBeLessThan(30);
+  });
+
+  it("style-only HTML with substantial stored raw_text triggers the fallback", () => {
+    // The James Bulltard shape: ~30KB of <style>, 4 chars of rendered text,
+    // 7,351 chars of stored raw_text.
+    const styleOnly = `<html><head><style>${".x{}".repeat(5000)}</style></head><body><p>8/3</p></body></html>`;
+    const rawText = "Recap paragraph. ".repeat(400);
+    expect(htmlHidesStoredText(styleOnly, rawText)).toBe(true);
+  });
+
+  it("HTML rendering a small fraction of a long raw_text triggers the fallback", () => {
+    const partial = `<html><body><p>${"a".repeat(400)}</p></body></html>`;
+    const rawText = "b".repeat(10_000);
+    expect(htmlHidesStoredText(partial, rawText)).toBe(true);
+  });
+
+  it("healthy HTML (full article text) does NOT trigger the fallback", () => {
+    const body = "A full paragraph of readable newsletter prose. ".repeat(80);
+    const html = `<html><body><p>${body}</p></body></html>`;
+    expect(htmlHidesStoredText(html, body)).toBe(false);
+  });
+
+  it("no raw_text to fall back to → never triggers", () => {
+    const styleOnly = "<html><head><style>.a{}</style></head><body></body></html>";
+    expect(htmlHidesStoredText(styleOnly, null)).toBe(false);
+    expect(htmlHidesStoredText(styleOnly, "")).toBe(false);
   });
 });
