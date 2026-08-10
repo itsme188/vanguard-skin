@@ -595,5 +595,100 @@ describe("TWR computation", () => {
 
       expect(viaAccountIds).toEqual(viaAccountId);
     });
+
+    it("an empty accountIds array does NOT widen to the unscoped result (explicit no-accounts guard)", () => {
+      seedCleanAccounts(db, [1, 2, 3]);
+
+      const empty = computeTwr(db, { startDate: "2026-01-01", accountIds: [] });
+      const unscoped = computeTwr(db, { startDate: "2026-01-01" });
+
+      // Same shape as "no snapshots exist" (see the very first test in this
+      // file) — an explicitly empty scope means zero accounts, not "no
+      // filter." It must never fall through to the all-accounts branch.
+      expect(empty).toBeNull();
+      expect(unscoped).not.toBeNull();
+    });
+
+    // ─── Scoping must cover EVERY aggregate query site, not just the ─────
+    // obvious SUM/COUNT ones. The three tests above only ever produce an
+    // EMPTY result from the allFlowStmt fallback query (every seeded
+    // snapshot carries deposits_withdrawals, so the aggregate never falls
+    // through to it) and never seed a December annual-summary-shaped row,
+    // so dropping either scopeAnd("account_id") there — or on the
+    // decemberSnaps query — would pass all of them silently. This fixture
+    // forces both paths to actually run with real cross-account data.
+    describe("accountIds scoping covers the flow-fallback and December-correction query sites", () => {
+      function seedFallbackAndDecemberFixture(
+        targetDb: Database.Database,
+        acctIds: number[]
+      ): void {
+        for (const acctId of acctIds) {
+          const v0 = 100000 * acctId; // Dec-2025 anchor
+          seedSnapshot(targetDb, acctId, "2025-12-31", v0);
+
+          // January: a real snapshot-level deposit (single-mid-month-flow
+          // branch — already covered elsewhere) so December's janNovDeps
+          // subquery has something nonzero to subtract.
+          const janDeposit = 1000 * acctId;
+          const v1 = v0 * 1.02;
+          seedSnapshot(targetDb, acctId, "2026-01-31", v1, {
+            depositsWithdrawals: janDeposit,
+          });
+
+          // February: deposits_withdrawals left NULL on purpose — the
+          // aggregate's effectiveDeposits is then 0 for this month, forcing
+          // it through allFlowStmt (the scoped cash-flow fallback, twr.ts
+          // ~453-460 / bind ~571) instead of the snapshot-level shortcut.
+          const v2 = v1 * 1.02;
+          seedSnapshot(targetDb, acctId, "2026-02-28", v2);
+          seedExternalFlow(targetDb, acctId, "2026-02-15", 200 * acctId);
+
+          // December: annual-summary-shaped row (starting_value is a
+          // year-start figure, nowhere near Feb's total — well past the
+          // 10% gap threshold — and deposits_withdrawals is the CUMULATIVE
+          // annual figure). Triggers both the per-account isAnnualSummary
+          // branch and the aggregate's decemberSnaps correction (twr.ts
+          // ~467-519), which must itself be scoped to the account list.
+          const decCumulativeDeposits = janDeposit + 500 * acctId;
+          seedSnapshot(targetDb, acctId, "2026-12-31", v2 * 1.03, {
+            startingValue: v0 * 3,
+            depositsWithdrawals: decCumulativeDeposits,
+          });
+        }
+      }
+
+      it("scoped 2-of-3 aggregate equals an independent 2-account DB seeded with the same rows", () => {
+        seedFallbackAndDecemberFixture(db, [1, 2, 3]);
+
+        const scoped = computeTwr(db, {
+          startDate: "2026-01-01",
+          accountIds: [1, 2],
+        });
+        expect(scoped).not.toBeNull();
+
+        // Independent DB with ONLY accounts 1 and 2's rows AND transactions
+        // — account 3 has its own distinct flow (twr.ts ~200*3=600 on
+        // 2026-02-15) and its own distinct December correction (based on
+        // 1000*3/500*3), so if either scopeAnd got dropped, account 3's
+        // data would leak into the scoped SUM and this comparison would
+        // fail, not silently pass.
+        const db2 = new Database(":memory:");
+        db2.pragma("foreign_keys = ON");
+        runMigrations(db2);
+        seedFallbackAndDecemberFixture(db2, [1, 2]);
+
+        const unscoped = computeTwr(db2, { startDate: "2026-01-01" });
+        expect(unscoped).not.toBeNull();
+
+        expect(scoped!.totalReturn).toBeCloseTo(unscoped!.totalReturn, 10);
+        expect(scoped!.annualizedReturn).toBeCloseTo(unscoped!.annualizedReturn!, 10);
+        expect(scoped!.startDate).toBe(unscoped!.startDate);
+        expect(scoped!.endDate).toBe(unscoped!.endDate);
+        expect(scoped!.totalDays).toBe(unscoped!.totalDays);
+        expect(scoped!.isPartial).toBe(unscoped!.isPartial);
+
+        db2.close();
+      });
+    });
   });
 });
