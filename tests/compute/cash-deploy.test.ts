@@ -123,6 +123,17 @@ describe("suggestAllocation", () => {
     const result = suggestAllocation(db, "ibkr", undefined, 5000);
     expect(result.benchmarkSymbol).toBe("QQQ");
   });
+
+  it("renders seven-figure unallocated cash through formatLargeUSD ($1.1M, never $1100.9k)", () => {
+    seedVanguardPortfolio(db);
+    // Deploy far more than the caps allow so a seven-figure remainder is left over.
+    const result = suggestAllocation(db, "vanguard", [1], 2_500_000);
+    expect(result.cashRemaining).toBeGreaterThanOrEqual(1_000_000);
+    const unallocatedNote = result.notes.find((n) => /unallocated/i.test(n));
+    expect(unallocatedNote).toBeDefined();
+    expect(unallocatedNote).toMatch(/\$\d+(\.\d+)?M/);
+    expect(unallocatedNote).not.toMatch(/\d{4,}(\.\d+)?k/);
+  });
 });
 
 describe("FX conversion (Task 9c — cash-deploy market value)", () => {

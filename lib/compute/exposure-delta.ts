@@ -161,6 +161,17 @@ function loadCurrentHoldings(
 }
 
 /**
+ * OCC option symbols are stored with multi-space padding ("CRWD  270319C00117500")
+ * but every render path collapses whitespace runs, so a user who copies the
+ * displayed symbol types a single space and an exact match fails. Match
+ * space-insensitively: no real symbol contains a space, and OCC padding is
+ * deterministic, so stripping whitespace can never collide two securities.
+ */
+function symbolKey(symbol: string): string {
+  return symbol.toUpperCase().replace(/\s+/g, "");
+}
+
+/**
  * Look up the latest price + classification for a hypothetical leg symbol.
  * Returns null if the security isn't in the DB (can't synthesize).
  */
@@ -185,11 +196,11 @@ function lookupSymbol(
       FROM securities s
       LEFT JOIN security_factors sf ON sf.security_id = s.id
       LEFT JOIN security_betas sb ON sb.security_id = s.id AND sb.lookback_days = 252
-      WHERE UPPER(s.symbol) = UPPER(?)
+      WHERE REPLACE(UPPER(s.symbol), ' ', '') = ?
       LIMIT 1
     `
     )
-    .get(symbol) as ({
+    .get(symbolKey(symbol)) as ({
       security_id: number;
       symbol: string;
       security_type: string | null;
@@ -279,12 +290,12 @@ function applyLegs(
   const dropped: DroppedLeg[] = [];
   const next: HoldingRow[] = current.map((h) => ({ ...h }));
   const indexBy = new Map<string, number>();
-  next.forEach((h, i) => indexBy.set(h.symbol.toUpperCase(), i));
+  next.forEach((h, i) => indexBy.set(symbolKey(h.symbol), i));
 
   for (const leg of legs) {
     if (!leg.dollarAmount || leg.dollarAmount <= 0) continue;
     const upper = leg.symbol.toUpperCase();
-    const idx = indexBy.get(upper);
+    const idx = indexBy.get(symbolKey(leg.symbol));
 
     if (idx !== undefined) {
       const h = next[idx];
@@ -328,7 +339,7 @@ function applyLegs(
         marketValue: marketValue(shares, synth.price, synth.securityType, synth.multiplier, usdPerUnit),
       };
       next.push(row);
-      indexBy.set(upper, next.length - 1);
+      indexBy.set(symbolKey(leg.symbol), next.length - 1);
     }
   }
 

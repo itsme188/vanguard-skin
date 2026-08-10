@@ -349,4 +349,37 @@ describe("droppedLegs surfacing (unknown / unheld legs must not silently no-op)"
       { symbol: "ZZZZTESTXYZ", reason: "unknown_symbol" },
     ]);
   });
+
+  it("matches a held OCC option typed with collapsed whitespace (the rendered form)", () => {
+    // Stored OCC symbols carry the standard two-space pad; every render path
+    // collapses it, so the user copies "CRWD 270319C00117500" (one space).
+    const today = new Date().toISOString().slice(0, 10);
+    db.prepare(
+      `INSERT INTO securities (id, symbol, security_type, sector, multiplier, underlying_symbol) VALUES (7, 'CRWD  270319C00117500', 'Option', 'Technology', 100, 'CRWD')`
+    ).run();
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (7, ?, 50, 'tws')`).run(today);
+    db.prepare(
+      `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, 7, ?, 2, 'vg-crwd-call')`
+    ).run(today);
+
+    const result = computeExposureDelta(db, "all", undefined, [
+      { symbol: "CRWD 270319C00117500", action: "buy", dollarAmount: 5000 },
+    ]);
+    expect(result.droppedLegs).toEqual([]);
+    expect(result.after.totalValue).toBeCloseTo(result.before.totalValue + 5000, 2);
+  });
+
+  it("resolves an unheld security typed with collapsed whitespace via lookup", () => {
+    const today = new Date().toISOString().slice(0, 10);
+    db.prepare(
+      `INSERT INTO securities (id, symbol, security_type, sector, multiplier, underlying_symbol) VALUES (8, 'AAPL  270115C00250000', 'Option', 'Technology', 100, 'AAPL')`
+    ).run();
+    db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (8, ?, 20, 'tws')`).run(today);
+
+    const result = computeExposureDelta(db, "all", undefined, [
+      { symbol: "AAPL 270115C00250000", action: "buy", dollarAmount: 2000 },
+    ]);
+    expect(result.droppedLegs).toEqual([]);
+    expect(result.after.totalValue).toBeCloseTo(result.before.totalValue + 2000, 2);
+  });
 });
