@@ -46,7 +46,21 @@ If any of these changed during the session, update `CLAUDE.md` accordingly:
 - Architecture changes (Calendar / Auto-Refresh / Electron Build / etc.)
 - Fixed known issues (strike through with `~~text~~` in "Active Issues")
 
-## 7. Rebuild Electron DMG (pre-authorized)
+## 7. Codex handoff — write `docs/HANDOFF.md`
+
+Overwrite `docs/HANDOFF.md` (rolling file; git history is the archive) with a brief handoff for Codex, which reviews this repo via GitHub. Cover exactly these five items:
+
+1. **Current goal + exact files changed** this session (paths, not vague areas).
+2. **Tests/E2E checks run and their results** (e.g., "`npx vitest run` — 4,571 passed" or "not run — docs-only session").
+3. **Open concerns, rejected approaches, and user decisions** — the "why" a reviewer can't get from the diff. Include anything decided but not yet implemented.
+4. **Uncommitted changes or live-process state** (worktrees, running dev servers, in-flight branches, pending PRs). "None" is a valid and useful answer.
+5. **Claude session link** (the `https://claude.ai/code/session_...` URL from this session's environment, if available).
+
+**Sanitization (public repo):** describe work in code terms only. No dollar amounts, share counts, position counts, return percentages, or any portfolio-derived figures — same rule as PR bodies and README assets.
+
+Commit it with the session's `chore(claude)` docs commit so it lands on GitHub with the push. Skip this step only if the session made no decisions and changed nothing (pure Q&A).
+
+## 8. Rebuild Electron DMG (pre-authorized)
 
 If the session changed any production code (anything outside `tests/`, `docs/`, `.claude/`, or memory files):
 
@@ -60,7 +74,7 @@ If notarization is skipped because `APPLE_API_KEY` env vars aren't in shell, tha
 
 Skip this step if the session was docs-only / memory-only / `.claude/` config-only.
 
-## 8. Summary
+## 9. Summary
 
 Print a tight summary (≤150 words):
 - What shipped this session (commit hash + 1-line takeaway per item)
