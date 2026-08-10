@@ -7,7 +7,8 @@ import { computeRiskMetrics } from "@/lib/compute/risk";
 import { dataWindowNotice } from "@/lib/compute/data-window";
 import { reconcileTwrAgainstStatements } from "@/lib/compute/twr-reconcile";
 import { computePeriodAttribution } from "@/lib/compute/period-attribution";
-import { resolveScope, resolveScopeToSingleId } from "@/lib/queries/accounts";
+import { resolveScope } from "@/lib/queries/accounts";
+import { todayET } from "@/lib/calendar/date-utils";
 import { getDailyValuationsByAccount, getDailyValuationsCombined } from "@/lib/queries/daily-valuations";
 import { Money, Pct } from "@/lib/privacy/components";
 import { formatPercent } from "@/lib/format";
@@ -46,22 +47,36 @@ function fmtDate(iso: string | undefined): string {
   return `${months[parseInt(m, 10) - 1]} ${parseInt(d, 10)}, ${y}`;
 }
 
-function startDateForPeriod(period: Period): string | undefined {
-  const today = new Date();
-  if (period === "ytd") return `${today.getFullYear()}-01-01`;
+// Compact month+year window (e.g. "May 2023"), for the per-account coverage
+// windows — a full day-level date would be noise there; the point is just
+// to make a shorter account history visually distinct from the headline.
+function fmtMonthYear(iso: string | undefined): string {
+  if (!iso) return "—";
+  const [y, m] = iso.split("-");
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${months[parseInt(m, 10) - 1]} ${y}`;
+}
+
+// todayIso must be an ET calendar day (todayET()) — never a local/UTC
+// `new Date()` slice. The arithmetic below then runs entirely in UTC (on a
+// Date anchored at that ET day's midnight) so it never re-drifts across a
+// day boundary depending on the machine's local timezone.
+function startDateForPeriod(period: Period, todayIso: string): string | undefined {
+  const today = new Date(todayIso + "T00:00:00Z");
+  if (period === "ytd") return `${today.getUTCFullYear()}-01-01`;
   if (period === "1y") {
     const d = new Date(today);
-    d.setFullYear(d.getFullYear() - 1);
+    d.setUTCFullYear(d.getUTCFullYear() - 1);
     return d.toISOString().slice(0, 10);
   }
   if (period === "3y") {
     const d = new Date(today);
-    d.setFullYear(d.getFullYear() - 3);
+    d.setUTCFullYear(d.getUTCFullYear() - 3);
     return d.toISOString().slice(0, 10);
   }
   if (period === "5y") {
     const d = new Date(today);
-    d.setFullYear(d.getFullYear() - 5);
+    d.setUTCFullYear(d.getUTCFullYear() - 5);
     return d.toISOString().slice(0, 10);
   }
   return undefined;
@@ -77,10 +92,21 @@ const BENCHMARK_SYMBOL = "SPY";
 export async function PerformanceView({ scope = "all", period }: PerformanceViewProps) {
   const activePeriod: Period = (PERIODS.find((p) => p.key === period)?.key ?? "ytd") as Period;
   const activeScope = SCOPES.find((s) => s.key === scope)?.key ?? "all";
-  const accountId = activeScope === "all" ? undefined : resolveScopeToSingleId(db, activeScope);
+  // Full scope, not a first-id collapse — resolveScopeToSingleId would
+  // silently drop every account past the first from the TWR aggregate
+  // chain (the resolveScopeToSingleId violation this fixes; scopes are
+  // disjoint but not all 1-account, and must not be treated as if they were).
+  const scopeAccountIds = activeScope === "all" ? undefined : resolveScope(db, activeScope);
+  // computeXirr/computeRiskMetrics still take a single accountId — their
+  // signature is unchanged (out of scope for this fix). Every scope today
+  // resolves to exactly one account, so the first id is equivalent; this
+  // only diverges once a named scope covers 2+ accounts.
+  const accountId = scopeAccountIds?.[0];
+  const twrAccountId = scopeAccountIds?.length === 1 ? scopeAccountIds[0] : undefined;
+  const twrAccountIds = scopeAccountIds && scopeAccountIds.length > 1 ? scopeAccountIds : undefined;
 
-  const startDate = startDateForPeriod(activePeriod);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayET();
+  const startDate = startDateForPeriod(activePeriod, today);
 
   let twrResult: ReturnType<typeof computeTwr> | null = null;
   let xirrResult: ReturnType<typeof computeXirr> | null = null;
@@ -88,7 +114,7 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
   let computeError: string | null = null;
 
   try {
-    twrResult = computeTwr(db, { startDate, accountId });
+    twrResult = computeTwr(db, { startDate, accountId: twrAccountId, accountIds: twrAccountIds });
     xirrResult = computeXirr(db, { startDate, accountId });
     riskResult = computeRiskMetrics(db, { startDate, endDate: today, accountId });
   } catch (err) {
@@ -312,6 +338,15 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
                 }
               />
             </div>
+            {/* Aggregate disclosure: mirrors TwrResult.isPartial one level up —
+                a statement-lag month got skipped from the headline's chained
+                return (see snapshot-coverage.ts). Plain words only, no
+                portfolio numbers. */}
+            {twrResult?.isPartial && (
+              <p className="text-xs text-ink-faint mt-3">
+                TWR reflects partial coverage — some months were excluded from the chain.
+              </p>
+            )}
             {/* Honest labeling: drawdown/Sharpe come from daily_valuations
                 (history starts 2026-03; risk further clamped to the
                 all-accounts-covered floor), so under 3Y/All they compute
@@ -376,7 +411,15 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
                 <tbody className="divide-y divide-edge">
                   {twrResult.perAccount.map((acc) => (
                     <tr key={acc.accountId}>
-                      <td className="py-2 text-ink">{acc.accountName}</td>
+                      <td className="py-2 text-ink">
+                        <div>{acc.accountName}</div>
+                        {/* Compact per-account coverage window — a shorter
+                            account history next to a longer headline window
+                            should be visibly different, not implied equal. */}
+                        <div className="text-[11px] text-ink-faint font-mono">
+                          {fmtMonthYear(acc.startDate)} – {fmtMonthYear(acc.endDate)}
+                        </div>
+                      </td>
                       <td className="py-2 text-right font-mono tabular-nums">
                         <Pct
                           value={acc.annualizedReturn !== null ? acc.annualizedReturn * 100 : null}
