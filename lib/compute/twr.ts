@@ -146,10 +146,20 @@ export function computeTwr(
   // flow queries, expected_accounts) to just those accounts.
   const scopeIds: number[] | undefined =
     !singleAccountId && accountIds && accountIds.length > 1 ? accountIds : undefined;
+  // An explicitly empty accountIds array is a real "zero accounts in
+  // scope" signal — it must NEVER widen to the unscoped/all-accounts path.
+  // A caller that resolved a named scope to no accounts (e.g. resolveScope
+  // returning []) wants "no data for this scope," not "show me the whole
+  // portfolio." Mirrors the existing accounts.length === 0 → null result
+  // just below (same shape as "no data").
+  const emptyScope =
+    !singleAccountId && accountIds !== undefined && accountIds.length === 0;
 
   // Get accounts to process
   let accounts: AccountRow[];
-  if (singleAccountId) {
+  if (emptyScope) {
+    accounts = [];
+  } else if (singleAccountId) {
     accounts = db
       .prepare("SELECT id, name FROM accounts WHERE id = ?")
       .all(singleAccountId) as AccountRow[];
