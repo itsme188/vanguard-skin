@@ -50,12 +50,8 @@ export function TranscriptsRefreshButton({ ticker }: Props) {
   return (
     <div className="flex items-center gap-2 text-[11px]">
       {error && (
-        <span
-          className="text-down"
-          title={error}
-          style={{ maxWidth: "240px" }}
-        >
-          ⚠ {error.length > 40 ? `${error.slice(0, 40)}…` : error}
+        <span className="text-down" style={{ maxWidth: "360px" }}>
+          ⚠ {error}
         </span>
       )}
       <button

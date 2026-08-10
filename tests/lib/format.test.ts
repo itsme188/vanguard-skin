@@ -8,6 +8,7 @@ import {
   formatProfitFactor,
   formatLargeUSD,
   formatPercent,
+  formatShares,
   formatUSD,
   formatUSDPrecise,
   parseLargeUSD,
@@ -307,3 +308,30 @@ describe("unrealizedGainRatio", () => {
   });
 });
 
+
+describe("formatShares fractional default", () => {
+  // Fractional DRIP lots rounded to "0" beside a real cost basis
+  // (qa:security-detail-taxlots--fractional-lots-render-qty-0-regression-4).
+  // At the default digits=0 a non-integer quantity must keep its fraction —
+  // rounding 0.077 shares to "0" claims the lot is empty.
+  it("renders fractional quantities at default digits instead of rounding to an integer", () => {
+    expect(formatShares(0.077)).toBe("0.077");
+    expect(formatShares(21.096)).toBe("21.096");
+    expect(formatShares(0.0538)).toBe("0.0538");
+  });
+  it("keeps whole quantities integer-formatted with grouping", () => {
+    expect(formatShares(21)).toBe("21");
+    expect(formatShares(1500)).toBe("1,500");
+    expect(formatShares(-3)).toBe("-3");
+  });
+  it("negative fractional quantities keep sign and fraction", () => {
+    expect(formatShares(-0.25)).toBe("-0.25");
+  });
+  it("explicit digits still pin the fraction width", () => {
+    expect(formatShares(0.077, 4)).toBe("0.0770");
+    expect(formatShares(2, 4)).toBe("2.0000");
+  });
+  it("non-finite stays em dash", () => {
+    expect(formatShares(Number.NaN)).toBe("—");
+  });
+});
