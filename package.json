@@ -32,7 +32,7 @@
     "electron:build": "rm -rf dist && npm run build && npm run electron:compile && npm run electron:copy-static",
     "electron:pack": "npm run electron:build && electron-builder --mac",
     "electron:deploy": "npm run electron:pack && npm run electron:install",
-    "electron:install": "osascript -e 'tell application \"Vanguard Dashboard\" to quit' 2>/dev/null; sleep 1; rm -rf \"/Applications/Vanguard Dashboard.app\" && cp -R \"dist/mac-arm64/Vanguard Dashboard.app\" /Applications/ && echo '✅ Installed to /Applications' && open -a 'Vanguard Dashboard'"
+    "electron:install": "osascript -e 'tell application \"/Applications/Vanguard Dashboard.app\" to quit' 2>/dev/null; sleep 1; rm -rf \"/Applications/Vanguard Dashboard.app\" && cp -R \"dist/mac-arm64/Vanguard Dashboard.app\" /Applications/ && echo '✅ Installed to /Applications' && open \"/Applications/Vanguard Dashboard.app\""
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.64",
