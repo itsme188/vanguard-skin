@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import { SecType } from "@stoqey/ib";
 import { getIbApi } from "./client";
 import { RateLimiter } from "./rate-limiter";
-import { mapSecurityType } from "./security-type-map";
+import { mapSecurityType, shouldRetypeAsEtf } from "./security-type-map";
 import type { EnrichResult } from "./types";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
 
@@ -136,6 +136,14 @@ export async function enrichSecurities(
 
   // `name` is set when the existing value is missing or just echoes the
   // symbol (i.e. was never enriched). Existing real names take precedence.
+  //
+  // security_type: IBKR reports ETFs as plain stocks (SecType.STK) in both
+  // TWS positions and IBKR activity-statement imports — nothing upstream
+  // distinguishes ARKK/HACK/SPY/etc. from a single-name equity. Contract
+  // details carry the missing signal (`stockType`); shouldRetypeAsEtf()
+  // only fires it forward (NULL/'Stock' -> 'ETF'), never downgrades an
+  // already-typed row, and never overwrites a statement-sourced non-Stock
+  // type (see lib/tws/security-type-map.ts for the full contract).
   const updateSecurity = db.prepare(`
     UPDATE securities
     SET sector = COALESCE(?, sector),
@@ -146,7 +154,8 @@ export async function enrichSecurities(
         name = CASE
                  WHEN ? IS NOT NULL AND (name IS NULL OR name = symbol) THEN ?
                  ELSE name
-               END
+               END,
+        security_type = CASE WHEN ? = 1 THEN 'ETF' ELSE security_type END
     WHERE id = ?
   `);
 
@@ -177,8 +186,19 @@ export async function enrichSecurities(
         const exchange = detail.contract?.primaryExch ?? null;
         const conId = detail.contract?.conId ?? null;
         const longName = detail.longName?.trim() || null;
+        const retypeAsEtf = shouldRetypeAsEtf(sec.security_type, detail.stockType);
 
-        updateSecurity.run(sector, sector, industry, exchange, conId, longName, longName, sec.id);
+        updateSecurity.run(
+          sector,
+          sector,
+          industry,
+          exchange,
+          conId,
+          longName,
+          longName,
+          retypeAsEtf ? 1 : 0,
+          sec.id,
+        );
 
         results.push({
           symbol: sec.symbol,
@@ -188,6 +208,7 @@ export async function enrichSecurities(
           industry: industry ?? undefined,
           exchange: exchange ?? undefined,
           conId: conId ?? undefined,
+          retypedToEtf: retypeAsEtf,
         });
       } else {
         results.push({

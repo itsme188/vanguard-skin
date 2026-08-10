@@ -143,6 +143,103 @@ describe("enrichSecurities", () => {
     expect(results[0].enriched).toBe(true);
   });
 
+  it("retypes a 'Stock' row to 'ETF' when contract details report an ETF stockType", async () => {
+    const secId = seedSecurity(db, "ARKK", "Stock");
+
+    const mockApi = {
+      getContractDetails: vi.fn().mockResolvedValue([
+        {
+          longName: "ARK INNOVATION ETF",
+          contract: { conId: 111111, primaryExch: "ARCA" },
+          stockType: "ETF",
+        },
+      ]),
+    };
+    mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+
+    const results = await enrichSecurities(db, [secId]);
+
+    expect(results[0].retypedToEtf).toBe(true);
+    const sec = db
+      .prepare("SELECT security_type FROM securities WHERE id = ?")
+      .get(secId) as { security_type: string };
+    expect(sec.security_type).toBe("ETF");
+  });
+
+  it("retypes a NULL security_type row to 'ETF' when contract details report an ETF stockType", async () => {
+    // seedSecurity's `securityType ?? "stock"` default can't express NULL —
+    // insert directly to get a genuinely NULL security_type row.
+    const insertResult = db
+      .prepare("INSERT INTO securities (symbol, name, security_type) VALUES (?, ?, NULL)")
+      .run("SOXX", "SOXX");
+    const secId = insertResult.lastInsertRowid as number;
+
+    const mockApi = {
+      getContractDetails: vi.fn().mockResolvedValue([
+        {
+          longName: "ISHARES SEMICONDUCTOR ETF",
+          contract: { conId: 222222, primaryExch: "NASDAQ" },
+          stockType: "ETF",
+        },
+      ]),
+    };
+    mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+
+    const results = await enrichSecurities(db, [secId]);
+
+    expect(results[0].retypedToEtf).toBe(true);
+    const sec = db
+      .prepare("SELECT security_type FROM securities WHERE id = ?")
+      .get(secId) as { security_type: string };
+    expect(sec.security_type).toBe("ETF");
+  });
+
+  it("does NOT retype a 'Mutual Fund' row even when contract details report an ETF stockType", async () => {
+    const secId = seedSecurity(db, "VTSAX", "Mutual Fund");
+
+    const mockApi = {
+      getContractDetails: vi.fn().mockResolvedValue([
+        {
+          longName: "VANGUARD TOTAL STOCK MKT IDX FD",
+          contract: { conId: 333333, primaryExch: "NASDAQ" },
+          stockType: "ETF",
+        },
+      ]),
+    };
+    mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+
+    const results = await enrichSecurities(db, [secId]);
+
+    expect(results[0].retypedToEtf).toBe(false);
+    const sec = db
+      .prepare("SELECT security_type FROM securities WHERE id = ?")
+      .get(secId) as { security_type: string };
+    expect(sec.security_type).toBe("Mutual Fund");
+  });
+
+  it("does NOT retype a 'Stock' row when contract details report a COMMON stockType", async () => {
+    const secId = seedSecurity(db, "AAPL", "Stock");
+
+    const mockApi = {
+      getContractDetails: vi.fn().mockResolvedValue([
+        {
+          longName: "APPLE INC",
+          contract: { conId: 265598, primaryExch: "NASDAQ" },
+          stockType: "COMMON",
+        },
+      ]),
+    };
+    mockedGetIbApi.mockReturnValue(mockApi as unknown as ReturnType<typeof getIbApi>);
+
+    const results = await enrichSecurities(db, [secId]);
+
+    expect(results[0].retypedToEtf).toBe(false);
+    const sec = db
+      .prepare("SELECT security_type FROM securities WHERE id = ?")
+      .get(secId) as { security_type: string };
+    expect(sec.security_type).toBe("Stock");
+  });
+
   it("handles errors per-security without aborting batch", async () => {
     const secId1 = seedSecurity(db, "GOOD", "stock");
     const secId2 = seedSecurity(db, "BAD", "stock");

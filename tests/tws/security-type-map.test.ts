@@ -5,6 +5,8 @@ import {
   PRICE_FETCH_EXCLUDED_TYPES,
   getWhatToShow,
   getWhatToShowFallback,
+  isEtfFamilyStockType,
+  shouldRetypeAsEtf,
 } from "@/lib/tws/security-type-map";
 
 describe("mapSecurityType", () => {
@@ -95,5 +97,66 @@ describe("getWhatToShowFallback", () => {
   it("returns null for stocks (no fallback)", () => {
     expect(getWhatToShowFallback("Stock")).toBeNull();
     expect(getWhatToShowFallback(null)).toBeNull();
+  });
+});
+
+describe("isEtfFamilyStockType", () => {
+  it("treats ETF as ETF-family", () => {
+    expect(isEtfFamilyStockType("ETF")).toBe(true);
+    expect(isEtfFamilyStockType("etf")).toBe(true);
+  });
+
+  it("treats ETN as ETF-family", () => {
+    expect(isEtfFamilyStockType("ETN")).toBe(true);
+    expect(isEtfFamilyStockType("etn")).toBe(true);
+  });
+
+  it("does not treat COMMON as ETF-family", () => {
+    expect(isEtfFamilyStockType("COMMON")).toBe(false);
+  });
+
+  it("does not treat CEF (closed-end fund) as ETF-family", () => {
+    expect(isEtfFamilyStockType("CEF")).toBe(false);
+  });
+
+  it("does not treat ADR or REIT as ETF-family", () => {
+    expect(isEtfFamilyStockType("ADR")).toBe(false);
+    expect(isEtfFamilyStockType("REIT")).toBe(false);
+  });
+
+  it("returns false for null/undefined/empty", () => {
+    expect(isEtfFamilyStockType(null)).toBe(false);
+    expect(isEtfFamilyStockType(undefined)).toBe(false);
+    expect(isEtfFamilyStockType("")).toBe(false);
+  });
+});
+
+describe("shouldRetypeAsEtf", () => {
+  it("retypes a 'Stock' row with ETF stockType", () => {
+    expect(shouldRetypeAsEtf("Stock", "ETF")).toBe(true);
+    expect(shouldRetypeAsEtf("stock", "ETF")).toBe(true);
+  });
+
+  it("retypes a NULL/empty current type row with ETF stockType", () => {
+    expect(shouldRetypeAsEtf(null, "ETF")).toBe(true);
+    expect(shouldRetypeAsEtf(undefined, "ETF")).toBe(true);
+    expect(shouldRetypeAsEtf("", "ETF")).toBe(true);
+  });
+
+  it("never downgrades an already-typed row", () => {
+    expect(shouldRetypeAsEtf("ETF", "ETF")).toBe(false);
+    expect(shouldRetypeAsEtf("Mutual Fund", "ETF")).toBe(false);
+    expect(shouldRetypeAsEtf("Bond", "ETF")).toBe(false);
+    expect(shouldRetypeAsEtf("Option", "ETF")).toBe(false);
+  });
+
+  it("does not retype when stockType is COMMON", () => {
+    expect(shouldRetypeAsEtf("Stock", "COMMON")).toBe(false);
+    expect(shouldRetypeAsEtf(null, "COMMON")).toBe(false);
+  });
+
+  it("does not retype when stockType is missing", () => {
+    expect(shouldRetypeAsEtf("Stock", null)).toBe(false);
+    expect(shouldRetypeAsEtf("Stock", undefined)).toBe(false);
   });
 });

@@ -128,7 +128,20 @@ export function upsertSecurity(
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(symbol) DO UPDATE SET
        name = COALESCE(excluded.name, securities.name),
-       security_type = COALESCE(excluded.security_type, securities.security_type),
+       -- 'Stock' is IBKR's catch-all for every STK contract — TWS positions
+       -- and IBKR activity imports label ETFs 'Stock' because the API cannot
+       -- distinguish them. An incoming 'Stock' is therefore WEAK evidence and
+       -- must never downgrade a row already classified into a fund-family
+       -- type (the 2026-08-10 ETF-retype repair was silently reverted by the
+       -- next TWS sync through exactly this clause). Genuine specific types
+       -- still win over each other via the COALESCE fallback.
+       security_type = CASE
+         WHEN LOWER(excluded.security_type) = 'stock'
+              AND LOWER(COALESCE(securities.security_type, ''))
+                  IN ('etf', 'mutual fund', 'closed-end fund', 'bond')
+         THEN securities.security_type
+         ELSE COALESCE(excluded.security_type, securities.security_type)
+       END,
        asset_class = COALESCE(excluded.asset_class, securities.asset_class),
        underlying_symbol = COALESCE(excluded.underlying_symbol, securities.underlying_symbol),
        strike_price = COALESCE(excluded.strike_price, securities.strike_price),

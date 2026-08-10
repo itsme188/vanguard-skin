@@ -256,4 +256,45 @@ describe("upsertSecurity", () => {
     const row = db.prepare("SELECT currency FROM securities WHERE id = ?").get(id) as any;
     expect(row.currency).toBe("KRW");
   });
+
+  // IBKR labels every STK contract 'Stock' — TWS positions and activity
+  // imports cannot distinguish ETFs. An incoming 'Stock' must never downgrade
+  // a row already classified into a fund-family type (the 2026-08-10 ETF
+  // retype repair was silently reverted by the next TWS sync without this).
+  describe("weak 'Stock' never downgrades a fund-family type", () => {
+    it.each(["etf", "mutual_fund", "bond"])(
+      "keeps %s when a TWS-style 'Stock' upsert arrives",
+      (fundType) => {
+        const id = upsertSecurity(db, "SPY", "SPDR S&P 500", fundType);
+        const before = db
+          .prepare("SELECT security_type FROM securities WHERE id = ?")
+          .get(id) as any;
+
+        upsertSecurity(db, "SPY", null, "stock");
+
+        const after = db
+          .prepare("SELECT security_type FROM securities WHERE id = ?")
+          .get(id) as any;
+        expect(after.security_type).toBe(before.security_type);
+      },
+    );
+
+    it("still upgrades 'Stock' -> 'ETF' when the specific type arrives", () => {
+      const id = upsertSecurity(db, "SOXX", null, "stock");
+      upsertSecurity(db, "SOXX", "iShares Semiconductor ETF", "etf");
+      const row = db
+        .prepare("SELECT security_type FROM securities WHERE id = ?")
+        .get(id) as any;
+      expect(row.security_type).toBe("ETF");
+    });
+
+    it("'Stock' over 'Stock' stays 'Stock' (no behavior change)", () => {
+      const id = upsertSecurity(db, "ZS", null, "stock");
+      upsertSecurity(db, "ZS", "Zscaler Inc", "stock");
+      const row = db
+        .prepare("SELECT security_type FROM securities WHERE id = ?")
+        .get(id) as any;
+      expect(row.security_type).toBe("Stock");
+    });
+  });
 });

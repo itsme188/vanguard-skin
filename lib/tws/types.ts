@@ -68,6 +68,9 @@ export interface EnrichResult {
   industry?: string;
   exchange?: string;
   conId?: number;
+  /** True when this enrich pass corrected security_type NULL/'Stock' -> 'ETF'
+   *  from IBKR contract-details stockType (see shouldRetypeAsEtf). */
+  retypedToEtf?: boolean;
   error?: string;
 }
 
