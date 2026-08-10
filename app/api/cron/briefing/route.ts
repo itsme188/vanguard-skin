@@ -5,10 +5,7 @@ import {
   BriefingSendError,
 } from "@/lib/digest/send-briefing";
 import { checkCloudMarker } from "@/lib/cron/marker-check";
-import {
-  withRunningMarker,
-  confirmMacSent,
-} from "@/lib/cron/running-marker";
+import { withRunningMarker } from "@/lib/cron/running-marker";
 import { tryAcquireSendLock, releaseSendLock } from "@/lib/cron/send-mutex";
 import { shouldSendBriefingToday } from "@/lib/calendar/market-holidays";
 import { todayET } from "@/lib/calendar/date-utils";
@@ -98,9 +95,10 @@ export async function POST(request: Request) {
     // plus a 2-min heartbeat — so the Worker's fallback skips while we work.
     // The briefing is the longest pipeline (13-17 min), which is exactly why
     // the old set-once-at-entry marker had always expired by 16:45.
-    // confirmMacSent runs inside the wrapper so mac-sent lands before
-    // mac-running is released and the handoff never has a gap.
-    const result = await withRunningMarker("briefing", async () => {
+    // confirmSent() runs inside the wrapper so mac-sent lands before
+    // mac-running is released; if it never gets acked, the wrapper leaves
+    // mac-running in place (TTL-expire) instead of clearing on a gap.
+    const result = await withRunningMarker("briefing", async ({ confirmSent }) => {
       const sent = await sendBriefingEmail(db, {
         weekOf: body.weekOf as string | undefined,
         recipient: body.to as string | undefined,
@@ -111,7 +109,7 @@ export async function POST(request: Request) {
       // route short-circuited (e.g. cloud already sent, or no content) — both
       // paths set skipped:true.
       if (sent && (sent as { success?: boolean }).success && !(sent as { skipped?: boolean }).skipped) {
-        await confirmMacSent("briefing");
+        await confirmSent();
       }
       return sent;
     });
@@ -126,8 +124,9 @@ export async function POST(request: Request) {
       { status: 500 }
     );
   } finally {
-    // withRunningMarker clears the marker in its own finally (even on error);
-    // the send lock is all that is left to release here.
+    // withRunningMarker clears the marker in its own finally (even on error,
+    // and skipping the clear entirely if confirmSent() was called but never
+    // acked); the send lock is all that is left to release here.
     releaseSendLock("briefing");
   }
 }

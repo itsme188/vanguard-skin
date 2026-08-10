@@ -34,7 +34,12 @@ const hoisted = vi.hoisted(() => ({
   // withRunningMarker stub below can forward it.
   setRunningMarker: vi.fn(async (_type: "briefing" | "digest" | "evening") => {}),
   clearRunningMarker: vi.fn(async (_type: "briefing" | "digest" | "evening") => {}),
-  confirmMacSent: vi.fn(async (_type: "briefing" | "digest" | "evening") => {}),
+  // Returns boolean (acked/not) per the confirmMacSent contract; defaults to
+  // acked so the mocked withRunningMarker's clear-on-ack path stays the same
+  // as before for every test that doesn't explicitly override it.
+  confirmMacSent: vi.fn(
+    async (_type: "briefing" | "digest" | "evening"): Promise<boolean> => true
+  ),
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -68,15 +73,30 @@ vi.mock("@/lib/cron/running-marker", () => ({
   // primitives, so the existing set-before-send / clear-in-finally assertions
   // stay meaningful. The wrapper's own behaviour — awaited initial set and the
   // heartbeat — is unit-tested in tests/cron/running-marker.test.ts.
+  // Mirrors the real wrapper's confirm-then-clear contract: `fn` receives a
+  // `confirmSent()` that wraps confirmMacSent and records whether it was
+  // attempted/acked, and the marker is only cleared when confirmation was
+  // never attempted OR came back acked — matching withRunningMarker's own
+  // "leave mac-running to TTL-expire on a failed confirm" behavior, which is
+  // unit-tested in full (heartbeat + ack tracking) in
+  // tests/cron/running-marker.test.ts.
   withRunningMarker: async (
     type: "briefing" | "digest" | "evening",
-    fn: () => Promise<unknown>
+    fn: (ctx: { confirmSent: () => Promise<void> }) => Promise<unknown>
   ) => {
     await hoisted.setRunningMarker(type);
+    let confirmAttempted = false;
+    let confirmAcked = false;
+    const confirmSent = async () => {
+      confirmAttempted = true;
+      confirmAcked = await hoisted.confirmMacSent(type);
+    };
     try {
-      return await fn();
+      return await fn({ confirmSent });
     } finally {
-      await hoisted.clearRunningMarker(type);
+      if (!(confirmAttempted && !confirmAcked)) {
+        await hoisted.clearRunningMarker(type);
+      }
     }
   },
 }));
@@ -301,11 +321,12 @@ describe("POST /api/cron/evening", () => {
     // interleave so that neither marker exists for a moment, and a Worker tick
     // landing in that window fires a duplicate fallback.
     const callOrder: string[] = [];
-    hoisted.confirmMacSent.mockImplementation(async () => {
+    hoisted.confirmMacSent.mockImplementation(async (): Promise<boolean> => {
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
       callOrder.push("confirmMacSent");
+      return true; // acked — clearRunningMarker must still be called after this.
     });
     hoisted.clearRunningMarker.mockImplementation(async () => {
       callOrder.push("clearRunningMarker");

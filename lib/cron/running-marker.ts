@@ -64,11 +64,21 @@ export function clearRunningMarker(type: "briefing" | "digest" | "evening"): Pro
 /** How often the marker is re-posted while a send pipeline is running. */
 const HEARTBEAT_MS = 2 * 60 * 1000;
 
+/** Context passed into `withRunningMarker`'s `fn` so it can confirm the send. */
+interface RunningMarkerCtx {
+  /**
+   * Call once the send has actually gone out. Wraps `confirmMacSent(type)`
+   * and records whether the Worker acked it, so the wrapper's `finally` can
+   * decide whether it is safe to clear `mac-running` (see below).
+   */
+  confirmSent: () => Promise<void>;
+}
+
 /**
  * Hold `mac-running-{type}` for exactly the lifetime of `fn`.
  *
- * Two things this fixes, either of which alone loses the send race to the
- * Worker's cloud fallback (both fired on the 2026-08-09 Sunday briefing):
+ * Four things this fixes, any of which alone can lose the send race to the
+ * Worker's cloud fallback or hand it a false "safe to retry" signal:
  *
  *  1. The initial set is AWAITED. Callers used to fire `void setRunningMarker()`
  *     and immediately enter the pipeline, whose synchronous better-sqlite3 work
@@ -84,32 +94,101 @@ const HEARTBEAT_MS = 2 * 60 * 1000;
  *     Heartbeating means no constant has to predict the pipeline's length; the
  *     TTL only has to outlive a single starved gap.
  *
- * Never blocks delivery on Worker RTT: a failed set or beat is swallowed by
- * callRunningMarkerEndpoint, and `fn` runs regardless.
+ *  3. Heartbeats never overlap, and the finally AWAITS any beat still in
+ *     flight before clearing. `setInterval` doesn't wait for its own async
+ *     callback, so without this a beat fired just before `fn` resolves can
+ *     have its PUT still in flight when the finally's DELETE goes out — the
+ *     PUT can land AFTER the DELETE and recreate a fresh 15-min `mac-running`
+ *     marker after the pipeline has already ended, delaying the Worker's
+ *     cloud retry on a Mac that actually failed.
+ *
+ *  4. `mac-running` is only cleared once `confirmMacSent` has actually been
+ *     ACKED (or was never attempted at all, e.g. a skipped/no-op send). If
+ *     `fn` calls `ctx.confirmSent()` and the Worker never acks — even after
+ *     the bounded retries inside `confirmMacSent` — clearing `mac-running`
+ *     here would leave the Worker seeing NEITHER `mac-sent` NOR
+ *     `mac-running`, and its catch-up sweep can't distinguish that from
+ *     "nothing ever ran" and may fire a duplicate. Leaving the marker in
+ *     place lets it act as a shield until it TTL-expires on its own.
+ *
+ * Never blocks delivery on Worker RTT: a failed set, beat, or confirm is
+ * swallowed by the underlying endpoint calls, and `fn` runs regardless.
  */
 export async function withRunningMarker<T>(
   type: "briefing" | "digest" | "evening",
-  fn: () => Promise<T>,
+  fn: (ctx: RunningMarkerCtx) => Promise<T>,
   opts?: { heartbeatMs?: number },
 ): Promise<T> {
   await setRunningMarker(type);
 
+  // Tracks the currently in-flight heartbeat PUT (if any) so the finally can
+  // await it before deleting the marker — see fix #3 above.
+  let heartbeatInFlight: Promise<void> | null = null;
+
   const beat = setInterval(() => {
-    void setRunningMarker(type);
+    // Skip this tick rather than starting an overlapping PUT: the next tick
+    // (2 min later) re-posts anyway, and serializing is enough to guarantee
+    // no beat's response can straddle the finally's clear below.
+    if (heartbeatInFlight) return;
+    heartbeatInFlight = setRunningMarker(type).finally(() => {
+      heartbeatInFlight = null;
+    });
   }, opts?.heartbeatMs ?? HEARTBEAT_MS);
   // Never let the heartbeat hold the Node process open on its own.
   (beat as { unref?: () => void }).unref?.();
 
+  let confirmAttempted = false;
+  let confirmAcked = false;
+
+  const confirmSent = async (): Promise<void> => {
+    const url = process.env.WORKER_MARKER_URL;
+    const secret = process.env.CRON_SHARED_SECRET;
+    if (!url || !secret) {
+      // Same no-op contract as every other marker call in this module: with
+      // the Worker unconfigured (local dev), behave exactly as before this
+      // change — confirmation was never "attempted", so the finally clears
+      // the marker normally below.
+      return;
+    }
+    confirmAttempted = true;
+    confirmAcked = await confirmMacSent(type);
+  };
+
   try {
-    return await fn();
+    return await fn({ confirmSent });
   } finally {
     clearInterval(beat);
-    // Awaited so the mac-sent → mac-running handoff ordering is deterministic:
-    // callers write mac-sent inside `fn`, so it has already landed by the time
-    // the running marker goes away. Bounded by the same 3s timeout.
-    await clearRunningMarker(type);
+    // Awaited so a beat that was mid-flight when fn resolved cannot land its
+    // PUT after the DELETE below (fix #3).
+    if (heartbeatInFlight) {
+      await heartbeatInFlight;
+    }
+
+    if (confirmAttempted && !confirmAcked) {
+      // mac-sent never landed despite the bounded retries in confirmMacSent.
+      // Do NOT clear mac-running: deleting it now would leave the Worker
+      // with no signal at all, and its catch-up sweep could fire a
+      // duplicate send. Leave it to TTL-expire instead (fix #4).
+      console.warn(
+        `[running-marker] confirmMacSent(${type}) never acked after retries — ` +
+          `leaving mac-running-${type} in place to TTL-expire instead of clearing it now`,
+      );
+    } else {
+      // Awaited so the mac-sent → mac-running handoff ordering is deterministic:
+      // callers confirm inside `fn`, so it has already landed by the time
+      // the running marker goes away. Bounded by the same 3s timeout.
+      await clearRunningMarker(type);
+    }
   }
 }
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Default bounded-retry shape for confirmMacSent — see its docstring. */
+const DEFAULT_CONFIRM_ATTEMPTS = 3;
+const DEFAULT_CONFIRM_RETRY_DELAY_MS = 2 * 1000;
 
 /**
  * Tell the Worker the Mac just successfully shipped {type} for today.
@@ -123,36 +202,62 @@ export async function withRunningMarker<T>(
  * Mesh CGNAT setup where the Worker's primary call almost always fails fast
  * with CF 1016. Mac confirming directly closes that gap.
  *
- * Fire-and-forget — never block email delivery on Worker RTT.
+ * Returns whether the Worker ACKED the confirmation (`res.ok` on some
+ * attempt) — `withRunningMarker` uses this to decide whether it is safe to
+ * clear `mac-running` (see its docstring, fix #4). A single dropped fetch
+ * used to silently swallow the confirmation entirely; a successful send with
+ * a failed confirm meant the Worker saw neither `mac-sent` nor (after the old
+ * unconditional clear) `mac-running`, so its catch-up sweep could fire a
+ * duplicate. The bounded retry (3 attempts, ~2s apart by default) covers a
+ * single transient blip without turning this into an unbounded delivery
+ * blocker — `attempts`/`retryDelayMs` are overridable (tests use 0-delay).
+ *
+ * Never throws and never blocks longer than `attempts * (timeout + delay)`;
+ * `false` (including the "env not configured" no-op case) just means the
+ * caller cannot treat the confirmation as landed.
  */
 export async function confirmMacSent(
   type: "briefing" | "digest" | "evening",
-): Promise<void> {
+  opts?: { attempts?: number; retryDelayMs?: number },
+): Promise<boolean> {
   const url = process.env.WORKER_MARKER_URL;
   const secret = process.env.CRON_SHARED_SECRET;
-  if (!url || !secret) return;
+  if (!url || !secret) return false;
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+  const attempts = opts?.attempts ?? DEFAULT_CONFIRM_ATTEMPTS;
+  const retryDelayMs = opts?.retryDelayMs ?? DEFAULT_CONFIRM_RETRY_DELAY_MS;
+  const target = `${url.replace(/\/$/, "")}/internal/mac-sent?type=${type}`;
 
-  try {
-    const target = `${url.replace(/\/$/, "")}/internal/mac-sent?type=${type}`;
-    const res = await fetch(target, {
-      method: "POST",
-      headers: { "X-Cron-Secret": secret },
-      signal: controller.signal,
-    });
-    if (!res.ok) {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+
+    try {
+      const res = await fetch(target, {
+        method: "POST",
+        headers: { "X-Cron-Secret": secret },
+        signal: controller.signal,
+      });
+      if (res.ok) return true;
       console.warn(
-        `[mac-sent] worker returned ${res.status} for ${type}; ignoring`,
+        `[mac-sent] worker returned ${res.status} for ${type} (attempt ${attempt}/${attempts})`,
       );
+    } catch (err) {
+      console.warn(
+        `[mac-sent] worker unreachable for ${type} (attempt ${attempt}/${attempts}):`,
+        err instanceof Error ? err.message : err,
+      );
+    } finally {
+      clearTimeout(timer);
     }
-  } catch (err) {
-    console.warn(
-      `[mac-sent] worker unreachable for ${type}; ignoring:`,
-      err instanceof Error ? err.message : err,
-    );
-  } finally {
-    clearTimeout(timer);
+
+    if (attempt < attempts && retryDelayMs > 0) {
+      await sleep(retryDelayMs);
+    }
   }
+
+  console.warn(
+    `[mac-sent] all ${attempts} attempts failed for ${type}; mac-running will be left for the caller to handle`,
+  );
+  return false;
 }
