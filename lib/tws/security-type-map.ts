@@ -72,3 +72,48 @@ export function getWhatToShowFallback(
       return null; // no fallback for stocks
   }
 }
+
+/**
+ * IBKR's `ContractDetails.stockType` (confirmed field name/type in
+ * @stoqey/ib's contractDetails.d.ts: `stockType?: string` — a free-form
+ * string, not a typed enum in the package). IBKR's own documented
+ * classification vocabulary (the `stockTypeFilter` scanner enum:
+ * CORP/ADR/ETF/REIT/CEF) plus the ETN value real-world contract details
+ * report for exchange-traded notes are treated as "trades like a fund, not
+ * a single-name equity" for this project's purposes. CEF (closed-end fund)
+ * is deliberately excluded — it is legally NOT an ETF (see PSUS carve-out
+ * in scripts/repair-etf-types.ts) even though it also trades on an
+ * exchange.
+ */
+const ETF_FAMILY_STOCK_TYPES = new Set(["etf", "etn"]);
+
+/** True when an IBKR `stockType` value indicates an ETF-family instrument
+ *  (ETF or ETN) rather than a common stock (COMMON), ADR, REIT, or CEF. */
+export function isEtfFamilyStockType(
+  stockType: string | null | undefined,
+): boolean {
+  if (!stockType) return false;
+  return ETF_FAMILY_STOCK_TYPES.has(stockType.trim().toLowerCase());
+}
+
+/**
+ * True when a security's stored `security_type` should be corrected to
+ * 'ETF' given IBKR's contract-details `stockType` classification.
+ *
+ * IBKR reports ETFs as plain stocks (SecType.STK) both in TWS positions
+ * and IBKR activity-statement imports — nothing upstream distinguishes an
+ * ETF from a single-name equity. This is the one-way correction: it never
+ * downgrades a row already typed 'ETF' / 'Mutual Fund' / 'Bond' / 'Option'
+ * (those are left alone regardless of what TWS reports), and it never
+ * overwrites a statement-sourced non-Stock type — both are guaranteed by
+ * requiring the CURRENT type to be NULL or 'Stock' (case-insensitive per
+ * project convention).
+ */
+export function shouldRetypeAsEtf(
+  currentType: string | null | undefined,
+  stockType: string | null | undefined,
+): boolean {
+  if (!isEtfFamilyStockType(stockType)) return false;
+  if (currentType == null || currentType.trim() === "") return true;
+  return currentType.trim().toLowerCase() === "stock";
+}
