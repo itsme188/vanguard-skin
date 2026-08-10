@@ -76,13 +76,18 @@ function makeDb(): Database.Database {
       sentiment TEXT,
       UNIQUE(article_id, security_id)
     );
-    CREATE TABLE securities (id INTEGER PRIMARY KEY, symbol TEXT NOT NULL UNIQUE, name TEXT);
+    CREATE TABLE securities (id INTEGER PRIMARY KEY, symbol TEXT NOT NULL UNIQUE, name TEXT, security_type TEXT);
     CREATE TABLE holdings (
       id INTEGER PRIMARY KEY,
       account_id INTEGER NOT NULL,
       security_id INTEGER NOT NULL,
       quantity REAL NOT NULL,
       as_of_date TEXT NOT NULL
+    );
+    CREATE TABLE watchlist (
+      id INTEGER PRIMARY KEY,
+      security_id INTEGER NOT NULL,
+      is_active INTEGER NOT NULL DEFAULT 1
     );
   `);
   db.prepare("INSERT INTO research_sources (id, name) VALUES (1, 'Eliant Capital')").run();
