@@ -89,14 +89,23 @@ export async function GET(request: Request) {
     const bondAllocationPct =
       portfolioValue > 0 ? (totalBondValue / portfolioValue) * 100 : 0;
 
-    // Weighted average duration (only bonds with duration data)
+    // Weighted average duration — averaged over the bonds that HAVE a
+    // duration. A null duration means "unknown", not "zero": dividing by the
+    // full sleeve value silently counted every unmeasured bond as duration 0
+    // and understated rate risk by exactly the unmeasured share.
     const bondsWithDuration = bonds.filter((b) => b.duration_years != null);
+    const measuredBondValue = bondsWithDuration.reduce(
+      (s, b) => s + b.market_value,
+      0
+    );
+    const unmeasuredBondValue = totalBondValue - measuredBondValue;
+    const unmeasuredBondCount = bonds.length - bondsWithDuration.length;
     const weightedAvgDuration =
-      bondsWithDuration.length > 0 && totalBondValue > 0
+      bondsWithDuration.length > 0 && measuredBondValue > 0
         ? bondsWithDuration.reduce(
             (sum, b) => sum + b.duration_years! * b.market_value,
             0
-          ) / totalBondValue
+          ) / measuredBondValue
         : null;
 
     // Credit quality breakdown
@@ -125,6 +134,9 @@ export async function GET(request: Request) {
           maturityDate: b.maturity_date,
         })),
         totalBondValue,
+        measuredBondValue,
+        unmeasuredBondValue,
+        unmeasuredBondCount,
         portfolioValue,
         bondAllocationPct,
         weightedAvgDuration,
