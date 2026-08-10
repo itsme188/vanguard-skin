@@ -287,6 +287,56 @@ describe("getEventsByWeek", () => {
     const week2 = getEventsByWeek(db, "2026-04-06");
     expect(week2).toHaveLength(1);
   });
+
+  it("backfills a NULL security_id from the symbol so week-ahead cards can link", () => {
+    const amnId = seedSecurity(db, "AMN");
+    upsertCalendarEvents(db, [
+      makeEvent({
+        source_key: "nasdaq:AMN:2026-08-06",
+        week_of: "2026-08-03",
+        event_type: "earnings",
+        symbol: "AMN",
+        security_id: null,
+      }),
+    ]);
+
+    const events = getEventsByWeek(db, "2026-08-03");
+    expect(events).toHaveLength(1);
+    expect(events[0].security_id).toBe(amnId);
+  });
+
+  it("backfills via issuer siblings (BRK.A event resolves to the held BRK/B row)", () => {
+    const brkbId = seedSecurity(db, "BRK/B");
+    upsertCalendarEvents(db, [
+      makeEvent({
+        source_key: "nasdaq:BRK.A:2026-08-07",
+        week_of: "2026-08-03",
+        event_type: "earnings",
+        symbol: "BRK.A",
+        security_id: null,
+      }),
+    ]);
+
+    const events = getEventsByWeek(db, "2026-08-03");
+    expect(events).toHaveLength(1);
+    expect(events[0].security_id).toBe(brkbId);
+  });
+
+  it("leaves security_id null when no family member exists (card stays inert honestly)", () => {
+    upsertCalendarEvents(db, [
+      makeEvent({
+        source_key: "nasdaq:ZZZQ:2026-08-05",
+        week_of: "2026-08-03",
+        event_type: "earnings",
+        symbol: "ZZZQ",
+        security_id: null,
+      }),
+    ]);
+
+    const events = getEventsByWeek(db, "2026-08-03");
+    expect(events).toHaveLength(1);
+    expect(events[0].security_id).toBeNull();
+  });
 });
 
 // ─── getEventCountBySource ───────────────────────────────────────
