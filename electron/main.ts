@@ -19,30 +19,66 @@ import { openServerLog, serverLogLine } from "./server-log";
 // ─── Find System Node.js ────────────────────────────────────────
 
 /**
+ * The Node ABI (process.versions.modules) the app's bundled better-sqlite3
+ * binary was compiled against. Pinned by `npmRebuild: false` in
+ * electron-builder.yml — the checked-in binary targets Node 20 (ABI 115).
+ * If the binary is ever rebuilt for a newer Node line, update this constant
+ * in the same commit.
+ */
+const REQUIRED_NODE_ABI = "115";
+
+/**
  * Find the system Node.js binary. Electron embeds its own Node.js with a
- * different ABI version, so native modules (better-sqlite3) won't load.
- * The Next.js server must run under system Node.js.
+ * different ABI version, so native modules (better-sqlite3) won't load —
+ * the Next.js server must run under a system Node.js.
+ *
+ * ABI-aware since 2026-08-10: a `brew upgrade` moved /opt/homebrew/bin/node
+ * to v26 (ABI 147) and the freshly launched app died on ERR_DLOPEN_FAILED —
+ * blank window, server exiting in a loop. Path-existence alone is not
+ * enough; prefer the first candidate whose ABI matches the bundled binary,
+ * and only fall back to bare existence when no candidate matches (better to
+ * crash with the loud module-version error in server.log than to not start).
  */
 function findSystemNode(): string {
   const { execSync } = require("node:child_process") as typeof import("node:child_process");
 
-  // Try common locations
   const candidates = [
+    "/opt/homebrew/opt/node@20/bin/node", // versioned keg — survives `brew upgrade node`
     "/opt/homebrew/bin/node",  // macOS Apple Silicon (Homebrew)
     "/usr/local/bin/node",     // macOS Intel (Homebrew)
     "/usr/bin/node",           // Linux system
   ];
 
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return p;
-  }
-
-  // Fallback: ask the shell
+  // Shell fallback candidate, appended last.
   try {
     const result = execSync("which node", { encoding: "utf-8" }).trim();
-    if (result && fs.existsSync(result)) return result;
+    if (result) candidates.push(result);
   } catch {
     // Fall through
+  }
+
+  const existing = candidates.filter((p) => fs.existsSync(p));
+
+  // First pass: exact ABI match against the bundled native module.
+  for (const p of existing) {
+    try {
+      const abi = execSync(`"${p}" -p process.versions.modules`, {
+        encoding: "utf-8",
+        timeout: 5000,
+      }).trim();
+      if (abi === REQUIRED_NODE_ABI) return p;
+    } catch {
+      // Unprobeable candidate — skip in this pass, existence pass may still use it.
+    }
+  }
+
+  // Second pass: old behavior — first existing path, ABI unknown/mismatched.
+  if (existing.length > 0) {
+    console.warn(
+      `[electron] No Node with ABI ${REQUIRED_NODE_ABI} found; falling back to ${existing[0]} — ` +
+        `better-sqlite3 may fail to load (install node@20 via Homebrew to fix)`,
+    );
+    return existing[0];
   }
 
   throw new Error("Could not find system Node.js. Install Node.js via Homebrew or nvm.");
