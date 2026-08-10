@@ -52,8 +52,10 @@ If any of these changed during the session, update `CLAUDE.md` accordingly:
 If the session changed any production code (anything outside `tests/`, `docs/`, `.claude/`, or memory files):
 
 ```bash
-npm run electron:deploy
+source ~/.zshrc >/dev/null 2>&1; PATH=/opt/homebrew/opt/node@20/bin:$PATH npm run electron:deploy
 ```
+
+(The Node-20 PATH prefix is REQUIRED — `next build` loads better-sqlite3, and the shell-default Node 26 dies with ERR_DLOPEN_FAILED at "collect page data"; discovered live 2026-08-10. `source ~/.zshrc` carries the APPLE_API_* notarization vars. When backgrounding with a `| tail` pipe, check `PIPESTATUS[0]` or grep the output for "Build error" — the pipe masks the real exit code.)
 
 **Run in background.** Pre-authorized — do not ask. Takes ~3-5 min (Next.js build + tsc + symlink deref + electron-builder + code signing + auto-install to `/Applications/Vanguard Dashboard.app` + relaunch).
 
