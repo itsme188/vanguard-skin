@@ -230,6 +230,62 @@ describe("generateTaxReport", () => {
   });
 });
 
+describe("non-USD sales (QA 2026-08-07)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+    db.exec(
+      "INSERT INTO securities (id, symbol, name, currency) VALUES (3, '402340', 'KRW Name', 'KRW')"
+    );
+  });
+
+  it("excludes a native-currency sale from the USD totals and counts the exclusion", () => {
+    // USD short-term gain: +1,000
+    addSale(db, {
+      securityId: 1,
+      acquisitionDate: "2026-01-05",
+      saleDate: "2026-03-01",
+      quantity: 10,
+      acquisitionPrice: 100,
+      salePrice: 200,
+    });
+    // KRW sale: realized_gain_loss is native won — must not sum into USD totals
+    addSale(db, {
+      securityId: 3,
+      acquisitionDate: "2026-02-01",
+      saleDate: "2026-07-12",
+      quantity: 10,
+      acquisitionPrice: 1_000_000,
+      salePrice: 602_000,
+    });
+
+    const report = generateTaxReport(db, 2026);
+
+    // Rows keep the raw export set (8949 FX intentionally out of scope)…
+    expect(report.shortTermRows).toHaveLength(2);
+    // …but the USD-labeled totals exclude the won figure.
+    expect(report.shortTermTotal.gainLoss).toBe(1000);
+    expect(report.shortTermTotal.proceeds).toBe(2000);
+    expect(report.shortTermTotal.costBasis).toBe(1000);
+    expect(report.excludedNonUsdSales).toBe(1);
+  });
+
+  it("reports zero exclusions on an all-USD year", () => {
+    addSale(db, {
+      securityId: 1,
+      acquisitionDate: "2026-01-05",
+      saleDate: "2026-03-01",
+      quantity: 10,
+      acquisitionPrice: 100,
+      salePrice: 200,
+    });
+    const report = generateTaxReport(db, 2026);
+    expect(report.excludedNonUsdSales).toBe(0);
+    expect(report.shortTermTotal.gainLoss).toBe(1000);
+  });
+});
+
 describe("generateForm8949CSV", () => {
   it("produces valid CSV with headers and totals", () => {
     const db = createTestDb();

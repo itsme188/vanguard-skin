@@ -78,3 +78,48 @@ describe("eventFigureDisplays (WeekAheadView Next-releases card)", () => {
     expect(effectiveConsensus({ consensus_estimate: null })).toBeNull();
   });
 });
+
+// ── releasedFigureGates (qa: prior-quarter reaction rendered on future print) ──
+// A date correction can carry a prior print's actual/reaction onto a FUTURE
+// row; the forward-looking week view must never render post-release data for
+// an event whose date hasn't arrived, and mirrors TodayReleases' enriched_at
+// gate for the reaction line.
+import { releasedFigureGates } from "@/app/dashboard/today/WeekAheadView";
+
+describe("releasedFigureGates (WeekAheadView)", () => {
+  const TODAY = "2026-08-09";
+  const base = {
+    event_date: "2026-08-12",
+    enriched_at: "2026-07-24 21:10:00",
+    reaction_snapshot: '{"source":"tws"}',
+  };
+
+  it("suppresses reaction AND actual on a future print carrying migrated enrichment", () => {
+    const g = releasedFigureGates(base, TODAY);
+    expect(g.released).toBe(false);
+    expect(g.showReaction).toBe(false);
+  });
+
+  it("shows both for a released, enriched event (event_date == today counts as released)", () => {
+    const g = releasedFigureGates({ ...base, event_date: TODAY }, TODAY);
+    expect(g.released).toBe(true);
+    expect(g.showReaction).toBe(true);
+  });
+
+  it("keeps the reaction hidden until enrichment stamps, even on a past date", () => {
+    const g = releasedFigureGates(
+      { ...base, event_date: "2026-08-05", enriched_at: null },
+      TODAY,
+    );
+    expect(g.released).toBe(true);
+    expect(g.showReaction).toBe(false);
+  });
+
+  it("no snapshot → no reaction line", () => {
+    const g = releasedFigureGates(
+      { ...base, event_date: "2026-08-05", reaction_snapshot: null },
+      TODAY,
+    );
+    expect(g.showReaction).toBe(false);
+  });
+});

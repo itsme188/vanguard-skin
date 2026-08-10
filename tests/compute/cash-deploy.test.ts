@@ -42,7 +42,9 @@ describe("suggestAllocation", () => {
 
   it("detects underweight sectors vs benchmark", () => {
     seedVanguardPortfolio(db);
-    const result = suggestAllocation(db, "vanguard", [1], 10000);
+    // Returned gaps are post-allocation REMAINING gaps; $1k only partially
+    // fills the ~$4.9k Healthcare gap, so it must still read underweight.
+    const result = suggestAllocation(db, "vanguard", [1], 1000);
     expect(result.benchmarkSymbol).toBe("VTI");
     expect(result.mode).toBe("benchmark");
     const healthcareGap = result.gaps.find((g) => g.sector === "Healthcare");
@@ -179,5 +181,41 @@ describe("FX conversion (Task 9c — cash-deploy market value)", () => {
 
     // Healthcare (USD-only) byte-unchanged.
     expect(Math.abs(healthGap!.dollarGap)).toBeCloseTo(expectedHealthDollars, 1);
+  });
+});
+
+describe("post-allocation gap update (qa: allocated-sector-gap-doubled)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    seedVanguardPortfolio(db);
+  });
+
+  it("shrinks the allocated sector's gap toward zero instead of doubling it", () => {
+    // Pre-allocation Healthcare gap (5k of 95k projected vs 11.5% target): ~-6.2pp
+    const before = suggestAllocation(db, "vanguard", [1], 0);
+    void before; // zero-cash run returns no gaps; compute expected gap independently below
+
+    const result = suggestAllocation(db, "vanguard", [1], 10000);
+    const hc = result.gaps.find((g) => g.sector === "Healthcare")!;
+    const hcAllocated = result.picks
+      .filter((p) => p.sectorTarget === "Healthcare")
+      .reduce((s, p) => s + p.allocationDollars, 0);
+
+    // Initial gap dollars: projectedTotal * (target - currentWeight).
+    // Holdings: AAPL $40k + MSFT $40k + JNJ 33x$150 = $84,950; +$10k cash.
+    const initialGapDollars = (84950 + 10000) * 0.115 - 4950; // ≈ $5,969
+
+    // The don't-double-fill guard: same-sector allocation never exceeds the
+    // initial dollar gap (pre-fix the gap GREW by each allocation, so a second
+    // candidate saw a larger budget and double-filled).
+    expect(hcAllocated).toBeLessThanOrEqual(initialGapDollars + 1);
+
+    // A fully-filled gap reads ~0 in the returned gaps (never 2x the original).
+    expect(Math.abs(hc.dollarGap)).toBeLessThan(1);
+    expect(Math.abs(hc.gapPp)).toBeLessThan(0.01);
   });
 });

@@ -116,7 +116,7 @@ export function WeekAheadView({ events, weekOf }: WeekAheadViewProps) {
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
           {days.map((day) => (
-            <DayCard key={day.date} day={day} />
+            <DayCard key={day.date} day={day} todayIso={todayIso} />
           ))}
         </div>
       )}
@@ -131,9 +131,10 @@ interface DayCardProps {
     isToday: boolean;
     events: CalendarEvent[];
   };
+  todayIso: string;
 }
 
-function DayCard({ day }: DayCardProps) {
+function DayCard({ day, todayIso }: DayCardProps) {
   return (
     <section
       className={`rounded-xl p-4 sm:p-5 min-w-0 card-elev ${
@@ -163,7 +164,7 @@ function DayCard({ day }: DayCardProps) {
       ) : (
         <ul className="space-y-2">
           {day.events.map((e) => (
-            <EventRow key={e.id} event={e} />
+            <EventRow key={e.id} event={e} todayIso={todayIso} />
           ))}
         </ul>
       )}
@@ -201,10 +202,28 @@ export function eventFigureDisplays(
   return { consensusDisplay, actualDisplay };
 }
 
-function EventRow({ event }: { event: CalendarEvent }) {
+
+// A date correction can carry a prior print's actual_value / reaction_snapshot
+// onto a FUTURE row. This is a forward-looking planning surface: post-release
+// data must never render for an event whose date hasn't arrived, and the
+// reaction line mirrors TodayReleases' enriched_at gate.
+export function releasedFigureGates(
+  event: Pick<CalendarEvent, "event_date" | "enriched_at" | "reaction_snapshot">,
+  todayIso: string,
+): { released: boolean; showReaction: boolean } {
+  const released = !!event.event_date && event.event_date <= todayIso;
+  return {
+    released,
+    showReaction: released && !!event.reaction_snapshot && !!event.enriched_at,
+  };
+}
+
+function EventRow({ event, todayIso }: { event: CalendarEvent; todayIso: string }) {
   const time = fmtTime(event.release_time ?? event.event_time);
   const symbol = event.symbol ?? null;
-  const { consensusDisplay, actualDisplay } = eventFigureDisplays(event);
+  const { consensusDisplay, actualDisplay: rawActualDisplay } = eventFigureDisplays(event);
+  const { released, showReaction } = releasedFigureGates(event, todayIso);
+  const actualDisplay = released ? rawActualDisplay : null;
   const inner = (
     <div className="rounded-lg bg-raised border border-edge p-3 hover:border-edge-strong transition-colors">
       <div className="flex items-center gap-2 mb-1.5 flex-wrap">
@@ -247,7 +266,7 @@ function EventRow({ event }: { event: CalendarEvent }) {
           the Calendar Living Record's only week-level browse path, so enriched
           past weeks surface their reactions here. Earnings rows lead with the
           reporter's own move; macro rows show SPY/QQQ. */}
-      {event.reaction_snapshot && (
+      {showReaction && event.reaction_snapshot && (
         <div className="mt-1.5">
           <EnrichmentRowSummary
             actual={null}
