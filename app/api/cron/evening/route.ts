@@ -9,11 +9,7 @@ import {
   advanceDigestMarkerAfterCloudSend,
   reconcileRecentCloudSends,
 } from "@/lib/cron/marker-check";
-import {
-  setRunningMarker,
-  clearRunningMarker,
-  confirmMacSent,
-} from "@/lib/cron/running-marker";
+import { withRunningMarker } from "@/lib/cron/running-marker";
 import { isMarketHoliday } from "@/lib/calendar/market-holidays";
 import { todayET } from "@/lib/calendar/date-utils";
 import { tryAcquireSendLock, releaseSendLock } from "@/lib/cron/send-mutex";
@@ -101,23 +97,23 @@ export async function POST(request: Request) {
       });
     }
 
-    // Signal to Worker that we're starting — fallback path will skip while
-    // this marker is set. Fire-and-forget; never block delivery on Worker RTT.
-    void setRunningMarker("evening").catch((err) => {
-      console.warn("[cron/evening] setRunningMarker failed:", err);
-    });
-
-    const result = await sendEveningEmail(db, {
-      recipient: body.recipient as string | undefined,
-      footerNote: body.footerNote as string | undefined,
-    });
-    // Tell the Worker we shipped tonight's evening recap so its catch-up
-    // retry sweep won't double-send. Only when an email actually went out.
-    if (result && (result as { success?: boolean }).success && !(result as { skipped?: boolean }).skipped) {
-      void confirmMacSent("evening").catch((err) => {
-        console.warn("[cron/evening] confirmMacSent failed:", err);
+    // Hold `mac-running-evening` for the WHOLE pipeline — awaited initial set
+    // plus a 2-min heartbeat — so the Worker's fallback skips while we work.
+    // confirmSent() runs inside the wrapper so mac-sent lands before
+    // mac-running is released; if it never gets acked, the wrapper leaves
+    // mac-running in place (TTL-expire) instead of clearing on a gap.
+    const result = await withRunningMarker("evening", async ({ confirmSent }) => {
+      const sent = await sendEveningEmail(db, {
+        recipient: body.recipient as string | undefined,
+        footerNote: body.footerNote as string | undefined,
       });
-    }
+      // Tell the Worker we shipped tonight's evening recap so its catch-up
+      // retry sweep won't double-send. Only when an email actually went out.
+      if (sent && (sent as { success?: boolean }).success && !(sent as { skipped?: boolean }).skipped) {
+        await confirmSent();
+      }
+      return sent;
+    });
     return Response.json(result);
   } catch (err) {
     if (err instanceof EveningSendError) {
@@ -129,12 +125,10 @@ export async function POST(request: Request) {
       { status: 500 }
     );
   } finally {
-    // Always clear, even on error — leaving the marker set would block
-    // subsequent retries. Auto-expires after 10min if this clear fails.
+    // withRunningMarker clears the marker in its own finally (even on error,
+    // and skipping the clear entirely if confirmSent() was called but never
+    // acked); the send lock is all that is left to release here.
     releaseSendLock("evening");
-    void clearRunningMarker("evening").catch((err) => {
-      console.warn("[cron/evening] clearRunningMarker failed:", err);
-    });
   }
 }
 

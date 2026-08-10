@@ -11,8 +11,9 @@
  *                                         cleared on success/error (10min TTL). Prevents
  *                                         the next 15-min tick from re-entering an in-flight
  *                                         fallback and double-sending the email.
- *   mac-running-{type}-{YYYY-MM-DD}     — set by Mac at start of /api/cron/* and cleared
- *                                         in finally (10min TTL)
+ *   mac-running-{type}-{YYYY-MM-DD}     — set by Mac at start of /api/cron/*, RENEWED every
+ *                                         2 min for the lifetime of the send, and cleared
+ *                                         in finally (15min TTL)
  *
  * Flow:
  *   1. Worker fires → reads sent markers → skips if either sent marker present
@@ -38,10 +39,28 @@
  *      fire duplicates every weekday Mac is awake-and-launchd-succeeds.
  *
  * 30h TTL on sent markers covers same-day re-triggers plus generous overnight
- * buffer for timezone/clock skew. 10min TTL on running-marker auto-expires if
- * Mac dies mid-process — long enough to outlive a 5-min Mac pipeline plus a
- * safety margin for clock skew. 10min TTL on cloud-attempting expires inside
+ * buffer for timezone/clock skew. 10min TTL on cloud-attempting expires inside
  * a 15-min cron interval, so a killed invocation lets the next tick retry.
+ *
+ * RUNNING-MARKER TTL (15 min, raised from 10 on 2026-08-09). This TTL must NOT
+ * be read as "how long a Mac pipeline takes" — that framing is what broke it.
+ * The original 10 min was sized against a then-5-minute pipeline; the pipeline
+ * grew to 13-17 min (4-week calendar sync, narrative pre-generation, regression
+ * backfill, self-admission regeneration) and the constant never moved, so the
+ * marker was reliably dead before the Worker's dispatch on EVERY job:
+ *
+ *   digest   Mac 8:45  → expiry 8:55  → Worker 9:00   (never covered)
+ *   evening  Mac 19:00 → expiry 19:10 → Worker 19:15  (never covered)
+ *   briefing Mac 16:30 → expiry 16:40 → Worker 16:45  (covered only if the
+ *                                                      launchd tick slipped
+ *                                                      past 16:35)
+ *
+ * Fast pipelines masked this by winning on mac-sent instead. The Mac now
+ * heartbeats the marker every 2 min for the lifetime of the send
+ * (lib/cron/running-marker.ts::withRunningMarker), so this TTL only has to
+ * outlive ONE beat lost to event-loop starvation — no constant has to predict
+ * the pipeline's length again. Keep it comfortably above the 2-min heartbeat
+ * and comfortably below the bounded catch-up windows.
  */
 
 import { todayET } from "./dst";
@@ -50,7 +69,7 @@ export type JobType = "briefing" | "digest" | "evening";
 export type SentBy = "mac" | "cloud";
 
 const SENT_TTL_SECONDS = 30 * 3600; // 30h
-const RUNNING_TTL_SECONDS = 10 * 60; // 10 min
+const RUNNING_TTL_SECONDS = 15 * 60; // 15 min — see the TTL note in the header
 const ATTEMPTING_TTL_SECONDS = 10 * 60; // 10 min — outlives a typical 5-min fallback,
                                         // expires inside the 15-min cron interval so a
                                         // killed invocation lets the next tick retry.
