@@ -10,10 +10,7 @@ import {
   advanceDigestMarkerAfterCloudSend,
   reconcileRecentCloudSends,
 } from "@/lib/cron/marker-check";
-import {
-  withRunningMarker,
-  confirmMacSent,
-} from "@/lib/cron/running-marker";
+import { withRunningMarker } from "@/lib/cron/running-marker";
 import { isMarketHoliday } from "@/lib/calendar/market-holidays";
 import { todayET } from "@/lib/calendar/date-utils";
 import { tryAcquireSendLock, releaseSendLock } from "@/lib/cron/send-mutex";
@@ -102,9 +99,10 @@ export async function POST(request: Request) {
 
     // Hold `mac-running-digest` for the WHOLE pipeline — awaited initial set
     // plus a 2-min heartbeat — so the Worker's fallback skips while we work.
-    // confirmMacSent runs inside the wrapper so mac-sent lands before
-    // mac-running is released and the handoff never has a gap.
-    const result = await withRunningMarker("digest", async () => {
+    // confirmSent() runs inside the wrapper so mac-sent lands before
+    // mac-running is released; if it never gets acked, the wrapper leaves
+    // mac-running in place (TTL-expire) instead of clearing on a gap.
+    const result = await withRunningMarker("digest", async ({ confirmSent }) => {
       const sent = await sendDigestEmail(db, {
         recipient: body.to as string | undefined,
         mode: body.mode as DigestMode | undefined,
@@ -114,7 +112,7 @@ export async function POST(request: Request) {
       // won't double-send hours later. Only when the route actually sent — a
       // skipped:true response means no email left the building.
       if (sent && (sent as { success?: boolean }).success && !(sent as { skipped?: boolean }).skipped) {
-        await confirmMacSent("digest");
+        await confirmSent();
       }
       return sent;
     });
@@ -129,8 +127,9 @@ export async function POST(request: Request) {
       { status: 500 }
     );
   } finally {
-    // withRunningMarker clears the marker in its own finally (even on error);
-    // the send lock is all that is left to release here.
+    // withRunningMarker clears the marker in its own finally (even on error,
+    // and skipping the clear entirely if confirmSent() was called but never
+    // acked); the send lock is all that is left to release here.
     releaseSendLock("digest");
   }
 }
