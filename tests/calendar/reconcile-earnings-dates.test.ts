@@ -344,3 +344,35 @@ describe("reconcileEarningsDates — manual future row vs reported quarter (qa:t
     expect(row(ghost).superseded).toBe(1);
   });
 });
+
+describe("reconcileEarningsDates — stale prior-quarter row must not shadow an agreeing pair", () => {
+  // NBIS 2026-08-10: finnhub 07-29 (wrong-date phantom, no actuals) sits exactly
+  // CLUSTER_PROXIMITY_DAYS before nasdaq 08-12, so all three rows cluster.
+  // find-first picked the 07-29 phantom as "the" finnhub claim and manufactured
+  // a conflict even though a live finnhub row AGREES with nasdaq at 08-12.
+  it("confirms on any finnhub/nasdaq date agreement even with an older finnhub phantom in the cluster", () => {
+    const phantom = seed({ source: "finnhub", symbol: "NBIS", date: "2026-07-29" });
+    const nasdaq = seed({ source: "nasdaq", symbol: "NBIS", date: "2026-08-12" });
+    const agreeing = seed({ source: "finnhub", symbol: "NBIS", date: "2026-08-12" });
+
+    reconcileEarningsDates(db, { today: "2026-08-10" });
+
+    expect(row(agreeing).date_status).toBe("confirmed");
+    expect(row(agreeing).superseded).toBe(0);
+    expect(row(agreeing).date_conflict_with).toBeNull();
+    expect(row(nasdaq).superseded).toBe(1);
+    expect(row(phantom).superseded).toBe(1);
+  });
+
+  it("points a genuine disagreement at the LATEST finnhub claim, never the phantom", () => {
+    const phantom = seed({ source: "finnhub", symbol: "NBIS", date: "2026-07-29" });
+    const nasdaq = seed({ source: "nasdaq", symbol: "NBIS", date: "2026-08-12" });
+    seed({ source: "finnhub", symbol: "NBIS", date: "2026-08-11" });
+
+    reconcileEarningsDates(db, { today: "2026-08-10" });
+
+    expect(row(nasdaq).date_status).toBe("conflict");
+    expect(row(nasdaq).date_conflict_with).toBe("finnhub:2026-08-11");
+    expect(row(phantom).superseded).toBe(1);
+  });
+});
