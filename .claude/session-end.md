@@ -29,6 +29,7 @@ Read `docs/plans/TODO.md` and reconcile it against what actually shipped this se
 - Match the file's existing convention: completed items move from "Open items" to the "Closed this session" block with `✅`, today's date, and commit hash(es). Do NOT introduce a new convention.
 - Add any new TODOs discovered this session (bugs found, deferred work, follow-ups the user mentioned) to "Open items" with enough context (files, ~time estimate, why) that next session can pick them up cold.
 - If the session closed a roadmap-level theme (Theme A / Theme D / etc.), update the "Backlog themes" list too.
+- **GitHub issue closeout:** if the session fixed anything tracked as a GitHub issue (Codex files findings there — `codex-advisory` label and P0 intakes), close each fixed issue with a comment linking the commit hash(es). This is Codex's feedback loop. Issues that were triaged into TODO.md this session stay open until their fix ships.
 
 ## 5. Update auto-memory
 
@@ -46,21 +47,7 @@ If any of these changed during the session, update `CLAUDE.md` accordingly:
 - Architecture changes (Calendar / Auto-Refresh / Electron Build / etc.)
 - Fixed known issues (strike through with `~~text~~` in "Active Issues")
 
-## 7. Codex handoff — write `docs/HANDOFF.md`
-
-Overwrite `docs/HANDOFF.md` (rolling file; git history is the archive) with a brief handoff for Codex, which reviews this repo via GitHub. Cover exactly these five items:
-
-1. **Current goal + exact files changed** this session (paths, not vague areas).
-2. **Tests/E2E checks run and their results** (e.g., "`npx vitest run` — 4,571 passed" or "not run — docs-only session").
-3. **Open concerns, rejected approaches, and user decisions** — the "why" a reviewer can't get from the diff. Include anything decided but not yet implemented.
-4. **Uncommitted changes or live-process state** (worktrees, running dev servers, in-flight branches, pending PRs). "None" is a valid and useful answer.
-5. **Claude session link** (the `https://claude.ai/code/session_...` URL from this session's environment, if available).
-
-**Sanitization (public repo):** describe work in code terms only. No dollar amounts, share counts, position counts, return percentages, or any portfolio-derived figures — same rule as PR bodies and README assets.
-
-Commit it with the session's `chore(claude)` docs commit so it lands on GitHub with the push. Skip this step only if the session made no decisions and changed nothing (pure Q&A).
-
-## 8. Rebuild Electron DMG (pre-authorized)
+## 7. Rebuild Electron DMG (pre-authorized)
 
 If the session changed any production code (anything outside `tests/`, `docs/`, `.claude/`, or memory files):
 
@@ -73,6 +60,22 @@ npm run electron:deploy
 If notarization is skipped because `APPLE_API_KEY` env vars aren't in shell, that's fine for local install — note it but don't block.
 
 Skip this step if the session was docs-only / memory-only / `.claude/` config-only.
+
+## 8. Codex handoff — write `docs/HANDOFF.md` (after the deploy finishes)
+
+Runs AFTER step 7 deliberately (Codex request 2026-08-10): the handoff must report the FINAL deploy/E2E result and the true ending process state, not the state before deployment. If the deploy is still running in the background, wait for it before writing.
+
+Overwrite `docs/HANDOFF.md` (rolling file; git history is the archive) with a brief handoff for Codex, which reviews this repo via GitHub. Cover exactly these five items:
+
+1. **Current goal + exact files changed** this session (paths, not vague areas).
+2. **Tests/E2E checks run and their results** (e.g., "`npx vitest run` — 4,571 passed" or "not run — docs-only session"), plus the step-7 deploy outcome (deployed + relaunched / skipped / failed-with-reason).
+3. **Open concerns, rejected approaches, and user decisions** — the "why" a reviewer can't get from the diff. Include anything decided but not yet implemented.
+4. **Uncommitted changes or live-process state** as of AFTER the deploy (worktrees, running dev servers, in-flight branches, pending PRs, which app build is live). "None" is a valid and useful answer.
+5. **Claude session link** (the `https://claude.ai/code/session_...` URL from this session's environment, if available). Access-control verified 2026-08-10: sessions are private-by-default (login wall + owner-only; opaque ID, no metadata leak), and the same links already ride every commit trailer in this repo. NEVER toggle a session on this project to public visibility — session context contains real portfolio data.
+
+**Sanitization (public repo):** describe work in code terms only. No dollar amounts, share counts, position counts, return percentages, or any portfolio-derived figures — same rule as PR bodies and README assets.
+
+Commit it as its own final `chore(claude): session handoff` commit and push — this is the session's last commit, so `docs/HANDOFF.md` on GitHub always reflects the true end state. Skip this step only if the session made no decisions and changed nothing (pure Q&A).
 
 ## 9. Summary
 
