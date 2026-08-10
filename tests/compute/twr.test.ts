@@ -493,4 +493,107 @@ describe("TWR computation", () => {
       }
     });
   });
+
+  // ─── Task 2: aggregate isPartial disclosure + accountIds scoping ─────
+  //
+  // portfolioPartial was already computed internally (full-coverage filter,
+  // see the "does not crash portfolio TWR when TWS snapshot covers only one
+  // account" test above) but DROPPED at the return — PortfolioTwrResult had
+  // no way to tell the Performance view "this headline skipped a
+  // statement-lag month." isPartial surfaces that flag.
+  //
+  // accountIds lets a multi-account named scope (e.g. a "vanguard" scope
+  // that resolves to 2+ account ids once a second Vanguard account exists)
+  // hit the aggregate path directly, instead of PerformanceView collapsing
+  // it to a single id via resolveScopeToSingleId (which would silently
+  // drop every account past the first from the chain).
+  describe("aggregate isPartial + accountIds scoping", () => {
+    const ANCHOR = "2025-12-31";
+    const MONTHS = ["2026-01-31", "2026-02-28", "2026-03-31"];
+
+    // A Dec-2025 anchor row per account gives the aggregate a V_start for
+    // January (mirrors seedGroundTruth() above) — without it, January
+    // itself would read as partial (no prior aggregate) regardless of how
+    // clean the rest of the fixture is, confounding the assertions below.
+    function seedCleanAccounts(
+      targetDb: Database.Database,
+      acctIds: number[]
+    ): void {
+      for (const acctId of acctIds) {
+        let v = 100000 * acctId;
+        seedSnapshot(targetDb, acctId, ANCHOR, v);
+        for (const date of MONTHS) {
+          v *= 1.01;
+          seedSnapshot(targetDb, acctId, date, v);
+        }
+      }
+    }
+
+    it("aggregate isPartial is false on a clean 3-account fixture", () => {
+      seedCleanAccounts(db, [1, 2, 3]);
+
+      const result = computeTwr(db, { startDate: "2026-01-01" });
+      expect(result).not.toBeNull();
+      expect(result!.isPartial).toBe(false);
+    });
+
+    it("aggregate isPartial is true when one account's month is missing (present < expected skip)", () => {
+      seedCleanAccounts(db, [1, 2, 3]);
+      // Account 3 is already "born" (its Dec-2025 anchor predates Feb), so a
+      // missing Feb row is statement lag, not a legitimate absence.
+      db.prepare(
+        "DELETE FROM monthly_snapshots WHERE account_id = ? AND month_end_date = ?"
+      ).run(3, "2026-02-28");
+
+      const result = computeTwr(db, { startDate: "2026-01-01" });
+      expect(result).not.toBeNull();
+      expect(result!.isPartial).toBe(true);
+    });
+
+    it("accountIds:[1,2] on a 3-account fixture equals the aggregate of a 2-account DB with the same rows", () => {
+      seedCleanAccounts(db, [1, 2, 3]);
+
+      const scoped = computeTwr(db, {
+        startDate: "2026-01-01",
+        accountIds: [1, 2],
+      });
+      expect(scoped).not.toBeNull();
+      expect(scoped!.perAccount).toHaveLength(2);
+      expect(scoped!.perAccount.map((a) => a.accountId).sort()).toEqual([1, 2]);
+
+      // Independent DB with ONLY accounts 1 and 2's rows seeded (account 3
+      // still exists in the `accounts` table via migration 002, but has no
+      // monthly_snapshots rows, so it never enters the per-account loop or
+      // the aggregate). The unscoped aggregate over this DB must equal the
+      // scoped call above — account 3's data must not leak into the scope.
+      const db2 = new Database(":memory:");
+      db2.pragma("foreign_keys = ON");
+      runMigrations(db2);
+      seedCleanAccounts(db2, [1, 2]);
+
+      const unscoped = computeTwr(db2, { startDate: "2026-01-01" });
+      expect(unscoped).not.toBeNull();
+
+      expect(scoped!.totalReturn).toBeCloseTo(unscoped!.totalReturn, 10);
+      expect(scoped!.annualizedReturn).toBeCloseTo(unscoped!.annualizedReturn!, 10);
+      expect(scoped!.startDate).toBe(unscoped!.startDate);
+      expect(scoped!.endDate).toBe(unscoped!.endDate);
+      expect(scoped!.totalDays).toBe(unscoped!.totalDays);
+      expect(scoped!.isPartial).toBe(unscoped!.isPartial);
+
+      db2.close();
+    });
+
+    it("accountIds of length 1 behaves identically to accountId (byte-for-byte)", () => {
+      seedCleanAccounts(db, [1, 2, 3]);
+
+      const viaAccountId = computeTwr(db, { startDate: "2026-01-01", accountId: 2 });
+      const viaAccountIds = computeTwr(db, {
+        startDate: "2026-01-01",
+        accountIds: [2],
+      });
+
+      expect(viaAccountIds).toEqual(viaAccountId);
+    });
+  });
 });

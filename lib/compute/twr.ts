@@ -27,12 +27,19 @@ export interface PortfolioTwrResult {
   annualizedReturn: number | null;
   totalDays: number;
   perAccount: TwrResult[];
+  isPartial: boolean; // true if some months had to be skipped from the chain (mirrors TwrResult.isPartial)
 }
 
 export interface TwrOptions {
   startDate?: string; // YYYY-MM-DD, defaults to earliest snapshot
   endDate?: string; // YYYY-MM-DD, defaults to latest snapshot
   accountId?: number; // if omitted, compute for all + portfolio-wide
+  // Multi-account scope (e.g. a named scope that resolves to 2+ accounts).
+  // A single-id array behaves identically to `accountId`. Ignored when
+  // `accountId` is also given. Never collapse a multi-id scope to one id —
+  // that silently drops accounts from the aggregate (resolveScopeToSingleId
+  // violation).
+  accountIds?: number[];
 }
 
 // ─── Internal types ─────────────────────────────────────────────────
@@ -129,14 +136,28 @@ export function computeTwr(
   db: Database.Database,
   options: TwrOptions = {}
 ): PortfolioTwrResult | null {
-  const { startDate, endDate, accountId } = options;
+  const { startDate, endDate, accountId, accountIds } = options;
+
+  // A single-id accountIds array behaves exactly like accountId (§2 of the
+  // task brief). accountId wins if both happen to be given.
+  const singleAccountId: number | undefined =
+    accountId ?? (accountIds && accountIds.length === 1 ? accountIds[0] : undefined);
+  // A 2+-id accountIds array scopes the whole aggregate path (snapshot +
+  // flow queries, expected_accounts) to just those accounts.
+  const scopeIds: number[] | undefined =
+    !singleAccountId && accountIds && accountIds.length > 1 ? accountIds : undefined;
 
   // Get accounts to process
   let accounts: AccountRow[];
-  if (accountId) {
+  if (singleAccountId) {
     accounts = db
       .prepare("SELECT id, name FROM accounts WHERE id = ?")
-      .all(accountId) as AccountRow[];
+      .all(singleAccountId) as AccountRow[];
+  } else if (scopeIds) {
+    const placeholders = scopeIds.map(() => "?").join(",");
+    accounts = db
+      .prepare(`SELECT id, name FROM accounts WHERE id IN (${placeholders}) ORDER BY id`)
+      .all(...scopeIds) as AccountRow[];
   } else {
     accounts = db
       .prepare("SELECT id, name FROM accounts ORDER BY id")
@@ -354,7 +375,7 @@ export function computeTwr(
   // also the more accurate one for a single account: it uses the statement's
   // pre-computed monthly TWR (percent/decimal source-aware) instead of a
   // Modified Dietz approximation.
-  if (accountId && perAccount.length === 1) {
+  if (singleAccountId && perAccount.length === 1) {
     const acct = perAccount[0];
     return {
       startDate: acct.startDate,
@@ -363,15 +384,36 @@ export function computeTwr(
       annualizedReturn: acct.annualizedReturn,
       totalDays: acct.totalDays,
       perAccount,
+      isPartial: acct.isPartial,
     };
   }
 
   // ─── Portfolio-wide TWR ────────────────────────────────────────
 
+  // When scopeIds is set (a named scope resolving to 2+ accounts), every
+  // aggregate query below must filter to just those accounts — including
+  // the "expected accounts" coverage count, which otherwise would compare
+  // scoped present_accounts against the WHOLE portfolio's expected count
+  // and permanently read as partial. scopePlaceholders/scopeAnd are reused
+  // across all four queries; scopeParams supplies the bind values for
+  // whichever clause(s) each query references.
+  const scopePlaceholders = scopeIds ? scopeIds.map(() => "?").join(",") : "";
+  const scopeAnd = (col: string) =>
+    scopeIds ? ` AND ${col} IN (${scopePlaceholders})` : "";
+  const scopeParams = scopeIds ?? [];
+  const firstsCte = scopeIds
+    ? `snapshot_firsts AS (
+         SELECT account_id, MIN(month_end_date) AS first_date
+         FROM monthly_snapshots
+         WHERE ${excludeLiveSnapshotsSql("source")}${scopeAnd("account_id")}
+         GROUP BY account_id
+       )`
+    : SNAPSHOT_FIRSTS_CTE;
+
   // Aggregate snapshots across accounts per month
   const aggSnapshots = db
     .prepare(
-      `WITH ${SNAPSHOT_FIRSTS_CTE}
+      `WITH ${firstsCte}
        SELECT ms.month_end_date,
               SUM(ms.total_value) AS total_value,
               SUM(COALESCE(ms.deposits_withdrawals, 0)) AS total_deposits_withdrawals,
@@ -379,16 +421,16 @@ export function computeTwr(
               ${EXPECTED_ACCOUNTS_SQL} AS expected_accounts
        FROM monthly_snapshots ms
        WHERE ms.month_end_date >= ? AND ms.month_end_date <= ?
-         AND ${excludeLiveSnapshotsSql("ms.source")}
+         AND ${excludeLiveSnapshotsSql("ms.source")}${scopeAnd("ms.account_id")}
        GROUP BY ms.month_end_date
        ORDER BY ms.month_end_date ASC`
     )
-    .all(effectiveStart, effectiveEnd) as AggregatedSnapshotRow[];
+    .all(...scopeParams, effectiveStart, effectiveEnd, ...scopeParams) as AggregatedSnapshotRow[];
 
   // Get aggregated prior snapshot
   const aggPriorRow = db
     .prepare(
-      `WITH ${SNAPSHOT_FIRSTS_CTE},
+      `WITH ${firstsCte},
        agg AS (
          SELECT ms.month_end_date,
                 SUM(ms.total_value) AS total_value,
@@ -396,7 +438,7 @@ export function computeTwr(
                 ${EXPECTED_ACCOUNTS_SQL} AS expected_accounts
          FROM monthly_snapshots ms
          WHERE ms.month_end_date < ?
-           AND ${excludeLiveSnapshotsSql("ms.source")}
+           AND ${excludeLiveSnapshotsSql("ms.source")}${scopeAnd("ms.account_id")}
          GROUP BY ms.month_end_date
        )
        SELECT total_value FROM agg
@@ -404,14 +446,15 @@ export function computeTwr(
        ORDER BY month_end_date DESC
        LIMIT 1`
     )
-    .get(effectiveStart) as { total_value: number | null } | undefined;
+    .get(...scopeParams, effectiveStart, ...scopeParams) as { total_value: number | null } | undefined;
 
-  // All external flows across all accounts for the range
+  // All external flows for the range — scoped to just the named accounts
+  // when a multi-account scope is active, otherwise every account.
   const allFlowStmt = db.prepare(
     `SELECT trade_date, SUM(${SIGNED_EXTERNAL_FLOW_SQL}) AS amount
      FROM transactions
      WHERE is_external_flow = 1
-       AND trade_date >= ? AND trade_date <= ?
+       AND trade_date >= ? AND trade_date <= ?${scopeAnd("account_id")}
      GROUP BY trade_date
      ORDER BY trade_date ASC`
   );
@@ -439,9 +482,9 @@ export function computeTwr(
        WHERE ms.month_end_date >= ? AND ms.month_end_date <= ?
          AND ${excludeLiveSnapshotsSql("ms.source")}
          AND SUBSTR(ms.month_end_date, 6, 2) = '12'
-         AND ms.starting_value IS NOT NULL`
+         AND ms.starting_value IS NOT NULL${scopeAnd("ms.account_id")}`
     )
-    .all(effectiveStart, effectiveEnd) as {
+    .all(effectiveStart, effectiveEnd, ...scopeParams) as {
     account_id: number;
     month_end_date: string;
     starting_value: number;
@@ -525,7 +568,7 @@ export function computeTwr(
       const mStart = monthStartDate(snap.month_end_date);
       const mEnd = snap.month_end_date;
       const totalDaysInMonth = daysInMonth(snap.month_end_date);
-      const flows = allFlowStmt.all(mStart, mEnd) as CashFlowRow[];
+      const flows = allFlowStmt.all(mStart, mEnd, ...scopeParams) as CashFlowRow[];
       weightedFlows = flows
         .filter((f) => f.amount != null)
         .map((f) => {
@@ -573,5 +616,6 @@ export function computeTwr(
     annualizedReturn: annualize(portfolioTotalReturn, portfolioTotalDays),
     totalDays: portfolioTotalDays,
     perAccount,
+    isPartial: portfolioPartial,
   };
 }
