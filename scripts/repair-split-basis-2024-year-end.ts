@@ -9,32 +9,27 @@
  * SPLIT-ADJUSTED to today's share basis, but the 2024-12-31 year-end
  * statement rows (prices, source='ibkr-activity') and the matching
  * holdings snapshot (as_of_date='2024-12-31') are in the PRE-split basis
- * of their statement date. Three names split between then and the TWS live
- * era (no split signature exists in tws-era prices, so all three landed
- * before 2026-03-27, i.e. inside the backfilled window):
- *
- *   TQQQ 2:1  — stmt 79.13 vs adjusted bar 39.57 (ratio 2.0000)
- *   UDOW 2:1  — stmt 94.55 vs adjusted bar 47.27 (ratio 2.0002; UDOW's
- *               2026-03-31 statement row already matches its bar, so its
- *               split predates March 2026)
- *   CDLX 1:10 reverse — stmt 3.71 vs adjusted bar 37.10 (ratio 10.0)
- *
- * Mixing bases poisoned the boundary: 2024-12-31 (statement-priced, basis
- * A) → 2025-01-02 (bar-priced, basis B) read as a fake −39.77% two-day
- * portfolio drop and became the reported max drawdown, and CDLX's −3000
- * pre-split short shares × 10x-adjusted bar prices over-counted that short
- * 10x all through 2025.
+ * of their statement date. Names that split between the statement date and
+ * the TWS live era therefore sit on a mixed basis: the statement-priced
+ * boundary day against the next bar-priced day reads as a fake multi-day
+ * portfolio cliff, and a pre-split-basis quantity times adjusted bar
+ * prices mis-scales that position's whole backfilled era (detect a
+ * candidate by statement price / adjusted bar close forming an integer or
+ * 1/integer ratio).
  *
  * Repair doctrine (same as scripts/repair-split-prices.ts): normalize to
  * the POST-split basis and preserve every qty x price product exactly:
  *   prices.close_price   /= r   (r = post_shares / pre_shares)
  *   holdings.quantity    *= r
- *   TQQQ: 100 x 79.13 = 7,913  ->  200 x 39.565 = 7,913
- *   UDOW: 200 x 94.55 = 18,910 ->  400 x 47.275 = 18,910
- *   CDLX: -3000 x 3.71 = -11,130 -> -300 x 37.10 = -11,130
+ * e.g. a 2:1 split at statement close 50.00 with 10 shares:
+ *   10 x 50.00 = 500  ->  20 x 25.00 = 500
  * The repaired statement price is the exact division of the statement
- * value (39.565, not the bar's rounded 39.57) so the product is preserved
- * to the penny.
+ * value (not the bar's rounded close) so the product is preserved to the
+ * penny.
+ *
+ * The affected symbols and their guard values are REAL portfolio data, so
+ * they live outside git in data/repair-configs/split-basis-2024-year-end.json
+ * (the data/ tree is gitignored); see CONFIG_EXAMPLE below for the shape.
  *
  * NOT touched: ohlcv_bars (already adjusted — that is the point),
  * transactions / tax lots (splits there are the SPLIT transaction type's
@@ -68,11 +63,37 @@ export interface SplitBasisTarget {
   preSplitQty: number;
 }
 
-export const TARGETS: SplitBasisTarget[] = [
-  { symbol: "TQQQ", ratio: 2, preSplitPrice: 79.13, preSplitQty: 100 },
-  { symbol: "UDOW", ratio: 2, preSplitPrice: 94.55, preSplitQty: 200 },
-  { symbol: "CDLX", ratio: 0.1, preSplitPrice: 3.71, preSplitQty: -3000 },
-];
+/** Shape of data/repair-configs/split-basis-2024-year-end.json (gitignored). */
+export const CONFIG_EXAMPLE = `[
+  { "symbol": "AAAA", "ratio": 2,   "preSplitPrice": 50.00, "preSplitQty": 10 },
+  { "symbol": "BBBB", "ratio": 0.1, "preSplitPrice": 4.00,  "preSplitQty": -500 }
+]`;
+
+/** Validates the parsed JSON config into SplitBasisTarget[]. Throws on shape errors. */
+export function parseTargetsConfig(raw: unknown): SplitBasisTarget[] {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new Error("config must be a non-empty JSON array");
+  }
+  return raw.map((entry, i) => {
+    const e = entry as Record<string, unknown>;
+    if (
+      typeof e.symbol !== "string" ||
+      typeof e.ratio !== "number" || !(e.ratio > 0) ||
+      typeof e.preSplitPrice !== "number" ||
+      typeof e.preSplitQty !== "number"
+    ) {
+      throw new Error(
+        `config entry ${i} is malformed — expected shape: ${CONFIG_EXAMPLE}`,
+      );
+    }
+    return {
+      symbol: e.symbol,
+      ratio: e.ratio,
+      preSplitPrice: e.preSplitPrice,
+      preSplitQty: e.preSplitQty,
+    };
+  });
+}
 
 const STATEMENT_DATE = "2024-12-31";
 const PRICE_EPS = 0.005;
@@ -94,13 +115,14 @@ export interface TargetReport {
  */
 export function repairSplitBasis(
   db: Database.Database,
+  targets: SplitBasisTarget[],
   opts: { apply: boolean; accountId?: number },
 ): TargetReport[] {
   const accountId = opts.accountId ?? 3;
   const reports: TargetReport[] = [];
 
   const run = () => {
-    for (const t of TARGETS) {
+    for (const t of targets) {
       const sec = db
         .prepare("SELECT id FROM securities WHERE UPPER(symbol) = ?")
         .get(t.symbol) as { id: number } | undefined;
@@ -217,6 +239,32 @@ if (isMain) {
       return;
     }
 
+    const configPath = path.default.join(
+      dataDir, "repair-configs", "split-basis-2024-year-end.json",
+    );
+    if (!fs.default.existsSync(configPath)) {
+      console.error(
+        `Config not found at ${configPath}\n` +
+          `The affected symbols + guard values are real portfolio data and ` +
+          `live outside git. Create the file as a JSON array of targets:\n` +
+          `${CONFIG_EXAMPLE}\n` +
+          `(ratio = post_shares / pre_shares; preSplitPrice/preSplitQty are ` +
+          `the known statement-date values used as write guards.)`,
+      );
+      process.exit(1);
+      return;
+    }
+    let targets: SplitBasisTarget[];
+    try {
+      targets = parseTargetsConfig(
+        JSON.parse(fs.default.readFileSync(configPath, "utf-8")),
+      );
+    } catch (err) {
+      console.error(`Bad config at ${configPath}: ${(err as Error).message}`);
+      process.exit(1);
+      return;
+    }
+
     const db = new BetterSqlite3(dbPath);
     db.pragma("journal_mode = WAL");
     db.pragma("foreign_keys = ON");
@@ -226,7 +274,7 @@ if (isMain) {
         `${apply ? "[APPLY]" : "[DRY RUN]"}`,
     );
 
-    const plan = repairSplitBasis(db, { apply: false });
+    const plan = repairSplitBasis(db, targets, { apply: false });
     for (const r of plan) {
       console.log(`  ${r.symbol.padEnd(5)} price: ${r.priceAction}`);
       console.log(`        qty:   ${r.qtyAction}`);
@@ -253,7 +301,7 @@ if (isMain) {
       `\nBackup ${backup.created ? "created" : "already present"} at ${backup.path}.`,
     );
 
-    const applied = repairSplitBasis(db, { apply: true });
+    const applied = repairSplitBasis(db, targets, { apply: true });
     for (const r of applied) {
       console.log(`  ${r.symbol.padEnd(5)} price: ${r.priceAction}`);
       console.log(`        qty:   ${r.qtyAction}`);
