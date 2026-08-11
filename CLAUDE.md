@@ -132,6 +132,8 @@ Detail: `docs/reference/conventions-detail.md`, `docs/reference/earnings-pipelin
 - `earnings_emails.error` is a tri-state; every new reader must exclude `'in_progress'`.
 - Never edit a sync-owned calendar row's date/slot in place — the conflict clause re-clobbers it.
 - `RECONCILE_CLOSE` is engine-owned: never parse, emit, or treat it as user activity.
+- Preview-phase `earnings_emails`/`earnings_email_skips` rows only repoint to an event their send date could cover (`date(sent_at) >= date(event_date,'-1 day')`) — a preview is a promise about a specific print; dragging a stale one blocks `findEmailCandidates` forever. Recaps/bogeys repoint unconditionally.
+- Level approval routes through `approveLevelGuarded` (409 `would_fire_immediately` + `force`); the guard and the scanner share `checkLevelTriggerState` — never fork the trigger-condition logic.
 
 ## Bug Fixes
 
@@ -147,6 +149,7 @@ When fixing bugs, verify the fix against the actual data/edge cases before decla
 - Finnhub: the symbol we QUERIED is canonical, never `entry.symbol`.
 - Earnings recap requires `actual_value IS NOT NULL`; `enriched_at` is not sufficient. Better no email than a wrong one.
 - Guard any Finnhub `actual_value` surface with `isPlausibleEarnings`.
+- TWS historical bars are SPLIT-ADJUSTED to today's share basis; statement-sourced prices/quantities are statement-date basis. Never mix bases: any bars→prices backfill must compare statement rows against same-date bar closes (integer ratio = a split) and normalize product-preserving (`scripts/repair-split-basis-2024-year-end.ts` precedent).
 - No-data sections render `<EmptySection>`, never a silent `return null`.
 - Outbound email = Resend; inbound = Gmail IMAP/OAuth. Keep split forever.
 
