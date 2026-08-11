@@ -197,6 +197,10 @@ function AlertsPageInner() {
   const [detecting, setDetecting] = useState(false);
   const [suggesting, setSuggesting] = useState(false);
   const [approvingAll, setApprovingAll] = useState(false);
+  // Per-row in-flight guard: a review PATCH can take minutes when the
+  // background sync is starving the event loop (observed 200s live) — an
+  // un-disabled Approve reads as a dead button and invites double-clicks.
+  const [decidingId, setDecidingId] = useState<number | null>(null);
   // Per-level "would fire immediately" confirm state — populated when a
   // 409 would_fire_immediately comes back from PATCH /api/levels/review.
   // Cleared on confirm (forced retry), cancel, or once the level leaves
@@ -328,6 +332,15 @@ function AlertsPageInner() {
   }
 
   async function decideReview(id: number, status: LevelReviewStatus, force = false) {
+    setDecidingId(id);
+    try {
+      await decideReviewInner(id, status, force);
+    } finally {
+      setDecidingId(null);
+    }
+  }
+
+  async function decideReviewInner(id: number, status: LevelReviewStatus, force = false) {
     const res = await fetch("/api/levels/review", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -666,7 +679,9 @@ function AlertsPageInner() {
       </header>
 
       {approveAllConfirm && (
-        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-[12px] text-amber-200 flex items-center justify-between gap-3 flex-wrap">
+        // gold-ink over amber-200: same both-themes contrast fix as the
+        // per-card confirm block in ReviewRow.
+        <div className="rounded-lg border border-gold/30 bg-gold/10 p-3 text-[12px] text-gold-ink flex items-center justify-between gap-3 flex-wrap">
           <span>
             {approveAllConfirm.ids.length} of {approveAllConfirm.total} are already past their
             levels and would fire immediately — arm those too?
@@ -675,14 +690,14 @@ function AlertsPageInner() {
             <button
               onClick={confirmApproveAllForce}
               disabled={approvingAll}
-              className="relative px-3 py-1 text-[11px] rounded bg-amber-500/20 text-amber-100 hover:bg-amber-500/30 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
+              className="relative px-3 py-1 text-[11px] font-medium rounded border border-gold/30 bg-gold/20 text-gold-ink hover:bg-gold/30 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
             >
               Confirm
             </button>
             <button
               onClick={cancelApproveAllForce}
               disabled={approvingAll}
-              className="relative px-3 py-1 text-[11px] rounded text-amber-200/70 hover:text-amber-100 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
+              className="relative px-3 py-1 text-[11px] rounded text-ink-dim hover:text-ink disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
             >
               Cancel
             </button>
@@ -747,7 +762,8 @@ function AlertsPageInner() {
         <ReviewGroupedByAuthor
           levels={reviewLevels}
           onDecide={decideReview}
-          disabled={approvingAll}
+          disabled={approvingAll || decidingId !== null}
+          busyId={decidingId}
           forceConfirm={forceConfirm}
           onCancelConfirm={cancelForceConfirm}
         />
@@ -761,7 +777,8 @@ function AlertsPageInner() {
                 key={`r-${it.level.id}`}
                 level={it.level}
                 onDecide={decideReview}
-                disabled={approvingAll}
+                disabled={approvingAll || decidingId !== null}
+                busyId={decidingId}
               />
             )
           )}
@@ -1172,12 +1189,14 @@ function ReviewGroupedByAuthor({
   levels,
   onDecide,
   disabled,
+  busyId,
   forceConfirm,
   onCancelConfirm,
 }: {
   levels: PendingLevel[];
   onDecide: (id: number, status: LevelReviewStatus, force?: boolean) => void;
   disabled: boolean;
+  busyId?: number | null;
   forceConfirm: ForceConfirmMap;
   onCancelConfirm: (id: number) => void;
 }) {
@@ -1206,6 +1225,7 @@ function ReviewGroupedByAuthor({
                 level={l}
                 onDecide={onDecide}
                 disabled={disabled}
+                busyId={busyId}
                 confirm={forceConfirm[l.id]}
                 onCancelConfirm={onCancelConfirm}
               />
@@ -1408,16 +1428,20 @@ function ReviewRow({
   level,
   onDecide,
   disabled,
+  busyId,
   confirm,
   onCancelConfirm,
 }: {
   level: PendingLevel;
   onDecide: (id: number, status: LevelReviewStatus, force?: boolean) => void;
   disabled?: boolean;
+  /** The level id whose review PATCH is currently in flight (spinner label). */
+  busyId?: number | null;
   /** Set when approving was refused with 409 would_fire_immediately. */
   confirm?: { currentPrice: number; effectivePrice: number };
   onCancelConfirm?: (id: number) => void;
 }) {
+  const busy = busyId === level.id;
   const distVal = distancePct(level.price, level.current_price);
   const when = new Date(level.created_at).toLocaleString("en-US", {
     month: "short",
@@ -1474,7 +1498,11 @@ function ReviewRow({
             <p className="text-[10px] text-ink-faint mt-1">Timeframe: {level.timeframe}</p>
           )}
           {confirm && (
-            <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2 text-[11px] text-amber-200">
+            // gold-ink, not amber-200: the amber palette is dark-tuned and
+            // composites to ~1.1:1 on the light theme's white panel — the
+            // gold-ink token is the house pair for readable small gold text
+            // in BOTH themes (4.5:1+ each side).
+            <div className="mt-2 rounded-lg border border-gold/30 bg-gold/10 p-2 text-[11px] text-gold-ink">
               Price {formatUSDPrecise(confirm.currentPrice)} is already past this level (
               {formatUSDPrecise(confirm.effectivePrice)}) — arming will fire an alert on the
               next scan. Arm anyway?
@@ -1482,14 +1510,14 @@ function ReviewRow({
                 <button
                   onClick={() => onDecide(level.id, "auto_approved", true)}
                   disabled={disabled}
-                  className="relative px-3 py-1 text-[11px] rounded bg-amber-500/20 text-amber-100 hover:bg-amber-500/30 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
+                  className="relative px-3 py-1 text-[11px] font-medium rounded border border-gold/30 bg-gold/20 text-gold-ink hover:bg-gold/30 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
                 >
-                  Confirm
+                  {busy ? "Arming…" : "Confirm"}
                 </button>
                 <button
                   onClick={() => onCancelConfirm?.(level.id)}
                   disabled={disabled}
-                  className="relative px-3 py-1 text-[11px] rounded text-amber-200/70 hover:text-amber-100 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
+                  className="relative px-3 py-1 text-[11px] rounded text-ink-dim hover:text-ink disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
                 >
                   Cancel
                 </button>
@@ -1504,7 +1532,7 @@ function ReviewRow({
               disabled={disabled}
               className="relative px-3 py-1 text-[11px] rounded bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
             >
-              Approve
+              {busy ? "Checking…" : "Approve"}
             </button>
             <button
               onClick={() => onDecide(level.id, "rejected")}
