@@ -36,11 +36,31 @@ export interface PrintSheetInputs {
 // line-by-line bogies table.
 const BOGIES_HEADING = /^##\s+line.by.line/i;
 
+// Same shapes as lib/calendar/briefing-html.ts's tableRowRe / tableSeparatorRe
+// — a table-like block only counts as a real table when its first line is a
+// header row and its second line is a separator row of matching column
+// count. Column counts are compared by splitting on UNESCAPED pipes only
+// (consistent with parseTableRow's `\|` escape rule in briefing-html.ts /
+// workers/cron/src/html.ts), so an escaped pipe inside a header cell doesn't
+// inflate the count.
+const TABLE_HEADER_ROW_RE = /^\|(.+)\|\s*$/;
+const TABLE_SEPARATOR_ROW_RE = /^\|(\s*:?-+:?\s*\|)+\s*$/;
+
+function countColumns(line: string): number {
+  return line.trim().slice(1, -1).split(/(?<!\\)\|/).length;
+}
+
 /**
  * Extract the "## Line-by-line bogies" heading + its table VERBATIM (no
  * re-parse, no re-wrap) from a stored `ai_output_md`. Returns null when the
- * heading is missing, or when the next `##` heading appears before any
- * table row does (a heading with no table under it).
+ * heading is missing, when the next `##` heading appears before any table
+ * row does (a heading with no table under it), or when the table block
+ * doesn't structurally validate as a real table (issue #41: a malformed
+ * model response — e.g. a single incomplete pipe row with no separator —
+ * must fall back to the deterministic worksheet, not print raw pipe text).
+ * Only the header + separator rows are validated; data rows after the
+ * separator are extracted verbatim without column-count checks, since real
+ * model output sometimes varies there.
  */
 export function extractBogiesTableMarkdown(aiOutputMd: string): string | null {
   const lines = aiOutputMd.split("\n");
@@ -58,6 +78,13 @@ export function extractBogiesTableMarkdown(aiOutputMd: string): string | null {
 
   const tableStart = i;
   while (i < lines.length && lines[i].trim().startsWith("|")) i++;
+
+  const tableLines = lines.slice(tableStart, i).map((l) => l.trim());
+  if (tableLines.length < 2) return null;
+  const [headerLine, separatorLine] = tableLines;
+  if (!TABLE_HEADER_ROW_RE.test(headerLine)) return null;
+  if (!TABLE_SEPARATOR_ROW_RE.test(separatorLine)) return null;
+  if (countColumns(headerLine) !== countColumns(separatorLine)) return null;
 
   return [lines[headingIdx], ...lines.slice(tableStart, i)].join("\n");
 }

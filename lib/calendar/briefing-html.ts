@@ -150,7 +150,11 @@ const tableRowRe = /^\|(.+)\|\s*$/;
 const tableSeparatorRe = /^\|(\s*:?-+:?\s*\|)+\s*$/;
 
 function parseTableRow(line: string): string[] {
-  return line.trim().slice(1, -1).split("|").map((s) => s.trim());
+  return line
+    .trim()
+    .slice(1, -1)
+    .split(/(?<!\\)\|/)
+    .map((s) => s.trim().replace(/\\\|/g, "|"));
 }
 
 function isFillableCell(text: string): boolean {

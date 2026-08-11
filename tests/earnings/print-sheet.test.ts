@@ -34,6 +34,41 @@ describe("extractBogiesTableMarkdown", () => {
   it("null when no table before the next ## heading", () => {
     expect(extractBogiesTableMarkdown("## Line-by-line bogies\n\n## The setup\n\n| a | b |\n|---|---|")).toBeNull();
   });
+
+  // Issue #41: a malformed model response (heading + a single incomplete
+  // pipe row, no separator row) must not be accepted as a printable table —
+  // it should fall back to the deterministic worksheet instead.
+  it("null when the table block has only a header-shaped row and no separator row", () => {
+    const md = "## Line-by-line bogies\n\n| Revenue | $4.34B | — | — |";
+    expect(extractBogiesTableMarkdown(md)).toBeNull();
+  });
+
+  it("null when the second line doesn't match the separator-row shape", () => {
+    const md = "## Line-by-line bogies\n\n| Metric | Consensus |\n| EPS | 4.30 |";
+    expect(extractBogiesTableMarkdown(md)).toBeNull();
+  });
+
+  it("null when the separator's column count doesn't match the header's column count", () => {
+    const md = "## Line-by-line bogies\n\n| Metric | Consensus | Actual | Δ |\n|---|---|---|\n| EPS | 4.30 | — | — |";
+    expect(extractBogiesTableMarkdown(md)).toBeNull();
+  });
+
+  it("extracts verbatim when header/separator are valid even if a later data row has a different column count", () => {
+    // Only header/separator gate acceptance — real model output sometimes
+    // varies in data rows, and those are not column-validated.
+    const md = "## Line-by-line bogies\n\n| Metric | Consensus | Actual | Δ |\n|---|---|---|---|\n| EPS | 4.30 | — |";
+    const out = extractBogiesTableMarkdown(md)!;
+    expect(out).not.toBeNull();
+    expect(out).toContain("| EPS | 4.30 | — |");
+  });
+
+  it("column-count comparison ignores an escaped pipe inside a header cell (consistent with the split-on-unescaped-pipe rule)", () => {
+    const md =
+      "## Line-by-line bogies\n\n| Metric | TMT \\| Breakout | Actual | Δ |\n|---|---|---|---|\n| EPS | 4.30 | — | — |";
+    const out = extractBogiesTableMarkdown(md)!;
+    expect(out).not.toBeNull();
+    expect(out).toContain("TMT \\| Breakout");
+  });
 });
 
 function inputs(over: Partial<Parameters<typeof composePrintSheetHtml>[0]> = {}) {
