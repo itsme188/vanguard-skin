@@ -376,3 +376,143 @@ describe("reconcileEarningsDates — stale prior-quarter row must not shadow an 
     expect(row(phantom).superseded).toBe(1);
   });
 });
+
+// ── Preview-phase repoint gate ──────────────────────────────────────
+//
+// Defect (2026-08-10, NBIS): findEmailCandidates treats ANY existing
+// preview-phase earnings_emails/earnings_email_skips row on an event as
+// "already handled". Unconditionally dragging a stale preview (sent for a
+// WRONG vendor date) onto a canonical that later resolves elsewhere both (a)
+// falsely shows "preview sent" for a print the email never covered, and (b)
+// permanently blocks the genuine preview from ever firing for that print
+// (findEmailCandidates' `ee.id IS NULL AND es.id IS NULL` guard sees the
+// dragged-in row and skips it forever). recap rows are unaffected — they're
+// written post-print, so they always genuinely document whichever event they
+// were attached to, and correcting their event_id onto the surviving
+// canonical is exactly the intended "audit follows the print" behavior.
+
+function seedPreviewEmail(dbHandle: Database.Database, eventId: number, sentAt: string): number {
+  return dbHandle
+    .prepare(
+      `INSERT INTO earnings_emails (event_id, phase, recipient, ai_output_md, sent_at)
+       VALUES (?, 'preview', 'x@y.com', 'md', ?)`,
+    )
+    .run(eventId, sentAt).lastInsertRowid as number;
+}
+
+function seedRecapEmail(dbHandle: Database.Database, eventId: number, sentAt: string): number {
+  return dbHandle
+    .prepare(
+      `INSERT INTO earnings_emails (event_id, phase, recipient, ai_output_md, sent_at)
+       VALUES (?, 'recap', 'x@y.com', 'md', ?)`,
+    )
+    .run(eventId, sentAt).lastInsertRowid as number;
+}
+
+function seedPreviewSkip(dbHandle: Database.Database, eventId: number, skippedAt: string): number {
+  return dbHandle
+    .prepare(
+      `INSERT INTO earnings_email_skips (event_id, phase, skipped_at) VALUES (?, 'preview', ?)`,
+    )
+    .run(eventId, skippedAt).lastInsertRowid as number;
+}
+
+function previewEmailEventId(dbHandle: Database.Database): number {
+  return (
+    dbHandle
+      .prepare("SELECT event_id FROM earnings_emails WHERE phase = 'preview'")
+      .get() as { event_id: number }
+  ).event_id;
+}
+
+function recapEmailEventId(dbHandle: Database.Database): number {
+  return (
+    dbHandle
+      .prepare("SELECT event_id FROM earnings_emails WHERE phase = 'recap'")
+      .get() as { event_id: number }
+  ).event_id;
+}
+
+function previewSkipEventId(dbHandle: Database.Database): number {
+  return (
+    dbHandle
+      .prepare("SELECT event_id FROM earnings_email_skips WHERE phase = 'preview'")
+      .get() as { event_id: number }
+  ).event_id;
+}
+
+describe("reconcileEarningsDates — preview-phase repoint gate (NBIS class)", () => {
+  it("NBIS shape: a preview sent for a stale phantom date stays behind when the canonical print resolves 14 days later", () => {
+    // finnhub 07-29 is a wrong-date phantom (no actuals) exactly
+    // CLUSTER_PROXIMITY_DAYS before the real print; a preview was sent for it
+    // on its own date. nasdaq + finnhub then agree on 08-12 — the real print.
+    const phantom = seed({ source: "finnhub", symbol: "NBIS", date: "2026-07-29" });
+    seedPreviewEmail(db, phantom, "2026-07-29 18:16:54");
+    seed({ source: "nasdaq", symbol: "NBIS", date: "2026-08-12" });
+    const agreeing = seed({ source: "finnhub", symbol: "NBIS", date: "2026-08-12" });
+
+    reconcileEarningsDates(db, { today: "2026-08-10" });
+
+    expect(row(agreeing).superseded).toBe(0);
+    expect(row(agreeing).date_status).toBe("confirmed");
+    // The preview stays on the superseded phantom row — it never covered 08-12.
+    expect(previewEmailEventId(db)).toBe(phantom);
+    const onCanonical = db
+      .prepare("SELECT COUNT(*) AS c FROM earnings_emails WHERE event_id = ? AND phase = 'preview'")
+      .get(agreeing) as { c: number };
+    expect(onCanonical.c).toBe(0);
+  });
+
+  it("repoints a preview when the canonical print lands the day after the sent date (duplicate-send protection preserved)", () => {
+    const finn = seed({ source: "finnhub", symbol: "TSLA", date: "2026-06-12" });
+    seedPreviewEmail(db, finn, "2026-06-12 20:00:00");
+    const nasdaq = seed({ source: "nasdaq", symbol: "TSLA", date: "2026-06-13" });
+
+    reconcileEarningsDates(db, { today: TODAY });
+
+    // Genuine finnhub/nasdaq disagreement — nasdaq wins as provisional canonical.
+    expect(row(nasdaq).superseded).toBe(0);
+    expect(row(finn).superseded).toBe(1);
+    // Sent date (06-12) is within 1 day of the canonical print (06-13) — the
+    // preview plausibly covers it, so it follows onto the canonical (this is
+    // exactly the duplicate-send-prevention behavior the gate must preserve).
+    expect(previewEmailEventId(db)).toBe(nasdaq);
+  });
+
+  it("recap-phase rows repoint unconditionally, even when sent well before the canonical print (pinned)", () => {
+    const phantom = seed({ source: "finnhub", symbol: "NKE", date: "2026-06-01" });
+    seedRecapEmail(db, phantom, "2026-06-01 20:00:00");
+    seed({ source: "nasdaq", symbol: "NKE", date: "2026-06-09" });
+    const agreeing = seed({ source: "finnhub", symbol: "NKE", date: "2026-06-09" });
+
+    reconcileEarningsDates(db, { today: TODAY });
+
+    expect(row(agreeing).superseded).toBe(0);
+    // 8 days before the canonical print — would fail the preview gate, but
+    // recap rows are post-print audit and always follow their print.
+    expect(recapEmailEventId(db)).toBe(agreeing);
+  });
+
+  it("a stale preview-phase skip (skipped long before the canonical print) stays on the superseded row", () => {
+    const phantom = seed({ source: "finnhub", symbol: "RIVN", date: "2026-05-20" });
+    seedPreviewSkip(db, phantom, "2026-05-20 12:00:00");
+    seed({ source: "nasdaq", symbol: "RIVN", date: "2026-06-01" });
+    const agreeing = seed({ source: "finnhub", symbol: "RIVN", date: "2026-06-01" });
+
+    reconcileEarningsDates(db, { today: TODAY });
+
+    expect(row(agreeing).superseded).toBe(0);
+    expect(previewSkipEventId(db)).toBe(phantom);
+  });
+
+  it("a same-day preview-phase skip repoints onto the canonical", () => {
+    const finn = seed({ source: "finnhub", symbol: "LULU", date: "2026-06-10" });
+    seedPreviewSkip(db, finn, "2026-06-10 12:00:00");
+    const nasdaq = seed({ source: "nasdaq", symbol: "LULU", date: "2026-06-11" });
+
+    reconcileEarningsDates(db, { today: TODAY });
+
+    expect(row(nasdaq).superseded).toBe(0);
+    expect(previewSkipEventId(db)).toBe(nasdaq);
+  });
+});
