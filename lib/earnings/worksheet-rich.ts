@@ -303,8 +303,16 @@ export function composeRichWorksheet(inputs: RichWorksheetInputs): string {
     for (let i = 0; i < free - 3; i++) body.push(`  ${"_".repeat(WIDTH - 4)}`);
   }
 
-  // Hard cap at 3 pages: footer is appended AFTER the page cap so it survives.
-  const cappedBody = body.slice(0, MAX_LINES * MAX_PAGES - 1);
+  // 3-page budget: footer is appended last, always. Notes-are-sacred
+  // (docs/reference/earnings-pipeline.md §15, issue #42): this used to be a
+  // hard `body.slice(0, MAX_LINES * MAX_PAGES - 1)` here, which silently cut
+  // into NOTES whenever fixed sections + notes ALONE (even with commentary
+  // trimmed to zero by the budget above) still ran past the cap — notes are
+  // appended after commentary, so they sat in the discarded tail. Commentary
+  // is already budgeted above to fit fixed sections + notes within the cap
+  // for the common case; when it isn't enough, keep the full body and let
+  // pagination below emit extra page(s) instead of truncating.
+  const cappedBody = body;
   cappedBody.push(footer);
 
   // Deterministic pagination: form feed after every 62 lines.

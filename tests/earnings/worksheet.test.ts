@@ -577,6 +577,47 @@ describe("printArmedWorksheets — real printWorksheetNow seam (PDF road integra
   });
 });
 
+describe("composeWorksheet — notes-are-sacred (issue #42)", () => {
+  it("fits-on-one-page case keeps the same single-page shape (no regression)", () => {
+    const text = composeWorksheet(BASE_INPUTS);
+    const lines = text.trimEnd().split("\n");
+    expect(lines.length).toBeLessThanOrEqual(62);
+    expect(text).toContain("SCRATCH");
+    expect(lines[lines.length - 1]).toContain("deterministic worksheet");
+  });
+
+  it("never truncates notes when the sheet overflows one page — overflow beats truncated notes", () => {
+    const notes = Array.from(
+      { length: 35 },
+      (_, i) =>
+        `Note marker ALPHA${i} — watching guidance and margin trends closely into this print for signal confirmation on the desk sheet.`,
+    );
+    const inputs: WorksheetInputs = {
+      ...BASE_INPUTS,
+      bogeys: [
+        bogey({
+          guidance_notes:
+            "FY26 revenue guide widened materially versus prior quarter commentary and analyst models expect further upside from here.",
+        }),
+      ],
+      noteLines: notes,
+    };
+    const text = composeWorksheet(inputs);
+    const lines = text.trimEnd().split("\n");
+    const flat = text.replace(/\n\s*/g, " ");
+
+    // Old code hard-sliced at MAX_LINES − 1 (62), silently dropping tail
+    // notes. New invariant: notes never truncate — the sheet overflows to a
+    // second page instead.
+    expect(lines.length).toBeGreaterThan(62);
+    for (let i = 0; i < notes.length; i++) {
+      expect(flat).toContain(`ALPHA${i}`);
+    }
+    // Footer still appended last, even on overflow.
+    expect(lines[lines.length - 1]).toContain("deterministic worksheet");
+  });
+});
+
 describe("composeWorksheet — adversarial layout invariants (review probes)", () => {
   it("a runaway source_label never pushes the header past 80 cols", () => {
     const text = composeWorksheet({

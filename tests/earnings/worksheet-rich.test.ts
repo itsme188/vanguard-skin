@@ -361,3 +361,39 @@ describe("composeRichWorksheet", () => {
     expect(count).toBe(60); // every word survived
   });
 });
+
+describe("composeRichWorksheet — notes-are-sacred (issue #42)", () => {
+  it("a normal-size input still respects the 3-page cap (no regression)", () => {
+    const text = composeRichWorksheet(richInputs());
+    const pages = text.split("\f");
+    expect(pages.length).toBeLessThanOrEqual(MAX_PAGES);
+    const lastLine = text.trimEnd().split("\n").pop()!;
+    expect(lastLine).toContain("from preview email sent");
+  });
+
+  it("keeps every note when fixed sections + notes alone exceed the 3-page cap (overflow beats truncated notes)", () => {
+    // Commentary budgeting already handles the common overflow case
+    // (commentary flexes down around notes). The bug this guards: when
+    // fixed sections + notes ALONE exceed MAX_LINES*MAX_PAGES even with
+    // commentary empty, the old hard `body.slice(...)` cut into notes
+    // because they're appended after commentary.
+    const notes = Array.from(
+      { length: 60 },
+      (_, i) =>
+        `Note BETA${i} — detailed thesis text watching margin trajectory and guidance commentary into this print, long enough to wrap across several lines for the printer layout regression check.`,
+    );
+    const sections = { bogiesTable: null, commentary: "" };
+    const text = composeRichWorksheet(richInputs({ sections, noteLines: notes }));
+    const pages = text.split("\f");
+    const flat = text.replace(/\n\s*/g, " ");
+
+    // Old code hard-sliced the assembled body at the 3-page cap, silently
+    // dropping tail note lines. New invariant: overflow beats truncation.
+    expect(pages.length).toBeGreaterThan(MAX_PAGES);
+    for (let i = 0; i < notes.length; i++) {
+      expect(flat).toContain(`BETA${i}`);
+    }
+    const lastLine = text.trimEnd().split("\n").pop()!;
+    expect(lastLine).toContain("from preview email sent");
+  });
+});
