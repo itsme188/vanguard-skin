@@ -15,7 +15,7 @@
 set -euo pipefail
 
 # Prefer Homebrew node on Apple Silicon; fall back to whatever's on PATH.
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+export PATH="/opt/homebrew/opt/node@24/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 MARKER=/Users/Yitzi/code/vanguard-skin/data/.state-snapshot-last-success
 STALE_MINUTES=1560  # 26h — one missed 02:00 window plus slack

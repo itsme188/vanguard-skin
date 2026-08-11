@@ -15,7 +15,7 @@ URL="http://localhost:3099/api/cron/digest"
 MAX_RETRIES=3
 DELAY=120
 
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+export PATH="/opt/homebrew/opt/node@24/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 # Self-gate: Mon-Fri at 08:45 ET (10-min window).
 source /Users/Yitzi/code/vanguard-skin/scripts/lib/et-gate.sh

@@ -27,7 +27,9 @@ MAX_FIX_ATTEMPTS=2
 mkdir -p "$LOG_DIR" "$REPORT_DIR"
 
 # --- Ensure PATH includes Homebrew and node ---
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+# node@24 keg first: better-sqlite3 is ABI-pinned to Node 24; the bare
+# /opt/homebrew/bin/node moves on every `brew upgrade` (broke 2026-08-11).
+export PATH="/opt/homebrew/opt/node@24/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 # --- Browser-process cleanup (2026-07-17) ---
 # Every nightly run was leaving an agent-browser daemon + Chrome-for-Testing
