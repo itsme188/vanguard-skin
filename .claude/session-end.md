@@ -29,7 +29,7 @@ Read `docs/plans/TODO.md` and reconcile it against what actually shipped this se
 - Match the file's existing convention: completed items move from "Open items" to the "Closed this session" block with `✅`, today's date, and commit hash(es). Do NOT introduce a new convention.
 - Add any new TODOs discovered this session (bugs found, deferred work, follow-ups the user mentioned) to "Open items" with enough context (files, ~time estimate, why) that next session can pick them up cold.
 - If the session closed a roadmap-level theme (Theme A / Theme D / etc.), update the "Backlog themes" list too.
-- **GitHub issue closeout:** if the session fixed anything tracked as a GitHub issue (Codex files findings there — `codex-advisory` label and P0 intakes), close each fixed issue with a comment linking the commit hash(es). This is Codex's feedback loop. Issues that were triaged into TODO.md this session stay open until their fix ships.
+- **GitHub issue reconcile (Codex request 2026-08-11):** sweep ALL open issues against landed commits, not just this session's fixes — `gh issue list` and, for each open issue, check whether a commit on `main` already implements it (grep for the issue's file paths / function names; check commit messages). A fix that landed in an earlier session without closing its issue is the known failure mode (issue #36 sat open 4 days after `8529729` shipped it). Close each satisfied issue with a comment linking the commit hash(es) and the verification evidence (test names / suite count). This is Codex's feedback loop. Issues triaged into TODO.md whose fix hasn't shipped stay open.
 
 ## 5. Update auto-memory
 
@@ -52,10 +52,10 @@ If any of these changed during the session, update `CLAUDE.md` accordingly:
 If the session changed any production code (anything outside `tests/`, `docs/`, `.claude/`, or memory files):
 
 ```bash
-source ~/.zshrc >/dev/null 2>&1; PATH=/opt/homebrew/opt/node@20/bin:$PATH npm run electron:deploy
+source ~/.zshrc >/dev/null 2>&1; PATH=/opt/homebrew/opt/node@24/bin:$PATH npm run electron:deploy
 ```
 
-(The Node-20 PATH prefix is REQUIRED — `next build` loads better-sqlite3, and the shell-default Node 26 dies with ERR_DLOPEN_FAILED at "collect page data"; discovered live 2026-08-10. `source ~/.zshrc` carries the APPLE_API_* notarization vars. When backgrounding with a `| tail` pipe, check `PIPESTATUS[0]` or grep the output for "Build error" — the pipe masks the real exit code.)
+(The node@24 PATH prefix is REQUIRED — the project is pinned to the node@24 LTS keg (2026-08-11 migration); the bare `/opt/homebrew/bin/node` moves on every `brew upgrade`. `source ~/.zshrc` carries the APPLE_API_* notarization vars. When backgrounding with a `| tail` pipe, check `PIPESTATUS[0]` or grep the output for "Build error" — the pipe masks the real exit code.)
 
 **Run in background.** Pre-authorized — do not ask. Takes ~3-5 min (Next.js build + tsc + symlink deref + electron-builder + code signing + auto-install to `/Applications/Vanguard Dashboard.app` + relaunch).
 
