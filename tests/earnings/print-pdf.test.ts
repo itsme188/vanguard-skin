@@ -186,3 +186,62 @@ describe("renderHtmlToPdf completion racing (injected spawnFn)", () => {
     expect(hasPdfEofMarker(pdf)).toBe(true);
   });
 });
+
+// --- readCompletedPdf validation, exercised via the close(0) completion
+// path (readCompletedPdf is module-private; renderHtmlToPdf's injected
+// spawnFn is the existing seam other tests in this file use to reach it). A
+// large pollIntervalMs keeps the poll-completion path from ever firing a
+// tick inside the test's window, so only the close(0)->readCompletedPdf
+// path can settle the promise — isolating the assertion to that path.
+describe("readCompletedPdf validation (via close(0) path)", () => {
+  it("accepts a buffer starting with %PDF and ending with %%EOF", async () => {
+    const { spawnFn } = makeStubSpawn((pdfPath, proc) => {
+      writeFileSync(pdfPath, "%PDF-1.4\n1 0 obj<</Type/Page>>\n%%EOF");
+      setTimeout(() => proc.emit("close", 0), 5);
+    });
+
+    const pdf = await renderHtmlToPdf("<h1>hi</h1>", {
+      chromePath: STUB_CHROME_PATH,
+      spawnFn,
+      pollIntervalMs: 10_000,
+      timeoutMs: 5000,
+    });
+
+    expect(pdf.toString("latin1")).toContain("%PDF-1.4");
+    expect(hasPdfEofMarker(pdf)).toBe(true);
+  });
+
+  it("rejects a non-empty buffer missing the %PDF header", async () => {
+    const { spawnFn } = makeStubSpawn((pdfPath, proc) => {
+      // Ends with a valid %%EOF trailer so this isolates the header check
+      // specifically, but never starts with the %PDF magic bytes.
+      writeFileSync(pdfPath, "not a pdf at all\n%%EOF");
+      setTimeout(() => proc.emit("close", 0), 5);
+    });
+
+    await expect(
+      renderHtmlToPdf("<h1>hi</h1>", {
+        chromePath: STUB_CHROME_PATH,
+        spawnFn,
+        pollIntervalMs: 10_000,
+        timeoutMs: 5000,
+      }),
+    ).rejects.toThrow(/missing %PDF header/i);
+  });
+
+  it("rejects a buffer with a %PDF header but no %%EOF tail (truncated)", async () => {
+    const { spawnFn } = makeStubSpawn((pdfPath, proc) => {
+      writeFileSync(pdfPath, "%PDF-1.4\n<mid-write, no trailer>");
+      setTimeout(() => proc.emit("close", 0), 5);
+    });
+
+    await expect(
+      renderHtmlToPdf("<h1>hi</h1>", {
+        chromePath: STUB_CHROME_PATH,
+        spawnFn,
+        pollIntervalMs: 10_000,
+        timeoutMs: 5000,
+      }),
+    ).rejects.toThrow(/missing %%EOF marker \(truncated\)/i);
+  });
+});
