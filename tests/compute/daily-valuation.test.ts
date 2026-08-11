@@ -600,4 +600,58 @@ describe("daily valuation computation", () => {
     // Feb 28: stock 10*160 + fund 100*410 = 42600
     expect(vals[3].total_value).toBe(42600);
   });
+
+  // ─── Tolerant cash anchor (weekend/holiday month-ends) ──────────
+
+  it("anchors cash from the nearest prior valuation row when the month-end falls on a weekend", () => {
+    // 2025-08-31 is a Sunday — no price/valuation row lands exactly on it.
+    // Valuation rows exist Mon-Fri (through 2025-08-29). The snapshot is
+    // still dated 2025-08-31 (statement convention), so the exact-equality
+    // join used to find nothing and leave September on cash=0.
+    const sec = seedSecurity(db, "AAPL");
+    seedHolding(db, ACCOUNT_ID, sec, 10, "2025-08-01");
+    seedPrice(db, sec, "2025-08-29", 150); // last trading day of the month (Fri)
+    seedPrice(db, sec, "2025-09-15", 155); // September carries cash forward
+
+    // Snapshot dated the actual (weekend) month-end. total=$2000, holdings
+    // (from the nearest prior valuation, 8/29) = $1500 → cash = $500.
+    seedSnapshot(db, ACCOUNT_ID, "2025-08-31", 2000);
+
+    computeDailyValuations(db);
+
+    const sepVal = db
+      .prepare("SELECT * FROM daily_valuations WHERE account_id = ? AND valuation_date = '2025-09-15'")
+      .get(ACCOUNT_ID) as any;
+
+    // NOT cash 0 — the September row must carry the $500 residual anchored
+    // off the 8/29 holdings value, not Phase 1's placeholder.
+    expect(sepVal.holdings_value).toBe(1550); // 10 * 155
+    expect(sepVal.cash_balance).toBe(500);
+    expect(sepVal.total_value).toBe(2050);
+  });
+
+  it("still skips the anchor when the nearest valuation row is more than 5 days before the snapshot", () => {
+    // Genuinely missing era: no valuation rows anywhere near the month-end
+    // (a >5-day gap), and no broker-reported cash_value either. The 5-day
+    // lookback bound must NOT reach back to a stale, unrelated valuation —
+    // the anchor should skip (matching the pre-fix "no anchor" behavior),
+    // not silently pair a far-away holdings_value with this snapshot's total.
+    const sec = seedSecurity(db, "AAPL");
+    seedHolding(db, ACCOUNT_ID, sec, 10, "2025-08-01");
+    seedPrice(db, sec, "2025-08-10", 150); // >5 days before month-end
+    seedPrice(db, sec, "2025-09-15", 155);
+
+    seedSnapshot(db, ACCOUNT_ID, "2025-08-31", 2000); // cash_value NULL
+
+    computeDailyValuations(db);
+
+    const sepVal = db
+      .prepare("SELECT * FROM daily_valuations WHERE account_id = ? AND valuation_date = '2025-09-15'")
+      .get(ACCOUNT_ID) as any;
+
+    // Skipped anchor → September keeps Phase 1's placeholder cash=0.
+    expect(sepVal.holdings_value).toBe(1550); // 10 * 155
+    expect(sepVal.cash_balance).toBe(0);
+    expect(sepVal.total_value).toBe(1550);
+  });
 });

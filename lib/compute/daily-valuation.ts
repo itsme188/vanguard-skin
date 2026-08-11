@@ -166,11 +166,32 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
     // Phase 2: Infer cash balances from monthly snapshot anchors.
     // At each snapshot date: cash = snapshot_total − computed_holdings_value.
     // Carry this cash forward until the next snapshot arrives.
+    //
+    // holdings_value is pulled from the LATEST daily_valuations row within a
+    // 5-day lookback window ending at the snapshot date, not an exact-date
+    // join. Statement-sourced monthly_snapshots are always dated the true
+    // calendar month-end, but Phase 1 only writes a valuation row on dates
+    // that have a price row — and TWS-era price series are trading-day-only.
+    // When the month-end falls on a weekend/holiday (e.g. 2025-08-31 is a
+    // Sunday), no valuation row lands exactly on it, so the old exact-equality
+    // LEFT JOIN produced holdings_value = NULL, the anchor loop `continue`d,
+    // and the entire following month kept Phase 1's placeholder cash=0 (the
+    // IBKR account's fake −96.8% December/June/September drawdowns). A 5-day
+    // lookback reaches back to the nearest trading day (Fri 8/29 for the
+    // 8/31 Sunday case) so the anchor still resolves. The bound is
+    // deliberately narrow: an era with NO valuation rows anywhere near the
+    // snapshot (a genuine data gap, not just a weekend) still finds nothing
+    // within 5 days and correctly skips — it must never anchor to a stale,
+    // unrelated holdings_value from weeks earlier.
     const getCashAnchors = db.prepare(
-      `SELECT ms.month_end_date, ms.total_value AS snapshot_total, dv.holdings_value, ms.cash_value
+      `SELECT ms.month_end_date, ms.total_value AS snapshot_total,
+              (SELECT dv.holdings_value FROM daily_valuations dv
+                WHERE dv.account_id = ms.account_id
+                  AND dv.valuation_date <= ms.month_end_date
+                  AND dv.valuation_date >= date(ms.month_end_date, '-5 days')
+                ORDER BY dv.valuation_date DESC LIMIT 1) AS holdings_value,
+              ms.cash_value
        FROM monthly_snapshots ms
-       LEFT JOIN daily_valuations dv
-         ON dv.account_id = ms.account_id AND dv.valuation_date = ms.month_end_date
        WHERE ms.account_id = ?
        ORDER BY ms.month_end_date`
     );
