@@ -3,11 +3,22 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import {
   repairSplitBasis,
-  TARGETS,
+  parseTargetsConfig,
+  type SplitBasisTarget,
 } from "@/scripts/repair-split-basis-2024-year-end";
 
 const STATEMENT_DATE = "2024-12-31";
 const ACCOUNT_ID = 3;
+
+// Synthetic targets — real guard values live in the gitignored
+// data/repair-configs/split-basis-2024-year-end.json, injected at the CLI.
+// Shapes mirror the real repair: two forward 2:1 splits + one 1:10 reverse
+// on a short position (negative quantity).
+const TARGETS: SplitBasisTarget[] = [
+  { symbol: "AAAA", ratio: 2, preSplitPrice: 50.0, preSplitQty: 10 },
+  { symbol: "BBBB", ratio: 2, preSplitPrice: 80.0, preSplitQty: 40 },
+  { symbol: "CCCC", ratio: 0.1, preSplitPrice: 4.0, preSplitQty: -500 },
+];
 
 function createTestDb(): Database.Database {
   const db = new Database(":memory:");
@@ -70,7 +81,7 @@ describe("repairSplitBasis", () => {
       }),
     );
 
-    const reports = repairSplitBasis(db, { apply: true });
+    const reports = repairSplitBasis(db, TARGETS, { apply: true });
     expect(reports).toHaveLength(3);
     for (const r of reports) {
       expect(r.priceChanged).toBe(true);
@@ -85,14 +96,14 @@ describe("repairSplitBasis", () => {
       expect(after.price * after.qty).toBeCloseTo(before.get(t.symbol)!, 6);
     }
 
-    // Concrete pin on the CDLX reverse split (the 10x short over-count):
-    const cdlx = readRow(db, secIds.get("CDLX")!);
-    expect(cdlx.price).toBeCloseTo(37.1, 6);
-    expect(cdlx.qty).toBeCloseTo(-300, 6);
+    // Concrete pin on the reverse split (a 10x-overcounted short):
+    const rev = readRow(db, secIds.get("CCCC")!);
+    expect(rev.price).toBeCloseTo(40.0, 6);
+    expect(rev.qty).toBeCloseTo(-50, 6);
   });
 
   it("dry-run (apply:false) reports the plan but writes nothing", () => {
-    const reports = repairSplitBasis(db, { apply: false });
+    const reports = repairSplitBasis(db, TARGETS, { apply: false });
     expect(reports.every((r) => r.priceChanged && r.qtyChanged)).toBe(true);
     for (const t of TARGETS) {
       const row = readRow(db, secIds.get(t.symbol)!);
@@ -102,10 +113,10 @@ describe("repairSplitBasis", () => {
   });
 
   it("is idempotent — a second apply run reports already-normalized and changes nothing", () => {
-    repairSplitBasis(db, { apply: true });
+    repairSplitBasis(db, TARGETS, { apply: true });
     const snapshot = TARGETS.map((t) => readRow(db, secIds.get(t.symbol)!));
 
-    const second = repairSplitBasis(db, { apply: true });
+    const second = repairSplitBasis(db, TARGETS, { apply: true });
     for (const r of second) {
       expect(r.priceChanged).toBe(false);
       expect(r.qtyChanged).toBe(false);
@@ -117,33 +128,57 @@ describe("repairSplitBasis", () => {
   });
 
   it("refuses to touch a row whose value matches neither the pre-split guard nor the normalized value", () => {
-    const tqqqId = secIds.get("TQQQ")!;
-    db.prepare("UPDATE prices SET close_price = 55.55 WHERE security_id = ?").run(tqqqId);
-    db.prepare("UPDATE holdings SET quantity = 123 WHERE security_id = ?").run(tqqqId);
+    const firstId = secIds.get("AAAA")!;
+    db.prepare("UPDATE prices SET close_price = 55.55 WHERE security_id = ?").run(firstId);
+    db.prepare("UPDATE holdings SET quantity = 123 WHERE security_id = ?").run(firstId);
 
-    const reports = repairSplitBasis(db, { apply: true });
-    const tqqq = reports.find((r) => r.symbol === "TQQQ")!;
-    expect(tqqq.priceChanged).toBe(false);
-    expect(tqqq.qtyChanged).toBe(false);
-    expect(tqqq.priceAction).toContain("UNEXPECTED");
-    expect(tqqq.qtyAction).toContain("UNEXPECTED");
+    const reports = repairSplitBasis(db, TARGETS, { apply: true });
+    const first = reports.find((r) => r.symbol === "AAAA")!;
+    expect(first.priceChanged).toBe(false);
+    expect(first.qtyChanged).toBe(false);
+    expect(first.priceAction).toContain("UNEXPECTED");
+    expect(first.qtyAction).toContain("UNEXPECTED");
 
-    const row = readRow(db, tqqqId);
+    const row = readRow(db, firstId);
     expect(row.price).toBeCloseTo(55.55, 6);
     expect(row.qty).toBeCloseTo(123, 6);
 
     // The other two targets still repair normally.
-    const others = reports.filter((r) => r.symbol !== "TQQQ");
+    const others = reports.filter((r) => r.symbol !== "AAAA");
     expect(others.every((r) => r.priceChanged && r.qtyChanged)).toBe(true);
   });
 
   it("reports missing rows as skipped without throwing", () => {
     const fresh = createTestDb(); // no securities seeded at all
-    const reports = repairSplitBasis(fresh, { apply: true });
+    const reports = repairSplitBasis(fresh, TARGETS, { apply: true });
     expect(reports).toHaveLength(3);
     for (const r of reports) {
       expect(r.securityId).toBeNull();
       expect(r.priceAction).toContain("skipped");
     }
+  });
+});
+
+describe("parseTargetsConfig", () => {
+  it("accepts a well-formed array and returns typed targets", () => {
+    const parsed = parseTargetsConfig(
+      JSON.parse(
+        '[{"symbol":"AAAA","ratio":2,"preSplitPrice":50,"preSplitQty":10}]',
+      ),
+    );
+    expect(parsed).toEqual([
+      { symbol: "AAAA", ratio: 2, preSplitPrice: 50, preSplitQty: 10 },
+    ]);
+  });
+
+  it("rejects non-arrays, empty arrays, and malformed entries", () => {
+    expect(() => parseTargetsConfig({})).toThrow("non-empty JSON array");
+    expect(() => parseTargetsConfig([])).toThrow("non-empty JSON array");
+    expect(() =>
+      parseTargetsConfig([{ symbol: "AAAA", ratio: 0, preSplitPrice: 1, preSplitQty: 1 }]),
+    ).toThrow("malformed");
+    expect(() =>
+      parseTargetsConfig([{ symbol: "AAAA", ratio: 2, preSplitPrice: "x", preSplitQty: 1 }]),
+    ).toThrow("malformed");
   });
 });

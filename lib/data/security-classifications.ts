@@ -19,7 +19,8 @@ export interface SecurityClassification {
 }
 
 /**
- * Lookup keyed by symbol. Covers the user's actual portfolio holdings.
+ * Lookup keyed by symbol. Covers widely-held ETFs, mutual funds, and
+ * well-known securities so classification works out of the box.
  *
  * Categories follow Morningstar-style taxonomy:
  * - Equity: "US Large Cap Equity", "US Small Cap Equity", "International Developed Equity", etc.
