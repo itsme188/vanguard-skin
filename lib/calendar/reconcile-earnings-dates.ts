@@ -202,9 +202,11 @@ export function reconcileEarningsDates(
   // "Consensus not yet published" and the sweep cron could re-send a
   // duplicate preview). Enrichment COALESCEs forward onto the canonical
   // (never overwriting its own non-NULL values — same "sync may only ADD
-  // data" invariant as the enrichment-runner), and child audit rows re-point.
-  // UPDATE OR IGNORE keeps the canonical's own row on a UNIQUE collision,
-  // leaving the superseded-side duplicate in place for audit.
+  // data" invariant as the enrichment-runner), and child audit rows re-point
+  // — bogeys and recap-phase rows unconditionally, preview-phase rows gated
+  // by send-date plausibility (see the repointPreviewEmails/Skips comment
+  // below). UPDATE OR IGNORE keeps the canonical's own row on a UNIQUE
+  // collision, leaving the superseded-side duplicate in place for audit.
   const carryEnrichment = db.prepare(
     `UPDATE calendar_events SET
        consensus_estimate = COALESCE(consensus_estimate, ?),
@@ -214,8 +216,47 @@ export function reconcileEarningsDates(
        enriched_at = COALESCE(enriched_at, ?)
      WHERE id = ?`,
   );
-  const repointChildren = ["earnings_emails", "earnings_bogeys", "earnings_email_skips"].map(
-    (table) => db.prepare(`UPDATE OR IGNORE ${table} SET event_id = ? WHERE event_id = ?`),
+  const repointBogeys = db.prepare(
+    "UPDATE OR IGNORE earnings_bogeys SET event_id = ? WHERE event_id = ?",
+  );
+  // Recap rows are written post-print, so wherever they live they genuinely
+  // document that row's release — repointing them onto the surviving
+  // canonical is just "audit follows the print", unconditional like bogeys.
+  const repointRecapEmails = db.prepare(
+    "UPDATE OR IGNORE earnings_emails SET event_id = ? WHERE event_id = ? AND phase = 'recap'",
+  );
+  const repointRecapSkips = db.prepare(
+    "UPDATE OR IGNORE earnings_email_skips SET event_id = ? WHERE event_id = ? AND phase = 'recap'",
+  );
+  // Preview rows are different: a preview is a PROMISE about a specific
+  // future release, sent 105-135 minutes before it (PREVIEW_WINDOW_MIN/MAX_MS
+  // in enrichment-runner.ts), so a genuine preview's send DATE always equals
+  // the event's print date (+/- 1 day for UTC sent_at vs ET event_date). If
+  // the row it's currently on gets superseded, only repoint it onto the new
+  // canonical when the send date could plausibly have covered THAT event's
+  // print (>= print date minus 1 day — later-than-print sends still count,
+  // documenting a post-print stale-slot notice). A preview sent for an
+  // earlier phantom date has no relationship to a print that resolves later
+  // and must stay behind on the superseded row: findEmailCandidates treats
+  // ANY existing preview-phase row on an event as "already handled" (`ee.id
+  // IS NULL AND es.id IS NULL`), so dragging a stale preview onto the
+  // canonical would both fabricate a "preview sent" for a print the email
+  // never covered AND permanently block the genuine preview from ever firing
+  // (qa/NBIS 2026-08-10: a preview sent for finnhub's 7/29 phantom date got
+  // dragged onto the real 8/12 print when reconcile resolved it 14 days
+  // later). Superseded rows referenced by earnings_emails are already
+  // delete-protected (lib/mutations/calendar.ts
+  // deleteUnenrichedEventsForWeek), so leaving the row behind keeps it
+  // archived and invisible to canonical readers rather than losing it.
+  const repointPreviewEmails = db.prepare(
+    `UPDATE OR IGNORE earnings_emails
+        SET event_id = ?
+      WHERE event_id = ? AND phase = 'preview' AND date(sent_at) >= date(?, '-1 day')`,
+  );
+  const repointPreviewSkips = db.prepare(
+    `UPDATE OR IGNORE earnings_email_skips
+        SET event_id = ?
+      WHERE event_id = ? AND phase = 'preview' AND date(skipped_at) >= date(?, '-1 day')`,
   );
 
   const result: ReconcileResult = { confirmed: 0, conflict: 0, single: 0, userConfirmed: 0 };
@@ -237,6 +278,7 @@ export function reconcileEarningsDates(
       for (const cluster of splitReportedFromManualCluster(proximityCluster, today)) {
         const res = resolveCluster(cluster, today);
         setCanonical.run(res.status, res.conflictWith, res.canonicalId);
+        const canonicalEventDate = cluster.find((r) => r.id === res.canonicalId)!.event_date;
         // Freshest-enriched donor first: with several superseded rows, the
         // first non-NULL value per column wins (COALESCE), so order matters.
         const superseded = cluster
@@ -252,7 +294,11 @@ export function reconcileEarningsDates(
             r.enriched_at,
             res.canonicalId,
           );
-          for (const repoint of repointChildren) repoint.run(res.canonicalId, r.id);
+          repointBogeys.run(res.canonicalId, r.id);
+          repointRecapEmails.run(res.canonicalId, r.id);
+          repointRecapSkips.run(res.canonicalId, r.id);
+          repointPreviewEmails.run(res.canonicalId, r.id, canonicalEventDate);
+          repointPreviewSkips.run(res.canonicalId, r.id, canonicalEventDate);
         }
         if (res.status === "confirmed") result.confirmed++;
         else if (res.status === "conflict") result.conflict++;
