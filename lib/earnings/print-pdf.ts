@@ -100,12 +100,15 @@ export function hasPdfEofMarker(pdf: Buffer): boolean {
 }
 
 /**
- * Reads a completed PDF from disk, throwing a descriptive error for the two
- * ways "chrome claims success" can still be a lie: no file, or an empty
- * one. Used by the `close`-event completion path (Chrome exited 0 on its
- * own) — the poll-completion path below has different semantics (an
- * empty/incomplete file there just means "keep waiting", not "fail now"),
- * so it does not reuse this helper.
+ * Reads a completed PDF from disk, throwing a descriptive error for the
+ * four ways "chrome claims success" can still be a lie: no file, an empty
+ * one, a file that doesn't start with the `%PDF` magic header, or one
+ * that's missing its trailing `%%EOF` marker (a truncated write
+ * masquerading as a clean exit — see `hasPdfEofMarker`). Used by the
+ * `close`-event completion path (Chrome exited 0 on its own) — the
+ * poll-completion path below has different semantics (an
+ * empty/incomplete/malformed file there just means "keep waiting", not
+ * "fail now"), so it does not reuse this helper.
  */
 function readCompletedPdf(pdfPath: string): Buffer {
   if (!existsSync(pdfPath)) {
@@ -114,6 +117,12 @@ function readCompletedPdf(pdfPath: string): Buffer {
   const pdf = readFileSync(pdfPath);
   if (pdf.length === 0) {
     throw new Error("chrome produced a 0-byte PDF");
+  }
+  if (pdf.subarray(0, 4).toString("latin1") !== "%PDF") {
+    throw new Error("chrome PDF missing %PDF header (not a PDF)");
+  }
+  if (!hasPdfEofMarker(pdf)) {
+    throw new Error("chrome PDF missing %%EOF marker (truncated)");
   }
   return pdf;
 }
@@ -172,8 +181,9 @@ async function cleanupTempDir(dir: string): Promise<void> {
  * `--print-to-pdf` finishes writing — it never self-exits, so a pure
  * `close`-event wait times out on every real call on this platform. The
  * poll loop below requires the output file's size to hold steady across
- * `REQUIRED_STABLE_SAMPLES` consecutive checks AND end in a `%%EOF` marker
- * (`hasPdfEofMarker`) before trusting it as complete — a size-only,
+ * `REQUIRED_STABLE_SAMPLES` consecutive checks AND start with the `%PDF`
+ * header AND end in a `%%EOF` marker (`hasPdfEofMarker`) before trusting it
+ * as complete — a size-only,
  * single-sample check would risk resolving a stable-but-truncated file as
  * a silent success on a slow disk or a larger multi-page render — then
  * kills Chrome itself and resolves with the file bytes. The `close`
@@ -287,6 +297,7 @@ export function renderHtmlToPdf(
         } catch {
           return; // transient read race mid-write — keep polling
         }
+        if (buf.subarray(0, 4).toString("latin1") !== "%PDF") return; // no header yet — keep polling
         if (!hasPdfEofMarker(buf)) return; // still looks incomplete
 
         child.kill();
