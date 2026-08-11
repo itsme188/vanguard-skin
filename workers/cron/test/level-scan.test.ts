@@ -218,6 +218,40 @@ describe("runLevelScan — fan-out", () => {
     expect(sent).toHaveLength(1); // still 1 — no duplicate push
   });
 
+  it("passes armed_crossed_at through to the push sender as armedCrossedAt", async () => {
+    const { env } = makeEnv();
+    const supportLevel = lvl({ id: 43, level_type: "support", price: 150, armed_crossed_at: "2026-08-10 12:00:00" });
+    const sent: any[] = [];
+    await runLevelScan(env, {
+      loadSnapshot: async () => makeSnapshot([supportLevel]),
+      fetchPrice: async () => ({ price: 149.5, tMs: Date.now() }),
+      sendPush: async (_env, args) => {
+        sent.push(args);
+        return { sent: true };
+      },
+      pacingMs: 0,
+    });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].armedCrossedAt).toBe("2026-08-10 12:00:00");
+  });
+
+  it("passes armedCrossedAt as null when the level has no stamp", async () => {
+    const { env } = makeEnv();
+    const supportLevel = lvl({ id: 44, level_type: "support", price: 150 });
+    const sent: any[] = [];
+    await runLevelScan(env, {
+      loadSnapshot: async () => makeSnapshot([supportLevel]),
+      fetchPrice: async () => ({ price: 149.5, tMs: Date.now() }),
+      sendPush: async (_env, args) => {
+        sent.push(args);
+        return { sent: true };
+      },
+      pacingMs: 0,
+    });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].armedCrossedAt).toBeNull();
+  });
+
   it("does not write KV marker in dryRun mode", async () => {
     const { env, kv } = makeEnv();
     const supportLevel = lvl({ id: 99, level_type: "support", price: 150 });

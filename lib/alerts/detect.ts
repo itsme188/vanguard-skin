@@ -70,6 +70,7 @@ export function detectAndFireAlerts(db: Database.Database): {
           sourceAuthor: level.source_author,
           heldQuantity: holdings.reduce((sum, h) => sum + h.quantity, 0),
           securityId: level.security_id,
+          armedCrossedAt: level.armed_crossed_at,
         }).catch(() => {
           // Extra safety net — sendLevelAlertPush already catches, but keep
           // this in case a future refactor removes the internal try/catch.

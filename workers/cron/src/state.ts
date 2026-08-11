@@ -126,6 +126,14 @@ export interface SecurityLevelRow {
   source: string;
   source_author: string | null;
   expires_at: string | null;
+  /**
+   * Set when the level was force-armed on the Mac while already past its
+   * threshold (approveLevelGuarded, force:true) — lets the cloud-side scan
+   * disclose "was already past this level when armed" instead of presenting
+   * it as a fresh cross. Optional so snapshots from before this field existed
+   * still parse (undefined treated the same as null).
+   */
+  armed_crossed_at?: string | null;
 }
 
 /**

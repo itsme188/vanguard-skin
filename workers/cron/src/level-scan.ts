@@ -204,6 +204,7 @@ export async function runLevelScan(
         triggeredPrice: priceData.price,
         sourceAuthor: lvl.source_author,
         securityId: lvl.security_id,
+        armedCrossedAt: lvl.armed_crossed_at ?? null,
       });
 
       result.fired++;
