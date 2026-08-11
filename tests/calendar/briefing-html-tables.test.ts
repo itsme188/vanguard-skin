@@ -105,3 +105,35 @@ Closing thoughts follow here.`;
     expect(html).toMatch(/<p[^>]*>Closing thoughts follow here\./);
   });
 });
+
+describe("briefingToHtml — escaped pipes in cell text (issue #43)", () => {
+  // lib/digest/send-earnings-email.ts's escapeCell escapes a literal `|`
+  // inside AI-extracted cell text (e.g. a bogey source_label like
+  // "TMT | Breakout") as `\|` before assembling markdown. The renderer must
+  // treat `\|` as part of the cell content, not a column boundary — else the
+  // escaped pipe still splits the row and shifts every later column.
+
+  it("keeps an escaped pipe in a HEADER cell as one cell, not two columns", () => {
+    const md = `| Metric | TMT \\| Breakout (8/4) |
+|---|---|
+| EPS | 4.30 |`;
+    const html = briefingToHtml(md, "Test");
+    // Un-escaped, rendered as literal text inside a single header cell.
+    expect(html).toContain("TMT | Breakout (8/4)");
+    // No leftover backslash from the escape sequence.
+    expect(html).not.toContain("TMT \\|");
+    expect(html).not.toContain("TMT \\");
+  });
+
+  it("keeps an escaped pipe in a BODY cell as one cell, not two columns, and leaves later columns intact", () => {
+    const md = `| Metric | Source | Consensus |
+|---|---|---|
+| EPS | TMT \\| Breakout | 4.30 |`;
+    const html = briefingToHtml(md, "Test");
+    expect(html).toContain("TMT | Breakout");
+    expect(html).not.toContain("TMT \\|");
+    // The column AFTER the escaped-pipe cell must not have shifted — 4.30
+    // (Consensus) must still be present and distinct from the source cell.
+    expect(html).toContain("4.30");
+  });
+});
