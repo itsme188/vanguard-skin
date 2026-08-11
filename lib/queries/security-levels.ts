@@ -1,5 +1,11 @@
 import type Database from "better-sqlite3";
-import type { SecurityLevel, LevelAlert, AlertResponse } from "@/lib/types";
+import type {
+  SecurityLevel,
+  LevelAlert,
+  AlertResponse,
+  LevelType,
+  LevelPriceSource,
+} from "@/lib/types";
 import { resolveLevelPrice } from "@/lib/alerts/resolve-level-price";
 
 // ─── Filter types ──────────────────────────────────────────────────
@@ -116,6 +122,65 @@ export function getLevelById(
  * threshold in sync.
  */
 export const LEVEL_PLAUSIBILITY_MAX_DISTANCE = 0.5;
+
+/** Minimal shape checkLevelTriggerState needs — matches the findCrossedLevels
+ * row shape and what approveLevelGuarded can assemble for a single level. */
+export interface LevelTriggerCheckInput {
+  id: number;
+  security_id: number;
+  level_type: LevelType;
+  price: number;
+  price_source: LevelPriceSource;
+  /** Security type, lowercased-compared — options are exempt from the
+   * plausibility guard. Null/undefined treated as non-option. */
+  sec_type?: string | null;
+}
+
+export interface LevelTriggerState {
+  /** True when currentPrice has crossed the level's effective price
+   * (direction-aware) and the level passed the plausibility guard. */
+  hit: boolean;
+  /** Resolved effective price (static price, or live MA value). Null when
+   * an MA-based level can't be resolved (insufficient ohlcv_bars history). */
+  effectivePrice: number | null;
+}
+
+/**
+ * Single source of truth for "does this level's condition currently hold" —
+ * effective price resolution + the plausibility guard + the direction test.
+ * Shared by findCrossedLevels (the scanner) and approveLevelGuarded (the
+ * pre-arm check) so the two can never drift on what counts as "already hit".
+ *
+ * Callers are responsible for resolving currentPrice (latest prices row,
+ * falling back to benchmark_prices) and any staleness filtering — this
+ * function only evaluates the condition given a price that's already been
+ * chosen.
+ */
+export function checkLevelTriggerState(
+  db: Database.Database,
+  level: LevelTriggerCheckInput,
+  currentPrice: number
+): LevelTriggerState {
+  const effective = resolveLevelPrice(db, level);
+  if (effective === null) return { hit: false, effectivePrice: null }; // MA can't be computed — skip rather than use stale snapshot
+
+  // Options exempt from the plausibility guard: option premiums legitimately
+  // double/halve overnight, so a real hit CAN first be seen >50% past the level.
+  const isOption = level.sec_type?.toLowerCase() === "option";
+  if (!isOption && Math.abs(currentPrice - effective) / effective > LEVEL_PLAUSIBILITY_MAX_DISTANCE) {
+    console.warn(
+      `[levels/scan] Skipping implausible level ${level.id} (${level.level_type} @ ${effective}) — current price ${currentPrice} is >${LEVEL_PLAUSIBILITY_MAX_DISTANCE * 100}% away (mis-scaled level?)`
+    );
+    return { hit: false, effectivePrice: effective };
+  }
+
+  const goingDown = ["support", "entry", "scale_in", "stop"].includes(level.level_type);
+  const hit = goingDown
+    ? currentPrice <= effective
+    : currentPrice >= effective; // resistance, exit
+  return { hit, effectivePrice: effective };
+}
+
 export function findCrossedLevels(
   db: Database.Database
 ): Array<SecurityLevel & { current_price: number; effective_price: number; price_date: string }> {
@@ -151,27 +216,75 @@ export function findCrossedLevels(
   const crossed: Array<SecurityLevel & { current_price: number; effective_price: number; price_date: string }> = [];
 
   for (const r of rows) {
-    const effective = resolveLevelPrice(db, r);
-    if (effective === null) continue; // MA can't be computed — skip rather than use stale snapshot
-    // Options exempt from the plausibility guard: option premiums legitimately
-    // double/halve overnight, so a real hit CAN first be seen >50% past the level.
-    const isOption = r.sec_type?.toLowerCase() === "option";
-    if (!isOption && Math.abs(r.current_price - effective) / effective > LEVEL_PLAUSIBILITY_MAX_DISTANCE) {
-      console.warn(
-        `[levels/scan] Skipping implausible level ${r.id} (${r.level_type} @ ${effective}) — current price ${r.current_price} is >${LEVEL_PLAUSIBILITY_MAX_DISTANCE * 100}% away (mis-scaled level?)`
-      );
-      continue;
-    }
-    const goingDown = ["support", "entry", "scale_in", "stop"].includes(r.level_type);
-    const hit = goingDown
-      ? r.current_price <= effective
-      : r.current_price >= effective; // resistance, exit
-    if (hit) {
-      crossed.push({ ...r, effective_price: effective });
+    const state = checkLevelTriggerState(db, r, r.current_price);
+    if (state.hit && state.effectivePrice !== null) {
+      crossed.push({ ...r, effective_price: state.effectivePrice });
     }
   }
 
   return crossed;
+}
+
+/**
+ * Resolve the latest close price for a security the same way findCrossedLevels
+ * does — primary `prices` table, falling back to `benchmark_prices` via
+ * symbol — plus the 4-day staleness check, in a single query scoped to one
+ * security. Used by approveLevelGuarded (pre-arm check) so a level being
+ * approved is judged by the exact same "current price" the scanner would use.
+ */
+export interface LatestScanPrice {
+  currentPrice: number | null;
+  priceDate: string | null;
+  /** True when priceDate is within the scanner's 4-day staleness window. */
+  isFresh: boolean;
+  secType: string | null;
+}
+
+export function getLatestScanPriceForSecurity(
+  db: Database.Database,
+  securityId: number
+): LatestScanPrice {
+  const row = db
+    .prepare(
+      `WITH latest_primary AS (
+         SELECT p1.security_id, p1.close_price, p1.date
+         FROM prices p1
+         WHERE p1.security_id = ?
+           AND p1.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = p1.security_id)
+       ),
+       latest_benchmark AS (
+         SELECT s.id AS security_id, bp.close_price, bp.date
+         FROM securities s
+         JOIN benchmark_prices bp ON bp.symbol = s.symbol
+         WHERE s.id = ?
+           AND bp.date = (SELECT MAX(bp2.date) FROM benchmark_prices bp2 WHERE bp2.symbol = bp.symbol)
+       )
+       SELECT s.security_type AS sec_type,
+         COALESCE(lp.close_price, lb.close_price) AS current_price,
+         COALESCE(lp.date, lb.date) AS price_date,
+         (COALESCE(lp.date, lb.date) >= date('now', '-4 days')) AS is_fresh
+       FROM securities s
+       LEFT JOIN latest_primary lp ON lp.security_id = s.id
+       LEFT JOIN latest_benchmark lb ON lb.security_id = s.id
+       WHERE s.id = ?`
+    )
+    .get(securityId, securityId, securityId) as
+    | {
+        sec_type: string | null;
+        current_price: number | null;
+        price_date: string | null;
+        is_fresh: number | null;
+      }
+    | undefined;
+
+  if (!row) return { currentPrice: null, priceDate: null, isFresh: false, secType: null };
+
+  return {
+    currentPrice: row.current_price,
+    priceDate: row.price_date,
+    isFresh: row.is_fresh === 1,
+    secType: row.sec_type,
+  };
 }
 
 // ─── Armed-levels view (U3: consolidated "what am I watching") ───────

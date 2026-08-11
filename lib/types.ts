@@ -351,6 +351,13 @@ export interface SecurityLevel {
   triggered_price: number | null;
   notes: string | null;
   review_status: LevelReviewStatus;
+  /**
+   * Set when a level was force-armed while its trigger condition was already
+   * satisfied (approveLevelGuarded, force:true) — datetime of the arm.
+   * NULL otherwise. Read by alert composition for honest "was already past
+   * when armed" copy instead of presenting a stale condition as a fresh cross.
+   */
+  armed_crossed_at: string | null;
   created_at: string;
   updated_at: string;
 }

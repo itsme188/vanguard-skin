@@ -165,6 +165,33 @@ describe("sendLevelAlertPush", () => {
     expect(body.get("message")).toBe("Triggered @ $280.50");
   });
 
+  it("discloses when the level was already past its threshold when armed", async () => {
+    process.env.PUSHOVER_APP_TOKEN = "tok";
+    process.env.PUSHOVER_USER_KEY = "usr";
+
+    const fetchSpy = vi.fn().mockResolvedValue({
+      status: 200,
+      json: async () => ({ status: 1, request: "req-2" }),
+    });
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    await sendLevelAlertPush({
+      symbol: "HOOD",
+      levelType: "entry",
+      triggeredPrice: 91.32,
+      sourceAuthor: "Helene Meisler",
+      heldQuantity: 300,
+      securityId: 1735,
+      armedCrossedAt: "2026-08-10 12:00:00",
+    });
+
+    const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const body = new URLSearchParams(init.body as string);
+    expect(body.get("message")).toBe(
+      "Triggered @ $91.32 — was already past this level when it was armed — Helene Meisler — held 300 sh"
+    );
+  });
+
   it("is a no-op (not thrown) when env vars are missing", async () => {
     const fetchSpy = vi.fn();
     globalThis.fetch = fetchSpy as unknown as typeof fetch;

@@ -59,6 +59,13 @@ export interface LevelPushArgs {
   triggeredPrice: number;
   sourceAuthor: string | null;
   securityId: number;
+  /**
+   * The level's `armed_crossed_at` — set when it was force-armed while
+   * already past its threshold. When present, the push discloses that this
+   * isn't a fresh cross instead of presenting it as one. Mirrors the same
+   * field on the Mac sibling (lib/alerts/notify-pushover.ts).
+   */
+  armedCrossedAt?: string | null;
 }
 
 /**
@@ -76,6 +83,7 @@ export async function sendLevelAlertPush(
     env.PUSHOVER_LINK_BASE ??
     (env.MESH_HOSTNAME ? `https://${env.MESH_HOSTNAME}` : "http://localhost:3099");
   const parts = [`Triggered @ ${fmtPrice(args.triggeredPrice)}`];
+  if (args.armedCrossedAt) parts.push("was already past this level when it was armed");
   if (args.sourceAuthor) parts.push(args.sourceAuthor);
   parts.push("cloud-fired");
   return sendPushover(env, {

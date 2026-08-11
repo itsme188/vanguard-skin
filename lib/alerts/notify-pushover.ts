@@ -89,11 +89,18 @@ export async function sendLevelAlertPush(args: {
   heldQuantity: number | null;
   securityId: number;
   baseUrl?: string;
+  /**
+   * The level's `armed_crossed_at` — set when the level was force-armed
+   * while already past its threshold. When present, the push discloses that
+   * this isn't a fresh cross instead of presenting it as one.
+   */
+  armedCrossedAt?: string | null;
 }): Promise<PushoverResult> {
   const fmtPrice = (n: number) =>
     `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const base = args.baseUrl ?? process.env.PUSHOVER_LINK_BASE ?? "http://localhost:3099";
   const parts = [`Triggered @ ${fmtPrice(args.triggeredPrice)}`];
+  if (args.armedCrossedAt) parts.push("was already past this level when it was armed");
   if (args.sourceAuthor) parts.push(args.sourceAuthor);
   if (args.heldQuantity && args.heldQuantity > 0) parts.push(`held ${args.heldQuantity} sh`);
   return sendPushover({

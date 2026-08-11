@@ -87,6 +87,12 @@ export function upsertLevel(
 /**
  * Flip review_status for a pending newsletter-extracted level.
  * Approved → armed; rejected → kept in DB (for audit) but excluded from scans.
+ *
+ * Does NOT run the "would fire immediately" guard — the review route only
+ * calls this for the reject/pending_review paths (auto_approved goes through
+ * approveLevelGuarded in lib/alerts/approve.ts instead). Always nulls
+ * armed_crossed_at so a stale force-arm stamp from a prior cycle can't
+ * survive a status change away from armed.
  */
 export function setLevelReviewStatus(
   db: Database.Database,
@@ -95,7 +101,7 @@ export function setLevelReviewStatus(
 ): void {
   db.prepare(
     `UPDATE security_levels
-     SET review_status = ?, updated_at = datetime('now')
+     SET review_status = ?, armed_crossed_at = NULL, updated_at = datetime('now')
      WHERE id = ?`
   ).run(status, id);
 }

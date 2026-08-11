@@ -97,6 +97,11 @@ interface Snapshot {
     source: string;
     source_author: string | null;
     expires_at: string | null;
+    // Set when the level was force-armed while already past its threshold
+    // (approveLevelGuarded, force:true) — lets the cloud-side scan disclose
+    // "was already past this level when armed" instead of a fresh cross.
+    // Optional/nullable so older Workers ignore it gracefully.
+    armed_crossed_at: string | null;
   }>;
   // v5 additions — user thesis notes (security-linked, last 90d) + curated
   // earnings bogeys (consensus + whisper) so the cloud earnings email carries
@@ -587,7 +592,8 @@ function buildSnapshot(db: Database.Database): Snapshot {
   const securityLevels = db
     .prepare(
       `SELECT sl.id, sl.security_id, s.symbol, sl.level_type, sl.price,
-              sl.direction, sl.source, sl.source_author, sl.expires_at
+              sl.direction, sl.source, sl.source_author, sl.expires_at,
+              sl.armed_crossed_at
          FROM security_levels sl
          JOIN securities s ON s.id = sl.security_id
          WHERE sl.is_active = 1
@@ -605,6 +611,7 @@ function buildSnapshot(db: Database.Database): Snapshot {
       source: string;
       source_author: string | null;
       expires_at: string | null;
+      armed_crossed_at: string | null;
     }>;
 
   // v9 — earnings intelligence. `earningsIntelStartDate` mirrors the

@@ -106,6 +106,10 @@ interface PendingLevel {
   created_at: string;
 }
 
+// Per-level "would fire immediately" confirm state, keyed by level id — see
+// decideReview's 409 would_fire_immediately handling.
+type ForceConfirmMap = Record<number, { currentPrice: number; effectivePrice: number }>;
+
 type StreamFilter =
   | "pending"
   | "review"
@@ -193,6 +197,19 @@ function AlertsPageInner() {
   const [detecting, setDetecting] = useState(false);
   const [suggesting, setSuggesting] = useState(false);
   const [approvingAll, setApprovingAll] = useState(false);
+  // Per-level "would fire immediately" confirm state — populated when a
+  // 409 would_fire_immediately comes back from PATCH /api/levels/review.
+  // Cleared on confirm (forced retry), cancel, or once the level leaves
+  // reviewLevels (approved/rejected some other way).
+  const [forceConfirm, setForceConfirm] = useState<
+    Record<number, { currentPrice: number; effectivePrice: number }>
+  >({});
+  // "Approve all" summary confirm — set when one or more of the batch came
+  // back 409 would_fire_immediately on the unforced first pass.
+  const [approveAllConfirm, setApproveAllConfirm] = useState<{
+    ids: number[];
+    total: number;
+  } | null>(null);
   const [actionStatus, setActionStatus] = useState<string | null>(null);
   const { sort, setSort } = useSortParam<StreamSortField>("alerts", "recency", "desc");
 
@@ -301,23 +318,56 @@ function AlertsPageInner() {
     refresh();
   }
 
-  async function decideReview(id: number, status: LevelReviewStatus) {
+  function clearForceConfirm(id: number) {
+    setForceConfirm((prev) => {
+      if (!(id in prev)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  }
+
+  async function decideReview(id: number, status: LevelReviewStatus, force = false) {
     const res = await fetch("/api/levels/review", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, status }),
+      body: JSON.stringify({ id, status, force }),
     });
-    if (!res.ok) {
-      toast("Failed to update level", "error");
+    const data = await res.json().catch(() => null);
+
+    if (res.ok && data?.success) {
+      toast(
+        status === "auto_approved"
+          ? force
+            ? "Level armed — price is already past this level, so it will fire on the next scan"
+            : "Level approved — now armed"
+          : "Level rejected",
+        status === "auto_approved" ? "success" : "info"
+      );
+      // Optimistic: drop the row immediately.
+      setReviewLevels((prev) => prev.filter((l) => l.id !== id));
+      clearForceConfirm(id);
+      window.dispatchEvent(new CustomEvent("reviews-updated"));
+      await refresh();
       return;
     }
-    toast(
-      status === "auto_approved" ? "Level approved — now armed" : "Level rejected",
-      status === "auto_approved" ? "success" : "info"
-    );
-    // Optimistic: drop the row immediately.
-    setReviewLevels((prev) => prev.filter((l) => l.id !== id));
-    window.dispatchEvent(new CustomEvent("reviews-updated"));
+
+    if (res.status === 409 && data?.code === "would_fire_immediately") {
+      // Refused, no write — show a per-card confirm instead of a generic
+      // failure toast. The row stays in reviewLevels (still pending).
+      setForceConfirm((prev) => ({
+        ...prev,
+        [id]: { currentPrice: data.currentPrice, effectivePrice: data.effectivePrice },
+      }));
+      return;
+    }
+
+    toast(data?.error ?? "Failed to update level", "error");
+  }
+
+  function cancelForceConfirm(id: number) {
+    clearForceConfirm(id);
+    toast("Left pending — level was not armed", "info");
   }
 
   async function approveAll() {
@@ -325,21 +375,90 @@ function AlertsPageInner() {
     setApprovingAll(true);
     try {
       const ids = reviewLevels.map((l) => l.id);
-      await Promise.all(
-        ids.map((id) =>
-          fetch("/api/levels/review", {
+      const results = await Promise.all(
+        ids.map(async (id) => {
+          const res = await fetch("/api/levels/review", {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ id, status: "auto_approved" }),
-          })
-        )
+          });
+          const data = await res.json().catch(() => null);
+          return {
+            id,
+            ok: res.ok && data?.success === true,
+            refused: res.status === 409 && data?.code === "would_fire_immediately",
+          };
+        })
       );
-      toast(`${ids.length} level${ids.length === 1 ? "" : "s"} approved`, "success");
-      setReviewLevels([]);
-      window.dispatchEvent(new CustomEvent("reviews-updated"));
+
+      const armedIds = results.filter((r) => r.ok).map((r) => r.id);
+      const refusedIds = results.filter((r) => r.refused).map((r) => r.id);
+      const failedIds = results
+        .filter((r) => !r.ok && !r.refused)
+        .map((r) => r.id);
+
+      if (armedIds.length > 0) {
+        toast(`${armedIds.length} level${armedIds.length === 1 ? "" : "s"} approved`, "success");
+        setReviewLevels((prev) => prev.filter((l) => !armedIds.includes(l.id)));
+        window.dispatchEvent(new CustomEvent("reviews-updated"));
+      }
+      if (failedIds.length > 0) {
+        toast(
+          `${failedIds.length} level${failedIds.length === 1 ? "" : "s"} failed to approve — still pending`,
+          "error"
+        );
+      }
+      if (refusedIds.length > 0) {
+        setApproveAllConfirm({ ids: refusedIds, total: ids.length });
+      }
+      await refresh();
     } finally {
       setApprovingAll(false);
     }
+  }
+
+  async function confirmApproveAllForce() {
+    if (!approveAllConfirm) return;
+    const ids = approveAllConfirm.ids;
+    setApprovingAll(true);
+    try {
+      const results = await Promise.all(
+        ids.map(async (id) => {
+          const res = await fetch("/api/levels/review", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id, status: "auto_approved", force: true }),
+          });
+          const data = await res.json().catch(() => null);
+          return { id, ok: res.ok && data?.success === true };
+        })
+      );
+      const armedIds = results.filter((r) => r.ok).map((r) => r.id);
+      const failedIds = results.filter((r) => !r.ok).map((r) => r.id);
+
+      if (armedIds.length > 0) {
+        toast(
+          `${armedIds.length} level${armedIds.length === 1 ? "" : "s"} armed — already past level, will fire on the next scan`,
+          "success"
+        );
+        setReviewLevels((prev) => prev.filter((l) => !armedIds.includes(l.id)));
+        window.dispatchEvent(new CustomEvent("reviews-updated"));
+      }
+      if (failedIds.length > 0) {
+        toast(`${failedIds.length} level${failedIds.length === 1 ? "" : "s"} failed to arm`, "error");
+      }
+      await refresh();
+    } finally {
+      setApproveAllConfirm(null);
+      setApprovingAll(false);
+    }
+  }
+
+  function cancelApproveAllForce() {
+    if (!approveAllConfirm) return;
+    const n = approveAllConfirm.ids.length;
+    toast(`${n} level${n === 1 ? "" : "s"} left pending — not armed`, "info");
+    setApproveAllConfirm(null);
   }
 
   async function runDetect() {
@@ -546,6 +665,31 @@ function AlertsPageInner() {
         </div>
       </header>
 
+      {approveAllConfirm && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-[12px] text-amber-200 flex items-center justify-between gap-3 flex-wrap">
+          <span>
+            {approveAllConfirm.ids.length} of {approveAllConfirm.total} are already past their
+            levels and would fire immediately — arm those too?
+          </span>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={confirmApproveAllForce}
+              disabled={approvingAll}
+              className="relative px-3 py-1 text-[11px] rounded bg-amber-500/20 text-amber-100 hover:bg-amber-500/30 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
+            >
+              Confirm
+            </button>
+            <button
+              onClick={cancelApproveAllForce}
+              disabled={approvingAll}
+              className="relative px-3 py-1 text-[11px] rounded text-amber-200/70 hover:text-amber-100 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       {actionStatus && (
         <div className="rounded-lg border border-edge bg-panel px-4 py-2.5 text-[11px] text-ink-dim flex items-center justify-between">
           <span>{actionStatus}</span>
@@ -592,9 +736,21 @@ function AlertsPageInner() {
       ) : sortedItems.length === 0 ? (
         <EmptyState filter={filter} />
       ) : isPending ? (
-        <SplitPendingStream items={sortedItems} onRespond={respond} onDecideReview={decideReview} />
+        <SplitPendingStream
+          items={sortedItems}
+          onRespond={respond}
+          onDecideReview={decideReview}
+          forceConfirm={forceConfirm}
+          onCancelConfirm={cancelForceConfirm}
+        />
       ) : isReview ? (
-        <ReviewGroupedByAuthor levels={reviewLevels} onDecide={decideReview} disabled={approvingAll} />
+        <ReviewGroupedByAuthor
+          levels={reviewLevels}
+          onDecide={decideReview}
+          disabled={approvingAll}
+          forceConfirm={forceConfirm}
+          onCancelConfirm={cancelForceConfirm}
+        />
       ) : (
         <ul className="space-y-2">
           {sortedItems.map((it) =>
@@ -941,10 +1097,14 @@ function SplitPendingStream({
   items,
   onRespond,
   onDecideReview,
+  forceConfirm,
+  onCancelConfirm,
 }: {
   items: StreamItem[];
   onRespond: (id: number, response: AlertResponse, note?: string) => void;
-  onDecideReview: (id: number, status: LevelReviewStatus) => void;
+  onDecideReview: (id: number, status: LevelReviewStatus, force?: boolean) => void;
+  forceConfirm: ForceConfirmMap;
+  onCancelConfirm: (id: number) => void;
 }) {
   // Surface today's activity above older items so the user can act before
   // market close. Both fired alerts (triggered_at = today) and review levels
@@ -973,6 +1133,8 @@ function SplitPendingStream({
                   key={`r-${it.level.id}`}
                   level={it.level}
                   onDecide={onDecideReview}
+                  confirm={forceConfirm[it.level.id]}
+                  onCancelConfirm={onCancelConfirm}
                 />
               )
             )}
@@ -994,6 +1156,8 @@ function SplitPendingStream({
                   key={`r-${it.level.id}`}
                   level={it.level}
                   onDecide={onDecideReview}
+                  confirm={forceConfirm[it.level.id]}
+                  onCancelConfirm={onCancelConfirm}
                 />
               )
             )}
@@ -1008,10 +1172,14 @@ function ReviewGroupedByAuthor({
   levels,
   onDecide,
   disabled,
+  forceConfirm,
+  onCancelConfirm,
 }: {
   levels: PendingLevel[];
-  onDecide: (id: number, status: LevelReviewStatus) => void;
+  onDecide: (id: number, status: LevelReviewStatus, force?: boolean) => void;
   disabled: boolean;
+  forceConfirm: ForceConfirmMap;
+  onCancelConfirm: (id: number) => void;
 }) {
   // When the user explicitly filters to "Review", group by source_author so
   // they can triage one author at a time (carries over the prior UX from
@@ -1033,7 +1201,14 @@ function ReviewGroupedByAuthor({
           </h2>
           <ul className="space-y-2">
             {rows.map((l) => (
-              <ReviewRow key={l.id} level={l} onDecide={onDecide} disabled={disabled} />
+              <ReviewRow
+                key={l.id}
+                level={l}
+                onDecide={onDecide}
+                disabled={disabled}
+                confirm={forceConfirm[l.id]}
+                onCancelConfirm={onCancelConfirm}
+              />
             ))}
           </ul>
         </section>
@@ -1233,10 +1408,15 @@ function ReviewRow({
   level,
   onDecide,
   disabled,
+  confirm,
+  onCancelConfirm,
 }: {
   level: PendingLevel;
-  onDecide: (id: number, status: LevelReviewStatus) => void;
+  onDecide: (id: number, status: LevelReviewStatus, force?: boolean) => void;
   disabled?: boolean;
+  /** Set when approving was refused with 409 would_fire_immediately. */
+  confirm?: { currentPrice: number; effectivePrice: number };
+  onCancelConfirm?: (id: number) => void;
 }) {
   const distVal = distancePct(level.price, level.current_price);
   const when = new Date(level.created_at).toLocaleString("en-US", {
@@ -1293,23 +1473,48 @@ function ReviewRow({
           {level.timeframe && (
             <p className="text-[10px] text-ink-faint mt-1">Timeframe: {level.timeframe}</p>
           )}
+          {confirm && (
+            <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2 text-[11px] text-amber-200">
+              Price {formatUSDPrecise(confirm.currentPrice)} is already past this level (
+              {formatUSDPrecise(confirm.effectivePrice)}) — arming will fire an alert on the
+              next scan. Arm anyway?
+              <div className="mt-1.5 flex items-center gap-2">
+                <button
+                  onClick={() => onDecide(level.id, "auto_approved", true)}
+                  disabled={disabled}
+                  className="relative px-3 py-1 text-[11px] rounded bg-amber-500/20 text-amber-100 hover:bg-amber-500/30 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
+                >
+                  Confirm
+                </button>
+                <button
+                  onClick={() => onCancelConfirm?.(level.id)}
+                  disabled={disabled}
+                  className="relative px-3 py-1 text-[11px] rounded text-amber-200/70 hover:text-amber-100 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
         </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            onClick={() => onDecide(level.id, "auto_approved")}
-            disabled={disabled}
-            className="relative px-3 py-1 text-[11px] rounded bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
-          >
-            Approve
-          </button>
-          <button
-            onClick={() => onDecide(level.id, "rejected")}
-            disabled={disabled}
-            className="relative px-3 py-1 text-[11px] rounded text-ink-faint hover:text-ink-dim disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
-          >
-            Reject
-          </button>
-        </div>
+        {!confirm && (
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => onDecide(level.id, "auto_approved")}
+              disabled={disabled}
+              className="relative px-3 py-1 text-[11px] rounded bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
+            >
+              Approve
+            </button>
+            <button
+              onClick={() => onDecide(level.id, "rejected")}
+              disabled={disabled}
+              className="relative px-3 py-1 text-[11px] rounded text-ink-faint hover:text-ink-dim disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2.5 pointer-coarse:after:-inset-x-0.5"
+            >
+              Reject
+            </button>
+          </div>
+        )}
       </div>
     </li>
   );
