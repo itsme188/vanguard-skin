@@ -44,7 +44,7 @@
     "@types/nodemailer": "^7.0.11",
     "ai": "^6.0.138",
     "aws4fetch": "^1.0.20",
-    "better-sqlite3": "^12.6.2",
+    "better-sqlite3": "^13.0.2",
     "electron-updater": "^6.8.3",
     "googleapis": "^171.4.0",
     "imapflow": "^1.2.18",

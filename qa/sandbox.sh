@@ -69,7 +69,7 @@ up() {
 
   (
     cd "$STANDALONE"
-    env -i HOME="$HOME" PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+    env -i HOME="$HOME" PATH="/opt/homebrew/opt/node@24/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
       NODE_ENV=production PORT="$PORT" HOSTNAME=127.0.0.1 \
       DATABASE_PATH="$DB_COPY" \
       ${pins[@]+"${pins[@]}"} \

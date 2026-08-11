@@ -234,7 +234,7 @@ When debugging data issues, investigate root causes rather than applying smoothi
 
 ## Testing
 
-- Run tests: `PATH=/opt/homebrew/opt/node@20/bin:$PATH npx vitest run` — the better-sqlite3 binary is built for Node 20; the shell-default node 26 dies with ERR_DLOPEN_FAILED (never `npm rebuild` — protects the Electron binary). Same prefix for `npx tsx scripts/*.ts`.
+- Run tests: `PATH=/opt/homebrew/opt/node@24/bin:$PATH npx vitest run` — the project runs on the node@24 LTS keg (pinned by versioned path everywhere since 2026-08-11; the bare `/opt/homebrew/bin/node` moves on every `brew upgrade` and must never be relied on). better-sqlite3 ≥13 is N-API (one binary works across Node ≥22 and Electron), but keep the pin: Next/tooling behavior should not drift with Homebrew's default node. Same prefix for `npx tsx scripts/*.ts`. Still never `npm rebuild` casually — rebuilds are deliberate, full-suite-verified events.
 - All tests use in-memory SQLite (`:memory:`) for isolation
 - Test fixtures in `tests/fixtures/` (anonymized)
 - Real data fixtures in `tests/fixtures/real/` (gitignored)

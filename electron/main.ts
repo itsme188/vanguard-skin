@@ -25,7 +25,7 @@ import { openServerLog, serverLogLine } from "./server-log";
  * If the binary is ever rebuilt for a newer Node line, update this constant
  * in the same commit.
  */
-const REQUIRED_NODE_ABI = "115";
+const REQUIRED_NODE_ABI = "137";
 
 /**
  * Find the system Node.js binary. Electron embeds its own Node.js with a
@@ -43,7 +43,8 @@ function findSystemNode(): string {
   const { execSync } = require("node:child_process") as typeof import("node:child_process");
 
   const candidates = [
-    "/opt/homebrew/opt/node@20/bin/node", // versioned keg — survives `brew upgrade node`
+    "/opt/homebrew/opt/node@24/bin/node", // versioned keg — survives `brew upgrade node`
+    "/opt/homebrew/opt/node@20/bin/node", // legacy keg (pre-2026-08-11 installs)
     "/opt/homebrew/bin/node",  // macOS Apple Silicon (Homebrew)
     "/usr/local/bin/node",     // macOS Intel (Homebrew)
     "/usr/bin/node",           // Linux system
@@ -76,7 +77,7 @@ function findSystemNode(): string {
   if (existing.length > 0) {
     console.warn(
       `[electron] No Node with ABI ${REQUIRED_NODE_ABI} found; falling back to ${existing[0]} — ` +
-        `better-sqlite3 may fail to load (install node@20 via Homebrew to fix)`,
+        `better-sqlite3 may fail to load (install node@24 via Homebrew to fix)`,
     );
     return existing[0];
   }
