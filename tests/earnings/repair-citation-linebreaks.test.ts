@@ -102,6 +102,49 @@ describe("repairCitationLineBreaks", () => {
     expect(repairCitationLineBreaks(md)).toBe(md);
   });
 
+  it("does not merge an adjacent bold-label-prefixed line into the one above it", () => {
+    const md = [
+      "**Bull case:** subscriber adds beat",
+      "**Bear case:** margins compress",
+    ].join("\n");
+    // A labeled-prose line (bold label + prose on the same line) is a new
+    // block, same as a bold-label-ONLY line — it must never be swallowed
+    // into the line above it, even with no blank line separating them.
+    expect(repairCitationLineBreaks(md)).toBe(md);
+  });
+
+  it("still merges a genuine citation fragment onto the end of a labeled-prose line", () => {
+    const md = ["**Bear case:** margins compress", ", per the 10-K filing."].join("\n");
+    // A labeled-prose line can still RECEIVE a continuation fragment — it's
+    // only excluded as something that merges UP into a preceding line, not
+    // as a valid merge target for what follows it.
+    expect(repairCitationLineBreaks(md)).toBe("**Bear case:** margins compress, per the 10-K filing.");
+  });
+
+  it("still merges a genuine citation fragment (word-leading) onto a labeled-prose line", () => {
+    const md = [
+      "**Bull case:** subscriber adds beat",
+      "and margin guidance was raised.",
+    ].join("\n");
+    expect(repairCitationLineBreaks(md)).toBe(
+      "**Bull case:** subscriber adds beat and margin guidance was raised.",
+    );
+  });
+
+  it("does not treat a mid-line bold span as a bold-label prefix (still merges as a continuation)", () => {
+    const md = [
+      "Management flagged one item on the call",
+      "The **key metric** discussed was retention, which improved.",
+    ].join("\n");
+    // The new bold-label-prefix rule only excludes lines that START with a
+    // complete bold label. A line whose bold span is mid-line is ordinary
+    // prose and, as a citation-fragment continuation with no blank line
+    // before it, still merges into the preceding line exactly as before.
+    expect(repairCitationLineBreaks(md)).toBe(
+      "Management flagged one item on the call The **key metric** discussed was retention, which improved.",
+    );
+  });
+
   it("handles empty input", () => {
     expect(repairCitationLineBreaks("")).toBe("");
   });

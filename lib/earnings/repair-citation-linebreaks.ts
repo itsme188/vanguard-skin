@@ -27,14 +27,18 @@
  *
  * Pure markdown → markdown transform, no imports. Walks lines; a non-blank
  * line that (a) is not itself a structural marker (header / table row /
- * blockquote / hr / list marker / bold-label-only line) and (b) has no
- * blank line immediately before it, gets folded onto the END of the
- * previous OUTPUT line — but only when that previous line is itself
- * mergeable content (plain prose or a list item — never a header, table
- * row, blockquote, hr, or bold-label-only line). `continuationJoiner` skips
- * the space before a fragment that opens with sentence-hugging punctuation
- * (`, . ; : ! ? ) ] }`) so "...August 10, 2026" + ", with" reassembles as
- * "...2026, with", not "...2026 , with".
+ * blockquote / hr / list marker / bold-label-only line / bold-label-PREFIX
+ * line, i.e. a bold label followed by prose on the same line, e.g.
+ * "**Bear case:** margins compress") and (b) has no blank line immediately
+ * before it, gets folded onto the END of the previous OUTPUT line — but
+ * only when that previous line is itself mergeable content (plain prose or
+ * a list item — never a header, table row, blockquote, hr, or
+ * bold-label-only line; a bold-label-PREFIX line IS still a valid merge
+ * target, since a genuine citation fragment can legitimately continue
+ * labeled prose — see BOLD_LABEL_PREFIX_RE / isMergeTarget below).
+ * `continuationJoiner` skips the space before a fragment that opens with
+ * sentence-hugging punctuation (`, . ; : ! ? ) ] }`) so "...August 10,
+ * 2026" + ", with" reassembles as "...2026, with", not "...2026 , with".
  */
 
 const HEADER_RE = /^#{1,6}\s/;
@@ -47,10 +51,19 @@ const LIST_MARKER_RE = /^([-*]\s+|\d+\.\s+)/;
 // BOLD_LABEL_LINE_RE — defensive parity even though earnings prose doesn't
 // currently produce this shape.
 const BOLD_LABEL_LINE_RE = /^\*\*[^*]+\*\*:?\s*$/;
+// A line that STARTS with a complete bold label followed by prose on the
+// same line ("**Bear case:** margins compress") — a labeled-prose line. A
+// genuine citation fragment is a mid-sentence continuation and essentially
+// never begins with a bold label, so this is a safe, conservative signal
+// that the line opens a new block rather than continuing the one above.
+// Anchored at the line start with a COMPLETE `**...**` span so a bold span
+// that merely appears mid-line ("The **key metric** is...") does NOT match
+// — only the line's own opening word being a bold label counts.
+const BOLD_LABEL_PREFIX_RE = /^\*\*[^*]+\*\*:?\s+\S/;
 
 // A line matching any of these ALWAYS starts something new and must never
 // be merged INTO the line above it (it can still be merged INTO, if it's a
-// list item — see isMergeTarget).
+// list item or a labeled-prose line — see isMergeTarget).
 function isNewBlockLine(trimmed: string): boolean {
   return (
     HEADER_RE.test(trimmed) ||
@@ -58,13 +71,18 @@ function isNewBlockLine(trimmed: string): boolean {
     HR_RE.test(trimmed) ||
     TABLE_ROW_RE.test(trimmed) ||
     LIST_MARKER_RE.test(trimmed) ||
-    BOLD_LABEL_LINE_RE.test(trimmed)
+    BOLD_LABEL_LINE_RE.test(trimmed) ||
+    BOLD_LABEL_PREFIX_RE.test(trimmed)
   );
 }
 
 // A line eligible to RECEIVE a continuation fragment appended to it: plain
-// prose or a list item. Never a header, table row, blockquote, hr, or
-// bold-label-only line.
+// prose, a list item, or a bold-label-PREFIX line (labeled prose, e.g.
+// "**Bear case:** margins compress"). Never a header, table row,
+// blockquote, hr, or bold-label-ONLY line. Deliberately does NOT check
+// BOLD_LABEL_PREFIX_RE — that regex only blocks a labeled-prose line from
+// merging UP into the line above it; it must still be able to receive a
+// genuine citation fragment appended to its own end.
 function isMergeTarget(trimmed: string): boolean {
   if (trimmed === "") return false;
   if (
