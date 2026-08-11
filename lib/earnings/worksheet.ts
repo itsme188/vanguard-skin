@@ -134,8 +134,11 @@ function firstBogey<K extends keyof EarningsBogey>(
 }
 
 /**
- * Pure composer — fixed-width text, hard-capped at MAX_LINES so the sheet
- * can never spill to a second page (scratch lines absorb the slack).
+ * Pure composer — fixed-width text. Scratch lines flex down to their 3-line
+ * minimum to absorb slack and keep the sheet to one page in the common
+ * case, but notes never truncate to force a page count (issue #42):
+ * whenever real content overflows MAX_LINES anyway, the sheet spills onto a
+ * second page via `lp` instead of dropping tail lines.
  */
 export function composeWorksheet(inputs: WorksheetInputs): string {
   const { event, bogeys, expectedMove, noteLines } = inputs;
@@ -225,9 +228,17 @@ export function composeWorksheet(inputs: WorksheetInputs): string {
   const scratchCount = Math.max(3, MAX_LINES - lines.length - 2);
   for (let i = 0; i < scratchCount; i++) lines.push(`  ${"_".repeat(WIDTH - 4)}`);
 
-  // Footer is appended AFTER the page cap so it survives any worst case.
+  // Footer is appended last, always. Notes-are-sacred (docs/reference/
+  // earnings-pipeline.md §15, issue #42): the sheet used to hard-slice at
+  // MAX_LINES − 1 here, silently dropping tail lines whenever bogeys/
+  // guidance + notes ran long — NOTES sits late in the assembly (above), so
+  // long notes were exactly what got cut. The scratch section above already
+  // flexes down to its 3-line minimum whenever the rest of the sheet is
+  // long, so if `lines` still exceeds MAX_LINES − 1 here, that overflow is
+  // real content (typically notes) — let it spill onto a second page via
+  // `lp` instead of truncating.
   const src = bogeys.find((b) => b.source_label)?.source_label;
-  const body = lines.slice(0, MAX_LINES - 1);
+  const body = lines;
   body.push(pad(`[${src ? `bogeys: ${src} · ` : ""}deterministic worksheet]`, WIDTH));
   return body.join("\n") + "\n";
 }
