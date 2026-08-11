@@ -147,19 +147,26 @@ describe("findMisplacedPreviewRows", () => {
     expect(emailRow(db, rowId)).toEqual(before);
   });
 
-  it("ignores a preview row whose current event is already superseded (not eligible for this pass)", () => {
+  it("scans SUPERSEDED events too — a stale preview parked there is an adoption-resurrection hazard", () => {
+    // The live NBIS shape after the 2026-08-10 repair's first pass: the
+    // stale preview sat on a superseded row (harmless to canonical readers)
+    // but archivally belonged on the event it was sent for — and
+    // correctEarningsEventDate's ADOPTION path can flip superseded back to
+    // 0, resurrecting a false "preview sent" on the adopted row.
     const superseded = seedEvent(db, {
       source: "nasdaq",
       symbol: "SUP",
       date: "2026-07-01",
       superseded: 1,
     });
-    seedPreviewEmail(db, superseded, "2026-06-10 14:00:00");
-    seedEvent(db, { source: "finnhub", symbol: "SUP", date: "2026-06-11" });
+    const rowId = seedPreviewEmail(db, superseded, "2026-06-10 14:00:00");
+    const origin = seedEvent(db, { source: "finnhub", symbol: "SUP", date: "2026-06-11" });
 
     const result = findMisplacedPreviewRows(db);
-    expect(result.plans).toHaveLength(0);
     expect(result.skipped).toHaveLength(0);
+    expect(result.plans).toHaveLength(1);
+    expect(result.plans[0].row.rowId).toBe(rowId);
+    expect(result.plans[0].originEventId).toBe(origin);
   });
 
   it("ignores a preview row whose sent date plausibly covers its current event (not stale)", () => {

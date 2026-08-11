@@ -20,8 +20,8 @@
  *
  * What it does, in order, inside ONE transaction:
  *   1. Rule-based: for every preview-phase row (earnings_emails or
- *      earnings_email_skips) sitting on a non-superseded event it could not
- *      plausibly have covered (`date(sent_at) < date(event_date, '-1 day')`
+ *      earnings_email_skips) sitting on an event — ANY superseded state —
+ *      it could not plausibly have covered (`date(sent_at) < date(event_date, '-1 day')`
  *      — a genuine preview's send date always equals its print date, +/-1
  *      day for UTC sent_at vs ET event_date; PREVIEW_WINDOW_MIN/MAX_MS in
  *      enrichment-runner.ts), finds the ORIGIN event — same UPPER(symbol),
@@ -180,7 +180,6 @@ function findStaleRowsForTable(
          JOIN calendar_events ce ON ce.id = t.event_id
         WHERE t.phase = 'preview'
           AND ce.event_type = 'earnings'
-          AND COALESCE(ce.superseded, 0) = 0
           AND ce.symbol IS NOT NULL
           AND date(t.${tsColumn}) < date(ce.event_date, '-1 day')`,
     )
@@ -226,9 +225,17 @@ function findOriginCandidate(
 
 /**
  * Pure read: finds every preview-phase earnings_emails/earnings_email_skips
- * row sitting on a non-superseded event whose send date could not
- * plausibly have covered it, and the origin event it belongs on (or a
- * skip reason when no origin resolves). Never writes.
+ * row whose send date could not plausibly have covered its current event's
+ * print date, and the origin event it belongs on (or a skip reason when no
+ * origin resolves). Never writes.
+ *
+ * Deliberately scans SUPERSEDED events too: a stale preview parked on a
+ * superseded row is harmless to canonical readers today, but it is
+ * archivally wrong (the email belongs on the event it was actually sent
+ * for) and it is a latent hazard — correctEarningsEventDate's ADOPTION path
+ * flips `superseded = 0` on an existing vendor row, which would resurrect a
+ * false "preview sent" state (and re-block the genuine preview) the moment
+ * that row is adopted as a correction target.
  */
 export function findMisplacedPreviewRows(db: Database.Database): MisplacedPreviewResult {
   const plans: PreviewRepointPlan[] = [];
