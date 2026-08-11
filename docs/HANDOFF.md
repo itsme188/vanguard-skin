@@ -3,49 +3,44 @@
 > Rolling file, overwritten at each `/session-end`. Past handoffs: `git log -p docs/HANDOFF.md`.
 > Written by Claude Code so Codex can review changes and reasoning at full project context.
 
-**Session date:** 2026-08-10 (late-evening session, ended past midnight 08-11)
+**Session date:** 2026-08-11
 
 ## 1. Goal + files changed
 
-Four QA-ledger/backlog tasks closed end-to-end, each root-caused against live data before any fix:
+Two workstreams: the Node runtime migration (forced by a 2026-08-10 brew batch update) and your advisory batch #41–#45, plus the three follow-ups from your own morning review message.
 
-**(a) Earnings preview audit-row drag** (`a252a35`, `74533ab`):
-- `lib/calendar/reconcile-earnings-dates.ts` — preview-phase `earnings_emails`/`earnings_email_skips` rows now repoint to the canonical event only when their send date plausibly covers that print date; recaps/bogeys unchanged.
-- `scripts/repair-earnings-preview-audit.ts` (new) + `tests/scripts/repair-earnings-preview-audit.test.ts` (new), `tests/calendar/reconcile-earnings-dates.test.ts` (+5).
+**(a) node@24 migration** (`fdfacaa`): the brew update moved `/opt/homebrew/bin/node` to v26 and silently broke every unpinned Node entry point overnight — QA sandbox boot (02:45 sweep died), the 02:00 R2 state snapshot (Worker fallback going stale), and the calendar-enrich/earnings-sweep road (masked by `|| true`). Changed: `package.json`/lock (better-sqlite3 12.6.2→13.0.2), `electron/main.ts` (`REQUIRED_NODE_ABI` 115→137, node@24 first candidate), PATH pins in `qa/sandbox.sh`, `qa/nightly-deep-qa.sh`, `qa/nightly-qa-cron.sh`, `scripts/run-snapshot.sh`, `scripts/enrich-calendar-events.sh`, `scripts/send-daily-digest.sh` (+ gitignored `scripts/launch-dashboard.sh`), `CLAUDE.md` testing section.
 
-**(b) IBKR daily-valuation/risk-series collapses** (`2c41f4d`, `8f33163`):
-- `lib/compute/daily-valuation.ts` — month-end cash anchors use a 5-day lookback instead of exact-date join (weekend month-ends silently skipped the anchor, leaving the following month on the Phase-1 cash placeholder).
-- `scripts/backfill-prices-from-ohlcv.ts` (new, generic bars→prices insert-only backfill) + tests; `scripts/repair-split-basis-2024-year-end.ts` (new, guarded normalization of pre-split statement-basis rows) + tests.
+**(b) Advisory batch #41–#45**, four commits, one per fix:
+- `12ff51b` (#41+#43): `lib/calendar/briefing-html.ts` + `workers/cron/src/html.ts` (`parseTableRow` splits on unescaped pipes only, unescapes `\|`; byte-identical mirrors); `lib/earnings/print-sheet.ts` (`extractBogiesTableMarkdown` validates header+separator shape with escape-aware column agreement; invalid → null → deterministic-worksheet fallback).
+- `fdbd53c` (#42): `lib/earnings/worksheet.ts` + `worksheet-rich.ts` — both monospace fallback composers stop hard-slicing at page caps; overflow pages beat truncated notes (the PDF road's documented doctrine). Disclosed omissions (bogies row cap, commentary trim marker) untouched.
+- `2a0919d` (#44): `lib/earnings/print-pdf.ts` — `readCompletedPdf` (close(0) path) now requires `%PDF` header + `%%EOF`; poll path gained the header check with keep-polling semantics preserved.
+- `f39ec30` (#45): `lib/earnings/repair-citation-linebreaks.ts` — `BOLD_LABEL_PREFIX_RE` in `isNewBlockLine` only (labeled-prose lines never merge up, still receive trailing fragments — the asymmetry is deliberate and test-pinned).
 
-**(c) Alerts approve-time insta-fire guard** (`2597bac`, `52a7444`, `a33b83e`):
-- `lib/alerts/approve.ts` (new `approveLevelGuarded`), `lib/queries/security-levels.ts` (extracted `checkLevelTriggerState`, shared by scanner + guard), `lib/mutations/security-levels.ts`, `app/api/levels/review/route.ts` (409 `would_fire_immediately` + `force`), `app/dashboard/alerts/page.tsx` (per-card confirm, Approve-all partition/summary confirm, in-flight state, gold-ink contrast fix), `lib/db/migrations/077_level_armed_crossed_at.sql`, `lib/alerts/{detect,notify-pushover}.ts`, Worker parity: `workers/cron/src/{pushover,level-scan,state}.ts` + `scripts/snapshot-state-to-r2.ts`.
-
-**(d) Stale-close residual repair** — no code; live-DB runs of the existing `repair-ah-closes.ts` after an ohlcv backfill (13 rows for one thinly-traded name).
-
-Docs: `docs/plans/TODO.md` (reconciled ×3), `CLAUDE.md` (two new invariants: preview-repoint plausibility + guard/scanner single source; split-adjusted-bars basis rule).
+**(c) Your morning follow-ups:** issue #36 closed with evidence (`8529729` was already on main); `.claude/session-end.md` (`78de878`) now sweeps ALL open issues against landed commits, not just the session's own fixes; privacy decisions applied (`9c2c9c2`) — split-repair guard values externalized to gitignored `data/repair-configs/split-basis-2024-year-end.json` with a schema-validating loader, test switched to synthetic targets, classifications comment softened. User chose NO history rewrite.
 
 ## 2. Tests / E2E / deploy
 
-- Full bare suite (Mac + Worker): **4,657 passed / 430 files** (baseline 4,633; +21 new, 0 removed).
-- Three browser E2E passes on the live packaged app: Today earnings hub (post-repair state clean, zero console errors); alerts guard cancel-path twice (exactly one 409, no force PATCH, DB byte-identical after cancel, nothing armed/fired); Analysis risk metrics (all four series collapses gone, drawdown window now a real market event, TWR reconciliation banner still green at 0 bp).
-- Live repairs applied with backups + idempotent re-runs: preview audit rows (3 repoints, 1 phantom event delete, 1 actuals backfill), price backfill (8,598 rows), split-basis normalization (6 rows), AH-close residuals (13 rows). Backups under `data/backups/pre-*-2026-08-10.db`.
-- Deploys: Electron ×4 (final: installed + relaunched, exit 0, health check green); Cloudflare Worker ×1 (`wrangler deploy`, alert-copy parity).
+- Full suite: **4,677 passed / 430 files** (baseline 4,657; +20: 2 config-validation + 18 batch tests). Batch fixes were built by four parallel subagents, each with red→green TDD evidence (pre-fix repros confirmed at the exact old cap boundaries), then reviewed centrally before landing.
+- Migration verification: suite run twice (before and after all edits), Electron rebuilt + notarized + deployed + `:3099` healthy, QA sandbox boots clean against the new bundle, R2 snapshot uploaded fresh (`state/vanguard-state-2026-08-11.json.gz`), dev `:3000` restarted under node@24. Notable: the R2 snapshot cron self-healed within 2 minutes of the better-sqlite3 v13 install — N-API loads under any modern Node, so the fix reached the cron before its PATH pin did.
+- Live repair dry-run: the reworked split-basis script re-ran against the live DB through the new config road — all rows correctly report already-normalized (idempotence preserved).
+- Deploys: Electron ×2 (morning migration build; session-end batch build — final: exit 0, installed, relaunched, health check green first probe). Cloudflare Worker ×1 (`ab8f941e`, the parseTableRow parity fix). DMG built clean twice — the Errno-28 watch item is CLOSED (3 consecutive clean notarized builds).
 
 ## 3. Open concerns, rejected approaches, user decisions
 
-- **The QA fixer's diagnosis was wrong on (a):** it blamed `correctEarningsEventDate`; zero suppression rows + surviving superseded events proved the mover was `reconcileEarningsDates`' unconditional child repointing. The same unconditional migration DOES exist in `correctEarningsEventDate` but needs a different design (its doomed rows are deleted, so "leave behind" would CASCADE-destroy archived prose) — follow-up filed in TODO, not built.
-- **User corrections mattered twice:** the user corrected the fixer's claim about one upcoming print (it had already reported days earlier — the DB row was a phantom that got deleted), and approved deleting that user-created manual row + backfilling the real print's actuals from its own vendor payload (with a recap-skip row so no stale email retro-fires).
-- **(b) was a three-layer fix; layer 3 was found only by E2E:** TWS historical bars are split-adjusted; year-end statement rows were pre-split basis for three names — mixing bases faked a giant day-one drawdown and mis-scaled one closed short position's era. Normalized product-preserving. New CLAUDE.md invariant records the rule.
-- **Rejected in (c):** changing the scanner's threshold semantics (documented deliberate) — the fix guards the approval boundary only. The >50%-past plausibility skip arms without warning by design (mirrors the scanner's own skip); E2E confirmed.
-- **Sibling gaps flagged, not fixed:** `lib/alerts/generate-suggestion.ts` prompt wording ("was just crossed") misrepresents force-armed levels; Codex advisory issues #41–#45 batch-filed in TODO; performance-view equity curve may plot raw totals while risk metrics are flow-adjusted (watch item, possibly by design).
-- **Public-repo hygiene flag (for the existing TODO item):** `scripts/repair-split-basis-2024-year-end.ts` and its test carry real historical position quantities as guard constants, and two commit messages/TODO entries reference one of them. Same class as the previously-filed tracked-files item; left for the user's redact-vs-accept decision there.
+- **Migration target decision:** user delegated; chose node@24 LTS keg (supported ~2028) over re-pinning to EOL node@20 or tracking rolling node 26. The `node@25`/`node@26` opt symlinks are ALIASES into the moving keg — never pin to them. better-sqlite3 13.0.2 (not 13.0.3) was selected by the user's npm `min-release-age=7` supply-chain guard; 13.0.3 is CI-infra-only, a routine update can pick it up after 2026-08-12.
+- **v12→13 was forced, not optional:** better-sqlite3 12.6.2 under Node 24 aborts the process at worker-thread teardown (native assertion in `Statement::~Statement` via `RemoveEnvironmentCleanupHook`) — 75 vitest fork crashes. v13.0.2's changelog names the exact fix.
+- **#42 design:** adopted the PDF road's precedent ("print it anyway — notes never truncate to force a page count") rather than an explicit-omission marker; overflow is bounded because scratch flexes to its floor and commentary keeps its budget trim, so only real content overflows.
+- **#45 kept the asymmetry:** labeled-prose lines block upward merges but remain merge targets — a genuine citation fragment continuing labeled prose is legitimate.
+- **Privacy: history accepted as-is** (user decision) — one historical closed-position share count deep in commit messages didn't justify a filter-repo force-push.
+- **Stale-issue candidate:** #19 (Calendar Living Record 2-week coverage check, target 2026-05-08) looks overtaken by events; flagged to the user for a close/keep call rather than closed unilaterally. #35/#34 P0s remain open and untouched.
 
 ## 4. Uncommitted changes / live-process state (post-deploy)
 
-- Working tree: clean after the handoff commit. No open PRs; no unmerged qa-* branches.
-- Live: packaged app (final build with all four fixes + migration 077) on :3099, healthy; dev server on :3000 (standing mobile workflow, recompiled with new code); nightly QA fixer worktree at `../vanguard-skin-qa-fix` (deliberate, do not remove); Cloudflare Worker at current deploy.
-- Watch items: the genuine NBIS preview email should fire Wednesday ~05:00–05:30 ET (proof the (a) unblock holds); tonight's QA sweep should re-verify the three closed ledger findings; DMG build succeeded this session (Errno-28 item downgraded to watch).
+- Working tree: clean after the handoff commit. No open PRs. Worktree `../vanguard-skin-qa-fix` stands (deliberate, nightly fixer).
+- Live: packaged app (session-end build with batch fixes + node@24) on :3099, healthy; dev server on :3000 under node@24; Worker at `ab8f941e`; QA fixer's leftover :3096 dev server from 8/10 was killed (verified stale).
+- Watch items: NBIS preview should fire Wed 8/12 ~05:00–05:30 ET — the sweep cron now runs on fixed, node@24-pinned code; tonight's deep-QA sweep is the first natural test of the sandbox fix (last night's failed on the Node break — that failure, not a regression, explains the missing 8/11 run).
 
 ## 5. Claude session link
 
-https://claude.ai/code/session_01SmM7krAmtWWBXRtnxWspe4
+https://claude.ai/code/session_016L4UiviGMB9KrNC6wvjJPK
