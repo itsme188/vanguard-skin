@@ -344,12 +344,27 @@ export function ResearchFeedsView({
     try {
       const res = await fetch("/api/research/sources");
       const data = await res.json();
-      if (data.success) setCurrentSources(data.data);
-      await refreshArticles();
+      const fresh: ResearchSource[] = data.success ? data.data : currentSources;
+      if (data.success) setCurrentSources(fresh);
+      // If the selected source can no longer appear in the filter dropdown
+      // (deactivated, deleted, or emptied), the select falls back to "All
+      // Sources" — the list must follow, or it strands on the old filter
+      // while the control claims no filter is applied.
+      const filterStillSelectable =
+        sourceFilter === null ||
+        fresh.some(
+          (s) => s.id === sourceFilter && s.is_active && s.article_count && s.article_count > 0
+        );
+      if (!filterStillSelectable) {
+        setSourceFilter(null);
+        await refreshArticles({ sourceId: null });
+      } else {
+        await refreshArticles();
+      }
     } catch {
       toast("Sources changed, but the article list couldn't refresh — it may be stale until the next sync.", "info");
     }
-  }, [refreshArticles, toast]);
+  }, [refreshArticles, toast, sourceFilter, currentSources]);
 
   const handleExpand = useCallback(async (articleId: number) => {
     if (expandedId === articleId) {

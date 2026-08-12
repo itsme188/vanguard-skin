@@ -93,7 +93,7 @@ export function computeScenario(
       `WITH latest_holdings AS (
          SELECT h.security_id, SUM(h.quantity) AS total_qty
          FROM holdings h
-         WHERE ${latestHoldingsPredicate({ keyBy: "account", includeShorts: true, accountFilter })}
+         WHERE ${latestHoldingsPredicate({ includeShorts: true, accountFilter })}
          GROUP BY h.security_id
        ),
        latest_prices AS (

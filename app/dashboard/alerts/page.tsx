@@ -1354,7 +1354,8 @@ function AlertRow({
 
           {!isPending && alert.user_response_note && (
             <p className="text-[11px] text-ink-faint italic mt-2">
-              Note: {alert.user_response_note}
+              {/* Trade notes carry share counts / execution prices — portfolio-derived */}
+              Note: <PrivateText>{alert.user_response_note}</PrivateText>
             </p>
           )}
         </div>
