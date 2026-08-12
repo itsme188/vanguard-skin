@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { extractMaturityDate } from "@/lib/bonds";
+import { formatOccSymbol, parseOptionSymbol } from "@/lib/import/occ-symbol";
 
 export interface UpsertSecurityParams {
   symbol: string;
@@ -88,6 +89,25 @@ export function upsertSecurity(
     (p.multiplier == null || p.multiplier <= 1)
   ) {
     p.multiplier = 100;
+  }
+
+  // Canonicalize option symbols to one spelling before anything below looks
+  // the row up. The same contract can arrive under multiple human-readable
+  // spellings for the exact same (underlying, expiry, right, strike) —
+  // "NVDA 260618 C 175.00" vs OCC "NVDA  260618C00175000" — and without
+  // this, each spelling gets its own securities row, silently double-
+  // counting that option's trades/holdings/tax lots
+  // (qa:security-detail-transactions--same-option-trade-duplicated-across-
+  // two-symbol-spellings). Parsing the SYMBOL STRING ITSELF — never the
+  // separate underlyingSymbol/strikePrice/expirationDate/optionType params
+  // — keeps this safe: a bare ticker like "INTC" never parses as an option
+  // shape, so it falls straight through unchanged and the type-conflict
+  // guard below still runs exactly as before.
+  if (p.symbol) {
+    const parsedOption = parseOptionSymbol(p.symbol);
+    if (parsedOption) {
+      p.symbol = formatOccSymbol(parsedOption);
+    }
   }
 
   // Safety check: don't let option metadata clobber an existing stock security
