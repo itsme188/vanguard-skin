@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { marketValue } from "@/lib/valuation";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
+import { fetchNetFlowsByDate } from "@/lib/compute/flow-adjusted";
 
 /** Don't carry a price forward more than 45 days — beyond that, the position
  *  was likely liquidated or the data is too stale to be meaningful. */
@@ -165,7 +166,8 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
 
     // Phase 2: Infer cash balances from monthly snapshot anchors.
     // At each snapshot date: cash = snapshot_total − computed_holdings_value.
-    // Carry this cash forward until the next snapshot arrives.
+    // Carry this cash forward until the next snapshot arrives — STEPPED by
+    // any recorded external flow that lands inside the window (see below).
     //
     // holdings_value is pulled from the LATEST daily_valuations row within a
     // 5-day lookback window ending at the snapshot date, not an exact-date
@@ -196,6 +198,10 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
        ORDER BY ms.month_end_date`
     );
 
+    const getMaxValuationDate = db.prepare(
+      `SELECT MAX(valuation_date) AS max_date FROM daily_valuations WHERE account_id = ?`
+    );
+
     const updateCashRange = db.prepare(
       `UPDATE daily_valuations
        SET cash_balance = ?, total_value = holdings_value + ?
@@ -211,8 +217,54 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
          AND valuation_date >= ?`
     );
 
+    // Writes one constant-cash segment: [fromDate, toDateExclusive) when
+    // toDateExclusive is given, or [fromDate, +inf) when null (the tail of
+    // the last anchor's carry-forward). Identical SQL shape to the pre-fix
+    // single-UPDATE-per-window code — a no-flow window calls this exactly
+    // once, so that path stays byte-identical to the old behavior.
+    function applyCashSegment(
+      accountId: number,
+      cashValue: number,
+      fromDate: string,
+      toDateExclusive: string | null
+    ): void {
+      if (toDateExclusive !== null) {
+        updateCashRange.run(cashValue, cashValue, accountId, fromDate, toDateExclusive);
+      } else {
+        updateCashFromDate.run(cashValue, cashValue, accountId, fromDate);
+      }
+    }
+
     for (const account of accounts) {
       const anchors = getCashAnchors.all(account.account_id) as CashAnchor[];
+      if (anchors.length === 0) continue;
+
+      // Recorded external flows are invisible to a constant-per-window plug
+      // — a mid-window deposit (2026-07-02: [REDACTED] ACH into Vanguard Taxable,
+      // a real transactions row with is_external_flow=1) left the series
+      // flat through the deposit date and then "arrived" all at once at the
+      // NEXT anchor, producing a fake no-flow return day where the deposit
+      // landed and a fake flow-less value jump where it was finally
+      // absorbed. Fix: within a window, cash is no longer constant —
+      // cash(day) = cashResidual + cumulative net external flows with
+      // trade_date in (anchor.month_end_date, day]. Reuses
+      // fetchNetFlowsByDate (lib/compute/flow-adjusted.ts) — the exact same
+      // table filter (is_external_flow=1), sign convention
+      // (SIGNED_EXTERNAL_FLOW_SQL), and per-date netting the flow-adjusted
+      // return math itself consumes — so a value step here lands on exactly
+      // the dates buildFlowAdjustedIndex expects a flow, and its
+      // `HAVING SUM(...) != 0` already makes a net-zero day (e.g. the June
+      // sub-account TRANSFER_IN/OUT pairs booked at amount=0) a no-op: it
+      // simply never appears in this list, so no segment is split there.
+      //
+      // One query for the account's whole anchor span (not one per window)
+      // — flows are then walked with a single monotonic pointer across
+      // windows, mirroring buildFlowAdjustedIndex's own pointer convention.
+      const maxDateRow = getMaxValuationDate.get(account.account_id) as { max_date: string | null };
+      const allFlows = maxDateRow.max_date
+        ? fetchNetFlowsByDate(db, [account.account_id], anchors[0].month_end_date, maxDateRow.max_date)
+        : [];
+      let flowIdx = 0;
 
       for (let i = 0; i < anchors.length; i++) {
         const anchor = anchors[i];
@@ -235,21 +287,41 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
             ? anchor.cash_value
             : 0;
 
-        if (i < anchors.length - 1) {
-          // Apply from this snapshot up to (but not including) the next
-          updateCashRange.run(
-            cashResidual, cashResidual,
-            account.account_id,
-            anchor.month_end_date, anchors[i + 1].month_end_date
-          );
-        } else {
-          // Last snapshot — carry forward indefinitely
-          updateCashFromDate.run(
-            cashResidual, cashResidual,
-            account.account_id,
-            anchor.month_end_date
-          );
+        // null = open-ended (last anchor, carries forward indefinitely)
+        const windowEndExclusive = i < anchors.length - 1 ? anchors[i + 1].month_end_date : null;
+
+        // Flows on/before this anchor's own date are already inside its
+        // snapshot_total — stepping them too would double-count. Strictly
+        // greater-than on the anchor side (matches fetchNetFlowsByDate's own
+        // `trade_date > startDate` convention), inclusive on the day side.
+        while (flowIdx < allFlows.length && allFlows[flowIdx].date <= anchor.month_end_date) flowIdx++;
+
+        const windowFlows: { date: string; net: number }[] = [];
+        while (
+          flowIdx < allFlows.length &&
+          (windowEndExclusive === null || allFlows[flowIdx].date < windowEndExclusive)
+        ) {
+          windowFlows.push(allFlows[flowIdx]);
+          flowIdx++;
         }
+
+        if (windowFlows.length === 0) {
+          applyCashSegment(account.account_id, cashResidual, anchor.month_end_date, windowEndExclusive);
+          continue;
+        }
+
+        // Stepped: split the window at each flow date. The flow's own date
+        // gets the POST-flow cumulative (inclusive-on-the-day-side).
+        let cumulative = cashResidual;
+        let segmentStart = anchor.month_end_date;
+        for (const flow of windowFlows) {
+          if (segmentStart < flow.date) {
+            applyCashSegment(account.account_id, cumulative, segmentStart, flow.date);
+          }
+          cumulative += flow.net;
+          segmentStart = flow.date;
+        }
+        applyCashSegment(account.account_id, cumulative, segmentStart, windowEndExclusive);
       }
     }
 

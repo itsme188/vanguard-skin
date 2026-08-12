@@ -654,4 +654,192 @@ describe("daily valuation computation", () => {
     expect(sepVal.cash_balance).toBe(0);
     expect(sepVal.total_value).toBe(1550);
   });
+
+  // ─── Stepped cash within an anchor window (mid-window external flows) ──
+  //
+  // Pre-fix, cash was CONSTANT across an entire anchor window — a recorded
+  // external flow (DEPOSIT/WITHDRAWAL/TRANSFER_IN/TRANSFER_OUT,
+  // is_external_flow=1) landing mid-window was invisible to the series
+  // until the NEXT anchor "revealed" it all at once. Real damage: the
+  // 2026-07-02 [REDACTED] ACH deposit into Vanguard Taxable left 07-03 reading a
+  // fake flow-less return (nothing moved) and the eventual Plaid anchor
+  // reading a fake value jump (a flow with no matching series step). Fix:
+  // cash(day) = cashResidual + cumulative net external flows with
+  // trade_date in (anchor.month_end_date, day] — reusing
+  // fetchNetFlowsByDate (lib/compute/flow-adjusted.ts) so the step lands on
+  // exactly the dates buildFlowAdjustedIndex expects a flow.
+
+  it("steps cash + total from the deposit date onward within a window (July 2026 regression, real numbers)", () => {
+    const sec = seedSecurity(db, "AAPL");
+    const HOLDINGS = 1_000_000;
+    seedHolding(db, ACCOUNT_ID, sec, 1, "2026-06-01");
+    seedPrice(db, sec, "2026-06-30", HOLDINGS);
+    seedPrice(db, sec, "2026-07-01", HOLDINGS);
+    seedPrice(db, sec, "2026-07-03", HOLDINGS);
+    seedPrice(db, sec, "2026-07-06", HOLDINGS);
+
+    // June-30 anchor: total = holdings + $[REDACTED] residual (the real
+    // pre-Plaid Vanguard Taxable plug value).
+    seedSnapshot(db, ACCOUNT_ID, "2026-06-30", HOLDINGS + [REDACTED]);
+    // The real 2026-07-02 [REDACTED] ACH deposit — a recorded external flow
+    // landing inside the (still-open) June-30 anchor window.
+    seedCashTransaction(db, ACCOUNT_ID, "2026-07-02", 40_000, "DEPOSIT");
+
+    computeDailyValuations(db);
+
+    const vals = Object.fromEntries(
+      (
+        db
+          .prepare(
+            `SELECT valuation_date, cash_balance, total_value FROM daily_valuations WHERE account_id = ? ORDER BY valuation_date`
+          )
+          .all(ACCOUNT_ID) as any[]
+      ).map((v) => [v.valuation_date, v])
+    );
+
+    // Before the deposit: still the plain anchor residual.
+    expect(vals["2026-07-01"].cash_balance).toBeCloseTo([REDACTED], 2);
+    expect(vals["2026-07-01"].total_value).toBeCloseTo(HOLDINGS + [REDACTED], 2);
+    // On/after the deposit date: stepped up by exactly [REDACTED].
+    expect(vals["2026-07-03"].cash_balance).toBeCloseTo([REDACTED], 2);
+    expect(vals["2026-07-03"].total_value).toBeCloseTo(HOLDINGS + [REDACTED], 2);
+    expect(vals["2026-07-06"].cash_balance).toBeCloseTo([REDACTED], 2);
+    expect(vals["2026-07-06"].total_value).toBeCloseTo(HOLDINGS + [REDACTED], 2);
+  });
+
+  it("does not double-count a flow dated exactly on a (non-first) anchor date", () => {
+    const sec = seedSecurity(db, "AAPL");
+    seedHolding(db, ACCOUNT_ID, sec, 1, "2026-01-01");
+    seedPrice(db, sec, "2026-01-31", 100_000);
+    seedPrice(db, sec, "2026-02-28", 100_000);
+    seedPrice(db, sec, "2026-03-15", 100_000);
+
+    seedSnapshot(db, ACCOUNT_ID, "2026-01-31", 100_000 + 5_000);
+    // The Feb-28 anchor's own snapshot total already reflects this deposit
+    // (it landed ON the anchor date, statement-EOD convention) — it must
+    // NOT also be stepped forward as if it were a mid-window flow.
+    seedSnapshot(db, ACCOUNT_ID, "2026-02-28", 100_000 + 9_000);
+    seedCashTransaction(db, ACCOUNT_ID, "2026-02-28", 4_000, "DEPOSIT");
+
+    computeDailyValuations(db);
+
+    const jan = db
+      .prepare(`SELECT cash_balance FROM daily_valuations WHERE account_id = ? AND valuation_date = '2026-01-31'`)
+      .get(ACCOUNT_ID) as any;
+    const mar = db
+      .prepare(`SELECT cash_balance FROM daily_valuations WHERE account_id = ? AND valuation_date = '2026-03-15'`)
+      .get(ACCOUNT_ID) as any;
+
+    // First window (Jan anchor) never sees the Feb-28 flow at all.
+    expect(jan.cash_balance).toBe(5_000);
+    // NOT 9,000 + 4,000 = 13,000 — the anchor's own $9,000 residual already
+    // includes the deposit; a second step would double-count it.
+    expect(mar.cash_balance).toBe(9_000);
+  });
+
+  it("keeps a no-flow window byte-identical to the constant-cash-per-window behavior", () => {
+    const sec = seedSecurity(db, "AAPL");
+    seedHolding(db, ACCOUNT_ID, sec, 10, "2025-01-31");
+    seedPrice(db, sec, "2025-01-31", 150);
+    seedPrice(db, sec, "2025-02-10", 155);
+    seedPrice(db, sec, "2025-02-20", 160);
+    seedSnapshot(db, ACCOUNT_ID, "2025-01-31", 2000); // holdings 1500 -> cash 500
+
+    computeDailyValuations(db);
+
+    const vals = db
+      .prepare(`SELECT valuation_date, cash_balance FROM daily_valuations WHERE account_id = ? ORDER BY valuation_date`)
+      .all(ACCOUNT_ID) as any[];
+
+    expect(vals).toHaveLength(3);
+    // No transactions anywhere in this window — every row carries the SAME
+    // constant residual, exactly as the pre-stepping single-UPDATE code
+    // produced (no per-day/per-segment splitting for a flow-free window).
+    for (const v of vals) {
+      expect(v.cash_balance).toBe(500);
+    }
+  });
+
+  it("treats zero-amount external-flow rows as harmless no-ops (June sub-account TRANSFER_IN/OUT journal pairs)", () => {
+    const sec = seedSecurity(db, "AAPL");
+    seedHolding(db, ACCOUNT_ID, sec, 1, "2026-01-01");
+    seedPrice(db, sec, "2026-01-31", 100_000);
+    seedPrice(db, sec, "2026-02-10", 100_000);
+    seedPrice(db, sec, "2026-02-20", 100_000);
+
+    seedSnapshot(db, ACCOUNT_ID, "2026-01-31", 105_000); // cash residual 5,000
+
+    // A real in-kind transfer booked as a same-date TRANSFER_IN + TRANSFER_OUT
+    // pair, both at amount=0, both is_external_flow=1 — nets to zero and
+    // fetchNetFlowsByDate's own HAVING SUM(...) != 0 drops the date entirely.
+    seedCashTransaction(db, ACCOUNT_ID, "2026-02-05", 0, "TRANSFER_IN");
+    seedCashTransaction(db, ACCOUNT_ID, "2026-02-05", 0, "TRANSFER_OUT");
+
+    computeDailyValuations(db);
+
+    const vals = db
+      .prepare(`SELECT valuation_date, cash_balance FROM daily_valuations WHERE account_id = ? ORDER BY valuation_date`)
+      .all(ACCOUNT_ID) as any[];
+
+    expect(vals).toHaveLength(3);
+    for (const v of vals) {
+      expect(v.cash_balance).toBe(5_000); // no step at all
+    }
+  });
+
+  it("steps DOWN a post-anchor withdrawal in the last (open-ended) anchor's carry-forward", () => {
+    const sec = seedSecurity(db, "AAPL");
+    seedHolding(db, ACCOUNT_ID, sec, 1, "2026-03-01");
+    seedPrice(db, sec, "2026-03-31", 200_000);
+    seedPrice(db, sec, "2026-04-05", 200_000);
+    seedPrice(db, sec, "2026-04-15", 200_000);
+
+    seedSnapshot(db, ACCOUNT_ID, "2026-03-31", 210_000); // only anchor, cash residual 10,000
+    // Real WITHDRAWAL rows store amount already negative (SIGNED_EXTERNAL_FLOW_SQL's
+    // ELSE branch uses the raw sign for everything except TRANSFER_OUT).
+    seedCashTransaction(db, ACCOUNT_ID, "2026-04-10", -6_000, "WITHDRAWAL");
+
+    computeDailyValuations(db);
+
+    const vals = Object.fromEntries(
+      (
+        db
+          .prepare(
+            `SELECT valuation_date, cash_balance, total_value FROM daily_valuations WHERE account_id = ? ORDER BY valuation_date`
+          )
+          .all(ACCOUNT_ID) as any[]
+      ).map((v) => [v.valuation_date, v])
+    );
+
+    expect(vals["2026-04-05"].cash_balance).toBe(10_000);
+    expect(vals["2026-04-15"].cash_balance).toBe(4_000); // 10,000 - 6,000
+    expect(vals["2026-04-15"].total_value).toBe(200_000 + 4_000);
+  });
+
+  it("is idempotent across repeated recomputes when a mid-window flow steps the window (July 2026 regression)", () => {
+    const sec = seedSecurity(db, "AAPL");
+    seedHolding(db, ACCOUNT_ID, sec, 1, "2026-06-01");
+    seedPrice(db, sec, "2026-06-30", 1_000_000);
+    seedPrice(db, sec, "2026-07-01", 1_000_000);
+    seedPrice(db, sec, "2026-07-03", 1_000_000);
+    seedPrice(db, sec, "2026-07-06", 1_000_000);
+    seedSnapshot(db, ACCOUNT_ID, "2026-06-30", 1_000_000 + [REDACTED]);
+    seedCashTransaction(db, ACCOUNT_ID, "2026-07-02", 40_000, "DEPOSIT");
+
+    computeDailyValuations(db);
+    const first = db
+      .prepare(
+        `SELECT valuation_date, cash_balance, holdings_value, total_value FROM daily_valuations WHERE account_id = ? ORDER BY valuation_date`
+      )
+      .all(ACCOUNT_ID);
+
+    computeDailyValuations(db);
+    const second = db
+      .prepare(
+        `SELECT valuation_date, cash_balance, holdings_value, total_value FROM daily_valuations WHERE account_id = ? ORDER BY valuation_date`
+      )
+      .all(ACCOUNT_ID);
+
+    expect(second).toEqual(first);
+  });
 });
