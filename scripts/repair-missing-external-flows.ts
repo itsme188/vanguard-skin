@@ -11,9 +11,9 @@
  * only works when every real external flow HAS a transaction row. A
  * read-only audit found daily_valuations.cash_balance jumping by six
  * figures on dates with zero transactions — e.g. 2026-07-11 Vanguard
- * Taxable: cash_balance +$[REDACTED], nearest transaction dates 07-02 and
- * 07-17. With nothing to net against, that jump reads as a real one-day
- * return and inflates volatility ([redacted]% vs ~[redacted]% ex-flows), poisoning
+ * Taxable: a six-figure cash_balance jump, nearest transaction dates 07-02
+ * and 07-17. With nothing to net against, that jump reads as a real one-day
+ * return and inflates volatility materially, poisoning
  * drawdown/Sharpe and any AI prose built on them.
  *
  * Shares its residual computation (lib/compute/cash-flow-audit.ts) with
@@ -65,12 +65,12 @@
  * candidate instead of using its computed residual — for when the residual
  * is directionally right but the exact figure is uncertain pending the
  * user's own knowledge of the real deposit/withdrawal (e.g. 2026-07-11's
- * residual mixes a [REDACTED] cash swing with a simultaneous [REDACTED] holdings
- * drop; the true external amount is closer to the $[REDACTED] total_value
- * move, but only the user can confirm it). Requires exactly one date
+ * residual mixes the cash swing with a simultaneous holdings-basis shift
+ * from the first Plaid anchor; the total_value move is the better
+ * estimate, but only the user can confirm it). Requires exactly one date
  * selected via --only — errors otherwise. Recomputes source_key from the
  * overridden amount so it stays deterministic. Example:
- *   npx tsx scripts/repair-missing-external-flows.ts --apply --only 2026-07-11 --amount [REDACTED]
+ *   npx tsx scripts/repair-missing-external-flows.ts --apply --only 2026-07-11 --amount 88000
  *
  * Idempotent: after --apply, a second run over the SAME dates finds zero
  * external-flow-candidates (the inserted flow now fully explains the
@@ -83,7 +83,7 @@
  *   npx tsx scripts/repair-missing-external-flows.ts                          # dry-run (default)
  *   npx tsx scripts/repair-missing-external-flows.ts --apply                   # write all external-flow-candidates
  *   npx tsx scripts/repair-missing-external-flows.ts --only 2026-07-11         # dry-run, one date
- *   npx tsx scripts/repair-missing-external-flows.ts --apply --only 2026-07-11 --amount [REDACTED]
+ *   npx tsx scripts/repair-missing-external-flows.ts --apply --only 2026-07-11 --amount 88000
  */
 
 import fs from "node:fs";

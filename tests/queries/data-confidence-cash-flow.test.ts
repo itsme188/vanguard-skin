@@ -52,8 +52,8 @@ describe("cashAccuracy dimension — unexplained cash-flow extension", () => {
 
   it("caps the score and names the account+date+classification for an external-flow-candidate jump", () => {
     insertFreshAnchor(db, 1, 2, 1_500_000); // fresh statement anchor — would otherwise score 100
-    insertValuation(db, 1, "2026-07-10", [REDACTED], [REDACTED]);
-    insertValuation(db, 1, "2026-07-11", [REDACTED], [REDACTED]); // unexplained +[REDACTED] cash, +[REDACTED] total_value, no transactions
+    insertValuation(db, 1, "2026-07-10", 60_500.25, 1_350_000.55);
+    insertValuation(db, 1, "2026-07-11", 210_500.25, 1_440_000.55); // unexplained +150,000.00 cash, +90,000.00 total_value, no transactions
 
     const { cashAccuracy } = getDataConfidence(db);
 
@@ -61,7 +61,7 @@ describe("cashAccuracy dimension — unexplained cash-flow extension", () => {
     expect(cashAccuracy.unexplainedFlow).not.toBeNull();
     expect(cashAccuracy.unexplainedFlow!.accountName).toBe("Vanguard Taxable");
     expect(cashAccuracy.unexplainedFlow!.date).toBe("2026-07-11");
-    expect(cashAccuracy.unexplainedFlow!.residual).toBeCloseTo([REDACTED], 1);
+    expect(cashAccuracy.unexplainedFlow!.residual).toBeCloseTo(150_000.00, 1);
     expect(cashAccuracy.unexplainedFlow!.classification).toBe("external-flow-candidate");
     expect(cashAccuracy.detail).toContain("Vanguard Taxable");
     expect(cashAccuracy.detail).toContain("2026-07-11");
@@ -70,12 +70,12 @@ describe("cashAccuracy dimension — unexplained cash-flow extension", () => {
   });
 
   it("caps the score and uses the internal-shift wording when total_value moved smoothly", () => {
-    insertFreshAnchor(db, 1, 2, [REDACTED]);
+    insertFreshAnchor(db, 1, 2, 1_548_600.40);
     // Mirrors the live 2026-07-30->07-31 finding: cash drops ~$231k but
     // total_value only drops ~$13.8k — a cash/holdings misattribution, not
     // a missing flow.
-    insertValuation(db, 1, "2026-07-30", [REDACTED], [REDACTED]);
-    insertValuation(db, 1, "2026-07-31", [REDACTED], [REDACTED]);
+    insertValuation(db, 1, "2026-07-30", 205_000.40, 1_560_000.40);
+    insertValuation(db, 1, "2026-07-31", 9_800.40, 1_548_600.40);
 
     const { cashAccuracy } = getDataConfidence(db);
 
@@ -100,12 +100,12 @@ describe("cashAccuracy dimension — unexplained cash-flow extension", () => {
   });
 
   it("does not flag a jump that's fully explained by a recorded deposit", () => {
-    insertFreshAnchor(db, 1, 2, [REDACTED]);
-    insertValuation(db, 1, "2026-07-16", [REDACTED], 1_500_000);
-    insertValuation(db, 1, "2026-07-17", [REDACTED], [REDACTED]);
+    insertFreshAnchor(db, 1, 2, 1_670_000);
+    insertValuation(db, 1, "2026-07-16", 130_250, 1_500_000);
+    insertValuation(db, 1, "2026-07-17", 300_250, 1_670_000);
     db.prepare(
       `INSERT INTO transactions (account_id, trade_date, type, amount, is_external_flow, source_key)
-       VALUES (1, '2026-07-17', 'DEPOSIT', [REDACTED], 1, 'test:1')`
+       VALUES (1, '2026-07-17', 'DEPOSIT', 170000, 1, 'test:1')`
     ).run();
 
     const { cashAccuracy } = getDataConfidence(db);

@@ -18,8 +18,7 @@ import type Database from "better-sqlite3";
  * IF every real external flow has a transaction row. It doesn't: a
  * read-only audit of the live ledger found daily_valuations.cash_balance
  * jumping by six figures on dates with ZERO transactions (2026-07-11
- * Vanguard Taxable: +$[REDACTED], next-nearest transaction dates 07-02 and
- * 07-17). With no flow row to net against, that jump reads as a real
+ * Vanguard Taxable, next-nearest transaction dates 07-02 and 07-17). With no flow row to net against, that jump reads as a real
  * one-day return and inflates volatility/drawdown/Sharpe (and the AI prose
  * built on top of them).
  *
@@ -45,7 +44,7 @@ import type Database from "better-sqlite3";
  * have a cash residual in the six figures while total_value moved smoothly
  * (well under 1% and ~1.7% respectively) — the SPLIT between cash_balance
  * and holdings_value jumped, not the total. 2026-07-31 is a
- * data_quality='live' row where [REDACTED] of the account appears to have been
+ * data_quality='live' row where a six-figure slice of the account appears to have been
  * misattributed from cash into holdings_value by the live valuation source
  * (probably the money-market sweep counted as a holding) and the
  * misattribution reversed itself on 08-03. Inserting a synthetic flow for
@@ -54,8 +53,7 @@ import type Database from "better-sqlite3";
  * CREATE a fake flow-adjusted return day (and corrupt TWR/XIRR, which also
  * consume is_external_flow rows) where none existed before.
  *
- * 2026-07-11 is different: total_value itself jumped (+$[REDACTED],
- * [redacted]) — a real fake-return day regardless of how the cash/holdings
+ * 2026-07-11 is different: total_value itself jumped materially — a real fake-return day regardless of how the cash/holdings
  * split moved underneath it. `classifyCashFlowResidual` distinguishes the
  * two by checking whether the total_value move CORROBORATES the cash
  * residual (same sign, at least half its magnitude) — see that function's
@@ -299,13 +297,13 @@ export function computeCashFlowResiduals(
  * flagged 13-16 candidates per Vanguard account — mostly ordinary
  * day-to-day noise from the daily Plaid cash-residual anchor (live since
  * 2026-07-11), not missing transactions:
- *   - Roth IRA ([redacted], no daily trading): residual noise tops out ~3.2% of
+ *   - Roth IRA (no daily trading): residual noise tops out ~3.2% of
  *     account value on days with zero transactions — indistinguishable
  *     from a "missing flow" by the explained-only signal alone.
- *   - Vanguard Taxable (~[redacted], active trading): noise on days with
- *     zero/near-zero explained activity tops out ~1.7%.
- *   - The target bug (2026-07-11 Vanguard Taxable): $[REDACTED], a large share of
- *     account value, zero transactions that date.
+ *   - Vanguard Taxable (active trading): noise on days with zero/near-zero
+ *     explained activity tops out ~1.7%.
+ *   - The target bug (2026-07-11 Vanguard Taxable): >10% of account
+ *     value, zero transactions that date.
  * A 5%-of-account-value relative floor sits 4-7x above both noise ceilings
  * and well below the target signal.
  */
