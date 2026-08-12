@@ -58,6 +58,49 @@ describe("classifyUnresolvedWithClaude", () => {
     const row = db.prepare("SELECT * FROM securities WHERE symbol='XLE'").get() as any;
     expect(row.fund_category).toBe("US Sector Equity (Technology)");
   });
+
+  // Regression (2026-08-12, qa:analysis-classification--auto-classify-writes-
+  // noncanonical-fund-category-duplicates-regression-1): auto_ai wrote
+  // market_cap_category completely unnormalized ("Large"/"Mid"/"Small" instead
+  // of "Large Cap"/"Mid Cap"/"Small Cap") and fund_category was already-wrapped
+  // in the "US Sector Equity (X)" scheme but with a synonym sector name inside
+  // ("Information Technology" instead of "Technology", "Financials" instead of
+  // "Financial") — each Auto-Classify click widened the Allocation donut split.
+  it("normalizes market_cap_category and wrapped sector-parenthetical fund_category at write time", async () => {
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({ text: JSON.stringify([
+      {
+        symbol: "XLE",
+        fund_category: "US Sector Equity (Information Technology)",
+        geography: "US",
+        market_cap_category: "Large",
+        style: "Growth",
+      },
+    ]) });
+    const db = makeDb();
+    const res = await classifyUnresolvedWithClaude(db, [{ id: 1, symbol: "XLE", security_type: "ETF" }]);
+    expect(res.classified).toBe(1);
+    const row = db.prepare("SELECT * FROM securities WHERE symbol='XLE'").get() as any;
+    expect(row.fund_category).toBe("US Sector Equity (Technology)");
+    expect(row.market_cap_category).toBe("Large Cap");
+  });
+
+  it("normalizes the 'Financials' sector-parenthetical synonym to the canonical singular 'Financial'", async () => {
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({ text: JSON.stringify([
+      {
+        symbol: "XLE",
+        fund_category: "US Sector Equity (Financials)",
+        geography: "US",
+        market_cap_category: "Mid",
+        style: "Value",
+      },
+    ]) });
+    const db = makeDb();
+    const res = await classifyUnresolvedWithClaude(db, [{ id: 1, symbol: "XLE", security_type: "ETF" }]);
+    expect(res.classified).toBe(1);
+    const row = db.prepare("SELECT * FROM securities WHERE symbol='XLE'").get() as any;
+    expect(row.fund_category).toBe("US Sector Equity (Financial)");
+    expect(row.market_cap_category).toBe("Mid Cap");
+  });
   it("returns an error and classifies nothing when Claude fails", async () => {
     (generateTextForFeature as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("402 credits"));
     const db = makeDb();
