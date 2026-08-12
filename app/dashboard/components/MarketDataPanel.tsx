@@ -341,6 +341,7 @@ export function MarketDataPanel({
         symbol={symbol}
         currentPrice={currentPrice}
         embedded
+        currency={currency}
       />
 
       {/* Local keyframes — scoped to this panel via no `:global` */}

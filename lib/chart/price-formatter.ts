@@ -1,3 +1,5 @@
+import { formatUSDPrecise } from "@/lib/format";
+
 /**
  * Chart price/level label formatting.
  *
@@ -41,4 +43,30 @@ export function formatChartPrice(
       maximumFractionDigits: 2,
     })}`;
   }
+}
+
+/**
+ * Level price label — the LevelsPanel sibling of formatChartPrice (2026-08-12
+ * QA follow-up: LevelsPanel is the "Levels & Alerts" list below the chart,
+ * app/dashboard/components/LevelsPanel.tsx — the one surface 9ba9158
+ * deliberately left $-labeling native prices).
+ *
+ * LevelsPanel's PRE-EXISTING USD formatter is `formatUSDPrecise`
+ * (thousands-grouped, "$1,234.56"), not the chart's own no-grouping
+ * "$1234.56" pill style — the two surfaces had different USD conventions
+ * before either was currency-aware. So USD (and null/undefined/blank, same
+ * "missing currency = USD" convention as formatChartPrice) delegates to
+ * `formatUSDPrecise` to stay byte-identical to LevelsPanel's prior output.
+ * Any other ISO code delegates to `formatChartPrice`, which already renders
+ * it correctly (e.g. "₩976,000" for KRW) — no need to duplicate that logic.
+ */
+export function formatLevelPrice(
+  currency: string | null | undefined,
+  value: number,
+): string {
+  const code = (currency ?? "").trim().toUpperCase();
+  if (code === "" || code === "USD") {
+    return formatUSDPrecise(value);
+  }
+  return formatChartPrice(currency, value);
 }
