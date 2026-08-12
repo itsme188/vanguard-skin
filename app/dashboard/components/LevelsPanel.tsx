@@ -12,7 +12,11 @@ import type {
 // Level prices are PUBLIC market data (a price level reveals neither what the
 // user owns nor earns), so they render via pure formatters — never privacy-
 // masked. This matches the SuggestedLevels rows, which always show full prices.
-import { formatUSDPrecise } from "@/lib/format";
+// formatLevelPrice is currency-aware (2026-08-12 QA follow-up to 9ba9158,
+// which fixed the chart itself but deliberately left this panel — levels
+// render in the security's NATIVE currency and need a matching label, e.g.
+// "₩976,000" rather than "$976,000" for a KRW security).
+import { formatLevelPrice } from "@/lib/chart/price-formatter";
 import { useToast } from "./Toast";
 import { Chip } from "./Chip";
 import { SortPicker } from "./SortPicker";
@@ -118,12 +122,15 @@ function SuggestedLevels({
   userLevels,
   onAccepted,
   embedded = false,
+  currency = null,
 }: {
   securityId: number;
   symbol: string;
   userLevels: EnrichedLevel[];
   onAccepted: () => void;
   embedded?: boolean;
+  /** Security's native currency (e.g. "KRW") — see LevelsPanel below. */
+  currency?: string | null;
 }) {
   const { toast } = useToast();
   const [data, setData] = useState<SuggestedLevelsResponse | null>(null);
@@ -137,8 +144,13 @@ function SuggestedLevels({
   // ATR converts: it mirrors MarketDataPanel's KPI-row ATR, which is USD.
   // DECIDED (user, 2026-08-05; re-reverted 2026-08-06): do NOT re-add
   // `* usd` to the price sites below — the "$919,000 for a $611 stock"
-  // symptom is the $ glyph on a native value, and the accepted fix direction
-  // is frame-consistency with the accepted list, not USD conversion.
+  // symptom was the $ glyph on a native value, not the value itself.
+  // RESOLVED (2026-08-12, LevelsPanel follow-up to chart fix 9ba9158): the
+  // glyph is fixed too now — sug.price renders via formatLevelPrice(currency,
+  // …), so a KRW suggestion shows "₩919,000" instead of "$919,000". Values
+  // still never multiply by `usd` here. ATR is the one deliberate exception:
+  // it mirrors MarketDataPanel's KPI-row ATR, which IS a USD value (converted
+  // via `* usd` below), so its "$" is correct as-is.
   const usd = data?.usdPerUnit ?? 1;
 
   useEffect(() => {
@@ -199,7 +211,7 @@ function SuggestedLevels({
         toast(`Failed to add level: ${json.error ?? "unknown"}`, "error");
         return;
       }
-      toast(`${symbol} ${sug.type} at $${sug.price.toFixed(2)} added`, "success");
+      toast(`${symbol} ${sug.type} at ${formatLevelPrice(currency, sug.price)} added`, "success");
       onAccepted();
     } finally {
       setAccepting(null);
@@ -309,7 +321,7 @@ function SuggestedLevels({
                           letterSpacing: "-0.01em",
                         }}
                       >
-                        ${sug.price.toFixed(2)}
+                        {formatLevelPrice(currency, sug.price)}
                       </span>
                       {/* Distance — colored to match side */}
                       <span
@@ -420,7 +432,7 @@ function SuggestedLevels({
                       sug.type === "resistance" ? "text-down" : "text-up"
                     }`}
                   >
-                    ${sug.price.toFixed(2)}
+                    {formatLevelPrice(currency, sug.price)}
                   </span>
                   <Chip tone={sug.type === "resistance" ? "down" : "up"} size="xs" uppercase>
                     {sug.type}
@@ -465,6 +477,7 @@ export function LevelsPanel({
   symbol,
   currentPrice,
   embedded = false,
+  currency = null,
 }: {
   securityId: number;
   symbol: string;
@@ -473,6 +486,10 @@ export function LevelsPanel({
   // border, bg-panel, padding) so the component becomes a flat content region
   // that inherits the panel's dark Terminal background.
   embedded?: boolean;
+  /** Security's native currency (e.g. "KRW"). Levels are stored and rendered
+   *  NATIVE (never converted) — same frame as the chart above this panel —
+   *  so this only changes the price LABEL, matching 9ba9158's chart fix. */
+  currency?: string | null;
 }) {
   const { toast } = useToast();
   const [levels, setLevels] = useState<EnrichedLevel[]>([]);
@@ -871,6 +888,7 @@ export function LevelsPanel({
         userLevels={levels}
         onAccepted={refresh}
         embedded={embedded}
+        currency={currency}
       />
 
       {/* Provenance filter — derived from distinct authors on this security's
@@ -1024,7 +1042,7 @@ export function LevelsPanel({
                               opacity: inactive ? 0.5 : 1,
                             }}
                           >
-                            {formatUSDPrecise(l.price)}
+                            {formatLevelPrice(currency, l.price)}
                           </span>
                         ) : (
                           <>
@@ -1049,7 +1067,7 @@ export function LevelsPanel({
                                   fontVariantNumeric: "tabular-nums",
                                 }}
                               >
-                                ≈ {formatUSDPrecise(l.effective_price)}
+                                ≈ {formatLevelPrice(currency, l.effective_price)}
                               </span>
                             ) : (
                               <span
@@ -1094,7 +1112,7 @@ export function LevelsPanel({
                               borderRadius: "2px",
                             }}
                           >
-                            Triggered @ {l.triggered_price !== null ? formatUSDPrecise(l.triggered_price) : "—"}
+                            Triggered @ {l.triggered_price !== null ? formatLevelPrice(currency, l.triggered_price) : "—"}
                           </span>
                         )}
                         {alertedToday && (
@@ -1248,7 +1266,7 @@ export function LevelsPanel({
                 <div className="flex items-baseline gap-2 flex-wrap">
                   {l.price_source === "static" ? (
                     <span className="text-sm font-mono font-medium text-ink">
-                      {formatUSDPrecise(l.price)}
+                      {formatLevelPrice(currency, l.price)}
                     </span>
                   ) : (
                     <>
@@ -1257,7 +1275,7 @@ export function LevelsPanel({
                       </span>
                       {l.effective_price !== null ? (
                         <span className="text-[10px] text-ink-faint">
-                          ≈ {formatUSDPrecise(l.effective_price)}
+                          ≈ {formatLevelPrice(currency, l.effective_price)}
                         </span>
                       ) : (
                         <span className="text-[10px] text-amber-400" title="Not enough OHLCV history to compute this MA yet — the level won't fire until bars accumulate.">
@@ -1278,7 +1296,7 @@ export function LevelsPanel({
                   )}
                   {l.is_active === 0 && l.triggered_at && (
                     <Chip size="xs" tone="gold">
-                      triggered @ {l.triggered_price !== null ? formatUSDPrecise(l.triggered_price) : "—"}
+                      triggered @ {l.triggered_price !== null ? formatLevelPrice(currency, l.triggered_price) : "—"}
                     </Chip>
                   )}
                   {triggeredToday(l.triggered_at) && (
