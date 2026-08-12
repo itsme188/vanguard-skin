@@ -482,7 +482,7 @@ export function ImportFlow() {
                   </summary>
                   <div className="mt-1 space-y-0.5">
                     {result.warnings.map((w, j) => (
-                      <p key={j} className="text-xs text-gold/80">
+                      <p key={j} className="text-xs text-gold-ink">
                         {w}
                       </p>
                     ))}
@@ -501,7 +501,7 @@ export function ImportFlow() {
             </span>
             <div className="mt-1 space-y-0.5">
               {state.replay.warnings.map((w, j) => (
-                <p key={j} className="text-xs text-gold/80">
+                <p key={j} className="text-xs text-gold-ink">
                   {w}
                 </p>
               ))}
