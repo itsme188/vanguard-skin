@@ -1,5 +1,33 @@
-import { describe, it, expect, vi } from "vitest";
+/**
+ * Tests for GET + POST /api/analysis/macro-themes
+ *
+ * Uses an in-memory SQLite database to avoid touching the real data/vanguard.db.
+ * The route module uses `import { db } from "@/lib/db"` — we mock that module
+ * before importing the route handlers (pattern: tests/api/settings-email-recipients.test.ts).
+ */
+
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import Database from "better-sqlite3";
+import { runMigrations } from "@/lib/db/migrate";
 import { upsertMacroThemes } from "@/lib/queries/analysis-macro-themes";
+
+// ── Shared mock — replace the `db` singleton with an in-memory DB ──────────
+
+const hoisted = vi.hoisted(() => ({
+  db: null as unknown as Database.Database,
+}));
+
+vi.mock("@/lib/db", () => ({
+  get db() {
+    return hoisted.db;
+  },
+}));
+
+beforeEach(() => {
+  hoisted.db = new Database(":memory:");
+  hoisted.db.pragma("foreign_keys = ON");
+  runMigrations(hoisted.db);
+});
 
 describe("/api/analysis/macro-themes", () => {
   it("GET returns cache hit shape when present", async () => {
