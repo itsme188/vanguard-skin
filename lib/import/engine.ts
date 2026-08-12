@@ -186,6 +186,7 @@ export async function parseImport(
         holdings: [],
         prices: [],
         snapshots: [],
+        corporateActions: [],
         errors: [`Unknown file format: ${filename}`],
         warnings: [],
       };

@@ -67,6 +67,7 @@ export function parseIbkrHoldings(
     holdings,
     prices: [],
     snapshots: [],
+    corporateActions: [],
     errors,
     warnings: [],
   };

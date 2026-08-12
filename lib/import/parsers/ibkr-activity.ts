@@ -5,6 +5,7 @@ import type {
   ParsedSnapshot,
   ParsedHolding,
   ParsedPrice,
+  ParsedCorporateAction,
 } from "../types";
 
 interface CsvRow {
@@ -379,6 +380,63 @@ export function parseIbkrActivity(
     securitiesMap.set(symbol, { symbol, securityType: "Stock" });
   }
 
+  // Parse Corporate Actions (splits/reverse splits only — spec 2026-08-11).
+  // Columns by header name (single-account statements omit "Account").
+  // The ratio lives in the description text; Quantity is the share DELTA
+  // (reconciliation evidence, never the booking truth).
+  const isRealIsoDate = (s: string): boolean => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+    const d = new Date(s + "T00:00:00Z");
+    return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+  };
+  const corporateActions: ParsedCorporateAction[] = [];
+  const caHeader = rows.find(
+    (r) => r.section === "Corporate Actions" && r.discriminator === "Header"
+  );
+  const cCol: Record<string, number> = {};
+  caHeader?.fields.forEach((name, i) => {
+    cCol[name] = i;
+  });
+  for (const row of rows) {
+    if (row.section !== "Corporate Actions" || row.discriminator !== "Data") continue;
+    const assetCategory = row.fields[cCol["Asset Category"] ?? 0];
+    if (assetCategory === "Total" || !assetCategory) continue;
+    const description = row.fields[cCol["Description"] ?? 5] ?? "";
+    if (assetCategory !== "Stocks") {
+      warnings.push(
+        `Corporate Actions: unsupported action skipped (non-stock ${assetCategory}) — "${description}"`
+      );
+      continue;
+    }
+    // Symbol = everything before the first "(" — dotted/suffixed symbols survive.
+    const symMatch = description.match(/^([^(]+)\(/);
+    const symbol = symMatch ? symMatch[1].trim() : "";
+    const ratioMatch = description.match(/\bSplit (\d+) for (\d+)\b/);
+    const dateStr = parseDatetime(row.fields[cCol["Date/Time"] ?? 4] ?? "");
+    const qtyRaw = parseFloat((row.fields[cCol["Quantity"] ?? 6] ?? "").replace(/,/g, ""));
+    if (!symbol || !ratioMatch || !isRealIsoDate(dateStr)) {
+      warnings.push(`Corporate Actions: unsupported action skipped — "${description}"`);
+      continue;
+    }
+    const num = parseInt(ratioMatch[1], 10);
+    const den = parseInt(ratioMatch[2], 10);
+    if (!Number.isFinite(num) || !Number.isFinite(den) || num <= 0 || den <= 0 || num === den) {
+      // num === den (1-for-1) is a no-op that would still create a row — skip loudly.
+      warnings.push(`Corporate Actions: unsupported action skipped (ratio) — "${description}"`);
+      continue;
+    }
+    corporateActions.push({
+      accountName: "IBKR",
+      symbol,
+      actionType: num > den ? "SPLIT" : "REVERSE_SPLIT",
+      effectiveDate: dateStr,
+      ratioNumerator: num,
+      ratioDenominator: den,
+      quantityDelta: Number.isFinite(qtyRaw) ? qtyRaw : null,
+      sourceKey: `ibkr:ca:split:${dateStr}:${symbol}:${num}:${den}`,
+    });
+  }
+
   // Parse Dividends
   for (const row of rows) {
     if (
@@ -583,6 +641,7 @@ export function parseIbkrActivity(
     holdings,
     prices,
     snapshots,
+    corporateActions,
     errors,
     warnings,
   };

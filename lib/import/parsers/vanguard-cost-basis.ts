@@ -54,6 +54,7 @@ function parseDirectExport(content: string, filename: string): ParsedImportResul
       sourceType: "vanguard-cost-basis",
       sourceName: filename,
       transactions: [], securities: [], holdings: [], prices: [], snapshots: [],
+      corporateActions: [],
       errors: ["Could not find header row in Vanguard cost basis export"],
       warnings: [],
     };
@@ -131,6 +132,7 @@ function parseDirectExport(content: string, filename: string): ParsedImportResul
     holdings,
     prices: [],
     snapshots: [],
+    corporateActions: [],
     errors,
     warnings: [],
   };
@@ -200,6 +202,7 @@ export function parseVanguardCostBasis(
     holdings,
     prices: [],
     snapshots: [],
+    corporateActions: [],
     errors,
     warnings: [],
   };

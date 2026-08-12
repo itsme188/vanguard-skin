@@ -90,6 +90,7 @@ export function parseFactorCsv(
     prices: [],
     snapshots: [],
     factors,
+    corporateActions: [],
     errors,
     warnings,
   };

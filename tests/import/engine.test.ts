@@ -327,6 +327,7 @@ describe("import engine", () => {
           { symbol: "TEST", date: "2025-03-15", closePrice: 105.0, source: "ibkr-activity" },
         ],
         snapshots: [],
+        corporateActions: [],
         errors: [],
         warnings: [],
       };
@@ -363,6 +364,7 @@ describe("import engine", () => {
           { symbol: "TEST2", date: "2025-03-15", closePrice: 100.0, source: "vanguard-holdings" },
         ],
         snapshots: [],
+        corporateActions: [],
         errors: [],
         warnings: [],
       };
@@ -417,6 +419,7 @@ describe("import engine", () => {
         ],
         prices: [],
         snapshots: [],
+        corporateActions: [],
         errors: [],
         warnings: [],
       };
@@ -458,6 +461,7 @@ describe("import engine", () => {
         ],
         prices: [],
         snapshots: [],
+        corporateActions: [],
         errors: [],
         warnings: [],
       };
@@ -502,6 +506,7 @@ describe("import engine", () => {
         ],
         prices: [],
         snapshots: [],
+        corporateActions: [],
         errors: [],
         warnings: [],
       };
@@ -554,6 +559,7 @@ describe("import engine", () => {
           },
         ],
         snapshots: [],
+        corporateActions: [],
         errors: [],
         warnings: [],
       };
@@ -598,6 +604,7 @@ describe("import engine", () => {
           { symbol: "TEST3", date: "2025-03-15", closePrice: 102.0, source: "vanguard-holdings" },
         ],
         snapshots: [],
+        corporateActions: [],
         errors: [],
         warnings: [],
       };
@@ -966,6 +973,7 @@ describe("import engine", () => {
           },
         ],
         snapshots: [],
+        corporateActions: [],
         errors: [],
         warnings: [],
       };
@@ -1029,6 +1037,7 @@ describe("import engine", () => {
         ],
         prices: [],
         snapshots: [],
+        corporateActions: [],
         errors: [],
         warnings: [],
       };
@@ -1086,6 +1095,7 @@ describe("import engine", () => {
         ],
         prices: [],
         snapshots: [],
+        corporateActions: [],
         errors: [],
         warnings: [],
       };
@@ -1149,6 +1159,7 @@ describe("import engine", () => {
             },
           ],
           snapshots: [],
+          corporateActions: [],
           errors: [],
           warnings: [],
         };
@@ -1310,6 +1321,7 @@ describe("import engine", () => {
         ],
         prices: [],
         snapshots: [],
+        corporateActions: [],
         errors: [],
         warnings: [],
       };
@@ -1391,6 +1403,7 @@ describe("import engine", () => {
         holdings: [],
         prices: [],
         snapshots: [],
+        corporateActions: [],
         errors: [],
         warnings: [],
       };
