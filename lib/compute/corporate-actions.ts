@@ -28,6 +28,49 @@ export interface AddCorporateActionParams {
   notes?: string;
 }
 
+// ── Guards ───────────────────────────────────────────────────────────
+
+/**
+ * Thrown by `undoCorporateAction` when asked to undo a row that came from
+ * the IBKR import pipeline (source === 'import'). Those rows are only
+ * removable by undoing their import batch — undoing them individually
+ * would desync them from the replay-mode ledger.
+ */
+export class ImportedActionError extends Error {}
+
+/**
+ * Shared validation for both the manual add path (`addCorporateAction`)
+ * and the future import path (Task 5). Returns an error message string
+ * when invalid, or null when valid.
+ */
+export function validateCorporateActionInput(params: {
+  actionType: string;
+  effectiveDate: string;
+  ratioNumerator: number;
+  ratioDenominator: number;
+}): string | null {
+  if (!["SPLIT", "REVERSE_SPLIT"].includes(params.actionType)) {
+    return "actionType must be SPLIT or REVERSE_SPLIT";
+  }
+  const d = params.effectiveDate;
+  const isRealDate =
+    /^\d{4}-\d{2}-\d{2}$/.test(d) &&
+    !isNaN(new Date(d + "T00:00:00Z").getTime()) &&
+    new Date(d + "T00:00:00Z").toISOString().slice(0, 10) === d;
+  if (!isRealDate) {
+    return "effectiveDate must be a real YYYY-MM-DD date";
+  }
+  for (const [name, v] of [
+    ["ratioNumerator", params.ratioNumerator],
+    ["ratioDenominator", params.ratioDenominator],
+  ] as const) {
+    if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) {
+      return `${name} must be a finite ratio component > 0`;
+    }
+  }
+  return null;
+}
+
 // ── Queries ──────────────────────────────────────────────────────────
 
 export function listCorporateActions(
@@ -77,6 +120,12 @@ export function addCorporateAction(
   db: Database.Database,
   params: AddCorporateActionParams,
 ): CorporateAction {
+  const validationError = validateCorporateActionInput({
+    ...params,
+    ratioDenominator: params.ratioDenominator ?? 1,
+  });
+  if (validationError) throw new Error(validationError);
+
   const ratio = params.ratioNumerator / (params.ratioDenominator ?? 1);
 
   const result = db.transaction(() => {
@@ -198,7 +247,7 @@ export function undoCorporateAction(
 ): void {
   const action = db
     .prepare(
-      `SELECT security_id, effective_date, ratio_numerator, ratio_denominator, applied
+      `SELECT security_id, effective_date, ratio_numerator, ratio_denominator, applied, source
        FROM corporate_actions WHERE id = ?`,
     )
     .get(actionId) as {
@@ -207,9 +256,16 @@ export function undoCorporateAction(
       ratio_numerator: number;
       ratio_denominator: number;
       applied: number;
+      source: string;
     } | undefined;
 
   if (!action) throw new Error(`Corporate action ${actionId} not found`);
+
+  if (action.source === "import") {
+    throw new ImportedActionError(
+      "This action was imported from a broker statement — undo its import batch instead",
+    );
+  }
 
   db.transaction(() => {
     if (action.applied) {
