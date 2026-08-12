@@ -1,5 +1,36 @@
-import { describe, it, expect, vi } from "vitest";
+/**
+ * Tests for matchScenariosToThemes + GET /api/compute/scenarios' active-themes wiring.
+ *
+ * The theme-matching logic is pure and needs no DB. The route-level test uses
+ * an in-memory SQLite database to avoid touching the real data/vanguard.db —
+ * the route module uses `import { db } from "@/lib/db"`, so we mock that
+ * module before importing the route handler (pattern: tests/api/settings-email-recipients.test.ts).
+ */
+
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import Database from "better-sqlite3";
+import { runMigrations } from "@/lib/db/migrate";
 import { matchScenariosToThemes, SCENARIO_RECIPES } from "@/lib/compute/scenario-recipes";
+
+// ── Shared mock — replace the `db` singleton with an in-memory DB ──────────
+// Only used by the route-level describe block below; the pure-function
+// tests above never touch @/lib/db.
+
+const hoisted = vi.hoisted(() => ({
+  db: null as unknown as Database.Database,
+}));
+
+vi.mock("@/lib/db", () => ({
+  get db() {
+    return hoisted.db;
+  },
+}));
+
+beforeEach(() => {
+  hoisted.db = new Database(":memory:");
+  hoisted.db.pragma("foreign_keys = ON");
+  runMigrations(hoisted.db);
+});
 
 describe("matchScenariosToThemes", () => {
   it("returns scenarios unchanged when themes is empty", () => {
