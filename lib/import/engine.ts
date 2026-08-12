@@ -141,6 +141,9 @@ function resolveIbkrExchangeSuffixedSymbols(parsed: ParsedImportResult): void {
   for (const p of parsed.prices) {
     p.symbol = resolveIbkrExchangeSuffixedSymbol(p.symbol);
   }
+  for (const ca of parsed.corporateActions) {
+    ca.symbol = resolveIbkrExchangeSuffixedSymbol(ca.symbol);
+  }
 }
 
 // ── Parse (detect + parse, no DB writes) ────────────────────────────
@@ -204,8 +207,10 @@ export interface CommitResult {
   newSnapshots: number;
   newSecurities: number;
   newFactors: number;
+  newCorporateActions: number;
   skippedDuplicates: number;
   unmatchedFactors?: string[];
+  warnings: string[];
 }
 
 // Map the parser's sourceType to the price.source value used by step 5's
@@ -248,7 +253,9 @@ export function commitImport(
   let newPrices = 0;
   let newSnapshots = 0;
   let newSecurities = 0;
+  let newCorporateActions = 0;
   let skippedDuplicates = 0;
+  const warnings: string[] = [];
 
   const result = db.transaction(() => {
     // 1. Create import batch
@@ -369,6 +376,56 @@ export function commitImport(
       } else {
         skippedDuplicates++;
       }
+    }
+
+    // 3b. Insert corporate actions (spec 2026-08-11 §3). Collision check is
+    // TYPE-AGNOSTIC on (security_id, effective_date). Security resolution is
+    // RESOLVE-ONLY — a split on a symbol we've never seen means missing
+    // history; creating a bare securities row would be a guess.
+    const insertCa = db.prepare(`
+      INSERT OR IGNORE INTO corporate_actions
+        (security_id, account_id, action_type, effective_date, ratio_numerator,
+         ratio_denominator, applied, source, source_key, import_batch_id, quantity_delta)
+      VALUES (?, ?, ?, ?, ?, ?, 0, 'import', ?, ?, ?)
+    `);
+    const findCollision = db.prepare(`
+      SELECT action_type, ratio_numerator, ratio_denominator, source
+      FROM corporate_actions WHERE security_id = ? AND effective_date = ?
+    `);
+    const findSecurity = db.prepare("SELECT id FROM securities WHERE symbol = ?");
+    for (const ca of parsed.corporateActions) {
+      const secRow = findSecurity.get(ca.symbol) as { id: number } | undefined;
+      if (!secRow) {
+        warnings.push(
+          `Corporate action skipped: no known security for symbol ${ca.symbol} — import the trades/holdings that establish it first`,
+        );
+        continue;
+      }
+      const accountId = getAccountId(ca.accountName);
+      const existing = findCollision.get(secRow.id, ca.effectiveDate) as
+        | { action_type: string; ratio_numerator: number; ratio_denominator: number; source: string }
+        | undefined;
+      if (existing) {
+        const sameShape =
+          existing.action_type === ca.actionType &&
+          existing.ratio_numerator === ca.ratioNumerator &&
+          existing.ratio_denominator === ca.ratioDenominator;
+        if (!sameShape) {
+          warnings.push(
+            `Corporate action conflict for ${ca.symbol} on ${ca.effectiveDate}: existing ${existing.source} ` +
+            `${existing.action_type} ${existing.ratio_numerator}:${existing.ratio_denominator} vs statement ` +
+            `${ca.actionType} ${ca.ratioNumerator}:${ca.ratioDenominator} — resolve manually`,
+          );
+        }
+        skippedDuplicates++;
+        continue;
+      }
+      const res2 = insertCa.run(
+        secRow.id, accountId, ca.actionType, ca.effectiveDate,
+        ca.ratioNumerator, ca.ratioDenominator, ca.sourceKey, batch.id, ca.quantityDelta,
+      );
+      if (res2.changes > 0) newCorporateActions++;
+      else skippedDuplicates++;
     }
 
     // 4. Upsert holdings. UNIQUE(account_id, security_id, as_of_date) means only
@@ -640,13 +697,15 @@ export function commitImport(
 
     // 9. Complete the batch
     const recordCount =
-      newTransactions + newHoldings + newPrices + newSnapshots + newFactors;
+      newTransactions + newHoldings + newPrices + newSnapshots + newFactors +
+      newCorporateActions;
     const summary = [
       newTransactions > 0 ? `${newTransactions} transactions` : null,
       newHoldings > 0 ? `${newHoldings} holdings` : null,
       newPrices > 0 ? `${newPrices} prices` : null,
       newSnapshots > 0 ? `${newSnapshots} snapshots` : null,
       newFactors > 0 ? `${newFactors} factor classifications` : null,
+      newCorporateActions > 0 ? `${newCorporateActions} corporate actions` : null,
       unmatchedFactors.length > 0 ? `${unmatchedFactors.length} unmatched symbols` : null,
       skippedDuplicates > 0 ? `${skippedDuplicates} duplicates skipped` : null,
     ]
@@ -664,8 +723,10 @@ export function commitImport(
       newSnapshots,
       newSecurities,
       newFactors,
+      newCorporateActions,
       skippedDuplicates,
       unmatchedFactors: unmatchedFactors.length > 0 ? unmatchedFactors : undefined,
+      warnings,
     };
   })();
 
@@ -701,9 +762,22 @@ export function commitImport(
   // type would silently re-include them. The sweeps are idempotent +
   // shrink-guarded, so gating canonical-csv this liberally is safe by
   // design — the worst case is a harmless extra global scan.
+  //
+  // `parsed.holdings.length > 0` is now also required for the STATIC-LIST
+  // sources (spec 2026-08-11, corporate-actions import): an ibkr-activity
+  // file can be corporate-actions-only or transactions-only, carrying an
+  // EMPTY holdings block despite the source type normally implying a full
+  // positions snapshot. Running `reconcileClosedEquityHoldings` against that
+  // empty snapshot would zero out every real position (a mass-close
+  // hazard the 50% shrink guard only partially bounds) — no holdings in the
+  // parse means no snapshot evidence, full stop, regardless of source type.
+  // A genuine holdings-snapshot statement (including a verbatim re-import)
+  // always parses out its holdings rows, so this doesn't weaken detection
+  // of the real case the static list exists for.
   const hasHoldingsSnapshot =
-    HOLDINGS_SNAPSHOT_SOURCES.includes(parsed.sourceType) ||
-    (parsed.sourceType === "canonical-csv" && parsed.holdings.length > 0);
+    parsed.holdings.length > 0 &&
+    (HOLDINGS_SNAPSHOT_SOURCES.includes(parsed.sourceType) ||
+      parsed.sourceType === "canonical-csv");
   if (hasHoldingsSnapshot) {
     try {
       const purged = purgeExpiredOptionHoldings(db);
