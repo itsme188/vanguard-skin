@@ -4,9 +4,13 @@ import {
   computeCashFlowResiduals,
   isUnexplainedCashFlow,
   isLikelyIbkrAccountName,
+  classifyCashFlowResidual,
+  partitionCandidates,
   CASH_AFFECTING_SIGNED_SQL,
   DEFAULT_RESIDUAL_ABS_FLOOR,
   DEFAULT_RESIDUAL_REL_FLOOR,
+  CORROBORATION_RATIO,
+  type CashFlowResidualPoint,
 } from "@/lib/compute/cash-flow-audit";
 
 /**
@@ -81,9 +85,9 @@ describe("computeCashFlowResiduals", () => {
     expect(points[0].residual).toBe(0);
   });
 
-  it("finds a large unexplained jump with the correct residual", () => {
+  it("finds a large unexplained jump with the correct residual, classified as an external-flow-candidate", () => {
     insertValuation(db, 1, "2026-07-10", 80_000, 1_400_000);
-    insertValuation(db, 1, "2026-07-11", [REDACTED], 1_500_000); // +[REDACTED], zero transactions
+    insertValuation(db, 1, "2026-07-11", [REDACTED], 1_500_000); // +[REDACTED] cash, +100,000 total_value, zero transactions
 
     const points = computeCashFlowResiduals(db, { accountIds: [1] });
     expect(points).toHaveLength(1);
@@ -91,6 +95,27 @@ describe("computeCashFlowResiduals", () => {
     expect(point.delta).toBeCloseTo([REDACTED], 5);
     expect(point.explained).toBe(0);
     expect(point.residual).toBeCloseTo([REDACTED], 5);
+    expect(point.totalValueAtFrom).toBe(1_400_000);
+    expect(point.totalDelta).toBe(100_000);
+    expect(point.totalDeltaPct).toBeCloseTo(100_000 / 1_500_000, 6);
+    expect(point.classification).toBe("external-flow-candidate");
+    expect(isUnexplainedCashFlow(point)).toBe(true);
+  });
+
+  it("classifies a large cash residual as an internal-shift when total_value barely moves", () => {
+    // Mirrors the live-data finding: cash_balance jumps but holdings_value
+    // absorbs almost the same amount in the opposite direction, so
+    // total_value (what risk metrics actually run on) stays smooth.
+    insertValuation(db, 1, "2026-07-30", [REDACTED], [REDACTED]);
+    insertValuation(db, 1, "2026-07-31", [REDACTED], 1_627_368); // cash -231,260, total_value only -13,806
+
+    const points = computeCashFlowResiduals(db, { accountIds: [1] });
+    const point = points[0];
+    expect(point.residual).toBeLessThan(-200_000);
+    expect(Math.abs(point.totalDelta)).toBeLessThan(Math.abs(point.residual) * CORROBORATION_RATIO);
+    expect(point.classification).toBe("internal-shift");
+    // Still flagged as unexplained by cash-only criteria — the script must
+    // filter classification itself, isUnexplainedCashFlow doesn't.
     expect(isUnexplainedCashFlow(point)).toBe(true);
   });
 
@@ -211,6 +236,9 @@ describe("computeCashFlowResiduals", () => {
 });
 
 describe("isUnexplainedCashFlow", () => {
+  // isUnexplainedCashFlow only looks at explained/residual/totalValueAtTo —
+  // classification is irrelevant to it (that's the script/data-confidence's
+  // job), so these fixture defaults are arbitrary-but-valid filler.
   const base = {
     accountId: 1,
     accountName: "Vanguard Taxable",
@@ -218,7 +246,11 @@ describe("isUnexplainedCashFlow", () => {
     toDate: "2026-07-11",
     cashBefore: 80_000,
     cashAfter: 260_000,
+    totalValueAtFrom: 1_400_000,
     totalValueAtTo: 1_500_000,
+    totalDelta: 100_000,
+    totalDeltaPct: 100_000 / 1_500_000,
+    classification: "external-flow-candidate" as const,
   };
 
   it("flags when residual clears both the absolute and relative floor and explained is negligible", () => {
@@ -279,5 +311,75 @@ describe("CASH_AFFECTING_SIGNED_SQL", () => {
   it("is a non-empty SQL fragment usable inside a SUM(...) aggregate", () => {
     expect(CASH_AFFECTING_SIGNED_SQL).toContain("CASE");
     expect(CASH_AFFECTING_SIGNED_SQL).toContain("END");
+  });
+});
+
+describe("classifyCashFlowResidual", () => {
+  it("classifies the 2026-07-11-style jump as external-flow-candidate (total_value corroborates)", () => {
+    // Real numbers: residual [REDACTED], total_value moved +[REDACTED] (58% of the residual, same sign).
+    expect(classifyCashFlowResidual([REDACTED], [REDACTED])).toBe("external-flow-candidate");
+  });
+
+  it("classifies the 2026-07-13->07-14-style shift as internal-shift (total_value nearly flat)", () => {
+    // Real numbers: residual -[REDACTED], total_value moved only -[REDACTED] (~11% of the residual).
+    expect(classifyCashFlowResidual(-[REDACTED], -[REDACTED])).toBe("internal-shift");
+  });
+
+  it("classifies the 2026-07-30->07-31-style shift as internal-shift", () => {
+    expect(classifyCashFlowResidual(-[REDACTED], -[REDACTED])).toBe("internal-shift");
+  });
+
+  it("classifies the 2026-08-02->08-03-style shift (the round-trip back) as internal-shift", () => {
+    expect(classifyCashFlowResidual([REDACTED], [REDACTED])).toBe("internal-shift");
+  });
+
+  it("requires the total_value move to share the residual's sign, even if the magnitude clears the ratio", () => {
+    // total_value moved the OPPOSITE direction of the cash residual — not a corroborating flow.
+    expect(classifyCashFlowResidual(100_000, -80_000)).toBe("internal-shift");
+  });
+
+  it("is a boundary at exactly half the residual's magnitude (>=, not >)", () => {
+    expect(classifyCashFlowResidual(100_000, 50_000)).toBe("external-flow-candidate");
+    expect(classifyCashFlowResidual(100_000, 49_999)).toBe("internal-shift");
+  });
+
+  it("treats a zero residual as internal-shift unless total_value is also exactly zero", () => {
+    expect(classifyCashFlowResidual(0, 0)).toBe("external-flow-candidate");
+    expect(classifyCashFlowResidual(0, 500)).toBe("internal-shift");
+  });
+});
+
+describe("partitionCandidates", () => {
+  function point(overrides: Partial<CashFlowResidualPoint>): CashFlowResidualPoint {
+    return {
+      accountId: 1,
+      accountName: "Vanguard Taxable",
+      fromDate: "2026-07-10",
+      toDate: "2026-07-11",
+      cashBefore: 80_000,
+      cashAfter: 260_000,
+      totalValueAtFrom: 1_400_000,
+      totalValueAtTo: 1_500_000,
+      delta: 180_000,
+      explained: 0,
+      residual: 180_000,
+      totalDelta: 100_000,
+      totalDeltaPct: 100_000 / 1_500_000,
+      classification: "external-flow-candidate",
+      ...overrides,
+    };
+  }
+
+  it("splits points into externalFlowCandidates and internalShifts by classification", () => {
+    const external = point({ toDate: "2026-07-11", classification: "external-flow-candidate" });
+    const internal = point({ toDate: "2026-07-14", classification: "internal-shift" });
+
+    const { externalFlowCandidates, internalShifts } = partitionCandidates([external, internal]);
+    expect(externalFlowCandidates).toEqual([external]);
+    expect(internalShifts).toEqual([internal]);
+  });
+
+  it("returns empty arrays for an empty input", () => {
+    expect(partitionCandidates([])).toEqual({ externalFlowCandidates: [], internalShifts: [] });
   });
 });

@@ -13,6 +13,7 @@ import {
   isLikelyIbkrAccountName,
   CONFIDENCE_RESIDUAL_ABS_FLOOR,
   CONFIDENCE_RESIDUAL_REL_FLOOR,
+  type CashFlowClassification,
 } from "@/lib/compute/cash-flow-audit";
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -45,13 +46,19 @@ export interface CashAccuracyScore extends DimensionScore {
   daysSinceAnchor: number | null;
   /** Set when computeCashFlowResiduals finds cash_balance jumping between
    *  two daily_valuations rows with no matching transaction to explain it
-   *  (see lib/compute/cash-flow-audit.ts) — a fake return day inflating
-   *  volatility/drawdown/Sharpe until repaired via
-   *  scripts/repair-missing-external-flows.ts. Null when none found. */
+   *  (see lib/compute/cash-flow-audit.ts). `classification` distinguishes
+   *  an `external-flow-candidate` (total_value itself moved — a real fake
+   *  return day, until repaired via scripts/repair-missing-external-flows.ts)
+   *  from an `internal-shift` (total_value moved smoothly; only the
+   *  cash/holdings split jumped — a valuation-source misattribution, not a
+   *  missing flow, and NOT something the repair script will insert a row
+   *  for). Both degrade this score — they're both data-quality problems,
+   *  just different ones. Null when neither is found. */
   unexplainedFlow: {
     accountName: string;
     date: string;
     residual: number;
+    classification: CashFlowClassification;
   } | null;
 }
 
@@ -255,7 +262,7 @@ function scoreHoldingsRecency(db: Database.Database): HoldingsRecencyScore {
  */
 function findWorstUnexplainedCashFlow(
   db: Database.Database
-): { accountName: string; date: string; residual: number } | null {
+): { accountName: string; date: string; residual: number; classification: CashFlowClassification } | null {
   const accounts = db.prepare(`SELECT id, name FROM accounts`).all() as {
     id: number;
     name: string;
@@ -263,6 +270,11 @@ function findWorstUnexplainedCashFlow(
   const accountIds = accounts.filter(a => !isLikelyIbkrAccountName(a.name)).map(a => a.id);
   if (accountIds.length === 0) return null;
 
+  // Both classifications count here — an internal cash/holdings
+  // misattribution is still a real data-quality problem, just not one the
+  // repair script writes a row for (see cash-flow-audit.ts's
+  // classifyCashFlowResidual doc). scoreCashAccuracy names which kind in
+  // the detail string.
   const flagged = computeCashFlowResiduals(db, { accountIds }).filter(p =>
     isUnexplainedCashFlow(p, {
       absFloor: CONFIDENCE_RESIDUAL_ABS_FLOOR,
@@ -277,7 +289,12 @@ function findWorstUnexplainedCashFlow(
       : Math.abs(b.residual) - Math.abs(a.residual)
   );
   const worst = flagged[0];
-  return { accountName: worst.accountName, date: worst.toDate, residual: worst.residual };
+  return {
+    accountName: worst.accountName,
+    date: worst.toDate,
+    residual: worst.residual,
+    classification: worst.classification,
+  };
 }
 
 function scoreCashAccuracy(db: Database.Database): CashAccuracyScore {
@@ -329,17 +346,33 @@ function scoreCashAccuracy(db: Database.Database): CashAccuracyScore {
         ? "Consider importing this month's statement to refresh the cash anchor."
         : "Cash may be significantly wrong — import the latest monthly statement.";
 
-  // An unexplained cash jump means the return series has a fake flow/return
-  // mixed in until it's repaired — cap the score regardless of how fresh the
-  // statement anchor otherwise looks, since anchor freshness doesn't fix this.
+  // An unexplained cash residual means SOMETHING is off with this account's
+  // numbers — cap the score regardless of how fresh the statement anchor
+  // otherwise looks, since anchor freshness doesn't fix either kind of
+  // problem. The two classifications get different wording (and different
+  // guidance) because they're different bugs with different fixes: an
+  // external-flow-candidate is a fake return day fixable by
+  // scripts/repair-missing-external-flows.ts; an internal-shift is a
+  // valuation-source misattribution that script deliberately WON'T touch
+  // (see cash-flow-audit.ts's classifyCashFlowResidual doc).
   if (unexplainedFlow) {
     score = Math.min(score, 40);
     const sign = unexplainedFlow.residual > 0 ? "+" : "-";
-    detail += `; unexplained ${sign}$${Math.abs(unexplainedFlow.residual).toFixed(0)} cash move on ${unexplainedFlow.date} in ${unexplainedFlow.accountName} — not matched to any transaction`;
-    guidance =
-      `${unexplainedFlow.accountName}'s ${unexplainedFlow.date} cash movement isn't explained by any recorded ` +
-      `transaction — it's likely inflating volatility/drawdown/Sharpe. Review ` +
-      `scripts/repair-missing-external-flows.ts (dry-run) to see the proposed fix.`;
+    const amountStr = `${sign}$${Math.abs(unexplainedFlow.residual).toFixed(0)}`;
+
+    if (unexplainedFlow.classification === "external-flow-candidate") {
+      detail += `; unexplained external-flow-shaped cash delta of ${amountStr} on ${unexplainedFlow.date} in ${unexplainedFlow.accountName} — not matched to any transaction`;
+      guidance =
+        `${unexplainedFlow.accountName}'s ${unexplainedFlow.date} cash movement isn't explained by any recorded ` +
+        `transaction and total_value moved with it — it's likely inflating volatility/drawdown/Sharpe. Review ` +
+        `scripts/repair-missing-external-flows.ts (dry-run) to see the proposed fix.`;
+    } else {
+      detail += `; internal cash/holdings shift (valuation-source misattribution) of ${amountStr} on ${unexplainedFlow.date} in ${unexplainedFlow.accountName}`;
+      guidance =
+        `${unexplainedFlow.accountName}'s ${unexplainedFlow.date} cash figure jumped but total_value moved smoothly — ` +
+        `the cash/holdings split looks misattributed by the valuation source (not a missing external flow, so the ` +
+        `repair script won't propose a row for it). Worth checking that day's live source data.`;
+    }
   }
 
   return {

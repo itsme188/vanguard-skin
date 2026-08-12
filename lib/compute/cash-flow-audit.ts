@@ -36,6 +36,30 @@ import type Database from "better-sqlite3";
  * weekends/holidays/gaps mean "previous day" is "previous valuation row")
  * and aggregates ALL transactions landing in (prevDate, currDate] against
  * that pair's delta.
+ *
+ * ── external-flow-candidate vs. internal-shift (2026-08-12 refinement) ──
+ * A large, unexplained CASH residual is not automatically a fake return
+ * day: risk metrics run on total_value, not cash_balance alone. A
+ * read-only follow-up audit found two of the four original candidates
+ * (2026-07-13→07-14 and the 2026-07-30→07-31 / 08-02→08-03 round trip)
+ * have a cash residual in the six figures while total_value moved smoothly
+ * (well under 1% and ~1.7% respectively) — the SPLIT between cash_balance
+ * and holdings_value jumped, not the total. 2026-07-31 is a
+ * data_quality='live' row where [REDACTED] of the account appears to have been
+ * misattributed from cash into holdings_value by the live valuation source
+ * (probably the money-market sweep counted as a holding) and the
+ * misattribution reversed itself on 08-03. Inserting a synthetic flow for
+ * a day like this would be actively harmful: total_value already reads
+ * correctly for return purposes, so subtracting a flow from it would
+ * CREATE a fake flow-adjusted return day (and corrupt TWR/XIRR, which also
+ * consume is_external_flow rows) where none existed before.
+ *
+ * 2026-07-11 is different: total_value itself jumped (+$[REDACTED],
+ * [redacted]) — a real fake-return day regardless of how the cash/holdings
+ * split moved underneath it. `classifyCashFlowResidual` distinguishes the
+ * two by checking whether the total_value move CORROBORATES the cash
+ * residual (same sign, at least half its magnitude) — see that function's
+ * doc for the exact rule.
  */
 
 // ── Per-type signed cash direction ──────────────────────────────────
@@ -105,6 +129,8 @@ export const CASH_AFFECTING_SIGNED_SQL = `
 
 // ── Types ────────────────────────────────────────────────────────────
 
+export type CashFlowClassification = "external-flow-candidate" | "internal-shift";
+
 export interface CashFlowResidualPoint {
   accountId: number;
   accountName: string;
@@ -114,6 +140,7 @@ export interface CashFlowResidualPoint {
   toDate: string;
   cashBefore: number;
   cashAfter: number;
+  totalValueAtFrom: number;
   totalValueAtTo: number;
   /** cashAfter - cashBefore */
   delta: number;
@@ -121,6 +148,15 @@ export interface CashFlowResidualPoint {
   explained: number;
   /** delta - explained. What a repair transaction's amount would be. */
   residual: number;
+  /** totalValueAtTo - totalValueAtFrom — did the ACCOUNT's total value move,
+   *  or just the cash/holdings split underneath it? */
+  totalDelta: number;
+  /** totalDelta as a fraction of totalValueAtTo (0 when totalValueAtTo is 0). */
+  totalDeltaPct: number;
+  /** See classifyCashFlowResidual — whether totalDelta corroborates the
+   *  cash residual (a real account-value jump, i.e. a fake return day) or
+   *  the residual is just cash/holdings being reclassified internally. */
+  classification: CashFlowClassification;
 }
 
 interface ValuationRow {
@@ -132,6 +168,32 @@ interface ValuationRow {
 interface DailyTxnRow {
   trade_date: string;
   signed: number;
+}
+
+// ── Classification: does total_value corroborate the cash residual? ──
+
+/**
+ * A cash residual is "corroborated" by the total-value move (i.e. a real
+ * external-flow-shaped event, not an internal cash/holdings reclassifying)
+ * when total_value moved AT LEAST HALF as much as the cash residual, in the
+ * SAME direction. Half, not all — a deposit that's partly invested the same
+ * day still shows up as mostly-cash with a smaller total_value bump than
+ * the deposit itself (some of the "value" was already there, just
+ * reshuffled from cash to a position); requiring an exact match would
+ * reject genuine flows. An internal cash↔holdings reclassification, by
+ * contrast, leaves total_value nearly flat (the empirical cases were
+ * <1% and ~1.7% against six-figure cash residuals) — nowhere near half.
+ */
+export const CORROBORATION_RATIO = 0.5;
+
+export function classifyCashFlowResidual(
+  residual: number,
+  totalDelta: number
+): CashFlowClassification {
+  const corroborated =
+    Math.abs(totalDelta) >= CORROBORATION_RATIO * Math.abs(residual) &&
+    Math.sign(totalDelta) === Math.sign(residual);
+  return corroborated ? "external-flow-candidate" : "internal-shift";
 }
 
 // ── Core computation ─────────────────────────────────────────────────
@@ -203,6 +265,10 @@ export function computeCashFlowResiduals(
       }
 
       const delta = curr.cash_balance - prev.cash_balance;
+      const residual = delta - explained;
+      const totalDelta = curr.total_value - prev.total_value;
+      const totalDeltaPct = curr.total_value !== 0 ? totalDelta / curr.total_value : 0;
+
       points.push({
         accountId: account.id,
         accountName: account.name,
@@ -210,10 +276,14 @@ export function computeCashFlowResiduals(
         toDate: curr.valuation_date,
         cashBefore: prev.cash_balance,
         cashAfter: curr.cash_balance,
+        totalValueAtFrom: prev.total_value,
         totalValueAtTo: curr.total_value,
         delta,
         explained,
-        residual: delta - explained,
+        residual,
+        totalDelta,
+        totalDeltaPct,
+        classification: classifyCashFlowResidual(residual, totalDelta),
       });
     }
   }
@@ -290,6 +360,23 @@ export function isUnexplainedCashFlow(
   const relBasis = Math.abs(point.totalValueAtTo);
   if (relBasis <= 0) return true;
   return absResidual > relBasis * relFloor;
+}
+
+/**
+ * Splits a flagged-candidate list by classification. Only
+ * `externalFlowCandidates` should ever get a proposed INSERT — see
+ * classifyCashFlowResidual's doc for why inserting a flow for an
+ * `internalShifts` entry would create a fake return day instead of fixing
+ * one.
+ */
+export function partitionCandidates(points: CashFlowResidualPoint[]): {
+  externalFlowCandidates: CashFlowResidualPoint[];
+  internalShifts: CashFlowResidualPoint[];
+} {
+  return {
+    externalFlowCandidates: points.filter((p) => p.classification === "external-flow-candidate"),
+    internalShifts: points.filter((p) => p.classification === "internal-shift"),
+  };
 }
 
 // ── Account scoping ──────────────────────────────────────────────────
