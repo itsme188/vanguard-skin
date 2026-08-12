@@ -7,6 +7,13 @@
 
 import type Database from "better-sqlite3";
 import { excludeLiveSnapshotsSql } from "@/lib/db/live-sources";
+import {
+  computeCashFlowResiduals,
+  isUnexplainedCashFlow,
+  isLikelyIbkrAccountName,
+  CONFIDENCE_RESIDUAL_ABS_FLOOR,
+  CONFIDENCE_RESIDUAL_REL_FLOOR,
+} from "@/lib/compute/cash-flow-audit";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -36,6 +43,16 @@ export interface HoldingsRecencyScore extends DimensionScore {
 export interface CashAccuracyScore extends DimensionScore {
   latestAnchorDate: string | null;
   daysSinceAnchor: number | null;
+  /** Set when computeCashFlowResiduals finds cash_balance jumping between
+   *  two daily_valuations rows with no matching transaction to explain it
+   *  (see lib/compute/cash-flow-audit.ts) — a fake return day inflating
+   *  volatility/drawdown/Sharpe until repaired via
+   *  scripts/repair-missing-external-flows.ts. Null when none found. */
+  unexplainedFlow: {
+    accountName: string;
+    date: string;
+    residual: number;
+  } | null;
 }
 
 export interface EnrichmentScore extends DimensionScore {
@@ -227,6 +244,42 @@ function scoreHoldingsRecency(db: Database.Database): HoldingsRecencyScore {
   return { score, detail, whyMatters, guidance, perAccount };
 }
 
+/**
+ * Worst (most recent, tie-broken by largest |residual|) unexplained
+ * cash-flow candidate across non-IBKR accounts, using the SAME residual
+ * computation scripts/repair-missing-external-flows.ts uses — so the
+ * confidence score and the repair script's candidate list can never
+ * disagree about what counts as "unexplained." Deliberately more sensitive
+ * than the repair script's own bar (CONFIDENCE_RESIDUAL_REL_FLOOR=2% vs the
+ * script's 5%) — this is an early warning, not a "propose a fix" bar.
+ */
+function findWorstUnexplainedCashFlow(
+  db: Database.Database
+): { accountName: string; date: string; residual: number } | null {
+  const accounts = db.prepare(`SELECT id, name FROM accounts`).all() as {
+    id: number;
+    name: string;
+  }[];
+  const accountIds = accounts.filter(a => !isLikelyIbkrAccountName(a.name)).map(a => a.id);
+  if (accountIds.length === 0) return null;
+
+  const flagged = computeCashFlowResiduals(db, { accountIds }).filter(p =>
+    isUnexplainedCashFlow(p, {
+      absFloor: CONFIDENCE_RESIDUAL_ABS_FLOOR,
+      relFloor: CONFIDENCE_RESIDUAL_REL_FLOOR,
+    })
+  );
+  if (flagged.length === 0) return null;
+
+  flagged.sort((a, b) =>
+    a.toDate !== b.toDate
+      ? (a.toDate < b.toDate ? 1 : -1) // most recent date first
+      : Math.abs(b.residual) - Math.abs(a.residual)
+  );
+  const worst = flagged[0];
+  return { accountName: worst.accountName, date: worst.toDate, residual: worst.residual };
+}
+
 function scoreCashAccuracy(db: Database.Database): CashAccuracyScore {
   const today = new Date().toISOString().split("T")[0];
 
@@ -243,6 +296,8 @@ function scoreCashAccuracy(db: Database.Database): CashAccuracyScore {
   const whyMatters =
     "Cash is inferred from the latest statement — the older the anchor, the more it can drift from reality.";
 
+  const unexplainedFlow = findWorstUnexplainedCashFlow(db);
+
   if (!row.latest_date) {
     return {
       score: 0,
@@ -251,6 +306,7 @@ function scoreCashAccuracy(db: Database.Database): CashAccuracyScore {
       guidance: "Import a monthly statement to establish a cash anchor.",
       latestAnchorDate: null,
       daysSinceAnchor: null,
+      unexplainedFlow,
     };
   }
 
@@ -262,16 +318,29 @@ function scoreCashAccuracy(db: Database.Database): CashAccuracyScore {
   else if (days <= 60) score = 40;
   else score = 10;
 
-  const detail = days <= 7
+  let detail = days <= 7
     ? `Cash anchor from ${row.latest_date} (${days}d ago)`
     : `Cash inferred from ${row.latest_date} (${days}d old — may be inaccurate)`;
 
-  const guidance =
+  let guidance =
     score >= 85
       ? "Cash anchor is recent."
       : score >= 50
         ? "Consider importing this month's statement to refresh the cash anchor."
         : "Cash may be significantly wrong — import the latest monthly statement.";
+
+  // An unexplained cash jump means the return series has a fake flow/return
+  // mixed in until it's repaired — cap the score regardless of how fresh the
+  // statement anchor otherwise looks, since anchor freshness doesn't fix this.
+  if (unexplainedFlow) {
+    score = Math.min(score, 40);
+    const sign = unexplainedFlow.residual > 0 ? "+" : "-";
+    detail += `; unexplained ${sign}$${Math.abs(unexplainedFlow.residual).toFixed(0)} cash move on ${unexplainedFlow.date} in ${unexplainedFlow.accountName} — not matched to any transaction`;
+    guidance =
+      `${unexplainedFlow.accountName}'s ${unexplainedFlow.date} cash movement isn't explained by any recorded ` +
+      `transaction — it's likely inflating volatility/drawdown/Sharpe. Review ` +
+      `scripts/repair-missing-external-flows.ts (dry-run) to see the proposed fix.`;
+  }
 
   return {
     score,
@@ -280,6 +349,7 @@ function scoreCashAccuracy(db: Database.Database): CashAccuracyScore {
     guidance,
     latestAnchorDate: row.latest_date,
     daysSinceAnchor: days,
+    unexplainedFlow,
   };
 }
 
