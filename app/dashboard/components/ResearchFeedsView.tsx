@@ -115,6 +115,17 @@ function ThemePills({ themesJson }: { themesJson: string | null }) {
   );
 }
 
+/**
+ * A source is selectable in the filter dropdown/fallback logic when it's
+ * active AND has at least one article — an inactive or empty source would
+ * be a dead-end filter choice. Shared between the dropdown options list and
+ * handleSourcesChanged's "is the current filter still valid" check so the
+ * two never drift.
+ */
+function isSelectableSource(s: ResearchSource): boolean {
+  return Boolean(s.is_active) && Boolean(s.article_count) && (s.article_count ?? 0) > 0;
+}
+
 // ── Main view ────────────────────────────────────────────────────────
 
 export function ResearchFeedsView({
@@ -344,17 +355,19 @@ export function ResearchFeedsView({
     try {
       const res = await fetch("/api/research/sources");
       const data = await res.json();
-      const fresh: ResearchSource[] = data.success ? data.data : currentSources;
-      if (data.success) setCurrentSources(fresh);
+      if (!res.ok || !data.success) {
+        // Throw into the catch below — proceeding with stale `currentSources`
+        // would silently mask that the source list itself failed to refresh.
+        throw new Error(data.error ?? `Sources fetch failed (${res.status})`);
+      }
+      const fresh: ResearchSource[] = data.data;
+      setCurrentSources(fresh);
       // If the selected source can no longer appear in the filter dropdown
       // (deactivated, deleted, or emptied), the select falls back to "All
       // Sources" — the list must follow, or it strands on the old filter
       // while the control claims no filter is applied.
       const filterStillSelectable =
-        sourceFilter === null ||
-        fresh.some(
-          (s) => s.id === sourceFilter && s.is_active && s.article_count && s.article_count > 0
-        );
+        sourceFilter === null || fresh.some((s) => s.id === sourceFilter && isSelectableSource(s));
       if (!filterStillSelectable) {
         setSourceFilter(null);
         await refreshArticles({ sourceId: null });
@@ -364,7 +377,7 @@ export function ResearchFeedsView({
     } catch {
       toast("Sources changed, but the article list couldn't refresh — it may be stale until the next sync.", "info");
     }
-  }, [refreshArticles, toast, sourceFilter, currentSources]);
+  }, [refreshArticles, toast, sourceFilter]);
 
   const handleExpand = useCallback(async (articleId: number) => {
     if (expandedId === articleId) {
@@ -409,7 +422,7 @@ export function ResearchFeedsView({
         >
           <option value="">All Sources</option>
           {currentSources
-            .filter((s) => s.is_active && s.article_count && s.article_count > 0)
+            .filter(isSelectableSource)
             .map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name} ({s.article_count})

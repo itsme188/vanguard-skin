@@ -115,7 +115,9 @@ export async function POST(req: NextRequest) {
   }
   const key = `${scope}::${surface}`;
   const now = Date.now();
-  const last = lastRegenAt.get(key) ?? 0;
+  const hadPreviousStamp = lastRegenAt.has(key);
+  const previousStamp = lastRegenAt.get(key);
+  const last = previousStamp ?? 0;
   if (now - last < REGEN_WINDOW_MS) {
     return NextResponse.json(
       {
@@ -126,6 +128,8 @@ export async function POST(req: NextRequest) {
       { status: 429 }
     );
   }
+  // Stamp BEFORE generating so a concurrent double-click (arriving while
+  // Sonnet is still running) also gets blocked, not just sequential calls.
   lastRegenAt.set(key, now);
   const week = mondayOf(new Date().toISOString().slice(0, 10));
   try {
@@ -137,6 +141,13 @@ export async function POST(req: NextRequest) {
     });
     return NextResponse.json({ success: true, ...r });
   } catch (e) {
+    // Roll back the stamp: a transient AI failure must not burn the 24h
+    // window — only the double-click guard above is the stamp's real job.
+    if (hadPreviousStamp) {
+      lastRegenAt.set(key, previousStamp!);
+    } else {
+      lastRegenAt.delete(key);
+    }
     return NextResponse.json(
       { success: false, error: e instanceof Error ? e.message : "Failed" },
       { status: 500 }
