@@ -53,4 +53,42 @@ describe("normalizeFundCategory", () => {
     expect(normalizeFundCategory("")).toBeNull();
     expect(normalizeFundCategory("   ")).toBeNull();
   });
+
+  // Regression (2026-08-12): auto_ai wrote ALREADY-WRAPPED "US Sector Equity (X)"
+  // labels where X was a Bloomberg/GICS synonym instead of the canonical sector
+  // name — e.g. "US Sector Equity (Information Technology)" instead of
+  // "US Sector Equity (Technology)". The bare-synonym ALIASES table above never
+  // matched because the input wasn't bare, so these slipped through as brand new
+  // duplicate allocation buckets. Unwrap the parenthetical, canonicalize the
+  // inner sector via normalizeSector (single source of truth for GICS-11 synonyms),
+  // then re-map through the same ALIASES table used for bare input.
+  it("canonicalizes sector synonyms inside an already-wrapped US Sector Equity(...) label", () => {
+    expect(normalizeFundCategory("US Sector Equity (Information Technology)")).toBe(
+      "US Sector Equity (Technology)"
+    );
+    expect(normalizeFundCategory("US Sector Equity (Info Technology)")).toBe(
+      "US Sector Equity (Technology)"
+    );
+    // GICS canonical sector name is plural "Financials", but this codebase's
+    // fund_category vocabulary uses singular "Financial" (see bare-synonym test
+    // above) — the wrapped form must match, not the raw GICS output.
+    expect(normalizeFundCategory("US Sector Equity (Financials)")).toBe(
+      "US Sector Equity (Financial)"
+    );
+    expect(normalizeFundCategory("US Sector Equity (Industrial)")).toBe(
+      "US Sector Equity (Industrials)"
+    );
+    expect(normalizeFundCategory("US Sector Equity (Health Care)")).toBe(
+      "US Sector Equity (Health Care)"
+    );
+  });
+
+  it("leaves an unrecognized wrapped sector label unchanged", () => {
+    // "Semiconductors" is not a GICS-11 sector, so normalizeSector can't
+    // canonicalize it — must fall through untouched (matches the existing
+    // "US Sector Equity (Real Estate/Homebuilders)" passthrough behavior).
+    expect(normalizeFundCategory("US Sector Equity (Semiconductors)")).toBe(
+      "US Sector Equity (Semiconductors)"
+    );
+  });
 });
