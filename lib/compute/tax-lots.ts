@@ -163,7 +163,8 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
           ? (
               db
                 .prepare(
-                  `SELECT COALESCE(SUM(quantity_remaining), 0) AS q FROM tax_lots
+                  `SELECT COALESCE(SUM(CASE WHEN is_short = 1 THEN -quantity_remaining ELSE quantity_remaining END), 0) AS q
+                   FROM tax_lots
                    WHERE security_id = ? AND account_id = ? AND quantity_remaining > 0 AND acquisition_date <= ?`
                 )
                 .get(ev.security_id, ev.account_id, ev.effective_date) as { q: number }

@@ -217,4 +217,19 @@ describe("computeTaxLots: import-sourced split replay", () => {
     expect(lot.acquisition_price).toBeCloseTo(100);
     expect(result.replayWarnings.join("\n")).toContain("AAAA");
   });
+
+  it("short lot (SELL_TO_OPEN) cross-checks sign-aware: broker's negative delta matches a short position", () => {
+    const { db, ibkr, sec } = setup();
+    insertTxn(db, ibkr, sec, "2026-06-01", "SELL_TO_OPEN", 100, 400, "k1");   // opens a short lot, is_short=1
+    // Broker convention: short −100 → −400 is a delta of −300 (not +300).
+    insertSplit(db, sec, ibkr, "2026-07-01", 4, 1, -300);
+    const result = computeTaxLots(db);
+    const lot = db.prepare("SELECT quantity_remaining, acquisition_price, is_short FROM tax_lots").get() as Record<string, number>;
+    expect(lot.is_short).toBe(1);
+    expect(lot.quantity_remaining).toBeCloseTo(400);
+    expect(lot.acquisition_price).toBeCloseTo(100);
+    const ca = db.prepare("SELECT reconcile_delta FROM corporate_actions").get() as { reconcile_delta: number | null };
+    expect(ca.reconcile_delta).toBeNull();            // sign-aware implied −300 matches stated −300
+    expect(result.replayWarnings).toHaveLength(0);
+  });
 });
