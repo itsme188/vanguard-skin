@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { marketValue } from "@/lib/valuation";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 import { fetchNetFlowsByDate } from "@/lib/compute/flow-adjusted";
+import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 
 /** Don't carry a price forward more than 45 days — beyond that, the position
  *  was likely liquidated or the data is too stale to be meaningful. */
@@ -20,9 +21,11 @@ interface HoldingRow {
   security_id: number;
   quantity: number;
   security_type: string | null;
+  fund_category: string | null;
   multiplier: number;
   currency: string | null;
   as_of_date: string;
+  source_key: string | null;
 }
 
 interface PriceRow {
@@ -81,7 +84,8 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
     // statement on every date — losing the prepared-statement optimization
     // this hot loop depends on. Intentionally inline.
     const getHoldings = db.prepare(
-      `SELECT h.security_id, h.quantity, s.security_type, COALESCE(s.multiplier, 1) AS multiplier, s.currency, h.as_of_date
+      `SELECT h.security_id, h.quantity, s.security_type, s.fund_category,
+              COALESCE(s.multiplier, 1) AS multiplier, s.currency, h.as_of_date, h.source_key
        FROM holdings h
        JOIN securities s ON s.id = h.security_id
        WHERE h.account_id = ?
@@ -94,15 +98,76 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
        GROUP BY h.security_id`
     );
 
+    // Bonds from the most recent STATEMENT snapshot on or before a date.
+    // Used only to repair Plaid-sourced days — see the carry-forward block
+    // in the loop below. Deliberately narrow: canonical (statement) rows
+    // only, real bonds only, live positions only.
+    const getCanonicalBonds = db.prepare(
+      `SELECT h.security_id, h.quantity, s.security_type, s.fund_category,
+              COALESCE(s.multiplier, 1) AS multiplier, s.currency, h.as_of_date, h.source_key
+       FROM holdings h
+       JOIN securities s ON s.id = h.security_id
+       WHERE h.account_id = ?
+         AND h.source_key LIKE 'canonical:%'
+         AND LOWER(COALESCE(s.security_type, '')) = 'bond'
+         AND h.quantity != 0
+         AND h.as_of_date = (
+           SELECT MAX(h2.as_of_date)
+           FROM holdings h2
+           WHERE h2.account_id = h.account_id
+             AND h2.as_of_date <= ?
+             AND h2.source_key LIKE 'canonical:%'
+         )
+       GROUP BY h.security_id`
+    );
+
     let datesComputed = 0;
     const accountsProcessed = new Set<number>();
 
     for (const account of accounts) {
       for (const { date } of priceDates) {
         // Get holdings as of this date (most recent snapshot on or before this date)
-        const holdings = getHoldings.all(account.account_id, date) as HoldingRow[];
+        const snapshotRows = getHoldings.all(account.account_id, date) as HoldingRow[];
 
-        if (holdings.length === 0) continue;
+        if (snapshotRows.length === 0) continue;
+
+        // Money-market sweep funds are CASH, not positions. The statement
+        // path reports them as ordinary holdings rows while the Plaid path
+        // folds them into the cash balance, so leaving them in holdings made
+        // the cash/holdings split flip every time snapshot ownership changed
+        // hands (the 07-31 shape). Excluding them here is the whole fix on
+        // this side: their value re-enters through Phase 2's residual
+        // (snapshot_total − holdings_value) automatically — never add them
+        // to cash by hand here, that would double-count.
+        const holdings = snapshotRows.filter((h) => !isCashEquivalentSecurity(h));
+
+        // Plaid never reports Treasuries. On a Plaid-sourced day the bonds
+        // simply vanish from holdings and their value silently lands in the
+        // cash residual — a phantom cash spike plus a holdings cliff with no
+        // trade behind it. Carry the most recent STATEMENT bond rows onto
+        // such days so the position stays a position.
+        //
+        // Gate: the day's snapshot has at least one plaid: row AND no bond
+        // rows of its own. Never widen this to "no bonds" alone — TWS
+        // reports bonds itself, so carrying into a tws- day would
+        // double-count a bond around a mid-month sale.
+        //
+        // If the latest statement snapshot holds no bonds, nothing is
+        // carried (bonds sold). A bond that matures mid-window keeps being
+        // carried until its price goes stale (PRICE_STALENESS_DAYS), at
+        // which point it stops contributing value — acceptable, and it
+        // shows up as degraded data_quality in the meantime.
+        const hasPlaidRow = snapshotRows.some((h) => h.source_key?.startsWith("plaid:"));
+        const hasOwnBondRow = snapshotRows.some(
+          (h) => h.security_type?.toLowerCase() === "bond"
+        );
+        if (hasPlaidRow && !hasOwnBondRow) {
+          const ownSecurityIds = new Set(snapshotRows.map((h) => h.security_id));
+          for (const bond of getCanonicalBonds.all(account.account_id, date) as HoldingRow[]) {
+            // The day's own row always wins on collision.
+            if (!ownSecurityIds.has(bond.security_id)) holdings.push(bond);
+          }
+        }
 
         let holdingsValue = 0;
         let pricedCount = 0;
@@ -129,20 +194,31 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
           }
         }
 
-        if (pricedCount === 0) continue;
+        // An account (or a day) whose snapshot is nothing but sweep fund has
+        // no positions left to value — but Phase 2 still needs a row on this
+        // date to attach the anchor's cash to, so write the empty shell
+        // instead of skipping and dropping the account out of the series.
+        const allHoldingsAreCashEquivalents = holdings.length === 0;
+        if (pricedCount === 0 && !allHoldingsAreCashEquivalents) continue;
 
         // Phase 1 placeholder. Phase 2 (below) infers cash from monthly snapshot
-        // anchors and overwrites these rows in place — see lines 148-205.
+        // anchors and overwrites these rows in place — see the Phase 2 block.
         const cashBalance = 0;
         const totalValue = cashBalance + holdingsValue;
 
-        // Holdings staleness: how old is the holdings snapshot relative to valuation date?
+        // Holdings staleness: how old is the holdings snapshot relative to
+        // valuation date? Measured off the day's OWN snapshot rows — carried
+        // bond rows legitimately carry an older as_of_date and must not
+        // make every Plaid day read as stale.
         const holdingsAgeDays = Math.floor(
-          (new Date(date).getTime() - new Date(holdings[0].as_of_date).getTime()) / 86_400_000
+          (new Date(date).getTime() - new Date(snapshotRows[0].as_of_date).getTime()) / 86_400_000
         );
 
         // Assess data quality: if holdings are from a prior date, always estimated
         const dataQuality =
+          // Nothing priced because there was nothing to price — the value is
+          // entirely Phase 2's inferred cash, which is an estimate.
+          allHoldingsAreCashEquivalents ? "estimated" :
           holdingsAgeDays > 0 ? "estimated" :
           pricedCount === holdings.length && maxPriceStaleDays <= 1 ? "live" :
           maxPriceStaleDays <= 3 ? "recent" :
