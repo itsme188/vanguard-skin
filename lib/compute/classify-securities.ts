@@ -16,6 +16,7 @@ import { SECURITY_CLASSIFICATIONS } from "@/lib/data/security-classifications";
 import { generateTextForFeature, AIRefusalError } from "@/lib/ai/generate";
 import { extractJsonArray } from "@/lib/ai/extract-json";
 import { normalizeFundCategory } from "@/lib/securities/normalize-fund-category";
+import { normalizeMarketCapCategory } from "@/lib/securities/normalize-market-cap";
 
 export interface ClassificationResult {
   /** Total securities processed */
@@ -229,7 +230,13 @@ export async function classifyUnresolvedWithClaude(
       for (const r of results) {
         const id = idMap.get(r.symbol);
         if (!id) continue;
-        update.run(normalizeFundCategory(r.fund_category), cleanEnumValue(r.geography), cleanEnumValue(r.market_cap_category), cleanEnumValue(r.style), id);
+        update.run(
+          normalizeFundCategory(r.fund_category),
+          cleanEnumValue(r.geography),
+          normalizeMarketCapCategory(cleanEnumValue(r.market_cap_category)),
+          cleanEnumValue(r.style),
+          id
+        );
         classified++;
       }
     } catch (err) {
