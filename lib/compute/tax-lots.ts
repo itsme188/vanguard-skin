@@ -342,7 +342,7 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
     if (hasHoldings) {
       const orphans = db
         .prepare(
-          `SELECT tl.account_id, tl.security_id,
+          `SELECT tl.account_id, tl.security_id, s.symbol,
                   SUM(tl.quantity_remaining) AS open_qty,
                   SUM(tl.quantity_remaining * tl.acquisition_price) AS open_cost,
                   h.as_of_date AS zero_date,
@@ -372,6 +372,7 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
         .all() as Array<{
         account_id: number;
         security_id: number;
+        symbol: string;
         open_qty: number;
         open_cost: number;
         zero_date: string;
@@ -391,6 +392,23 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
       );
 
       for (const orphan of orphans) {
+        // Guard: an import-sourced split effective AFTER the zero-holdings
+        // date means the orphan's open lots (queried above, post-merge-loop)
+        // are already in POST-split units, while `prices` at zero_date is
+        // whatever basis the market was quoting on that date — potentially
+        // pre-split. Synthesizing a close here would price a post-split
+        // quantity off a basis the split cross-check can't vouch for,
+        // mixing bases (the "never mix bases" rule). Skip and let the real
+        // statement SELL (which arrives in its own correct basis) close it.
+        const laterSplit = splitEvents.find(
+          (ev) => ev.security_id === orphan.security_id && ev.effective_date > orphan.zero_date
+        );
+        if (laterSplit) {
+          replayWarnings.push(
+            `${orphan.symbol}: zero-holdings row on ${orphan.zero_date} predates the ${laterSplit.effective_date} split — skipping the synthetic RECONCILE_CLOSE to avoid mixing pre/post-split bases. Import the missing SELL to close this position.`
+          );
+          continue;
+        }
         const priceRow = latestPriceStmt.get(orphan.security_id, orphan.zero_date) as
           | { close_price: number }
           | undefined;
