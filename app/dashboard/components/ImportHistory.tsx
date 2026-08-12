@@ -33,6 +33,7 @@ function formatDate(dateStr: string): string {
 export function ImportHistory({ batches }: { batches: ImportBatch[] }) {
   const router = useRouter();
   const [undoingId, setUndoingId] = useState<number | null>(null);
+  const [undoError, setUndoError] = useState<string | null>(null);
 
   if (batches.length === 0) {
     return (
@@ -46,8 +47,6 @@ export function ImportHistory({ batches }: { batches: ImportBatch[] }) {
       </div>
     );
   }
-
-  const [undoError, setUndoError] = useState<string | null>(null);
 
   const handleUndo = async (batchId: number) => {
     if (!confirm("Undo this import? This will delete all records from this batch and recompute tax lots.")) return;
