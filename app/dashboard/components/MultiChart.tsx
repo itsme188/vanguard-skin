@@ -8,6 +8,7 @@ interface ChartableSecurity {
   symbol: string;
   name: string | null;
   security_type: string | null;
+  currency: string | null;
 }
 
 type LayoutKey = "1" | "2" | "4";
@@ -132,7 +133,7 @@ export function MultiChart({
                     key={`${i}-${sec.id}`}
                     securityId={sec.id}
                     symbol={sec.symbol}
-
+                    currency={sec.currency}
                     compact
                   />
                 ) : (

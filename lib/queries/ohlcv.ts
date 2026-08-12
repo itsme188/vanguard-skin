@@ -60,6 +60,7 @@ export interface ChartableSecurity {
   symbol: string;
   name: string | null;
   security_type: string | null;
+  currency: string | null;
 }
 
 /**
@@ -71,7 +72,7 @@ export function getChartableSecurities(
 ): ChartableSecurity[] {
   return db
     .prepare(
-      `SELECT id, symbol, name, security_type
+      `SELECT id, symbol, name, security_type, currency
        FROM securities
        WHERE ib_con_id IS NOT NULL
          AND (security_type IS NULL OR LOWER(security_type) NOT IN ('mutual_fund', 'mutual fund'))
