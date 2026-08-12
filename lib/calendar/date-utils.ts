@@ -187,3 +187,26 @@ function formatDate(d: Date): string {
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 }
+
+// `datetime('now')` shape: space-separated UTC, no 'Z' (e.g. "2026-08-13 01:00:00").
+const SQLITE_DATETIME_PATTERN = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
+
+/**
+ * Format a "generated at" timestamp as a short ET-anchored caption
+ * ("Aug 12"). Accepts both real ISO strings (`toISOString()` — 'T' +
+ * trailing 'Z'/offset) and SQLite's `datetime('now')` shape, which
+ * `new Date()` would otherwise parse as LOCAL wall-clock time (wrong
+ * instant) or reject outright as Invalid Date on some Safari versions.
+ * Returns null (caller should hide the caption) when the input can't be
+ * parsed as a valid date.
+ */
+export function formatGeneratedAt(raw: string): string | null {
+  const iso = SQLITE_DATETIME_PATTERN.test(raw) ? `${raw.replace(" ", "T")}Z` : raw;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  return d.toLocaleDateString("en-US", {
+    timeZone: "America/New_York",
+    month: "short",
+    day: "numeric",
+  });
+}

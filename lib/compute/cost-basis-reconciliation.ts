@@ -72,7 +72,10 @@ export function reconcileCostBasis(
   if (options.accountId) params.push(options.accountId);
 
   // Get current holdings with broker cost basis
-  // Uses per-account MAX date so each account uses its own most recent snapshot
+  // Per-(account, security) latest date (default keyBy) — a position whose
+  // own latest row predates the account's overall newest snapshot must still
+  // appear, or it silently vanishes from the reconciliation report (same
+  // latent bug fixed for scenarios.ts in PR #46 / commit ae2b4f5).
   const holdings = db
     .prepare(
       `SELECT
@@ -89,7 +92,7 @@ export function reconcileCostBasis(
        JOIN securities s ON s.id = h.security_id
        JOIN accounts a ON a.id = h.account_id
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
-       WHERE ${latestHoldingsPredicate({ keyBy: "account", includeShorts: true, accountFilter })}
+       WHERE ${latestHoldingsPredicate({ includeShorts: true, accountFilter })}
          AND LOWER(s.security_type) NOT IN ('mutual fund', 'money market', 'fund', 'money_market')
        ORDER BY a.name, s.symbol`
     )

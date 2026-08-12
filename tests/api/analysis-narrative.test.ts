@@ -28,6 +28,7 @@ import {
   __resetRateLimitForTests,
 } from "@/app/api/analysis/narrative/route";
 import { getCachedNarrative } from "@/lib/queries/analysis-narratives";
+import { generateNarrative } from "@/lib/compute/analysis-narratives";
 
 describe("GET /api/analysis/narrative", () => {
   beforeEach(() => {
@@ -96,6 +97,28 @@ describe("POST /api/analysis/narrative (force regen)", () => {
     });
     const res = await POST(req as never);
     expect(res.status).toBe(404);
+  });
+
+  it("rolls back the rate-limit stamp on generation failure, so a retry right after isn't blocked for 24h", async () => {
+    // Pre-fix: the stamp was set BEFORE calling generateNarrative and never
+    // rolled back on failure, so one transient AI error bricked the Refresh
+    // button for a full day.
+    (generateNarrative as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("Sonnet timeout")
+    );
+    const makeReq = () =>
+      new Request("http://x/api/analysis/narrative", {
+        method: "POST",
+        body: JSON.stringify({
+          scope: "vanguard",
+          surface: "factor-analysis",
+        }),
+        headers: { "Content-Type": "application/json" },
+      });
+    const r1 = await POST(makeReq() as never);
+    expect(r1.status).toBe(500);
+    const r2 = await POST(makeReq() as never);
+    expect(r2.status).toBe(200);
   });
 });
 

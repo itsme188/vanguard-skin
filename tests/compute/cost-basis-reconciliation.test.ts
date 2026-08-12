@@ -135,6 +135,34 @@ describe("reconcileCostBasis", () => {
   });
 });
 
+describe("reconcileCostBasis uses account_security keyBy (QA regression, mirrors PR #46 scenarios.ts fix)", () => {
+  // Bug: the holdings query built its latest-holdings predicate with
+  // keyBy: "account" — the latest as_of_date across ALL securities in the
+  // account. A position whose OWN latest row predates that account-wide
+  // date was silently dropped from the reconciliation report entirely
+  // (not just mismeasured — absent from `rows`).
+  it("includes a position whose latest holdings row is older than another position's latest row", () => {
+    insertTransaction(1, "BUY", "2025-06-01", 100, 150);
+    insertTransaction(2, "BUY", "2025-06-01", 50, 400);
+    computeTaxLots(db);
+
+    // AAPL: fresher snapshot (the account's overall newest as_of_date).
+    insertHolding(1, 100, 15000, "2026-03-27");
+    // MSFT: staler snapshot — no row on 2026-03-27 for this security.
+    insertHolding(2, 50, 20000, "2026-02-15");
+
+    const result = reconcileCostBasis(db);
+
+    // Pre-fix, keyBy: "account" kept only rows dated 2026-03-27 (the
+    // account's overall newest date) and silently dropped MSFT.
+    expect(result.rows.map((r) => r.symbol).sort()).toEqual(["AAPL", "MSFT"]);
+    expect(result.totalPositions).toBe(2);
+    const msft = result.rows.find((r) => r.symbol === "MSFT");
+    expect(msft?.holdingsAsOf).toBe("2026-02-15");
+    expect(msft?.brokerCostBasis).toBe(20000);
+  });
+});
+
 describe("reconcileCostBasis FX conversion", () => {
   it("converts KRW broker AND computed cost basis to USD (both sides, delta preserved)", () => {
     db.prepare(

@@ -2,21 +2,27 @@
 
 import { useEffect, useState } from "react";
 import { PrivateText } from "@/lib/privacy/components";
+import { formatGeneratedAt } from "@/lib/calendar/date-utils";
 
 interface Props {
   scope: string;
   surfaceKey: "factor-analysis" | "risk-metrics" | "position-risk" | "factor-heatmap" | "defense";
 }
 
-// Exported for unit testing (no rendering harness in this repo — see the
-// notesListIsFiltered precedent in tests/dashboard/notes-filtered-state.test.ts
-// for the pattern of testing extracted pure helpers directly).
-export function formatGeneratedAt(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-US", {
-    timeZone: "America/New_York",
-    month: "short",
-    day: "numeric",
-  });
+const MS_PER_HOUR = 60 * 60 * 1000;
+
+/**
+ * Render the POST route's 429 `retryAfter` (ms) as domain language instead
+ * of the bare "rate-limited" token — round up to whole hours so "1h" always
+ * means "at most 1h left", never "just over 0".
+ */
+function formatRateLimitMessage(retryAfterMs: unknown): string {
+  const ms = typeof retryAfterMs === "number" && retryAfterMs > 0 ? retryAfterMs : 0;
+  if (ms < MS_PER_HOUR) {
+    return "Narrative refreshes once per day — available again in less than 1h.";
+  }
+  const hours = Math.ceil(ms / MS_PER_HOUR);
+  return `Narrative refreshes once per day — available again in about ${hours}h.`;
 }
 
 export function NarrativeBlock({ scope, surfaceKey }: Props) {
@@ -30,6 +36,7 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
   useEffect(() => {
     let alive = true;
     setLoading(true);
+    setRefreshError(null); // don't let a prior scope's refresh error bleed onto the new scope
     fetch(`/api/analysis/narrative?scope=${scope}&surface=${surfaceKey}`)
       .then((r) => r.json())
       .then((data) => {
@@ -61,10 +68,14 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
       if (res.ok && data.success) {
         setText(data.narrativeMd);
         setGeneratedAt(data.generatedAt ?? null);
+      } else if (res.status === 429) {
+        // The bare "rate-limited" token means nothing to a user — explain the
+        // 24h window in domain language and surface the actual wait time.
+        setRefreshError(formatRateLimitMessage(data.retryAfter));
       } else {
-        // Honest failure surface (incl. the 24h rate-limit message) — never
-        // swallow, never silently revert (nothing was optimistically changed
-        // above, so the stale narrative simply stays visible alongside this).
+        // Honest failure surface — never swallow, never silently revert
+        // (nothing was optimistically changed above, so the stale narrative
+        // simply stays visible alongside this).
         setRefreshError(data.error ?? "Refresh failed");
       }
     } catch (e) {
@@ -77,6 +88,10 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
   if (loading) return <div className="text-xs text-ink-faint italic mt-2">Loading narrative…</div>;
   if (error || !text) return null; // graceful no-render on error
 
+  // formatGeneratedAt returns null for an unparseable timestamp — hide the
+  // caption rather than render "Invalid Date".
+  const generatedLabel = generatedAt ? formatGeneratedAt(generatedAt) : null;
+
   return (
     <div className="text-sm text-ink-dim italic border-l-2 border-gold/40 pl-3 my-3 leading-relaxed">
       {/* AI narrative embeds portfolio-derived figures at generation time, so
@@ -84,9 +99,9 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
           interpretation sentences). */}
       <PrivateText>{text}</PrivateText>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1.5 not-italic">
-        {generatedAt && (
+        {generatedLabel && (
           <span className="text-xs text-ink-faint">
-            Generated {formatGeneratedAt(generatedAt)}
+            Generated {generatedLabel}
           </span>
         )}
         <button
