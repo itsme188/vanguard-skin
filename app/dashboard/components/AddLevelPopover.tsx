@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useToast } from "./Toast";
+import { formatChartPrice } from "@/lib/chart/price-formatter";
 
 interface Props {
   securityId: number;
@@ -12,6 +13,9 @@ interface Props {
   y: number;
   onClose: () => void;
   onAdded: () => void;
+  /** Security's native currency (e.g. "KRW"). The clicked price is native —
+   *  see SecurityChart — so the label here must match instead of assuming USD. */
+  currency?: string | null;
 }
 
 export function AddLevelPopover({
@@ -23,6 +27,7 @@ export function AddLevelPopover({
   y,
   onClose,
   onAdded,
+  currency,
 }: Props) {
   const { toast } = useToast();
   const [submitting, setSubmitting] = useState<"support" | "resistance" | null>(null);
@@ -69,7 +74,7 @@ export function AddLevelPopover({
           action_hint: "watch",
           source: "user",
           source_author: "Me",
-          thesis: `Added by chart click at $${price.toFixed(2)}`,
+          thesis: `Added by chart click at ${formatChartPrice(currency, price)}`,
           timeframe: null,
           expires_at: null,
         }),
@@ -80,7 +85,7 @@ export function AddLevelPopover({
         setSubmitting(null);
         return;
       }
-      toast(`${symbol} ${type} at $${price.toFixed(2)} added`, "success");
+      toast(`${symbol} ${type} at ${formatChartPrice(currency, price)} added`, "success");
       window.dispatchEvent(new CustomEvent("level-added"));
       onAdded();
     } catch (e) {
@@ -110,7 +115,7 @@ export function AddLevelPopover({
     >
       <div className="flex items-baseline justify-between mb-2.5">
         <span className="font-mono text-sm font-semibold text-ink">
-          ${price.toFixed(2)}
+          {formatChartPrice(currency, price)}
         </span>
         <button
           onClick={onClose}

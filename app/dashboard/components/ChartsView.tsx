@@ -11,6 +11,7 @@ interface ChartableSecurity {
   symbol: string;
   name: string | null;
   security_type: string | null;
+  currency: string | null;
 }
 
 type ViewMode = "single" | "multi";
@@ -116,7 +117,7 @@ export function ChartsView({
               key={selected.id}
               securityId={selected.id}
               symbol={selected.symbol}
-              
+              currency={selected.currency}
             />
           </div>
         )

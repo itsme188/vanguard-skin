@@ -43,6 +43,10 @@ interface Props {
    * units — so only the $-labeled displays multiply by this at render time.
    */
   usdPerUnit?: number;
+  /** Security's native currency (e.g. "KRW"). Passed through to the embedded
+   *  SecurityChart, which stays in the native frame and needs this to label
+   *  its axis/pill correctly instead of always assuming USD. */
+  currency?: string | null;
 }
 
 /**
@@ -77,6 +81,7 @@ export function MarketDataPanel({
   priceDate,
   kpis,
   usdPerUnit = 1,
+  currency = null,
 }: Props) {
   const isUp = priceChange != null && priceChange >= 0;
   const gainColor = isUp ? "#22c55e" : "#ef4444";
@@ -236,7 +241,7 @@ export function MarketDataPanel({
       {/* Chart — the SecurityChart component already paints its own Terminal
           palette after the color refactor, so it drops in cleanly here. */}
       <div className="h-[460px] md:h-[520px]" style={{ borderBottom: "1px solid #1f1f1f" }}>
-        <SecurityChart securityId={securityId} symbol={symbol} />
+        <SecurityChart securityId={securityId} symbol={symbol} currency={currency} />
       </div>
 
       {/* Quote-strip KPIs — Bloomberg-style row between chart and levels.

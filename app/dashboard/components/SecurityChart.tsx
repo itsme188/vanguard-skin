@@ -3,7 +3,9 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { OhlcvBar } from "@/lib/tws/types";
 import { computeSMA, computeEMA } from "@/lib/chart/indicators";
+import { formatChartPrice } from "@/lib/chart/price-formatter";
 import { Money, Count } from "@/lib/privacy/components";
+import { rendersAsZero } from "@/lib/format";
 import { usePrivacy } from "@/lib/privacy/context";
 import { AddLevelPopover } from "./AddLevelPopover";
 import { ScrollFade } from "./ScrollFade";
@@ -109,10 +111,16 @@ type IndicatorKey = (typeof INDICATORS)[number]["key"];
 export function SecurityChart({
   securityId,
   symbol,
+  currency = null,
   compact = false,
 }: {
   securityId: number;
   symbol: string;
+  /** Security's native currency (e.g. "KRW"). The chart stays in this native
+   *  frame — bars, levels, and the last-price pill are never converted — so
+   *  this only changes the axis/pill/legend LABEL, never the values. Null
+   *  (and "USD") render with the pre-existing "$" style. */
+  currency?: string | null;
   compact?: boolean;
 }) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
@@ -174,6 +182,16 @@ export function SecurityChart({
   const { isPrivate } = usePrivacy();
   const isPrivateRef = useRef(isPrivate);
   isPrivateRef.current = isPrivate;
+
+  // Mirrored for the same reason as isPrivateRef: the chart-level
+  // priceFormatter closure is created once (chart init effect, deps
+  // [securityId] only) and called by LightweightCharts internals on its own
+  // schedule — it must read the current value, not the one captured at
+  // creation time. In practice currency only changes together with
+  // securityId (every caller keys/remounts on it), but this keeps the two
+  // priceFormatter definitions symmetric and correct regardless.
+  const currencyRef = useRef(currency);
+  currencyRef.current = currency;
 
   // Mirrored for the init effect, which deliberately excludes showMarkers from
   // its deps (a toggle must not re-create the chart) but still needs the
@@ -248,7 +266,7 @@ export function SecurityChart({
           priceFormatter: (p: number) =>
             isPrivateRef.current
               ? "\u2022\u2022\u2022"
-              : `$${p.toFixed(2)}`,
+              : formatChartPrice(currencyRef.current, p),
         },
         layout: {
           background: { color: C.background },
@@ -494,7 +512,7 @@ export function SecurityChart({
     chart.applyOptions({
       localization: {
         priceFormatter: (p: number) =>
-          isPrivate ? "\u2022\u2022\u2022" : `$${p.toFixed(2)}`,
+          isPrivate ? "\u2022\u2022\u2022" : formatChartPrice(currencyRef.current, p),
       },
     });
     volume.applyOptions({
@@ -856,29 +874,29 @@ export function SecurityChart({
                   Close + optional delta-to-open + active indicators always show. */}
               <span className="hidden md:inline-flex items-center gap-1">
                 <span className="text-ink-faint">O</span>
-                <Money value={legend.open} precise className="text-ink" />
+                <ChartMoney value={legend.open} currency={currency} className="text-ink" />
               </span>
               <span className="hidden md:inline-flex items-center gap-1">
                 <span className="text-ink-faint">H</span>
-                <Money value={legend.high} precise className="text-ink" />
+                <ChartMoney value={legend.high} currency={currency} className="text-ink" />
               </span>
               <span className="hidden md:inline-flex items-center gap-1">
                 <span className="text-ink-faint">L</span>
-                <Money value={legend.low} precise className="text-ink" />
+                <ChartMoney value={legend.low} currency={currency} className="text-ink" />
               </span>
               <span className="inline-flex items-center gap-1">
                 <span className="text-ink-faint">C</span>
-                <Money
+                <ChartMoney
                   value={legend.close}
-                  precise
+                  currency={currency}
                   className={legend.close >= legend.open ? "text-up" : "text-down"}
                 />
               </span>
               {/* Mobile-only: signed delta from open (replaces O/H/L for context). */}
               <span className="inline-flex md:hidden items-baseline">
-                <Money
+                <ChartMoney
                   value={legend.close - legend.open}
-                  precise
+                  currency={currency}
                   signed
                   className={legend.close >= legend.open ? "text-up" : "text-down"}
                 />
@@ -895,7 +913,7 @@ export function SecurityChart({
                 return (
                   <span key={key} className="flex items-baseline gap-1">
                     <span className="text-ink-faint" style={{ color }}>{label}</span>
-                    <Money value={value} precise className="text-ink" />
+                    <ChartMoney value={value} currency={currency} className="text-ink" />
                   </span>
                 );
               })}
@@ -1034,6 +1052,7 @@ export function SecurityChart({
             symbol={symbol}
             price={addPopover.price}
             currentPrice={latestClose}
+            currency={currency}
             x={addPopover.x}
             y={addPopover.y}
             onClose={() => setAddPopover(null)}
@@ -1079,6 +1098,65 @@ function LegendDot({ color, label }: { color: string; label: string }) {
       <span>{label}</span>
     </span>
   );
+}
+
+/**
+ * OHLC-legend / indicator price cell — currency-aware sibling of <Money>.
+ * The crosshair legend reads raw NATIVE bar values (never FX-converted, same
+ * frame as the candles themselves), so it needs the same native-currency
+ * labeling as the chart's own axis/pill.
+ *
+ * USD (and blank/null currency) delegates straight to the untouched <Money>
+ * component — byte-identical output to before this component existed. Any
+ * other currency renders via formatChartPrice with the same privacy-mask and
+ * signed-prefix semantics <Money> uses.
+ */
+function ChartMoney({
+  value,
+  currency,
+  className,
+  signed = false,
+}: {
+  value: number;
+  currency: string | null | undefined;
+  className?: string;
+  signed?: boolean;
+}) {
+  const code = (currency ?? "").trim().toUpperCase();
+  if (code === "" || code === "USD") {
+    return <Money value={value} precise signed={signed} className={className} />;
+  }
+  return (
+    <NativeChartMoney value={value} currency={currency} className={className} signed={signed} />
+  );
+}
+
+function NativeChartMoney({
+  value,
+  currency,
+  className,
+  signed,
+}: {
+  value: number;
+  currency: string | null | undefined;
+  className?: string;
+  signed: boolean;
+}) {
+  const { isPrivate } = usePrivacy();
+  if (isPrivate) {
+    return <span className={className}>{"•••"}</span>;
+  }
+  const formatted = formatChartPrice(currency, Math.abs(value));
+  // Same negative-zero guard as <Money> — sign decided after rounding, never
+  // "−₩0" / "+₩0" for a tiny value that rounds to zero at render precision.
+  const sign = rendersAsZero(formatted)
+    ? ""
+    : signed && value > 0
+      ? "+"
+      : value < 0
+        ? "−"
+        : "";
+  return <span className={className}>{`${sign}${formatted}`}</span>;
 }
 
 // ---------- Helper functions ----------
