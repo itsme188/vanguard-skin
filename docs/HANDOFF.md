@@ -3,44 +3,49 @@
 > Rolling file, overwritten at each `/session-end`. Past handoffs: `git log -p docs/HANDOFF.md`.
 > Written by Claude Code so Codex can review changes and reasoning at full project context.
 
-**Session date:** 2026-08-11
+**Session date:** 2026-08-12 (session started 2026-08-11 evening)
 
 ## 1. Goal + files changed
 
-Two workstreams: the Node runtime migration (forced by a 2026-08-10 brew batch update) and your advisory batch #41–#45, plus the three follow-ups from your own morning review message.
+One workstream: issue #37 (IBKR Corporate Actions ingestion), taken through the full arc — brainstorm → spec → implementation plan → subagent-driven build → merge → live repair — in a single session, under the new review-intake flow (see §3).
 
-**(a) node@24 migration** (`fdfacaa`): the brew update moved `/opt/homebrew/bin/node` to v26 and silently broke every unpinned Node entry point overnight — QA sandbox boot (02:45 sweep died), the 02:00 R2 state snapshot (Worker fallback going stale), and the calendar-enrich/earnings-sweep road (masked by `|| true`). Changed: `package.json`/lock (better-sqlite3 12.6.2→13.0.2), `electron/main.ts` (`REQUIRED_NODE_ABI` 115→137, node@24 first candidate), PATH pins in `qa/sandbox.sh`, `qa/nightly-deep-qa.sh`, `qa/nightly-qa-cron.sh`, `scripts/run-snapshot.sh`, `scripts/enrich-calendar-events.sh`, `scripts/send-daily-digest.sh` (+ gitignored `scripts/launch-dashboard.sh`), `CLAUDE.md` testing section.
+**Process artifacts:** `docs/superpowers/specs/2026-08-11-ibkr-corporate-actions-design.md`, `docs/superpowers/plans/2026-08-11-ibkr-corporate-actions.md`, `.claude/commands/codex-review-plan.md` (new slash command: independent read-only Codex design review via `codex exec --sandbox read-only`).
 
-**(b) Advisory batch #41–#45**, four commits, one per fix:
-- `12ff51b` (#41+#43): `lib/calendar/briefing-html.ts` + `workers/cron/src/html.ts` (`parseTableRow` splits on unescaped pipes only, unescapes `\|`; byte-identical mirrors); `lib/earnings/print-sheet.ts` (`extractBogiesTableMarkdown` validates header+separator shape with escape-aware column agreement; invalid → null → deterministic-worksheet fallback).
-- `fdbd53c` (#42): `lib/earnings/worksheet.ts` + `worksheet-rich.ts` — both monospace fallback composers stop hard-slicing at page caps; overflow pages beat truncated notes (the PDF road's documented doctrine). Disclosed omissions (bogies row cap, commentary trim marker) untouched.
-- `2a0919d` (#44): `lib/earnings/print-pdf.ts` — `readCompletedPdf` (close(0) path) now requires `%PDF` header + `%%EOF`; poll path gained the header check with keep-polling semantics preserved.
-- `f39ec30` (#45): `lib/earnings/repair-citation-linebreaks.ts` — `BOLD_LABEL_PREFIX_RE` in `isNewBlockLine` only (labeled-prose lines never merge up, still receive trailing fragments — the asymmetry is deliberate and test-pinned).
+**Feature commits (`ea29e85..78f817a`):**
+- `lib/db/migrations/078_corporate_actions_import.sql` — additive columns: `source_key` (unique partial index), `import_batch_id`, `account_id`, `quantity_delta`, `reconcile_delta`.
+- `lib/import/types.ts` + `lib/import/parsers/ibkr-activity.ts` — `ParsedCorporateAction` (required field on `ParsedImportResult`, every producer swept); Corporate Actions section parsing (header-name columns, ratio from description, effective date from Date/Time not Report Date, real-calendar-date validation, delta as evidence only, named warnings for every unsupported shape).
+- `lib/compute/corporate-actions.ts` + `app/api/corporate-actions/route.ts` — shared `validateCorporateActionInput`, `ImportedActionError`; manual road guards (403 undo of import rows, type-agnostic 409 collision pre-check).
+- `lib/compute/tax-lots.ts` — replay integration: `source='import'` events applied chronologically in the sells loop (end-of-day rule: strict `<`, split-date sells first), lots adjusted qty ×ratio / per-share ÷ratio with cost_basis + acquisition_date untouched, account-scoped sign-aware delta cross-check persisted to `reconcile_delta`, `replayWarnings` on the result, RECONCILE_CLOSE pass skips orphans whose zero-date predates an applied split (fabricated-gain guard).
+- `lib/import/engine.ts` + `lib/import/validate.ts` + `lib/mutations/import-batches.ts` — commit block (resolve-only security lookup, collision warnings never swallowed by INSERT OR IGNORE, batch tagging, accounting), `"corporateAction"` validation category, batch-undo deletion, holdings-snapshot sweep gate (`parsed.holdings.length > 0` now required before purges/closed-equity reconcile).
+- `app/api/import/route.ts` + `app/dashboard/components/ImportFlow.tsx` + `CorporateActionsSection.tsx` — replay status (`clean|mismatch|failed`, null when no CAs) on commit responses, preview block from `validatedResult`, CA-only importability, imported chip (never "Pending"), reconcile delta rendered through `<Shares>`.
+- `app/dashboard/components/ImportHistory.tsx` — standalone fix (`78f817a`): `useState` hoisted above the empty-state early return (Rules-of-Hooks violation, pre-existing since `eaf8bfe` 2026-04-12; crashed the Import page on a fresh DB's first import).
+- Tests: `tests/fixtures/ibkr-corporate-actions.csv` (fake tickers, 4 valid + 5 decoy rows), `tests/import/corporate-actions-migration.test.ts` (true upgrade-path test), `ibkr-corporate-actions-parser.test.ts`, `engine-corporate-actions.test.ts`, `corporate-actions-integration.test.ts`, `tests/compute/tax-lots-splits.test.ts` (13), `corporate-actions-guards.test.ts`, `tests/api/import-corporate-actions-route.test.ts`, `corporate-actions-route.test.ts`.
 
-**(c) Your morning follow-ups:** issue #36 closed with evidence (`8529729` was already on main); `.claude/session-end.md` (`78de878`) now sweeps ALL open issues against landed commits, not just the session's own fixes; privacy decisions applied (`9c2c9c2`) — split-repair guard values externalized to gitignored `data/repair-configs/split-basis-2024-year-end.json` with a schema-validating loader, test switched to synthetic targets, classifications comment softened. User chose NO history rewrite.
+**Docs reconcile:** `CLAUDE.md` (replay-vs-rewrite invariant bullet), `docs/plans/TODO.md` (#37 closed with evidence; hardening follow-ups filed; #34/#35/#37 issue anchors added at session start).
 
 ## 2. Tests / E2E / deploy
 
-- Full suite: **4,677 passed / 430 files** (baseline 4,657; +20: 2 config-validation + 18 batch tests). Batch fixes were built by four parallel subagents, each with red→green TDD evidence (pre-fix repros confirmed at the exact old cap boundaries), then reviewed centrally before landing.
-- Migration verification: suite run twice (before and after all edits), Electron rebuilt + notarized + deployed + `:3099` healthy, QA sandbox boots clean against the new bundle, R2 snapshot uploaded fresh (`state/vanguard-state-2026-08-11.json.gz`), dev `:3000` restarted under node@24. Notable: the R2 snapshot cron self-healed within 2 minutes of the better-sqlite3 v13 install — N-API loads under any modern Node, so the fix reached the cron before its PATH pin did.
-- Live repair dry-run: the reworked split-basis script re-ran against the live DB through the new config road — all rows correctly report already-normalized (idempotence preserved).
-- Deploys: Electron ×2 (morning migration build; session-end batch build — final: exit 0, installed, relaunched, health check green first probe). Cloudflare Worker ×1 (`ab8f941e`, the parseTableRow parity fix). DMG built clean twice — the Errno-28 watch item is CLOSED (3 consecutive clean notarized builds).
+- Full suite **4,723 passed / 438 files** (baseline 4,677; +46 net new). Run three ways: worktree branch tip, merged main, and per-task focused runs with red→green TDD evidence for every task.
+- **Browser E2E** against a worktree dev server running the branch: preview shows the corporate-actions block + all named warnings, Import button enabled for CA-bearing files, commit works, security-detail shows the imported chip with no Undo, privacy masking round-trips on the reconcile delta, re-import is a 0-new/all-dupes no-op. The E2E also *found* the ImportHistory hooks crash (fresh-DB-only path).
+- **Live repair (separately authorized in-session):** backup `data/backups/pre-corp-actions-import-2026-08-12.db`; July statement re-imported through the normal import road on a restarted dev server running merged main. Result: exactly one new corporate-action row, replay status **clean** (`reconcile_delta` NULL — ledger-implied delta matched the statement exactly), post-split sells now consume the split-adjusted lots (the prior future-lot pairing at the oversell point is gone), open position matches the broker's post-split book, zero synthetic closes, second re-import a proven no-op. Issue #37 closed with sanitized evidence.
+- **Deploy:** `electron:deploy` exit 0, notarization successful, installed + relaunched, `:3099` health 200. (First deploy attempt was hook-blocked pending a TODO.md reconcile — satisfied, not bypassed.)
 
 ## 3. Open concerns, rejected approaches, user decisions
 
-- **Migration target decision:** user delegated; chose node@24 LTS keg (supported ~2028) over re-pinning to EOL node@20 or tracking rolling node 26. The `node@25`/`node@26` opt symlinks are ALIASES into the moving keg — never pin to them. better-sqlite3 13.0.2 (not 13.0.3) was selected by the user's npm `min-release-age=7` supply-chain guard; 13.0.3 is CI-infra-only, a routine update can pick it up after 2026-08-12.
-- **v12→13 was forced, not optional:** better-sqlite3 12.6.2 under Node 24 aborts the process at worker-thread teardown (native assertion in `Statement::~Statement` via `RemoveEnvironmentCleanupHook`) — 75 vitest fork crashes. v13.0.2's changelog names the exact fix.
-- **#42 design:** adopted the PDF road's precedent ("print it anyway — notes never truncate to force a page count") rather than an explicit-omission marker; overflow is bounded because scratch flexes to its floor and commentary keeps its budget trim, so only real content overflows.
-- **#45 kept the asymmetry:** labeled-prose lines block upward merges but remain merge targets — a genuine citation fragment continuing labeled prose is legitimate.
-- **Privacy: history accepted as-is** (user decision) — one historical closed-position share count deep in commit messages didn't justify a filter-repo force-push.
-- **Stale-issue candidate:** #19 (Calendar Living Record 2-week coverage check, target 2026-05-08) looks overtaken by events; flagged to the user for a close/keep call rather than closed unilaterally. #35/#34 P0s remain open and untouched.
+- **New standing workflow rule (user, this session):** every plan/spec gets an independent Codex review via `/codex-review-plan` — iterate until settled — BEFORE the user reviews. This session ran 4 such rounds (2 on the spec, 2 on the plan); real catches included business-key collisions silently swallowing imported actions, the non-blocking post-commit recompute stranding replay warnings, an account-scoping error in the delta cross-check, and a CA-only import triggering the closed-equity reconciler against an empty snapshot. Recorded in project memory; progress comment left on issue #34.
+- **Semantics decision (user):** splits are replay-native events — history is never rewritten (approach B, driving the legacy `addCorporateAction` rewrite machinery from import, was rejected for re-import idempotence breakage; approach C, zero-cost share injection, rejected for basis corruption). The manual Apply/Undo road is untouched this round; its multi-minute-freeze QA finding stays a separate item.
+- **Sanitization decision (user):** committed docs may name tickers (public market facts; consistent with existing repo practice) but never quantities/basis; the issue-close comment itself is fully sanitized per #37's stricter rule.
+- **Known limitations, disclosed:** duplicate-owner batch undo semantics are inherited platform behavior (documented, test-pinned, not special-cased); preview CA counts are shape-validated only (no DB handle) so an unknown-symbol row previews but resolve-skips at commit with a warning; reverse-split cash-in-lieu is out of scope with the persisted delta as tripwire.
+- **Hardening follow-ups filed in TODO** (from the final whole-branch review): equal-date orphan guard should widen `>` to `>=` (plan defect, narrow); `splitEvents` query should filter `action_type IN ('SPLIT','REVERSE_SPLIT')`; mixed long+short single-security book lacks a cross-check covering test.
+- **Not addressed this session:** issues #34 (progress comment only) and #35 (untouched).
 
 ## 4. Uncommitted changes / live-process state (post-deploy)
 
-- Working tree: clean after the handoff commit. No open PRs. Worktree `../vanguard-skin-qa-fix` stands (deliberate, nightly fixer).
-- Live: packaged app (session-end build with batch fixes + node@24) on :3099, healthy; dev server on :3000 under node@24; Worker at `ab8f941e`; QA fixer's leftover :3096 dev server from 8/10 was killed (verified stale).
-- Watch items: NBIS preview should fire Wed 8/12 ~05:00–05:30 ET — the sweep cron now runs on fixed, node@24-pinned code; tonight's deep-QA sweep is the first natural test of the sandbox fix (last night's failed on the Node break — that failure, not a regression, explains the missing 8/11 run).
+- Working tree clean; all commits pushed through the final handoff commit. Feature worktree `../vanguard-skin-ca` removed after merge; the nightly fixer's `../vanguard-skin-qa-fix` worktree stands (deliberate).
+- **PR #46 (`qa-auto-fixes-2026-08-12`) is OPEN** — the nightly QA fixer ran overnight (first natural pass of the node@24 sandbox fix — it worked) and needs triage next session.
+- Live: packaged app (with corporate-actions code) on `:3099`, healthy; dev server on `:3000` running merged main (restarted this session — it had pre-merge code); Worker unchanged (no parity work needed — import path is Mac-only by architecture, rationale in the spec).
+- Watch items: NBIS earnings preview ~05:00–05:30 ET Wed 8/12 (sweep now runs on node@24-pinned code); PR #46 triage.
 
 ## 5. Claude session link
 
-https://claude.ai/code/session_016L4UiviGMB9KrNC6wvjJPK
+https://claude.ai/code/session_013RhpNgKkYnkirVxKq7C3Hw
