@@ -3,6 +3,8 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Section } from "./Section";
+import { Chip } from "./Chip";
+import { Shares } from "@/lib/privacy/components";
 
 interface CorporateAction {
   id: number;
@@ -12,7 +14,11 @@ interface CorporateAction {
   ratioDenominator: number;
   notes: string | null;
   applied: number;
+  source: string;
   createdAt: string;
+  sourceKey: string | null;
+  reconcileDelta: number | null;
+  quantityDelta: number | null;
 }
 
 export function CorporateActionsSection({
@@ -202,7 +208,18 @@ export function CorporateActionsSection({
                   <span className="text-xs font-mono px-2 py-0.5 rounded bg-raised text-ink-dim">
                     {formatRatio(action.ratioNumerator, action.ratioDenominator)}
                   </span>
-                  {action.applied ? (
+                  {action.source === "import" ? (
+                    // Import rows have applied=0 forever — the replay applies
+                    // them on every tax-lot recompute rather than flipping a
+                    // stored flag. Reading that as "Pending" would be wrong;
+                    // this is a normal, settled import row.
+                    <Chip
+                      tone="info"
+                      title="Imported from a statement — remove via import undo"
+                    >
+                      imported
+                    </Chip>
+                  ) : action.applied ? (
                     <span className="text-xs px-1.5 py-0.5 rounded-full bg-up/15 text-up">Applied</span>
                   ) : (
                     <span className="text-xs px-1.5 py-0.5 rounded-full bg-gold/15 text-gold-ink">Pending</span>
@@ -212,14 +229,22 @@ export function CorporateActionsSection({
                   Effective: {action.effectiveDate}
                   {action.notes && <span className="ml-3 text-ink-dim">{action.notes}</span>}
                 </div>
+                {action.reconcileDelta != null && (
+                  <div className="text-xs text-gold-ink">
+                    Reconcile: ledger-implied delta differs from statement by{" "}
+                    <Shares value={action.reconcileDelta} /> — review lots
+                  </div>
+                )}
               </div>
-              <button
-                onClick={() => handleUndo(action.id)}
-                className="text-xs text-down/70 hover:text-down transition-colors"
-                title="Undo this corporate action"
-              >
-                Undo
-              </button>
+              {action.source !== "import" && (
+                <button
+                  onClick={() => handleUndo(action.id)}
+                  className="text-xs text-down/70 hover:text-down transition-colors"
+                  title="Undo this corporate action"
+                >
+                  Undo
+                </button>
+              )}
             </div>
           ))}
         </div>

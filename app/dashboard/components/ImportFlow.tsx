@@ -10,6 +10,12 @@ interface SkippedRow {
   symbol?: string;
 }
 
+interface CorporateActionPreviewRow {
+  symbol: string;
+  description: string;
+  effectiveDate: string;
+}
+
 interface PreviewResult {
   filename: string;
   success: boolean;
@@ -21,6 +27,10 @@ interface PreviewResult {
     holdingCount: number;
     priceCount: number;
     snapshotCount: number;
+    corporateActions: {
+      count: number;
+      sample: CorporateActionPreviewRow[];
+    };
   };
   skippedRows?: SkippedRow[];
   errors?: string[];
@@ -39,17 +49,24 @@ interface CommitResult {
     newPrices: number;
     newSnapshots: number;
     newSecurities: number;
+    newCorporateActions: number;
     skippedDuplicates: number;
     totalRecords: number;
   };
+  warnings?: string[];
 }
+
+type ReplayResult = {
+  status: "clean" | "mismatch" | "failed";
+  warnings: string[];
+} | null;
 
 type ImportState =
   | { status: "idle" }
   | { status: "parsing" }
   | { status: "preview"; results: PreviewResult[] }
   | { status: "importing" }
-  | { status: "done"; results: CommitResult[]; newTradePeriods?: { periodStart: string; periodEnd: string; tradeCount: number }[]; reconciliationFlags?: { accountName: string; snapshotDate: string; diffPct: number }[] }
+  | { status: "done"; results: CommitResult[]; replay?: ReplayResult; newTradePeriods?: { periodStart: string; periodEnd: string; tradeCount: number }[]; reconciliationFlags?: { accountName: string; snapshotDate: string; diffPct: number }[] }
   | { status: "error"; message: string };
 
 export function ImportFlow() {
@@ -122,7 +139,7 @@ export function ImportFlow() {
         return;
       }
 
-      setState({ status: "done", results: data.results, newTradePeriods: data.newTradePeriods, reconciliationFlags: data.reconciliationFlags });
+      setState({ status: "done", results: data.results, replay: data.replay, newTradePeriods: data.newTradePeriods, reconciliationFlags: data.reconciliationFlags });
       router.refresh();
     } catch (err) {
       setState({
@@ -243,7 +260,7 @@ export function ImportFlow() {
     // committing it only creates an empty import_batches row (the 0-record
     // rows in Import History that invite a pointless 95s Undo).
     const previewRecordCount = (p: NonNullable<(typeof state.results)[number]["preview"]>) =>
-      p.transactionCount + p.securityCount + p.holdingCount + p.priceCount + p.snapshotCount;
+      p.transactionCount + p.securityCount + p.holdingCount + p.priceCount + p.snapshotCount + p.corporateActions.count;
     const parsedResults = state.results.filter((r) => r.success && r.preview);
     const importableCount = parsedResults.filter(
       (r) => previewRecordCount(r.preview!) > 0
@@ -294,7 +311,7 @@ export function ImportFlow() {
               </div>
 
               {result.success && result.preview ? (
-                <div className="grid grid-cols-3 md:grid-cols-5 gap-2 text-center">
+                <div className="grid grid-cols-3 md:grid-cols-6 gap-2 text-center">
                   {(
                     [
                       ["Transactions", result.preview.transactionCount],
@@ -302,6 +319,7 @@ export function ImportFlow() {
                       ["Holdings", result.preview.holdingCount],
                       ["Prices", result.preview.priceCount],
                       ["Snapshots", result.preview.snapshotCount],
+                      ["Corp Actions", result.preview.corporateActions.count],
                     ] as const
                   ).map(([label, count]) => (
                     <div key={label} className="py-2">
@@ -318,6 +336,23 @@ export function ImportFlow() {
                     <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
                   </svg>
                   {result.error}
+                </div>
+              )}
+
+              {/* Corporate actions sample */}
+              {result.preview && result.preview.corporateActions.count > 0 && (
+                <div className="mt-3 rounded-lg border border-edge bg-raised/40 px-3 py-2">
+                  <p className="text-xs font-medium text-ink-dim mb-1">
+                    {result.preview.corporateActions.count} corporate action
+                    {result.preview.corporateActions.count !== 1 ? "s" : ""}
+                  </p>
+                  <div className="space-y-0.5">
+                    {result.preview.corporateActions.sample.map((ca, j) => (
+                      <p key={j} className="text-xs text-ink-faint font-mono">
+                        {ca.symbol} — {ca.description} — effective {ca.effectiveDate}
+                      </p>
+                    ))}
+                  </div>
                 </div>
               )}
 
@@ -416,28 +451,69 @@ export function ImportFlow() {
           {state.results.map((result, i) => (
             <div
               key={i}
-              className="rounded-lg border border-edge bg-canvas p-3 flex items-center justify-between"
+              className="rounded-lg border border-edge bg-canvas p-3"
             >
-              <div className="flex items-center gap-2">
-                <svg className="w-4 h-4 text-ink-faint" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
-                </svg>
-                <span className="text-sm text-ink">{result.filename}</span>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <svg className="w-4 h-4 text-ink-faint" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+                  </svg>
+                  <span className="text-sm text-ink">{result.filename}</span>
+                </div>
+                {result.committed && (
+                  <span className="text-xs font-mono text-ink-dim tabular-nums">
+                    {result.committed.totalRecords} records
+                    {result.committed.skippedDuplicates > 0 && (
+                      <span className="text-ink-faint">
+                        {" "}
+                        ({result.committed.skippedDuplicates} dupes skipped)
+                      </span>
+                    )}
+                  </span>
+                )}
               </div>
-              {result.committed && (
-                <span className="text-xs font-mono text-ink-dim tabular-nums">
-                  {result.committed.totalRecords} records
-                  {result.committed.skippedDuplicates > 0 && (
-                    <span className="text-ink-faint">
-                      {" "}
-                      ({result.committed.skippedDuplicates} dupes skipped)
-                    </span>
-                  )}
-                </span>
+
+              {/* Parser/commit warnings (e.g. corporate actions skipped for an
+                  unresolved symbol or a ratio collision) */}
+              {result.warnings && result.warnings.length > 0 && (
+                <details className="mt-2">
+                  <summary className="text-xs text-gold-ink cursor-pointer hover:text-gold/80">
+                    {result.warnings.length} warning{result.warnings.length !== 1 ? "s" : ""}
+                  </summary>
+                  <div className="mt-1 space-y-0.5">
+                    {result.warnings.map((w, j) => (
+                      <p key={j} className="text-xs text-gold/80">
+                        {w}
+                      </p>
+                    ))}
+                  </div>
+                </details>
               )}
             </div>
           ))}
         </div>
+
+        {/* Corporate-action tax-lot replay status */}
+        {state.replay && state.replay.status === "mismatch" && (
+          <div className="rounded-lg border border-gold/20 bg-gold/5 px-4 py-3 text-sm">
+            <span className="text-gold-ink font-medium">
+              Corporate action reconcile mismatch
+            </span>
+            <div className="mt-1 space-y-0.5">
+              {state.replay.warnings.map((w, j) => (
+                <p key={j} className="text-xs text-gold/80">
+                  {w}
+                </p>
+              ))}
+            </div>
+          </div>
+        )}
+        {state.replay && state.replay.status === "failed" && (
+          <div className="rounded-lg border border-down/20 bg-down/5 px-4 py-3 text-sm text-down">
+            Tax-lot recompute failed after a corporate-action import — reconcile status unknown.
+            Check the server log and re-run the recompute.
+          </div>
+        )}
 
         {/* Trade review prompt */}
         {state.newTradePeriods && state.newTradePeriods.length > 0 && (
