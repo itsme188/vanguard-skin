@@ -50,10 +50,10 @@ describe("cashAccuracy dimension — unexplained cash-flow extension", () => {
     db = createTestDb();
   });
 
-  it("caps the score and names the account+date when an unexplained cash jump exists", () => {
+  it("caps the score and names the account+date+classification for an external-flow-candidate jump", () => {
     insertFreshAnchor(db, 1, 2, 1_500_000); // fresh statement anchor — would otherwise score 100
     insertValuation(db, 1, "2026-07-10", [REDACTED], [REDACTED]);
-    insertValuation(db, 1, "2026-07-11", [REDACTED], [REDACTED]); // unexplained +[REDACTED], no transactions
+    insertValuation(db, 1, "2026-07-11", [REDACTED], [REDACTED]); // unexplained +[REDACTED] cash, +[REDACTED] total_value, no transactions
 
     const { cashAccuracy } = getDataConfidence(db);
 
@@ -62,8 +62,30 @@ describe("cashAccuracy dimension — unexplained cash-flow extension", () => {
     expect(cashAccuracy.unexplainedFlow!.accountName).toBe("Vanguard Taxable");
     expect(cashAccuracy.unexplainedFlow!.date).toBe("2026-07-11");
     expect(cashAccuracy.unexplainedFlow!.residual).toBeCloseTo([REDACTED], 1);
+    expect(cashAccuracy.unexplainedFlow!.classification).toBe("external-flow-candidate");
     expect(cashAccuracy.detail).toContain("Vanguard Taxable");
     expect(cashAccuracy.detail).toContain("2026-07-11");
+    expect(cashAccuracy.detail).toContain("unexplained external-flow-shaped cash delta");
+    expect(cashAccuracy.guidance).toContain("repair-missing-external-flows.ts");
+  });
+
+  it("caps the score and uses the internal-shift wording when total_value moved smoothly", () => {
+    insertFreshAnchor(db, 1, 2, [REDACTED]);
+    // Mirrors the live 2026-07-30->07-31 finding: cash drops ~$231k but
+    // total_value only drops ~$13.8k — a cash/holdings misattribution, not
+    // a missing flow.
+    insertValuation(db, 1, "2026-07-30", [REDACTED], [REDACTED]);
+    insertValuation(db, 1, "2026-07-31", [REDACTED], [REDACTED]);
+
+    const { cashAccuracy } = getDataConfidence(db);
+
+    expect(cashAccuracy.score).toBeLessThanOrEqual(40);
+    expect(cashAccuracy.unexplainedFlow).not.toBeNull();
+    expect(cashAccuracy.unexplainedFlow!.classification).toBe("internal-shift");
+    expect(cashAccuracy.detail).toContain("internal cash/holdings shift (valuation-source misattribution)");
+    expect(cashAccuracy.detail).not.toContain("unexplained external-flow-shaped");
+    expect(cashAccuracy.guidance).toContain("valuation source");
+    expect(cashAccuracy.guidance).not.toContain("repair-missing-external-flows.ts");
   });
 
   it("leaves the score untouched and unexplainedFlow null when cash is clean", () => {
@@ -108,5 +130,7 @@ describe("cashAccuracy dimension — unexplained cash-flow extension", () => {
     const { cashAccuracy } = getDataConfidence(db);
     expect(cashAccuracy.unexplainedFlow).not.toBeNull();
     expect(cashAccuracy.unexplainedFlow!.accountName).toBe("Vanguard Roth IRA");
+    // total_value moved exactly as much as cash here (holdings unchanged) — corroborated.
+    expect(cashAccuracy.unexplainedFlow!.classification).toBe("external-flow-candidate");
   });
 });
