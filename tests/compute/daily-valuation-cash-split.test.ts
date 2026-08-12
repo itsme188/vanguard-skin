@@ -212,6 +212,67 @@ describe("daily valuation — cash/holdings split normalization", () => {
     expect(vals["2026-08-04"].cash_balance).toBe(1_000);
   });
 
+  it("keeps cash positive when a Plaid ANCHOR day also carries a bond (the daily production shape)", () => {
+    // The shape that actually ships: Plaid writes a monthly_snapshots anchor
+    // on every sync (lib/plaid/refresh.ts), so on a carry day the residual is
+    // computed against a PLAID total rather than inherited from the previous
+    // statement — cash = plaid_total − (equity + carried_bond).
+    //
+    // That makes this the one test that exercises the engine's load-bearing
+    // assumption: Plaid's account `balances.current` includes the
+    // institution-held Treasury even though Plaid never reports it as a
+    // position. Verified against real data — Plaid-anchored carry days come
+    // out positive and smooth, with zero negative-cash rows on the account
+    // that holds bonds. If a future Plaid change dropped bond value from the
+    // account total, the carried bond would be subtracted from a total that
+    // never contained it and cash would crater by the bond's full market
+    // value; the positivity assertions below are the canary for that.
+    const aapl = seedSecurity(db, "AAPL", "stock", "US Large Cap Equity");
+    const bill = seedSecurity(db, "TBILL", "bond", "US Treasury");
+    const TRUE_CASH = 1_000;
+
+    seedHolding(db, ACCOUNT_ID, aapl, 100, "2026-07-31", "canonical:hold:TAX:AAPL:2026-07-31");
+    seedHolding(db, ACCOUNT_ID, bill, 100_000, "2026-07-31", "canonical:hold:TAX:TBILL:2026-07-31");
+    seedHolding(db, ACCOUNT_ID, aapl, 100, "2026-08-03", "plaid:1:1:2026-08-03");
+    seedHolding(db, ACCOUNT_ID, aapl, 100, "2026-08-04", "plaid:1:1:2026-08-04");
+
+    for (const d of ["2026-07-31", "2026-08-03", "2026-08-04"]) seedPrice(db, aapl, d, 150);
+    seedPrice(db, bill, "2026-07-31", 99);   // 99,000
+    seedPrice(db, bill, "2026-08-03", 99.5); // 99,500
+    seedPrice(db, bill, "2026-08-04", 100);  // 100,000
+
+    // Statement anchor, then a Plaid anchor on EACH sync day. Every total
+    // includes the bond's market value — that is the verified reality this
+    // test pins down.
+    seedSnapshot(db, ACCOUNT_ID, "2026-07-31", 15_000 + 99_000 + TRUE_CASH, "statement");
+    seedSnapshot(db, ACCOUNT_ID, "2026-08-03", 15_000 + 99_500 + TRUE_CASH, "plaid");
+    seedSnapshot(db, ACCOUNT_ID, "2026-08-04", 15_000 + 100_000 + TRUE_CASH, "plaid");
+
+    computeDailyValuations(db);
+    const vals = valuationsByDate(db, ACCOUNT_ID);
+
+    // (c) The carried bond is inside holdings_value on the Plaid anchor days.
+    expect(vals["2026-08-03"].holdings_value).toBe(114_500); // 15,000 + 99,500
+    expect(vals["2026-08-03"].holdings_count).toBe(2);
+    expect(vals["2026-08-04"].holdings_value).toBe(115_000); // 15,000 + 100,000
+
+    // (a) The residual against the PLAID total lands exactly on true cash —
+    // it does not absorb the bond (that would be ~100,500, a phantom spike)
+    // and it does not go negative (that would be ~-98,500, the failure mode
+    // if Plaid's total ever excluded the bond).
+    expect(vals["2026-08-03"].cash_balance).toBe(TRUE_CASH);
+    expect(vals["2026-08-04"].cash_balance).toBe(TRUE_CASH);
+
+    // (b) Positive and continuous across the statement→Plaid handoff and
+    // across consecutive Plaid anchors — no step, no sign flip.
+    for (const d of ["2026-07-31", "2026-08-03", "2026-08-04"]) {
+      expect(vals[d].cash_balance).toBeGreaterThan(0);
+      expect(vals[d].cash_balance).toBe(TRUE_CASH);
+      // Totals still equal the anchors' own snapshot totals.
+      expect(vals[d].total_value).toBe(vals[d].holdings_value + TRUE_CASH);
+    }
+  });
+
   it("never carries bonds into a TWS-sourced snapshot day", () => {
     // TWS reports bonds itself; carrying would double-count around a
     // mid-month sale. The gate is the presence of a plaid: row, not the
