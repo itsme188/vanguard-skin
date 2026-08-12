@@ -17,6 +17,9 @@ export interface CorporateAction {
   applied: number;
   source: string;
   createdAt: string;
+  sourceKey: string | null;
+  reconcileDelta: number | null;
+  quantityDelta: number | null;
 }
 
 export interface AddCorporateActionParams {
@@ -83,7 +86,8 @@ export function listCorporateActions(
         `SELECT id, security_id AS securityId, action_type AS actionType,
                 effective_date AS effectiveDate, ratio_numerator AS ratioNumerator,
                 ratio_denominator AS ratioDenominator, new_security_id AS newSecurityId,
-                cash_per_share AS cashPerShare, notes, applied, source, created_at AS createdAt
+                cash_per_share AS cashPerShare, notes, applied, source, created_at AS createdAt,
+                source_key AS sourceKey, reconcile_delta AS reconcileDelta, quantity_delta AS quantityDelta
          FROM corporate_actions WHERE security_id = ? ORDER BY effective_date DESC`,
       )
       .all(securityId) as CorporateAction[];
@@ -93,7 +97,8 @@ export function listCorporateActions(
       `SELECT id, security_id AS securityId, action_type AS actionType,
               effective_date AS effectiveDate, ratio_numerator AS ratioNumerator,
               ratio_denominator AS ratioDenominator, new_security_id AS newSecurityId,
-              cash_per_share AS cashPerShare, notes, applied, source, created_at AS createdAt
+              cash_per_share AS cashPerShare, notes, applied, source, created_at AS createdAt,
+              source_key AS sourceKey, reconcile_delta AS reconcileDelta, quantity_delta AS quantityDelta
        FROM corporate_actions ORDER BY effective_date DESC`,
     )
     .all() as CorporateAction[];

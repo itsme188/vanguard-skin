@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { parseImport, commitImport, undoImport } from "@/lib/import/engine";
+import type { CommitResult } from "@/lib/import/engine";
 import { validateParsedResult } from "@/lib/import/validate";
 import { getSnapshotReconciliation } from "@/lib/queries/data-health";
 import { classifySecurities } from "@/lib/compute/classify-securities";
@@ -40,6 +41,10 @@ export async function POST(request: NextRequest) {
     }
 
     const results = [];
+    // Raw CommitResult objects (not the transformed `results` entries) — used
+    // after the loop to decide whether the request carried any corporate
+    // action activity, and if so, what the tax-lot replay found.
+    const commitResultsRaw: CommitResult[] = [];
 
     for (const file of files) {
       const isPdf = file.type === "application/pdf" || file.name.endsWith(".pdf");
@@ -78,6 +83,14 @@ export async function POST(request: NextRequest) {
             priceCount: validatedResult.prices.length,
             snapshotCount: validatedResult.snapshots.length,
             factorCount: validatedResult.factors?.length ?? 0,
+            corporateActions: {
+              count: validatedResult.corporateActions.length,
+              sample: validatedResult.corporateActions.slice(0, 5).map((ca) => ({
+                symbol: ca.symbol,
+                description: `${ca.ratioNumerator}:${ca.ratioDenominator} ${ca.actionType === "SPLIT" ? "split" : "reverse split"}`,
+                effectiveDate: ca.effectiveDate,
+              })),
+            },
           },
           skippedRows: skippedRows.length > 0 ? skippedRows : undefined,
           errors: parsed.errors,
@@ -88,6 +101,7 @@ export async function POST(request: NextRequest) {
 
       // Commit mode — write to DB
       const commitResult = commitImport(db, parsed);
+      commitResultsRaw.push(commitResult);
 
       // Phase 3: archive source PDFs to R2 (fire-and-forget; never blocks).
       // Only PDFs are archived — CSVs are usually user-managed/version-tracked
@@ -121,26 +135,49 @@ export async function POST(request: NextRequest) {
           newSnapshots: commitResult.newSnapshots,
           newSecurities: commitResult.newSecurities,
           newFactors: commitResult.newFactors,
+          newCorporateActions: commitResult.newCorporateActions,
           skippedDuplicates: commitResult.skippedDuplicates,
           totalRecords: commitResult.recordCount,
           unmatchedFactors: commitResult.unmatchedFactors,
         },
         errors: parsed.errors,
-        warnings: parsed.warnings,
+        // Parser-level warnings (e.g. skipped merger/malformed CA rows) plus
+        // commit-time corporate-action warnings (unresolved symbol, ratio
+        // collision) — both are meaningful post-commit, neither should be lost.
+        warnings: [...parsed.warnings, ...commitResult.warnings],
       });
     }
 
-    // Auto-classify and compute tax lots after commit
+    // Auto-classify and compute tax lots after commit. The route loops over
+    // files calling commitImport per file, then runs these ONCE for the
+    // whole request — so the replay status aggregates across every file.
+    let replay: { status: "clean" | "mismatch" | "failed"; warnings: string[] } | null = null;
     if (mode === "commit") {
       try {
         classifySecurities(db);
       } catch {
         // Classification failure shouldn't block import
       }
+
+      const hadCorporateActions = commitResultsRaw.some(
+        (r) => (r.newCorporateActions ?? 0) > 0 || (r.warnings ?? []).length > 0,
+      );
       try {
-        computeTaxLots(db);
-      } catch {
-        // Tax lot computation failure shouldn't block import
+        const lotResult = computeTaxLots(db);
+        if (hadCorporateActions) {
+          replay =
+            lotResult.replayWarnings.length > 0
+              ? { status: "mismatch", warnings: lotResult.replayWarnings }
+              : { status: "clean", warnings: [] };
+        }
+      } catch (err) {
+        console.error("[import] tax-lot recompute failed:", err);
+        if (hadCorporateActions) {
+          replay = {
+            status: "failed",
+            warnings: ["Tax-lot recompute failed — reconcile status unknown"],
+          };
+        }
       }
       try {
         computeDailyValuations(db);
@@ -181,6 +218,7 @@ export async function POST(request: NextRequest) {
       mode,
       fileCount: files.length,
       results,
+      replay,
       newTradePeriods,
       reconciliationFlags: reconciliationFlags.length > 0 ? reconciliationFlags : undefined,
     });
