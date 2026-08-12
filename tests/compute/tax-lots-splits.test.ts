@@ -37,6 +37,23 @@ function insertSplit(db: Database.Database, secId: number, accountId: number | n
         source === "import" ? `ibkr:ca:split:${date}:AAAA:${num}:${den}` : null, delta);
 }
 
+// Mirrors tests/compute/tax-lots-reconcile-close.test.ts's seed helpers —
+// the RECONCILE_CLOSE pass only fires for stocks/ETFs, so the security must
+// be typed for these tests.
+function seedHolding(db: Database.Database, accountId: number, secId: number,
+  quantity: number, asOfDate: string) {
+  db.prepare(
+    `INSERT INTO holdings (account_id, security_id, quantity, cost_basis, as_of_date, source_key)
+     VALUES (?, ?, ?, 0, ?, ?)`,
+  ).run(accountId, secId, quantity, asOfDate, `test-hold-${accountId}-${secId}-${asOfDate}`);
+}
+
+function seedPrice(db: Database.Database, secId: number, date: string, price: number) {
+  db.prepare(
+    "INSERT OR REPLACE INTO prices (security_id, date, close_price, source) VALUES (?, ?, ?, 'test')",
+  ).run(secId, date, price);
+}
+
 describe("computeTaxLots: import-sourced split replay", () => {
   it("adjusts an open lot: qty ×4, per-share ÷4, total basis and date unchanged; clean delta → NULL", () => {
     const { db, ibkr, sec } = setup();
@@ -170,5 +187,34 @@ describe("computeTaxLots: import-sourced split replay", () => {
     computeTaxLots(db);
     ca = db.prepare("SELECT reconcile_delta FROM corporate_actions").get() as { reconcile_delta: number | null };
     expect(ca.reconcile_delta).toBeNull();                           // each recompute refreshes it
+  });
+
+  it("RECONCILE_CLOSE skips an orphan whose zero-holdings date predates a later import split (no basis-mixed fabricated gain)", () => {
+    const { db, ibkr, sec } = setup();
+    db.prepare("UPDATE securities SET security_type = 'Stock' WHERE id = ?").run(sec);
+    insertTxn(db, ibkr, sec, "2026-06-01", "BUY", 100, 400, "k1");
+    // Broker snapshot says the position was flat on 6/15 — but no SELL was
+    // ever imported. Without the guard, computeTaxLots would already have
+    // applied the 7/01 split (400 @ $100) by the time this pass runs, and
+    // would price the synthetic close at the 6/15 price of $400 — mixing a
+    // post-split quantity against what happens to be a pre-split-era price,
+    // fabricating a large phantom gain (400 × $400 proceeds vs $40,000 basis).
+    seedHolding(db, ibkr, sec, 0, "2026-06-15");
+    seedPrice(db, sec, "2026-06-15", 400);
+    insertSplit(db, sec, ibkr, "2026-07-01", 4, 1, 300);
+
+    const result = computeTaxLots(db);
+
+    const synth = db
+      .prepare("SELECT * FROM transactions WHERE type = 'RECONCILE_CLOSE' AND security_id = ?")
+      .all(sec);
+    expect(synth).toHaveLength(0);
+    const sales = db.prepare("SELECT * FROM tax_lot_sales").all();
+    expect(sales).toHaveLength(0);
+
+    const lot = db.prepare("SELECT quantity_remaining, acquisition_price FROM tax_lots").get() as Record<string, number>;
+    expect(lot.quantity_remaining).toBeCloseTo(400);   // split still applies — position stays open
+    expect(lot.acquisition_price).toBeCloseTo(100);
+    expect(result.replayWarnings.join("\n")).toContain("AAAA");
   });
 });
