@@ -4,6 +4,7 @@ import {
   listCorporateActions,
   addCorporateAction,
   undoCorporateAction,
+  ImportedActionError,
 } from "@/lib/compute/corporate-actions";
 
 /**
@@ -46,6 +47,26 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const existing = db
+      .prepare(
+        `SELECT id, source FROM corporate_actions WHERE security_id = ? AND effective_date = ?`,
+      )
+      .get(securityId, effectiveDate) as { id: number; source: string } | undefined;
+
+    if (existing) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            `A corporate action already exists for this security on ${effectiveDate}` +
+            (existing.source === "import"
+              ? " (imported from a statement — resolve via import)"
+              : ""),
+        },
+        { status: 409 },
+      );
+    }
+
     const action = addCorporateAction(db, {
       securityId,
       actionType,
@@ -80,6 +101,9 @@ export async function DELETE(request: NextRequest) {
 
     return NextResponse.json({ success: true, message: `Corporate action ${id} undone` });
   } catch (error) {
+    if (error instanceof ImportedActionError) {
+      return NextResponse.json({ success: false, error: error.message }, { status: 403 });
+    }
     const message = error instanceof Error ? error.message : "Unknown error";
     return NextResponse.json({ success: false, error: message }, { status: 500 });
   }
