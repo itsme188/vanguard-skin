@@ -4,6 +4,7 @@ interface TaxLotComputeResult {
   lotsCreated: number;
   salesProcessed: number;
   totalRealizedGain: number;
+  replayWarnings: string[];
 }
 
 interface TransactionRow {
@@ -24,6 +25,16 @@ interface OpenLot {
   acquisition_price: number;
   quantity_remaining: number;
   is_short: number;
+}
+
+interface SplitEvent {
+  id: number;
+  security_id: number;
+  account_id: number | null;
+  effective_date: string;
+  ratio: number;
+  quantity_delta: number | null;
+  symbol: string;
 }
 
 interface OptionExerciseRow {
@@ -118,6 +129,70 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
       );
       lotsCreated++;
     }
+
+    // ── Import-sourced corporate-action splits (replay events) ──
+    // 'manual' rows already rewrote history at apply time (legacy road) and
+    // are excluded here — replaying them would double-apply. Only
+    // 'import' rows (statement-sourced) are replayed chronologically,
+    // merged into the sells loop below.
+    const splitEvents = db
+      .prepare(
+        `SELECT ca.id, ca.security_id, ca.account_id, ca.effective_date,
+                CAST(ca.ratio_numerator AS REAL) / ca.ratio_denominator AS ratio,
+                ca.quantity_delta, s.symbol
+         FROM corporate_actions ca
+         JOIN securities s ON s.id = ca.security_id
+         WHERE ca.source = 'import'
+         ORDER BY ca.effective_date, ca.id`
+      )
+      .all() as SplitEvent[];
+    const replayWarnings: string[] = [];
+    const clearDelta = db.prepare(
+      "UPDATE corporate_actions SET reconcile_delta = NULL WHERE id = ?"
+    );
+    const setDelta = db.prepare(
+      "UPDATE corporate_actions SET reconcile_delta = ? WHERE id = ?"
+    );
+
+    const applySplitEvent = (ev: SplitEvent) => {
+      // Cross-check scope: the importing account's open lots only (the
+      // statement is single-account evidence). The adjustment itself is
+      // market-wide — a split applies to every account holding the security.
+      const preOpen =
+        ev.account_id != null
+          ? (
+              db
+                .prepare(
+                  `SELECT COALESCE(SUM(quantity_remaining), 0) AS q FROM tax_lots
+                   WHERE security_id = ? AND account_id = ? AND quantity_remaining > 0 AND acquisition_date <= ?`
+                )
+                .get(ev.security_id, ev.account_id, ev.effective_date) as { q: number }
+            ).q
+          : null;
+
+      db.prepare(
+        `UPDATE tax_lots
+         SET quantity_acquired = quantity_acquired * ?,
+             quantity_remaining = quantity_remaining * ?,
+             acquisition_price = acquisition_price / ?
+         WHERE security_id = ? AND quantity_remaining > 0 AND acquisition_date <= ?`
+      ).run(ev.ratio, ev.ratio, ev.ratio, ev.security_id, ev.effective_date);
+
+      if (ev.quantity_delta != null && preOpen != null) {
+        const implied = preOpen * (ev.ratio - 1);
+        const delta = implied - ev.quantity_delta;
+        if (Math.abs(delta) <= 1e-6) {
+          clearDelta.run(ev.id);
+        } else {
+          setDelta.run(delta, ev.id);
+          replayWarnings.push(
+            `${ev.symbol} ${ev.effective_date} split: ledger-implied share delta differs from the statement's — the ledger may have been missing shares before the split`
+          );
+        }
+      } else {
+        clearDelta.run(ev.id);
+      }
+    };
 
     // ── Process SELL-like transactions ──
     // Includes: SELL, SELL_TO_CLOSE, REDEMPTION, BUY_TO_COVER, EXPIRED,
@@ -226,8 +301,27 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
       salesProcessed++;
     };
 
+    // Merge split events into the chronological sell stream. End-of-day
+    // rule (strict '<'): a sell dated the split's effective date processes
+    // BEFORE that date's split — extended-hours trading ends 20:00 ET and
+    // IBKR stamps split actions after the close (observed 20:25), so every
+    // same-date trade executed in pre-split units. Leftover events (no
+    // later sell needs to observe them) apply after the loop. With zero
+    // split events this degenerates to the original loop.
+    let nextEvent = 0;
     for (const sell of sells) {
+      while (
+        nextEvent < splitEvents.length &&
+        splitEvents[nextEvent].effective_date < sell.trade_date
+      ) {
+        applySplitEvent(splitEvents[nextEvent]);
+        nextEvent++;
+      }
       processSell(sell);
+    }
+    while (nextEvent < splitEvents.length) {
+      applySplitEvent(splitEvents[nextEvent]);
+      nextEvent++;
     }
 
     // ── Broker-close reconciliation pass ──
@@ -329,7 +423,7 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
       }
     }
 
-    return { lotsCreated, salesProcessed, totalRealizedGain };
+    return { lotsCreated, salesProcessed, totalRealizedGain, replayWarnings };
   })();
 }
 
