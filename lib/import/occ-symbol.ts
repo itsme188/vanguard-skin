@@ -36,16 +36,18 @@ export function isOCCFormat(symbol: string): boolean {
   return /^.{6}\d{6}[CP]\d{8}$/.test(symbol);
 }
 
-/**
- * Parse an OCC-format symbol into its components (inverse of buildOCCSymbol).
- * Returns null if the string isn't OCC format.
- */
-export function parseOCCSymbol(symbol: string): {
+export interface ParsedOptionSymbol {
   underlying: string;
   expirationDate: string; // YYYY-MM-DD
   optionType: "CALL" | "PUT";
   strike: number;
-} | null {
+}
+
+/**
+ * Parse an OCC-format symbol into its components (inverse of buildOCCSymbol).
+ * Returns null if the string isn't OCC format.
+ */
+export function parseOCCSymbol(symbol: string): ParsedOptionSymbol | null {
   if (!isOCCFormat(symbol)) return null;
   const underlying = symbol.slice(0, 6).trim();
   const yy = symbol.slice(6, 8);
@@ -59,6 +61,58 @@ export function parseOCCSymbol(symbol: string): {
     optionType: cp === "C" ? "CALL" : "PUT",
     strike: parseInt(strikeRaw, 10) / 1000,
   };
+}
+
+/**
+ * Human-readable "Vanguard-compact" option symbol: root ticker, then a
+ * space, then YYMMDD (no separators), then a space, C or P, then a space,
+ * then the decimal strike. Example: "NVDA 260618 C 175.00" — the exact
+ * same contract as OCC "NVDA  260618C00175000". This spelling comes out of
+ * the Vanguard-PDF Claude extraction path (lib/import/parsers/vanguard-pdf.ts)
+ * when the model emits a symbol directly instead of (or in addition to) the
+ * structured underlying/strike/expiration/type fields ensureOCCSymbol()
+ * relies on — so a bare regex parse of the symbol text itself is the only
+ * way to recognize it (qa:security-detail-transactions--same-option-trade-
+ * duplicated-across-two-symbol-spellings, 2026-08-12).
+ */
+const VANGUARD_COMPACT_OPTION_RE =
+  /^([A-Z][A-Z0-9.]{0,5})\s+(\d{2})(\d{2})(\d{2})\s+([CP])\s+([\d.]+)\s*$/;
+
+/**
+ * Parse an option symbol string that may be spelled either in canonical OCC
+ * form or the "Vanguard-compact" human-readable form above. Returns null for
+ * anything that matches neither shape — bare tickers, bonds, CUSIPs, mutual
+ * fund symbols all safely fall through to null, never throw.
+ */
+export function parseOptionSymbol(symbol: string): ParsedOptionSymbol | null {
+  const occ = parseOCCSymbol(symbol);
+  if (occ) return occ;
+
+  const match = symbol.match(VANGUARD_COMPACT_OPTION_RE);
+  if (!match) return null;
+  const [, underlying, yy, mm, dd, cp, strikeStr] = match;
+  const strike = parseFloat(strikeStr);
+  if (!Number.isFinite(strike) || strike <= 0) return null;
+  return {
+    underlying,
+    expirationDate: `20${yy}-${mm}-${dd}`,
+    optionType: cp === "C" ? "CALL" : "PUT",
+    strike,
+  };
+}
+
+/**
+ * Format a parsed option identity into canonical OCC form. Thin wrapper
+ * over buildOCCSymbol kept as a distinct name so call sites read as
+ * "reformat what I already parsed" rather than "build from raw parts".
+ */
+export function formatOccSymbol(parsed: ParsedOptionSymbol): string {
+  return buildOCCSymbol(
+    parsed.underlying,
+    parsed.expirationDate,
+    parsed.optionType,
+    parsed.strike
+  );
 }
 
 /**

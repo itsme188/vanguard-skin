@@ -297,4 +297,109 @@ describe("upsertSecurity", () => {
       expect(row.security_type).toBe("Stock");
     });
   });
+
+  // qa:security-detail-transactions--same-option-trade-duplicated-across-
+  // two-symbol-spellings — the same contract can arrive under multiple
+  // human-readable spellings. upsertSecurity now canonicalizes any
+  // option-shaped symbol to OCC form BEFORE the lookup, so both spellings
+  // resolve to the same row forever after.
+  describe("option symbol canonicalization", () => {
+    it("canonicalizes a Vanguard-compact human-form symbol to OCC on first insert", () => {
+      const id = upsertSecurity(db, {
+        symbol: "NVDA 260618 C 175.00",
+        name: "CALL NVIDIA CORP $175 EXP 06/18/26",
+        securityType: "option",
+      });
+      const row = db.prepare("SELECT symbol FROM securities WHERE id = ?").get(id) as any;
+      expect(row.symbol).toBe("NVDA  260618C00175000");
+    });
+
+    it("both spellings of the same contract resolve to the SAME row", () => {
+      const id1 = upsertSecurity(db, {
+        symbol: "NVDA 260618 C 175.00",
+        name: "CALL NVIDIA CORP $175 EXP 06/18/26",
+        securityType: "option",
+        underlyingSymbol: "NVDA",
+        strikePrice: 175,
+        expirationDate: "2026-06-18",
+        optionType: "CALL",
+      });
+      const id2 = upsertSecurity(db, {
+        symbol: "NVDA  260618C00175000",
+        name: "CALL NVIDIA CORP $175 EXP 06/18/26",
+        securityType: "option",
+        underlyingSymbol: "NVDA",
+        strikePrice: 175,
+        expirationDate: "2026-06-18",
+        optionType: "CALL",
+      });
+
+      expect(id2).toBe(id1);
+      const count = (
+        db.prepare("SELECT COUNT(*) as c FROM securities WHERE underlying_symbol = 'NVDA'").get() as any
+      ).c;
+      expect(count).toBe(1);
+    });
+
+    it("canonicalizes a human-form PUT with a fractional strike", () => {
+      const id = upsertSecurity(db, {
+        symbol: "APP 250321 P 175.50",
+        securityType: "option",
+        optionType: "PUT",
+      });
+      const row = db.prepare("SELECT symbol, option_type FROM securities WHERE id = ?").get(id) as any;
+      expect(row.symbol).toBe("APP   250321P00175500");
+      expect(row.option_type).toBe("PUT");
+    });
+
+    it("does not touch a plain equity symbol", () => {
+      const id = upsertSecurity(db, "AAPL", "Apple Inc", "stock");
+      const row = db.prepare("SELECT symbol FROM securities WHERE id = ?").get(id) as any;
+      expect(row.symbol).toBe("AAPL");
+    });
+
+    it("does not touch a bond symbol", () => {
+      const id = upsertSecurity(db, "912828YK0", "US Treasury Note", "bond");
+      const row = db.prepare("SELECT symbol FROM securities WHERE id = ?").get(id) as any;
+      expect(row.symbol).toBe("912828YK0");
+    });
+
+    it("leaves an unparseable bare-ticker option symbol unchanged (falls through, never throws) — preserves the type-conflict guard", () => {
+      // Same scenario as the existing "prevents option metadata from
+      // clobbering stock security" test: an option import supplies a bare
+      // ticker with no embedded date/strike. It can't be parsed as an
+      // option shape, so it must fall through untouched rather than being
+      // built from the separate metadata fields — otherwise this would
+      // silently create a NEW row instead of hitting the type-conflict
+      // guard against the existing "INTC" stock.
+      const stockId = upsertSecurity(db, "INTC", "Intel Corp", "stock");
+      const resultId = upsertSecurity(db, {
+        symbol: "INTC",
+        name: "PUT INTEL CORP $45 EXP 03/20/26",
+        securityType: "option",
+        underlyingSymbol: "INTC",
+        strikePrice: 45,
+        expirationDate: "2026-03-20",
+        optionType: "PUT",
+      });
+      expect(resultId).toBe(stockId);
+      const row = db.prepare("SELECT security_type, symbol FROM securities WHERE id = ?").get(stockId) as any;
+      expect(row.security_type).toBe("Stock");
+      expect(row.symbol).toBe("INTC");
+    });
+
+    it("is idempotent — re-upserting an already-canonical OCC symbol is a no-op rename", () => {
+      const id1 = upsertSecurity(db, {
+        symbol: "AMSC  260116C00035000",
+        securityType: "option",
+      });
+      const id2 = upsertSecurity(db, {
+        symbol: "AMSC  260116C00035000",
+        securityType: "option",
+      });
+      expect(id2).toBe(id1);
+      const row = db.prepare("SELECT symbol FROM securities WHERE id = ?").get(id1) as any;
+      expect(row.symbol).toBe("AMSC  260116C00035000");
+    });
+  });
 });
