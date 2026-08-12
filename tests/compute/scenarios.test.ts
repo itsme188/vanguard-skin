@@ -275,6 +275,63 @@ describe("legacy custom-scenario path (non-recipe ids flow through beta heuristi
   });
 });
 
+describe("legacy custom-scenario path uses account_security keyBy (QA regression)", () => {
+  // Bug: the legacy custom-scenario path built its latest_holdings CTE with
+  // keyBy: "account" — the latest as_of_date across ALL securities in the
+  // account. Any position whose OWN latest row predates that account-wide
+  // date was silently dropped, understating currentPortfolioValue (and every
+  // % derived from it) vs. the recipe/preset path, which correctly uses the
+  // default account_security keyBy (latest row per account+security pair).
+  it("includes a position whose latest holdings row is older than another position's latest row", () => {
+    const db = createTestDb();
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test')");
+
+    // Security A: latest (and only) holdings row is FRESH.
+    db.prepare(
+      "INSERT INTO securities (id, symbol, name, security_type) VALUES (1, 'AAA', 'Security A', 'stock')"
+    ).run();
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 1, '2026-08-01', 100)"
+    ).run();
+    db.prepare(
+      "INSERT INTO prices (security_id, date, close_price) VALUES (1, '2026-08-01', 50)"
+    ).run();
+
+    // Security B: latest (and only) holdings row is OLDER — no row on
+    // 2026-08-01, the account's overall newest date, for this security.
+    db.prepare(
+      "INSERT INTO securities (id, symbol, name, security_type) VALUES (2, 'BBB', 'Security B', 'stock')"
+    ).run();
+    db.prepare(
+      "INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 2, '2026-07-15', 200)"
+    ).run();
+    db.prepare(
+      "INSERT INTO prices (security_id, date, close_price) VALUES (2, '2026-07-15', 25)"
+    ).run();
+
+    const customScenario = {
+      id: "custom",
+      name: "Custom",
+      description: "test",
+      category: "custom" as const,
+      marketMove: -0.10,
+    };
+    const result = computeScenario(db, customScenario);
+
+    // A = 100 × $50 = $5,000; B = 200 × $25 = $5,000. Total = $10,000.
+    // Pre-fix, keyBy: "account" kept only rows dated 2026-08-01 (the
+    // account's overall newest date) and silently dropped B's $5,000.
+    expect(result.positionImpacts.map((p) => p.symbol).sort()).toEqual(["AAA", "BBB"]);
+    expect(result.currentPortfolioValue).toBeCloseTo(10_000, 2);
+
+    // Cross-check against the preset/recipe path (which already used the
+    // default account_security keyBy) on the same DB — the two bases must
+    // now agree, since both paths use the same predicate options.
+    const recipeResult = computeScenario(db, PRESET_SCENARIOS[0]);
+    expect(recipeResult.currentPortfolioValue).toBeCloseTo(result.currentPortfolioValue, 2);
+  });
+});
+
 describe("FX conversion (Task 9a — scenario market value)", () => {
   let db: Database.Database;
 
