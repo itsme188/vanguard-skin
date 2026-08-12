@@ -5,6 +5,7 @@ import type {
   ParsedPrice,
   ParsedSnapshot,
 } from "./types";
+import { validateCorporateActionInput } from "@/lib/compute/corporate-actions";
 
 // ── Known transaction types ─────────────────────────────────────────
 
@@ -123,7 +124,7 @@ function describeNumber(value: number | null | undefined): string {
 // ── Validation report ───────────────────────────────────────────────
 
 export interface SkippedRow {
-  category: "transaction" | "holding" | "price" | "snapshot" | "security";
+  category: "transaction" | "holding" | "price" | "snapshot" | "security" | "corporateAction";
   index: number;
   reason: string;
   symbol?: string;
@@ -361,6 +362,32 @@ export function validateParsedResult(
     }
   }
 
+  // ── Corporate actions ───────────────────────────────────────────
+  // Shares validateCorporateActionInput with the manual add path
+  // (lib/compute/corporate-actions.ts) so a statement-sourced SPLIT and a
+  // manually-entered one are held to the same bar (real date, positive
+  // finite ratio components, known actionType).
+  const validCorporateActions: ParsedImportResult["corporateActions"] = [];
+  for (let i = 0; i < parsed.corporateActions.length; i++) {
+    const ca = parsed.corporateActions[i];
+    const err = validateCorporateActionInput({
+      actionType: ca.actionType,
+      effectiveDate: ca.effectiveDate,
+      ratioNumerator: ca.ratioNumerator,
+      ratioDenominator: ca.ratioDenominator,
+    });
+    if (err) {
+      skippedRows.push({
+        category: "corporateAction",
+        index: i,
+        reason: err,
+        symbol: ca.symbol,
+      });
+      continue;
+    }
+    validCorporateActions.push(ca);
+  }
+
   // ── Summary warning ─────────────────────────────────────────────
   if (skippedRows.length > 0) {
     warnings.unshift(
@@ -378,6 +405,7 @@ export function validateParsedResult(
       holdings: validHoldings,
       prices: validPrices,
       snapshots: validSnapshots,
+      corporateActions: validCorporateActions,
       warnings: [...parsed.warnings, ...warnings],
     },
   };

@@ -49,6 +49,11 @@ export function deleteImportBatch(db: Database.Database, batchId: number): void 
     db.prepare("DELETE FROM holdings WHERE import_batch_id = ?").run(batchId);
     db.prepare("DELETE FROM transactions WHERE import_batch_id = ?").run(batchId);
     db.prepare("DELETE FROM monthly_snapshots WHERE import_batch_id = ?").run(batchId);
+    // Import-sourced corporate actions (source='import') are batch-tagged;
+    // undoing the batch removes the CA row too (see undoImport's caller-side
+    // computeTaxLots/computeDailyValuations recompute, which restores
+    // pre-split lots once the row is gone).
+    db.prepare("DELETE FROM corporate_actions WHERE import_batch_id = ?").run(batchId);
     db.prepare("DELETE FROM import_batches WHERE id = ?").run(batchId);
   })();
 }
