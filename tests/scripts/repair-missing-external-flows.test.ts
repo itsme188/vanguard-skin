@@ -61,14 +61,14 @@ describe("findCandidates / buildProposedTransaction", () => {
   });
 
   it("finds the 2026-07-11-style candidate: a large jump with zero transactions", () => {
-    insertValuation(db, 1, "2026-07-10", [REDACTED], [REDACTED]);
-    insertValuation(db, 1, "2026-07-11", [REDACTED], [REDACTED]);
+    insertValuation(db, 1, "2026-07-10", 60_500.25, 1_350_000.55);
+    insertValuation(db, 1, "2026-07-11", 210_500.25, 1_440_000.55);
 
     const candidates = findCandidates(db);
     expect(candidates).toHaveLength(1);
     expect(candidates[0].accountId).toBe(1);
     expect(candidates[0].toDate).toBe("2026-07-11");
-    expect(candidates[0].residual).toBeCloseTo([REDACTED], 1);
+    expect(candidates[0].residual).toBeCloseTo(150_000.00, 1);
   });
 
   it("builds a DEPOSIT proposal for a positive residual and a WITHDRAWAL for a negative one", () => {
@@ -99,9 +99,9 @@ describe("findCandidates / buildProposedTransaction", () => {
   });
 
   it("does not surface a fully-explained deposit day as a candidate", () => {
-    insertValuation(db, 1, "2026-07-16", [REDACTED], 1_500_000);
-    insertValuation(db, 1, "2026-07-17", [REDACTED], [REDACTED]);
-    insertTxn(db, 1, "2026-07-17", "DEPOSIT", [REDACTED]);
+    insertValuation(db, 1, "2026-07-16", 130_250, 1_500_000);
+    insertValuation(db, 1, "2026-07-17", 300_250, 1_670_000);
+    insertTxn(db, 1, "2026-07-17", "DEPOSIT", 170_000);
 
     expect(findCandidates(db)).toHaveLength(0);
   });
@@ -117,8 +117,8 @@ describe("findCandidates / buildProposedTransaction", () => {
   });
 
   it("tags a candidate 'external-flow-candidate' when total_value corroborates the cash residual", () => {
-    insertValuation(db, 1, "2026-07-10", [REDACTED], [REDACTED]);
-    insertValuation(db, 1, "2026-07-11", [REDACTED], [REDACTED]);
+    insertValuation(db, 1, "2026-07-10", 60_500.25, 1_350_000.55);
+    insertValuation(db, 1, "2026-07-11", 210_500.25, 1_440_000.55);
 
     expect(findCandidates(db)[0].classification).toBe("external-flow-candidate");
   });
@@ -143,23 +143,23 @@ describe("classification integration — matches the 2026-08-12 live-data verifi
   });
 
   it("classifies exactly one external-flow-candidate (07-11) and three internal-shifts, matching the live audit", () => {
-    // 2026-07-10 -> 2026-07-11: cash +[REDACTED], total_value +[REDACTED], zero transactions.
-    insertValuation(db, 10, "2026-07-10", [REDACTED], [REDACTED]);
-    insertValuation(db, 10, "2026-07-11", [REDACTED], [REDACTED]);
+    // 2026-07-10 -> 2026-07-11: cash +150,000.00, total_value +90,000.00, zero transactions.
+    insertValuation(db, 10, "2026-07-10", 60_500.25, 1_350_000.55);
+    insertValuation(db, 10, "2026-07-11", 210_500.25, 1_440_000.55);
 
-    // 2026-07-13 -> 2026-07-14: cash -[REDACTED] (explained [REDACTED]), total_value only -[REDACTED].
-    insertValuation(db, 11, "2026-07-13", [REDACTED], [REDACTED]);
-    insertValuation(db, 11, "2026-07-14", [REDACTED], [REDACTED]);
-    insertTxn(db, 11, "2026-07-14", "FEE", [REDACTED]);
+    // 2026-07-13 -> 2026-07-14: cash -113,500.00 (explained -1,000.00), total_value only -11,400.00.
+    insertValuation(db, 11, "2026-07-13", 220_000.10, 1_440_000.55);
+    insertValuation(db, 11, "2026-07-14", 106_500.10, 1_428_600.55);
+    insertTxn(db, 11, "2026-07-14", "FEE", -1_000.00);
 
-    // 2026-07-30 -> 2026-07-31: cash -[REDACTED] (explained [REDACTED]), total_value only -[REDACTED].
-    insertValuation(db, 12, "2026-07-30", [REDACTED], [REDACTED]);
-    insertValuation(db, 12, "2026-07-31", [REDACTED], [REDACTED]);
-    insertTxn(db, 12, "2026-07-31", "FEE", [REDACTED]);
+    // 2026-07-30 -> 2026-07-31: cash -195,200.00 (explained -1,100.00), total_value only -11,400.00.
+    insertValuation(db, 12, "2026-07-30", 205_000.40, 1_560_000.40);
+    insertValuation(db, 12, "2026-07-31", 9_800.40, 1_548_600.40);
+    insertTxn(db, 12, "2026-07-31", "FEE", -1_100.00);
 
-    // 2026-08-02 -> 2026-08-03: cash +[REDACTED], total_value only +[REDACTED] (the round-trip back).
-    insertValuation(db, 13, "2026-08-02", [REDACTED], [REDACTED]);
-    insertValuation(db, 13, "2026-08-03", [REDACTED], [REDACTED]);
+    // 2026-08-02 -> 2026-08-03: cash +195,700.00, total_value only +24,700.00 (the round-trip back).
+    insertValuation(db, 13, "2026-08-02", 9_800.40, 1_548_800.40);
+    insertValuation(db, 13, "2026-08-03", 205_500.40, 1_573_500.40);
 
     const candidates = findCandidates(db, { accountIds: [10, 11, 12, 13] });
     expect(candidates).toHaveLength(4);
@@ -172,11 +172,11 @@ describe("classification integration — matches the 2026-08-12 live-data verifi
   });
 
   it("only builds a proposal for the external-flow-candidate; applying it inserts exactly one row", () => {
-    insertValuation(db, 10, "2026-07-10", [REDACTED], [REDACTED]);
-    insertValuation(db, 10, "2026-07-11", [REDACTED], [REDACTED]);
-    insertValuation(db, 11, "2026-07-13", [REDACTED], [REDACTED]);
-    insertValuation(db, 11, "2026-07-14", [REDACTED], [REDACTED]);
-    insertTxn(db, 11, "2026-07-14", "FEE", [REDACTED]);
+    insertValuation(db, 10, "2026-07-10", 60_500.25, 1_350_000.55);
+    insertValuation(db, 10, "2026-07-11", 210_500.25, 1_440_000.55);
+    insertValuation(db, 11, "2026-07-13", 220_000.10, 1_440_000.55);
+    insertValuation(db, 11, "2026-07-14", 106_500.10, 1_428_600.55);
+    insertTxn(db, 11, "2026-07-14", "FEE", -1_000.00);
 
     const candidates = findCandidates(db, { accountIds: [10, 11] });
     const result = selectRun(candidates);
@@ -209,8 +209,8 @@ describe("applyProposedTransactions", () => {
   });
 
   it("inserts one is_external_flow=1 row per candidate and a second run finds zero candidates", () => {
-    insertValuation(db, 1, "2026-07-10", [REDACTED], [REDACTED]);
-    insertValuation(db, 1, "2026-07-11", [REDACTED], [REDACTED]);
+    insertValuation(db, 1, "2026-07-10", 60_500.25, 1_350_000.55);
+    insertValuation(db, 1, "2026-07-11", 210_500.25, 1_440_000.55);
 
     const before = findCandidates(db);
     expect(before).toHaveLength(1);
@@ -223,7 +223,7 @@ describe("applyProposedTransactions", () => {
       .prepare(`SELECT type, amount, is_external_flow, trade_date FROM transactions WHERE source_key = ?`)
       .get(proposals[0].sourceKey) as { type: string; amount: number; is_external_flow: number; trade_date: string };
     expect(row.type).toBe("DEPOSIT");
-    expect(row.amount).toBeCloseTo([REDACTED], 1);
+    expect(row.amount).toBeCloseTo(150_000.00, 1);
     expect(row.is_external_flow).toBe(1);
     expect(row.trade_date).toBe("2026-07-11");
 
@@ -264,15 +264,15 @@ function makePoint(overrides: Partial<import("@/lib/compute/cash-flow-audit").Ca
     accountName: "Vanguard Taxable",
     fromDate: "2026-07-10",
     toDate: "2026-07-11",
-    cashBefore: [REDACTED],
-    cashAfter: [REDACTED],
-    totalValueAtFrom: [REDACTED],
-    totalValueAtTo: [REDACTED],
-    delta: [REDACTED],
+    cashBefore: 60_500.25,
+    cashAfter: 210_500.25,
+    totalValueAtFrom: 1_350_000.55,
+    totalValueAtTo: 1_440_000.55,
+    delta: 150_000.00,
     explained: 0,
-    residual: [REDACTED],
-    totalDelta: [REDACTED],
-    totalDeltaPct: [REDACTED] / [REDACTED],
+    residual: 150_000.00,
+    totalDelta: 90_000.00,
+    totalDeltaPct: 90_000.00 / 1_440_000.55,
     classification: "external-flow-candidate" as const,
     ...overrides,
   };
@@ -284,8 +284,8 @@ describe("selectRun", () => {
     const internal = makePoint({
       toDate: "2026-07-14",
       classification: "internal-shift",
-      residual: -[REDACTED],
-      totalDelta: -[REDACTED],
+      residual: -112_500.00,
+      totalDelta: -11_400.00,
     });
 
     const result = selectRun([external, internal]);
@@ -316,18 +316,18 @@ describe("selectRun", () => {
   });
 
   it("--amount overrides the proposal's amount and recomputes source_key when exactly one candidate is selected", () => {
-    const external = makePoint({ toDate: "2026-07-11", residual: [REDACTED] });
+    const external = makePoint({ toDate: "2026-07-11", residual: 150_000.00 });
 
-    const result = selectRun([external], { onlyDates: ["2026-07-11"], amountOverride: [REDACTED] });
+    const result = selectRun([external], { onlyDates: ["2026-07-11"], amountOverride: 88_000 });
     expect(result.error).toBeNull();
     expect(result.proposals).toHaveLength(1);
-    expect(result.proposals[0].amount).toBe([REDACTED]);
-    expect(result.proposals[0].sourceKey).toBe("repair-missing-flow:1:2026-07-11:[REDACTED]");
+    expect(result.proposals[0].amount).toBe(88_000);
+    expect(result.proposals[0].sourceKey).toBe("repair-missing-flow:1:2026-07-11:88000");
     expect(result.proposals[0].notes).toContain("overridden");
   });
 
   it("--amount errors when zero candidates are selected (nothing to apply it to)", () => {
-    const result = selectRun([], { amountOverride: [REDACTED] });
+    const result = selectRun([], { amountOverride: 88_000 });
     expect(result.error).toMatch(/requires exactly one/);
     expect(result.proposals).toEqual([]);
   });
@@ -339,12 +339,12 @@ describe("selectRun", () => {
     // No --only at all — even though there happens to be only one
     // external-flow-candidate some of the time, --amount must not silently
     // ride along on a coincidence; it demands an explicit --only.
-    const noOnly = selectRun([a], { amountOverride: [REDACTED] });
+    const noOnly = selectRun([a], { amountOverride: 88_000 });
     expect(noOnly.error).toMatch(/requires exactly one date selected via --only \(got 0\)/);
     expect(noOnly.proposals).toEqual([]);
 
     // --only naming two dates isn't "exactly one" either.
-    const twoOnly = selectRun([a, b], { onlyDates: ["2026-07-11", "2026-08-03"], amountOverride: [REDACTED] });
+    const twoOnly = selectRun([a, b], { onlyDates: ["2026-07-11", "2026-08-03"], amountOverride: 88_000 });
     expect(twoOnly.error).toMatch(/got 2/);
     expect(twoOnly.proposals).toEqual([]);
   });
@@ -353,7 +353,7 @@ describe("selectRun", () => {
     const acct1 = makePoint({ accountId: 1, accountName: "Vanguard Taxable", toDate: "2026-07-11" });
     const acct2 = makePoint({ accountId: 2, accountName: "Vanguard Roth IRA", toDate: "2026-07-11" });
 
-    const result = selectRun([acct1, acct2], { onlyDates: ["2026-07-11"], amountOverride: [REDACTED] });
+    const result = selectRun([acct1, acct2], { onlyDates: ["2026-07-11"], amountOverride: 88_000 });
     expect(result.error).toMatch(/found 2/);
     expect(result.proposals).toEqual([]);
   });
@@ -384,6 +384,6 @@ describe("collectFlagValues", () => {
   });
 
   it("collects a single-use flag like --amount as a one-element array", () => {
-    expect(collectFlagValues(["--apply", "--amount", "[REDACTED]"], "--amount")).toEqual(["[REDACTED]"]);
+    expect(collectFlagValues(["--apply", "--amount", "88000"], "--amount")).toEqual(["88000"]);
   });
 });

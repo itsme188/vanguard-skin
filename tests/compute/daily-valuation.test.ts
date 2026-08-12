@@ -660,8 +660,8 @@ describe("daily valuation computation", () => {
   // Pre-fix, cash was CONSTANT across an entire anchor window — a recorded
   // external flow (DEPOSIT/WITHDRAWAL/TRANSFER_IN/TRANSFER_OUT,
   // is_external_flow=1) landing mid-window was invisible to the series
-  // until the NEXT anchor "revealed" it all at once. Real damage: the
-  // 2026-07-02 [REDACTED] ACH deposit into Vanguard Taxable left 07-03 reading a
+  // until the NEXT anchor "revealed" it all at once. Real damage: a
+  // recorded 2026-07-02 ACH deposit into Vanguard Taxable left 07-03 reading a
   // fake flow-less return (nothing moved) and the eventual Plaid anchor
   // reading a fake value jump (a flow with no matching series step). Fix:
   // cash(day) = cashResidual + cumulative net external flows with
@@ -669,7 +669,7 @@ describe("daily valuation computation", () => {
   // fetchNetFlowsByDate (lib/compute/flow-adjusted.ts) so the step lands on
   // exactly the dates buildFlowAdjustedIndex expects a flow.
 
-  it("steps cash + total from the deposit date onward within a window (July 2026 regression, real numbers)", () => {
+  it("steps cash + total from the deposit date onward within a window (July 2026 regression shape, synthetic figures)", () => {
     const sec = seedSecurity(db, "AAPL");
     const HOLDINGS = 1_000_000;
     seedHolding(db, ACCOUNT_ID, sec, 1, "2026-06-01");
@@ -678,12 +678,12 @@ describe("daily valuation computation", () => {
     seedPrice(db, sec, "2026-07-03", HOLDINGS);
     seedPrice(db, sec, "2026-07-06", HOLDINGS);
 
-    // June-30 anchor: total = holdings + $[REDACTED] residual (the real
-    // pre-Plaid Vanguard Taxable plug value).
-    seedSnapshot(db, ACCOUNT_ID, "2026-06-30", HOLDINGS + [REDACTED]);
-    // The real 2026-07-02 [REDACTED] ACH deposit — a recorded external flow
+    // June-30 anchor: total = holdings + a synthetic plug residual (same
+    // shape as the real pre-Plaid window).
+    seedSnapshot(db, ACCOUNT_ID, "2026-06-30", HOLDINGS + 63_450.25);
+    // A mid-window deposit (synthetic amount) — a recorded external flow
     // landing inside the (still-open) June-30 anchor window.
-    seedCashTransaction(db, ACCOUNT_ID, "2026-07-02", 40_000, "DEPOSIT");
+    seedCashTransaction(db, ACCOUNT_ID, "2026-07-02", 25_000, "DEPOSIT");
 
     computeDailyValuations(db);
 
@@ -698,13 +698,13 @@ describe("daily valuation computation", () => {
     );
 
     // Before the deposit: still the plain anchor residual.
-    expect(vals["2026-07-01"].cash_balance).toBeCloseTo([REDACTED], 2);
-    expect(vals["2026-07-01"].total_value).toBeCloseTo(HOLDINGS + [REDACTED], 2);
-    // On/after the deposit date: stepped up by exactly [REDACTED].
-    expect(vals["2026-07-03"].cash_balance).toBeCloseTo([REDACTED], 2);
-    expect(vals["2026-07-03"].total_value).toBeCloseTo(HOLDINGS + [REDACTED], 2);
-    expect(vals["2026-07-06"].cash_balance).toBeCloseTo([REDACTED], 2);
-    expect(vals["2026-07-06"].total_value).toBeCloseTo(HOLDINGS + [REDACTED], 2);
+    expect(vals["2026-07-01"].cash_balance).toBeCloseTo(63_450.25, 2);
+    expect(vals["2026-07-01"].total_value).toBeCloseTo(HOLDINGS + 63_450.25, 2);
+    // On/after the deposit date: stepped up by exactly the deposit.
+    expect(vals["2026-07-03"].cash_balance).toBeCloseTo(88_450.25, 2);
+    expect(vals["2026-07-03"].total_value).toBeCloseTo(HOLDINGS + 88_450.25, 2);
+    expect(vals["2026-07-06"].cash_balance).toBeCloseTo(88_450.25, 2);
+    expect(vals["2026-07-06"].total_value).toBeCloseTo(HOLDINGS + 88_450.25, 2);
   });
 
   it("does not double-count a flow dated exactly on a (non-first) anchor date", () => {
@@ -823,8 +823,8 @@ describe("daily valuation computation", () => {
     seedPrice(db, sec, "2026-07-01", 1_000_000);
     seedPrice(db, sec, "2026-07-03", 1_000_000);
     seedPrice(db, sec, "2026-07-06", 1_000_000);
-    seedSnapshot(db, ACCOUNT_ID, "2026-06-30", 1_000_000 + [REDACTED]);
-    seedCashTransaction(db, ACCOUNT_ID, "2026-07-02", 40_000, "DEPOSIT");
+    seedSnapshot(db, ACCOUNT_ID, "2026-06-30", 1_000_000 + 63_450.25);
+    seedCashTransaction(db, ACCOUNT_ID, "2026-07-02", 25_000, "DEPOSIT");
 
     computeDailyValuations(db);
     const first = db

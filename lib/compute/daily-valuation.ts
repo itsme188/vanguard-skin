@@ -240,8 +240,8 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
       if (anchors.length === 0) continue;
 
       // Recorded external flows are invisible to a constant-per-window plug
-      // — a mid-window deposit (2026-07-02: [REDACTED] ACH into Vanguard Taxable,
-      // a real transactions row with is_external_flow=1) left the series
+      // — a mid-window deposit (2026-07-02: a recorded ACH
+      // deposit into Vanguard Taxable, is_external_flow=1) left the series
       // flat through the deposit date and then "arrived" all at once at the
       // NEXT anchor, producing a fake no-flow return day where the deposit
       // landed and a fake flow-less value jump where it was finally

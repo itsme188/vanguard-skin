@@ -87,14 +87,14 @@ describe("computeCashFlowResiduals", () => {
 
   it("finds a large unexplained jump with the correct residual, classified as an external-flow-candidate", () => {
     insertValuation(db, 1, "2026-07-10", 80_000, 1_400_000);
-    insertValuation(db, 1, "2026-07-11", [REDACTED], 1_500_000); // +[REDACTED] cash, +100,000 total_value, zero transactions
+    insertValuation(db, 1, "2026-07-11", 210_500, 1_500_000); // +130,500 cash, +100,000 total_value, zero transactions
 
     const points = computeCashFlowResiduals(db, { accountIds: [1] });
     expect(points).toHaveLength(1);
     const point = points[0];
-    expect(point.delta).toBeCloseTo([REDACTED], 5);
+    expect(point.delta).toBeCloseTo(130_500, 5);
     expect(point.explained).toBe(0);
-    expect(point.residual).toBeCloseTo([REDACTED], 5);
+    expect(point.residual).toBeCloseTo(130_500, 5);
     expect(point.totalValueAtFrom).toBe(1_400_000);
     expect(point.totalDelta).toBe(100_000);
     expect(point.totalDeltaPct).toBeCloseTo(100_000 / 1_500_000, 6);
@@ -106,12 +106,12 @@ describe("computeCashFlowResiduals", () => {
     // Mirrors the live-data finding: cash_balance jumps but holdings_value
     // absorbs almost the same amount in the opposite direction, so
     // total_value (what risk metrics actually run on) stays smooth.
-    insertValuation(db, 1, "2026-07-30", [REDACTED], [REDACTED]);
-    insertValuation(db, 1, "2026-07-31", [REDACTED], 1_627_368); // cash -231,260, total_value only -13,806
+    insertValuation(db, 1, "2026-07-30", 205_000, 1_560_000);
+    insertValuation(db, 1, "2026-07-31", 9_800, 1_548_600); // cash -195,200, total_value only -11,400
 
     const points = computeCashFlowResiduals(db, { accountIds: [1] });
     const point = points[0];
-    expect(point.residual).toBeLessThan(-200_000);
+    expect(point.residual).toBeLessThan(-190_000);
     expect(Math.abs(point.totalDelta)).toBeLessThan(Math.abs(point.residual) * CORROBORATION_RATIO);
     expect(point.classification).toBe("internal-shift");
     // Still flagged as unexplained by cash-only criteria — the script must
@@ -120,9 +120,9 @@ describe("computeCashFlowResiduals", () => {
   });
 
   it("does NOT flag a day whose cash delta is fully explained by a recorded transaction", () => {
-    insertValuation(db, 1, "2026-07-16", [REDACTED], 1_500_000);
-    insertValuation(db, 1, "2026-07-17", [REDACTED], [REDACTED]); // +194,992
-    insertTxn(db, 1, "2026-07-17", "DEPOSIT", [REDACTED]);
+    insertValuation(db, 1, "2026-07-16", 130_250, 1_500_000);
+    insertValuation(db, 1, "2026-07-17", 300_250, 1_670_000); // +170,000
+    insertTxn(db, 1, "2026-07-17", "DEPOSIT", 170_000);
 
     const points = computeCashFlowResiduals(db, { accountIds: [1] });
     expect(points).toHaveLength(1);
@@ -135,8 +135,8 @@ describe("computeCashFlowResiduals", () => {
     // but this audit's simplified per-type model doesn't net it exactly —
     // `explained` is large (not "zero transactions that date"), so this
     // must NOT be treated as the same bug as a literally unexplained jump.
-    insertValuation(db, 1, "2026-07-16", [REDACTED], 1_500_000);
-    insertValuation(db, 1, "2026-07-17", [REDACTED], [REDACTED]); // +194,992
+    insertValuation(db, 1, "2026-07-16", 130_250, 1_500_000);
+    insertValuation(db, 1, "2026-07-17", 300_250, 1_670_000); // +170,000
     insertTxn(db, 1, "2026-07-17", "DEPOSIT", 200_000);
     insertTxn(db, 1, "2026-07-17", "BUY", -50_000);
 
@@ -316,21 +316,21 @@ describe("CASH_AFFECTING_SIGNED_SQL", () => {
 
 describe("classifyCashFlowResidual", () => {
   it("classifies the 2026-07-11-style jump as external-flow-candidate (total_value corroborates)", () => {
-    // Real numbers: residual [REDACTED], total_value moved +[REDACTED] (58% of the residual, same sign).
-    expect(classifyCashFlowResidual([REDACTED], [REDACTED])).toBe("external-flow-candidate");
+    // Same shape as the real window: total_value moved ~58% of the residual, same sign.
+    expect(classifyCashFlowResidual(150_000, 87_000)).toBe("external-flow-candidate");
   });
 
   it("classifies the 2026-07-13->07-14-style shift as internal-shift (total_value nearly flat)", () => {
-    // Real numbers: residual -[REDACTED], total_value moved only -[REDACTED] (~11% of the residual).
-    expect(classifyCashFlowResidual(-[REDACTED], -[REDACTED])).toBe("internal-shift");
+    // Same shape as the real window: total_value moved only ~11% of the residual.
+    expect(classifyCashFlowResidual(-120_000, -13_200)).toBe("internal-shift");
   });
 
   it("classifies the 2026-07-30->07-31-style shift as internal-shift", () => {
-    expect(classifyCashFlowResidual(-[REDACTED], -[REDACTED])).toBe("internal-shift");
+    expect(classifyCashFlowResidual(-200_000, -12_000)).toBe("internal-shift");
   });
 
   it("classifies the 2026-08-02->08-03-style shift (the round-trip back) as internal-shift", () => {
-    expect(classifyCashFlowResidual([REDACTED], [REDACTED])).toBe("internal-shift");
+    expect(classifyCashFlowResidual(210_000, 26_500)).toBe("internal-shift");
   });
 
   it("requires the total_value move to share the residual's sign, even if the magnitude clears the ratio", () => {
