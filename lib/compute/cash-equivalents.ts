@@ -19,10 +19,21 @@
  *   1. `security_type` = 'money_market' / 'money market' — set by the static
  *      lookup's `fix_security_type` (lib/data/security-classifications.ts)
  *      and by broker/import type mapping.
- *   2. `fund_category` = 'Cash Equivalent' — set by the static lookup and by
- *      the auto rule in lib/compute/classify-securities.ts. This catches rows
- *      whose `security_type` was never repaired (brokers routinely label a
- *      money-market fund a plain 'Stock').
+ *   2. `fund_category` = 'Cash Equivalent' / 'Money Market' — set by the
+ *      static lookup and by the auto rule in
+ *      lib/compute/classify-securities.ts. This catches rows whose
+ *      `security_type` was never repaired (brokers routinely label a
+ *      money-market fund a plain 'Stock' or 'Mutual Fund'). The 'Money
+ *      Market' spelling is accepted because that literal vocabulary already
+ *      exists in-repo — lib/import/parsers/vanguard-export.ts:60 derives it.
+ *
+ * IMPORTANT — in current production data signal 2 is the ONLY one doing any
+ * work: live VMFXX rows carry security_type = 'Mutual Fund' with
+ * fund_category = 'Cash Equivalent', so the money_market branch of signal 1
+ * matches nothing today. It is kept because the static lookup still writes
+ * that type via `fix_security_type` and a re-classification run would revive
+ * it — but do not assume signal 1 provides any live coverage, and do not
+ * "simplify" signal 2 away on the grounds that signal 1 looks sufficient.
  *
  * Note what is deliberately NOT cash: bonds and ultra-short bond funds are
  * holdings — they carry duration and mark to market.
@@ -36,5 +47,8 @@ export function isCashEquivalentSecurity(sec: {
   const type = sec.security_type?.trim().toLowerCase();
   if (type === "money_market" || type === "money market") return true;
 
-  return sec.fund_category?.trim().toLowerCase() === "cash equivalent";
+  // Exact match, never substring — "Cash Equivalent Alternatives" is a
+  // different asset class.
+  const category = sec.fund_category?.trim().toLowerCase();
+  return category === "cash equivalent" || category === "money market";
 }

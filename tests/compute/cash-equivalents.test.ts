@@ -32,6 +32,23 @@ describe("isCashEquivalentSecurity", () => {
     expect(isCashEquivalentSecurity({ security_type: null, fund_category: "CASH EQUIVALENT" })).toBe(true);
   });
 
+  it("recognizes a 'Money Market' fund_category", () => {
+    // lib/import/parsers/vanguard-export.ts:60 derives the literal
+    // "Money Market" vocabulary, so it can reach fund_category too.
+    expect(isCashEquivalentSecurity({ security_type: "stock", fund_category: "Money Market" })).toBe(true);
+    expect(isCashEquivalentSecurity({ security_type: null, fund_category: "money market" })).toBe(true);
+  });
+
+  it("matches the live production shape of a sweep fund", () => {
+    // What the real rows actually look like: the broker calls VMFXX a mutual
+    // fund and only the classification layer knows better. This is the ONLY
+    // signal carrying the predicate in current data — see the note in
+    // lib/compute/cash-equivalents.ts.
+    expect(
+      isCashEquivalentSecurity({ security_type: "Mutual Fund", fund_category: "Cash Equivalent" })
+    ).toBe(true);
+  });
+
   // ─── Negatives ──────────────────────────────────────────────────
 
   it("returns false for ordinary securities", () => {

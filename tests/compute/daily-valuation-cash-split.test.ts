@@ -273,6 +273,104 @@ describe("daily valuation — cash/holdings split normalization", () => {
     }
   });
 
+  // ─── Part C: the carry source is the whole statement-authority class ──
+  //
+  // Statement holdings arrive under six different source_key prefixes
+  // depending on which importer ran (lib/import/engine.ts:431-436 treats them
+  // as one class). Matching only 'canonical:%' would mean that the first month
+  // a Vanguard bond arrives via the PDF statement path — the primary format of
+  // the monthly import workflow — the carry silently stops and the bond value
+  // drops back into the cash plug with no alarm.
+
+  const STATEMENT_SOURCE_CASES: { label: string; equity: string; bond: string }[] = [
+    {
+      label: "canonical:hold:",
+      equity: "canonical:hold:TAX:AAPL:2026-07-31",
+      bond: "canonical:hold:TAX:TBILL:2026-07-31",
+    },
+    {
+      label: "vanguard-pdf:holding:",
+      equity: "vanguard-pdf:holding:Taxable:AAPL:2026-07-31",
+      bond: "vanguard-pdf:holding:Taxable:TBILL:2026-07-31",
+    },
+    {
+      label: "vanguard:holding:",
+      equity: "vanguard:holding:AAPL:2026-07-31",
+      bond: "vanguard:holding:TBILL:2026-07-31",
+    },
+    {
+      label: "vanguard-export:holding:",
+      equity: "vanguard-export:holding:Taxable:AAPL:2026-07-31",
+      bond: "vanguard-export:holding:Taxable:TBILL:2026-07-31",
+    },
+    {
+      label: "ibkr:pos:",
+      equity: "ibkr:pos:2026-07-31:AAPL",
+      bond: "ibkr:pos:2026-07-31:TBILL",
+    },
+    {
+      label: "ibkr:holding:",
+      equity: "ibkr:holding:AAPL:2026-07-31",
+      bond: "ibkr:holding:TBILL:2026-07-31",
+    },
+  ];
+
+  it.each(STATEMENT_SOURCE_CASES)(
+    "carries a bond written under the $label statement prefix",
+    ({ equity, bond }) => {
+      const aapl = seedSecurity(db, "AAPL", "stock", "US Large Cap Equity");
+      const bill = seedSecurity(db, "TBILL", "bond", "US Treasury");
+
+      seedHolding(db, ACCOUNT_ID, aapl, 100, "2026-07-31", equity);
+      seedHolding(db, ACCOUNT_ID, bill, 100_000, "2026-07-31", bond);
+      seedHolding(db, ACCOUNT_ID, aapl, 100, "2026-08-03", "plaid:1:1:2026-08-03");
+
+      for (const d of ["2026-07-31", "2026-08-03"]) {
+        seedPrice(db, aapl, d, 150);
+        seedPrice(db, bill, d, 100);
+      }
+      seedSnapshot(db, ACCOUNT_ID, "2026-07-31", 116_000, "statement");
+
+      computeDailyValuations(db);
+      const vals = valuationsByDate(db, ACCOUNT_ID);
+
+      // 15,000 equity + 100,000 bond — the bond survived the source handoff.
+      expect(vals["2026-08-03"].holdings_value).toBe(115_000);
+      expect(vals["2026-08-03"].holdings_count).toBe(2);
+      expect(vals["2026-08-03"].cash_balance).toBe(1_000);
+    }
+  );
+
+  it.each(["plaid:", "tws-"])(
+    "never treats a %s-sourced bond row as a carry source",
+    (livePrefix) => {
+      // A bond that only ever existed under a LIVE prefix is not statement
+      // authority. Widening the statement match must not accidentally start
+      // carrying live rows forward — that would resurrect a position the next
+      // live sync legitimately dropped.
+      const aapl = seedSecurity(db, "AAPL", "stock", "US Large Cap Equity");
+      const bill = seedSecurity(db, "TBILL", "bond", "US Treasury");
+
+      seedHolding(db, ACCOUNT_ID, aapl, 100, "2026-07-31", `${livePrefix}1:1:2026-07-31`);
+      seedHolding(db, ACCOUNT_ID, bill, 100_000, "2026-07-31", `${livePrefix}1:2:2026-07-31`);
+      // Next day: Plaid reports equity only. Nothing statement-sourced exists,
+      // so there is nothing legitimate to carry.
+      seedHolding(db, ACCOUNT_ID, aapl, 100, "2026-08-03", "plaid:1:1:2026-08-03");
+
+      for (const d of ["2026-07-31", "2026-08-03"]) {
+        seedPrice(db, aapl, d, 150);
+        seedPrice(db, bill, d, 100);
+      }
+      seedSnapshot(db, ACCOUNT_ID, "2026-07-31", 116_000, "statement");
+
+      computeDailyValuations(db);
+      const vals = valuationsByDate(db, ACCOUNT_ID);
+
+      expect(vals["2026-08-03"].holdings_count).toBe(1);
+      expect(vals["2026-08-03"].holdings_value).toBe(15_000);
+    }
+  );
+
   it("never carries bonds into a TWS-sourced snapshot day", () => {
     // TWS reports bonds itself; carrying would double-count around a
     // mid-month sale. The gate is the presence of a plaid: row, not the

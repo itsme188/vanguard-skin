@@ -3,6 +3,7 @@ import { marketValue } from "@/lib/valuation";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 import { fetchNetFlowsByDate } from "@/lib/compute/flow-adjusted";
 import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
+import { statementSourcedHoldingSql, isPlaidSourcedHolding } from "@/lib/db/holding-sources";
 
 /** Don't carry a price forward more than 45 days — beyond that, the position
  *  was likely liquidated or the data is too stale to be meaningful. */
@@ -100,15 +101,21 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
 
     // Bonds from the most recent STATEMENT snapshot on or before a date.
     // Used only to repair Plaid-sourced days — see the carry-forward block
-    // in the loop below. Deliberately narrow: canonical (statement) rows
-    // only, real bonds only, live positions only.
-    const getCanonicalBonds = db.prepare(
+    // in the loop below. Deliberately narrow: statement-authority rows only,
+    // real bonds only, live positions only.
+    //
+    // "Statement-authority" is the whole prefix class, not just 'canonical:'.
+    // Which prefix a bond carries depends only on which importer ran, so
+    // matching one would make the carry stop the first month the bond arrived
+    // through a different path (e.g. the Vanguard PDF statement) — silently
+    // dropping its value back into the cash plug. See lib/db/holding-sources.ts.
+    const getStatementBonds = db.prepare(
       `SELECT h.security_id, h.quantity, s.security_type, s.fund_category,
               COALESCE(s.multiplier, 1) AS multiplier, s.currency, h.as_of_date, h.source_key
        FROM holdings h
        JOIN securities s ON s.id = h.security_id
        WHERE h.account_id = ?
-         AND h.source_key LIKE 'canonical:%'
+         AND ${statementSourcedHoldingSql("h.source_key")}
          AND LOWER(COALESCE(s.security_type, '')) = 'bond'
          AND h.quantity != 0
          AND h.as_of_date = (
@@ -116,7 +123,7 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
            FROM holdings h2
            WHERE h2.account_id = h.account_id
              AND h2.as_of_date <= ?
-             AND h2.source_key LIKE 'canonical:%'
+             AND ${statementSourcedHoldingSql("h2.source_key")}
          )
        GROUP BY h.security_id`
     );
@@ -157,13 +164,13 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
         // carried until its price goes stale (PRICE_STALENESS_DAYS), at
         // which point it stops contributing value — acceptable, and it
         // shows up as degraded data_quality in the meantime.
-        const hasPlaidRow = snapshotRows.some((h) => h.source_key?.startsWith("plaid:"));
+        const hasPlaidRow = snapshotRows.some((h) => isPlaidSourcedHolding(h.source_key));
         const hasOwnBondRow = snapshotRows.some(
           (h) => h.security_type?.toLowerCase() === "bond"
         );
         if (hasPlaidRow && !hasOwnBondRow) {
           const ownSecurityIds = new Set(snapshotRows.map((h) => h.security_id));
-          for (const bond of getCanonicalBonds.all(account.account_id, date) as HoldingRow[]) {
+          for (const bond of getStatementBonds.all(account.account_id, date) as HoldingRow[]) {
             // The day's own row always wins on collision.
             if (!ownSecurityIds.has(bond.security_id)) holdings.push(bond);
           }
