@@ -1,0 +1,13 @@
+Statement,Header,Field Name,Field Value
+Statement,Data,Period,"July 1, 2026 - July 31, 2026"
+Corporate Actions,Header,Asset Category,Currency,Account,Report Date,Date/Time,Description,Quantity,Proceeds,Value,Realized P/L,Code
+Corporate Actions,Data,Stocks,USD,U0000000,2026-07-02,"2026-07-01, 20:25:00","AAAA(US0000000001) Split 4 for 1 (AAAA, FAKE ALPHA CORP, US0000000001)",300,0,0,0,
+Corporate Actions,Data,Stocks,USD,U0000000,2026-07-16,"2026-07-15, 20:25:00","BBBB(US0000000002) Split 1 for 10 (BBBB, FAKE BETA CORP, US0000000002)",-90,0,0,0,
+Corporate Actions,Data,Stocks,USD,U0000000,2026-07-20,"2026-07-19, 20:25:00","CCCC(US0000000003) Merged(Acquisition) FAKE GAMMA CORP (CCCC, FAKE GAMMA CORP, US0000000003)",-50,0,500,0,
+Corporate Actions,Data,Stocks,USD,U0000000,2026-07-22,"2026-07-21, 20:25:00","DDDD(US0000000004) Split X for Y (DDDD, FAKE DELTA CORP, US0000000004)",7,0,0,0,
+Corporate Actions,Data,Stocks,USD,U0000000,2026-07-23,"2026-07-22, 20:25:00","EEEE(US0000000005) Split 1 for 1 (EEEE, FAKE EPSILON CORP, US0000000005)",0,0,0,0,
+Corporate Actions,Data,Equity and Index Options,USD,U0000000,2026-07-24,"2026-07-23, 20:25:00","AAAA 21AUG26 100 C Contract Adjustment",0,0,0,0,
+Corporate Actions,Data,Stocks,USD,U0000000,2026-07-25,"2026-07-24, 20:25:00","402340.KS(KR7402340005) Split 2 for 1 (402340.KS, FAKE KOREA CO, KR7402340005)",10,0,0,0,
+Corporate Actions,Data,Stocks,USD,U0000000,2026-07-26,"2026-07-25, 20:25:00","FFFF(US0000000006) Split 4 for 0 (FFFF, FAKE ZETA CORP, US0000000006)",0,0,0,0,
+Corporate Actions,Data,Stocks,USD,U0000000,2026-07-27,"2026-07-26, 20:25:00","GGGG(US0000000007) Split 3 for 1 (GGGG, FAKE ETA CORP, US0000000007)",N/A,0,0,0,
+Corporate Actions,Data,Total,,,,,,,0,0,0,

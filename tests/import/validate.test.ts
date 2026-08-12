@@ -159,6 +159,7 @@ function makeParsedResult(
     holdings: [],
     prices: [],
     snapshots: [],
+    corporateActions: [],
     errors: [],
     warnings: [],
     ...overrides,

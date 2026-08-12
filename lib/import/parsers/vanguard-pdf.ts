@@ -434,6 +434,7 @@ export function parseClaudePdfResponse(
     holdings,
     prices,
     snapshots,
+    corporateActions: [],
     errors,
     warnings,
   };

@@ -287,6 +287,7 @@ export function parseCanonicalCsv(
     holdings,
     prices,
     snapshots,
+    corporateActions: [],
     errors,
     warnings,
   };

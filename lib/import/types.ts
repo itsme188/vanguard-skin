@@ -89,6 +89,17 @@ export interface ParsedFactor {
   regulatory_risk?: string;
 }
 
+export interface ParsedCorporateAction {
+  accountName: string;
+  symbol: string; // raw statement symbol (suffix-normalized later, at commit)
+  actionType: "SPLIT" | "REVERSE_SPLIT";
+  effectiveDate: string; // YYYY-MM-DD from the Date/Time column
+  ratioNumerator: number;
+  ratioDenominator: number;
+  quantityDelta: number | null; // statement Quantity column
+  sourceKey: string; // ibkr:ca:split:<date>:<symbol>:<num>:<den>
+}
+
 export interface ParsedImportResult {
   sourceType: SourceType;
   sourceName: string;
@@ -98,6 +109,7 @@ export interface ParsedImportResult {
   prices: ParsedPrice[];
   snapshots: ParsedSnapshot[];
   factors?: ParsedFactor[];
+  corporateActions: ParsedCorporateAction[];
   errors: string[];
   warnings: string[];
 }

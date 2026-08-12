@@ -71,6 +71,7 @@ export function parseMonthlyValues(
     holdings: [],
     prices: [],
     snapshots,
+    corporateActions: [],
     errors,
     warnings: [],
   };

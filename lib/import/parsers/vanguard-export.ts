@@ -261,6 +261,7 @@ export function parseVanguardExport(
     holdings,
     prices: Array.from(pricesMap.values()),
     snapshots: [],
+    corporateActions: [],
     errors,
     warnings,
   };
