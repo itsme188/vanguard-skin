@@ -41,6 +41,10 @@ export interface DrawdownInfo {
   troughDate: string;
   peakValue: number;
   troughValue: number;
+  // Net external flows (deposits positive, withdrawals negative) that landed
+  // in (peakDate, troughDate] — see the comment above the raw-dollar overlay
+  // in computeRiskMetrics for why this bridging term exists.
+  netFlowsInWindow: number;
 }
 
 export interface CurrentDrawdownInfo {
@@ -48,7 +52,17 @@ export interface CurrentDrawdownInfo {
   peakDate: string;
   peakValue: number;
   currentValue: number;
+  // Net external flows (deposits positive, withdrawals negative) that landed
+  // in (peakDate, seriesEnd] — see the comment above the raw-dollar overlay
+  // in computeRiskMetrics for why this bridging term exists.
+  netFlowsInWindow: number;
 }
+
+// Internal shapes returned by the flow-adjusted-index-only drawdown finders,
+// before the raw-dollar overlay (peakValue/troughValue/netFlowsInWindow) is
+// attached in computeRiskMetrics.
+type DrawdownCore = Omit<DrawdownInfo, "netFlowsInWindow">;
+type CurrentDrawdownCore = Omit<CurrentDrawdownInfo, "netFlowsInWindow">;
 
 export interface PositionWeight {
   symbol: string;
@@ -172,19 +186,31 @@ export function computeRiskMetrics(
   // Percent + dates come from the flow-adjusted index; the dollar fields keep
   // reporting the actual account value on those dates (what the user can see
   // on a statement), so they intentionally don't ratio back to `percent`.
+  // `netFlowsInWindow` is the bridging term: it's the net external flow
+  // (deposits positive, withdrawals negative) that landed between peak and
+  // trough, which is exactly what makes peakValue/troughValue look
+  // inconsistent with `percent` when nonzero (e.g. a deposit mid-drawdown can
+  // push troughValue above peakValue even though the market itself fell) —
+  // surfacing it lets the UI overlay stay self-consistent instead of silently
+  // contradicting itself.
   const maxDrawdown = maxDrawdownIdx
     ? {
         ...maxDrawdownIdx,
         peakValue: rawValueByDate.get(maxDrawdownIdx.peakDate) ?? maxDrawdownIdx.peakValue,
         troughValue: rawValueByDate.get(maxDrawdownIdx.troughDate) ?? maxDrawdownIdx.troughValue,
+        netFlowsInWindow: sumFlowsInWindow(flows, maxDrawdownIdx.peakDate, maxDrawdownIdx.troughDate),
       }
     : null;
   const currentDrawdownIdx = computeCurrentDrawdown(index);
+  // A non-null currentDrawdownIdx implies index.length >= 2 (computeCurrentDrawdown's
+  // own guard), and index.length === points.length, so points[points.length - 1]
+  // is safe here even though `points` can be empty in the null branch.
   const currentDrawdown = currentDrawdownIdx
     ? {
         ...currentDrawdownIdx,
         peakValue: rawValueByDate.get(currentDrawdownIdx.peakDate) ?? currentDrawdownIdx.peakValue,
         currentValue: points[points.length - 1].value,
+        netFlowsInWindow: sumFlowsInWindow(flows, currentDrawdownIdx.peakDate, points[points.length - 1].date),
       }
     : null;
   const { volatility, sharpeRatio } = computeVolatility(logReturns, points.length, riskFreeRate);
@@ -212,11 +238,28 @@ export function computeRiskMetrics(
 // External cash-flow adjustment (fetchNetFlowsByDate + buildFlowAdjustedIndex)
 // moved to lib/compute/flow-adjusted.ts — shared with computeMarketRegression.
 
+/**
+ * Sum net external flows (fetchNetFlowsByDate rows) that landed strictly
+ * after `startExclusive` and on/before `endInclusive` — same end-of-day
+ * convention as fetchNetFlowsByDate/buildFlowAdjustedIndex (a flow dated on a
+ * boundary date is attributed to that date's value).
+ */
+function sumFlowsInWindow(
+  flows: { date: string; net: number }[],
+  startExclusive: string,
+  endInclusive: string
+): number {
+  return flows.reduce(
+    (sum, f) => (f.date > startExclusive && f.date <= endInclusive ? sum + f.net : sum),
+    0
+  );
+}
+
 // ─── Max Drawdown ───────────────────────────────────────────────
 
 function computeMaxDrawdown(
   series: { date: string; value: number }[]
-): DrawdownInfo | null {
+): DrawdownCore | null {
   if (series.length < 2) return null;
 
   let peak = series[0].value;
@@ -257,7 +300,7 @@ function computeMaxDrawdown(
 
 function computeCurrentDrawdown(
   series: { date: string; value: number }[]
-): CurrentDrawdownInfo | null {
+): CurrentDrawdownCore | null {
   if (series.length < 2) return null;
 
   let peak = 0;
