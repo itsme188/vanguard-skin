@@ -43,11 +43,14 @@ import type Database from "better-sqlite3";
  * (2026-07-13→07-14 and the 2026-07-30→07-31 / 08-02→08-03 round trip)
  * have a cash residual in the six figures while total_value moved smoothly
  * (well under 1% and ~1.7% respectively) — the SPLIT between cash_balance
- * and holdings_value jumped, not the total. 2026-07-31 is a
- * data_quality='live' row where a six-figure slice of the account appears to have been
- * misattributed from cash into holdings_value by the live valuation source
- * (probably the money-market sweep counted as a holding) and the
- * misattribution reversed itself on 08-03. Inserting a synthetic flow for
+ * and holdings_value jumped, not the total. Root cause CONFIRMED and FIXED
+ * 2026-08-12 (cash-split normalization in lib/compute/daily-valuation.ts,
+ * 6c1e34d): the money-market sweep WAS counted as a holding on
+ * statement-anchored days and folded into cash on Plaid days, flipping the
+ * split at every anchor handoff — the 07-31/08-03 "round trip" was exactly
+ * that flip. With the engine normalized (sweep = cash everywhere,
+ * statement bonds carried into Plaid days) internal-shift days like these
+ * should no longer surface as candidates. Inserting a synthetic flow for
  * a day like this would be actively harmful: total_value already reads
  * correctly for return purposes, so subtracting a flow from it would
  * CREATE a fake flow-adjusted return day (and corrupt TWR/XIRR, which also
