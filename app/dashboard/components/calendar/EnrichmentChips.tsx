@@ -23,6 +23,27 @@ export function parseReactionSnapshot(
   }
 }
 
+/**
+ * A stored snapshot only belongs to a print when its t0 falls on the event's
+ * own date, compared in ET wall-clock (an evening AMC print rolls the UTC
+ * date past midnight). composeReleaseInstant writes t0 from event_date so
+ * they agree at write time — but a later date correction strands a snapshot
+ * measured for a different day on this row. Missing/unparseable t0 fails
+ * closed: better no reaction than a wrong one. Shared by WeekAheadView's
+ * releasedFigureGates and TodayReleases — do not fork this check.
+ */
+export function snapshotCoversEventDate(
+  eventDate: string | null | undefined,
+  snap: ReactionSnapshot | null,
+): boolean {
+  if (!eventDate || !snap?.t0_utc) return false;
+  const t0 = new Date(snap.t0_utc);
+  if (isNaN(t0.getTime())) return false;
+  // en-CA renders YYYY-MM-DD; timeZone anchors to ET per repo convention.
+  const etDate = t0.toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  return etDate === eventDate;
+}
+
 function deltaClass(pct: number | null | undefined): string {
   if (pct == null) return "text-ink-faint";
   if (pct > 0.05) return "text-up";
