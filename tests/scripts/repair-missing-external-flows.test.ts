@@ -9,6 +9,8 @@ import {
   nonIbkrAccountIds,
   selectRun,
   collectFlagValues,
+  collectSeamDatesByAccount,
+  findLegacyRepairRowsOnSeams,
 } from "@/scripts/repair-missing-external-flows";
 
 function createTestDb(): Database.Database {
@@ -385,5 +387,118 @@ describe("collectFlagValues", () => {
 
   it("collects a single-use flag like --amount as a one-element array", () => {
     expect(collectFlagValues(["--apply", "--amount", "88000"], "--amount")).toEqual(["88000"]);
+  });
+});
+
+// ─── Seam awareness ─────────────────────────────────────────────────
+
+function insertAnchor(
+  db: Database.Database,
+  accountId: number,
+  date: string,
+  source: string | null
+): void {
+  db.prepare(
+    `INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, source)
+     VALUES (?, ?, 100000, ?)`
+  ).run(accountId, date, source);
+}
+
+/** Account 1: canonical -> plaid transition landing 2026-07-11 (a seam).
+ *  Account 2: plaid throughout (no source change, no seam) — proves seams
+ *  are collected per-account, never a cross-account union. */
+function makeDbWithAnchors(): Database.Database {
+  const db = createTestDb();
+  insertAnchor(db, 1, "2026-06-30", "canonical");
+  insertAnchor(db, 1, "2026-07-11", "plaid");
+  insertAnchor(db, 2, "2026-06-30", "plaid");
+  insertAnchor(db, 2, "2026-07-11", "plaid");
+  return db;
+}
+
+/** Account 1 valuations spanning two scenarios the legacy-audit tests need:
+ *   - 2026-07-10 -> 2026-07-11: no gap, the seam date IS a valuation date.
+ *   - 2026-08-28 (Fri) -> 2026-08-31 (Mon): weekend gap skips Sat 08-29 /
+ *     Sun 08-30, so a seam dated Sat 2026-08-29 has NO valuation row of its
+ *     own — only the INTERVAL (08-28, 08-31] contains it.
+ */
+function makeDbWithAnchorsAndValuations(): Database.Database {
+  const db = createTestDb();
+  insertValuation(db, 1, "2026-07-10", 60_500.25, 1_350_000.55);
+  insertValuation(db, 1, "2026-07-11", 210_500.25, 1_440_000.55);
+  insertValuation(db, 1, "2026-08-28", 210_500.25, 1_440_000.55);
+  insertValuation(db, 1, "2026-08-31", 298_500.25, 1_528_000.55);
+  insertValuation(db, 1, "2026-09-02", 298_500.25, 1_528_000.55);
+  return db;
+}
+
+/** Account 1 has a genuine anchor-source transition landing 2026-07-11
+ *  AND an unexplained cash jump on that same date with zero transactions —
+ *  the exact shape that used to reach --apply before seam awareness. */
+function makeDbWithSeamResidual(): Database.Database {
+  const db = createTestDb();
+  insertValuation(db, 1, "2026-07-10", 60_500.25, 1_350_000.55);
+  insertValuation(db, 1, "2026-07-11", 210_500.25, 1_440_000.55);
+  insertAnchor(db, 1, "2026-06-30", "canonical");
+  insertAnchor(db, 1, "2026-07-11", "plaid");
+  return db;
+}
+
+describe("seam awareness", () => {
+  it("collectSeamDatesByAccount fetches per-account seams (no cross-account union)", () => {
+    const db = makeDbWithAnchors();
+    const seams = collectSeamDatesByAccount(db, [1, 2]);
+    expect(seams.get(1)).toEqual(["2026-07-11"]);
+    expect(seams.get(2) ?? []).toEqual([]);
+  });
+
+  it("findLegacyRepairRowsOnSeams matches by valuation INTERVAL, not exact date", () => {
+    const db = makeDbWithAnchorsAndValuations();
+    db.prepare(
+      `INSERT INTO transactions (account_id, trade_date, type, amount, is_external_flow, source_key)
+       VALUES (1, '2026-08-31', 'DEPOSIT', 88000, 1, 'repair-missing-flow:1:2026-08-31')`
+    ).run();
+    // Seam 2026-08-29 (Saturday) has no valuation row of its own — only the
+    // interval (2026-08-28, 2026-08-31] contains it.
+    const flagged = findLegacyRepairRowsOnSeams(db, new Map([[1, ["2026-08-29"]]]));
+    expect(flagged).toHaveLength(1);
+    expect(flagged[0].source_key).toBe("repair-missing-flow:1:2026-08-31");
+  });
+
+  it("flags an exact-date legacy row too (seam date IS a valuation date)", () => {
+    const db = makeDbWithAnchorsAndValuations();
+    db.prepare(
+      `INSERT INTO transactions (account_id, trade_date, type, amount, is_external_flow, source_key)
+       VALUES (1, '2026-07-11', 'DEPOSIT', 150000, 1, 'repair-missing-flow:1:2026-07-11')`
+    ).run();
+    const flagged = findLegacyRepairRowsOnSeams(db, new Map([[1, ["2026-07-11"]]]));
+    expect(flagged).toHaveLength(1);
+    expect(flagged[0].source_key).toBe("repair-missing-flow:1:2026-07-11");
+  });
+
+  it("falls back to exact-date equality when there is no valuation row before the trade_date", () => {
+    const db = createTestDb();
+    db.prepare(
+      `INSERT INTO transactions (account_id, trade_date, type, amount, is_external_flow, source_key)
+       VALUES (1, '2026-01-02', 'DEPOSIT', 5000, 1, 'repair-missing-flow:1:2026-01-02')`
+    ).run();
+    expect(findLegacyRepairRowsOnSeams(db, new Map([[1, ["2026-01-02"]]]))).toHaveLength(1);
+    // A seam one day later does NOT match — with no prior valuation row the
+    // fallback is exact-date equality, not "on or before".
+    expect(findLegacyRepairRowsOnSeams(db, new Map([[1, ["2026-01-03"]]]))).toEqual([]);
+  });
+
+  it("stays silent when no legacy repair rows sit on seams", () => {
+    const db = makeDbWithAnchorsAndValuations();
+    expect(findLegacyRepairRowsOnSeams(db, new Map([[1, ["2026-07-11"]]]))).toEqual([]);
+  });
+
+  it("a seam-shaped point reaches the CLI selection but yields no proposal, even with --amount", () => {
+    const db = makeDbWithSeamResidual();
+    const candidates = findCandidates(db, { accountIds: [1] }); // now seam-aware internally
+    const result = selectRun(candidates, { onlyDates: ["2026-07-11"], amountOverride: 88000 });
+    expect(result.seamPoints.map((p) => p.toDate)).toContain("2026-07-11");
+    expect(result.proposals.map((p) => p.tradeDate)).not.toContain("2026-07-11");
+    expect(result.error).toMatch(/external-flow-candidate/);
   });
 });
