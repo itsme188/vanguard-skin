@@ -27,6 +27,13 @@
  * bond's value would have dropped back into the cash plug with no alarm.
  *
  * When a new importer is added, add its holdings prefix here.
+ *
+ * Two prefixes deliberately live OUTSIDE this taxonomy (neither statement
+ * authority nor live sync): 'recon:closed-equity:' (engine-owned
+ * reconciliation rows — always quantity=0, so inert for the bond
+ * carry-forward and every value predicate) and 'demo-hold-'
+ * (scripts/seed-demo.ts dev-only seed data). Do not add them to either
+ * list above.
  */
 
 /** Every prefix an importer stamps on a statement-sourced holdings row. */

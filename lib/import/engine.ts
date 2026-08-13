@@ -429,11 +429,12 @@ export function commitImport(
     }
 
     // 4. Upsert holdings. UNIQUE(account_id, security_id, as_of_date) means only
-    //    one row per (account, security, date). Statement holdings (source_key
-    //    prefixes 'ibkr:pos:', 'canonical:hold:', 'vanguard:...') are the
-    //    end-of-day authority and must overwrite earlier TWS intra-day rows for
-    //    the same date (source_key prefix 'tws-'). Re-imports of the same
-    //    statement match on UNIQUE source_key and are no-ops.
+    //    one row per (account, security, date). Statement holdings — the
+    //    six-prefix statement-authority class single-sourced in
+    //    lib/db/holding-sources.ts — are the end-of-day authority and must
+    //    overwrite earlier live intra-day rows for the same date (live
+    //    prefixes live in the same file). Re-imports of the same statement
+    //    match on UNIQUE source_key and are no-ops.
     //
     //    Pre-2026-05-04 this used INSERT OR IGNORE, which silently dropped the
     //    statement holdings whenever TWS had already written an intra-day row.
