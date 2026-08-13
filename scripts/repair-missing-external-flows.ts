@@ -97,6 +97,7 @@ import {
   type CashFlowResidualPoint,
   type UnexplainedCashFlowFloors,
 } from "../lib/compute/cash-flow-audit";
+import { fetchAnchorSourceSeamDates } from "../lib/compute/flow-adjusted";
 
 const DB_PATH = path.join(process.cwd(), "data", "vanguard.db");
 
@@ -155,17 +156,84 @@ export function nonIbkrAccountIds(db: Database.Database): number[] {
   return rows.filter((r) => !isLikelyIbkrAccountName(r.name)).map((r) => r.id);
 }
 
+// ─── Seam awareness ─────────────────────────────────────────────────
+
+/**
+ * Per-account seam dates over each account's full anchor span — one
+ * fetchAnchorSourceSeamDates call PER ACCOUNT, never a cross-account union:
+ * account A's anchor-source transition must not suppress a genuine
+ * candidate in account B landing on the same calendar date.
+ */
+export function collectSeamDatesByAccount(
+  db: Database.Database,
+  accountIds: number[]
+): Map<number, string[]> {
+  const map = new Map<number, string[]>();
+  for (const id of accountIds) {
+    map.set(id, fetchAnchorSourceSeamDates(db, [id], "0000-00-00", "9999-12-31"));
+  }
+  return map;
+}
+
+interface LegacyRepairRow {
+  id: number;
+  account_id: number;
+  trade_date: string;
+  amount: number;
+  source_key: string;
+}
+
+/**
+ * Read-only audit: previously applied synthetic flows (source_key LIKE
+ * 'repair-missing-flow:%') whose account's valuation INTERVAL contains a
+ * seam — a past run (before this script was seam-aware) may have misread an
+ * anchor-source transition as a missing external flow. Interval matching,
+ * not exact-date: a weekend anchor's seam date (e.g. a Saturday) has no
+ * valuation row of its own, but the repair row would have landed on the
+ * next valuation date, whose interval (prev valuation date, repair date]
+ * still contains the seam. With no valuation row before the repair row's
+ * trade_date at all, falls back to exact-date membership.
+ */
+export function findLegacyRepairRowsOnSeams(
+  db: Database.Database,
+  seamsByAccount: Map<number, string[]>
+): LegacyRepairRow[] {
+  const rows = db
+    .prepare(
+      `SELECT id, account_id, trade_date, amount, source_key FROM transactions
+       WHERE source_key LIKE 'repair-missing-flow:%' ORDER BY trade_date`
+    )
+    .all() as LegacyRepairRow[];
+  const prevValuationStmt = db.prepare(
+    `SELECT MAX(valuation_date) AS prev FROM daily_valuations
+     WHERE account_id = ? AND valuation_date < ?`
+  );
+  return rows.filter((r) => {
+    const seams = seamsByAccount.get(r.account_id) ?? [];
+    if (seams.length === 0) return false;
+    const { prev } = prevValuationStmt.get(r.account_id, r.trade_date) as { prev: string | null };
+    // Interval (prev, trade_date]; with no prior valuation row, fall back to
+    // exact-date membership.
+    return seams.some((s) => (prev !== null ? s > prev && s <= r.trade_date : s === r.trade_date));
+  });
+}
+
 /**
  * Full candidate list for --apply / dry-run: computes residuals for the
  * given accounts (default: every non-IBKR account) and keeps only the
- * points isUnexplainedCashFlow flags, oldest first.
+ * points isUnexplainedCashFlow flags, oldest first. Seam-aware: a point
+ * landing on an anchor-source-transition interval classifies `source-seam`
+ * (see collectSeamDatesByAccount) and, while still flagged as unexplained
+ * (isUnexplainedCashFlow doesn't look at classification), never becomes an
+ * external-flow-candidate — see selectRun/partitionCandidates.
  */
 export function findCandidates(
   db: Database.Database,
   opts?: { accountIds?: number[]; floors?: UnexplainedCashFlowFloors }
 ): CashFlowResidualPoint[] {
   const accountIds = opts?.accountIds ?? nonIbkrAccountIds(db);
-  const points = computeCashFlowResiduals(db, { accountIds });
+  const seamDatesByAccount = collectSeamDatesByAccount(db, accountIds);
+  const points = computeCashFlowResiduals(db, { accountIds, seamDatesByAccount });
   return points
     .filter((p) => isUnexplainedCashFlow(p, opts?.floors))
     .sort((a, b) => (a.toDate < b.toDate ? -1 : a.toDate > b.toDate ? 1 : a.accountId - b.accountId));
@@ -180,6 +248,10 @@ export interface SelectRunResult {
   externalFlowCandidates: CashFlowResidualPoint[];
   /** Printed informationally, never inserted. */
   internalShifts: CashFlowResidualPoint[];
+  /** Printed informationally, never inserted — an anchor-source-transition
+   *  artifact (see classifyCashFlowResidual / collectSeamDatesByAccount),
+   *  not a flow. Reaches the CLI layer instead of being silently dropped. */
+  seamPoints: CashFlowResidualPoint[];
   /** --only dates that matched no candidate at all (typo guard). */
   unmatchedOnlyDates: string[];
   /** Non-null when the request is invalid — callers must not apply. */
@@ -204,7 +276,7 @@ export function selectRun(
     selected = candidates.filter((c) => onlyDates.includes(c.toDate));
   }
 
-  const { externalFlowCandidates, internalShifts } = partitionCandidates(selected);
+  const { externalFlowCandidates, internalShifts, seamPoints } = partitionCandidates(selected);
 
   // Require --only explicitly, not just "happens to be exactly one
   // candidate right now" — the candidate set changes as the ledger changes,
@@ -216,6 +288,7 @@ export function selectRun(
         proposals: [],
         externalFlowCandidates,
         internalShifts,
+        seamPoints,
         unmatchedOnlyDates,
         error:
           `--amount requires exactly one date selected via --only (got ${onlyDates.length}). ` +
@@ -227,10 +300,11 @@ export function selectRun(
         proposals: [],
         externalFlowCandidates,
         internalShifts,
+        seamPoints,
         unmatchedOnlyDates,
         error:
           `--amount's --only ${onlyDates[0]} must match exactly one external-flow-candidate ` +
-          `(found ${externalFlowCandidates.length} — internal-shift dates never get a proposal).`,
+          `(found ${externalFlowCandidates.length} — internal-shift/source-seam dates never get a proposal).`,
       };
     }
   }
@@ -239,7 +313,7 @@ export function selectRun(
     buildProposedTransaction(c, externalFlowCandidates.length === 1 ? opts.amountOverride : undefined)
   );
 
-  return { proposals, externalFlowCandidates, internalShifts, unmatchedOnlyDates, error: null };
+  return { proposals, externalFlowCandidates, internalShifts, seamPoints, unmatchedOnlyDates, error: null };
 }
 
 // ─── Backup (mirrors scripts/repair-etf-types.ts::backupDatabase) ─────
@@ -316,6 +390,13 @@ function printInternalShift(point: CashFlowResidualPoint): void {
   console.log(`  classification: internal-shift (total_value moved smoothly — NOT proposed)`);
 }
 
+function printSeamPoint(point: CashFlowResidualPoint): void {
+  printPointDetail(point);
+  console.log(
+    `  classification: source-seam (anchor source changed — measurement-basis step, not a flow; never synthesized)`
+  );
+}
+
 /** Collects every value passed to a repeatable `--flag value` CLI arg. */
 export function collectFlagValues(args: string[], flag: string): string[] {
   const values: string[] = [];
@@ -364,6 +445,7 @@ async function main(): Promise<void> {
       );
     }
 
+    const seamDatesByAccount = collectSeamDatesByAccount(db, accountIds);
     const candidates = findCandidates(db, { accountIds });
     const result = selectRun(candidates, { onlyDates, amountOverride });
 
@@ -377,33 +459,60 @@ async function main(): Promise<void> {
       return;
     }
 
-    const { proposals, externalFlowCandidates, internalShifts } = result;
+    const { proposals, externalFlowCandidates, internalShifts, seamPoints } = result;
+    const hasAnything =
+      externalFlowCandidates.length > 0 || internalShifts.length > 0 || seamPoints.length > 0;
 
-    if (externalFlowCandidates.length === 0 && internalShifts.length === 0) {
+    if (!hasAnything) {
       console.log("\nNo unexplained cash-flow candidates found (after filters). Nothing to do.");
-      return;
-    }
-
-    console.log(
-      `\nFound ${externalFlowCandidates.length} external-flow-candidate(s) (proposed) and ` +
-        `${internalShifts.length} internal-shift(s) (informational only).`
-    );
-
-    if (proposals.length > 0) {
-      console.log(`\n── Proposed inserts (total_value move corroborates the cash residual) ──`);
-      for (let i = 0; i < externalFlowCandidates.length; i++) {
-        printProposal(externalFlowCandidates[i], proposals[i]);
-      }
-    }
-
-    if (internalShifts.length > 0) {
+    } else {
       console.log(
-        `\n── Internal cash↔holdings shifts — NOT proposed; likely valuation-source ` +
-          `misattribution, no external money moved ──`
+        `\nFound ${externalFlowCandidates.length} external-flow-candidate(s) (proposed), ` +
+          `${internalShifts.length} internal-shift(s), and ${seamPoints.length} source-seam ` +
+          `point(s) (internal-shift and source-seam are informational only, never synthesized).`
       );
-      for (const point of internalShifts) {
-        printInternalShift(point);
+
+      if (proposals.length > 0) {
+        console.log(`\n── Proposed inserts (total_value move corroborates the cash residual) ──`);
+        for (let i = 0; i < externalFlowCandidates.length; i++) {
+          printProposal(externalFlowCandidates[i], proposals[i]);
+        }
       }
+
+      if (internalShifts.length > 0) {
+        console.log(
+          `\n── Internal cash↔holdings shifts — NOT proposed; likely valuation-source ` +
+            `misattribution, no external money moved ──`
+        );
+        for (const point of internalShifts) {
+          printInternalShift(point);
+        }
+      }
+
+      if (seamPoints.length > 0) {
+        console.log(
+          `\n── Anchor source-seam points — NOT proposed; anchor source changed — ` +
+            `measurement-basis step, not a flow; never synthesized ──`
+        );
+        for (const point of seamPoints) {
+          printSeamPoint(point);
+        }
+      }
+    }
+
+    const legacyFlagged = findLegacyRepairRowsOnSeams(db, seamDatesByAccount);
+    if (legacyFlagged.length > 0) {
+      console.log(
+        `\n── Legacy repair rows sitting on a seam interval — a past run may have ` +
+          `synthesized a flow for what was actually a source-seam artifact; review these ──`
+      );
+      for (const row of legacyFlagged) {
+        console.log(
+          `  account ${row.account_id}, ${row.trade_date}: ${row.source_key} amount=${row.amount.toFixed(2)}`
+        );
+      }
+    } else {
+      console.log("\nLegacy repair-row audit: no legacy repair rows on seams.");
     }
 
     if (!apply) {
