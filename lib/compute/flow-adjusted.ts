@@ -78,21 +78,41 @@ export function fetchNetFlowsByDate(
  * Drawdowns computed on this index reflect market movement only; the raw
  * series would read every withdrawal as a crash and every deposit as a rally.
  *
+ * `seamDates` (sorted ascending — fetchAnchorSourceSeamDates output) marks
+ * anchor-source transition days: a day whose interval (date_{t−1}, date_t]
+ * contains a seam is a BRIDGED day — the value step mixes two measurement
+ * bases (statement vs Plaid vs TWS), so it is zero information, not a
+ * return. The index carries flat and no return observation is emitted (the
+ * same skip shape as the non-positive guard, so every consumer already
+ * tolerates it). Flows inside a bridged interval are consumed — the whole
+ * step is discarded, flow component included — and never leak into the next
+ * day's return, which divides by the raw series[t].value as always.
+ *
  * `returns` carries each log return with the date it lands on (series[t]) so
  * consumers that pair returns with another series (the market regression's
  * benchmark alignment) can match by date; a skipped pair (non-positive prev
- * or adjusted value) simply has no entry.
+ * or adjusted value, or a bridged day) simply has no entry. `bridgedDays`
+ * counts seam-bridged days for observability (PortfolioRiskMetrics.
+ * seamDaysBridged; 0 when seamDates is empty).
  */
 export function buildFlowAdjustedIndex(
   series: SeriesPoint[],
-  flows: { date: string; net: number }[]
-): { index: SeriesPoint[]; returns: { date: string; logReturn: number }[] } {
-  if (series.length === 0) return { index: [], returns: [] };
+  flows: { date: string; net: number }[],
+  seamDates: string[] = []
+): {
+  index: SeriesPoint[];
+  returns: { date: string; logReturn: number }[];
+  bridgedDays: number;
+} {
+  if (series.length === 0) return { index: [], returns: [], bridgedDays: 0 };
 
   const index: SeriesPoint[] = [{ date: series[0].date, value: 1 }];
   const returns: { date: string; logReturn: number }[] = [];
+  let bridgedDays = 0;
   let fi = 0;
   while (fi < flows.length && flows[fi].date <= series[0].date) fi++;
+  let si = 0;
+  while (si < seamDates.length && seamDates[si] <= series[0].date) si++;
 
   for (let t = 1; t < series.length; t++) {
     let net = 0;
@@ -100,10 +120,17 @@ export function buildFlowAdjustedIndex(
       net += flows[fi].net;
       fi++;
     }
+    let bridged = false;
+    while (si < seamDates.length && seamDates[si] <= series[t].date) {
+      bridged = true;
+      si++;
+    }
     const prev = series[t - 1].value;
     const adjusted = series[t].value - net;
     let indexValue = index[t - 1].value;
-    if (prev > 0 && adjusted > 0) {
+    if (bridged) {
+      bridgedDays++;
+    } else if (prev > 0 && adjusted > 0) {
       const growth = adjusted / prev;
       returns.push({ date: series[t].date, logReturn: Math.log(growth) });
       indexValue = index[t - 1].value * growth;
@@ -111,7 +138,7 @@ export function buildFlowAdjustedIndex(
     index.push({ date: series[t].date, value: indexValue });
   }
 
-  return { index, returns };
+  return { index, returns, bridgedDays };
 }
 
 /**
