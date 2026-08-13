@@ -108,4 +108,49 @@ describe("classifyUnresolvedWithClaude", () => {
     expect(res.classified).toBe(0);
     expect(res.errors.length).toBeGreaterThan(0);
   });
+
+  // Regression (2026-08-13, qa:analysis-classification--auto-classify-swallows-ai-json-error):
+  // the model intermittently emits a raw, unescaped control character (e.g. a
+  // literal newline) inside a JSON string value. JSON.parse rejects this
+  // ("Bad control character in string literal in JSON") even though
+  // extractJsonArray already isolated a well-formed-looking `[...]` slice.
+  // Same defense as verify-sector-tags.ts / verify-earnings-dates.ts: retry
+  // with C0 control chars collapsed to spaces.
+  it("recovers from a raw control character embedded inside a JSON string value", async () => {
+    const rawNewline = String.fromCharCode(10);
+    const malformedText = [
+      "[{",
+      '"symbol":"XLE",',
+      `"fund_category":"US Sector${rawNewline}Equity (Energy)",`,
+      '"geography":"US",',
+      '"market_cap_category":"Large",',
+      '"style":"Value"',
+      "}]",
+    ].join("");
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({ text: malformedText });
+    const db = makeDb();
+    const res = await classifyUnresolvedWithClaude(db, [{ id: 1, symbol: "XLE", security_type: "ETF" }]);
+    expect(res.errors).toEqual([]);
+    expect(res.classified).toBe(1);
+    const row = db.prepare("SELECT * FROM securities WHERE symbol='XLE'").get() as any;
+    // The raw newline collapses to a space, same as the sibling call sites.
+    expect(row.fund_category).toBe("US Sector Equity (Energy)");
+  });
+
+  // A genuinely truncated response (e.g. a batch cut off by maxOutputTokens
+  // mid-object) is NOT recoverable by the control-char retry — there's no
+  // closing bracket/quote to reconstruct. This must surface as a clean
+  // per-batch domain error rather than throwing out of the whole sweep or
+  // silently dropping the batch.
+  it("records a clean domain error (not a crash) when the response is truncated mid-object", async () => {
+    const truncatedText = '[{"symbol":"XLE","fund_category":"US Sector Equity (Ener';
+    (generateTextForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({ text: truncatedText });
+    const db = makeDb();
+    const res = await classifyUnresolvedWithClaude(db, [{ id: 1, symbol: "XLE", security_type: "ETF" }]);
+    expect(res.classified).toBe(0);
+    expect(res.errors.length).toBe(1);
+    expect(res.errors[0]).toMatch(/Unterminated string|Bad control character|Unexpected end/i);
+    const row = db.prepare("SELECT * FROM securities WHERE symbol='XLE'").get() as any;
+    expect(row.classification_source).toBeNull();
+  });
 });
