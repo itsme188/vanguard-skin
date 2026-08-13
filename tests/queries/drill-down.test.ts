@@ -34,15 +34,15 @@ function seedBasicPortfolio(db: Database.Database) {
     `INSERT INTO security_factors (security_id, growth_vs_value, ai_exposure) VALUES (4, 'Value', 'Low')`
   ).run();
 
-  // Cached betas (lookback 252)
+  // Cached betas — at the writer's lookback (BETA_LOOKBACK_DAYS = 60)
   db.prepare(
-    `INSERT INTO security_betas (security_id, lookback_days, beta, computed_at) VALUES (1, 252, 1.2, '2026-05-10')`
+    `INSERT INTO security_betas (security_id, lookback_days, beta, computed_at) VALUES (1, 60, 1.2, '2026-05-10')`
   ).run();
   db.prepare(
-    `INSERT INTO security_betas (security_id, lookback_days, beta, computed_at) VALUES (2, 252, 1.1, '2026-05-10')`
+    `INSERT INTO security_betas (security_id, lookback_days, beta, computed_at) VALUES (2, 60, 1.1, '2026-05-10')`
   ).run();
   db.prepare(
-    `INSERT INTO security_betas (security_id, lookback_days, beta, computed_at) VALUES (3, 252, 0.6, '2026-05-10')`
+    `INSERT INTO security_betas (security_id, lookback_days, beta, computed_at) VALUES (3, 60, 0.6, '2026-05-10')`
   ).run();
   // XOM intentionally has no cached beta — verifies the LEFT JOIN returns null.
 
@@ -162,5 +162,29 @@ describe("getHoldingsInBucket", () => {
       bucket: "NonexistentSector",
     });
     expect(rows).toEqual([]);
+  });
+});
+
+// Regression: the beta join must use the same lookback the refresh script
+// writes (60 days) — with only 60-day rows in the table (production shape)
+// a 252-day join renders every Beta cell null.
+// [qa:analysis-whatif--portfolio-beta-always-one-lookback-mismatch]
+describe("beta lookback matches the production beta writer", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    seedBasicPortfolio(db);
+    db.prepare(`DELETE FROM security_betas`).run();
+    db.prepare(`INSERT INTO security_betas (security_id, lookback_days, beta, computed_at) VALUES (1, 60, 1.2, '2026-08-01')`).run();
+  });
+
+  it("risk drawer rows surface betas cached at the writer's lookback", () => {
+    const rows = getHoldingsInBucket(db, "all", { kind: "risk", topN: 5 });
+    const aapl = rows.find((r) => r.symbol === "AAPL");
+    expect(aapl).toBeDefined();
+    expect(aapl!.beta).toBe(1.2);
   });
 });

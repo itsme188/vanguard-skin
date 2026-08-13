@@ -16,10 +16,10 @@ function seedBasicPortfolio(db: Database.Database) {
   db.prepare(`INSERT INTO security_factors (security_id, growth_vs_value, ai_exposure) VALUES (2, 'Growth', 'High')`).run();
   db.prepare(`INSERT INTO security_factors (security_id, growth_vs_value, ai_exposure) VALUES (3, 'Value', 'No')`).run();
 
-  // Betas (lookback 252)
-  db.prepare(`INSERT INTO security_betas (security_id, lookback_days, beta, computed_at) VALUES (1, 252, 1.2, '2026-05-10')`).run();
-  db.prepare(`INSERT INTO security_betas (security_id, lookback_days, beta, computed_at) VALUES (2, 252, 1.1, '2026-05-10')`).run();
-  db.prepare(`INSERT INTO security_betas (security_id, lookback_days, beta, computed_at) VALUES (3, 252, 0.6, '2026-05-10')`).run();
+  // Betas — at the writer's lookback (BETA_LOOKBACK_DAYS = 60)
+  db.prepare(`INSERT INTO security_betas (security_id, lookback_days, beta, computed_at) VALUES (1, 60, 1.2, '2026-05-10')`).run();
+  db.prepare(`INSERT INTO security_betas (security_id, lookback_days, beta, computed_at) VALUES (2, 60, 1.1, '2026-05-10')`).run();
+  db.prepare(`INSERT INTO security_betas (security_id, lookback_days, beta, computed_at) VALUES (3, 60, 0.6, '2026-05-10')`).run();
 
   // Prices
   const today = new Date().toISOString().slice(0, 10);
@@ -381,5 +381,40 @@ describe("droppedLegs surfacing (unknown / unheld legs must not silently no-op)"
     ]);
     expect(result.droppedLegs).toEqual([]);
     expect(result.after.totalValue).toBeCloseTo(result.before.totalValue + 2000, 2);
+  });
+});
+
+// Regression: security_betas only ever contains rows at the lookback the
+// refresh script writes (60 days) — the join must ask for that same lookback
+// or every cached_beta is NULL and the ?? 1.0 fallback pins portfolio beta
+// at exactly 1.00. [qa:analysis-whatif--portfolio-beta-always-one-lookback-mismatch]
+describe("beta lookback matches the production beta writer", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    seedBasicPortfolio(db);
+    // Production shape: ONLY 60-day rows exist.
+    db.prepare(`DELETE FROM security_betas`).run();
+    db.prepare(`INSERT INTO security_betas (security_id, lookback_days, beta, computed_at) VALUES (1, 60, 1.2, '2026-08-01')`).run();
+    db.prepare(`INSERT INTO security_betas (security_id, lookback_days, beta, computed_at) VALUES (2, 60, 1.1, '2026-08-01')`).run();
+    db.prepare(`INSERT INTO security_betas (security_id, lookback_days, beta, computed_at) VALUES (3, 60, 0.6, '2026-08-01')`).run();
+  });
+
+  it("portfolio beta reflects betas cached at the writer's lookback, not 1.0", () => {
+    const result = computeExposureDelta(db, "all", undefined, [
+      { symbol: "AAPL", action: "buy", dollarAmount: 1000 },
+    ]);
+    // Weighted: (2000*1.2 + 3000*0.6 + 2000*1.1) / 7000
+    expect(result.before.beta).toBeCloseTo((2000 * 1.2 + 3000 * 0.6 + 2000 * 1.1) / 7000, 4);
+  });
+
+  it("a leg into a low-beta name moves the after-beta", () => {
+    const result = computeExposureDelta(db, "all", undefined, [
+      { symbol: "JNJ", action: "buy", dollarAmount: 7000 },
+    ]);
+    expect(result.after.beta).toBeLessThan(result.before.beta);
   });
 });

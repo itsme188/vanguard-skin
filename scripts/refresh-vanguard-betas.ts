@@ -15,12 +15,13 @@
 
 import type Database from "better-sqlite3";
 import { upsertBeta } from "@/lib/mutations/security-betas";
+import { BETA_LOOKBACK_DAYS } from "@/lib/queries/security-betas";
 import { calendarDaysBetween } from "@/lib/calendar/date-utils";
 import { isSplitSignatureReturnPair } from "@/lib/compute/risk";
 
 // ─── Constants ────────────────────────────────────────────────────
 
-const LOOKBACK_DAYS = 60;
+const LOOKBACK_DAYS = BETA_LOOKBACK_DAYS;
 const MIN_DATA_POINTS = 30; // skip securities with fewer aligned return pairs
 const BENCHMARK_SYMBOL = "SPY";
 // Drop return pairs whose dates are more than ~a week apart. The prices table
