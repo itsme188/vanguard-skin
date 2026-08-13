@@ -39,6 +39,7 @@ function fakeMetrics(overrides: Partial<PortfolioRiskMetrics> = {}): PortfolioRi
     dataPoints: 252,
     seriesStart: "2026-01-01",
     seriesEnd: "2026-07-21",
+    seamDaysBridged: 0,
     ...overrides,
   };
 }
