@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
+import { isCashEquivalentSecurity } from "@/lib/compute/cash-equivalents";
 
 /**
  * Chat sector-FILTER-only alias, on top of normalizeSector. normalizeSector
@@ -739,8 +740,29 @@ export interface CashEstimate {
  * Estimate cash balances per account by subtracting holdings market value
  * from the latest monthly snapshot total. This is an approximation since
  * prices may have changed since the snapshot date.
+ *
+ * Money-market sweep funds are cash, not holdings — the statement import
+ * path writes them as ordinary `holdings` rows, so naively subtracting ALL
+ * holdings from the snapshot total double-subtracts cash the user actually
+ * holds (it moves the sweep's value from "cash" to "invested"). Excluded
+ * here via the single-sourced `isCashEquivalentSecurity` predicate (never a
+ * hand-rolled `security_type`/`fund_category` SQL literal — see
+ * lib/compute/cash-equivalents.ts). Their value re-enters automatically
+ * through estimated_cash's residual (snapshot_total − holdings_total).
+ * Mirrors the same fix in lib/compute/daily-valuation.ts.
  */
 export function getCashEstimates(db: Database.Database): CashEstimate[] {
+  const allSecurities = db
+    .prepare(`SELECT id, security_type, fund_category FROM securities`)
+    .all() as { id: number; security_type: string | null; fund_category: string | null }[];
+  const cashEquivalentIds = allSecurities
+    .filter((s) => isCashEquivalentSecurity(s))
+    .map((s) => s.id);
+  // Integers sourced from our own SELECT above, never user input — safe to
+  // splice directly rather than binding a dynamic-length placeholder list.
+  const excludeCashEquivSql =
+    cashEquivalentIds.length > 0 ? `AND h.security_id NOT IN (${cashEquivalentIds.join(",")})` : "";
+
   return db
     .prepare(
       `WITH latest_prices AS (
@@ -754,12 +776,12 @@ export function getCashEstimates(db: Database.Database): CashEstimate[] {
         ms.total_value AS snapshot_total,
         ms.month_end_date AS snapshot_date,
         COALESCE(SUM(
-          CASE WHEN lp.close_price IS NOT NULL AND h.quantity > 0
+          CASE WHEN lp.close_price IS NOT NULL AND h.quantity > 0 ${excludeCashEquivSql}
             THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
             ELSE 0 END
         ), 0) AS holdings_total,
         COALESCE(ms.total_value, 0) - COALESCE(SUM(
-          CASE WHEN lp.close_price IS NOT NULL AND h.quantity > 0
+          CASE WHEN lp.close_price IS NOT NULL AND h.quantity > 0 ${excludeCashEquivSql}
             THEN ${adjustedMarketValueSQL("h.quantity", "lp.close_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
             ELSE 0 END
         ), 0) AS estimated_cash
