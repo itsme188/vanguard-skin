@@ -196,7 +196,21 @@ export function RiskMetrics({ scope }: { scope?: string }) {
           }
           sublabel={
             metrics.maxDrawdown
-              ? `${formatDate(metrics.maxDrawdown.peakDate)} \u2192 ${formatDate(metrics.maxDrawdown.troughDate)}`
+              ? metrics.maxDrawdown.netFlowsInWindow !== 0
+                ? (
+                    <>
+                      {formatDate(metrics.maxDrawdown.peakDate)}
+                      {" \u2192 "}
+                      {formatDate(metrics.maxDrawdown.troughDate)}
+                      {" \u00b7 incl. "}
+                      {metrics.maxDrawdown.netFlowsInWindow > 0 ? "+" : "\u2212"}
+                      <PrivateText>
+                        {formatMoney(Math.abs(metrics.maxDrawdown.netFlowsInWindow))}
+                      </PrivateText>
+                      {" net flows"}
+                    </>
+                  )
+                : `${formatDate(metrics.maxDrawdown.peakDate)} \u2192 ${formatDate(metrics.maxDrawdown.troughDate)}`
               : undefined
           }
           color="down"
@@ -216,6 +230,18 @@ export function RiskMetrics({ scope }: { scope?: string }) {
               <>
                 Peak: <PrivateText>{formatMoney(metrics.currentDrawdown.peakValue)}</PrivateText> on{" "}
                 {formatDate(metrics.currentDrawdown.peakDate)}
+                {metrics.currentDrawdown.netFlowsInWindow !== 0 && (
+                  <>
+                    {" · "}
+                    {metrics.currentDrawdown.netFlowsInWindow > 0 ? "+" : "−"}
+                    <PrivateText>
+                      {formatMoney(Math.abs(metrics.currentDrawdown.netFlowsInWindow))}
+                    </PrivateText>
+                    {" net "}
+                    {metrics.currentDrawdown.netFlowsInWindow > 0 ? "deposits" : "withdrawals"}
+                    {" since"}
+                  </>
+                )}
               </>
             ) : (
               "Portfolio at all-time high"

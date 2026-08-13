@@ -399,6 +399,54 @@ describe("external cash-flow adjustment", () => {
     expect(result.volatility).toBeCloseTo(0, 6);
   });
 
+  it("exposes netFlowsInWindow as the bridging term for the raw-dollar overlay", () => {
+    // Market: +2%/day days 1-10 (peak), -1%/day days 11-20 (trough), then
+    // +0.1%/day recovery through day 59. A $15,000 deposit lands mid-decline
+    // (day 15, inside the max-drawdown window) and a second $5,000 deposit
+    // lands after the trough during recovery (day 30, inside the
+    // current-drawdown window but outside the max-drawdown window) — this
+    // proves the two fields are computed against their own windows, not a
+    // shared total.
+    const values: number[] = [100_000];
+    for (let i = 1; i < 60; i++) {
+      const r = i <= 10 ? 0.02 : i <= 20 ? -0.01 : 0.001;
+      let v = values[i - 1] * (1 + r);
+      if (i === 15) v += 15_000;
+      if (i === 30) v += 5_000;
+      values.push(v);
+    }
+    seedDailyValuations(db, values);
+    seedFlow(makeDate(15), 15_000);
+    seedFlow(makeDate(30), 5_000);
+
+    const result = computeRiskMetrics(db);
+    expect(result.maxDrawdown).not.toBeNull();
+    expect(result.maxDrawdown!.peakDate).toBe(makeDate(10));
+    expect(result.maxDrawdown!.troughDate).toBe(makeDate(20));
+    // Only the day-15 deposit falls inside (peakDate, troughDate].
+    expect(result.maxDrawdown!.netFlowsInWindow).toBeCloseTo(15_000, 0);
+
+    expect(result.currentDrawdown).not.toBeNull();
+    expect(result.currentDrawdown!.peakDate).toBe(makeDate(10));
+    // Both deposits fall inside (peakDate, seriesEnd].
+    expect(result.currentDrawdown!.netFlowsInWindow).toBeCloseTo(20_000, 0);
+  });
+
+  it("reports netFlowsInWindow as 0 when no flows land in the drawdown window", () => {
+    const values = Array.from({ length: 50 }, (_, i) => {
+      if (i <= 10) return 100 + i * 2; // rise to 120
+      if (i <= 25) return 120 - (i - 10) * 2; // drop to 90
+      return 90 + (i - 25) * 0.8; // recover
+    });
+    seedDailyValuations(db, values);
+
+    const result = computeRiskMetrics(db);
+    expect(result.maxDrawdown).not.toBeNull();
+    expect(result.maxDrawdown!.netFlowsInWindow).toBe(0);
+    expect(result.currentDrawdown).not.toBeNull();
+    expect(result.currentDrawdown!.netFlowsInWindow).toBe(0);
+  });
+
   it("is a no-op when the transactions table does not exist (minimal test DBs)", () => {
     db.exec("DROP TABLE transactions");
     seedDailyValuations(db, Array.from({ length: 50 }, (_, i) => 100 + i));

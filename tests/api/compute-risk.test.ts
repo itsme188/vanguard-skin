@@ -26,6 +26,7 @@ function fakeMetrics(overrides: Partial<PortfolioRiskMetrics> = {}): PortfolioRi
       troughDate: "2026-03-15",
       peakValue: 1_000_000,
       troughValue: 850_000,
+      netFlowsInWindow: 0,
     },
     currentDrawdown: null,
     volatility: 0.18,
