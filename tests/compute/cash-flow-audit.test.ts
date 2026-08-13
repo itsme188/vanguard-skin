@@ -349,6 +349,59 @@ describe("classifyCashFlowResidual", () => {
   });
 });
 
+describe("source-seam classification", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+    nextTxnId = 1;
+  });
+
+  it("classifies a residual point on a seam interval as source-seam", () => {
+    // Same fixture shape as the external-flow-candidate test: a jump with
+    // zero transactions. Without the seam this would classify as
+    // external-flow-candidate; with a seam on the landing date it must not.
+    insertValuation(db, 1, "2026-07-10", 80_000, 1_400_000);
+    insertValuation(db, 1, "2026-07-11", 210_500, 1_500_000);
+
+    const seams = new Map([[1, ["2026-07-11"]]]);
+    const points = computeCashFlowResiduals(db, {
+      accountIds: [1],
+      seamDatesByAccount: seams,
+    });
+    const seamPoint = points.find((p) => p.toDate === "2026-07-11")!;
+    expect(seamPoint.classification).toBe("source-seam");
+  });
+
+  it("does not let account A's seam reclassify account B's same-date point", () => {
+    // Both accounts jump on the same date; only account 1 has a seam there.
+    insertValuation(db, 1, "2026-07-10", 80_000, 1_400_000);
+    insertValuation(db, 1, "2026-07-11", 210_500, 1_500_000);
+    insertValuation(db, 2, "2026-07-10", 40_000, 700_000);
+    insertValuation(db, 2, "2026-07-11", 105_250, 750_000);
+
+    const seams = new Map([[1, ["2026-07-11"]]]); // seam only in account 1
+    const points = computeCashFlowResiduals(db, { seamDatesByAccount: seams });
+
+    expect(
+      points.find((p) => p.accountId === 1 && p.toDate === "2026-07-11")!.classification
+    ).toBe("source-seam");
+    expect(
+      points.find((p) => p.accountId === 2 && p.toDate === "2026-07-11")!.classification
+    ).not.toBe("source-seam");
+  });
+
+  it("is byte-identical when seamDatesByAccount is omitted vs. an empty map", () => {
+    insertValuation(db, 1, "2026-07-01", 10_000, 200_000);
+    insertValuation(db, 1, "2026-07-02", 10_000, 200_000);
+
+    const a = computeCashFlowResiduals(db, { accountIds: [1] });
+    const b = computeCashFlowResiduals(db, { accountIds: [1], seamDatesByAccount: new Map() });
+    expect(b).toEqual(a);
+    expect(a.every((p) => p.classification !== "source-seam")).toBe(true);
+  });
+});
+
 describe("partitionCandidates", () => {
   function point(overrides: Partial<CashFlowResidualPoint>): CashFlowResidualPoint {
     return {
@@ -374,12 +427,35 @@ describe("partitionCandidates", () => {
     const external = point({ toDate: "2026-07-11", classification: "external-flow-candidate" });
     const internal = point({ toDate: "2026-07-14", classification: "internal-shift" });
 
-    const { externalFlowCandidates, internalShifts } = partitionCandidates([external, internal]);
+    const { externalFlowCandidates, internalShifts, seamPoints } = partitionCandidates([
+      external,
+      internal,
+    ]);
     expect(externalFlowCandidates).toEqual([external]);
     expect(internalShifts).toEqual([internal]);
+    expect(seamPoints).toEqual([]);
   });
 
   it("returns empty arrays for an empty input", () => {
-    expect(partitionCandidates([])).toEqual({ externalFlowCandidates: [], internalShifts: [] });
+    expect(partitionCandidates([])).toEqual({
+      externalFlowCandidates: [],
+      internalShifts: [],
+      seamPoints: [],
+    });
+  });
+
+  it("puts a source-seam point ONLY in seamPoints, never in the other two buckets", () => {
+    const external = point({ toDate: "2026-07-11", classification: "external-flow-candidate" });
+    const internal = point({ toDate: "2026-07-14", classification: "internal-shift" });
+    const seam = point({ toDate: "2026-07-17", classification: "source-seam" });
+
+    const { externalFlowCandidates, internalShifts, seamPoints } = partitionCandidates([
+      external,
+      internal,
+      seam,
+    ]);
+    expect(seamPoints).toEqual([seam]);
+    expect(externalFlowCandidates).not.toContain(seam);
+    expect(internalShifts).not.toContain(seam);
   });
 });

@@ -130,7 +130,10 @@ export const CASH_AFFECTING_SIGNED_SQL = `
 
 // ── Types ────────────────────────────────────────────────────────────
 
-export type CashFlowClassification = "external-flow-candidate" | "internal-shift";
+export type CashFlowClassification =
+  | "external-flow-candidate"
+  | "internal-shift"
+  | "source-seam";
 
 export interface CashFlowResidualPoint {
   accountId: number;
@@ -156,7 +159,11 @@ export interface CashFlowResidualPoint {
   totalDeltaPct: number;
   /** See classifyCashFlowResidual — whether totalDelta corroborates the
    *  cash residual (a real account-value jump, i.e. a fake return day) or
-   *  the residual is just cash/holdings being reclassified internally. */
+   *  the residual is just cash/holdings being reclassified internally.
+   *  A `source-seam` point overrides that call entirely: its residual is a
+   *  measurement-basis artifact of an anchor-source transition (statement
+   *  vs. Plaid vs. TWS — see fetchAnchorSourceSeamDates in
+   *  lib/compute/flow-adjusted.ts), not a candidate for flow synthesis. */
   classification: CashFlowClassification;
 }
 
@@ -204,10 +211,19 @@ export function classifyCashFlowResidual(
  * account, if omitted) and returns one CashFlowResidualPoint per consecutive
  * pair. Pure data — no thresholding. Callers apply their own bar via
  * `isUnexplainedCashFlow`.
+ *
+ * `seamDatesByAccount` is optional and per-account: a point whose interval
+ * (prev.valuation_date, curr.valuation_date] contains a seam date for THAT
+ * point's own account is force-classified `source-seam`, overriding
+ * `classifyCashFlowResidual` — see fetchAnchorSourceSeamDates
+ * (lib/compute/flow-adjusted.ts) for what a seam date means. Omitting the
+ * option (or passing an empty map) leaves output byte-identical to before
+ * this option existed — lib/queries/data-confidence.ts relies on this and
+ * calls without it.
  */
 export function computeCashFlowResiduals(
   db: Database.Database,
-  opts?: { accountIds?: number[] }
+  opts?: { accountIds?: number[]; seamDatesByAccount?: Map<number, string[]> }
 ): CashFlowResidualPoint[] {
   // Gracefully returns [] when daily_valuations/transactions don't exist —
   // same precedent as fetchNetFlowsByDate's settings guard (minimal
@@ -248,12 +264,21 @@ export function computeCashFlowResiduals(
     const valuations = valuationsStmt.all(account.id) as ValuationRow[];
     if (valuations.length < 2) continue;
     const txns = txnsStmt.all(account.id) as DailyTxnRow[];
+    // Sorted defensively — callers pass this map, and the pointer walk
+    // below assumes ascending order (fetchAnchorSourceSeamDates already
+    // returns ascending, but this function must not trust that silently).
+    const accountSeams = [...(opts?.seamDatesByAccount?.get(account.id) ?? [])].sort();
 
     let ti = 0;
     // Transactions on/before the first valuation date are already baked
     // into the starting cash figure — same convention as
     // fetchNetFlowsByDate (lib/compute/flow-adjusted.ts).
     while (ti < txns.length && txns[ti].trade_date <= valuations[0].valuation_date) ti++;
+
+    let si = 0;
+    // Same convention as `ti`: a seam on/before the first valuation date
+    // isn't "in" any interval this function reports.
+    while (si < accountSeams.length && accountSeams[si] <= valuations[0].valuation_date) si++;
 
     for (let i = 1; i < valuations.length; i++) {
       const prev = valuations[i - 1];
@@ -263,6 +288,12 @@ export function computeCashFlowResiduals(
       while (ti < txns.length && txns[ti].trade_date <= curr.valuation_date) {
         explained += txns[ti].signed;
         ti++;
+      }
+
+      let seamInInterval = false;
+      while (si < accountSeams.length && accountSeams[si] <= curr.valuation_date) {
+        seamInInterval = true;
+        si++;
       }
 
       const delta = curr.cash_balance - prev.cash_balance;
@@ -284,7 +315,9 @@ export function computeCashFlowResiduals(
         residual,
         totalDelta,
         totalDeltaPct,
-        classification: classifyCashFlowResidual(residual, totalDelta),
+        classification: seamInInterval
+          ? "source-seam"
+          : classifyCashFlowResidual(residual, totalDelta),
       });
     }
   }
@@ -368,15 +401,18 @@ export function isUnexplainedCashFlow(
  * `externalFlowCandidates` should ever get a proposed INSERT — see
  * classifyCashFlowResidual's doc for why inserting a flow for an
  * `internalShifts` entry would create a fake return day instead of fixing
- * one.
+ * one. `seamPoints` are a third, disjoint bucket: an anchor-source
+ * transition artifact, never a synthesis candidate either.
  */
 export function partitionCandidates(points: CashFlowResidualPoint[]): {
   externalFlowCandidates: CashFlowResidualPoint[];
   internalShifts: CashFlowResidualPoint[];
+  seamPoints: CashFlowResidualPoint[];
 } {
   return {
     externalFlowCandidates: points.filter((p) => p.classification === "external-flow-candidate"),
     internalShifts: points.filter((p) => p.classification === "internal-shift"),
+    seamPoints: points.filter((p) => p.classification === "source-seam"),
   };
 }
 
