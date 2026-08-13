@@ -1000,6 +1000,10 @@ export function LevelsPanel({
                 const triggered = l.is_active === 0 && l.triggered_at != null;
                 const alertedToday = triggeredToday(l.triggered_at);
                 const inactive = l.is_active === 0 && !l.triggered_at;
+                // is_active=1 alone does not make a level armed — the scanner's
+                // whitelist also requires review_status='auto_approved'.
+                // Rejected / pending-review levels must read as not-armed here.
+                const unarmedReview = l.is_active === 1 && l.review_status !== "auto_approved";
                 return (
                   <div
                     key={l.id}
@@ -1148,6 +1152,23 @@ export function LevelsPanel({
                             Inactive
                           </span>
                         )}
+                        {unarmedReview && (
+                          <span
+                            title="Not armed — the alert scanner only watches auto-approved levels. Approve or reject it on the Alerts Review tab."
+                            style={{
+                              fontFamily: "var(--font-mono), monospace",
+                              fontSize: "11px",
+                              letterSpacing: "0.14em",
+                              textTransform: "uppercase",
+                              color: l.review_status === "rejected" ? "#f87171" : "#f59e0b",
+                              border: "1px solid " + (l.review_status === "rejected" ? "#f87171" : "#f59e0b"),
+                              padding: "2px 6px",
+                              borderRadius: "2px",
+                            }}
+                          >
+                            {l.review_status === "rejected" ? "Rejected" : "Pending Review"}
+                          </span>
+                        )}
                       </div>
                       {(l.thesis || l.source_author) && (
                         <p
@@ -1178,7 +1199,7 @@ export function LevelsPanel({
                       )}
                     </div>
                     <div style={{ display: "flex", gap: "8px", alignSelf: "center" }}>
-                      {l.is_active === 1 ? (
+                      {unarmedReview ? null : l.is_active === 1 ? (
                         <button
                           onClick={() => handleDeactivate(l.id)}
                           title="Deactivate"
@@ -1312,6 +1333,16 @@ export function LevelsPanel({
                   {l.is_active === 0 && !l.triggered_at && (
                     <Chip size="xs" tone="neutral">inactive</Chip>
                   )}
+                  {l.is_active === 1 && l.review_status !== "auto_approved" && (
+                    <Chip
+                      size="xs"
+                      tone="warn"
+                      uppercase
+                      title="Not armed — the alert scanner only watches auto-approved levels. Approve or reject it on the Alerts Review tab."
+                    >
+                      {l.review_status === "rejected" ? "rejected" : "pending review"}
+                    </Chip>
+                  )}
                 </div>
                 {(l.thesis || l.source_author) && (
                   <p className="text-[11px] text-ink-faint mt-0.5">
@@ -1323,7 +1354,7 @@ export function LevelsPanel({
                 )}
               </div>
               <div className="flex gap-1 shrink-0">
-                {l.is_active === 1 ? (
+                {l.is_active === 1 && l.review_status !== "auto_approved" ? null : l.is_active === 1 ? (
                   <button
                     onClick={() => handleDeactivate(l.id)}
                     className="text-[10px] text-ink-faint hover:text-ink"
