@@ -21,6 +21,41 @@
 
 ---
 
+### Task 0: capture the pre-change baseline (read-only, no commit)
+
+**Files:**
+- Create: `/Users/Yitzi/.claude/jobs/5470995b/tmp/risk-baseline.ts` (throwaway — job tmp dir, never committed)
+
+Task 7 compares before/after; the "before" must be captured BEFORE any code
+changes land, not reconstructed via stash gymnastics.
+
+- [ ] **Step 1: Write and run the baseline snippet**
+
+```ts
+// risk-baseline.ts — throwaway; run from the repo root
+import Database from "better-sqlite3";
+import { computeRiskMetrics } from "@/lib/compute/risk";
+import { computeFactorAnalysis } from "@/lib/compute/factors";
+
+const db = new Database("data/vanguard.db", { readonly: true });
+for (const scope of [[1], [2], [3], undefined] as (number[] | undefined)[]) {
+  const m = computeRiskMetrics(db, scope ? { accountIds: scope } : undefined);
+  console.log(scope ?? "all", {
+    vol: m.volatility, sharpe: m.sharpeRatio,
+    maxDD: m.maxDrawdown?.percent, ddPeak: m.maxDrawdown?.peakDate,
+    ddTrough: m.maxDrawdown?.troughDate, dataPoints: m.dataPoints,
+  });
+}
+const fa = computeFactorAnalysis(db);
+console.log("regression", fa.marketRegression);
+```
+
+Run: `PATH=/opt/homebrew/opt/node@24/bin:$PATH npx tsx /Users/Yitzi/.claude/jobs/5470995b/tmp/risk-baseline.ts`
+(If `@/` aliases fail under tsx, rewrite the imports as relative paths.)
+Save the output to `/Users/Yitzi/.claude/jobs/5470995b/tmp/risk-baseline-before.txt`. Adjust field names to the actual `PortfolioRiskMetrics`/`MarketRegression` interfaces if they differ — read them first.
+
+---
+
 ### Task 1: `fetchAnchorSourceSeamDates` helper
 
 **Files:**
@@ -451,7 +486,23 @@ git commit -F /tmp/cmsg.txt
 
 **Files:**
 - Modify: `lib/compute/risk.ts` (import at ~line 7; interface `PortfolioRiskMetrics` at ~line 74; step-2 block at ~lines 176–216; return at ~lines 222–235)
+- Modify: `tests/api/compute-risk.test.ts` (the typed `fakeMetrics(): PortfolioRiskMetrics` fixture at ~line 21 gains `seamDaysBridged: 0` — the interface addition breaks its type-completeness otherwise)
 - Test: `tests/compute/flow-adjusted-seams.test.ts` (extend with an integration describe)
+
+**Fixture DDL note:** `tests/compute/risk.test.ts`'s fixture has NO
+`monthly_snapshots` table (that's why existing risk tests stay green — the
+helper's missing-table guard returns `[]`). The new integration fixture must
+therefore create its own supplemental table alongside the copied DDL:
+
+```sql
+CREATE TABLE monthly_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id INTEGER NOT NULL,
+  month_end_date TEXT NOT NULL,
+  total_value REAL NOT NULL,
+  source TEXT
+);
+```
 
 **Interfaces:**
 - Consumes: `fetchAnchorSourceSeamDates` (Task 1), 3-arg `buildFlowAdjustedIndex` (Task 2).
@@ -488,10 +539,31 @@ describe("computeRiskMetrics seam awareness (07-11 shape)", () => {
     const result = computeRiskMetrics(db);
     expect(result.seamDaysBridged).toBe(0);
   });
+
+  it("never places a drawdown peak or trough ON the seam day", () => {
+    // Shape the series so the CONTAMINATED run's max drawdown peaks exactly
+    // on the seam step (values rise into the +4% step then decline), then
+    // assert the seam-aware run reports different peak/trough dates, neither
+    // equal to the seam date.
+    const db = makeRiskDb();
+    const m = computeRiskMetrics(db);
+    expect(m.maxDrawdown?.peakDate).not.toBe(SEAM_DATE);
+    expect(m.maxDrawdown?.troughDate).not.toBe(SEAM_DATE);
+  });
+
+  it("returns null vol/Sharpe when bridging drops clean returns below 20", () => {
+    // 31 valuation days (passes the seriesLength >= 30 gate) but with 11
+    // seam days interleaved so clean returns = 30 - 11 = 19 < 20.
+    const db = makeRiskDbManySeams();
+    const m = computeRiskMetrics(db);
+    expect(m.volatility).toBeNull();
+    expect(m.sharpeRatio).toBeNull();
+    expect(m.seamDaysBridged).toBe(11);
+  });
 });
 ```
 
-(Write `makeRiskDb`/`makeRiskDbWithoutSourceChange` as concrete local helpers generating the same synthetic series with only the anchor `source` values differing.)
+(Write `makeRiskDb`/`makeRiskDbWithoutSourceChange`/`makeRiskDbManySeams` as concrete local helpers generating the same synthetic series with only the anchor rows differing; `SEAM_DATE` is the fixture's step-date constant. Many-seams fixture: alternate anchor sources on 11 of the dates.)
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -523,11 +595,12 @@ In `lib/compute/risk.ts`:
 ```
 
 4. Add `seamDaysBridged: bridgedDays,` to the returned object.
+5. In `tests/api/compute-risk.test.ts`, add `seamDaysBridged: 0,` to the object literal inside `fakeMetrics()` (~line 21) so the typed fixture stays complete.
 
 - [ ] **Step 4: Run tests**
 
-Run: `PATH=/opt/homebrew/opt/node@24/bin:$PATH npx vitest run tests/compute/flow-adjusted-seams.test.ts tests/compute/risk.test.ts`
-Expected: PASS (existing risk tests unaffected — their fixtures have no source changes, or no monthly_snapshots table at all, so `seamDates` is `[]`).
+Run: `PATH=/opt/homebrew/opt/node@24/bin:$PATH npx vitest run tests/compute/flow-adjusted-seams.test.ts tests/compute/risk.test.ts tests/api/compute-risk.test.ts`
+Expected: PASS (existing risk tests unaffected — their fixtures have no `monthly_snapshots` table at all, so `seamDates` is `[]`; the api fixture now carries the new field).
 
 - [ ] **Step 5: Commit**
 
@@ -542,39 +615,40 @@ git commit -F /tmp/cmsg.txt
 ### Task 4: thread seams through `computeMarketRegression`
 
 **Files:**
-- Modify: `lib/compute/factors.ts` (import at ~line 7; step-3 block at ~lines 147–156)
-- Test: `tests/compute/flow-adjusted-seams.test.ts` (extend)
+- Modify: `lib/compute/factors.ts` (import at ~line 7; step-3 block of the PRIVATE `computeMarketRegression` at ~lines 147–156 — it is NOT exported; the public path is `computeFactorAnalysis(db, options).marketRegression` at ~line 498)
+- Test: `tests/compute/factors-flow-adjusted.test.ts` (extend — this existing file already fixtures the flow-adjusted regression path; read it first and reuse its DDL/seed helpers, adding a `monthly_snapshots` table with the same supplemental DDL as Task 3 if its fixture lacks one)
 
 **Interfaces:**
 - Consumes: `fetchAnchorSourceSeamDates` (Task 1), 3-arg `buildFlowAdjustedIndex` (Task 2).
-- Produces: no signature change — `computeMarketRegression` internally excludes bridged days from the regression pairs.
+- Produces: no signature change — the private `computeMarketRegression` internally excludes bridged days; tests observe it through `computeFactorAnalysis(db).marketRegression`.
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `tests/compute/flow-adjusted-seams.test.ts` (reuse the Task 3 fixture helpers; the regression fixture additionally needs `benchmark_prices` rows — copy the DDL/inserts pattern from the existing regression tests in `tests/compute/factors*.test.ts`, reading that file first):
+Append to `tests/compute/factors-flow-adjusted.test.ts` (reuse its existing fixture helpers; check the actual `MarketRegression` interface at `lib/compute/factors.ts` ~line 44 for field names — adjust `beta`/observation-count names to what it declares):
 
 ```ts
-import { computeMarketRegression } from "@/lib/compute/factors";
-
-describe("computeMarketRegression seam awareness", () => {
-  it("drops the seam day's pair instead of biasing beta", () => {
-    const db = makeRegressionDbWithSeam();      // seam step day, source change
-    const control = makeRegressionDbNoSeam();   // identical values, no source change
-    const seamAware = computeMarketRegression(db)!;
-    const contaminated = computeMarketRegression(control)!;
-    // one fewer observation, and the fake-return pair no longer drags beta
-    expect(seamAware.dataPoints).toBe(contaminated.dataPoints - 1);
-    expect(seamAware.beta).not.toBeCloseTo(contaminated.beta, 5);
+describe("market regression seam awareness", () => {
+  it("drops the seam day's pair; beta recovers the true relationship", () => {
+    // Construct portfolio returns as EXACTLY 1.0 x benchmark for 40 aligned
+    // days, EXCEPT one +4% portfolio-only step day with no flow row. Anchors:
+    // 'canonical' era before the step, 'plaid' from the step date (seam DB);
+    // control DB has identical values but both anchors 'canonical'.
+    const db = makeRegressionDbWithSeam();
+    const control = makeRegressionDbNoSeam();
+    const seamAware = computeFactorAnalysis(db).marketRegression!;
+    const contaminated = computeFactorAnalysis(control).marketRegression!;
+    // The fake-return pair is excluded, so beta comes back ~1.0 exactly;
+    // the contaminated control deviates from 1.0.
+    expect(seamAware.beta).toBeCloseTo(1.0, 2);
+    expect(Math.abs(contaminated.beta - 1.0)).toBeGreaterThan(0.05);
   });
 });
 ```
 
-(Adjust the result-field names — `dataPoints`/`beta` — to the actual `MarketRegressionResult` interface in `lib/compute/factors.ts`; read it before writing the test. If the count field has a different name, assert on that name.)
-
 - [ ] **Step 2: Run to verify failure**
 
-Run: `PATH=/opt/homebrew/opt/node@24/bin:$PATH npx vitest run tests/compute/flow-adjusted-seams.test.ts`
-Expected: FAIL — both scenarios produce identical observation counts.
+Run: `PATH=/opt/homebrew/opt/node@24/bin:$PATH npx vitest run tests/compute/factors-flow-adjusted.test.ts`
+Expected: FAIL — both scenarios produce the same contaminated beta.
 
 - [ ] **Step 3: Implement threading**
 
@@ -595,14 +669,14 @@ In `lib/compute/factors.ts`, extend the import and mirror the risk.ts pattern in
 
 - [ ] **Step 4: Run tests**
 
-Run: `PATH=/opt/homebrew/opt/node@24/bin:$PATH npx vitest run tests/compute/flow-adjusted-seams.test.ts tests/compute/factors.test.ts tests/compute/`
+Run: `PATH=/opt/homebrew/opt/node@24/bin:$PATH npx vitest run tests/compute/factors-flow-adjusted.test.ts tests/compute/factors.test.ts tests/compute/`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-printf 'feat(risk): computeMarketRegression excludes seam days from beta pairs\n' > /tmp/cmsg.txt
-git add lib/compute/factors.ts tests/compute/flow-adjusted-seams.test.ts
+printf 'feat(risk): market regression excludes seam days from beta pairs\n' > /tmp/cmsg.txt
+git add lib/compute/factors.ts tests/compute/factors-flow-adjusted.test.ts
 git commit -F /tmp/cmsg.txt
 ```
 
@@ -677,7 +751,13 @@ In `lib/compute/cash-flow-audit.ts`:
 
 where `seamInInterval` is true when the pointer consumed at least one seam date for this interval. Document on the type: a `source-seam` point's residual is a measurement-basis artifact of an anchor-source transition (see `fetchAnchorSourceSeamDates` in `lib/compute/flow-adjusted.ts`), not a candidate for flow synthesis.
 
-4. Check `partitionCandidates` (~line 373): it must route `source-seam` points into neither the external-flow-candidate bucket nor the internal-shift bucket silently — read its shape and either add a third partition field or exclude-and-count; the repair script (Task 6) needs the seam points listed. Prefer adding `seamPoints: CashFlowResidualPoint[]` to its return object.
+4. Extend `partitionCandidates` (~line 373) with a third bucket:
+   `seamPoints: CashFlowResidualPoint[]` in its return object, filled with
+   `classification === "source-seam"` points. **Update the existing
+   partition tests in `tests/compute/cash-flow-audit.test.ts`** — any exact
+   `toEqual({ externalFlowCandidates: [], internalShifts: [] })` assertion now
+   needs `seamPoints: []`, and add one assertion that a `source-seam` point
+   lands in `seamPoints` and in NEITHER other bucket.
 
 - [ ] **Step 4: Run tests (audit + data-confidence twins)**
 
@@ -717,25 +797,56 @@ describe("seam awareness", () => {
     expect(seams.get(2) ?? []).toEqual([]);
   });
 
-  it("findLegacyRepairRowsOnSeams flags an applied synthetic flow on a seam interval", () => {
-    const db = makeDbWithAnchors();
+  it("findLegacyRepairRowsOnSeams matches by valuation INTERVAL, not exact date", () => {
+    // Weekend anchor: seam dated Sunday 2026-08-31; the account's valuation
+    // rows skip the weekend (Fri 08-29 → Mon 09-01), so a legacy repair row
+    // dated Mon 09-01 sits in the interval (08-29, 09-01] containing the seam.
+    const db = makeDbWithAnchorsAndValuations(); // valuations: ...08-28, 08-29, 09-01, 09-02...
+    db.prepare(
+      `INSERT INTO transactions (account_id, trade_date, type, amount, is_external_flow, source_key)
+       VALUES (1, '2026-09-01', 'DEPOSIT', 88000, 1, 'repair-missing-flow:1:2026-09-01')`
+    ).run();
+    const flagged = findLegacyRepairRowsOnSeams(db, new Map([[1, ["2026-08-31"]]]));
+    expect(flagged).toHaveLength(1);
+    expect(flagged[0].source_key).toBe("repair-missing-flow:1:2026-09-01");
+  });
+
+  it("flags an exact-date legacy row too (seam date IS a valuation date)", () => {
+    const db = makeDbWithAnchorsAndValuations();
     db.prepare(
       `INSERT INTO transactions (account_id, trade_date, type, amount, is_external_flow, source_key)
        VALUES (1, '2026-07-11', 'DEPOSIT', 88000, 1, 'repair-missing-flow:1:2026-07-11')`
     ).run();
     const flagged = findLegacyRepairRowsOnSeams(db, new Map([[1, ["2026-07-11"]]]));
     expect(flagged).toHaveLength(1);
-    expect(flagged[0].source_key).toBe("repair-missing-flow:1:2026-07-11");
   });
 
   it("stays silent when no legacy repair rows sit on seams", () => {
-    const db = makeDbWithAnchors();
+    const db = makeDbWithAnchorsAndValuations();
     expect(findLegacyRepairRowsOnSeams(db, new Map([[1, ["2026-07-11"]]]))).toEqual([]);
+  });
+
+  it("a seam-shaped point reaches the CLI selection but yields no proposal, even with --amount", () => {
+    // Thread a source-seam point through findCandidates/selectRun: the run's
+    // insert list must be empty and --amount targeting it must error the same
+    // way it errors for any non-candidate date.
+    const db = makeDbWithSeamResidual(); // cash jump on the seam day, no txn
+    const run = findCandidates(db); // now seam-aware internally
+    expect(run.seamPoints.map((p) => p.toDate)).toContain("2026-07-11");
+    expect(run.proposals.map((p) => p.trade_date)).not.toContain("2026-07-11");
+    expect(() =>
+      applyOnlyAndAmountSelection(run, ["2026-07-11"], 88000)
+    ).toThrow(/external-flow-candidate/);
   });
 });
 ```
 
-(Match the actual `transactions` DDL used elsewhere in this test file; adjust column lists accordingly. `collectSeamDatesByAccount` and `findLegacyRepairRowsOnSeams` are new pure exports from the script.)
+(Match the actual `transactions`/`daily_valuations` DDL and the real helper
+names used elsewhere in this test file — the selection helper around
+`scripts/repair-missing-external-flows.ts:190` and the candidate-list builder
+around line 159 may differ from the names sketched here; read the script and
+its existing tests FIRST and use the real exported names. `collectSeamDatesByAccount`
+and `findLegacyRepairRowsOnSeams` are new pure exports from the script.)
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -764,8 +875,12 @@ export function collectSeamDatesByAccount(
   return map;
 }
 
-/** Read-only audit: previously applied synthetic flows whose date lands on
- *  a seam — a past run may have misread a source transition as a flow.
+/** Read-only audit: previously applied synthetic flows whose valuation
+ *  INTERVAL contains a seam — a past run may have misread a source
+ *  transition as a flow. Interval matching, not exact-date: a weekend
+ *  anchor's seam date (e.g. a Sunday month-end) has no valuation row of its
+ *  own, but the repair row was inserted on the following valuation date
+ *  whose interval (prev valuation date, repair date] contains the seam.
  *  (Zero such rows exist in the live ledger as of 2026-08-13 — preventive.) */
 export function findLegacyRepairRowsOnSeams(
   db: Database.Database,
@@ -777,11 +892,39 @@ export function findLegacyRepairRowsOnSeams(
        WHERE source_key LIKE 'repair-missing-flow:%' ORDER BY trade_date`
     )
     .all() as { id: number; account_id: number; trade_date: string; amount: number; source_key: string }[];
-  return rows.filter((r) => (seamsByAccount.get(r.account_id) ?? []).includes(r.trade_date));
+  const prevValuationStmt = db.prepare(
+    `SELECT MAX(valuation_date) AS prev FROM daily_valuations
+     WHERE account_id = ? AND valuation_date < ?`
+  );
+  return rows.filter((r) => {
+    const seams = seamsByAccount.get(r.account_id) ?? [];
+    if (seams.length === 0) return false;
+    const { prev } = prevValuationStmt.get(r.account_id, r.trade_date) as { prev: string | null };
+    // Interval (prev, trade_date]; with no prior valuation row, fall back to
+    // exact-date membership.
+    return seams.some((s) =>
+      prev !== null ? s > prev && s <= r.trade_date : s === r.trade_date
+    );
+  });
 }
 ```
 
-3. In `main()` / the candidate-assembly path: build `seamsByAccount` for the audited accounts, pass `seamDatesByAccount` into `computeCashFlowResiduals`, print `source-seam` points under a distinct heading (mirror `printInternalShift`'s shape) with a one-line explanation ("anchor source changed — measurement-basis step, not a flow; never synthesized"), and print the legacy-row audit section (or "no legacy repair rows on seams" line). The `--apply` insert list continues to come exclusively from `external-flow-candidate` points via the existing selection helpers — no change needed there beyond the classification upstream.
+3. Thread seams through the REAL script paths (read them first — names below
+   from `scripts/repair-missing-external-flows.ts` ~lines 159–246): the
+   candidate-list builder (~line 159) that today calls
+   `computeCashFlowResiduals(db, { accountIds })` gains the
+   `collectSeamDatesByAccount` call and passes `seamDatesByAccount`; its
+   result type (and the selection-run type at ~line 177, whatever it is
+   actually named) carries the new `seamPoints` bucket from
+   `partitionCandidates` so seam points REACH the CLI layer instead of being
+   silently dropped. The `--only`/`--amount` selection helper (~line 190)
+   already validates against external-flow-candidates only — verify the new
+   class errors there and cover it with the Step-1 test.
+4. In `main()`: print `source-seam` points under a distinct heading (mirror
+   `printInternalShift`'s shape) with a one-line explanation ("anchor source
+   changed — measurement-basis step, not a flow; never synthesized"), and
+   print the legacy-row audit section (or a "no legacy repair rows on seams"
+   line).
 
 - [ ] **Step 4: Run the script's tests + a live dry-run smoke check**
 
@@ -818,14 +961,26 @@ Expected: compiles clean (catches type breaks in UI consumers of `PortfolioRiskM
 
 - [ ] **Step 3: Live before/after (read-only)**
 
-Write a THROWAWAY tsx snippet (do not commit) that opens `data/vanguard.db` read-only and prints `computeRiskMetrics(db, { accountId: N })` vol/Sharpe/`seamDaysBridged` for accounts 1, 2, 3 and the all-scope, plus `computeMarketRegression(db)` beta. Compare against the same snippet run on stashed-clean `main` (or record the pre-change numbers first). Expected: single-account vol drops materially (the fake seam observations leave the stream); `seamDaysBridged` > 0 for windows spanning 2026-07-11 / month-end handoffs; beta observation count drops by the bridged-day count. **Known caveat (spec §6):** in-kind $0-amount TRANSFER legs (June donation departures, early-August option return) still contaminate — distinct filed defect; do not misattribute or chase here.
+Re-run the Task 0 baseline snippet unchanged (it now exercises the new code) and diff against `/Users/Yitzi/.claude/jobs/5470995b/tmp/risk-baseline-before.txt`. Expected: single-account vol drops materially (the fake seam observations leave the stream); `seamDaysBridged` > 0 for windows spanning 2026-07-11 / month-end handoffs; drawdown dates no longer land on seam days where they previously did. **Known caveat (spec §6):** in-kind $0-amount TRANSFER legs (June donation departures, early-August option return) still contaminate — distinct filed defect; do not misattribute or chase here.
 
-- [ ] **Step 4: Report**
+- [ ] **Step 4: Browser E2E on the risk UI (repo rule: test as a real user)**
 
-Report suite count, build result, and the before/after table to the user. Do NOT commit anything in this task; do NOT deploy — deploy decisions stay with the user/session-end.
+Restart the dev server on :3000 first (server-side code changed — Next caches
+aggressively; kill the existing `next dev` by specific PID only, then
+`npm run dev`). Then drive a browser (agent-browser subagent / Playwright MCP)
+to `/dashboard/analysis?view=diagnostics`: confirm Risk Decomposition renders
+(vol/Sharpe/drawdown cards populated, no error state) and note the displayed
+vol values match the Step-3 after numbers. Screenshot for the report.
+
+- [ ] **Step 5: Report**
+
+Report suite count, build result, the before/after table, and the E2E
+screenshot to the user. Do NOT deploy — Electron rebuild/deploy stays a
+user/session-end decision.
 
 ## Self-review notes
 
-- Spec coverage: §3.1→Task 1, §3.2→Task 2, §3.3→Tasks 3–4, §3.4→Tasks 5–6, §6 verification→Task 7. `seamDaysBridged` (§3.3 observability) → Task 3. Legacy audit (§3.4) → Task 6.
+- Spec coverage: §3.1→Task 1, §3.2→Task 2, §3.3→Tasks 3–4, §3.4→Tasks 5–6, §6 verification→Tasks 0+7. `seamDaysBridged` (§3.3 observability) → Task 3. Legacy audit (§3.4) → Task 6.
 - Existing-test compatibility is asserted at every task via the byte-identical default path.
 - Type consistency: `fetchAnchorSourceSeamDates` returns `string[]`; `seamDatesByAccount` is `Map<number, string[]>`; `bridgedDays` (function) vs `seamDaysBridged` (metrics field) — intentional rename at the API boundary, defined in Tasks 2 and 3 respectively.
+- Codex plan-review round 1 (2026-08-13) folded in: private `computeMarketRegression` → test via `computeFactorAnalysis` in `tests/compute/factors-flow-adjusted.test.ts`; `fakeMetrics` fixture update added to Task 3; fixture DDL for `monthly_snapshots` specified; `partitionCandidates` third bucket + existing-assertion updates; concrete `findCandidates`/selection-run threading + `--amount` coverage; legacy-row audit is interval-based (weekend-anchor test); drawdown-not-on-seam + sub-20-null tests added; Task 0 pre-change baseline replaces stash comparison; Task 7 gains the browser E2E step.
