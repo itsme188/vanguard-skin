@@ -10,6 +10,7 @@
 
 import type Database from "better-sqlite3";
 import { isMarketClosed, nextTradingDay } from "@/lib/calendar/market-holidays";
+import { BETA_LOOKBACK_DAYS } from "@/lib/queries/security-betas";
 
 // ─── Trigger constants ────────────────────────────────────────────────────────
 // A move is "out of the ordinary" only if it is BOTH large in raw terms AND
@@ -184,7 +185,7 @@ export function computeAnomalies(db: Database.Database): AnomalyFlag[] {
          FROM holdings h
          JOIN securities s ON s.id = h.security_id
          LEFT JOIN security_betas sb
-               ON sb.security_id = s.id AND sb.lookback_days = 60
+               ON sb.security_id = s.id AND sb.lookback_days = ${BETA_LOOKBACK_DAYS}
         WHERE h.account_id IN (${placeholders})
           AND UPPER(s.symbol) != 'SPY'`
     )
