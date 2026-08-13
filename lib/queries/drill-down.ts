@@ -17,6 +17,7 @@ import type Database from "better-sqlite3";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
+import { BETA_LOOKBACK_DAYS } from "@/lib/queries/security-betas";
 
 export type ClassificationDimension =
   | "sector"
@@ -40,7 +41,7 @@ export interface DrillDownRow {
   marketValue: number;
   /** Fraction of the SCOPE total (not the filtered subset). */
   weight: number;
-  /** From `security_betas` at `lookback_days = 252`; null if not cached. */
+  /** From `security_betas` at `BETA_LOOKBACK_DAYS`; null if not cached. */
   beta: number | null;
   /** Up to 9 factor columns; missing keys mean no `security_factors` row OR null cell. */
   factors: Partial<Record<FactorColumn, string>>;
@@ -138,7 +139,7 @@ export function getHoldingsInBucket(
       FROM holdings h
       JOIN securities s ON s.id = h.security_id
       LEFT JOIN security_factors sf ON sf.security_id = s.id
-      LEFT JOIN security_betas sb ON sb.security_id = s.id AND sb.lookback_days = 252
+      LEFT JOIN security_betas sb ON sb.security_id = s.id AND sb.lookback_days = ${BETA_LOOKBACK_DAYS}
       LEFT JOIN (
         SELECT p.security_id, p.close_price
         FROM prices p

@@ -101,7 +101,15 @@ describe("releasedFigureGates (WeekAheadView)", () => {
   });
 
   it("shows both for a released, enriched event (event_date == today counts as released)", () => {
-    const g = releasedFigureGates({ ...base, event_date: TODAY }, TODAY);
+    // Snapshot t0 on the event's own date — 14:55Z = 10:55 ET same day.
+    const g = releasedFigureGates(
+      {
+        ...base,
+        event_date: TODAY,
+        reaction_snapshot: `{"source":"tws","t0_utc":"${TODAY}T14:55:00.000Z"}`,
+      },
+      TODAY,
+    );
     expect(g.released).toBe(true);
     expect(g.showReaction).toBe(true);
   });
@@ -121,5 +129,73 @@ describe("releasedFigureGates (WeekAheadView)", () => {
       TODAY,
     );
     expect(g.showReaction).toBe(false);
+  });
+});
+
+// ── snapshotCoversEventDate (qa: reaction snapshot t0 outside release window) ──
+// A stored snapshot only belongs to a print when its t0 falls on the event's
+// own date (ET wall-clock — an 8 PM ET print rolls the UTC date). Date
+// corrections can strand a snapshot measured for a different day on this row.
+import { snapshotCoversEventDate } from "@/app/dashboard/components/calendar/EnrichmentChips";
+import type { ReactionSnapshot } from "@/lib/calendar/reaction-snapshot";
+
+function snap(t0: string | undefined): ReactionSnapshot {
+  return { t0_utc: t0 } as unknown as ReactionSnapshot;
+}
+
+describe("snapshotCoversEventDate", () => {
+  it("accepts a t0 on the event's ET date", () => {
+    // 14:55Z on Aug 13 = 10:55 ET Aug 13.
+    expect(snapshotCoversEventDate("2026-08-13", snap("2026-08-13T14:55:00.000Z"))).toBe(true);
+  });
+
+  it("accepts an evening AMC print whose UTC date rolled over", () => {
+    // 00:15Z Aug 14 = 20:15 ET Aug 13 — same ET date as the event.
+    expect(snapshotCoversEventDate("2026-08-13", snap("2026-08-14T00:15:00.000Z"))).toBe(true);
+  });
+
+  it("rejects a t0 measured the day BEFORE the event (pre-print snapshot)", () => {
+    // LAC shape: event 2026-08-13, snapshot measured 10:55 ET on Aug 12.
+    expect(snapshotCoversEventDate("2026-08-13", snap("2026-08-12T14:55:00.000Z"))).toBe(false);
+  });
+
+  it("rejects a t0 measured the day AFTER the event", () => {
+    // OCUL shape: event 2026-08-03, snapshot measured 16:15 ET on Aug 4.
+    expect(snapshotCoversEventDate("2026-08-03", snap("2026-08-04T20:15:00.000Z"))).toBe(false);
+  });
+
+  it("rejects a snapshot with no t0 and a garbage t0", () => {
+    expect(snapshotCoversEventDate("2026-08-13", snap(undefined))).toBe(false);
+    expect(snapshotCoversEventDate("2026-08-13", snap("not-a-date"))).toBe(false);
+    expect(snapshotCoversEventDate("2026-08-13", null)).toBe(false);
+  });
+});
+
+describe("releasedFigureGates t0 window check", () => {
+  const TODAY = "2026-08-13";
+
+  it("suppresses the reaction when the snapshot's t0 is outside the event's date", () => {
+    const g = releasedFigureGates(
+      {
+        event_date: "2026-08-13",
+        enriched_at: "2026-08-13 12:00:00",
+        reaction_snapshot: '{"source":"tws","t0_utc":"2026-08-12T14:55:00.000Z"}',
+      },
+      TODAY,
+    );
+    expect(g.released).toBe(true);
+    expect(g.showReaction).toBe(false);
+  });
+
+  it("still shows the reaction when t0 matches the event date", () => {
+    const g = releasedFigureGates(
+      {
+        event_date: "2026-08-13",
+        enriched_at: "2026-08-13 12:00:00",
+        reaction_snapshot: '{"source":"tws","t0_utc":"2026-08-13T14:55:00.000Z"}',
+      },
+      TODAY,
+    );
+    expect(g.showReaction).toBe(true);
   });
 });
