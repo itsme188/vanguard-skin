@@ -961,14 +961,27 @@ export function SecurityChart({
                 <button
                   key={ind.key}
                   onClick={() => toggleIndicator(ind.key)}
-                  className={`relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:inset-x-0 px-2 py-1 text-xs font-medium rounded-md transition-colors ${
+                  className={`relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:inset-x-0 px-2 py-1 text-xs font-medium rounded-md transition-colors inline-flex items-center gap-1 ${
                     activeIndicators.has(ind.key)
-                      ? "bg-panel"
+                      ? "bg-panel text-gold-ink"
                       : "text-ink-faint hover:text-ink-dim"
                   }`}
-                  style={activeIndicators.has(ind.key) ? { color: ind.color } : undefined}
                   title={ind.label}
                 >
+                  {activeIndicators.has(ind.key) && (
+                    // Series-color swatch preserves the color association with
+                    // the chart line; the label text uses the same accessible
+                    // active-state color as the sibling D/All/Txns/S/R toggles
+                    // instead of the raw series color (qa:security-detail-chart--
+                    // ma-toggle-active-label-low-contrast: EMA 9/21 + SMA 50/200
+                    // label text measured as low as 1.39:1 on the light-mode
+                    // pill — series colors are tuned for the dark chart canvas,
+                    // not this toolbar).
+                    <span
+                      className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
+                      style={{ backgroundColor: ind.color }}
+                    />
+                  )}
                   {ind.label}
                 </button>
               ))}

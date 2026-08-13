@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import type { DataConfidence, DataAction, DimensionScore } from "@/lib/queries/data-confidence";
+import { PrivateText } from "@/lib/privacy/components";
 
 const LEVEL_CONFIG = {
   high: { color: "bg-up", label: "Data reliable" },
@@ -252,7 +253,12 @@ function DimensionBar({ label, dim }: { label: string; dim: DimensionScore }) {
           style={{ width: `${score}%` }}
         />
       </div>
-      <p className="text-[9px] text-ink-faint">{detail}</p>
+      {/* detail is composed from the user's own accounts/dates/dollar deltas
+          (e.g. an unexplained cash delta with the account name and amount) —
+          portfolio-derived, so it must mask in privacy mode like <Money>/
+          <PrivateText> everywhere else. whyMatters is fixed per-dimension
+          copy (never data-driven) so it stays plain. */}
+      <p className="text-[9px] text-ink-faint"><PrivateText>{detail}</PrivateText></p>
       {expanded && (
         <div className="pt-1 pl-3 space-y-1 border-l border-edge ml-0.5">
           <p className="text-[9px] text-ink-dim leading-snug">
@@ -261,7 +267,7 @@ function DimensionBar({ label, dim }: { label: string; dim: DimensionScore }) {
           </p>
           <p className={`text-[9px] leading-snug ${guidanceColor}`}>
             <span className="text-ink-faint">What to do: </span>
-            {guidance}
+            <PrivateText>{guidance}</PrivateText>
           </p>
         </div>
       )}

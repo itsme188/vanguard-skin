@@ -223,9 +223,35 @@ export async function classifyUnresolvedWithClaude(
     const prompt = `Classify:\n${batch.map((s) => `- ${s.symbol} (type: ${s.security_type ?? "stock"})`).join("\n")}`;
     try {
       // No `temperature` — tier-resolved models can reject it as deprecated (QA 2026-07-07).
-      const { text } = await generateTextForFeature("securityClassification", { maxOutputTokens: 4000, system: AI_CLASSIFY_SYSTEM, prompt });
+      // maxOutputTokens raised 4000→8000 (2026-08-13, qa:analysis-classification--
+      // auto-classify-swallows-ai-json-error): a full BATCH=25 response was
+      // getting cut off mid-object every run — "Unterminated string in JSON"
+      // is the truncation signature (reproduced locally: a genuinely truncated
+      // JSON string throws "Unterminated string"; an in-string raw control
+      // char throws "Bad control character" instead, a different failure the
+      // C0-retry below handles). 8000 matches classify-factors.ts's budget for
+      // the same BATCH=25 size — that schema has more fields per item, so
+      // this has ample headroom for the longer "US Sector Equity (<Sector>)"
+      // values that were pushing 4000 past the edge.
+      const { text } = await generateTextForFeature("securityClassification", { maxOutputTokens: 8000, system: AI_CLASSIFY_SYSTEM, prompt });
       const json = extractJsonArray(text);
-      const results = JSON.parse(json) as Array<Record<string, string>>;
+      // The model intermittently emits raw control characters (unescaped
+      // newlines) INSIDE string literals, which JSON.parse rejects
+      // ("Unterminated string in JSON" / "Bad control character") — same
+      // defense as lib/securities/verify-sector-tags.ts::parseVerdicts and
+      // lib/compute/macro-themes.ts::parseThemesJson. Retry with C0 controls
+      // collapsed to spaces: legal JSON only carries them between tokens as
+      // whitespace, so valid input is unaffected.
+      let results: Array<Record<string, string>>;
+      try {
+        results = JSON.parse(json) as Array<Record<string, string>>;
+      } catch (parseErr) {
+        try {
+          results = JSON.parse(json.replace(/[\u0000-\u001f]+/g, " ")) as Array<Record<string, string>>;
+        } catch {
+          throw parseErr;
+        }
+      }
       const idMap = new Map(batch.map((s) => [s.symbol, s.id]));
       for (const r of results) {
         const id = idMap.get(r.symbol);

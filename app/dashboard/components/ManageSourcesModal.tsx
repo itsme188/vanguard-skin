@@ -732,12 +732,20 @@ export function ManageSourcesModal({
                 !addedEmails.has(s.email.toLowerCase())
             );
             const alreadyAddedCount = discovered.length - newSenders.length;
+            // Only claim results were "Found in Gmail" once discovery actually
+            // succeeded and returned candidates — a request finishing isn't
+            // the same as it succeeding. Without this guard, the heading kept
+            // rendering above the error box (and above stale results from a
+            // prior successful scan) on every failed retry.
+            const showHeading = !discovering && !discoverError && discovered.length > 0;
 
             return (
               <div ref={discoverResultsRef} className="space-y-2 scroll-mb-16">
-                <p className="text-xs text-ink-faint uppercase tracking-wider">
-                  Found in Gmail
-                </p>
+                {showHeading && (
+                  <p className="text-xs text-ink-faint uppercase tracking-wider">
+                    Found in Gmail
+                  </p>
+                )}
                 {discovering ? (
                   <div className="flex items-center gap-2 py-4 justify-center text-sm text-ink-dim">
                     <div className="w-4 h-4 border-2 border-ink-faint border-t-transparent rounded-full animate-spin" />
