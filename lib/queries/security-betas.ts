@@ -1,9 +1,17 @@
 import type Database from "better-sqlite3";
 
+/**
+ * The one lookback window the beta refresh script actually writes.
+ * Every reader (default params here, the exposure-delta and drill-down SQL
+ * joins) must ask for this same value — a join on any other lookback finds
+ * zero rows and silently degrades to the ?? 1.0 fallback.
+ */
+export const BETA_LOOKBACK_DAYS = 60;
+
 export function getCachedBeta(
   db: Database.Database,
   securityId: number,
-  lookbackDays: number = 60,
+  lookbackDays: number = BETA_LOOKBACK_DAYS,
 ): number | null {
   const row = db
     .prepare(
@@ -24,7 +32,7 @@ export interface CachedBeta {
 export function getCachedBetasForSymbols(
   db: Database.Database,
   symbols: string[],
-  lookbackDays: number = 60,
+  lookbackDays: number = BETA_LOOKBACK_DAYS,
 ): CachedBeta[] {
   if (symbols.length === 0) return [];
   const placeholders = symbols.map(() => "?").join(",");

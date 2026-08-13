@@ -8,6 +8,7 @@ import { effectiveConsensus } from "@/lib/calendar/consensus";
 import {
   EnrichmentRowSummary,
   parseReactionSnapshot,
+  snapshotCoversEventDate,
 } from "./calendar/EnrichmentChips";
 
 /**
@@ -62,8 +63,17 @@ export function TodayReleases({
       </div>
       <ul className="divide-y divide-edge -mx-4">
         {releases.map((event) => {
-          const snapshot = parseReactionSnapshot(event.reaction_snapshot);
-          const enriched = !!event.enriched_at;
+          // A snapshot measured on a different day than this event (date
+          // corrections strand these) is not this print's reaction — drop it
+          // rather than render another window's market move. Same check as
+          // WeekAheadView's releasedFigureGates.
+          const parsedSnapshot = parseReactionSnapshot(event.reaction_snapshot);
+          const snapshot = snapshotCoversEventDate(event.event_date, parsedSnapshot)
+            ? parsedSnapshot
+            : null;
+          // Without an actual OR a usable reaction, an enriched_at stamp has
+          // nothing post-release to show — fall through to Est/Pending.
+          const enriched = !!event.enriched_at && (!!event.actual_value || snapshot != null);
           const showPill = !!event.symbol && event.security_id != null;
           // Earnings titles already begin with the ticker ("NKE earnings (AMC)").
           // When the symbol pill is shown, drop that leading prefix so we don't

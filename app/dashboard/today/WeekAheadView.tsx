@@ -4,7 +4,11 @@ import { addDays, formatWeekRange, todayET, getCurrentMonday } from "@/lib/calen
 import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
 import { effectiveConsensus } from "@/lib/calendar/consensus";
 import { actualsAreImplausible } from "./EarningsHub";
-import { EnrichmentRowSummary } from "../components/calendar/EnrichmentChips";
+import {
+  EnrichmentRowSummary,
+  parseReactionSnapshot,
+  snapshotCoversEventDate,
+} from "../components/calendar/EnrichmentChips";
 
 interface WeekAheadViewProps {
   events: CalendarEvent[];
@@ -206,15 +210,20 @@ export function eventFigureDisplays(
 // A date correction can carry a prior print's actual_value / reaction_snapshot
 // onto a FUTURE row. This is a forward-looking planning surface: post-release
 // data must never render for an event whose date hasn't arrived, and the
-// reaction line mirrors TodayReleases' enriched_at gate.
+// reaction line mirrors TodayReleases' enriched_at gate. The snapshot must
+// also have been measured on this event's own date (snapshotCoversEventDate)
+// — a stale snapshot stranded by a date correction is not this print's
+// reaction, released or not.
 export function releasedFigureGates(
   event: Pick<CalendarEvent, "event_date" | "enriched_at" | "reaction_snapshot">,
   todayIso: string,
 ): { released: boolean; showReaction: boolean } {
   const released = !!event.event_date && event.event_date <= todayIso;
+  const snap = parseReactionSnapshot(event.reaction_snapshot ?? null);
   return {
     released,
-    showReaction: released && !!event.reaction_snapshot && !!event.enriched_at,
+    showReaction:
+      released && !!event.enriched_at && snapshotCoversEventDate(event.event_date, snap),
   };
 }
 
