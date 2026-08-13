@@ -113,3 +113,74 @@ export function buildFlowAdjustedIndex(
 
   return { index, returns };
 }
+
+/**
+ * Anchor-source seam dates for the scoped accounts, bounded to
+ * (startDate, endDate] — the same half-open convention as
+ * fetchNetFlowsByDate (a seam on/before the series' first date is already
+ * inside the starting value).
+ *
+ * A "seam" is the month_end_date of any monthly_snapshots anchor whose
+ * `source` differs from the SAME account's previous anchor. Phase 2 of
+ * computeDailyValuations snaps total_value to each anchor's total on the
+ * anchor date, so a source change between adjacent anchors injects the two
+ * sources' measurement-basis difference into the daily series as if it were
+ * a market move (the 2026-07-11 Plaid go-live read as a fake ~+4% day; every
+ * daily-source ↔ statement month-end handoff repeats this at ~±1-3%).
+ * buildFlowAdjustedIndex bridges these days: zero information, not a return.
+ *
+ * The scan starts from each account's FIRST anchor (not startDate) so the
+ * first in-window anchor is compared against its true predecessor. NULL and
+ * unrecognized sources are distinct values — a transition to/from unknown
+ * provenance bridges (conservative by construction). An account's first
+ * anchor has no predecessor and is never a seam.
+ *
+ * Gracefully returns [] when monthly_snapshots doesn't exist (minimal
+ * in-memory test DBs) — same precedent as fetchNetFlowsByDate.
+ */
+export function fetchAnchorSourceSeamDates(
+  db: Database.Database,
+  accountIds: number[] | undefined,
+  startDate: string,
+  endDate: string
+): string[] {
+  const hasTable = db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'monthly_snapshots'"
+    )
+    .get();
+  if (!hasTable) return [];
+
+  const accountFilter =
+    accountIds && accountIds.length > 0
+      ? `AND account_id IN (${accountIds.map(() => "?").join(",")})`
+      : "";
+
+  const rows = db
+    .prepare(
+      `SELECT account_id, month_end_date, source
+       FROM monthly_snapshots
+       WHERE month_end_date <= ?
+         ${accountFilter}
+       ORDER BY account_id ASC, month_end_date ASC`
+    )
+    .all(endDate, ...(accountIds ?? [])) as {
+    account_id: number;
+    month_end_date: string;
+    source: string | null;
+  }[];
+
+  const seams = new Set<string>();
+  let prevAccount: number | null = null;
+  let prevSource: string | null | undefined;
+  for (const row of rows) {
+    const isNewAccount = row.account_id !== prevAccount;
+    if (!isNewAccount && row.source !== prevSource && row.month_end_date > startDate) {
+      seams.add(row.month_end_date);
+    }
+    prevAccount = row.account_id;
+    prevSource = row.source;
+  }
+
+  return [...seams].sort();
+}
