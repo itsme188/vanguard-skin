@@ -101,6 +101,8 @@ Detail: `docs/reference/conventions-detail.md`, `docs/reference/earnings-pipelin
 - Market values via `adjustedMarketValueSQL()` (bonds ÷100, options ×multiplier, `LOWER()` matching).
 - Prices/cost_basis store NATIVE currency; convert at read time (`getUsdPerUnit` / `COALESCE(fx.usd_per_unit,1)`). Any new $-rendering surface must thread the FX factor. Don't convert % returns, betas, Sharpe/vol/drawdown, benchmarks.
 - Risk metrics are flow-adjusted (`lib/compute/flow-adjusted.ts`), never raw `daily_valuations` — a metric must be invariant to depositing $1M and buying nothing.
+- Cash-equivalent identity is single-sourced: `isCashEquivalentSecurity` (`lib/compute/cash-equivalents.ts`, fund_category-driven) — never hand-roll `money_market` string lists (nine legacy copies disagree; see TODO). `daily_valuations` counts sweep funds as CASH, not holdings; statement-sourced bonds are carried into Plaid-snapshot days (2026-08-12).
+- Holdings `source_key` prefix classes (statement-authority vs live) are single-sourced in `lib/db/holding-sources.ts` — never inline a `LIKE 'canonical:%'`-style match for source classification.
 
 **Scoping**
 - Scope-selector pages: every query respects `accountIds`; scopes are disjoint (`all = vanguard + roth + ibkr`). Never collapse a multi-account scope to `accountIds[0]`.
