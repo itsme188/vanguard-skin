@@ -20,7 +20,7 @@ Three user-picked items, executed via subagent-driven development (fresh impleme
 - Suite **4,864 → 4,904** (449 files), green at every commit; TDD RED/GREEN evidence captured for the engine work, including an anti-vacuity proof (gate temporarily disabled → both assertion legs fail with the exact phantom-cash spike the fix prevents).
 - **Scratch-copy live verification** (VACUUM-INTO copy, never the live DB): the month-end split flip shrank ~4× to just the structural plug drift (intra-window sweep growth invisible to any daily source, corrected at each anchor); the 07-31 anchored residual lands exactly on true-cash-plus-sweep; holdings counts smooth; **anchor totals exact at every monthly snapshot**; the bond-holding account has zero negative-cash rows — which also empirically settles the one assumption the reviews could not verify (Plaid's account total DOES include institution-held Treasuries; now regression-locked by the Plaid-anchor+carried-bond test).
 - **Perf benchmarked, not assumed:** full-history recompute 229.4s (old engine) vs 238.1s (new) on identical scratch copies — no regression; the ~4-minute baseline is pre-existing (TODO'd as an observation).
-- **NOT deployed, NOT pushed.** All five commits are local on `main`. The packaged app on :3099 still runs the old engine; its syncs keep regenerating old-semantics rows until the next deploy, after which the first sync regenerates the normalized series (durable by construction — deploy-before-recompute lesson honored by doing NO live recompute this session).
+- **Pushed + deployed at session end** (`/session-end`): all commits on `origin/main` through the final handoff commit; Electron DMG rebuilt, signed, notarized, installed, relaunched — :3099 health 200 on the new build. No manual live recompute was run (deploy-before-recompute lesson): the packaged app's own first sync regenerates the normalized valuation series, durable by construction. One deploy attempt was stopped mid-launch and re-run after explicit user confirmation; the interrupted attempt produced no build output and left no partial state.
 
 ## 3. Open concerns, rejected approaches, user decisions
 
@@ -32,8 +32,9 @@ Three user-picked items, executed via subagent-driven development (fresh impleme
 
 ## 4. Uncommitted changes / live-process state
 
-- Working tree at session close: TODO reconciliation + this handoff (committed as the final chore commit). Five code commits ahead of `origin/main`: `ec57213`, `8736d2c`, `6c1e34d`, `8044154`, `59e885c`. **Push + Electron deploy await user approval** (or `/session-end`).
-- Live: packaged app on :3099 (old engine, healthy); dev server on :3000 (current code, used for E2E). Worker untouched (no parity surfaces — chart/tests/valuation are Mac-side by architecture).
+- Working tree clean; everything pushed. Session commits on `origin/main`: `ec57213`, `8736d2c`, `6c1e34d`, `8044154`, `59e885c` (code), `fa8aeb2`/`49b7b07` (TODO+handoff chores), `89a7068` (CLAUDE.md conventions: cash-equivalent identity + holding-source prefix classes are now single-sourced), plus this final handoff commit.
+- Live: packaged app on :3099 rebuilt and relaunched with the new engine (health 200); dev server on :3000. Worker untouched (no parity surfaces — chart/tests/valuation are Mac-side by architecture). First post-deploy sync regenerates the valuation series; the one-time verification chore (flows-audit re-run + `cash-flow-audit.ts` header refresh) is filed in TODO.
+- Live-data decision still pending user: regenerate the polluted macro-themes scope (delete the test rows + app Refresh) — filed in TODO.
 - Fixer collision note: tonight's nightly fixer implements the 4 remaining decided QA findings — none overlap this session's files (verified against the decided list: SPY-weights, risk-drawer ranking, empty bogeys, wash-sale labeling, actuals floor).
 
 ## 5. Claude session link
