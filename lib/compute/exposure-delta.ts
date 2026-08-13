@@ -13,6 +13,7 @@ import type Database from "better-sqlite3";
 import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
 import { marketValue } from "@/lib/valuation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { BETA_LOOKBACK_DAYS } from "@/lib/queries/security-betas";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
 
 export interface HypotheticalLeg {
@@ -121,7 +122,7 @@ function loadCurrentHoldings(
       JOIN securities s ON s.id = lh.security_id
       LEFT JOIN latest_prices lp ON lp.security_id = s.id
       LEFT JOIN security_factors sf ON sf.security_id = s.id
-      LEFT JOIN security_betas sb ON sb.security_id = s.id AND sb.lookback_days = 252
+      LEFT JOIN security_betas sb ON sb.security_id = s.id AND sb.lookback_days = ${BETA_LOOKBACK_DAYS}
       GROUP BY s.id
     `
     )
@@ -195,7 +196,7 @@ function lookupSymbol(
         sb.beta AS cached_beta
       FROM securities s
       LEFT JOIN security_factors sf ON sf.security_id = s.id
-      LEFT JOIN security_betas sb ON sb.security_id = s.id AND sb.lookback_days = 252
+      LEFT JOIN security_betas sb ON sb.security_id = s.id AND sb.lookback_days = ${BETA_LOOKBACK_DAYS}
       WHERE REPLACE(UPPER(s.symbol), ' ', '') = ?
       LIMIT 1
     `
