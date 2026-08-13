@@ -760,7 +760,10 @@ function AlertsPageInner() {
         />
       ) : isReview ? (
         <ReviewGroupedByAuthor
-          levels={reviewLevels}
+          // sortedItems, not raw reviewLevels — the Sort picker reorders the
+          // stream, and Review must honor it like every other tab. Group
+          // order + within-group order both follow this input order.
+          levels={sortedItems.flatMap((it) => (it.kind === "review" ? [it.level] : []))}
           onDecide={decideReview}
           disabled={approvingAll || decidingId !== null}
           busyId={decidingId}
