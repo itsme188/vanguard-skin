@@ -37,7 +37,10 @@ export function ClassificationCard({ concentration, coverage }: Props) {
       const res = await fetch("/api/compute/classify", { method: "POST" });
       const data = await res.json();
       if (data.success) {
-        if (data.classified === 0 && !data.unresolvedCount) {
+        // Guard with Array.isArray — aiErrors comes off the wire as JSON, not
+        // a typed value.
+        const aiErrors: string[] = Array.isArray(data.aiErrors) ? data.aiErrors : [];
+        if (data.classified === 0 && !data.unresolvedCount && aiErrors.length === 0) {
           // Explain the no-op — "Classified 0" with no why reads as a broken button.
           // No count: data.skipped is the engine's whole-table skip tally (every
           // securities row ever seen, ~1.3k), not the held universe — quoting it
@@ -46,7 +49,11 @@ export function ClassificationCard({ concentration, coverage }: Props) {
         } else {
           const parts = [`Classified ${data.classified}`, `${data.skipped} already done`];
           if (data.unresolvedCount > 0) parts.push(`${data.unresolvedCount} couldn't be auto-classified`);
-          toast(parts.join(" · "), data.unresolvedCount > 0 ? "info" : "success");
+          // Surface the AI batch failure instead of swallowing it — a silent
+          // aiErrors[] left the classify step hard-failing on every run with
+          // no visible signal (qa:analysis-classification--auto-classify-swallows-ai-json-error).
+          if (aiErrors.length > 0) parts.push(`AI step failed: ${aiErrors[0]}`);
+          toast(parts.join(" · "), aiErrors.length > 0 ? "error" : data.unresolvedCount > 0 ? "info" : "success");
         }
         router.refresh();
       } else {
