@@ -157,3 +157,95 @@ describe("computeMarketRegression flow adjustment", () => {
     expect(reg.beta).toBeLessThan(1.1);
   });
 });
+
+/**
+ * Seam-aware market regression: a monthly_snapshots anchor-source transition
+ * (e.g. canonical statement era → Plaid daily era) makes the daily_valuations
+ * series jump by a fixed measurement-basis offset on the seam date — not a
+ * market move, and not an external flow either (no transactions row explains
+ * it). buildFlowAdjustedIndex (Task 2) bridges that one day when given the
+ * seam dates (Task 1); this section verifies computeMarketRegression (via
+ * computeFactorAnalysis) actually threads those seam dates through so the
+ * bridged day's return pair never reaches the beta regression.
+ */
+function addMonthlySnapshotsTable(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE monthly_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      account_id INTEGER NOT NULL,
+      month_end_date TEXT NOT NULL,
+      total_value REAL NOT NULL,
+      source TEXT
+    );
+  `);
+}
+
+/**
+ * 41-day aligned series: portfolio tracks benchmark exactly 1:1 (value =
+ * spy * 10) except a permanent level shift of +4% applied from `stepDate`
+ * onward (no flow row backs it) — i.e. one anomalous +4% excess-return day
+ * on stepDate itself, then back to tracking exactly (now at the new level).
+ */
+function seedStepPortfolio(db: Database.Database, stepDaysAgo: number): string {
+  db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test')");
+  let stepDate = "";
+  for (let i = 40; i >= 0; i--) {
+    const date = recentDate(i);
+    const spy = 500 + (40 - i) * 0.3 + Math.sin((40 - i) * 0.5) * 10;
+    if (i === stepDaysAgo) stepDate = date;
+    const multiplier = i <= stepDaysAgo ? 10 * 1.04 : 10;
+    const total = spy * multiplier;
+    db.prepare(
+      "INSERT OR IGNORE INTO benchmark_prices (symbol, date, close_price) VALUES ('SPY', ?, ?)",
+    ).run(date, spy);
+    db.prepare(
+      "INSERT OR IGNORE INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (1, ?, 0, ?, ?)",
+    ).run(date, total, total);
+  }
+  return stepDate;
+}
+
+function makeRegressionDbWithSeam(): Database.Database {
+  const db = createTestDb(false);
+  addMonthlySnapshotsTable(db);
+  const stepDate = seedStepPortfolio(db, 20);
+  const firstDate = recentDate(40);
+  db.prepare(
+    "INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, source) VALUES (1, ?, 0, 'canonical')",
+  ).run(firstDate);
+  db.prepare(
+    "INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, source) VALUES (1, ?, 0, 'plaid')",
+  ).run(stepDate);
+  return db;
+}
+
+function makeRegressionDbNoSeam(): Database.Database {
+  const db = createTestDb(false);
+  addMonthlySnapshotsTable(db);
+  const stepDate = seedStepPortfolio(db, 20);
+  const firstDate = recentDate(40);
+  db.prepare(
+    "INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, source) VALUES (1, ?, 0, 'canonical')",
+  ).run(firstDate);
+  db.prepare(
+    "INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, source) VALUES (1, ?, 0, 'canonical')",
+  ).run(stepDate);
+  return db;
+}
+
+describe("market regression seam awareness", () => {
+  it("drops the seam day's pair; beta recovers the true relationship", () => {
+    // Construct portfolio returns as EXACTLY 1.0 x benchmark for 40 aligned
+    // days, EXCEPT one +4% portfolio-only step day with no flow row. Anchors:
+    // 'canonical' era before the step, 'plaid' from the step date (seam DB);
+    // control DB has identical values but both anchors 'canonical'.
+    const db = makeRegressionDbWithSeam();
+    const control = makeRegressionDbNoSeam();
+    const seamAware = computeFactorAnalysis(db).marketRegression!;
+    const contaminated = computeFactorAnalysis(control).marketRegression!;
+    // The fake-return pair is excluded, so beta comes back ~1.0 exactly;
+    // the contaminated control deviates from 1.0.
+    expect(seamAware.beta).toBeCloseTo(1.0, 2);
+    expect(Math.abs(contaminated.beta - 1.0)).toBeGreaterThan(0.05);
+  });
+});

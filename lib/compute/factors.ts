@@ -4,7 +4,11 @@ import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { FACTOR_COLUMNS, type FactorColumn } from "@/lib/factors";
 import { getFactorHeatmap, type FactorHeatmapRow } from "@/lib/queries/analysis";
-import { buildFlowAdjustedIndex, fetchNetFlowsByDate } from "@/lib/compute/flow-adjusted";
+import {
+  buildFlowAdjustedIndex,
+  fetchNetFlowsByDate,
+  fetchAnchorSourceSeamDates,
+} from "@/lib/compute/flow-adjusted";
 
 // ─── Types ─────────────��────────────────────────────────────────
 
@@ -153,7 +157,16 @@ function computeMarketRegression(
           alignedSeries[alignedSeries.length - 1].date
         )
       : [];
-  const { returns: adjustedReturns } = buildFlowAdjustedIndex(alignedSeries, flows);
+  const seamDates =
+    alignedSeries.length >= 2
+      ? fetchAnchorSourceSeamDates(
+          db,
+          accountIds,
+          alignedSeries[0].date,
+          alignedSeries[alignedSeries.length - 1].date
+        )
+      : [];
+  const { returns: adjustedReturns } = buildFlowAdjustedIndex(alignedSeries, flows, seamDates);
 
   const dateIndex = new Map(allDates.map((d, i) => [d, i]));
   const portfolioReturns: number[] = [];
