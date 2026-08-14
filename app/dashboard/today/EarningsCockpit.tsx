@@ -102,6 +102,7 @@ export function EarningsCockpit() {
     };
   }, []);
 
+  // GET is a side-effect-free read of already-computed intel (#35 task 5).
   const load = useCallback(async () => {
     try {
       const res = await fetch("/api/earnings/cockpit");
@@ -119,13 +120,34 @@ export function EarningsCockpit() {
     }
   }, []);
 
+  // POST refreshes intel (implied-move / straddle rows) then returns the
+  // decorated payload. The refresh is the write that used to ride the GET;
+  // it's TTL-guarded server-side (≤1 refresh per event per 30 min). Plain
+  // fetch for now — a later task re-points to apiFetch.
+  const refresh = useCallback(async () => {
+    try {
+      const res = await fetch("/api/earnings/cockpit", { method: "POST" });
+      const json = await res.json();
+      if (!alive.current) return;
+      if (res.ok && json.success) {
+        setPayload(json.data);
+        setStale(false);
+      }
+      // A failed refresh keeps the last good payload; load()'s read still runs.
+    } catch {
+      /* keep last good payload */
+    }
+  }, []);
+
   useEffect(() => {
+    // Instant paint from cache, then refresh intel in the background.
     void load();
+    void refresh();
     const id = setInterval(() => {
-      if (document.visibilityState === "visible") void load();
+      if (document.visibilityState === "visible") void refresh();
     }, POLL_MS);
     return () => clearInterval(id);
-  }, [load]);
+  }, [load, refresh]);
 
   // Immediate refetch when an earnings mutation happens elsewhere on the
   // page (add / delete / skip in the EarningsHub). Those handlers call

@@ -17,7 +17,7 @@ vi.mock("@/lib/queries/security-regressions", () => ({
 // Stub the db singleton — neither mocked module touches it.
 vi.mock("@/lib/db", () => ({ db: {} as never }));
 
-import { GET } from "@/app/api/security/[id]/regression/route";
+import { GET, POST } from "@/app/api/security/[id]/regression/route";
 import { computeSecurityRegression } from "@/lib/compute/security-regression";
 import {
   getCachedRegression,
@@ -46,7 +46,7 @@ describe("GET /api/security/[id]/regression", () => {
     });
   });
 
-  it("on cache miss, computes fresh and writes back to cache", async () => {
+  it("on cache miss, computes fresh and RETURNS it WITHOUT writing the cache (side-effect-free GET, #35)", async () => {
     const { request, ctx } = makeReq("42");
     const res = await GET(request, ctx);
     expect(res.status).toBe(200);
@@ -62,7 +62,8 @@ describe("GET /api/security/[id]/regression", () => {
     });
     expect(getCachedRegression).toHaveBeenCalledWith({}, 42, "SPY");
     expect(computeSecurityRegression).toHaveBeenCalledWith({}, 42, "SPY");
-    expect(upsertRegression).toHaveBeenCalledOnce();
+    // The GET must NOT persist — the write moved to POST.
+    expect(upsertRegression).not.toHaveBeenCalled();
   });
 
   it("on cache hit, returns cached row and skips compute", async () => {
@@ -94,5 +95,51 @@ describe("GET /api/security/[id]/regression", () => {
     expect(body.success).toBe(false);
     expect(getCachedRegression).not.toHaveBeenCalled();
     expect(computeSecurityRegression).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/security/[id]/regression (persist path, #35)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(computeSecurityRegression).mockReturnValue({
+      beta: 1.2,
+      vol: 0.22,
+      correlation: 0.85,
+      rSquared: 0.72,
+      dataPoints: 220,
+    });
+  });
+
+  it("computes fresh and WRITES back to the cache", async () => {
+    const { request, ctx } = makeReq("42");
+    const res = await POST(request, ctx);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.fromCache).toBe(false);
+    expect(body.data.beta).toBe(1.2);
+    expect(computeSecurityRegression).toHaveBeenCalledWith({}, 42, "SPY");
+    expect(upsertRegression).toHaveBeenCalledOnce();
+  });
+
+  it("returns null data + does not write when there's insufficient history", async () => {
+    vi.mocked(computeSecurityRegression).mockReturnValue(
+      null as unknown as ReturnType<typeof computeSecurityRegression>,
+    );
+    const { request, ctx } = makeReq("7");
+    const res = await POST(request, ctx);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.data).toBeNull();
+    expect(upsertRegression).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when id is not an integer (no compute, no write)", async () => {
+    const { request, ctx } = makeReq("nope");
+    const res = await POST(request, ctx);
+    expect(res.status).toBe(400);
+    expect(computeSecurityRegression).not.toHaveBeenCalled();
+    expect(upsertRegression).not.toHaveBeenCalled();
   });
 });

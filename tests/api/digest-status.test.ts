@@ -39,7 +39,7 @@ import {
   reconcileRecentCloudSends,
 } from "@/lib/cron/marker-check";
 import { setLastDigestSentAt } from "@/lib/digest/daily-digest";
-import { GET } from "@/app/api/digest/status/route";
+import { GET, POST } from "@/app/api/digest/status/route";
 
 describe("GET /api/digest/status", () => {
   beforeEach(() => {
@@ -49,10 +49,19 @@ describe("GET /api/digest/status", () => {
     vi.mocked(checkCloudMarker).mockResolvedValue(null);
   });
 
-  it("runs the on-wake reconcile so the pointer heals while the dashboard is open", async () => {
+  it("GET is side-effect-free — it does NOT run the on-wake reconcile (write moved to POST, #35)", async () => {
     await GET();
+    expect(reconcileRecentCloudSends).not.toHaveBeenCalled();
+  });
+
+  it("POST runs the on-wake reconcile so the pointer heals while the dashboard is open", async () => {
+    const res = await POST();
     expect(reconcileRecentCloudSends).toHaveBeenCalledTimes(1);
     expect(reconcileRecentCloudSends).toHaveBeenCalledWith(testDb);
+    // POST returns the same status payload shape as GET.
+    const body = await res.json();
+    expect(body).toHaveProperty("lastDigestSentAt");
+    expect(body).toHaveProperty("cloudDigestToday");
   });
 
   it("reports today's cloud digest marker as cloudDigestToday", async () => {

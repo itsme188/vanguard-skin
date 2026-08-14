@@ -36,7 +36,7 @@ describe("GET /api/analysis/narrative", () => {
     __resetRateLimitForTests();
   });
 
-  it("returns 200 + narrativeMd shape on cache miss", async () => {
+  it("cache miss returns notGenerated WITHOUT generating (side-effect-free GET, #35)", async () => {
     const req = new Request(
       "http://x/api/analysis/narrative?scope=vanguard&surface=factor-analysis"
     );
@@ -44,7 +44,27 @@ describe("GET /api/analysis/narrative", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
-    expect(body.narrativeMd).toBe("Mocked narrative prose.");
+    expect(body.narrativeMd).toBeNull();
+    expect(body.notGenerated).toBe(true);
+    // GET must never call the paid Sonnet generator.
+    expect(generateNarrative).not.toHaveBeenCalled();
+  });
+
+  it("cache hit returns the cached narrative (no generation)", async () => {
+    (getCachedNarrative as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+      narrativeMd: "Cached prose.",
+      generatedAt: "2026-05-10T22:00:00Z",
+    });
+    const req = new Request(
+      "http://x/api/analysis/narrative?scope=vanguard&surface=risk-metrics"
+    );
+    const res = await GET(req as never);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.fromCache).toBe(true);
+    expect(body.narrativeMd).toBe("Cached prose.");
+    expect(generateNarrative).not.toHaveBeenCalled();
   });
 
   it("returns 400 when scope is missing", async () => {
@@ -122,45 +142,25 @@ describe("POST /api/analysis/narrative (force regen)", () => {
   });
 });
 
-describe("GET /api/analysis/narrative cache-miss rate-limit", () => {
+describe("GET /api/analysis/narrative repeated cache misses (no rate-limit, never generate)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     __resetRateLimitForTests();
   });
 
-  it("first cache-miss call goes through; second within window is rate-limited", async () => {
+  it("repeated cache misses all return 200 notGenerated and never generate", async () => {
+    // The GET cache-miss rate-limiter is GONE — it only existed to throttle
+    // generate-on-miss, which no longer happens. Every miss is a cheap read.
     const makeReq = () =>
       new Request(
         "http://x/api/analysis/narrative?scope=all&surface=factor-analysis"
       );
     const r1 = await GET(makeReq() as never);
-    expect(r1.status).toBe(200);
     const r2 = await GET(makeReq() as never);
-    expect(r2.status).toBe(429);
-    const body2 = await r2.json();
-    expect(body2.error).toBe("rate-limited (cache miss)");
-    expect(body2.retryAfter).toBeGreaterThan(0);
-  });
-
-  it("cache hit bypasses rate-limit (repeated cache hits always return 200)", async () => {
-    const makeReq = () =>
-      new Request(
-        "http://x/api/analysis/narrative?scope=all&surface=risk-metrics"
-      );
-    // First call: cache miss (default getCachedNarrative → null) — sets the
-    // cache-miss rate-limit timestamp.
-    const r1 = await GET(makeReq() as never);
     expect(r1.status).toBe(200);
-    // Cache is now warm: getCachedNarrative returns a row. Even within the
-    // rate-limit window, a cache hit short-circuits BEFORE the limiter → 200.
-    (getCachedNarrative as ReturnType<typeof vi.fn>).mockReturnValueOnce({
-      narrativeMd: "Cached prose.",
-      generatedAt: "2026-05-10T22:00:00Z",
-    });
-    const r2 = await GET(makeReq() as never);
     expect(r2.status).toBe(200);
-    const body2 = await r2.json();
-    expect(body2.fromCache).toBe(true);
-    expect(body2.narrativeMd).toBe("Cached prose.");
+    expect((await r1.json()).notGenerated).toBe(true);
+    expect((await r2.json()).notGenerated).toBe(true);
+    expect(generateNarrative).not.toHaveBeenCalled();
   });
 });

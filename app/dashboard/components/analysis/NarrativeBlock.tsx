@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { PrivateText } from "@/lib/privacy/components";
 import { formatGeneratedAt } from "@/lib/calendar/date-utils";
 
@@ -33,29 +33,11 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let alive = true;
-    setLoading(true);
-    setRefreshError(null); // don't let a prior scope's refresh error bleed onto the new scope
-    fetch(`/api/analysis/narrative?scope=${scope}&surface=${surfaceKey}`)
-      .then((r) => r.json())
-      .then((data) => {
-        if (!alive) return;
-        if (data.success) {
-          setText(data.narrativeMd);
-          setGeneratedAt(data.generatedAt ?? null);
-        } else {
-          setError(data.error ?? "Failed to load narrative");
-        }
-      })
-      .catch((e) => alive && setError(e instanceof Error ? e.message : "Failed to load narrative"))
-      .finally(() => alive && setLoading(false));
-    return () => {
-      alive = false;
-    };
-  }, [scope, surfaceKey]);
-
-  async function handleRefresh() {
+  // POST is the generate path (#35 task 5): GET is a cache-read that returns
+  // { notGenerated: true } on a miss and NEVER generates. handleRefresh is
+  // reused both for the manual Refresh button and to auto-fill an empty cache
+  // on first view. Plain fetch for now — a later task re-points to apiFetch.
+  const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     setRefreshError(null);
     try {
@@ -83,9 +65,36 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
     } finally {
       setRefreshing(false);
     }
-  }
+  }, [scope, surfaceKey]);
 
-  if (loading) return <div className="text-xs text-ink-faint italic mt-2">Loading narrative…</div>;
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    setRefreshError(null); // don't let a prior scope's refresh error bleed onto the new scope
+    fetch(`/api/analysis/narrative?scope=${scope}&surface=${surfaceKey}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (!alive) return;
+        if (data.success && data.narrativeMd) {
+          setText(data.narrativeMd);
+          setGeneratedAt(data.generatedAt ?? null);
+        } else if (data.success && data.notGenerated) {
+          // Cache is empty — auto-generate once via the POST path (GET no
+          // longer generates-on-miss). Same call the Refresh button makes.
+          void handleRefresh();
+        } else if (!data.success) {
+          setError(data.error ?? "Failed to load narrative");
+        }
+      })
+      .catch((e) => alive && setError(e instanceof Error ? e.message : "Failed to load narrative"))
+      .finally(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+    };
+  }, [scope, surfaceKey, handleRefresh]);
+
+  if (loading || (refreshing && !text))
+    return <div className="text-xs text-ink-faint italic mt-2">Loading narrative…</div>;
   if (error || !text) return null; // graceful no-render on error
 
   // formatGeneratedAt returns null for an unparseable timestamp — hide the
