@@ -95,4 +95,38 @@ describe("POST /api/tws/connect — target allowlist", () => {
     expect(body.success).toBe(true);
     expect(hoisted.connectTws).toHaveBeenCalledTimes(1);
   });
+
+  // Round-1 coordinator review: the route must validate AND connect with the
+  // SAME resolved target. A raw body value like {host: null} nullish-coalesces
+  // to the current (already-allowed) host for validation purposes — but
+  // connectTws()'s merge (`{...current, ...config}`) treats an explicit
+  // `host: null` key as an overwrite, not "unset". If the route forwarded
+  // body.host (null) instead of the resolved targetHost, it would validate
+  // against 127.0.0.1 while writing null into the live TWS config — a
+  // validate-X/act-on-Y gap in a security control.
+  it("a null host in the body validates against, and connects to, the RESOLVED (current) host — not null", async () => {
+    const res = await POST(makeReq({ host: null, port: 7496, clientId: 1 }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(hoisted.connectTws).toHaveBeenCalledTimes(1);
+    expect(hoisted.connectTws).toHaveBeenCalledWith({
+      host: "127.0.0.1", // resolved current host, never the raw `null`
+      port: 7496,
+      clientId: 1,
+    });
+  });
+
+  it("an omitted host in the body validates against, and connects to, the RESOLVED (current) host — not undefined", async () => {
+    const res = await POST(makeReq({ port: 7496, clientId: 1 }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(hoisted.connectTws).toHaveBeenCalledTimes(1);
+    expect(hoisted.connectTws).toHaveBeenCalledWith({
+      host: "127.0.0.1", // resolved current host, never `undefined`
+      port: 7496,
+      clientId: 1,
+    });
+  });
 });

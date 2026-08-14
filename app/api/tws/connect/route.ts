@@ -22,9 +22,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: message }, { status: 400 });
     }
 
+    // Connect with the RESOLVED target — not the raw body — so what was
+    // validated is provably what connects. A raw body value like
+    // {host: null} validates safely (falls back to targetHost above) but
+    // would otherwise overwrite the live config with null via connectTws()'s
+    // object-spread merge (an explicit key, even undefined/null, wins).
     const status = await connectTws({
-      host: body.host,
-      port: body.port,
+      host: targetHost,
+      port: targetPort,
       clientId: body.clientId,
     });
 
