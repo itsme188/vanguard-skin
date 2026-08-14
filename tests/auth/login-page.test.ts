@@ -52,4 +52,36 @@ describe("safeNextPath", () => {
   it("rejects a backslash-leading path (browser-normalized protocol-relative bypass)", () => {
     expect(safeNextPath("/\\evil.com")).toBe(DEFAULT_LOGIN_REDIRECT);
   });
+
+  it("rejects a javascript: scheme", () => {
+    expect(safeNextPath("javascript:alert(1)")).toBe(DEFAULT_LOGIN_REDIRECT);
+  });
+
+  // Round-1 review finding: the WHATWG URL parser (what
+  // `window.location.href = ` actually runs) strips ASCII tab/CR/LF
+  // ANYWHERE in the string before navigating. A naive
+  // startsWith("/") + !startsWith("//") check on the RAW string misses
+  // this — "/\t/evil.com" has a tab between the two slashes so it isn't
+  // "//"-prefixed pre-strip, but the browser sees "//evil.com" and
+  // navigates off-origin. URLSearchParams auto-decodes %09/%0a/%0d, so
+  // "?next=%2F%09%2Fevil.com" delivers this string verbatim from a URL.
+  it("rejects a tab-injected protocol-relative bypass (/\\t/evil.com)", () => {
+    expect(safeNextPath("/\t/evil.com")).toBe(DEFAULT_LOGIN_REDIRECT);
+  });
+
+  it("rejects a newline-injected protocol-relative bypass (/\\n/evil.com)", () => {
+    expect(safeNextPath("/\n/evil.com")).toBe(DEFAULT_LOGIN_REDIRECT);
+  });
+
+  it("rejects a carriage-return-injected protocol-relative bypass (/\\r/evil.com)", () => {
+    expect(safeNextPath("/\r/evil.com")).toBe(DEFAULT_LOGIN_REDIRECT);
+  });
+
+  it("strips a tab from an otherwise-safe path and returns the STRIPPED value, not the raw input or the default", () => {
+    // Confirms the fix validates the stripped string and returns that same
+    // stripped string — so what was checked is what gets assigned to
+    // location.href. Uses a target other than DEFAULT_LOGIN_REDIRECT so a
+    // pass can't be confused with "always falls back on any tab".
+    expect(safeNextPath("/dash\tboard/security/5")).toBe("/dashboard/security/5");
+  });
 });
