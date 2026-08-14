@@ -92,6 +92,51 @@ const WRITE_PATTERNS: Array<{ label: string; re: RegExp }> = [
   { label: "record*() persist call", re: /\brecord[A-Z]\w*\s*\(/ },
 ];
 
+/**
+ * NARROW write-through-cache helper denylist. These helpers write INSIDE lib/
+ * (INSERT/UPSERT on a cache miss, on-wake pointer heal, or intel refresh), so
+ * the write is INVISIBLE to a GET-body scan of `.run(`/INSERT/etc. Their names
+ * are deliberately generic (`generate*`/`getOrGenerate*`/`reconcile*`), which is
+ * exactly why the broad WRITE_PATTERNS can't include those prefixes — a broad
+ * `reconcile*` would false-positive on the pure-compute `reconcileCostBasis`.
+ *
+ * So we pin the SPECIFIC offending names instead: each of these seeded a task-3
+ * GET-write offender (4 of the 7 were paid-AI generate-on-miss). If any exact
+ * name reappears in a GET handler body, the generate-on-miss CSRF vector is back
+ * and this test must fail — GET_WRITE_OFFENDERS being []-asserted gives no
+ * ongoing detection on its own. Word-boundary match (`\bNAME\s*\(`) so it fires
+ * on a real call, not on a substring or an unrelated identifier.
+ *
+ * A new write-through helper reached from a GET must be ADDED here (and the
+ * route split so the write lives on POST), never worked around.
+ */
+const WRITE_THROUGH_HELPERS = [
+  "generateNarrative",
+  "generateMacroThemes",
+  "generateDigestSinceAdaptive",
+  "getOrGenerateNarrative",
+  "reconcileRecentCloudSends",
+  "ensureIntelForEvents",
+] as const;
+
+function helperCallPattern(name: string): RegExp {
+  return new RegExp(`\\b${name}\\s*\\(`);
+}
+
+/** Scan one GET body; return the labels of every write signal it contains. */
+function scanGetBody(body: string): string[] {
+  const hits: string[] = [];
+  for (const { label, re } of WRITE_PATTERNS) {
+    if (re.test(body)) hits.push(label);
+  }
+  for (const name of WRITE_THROUGH_HELPERS) {
+    if (helperCallPattern(name).test(body)) {
+      hits.push(`write-through helper ${name}()`);
+    }
+  }
+  return hits;
+}
+
 describe("no state-changing GET routes (SameSite=Lax GET-CSRF)", () => {
   it("GET_WRITE_OFFENDERS is empty — every offender migrated to POST", () => {
     expect(GET_WRITE_OFFENDERS).toEqual([]);
@@ -115,13 +160,41 @@ describe("no state-changing GET routes (SameSite=Lax GET-CSRF)", () => {
         violations.push(`${h.pathname}: could not isolate GET body`);
         continue;
       }
-      for (const { label, re } of WRITE_PATTERNS) {
-        if (re.test(body)) {
-          violations.push(`GET ${h.pathname}: GET body contains ${label}`);
-        }
+      for (const label of scanGetBody(body)) {
+        violations.push(`GET ${h.pathname}: GET body contains ${label}`);
       }
     }
 
     expect(violations).toEqual([]);
+  });
+
+  it("the scan would catch a planted write-through helper call in a GET body", () => {
+    // Synthetic proof the guard covers the generate-on-miss vector that seeded
+    // 4 of the 7 offenders — a future GET calling one of these helpers writes
+    // inside lib/ (invisible to the .run(/INSERT scan) yet must still be caught.
+    const plantedGet = `
+      const { searchParams } = new URL(req.url);
+      const scope = searchParams.get("scope");
+      // read-through cache: generates + UPSERTs on a miss, inside lib/
+      const r = await generateNarrative(db, { scope, surfaceKey: "risk-metrics", weekOf: week });
+      return NextResponse.json({ success: true, ...r });
+    `;
+    const hits = scanGetBody(plantedGet);
+    expect(hits).toContain("write-through helper generateNarrative()");
+
+    // Every pinned helper name is individually detected.
+    for (const name of WRITE_THROUGH_HELPERS) {
+      expect(scanGetBody(`await ${name}(db, x);`)).toContain(
+        `write-through helper ${name}()`,
+      );
+    }
+
+    // And a genuinely side-effect-free GET body trips nothing.
+    const cleanGet = `
+      const cached = getCachedNarrative(db, scope, surface, week);
+      if (cached) return NextResponse.json({ success: true, narrativeMd: cached.narrativeMd });
+      return NextResponse.json({ success: true, narrativeMd: null, notGenerated: true });
+    `;
+    expect(scanGetBody(cleanGet)).toEqual([]);
   });
 });
