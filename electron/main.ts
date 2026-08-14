@@ -380,7 +380,18 @@ async function createWindow(): Promise<void> {
     );
   }
 
-  await mainWindow.loadURL(`http://localhost:${PORT}/dashboard/today`);
+  // Guard loadURL: a rejection (ERR_ABORTED when a redirect supersedes the
+  // navigation, or a mid-load server hiccup) must NOT skip show() nor escape
+  // to whenReady's outer catch — that would pop a misleading "Failed to Start"
+  // dialog and quit even though the server is healthy. The window ALWAYS
+  // appears; a failed load simply lands on Chromium's error page.
+  try {
+    await mainWindow.loadURL(`http://localhost:${PORT}/dashboard/today`);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[electron] loadURL failed:", message);
+    serverLogStream?.write(serverLogLine("[electron]", `loadURL failed: ${message}`));
+  }
   mainWindow.show();
 }
 
