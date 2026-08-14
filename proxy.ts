@@ -24,6 +24,24 @@ export const config = {
 // inside the window cheap no-ops.
 const TOUCH_THROTTLE_MS = 5 * 60_000;
 
+// DEPLOYMENT SEQUENCING (read before enabling enforcement): the phone reaches
+// the Mac at http://100.96.0.1:3099 (WARP mesh) TODAY. That Host is NOT in the
+// built-in allowlist below. Do NOT deploy this choke point before the Phase-D
+// Cloudflare Tunnel cutover UNLESS the operator sets APP_EXTRA_HOSTS to include
+// the current phone Host (and APP_EXTRA_ORIGINS the matching Origin) — otherwise
+// the phone is denied even on /login and loops on the redirect. The mesh is
+// retired at cutover; APP_EXTRA_* is only the transition escape hatch, so the
+// mesh IP is never hardcoded here.
+
+/** Parse a comma-separated env var into trimmed, non-empty entries. */
+function parseCsvEnv(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
 export default function proxy(req: NextRequest): NextResponse {
   const url = new URL(req.url);
   const pathname = url.pathname;
@@ -47,6 +65,9 @@ export default function proxy(req: NextRequest): NextResponse {
       "localhost:3000",
       "127.0.0.1:3000",
       hostname,
+      // Transition escape hatch (see DEPLOYMENT SEQUENCING above): e.g.
+      // APP_EXTRA_HOSTS=100.96.0.1:3099 for the pre-cutover mesh phone.
+      ...parseCsvEnv(process.env.APP_EXTRA_HOSTS),
     ]),
     origins: new Set([
       "http://localhost:3099",
@@ -54,6 +75,8 @@ export default function proxy(req: NextRequest): NextResponse {
       "http://localhost:3000",
       "http://127.0.0.1:3000",
       `https://${hostname}`,
+      // e.g. APP_EXTRA_ORIGINS=http://100.96.0.1:3099
+      ...parseCsvEnv(process.env.APP_EXTRA_ORIGINS),
     ]),
     cronSecret: process.env.CRON_SHARED_SECRET || "",
     electronCred: process.env.ELECTRON_SERVICE_CRED || "",
