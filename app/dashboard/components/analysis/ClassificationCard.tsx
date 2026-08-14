@@ -15,6 +15,7 @@ import {
 } from "recharts";
 import type { ConcentrationMetrics, ClassificationCoverage } from "@/lib/queries/analysis";
 import { interpretHHI } from "@/lib/analysis/interpret";
+import apiFetch from "@/lib/http/apiFetch";
 
 interface Props {
   concentration: ConcentrationMetrics;
@@ -34,7 +35,7 @@ export function ClassificationCard({ concentration, coverage }: Props) {
   async function runAutoClassify() {
     setClassifyLoading(true);
     try {
-      const res = await fetch("/api/compute/classify", { method: "POST" });
+      const res = await apiFetch("/api/compute/classify", { method: "POST" });
       const data = await res.json();
       if (data.success) {
         // Guard with Array.isArray — aiErrors comes off the wire as JSON, not

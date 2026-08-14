@@ -9,6 +9,7 @@ import { HoldingPeriodBadge } from "./HoldingPeriodBadge";
 import { Money, Pct, Shares, PrivateText } from "@/lib/privacy/components";
 import { isNarrativeStale } from "@/lib/trade-review/stale-narrative";
 import { formatProfitFactor } from "@/lib/format";
+import apiFetch from "@/lib/http/apiFetch";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -226,7 +227,7 @@ export function TradeReviewView({
       };
       if (answers) body.answers = answers;
 
-      const res = await fetch("/api/trade-review", {
+      const res = await apiFetch("/api/trade-review", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),

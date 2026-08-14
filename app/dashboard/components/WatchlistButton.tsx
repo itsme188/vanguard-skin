@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useToast } from "./Toast";
+import apiFetch from "@/lib/http/apiFetch";
 
 export function WatchlistButton({
   securityId,
@@ -31,12 +32,12 @@ export function WatchlistButton({
           (i: { security_id: number }) => i.security_id === securityId
         );
         if (item) {
-          const res = await fetch(`/api/watchlist?id=${item.id}`, { method: "DELETE" });
+          const res = await apiFetch(`/api/watchlist?id=${item.id}`, { method: "DELETE" });
           if (!res.ok) throw new Error(`server returned ${res.status}`);
         }
         setWatched(false);
       } else {
-        const res = await fetch("/api/watchlist", {
+        const res = await apiFetch("/api/watchlist", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ securityId }),

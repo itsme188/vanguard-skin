@@ -18,6 +18,7 @@ import type {
   PortfolioChartPoint,
 } from "@/lib/queries/dashboard";
 import { Pct, usePrivateFormatter } from "@/lib/privacy/components";
+import apiFetch from "@/lib/http/apiFetch";
 
 const ACCOUNT_COLORS: Record<string, string> = {
   "Vanguard Taxable": "#C9A44E",
@@ -400,7 +401,7 @@ export function CombinedPortfolioChart({
     setSyncing(true);
     setSyncMessage("Connecting to TWS...");
     try {
-      const res = await fetch("/api/benchmark/sync", { method: "POST" });
+      const res = await apiFetch("/api/benchmark/sync", { method: "POST" });
       const reader = res.body?.getReader();
       if (!reader) {
         setSyncMessage("Error: No response from server");
