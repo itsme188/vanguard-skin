@@ -91,7 +91,7 @@ export function briefingToHtml(
   <meta name="supported-color-schemes" content="light">
   <title>${escapeHtml(title)}</title>
 </head>
-<body style="margin:0; padding:0; background-color:${COLORS.canvas}; font-family:${FONT_BODY}; -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;">
+<body style="margin:0; padding:0; background-color:${COLORS.canvas}; font-family:${FONT_BODY}; -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; word-break:break-word; overflow-wrap:anywhere;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:${COLORS.canvas};">
     <tr>
       <td align="center" style="padding:48px 20px 56px;">
@@ -104,7 +104,7 @@ export function briefingToHtml(
           </tr>
           <!-- Body — body's own # H1 carries the title, no chrome H1 -->
           <tr>
-            <td style="font-family:${FONT_BODY}; font-size:18px; line-height:1.7; color:${COLORS.inkDim};">
+            <td style="font-family:${FONT_BODY}; font-size:18px; line-height:1.7; color:${COLORS.inkDim}; word-break:break-word; overflow-wrap:anywhere;">
               ${bodyHtml}
             </td>
           </tr>
@@ -184,7 +184,7 @@ function renderTable(headers: string[], rows: string[][]): string {
             : `font-family:${FONT_BODY};`;
           const cellColor = isLabel ? TABLE_COLORS.labelText : TABLE_COLORS.bodyText;
           const fontWeight = isLabel ? "font-weight:500;" : "";
-          return `<td style="border:1px solid ${TABLE_COLORS.border}; padding:${padding}; background-color:${TABLE_COLORS.bodyBg}; color:${cellColor}; font-size:13px; ${fontWeight} ${align} ${numAlign}">${content}</td>`;
+          return `<td style="border:1px solid ${TABLE_COLORS.border}; padding:${padding}; background-color:${TABLE_COLORS.bodyBg}; color:${cellColor}; font-size:13px; ${fontWeight} ${align} ${numAlign} word-break:break-word; overflow-wrap:anywhere;">${content}</td>`;
         })
         .join("");
       return `<tr>${cells}</tr>`;
