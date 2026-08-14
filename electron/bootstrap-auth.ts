@@ -29,6 +29,18 @@ export const ELECTRON_SERVICE_CRED_KEY = "electronServiceCred";
 /** Env var name the credential is injected into the child server as. */
 export const ELECTRON_SERVICE_CRED_ENV = "ELECTRON_SERVICE_CRED";
 
+/**
+ * OS-keychain secret key under which the app PASSWORD HASH is stored (task 15,
+ * via `setEncryptedSecret`/`getEncryptedSecret` in settings-store.ts). Kept
+ * with the other secret constants so the provisioning, change, and injection
+ * call sites can't typo-drift.
+ */
+export const APP_PASSWORD_HASH_KEY = "appPasswordHash";
+
+/** Env var name the password hash is injected into the child server as — read
+ * by app/api/auth/login/route.ts as `process.env.APP_PASSWORD_HASH`. */
+export const APP_PASSWORD_HASH_ENV = "APP_PASSWORD_HASH";
+
 /** Shape of the `/api/auth/desktop-bootstrap` JSON response we consume. */
 export interface BootstrapResponse {
   success?: boolean;

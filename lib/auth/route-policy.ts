@@ -57,6 +57,10 @@ const ELECTRON_ROUTES = new Set<string>([
   "GET /api/tws/status",
   "POST /api/tws/connect",
   "POST /api/auth/desktop-bootstrap",
+  // task 15 — the change-password transaction's server-owned "log out
+  // everywhere" call. Loopback + Electron-service-credential only (the route
+  // enforces both as defense-in-depth); Electron main can't open the DB itself.
+  "POST /api/auth/revoke-all",
 ]);
 
 /**

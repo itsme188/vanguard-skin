@@ -22,6 +22,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
   isFirstRun: () => ipcRenderer.invoke("is-first-run"),
   completeFirstRun: () => ipcRenderer.invoke("complete-first-run"),
 
+  // Change password (Settings action) — #35 task 15. Passwords are sent to
+  // main once and never returned or persisted (only the scrypt hash is stored,
+  // encrypted, in secrets.json). Resolves to { success, error? }.
+  changePassword: (currentPassword: string, newPassword: string) =>
+    ipcRenderer.invoke("change-password", { currentPassword, newPassword }),
+
   // Auto-update
   checkForUpdates: () => ipcRenderer.invoke("check-for-updates"),
   installUpdate: () => ipcRenderer.invoke("install-update"),

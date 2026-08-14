@@ -47,6 +47,8 @@ describe("classifyRoute", () => {
     expect(classifyRoute("GET", "/api/tws/status")).toBe("electron");
     expect(classifyRoute("POST", "/api/tws/connect")).toBe("electron");
     expect(classifyRoute("POST", "/api/auth/desktop-bootstrap")).toBe("electron");
+    // #35 task 15 — the change-password transaction's server-owned revoke-all.
+    expect(classifyRoute("POST", "/api/auth/revoke-all")).toBe("electron");
   });
 
   it("defaults to human for anything not explicitly listed", () => {
