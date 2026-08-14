@@ -10,8 +10,17 @@
 export const DEFAULT_LOGIN_REDIRECT = "/dashboard/today";
 
 /**
- * Returns `next` unchanged if it is a safe same-origin relative path, else
- * `DEFAULT_LOGIN_REDIRECT`. "Safe" means:
+ * Returns a safe same-origin relative path derived from `next`, else
+ * `DEFAULT_LOGIN_REDIRECT`. Tab/CR/LF are stripped BEFORE validating —
+ * the WHATWG URL parser (what `window.location.href =` actually runs)
+ * strips ASCII tab/newline ANYWHERE in a string before navigating, so an
+ * un-stripped `"/\t/evil.com"` passes a naive `startsWith("/")` +
+ * `!startsWith("//")` check (the tab sits between the two slashes) but the
+ * BROWSER sees `"//evil.com"` and navigates off-origin. Validating and
+ * returning the SAME stripped string closes that gap — what was checked is
+ * what gets assigned to `location.href`.
+ *
+ * After stripping, "safe" means:
  *   - starts with exactly one `/` (rules out `evil.com`, `javascript:…`,
  *     and any absolute URL — `http://…`/`https://…`/anything else all lack
  *     a leading `/`)
@@ -23,7 +32,9 @@ export const DEFAULT_LOGIN_REDIRECT = "/dashboard/today";
  */
 export function safeNextPath(next: string | null | undefined): string {
   if (!next) return DEFAULT_LOGIN_REDIRECT;
-  if (!next.startsWith("/")) return DEFAULT_LOGIN_REDIRECT;
-  if (next.startsWith("//") || next.startsWith("/\\")) return DEFAULT_LOGIN_REDIRECT;
-  return next;
+  const stripped = next.replace(/[\t\r\n]/g, "");
+  if (!stripped.startsWith("/") || stripped.startsWith("//") || stripped.startsWith("/\\")) {
+    return DEFAULT_LOGIN_REDIRECT;
+  }
+  return stripped;
 }
