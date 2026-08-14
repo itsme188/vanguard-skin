@@ -7,14 +7,16 @@ import { autoUpdater } from "electron-updater";
 import path from "node:path";
 import { getSettings, saveSettings, getSanitizedSettings } from "./settings-store";
 import type { PasswordChangeResult } from "./password-change";
+import type { RotateCredentialResult } from "./credential-rotation";
 
 /**
- * Dependencies injected by main.ts — the change-password transaction lives
- * there (it needs serverProcess/mainWindow/service-credential state), but the
- * IPC surface is registered here (#35 task 15).
+ * Dependencies injected by main.ts — the change-password + credential-rotation
+ * transactions live there (they need serverProcess/mainWindow/service-credential
+ * state), but the IPC surface is registered here (#35 tasks 15 + 17).
  */
 export interface IpcHandlerDeps {
   changePassword: (currentPassword: string, newPassword: string) => Promise<PasswordChangeResult>;
+  rotateServiceCredential: () => Promise<RotateCredentialResult>;
 }
 
 export function setupIpcHandlers(deps: IpcHandlerDeps): void {
@@ -76,6 +78,19 @@ export function setupIpcHandlers(deps: IpcHandlerDeps): void {
       const current = payload?.currentPassword ?? "";
       const next = payload?.newPassword ?? "";
       return deps.changePassword(current, next);
+    },
+  );
+
+  // #35 task 17 — Settings "rotate service credential" action. Re-mints
+  // ELECTRON_SERVICE_CRED, restarts the child server so it picks up the new
+  // value from env, and re-bootstraps the desktop session. Takes no payload
+  // (there is nothing for the renderer to supply — the new credential is
+  // generated in main and never returned to the renderer). Returns a domain
+  // result so the renderer can show the outcome.
+  ipcMain.handle(
+    "rotate-service-credential",
+    async (): Promise<RotateCredentialResult> => {
+      return deps.rotateServiceCredential();
     },
   );
 

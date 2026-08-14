@@ -1,10 +1,16 @@
 "use client";
 
 /**
- * Security settings (#35, tasks 15 + 16):
+ * Security settings (#35, tasks 15 + 16 + 17):
  *   - Change password  -> window.electronAPI.changePassword (IPC wired in
  *     task 15; this closes the "no user-reachable trigger" gap). Electron-only
  *     — the transaction rehashes, logs out everywhere, restarts + rebootstraps.
+ *   - Rotate service credential -> window.electronAPI.rotateServiceCredential
+ *     (IPC wired in task 17). Electron-only — re-mints ELECTRON_SERVICE_CRED,
+ *     restarts the child server (a running process can't hot-swap its own
+ *     env), and re-bootstraps the desktop session. Does not touch the app
+ *     password or human sessions — it only affects Electron main's own
+ *     service-to-service credential (bootstrap + tws/* calls).
  *   - Set a convenience PIN -> POST /api/auth/pin (requires the live session
  *     cookie; the PIN re-unlocks THIS device only, spec §B2).
  *   - Lock now -> dispatches the `lock-app` event the PinUnlock overlay listens
@@ -55,6 +61,35 @@ export function SecuritySection() {
     } catch {
       setPwStatus("error");
       setPwError("Password change failed.");
+    }
+  }
+
+  // --- Rotate service credential ---
+  const [rotateStatus, setRotateStatus] = useState<Status>("idle");
+  const [rotateError, setRotateError] = useState<string | null>(null);
+
+  async function handleRotateCredential() {
+    if (!api?.rotateServiceCredential) return;
+    if (
+      !window.confirm(
+        "Rotate the service credential? The app will briefly restart its server and reload.",
+      )
+    ) {
+      return;
+    }
+    setRotateStatus("pending");
+    setRotateError(null);
+    try {
+      const result = await api.rotateServiceCredential();
+      if (result.success) {
+        setRotateStatus("ok");
+      } else {
+        setRotateStatus("error");
+        setRotateError(result.error ?? "Credential rotation failed.");
+      }
+    } catch {
+      setRotateStatus("error");
+      setRotateError("Credential rotation failed.");
     }
   }
 
@@ -146,6 +181,28 @@ export function SecuritySection() {
           </div>
           <p className="text-[10px] text-ink-faint">
             Changing your password signs out every device (including a lost phone).
+          </p>
+        </div>
+      )}
+
+      {/* Rotate service credential — Electron-only */}
+      {api?.rotateServiceCredential && (
+        <div className="space-y-2 pt-2 border-t border-edge">
+          <p className="text-[11px] text-ink-dim font-medium">Service credential</p>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleRotateCredential}
+              disabled={rotateStatus === "pending"}
+              className="px-4 py-1.5 text-xs font-medium rounded-lg border border-edge text-ink-dim hover:bg-raised disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >
+              {rotateStatus === "pending" ? "Rotating…" : "Rotate service credential"}
+            </button>
+            {rotateStatus === "ok" && <span className="text-[11px] text-up">Rotated</span>}
+            {rotateStatus === "error" && <span className="text-[11px] text-down">{rotateError}</span>}
+          </div>
+          <p className="text-[10px] text-ink-faint">
+            Re-mints the app&apos;s internal service credential and restarts its server.
+            Does not change your password or sign out other devices.
           </p>
         </div>
       )}
