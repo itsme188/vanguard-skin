@@ -81,14 +81,14 @@ describe("POST /api/calendar/reconcile-cloud-enrich", () => {
     expect(body.note).toMatch(/WORKER_MARKER_URL/);
   });
 
-  it("returns 403 when X-Cron-Secret is provided but wrong", async () => {
+  it("returns 401 when X-Cron-Secret is provided but wrong", async () => {
     const res = await POST(makeRequest({ "x-cron-secret": "wrong" }));
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(401);
   });
 
-  it("returns 403 when X-Cron-Secret is missing", async () => {
+  it("returns 401 when X-Cron-Secret is missing", async () => {
     const res = await POST(makeRequest({}));
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(401);
   });
 
   it("returns 500 when CRON_SHARED_SECRET is not configured", async () => {
