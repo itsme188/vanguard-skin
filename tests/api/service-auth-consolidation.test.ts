@@ -166,6 +166,52 @@ describe.each([
   });
 });
 
+describe("502 passthrough on Worker outage (result.status forwarded as HTTP status)", () => {
+  // reconcile-cloud-enrich's equivalent passthrough is already covered
+  // end-to-end (real reconcileCloudEnrichment + mocked fetch) by
+  // tests/calendar/reconcile-cloud-enrich.test.ts:100-109. These two mirror
+  // that coverage for the other two routes using the same
+  // `if (result.status) throw {status, message}` pattern, which the
+  // describe.each block above never exercises (its default mocks always
+  // resolve success-shaped objects with no `.status`).
+
+  it("POST /api/levels/reconcile-cloud-fired returns 502 when reconcileCloudFiredLevels reports a Worker error", async () => {
+    hoisted.reconcileCloudFiredLevels.mockResolvedValueOnce({
+      ok: false,
+      reconciled: 0,
+      skipped_already_alerted: 0,
+      skipped_level_missing: 0,
+      error: "worker returned 500",
+      status: 502,
+    });
+
+    const res = await reconcileFiredPost(
+      makeRequest("/api/levels/reconcile-cloud-fired", { "x-cron-secret": "test-secret" }),
+    );
+    expect(res.status).toBe(502);
+    const body = await res.json();
+    expect(body.error).toBe("worker returned 500");
+  });
+
+  it("POST /api/research/reconcile-cloud-fetched returns 502 when reconcileCloudFetchedNewsletters reports a Worker error", async () => {
+    hoisted.reconcileCloudFetchedNewsletters.mockResolvedValueOnce({
+      ok: false,
+      reconciled: 0,
+      skipped_already_in_db: 0,
+      skipped_source_missing: 0,
+      error: "worker returned 500",
+      status: 502,
+    });
+
+    const res = await reconcileFetchedPost(
+      makeRequest("/api/research/reconcile-cloud-fetched", { "x-cron-secret": "test-secret" }),
+    );
+    expect(res.status).toBe(502);
+    const body = await res.json();
+    expect(body.error).toBe("worker returned 500");
+  });
+});
+
 describe("POST /api/calendar/enrich-manual (human path)", () => {
   it("runs without any X-Cron-Secret header", async () => {
     const res = await enrichManualPost(makeRequest("/api/calendar/enrich-manual"));
