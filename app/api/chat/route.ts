@@ -90,19 +90,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const slot = acquireStreamSlot(sessionKey, nowMs);
-    if (!slot.ok) {
-      return Response.json(
-        { success: false, error: "Too many concurrent chat requests for this session." },
-        { status: 429 }
-      );
-    }
-    let slotReleased = false;
-    releaseSlot = () => {
-      if (slotReleased) return;
-      slotReleased = true;
-      releaseStreamSlot(sessionKey, slot.slotId);
-    };
+    // NOTE: the concurrency slot is deliberately NOT acquired here. The
+    // size/rate/daily checks above are cheap and side-effect-free on
+    // rejection, so it's fine to run them before acquiring anything. But
+    // scope validation and the API-key check below both `return` (not
+    // throw) on failure — a slot acquired before them would never reach
+    // streamText's onFinish/onError/onAbort OR the outer catch (which only
+    // fires on a throw), leaking a slot on every invalid-scope or
+    // missing-API-key request until the 10-minute stale-slot prune. Acquire
+    // the slot immediately before the streamText call instead, once every
+    // early-return path that doesn't throw has already passed.
 
     // Validate scope — missing defaults to "all", invalid returns 400
     let scope: ChatScope = "all";
@@ -205,6 +202,25 @@ export async function POST(request: NextRequest) {
         },
       });
     }
+
+    // Acquire the concurrency slot HERE — immediately before streamText —
+    // now that every early-return path that doesn't throw (scope
+    // validation, the API-key check) has already passed. Anything past
+    // this point either reaches streamText's onFinish/onError/onAbort or
+    // throws into the outer catch, so releaseSlot is guaranteed a call site.
+    const slot = acquireStreamSlot(sessionKey, nowMs);
+    if (!slot.ok) {
+      return Response.json(
+        { success: false, error: "Too many concurrent chat requests for this session." },
+        { status: 429 }
+      );
+    }
+    let slotReleased = false;
+    releaseSlot = () => {
+      if (slotReleased) return;
+      slotReleased = true;
+      releaseStreamSlot(sessionKey, slot.slotId);
+    };
 
     // Stream with automatic agentic tool loop (up to 8 model calls)
     const result = streamText({
