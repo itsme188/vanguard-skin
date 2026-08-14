@@ -340,7 +340,7 @@ export function RiskMetrics({ scope }: { scope?: string }) {
               <BarChart
                 data={concentrationData}
                 layout="vertical"
-                margin={{ top: 0, right: 12, bottom: 0, left: 0 }}
+                margin={{ top: 0, right: 12, bottom: 0, left: 60 }}
               >
                 <XAxis
                   type="number"
