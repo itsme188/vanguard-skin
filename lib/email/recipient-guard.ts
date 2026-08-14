@@ -72,9 +72,17 @@ export function getAllowedRecipients(
 /**
  * Guards a caller-supplied `to` on an outbound email route.
  *
- * - No `to` (undefined/empty) → always allowed. The composer falls back to
+ * - No `to` (undefined/null) → always allowed. The composer falls back to
  *   its own default resolution (settings override / BRIEFING_EMAIL_TO)
  *   unchanged — this is the legitimate cron/in-process/manual-default path.
+ * - `to` supplied but not a string (a JSON array/number/object slipped past
+ *   the route's `as string | undefined` cast — `request.json()` gives no
+ *   runtime type guarantee) → rejected (400). Checked BEFORE the override
+ *   branch: `override` means "send to this address anyway", which
+ *   presupposes an actual address string, not malformed input. Without this
+ *   check, a non-string `to` would reach `.trim()` below and throw past the
+ *   route's try/catch — still fail-closed (no send) but as an unhandled
+ *   500 instead of a clean 400.
  * - `to` supplied, `override` true → always allowed (deliberate escape
  *   hatch, e.g. a one-off forward).
  * - `to` supplied, every address already in the allowlist → allowed (this
@@ -85,10 +93,18 @@ export function getAllowedRecipients(
 export function checkRecipientAllowed(
   db: Database.Database,
   type: RecipientGuardEmailType,
-  to: string | undefined | null,
+  to: unknown,
   override: boolean,
 ): GuardResult {
-  if (!to || !to.trim()) return { ok: true };
+  if (to === undefined || to === null) return { ok: true };
+  if (typeof to !== "string") {
+    return {
+      ok: false,
+      status: 400,
+      error: "Body field 'to' must be a string.",
+    };
+  }
+  if (!to.trim()) return { ok: true };
   if (override) return { ok: true };
 
   const requested = parseAddresses(to);
