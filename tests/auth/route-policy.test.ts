@@ -16,7 +16,8 @@ describe("classifyRoute", () => {
   it("classifies by kind", () => {
     expect(classifyRoute("POST", "/api/auth/login")).toBe("public");
     expect(classifyRoute("POST", "/api/cron/digest")).toBe("cron");
-    expect(classifyRoute("POST", "/api/tws/connect")).toBe("electron");
+    // task 18 — tws/connect + tws/status are now DUAL (UI session OR Electron cred).
+    expect(classifyRoute("POST", "/api/tws/connect")).toBe("dual");
     expect(classifyRoute("DELETE", "/api/import")).toBe("human");
   });
 
@@ -43,12 +44,18 @@ describe("classifyRoute", () => {
     }
   });
 
-  it("classifies the full ELECTRON set", () => {
-    expect(classifyRoute("GET", "/api/tws/status")).toBe("electron");
-    expect(classifyRoute("POST", "/api/tws/connect")).toBe("electron");
+  it("classifies the full ELECTRON set (electron-cred ONLY — never a session)", () => {
     expect(classifyRoute("POST", "/api/auth/desktop-bootstrap")).toBe("electron");
     // #35 task 15 — the change-password transaction's server-owned revoke-all.
     expect(classifyRoute("POST", "/api/auth/revoke-all")).toBe("electron");
+  });
+
+  it("classifies the full DUAL set — reachable by Electron cred OR UI session (task 18)", () => {
+    // Both are called by BOTH Electron main (X-Electron-Cred, no cookie) AND
+    // the dashboard UI (session cookie via apiFetch), so neither is pure
+    // electron nor pure human.
+    expect(classifyRoute("GET", "/api/tws/status")).toBe("dual");
+    expect(classifyRoute("POST", "/api/tws/connect")).toBe("dual");
   });
 
   it("defaults to human for anything not explicitly listed", () => {
@@ -94,7 +101,7 @@ describe("listRouteHandlers", () => {
     const handlers = listRouteHandlers();
     expect(handlers.length).toBeGreaterThan(100);
     for (const h of handlers) {
-      expect(["public", "human", "cron", "electron"] as RouteClass[]).toContain(
+      expect(["public", "human", "cron", "electron", "dual"] as RouteClass[]).toContain(
         classifyRoute(h.method, h.pathname),
       );
     }

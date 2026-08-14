@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 // task) and every enforcement test consume classifyRoute/isImmutableAsset
 // from here — never fork this logic.
 
-export type RouteClass = "public" | "human" | "cron" | "electron";
+export type RouteClass = "public" | "human" | "cron" | "electron" | "dual";
 
 function routeKey(method: string, pathname: string): string {
   return `${method.toUpperCase()} ${pathname}`;
@@ -51,16 +51,30 @@ const CRON_ROUTES = new Set<string>([
 /**
  * Electron-main service credential — the main process's own Node-`fetch`
  * calls, which do not carry the renderer window's cookie jar (spec §F.3).
- * Exactly these three (method, pathname) entries and nothing else.
+ * These are ELECTRON-CRED-ONLY: they are never reachable with a human
+ * session, only the Electron-main service credential. Both are powerful and
+ * loopback-only (the handlers loopback-gate themselves as defense-in-depth).
  */
 const ELECTRON_ROUTES = new Set<string>([
-  "GET /api/tws/status",
-  "POST /api/tws/connect",
   "POST /api/auth/desktop-bootstrap",
   // task 15 — the change-password transaction's server-owned "log out
   // everywhere" call. Loopback + Electron-service-credential only (the route
   // enforces both as defense-in-depth); Electron main can't open the DB itself.
   "POST /api/auth/revoke-all",
+]);
+
+/**
+ * Dual-auth routes (task 18) — reachable by BOTH the Electron main process
+ * (X-Electron-Cred header, no cookie) AND the dashboard UI (session cookie via
+ * apiFetch). `GET /api/tws/status` is polled by TwsStatus.tsx AND read by
+ * Electron main at startup; `POST /api/tws/connect` is triggered from the UI
+ * (apiFetch, CSRF-protected) AND by Electron main's auto-connect. A `dual`
+ * route passes with EITHER a valid Electron cred OR a valid human session
+ * (with CSRF + Origin on unsafe methods) — never the cron secret.
+ */
+const DUAL_ROUTES = new Set<string>([
+  "GET /api/tws/status",
+  "POST /api/tws/connect",
 ]);
 
 /**
@@ -74,6 +88,7 @@ export function classifyRoute(method: string, pathname: string): RouteClass {
   const key = routeKey(method, pathname);
   if (PUBLIC_ROUTES.has(key)) return "public";
   if (CRON_ROUTES.has(key)) return "cron";
+  if (DUAL_ROUTES.has(key)) return "dual";
   if (ELECTRON_ROUTES.has(key)) return "electron";
   return "human";
 }
