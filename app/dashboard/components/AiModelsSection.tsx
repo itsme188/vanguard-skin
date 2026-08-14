@@ -16,6 +16,7 @@
  */
 
 import { useEffect, useState } from "react";
+import apiFetch from "@/lib/http/apiFetch";
 
 interface FeatureModelRow {
   key: string;
@@ -73,7 +74,7 @@ export function AiModelsSection() {
   async function patchOverride(key: string, model: string | null) {
     setSaving((prev) => ({ ...prev, [key]: true }));
     try {
-      const res = await fetch("/api/settings/ai-models", {
+      const res = await apiFetch("/api/settings/ai-models", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ key, model }),

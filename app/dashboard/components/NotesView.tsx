@@ -9,6 +9,7 @@ import { TranscriptCard, FetchTranscriptButton } from "./TranscriptCard";
 import { useToast } from "./Toast";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
+import apiFetch from "@/lib/http/apiFetch";
 
 // ─── Props ───────────────────────────────────────────────────────
 
@@ -161,7 +162,7 @@ export function NotesView({
           .filter(Boolean);
       }
 
-      const res = await fetch("/api/notes", {
+      const res = await apiFetch("/api/notes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -199,7 +200,7 @@ export function NotesView({
     if (!editContent.trim()) return;
 
     try {
-      const res = await fetch("/api/notes", {
+      const res = await apiFetch("/api/notes", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, content: editContent.trim() }),
@@ -221,7 +222,7 @@ export function NotesView({
 
   async function handleDelete(id: number) {
     try {
-      const res = await fetch(`/api/notes?id=${id}`, { method: "DELETE" });
+      const res = await apiFetch(`/api/notes?id=${id}`, { method: "DELETE" });
       const data = await res.json();
       if (!data.success) throw new Error(data.error);
 

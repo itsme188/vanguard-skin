@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import apiFetch from "@/lib/http/apiFetch";
 
 const STORAGE_KEY = "vgs:notes-ambient";
 const SAVE_DEBOUNCE_MS = 400;
@@ -83,7 +84,7 @@ export function NotesAmbient() {
     setSaveState("saving");
     setErrorMsg(null);
     try {
-      const res = await fetch("/api/notes", {
+      const res = await apiFetch("/api/notes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ note_type: "journal", content }),

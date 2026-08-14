@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { ImportBatch } from "@/lib/types";
 import { parseStoredTimestamp } from "@/lib/format";
+import apiFetch from "@/lib/http/apiFetch";
 
 const SOURCE_LABELS: Record<string, string> = {
   "ibkr-activity": "IBKR Activity",
@@ -53,7 +54,7 @@ export function ImportHistory({ batches }: { batches: ImportBatch[] }) {
     setUndoingId(batchId);
     setUndoError(null);
     try {
-      const res = await fetch(`/api/import?batchId=${batchId}`, { method: "DELETE" });
+      const res = await apiFetch(`/api/import?batchId=${batchId}`, { method: "DELETE" });
       if (!res.ok) {
         const data = await res.json().catch(() => ({ error: "Undo failed" }));
         setUndoError(data.error ?? "Undo failed");
