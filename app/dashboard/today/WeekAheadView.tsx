@@ -4,11 +4,16 @@ import { addDays, formatWeekRange, todayET, getCurrentMonday } from "@/lib/calen
 import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
 import { effectiveConsensus } from "@/lib/calendar/consensus";
 import { actualsAreImplausible } from "./EarningsHub";
+import { EnrichmentRowSummary } from "../components/calendar/EnrichmentChips";
+// This is a SERVER component — parseReactionSnapshot / snapshotCoversEventDate
+// must come from the non-"use client" lib module, not from EnrichmentChips
+// (a server component can render a client component's JSX export like
+// EnrichmentRowSummary above, but calling a function export from a "use
+// client" module crashes at runtime, even via re-export).
 import {
-  EnrichmentRowSummary,
   parseReactionSnapshot,
   snapshotCoversEventDate,
-} from "../components/calendar/EnrichmentChips";
+} from "@/lib/calendar/reaction-snapshot";
 
 interface WeekAheadViewProps {
   events: CalendarEvent[];

@@ -136,7 +136,7 @@ describe("releasedFigureGates (WeekAheadView)", () => {
 // A stored snapshot only belongs to a print when its t0 falls on the event's
 // own date (ET wall-clock — an 8 PM ET print rolls the UTC date). Date
 // corrections can strand a snapshot measured for a different day on this row.
-import { snapshotCoversEventDate } from "@/app/dashboard/components/calendar/EnrichmentChips";
+import { snapshotCoversEventDate } from "@/lib/calendar/reaction-snapshot";
 import type { ReactionSnapshot } from "@/lib/calendar/reaction-snapshot";
 
 function snap(t0: string | undefined): ReactionSnapshot {
