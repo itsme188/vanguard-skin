@@ -81,7 +81,7 @@ export function handleDesktopBootstrap(
  * optional port. Anything else — including a tunnel/public host — is rejected
  * before the credential is even examined.
  */
-function isLoopbackHost(host: string | null): boolean {
+export function isLoopbackHost(host: string | null): boolean {
   if (!host) return false;
   let h = host.trim().toLowerCase();
   if (h.startsWith("[")) {
