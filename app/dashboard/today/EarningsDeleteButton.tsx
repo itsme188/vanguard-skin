@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { useToast } from "../components/Toast";
+import apiFetch from "@/lib/http/apiFetch";
 
 /**
  * Remove control for earnings events. Manual rows delete directly; sync-owned
@@ -41,7 +42,7 @@ export function EarningsDeleteButton({
     if (!confirm(confirmMessage)) return;
     setDeleting(true);
     try {
-      const res = await fetch("/api/calendar/events", {
+      const res = await apiFetch("/api/calendar/events", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: eventId }),

@@ -23,6 +23,7 @@ import { EarningsDateChip } from "../today/EarningsDateChip";
 import type { EarningsDateConflict } from "@/lib/queries/calendar";
 import type { SentEarningsEmail } from "@/lib/queries/earnings-emails";
 import { EarningsEmailViewer } from "../components/EarningsEmailViewer";
+import apiFetch from "@/lib/http/apiFetch";
 
 // One armed level as returned by GET /api/levels/armed (mirrors ArmedLevel in
 // lib/queries/security-levels.ts). Prices here are PUBLIC market data.
@@ -307,7 +308,7 @@ function AlertsPageInner() {
   }, [refresh]);
 
   async function respond(id: number, response: AlertResponse, note?: string) {
-    const res = await fetch("/api/alerts", {
+    const res = await apiFetch("/api/alerts", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id, response, note }),
@@ -341,7 +342,7 @@ function AlertsPageInner() {
   }
 
   async function decideReviewInner(id: number, status: LevelReviewStatus, force = false) {
-    const res = await fetch("/api/levels/review", {
+    const res = await apiFetch("/api/levels/review", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id, status, force }),
@@ -390,7 +391,7 @@ function AlertsPageInner() {
       const ids = reviewLevels.map((l) => l.id);
       const results = await Promise.all(
         ids.map(async (id) => {
-          const res = await fetch("/api/levels/review", {
+          const res = await apiFetch("/api/levels/review", {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ id, status: "auto_approved" }),
@@ -437,7 +438,7 @@ function AlertsPageInner() {
     try {
       const results = await Promise.all(
         ids.map(async (id) => {
-          const res = await fetch("/api/levels/review", {
+          const res = await apiFetch("/api/levels/review", {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ id, status: "auto_approved", force: true }),
@@ -478,7 +479,7 @@ function AlertsPageInner() {
     setDetecting(true);
     setActionStatus(null);
     try {
-      const res = await fetch("/api/alerts/detect", { method: "POST" });
+      const res = await apiFetch("/api/alerts/detect", { method: "POST" });
       const json = await res.json();
       if (json.success) {
         const { scanned, fired, deduped } = json as {
@@ -508,7 +509,7 @@ function AlertsPageInner() {
     setSuggesting(true);
     if (!opts?.silent) setActionStatus(null);
     try {
-      const res = await fetch("/api/alerts/suggest", {
+      const res = await apiFetch("/api/alerts/suggest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(alertId ? { alertId } : {}),

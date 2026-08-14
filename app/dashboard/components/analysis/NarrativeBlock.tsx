@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { PrivateText } from "@/lib/privacy/components";
 import { formatGeneratedAt } from "@/lib/calendar/date-utils";
+import apiFetch from "@/lib/http/apiFetch";
 
 interface Props {
   scope: string;
@@ -36,12 +37,12 @@ export function NarrativeBlock({ scope, surfaceKey }: Props) {
   // POST is the generate path (#35 task 5): GET is a cache-read that returns
   // { notGenerated: true } on a miss and NEVER generates. handleRefresh is
   // reused both for the manual Refresh button and to auto-fill an empty cache
-  // on first view. Plain fetch for now — a later task re-points to apiFetch.
+  // on first view. Routed through apiFetch (#35 task 9-12) since it's a mutating call.
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     setRefreshError(null);
     try {
-      const res = await fetch("/api/analysis/narrative", {
+      const res = await apiFetch("/api/analysis/narrative", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ scope, surface: surfaceKey }),

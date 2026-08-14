@@ -9,6 +9,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { todayET } from "@/lib/calendar/date-utils";
+import apiFetch from "@/lib/http/apiFetch";
 
 interface Props {
   weekOf: string;
@@ -34,7 +35,7 @@ export function EarningsHubAddForm({ weekOf: _weekOf }: Props) {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch("/api/calendar/events", {
+      const res = await apiFetch("/api/calendar/events", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
