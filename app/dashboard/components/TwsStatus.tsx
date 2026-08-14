@@ -6,6 +6,7 @@ import type { SyncState } from "@/lib/tws/sync-state";
 import { useStreamingQuotes } from "@/lib/hooks/useStreamingQuotes";
 import { useAutoRefresh } from "@/lib/hooks/useAutoRefresh";
 import { Money } from "@/lib/privacy/components";
+import apiFetch from "@/lib/http/apiFetch";
 
 const STATE_CONFIG = {
   disconnected: { color: "bg-ink-faint", label: "TWS Disconnected" },
@@ -182,7 +183,7 @@ function TwsPanel({
     setResult(null);
     setResultBalances(null);
     try {
-      const res = await fetch("/api/tws/connect", {
+      const res = await apiFetch("/api/tws/connect", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -214,7 +215,7 @@ function TwsPanel({
     setResult(null);
     setResultBalances(null);
     try {
-      const res = await fetch("/api/tws/disconnect", { method: "POST" });
+      const res = await apiFetch("/api/tws/disconnect", { method: "POST" });
       const json = await res.json();
       if (json.success) {
         onStatusChange(json.data);
@@ -236,7 +237,7 @@ function TwsPanel({
     let errors = 0;
 
     try {
-      const res = await fetch("/api/tws/prices", {
+      const res = await apiFetch("/api/tws/prices", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode }),
@@ -327,7 +328,7 @@ function TwsPanel({
     setResult(null);
     setResultBalances(null);
     try {
-      const res = await fetch("/api/tws/enrich", {
+      const res = await apiFetch("/api/tws/enrich", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
@@ -355,7 +356,7 @@ function TwsPanel({
     setSyncStatus("Connecting...");
 
     try {
-      const res = await fetch("/api/tws/positions", { method: "POST" });
+      const res = await apiFetch("/api/tws/positions", { method: "POST" });
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({ error: "Failed" }));
@@ -579,7 +580,7 @@ function TwsPanel({
             <button
               onClick={async () => {
                 try {
-                  await fetch("/api/tws/auto-refresh", {
+                  await apiFetch("/api/tws/auto-refresh", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ level: "full" }),
