@@ -19,8 +19,15 @@ const eslintConfig = defineConfig([
   // attach the CSRF header. Tasks 9-12 migrate the existing call sites
   // area-by-area, so this WILL report many pre-existing violations until
   // that lands — expected, not a regression from this change.
+  //
+  // app/api/** is excluded: those are SERVER route handlers, not browser
+  // code. Rule branch (a) flags any literal unsafe `method:` regardless of
+  // URL, so a route handler doing a server-side POST to an external
+  // service (no browser cookie jar, nothing to attach) would otherwise be
+  // false-flagged into a wrapper that only makes sense client-side.
   {
     files: ["app/**/*.{ts,tsx}"],
+    ignores: ["app/api/**"],
     plugins: { local: { rules: { "no-raw-api-fetch": noRawApiFetch } } },
     rules: { "local/no-raw-api-fetch": "error" },
   },
