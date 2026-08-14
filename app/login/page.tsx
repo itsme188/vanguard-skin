@@ -37,6 +37,7 @@ export default function LoginPage() {
     setError(null);
 
     try {
+      // eslint-disable-next-line local/no-raw-api-fetch -- bootstrap call: no session/CSRF token exists yet, so apiFetch can't apply here (see file header comment)
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
