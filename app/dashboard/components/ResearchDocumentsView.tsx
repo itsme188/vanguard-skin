@@ -10,6 +10,7 @@ import type {
 import { Chip } from "./Chip";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { useToast } from "./Toast";
+import apiFetch from "@/lib/http/apiFetch";
 
 interface DocumentListResponse {
   documents: ResearchDocumentSummary[];
@@ -102,7 +103,7 @@ function UploadZone({ onUploadComplete }: UploadZoneProps) {
       form.append("file", file);
 
       try {
-        const res = await fetch("/api/research/documents", {
+        const res = await apiFetch("/api/research/documents", {
           method: "POST",
           body: form,
         });
@@ -318,7 +319,7 @@ function TagEditor({
       setSaving(true);
       setSaveError(null);
       try {
-        const res = await fetch(`/api/research/documents/${docId}`, {
+        const res = await apiFetch(`/api/research/documents/${docId}`, {
           method: "PATCH",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ tags: next }),
@@ -459,7 +460,7 @@ function DocumentRow({
   async function confirmDelete() {
     setConfirmingDelete(false);
     try {
-      const res = await fetch(`/api/research/documents/${doc.id}`, {
+      const res = await apiFetch(`/api/research/documents/${doc.id}`, {
         method: "DELETE",
       });
       if (res.ok) {
@@ -701,7 +702,7 @@ function InboxForwardCard({ onIngested }: { onIngested: () => void }) {
   const check = useCallback(async () => {
     setChecking(true);
     try {
-      const res = await fetch("/api/research/ingest-inbox", { method: "POST" });
+      const res = await apiFetch("/api/research/ingest-inbox", { method: "POST" });
       const data = await res.json();
       if (res.ok && data.success) {
         const n: number = data.ingested ?? 0;

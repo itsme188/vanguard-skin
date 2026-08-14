@@ -5,6 +5,7 @@ import { Money, Pct } from "@/lib/privacy/components";
 import { FACTOR_COLUMNS, FACTOR_LABELS, type FactorColumn } from "@/lib/factors";
 import type { ExposureDelta, HypotheticalLeg } from "@/lib/compute/exposure-delta";
 import { ScrollFade } from "../ScrollFade";
+import apiFetch from "@/lib/http/apiFetch";
 
 const MATERIAL_DELTA_PCT = 0.005; // 0.5pp threshold for sector + factor rows
 
@@ -54,7 +55,7 @@ export function WhatIfCalculator({ scope }: Props) {
           action: l.action,
           dollarAmount: l.dollarAmount,
         }));
-      const res = await fetch("/api/analysis/what-if", {
+      const res = await apiFetch("/api/analysis/what-if", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ scope, legs: cleanLegs }),
