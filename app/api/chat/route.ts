@@ -18,8 +18,30 @@ import { getModelForFeature } from "@/lib/ai/provider";
 import { VALID_SCOPES, type ChatScope } from "@/lib/types";
 import { createConversation, saveMessage, updateConversationTitle } from "@/lib/mutations/chat";
 import { todayET } from "@/lib/calendar/date-utils";
+import { verifySession } from "@/lib/queries/sessions";
+import { SESSION_COOKIE } from "@/lib/auth/cookies";
+import {
+  checkRequestSize,
+  checkAndConsumeRateLimit,
+  isUnderDailyCeiling,
+  recordDailyUsage,
+  acquireStreamSlot,
+  releaseStreamSlot,
+  budgetDayFor,
+  NO_SESSION_KEY,
+} from "@/lib/chat/budget";
 
 export async function POST(request: NextRequest) {
+  // Defense-in-depth budget/rate-limit gate (#35, task 22, spec §G) — purely
+  // ADDITIVE on top of the streamText/useChat integration below (CLAUDE.md's
+  // "What NOT to Change"): every guard here returns before streamText is
+  // ever called, and none of it alters the streamText config, the tool set,
+  // or the client wiring. `releaseSlot` is declared here (outer scope, not
+  // inside the try) so both the streamText onFinish/onError/onAbort hooks
+  // AND the outer catch below can release the same concurrency slot no
+  // matter which path the request takes. Tunables live in lib/chat/budget.ts.
+  let releaseSlot: () => void = () => {};
+
   try {
     const { messages, scope: rawScope, conversationId: rawConvId, pageContext } = await request.json();
 
@@ -29,6 +51,58 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
+
+    // Session key: the verified session id, read the same cookie->
+    // verifySession way as app/api/auth/pin/route.ts. proxy.ts already
+    // required a valid human session to reach this route at all (it's
+    // "human"-classified by default-deny in lib/auth/route-policy.ts) — this
+    // re-check just recovers the session's numeric id (one indexed SELECT)
+    // to key the per-session budget on. A missing/expired cookie (local dev
+    // without the auth boundary, or an edge-case expiry race) falls back to
+    // one shared bucket rather than being unbounded (spec §G: "keying on a
+    // per-process/global bucket is an acceptable simpler fallback").
+    const nowMs = Date.now();
+    const rawSessionToken = request.cookies.get(SESSION_COOKIE)?.value;
+    const verifiedSession = rawSessionToken ? verifySession(db, rawSessionToken, nowMs) : null;
+    const sessionKey = verifiedSession ? `session:${verifiedSession.id}` : NO_SESSION_KEY;
+    const budgetDay = budgetDayFor(nowMs);
+
+    const sizeCheck = checkRequestSize(messages, pageContext);
+    if (!sizeCheck.ok) {
+      return Response.json({ success: false, error: sizeCheck.reason }, { status: 400 });
+    }
+
+    const rateLimit = checkAndConsumeRateLimit(sessionKey, nowMs);
+    if (!rateLimit.ok) {
+      return Response.json(
+        { success: false, error: "Too many chat requests — please wait a moment and try again." },
+        {
+          status: 429,
+          headers: { "Retry-After": String(Math.ceil(rateLimit.retryAfterMs / 1000)) },
+        }
+      );
+    }
+
+    if (!isUnderDailyCeiling(sessionKey, budgetDay)) {
+      return Response.json(
+        { success: false, error: "Daily chat usage limit reached for this session. Try again tomorrow." },
+        { status: 429 }
+      );
+    }
+
+    const slot = acquireStreamSlot(sessionKey, nowMs);
+    if (!slot.ok) {
+      return Response.json(
+        { success: false, error: "Too many concurrent chat requests for this session." },
+        { status: 429 }
+      );
+    }
+    let slotReleased = false;
+    releaseSlot = () => {
+      if (slotReleased) return;
+      slotReleased = true;
+      releaseStreamSlot(sessionKey, slot.slotId);
+    };
 
     // Validate scope — missing defaults to "all", invalid returns 400
     let scope: ChatScope = "all";
@@ -151,7 +225,15 @@ export async function POST(request: NextRequest) {
           thinking: { type: "adaptive" },
         },
       },
-      onFinish: async ({ text, finishReason }) => {
+      onFinish: async ({ text, finishReason, totalUsage }) => {
+        // Best-effort daily ceiling accounting (#35, task 22): the AI SDK's
+        // actual post-call usage figure, not an estimate — accumulated here
+        // because this is the one place streamText hands back real token
+        // counts. Release the concurrency slot in the same breath so the
+        // next request for this session sees capacity immediately.
+        recordDailyUsage(sessionKey, budgetDay, totalUsage?.outputTokens ?? 0);
+        releaseSlot();
+
         if (finishReason === "content-filter") {
           console.warn("[chat] model refused the request");
         }
@@ -165,6 +247,19 @@ export async function POST(request: NextRequest) {
           }
         }
       },
+      onError: ({ error }) => {
+        // Additive (#35, task 22): streamText's own error hook, independent
+        // of toUIMessageStreamResponse's onError below — this only logs +
+        // releases the concurrency slot so an in-flight-generation error
+        // never leaves the session permanently stuck at the concurrency cap.
+        console.error("[chat] streamText error:", error);
+        releaseSlot();
+      },
+      onAbort: () => {
+        // Additive (#35, task 22): fires on client disconnect / stream
+        // abort — same release, so an abandoned request can't leak a slot.
+        releaseSlot();
+      },
     });
 
     return result.toUIMessageStreamResponse({
@@ -174,6 +269,11 @@ export async function POST(request: NextRequest) {
         error instanceof Error ? error.message : "Stream error",
     });
   } catch (error) {
+    // Covers any synchronous throw between acquiring the concurrency slot
+    // and streamText's own callbacks taking over release duty (e.g. a
+    // model-resolution error in getModelForFeature) — releaseSlot is a
+    // no-op if the slot was already released or never acquired.
+    releaseSlot();
     const message =
       error instanceof Error ? error.message : "Unknown error";
     return Response.json({ error: message }, { status: 500 });
