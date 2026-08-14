@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Section } from "./Section";
 import { Chip } from "./Chip";
 import { Shares } from "@/lib/privacy/components";
+import apiFetch from "@/lib/http/apiFetch";
 
 interface CorporateAction {
   id: number;
@@ -53,7 +54,7 @@ export function CorporateActionsSection({
     setSubmitting(true);
 
     try {
-      const res = await fetch("/api/corporate-actions", {
+      const res = await apiFetch("/api/corporate-actions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -86,7 +87,7 @@ export function CorporateActionsSection({
   async function handleUndo(actionId: number) {
     if (!confirm("Undo this corporate action? This will reverse all adjustments.")) return;
 
-    const res = await fetch(`/api/corporate-actions?id=${actionId}`, {
+    const res = await apiFetch(`/api/corporate-actions?id=${actionId}`, {
       method: "DELETE",
     });
     const data = await res.json();

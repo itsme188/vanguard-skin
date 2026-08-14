@@ -7,6 +7,7 @@ import { AiModelsSection } from "./AiModelsSection";
 import { EarningsEmailsSection } from "./EarningsEmailsSection";
 import { EmailRecipientsSection } from "./EmailRecipientsSection";
 import { PlaidSection } from "./PlaidSection";
+import apiFetch from "@/lib/http/apiFetch";
 
 /**
  * Settings source abstraction — either Electron IPC (packaged app) or the
@@ -101,7 +102,7 @@ export function SettingsModal() {
         return res.json();
       },
       saveSettings: async (updates) => {
-        const res = await fetch("/api/settings", {
+        const res = await apiFetch("/api/settings", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(updates),

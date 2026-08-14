@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
+import apiFetch from "@/lib/http/apiFetch";
 
 interface SkippedRow {
   category: string;
@@ -86,7 +87,7 @@ export function ImportFlow() {
       const formData = new FormData();
       selectedFiles.forEach((f) => formData.append("files", f));
 
-      const res = await fetch("/api/import?mode=preview", {
+      const res = await apiFetch("/api/import?mode=preview", {
         method: "POST",
         body: formData,
       });
@@ -121,7 +122,7 @@ export function ImportFlow() {
       const formData = new FormData();
       files.forEach((f) => formData.append("files", f));
 
-      const res = await fetch("/api/import?mode=commit", {
+      const res = await apiFetch("/api/import?mode=commit", {
         method: "POST",
         body: formData,
       });
