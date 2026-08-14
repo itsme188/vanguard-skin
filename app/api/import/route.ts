@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { parseImport, commitImport, undoImport } from "@/lib/import/engine";
+import { parseImport, commitImport } from "@/lib/import/engine";
 import type { CommitResult } from "@/lib/import/engine";
 import { validateParsedResult } from "@/lib/import/validate";
 import { getSnapshotReconciliation } from "@/lib/queries/data-health";
@@ -10,6 +10,14 @@ import { computeDailyValuations } from "@/lib/compute/daily-valuation";
 import { detectNewTradeReviewPeriods } from "@/lib/compute/trade-roundtrips";
 import { buildStatementKey, isR2Configured, uploadStatementPdf } from "@/lib/storage/r2";
 import { setImportBatchR2Key } from "@/lib/mutations/import-batches";
+import { undoImportWithRecovery } from "@/lib/import/recovery";
+import {
+  issueUndoToken,
+  consumeUndoToken,
+  checkUndoRateLimit,
+  recordUndo,
+} from "@/lib/import/undo-confirmation";
+import type Database from "better-sqlite3";
 
 /**
  * POST /api/import?mode=preview  — parse only, return preview JSON
@@ -231,6 +239,87 @@ export async function POST(request: NextRequest) {
   }
 }
 
+export interface UndoRequestResult {
+  status: number;
+  body: Record<string, unknown>;
+}
+
+/**
+ * DI-testable core of the undo DELETE (task 20, §G). Deliberate TWO-STEP so a
+ * stray or replayed DELETE can't unwind a batch:
+ *
+ *   1. A DELETE with NO `confirm` returns a short-lived, single-use token
+ *      bound to this batch (no deletion happens).
+ *   2. A DELETE with a valid `confirm` token passes the rate limit, writes a
+ *      recovery manifest BEFORE the destructive delete, then undoes the batch.
+ *
+ * The manifest is written to `manifestDir` (default data/undo-recovery/,
+ * gitignored) atomically before any row is deleted, so undo is always
+ * recoverable via scripts/restore-import-batch.ts.
+ */
+export function handleUndoRequest(
+  database: Database.Database,
+  params: { batchId: number; confirm?: string | null },
+  opts: { manifestDir?: string; nowMs?: number } = {},
+): UndoRequestResult {
+  const now = opts.nowMs ?? Date.now();
+  const { batchId, confirm } = params;
+  const batchExists = () =>
+    database.prepare("SELECT id FROM import_batches WHERE id = ?").get(batchId) != null;
+
+  // Step 1 — no token yet: issue a confirmation challenge, delete nothing.
+  if (!confirm) {
+    if (!batchExists()) {
+      return { status: 404, body: { success: false, error: `Import batch ${batchId} not found` } };
+    }
+    const { token, expiresAt } = issueUndoToken(batchId, now);
+    return {
+      status: 200,
+      body: {
+        success: false,
+        requiresConfirmation: true,
+        confirmToken: token,
+        expiresAt,
+        message: "Undo requires confirmation — resend the request with this confirmToken.",
+      },
+    };
+  }
+
+  // Step 2 — token present. Rate-limit destructive undos first (a throttled
+  // attempt must not consume the token). The token is the security gate, so
+  // it is validated BEFORE the batch-existence check — a replayed DELETE with
+  // an already-consumed token is a 403, not a 404, even after the batch is gone.
+  if (!checkUndoRateLimit(now)) {
+    return {
+      status: 429,
+      body: { success: false, error: "Too many undo operations — please wait a moment and try again." },
+    };
+  }
+  if (!consumeUndoToken(batchId, confirm, now)) {
+    return {
+      status: 403,
+      body: { success: false, error: "Invalid or expired confirmation token — request a new confirmation." },
+    };
+  }
+  if (!batchExists()) {
+    return { status: 404, body: { success: false, error: `Import batch ${batchId} not found` } };
+  }
+  recordUndo(now);
+
+  const { manifestPath } = undoImportWithRecovery(database, batchId, {
+    manifestDir: opts.manifestDir,
+  });
+
+  return {
+    status: 200,
+    body: {
+      success: true,
+      message: `Import batch ${batchId} has been undone`,
+      manifestPath,
+    },
+  };
+}
+
 export async function DELETE(request: NextRequest) {
   try {
     const batchIdParam = request.nextUrl.searchParams.get("batchId");
@@ -250,24 +339,9 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    // Verify batch exists
-    const batch = db
-      .prepare("SELECT id FROM import_batches WHERE id = ?")
-      .get(batchId);
-
-    if (!batch) {
-      return NextResponse.json(
-        { success: false, error: `Import batch ${batchId} not found` },
-        { status: 404 }
-      );
-    }
-
-    undoImport(db, batchId);
-
-    return NextResponse.json({
-      success: true,
-      message: `Import batch ${batchId} has been undone`,
-    });
+    const confirm = request.nextUrl.searchParams.get("confirm");
+    const result = handleUndoRequest(db, { batchId, confirm });
+    return NextResponse.json(result.body, { status: result.status });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     return NextResponse.json(
