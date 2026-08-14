@@ -161,10 +161,14 @@ export function pruneManifests(dir: string, retention: number): void {
   }
   const jsons = entries.filter((f) => f.endsWith(".json"));
   if (jsons.length <= retention) return;
-  // Newest first: filename timestamp is zero-padded ISO, so a descending
-  // string sort is chronological within a batch; mtime breaks cross-batch ties.
+  // Newest first, CHRONOLOGICALLY. Filenames are `<batchId>-<isoSlug>.json`
+  // and batchId is NOT zero-padded, so a raw filename sort orders by batchId
+  // ("9-" > "10-") — which could prune a freshly-written low-batchId manifest.
+  // Sort by the embedded zero-padded ISO timestamp instead (batch-independent),
+  // with mtime as the tie-breaker.
+  const slug = (f: string) => f.replace(/^\d+-/, "").replace(/\.json$/, "");
   jsons.sort((a, b) => {
-    const cmp = b.localeCompare(a);
+    const cmp = slug(b).localeCompare(slug(a));
     if (cmp !== 0) return cmp;
     return statSync(join(dir, b)).mtimeMs - statSync(join(dir, a)).mtimeMs;
   });
@@ -262,7 +266,7 @@ function restoreSpec(table: RecoverySourceTable): RestoreSpec {
   }
 }
 
-/** Build + run a parameterized INSERT that re-inserts one captured row verbatim. */
+/** Build + run a parameterized INSERT that re-inserts one captured row. */
 function insertCapturedRow(
   db: Database.Database,
   table: string,
@@ -273,6 +277,24 @@ function insertCapturedRow(
   const placeholders = cols.map(() => "?").join(", ");
   const sql = `INSERT ${spec.prefix} INTO ${table} (${cols.map((c) => `"${c}"`).join(", ")}) VALUES (${placeholders}) ${spec.conflict}`;
   db.prepare(sql).run(...cols.map((c) => row[c] as never));
+}
+
+/**
+ * Drop the autoincrement `id` from a captured CHILD row so restore never
+ * re-inserts a verbatim PK. If an import lands BETWEEN undo and restore and a
+ * freed id is in play, a verbatim id would either silently drop the row on an
+ * OR-IGNORE table (partial restore counted as success) or ABORT the whole
+ * transaction on an upsert table (PK conflict the natural-key ON CONFLICT
+ * doesn't catch). Letting AUTOINCREMENT assign a fresh id is safe: the derived
+ * layer is recomputed and every downstream key is natural (source_key,
+ * account/security/date), never the child id. The FK to import_batches lives in
+ * `import_batch_id`, which is preserved. Only the import_batches row itself
+ * keeps its explicit id (its identity IS that id).
+ */
+function stripRowId(row: Row): Row {
+  const { id: _id, ...rest } = row;
+  void _id;
+  return rest;
 }
 
 export interface RestoreResult {
@@ -294,18 +316,42 @@ export function restoreImportBatch(db: Database.Database, manifest: RecoveryMani
     );
   }
 
+  // The import_batches row keeps its explicit id (its identity IS that id, and
+  // every child row's import_batch_id points at it). If that id is now occupied
+  // by a DIFFERENT batch (a freed id reused since the undo), restoring would
+  // silently re-parent the manifested children under the wrong batch — refuse
+  // hard rather than corrupt provenance.
+  const m = manifest.payload.importBatch;
+  const existingBatch = db
+    .prepare("SELECT source_type, filename, created_at FROM import_batches WHERE id = ?")
+    .get(manifest.batchId) as { source_type: unknown; filename: unknown; created_at: unknown } | undefined;
+  if (existingBatch) {
+    const sameBatch =
+      existingBatch.source_type === m.source_type &&
+      (existingBatch.filename ?? null) === (m.filename ?? null) &&
+      existingBatch.created_at === m.created_at;
+    if (!sameBatch) {
+      throw new Error(
+        `Refusing to restore import batch ${manifest.batchId}: that id is occupied by a different batch (${String(existingBatch.source_type)}). Recover the conflicting batch's id first.`,
+      );
+    }
+  }
+
   const restored: Record<string, number> = {};
   db.transaction(() => {
-    // Parent metadata row first (children FK-reference it). OR IGNORE so a
-    // double-restore is a no-op rather than a PK violation.
-    insertCapturedRow(db, "import_batches", manifest.payload.importBatch, { prefix: "OR IGNORE", conflict: "" });
+    // Parent metadata row first (children FK-reference it), keeping its id.
+    // OR IGNORE so a double-restore (same batch) is a no-op rather than a PK
+    // violation — a DIFFERENT batch on that id was already refused above.
+    insertCapturedRow(db, "import_batches", m, { prefix: "OR IGNORE", conflict: "" });
     restored.import_batches = 1;
 
     for (const table of RECOVERY_SOURCE_TABLES) {
       const spec = restoreSpec(table);
       let n = 0;
       for (const row of manifest.payload.tables[table]) {
-        insertCapturedRow(db, table, row, spec);
+        // Strip the child id so AUTOINCREMENT assigns a fresh one (see
+        // stripRowId) — the FK import_batch_id is preserved inside the row.
+        insertCapturedRow(db, table, stripRowId(row), spec);
         n++;
       }
       restored[table] = n;

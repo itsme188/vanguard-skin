@@ -21,7 +21,7 @@ import Database from "better-sqlite3";
 // open the real on-disk DB). handleUndoRequest takes an explicit db param, so
 // the singleton is never used here — stub it to keep the test hermetic.
 vi.mock("@/lib/db", () => ({ db: {} }));
-import { mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runMigrations } from "@/lib/db/migrate";
@@ -321,6 +321,142 @@ describe("import-undo recovery — re-import idempotence after undo", () => {
     // Exactly one copy of each source row survives.
     expect((db.prepare("SELECT COUNT(*) c FROM transactions").get() as { c: number }).c).toBe(1);
     expect((db.prepare("SELECT COUNT(*) c FROM holdings").get() as { c: number }).c).toBe(2);
+  });
+});
+
+describe("import-undo recovery — corporate actions capture/restore", () => {
+  let db: Database.Database;
+  let dir: string;
+
+  beforeEach(() => {
+    db = fresh();
+    dir = mkdtempSync(join(tmpdir(), "undo-recovery-"));
+  });
+  afterEach(() => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("captures a corporate_actions row and restores it after undo", () => {
+    const parsed = sampleParsed();
+    parsed.corporateActions = [
+      {
+        symbol: "AAA",
+        accountName: "IBKR",
+        actionType: "SPLIT",
+        effectiveDate: "2025-01-20",
+        ratioNumerator: 2,
+        ratioDenominator: 1,
+        sourceKey: "ibkr:ca:AAA:2025-01-20",
+        quantityDelta: 10,
+      },
+    ] as unknown as ParsedImportResult["corporateActions"];
+
+    const res = commitImport(db, parsed);
+    expect((db.prepare("SELECT COUNT(*) c FROM corporate_actions WHERE import_batch_id = ?").get(res.batchId) as { c: number }).c).toBe(1);
+
+    const manifest = buildRecoveryManifest(db, res.batchId);
+    expect(manifest.payload.tables.corporate_actions.length).toBe(1);
+
+    undoImportWithRecovery(db, res.batchId, { manifestDir: dir });
+    expect((db.prepare("SELECT COUNT(*) c FROM corporate_actions").get() as { c: number }).c).toBe(0);
+
+    restoreImportBatch(db, manifest);
+    const rows = db
+      .prepare("SELECT action_type, effective_date, source_key, source FROM corporate_actions WHERE import_batch_id = ?")
+      .all(res.batchId);
+    expect(rows.length).toBe(1);
+    expect(rows[0]).toMatchObject({
+      action_type: "SPLIT",
+      effective_date: "2025-01-20",
+      source_key: "ibkr:ca:AAA:2025-01-20",
+      source: "import",
+    });
+  });
+});
+
+describe("import-undo recovery — restore hardening (fix round)", () => {
+  let db: Database.Database;
+  let dir: string;
+
+  beforeEach(() => {
+    db = fresh();
+    dir = mkdtempSync(join(tmpdir(), "undo-recovery-"));
+  });
+  afterEach(() => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("assigns fresh child ids so an intervening write on a freed id can't break restore", () => {
+    const res = commitImport(db, sampleParsed());
+    const manifest = buildRecoveryManifest(db, res.batchId);
+    const holdingsCount = manifest.payload.tables.holdings.length;
+    const txnCount = manifest.payload.tables.transactions.length;
+    const freedHoldingId = manifest.payload.tables.holdings[0].id as number;
+    const freedTxnId = manifest.payload.tables.transactions[0].id as number;
+    const ibkrId = (db.prepare("SELECT id FROM accounts WHERE name = 'IBKR'").get() as { id: number }).id;
+
+    undoImportWithRecovery(db, res.batchId, { manifestDir: dir });
+
+    // A separate security + intervening rows that GRAB the batch's freed child
+    // ids (simulating an id reuse between undo and restore). Distinct natural
+    // keys, so ONLY the primary key would collide.
+    const cccId = Number(db.prepare("INSERT INTO securities (symbol, name) VALUES ('CCC', 'Gamma')").run().lastInsertRowid);
+    db.prepare(
+      "INSERT INTO holdings (id, account_id, security_id, quantity, cost_basis, as_of_date, source_key) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    ).run(freedHoldingId, ibkrId, cccId, 3, 30, "2025-02-28", "tws-CCC-2025-02-28");
+    db.prepare(
+      "INSERT INTO transactions (id, account_id, security_id, trade_date, type, quantity, source_key) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    ).run(freedTxnId, ibkrId, cccId, "2025-02-10", "BUY", 3, "tws:txn:CCC:2025-02-10");
+
+    // Verbatim-id restore would ABORT (holdings PK conflict) or silently drop
+    // (transactions OR IGNORE on PK). Fresh-id restore fully restores A.
+    restoreImportBatch(db, manifest);
+
+    expect(db.prepare("SELECT COUNT(*) c FROM holdings WHERE import_batch_id = ?").get(res.batchId)).toEqual({ c: holdingsCount });
+    expect(db.prepare("SELECT COUNT(*) c FROM transactions WHERE import_batch_id = ?").get(res.batchId)).toEqual({ c: txnCount });
+    // The intervening rows are untouched.
+    expect((db.prepare("SELECT COUNT(*) c FROM holdings WHERE source_key = 'tws-CCC-2025-02-28'").get() as { c: number }).c).toBe(1);
+    expect((db.prepare("SELECT COUNT(*) c FROM transactions WHERE source_key = 'tws:txn:CCC:2025-02-10'").get() as { c: number }).c).toBe(1);
+  });
+
+  it("hard-refuses restore when the import_batches id is occupied by a DIFFERENT batch", () => {
+    const res = commitImport(db, sampleParsed());
+    const manifest = buildRecoveryManifest(db, res.batchId);
+    undoImportWithRecovery(db, res.batchId, { manifestDir: dir });
+
+    // A different batch now occupies the freed id.
+    db.prepare("INSERT INTO import_batches (id, source_type, filename) VALUES (?, 'manual', 'other.csv')").run(res.batchId);
+
+    expect(() => restoreImportBatch(db, manifest)).toThrow(/different batch/i);
+    // The occupying batch is untouched.
+    expect((db.prepare("SELECT source_type FROM import_batches WHERE id = ?").get(res.batchId) as { source_type: string }).source_type).toBe("manual");
+  });
+
+  it("chronological prune keeps the freshly-written low-batchId manifest when N older high-batchId ones exist", () => {
+    const res = commitImport(db, sampleParsed());
+    const base = buildRecoveryManifest(db, res.batchId);
+
+    // 25 OLDER manifests filed under a HIGH batch id (filenames "9-...").
+    for (let i = 0; i < 25; i++) {
+      writeRecoveryManifest(
+        { ...base, batchId: 9, createdAt: new Date(Date.UTC(2025, 0, 1, 0, 0, i)).toISOString() },
+        dir,
+        25,
+      );
+    }
+    // A fresh manifest under a LOW batch id (filename "10-...") but the NEWEST
+    // timestamp. A filename sort would prune it ("10-" < "9-"); a chronological
+    // sort must keep it.
+    const freshPath = writeRecoveryManifest(
+      { ...base, batchId: 10, createdAt: new Date(Date.UTC(2025, 0, 1, 1, 0, 0)).toISOString() },
+      dir,
+      25,
+    );
+
+    expect(existsSync(freshPath)).toBe(true);
+    expect(readdirSync(dir).filter((f) => f.endsWith(".json")).length).toBe(25);
   });
 });
 
