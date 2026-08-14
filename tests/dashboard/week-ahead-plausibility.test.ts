@@ -132,44 +132,13 @@ describe("releasedFigureGates (WeekAheadView)", () => {
   });
 });
 
-// ── snapshotCoversEventDate (qa: reaction snapshot t0 outside release window) ──
-// A stored snapshot only belongs to a print when its t0 falls on the event's
-// own date (ET wall-clock — an 8 PM ET print rolls the UTC date). Date
-// corrections can strand a snapshot measured for a different day on this row.
-import { snapshotCoversEventDate } from "@/app/dashboard/components/calendar/EnrichmentChips";
-import type { ReactionSnapshot } from "@/lib/calendar/reaction-snapshot";
-
-function snap(t0: string | undefined): ReactionSnapshot {
-  return { t0_utc: t0 } as unknown as ReactionSnapshot;
-}
-
-describe("snapshotCoversEventDate", () => {
-  it("accepts a t0 on the event's ET date", () => {
-    // 14:55Z on Aug 13 = 10:55 ET Aug 13.
-    expect(snapshotCoversEventDate("2026-08-13", snap("2026-08-13T14:55:00.000Z"))).toBe(true);
-  });
-
-  it("accepts an evening AMC print whose UTC date rolled over", () => {
-    // 00:15Z Aug 14 = 20:15 ET Aug 13 — same ET date as the event.
-    expect(snapshotCoversEventDate("2026-08-13", snap("2026-08-14T00:15:00.000Z"))).toBe(true);
-  });
-
-  it("rejects a t0 measured the day BEFORE the event (pre-print snapshot)", () => {
-    // LAC shape: event 2026-08-13, snapshot measured 10:55 ET on Aug 12.
-    expect(snapshotCoversEventDate("2026-08-13", snap("2026-08-12T14:55:00.000Z"))).toBe(false);
-  });
-
-  it("rejects a t0 measured the day AFTER the event", () => {
-    // OCUL shape: event 2026-08-03, snapshot measured 16:15 ET on Aug 4.
-    expect(snapshotCoversEventDate("2026-08-03", snap("2026-08-04T20:15:00.000Z"))).toBe(false);
-  });
-
-  it("rejects a snapshot with no t0 and a garbage t0", () => {
-    expect(snapshotCoversEventDate("2026-08-13", snap(undefined))).toBe(false);
-    expect(snapshotCoversEventDate("2026-08-13", snap("not-a-date"))).toBe(false);
-    expect(snapshotCoversEventDate("2026-08-13", null)).toBe(false);
-  });
-});
+// ── snapshotCoversEventDate ──────────────────────────────────────────
+// Direct unit coverage for snapshotCoversEventDate moved to
+// tests/calendar/reaction-snapshot-core.test.ts (it now lives in
+// lib/calendar/reaction-snapshot-core.ts, not EnrichmentChips.tsx — see qa
+// fix 2026-08-14). This file keeps the releasedFigureGates-level coverage
+// below, which exercises snapshotCoversEventDate indirectly through
+// WeekAheadView.
 
 describe("releasedFigureGates t0 window check", () => {
   const TODAY = "2026-08-13";

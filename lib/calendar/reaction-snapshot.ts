@@ -13,34 +13,17 @@
 import { BarSizeSetting, SecType } from "@stoqey/ib";
 import type { IBApiNext } from "@stoqey/ib";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
+import type { BenchmarkReaction, ReactionSnapshot } from "./reaction-snapshot-core";
 
 // ── Types ───────────────────────────────────────────────────────────
-
-export interface BenchmarkReaction {
-  t_pre: number;
-  t_post: number;
-  delta_pct: number;
-}
-
-export interface ReactionSnapshot {
-  t0_utc: string;
-  window_min: 120;
-  source: "tws" | "polygon" | "yahoo";
-  spy: BenchmarkReaction;
-  qqq: BenchmarkReaction;
-  tlt: BenchmarkReaction;
-  sector?: BenchmarkReaction & { symbol: string };
-  // The event's own stock — populated for earnings (and any future event type
-  // that passes `eventSymbol`). Lets the recap email say "GLW closed +4.2% vs
-  // SPY +0.1%" instead of just the benchmark deltas. Optional because it
-  // gracefully degrades if bars for the event symbol aren't available.
-  symbol?: BenchmarkReaction & { symbol: string };
-  // Present (as "prior_close") when every t_pre in this snapshot is the last
-  // regular-session close before the release instead of the near-release bar
-  // (earnings rows, 2026-08-04). Absent on macro rows and pre-fix snapshots —
-  // renderers use it to label deltas honestly ("vs prior close").
-  pre_anchor?: "prior_close";
-}
+// BenchmarkReaction/ReactionSnapshot + the pure parse/date-match helpers
+// (parseReactionSnapshot, snapshotCoversEventDate) now live in the
+// dependency-free ./reaction-snapshot-core (2026-08-14, qa fix round 2) so
+// 'use client' callers (EnrichmentChips.tsx, TodayReleases.tsx) don't drag
+// this file's @stoqey/ib import into the browser bundle. Re-exported here
+// (type-only — erased at compile time) for any existing server-only
+// importers of the type from this module path.
+export type { BenchmarkReaction, ReactionSnapshot };
 
 /** A single time/close pair — format-agnostic across data sources. */
 export interface TimedClose {

@@ -5,11 +5,14 @@ import type { CalendarEvent } from "@/lib/types";
 import { SymbolLink } from "./SymbolLink";
 import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
 import { effectiveConsensus } from "@/lib/calendar/consensus";
+import { EnrichmentRowSummary } from "./calendar/EnrichmentChips";
+// Import from the dependency-free core, never lib/calendar/reaction-snapshot.ts
+// (that file imports real values from @stoqey/ib — a client bundle that
+// pulls a value from it fails webpack with "Can't resolve 'net'").
 import {
-  EnrichmentRowSummary,
   parseReactionSnapshot,
   snapshotCoversEventDate,
-} from "./calendar/EnrichmentChips";
+} from "@/lib/calendar/reaction-snapshot-core";
 
 /**
  * Today view — "Today's releases" block (left half of the Today header row).

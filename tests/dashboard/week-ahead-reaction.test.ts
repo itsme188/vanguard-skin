@@ -1,9 +1,6 @@
 import { describe, it, expect } from "vitest";
-import {
-  parseReactionSnapshot,
-  reactionSummaryPairs,
-} from "@/app/dashboard/components/calendar/EnrichmentChips";
-import type { ReactionSnapshot } from "@/lib/calendar/reaction-snapshot";
+import { reactionSummaryPairs } from "@/app/dashboard/components/calendar/EnrichmentChips";
+import type { ReactionSnapshot } from "@/lib/calendar/reaction-snapshot-core";
 
 const base: ReactionSnapshot = {
   t0_utc: "2026-07-30T20:01:00.000Z",
@@ -44,8 +41,7 @@ describe("reactionSummaryPairs (week-ahead reaction line)", () => {
     expect(reactionSummaryPairs(null)).toEqual([]);
   });
 
-  it("parseReactionSnapshot survives malformed JSON", () => {
-    expect(parseReactionSnapshot("{not json")).toBeNull();
-    expect(parseReactionSnapshot(null)).toBeNull();
-  });
+  // parseReactionSnapshot itself is covered in
+  // tests/calendar/reaction-snapshot-core.test.ts (it now lives in
+  // lib/calendar/reaction-snapshot-core.ts, not EnrichmentChips.tsx).
 });
