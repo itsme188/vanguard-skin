@@ -4,6 +4,7 @@ import { Fragment, useState } from "react";
 import { Money, Pct } from "@/lib/privacy/components";
 import { FACTOR_COLUMNS, FACTOR_LABELS, type FactorColumn } from "@/lib/factors";
 import type { ExposureDelta, HypotheticalLeg } from "@/lib/compute/exposure-delta";
+import { ScrollFade } from "../ScrollFade";
 
 const MATERIAL_DELTA_PCT = 0.005; // 0.5pp threshold for sector + factor rows
 
@@ -272,38 +273,40 @@ function DeltaTable({ delta }: { delta: ExposureDelta }) {
   ].filter((s) => s.rows.length > 0);
 
   return (
-    <div className="bg-canvas border border-edge rounded-lg overflow-hidden overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b border-edge text-ink-faint">
-            <th className="text-left py-2 px-3">Metric</th>
-            <th className="text-right py-2 px-3">Before</th>
-            <th className="text-right py-2 px-3">After</th>
-            <th className="text-right py-2 px-3">Δ</th>
-          </tr>
-        </thead>
-        <tbody>
-          {sections.map((section, sIdx) => (
-            <Fragment key={section.title}>
-              {sIdx > 0 && (
-                <tr className="bg-canvas">
-                  <td colSpan={4} className="py-1.5 px-3 text-[11px] uppercase tracking-wide text-ink-faint border-t border-edge">
-                    {section.title}
-                  </td>
-                </tr>
-              )}
-              {section.rows.map((r) => (
-                <tr key={r.label} className="border-b border-edge/40">
-                  <td className={`py-2 px-3 text-ink ${r.indent ? "pl-6" : ""}`}>{r.label}</td>
-                  <td className="text-right py-2 px-3 font-mono text-ink-dim">{r.before}</td>
-                  <td className="text-right py-2 px-3 font-mono text-ink">{r.after}</td>
-                  <td className="text-right py-2 px-3 font-mono text-ink-faint">{r.diff ?? "—"}</td>
-                </tr>
-              ))}
-            </Fragment>
-          ))}
-        </tbody>
-      </table>
+    <div className="bg-canvas border border-edge rounded-lg overflow-hidden">
+      <ScrollFade>
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-edge text-ink-faint">
+              <th className="text-left py-2 px-3">Metric</th>
+              <th className="text-right py-2 px-3">Before</th>
+              <th className="text-right py-2 px-3">After</th>
+              <th className="text-right py-2 px-3">Δ</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sections.map((section, sIdx) => (
+              <Fragment key={section.title}>
+                {sIdx > 0 && (
+                  <tr className="bg-canvas">
+                    <td colSpan={4} className="py-1.5 px-3 text-[11px] uppercase tracking-wide text-ink-faint border-t border-edge">
+                      {section.title}
+                    </td>
+                  </tr>
+                )}
+                {section.rows.map((r) => (
+                  <tr key={r.label} className="border-b border-edge/40">
+                    <td className={`py-2 px-3 text-ink ${r.indent ? "pl-6" : ""}`}>{r.label}</td>
+                    <td className="text-right py-2 px-3 font-mono text-ink-dim">{r.before}</td>
+                    <td className="text-right py-2 px-3 font-mono text-ink">{r.after}</td>
+                    <td className="text-right py-2 px-3 font-mono text-ink-faint">{r.diff ?? "—"}</td>
+                  </tr>
+                ))}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      </ScrollFade>
     </div>
   );
 }
