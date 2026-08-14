@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import {
+  getAllHoldings,
   getHoldingsByAccount,
   getLatestHoldingsDate,
 } from "@/lib/queries/holdings";
@@ -30,6 +31,17 @@ function seedHolding(
     asOfDate,
     `hold-${accountId}-${securityId}-${asOfDate}`
   );
+}
+
+function seedPrice(
+  db: Database.Database,
+  securityId: number,
+  date: string,
+  price: number
+): void {
+  db.prepare(
+    "INSERT OR REPLACE INTO prices (security_id, date, close_price) VALUES (?, ?, ?)"
+  ).run(securityId, date, price);
 }
 
 describe("holdings queries", () => {
@@ -98,6 +110,55 @@ describe("holdings queries", () => {
       expect(holdings[0].symbol).toBe("VTI");
       expect(holdings[0].security_name).toBe("VTI Corp");
       expect(holdings[0].account_name).toBe("Vanguard Taxable");
+    });
+  });
+
+  describe("getAllHoldings", () => {
+    // Account IDs from the 002_seed_accounts.sql seed: 1 = Vanguard Taxable,
+    // 2 = Vanguard Roth IRA, 3 = IBKR.
+    const TAXABLE_ID = 1;
+    const IBKR_ID = 3;
+    const TODAY = "2025-02-28";
+
+    it("includes shorts (negative quantity, negative current_value) alongside longs, excludes qty=0 tombstones", () => {
+      // Long position in the taxable account.
+      const vti = seedSecurity(db, "VTI");
+      seedHolding(db, TAXABLE_ID, vti, 100, TODAY);
+      seedPrice(db, vti, TODAY, 250);
+
+      // Long position in a second account (IBKR).
+      const tlt = seedSecurity(db, "TLT");
+      seedHolding(db, IBKR_ID, tlt, 20, TODAY);
+      seedPrice(db, tlt, TODAY, 90);
+
+      // Short position in IBKR — real position, must render (mirrors
+      // getHoldingsByAccount's quantity != 0 filter).
+      const banc = seedSecurity(db, "BANC");
+      seedHolding(db, IBKR_ID, banc, -500, TODAY);
+      seedPrice(db, banc, TODAY, 15);
+
+      // Closed-equity reconciler tombstone (quantity=0) — closure marker,
+      // not a position; must be excluded (QA 2026-07-11 precedent).
+      const acwv = seedSecurity(db, "ACWV");
+      seedHolding(db, IBKR_ID, acwv, 0, TODAY);
+      seedPrice(db, acwv, TODAY, 100);
+
+      const rows = getAllHoldings(db);
+      const symbols = rows.map((r) => r.symbol).sort();
+      expect(symbols).toEqual(["BANC", "TLT", "VTI"]);
+
+      const bancRow = rows.find((r) => r.symbol === "BANC")!;
+      expect(bancRow.quantity).toBe(-500);
+      expect(bancRow.current_value).toBe(-500 * 15);
+      expect(bancRow.current_value).toBeLessThan(0);
+
+      const vtiRow = rows.find((r) => r.symbol === "VTI")!;
+      expect(vtiRow.quantity).toBe(100);
+      expect(vtiRow.current_value).toBe(100 * 250);
+
+      const tltRow = rows.find((r) => r.symbol === "TLT")!;
+      expect(tltRow.quantity).toBe(20);
+      expect(tltRow.current_value).toBe(20 * 90);
     });
   });
 

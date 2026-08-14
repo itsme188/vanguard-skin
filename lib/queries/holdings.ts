@@ -76,7 +76,7 @@ export function getAllHoldings(db: Database.Database): AllHoldingsRow[] {
     LEFT JOIN prices p ON p.security_id = h.security_id
       AND p.date = (SELECT MAX(p2.date) FROM prices p2 WHERE p2.security_id = h.security_id)
     LEFT JOIN fx_rates fx ON fx.currency = s.currency
-    WHERE h.quantity > 0
+    WHERE h.quantity != 0
       AND h.as_of_date = (
         SELECT MAX(h2.as_of_date) FROM holdings h2
         WHERE h2.account_id = h.account_id
@@ -84,6 +84,11 @@ export function getAllHoldings(db: Database.Database): AllHoldingsRow[] {
       AND (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
     ORDER BY current_value DESC NULLS LAST
   `;
+  // quantity != 0 (not > 0): shorts are real positions and must render, but
+  // the closed-equity reconciler's quantity=0 tombstone rows (written at the
+  // latest snapshot date to mark statement-disappeared positions) are not —
+  // mirrors getHoldingsByAccount below (QA 2026-07-11; All Accounts view was
+  // silently dropping every short, understating position count and Total).
 
   return db.prepare(sql).all() as AllHoldingsRow[];
 }
