@@ -21,24 +21,19 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import type Database from "better-sqlite3";
-import { timingSafeEqual } from "node:crypto";
 import { db } from "@/lib/db";
 import { createSession, cleanupExpiredSessions } from "@/lib/mutations/sessions";
+import { isLoopbackHost, verifyElectronCred } from "@/lib/auth/electron-cred";
+
+// isLoopbackHost is re-exported so existing callers/tests keep importing it
+// from this route; the implementation is single-sourced in electron-cred.ts.
+export { isLoopbackHost };
 
 export interface DesktopBootstrapResult {
   status: number;
   body:
     | { success: true; data: { session: string; csrf: string } }
     | { success: false; error: string };
-}
-
-/** Constant-time string compare; a length mismatch short-circuits false
- * (timingSafeEqual throws on unequal buffer lengths). */
-function constantTimeEqual(a: string, b: string): boolean {
-  const ab = Buffer.from(a);
-  const bb = Buffer.from(b);
-  if (ab.length !== bb.length) return false;
-  return timingSafeEqual(ab, bb);
 }
 
 /**
@@ -56,16 +51,9 @@ export function handleDesktopBootstrap(
   providedCred: string,
   nowMs: number = Date.now(),
 ): DesktopBootstrapResult {
-  const expected = process.env.ELECTRON_SERVICE_CRED;
-  if (!expected) {
-    return {
-      status: 500,
-      body: { success: false, error: "Server not configured: ELECTRON_SERVICE_CRED missing." },
-    };
-  }
-
-  if (!providedCred || !constantTimeEqual(providedCred, expected)) {
-    return { status: 401, body: { success: false, error: "Invalid Electron service credential." } };
+  const check = verifyElectronCred(providedCred);
+  if (!check.ok) {
+    return { status: check.status, body: { success: false, error: check.error } };
   }
 
   cleanupExpiredSessions(database, nowMs);
@@ -74,25 +62,6 @@ export function handleDesktopBootstrap(
     status: 200,
     body: { success: true, data: { session: session.rawToken, csrf: session.csrfToken } },
   };
-}
-
-/**
- * True only for a loopback Host header (localhost / 127.0.0.1 / ::1), with an
- * optional port. Anything else — including a tunnel/public host — is rejected
- * before the credential is even examined.
- */
-export function isLoopbackHost(host: string | null): boolean {
-  if (!host) return false;
-  let h = host.trim().toLowerCase();
-  if (h.startsWith("[")) {
-    // IPv6 literal: [::1]:port
-    const end = h.indexOf("]");
-    h = end >= 0 ? h.slice(1, end) : h.slice(1);
-  } else {
-    const colon = h.indexOf(":");
-    if (colon >= 0) h = h.slice(0, colon);
-  }
-  return h === "localhost" || h === "127.0.0.1" || h === "::1";
 }
 
 export async function POST(request: NextRequest) {
