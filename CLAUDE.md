@@ -101,6 +101,7 @@ Detail: `docs/reference/conventions-detail.md`, `docs/reference/earnings-pipelin
 - Market values via `adjustedMarketValueSQL()` (bonds ÷100, options ×multiplier, `LOWER()` matching).
 - Prices/cost_basis store NATIVE currency; convert at read time (`getUsdPerUnit` / `COALESCE(fx.usd_per_unit,1)`). Any new $-rendering surface must thread the FX factor. Don't convert % returns, betas, Sharpe/vol/drawdown, benchmarks.
 - Risk metrics are flow-adjusted (`lib/compute/flow-adjusted.ts`), never raw `daily_valuations` — a metric must be invariant to depositing $1M and buying nothing.
+- Risk metrics are also SEAM-BRIDGED (2026-08-13): a day whose `monthly_snapshots` anchor source differs from the previous anchor's (statement↔plaid↔tws handoffs, go-lives) is a measurement-basis splice, not a market move — `fetchAnchorSourceSeamDates` + `buildFlowAdjustedIndex(…, seamDates)` carry the index flat and emit no return observation (`PortfolioRiskMetrics.seamDaysBridged` counts them). Cash-residual audits classify these days `source-seam`; never synthesize a flow row to "explain" a seam day (the repair script refuses to).
 - Cash-equivalent identity is single-sourced: `isCashEquivalentSecurity` (`lib/compute/cash-equivalents.ts`, fund_category-driven) — never hand-roll `money_market` string lists (nine legacy copies disagree; see TODO). `daily_valuations` counts sweep funds as CASH, not holdings; statement-sourced bonds are carried into Plaid-snapshot days (2026-08-12).
 - Holdings `source_key` prefix classes (statement-authority vs live) are single-sourced in `lib/db/holding-sources.ts` — never inline a `LIKE 'canonical:%'`-style match for source classification.
 
@@ -194,6 +195,7 @@ Detail: `docs/reference/ui-structure.md`
 ## Electron Build
 
 - DMG build: `npm run electron:pack`. `dist/` must be cleaned first (the chain does it) — stale `dist/` causes recursive `.app` nesting during signing.
+- Stale `dist/` ALSO breaks `npx next build` (2026-08-13): the packaged app under `dist/mac-arm64/…` contains a copy of `electron/main.ts`, and tsconfig excludes `electron`/`dist-electron` but NOT `dist` — Next's typecheck sweeps the copy and fails. Fix: remove `dist/` (or add `"dist"` to tsconfig excludes).
 - `npmRebuild: false` in `electron-builder.yml` must stay — it protects the working better-sqlite3 binary.
 - Packaged-app server logs: `~/Library/Logs/Vanguard Dashboard/server.log` — first place to look for packaged-app issues.
 
