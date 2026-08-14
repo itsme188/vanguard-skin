@@ -313,7 +313,12 @@ export default async function SecurityDetailPage(props: {
                 <span className="font-mono font-semibold text-lg text-ink">
                   {security.expiration_date}
                   <span className="text-xs text-ink-faint ml-1.5">
-                    ({Math.max(0, Math.floor((new Date(security.expiration_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24)))}d)
+                    {(() => {
+                      const daysToExpiry = Math.floor(
+                        (new Date(security.expiration_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
+                      );
+                      return daysToExpiry < 0 ? "(expired)" : `(${daysToExpiry}d)`;
+                    })()}
                   </span>
                 </span>
               </OptionCell>
