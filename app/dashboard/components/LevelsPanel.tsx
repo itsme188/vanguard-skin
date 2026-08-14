@@ -21,6 +21,7 @@ import { useToast } from "./Toast";
 import { Chip } from "./Chip";
 import { SortPicker } from "./SortPicker";
 import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
+import apiFetch from "@/lib/http/apiFetch";
 
 type LevelSortField =
   | "price"
@@ -159,8 +160,9 @@ function SuggestedLevels({
 
     // GET is side-effect-free (#35 task 5): it returns levels with narratives
     // READ FROM CACHE (null when not yet generated). When any narrative is
-    // missing we POST once to generate them (the paid-AI write path). Plain
-    // fetch for now — a later task re-points to apiFetch.
+    // missing we POST once to generate them (the paid-AI write path) —
+    // routed through apiFetch (#35 task 9-12) since it's the mutating call;
+    // the GET stays a plain fetch.
     (async () => {
       try {
         const getRes = await fetch(
@@ -174,7 +176,7 @@ function SuggestedLevels({
         const needsNarratives =
           json?.levels?.some((l) => l.narrative == null) ?? false;
         if (needsNarratives) {
-          const postRes = await fetch(
+          const postRes = await apiFetch(
             `/api/suggested-levels?securityId=${securityId}&narratives=1`,
             { method: "POST" },
           );
@@ -210,7 +212,7 @@ function SuggestedLevels({
   async function accept(sug: SuggestedLevel, index: number) {
     setAccepting(index);
     try {
-      const res = await fetch("/api/levels", {
+      const res = await apiFetch("/api/levels", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -602,7 +604,7 @@ export function LevelsPanel({
 
     setLoading(true);
     try {
-      const res = await fetch("/api/levels", {
+      const res = await apiFetch("/api/levels", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -640,7 +642,7 @@ export function LevelsPanel({
   }
 
   async function handleDeactivate(id: number) {
-    const res = await fetch("/api/levels", {
+    const res = await apiFetch("/api/levels", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id, action: "deactivate" }),
@@ -651,7 +653,7 @@ export function LevelsPanel({
   }
 
   async function handleReactivate(id: number) {
-    const res = await fetch("/api/levels", {
+    const res = await apiFetch("/api/levels", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id, action: "reactivate" }),
@@ -663,7 +665,7 @@ export function LevelsPanel({
 
   async function handleDelete(id: number) {
     if (!confirm("Delete this level permanently?")) return;
-    const res = await fetch(`/api/levels?id=${id}`, { method: "DELETE" });
+    const res = await apiFetch(`/api/levels?id=${id}`, { method: "DELETE" });
     if (res.ok) toast("Level deleted", "info");
     else toast("Failed to delete level", "error");
     refresh();

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { getCurrentMonday, addDays } from "@/lib/calendar/date-utils";
+import apiFetch from "@/lib/http/apiFetch";
 
 type EmailType = "digest" | "briefing";
 type DigestMode = "today" | "since_last" | "since_date";
@@ -64,7 +65,7 @@ export function SendDigestPanel({ onClose }: { onClose: () => void }) {
         const body: Record<string, string> = { to: recipient.trim(), mode: digestMode };
         if (digestMode === "since_date" && sinceDate) body.sinceDate = sinceDate;
 
-        const res = await fetch("/api/digest/email", {
+        const res = await apiFetch("/api/digest/email", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
@@ -91,7 +92,7 @@ export function SendDigestPanel({ onClose }: { onClose: () => void }) {
           weekOf = weekOfDate || getCurrentMonday();
         }
 
-        const res = await fetch("/api/calendar/email", {
+        const res = await apiFetch("/api/calendar/email", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ weekOf, to: recipient.trim() }),

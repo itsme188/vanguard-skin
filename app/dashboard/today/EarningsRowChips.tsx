@@ -7,6 +7,7 @@ import {
   EarningsEmailViewer,
   type InlineEmailData,
 } from "../components/EarningsEmailViewer";
+import apiFetch from "@/lib/http/apiFetch";
 
 interface EarningsRowChipsProps {
   eventId: number;
@@ -61,7 +62,7 @@ export function EarningsRowChips({
     if (sheetBusy) return;
     setSheetBusy(true);
     try {
-      const res = await fetch("/api/earnings/worksheet", {
+      const res = await apiFetch("/api/earnings/worksheet", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ eventId, action: worksheetArmed ? "disarm" : "arm" }),
@@ -115,7 +116,7 @@ export function EarningsRowChips({
     if (generating) return;
     setGenerating(true);
     try {
-      const res = await fetch("/api/earnings/recap-modal", {
+      const res = await apiFetch("/api/earnings/recap-modal", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ eventId, runEnrichmentFirst: true }),
@@ -282,10 +283,10 @@ function PhaseChip({ eventId, phase, sent, skipped, onView }: PhaseChipProps) {
     if (pending) return;
     try {
       const res = skipped
-        ? await fetch(`/api/earnings/skip?eventId=${eventId}&phase=${phase}`, {
+        ? await apiFetch(`/api/earnings/skip?eventId=${eventId}&phase=${phase}`, {
             method: "DELETE",
           })
-        : await fetch("/api/earnings/skip", {
+        : await apiFetch("/api/earnings/skip", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ eventId, phase }),

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import apiFetch from "@/lib/http/apiFetch";
 
 type Layout = "structured" | "by_source" | "by_company";
 
@@ -65,11 +66,12 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
         else if (getData.byCompanyHtml) setLayout("by_company");
         setLoading(false);
 
-        // 2) POST — generate the structured (synthesis) layout. Plain fetch for
-        //    now; a later task re-points to apiFetch. This is authoritative for
-        //    `empty` (it accounts for alert-only windows the GET can miss).
+        // 2) POST — generate the structured (synthesis) layout. Routed through
+        //    apiFetch (#35 task 9-12) since it's a mutating call. This is
+        //    authoritative for `empty` (it accounts for alert-only windows the
+        //    GET can miss).
         setGenLoading(true);
-        const postRes = await fetch(url, { method: "POST" });
+        const postRes = await apiFetch(url, { method: "POST" });
         if (!postRes.ok) return; // keep the deterministic views; structured stays unavailable
         const postData = (await postRes.json()) as DigestPreviewResponse;
         if (cancelled) return;

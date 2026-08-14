@@ -7,6 +7,7 @@ import { Money } from "@/lib/privacy/components";
 import { EarningsEmailViewer } from "@/app/dashboard/components/EarningsEmailViewer";
 import { BogeysEditModal } from "./BogeysEditModal";
 import { CallNoteModal } from "./CallNoteModal";
+import apiFetch from "@/lib/http/apiFetch";
 
 const POLL_MS = 60_000;
 
@@ -122,11 +123,11 @@ export function EarningsCockpit() {
 
   // POST refreshes intel (implied-move / straddle rows) then returns the
   // decorated payload. The refresh is the write that used to ride the GET;
-  // it's TTL-guarded server-side (≤1 refresh per event per 30 min). Plain
-  // fetch for now — a later task re-points to apiFetch.
+  // it's TTL-guarded server-side (≤1 refresh per event per 30 min). Routed
+  // through apiFetch (#35 task 9-12) since it's a mutating call.
   const refresh = useCallback(async () => {
     try {
-      const res = await fetch("/api/earnings/cockpit", { method: "POST" });
+      const res = await apiFetch("/api/earnings/cockpit", { method: "POST" });
       const json = await res.json();
       if (!alive.current) return;
       if (res.ok && json.success) {

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { MacroThemeReceiptDrawer } from "./MacroThemeReceiptDrawer";
+import apiFetch from "@/lib/http/apiFetch";
 
 interface MacroTheme {
   name: string;
@@ -69,9 +70,9 @@ export function MacroOverlayCard({ scope }: { scope: string }) {
 
     // GET is a side-effect-free cache read (#35 task 5); on a miss it returns
     // { notGenerated: true } and we POST once to generate (the paid-AI write
-    // path). Plain fetch for now — a later task re-points to apiFetch.
+    // path). Routed through apiFetch (#35 task 9-12) since it's a mutating call.
     const generate = async (): Promise<ApiResponse> => {
-      const res = await fetch("/api/analysis/macro-themes", {
+      const res = await apiFetch("/api/analysis/macro-themes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ scope }),

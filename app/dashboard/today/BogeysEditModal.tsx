@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { coercePercent, formatLargeUSD, parseLargeUSD } from "@/lib/format";
 import type { EarningsBogey } from "@/lib/queries/earnings-bogeys";
+import apiFetch from "@/lib/http/apiFetch";
 
 interface Props {
   eventId: number;
@@ -130,7 +131,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
     setPrintedRoad(null);
     setError(null);
     try {
-      const res = await fetch("/api/earnings/worksheet", {
+      const res = await apiFetch("/api/earnings/worksheet", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ eventId, action: "print" }),
@@ -173,7 +174,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
         ? coercePercent(form.expected_move)
         : null;
 
-      const res = await fetch("/api/earnings/bogeys", {
+      const res = await apiFetch("/api/earnings/bogeys", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -215,7 +216,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
         setError("Provide at least one actual value (EPS or revenue).");
         return;
       }
-      const res = await fetch("/api/earnings/actuals", {
+      const res = await apiFetch("/api/earnings/actuals", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -240,7 +241,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
 
   async function remove(id: number) {
     if (!confirm("Delete this bogey?")) return;
-    const res = await fetch(`/api/earnings/bogeys?id=${id}`, { method: "DELETE" });
+    const res = await apiFetch(`/api/earnings/bogeys?id=${id}`, { method: "DELETE" });
     if (!res.ok) {
       const data = (await res.json().catch(() => ({}))) as { error?: string };
       setError(data.error ?? `Server returned ${res.status}`);

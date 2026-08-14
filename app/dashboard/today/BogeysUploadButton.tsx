@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import apiFetch from "@/lib/http/apiFetch";
 
 interface Props {
   weekOf: string;
@@ -43,7 +44,7 @@ export function BogeysUploadButton({ weekOf }: Props) {
       fd.append("file", file);
       fd.append("weekOf", weekOf);
       fd.append("sourceLabel", `${file.name.replace(/\.(pdf|png|jpe?g|webp|gif)$/i, "")} ${weekOf}`);
-      const res = await fetch("/api/earnings/bogeys/upload", {
+      const res = await apiFetch("/api/earnings/bogeys/upload", {
         method: "POST",
         body: fd,
       });
