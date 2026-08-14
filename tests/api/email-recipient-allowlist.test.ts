@@ -254,3 +254,62 @@ describe("recipient allowlist honors settings-backed recipient overrides", () =>
     expect(hoisted.sendBriefingEmail).toHaveBeenCalledTimes(1);
   });
 });
+
+// ── Review round 1: mixed-recipient, case-normalization, non-string `to` ──
+//
+// The multi-recipient split (`disallowed.filter`) and the lowercase
+// normalization (`parseAddresses`) were already implemented but untested —
+// this closes that gap. The non-string `to` case covers a JSON request body
+// where `to` deserializes to something other than a string (an array here);
+// pre-fix that value reached `.trim()` inside `checkRecipientAllowed` and
+// threw past the route's try/catch instead of failing closed with a clean
+// 400. Exercised on the digest route only — the guard is single-sourced in
+// `lib/email/recipient-guard.ts`, so this isn't route-specific behavior.
+
+describe("recipient allowlist — mixed recipients, case normalization, non-string `to`", () => {
+  it("rejects a mixed `to` (one allowlisted + one not) with 400 naming only the bad address", async () => {
+    const mixedTo = `${CONFIGURED_TO},${OUTSIDE_TO}`;
+    const res = await digestEmailPOST(
+      jsonRequest("http://localhost/api/digest/email", { to: mixedTo }),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain(OUTSIDE_TO);
+    expect(body.error).not.toContain(CONFIGURED_TO);
+    expect(hoisted.sendDigestEmail).not.toHaveBeenCalled();
+  });
+
+  it("allows an allowlisted recipient supplied in a different case", async () => {
+    const upperTo = CONFIGURED_TO.toUpperCase();
+    const res = await digestEmailPOST(
+      jsonRequest("http://localhost/api/digest/email", { to: upperTo }),
+    );
+    expect(res.status).toBe(200);
+    expect(hoisted.sendDigestEmail).toHaveBeenCalledTimes(1);
+    // The guard only compares case-insensitively for the allowlist check —
+    // it doesn't rewrite what's actually sent, so the composer still
+    // receives the caller's original casing.
+    expect(
+      (hoisted.sendDigestEmail.mock.calls[0][1] as { recipient?: string }).recipient,
+    ).toBe(upperTo);
+  });
+
+  it("rejects a non-string `to` (JSON array) with a clean 400, not an unhandled exception", async () => {
+    const res = await digestEmailPOST(
+      jsonRequest("http://localhost/api/digest/email", { to: [CONFIGURED_TO] }),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(typeof body.error).toBe("string");
+    expect(hoisted.sendDigestEmail).not.toHaveBeenCalled();
+  });
+
+  it("a missing `to` still takes the default-allowed path (non-string guard doesn't touch it)", async () => {
+    const res = await digestEmailPOST(jsonRequest("http://localhost/api/digest/email", {}));
+    expect(res.status).toBe(200);
+    expect(hoisted.sendDigestEmail).toHaveBeenCalledTimes(1);
+    expect(
+      (hoisted.sendDigestEmail.mock.calls[0][1] as { recipient?: string }).recipient,
+    ).toBeUndefined();
+  });
+});
