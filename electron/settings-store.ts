@@ -369,3 +369,18 @@ export function loadOrCreateSecret(key: string): string {
   setEncryptedSecret(key, generated);
   return generated;
 }
+
+/**
+ * ROTATE a secret (#35 task 17): unlike `loadOrCreateSecret`, this always
+ * mints a fresh 256-bit random value and overwrites whatever is stored under
+ * `key` — the whole point of rotation is that the old value stops working.
+ * Persists via `setEncryptedSecret`, so it is fail-closed (throws if the OS
+ * keychain is unavailable) and never writes plaintext. Returns the new value
+ * so the caller (main.ts) can update its in-memory copy and inject it into
+ * the restarted child server's env.
+ */
+export function rotateSecret(key: string): string {
+  const generated = crypto.randomBytes(32).toString("hex");
+  setEncryptedSecret(key, generated);
+  return generated;
+}

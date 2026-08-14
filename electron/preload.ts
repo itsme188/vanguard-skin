@@ -28,6 +28,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
   changePassword: (currentPassword: string, newPassword: string) =>
     ipcRenderer.invoke("change-password", { currentPassword, newPassword }),
 
+  // Rotate the Electron-main service credential (Settings action) — #35 task
+  // 17. No payload — the new credential is generated in main and never
+  // crosses the IPC boundary. Resolves to { success, error? }.
+  rotateServiceCredential: () => ipcRenderer.invoke("rotate-service-credential"),
+
   // Auto-update
   checkForUpdates: () => ipcRenderer.invoke("check-for-updates"),
   installUpdate: () => ipcRenderer.invoke("install-update"),

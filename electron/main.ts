@@ -19,6 +19,7 @@ import {
   loadOrCreateSecret,
   getEncryptedSecret,
   setEncryptedSecret,
+  rotateSecret,
 } from "./settings-store";
 import { openServerLog, serverLogLine } from "./server-log";
 import {
@@ -32,6 +33,7 @@ import {
 import { hashPassword, verifyPassword } from "./password-hash";
 import { promptForNewPassword } from "./password-prompt";
 import { runPasswordChange, type PasswordChangeResult } from "./password-change";
+import { runCredentialRotation, type RotateCredentialResult } from "./credential-rotation";
 
 // ─── Find System Node.js ────────────────────────────────────────
 
@@ -602,6 +604,46 @@ async function changePasswordTransaction(
   }
 }
 
+// ─── Service-credential rotation transaction (#35 task 17) ──────
+
+/**
+ * The full ELECTRON_SERVICE_CRED rotation transaction, invoked from the
+ * Settings IPC handler. Order is enforced by the pure `runCredentialRotation`
+ * sequencer (mint + persist new cred -> restart child -> re-bootstrap
+ * window). ELECTRON_SERVICE_CRED lives in the already-spawned child's env, so
+ * it cannot be hot-swapped — restarting is the only way the server picks up
+ * the new value.
+ *
+ * `writeCred` updates the module-level `electronServiceCred` BEFORE restart
+ * runs, so every later reader (startServer()'s env injection, and
+ * bootstrapDesktopSession()/autoConnectTws()'s `X-Electron-Cred` header) sees
+ * the new value — none of them capture it in a closure, they all read the
+ * live variable. A thrown step (e.g. safeStorage unavailable, or the restart
+ * itself failing) is caught here and returned as a domain failure so the
+ * renderer can explain the no-op rather than crashing the main process; the
+ * raw new credential never crosses the IPC boundary (RotateCredentialResult
+ * carries no secret).
+ */
+async function rotateServiceCredentialTransaction(): Promise<RotateCredentialResult> {
+  try {
+    const result = await runCredentialRotation({
+      writeCred: () => {
+        const newCred = rotateSecret(ELECTRON_SERVICE_CRED_KEY);
+        electronServiceCred = newCred;
+        return newCred;
+      },
+      restart: restartServer,
+      rebootstrap: rebootstrapWindowSession,
+    });
+    return { success: result.success };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[electron] credential rotation transaction failed:", message);
+    serverLogStream?.write(serverLogLine("[electron]", `credential rotation failed: ${message}`));
+    return { success: false, error: `Credential rotation failed after starting: ${message}` };
+  }
+}
+
 // ─── Auto-Update ────────────────────────────────────────────────
 
 function setupAutoUpdater(): void {
@@ -663,7 +705,10 @@ app.setName(APP_NAME);
 app.whenReady().then(async () => {
   // On first launch, import API keys from .env.local
   bootstrapFromEnvLocal();
-  setupIpcHandlers({ changePassword: changePasswordTransaction });
+  setupIpcHandlers({
+    changePassword: changePasswordTransaction,
+    rotateServiceCredential: rotateServiceCredentialTransaction,
+  });
 
   // #35 task 14 — load/generate the Electron-main service credential BEFORE
   // starting the server (it must be present in the child env). FAIL-CLOSED:

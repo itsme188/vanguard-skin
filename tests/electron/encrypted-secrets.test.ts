@@ -46,6 +46,7 @@ import {
   getEncryptedSecret,
   setEncryptedSecret,
   loadOrCreateSecret,
+  rotateSecret,
   getSanitizedSettings,
   getSettings,
 } from "@/electron/settings-store";
@@ -134,6 +135,42 @@ describe("loadOrCreateSecret", () => {
   it("fails closed: throws when encryption is unavailable, never generating an unprotected secret", () => {
     mockState.encryptionAvailable = false;
     expect(() => loadOrCreateSecret("anyKey")).toThrow();
+
+    const secretsPath = path.join(tmpDir, "secrets.json");
+    expect(fs.existsSync(secretsPath)).toBe(false);
+  });
+});
+
+describe("rotateSecret (#35 task 17 — credential rotation)", () => {
+  it("mints a NEW 256-bit hex secret and OVERWRITES any existing value under the key", () => {
+    const original = loadOrCreateSecret("electronServiceCred");
+    expect(original).toMatch(/^[0-9a-f]{64}$/);
+
+    const rotated = rotateSecret("electronServiceCred");
+    expect(rotated).toMatch(/^[0-9a-f]{64}$/);
+    expect(rotated).not.toBe(original);
+
+    // Persisted — a subsequent read (not loadOrCreateSecret, which would just
+    // return whatever is stored) sees the rotated value, not the original.
+    expect(getEncryptedSecret("electronServiceCred")).toBe(rotated);
+  });
+
+  it("works on a key that was never set (first rotation == first mint)", () => {
+    const rotated = rotateSecret("neverSetKey");
+    expect(rotated).toMatch(/^[0-9a-f]{64}$/);
+    expect(getEncryptedSecret("neverSetKey")).toBe(rotated);
+  });
+
+  it("each call mints an independent value (no accidental caching)", () => {
+    const a = rotateSecret("electronServiceCred");
+    const b = rotateSecret("electronServiceCred");
+    expect(a).not.toBe(b);
+    expect(getEncryptedSecret("electronServiceCred")).toBe(b);
+  });
+
+  it("fails closed: throws when encryption is unavailable, never writing an unprotected secret", () => {
+    mockState.encryptionAvailable = false;
+    expect(() => rotateSecret("electronServiceCred")).toThrow();
 
     const secretsPath = path.join(tmpDir, "secrets.json");
     expect(fs.existsSync(secretsPath)).toBe(false);
