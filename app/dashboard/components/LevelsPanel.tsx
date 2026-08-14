@@ -156,17 +156,40 @@ function SuggestedLevels({
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    fetch(`/api/suggested-levels?securityId=${securityId}&narratives=1`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((json: SuggestedLevelsResponse | null) => {
+
+    // GET is side-effect-free (#35 task 5): it returns levels with narratives
+    // READ FROM CACHE (null when not yet generated). When any narrative is
+    // missing we POST once to generate them (the paid-AI write path). Plain
+    // fetch for now — a later task re-points to apiFetch.
+    (async () => {
+      try {
+        const getRes = await fetch(
+          `/api/suggested-levels?securityId=${securityId}&narratives=1`,
+        );
+        const json = (getRes.ok ? await getRes.json() : null) as
+          | SuggestedLevelsResponse
+          | null;
         if (!cancelled) setData(json);
-      })
-      .catch(() => {
+
+        const needsNarratives =
+          json?.levels?.some((l) => l.narrative == null) ?? false;
+        if (needsNarratives) {
+          const postRes = await fetch(
+            `/api/suggested-levels?securityId=${securityId}&narratives=1`,
+            { method: "POST" },
+          );
+          if (postRes.ok) {
+            const enriched = (await postRes.json()) as SuggestedLevelsResponse;
+            if (!cancelled) setData(enriched);
+          }
+        }
+      } catch {
         /* silent */
-      })
-      .finally(() => {
+      } finally {
         if (!cancelled) setLoading(false);
-      });
+      }
+    })();
+
     return () => {
       cancelled = true;
     };

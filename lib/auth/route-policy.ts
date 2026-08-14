@@ -89,47 +89,37 @@ export function isImmutableAsset(pathname: string): boolean {
 }
 
 /**
- * GET-write audit (task 3, 2026-08-14) — every route below performs a DB
- * write inside a GET handler, either directly or via a read-through-cache
- * helper (`generate*`/`getOrGenerate*`/`ensure*`/`upsert*`/`reconcile*`)
- * called unconditionally from GET. Under the new auth boundary a bare GET
- * carries no CSRF protection, so each of these is a mutation reachable by
- * a plain hyperlink/prefetch/img-tag — seeded here so task 5 can migrate
- * them one at a time (empties this array; the seeded test asserts the
- * membership, not the length, so partial progress doesn't break CI).
+ * GET-write audit (task 3, 2026-08-14) — MIGRATED EMPTY in task 5 (2026-08-14).
  *
- * Full audit trail (`route.ts` → write call → what it writes):
- *   - GET /api/security/[id]/regression → upsertRegression()
- *       → INSERT ... ON CONFLICT DO UPDATE into security_regressions.
- *   - GET /api/earnings/cockpit → ensureIntelForEvents()
- *       → writes earnings intel rows (TTL-guarded, "best-effort by
- *         contract, never throws" per the route's own comment).
- *   - GET /api/suggested-levels → getOrGenerateNarrative() (lib/chart/narrate-levels.ts)
- *       → INSERT OR IGNORE into suggested_level_narratives on a cache miss.
- *   - GET /api/analysis/narrative → generateNarrative() (lib/compute/analysis-narratives.ts)
- *       → upsertNarrative() UPSERTs analysis_narratives on a cache miss.
- *   - GET /api/analysis/macro-themes → generateMacroThemes() (lib/compute/macro-themes.ts)
- *       → upsertMacroThemes() UPSERTs analysis_macro_themes on a cache miss
- *         (including the empty-array/under-threshold branch).
- *   - GET /api/digest/status → reconcileRecentCloudSends() (lib/cron/marker-check.ts)
- *       → advanceDigestMarkerAfterCloudSend() writes settings.last_digest_sent_at.
- *         By the function's own doc comment this is BY DESIGN: "an open
- *         dashboard heals the pointer within one poll" — but it is still a
- *         write behind a bare GET.
- *   - GET /api/digest/preview → generateDigestSinceAdaptive() (lib/digest/daily-digest.ts)
- *       → on a synthesis fallback, recordSynthesisFallback() writes a
- *         telemetry ring buffer to settings.synthesis_fallbacks_last_30d.
- *         Best-effort/try-catch-wrapped, but still a write on GET.
+ * Every route the task-3 audit found performing a DB write inside a GET handler
+ * (directly or via a read-through-cache helper) has been split so the GET is
+ * side-effect-free and the write lives on a POST (or an existing background
+ * path). Under the SameSite=Lax session cookie a bare GET carries no CSRF
+ * protection, so a state-changing GET is reachable by a plain
+ * hyperlink/prefetch/img-tag — the durable guard is the static scan in
+ * `tests/api/no-state-changing-get.test.ts`, which fails the moment any GET
+ * handler body grows a write.
+ *
+ * Migration record (`route.ts` → where the write went):
+ *   - GET /api/security/[id]/regression → POST persists (GET computes+returns,
+ *     no cache write; compute is pure deterministic math).
+ *   - GET /api/earnings/cockpit → POST runs ensureIntelForEvents (GET decorates
+ *     from already-computed intel rows).
+ *   - GET /api/suggested-levels → POST generates narratives (GET reads cached
+ *     narratives via getCachedLevelNarrative, null when absent).
+ *   - GET /api/analysis/narrative → POST regen (GET is cache-read-only; a miss
+ *     returns notGenerated).
+ *   - GET /api/analysis/macro-themes → POST regen (GET reads getCachedMacroThemes;
+ *     empty cached array = under-threshold; a miss returns notGenerated).
+ *   - GET /api/digest/status → POST runs reconcileRecentCloudSends (GET is a
+ *     pure read; checkCloudMarker stays — it writes nothing).
+ *   - GET /api/digest/preview → POST runs the adaptive Sonnet synthesis + its
+ *     telemetry write (GET returns the two deterministic renderings only).
+ *
+ * This array is the CONTRACT the task-5 test asserts empty. Adding a new
+ * state-changing GET must not re-populate it — fix the route instead.
  */
-export const GET_WRITE_OFFENDERS: string[] = [
-  "GET /api/security/[id]/regression",
-  "GET /api/earnings/cockpit",
-  "GET /api/suggested-levels",
-  "GET /api/analysis/narrative",
-  "GET /api/analysis/macro-themes",
-  "GET /api/digest/status",
-  "GET /api/digest/preview",
-];
+export const GET_WRITE_OFFENDERS: string[] = [];
 
 const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 

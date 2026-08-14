@@ -117,23 +117,16 @@ describe("listRouteHandlers", () => {
 });
 
 describe("GET_WRITE_OFFENDERS", () => {
-  it("GET-write offenders are seeded (audit gate — emptied in Task 5)", () => {
-    expect(GET_WRITE_OFFENDERS).toContain("GET /api/security/[id]/regression");
-    expect(GET_WRITE_OFFENDERS).toContain("GET /api/earnings/cockpit");
+  it("is empty — all offenders migrated to POST in Task 5 (no state-changing GET)", () => {
+    // The task-3 audit seeded 7 GET-write offenders; task 5 split each so the
+    // GET is side-effect-free and the write moved to POST / a background path.
+    // The durable guard is tests/api/no-state-changing-get.test.ts.
+    expect(GET_WRITE_OFFENDERS).toEqual([]);
   });
 
-  it("also seeds the additional offenders found by the deeper audit", () => {
-    // Read-through-cache-on-GET pattern: each of these calls a
-    // generate*/getOrGenerate*/reconcile* helper that writes on a cache
-    // miss / on-wake heal, reachable via a bare GET.
-    expect(GET_WRITE_OFFENDERS).toContain("GET /api/suggested-levels");
-    expect(GET_WRITE_OFFENDERS).toContain("GET /api/analysis/narrative");
-    expect(GET_WRITE_OFFENDERS).toContain("GET /api/analysis/macro-themes");
-    expect(GET_WRITE_OFFENDERS).toContain("GET /api/digest/status");
-    expect(GET_WRITE_OFFENDERS).toContain("GET /api/digest/preview");
-  });
-
-  it("every offender is itself classified human by default (no accidental cron/electron exemption)", () => {
+  it("any future offender (should there be one) is classified human by default", () => {
+    // Vacuously true while empty; guards against a re-added offender being
+    // silently swept into a cron/electron exemption.
     for (const entry of GET_WRITE_OFFENDERS) {
       const [method, pathname] = entry.split(" ");
       expect(classifyRoute(method, pathname)).toBe("human");

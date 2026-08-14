@@ -47,7 +47,12 @@ export function DigestCatchup() {
         return;
       }
 
-      fetch("/api/digest/status")
+      // POST (not GET): the on-wake reconcile — which advances the shared
+      // last_digest_sent_at pointer from confirmed cloud sends — is a WRITE,
+      // moved off the GET read for the SameSite=Lax CSRF fix (#35 task 5). This
+      // poller is the "open dashboard heals the pointer within one poll" path,
+      // so it calls POST. Plain fetch for now — a later task re-points to apiFetch.
+      fetch("/api/digest/status", { method: "POST" })
         .then((r) => r.json())
         .then((data) => {
           // Cloud fallback mid-flight: informational, not actionable.

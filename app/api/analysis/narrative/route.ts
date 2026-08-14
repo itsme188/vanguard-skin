@@ -9,18 +9,23 @@ import { mondayOf } from "@/lib/calendar/date-utils";
 
 export const dynamic = "force-dynamic";
 
-// Separate map for GET cache-miss attempts; 60s window — the goal is to prevent
-// thundering herd on cold cache (e.g. 4 surfaces all missing on first visit to
-// <AnalysisView>), not to match the 24h POST window which gates force-regen.
-const lastCacheMissAt = new Map<string, number>();
-const CACHE_MISS_WINDOW_MS = 60 * 1000;
-
+/**
+ * GET /api/analysis/narrative — SIDE-EFFECT-FREE cache read (#35 task 5).
+ *
+ * Returns the cached narrative for (scope, surface, thisWeek) or a
+ * `notGenerated` marker. It NEVER generates-on-miss: generation is a paid
+ * Sonnet call and a write (upsertNarrative), and under SameSite=Lax a bare GET
+ * carries no CSRF protection — so a cross-site top-level navigation must not be
+ * able to burn AI budget or write the cache. Generation happens ONLY via POST
+ * (the existing force-regen path). The client fires POST when it needs to fill
+ * an empty cache. This enforces the app's own "cached-AI GET-read / POST-regen"
+ * convention (CLAUDE.md).
+ */
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const scope = url.searchParams.get("scope");
   const surface = url.searchParams.get("surface");
 
-  // Validate inputs BEFORE cache lookup so bad inputs always get 400/404, not 429.
   if (!scope) {
     return NextResponse.json(
       { success: false, error: "scope required" },
@@ -39,8 +44,6 @@ export async function GET(req: NextRequest) {
 
   const week = mondayOf(new Date().toISOString().slice(0, 10));
 
-  // Cache lookup at the route level — if hit, return immediately and skip the
-  // rate-limit gate entirely. Cache reads are free (no Sonnet call).
   const cached = getCachedNarrative(db, scope, surface, week);
   if (cached) {
     return NextResponse.json({
@@ -51,37 +54,14 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  // Cache miss — apply per-(scope, surface) rate-limit to prevent thundering herd.
-  const key = `${scope}::${surface}`;
-  const now = Date.now();
-  const last = lastCacheMissAt.get(key) ?? 0;
-  if (now - last < CACHE_MISS_WINDOW_MS) {
-    return NextResponse.json(
-      {
-        success: false,
-        error: "rate-limited (cache miss)",
-        retryAfter: CACHE_MISS_WINDOW_MS - (now - last),
-      },
-      { status: 429 }
-    );
-  }
-  // Set timestamp BEFORE the generateNarrative call so concurrent misses that
-  // arrive while Sonnet is running are also blocked (not just sequential ones).
-  lastCacheMissAt.set(key, now);
-
-  try {
-    const r = await generateNarrative(db, {
-      scope,
-      surfaceKey: surface,
-      weekOf: week,
-    });
-    return NextResponse.json({ success: true, ...r });
-  } catch (e) {
-    return NextResponse.json(
-      { success: false, error: e instanceof Error ? e.message : "Failed" },
-      { status: 500 }
-    );
-  }
+  // Cache miss — report "not generated yet" WITHOUT generating. The client
+  // POSTs to generate on demand.
+  return NextResponse.json({
+    success: true,
+    narrativeMd: null,
+    generatedAt: null,
+    notGenerated: true,
+  });
 }
 
 // Per-process rate limiter; OK for the single-server Electron deployment. If
@@ -159,5 +139,4 @@ export async function POST(req: NextRequest) {
 // Do NOT call from production code.
 export function __resetRateLimitForTests() {
   lastRegenAt.clear();
-  lastCacheMissAt.clear();
 }
