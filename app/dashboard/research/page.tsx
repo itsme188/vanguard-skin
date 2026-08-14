@@ -10,6 +10,7 @@ import {
   getSymbolSecurityMap,
   getFilteredArticles,
   getFilteredArticleCount,
+  getFilteredArticleCategoryCounts,
 } from "@/lib/queries/research";
 import type { NoteType } from "@/lib/types";
 import { NotesView } from "../components/NotesView";
@@ -73,6 +74,7 @@ export default async function ResearchPage({ searchParams }: PageProps) {
   let feedSymbolMap: Record<string, number> = {};
   let filteredArticles: Awaited<ReturnType<typeof getFilteredArticles>> = [];
   let filteredCount = 0;
+  let filteredCategoryCounts: Awaited<ReturnType<typeof getFilteredArticleCategoryCounts>> = [];
 
   if (view === "feeds") {
     try {
@@ -81,6 +83,9 @@ export default async function ResearchPage({ searchParams }: PageProps) {
       feedSymbolMap = getSymbolSecurityMap(db, feedArticles.map((a) => a.id));
       filteredArticles = getFilteredArticles(db, { limit: 100 });
       filteredCount = getFilteredArticleCount(db);
+      // Full-set aggregate for the section headers — never derive header
+      // counts from `filteredArticles`, which is capped at 100 rows.
+      filteredCategoryCounts = getFilteredArticleCategoryCounts(db);
     } catch {
       // Non-blocking — feeds table may not exist yet (pre-migration)
     }
@@ -111,6 +116,7 @@ export default async function ResearchPage({ searchParams }: PageProps) {
           initialSymbolMap={feedSymbolMap}
           initialFilteredArticles={filteredArticles}
           initialFilteredCount={filteredCount}
+          initialFilteredCategoryCounts={filteredCategoryCounts}
         />
       ) : (
         <NotesView
