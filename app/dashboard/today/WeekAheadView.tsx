@@ -4,11 +4,17 @@ import { addDays, formatWeekRange, todayET, getCurrentMonday } from "@/lib/calen
 import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
 import { effectiveConsensus } from "@/lib/calendar/consensus";
 import { actualsAreImplausible } from "./EarningsHub";
+import { EnrichmentRowSummary } from "../components/calendar/EnrichmentChips";
+// This is a Server Component (no "use client"): parseReactionSnapshot /
+// snapshotCoversEventDate must come from the dependency-free
+// reaction-snapshot-core module — never call a value export of
+// EnrichmentChips.tsx ('use client') directly from server code (RSC
+// forbids it), and never import a value from reaction-snapshot.ts (pulls
+// in @stoqey/ib) into anything that could end up in a client bundle.
 import {
-  EnrichmentRowSummary,
   parseReactionSnapshot,
   snapshotCoversEventDate,
-} from "../components/calendar/EnrichmentChips";
+} from "@/lib/calendar/reaction-snapshot-core";
 
 interface WeekAheadViewProps {
   events: CalendarEvent[];
