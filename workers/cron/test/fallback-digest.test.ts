@@ -468,4 +468,26 @@ describe("sanitizeModelSummary", () => {
     expect(sanitizeModelSummary("Guidance for Q3 <10% growth.")).toBe("Guidance for Q3 <10% growth.");
     expect(sanitizeModelSummary("")).toBe("");
   });
+
+  // 2026-08-14 cloud-fallback leak (research_articles rows 71098/71094/68064,
+  // QA finding research-feeds--cloud-fallback-raw-json-envelope-in-summary):
+  // no XML tags — the model dumps the rest of the raw JSON envelope as
+  // literal text inside the `summary` string. Mac mirror:
+  // lib/gmail/theme-sanitize.ts (semantic parity — change both).
+  it("cuts at the JSON-envelope remnant (no XML tags)", () => {
+    const poisoned =
+      "The newsletter argues chip demand remains resilient into year-end." +
+      '", "key_themes": ["semis", "AI capex"], "sentiment": "bullish", ' +
+      '"sentiment_score": 0.55, "mentioned_symbols": ["NVDA"], ' +
+      '"portfolio_relevance": "Relevant to your NVDA position.", "is_portfolio_relevant": true}';
+    expect(sanitizeModelSummary(poisoned)).toBe(
+      "The newsletter argues chip demand remains resilient into year-end.",
+    );
+  });
+
+  it("does not false-positive on prose that merely mentions sentiment/themes by name", () => {
+    expect(
+      sanitizeModelSummary("Sentiment on the sector improved; key themes remain unchanged."),
+    ).toBe("Sentiment on the sector improved; key themes remain unchanged.");
+  });
 });
