@@ -13,8 +13,14 @@ import path from "node:path";
 import fs from "node:fs";
 import { setupIpcHandlers } from "./ipc-handlers";
 import { createTray } from "./tray";
-import { getSettings, bootstrapFromEnvLocal } from "./settings-store";
+import { getSettings, bootstrapFromEnvLocal, loadOrCreateSecret } from "./settings-store";
 import { openServerLog, serverLogLine } from "./server-log";
+import {
+  buildBootstrapCookieArgs,
+  ELECTRON_SERVICE_CRED_KEY,
+  ELECTRON_SERVICE_CRED_ENV,
+  type BootstrapResponse,
+} from "./bootstrap-auth";
 
 // ─── Find System Node.js ────────────────────────────────────────
 
@@ -117,6 +123,14 @@ function getDataDir(): string {
 let mainWindow: BrowserWindow | null = null;
 let serverProcess: ChildProcess | null = null;
 /**
+ * Electron-main service credential (#35 task 14). Loaded/generated once at
+ * startup via `loadOrCreateSecret` (OS-keychain encrypted), injected into the
+ * child server as ELECTRON_SERVICE_CRED, and sent as the `X-Electron-Cred`
+ * header on the main process's own fetches (desktop-bootstrap + the tws/*
+ * auto-connect calls), which do NOT carry the renderer window's cookie jar.
+ */
+let electronServiceCred: string | null = null;
+/**
  * Durable sink for the Next server's stdout/stderr (2026-08-04): a
  * Finder-launched .app discards Electron main's console, so without this
  * file server-side warnings leave no trace (the useRTH reaction failure
@@ -151,6 +165,11 @@ function startServer(): Promise<void> {
       VANGUARD_DB_DIR: dataDir,
       ELECTRON: "true",
     };
+
+    // #35 task 14 — the Electron-main service credential the desktop-bootstrap
+    // route (and the tws/* auto-connect routes) authenticate against. Loaded
+    // before startServer() in whenReady; injected here alongside the settings.
+    if (electronServiceCred) env[ELECTRON_SERVICE_CRED_ENV] = electronServiceCred;
 
     // Inject settings as env vars
     if (settings.anthropicApiKey) env.ANTHROPIC_API_KEY = settings.anthropicApiKey;
@@ -277,7 +296,34 @@ function stopServer(): void {
 
 // ─── Window ─────────────────────────────────────────────────────
 
-function createWindow(): void {
+/**
+ * Calls the loopback desktop-bootstrap route to mint the renderer window's
+ * human session, authenticating with the Electron-main service credential.
+ * Retries briefly: startServer() resolves on Next's "Ready" line, but the
+ * first request also triggers lazy DB migrations, so an early attempt can
+ * race. Bounded so a genuinely broken server never hangs the launch forever.
+ */
+async function bootstrapDesktopSession(): Promise<BootstrapResponse> {
+  const attempts = 5;
+  let lastErr: unknown = null;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetch(`http://localhost:${PORT}/api/auth/desktop-bootstrap`, {
+        method: "POST",
+        headers: { "X-Electron-Cred": electronServiceCred ?? "" },
+      });
+      const json = (await res.json()) as BootstrapResponse;
+      if (res.ok && json?.success) return json;
+      lastErr = new Error(`bootstrap HTTP ${res.status}: ${json?.error ?? "unknown"}`);
+    } catch (err) {
+      lastErr = err;
+    }
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("desktop bootstrap failed");
+}
+
+async function createWindow(): Promise<void> {
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -287,6 +333,10 @@ function createWindow(): void {
     backgroundColor: "#080B12", // Midnight Portfolio canvas color
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 16, y: 16 },
+    // #35 task 14 — do NOT reveal the window until it's authenticated: create
+    // hidden, install the session cookies, load /dashboard, THEN show(). This
+    // avoids a visible flash of the /login bounce on every launch.
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -297,8 +347,6 @@ function createWindow(): void {
   // Start maximized — the dashboard is designed for full-width viewports
   mainWindow.maximize();
 
-  mainWindow.loadURL(`http://localhost:${PORT}/dashboard/today`);
-
   // Open external links in the default browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
@@ -308,6 +356,32 @@ function createWindow(): void {
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
+
+  // Silent auth: mint the human session server-side and install both cookies
+  // on this window's partition BEFORE loading the dashboard. If it fails, we
+  // still load — the window will bounce to /login (task 18) where the password
+  // can be entered manually. A failure here must never crash the app.
+  try {
+    const boot = await bootstrapDesktopSession();
+    const cookieArgs = buildBootstrapCookieArgs(PORT, boot);
+    for (const c of cookieArgs) {
+      await mainWindow.webContents.session.cookies.set({
+        url: c.url,
+        name: c.name,
+        value: c.value,
+        httpOnly: c.httpOnly,
+      });
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[electron] desktop bootstrap failed:", message);
+    serverLogStream?.write(
+      serverLogLine("[electron]", `desktop bootstrap failed (window will bounce to /login): ${message}`),
+    );
+  }
+
+  await mainWindow.loadURL(`http://localhost:${PORT}/dashboard/today`);
+  mainWindow.show();
 }
 
 // ─── TWS Auto-Connect ───────────────────────────────────────────
@@ -320,8 +394,13 @@ async function autoConnectTws(): Promise<void> {
   }
 
   try {
-    // Check if already connected
-    const statusRes = await fetch(`http://localhost:${PORT}/api/tws/status`);
+    // Check if already connected. These main-process fetches carry no window
+    // cookie jar, so they authenticate with the Electron service credential
+    // (#35 task 14 — /api/tws/status + /api/tws/connect are classified
+    // `electron` in lib/auth/route-policy.ts).
+    const statusRes = await fetch(`http://localhost:${PORT}/api/tws/status`, {
+      headers: { "X-Electron-Cred": electronServiceCred ?? "" },
+    });
     const statusData = await statusRes.json();
     if (statusData?.data?.state === "connected") {
       console.log("[auto-connect] TWS already connected");
@@ -331,7 +410,10 @@ async function autoConnectTws(): Promise<void> {
     // Attempt connection
     const res = await fetch(`http://localhost:${PORT}/api/tws/connect`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-Electron-Cred": electronServiceCred ?? "",
+      },
       body: JSON.stringify({
         host: settings.twsHost || "127.0.0.1",
         port: settings.twsPort || 7496,
@@ -412,9 +494,27 @@ app.whenReady().then(async () => {
   bootstrapFromEnvLocal();
   setupIpcHandlers();
 
+  // #35 task 14 — load/generate the Electron-main service credential BEFORE
+  // starting the server (it must be present in the child env). FAIL-CLOSED:
+  // loadOrCreateSecret throws if the OS keychain is unavailable (safeStorage
+  // off/locked) — surface a clear dialog rather than crashing uncaught or
+  // silently launching an app that can't authenticate its own window.
+  try {
+    electronServiceCred = loadOrCreateSecret(ELECTRON_SERVICE_CRED_KEY);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    dialog.showErrorBox(
+      "Secure Storage Unavailable",
+      `The app could not access the OS keychain to load its service credential:\n\n${message}\n\n` +
+        `Unlock your login keychain and relaunch. The app cannot start securely without it.`,
+    );
+    app.quit();
+    return;
+  }
+
   try {
     await startServer();
-    createWindow();
+    await createWindow();
     createTray(mainWindow);
 
     // Non-blocking TWS auto-connect after server warmup
