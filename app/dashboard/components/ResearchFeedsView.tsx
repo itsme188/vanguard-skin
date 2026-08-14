@@ -4,7 +4,7 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import Link from "next/link";
 import type { ResearchArticle, ResearchSource, FilteredArticle } from "@/lib/queries/research";
 import { trimEmailFooter, htmlHidesStoredText } from "@/lib/gmail/sanitize";
-import { sanitizeThemeList } from "@/lib/gmail/theme-sanitize";
+import { sanitizeModelSummary, sanitizeThemeList } from "@/lib/gmail/theme-sanitize";
 import { ManageSourcesModal } from "./ManageSourcesModal";
 import { NewsletterArticleFrame } from "./NewsletterArticleFrame";
 import { SendDigestPanel } from "./SendDigestPanel";
@@ -694,9 +694,13 @@ function ArticleCard({
           {article.subject}
         </h3>
 
-        {/* AI Summary — reader-app body (17px / 1.7 line-height) */}
+        {/* AI Summary — reader-app body (17px / 1.7 line-height). Sanitized
+            at render too (storage-boundary guard can miss a leak shape on
+            old rows) — same helper as ThemePills below. */}
         {article.summary && (
-          <p className="text-[17px] leading-[1.7] text-ink-dim mb-3">{article.summary}</p>
+          <p className="text-[17px] leading-[1.7] text-ink-dim mb-3">
+            {sanitizeModelSummary(article.summary)}
+          </p>
         )}
 
         {/* Portfolio relevance */}
