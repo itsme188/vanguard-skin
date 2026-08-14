@@ -17,6 +17,14 @@ interface ElectronAPI {
   getSettings: () => Promise<Record<string, string | number | boolean>>;
   saveSettings: (settings: Record<string, unknown>) => Promise<{ success: boolean }>;
 
+  // Change password (#35 task 15). Passwords are sent to main once and never
+  // returned or persisted (only the scrypt hash is stored). Resolves to
+  // { success, error? }.
+  changePassword: (
+    currentPassword: string,
+    newPassword: string,
+  ) => Promise<{ success: boolean; error?: string }>;
+
   // App lifecycle
   restartApp: () => Promise<void>;
 

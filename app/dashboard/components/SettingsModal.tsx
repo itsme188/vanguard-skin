@@ -7,6 +7,7 @@ import { AiModelsSection } from "./AiModelsSection";
 import { EarningsEmailsSection } from "./EarningsEmailsSection";
 import { EmailRecipientsSection } from "./EmailRecipientsSection";
 import { PlaidSection } from "./PlaidSection";
+import { SecuritySection } from "./SecuritySection";
 import apiFetch from "@/lib/http/apiFetch";
 
 /**
@@ -401,6 +402,14 @@ export function SettingsModal() {
                   <PlaidSection />
                 </div>
               )}
+
+              {/* Security — change password (#35 task 15) + convenience PIN
+                  (#35 task 16). Shown regardless of settings-source
+                  availability (the PIN set call uses the session cookie, not
+                  the Electron settings channel). */}
+              <div className="pt-2 border-t border-edge">
+                <SecuritySection />
+              </div>
 
               {/* Save button — hidden when unavailable */}
               {!unavailableReason && (

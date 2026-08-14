@@ -15,6 +15,7 @@ import { NotificationBell } from "./components/NotificationBell";
 import { PrivacyToggle } from "./components/PrivacyToggle";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { NotesAmbient } from "./components/NotesAmbient";
+import { PinUnlock } from "./components/PinUnlock";
 import { PrivacyProvider } from "@/lib/privacy/context";
 
 export default function DashboardLayout({
@@ -102,6 +103,11 @@ export default function DashboardLayout({
 
         {/* Ambient notes overlay (Cmd+; from any tab) */}
         <NotesAmbient />
+
+        {/* Convenience-PIN re-unlock overlay (#35 task 16). Renders only
+            while the app is in the client-side "locked" state; dispatch a
+            window `lock-app` event to enter it. */}
+        <PinUnlock />
       </div>
      </PrivacyProvider>
     </ToastProvider>

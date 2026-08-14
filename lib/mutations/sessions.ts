@@ -56,9 +56,67 @@ export function touchSession(db: Database.Database, id: number, nowMs: number, t
   );
 }
 
-/** Revokes a single session (e.g. explicit sign-out on one device). */
+/** Revokes a single session (e.g. explicit sign-out on one device). Its
+ * convenience-PIN row (if any) is removed automatically by the
+ * session_pins FK ON DELETE CASCADE — revoke device => PIN dead. */
 export function revokeSession(db: Database.Database, id: number): void {
   db.prepare("DELETE FROM app_sessions WHERE id = ?").run(id);
+}
+
+/**
+ * Sets (or replaces) the convenience PIN bound to a session (#35, task 16).
+ * Upsert: re-setting a PIN always clears any accumulated failure/lockout
+ * state, so `fail_count`/`locked` reset to 0. Never touches app_sessions —
+ * a PIN is a veneer over an already-created session, never a way to make one.
+ */
+export function setSessionPin(
+  db: Database.Database,
+  sessionId: number,
+  pinHash: string,
+  nowMs: number
+): void {
+  const nowIso = new Date(nowMs).toISOString();
+  db.prepare(
+    `INSERT INTO session_pins (session_id, pin_hash, fail_count, locked, created_at, updated_at)
+     VALUES (?, ?, 0, 0, ?, ?)
+     ON CONFLICT(session_id) DO UPDATE SET
+       pin_hash = excluded.pin_hash,
+       fail_count = 0,
+       locked = 0,
+       updated_at = excluded.updated_at`
+  ).run(sessionId, pinHash, nowIso, nowIso);
+}
+
+/** Records one wrong-PIN attempt and locks the PIN out once the running
+ * count reaches `maxAttempts`. Returns the post-update state so the caller
+ * can report attempts-remaining / the just-tripped lockout. A no-op (row
+ * absent) returns failCount 0, locked false. */
+export function recordPinFailure(
+  db: Database.Database,
+  sessionId: number,
+  maxAttempts: number,
+  nowMs: number
+): { failCount: number; locked: boolean } {
+  const nowIso = new Date(nowMs).toISOString();
+  db.prepare(
+    `UPDATE session_pins
+        SET fail_count = fail_count + 1,
+            locked = CASE WHEN fail_count + 1 >= ? THEN 1 ELSE locked END,
+            updated_at = ?
+      WHERE session_id = ?`
+  ).run(maxAttempts, nowIso, sessionId);
+  const row = db
+    .prepare("SELECT fail_count, locked FROM session_pins WHERE session_id = ?")
+    .get(sessionId) as { fail_count: number; locked: number } | undefined;
+  return { failCount: row?.fail_count ?? 0, locked: !!row?.locked };
+}
+
+/** Clears failure/lockout state after a correct PIN (or an admin reset). */
+export function resetPinFailures(db: Database.Database, sessionId: number, nowMs: number): void {
+  const nowIso = new Date(nowMs).toISOString();
+  db.prepare(
+    "UPDATE session_pins SET fail_count = 0, locked = 0, updated_at = ? WHERE session_id = ?"
+  ).run(nowIso, sessionId);
 }
 
 /** Revokes every session (e.g. "sign out everywhere"). */

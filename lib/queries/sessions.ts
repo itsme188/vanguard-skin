@@ -57,3 +57,49 @@ export function verifySession(
 
   return { id: row.id, csrfSecret: row.csrf_secret, label: row.label };
 }
+
+/**
+ * Same liveness check as verifySession (absolute + idle windows) but keyed
+ * by the session's numeric id instead of its bearer token. The convenience
+ * PIN (#35, task 16) is bound to a session ROW, not a token — verify-PIN
+ * re-activates an already-known session by id, so it needs to confirm that
+ * row is still alive without re-deriving it from a raw token. Returns null
+ * for an absent (revoked), absolute-expired, or idle-expired session — which
+ * is exactly why the PIN can never re-animate a dead session (spec §B2).
+ */
+export function getLiveSessionById(
+  db: Database.Database,
+  id: number,
+  nowMs: number
+): VerifiedSession | null {
+  const row = db
+    .prepare("SELECT * FROM app_sessions WHERE id = ?")
+    .get(id) as AppSessionRow | undefined;
+  if (!row) return null;
+
+  const expiresAtMs = Date.parse(row.expires_at);
+  if (expiresAtMs <= nowMs) return null;
+
+  const lastSeenMs = Date.parse(row.last_seen_at);
+  if (lastSeenMs + IDLE_WINDOW_MS <= nowMs) return null;
+
+  return { id: row.id, csrfSecret: row.csrf_secret, label: row.label };
+}
+
+export interface SessionPinRow {
+  session_id: number;
+  pin_hash: string;
+  fail_count: number;
+  locked: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Reads the PIN row bound to a session (null when no PIN has been set, or
+ * when the session — and thus its CASCADE-deleted PIN row — is gone). */
+export function getSessionPin(db: Database.Database, sessionId: number): SessionPinRow | null {
+  const row = db
+    .prepare("SELECT * FROM session_pins WHERE session_id = ?")
+    .get(sessionId) as SessionPinRow | undefined;
+  return row ?? null;
+}
