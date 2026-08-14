@@ -42,8 +42,11 @@ export const RATE_LIMIT_MAX_REQUESTS = 20;
 /** Once the window's request count is exceeded, the session is cooled down
  * for this long — held even past the point the fixed window would otherwise
  * have rolled over, so a client can't just wait out the window and resume
- * the burst immediately. */
-export const RATE_LIMIT_COOLDOWN_MS = 30_000; // 30 seconds
+ * the burst immediately. MUST stay greater than RATE_LIMIT_WINDOW_MS for
+ * that property to actually hold (otherwise the cooldown always expires
+ * before the window could have rolled over anyway, making it a no-op on
+ * top of the window). */
+export const RATE_LIMIT_COOLDOWN_MS = 90_000; // 90 seconds
 
 /** Best-effort daily ceiling on cumulative OUTPUT tokens per session,
  * bucketed by ET calendar day (repo convention: ET-anchor "today"). Sized

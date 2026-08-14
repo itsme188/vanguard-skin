@@ -164,20 +164,25 @@ describe("checkAndConsumeRateLimit", () => {
   });
 
   it("holds the cooldown even after the fixed window would have rolled over", () => {
+    // This test is only meaningful when the cooldown outlasts the window —
+    // otherwise "past the window" and "past the cooldown" are the same
+    // instant and this would assert nothing. Guard the PREMISE (a constants
+    // relationship that must hold for the feature's documented behavior to
+    // exist at all), not the assertion itself.
+    expect(RATE_LIMIT_COOLDOWN_MS).toBeGreaterThan(RATE_LIMIT_WINDOW_MS);
+
     const key = "session:rl-2";
     for (let i = 0; i < RATE_LIMIT_MAX_REQUESTS; i++) {
       expect(checkAndConsumeRateLimit(key, T0).ok).toBe(true);
     }
     expect(checkAndConsumeRateLimit(key, T0).ok).toBe(false); // trips cooldown
 
-    // Well past the window, but still inside the cooldown.
-    const afterWindow = T0 + RATE_LIMIT_WINDOW_MS + 1;
-    expect(afterWindow - T0).toBeLessThan(RATE_LIMIT_COOLDOWN_MS + RATE_LIMIT_WINDOW_MS);
-    const stillCooling = checkAndConsumeRateLimit(key, T0 + RATE_LIMIT_WINDOW_MS + 1);
-    // Cooldown was set to T_trip + RATE_LIMIT_COOLDOWN_MS at the moment it tripped.
-    if (T0 + RATE_LIMIT_WINDOW_MS + 1 < T0 + RATE_LIMIT_COOLDOWN_MS) {
-      expect(stillCooling.ok).toBe(false);
-    }
+    // Just past the point the fixed window would have rolled over — a
+    // window-only limiter would allow this request again. The cooldown must
+    // still be holding at this instant since it outlasts the window.
+    const afterWindowRollover = T0 + RATE_LIMIT_WINDOW_MS + 1;
+    const stillCooling = checkAndConsumeRateLimit(key, afterWindowRollover);
+    expect(stillCooling.ok).toBe(false);
   });
 
   it("recovers after the cooldown elapses", () => {
@@ -304,6 +309,46 @@ describe("POST /api/chat — budget gate", () => {
     const body = await res.json();
     expect(body.success).toBe(false);
     expect(hoisted.streamTextMock).not.toHaveBeenCalled();
+  });
+
+  it("invalid scope: 400, and no concurrency slot is leaked (round-1 review fix)", async () => {
+    // Regression for a leak found in code review: scope validation `return`s
+    // (doesn't throw) on an invalid scope. Before the fix, the concurrency
+    // slot was acquired BEFORE scope validation, so this path returned
+    // without ever calling releaseSlot — the slot only came back via the
+    // 10-minute stale-slot prune. The fix moves acquisition to immediately
+    // before streamText, so this path never acquires a slot at all.
+    const req = makeChatRequest({
+      messages: [{ role: "user", parts: [{ type: "text", text: "hello" }] }],
+      scope: "not-a-real-scope",
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    expect(hoisted.streamTextMock).not.toHaveBeenCalled();
+
+    const { NO_SESSION_KEY, activeStreamCount } = await import("@/lib/chat/budget");
+    expect(activeStreamCount(NO_SESSION_KEY, Date.now())).toBe(0);
+  });
+
+  it("missing ANTHROPIC_API_KEY: 500, and no concurrency slot is leaked (round-1 review fix)", async () => {
+    // Same class of leak as the invalid-scope case: the API-key check also
+    // `return`s (doesn't throw) on failure.
+    const envModule = await import("@/lib/env");
+    const spy = vi.spyOn(envModule, "getAnthropicApiKey").mockReturnValue(undefined);
+    try {
+      const req = makeChatRequest({
+        messages: [{ role: "user", parts: [{ type: "text", text: "hello" }] }],
+        scope: "macro",
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(500);
+      expect(hoisted.streamTextMock).not.toHaveBeenCalled();
+
+      const { NO_SESSION_KEY, activeStreamCount } = await import("@/lib/chat/budget");
+      expect(activeStreamCount(NO_SESSION_KEY, Date.now())).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("a normal single request within all limits proceeds (streamText called once)", async () => {
