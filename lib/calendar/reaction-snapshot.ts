@@ -48,6 +48,52 @@ export interface TimedClose {
   close: number;
 }
 
+// ── Snapshot parsing (shared client+server) ──────────────────────────
+// Moved out of EnrichmentChips.tsx (2026-08-14, qa:today-week-ahead--
+// server-components-render-crash-unrecoverable): that module is
+// "use client", so a server component (WeekAheadView.tsx) importing and
+// CALLING its exports crashes ("Attempted to call X() from the server
+// but X is on the client") even via re-export — the client boundary
+// applies to callable functions, not just JSX components. These are
+// pure functions with no React/DOM dependency, so they belong beside
+// the type they parse.
+
+/**
+ * Parse a stored reaction_snapshot JSON string. Returns null on missing
+ * or malformed input — callers degrade gracefully rather than throw.
+ */
+export function parseReactionSnapshot(
+  raw: string | null,
+): ReactionSnapshot | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as ReactionSnapshot;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A stored snapshot only belongs to a print when its t0 falls on the event's
+ * own date, compared in ET wall-clock (an evening AMC print rolls the UTC
+ * date past midnight). composeReleaseInstant writes t0 from event_date so
+ * they agree at write time — but a later date correction strands a snapshot
+ * measured for a different day on this row. Missing/unparseable t0 fails
+ * closed: better no reaction than a wrong one. Shared by WeekAheadView's
+ * releasedFigureGates and TodayReleases — do not fork this check.
+ */
+export function snapshotCoversEventDate(
+  eventDate: string | null | undefined,
+  snap: ReactionSnapshot | null,
+): boolean {
+  if (!eventDate || !snap?.t0_utc) return false;
+  const t0 = new Date(snap.t0_utc);
+  if (isNaN(t0.getTime())) return false;
+  // en-CA renders YYYY-MM-DD; timeZone anchors to ET per repo convention.
+  const etDate = t0.toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  return etDate === eventDate;
+}
+
 // ── Benchmark universe ──────────────────────────────────────────────
 
 export const CORE_BENCHMARKS = ["SPY", "QQQ", "TLT"] as const;

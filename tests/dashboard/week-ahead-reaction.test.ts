@@ -1,8 +1,6 @@
 import { describe, it, expect } from "vitest";
-import {
-  parseReactionSnapshot,
-  reactionSummaryPairs,
-} from "@/app/dashboard/components/calendar/EnrichmentChips";
+import { reactionSummaryPairs } from "@/app/dashboard/components/calendar/EnrichmentChips";
+import { parseReactionSnapshot } from "@/lib/calendar/reaction-snapshot";
 import type { ReactionSnapshot } from "@/lib/calendar/reaction-snapshot";
 
 const base: ReactionSnapshot = {
