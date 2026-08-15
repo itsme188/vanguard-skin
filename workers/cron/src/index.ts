@@ -1,13 +1,15 @@
 /**
- * Vanguard Skin cron Worker — Phase 4 (primary-only).
+ * Vanguard Skin cron Worker — fallback-only for briefing/digest/evening.
  *
- * Session B deliverable: reliable retry + dedup for the Mac's briefing/digest
- * emails. If the Mac is awake and reachable via MESH_HOSTNAME, the Worker
- * calls /api/cron/{briefing|digest} and records a mac-sent marker in KV.
- *
- * Session C wires in the cloud fallback: on primary-path failure, the Worker
- * will generate + send the email itself. For now, non-success outcomes are
- * logged only — the cloud fallback is a stub.
+ * Originally (Session B) the Worker tried a Mac-primary call at MESH_HOSTNAME
+ * before falling back to composing/sending the email itself. RETIRED
+ * 2026-08-14 (#35 Phase D, Task 25): the Mac binds loopback-only behind an
+ * Access-gated tunnel, so MESH_HOSTNAME is permanently unreachable from the
+ * Cloudflare edge and the Worker has no Access identity to reach the new
+ * hostname either. `runJob` now goes straight from the marker dedup check to
+ * the cloud fallback (Gmail + Claude + Resend) — see the marker-check comment
+ * inside `runJob` for how the dedup that used to guard the primary-timeout
+ * race is preserved with no primary call left to race against.
  *
  * Exposes two HTTP endpoints for the Mac side + smoke testing:
  *   GET  /internal/marker?type={briefing|digest|evening}   (X-Cron-Secret required)
@@ -31,7 +33,6 @@ import {
   getCurrentETDayOfWeek,
   todayET,
 } from "./dst";
-import { callPrimary, type PrimaryResult } from "./primary";
 import { runFallbackDigest, type FallbackResult } from "./fallback-digest";
 import { runFallbackBriefing } from "./fallback-briefing";
 import { runFallbackEvening } from "./fallback-evening";
@@ -77,9 +78,17 @@ export interface Env {
   EXPECTED_MINUTE_EVENING_MON_THU?: string;
   EXPECTED_HOUR_EVENING_FRI: string;
   EXPECTED_MINUTE_EVENING_FRI: string;
+  // PRIMARY_TIMEOUT_MS: fully unused now that runJob's Mac-primary call is
+  // retired (2026-08-14, #35 Phase D, Task 25). Left in place per convention
+  // (env cleanup is a deploy-time step, not a code change) — safe to drop
+  // from wrangler.toml in a later pass.
   PRIMARY_TIMEOUT_MS: string;
   // Secrets (`wrangler secret put`)
   CRON_SHARED_SECRET: string;
+  // MESH_HOSTNAME: no longer used to call the Mac from runJob, but still
+  // read by pushover.ts (level-scan + calendar-enrich push-at-print) as the
+  // Pushover deep-link base fallback when PUSHOVER_LINK_BASE is unset — do
+  // not remove.
   MESH_HOSTNAME: string;
   // Session-C secrets — optional in Session B, present for typing only.
   ANTHROPIC_API_KEY?: string;
@@ -161,7 +170,6 @@ export function parseJobFromClock(env: Env): { type: JobType; expectedHour: numb
 
 interface RunJobOpts {
   dryRun?: boolean;
-  fallbackOnly?: boolean; // skip primary, go straight to fallback (smoke test)
   force?: boolean; // bypass the holiday/briefing-day gate (manual /internal/trigger)
 }
 
@@ -173,18 +181,17 @@ interface RunJobResult {
     | "cloud_attempt_in_flight"
     | "market_holiday"
     | "not_briefing_day";
-  primary?: PrimaryResult;
   fallback?: FallbackResult;
   sentBy?: SentBy;
 }
 
-async function runJob(type: JobType, env: Env, opts: RunJobOpts = {}): Promise<RunJobResult> {
+export async function runJob(type: JobType, env: Env, opts: RunJobOpts = {}): Promise<RunJobResult> {
   const date = todayET();
 
-  // Holiday gating (mirrors the Mac cron routes). Skip BEFORE calling the Mac
-  // or touching markers so a closed day produces no email and no marker churn.
-  // Bypassed by the manual /internal/trigger endpoint (opts.force) — an explicit
-  // smoke-test or hand-trigger should run regardless of the calendar.
+  // Holiday gating (mirrors the Mac cron routes). Skip BEFORE touching markers
+  // so a closed day produces no email and no marker churn. Bypassed by the
+  // manual /internal/trigger endpoint (opts.force) — an explicit smoke-test or
+  // hand-trigger should run regardless of the calendar.
   if (!opts.force) {
     if ((type === "digest" || type === "evening") && isMarketHoliday(date)) {
       console.log(`[runJob ${type}] ${date} is a market holiday — skipping.`);
@@ -196,56 +203,31 @@ async function runJob(type: JobType, env: Env, opts: RunJobOpts = {}): Promise<R
     }
   }
 
+  // Mac-primary path retired 2026-08-14 (#35 Phase D, Task 25): the Mac binds
+  // loopback-only behind the Access-gated tunnel and MESH_HOSTNAME is
+  // permanently unreachable from the Cloudflare edge — the Worker never has
+  // an ingress path to attempt, so there's no primary POST and no timeout
+  // window to race against anymore.
+  //
+  // Marker check before fallback (dedup) — RETAINED. Pre-retirement this ran
+  // twice: once before the primary call (mac/cloud/cloudAttempting only), and
+  // once again right before fallback if primary failed (that second read also
+  // checked mac-running — added 2026-04-27 to close the 8:45→8:57 race where
+  // the Mac finished slowly during the primary's timeout window). With no
+  // primary call left to create that timing gap, the two reads collapse into
+  // ONE — but it checks all FOUR markers (the superset), so the mac-running
+  // guard the second read added is still enforced: the Mac's own
+  // launchd-triggered /api/cron/{type} run can still be starting or mid-flight
+  // when this tick fires, and must not be duplicated.
   const markers = await readMarkers(env.CRON_KV, type, date);
-
-  if (markers.mac && !opts.dryRun) return { skipped: "already_sent" };
-  if (markers.cloud && !opts.dryRun) return { skipped: "already_sent_by_cloud" };
-  // A concurrent invocation is already inside the fallback path. Bail out so
-  // 4 consecutive ticks at hh:00/15/30/45 don't all enter fallback and ship
-  // 4 emails before the first one finishes its 5-min run.
-  if (markers.cloudAttempting && !opts.dryRun) {
-    return { skipped: "cloud_attempt_in_flight" };
-  }
-
-  // Optionally skip primary entirely — for exercising the fallback path in tests.
-  let primary: PrimaryResult | undefined;
-  if (!opts.fallbackOnly) {
-    primary = await callPrimary({
-      meshHostname: env.MESH_HOSTNAME,
-      cronSecret: env.CRON_SHARED_SECRET,
-      type,
-      timeoutMs: parseInt(env.PRIMARY_TIMEOUT_MS, 10) || 300000,
-      // Digest: since last sent (matches launchd wrapper). Without this the
-      // Mac defaults to generateDailyDigest (last 24h) — which is yesterday's
-      // content re-packaged as today's email.
-      body: type === "digest" ? { mode: "since_last" } : undefined,
-    });
-
-    if (primary.kind === "success") {
-      if (!opts.dryRun) await writeMarker(env.CRON_KV, "mac", type, date);
-      return { primary, sentBy: "mac" };
-    }
-    if (primary.kind === "skipped_by_mac") {
-      return { primary };
-    }
-
-    // Primary timed out or errored from our perspective. Re-read markers
-    // before firing the fallback: the Mac may have completed slowly during
-    // our timeout window and written mac-sent (via the Mac→Worker callback
-    // wired into /api/cron/*), or it may still be running and have set the
-    // mac-running marker. Either way, we should NOT re-send. This closes
-    // the 8:45→8:57 race observed 2026-04-27.
-    if (!opts.dryRun) {
-      const reMarkers = await readMarkers(env.CRON_KV, type, date);
-      if (reMarkers.mac) return { primary, sentBy: "mac", skipped: "already_sent" };
-      if (reMarkers.cloud) return { primary, skipped: "already_sent_by_cloud" };
-      if (reMarkers.cloudAttempting) {
-        return { primary, skipped: "cloud_attempt_in_flight" };
-      }
-      if (reMarkers.macRunning) {
-        return { primary, skipped: "mac_still_running" };
-      }
-    }
+  if (!opts.dryRun) {
+    if (markers.mac) return { skipped: "already_sent", sentBy: "mac" };
+    if (markers.cloud) return { skipped: "already_sent_by_cloud" };
+    // A concurrent invocation is already inside the fallback path. Bail out so
+    // 4 consecutive ticks at hh:00/15/30/45 don't all enter fallback and ship
+    // 4 emails before the first one finishes its 5-min run.
+    if (markers.cloudAttempting) return { skipped: "cloud_attempt_in_flight" };
+    if (markers.macRunning) return { skipped: "mac_still_running" };
   }
 
   // Claim the fallback BEFORE the heavy Gmail+Claude+Resend work. The 10-min
@@ -254,7 +236,7 @@ async function runJob(type: JobType, env: Env, opts: RunJobOpts = {}): Promise<R
   // hermetic.
   if (!opts.dryRun) await setAttemptingMarker(env.CRON_KV, type, date);
 
-  // Primary failed (timeout / network / 5xx) or was skipped — run fallback.
+  // No primary to fail anymore — go straight to fallback.
   let fallback: FallbackResult;
   try {
     if (type === "briefing") {
@@ -281,13 +263,13 @@ async function runJob(type: JobType, env: Env, opts: RunJobOpts = {}): Promise<R
       await writeMarker(env.CRON_KV, "cloud", type, date);
       await clearAttemptingMarker(env.CRON_KV, type, date);
     }
-    return { primary, fallback, sentBy: "cloud" };
+    return { fallback, sentBy: "cloud" };
   }
 
   // Fallback didn't ship. Clear the attempting marker so the next tick can
   // retry immediately instead of waiting 10 min for the TTL to expire.
   if (!opts.dryRun) await clearAttemptingMarker(env.CRON_KV, type, date);
-  return { primary, fallback };
+  return { fallback };
 }
 
 // ── Catch-up retry ──────────────────────────────────────────────────────────
@@ -678,12 +660,13 @@ export default {
         );
       }
       const dryRun = url.searchParams.get("dryRun") === "true";
-      const fallbackOnly = url.searchParams.get("fallbackOnly") === "true";
       // Manual triggers bypass the holiday/briefing-day gate by default (smoke
       // tests + hand-triggers should run regardless of the calendar). Pass
-      // force=false to exercise the gate itself.
+      // force=false to exercise the gate itself. No fallbackOnly param here
+      // anymore — runJob is always fallback-only since the 2026-08-14 (#35
+      // Phase D, Task 25) Mac-primary retirement.
       const force = url.searchParams.get("force") !== "false";
-      const result = await runJob(typeParam, env, { dryRun, fallbackOnly, force });
+      const result = await runJob(typeParam, env, { dryRun, force });
       return Response.json(result);
     }
 

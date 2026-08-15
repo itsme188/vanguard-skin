@@ -31,7 +31,6 @@ import {
   todayET,
   getCurrentETDayOfWeek,
 } from "../../workers/cron/src/dst";
-import { callPrimary } from "../../workers/cron/src/primary";
 
 // ── Map-backed KVNamespace fake ─────────────────────────────────
 
@@ -154,83 +153,13 @@ describe("cron worker — marker dedup", () => {
   });
 });
 
-// ── callPrimary (HTTP to Mac) ───────────────────────────────────
-
-describe("cron worker — callPrimary", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it("returns success when Mac responds 200 with non-skip body", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }),
-      ),
-    );
-    const result = await callPrimary({
-      meshHostname: "http://mac.test",
-      cronSecret: "s",
-      type: "briefing",
-      timeoutMs: 500,
-    });
-    expect(result.kind).toBe("success");
-  });
-
-  it("returns skipped_by_mac when Mac replies with skipped:true", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        new Response(JSON.stringify({ skipped: true, reason: "cloud already sent" }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
-      ),
-    );
-    const result = await callPrimary({
-      meshHostname: "http://mac.test",
-      cronSecret: "s",
-      type: "briefing",
-      timeoutMs: 500,
-    });
-    expect(result.kind).toBe("skipped_by_mac");
-  });
-
-  it("returns server_error on 5xx", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("boom", { status: 503 })),
-    );
-    const result = await callPrimary({
-      meshHostname: "http://mac.test",
-      cronSecret: "s",
-      type: "digest",
-      timeoutMs: 500,
-    });
-    expect(result.kind).toBe("server_error");
-  });
-
-  it("returns network_error on fetch rejection", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => {
-        throw new Error("ECONNREFUSED");
-      }),
-    );
-    const result = await callPrimary({
-      meshHostname: "http://mac.test",
-      cronSecret: "s",
-      type: "digest",
-      timeoutMs: 500,
-    });
-    expect(result.kind).toBe("network_error");
-    if (result.kind === "network_error") {
-      expect(result.message).toContain("ECONNREFUSED");
-    }
-  });
-});
-
 // ── fetch handler: /internal/marker + /internal/trigger + auth ──
+//
+// callPrimary (the HTTP-to-Mac helper that used to live here) was retired
+// 2026-08-14 (#35 Phase D, Task 25) along with its call site in runJob —
+// workers/cron/src/primary.ts is deleted. See
+// workers/cron/test/primary-retirement.test.ts for dedicated coverage of the
+// retirement itself (no fetch attempted, marker dedup preserved).
 
 describe("cron worker — /internal/* handlers", () => {
   beforeEach(() => {
@@ -265,58 +194,14 @@ describe("cron worker — /internal/* handlers", () => {
     expect(body.sentBy).toBe("cloud");
   });
 
-  it("/internal/trigger runs primary → mac marker on success (dry run)", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        new Response(JSON.stringify({ ok: true }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
-      ),
-    );
-    const env = makeEnv();
-
-    const res = await worker.fetch(
-      new Request("http://w/internal/trigger?type=digest", {
-        method: "POST",
-        headers: { "X-Cron-Secret": "test-secret" },
-      }),
-      env,
-    );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { sentBy?: string; primary?: { kind: string } };
-    expect(body.sentBy).toBe("mac");
-    expect(body.primary?.kind).toBe("success");
-
-    // Marker WAS written (dryRun flag wasn't set in this test → writeMarker fires).
-    const markers = await readMarkers(env.CRON_KV, "digest", todayET());
-    expect(markers.mac).toBe(true);
-    expect(markers.cloud).toBe(false);
-  });
-
-  it("/internal/trigger skips when mac marker already exists", async () => {
-    const env = makeEnv();
-    await writeMarker(env.CRON_KV, "mac", "digest", todayET());
-
-    const res = await worker.fetch(
-      new Request("http://w/internal/trigger?type=digest", {
-        method: "POST",
-        headers: { "X-Cron-Secret": "test-secret" },
-      }),
-      env,
-    );
-    const body = (await res.json()) as { skipped?: string };
-    expect(body.skipped).toBe("already_sent");
-    expect(fallbackMocks.runFallbackDigest).not.toHaveBeenCalled();
-  });
-
-  it("/internal/trigger: primary failure → fallback runs → cloud marker", async () => {
-    // Mac returns 5xx → primary fails → fallback fires.
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("upstream dead", { status: 502 })),
-    );
+  // 2026-08-14 (#35 Phase D, Task 25): the Mac-primary POST is retired —
+  // /internal/trigger now goes straight from the marker dedup check to the
+  // fallback composer for every request. No fetch to MESH_HOSTNAME is ever
+  // attempted, so "mac" sentBy is only reachable via a pre-existing mac-sent
+  // marker (the Mac's own launchd-triggered send), never via a Worker→Mac
+  // call succeeding.
+  it("/internal/trigger goes straight to fallback with no fetch attempted", async () => {
+    vi.stubGlobal("fetch", vi.fn());
     fallbackMocks.runFallbackDigest.mockResolvedValueOnce({
       kind: "success",
       sentTo: "me@test",
@@ -331,36 +216,34 @@ describe("cron worker — /internal/* handlers", () => {
       }),
       env,
     );
-    const body = (await res.json()) as { sentBy?: string; primary?: { kind: string } };
-    expect(body.primary?.kind).toBe("server_error");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { sentBy?: string };
     expect(body.sentBy).toBe("cloud");
     expect(fallbackMocks.runFallbackDigest).toHaveBeenCalledTimes(1);
+    expect(global.fetch).not.toHaveBeenCalled();
 
     const markers = await readMarkers(env.CRON_KV, "digest", todayET());
     expect(markers.mac).toBe(false);
     expect(markers.cloud).toBe(true);
   });
 
-  it("/internal/trigger with fallbackOnly=true skips primary entirely", async () => {
-    const macSpy = vi.fn(async () => new Response("should not be called", { status: 200 }));
-    vi.stubGlobal("fetch", macSpy);
-
-    fallbackMocks.runFallbackBriefing.mockResolvedValueOnce({
-      kind: "success",
-      sentTo: "me@test",
-    });
-
+  it("/internal/trigger skips when mac marker already exists (dedup preserved, sentBy=mac)", async () => {
+    vi.stubGlobal("fetch", vi.fn());
     const env = makeEnv();
-    await worker.fetch(
-      new Request("http://w/internal/trigger?type=briefing&fallbackOnly=true", {
+    await writeMarker(env.CRON_KV, "mac", "digest", todayET());
+
+    const res = await worker.fetch(
+      new Request("http://w/internal/trigger?type=digest", {
         method: "POST",
         headers: { "X-Cron-Secret": "test-secret" },
       }),
       env,
     );
-
-    expect(macSpy).not.toHaveBeenCalled();
-    expect(fallbackMocks.runFallbackBriefing).toHaveBeenCalledTimes(1);
+    const body = (await res.json()) as { skipped?: string; sentBy?: string };
+    expect(body.skipped).toBe("already_sent");
+    expect(body.sentBy).toBe("mac");
+    expect(fallbackMocks.runFallbackDigest).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it("/health returns ok without authentication", async () => {
@@ -386,9 +269,17 @@ describe("cron worker — /internal/* handlers", () => {
 
 // ── B3: running-marker race fix ─────────────────────────────────
 //
-// Closes the 8:45 → 8:57 race observed 2026-04-27 where Mac succeeded
-// during the Worker's primary timeout window, Worker fired fallback anyway,
-// and the user got a thinned-out duplicate email.
+// Originally closed the 8:45 → 8:57 race observed 2026-04-27 where Mac
+// succeeded during the Worker's primary timeout window, Worker fired
+// fallback anyway, and the user got a thinned-out duplicate email — the
+// mac-running check was added to the post-primary marker re-read.
+//
+// 2026-08-14 (#35 Phase D, Task 25): the primary POST itself is retired, so
+// there's no timeout window left to race — but the guarantee (mac-running
+// must still block fallback) is preserved by folding it into the single
+// marker check runJob does before claiming fallback. The tests below now
+// prove that guarantee by seeding markers directly rather than simulating a
+// blocking Mac fetch mid-timeout.
 
 describe("cron worker — mac-running marker", () => {
   it("/internal/running-marker?action=set writes the mac-running KV key", async () => {
@@ -450,31 +341,12 @@ describe("cron worker — mac-running marker", () => {
     expect(res.status).toBe(401);
   });
 
-  it("Worker re-checks markers after primary timeout — skips fallback when mac-running is set", async () => {
-    // Simulate the 8:45→8:57 race:
-    //   1. Worker fires, no markers present.
-    //   2. Worker calls Mac primary. Mac begins processing (sets running marker).
-    //   3. Mac's pipeline takes >timeout. Worker's primary call aborts (timeout).
-    //   4. PRE-FIX: Worker fires fallback → duplicate thin email.
-    //   5. POST-FIX: Worker re-reads markers → sees mac-running → skips fallback.
-    const env = makeEnv({ PRIMARY_TIMEOUT_MS: "50" });
-
-    // Mac fetch is slow — never resolves before the timeout aborts it.
-    const macFetch = vi.fn(async (_url: string, init?: RequestInit) => {
-      // Simulate Mac setting the running-marker via a parallel call we
-      // emulate by writing to KV directly here. In production this would
-      // happen via the Mac POSTing /internal/running-marker.
-      await env.CRON_KV.put("mac-running-digest-" + todayET(), "now", {
-        expirationTtl: 600,
-      });
-      // Then block until aborted.
-      return new Promise<Response>((_res, rej) => {
-        init?.signal?.addEventListener("abort", () =>
-          rej(Object.assign(new Error("aborted"), { name: "AbortError" })),
-        );
-      });
+  it("Worker's marker check skips fallback when mac-running is set (Mac's own launchd run is mid-flight)", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const env = makeEnv();
+    await env.CRON_KV.put("mac-running-digest-" + todayET(), "now", {
+      expirationTtl: 600,
     });
-    vi.stubGlobal("fetch", macFetch);
 
     fallbackMocks.runFallbackDigest.mockClear();
 
@@ -490,30 +362,15 @@ describe("cron worker — mac-running marker", () => {
     const body = (await res.json()) as { skipped?: string };
     expect(body.skipped).toBe("mac_still_running");
     expect(fallbackMocks.runFallbackDigest).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
-  it("Worker re-checks markers after primary timeout — skips fallback when mac-sent appeared late", async () => {
-    // Variant: Mac succeeded slowly during the timeout window. The success
-    // response was lost (Worker had already aborted). But Mac wrote the
-    // mac-sent marker via... well, in this design the Worker writes the
-    // mac-sent marker on success. So the realistic late-success case is
-    // that mac-running is set and persists past timeout. That's covered
-    // by the previous test. This case covers a future evolution where
-    // the Mac itself writes mac-sent — the dedup still works.
-    const env = makeEnv({ PRIMARY_TIMEOUT_MS: "50" });
-
-    const macFetch = vi.fn(async (_url: string, init?: RequestInit) => {
-      // Mac wrote mac-sent during processing (e.g. via a Mac→KV callback).
-      await env.CRON_KV.put("mac-sent-digest-" + todayET(), "now", {
-        expirationTtl: 30 * 3600,
-      });
-      return new Promise<Response>((_res, rej) => {
-        init?.signal?.addEventListener("abort", () =>
-          rej(Object.assign(new Error("aborted"), { name: "AbortError" })),
-        );
-      });
+  it("Worker's marker check returns sentBy=mac and skips fallback when mac-sent is already present", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const env = makeEnv();
+    await env.CRON_KV.put("mac-sent-digest-" + todayET(), "now", {
+      expirationTtl: 30 * 3600,
     });
-    vi.stubGlobal("fetch", macFetch);
 
     fallbackMocks.runFallbackDigest.mockClear();
 
@@ -529,23 +386,15 @@ describe("cron worker — mac-running marker", () => {
     const body = (await res.json()) as { skipped?: string; sentBy?: string };
     expect(body.sentBy).toBe("mac");
     expect(fallbackMocks.runFallbackDigest).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
-  it("Worker still fires fallback when no markers appear during timeout (Mac dead)", async () => {
-    // Sanity check: the running-marker fix must not break the existing
-    // fallback path. If the Mac is genuinely offline (no markers written),
-    // Worker should still fall back as before.
-    const env = makeEnv({ PRIMARY_TIMEOUT_MS: "50" });
-
-    const macFetch = vi.fn(async (_url: string, init?: RequestInit) => {
-      // Mac is dead — no markers written.
-      return new Promise<Response>((_res, rej) => {
-        init?.signal?.addEventListener("abort", () =>
-          rej(Object.assign(new Error("aborted"), { name: "AbortError" })),
-        );
-      });
-    });
-    vi.stubGlobal("fetch", macFetch);
+  it("Worker fires fallback immediately when no markers are present (no primary call to wait on)", async () => {
+    // Sanity check: with the primary POST retired, an unmarked tick must
+    // still fall back — there's no "Mac might still respond" window anymore,
+    // so this should be immediate rather than needing a timeout to elapse.
+    vi.stubGlobal("fetch", vi.fn());
+    const env = makeEnv();
 
     fallbackMocks.runFallbackDigest.mockClear();
     fallbackMocks.runFallbackDigest.mockResolvedValueOnce({
@@ -566,5 +415,6 @@ describe("cron worker — mac-running marker", () => {
     const body = (await res.json()) as { sentBy?: string };
     expect(body.sentBy).toBe("cloud");
     expect(fallbackMocks.runFallbackDigest).toHaveBeenCalledTimes(1);
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 });
