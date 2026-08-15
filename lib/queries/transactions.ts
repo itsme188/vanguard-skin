@@ -14,6 +14,11 @@ export interface TransactionWithSecurity extends Transaction {
  * Detail (a703773). The converted aliases after t.* deliberately shadow
  * the native columns (better-sqlite3 row objects are built in column
  * order, so the last same-named column wins).
+ *
+ * RECONCILE_CLOSE rows are excluded — they're engine-owned synthetic
+ * transactions (lib/compute/tax-lots.ts), deleted and regenerated on every
+ * recompute, and never real user activity (CLAUDE.md invariant). Showing
+ * one here reads as a trade the user made when it isn't.
  */
 export function getTransactionsByAccount(
   db: Database.Database,
@@ -30,6 +35,7 @@ export function getTransactionsByAccount(
     LEFT JOIN fx_rates fx ON fx.currency = s.currency
     JOIN accounts a ON a.id = t.account_id
     WHERE t.account_id = ?
+      AND t.type != 'RECONCILE_CLOSE'
   `;
   const params: (number | string)[] = [accountId];
 
