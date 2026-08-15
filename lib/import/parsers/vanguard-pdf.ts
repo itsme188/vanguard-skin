@@ -586,7 +586,13 @@ async function callClaudeWithPdf<T>(pdfBuffer: Buffer, prompt: string): Promise<
       .replace(/\n?```\s*$/, "");
   }
 
-  return JSON.parse(jsonText) as T;
+  try {
+    return JSON.parse(jsonText) as T;
+  } catch {
+    throw new Error(
+      `Failed to parse Claude response as JSON: ${jsonText.slice(0, 200)}`
+    );
+  }
 }
 
 /**
@@ -623,6 +629,17 @@ export async function extractHoldingsFromPdf(
   // Attempt 1: Focused holdings extraction (no transactions)
   const response = await callClaudeWithPdf<ClaudePdfResponse>(pdfBuffer, FOCUSED_HOLDINGS_PROMPT);
   response.transactions = []; // Ensure empty
+
+  // Guard against a well-formed-but-incomplete response: Claude answered in
+  // JSON but the schema didn't come through (e.g. it dropped the top-level
+  // account summary). Reading response.total_value.toLocaleString() below
+  // would null-deref into a raw TypeError — fail clean instead.
+  if (typeof response.total_value !== "number") {
+    throw new Error(
+      "Claude response is missing the account total value (total_value) — " +
+      "the PDF extraction may have failed or returned an incomplete response."
+    );
+  }
 
   const attempt1Holdings = [...response.holdings];
   let holdingsSum = response.holdings.reduce((s, h) => s + (h.value || 0), 0);
