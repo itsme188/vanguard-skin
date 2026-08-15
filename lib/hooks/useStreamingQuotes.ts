@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import apiFetch from "@/lib/http/apiFetch";
 import type { LiveQuote } from "@/lib/tws/streaming";
 
 interface StreamingState {
@@ -99,7 +100,7 @@ export function useStreamingQuotes(enabled: boolean = false): StreamingState & {
 
     // Tell server to stop
     try {
-      await fetch("/api/tws/stream", {
+      await apiFetch("/api/tws/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "stop" }),
@@ -113,7 +114,7 @@ export function useStreamingQuotes(enabled: boolean = false): StreamingState & {
 
   const saveSnapshot = useCallback(async (): Promise<number> => {
     try {
-      const res = await fetch("/api/tws/stream", {
+      const res = await apiFetch("/api/tws/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "snapshot" }),
