@@ -106,9 +106,24 @@ function buildContextForSurface(
   }
 
   if (surface === "position-risk") {
-    const result = computePositionRisk(db, { accountIds, topN: 5 });
+    // topN:10 matches the surface's table (PositionRiskCard fetches
+    // topN=10) — a narrower topN here would silently drop true top risk
+    // contributors that rank outside the top-5 by market value.
+    const result = computePositionRisk(db, { accountIds, topN: 10 });
     if (!result) return emptyMessage;
-    return JSON.stringify(result, null, 2);
+    // computePositionRisk's SQL selects candidates ORDER BY market_value
+    // DESC (it must, to pick the topN subset before vol/corr can even be
+    // computed) — but the table renders them sorted by riskContribution
+    // desc (PositionRiskCard.tsx). Re-rank here so the model sees the same
+    // "biggest risk contributors" ordering the table shows, not a
+    // value-ordered list it would otherwise confabulate from.
+    const rankedPositions = [...result.positions].sort((a, b) => {
+      if (a.riskContribution == null && b.riskContribution == null) return 0;
+      if (a.riskContribution == null) return 1;
+      if (b.riskContribution == null) return -1;
+      return b.riskContribution - a.riskContribution;
+    });
+    return JSON.stringify({ ...result, positions: rankedPositions }, null, 2);
   }
 
   if (surface === "factor-heatmap") {
