@@ -400,7 +400,12 @@ describe("runCloudFallback", () => {
   });
 });
 
-describe("runCalendarEnrich primary-fail → cloud success", () => {
+// 2026-08-14 (#35 Phase D, Task 25): the Mac-primary POST is retired — there
+// is no primary call left to fail, so runCalendarEnrich goes straight to
+// cloud enrichment. The mock's "/api/calendar/enrich" branch below is dead
+// (no code path ever requests that URL anymore) but harmless; left in place
+// as evidence nothing new started hitting it.
+describe("runCalendarEnrich → cloud success (no primary call attempted)", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", vi.fn());
     vi.useFakeTimers();
@@ -491,6 +496,12 @@ describe("runCalendarEnrich primary-fail → cloud success", () => {
     expect(result.sentBy).toBe("cloud");
     expect(result.fallback?.kind).toBe("success");
     expect(result.fallback?.candidatesProcessed).toBe(1);
+
+    // No call ever reaches the dead "/api/calendar/enrich" mock branch above.
+    const fetchedUrls = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.map(
+      (call) => String(call[0]),
+    );
+    expect(fetchedUrls.some((u) => u.includes("/api/calendar/enrich"))).toBe(false);
 
     const store = (kv as unknown as { store: Map<string, string> }).store;
     const keys = Array.from(store.keys());

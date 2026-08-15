@@ -10,9 +10,15 @@
  * capturable ticks. 18:59 gives every AMC name at least two tick
  * opportunities within the runner's -2h candidate window.
  *
- * Architecture mirrors briefing/digest: try the Mac primary via
- * `callPrimary`, record an `enrich-sent-{slot}` KV marker on success. On
- * primary failure, Phase 9b kicks in:
+ * Originally (mirroring briefing/digest) this tried a Mac primary via a local
+ * `callEnrichPrimary` helper before falling back — record an `enrich-sent-
+ * {slot}` KV marker on primary success. RETIRED 2026-08-14 (#35 Phase D, Task
+ * 25): the Mac binds loopback-only behind an Access-gated tunnel, so
+ * MESH_HOSTNAME is permanently unreachable from the Cloudflare edge and the
+ * Worker has no Access identity to reach the new hostname either.
+ * `runCalendarEnrich` now goes straight from the `enrich-sent-{slot}` dedup
+ * check (unchanged — it's the only marker check this path ever had) to Phase
+ * 9b cloud enrichment:
  *
  *   1. Read the latest R2 state snapshot.
  *   2. Filter calendar events to the [now-2h, now-5min] window.
@@ -46,54 +52,6 @@ import {
 // Back-compat re-exports — existing importers/tests reach these through
 // calendar-enrich; the definitions now live in cloud-enriched.ts.
 export { cloudEnrichedKey, isPayloadComplete, type CloudEnrichedPayload };
-
-// ── Primary call ────────────────────────────────────────────────────
-
-export type PrimaryEnrichResult =
-  | { kind: "success"; status: number; body: unknown }
-  | { kind: "timeout" }
-  | { kind: "network_error"; message: string }
-  | { kind: "server_error"; status: number; body: unknown };
-
-async function callEnrichPrimary(
-  meshHostname: string,
-  cronSecret: string,
-  timeoutMs: number,
-): Promise<PrimaryEnrichResult> {
-  const url = `${meshHostname.replace(/\/$/, "")}/api/calendar/enrich`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Cron-Secret": cronSecret,
-      },
-      body: JSON.stringify({}),
-      signal: controller.signal,
-    });
-    const text = await res.text();
-    let body: unknown;
-    try {
-      body = JSON.parse(text);
-    } catch {
-      body = text.slice(0, 500);
-    }
-    if (res.ok) return { kind: "success", status: res.status, body };
-    return { kind: "server_error", status: res.status, body };
-  } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
-      return { kind: "timeout" };
-    }
-    return {
-      kind: "network_error",
-      message: err instanceof Error ? err.message : String(err),
-    };
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 // ── When to run ─────────────────────────────────────────────────────
 
@@ -166,9 +124,11 @@ function failSlotKey(date: string, hour: number, minute: number): string {
 
 export interface EnrichRunResult {
   skipped?: "off_hours" | "already_sent_this_slot" | "cloud_disabled";
-  primary?: PrimaryEnrichResult;
   fallback?: FallbackRunSummary;
-  sentBy?: "mac" | "cloud" | "none";
+  // "mac" dropped 2026-08-14 (#35 Phase D, Task 25): the Worker's own
+  // Mac-primary POST that used to produce it is retired, and nothing else
+  // ever wrote the enrich-sent-{slot} marker this path checks.
+  sentBy?: "cloud" | "none";
 }
 
 export interface FallbackRunSummary {
@@ -184,10 +144,17 @@ export interface FallbackRunSummary {
 
 export interface EnrichRunEnv {
   CRON_KV: KVNamespace;
-  /** Required for the cloud-fallback path; primary-only runs may omit. */
+  /** Required for the cloud-fallback path (the only path there is now that
+   *  the Mac-primary call is retired — see the file header). */
   ARCHIVE?: R2Bucket;
   CRON_SHARED_SECRET: string;
+  // MESH_HOSTNAME: no longer used to call the Mac (2026-08-14, #35 Phase D,
+  // Task 25) but still read below as the Pushover deep-link base fallback
+  // when PUSHOVER_LINK_BASE is unset — do not remove.
   MESH_HOSTNAME: string;
+  // PRIMARY_TIMEOUT_MS: fully unused now that callEnrichPrimary is retired.
+  // Left in place per convention (env cleanup is a deploy-time step, not a
+  // code change) — safe to drop from wrangler.toml in a later pass.
   PRIMARY_TIMEOUT_MS: string;
   CLOUD_ENRICH_ENABLED?: string;
   FRED_API_KEY?: string;
@@ -511,33 +478,34 @@ export async function runCalendarEnrich(
   const date = todayET();
   const key = slotKey(date, hour, minute);
 
+  // Marker check before fallback (dedup) — RETAINED. This was already the
+  // ONLY marker check this path had (unlike the briefing/digest/evening
+  // dispatch in index.ts, calendar-enrich never had a separate post-primary
+  // re-check) — it now sits directly in front of fallback instead of in
+  // front of a primary call. Nothing besides this Worker's own now-retired
+  // primary-success branch ever wrote this key, so in practice it will
+  // rarely fire — kept as cheap insurance against a concurrent invocation or
+  // a future write into this keyspace.
   const existing = await env.CRON_KV.get(key);
   if (existing) {
     return { skipped: "already_sent_this_slot" };
   }
 
-  const primary = await callEnrichPrimary(
-    env.MESH_HOSTNAME,
-    env.CRON_SHARED_SECRET,
-    parseInt(env.PRIMARY_TIMEOUT_MS, 10) || 300000,
-  );
-
-  if (primary.kind === "success") {
-    await env.CRON_KV.put(key, new Date().toISOString(), {
-      expirationTtl: 2 * 3600,
-    });
-    return { primary, sentBy: "mac" };
-  }
-
-  // Primary failed — journal the failure and run cloud fallback (if enabled).
+  // Mac-primary path retired 2026-08-14 (#35 Phase D, Task 25): the Mac binds
+  // loopback-only behind the Access-gated tunnel and MESH_HOSTNAME is
+  // permanently unreachable from the Cloudflare edge — go straight to the
+  // fallback journal + cloud enrichment. The journal write below is
+  // unchanged in effect: the Mac-primary POST failed with CF 1016 on every
+  // tick before this retirement too, so `isBenignEnrichOutcome` already
+  // treats "no primary success" as the normal idle state, not a problem.
   await env.CRON_KV.put(
     failSlotKey(date, hour, minute),
-    JSON.stringify({ at: new Date().toISOString(), primary }),
+    JSON.stringify({ at: new Date().toISOString(), primary: "retired" }),
     { expirationTtl: 24 * 3600 },
   );
 
   if (env.CLOUD_ENRICH_ENABLED !== "true") {
-    return { primary, fallback: { kind: "error", error: "cloud_enrich_disabled" }, sentBy: "none" };
+    return { fallback: { kind: "error", error: "cloud_enrich_disabled" }, sentBy: "none" };
   }
 
   const fallback = await runCloudFallback(env, { pacingMs: opts.pacingMs });
@@ -557,16 +525,17 @@ export async function runCalendarEnrich(
       { expirationTtl: 2 * 3600 },
     );
     await env.CRON_KV.delete(failSlotKey(date, hour, minute));
-    return { primary, fallback, sentBy: "cloud" };
+    return { fallback, sentBy: "cloud" };
   }
 
-  // No cloud send this tick. The Mac primary is unreachable from CF's edge by
-  // design (CF 1016) every tick, so clear the fail journal we wrote above unless
-  // the cloud fallback ALSO hit a real problem — a benign no_candidates idle
-  // tick must not read as a failure in the KV marker scan.
+  // No cloud send this tick. The Mac primary was unreachable from CF's edge by
+  // design (CF 1016) on every tick even before it was retired, so clear the
+  // fail journal we wrote above unless the cloud fallback ALSO hit a real
+  // problem — a benign no_candidates idle tick must not read as a failure in
+  // the KV marker scan.
   if (isBenignEnrichOutcome(fallback)) {
     await env.CRON_KV.delete(failSlotKey(date, hour, minute));
   }
 
-  return { primary, fallback, sentBy: "none" };
+  return { fallback, sentBy: "none" };
 }

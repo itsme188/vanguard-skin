@@ -225,19 +225,22 @@ describe("§6 row 7 — Missing/blank service secret configured → fails closed
 // ---------------------------------------------------------------------------
 describe("§6 row 8 — Worker primary during/after cutover → network failure → fallback; no direct Mac ingress", () => {
   it.todo(
-    "PARTIAL / PHASE-D-BLOCKED: workers/cron/src/primary.ts (callPrimary) still exists and is " +
-      "still called from workers/cron/src/index.ts and workers/cron/src/calendar-enrich.ts — " +
-      "retiring both call sites to fallback-only is Phase D scope (spec §7 'Worker parity' " +
-      "item), not yet done. The Worker's fallback COMPOSITION once triggered (dedup, marker " +
-      "re-check, push/email synthesis) IS exercised by workers/cron/test/fallback-*.test.ts " +
-      "and workers/cron/test/calendar-enrich.test.ts (root `npx vitest run` DOES sweep " +
-      "workers/cron/test/** — confirmed present in the full-suite run for this task), but the " +
-      "callPrimary-network-error->immediate-fallback TRIGGER path and the 'no direct Mac " +
-      "ingress' guarantee specifically (which depends on the row-1 loopback flip) are untested " +
-      "and cannot be until Phase D lands. Cutover checklist: after primary.ts/calendar-enrich.ts " +
-      "are retired to fallback-only, kill the Mac's dev server mid-window and confirm the " +
-      "Worker takes immediate fallback with no MESH_HOSTNAME POST attempted (check Worker logs " +
-      "for the absence of any fetch to the Mac origin)."
+    "PARTIAL, LOOPBACK-FLIP-BLOCKED (Task 26): the code-level half of this row is DONE " +
+      "(2026-08-14, Task 25) — workers/cron/src/primary.ts's callPrimary AND " +
+      "workers/cron/src/calendar-enrich.ts's own local callEnrichPrimary (NOT callPrimary — " +
+      "that function lived only in primary.ts and was never shared with calendar-enrich.ts; " +
+      "the original PHASE-D-BLOCKED note here named it imprecisely) are both retired; " +
+      "primary.ts is deleted. runJob/runCalendarEnrich now go straight from the marker dedup " +
+      "check to fallback, proven by workers/cron/test/primary-retirement.test.ts (asserts " +
+      "global.fetch is never called and every marker-skip path — mac-sent/cloud-sent/cloud-" +
+      "attempting/mac-running for the email path, already-sent-this-slot for calendar-enrich — " +
+      "still short-circuits before fallback runs). What remains untested here is the LIVE 'no " +
+      "direct Mac ingress' guarantee, which depends on the row-1 loopback bind flip (Task 26) " +
+      "actually landing: the code can no longer ATTEMPT an ingress call, but proving nothing " +
+      "CAN REACH the Mac requires the bind change. Cutover checklist: after the loopback flip " +
+      "lands, kill the Mac's dev server mid-window and confirm the Worker takes immediate " +
+      "fallback (already guaranteed by code) with no MESH_HOSTNAME POST attempted (check " +
+      "Worker logs for the absence of any fetch to the Mac origin)."
   );
 });
 
@@ -726,17 +729,23 @@ describe("§6 row 27 — Dynamic apiFetch call sites (template-literal + variabl
 // Row 28
 // ---------------------------------------------------------------------------
 describe("§6 row 28 — Both Worker primary calls removed (primary.ts + calendar-enrich.ts): immediate fallback, no MESH_HOSTNAME POST attempted", () => {
-  it.todo(
-    "NOT YET IMPLEMENTED, PHASE-D-BLOCKED: workers/cron/src/primary.ts still exports " +
-      "callPrimary and it is still called from workers/cron/src/index.ts:213 and " +
-      "workers/cron/src/calendar-enrich.ts — retiring BOTH call sites to fallback-only (spec §7 " +
-      "'Worker parity' item) is explicitly Phase D scope per the task-23 brief file itself " +
-      "('Phase D — Transport, Worker parity, cutover (loopback flip lands here)' immediately " +
-      "follows the Task 23 entry). There is nothing to test yet — the code this row describes " +
-      "does not exist on this branch. DO NOT write a test against code that will be deleted; " +
-      "the Phase D task that retires callPrimary must add its own test proving the immediate- " +
-      "fallback-with-marker-re-check behavior and the absence of any MESH_HOSTNAME fetch."
-  );
+  // DONE 2026-08-14 (Task 25, #35 Phase D): workers/cron/src/primary.ts (which
+  // exported callPrimary, called from index.ts's runJob) is deleted entirely.
+  // workers/cron/src/calendar-enrich.ts's own local callEnrichPrimary (NOT
+  // callPrimary — that naming in the original PHASE-D-BLOCKED note was
+  // imprecise; callPrimary lived only in primary.ts) is also deleted.
+  // runJob/runCalendarEnrich now go straight from the marker dedup check to
+  // fallback.
+  //   COVERED BY: workers/cron/test/primary-retirement.test.ts — asserts
+  //   global.fetch is never called for either path, AND that every marker-
+  //   skip path (mac-sent/cloud-sent/cloud-attempting/mac-running for the
+  //   email path; already-sent-this-slot for calendar-enrich) still
+  //   short-circuits before the fallback composer runs — proving the dedup
+  //   that used to guard the post-primary race is intact with no primary
+  //   call left to race against.
+  it("cited coverage file exists", () => {
+    expectCitedTestsExist(["workers/cron/test/primary-retirement.test.ts"]);
+  });
 });
 
 // ---------------------------------------------------------------------------
