@@ -175,7 +175,7 @@ Full route catalog: `docs/reference/api-patterns.md`. Every new/edited route:
 
 - **Thin wrapper.** Logic lives in `lib/…`; the lib fn is the single source of truth so in-process callers (email composers, crons) share it. Route = auth + parse + call.
 - **Envelope.** `{success:true,data}` / `{success:false,error}`.
-- **Auth.** `/api/cron/*` + enrich/reconcile routes: `X-Cron-Secret` mandatory — missing `CRON_SHARED_SECRET` env → 500, mismatch → 403. Never trust "local UI" or the inbound `Host` header. In-app routes take no cron auth.
+- **Auth.** `/api/cron/*` + enrich/reconcile routes: `X-Cron-Secret` mandatory — missing `CRON_SHARED_SECRET` env → 500, mismatch → 403. Never trust "local UI" or the inbound `Host` header. In-app routes take no cron auth. **Trust boundary (#35, 2026-08-14):** the app sits behind `proxy.ts`, the single choke point that default-denies every non-static route and classifies each `(method, pathname)` as public/human/service/dual — human routes require a DB-backed session + double-submit CSRF cookie, service routes require the cron secret or the Electron-main service credential. The Next server binds loopback-only (`127.0.0.1`); remote (phone) access is a named Cloudflare Tunnel + Cloudflare Access in front of that same login, never a second unauthenticated path. Full design: `docs/superpowers/specs/2026-08-14-packaged-app-trust-boundary-design.md`.
 - **Streaming.** Long/multi-phase in-app work → SSE; cron/background twins → plain JSON.
 - **Scope.** Multi-account: `resolveScope`, never `resolveScopeToSingleId`/first-id.
 - **Counts.** `?countOnly=true` must use the identical predicate + window as the list response — badge and surface can never disagree.

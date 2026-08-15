@@ -173,7 +173,7 @@ function startServer(): Promise<void> {
     const env: Record<string, string> = {
       ...process.env as Record<string, string>,
       PORT: String(PORT),
-      HOSTNAME: "0.0.0.0",
+      HOSTNAME: "127.0.0.1",
       NODE_ENV: "production",
       VANGUARD_DB_DIR: dataDir,
       ELECTRON: "true",

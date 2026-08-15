@@ -21,9 +21,9 @@
   "private": true,
   "main": "dist-electron/main.js",
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -H 127.0.0.1",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -H 127.0.0.1",
     "lint": "eslint",
     "seed:demo": "tsx scripts/seed-demo.ts",
     "electron:compile": "tsc -p electron/tsconfig.json",

@@ -97,12 +97,13 @@ function ctx(partial: Partial<RequestCtx> & Pick<RequestCtx, "method" | "pathnam
 // ---------------------------------------------------------------------------
 describe("§6 row 1 — LAN client → http://<mac-ip>:3099 → Connection refused", () => {
   it.todo(
-    "MANUAL/E2E, PHASE-D-BLOCKED: requires the loopback bind flip (electron/main.ts:176 " +
-      "HOSTNAME is still \"0.0.0.0\", not \"127.0.0.1\" — Phase D work, not yet landed on this " +
-      "branch). Cannot be unit-tested: this is a real OS-level TCP bind/refuse behavior, not " +
-      "app logic decideRequest can express. Cutover checklist: after the loopback flip ships, " +
-      "from a second LAN machine run `curl -m 3 http://<mac-lan-ip>:3099/login` and confirm " +
-      "connection refused (not a 401/redirect — the port must not even accept the TCP connection)."
+    "MANUAL/E2E: the loopback bind flip landed in code 2026-08-14 (Task 26 — " +
+      "electron/main.ts's injected HOSTNAME is now \"127.0.0.1\", was \"0.0.0.0\"). Cannot be " +
+      "unit-tested: this is a real OS-level TCP bind/refuse behavior, not app logic " +
+      "decideRequest can express. Cutover checklist: after the packaged app is rebuilt/" +
+      "installed with this change, from a second LAN machine run " +
+      "`curl -m 3 http://<mac-lan-ip>:3099/login` and confirm connection refused (not a " +
+      "401/redirect — the port must not even accept the TCP connection)."
   );
 });
 
@@ -111,11 +112,10 @@ describe("§6 row 1 — LAN client → http://<mac-ip>:3099 → Connection refus
 // ---------------------------------------------------------------------------
 describe("§6 row 2 — Separately started dev server, hit from LAN → Connection refused", () => {
   it.todo(
-    "MANUAL/E2E, PHASE-D-BLOCKED: package.json's \"dev\" script is still plain `next dev` " +
-      "(no `-H 127.0.0.1`) — Phase D work, not yet landed. Same reasoning as row 1: a bind " +
-      "behavior, not decideRequest logic. Cutover checklist: after package.json adds " +
-      "`-H 127.0.0.1` to dev/start, run `npm run dev`, then from a second LAN machine confirm " +
-      "connection refused on the dev port."
+    "MANUAL/E2E: package.json's \"dev\"/\"start\" scripts now pass `-H 127.0.0.1` " +
+      "(landed 2026-08-14, Task 26 — were plain `next dev`/`next start`). Same reasoning as " +
+      "row 1: a bind behavior, not decideRequest logic. Cutover checklist: run `npm run dev`, " +
+      "then from a second LAN machine confirm connection refused on the dev port."
   );
 });
 
@@ -225,22 +225,24 @@ describe("§6 row 7 — Missing/blank service secret configured → fails closed
 // ---------------------------------------------------------------------------
 describe("§6 row 8 — Worker primary during/after cutover → network failure → fallback; no direct Mac ingress", () => {
   it.todo(
-    "PARTIAL, LOOPBACK-FLIP-BLOCKED (Task 26): the code-level half of this row is DONE " +
-      "(2026-08-14, Task 25) — workers/cron/src/primary.ts's callPrimary AND " +
-      "workers/cron/src/calendar-enrich.ts's own local callEnrichPrimary (NOT callPrimary — " +
-      "that function lived only in primary.ts and was never shared with calendar-enrich.ts; " +
-      "the original PHASE-D-BLOCKED note here named it imprecisely) are both retired; " +
-      "primary.ts is deleted. runJob/runCalendarEnrich now go straight from the marker dedup " +
-      "check to fallback, proven by workers/cron/test/primary-retirement.test.ts (asserts " +
-      "global.fetch is never called and every marker-skip path — mac-sent/cloud-sent/cloud-" +
-      "attempting/mac-running for the email path, already-sent-this-slot for calendar-enrich — " +
-      "still short-circuits before fallback runs). What remains untested here is the LIVE 'no " +
-      "direct Mac ingress' guarantee, which depends on the row-1 loopback bind flip (Task 26) " +
-      "actually landing: the code can no longer ATTEMPT an ingress call, but proving nothing " +
-      "CAN REACH the Mac requires the bind change. Cutover checklist: after the loopback flip " +
-      "lands, kill the Mac's dev server mid-window and confirm the Worker takes immediate " +
-      "fallback (already guaranteed by code) with no MESH_HOSTNAME POST attempted (check " +
-      "Worker logs for the absence of any fetch to the Mac origin)."
+    "PARTIAL, MANUAL/E2E: the code-level half of this row is DONE — both the Worker-primary " +
+      "retirement (2026-08-14, Task 25: workers/cron/src/primary.ts's callPrimary AND " +
+      "workers/cron/src/calendar-enrich.ts's own local callEnrichPrimary, which never shared " +
+      "callPrimary with primary.ts, are both retired; primary.ts is deleted) AND the loopback " +
+      "bind flip (2026-08-14, Task 26: electron/main.ts HOSTNAME=127.0.0.1, package.json dev/" +
+      "start -H 127.0.0.1) have landed in code. runJob/runCalendarEnrich now go straight from " +
+      "the marker dedup check to fallback, proven by " +
+      "workers/cron/test/primary-retirement.test.ts (asserts global.fetch is never called and " +
+      "every marker-skip path — mac-sent/cloud-sent/cloud-attempting/mac-running for the email " +
+      "path, already-sent-this-slot for calendar-enrich — still short-circuits before fallback " +
+      "runs). What remains untested here is the LIVE 'no direct Mac ingress' guarantee, which " +
+      "requires the packaged app to actually be rebuilt/installed with the loopback bind (the " +
+      "user's cutover step) — the code can no longer ATTEMPT an ingress call, but proving " +
+      "nothing CAN REACH the Mac requires the running binary to reflect it. Cutover checklist: " +
+      "after the packaged app is rebuilt/installed, kill the Mac's dev server mid-window and " +
+      "confirm the Worker takes immediate fallback (already guaranteed by code) with no " +
+      "MESH_HOSTNAME POST attempted (check Worker logs for the absence of any fetch to the Mac " +
+      "origin)."
   );
 });
 
@@ -835,8 +837,9 @@ describe("§6 — consolidated manual/E2E verification checklist for live cutove
   // .superpowers/sdd/2026-08-14-packaged-app-trust-boundary/task-23-report.md.
   it.todo(
     "See task-23-report.md 'Consolidated manual/E2E verification checklist' for the full " +
-      "list, grouped by: (A) PHASE-D-BLOCKED items that cannot even be attempted until the " +
-      "loopback flip + Worker-primary retirement land (rows 1, 2, 8-partial, 28), " +
+      "list, grouped by: (A) items whose code (loopback flip + Worker-primary retirement, " +
+      "both landed 2026-08-14) is done but which still need the packaged-app rebuild/install " +
+      "cutover before live verification is possible (rows 1, 2, 8-partial, 28), " +
       "(B) live-packaged-Electron-app items (rows 3, 19), (C) live-Cloudflare-Access-edge " +
       "items (row 9), (D) live-Plaid-OAuth item entangled with named-hostname cutover " +
       "(row 31), (E) live-device PIN-lockout UI item (row 18)."
