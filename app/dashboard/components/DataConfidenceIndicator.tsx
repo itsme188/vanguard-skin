@@ -291,8 +291,12 @@ function ActionRow({
         {action.severity === "critical" ? "●" : action.severity === "warning" ? "◐" : "○"}
       </span>
       <div className="flex-1 min-w-0">
-        <p className="text-ink-dim">{action.message}</p>
-        <p className="text-ink-faint">{action.fix}</p>
+        {/* message/fix are composed from the user's own held-security counts,
+            tickers, and account names (getDataActions in
+            lib/queries/data-confidence.ts) — portfolio-derived, so they mask
+            like detail/guidance in DimensionBar above. */}
+        <p className="text-ink-dim"><PrivateText>{action.message}</PrivateText></p>
+        <p className="text-ink-faint"><PrivateText>{action.fix}</PrivateText></p>
       </div>
       {action.autoFixable && (
         <button
