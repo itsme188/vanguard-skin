@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { jsonSchema } from "ai";
 import { generateObjectForFeature } from "@/lib/ai/generate";
+import { guardNarrative } from "@/lib/levels/narrative-guard";
 import type { SuggestedLevel } from "./suggested-levels";
 import type { OhlcBar } from "./indicators";
 
@@ -81,8 +82,15 @@ export async function getOrGenerateNarrative(
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const object = _rawObject as any as { narrative: string };
-    const narrative = (object.narrative ?? "").trim();
-    if (!narrative) return null;
+    const rawNarrative = (object.narrative ?? "").trim();
+    if (!rawNarrative) return null;
+
+    // Numeric-plausibility gate (QA regression #6, 2026-08-16): a model
+    // narrative sometimes states a distance figure ("N% above/below") that
+    // contradicts the level's own price/currentPrice. Never store the raw
+    // sentence when that happens — swap in a computed-template sentence
+    // built from real data instead. See lib/levels/narrative-guard.ts.
+    const narrative = guardNarrative(rawNarrative, input.currentPrice, input.level) ?? rawNarrative;
 
     db.prepare(
       `INSERT OR IGNORE INTO suggested_level_narratives
