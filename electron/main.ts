@@ -13,8 +13,27 @@ import path from "node:path";
 import fs from "node:fs";
 import { setupIpcHandlers } from "./ipc-handlers";
 import { createTray } from "./tray";
-import { getSettings, bootstrapFromEnvLocal } from "./settings-store";
+import {
+  getSettings,
+  bootstrapFromEnvLocal,
+  loadOrCreateSecret,
+  getEncryptedSecret,
+  setEncryptedSecret,
+  rotateSecret,
+} from "./settings-store";
 import { openServerLog, serverLogLine } from "./server-log";
+import {
+  buildBootstrapCookieArgs,
+  ELECTRON_SERVICE_CRED_KEY,
+  ELECTRON_SERVICE_CRED_ENV,
+  APP_PASSWORD_HASH_KEY,
+  APP_PASSWORD_HASH_ENV,
+  type BootstrapResponse,
+} from "./bootstrap-auth";
+import { hashPassword, verifyPassword } from "./password-hash";
+import { promptForNewPassword } from "./password-prompt";
+import { runPasswordChange, type PasswordChangeResult } from "./password-change";
+import { runCredentialRotation, type RotateCredentialResult } from "./credential-rotation";
 
 // ─── Find System Node.js ────────────────────────────────────────
 
@@ -117,6 +136,14 @@ function getDataDir(): string {
 let mainWindow: BrowserWindow | null = null;
 let serverProcess: ChildProcess | null = null;
 /**
+ * Electron-main service credential (#35 task 14). Loaded/generated once at
+ * startup via `loadOrCreateSecret` (OS-keychain encrypted), injected into the
+ * child server as ELECTRON_SERVICE_CRED, and sent as the `X-Electron-Cred`
+ * header on the main process's own fetches (desktop-bootstrap + the tws/*
+ * auto-connect calls), which do NOT carry the renderer window's cookie jar.
+ */
+let electronServiceCred: string | null = null;
+/**
  * Durable sink for the Next server's stdout/stderr (2026-08-04): a
  * Finder-launched .app discards Electron main's console, so without this
  * file server-side warnings leave no trace (the useRTH reaction failure
@@ -146,11 +173,24 @@ function startServer(): Promise<void> {
     const env: Record<string, string> = {
       ...process.env as Record<string, string>,
       PORT: String(PORT),
-      HOSTNAME: "0.0.0.0",
+      HOSTNAME: "127.0.0.1",
       NODE_ENV: "production",
       VANGUARD_DB_DIR: dataDir,
       ELECTRON: "true",
     };
+
+    // #35 task 14 — the Electron-main service credential the desktop-bootstrap
+    // route (and the tws/* auto-connect routes) authenticate against. Loaded
+    // before startServer() in whenReady; injected here alongside the settings.
+    if (electronServiceCred) env[ELECTRON_SERVICE_CRED_ENV] = electronServiceCred;
+
+    // #35 task 15 — the app password hash the /api/auth/login route verifies
+    // against. Read fresh from safeStorage on EVERY spawn so a change-password
+    // restart picks up the new hash from env (a running server can't hot-swap
+    // it). Provisioned before the first startServer() in whenReady, so it is
+    // always present here; a running server with no hash refuses remote logins.
+    const passwordHash = getEncryptedSecret(APP_PASSWORD_HASH_KEY);
+    if (passwordHash) env[APP_PASSWORD_HASH_ENV] = passwordHash;
 
     // Inject settings as env vars
     if (settings.anthropicApiKey) env.ANTHROPIC_API_KEY = settings.anthropicApiKey;
@@ -275,9 +315,96 @@ function stopServer(): void {
   });
 }
 
+/**
+ * Stops the child server and RESOLVES once it has actually exited (SIGTERM,
+ * then SIGKILL after 5s). Unlike stopServer() this awaits the exit so a
+ * restart never races a still-bound port 3099. Safe to call with no server
+ * running (resolves immediately).
+ */
+function stopServerAsync(): Promise<void> {
+  return new Promise((resolve) => {
+    const proc = serverProcess;
+    if (!proc) {
+      resolve();
+      return;
+    }
+    const forceKill = setTimeout(() => {
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        // already gone
+      }
+    }, 5_000);
+    proc.once("exit", () => {
+      clearTimeout(forceKill);
+      resolve();
+    });
+    proc.kill("SIGTERM");
+  });
+}
+
+/**
+ * #35 task 15 — restart the child server so it re-reads its env (the new
+ * APP_PASSWORD_HASH after a password change, or a rotated service credential).
+ * A running Node process cannot hot-swap its env, so the only correct way to
+ * pick up a changed secret is a full stop→start. startServer() re-reads
+ * safeStorage + settings on spawn.
+ */
+async function restartServer(): Promise<void> {
+  await stopServerAsync();
+  await startServer();
+}
+
 // ─── Window ─────────────────────────────────────────────────────
 
-function createWindow(): void {
+/**
+ * Calls the loopback desktop-bootstrap route to mint the renderer window's
+ * human session, authenticating with the Electron-main service credential.
+ * Retries briefly: startServer() resolves on Next's "Ready" line, but the
+ * first request also triggers lazy DB migrations, so an early attempt can
+ * race. Bounded so a genuinely broken server never hangs the launch forever.
+ */
+async function bootstrapDesktopSession(): Promise<BootstrapResponse> {
+  const attempts = 5;
+  let lastErr: unknown = null;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetch(`http://localhost:${PORT}/api/auth/desktop-bootstrap`, {
+        method: "POST",
+        headers: { "X-Electron-Cred": electronServiceCred ?? "" },
+      });
+      const json = (await res.json()) as BootstrapResponse;
+      if (res.ok && json?.success) return json;
+      lastErr = new Error(`bootstrap HTTP ${res.status}: ${json?.error ?? "unknown"}`);
+    } catch (err) {
+      lastErr = err;
+    }
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("desktop bootstrap failed");
+}
+
+/**
+ * Mints a fresh desktop session via the loopback bootstrap route and installs
+ * the returned session + CSRF cookies on the given window's partition. Shared
+ * by first launch (createWindow) and the change-password re-bootstrap. Throws
+ * if the bootstrap call or cookie install fails — callers decide whether that
+ * is fatal.
+ */
+async function mintAndInstallDesktopSession(window: BrowserWindow): Promise<void> {
+  const boot = await bootstrapDesktopSession();
+  const cookieArgs = buildBootstrapCookieArgs(PORT, boot);
+  for (const c of cookieArgs) {
+    await window.webContents.session.cookies.set({
+      url: c.url,
+      name: c.name,
+      value: c.value,
+      httpOnly: c.httpOnly,
+    });
+  }
+}
+
+async function createWindow(): Promise<void> {
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -287,6 +414,10 @@ function createWindow(): void {
     backgroundColor: "#080B12", // Midnight Portfolio canvas color
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 16, y: 16 },
+    // #35 task 14 — do NOT reveal the window until it's authenticated: create
+    // hidden, install the session cookies, load /dashboard, THEN show(). This
+    // avoids a visible flash of the /login bounce on every launch.
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -297,8 +428,6 @@ function createWindow(): void {
   // Start maximized — the dashboard is designed for full-width viewports
   mainWindow.maximize();
 
-  mainWindow.loadURL(`http://localhost:${PORT}/dashboard/today`);
-
   // Open external links in the default browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
@@ -308,6 +437,34 @@ function createWindow(): void {
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
+
+  // Silent auth: mint the human session server-side and install both cookies
+  // on this window's partition BEFORE loading the dashboard. If it fails, we
+  // still load — the window will bounce to /login (task 18) where the password
+  // can be entered manually. A failure here must never crash the app.
+  try {
+    await mintAndInstallDesktopSession(mainWindow);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[electron] desktop bootstrap failed:", message);
+    serverLogStream?.write(
+      serverLogLine("[electron]", `desktop bootstrap failed (window will bounce to /login): ${message}`),
+    );
+  }
+
+  // Guard loadURL: a rejection (ERR_ABORTED when a redirect supersedes the
+  // navigation, or a mid-load server hiccup) must NOT skip show() nor escape
+  // to whenReady's outer catch — that would pop a misleading "Failed to Start"
+  // dialog and quit even though the server is healthy. The window ALWAYS
+  // appears; a failed load simply lands on Chromium's error page.
+  try {
+    await mainWindow.loadURL(`http://localhost:${PORT}/dashboard/today`);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[electron] loadURL failed:", message);
+    serverLogStream?.write(serverLogLine("[electron]", `loadURL failed: ${message}`));
+  }
+  mainWindow.show();
 }
 
 // ─── TWS Auto-Connect ───────────────────────────────────────────
@@ -320,8 +477,13 @@ async function autoConnectTws(): Promise<void> {
   }
 
   try {
-    // Check if already connected
-    const statusRes = await fetch(`http://localhost:${PORT}/api/tws/status`);
+    // Check if already connected. These main-process fetches carry no window
+    // cookie jar, so they authenticate with the Electron service credential
+    // (#35 task 14 — /api/tws/status + /api/tws/connect are classified
+    // `electron` in lib/auth/route-policy.ts).
+    const statusRes = await fetch(`http://localhost:${PORT}/api/tws/status`, {
+      headers: { "X-Electron-Cred": electronServiceCred ?? "" },
+    });
     const statusData = await statusRes.json();
     if (statusData?.data?.state === "connected") {
       console.log("[auto-connect] TWS already connected");
@@ -331,7 +493,10 @@ async function autoConnectTws(): Promise<void> {
     // Attempt connection
     const res = await fetch(`http://localhost:${PORT}/api/tws/connect`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-Electron-Cred": electronServiceCred ?? "",
+      },
       body: JSON.stringify({
         host: settings.twsHost || "127.0.0.1",
         port: settings.twsPort || 7496,
@@ -346,6 +511,136 @@ async function autoConnectTws(): Promise<void> {
     }
   } catch {
     console.log("[auto-connect] TWS connection attempt failed (TWS may not be running)");
+  }
+}
+
+// ─── Password provisioning + change transaction (#35 task 15) ───
+
+/**
+ * First-run provisioning. If no app password hash exists in safeStorage, opens
+ * the native prompt, scrypt-hashes the chosen password, and stores it — BEFORE
+ * the child server is spawned, so the server never serves a login it can't
+ * verify. Idempotent: a no-op once a hash exists. Throws if the user
+ * cancels/closes the prompt (the caller treats that as fatal — no password,
+ * no trusted server) or if safeStorage is unavailable (fail-closed, via
+ * getEncryptedSecret/setEncryptedSecret).
+ */
+async function ensureAppPasswordProvisioned(): Promise<void> {
+  const existing = getEncryptedSecret(APP_PASSWORD_HASH_KEY); // fail-closed guard runs here
+  if (existing !== null) return;
+  const password = await promptForNewPassword();
+  setEncryptedSecret(APP_PASSWORD_HASH_KEY, hashPassword(password));
+  console.log("[electron] app password provisioned (first run)");
+  serverLogStream?.write(serverLogLine("[electron]", "app password provisioned (first run)"));
+}
+
+/**
+ * Calls the server-owned POST /api/auth/revoke-all on the CURRENT (pre-restart)
+ * child, authenticated with the Electron service credential. Electron main
+ * cannot open the SQLite session store itself (better-sqlite3 ABI), so the
+ * server must do the delete. Throws on any non-2xx so the transaction surfaces
+ * the failure instead of silently leaving stale sessions alive.
+ */
+async function callRevokeAll(): Promise<void> {
+  const res = await fetch(`http://localhost:${PORT}/api/auth/revoke-all`, {
+    method: "POST",
+    headers: { "X-Electron-Cred": electronServiceCred ?? "" },
+  });
+  const json = (await res.json().catch(() => null)) as { success?: boolean; error?: string } | null;
+  if (!res.ok || !json?.success) {
+    throw new Error(`revoke-all failed: HTTP ${res.status} ${json?.error ?? ""}`.trim());
+  }
+}
+
+/**
+ * Re-mints the desktop session on the restarted server and reloads the window
+ * so it drops the now-revoked cookie and picks up the fresh one. Best-effort on
+ * the reload (a failed navigation lands on /login, where the new password
+ * works) but the mint+install must succeed or the window would be stuck logged
+ * out — so this rethrows a mint failure to the transaction.
+ */
+async function rebootstrapWindowSession(): Promise<void> {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  await mintAndInstallDesktopSession(mainWindow);
+  try {
+    await mainWindow.loadURL(`http://localhost:${PORT}/dashboard/today`);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[electron] post-change reload failed:", message);
+    serverLogStream?.write(serverLogLine("[electron]", `post-change reload failed: ${message}`));
+  }
+}
+
+/**
+ * The full change-password transaction, invoked from the Settings IPC handler.
+ * Order is enforced by the pure `runPasswordChange` sequencer (verify → write
+ * → revoke-all → restart child → re-bootstrap window). Returns a domain result;
+ * a thrown step (e.g. the restart) is caught and returned as a failure so the
+ * renderer can explain the no-op rather than crashing the main process.
+ */
+async function changePasswordTransaction(
+  currentPassword: string,
+  newPassword: string,
+): Promise<PasswordChangeResult> {
+  if (typeof newPassword !== "string" || newPassword.length < 8) {
+    return { success: false, error: "New password must be at least 8 characters." };
+  }
+  try {
+    return await runPasswordChange({
+      verifyCurrent: () => {
+        const stored = getEncryptedSecret(APP_PASSWORD_HASH_KEY);
+        return stored !== null && verifyPassword(currentPassword, stored);
+      },
+      writeHash: () => setEncryptedSecret(APP_PASSWORD_HASH_KEY, hashPassword(newPassword)),
+      revokeAll: callRevokeAll,
+      restart: restartServer,
+      rebootstrap: rebootstrapWindowSession,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[electron] change-password transaction failed:", message);
+    serverLogStream?.write(serverLogLine("[electron]", `change-password failed: ${message}`));
+    return { success: false, error: `Password change failed after starting: ${message}` };
+  }
+}
+
+// ─── Service-credential rotation transaction (#35 task 17) ──────
+
+/**
+ * The full ELECTRON_SERVICE_CRED rotation transaction, invoked from the
+ * Settings IPC handler. Order is enforced by the pure `runCredentialRotation`
+ * sequencer (mint + persist new cred -> restart child -> re-bootstrap
+ * window). ELECTRON_SERVICE_CRED lives in the already-spawned child's env, so
+ * it cannot be hot-swapped — restarting is the only way the server picks up
+ * the new value.
+ *
+ * `writeCred` updates the module-level `electronServiceCred` BEFORE restart
+ * runs, so every later reader (startServer()'s env injection, and
+ * bootstrapDesktopSession()/autoConnectTws()'s `X-Electron-Cred` header) sees
+ * the new value — none of them capture it in a closure, they all read the
+ * live variable. A thrown step (e.g. safeStorage unavailable, or the restart
+ * itself failing) is caught here and returned as a domain failure so the
+ * renderer can explain the no-op rather than crashing the main process; the
+ * raw new credential never crosses the IPC boundary (RotateCredentialResult
+ * carries no secret).
+ */
+async function rotateServiceCredentialTransaction(): Promise<RotateCredentialResult> {
+  try {
+    const result = await runCredentialRotation({
+      writeCred: () => {
+        const newCred = rotateSecret(ELECTRON_SERVICE_CRED_KEY);
+        electronServiceCred = newCred;
+        return newCred;
+      },
+      restart: restartServer,
+      rebootstrap: rebootstrapWindowSession,
+    });
+    return { success: result.success };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[electron] credential rotation transaction failed:", message);
+    serverLogStream?.write(serverLogLine("[electron]", `credential rotation failed: ${message}`));
+    return { success: false, error: `Credential rotation failed after starting: ${message}` };
   }
 }
 
@@ -410,11 +705,50 @@ app.setName(APP_NAME);
 app.whenReady().then(async () => {
   // On first launch, import API keys from .env.local
   bootstrapFromEnvLocal();
-  setupIpcHandlers();
+  setupIpcHandlers({
+    changePassword: changePasswordTransaction,
+    rotateServiceCredential: rotateServiceCredentialTransaction,
+  });
+
+  // #35 task 14 — load/generate the Electron-main service credential BEFORE
+  // starting the server (it must be present in the child env). FAIL-CLOSED:
+  // loadOrCreateSecret throws if the OS keychain is unavailable (safeStorage
+  // off/locked) — surface a clear dialog rather than crashing uncaught or
+  // silently launching an app that can't authenticate its own window.
+  try {
+    electronServiceCred = loadOrCreateSecret(ELECTRON_SERVICE_CRED_KEY);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    dialog.showErrorBox(
+      "Secure Storage Unavailable",
+      `The app could not access the OS keychain to load its service credential:\n\n${message}\n\n` +
+        `Unlock your login keychain and relaunch. The app cannot start securely without it.`,
+    );
+    app.quit();
+    return;
+  }
+
+  // #35 task 15 — provision the app password on first run BEFORE the server is
+  // spawned (its hash is injected into the child env, and the server must never
+  // serve a login it can't verify). FAIL-CLOSED: a cancelled prompt or an
+  // unavailable keychain means we cannot start a trustworthy server — surface a
+  // dialog and quit rather than launching without a password boundary.
+  try {
+    await ensureAppPasswordProvisioned();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    dialog.showErrorBox(
+      "Password Required",
+      `Portfolio Desk needs an app password before it can start:\n\n${message}\n\n` +
+        `Relaunch and set a password to continue.`,
+    );
+    app.quit();
+    return;
+  }
 
   try {
     await startServer();
-    createWindow();
+    await createWindow();
     createTray(mainWindow);
 
     // Non-blocking TWS auto-connect after server warmup

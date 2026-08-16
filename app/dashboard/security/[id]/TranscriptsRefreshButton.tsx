@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import apiFetch from "@/lib/http/apiFetch";
 
 interface Props {
   ticker: string;
@@ -25,7 +26,7 @@ export function TranscriptsRefreshButton({ ticker }: Props) {
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch("/api/transcripts", {
+      const res = await apiFetch("/api/transcripts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ticker }),

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import apiFetch from "@/lib/http/apiFetch";
 
 type Layout = "structured" | "by_source" | "by_company";
 
@@ -33,37 +34,58 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
   const [data, setData] = useState<DigestPreviewResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // The STRUCTURED layout is the paid-AI synthesis, produced only by POST
+  // (#35 task 5: GET is a side-effect-free read of the two deterministic
+  // renderings). genLoading covers the extra POST round-trip.
+  const [genLoading, setGenLoading] = useState(false);
   const [layout, setLayout] = useState<Layout>("structured");
 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     setLoading(true);
+    setGenLoading(false);
     setError(null);
     setData(null);
 
-    const url = since ? `/api/digest/preview?since=${encodeURIComponent(since)}` : "/api/digest/preview";
-    fetch(url)
-      .then(async (res) => {
-        if (!res.ok) {
-          const body = (await res.json().catch(() => ({}))) as { error?: string };
-          throw new Error(body.error ?? `HTTP ${res.status}`);
+    const qs = since ? `?since=${encodeURIComponent(since)}` : "";
+    const url = `/api/digest/preview${qs}`;
+
+    (async () => {
+      try {
+        // 1) GET — instant paint of by-publication / by-company (no AI, no write).
+        const getRes = await fetch(url);
+        if (!getRes.ok) {
+          const body = (await getRes.json().catch(() => ({}))) as { error?: string };
+          throw new Error(body.error ?? `HTTP ${getRes.status}`);
         }
-        return res.json() as Promise<DigestPreviewResponse>;
-      })
-      .then((d) => {
+        const getData = (await getRes.json()) as DigestPreviewResponse;
         if (cancelled) return;
-        setData(d);
-        if (d.structuredHtml) setLayout("structured");
-        else if (d.bySourceHtml) setLayout("by_source");
-        else if (d.byCompanyHtml) setLayout("by_company");
-      })
-      .catch((err: unknown) => {
+        setData(getData);
+        if (getData.bySourceHtml) setLayout("by_source");
+        else if (getData.byCompanyHtml) setLayout("by_company");
+        setLoading(false);
+
+        // 2) POST — generate the structured (synthesis) layout. Routed through
+        //    apiFetch (#35 task 9-12) since it's a mutating call. This is
+        //    authoritative for `empty` (it accounts for alert-only windows the
+        //    GET can miss).
+        setGenLoading(true);
+        const postRes = await apiFetch(url, { method: "POST" });
+        if (!postRes.ok) return; // keep the deterministic views; structured stays unavailable
+        const postData = (await postRes.json()) as DigestPreviewResponse;
+        if (cancelled) return;
+        setData(postData);
+        if (postData.structuredHtml) setLayout("structured");
+      } catch (err: unknown) {
         if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load digest.");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+          setGenLoading(false);
+        }
+      }
+    })();
 
     return () => {
       cancelled = true;
@@ -178,7 +200,12 @@ export function DigestEmailViewer({ open, onClose, since }: DigestEmailViewerPro
               sandbox="allow-same-origin"
             />
           )}
-          {data && !data.empty && !activeHtml && (
+          {data && !data.empty && !activeHtml && layout === "structured" && genLoading && (
+            <div className="px-5 py-12 text-center text-[14px] text-ink-faint">
+              Generating structured view…
+            </div>
+          )}
+          {data && !data.empty && !activeHtml && !(layout === "structured" && genLoading) && (
             <div className="px-5 py-12 text-center text-[14px] text-ink-faint">
               {layout === "structured" ? "Structured" : layout === "by_source" ? "By-publication" : "By-company"} view unavailable.
               {otherAvailable && (

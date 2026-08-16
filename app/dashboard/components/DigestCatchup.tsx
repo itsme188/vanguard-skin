@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import apiFetch from "@/lib/http/apiFetch";
 
 // Mirrors com.vanguard-skin.daily-digest.plist — Mon-Fri 8:45 AM local.
 const DIGEST_HOUR = 8;
@@ -47,7 +48,12 @@ export function DigestCatchup() {
         return;
       }
 
-      fetch("/api/digest/status")
+      // POST (not GET): the on-wake reconcile — which advances the shared
+      // last_digest_sent_at pointer from confirmed cloud sends — is a WRITE,
+      // moved off the GET read for the SameSite=Lax CSRF fix (#35 task 5). This
+      // poller is the "open dashboard heals the pointer within one poll" path,
+      // so it calls POST. Routed through apiFetch (#35 task 9-12) since it's a mutating call.
+      apiFetch("/api/digest/status", { method: "POST" })
         .then((r) => r.json())
         .then((data) => {
           // Cloud fallback mid-flight: informational, not actionable.
@@ -95,7 +101,7 @@ export function DigestCatchup() {
       // and skip the last_digest_sent_at update so a still-in-flight cron
       // isn't poisoned by our "now" timestamp. Catches the 8:45 → 8:57
       // duplicate-with-thin-content race observed 2026-04-27.
-      const res = await fetch("/api/digest/email", {
+      const res = await apiFetch("/api/digest/email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode: "since_last", skipMarkerUpdate: true }),

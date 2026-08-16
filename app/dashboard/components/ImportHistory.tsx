@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { ImportBatch } from "@/lib/types";
 import { parseStoredTimestamp } from "@/lib/format";
+import apiFetch from "@/lib/http/apiFetch";
 
 const SOURCE_LABELS: Record<string, string> = {
   "ibkr-activity": "IBKR Activity",
@@ -49,13 +50,27 @@ export function ImportHistory({ batches }: { batches: ImportBatch[] }) {
   }
 
   const handleUndo = async (batchId: number) => {
-    if (!confirm("Undo this import? This will delete all records from this batch and recompute tax lots.")) return;
+    if (!confirm("Undo this import? This will delete all records from this batch and recompute tax lots. A recovery snapshot is saved first, so the batch can be restored if needed.")) return;
     setUndoingId(batchId);
     setUndoError(null);
     try {
-      const res = await fetch(`/api/import?batchId=${batchId}`, { method: "DELETE" });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({ error: "Undo failed" }));
+      // Deliberate two-step (task 20, §G): the first DELETE returns a
+      // short-lived, single-use confirmation token; the second presents it.
+      // A stray or replayed DELETE therefore can't unwind a batch on its own.
+      const challenge = await apiFetch(`/api/import?batchId=${batchId}`, { method: "DELETE" });
+      const challengeData = await challenge.json().catch(() => ({ error: "Undo failed" }));
+      if (!challenge.ok || !challengeData.requiresConfirmation || !challengeData.confirmToken) {
+        setUndoError(challengeData.error ?? "Undo failed");
+        return;
+      }
+
+      const confirmToken = encodeURIComponent(challengeData.confirmToken as string);
+      const res = await apiFetch(
+        `/api/import?batchId=${batchId}&confirm=${confirmToken}`,
+        { method: "DELETE" },
+      );
+      const data = await res.json().catch(() => ({ error: "Undo failed" }));
+      if (!res.ok || !data.success) {
         setUndoError(data.error ?? "Undo failed");
         return;
       }

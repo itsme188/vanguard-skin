@@ -1,9 +1,13 @@
 /**
  * Orchestrates post-release enrichment for calendar events.
  *
- * Shared between the launchd-driven cron script and the on-demand
- * `POST /api/calendar/enrich` route. Keeps all scheduling semantics
- * (window, TWS detection, sector-gap logging) in one place.
+ * Shared between the launchd-driven cron script and both calendar-enrich
+ * routes (`POST /api/calendar/enrich` — service/cron — and
+ * `POST /api/calendar/enrich-manual` — human, no cron secret) via
+ * `lib/calendar/enrich-request.ts::runCalendarEnrichRequest`, which wraps
+ * this function with the cloud-reconcile pre-step and response shaping.
+ * Keeps all scheduling semantics (window, TWS detection, sector-gap
+ * logging) in one place.
  */
 
 import type Database from "better-sqlite3";

@@ -7,6 +7,7 @@ import { useToast } from "./Toast";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
 import { Money } from "@/lib/privacy/components";
+import apiFetch from "@/lib/http/apiFetch";
 
 interface Account {
   id: number;
@@ -45,7 +46,7 @@ export function ReconciliationTable({
     if (!isFormValid) return;
     setIsSubmitting(true);
     try {
-      const res = await fetch("/api/reconciliation", {
+      const res = await apiFetch("/api/reconciliation", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -75,7 +76,7 @@ export function ReconciliationTable({
   async function handleDelete(id: number) {
     setDeleteTarget(null);
     try {
-      const res = await fetch(`/api/reconciliation?id=${id}`, { method: "DELETE" });
+      const res = await apiFetch(`/api/reconciliation?id=${id}`, { method: "DELETE" });
       if (!res.ok) throw new Error("Failed to delete checkpoint");
       setError(null);
       toast("Checkpoint removed", "success");

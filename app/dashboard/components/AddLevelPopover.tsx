@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useToast } from "./Toast";
 import { formatChartPrice } from "@/lib/chart/price-formatter";
+import apiFetch from "@/lib/http/apiFetch";
 
 interface Props {
   securityId: number;
@@ -62,7 +63,7 @@ export function AddLevelPopover({
   async function submit(type: "support" | "resistance") {
     setSubmitting(type);
     try {
-      const res = await fetch("/api/levels", {
+      const res = await apiFetch("/api/levels", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

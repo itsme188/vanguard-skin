@@ -17,6 +17,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import apiFetch from "@/lib/http/apiFetch";
 
 interface RecipientsState {
   briefing_email_recipients: string;
@@ -93,7 +94,7 @@ export function EmailRecipientsSection() {
     if (!(key in dirty)) return;
     const value = dirty[key] ?? "";
     try {
-      const res = await fetch("/api/settings/email-recipients", {
+      const res = await apiFetch("/api/settings/email-recipients", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ [key]: value }),
@@ -127,7 +128,7 @@ export function EmailRecipientsSection() {
     const keys = Object.keys(dirty) as FieldKey[];
     if (keys.length === 0) return;
     try {
-      const res = await fetch("/api/settings/email-recipients", {
+      const res = await apiFetch("/api/settings/email-recipients", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(dirty),

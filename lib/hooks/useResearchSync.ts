@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useCallback } from "react";
+import apiFetch from "@/lib/http/apiFetch";
 
 const SYNC_DEBOUNCE_KEY = "vgs:lastResearchSync";
 const FOCUS_IDLE_MS = 10 * 60 * 1000; // 10 min away counts as "back from idle"
@@ -76,7 +77,7 @@ export function useResearchSync(options: {
       // and complete. We `read` the stream to drain it; we don't surface
       // the events. The user's manual sync UI in ResearchFeedsView handles
       // the verbose progress UI separately.
-      const res = await fetch("/api/research/sync", { method: "POST" });
+      const res = await apiFetch("/api/research/sync", { method: "POST" });
       if (res.ok && res.body) {
         const reader = res.body.getReader();
         // Drain the stream — we don't care about the contents here.

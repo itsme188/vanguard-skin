@@ -14,6 +14,7 @@ import { getQuickActions } from "@/lib/chat/quick-actions";
 import { getPageContext } from "@/lib/chat/page-context";
 import type { ChatScope } from "@/lib/types";
 import type { ChatConversation, ChatMessage } from "@/lib/queries/chat";
+import apiFetch from "@/lib/http/apiFetch";
 
 // Friendly labels for tool call indicators
 const TOOL_LABELS: Record<string, string> = {
@@ -450,7 +451,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
     setDeletePending(null);
 
     try {
-      const res = await fetch(`/api/chat/conversations/${conv.id}`, {
+      const res = await apiFetch(`/api/chat/conversations/${conv.id}`, {
         method: "DELETE",
       });
       if (!res.ok) {

@@ -6,37 +6,28 @@
  * idempotent — Mac's own fetchNewArticles dedups against the same UNIQUE
  * column if the message had already been ingested locally.
  *
- * Requires X-Cron-Secret to match CRON_SHARED_SECRET. Called from
- * research-sync paths (both /api/research/sync UI flow and the
- * /api/cron/research-sync background path) so cloud-fetched rows surface in
- * the Feeds tab the moment Mac wakes.
+ * Auth: X-Cron-Secret (withCronAuth). Called from research-sync paths (both
+ * /api/research/sync UI flow and the /api/cron/research-sync background
+ * path) so cloud-fetched rows surface in the Feeds tab the moment Mac wakes.
  */
 
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { reconcileCloudFetchedNewsletters } from "@/lib/research/reconcile-cloud-fetched";
-
-function requireCronSecret(request: NextRequest): string | NextResponse {
-  const secret = process.env.CRON_SHARED_SECRET;
-  if (!secret) {
-    return NextResponse.json(
-      { error: "Server not configured: CRON_SHARED_SECRET missing." },
-      { status: 500 },
-    );
-  }
-
-  const provided = request.headers.get("x-cron-secret") ?? "";
-  if (provided !== secret) {
-    return NextResponse.json({ error: "forbidden" }, { status: 403 });
-  }
-
-  return secret;
-}
+import { withCronAuth } from "@/lib/cron/wrappers";
 
 export async function POST(request: NextRequest) {
-  const secretOrResponse = requireCronSecret(request);
-  if (typeof secretOrResponse !== "string") return secretOrResponse;
-
-  const result = await reconcileCloudFetchedNewsletters(db, secretOrResponse);
-  return NextResponse.json(result, { status: result.status ?? 200 });
+  return withCronAuth(request, async () => {
+    // withCronAuth already verified CRON_SHARED_SECRET is set and matches
+    // before invoking this callback.
+    const secret = process.env.CRON_SHARED_SECRET as string;
+    const result = await reconcileCloudFetchedNewsletters(db, secret);
+    // reconcileCloudFetchedNewsletters signals a non-2xx outcome (e.g.
+    // Worker unreachable) via result.status rather than throwing — surface
+    // it as the real HTTP status by throwing the shape withCronAuth maps.
+    if (result.status) {
+      throw { status: result.status, message: result.error ?? "reconcile failed" };
+    }
+    return result;
+  });
 }

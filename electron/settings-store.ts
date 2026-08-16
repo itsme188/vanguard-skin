@@ -4,7 +4,8 @@
  * Replaces .env.local for the packaged app.
  */
 
-import { app } from "electron";
+import { app, safeStorage } from "electron";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -270,4 +271,116 @@ export function getSanitizedSettings(): Record<string, string | number | boolean
     refreshIntervalMinutes: s.refreshIntervalMinutes ?? 30,
     firstRunComplete: s.firstRunComplete ?? false,
   };
+}
+
+// ─── Encrypted secrets (#35 auth boundary, 2026-08-14) ──────────────────────
+//
+// A small set of secrets — the app PASSWORD HASH and the ELECTRON-MAIN
+// SERVICE CREDENTIAL used by later tasks in the #35 boundary — must never
+// live in plaintext settings.json. They are stored OS-keychain-encrypted via
+// Electron's `safeStorage`, in a SEPARATE file (secrets.json) outside the
+// `AppSettings` interface entirely. This is deliberate, not just "another
+// key we forget to sanitize":
+//   - `getSanitizedSettings()` (the IPC `get-settings` surface) enumerates
+//     explicit AppSettings fields, so a stray key added to AppSettings could
+//     theoretically leak by omission of masking. A separate file makes that
+//     class of bug structurally impossible — there is no AppSettings field
+//     to read from in the first place.
+//   - `save-settings` (IPC, renderer-writable) calls `saveSettings()`, which
+//     merges into settings.json only. It has no path to secrets.json, so a
+//     compromised/buggy renderer call can never overwrite or read a secret.
+//
+// Fail-closed: every accessor checks `safeStorage.isEncryptionAvailable()`
+// first and THROWS if it's false (locked/unsupported keychain) — never a
+// silent plaintext fallback.
+
+interface EncryptedSecretsFile {
+  [key: string]: string; // base64(safeStorage.encryptString(value))
+}
+
+function getSecretsPath(): string {
+  try {
+    return path.join(app.getPath("userData"), "secrets.json");
+  } catch {
+    return path.join(process.env.HOME || "~", ".vanguard-skin-secrets.json");
+  }
+}
+
+function readSecretsFile(): EncryptedSecretsFile {
+  try {
+    const raw = fs.readFileSync(getSecretsPath(), "utf-8");
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+function writeSecretsFile(secrets: EncryptedSecretsFile): void {
+  const dir = path.dirname(getSecretsPath());
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(getSecretsPath(), JSON.stringify(secrets, null, 2));
+}
+
+function assertEncryptionAvailable(key: string): void {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error(
+      `[settings] Cannot access encrypted secret "${key}": OS keychain encryption ` +
+        `is unavailable (safeStorage.isEncryptionAvailable() === false). Refusing ` +
+        `to read or write it in plaintext — unlock the keychain and retry.`,
+    );
+  }
+}
+
+/**
+ * Read a secret stored via `setEncryptedSecret`. Returns `null` if the key
+ * was never set. Throws (fail-closed) if OS keychain encryption is
+ * unavailable — never returns an unprotected value.
+ */
+export function getEncryptedSecret(key: string): string | null {
+  assertEncryptionAvailable(key);
+  const secrets = readSecretsFile();
+  const stored = secrets[key];
+  if (stored === undefined) return null;
+  return safeStorage.decryptString(Buffer.from(stored, "base64"));
+}
+
+/**
+ * Encrypt `value` via the OS keychain and persist it under `key` in
+ * secrets.json (never in settings.json / AppSettings). Throws (fail-closed)
+ * if OS keychain encryption is unavailable — never falls back to plaintext.
+ */
+export function setEncryptedSecret(key: string, value: string): void {
+  assertEncryptionAvailable(key);
+  const secrets = readSecretsFile();
+  secrets[key] = safeStorage.encryptString(value).toString("base64");
+  writeSecretsFile(secrets);
+}
+
+/**
+ * Return the existing decrypted secret for `key`, or generate a new 256-bit
+ * random secret (hex-encoded), persist it encrypted, and return it. Stable
+ * across calls — once created, the same secret is returned every time.
+ * Throws (fail-closed) if OS keychain encryption is unavailable.
+ */
+export function loadOrCreateSecret(key: string): string {
+  const existing = getEncryptedSecret(key); // fail-closed guard runs here first
+  if (existing !== null) return existing;
+  const generated = crypto.randomBytes(32).toString("hex");
+  setEncryptedSecret(key, generated);
+  return generated;
+}
+
+/**
+ * ROTATE a secret (#35 task 17): unlike `loadOrCreateSecret`, this always
+ * mints a fresh 256-bit random value and overwrites whatever is stored under
+ * `key` — the whole point of rotation is that the old value stops working.
+ * Persists via `setEncryptedSecret`, so it is fail-closed (throws if the OS
+ * keychain is unavailable) and never writes plaintext. Returns the new value
+ * so the caller (main.ts) can update its in-memory copy and inject it into
+ * the restarted child server's env.
+ */
+export function rotateSecret(key: string): string {
+  const generated = crypto.randomBytes(32).toString("hex");
+  setEncryptedSecret(key, generated);
+  return generated;
 }

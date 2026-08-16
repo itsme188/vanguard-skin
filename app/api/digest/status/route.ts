@@ -23,18 +23,39 @@ export const dynamic = "force-dynamic";
  *      instead of nagging that 8:45 was missed.
  *
  * Both are graceful no-ops when WORKER_MARKER_URL is unset.
+ *
+ * SIDE-EFFECT-FREE (#35 task 5): GET no longer runs reconcileRecentCloudSends
+ * (which WRITES settings.last_digest_sent_at via setLastDigestSentAt). Under
+ * SameSite=Lax a bare GET carries no CSRF protection, so the pointer-advance
+ * moved to POST. checkCloudMarker stays on GET — it's a read (a Worker RTT that
+ * writes nothing). The open-dashboard self-heal is preserved by DigestCatchup
+ * calling POST on its poll; the cron/digest + cron/evening paths still
+ * reconcile on their own entry.
  */
-export async function GET() {
-  await reconcileRecentCloudSends(db);
-
+async function readStatus() {
   const marker = await checkCloudMarker("digest");
   const cloudDigestToday: MarkerCheckResult | null =
     marker && marker.sentBy === "cloud" ? marker : null;
 
-  return Response.json({
+  return {
     lastDigestSentAt: getLastDigestSentAt(db),
     lastBriefingSentAt: getLastBriefingSentAt(db),
     defaultRecipient: process.env.BRIEFING_EMAIL_TO || null,
     cloudDigestToday,
-  });
+  };
+}
+
+export async function GET() {
+  return Response.json(await readStatus());
+}
+
+/**
+ * POST /api/digest/status — run the idempotent on-wake reconcile (advance the
+ * shared last_digest_sent_at pointer from confirmed cloud sends), then return
+ * the same status payload. This is the write path GET used to carry; an open
+ * dashboard heals the pointer within one poll by calling POST here.
+ */
+export async function POST() {
+  await reconcileRecentCloudSends(db);
+  return Response.json(await readStatus());
 }

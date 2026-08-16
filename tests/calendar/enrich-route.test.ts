@@ -54,13 +54,13 @@ describe("POST /api/calendar/enrich", () => {
 
   it("rejects missing X-Cron-Secret", async () => {
     const res = await POST(makeRequest());
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(401);
     expect(hoisted.runEnrichment).not.toHaveBeenCalled();
   });
 
   it("rejects wrong X-Cron-Secret", async () => {
     const res = await POST(makeRequest({ "x-cron-secret": "wrong" }));
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(401);
     expect(hoisted.runEnrichment).not.toHaveBeenCalled();
   });
 

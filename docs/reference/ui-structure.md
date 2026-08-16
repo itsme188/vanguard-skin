@@ -36,7 +36,7 @@
 - **ChatDrawer rendered at layout root** (not inside header) so mobile full-screen overlay works. Do NOT wrap in `hidden md:flex`.
 - **Breakpoint**: `md:` (768px) separates phone from tablet/desktop. Mobile-first defaults.
 - **Safe area**: `pb-safe` utility in globals.css, `viewport-fit=cover` meta tag for iPhone notch/home indicator.
-- **Remote access**: Cloudflare Mesh — iPhone accesses Electron app at `100.96.0.1:3099` via Cloudflare One Client. Server binds to `0.0.0.0` (not localhost). Team: `isafier`. MDM config at `/Library/Managed Preferences/com.cloudflare.warp.plist`. Device profile: "Mesh Network Profile" (Include mode, `100.96.0.0/12`).
+- **Remote access (post #35 cutover, 2026-08-14)**: the Next server binds loopback-only (`127.0.0.1:3099`) — no LAN/mesh interface, permanently (spec §5.3 invariant, `docs/superpowers/specs/2026-08-14-packaged-app-trust-boundary-design.md`). The iPhone reaches the dashboard via a named Cloudflare Tunnel to `app.myportfoliodesk.com`, gated by Cloudflare Access in front and an app-level login (DB-backed session + CSRF) behind it — Access approval alone grants nothing; the app still requires its own authenticated session. The Cloudflare Mesh / `100.96.0.1:3099` path described in earlier revisions of this doc is retired.
 
 
 ## Benchmark & Risk

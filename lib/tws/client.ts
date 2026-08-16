@@ -52,6 +52,44 @@ function verifyConnectionState(): void {
   }
 }
 
+/**
+ * Standard TWS API ports this app documents/supports (see TwsConfig.port
+ * comment in ./types.ts): 7496 (live) and 7497 (paper). IB Gateway's
+ * 4001/4002 are deliberately NOT included — nothing in this codebase
+ * connects to or documents support for IB Gateway; adding unused ports to
+ * an allowlist only widens the attack surface without a real need.
+ */
+const ALLOWED_TWS_PORTS = new Set([7496, 7497]);
+
+/**
+ * Defense-in-depth (packaged-app trust boundary #35, Task 19, spec §G):
+ * `POST /api/tws/connect` forwards a caller-supplied host/port straight into
+ * this module's raw TCP connect. Without a target check, a caller with a
+ * stolen session/cred could use the route as an SSRF/port-scan primitive —
+ * probing arbitrary host:port combos through the app's network position.
+ * This does NOT replace the auth boundary (the route is `dual` class); it
+ * limits blast radius after any credential compromise.
+ *
+ * Throws when `host`/`port` fall outside the allowlist:
+ *   - host: 127.0.0.1, localhost, or the configured TWS_HOST env value
+ *     (if set) — case-insensitive.
+ *   - port: 7496 (live) or 7497 (paper).
+ */
+export function assertAllowedTwsTarget(host: string, port: number): void {
+  const allowedHosts = new Set(["127.0.0.1", "localhost"]);
+  const configuredHost = process.env.TWS_HOST;
+  if (configuredHost) allowedHosts.add(configuredHost.toLowerCase());
+
+  const normalizedHost = (host ?? "").toLowerCase();
+  if (!allowedHosts.has(normalizedHost)) {
+    throw new Error(`TWS connect target not allowed: host "${host}" is not in the allowlist`);
+  }
+
+  if (!ALLOWED_TWS_PORTS.has(port)) {
+    throw new Error(`TWS connect target not allowed: port ${port} is not a standard TWS port`);
+  }
+}
+
 export function getTwsStatus(): TwsStatus {
   verifyConnectionState();
   return {
