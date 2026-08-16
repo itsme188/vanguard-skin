@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { sanitizeThemeList } from "@/lib/gmail/theme-sanitize";
+import { sanitizeModelSummary, sanitizeThemeList } from "@/lib/gmail/theme-sanitize";
 import { subjectSymbolBackstop } from "@/lib/gmail/subject-symbol-backstop";
 import { getHeldStockSymbols } from "@/lib/queries/briefing-symbols";
 import { getActiveWatchlistStockSymbols } from "@/lib/queries/watchlist";
@@ -194,6 +194,15 @@ export async function reconcileCloudFetchedNewsletters(
       );
       const mentionedSymbols = [...payload.mentioned_symbols, ...backstopHits];
 
+      // Re-sanitize at this storage boundary too (defense-in-depth, same
+      // treatment as sanitizeThemeList below): this is the ONLY DB insert
+      // for the cloud-fallback path (ai_model='cloud-fallback'), so it's
+      // the last line of defense if the Worker's own sanitizeModelSummary
+      // (workers/cron/src/fallback-digest.ts, same regex family) ever misses
+      // a new leak shape — see QA finding research-feeds--cloud-fallback-
+      // raw-json-envelope-in-summary (2026-08-14, rows 71098/71094/68064).
+      const summary = sanitizeModelSummary(payload.summary || "");
+
       const info = insertArticle.run(
         payload.source_id,
         payload.gmail_message_id,
@@ -202,7 +211,7 @@ export async function reconcileCloudFetchedNewsletters(
         payload.sender,
         payload.raw_text,
         payload.raw_html,
-        payload.summary,
+        summary,
         JSON.stringify(sanitizeThemeList(payload.key_themes)),
         payload.sentiment,
         payload.sentiment_score,

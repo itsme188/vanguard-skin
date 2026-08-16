@@ -110,10 +110,26 @@ const POISONED_SUMMARY =
   '<sentiment>neutral</sentiment>\n<sentiment_score>-0.05</sentiment_score>\n' +
   "<mentioned_symbols>[]</mentioned_symbols>";
 
+// Shape of the 2026-08-14 cloud-fallback leak (research_articles rows
+// 71098/71094/68064) — QA finding research-feeds--cloud-fallback-raw-json-
+// envelope-in-summary. No XML tags this time: the model dumps the rest of
+// the raw JSON envelope as literal text inside the `summary` string.
+const POISONED_SUMMARY_JSON =
+  "The newsletter argues chip demand remains resilient into year-end." +
+  '", "key_themes": ["semis", "AI capex"], "sentiment": "bullish", ' +
+  '"sentiment_score": 0.55, "mentioned_symbols": ["NVDA"], ' +
+  '"portfolio_relevance": "Relevant to your NVDA position.", "is_portfolio_relevant": true}';
+
 describe("sanitizeModelSummary (pure)", () => {
   it("cuts at the first tagged remnant, incl. the malformed <key_themes\"> variant", () => {
     expect(sanitizeModelSummary(POISONED_SUMMARY)).toBe(
       "Vital Knowledge reports tariff developments adding cost burdens.",
+    );
+  });
+
+  it("cuts at the JSON-envelope remnant (no XML tags — 2026-08-14 cloud-fallback leak shape)", () => {
+    expect(sanitizeModelSummary(POISONED_SUMMARY_JSON)).toBe(
+      "The newsletter argues chip demand remains resilient into year-end.",
     );
   });
 
@@ -135,6 +151,12 @@ describe("sanitizeModelSummary (pure)", () => {
     expect(sanitizeModelSummary('Real prose here.<parameter name="key_themes">["x"]')).toBe(
       "Real prose here.",
     );
+  });
+
+  it("does not false-positive on prose that merely mentions sentiment/themes by name", () => {
+    expect(
+      sanitizeModelSummary("Sentiment on the sector improved; key themes remain unchanged."),
+    ).toBe("Sentiment on the sector improved; key themes remain unchanged.");
   });
 });
 
@@ -211,6 +233,31 @@ describe("processUnprocessedArticles stores a sanitized summary", () => {
     expect(row.summary).toBe("Vital Knowledge reports tariff developments adding cost burdens.");
     expect(row.summary).not.toContain("</summary>");
     expect(row.summary).not.toContain("<sentiment>");
+  });
+
+  it("a JSON-envelope-blob summary from the model never reaches the DB (2026-08-14 cloud-fallback leak shape)", async () => {
+    const db = makeDb();
+    (generateObjectForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      object: {
+        summary: POISONED_SUMMARY_JSON,
+        key_themes: ["semis", "AI capex"],
+        sentiment: "bullish",
+        sentiment_score: 0.55,
+        mentioned_symbols: ["NVDA"],
+        portfolio_relevance: "Relevant to your NVDA position.",
+        is_portfolio_relevant: true,
+      },
+    });
+
+    await processUnprocessedArticles(db);
+
+    const row = db.prepare(`SELECT summary FROM research_articles WHERE id = 1`).get() as {
+      summary: string;
+    };
+    expect(row.summary).toBe("The newsletter argues chip demand remains resilient into year-end.");
+    expect(row.summary).not.toContain('"key_themes"');
+    expect(row.summary).not.toContain('"sentiment_score"');
+    expect(row.summary).not.toContain('"mentioned_symbols"');
   });
 });
 

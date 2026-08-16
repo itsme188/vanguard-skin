@@ -22,11 +22,29 @@
 const SUMMARY_TAG_REMNANT =
   /<\/?(?:summary|key_themes|sentiment_score|sentiment|mentioned_symbols|portfolio_relevance|is_portfolio_relevant|parameter)\b/i;
 
+// Sibling guard for a JSON-shaped variant of the same leak (2026-08-14,
+// research_articles rows 71098/71094/68064, ALL via the cloud-fallback
+// path): no XML tags at all this time — the model dumps the rest of the
+// raw tool-call JSON envelope as literal text inside the `summary` string
+// ("...ends here.", "key_themes": [...], "sentiment": "bullish",
+// "sentiment_score": 0.55, "mentioned_symbols": [...]"). A quoted schema
+// field name glued directly to a colon essentially never occurs in prose,
+// so it's a safe cut signal — same family as SUMMARY_TAG_REMNANT above.
+// Worker mirror: workers/cron/src/fallback-digest.ts.
+const SUMMARY_JSON_ENVELOPE_REMNANT =
+  /"(?:key_themes|sentiment_score|sentiment|mentioned_symbols|portfolio_relevance|is_portfolio_relevant)"\s*:/i;
+
 export function sanitizeModelSummary(raw: string): string {
   if (!raw) return "";
   const s = raw.replace(/^\s*<summary[^>]*>\s*/i, "");
-  const cut = s.search(SUMMARY_TAG_REMNANT);
-  return (cut === -1 ? s : s.slice(0, cut)).trim();
+  const tagCut = s.search(SUMMARY_TAG_REMNANT);
+  const jsonCut = s.search(SUMMARY_JSON_ENVELOPE_REMNANT);
+  const cuts = [tagCut, jsonCut].filter((i) => i !== -1);
+  if (cuts.length === 0) return s.trim();
+  // Trim trailing separator debris left by the cut (e.g. the `", ` that
+  // precedes the next JSON key) — same boundary-strip idea as
+  // cleanThemeElement below, applied only when a remnant was actually found.
+  return s.slice(0, Math.min(...cuts)).replace(/[",\s]+$/, "").trim();
 }
 
 /**
