@@ -384,6 +384,14 @@ export function correctEarningsEventDate(
   opts: { symbol: string; wrongDate: string; correctDate: string; slot?: "BMO" | "AMC" },
 ): CorrectEarningsDateResult {
   const symbol = opts.symbol.trim().toUpperCase();
+  // Defense-in-depth case normalization: the route already uppercases
+  // before calling in, but this lib fn is a public seam (scripts,
+  // lib/calendar/verify-earnings-dates.ts, tests) — a lowercase 'amc' must
+  // never dodge the no_change guard just because it doesn't string-match
+  // the stored uppercase 'AMC'.
+  const normalizedSlot: "BMO" | "AMC" | undefined = opts.slot
+    ? ((opts.slot as string).toUpperCase() as "BMO" | "AMC")
+    : undefined;
 
   const wrongRows = db
     .prepare(
@@ -422,20 +430,19 @@ export function correctEarningsEventDate(
   // Slot-less rows deliberately accept a slot-set (that adds information);
   // the popover's client-side disable covers the defaulted-form case there.
   if (opts.correctDate === opts.wrongDate && wrongRows.length > 0) {
-    const requestedSlot = opts.slot ?? null;
     const knownSlots = wrongRows
       .map((r) => rowSlot(r))
       .filter((s): s is "BMO" | "AMC" => s !== null);
     const unchanged =
-      requestedSlot === null ||
-      (knownSlots.length > 0 && knownSlots.every((s) => s === requestedSlot));
+      normalizedSlot === undefined ||
+      (knownSlots.length > 0 && knownSlots.every((s) => s === normalizedSlot));
     if (unchanged) {
       return {
         ok: false,
         code: "no_change",
         refusedReason:
           `Nothing to change — ${symbol} already sits on ${opts.wrongDate}` +
-          (requestedSlot ? ` ${requestedSlot}` : "") +
+          (normalizedSlot ? ` ${normalizedSlot}` : "") +
           `. Edit the date or slot before fixing.`,
       };
     }
@@ -443,7 +450,7 @@ export function correctEarningsEventDate(
 
   const runCorrection = db.transaction((): CorrectEarningsDateResult => {
     // ── 1. Resolve the corrected row FIRST (adopt, else mint) ───────────────
-    const eventTime = opts.slot ?? wrongRows[0]?.event_time ?? "AMC";
+    const eventTime = normalizedSlot ?? wrongRows[0]?.event_time ?? "AMC";
     let newEventId: number | null = null;
 
     if (opts.correctDate !== opts.wrongDate) {
@@ -500,6 +507,27 @@ export function correctEarningsEventDate(
           )
           .get(symbol, opts.correctDate) as { id: number };
         newEventId = existing.id;
+
+        // The WHERE clause above guarantees the adopted row is always
+        // source='manual' — i.e. correction-owned, never sync-owned — so
+        // editing its slot in place does NOT run afoul of the "never edit
+        // a sync-owned row's date/slot in place" rule (that rule guards the
+        // resolve-first adopt branch above, which only ever touches
+        // `source != 'manual'` rows and deliberately never rewrites their
+        // event_time). Without this, a correction that collides with an
+        // already-corrected manual row on the same target — e.g. a
+        // slot-only fix re-submitted after an earlier correction already
+        // minted this row — returned ok:true while the requested slot was
+        // silently discarded
+        // (qa:today-earningshub-fix-date--slot-only-change-200-writes-nothing).
+        // Only fires when a slot was actually requested — a pure date-move
+        // with no slot opinion must not clobber whatever slot the adopted
+        // row already carries.
+        if (normalizedSlot) {
+          db.prepare(
+            "UPDATE calendar_events SET event_time = ?, release_time = ? WHERE id = ?",
+          ).run(normalizedSlot, deriveReleaseTime(db, normalizedSlot, symbol), existing.id);
+        }
       }
     }
 

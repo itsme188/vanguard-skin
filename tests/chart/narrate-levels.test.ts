@@ -146,4 +146,61 @@ describe("getOrGenerateNarrative", () => {
     });
     expect(result).toBeNull();
   });
+
+  // QA regression security-detail-suggested-levels--narrative-magnitude-
+  // contradiction-regression-6: the model wrote "1619% above" for a level
+  // whose true distance is +19.3%. The formula (chart, chip) was fine — the
+  // prose was model noise. Gate it at storage so a bad sentence never
+  // reaches suggested_level_narratives (or a later ACCEPT'd thesis).
+  it("replaces an implausible model narrative with a computed fallback before storing", async () => {
+    const { generateObjectForFeature } = await import("@/lib/ai/generate");
+    (generateObjectForFeature as unknown as { mockResolvedValueOnce: (v: unknown) => void }).mockResolvedValueOnce({
+      object: {
+        narrative:
+          "Single touch on 2024-09-11 offers minimal support confirmation; price currently 1619% above this historical level.",
+      },
+    });
+
+    const level = { ...SAMPLE_LEVEL, price: 495.6, lastTouchDate: "2024-09-11", touches: 1 };
+    const result = await getOrGenerateNarrative(db, {
+      securityId: 1,
+      symbol: "META",
+      currentPrice: 591.33,
+      level,
+      recentBars: SAMPLE_BARS,
+    });
+
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("1619");
+    expect(result).toMatch(/19\.3%/);
+
+    const row = db
+      .prepare(
+        `SELECT narrative FROM suggested_level_narratives
+         WHERE security_id = ? AND level_price = ? AND direction = ?`,
+      )
+      .get(1, 495.6, "support") as { narrative: string };
+    expect(row.narrative).not.toContain("1619");
+    expect(row.narrative).toBe(result);
+  });
+
+  it("stores a plausible model narrative verbatim (no false-positive gating)", async () => {
+    const { generateObjectForFeature } = await import("@/lib/ai/generate");
+    const goodNarrative =
+      "Single touch on 2024-09-11 offers minimal support confirmation; price currently 19.3% above this historical level.";
+    (generateObjectForFeature as unknown as { mockResolvedValueOnce: (v: unknown) => void }).mockResolvedValueOnce({
+      object: { narrative: goodNarrative },
+    });
+
+    const level = { ...SAMPLE_LEVEL, price: 495.6, lastTouchDate: "2024-09-11", touches: 1 };
+    const result = await getOrGenerateNarrative(db, {
+      securityId: 1,
+      symbol: "META",
+      currentPrice: 591.33,
+      level,
+      recentBars: SAMPLE_BARS,
+    });
+
+    expect(result).toBe(goodNarrative);
+  });
 });

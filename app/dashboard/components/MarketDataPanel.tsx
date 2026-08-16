@@ -50,6 +50,28 @@ interface Props {
 }
 
 /**
+ * True when the KPI strip's bar-derived cells (Open / Day Range / Volume /
+ * ATR 14 — all sourced from the latest cached ohlcv_bars row) predate the
+ * hero price's own as-of date. The bars backfill and the live price feed
+ * are independent pipelines; the bars can lag by months while the hero
+ * price stays current (2026-08-15 QA repro: HOOD bars 114d stale next to a
+ * live quote, hero price sitting ABOVE the strip's own stated day-range
+ * high — an internally impossible display with no caption to explain it).
+ *
+ * Mirrors the week52AsOf freshness arbitration in getKpisForSecurity: plain
+ * YYYY-MM-DD string compare, never `new Date()` (timezone-shift hazard).
+ * No price as-of to compare against → not stale, so the strip stays
+ * uncluttered rather than warning on data we can't actually judge.
+ */
+export function isBarsStaleVsPrice(
+  barsAsOfDate: string,
+  priceAsOfDate: string | null
+): boolean {
+  if (priceAsOfDate == null) return false;
+  return barsAsOfDate < priceAsOfDate;
+}
+
+/**
  * Compact volume label: 12.3M / 4.7K / 812. Privacy-aware via the <Count>
  * wrapper around the numeric piece.
  */
@@ -86,6 +108,9 @@ export function MarketDataPanel({
   const isUp = priceChange != null && priceChange >= 0;
   const gainColor = isUp ? "#22c55e" : "#ef4444";
   const vol = kpis ? formatVolumeValue(kpis.volume) : null;
+  const barsAsOf = kpis?.asOfDate ?? null;
+  const barsStale = barsAsOf != null && isBarsStaleVsPrice(barsAsOf, priceDate);
+  const barsAsOfCaption = barsStale ? `as of ${barsAsOf}` : undefined;
 
   return (
     <section
@@ -269,6 +294,9 @@ export function MarketDataPanel({
                 "—"
               )
             }
+            // Bar-derived, not live — caption when the cached bar predates
+            // the hero price's own as-of date (see isBarsStaleVsPrice).
+            subvalue={barsAsOfCaption}
           />
           <KpiCell
             label="Day Range"
@@ -281,6 +309,7 @@ export function MarketDataPanel({
                 "—"
               )
             }
+            subvalue={barsAsOfCaption}
           />
           <KpiCell
             label="52w Range"
@@ -312,6 +341,7 @@ export function MarketDataPanel({
                 "—"
               )
             }
+            subvalue={barsAsOfCaption}
           />
           <KpiCell
             label="ATR 14"
@@ -325,10 +355,15 @@ export function MarketDataPanel({
                 "—"
               )
             }
+            // When stale, the as-of caption takes priority over the %-of-price
+            // subvalue — that ratio itself mixes a stale ATR against the live
+            // hero price, the same class of problem this fix addresses.
             subvalue={
-              kpis.atr14 != null && currentPrice != null && currentPrice > 0 ? (
-                <Pct value={(kpis.atr14 / currentPrice) * 100} digits={2} />
-              ) : undefined
+              barsStale
+                ? barsAsOfCaption
+                : kpis.atr14 != null && currentPrice != null && currentPrice > 0
+                  ? <Pct value={(kpis.atr14 / currentPrice) * 100} digits={2} />
+                  : undefined
             }
           />
         </div>

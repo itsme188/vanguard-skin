@@ -140,3 +140,93 @@ describe("buildContextForSurface multi-account fidelity (via generateNarrative)"
     expect(capturedPrompt).not.toMatch(/multiple accounts/i);
   });
 });
+
+describe("buildContextForSurface position-risk ranks by risk contribution (via generateNarrative)", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    runMigrations(db);
+    db.exec("DELETE FROM accounts");
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test Account')");
+
+    // 6 positions: SPY/QQQ/VTI/AAA/BBB are large-weight, low-vol (same phase
+    // sine wiggle). HOOD is the SMALLEST by market value — 6th place, so a
+    // topN:5 market-value-ranked query drops it entirely — but has a much
+    // bigger price swing, so its true risk contribution (weight × vol ×
+    // corr / portfolioVol) beats every large-weight name once it's actually
+    // in the candidate set. This mirrors the real regression: the narrative
+    // named QQQ/SPY/VTI as top risk contributors while the deterministic
+    // table (risk-contribution-ranked) had NET/HOOD on top.
+    const secs: { id: number; symbol: string; qty: number; basePrice: number; amp: number }[] = [
+      { id: 1, symbol: "SPY", qty: 1000, basePrice: 200, amp: 5 },
+      { id: 2, symbol: "QQQ", qty: 900, basePrice: 190, amp: 5 },
+      { id: 3, symbol: "VTI", qty: 800, basePrice: 180, amp: 5 },
+      { id: 4, symbol: "AAA", qty: 700, basePrice: 170, amp: 5 },
+      { id: 5, symbol: "BBB", qty: 600, basePrice: 160, amp: 5 },
+      { id: 6, symbol: "HOOD", qty: 500, basePrice: 50, amp: 40 },
+    ];
+
+    const today = new Date();
+    const asOf = today.toISOString().slice(0, 10);
+    for (const s of secs) {
+      db.prepare(
+        "INSERT INTO securities (id, symbol, name, security_type, currency) VALUES (?, ?, ?, 'stock', 'USD')"
+      ).run(s.id, s.symbol, s.symbol);
+      db.prepare(
+        "INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, ?, ?, ?)"
+      ).run(s.id, asOf, s.qty);
+    }
+
+    for (let i = 0; i < 60; i++) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - 59 + i);
+      const date = d.toISOString().slice(0, 10);
+      for (const s of secs) {
+        const price = s.basePrice + Math.sin(i * 0.3) * s.amp + i * 0.05;
+        db.prepare(
+          "INSERT OR IGNORE INTO prices (security_id, date, close_price) VALUES (?, ?, ?)"
+        ).run(s.id, date, price);
+      }
+    }
+  });
+
+  it("orders positions by riskContribution desc and includes the true top contributor, not just the biggest weights", async () => {
+    let capturedPrompt = "";
+    vi.mocked(generateTextForFeature).mockImplementationOnce(async (_feature, args) => {
+      const p = args.prompt;
+      capturedPrompt = typeof p === "string" ? p : "";
+      return { text: "The book leans on a handful of volatile names for most of its risk." } as never;
+    });
+
+    await generateNarrative(db, {
+      scope: "all",
+      surfaceKey: "position-risk",
+      weekOf: "2026-05-04",
+      forceRegen: true,
+    });
+
+    // HOOD is the smallest position by market value (6th of 6) — a
+    // topN:5 market-value query never sees it. It must be present now.
+    expect(capturedPrompt).toContain("HOOD");
+
+    const jsonStart = capturedPrompt.indexOf("{");
+    const context = JSON.parse(capturedPrompt.slice(jsonStart));
+    const symbols: string[] = context.positions.map((p: { symbol: string }) => p.symbol);
+    const riskContribs: (number | null)[] = context.positions.map(
+      (p: { riskContribution: number | null }) => p.riskContribution
+    );
+
+    // The true top risk contributor (HOOD) must lead the serialized list —
+    // matching the risk-contribution-sorted table, not SQL's market-value
+    // ORDER BY.
+    expect(symbols[0]).toBe("HOOD");
+
+    // The whole list must be sorted by riskContribution descending (nulls
+    // last), i.e. monotonically non-increasing.
+    const nonNull = riskContribs.filter((v): v is number => v != null);
+    for (let i = 1; i < nonNull.length; i++) {
+      expect(nonNull[i]).toBeLessThanOrEqual(nonNull[i - 1]);
+    }
+  });
+});
