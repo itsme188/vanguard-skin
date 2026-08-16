@@ -129,8 +129,11 @@ export function PositionRiskCard({ scope }: { scope?: string }) {
         <div className="flex items-center gap-3 flex-wrap">
           {data.portfolioVol != null && (
             <span className="text-xs text-ink-faint">
-              Portfolio Vol:{" "}
+              Top-10 basket vol:{" "}
               <Pct value={data.portfolioVol * 100} digits={1} className="font-mono text-ink" />
+              <span className="ml-1 text-[10px] text-ink-faint/70">
+                (price-based · 1Y · top 10 positions)
+              </span>
             </span>
           )}
           {/* P3 Slice C — drill-down trigger. Single button (not per-row click)

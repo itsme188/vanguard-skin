@@ -170,6 +170,20 @@ export function RiskMetrics({ scope }: { scope?: string }) {
         <h3 className="text-sm font-medium text-ink">Risk Decomposition</h3>
         <span className="text-xs text-ink-faint font-mono">
           {metrics.dataPoints} daily observations
+          {metrics.seriesStart && metrics.seriesEnd && (
+            <>
+              {" · "}
+              {formatDate(metrics.seriesStart)}
+              {" → "}
+              {formatDate(metrics.seriesEnd)}
+            </>
+          )}
+          {metrics.seamDaysBridged > 0 && (
+            <>
+              {" · "}
+              {metrics.seamDaysBridged} seam day{metrics.seamDaysBridged === 1 ? "" : "s"} bridged
+            </>
+          )}
         </span>
       </div>
 

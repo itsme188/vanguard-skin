@@ -884,3 +884,83 @@ describe("computePositionRisk coverage gate under whole-portfolio weights", () =
     expect(result.positions[0].correlationWithPortfolio).not.toBeNull();
   });
 });
+
+describe("computePositionRisk aggregate observation floor (qa:analysis-risk--vol-figures-lack-window-and-basis-captions)", () => {
+  // A position with fewer than the per-row observation floor (20 daily
+  // returns) already nulls out its own vol/corr/riskContribution row (see
+  // "handles insufficient price data gracefully" above). The basket
+  // aggregate (portfolioVol) must apply the SAME floor: a thinly-traded
+  // position (e.g. an option with only ~15 days of price history) must not
+  // feed the headline "Portfolio Vol" while its own table row renders "—".
+  function seedGoodAndThin(db: Database.Database, includeThin: boolean) {
+    const today = new Date();
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test')");
+    db.exec(
+      "INSERT INTO securities (id, symbol, name, security_type) VALUES (1, 'GOOD', 'Good Co', 'stock')"
+    );
+    const asOf = today.toISOString().slice(0, 10);
+    db.exec(
+      `INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 1, '${asOf}', 400)`
+    );
+
+    // GOOD: 60 days of gently-moving prices -> plenty of observations (59
+    // return pairs, well above the floor).
+    for (let i = 0; i < 60; i++) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - 59 + i);
+      const date = d.toISOString().slice(0, 10);
+      const price = 100 + Math.sin(i * 0.3) * 5 + i * 0.05;
+      db.prepare(
+        "INSERT OR IGNORE INTO prices (security_id, date, close_price) VALUES (1, ?, ?)"
+      ).run(date, price);
+    }
+
+    if (includeThin) {
+      db.exec(
+        "INSERT INTO securities (id, symbol, name, security_type) VALUES (2, 'THIN', 'Thin Option', 'option')"
+      );
+      db.exec(
+        `INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 2, '${asOf}', 300)`
+      );
+      // THIN: prices only for the last 15 days -> 14 return pairs, below the
+      // 20-observation floor. Alternates hard between two price levels
+      // (option-like) so a leak into the aggregate would visibly shift vol.
+      for (let i = 45; i < 60; i++) {
+        const d = new Date(today);
+        d.setDate(d.getDate() - 59 + i);
+        const date = d.toISOString().slice(0, 10);
+        const price = 50 * (i % 2 === 0 ? 1.6 : 0.7);
+        db.prepare(
+          "INSERT OR IGNORE INTO prices (security_id, date, close_price) VALUES (2, ?, ?)"
+        ).run(date, price);
+      }
+    }
+  }
+
+  it("excludes a sub-floor position from the basket aggregate and its renormalization weight", () => {
+    const dbGoodOnly = createTestDb();
+    seedGoodAndThin(dbGoodOnly, false);
+    const goodOnly = computePositionRisk(dbGoodOnly);
+
+    const dbWithThin = createTestDb();
+    seedGoodAndThin(dbWithThin, true);
+    const withThin = computePositionRisk(dbWithThin);
+
+    // THIN itself stays sub-floor and nulls its own row -- unchanged by this
+    // fix, just confirming the fixture matches the "row already says —" premise.
+    const thinRow = withThin.positions.find((p) => p.symbol === "THIN");
+    expect(thinRow).toBeDefined();
+    expect(thinRow!.dataPoints).toBeLessThan(20);
+    expect(thinRow!.annualizedVol).toBeNull();
+
+    // The basket aggregate must be computed from GOOD alone in both
+    // scenarios -- adding a sub-floor THIN position must not move the vol
+    // the header renders, because the aggregate is a coverage-normalized
+    // weighted mean: with THIN excluded, its weight also drops out of the
+    // renormalization denominator, so the two scenarios collapse to the
+    // identical GOOD-only return series.
+    expect(goodOnly.portfolioVol).not.toBeNull();
+    expect(withThin.portfolioVol).not.toBeNull();
+    expect(withThin.portfolioVol).toBeCloseTo(goodOnly.portfolioVol!, 10);
+  });
+});
