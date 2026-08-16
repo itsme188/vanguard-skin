@@ -14,6 +14,24 @@ describe("planVerification", () => {
     expect(plan.selectedTests).toContain("tests/mutations/");
   });
 
+  it("maps lib/db.ts (the db singleton) to tests/db/", () => {
+    const plan = planVerification(["lib/db.ts"]);
+    expect(plan.selectedTests).toContain("tests/db/");
+    expect(plan.unmatched).toEqual([]);
+  });
+
+  it("maps a research-family path to its tests dir", () => {
+    const plan = planVerification(["lib/research-inbox/triage.ts"]);
+    expect(plan.selectedTests).toContain("tests/research-inbox/");
+    expect(plan.unmatched).toEqual([]);
+  });
+
+  it("maps lib/plaid/x.ts to tests/plaid/", () => {
+    const plan = planVerification(["lib/plaid/x.ts"]);
+    expect(plan.selectedTests).toContain("tests/plaid/");
+    expect(plan.unmatched).toEqual([]);
+  });
+
   it("maps lib/format.ts to the format test file", () => {
     const plan = planVerification(["lib/format.ts"]);
     expect(plan.selectedTests).toContain("tests/lib/format.test.ts");
