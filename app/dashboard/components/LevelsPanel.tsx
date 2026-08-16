@@ -17,6 +17,15 @@ import type {
 // render in the security's NATIVE currency and need a matching label, e.g.
 // "₩976,000" rather than "$976,000" for a KRW security).
 import { formatLevelPrice } from "@/lib/chart/price-formatter";
+// Suggested-level narratives are Haiku prose and occasionally state a
+// distance figure ("N% above/below") that contradicts the level's own
+// price/currentPrice — QA regression security-detail-suggested-levels--
+// narrative-magnitude-contradiction-regression-6 (2026-08-16). Storage
+// already gates this (lib/chart/narrate-levels.ts), but this render call
+// is defense for rows persisted before that fix, and resolveAcceptedThesis
+// is the ACCEPT-path gate so a bad sentence can never ride into
+// security_levels.thesis on an armed level.
+import { guardNarrative, resolveAcceptedThesis } from "@/lib/levels/narrative-guard";
 import { useToast } from "./Toast";
 import { Chip } from "./Chip";
 import { SortPicker } from "./SortPicker";
@@ -184,6 +193,14 @@ function SuggestedLevels({
     );
   });
 
+  // Render-time defense: re-check the narrative's numeric claims against
+  // this card's own price/level even though storage already gates them —
+  // covers rows that were cached before the guard shipped. Falls back to
+  // the raw narrative only when currentPrice isn't known yet (best effort).
+  const displayNarrative = data?.currentPrice != null
+    ? (sug: SuggestedLevel) => guardNarrative(sug.narrative ?? null, data.currentPrice as number, sug)
+    : (sug: SuggestedLevel) => sug.narrative ?? null;
+
   async function accept(sug: SuggestedLevel, index: number) {
     setAccepting(index);
     try {
@@ -199,9 +216,7 @@ function SuggestedLevels({
           action_hint: "watch",
           source: "suggested",
           source_author: "chart-analysis",
-          thesis: sug.narrative
-            ? sug.narrative
-            : `Auto-suggested from pivot clustering · ${sug.touches}× touches, last ${sug.lastTouchDate} · confidence: ${sug.confidence}`,
+          thesis: resolveAcceptedThesis(sug, data?.currentPrice ?? null),
           timeframe: null,
           expires_at: null,
         }),
@@ -357,7 +372,7 @@ function SuggestedLevels({
                           color: "#bbb",
                         }}
                       >
-                        {sug.narrative}
+                        {displayNarrative(sug)}
                       </p>
                     )}
                   </div>
@@ -453,7 +468,7 @@ function SuggestedLevels({
                 </div>
                 {sug.narrative && (
                   <p className="mt-1 text-[11px] text-ink-dim leading-snug">
-                    {sug.narrative}
+                    {displayNarrative(sug)}
                   </p>
                 )}
               </div>
