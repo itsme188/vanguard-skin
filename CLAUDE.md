@@ -233,6 +233,8 @@ Detail: `docs/reference/calendar.md`
 
 After implementing a fix or feature, always run the full test suite (`npx vitest run`) and report the result before committing. This project has 1600+ tests — use them. Report the test count and pass/fail status. Do not commit if tests are failing.
 
+Before the full suite, run `npm run verify:changed` to execute the smallest relevant checks for your diff, and `npm run verify:smoke` for UI-visible changes. The loop + evidence template: `docs/reference/verification-loop.md`.
+
 ## Debugging
 
 When debugging data issues, investigate root causes rather than applying smoothing or workarounds. If the user says to fix the underlying data, do not paper over gaps.
