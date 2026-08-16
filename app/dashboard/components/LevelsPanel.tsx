@@ -26,6 +26,7 @@ import { formatLevelPrice } from "@/lib/chart/price-formatter";
 // is the ACCEPT-path gate so a bad sentence can never ride into
 // security_levels.thesis on an armed level.
 import { guardNarrative, resolveAcceptedThesis } from "@/lib/levels/narrative-guard";
+import { levelActionVisibility, levelReviewGuidance } from "@/lib/levels/action-visibility";
 import { todayET } from "@/lib/calendar/date-utils";
 import { useToast } from "./Toast";
 import { Chip } from "./Chip";
@@ -687,6 +688,27 @@ export function LevelsPanel({
     refresh();
   }
 
+  // Sends a rejected level back to pending_review so the Alerts Review tab
+  // (which only queries review_status='pending_review') can act on it again.
+  // Reuses PATCH /api/levels/review — the same route the Review tab's own
+  // Approve/Reject buttons call — status: "pending_review" routes to
+  // setLevelReviewStatus, never approveLevelGuarded, so this can never arm
+  // a level on its own.
+  async function handleRequeue(id: number) {
+    const res = await apiFetch("/api/levels/review", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, status: "pending_review" }),
+    });
+    const data = await res.json().catch(() => null);
+    if (res.ok && data?.success) {
+      toast("Re-queued — visit the Alerts Review tab to approve or reject it", "info");
+      await refresh();
+    } else {
+      toast(`Failed to re-queue level: ${data?.error ?? "unknown error"}`, "error");
+    }
+  }
+
   return (
     <section
       className={
@@ -1045,7 +1067,8 @@ export function LevelsPanel({
                 // is_active=1 alone does not make a level armed — the scanner's
                 // whitelist also requires review_status='auto_approved'.
                 // Rejected / pending-review levels must read as not-armed here.
-                const unarmedReview = l.is_active === 1 && l.review_status !== "auto_approved";
+                const { unarmedReview, showPause, showReactivate, showRequeue } =
+                  levelActionVisibility(l);
                 return (
                   <div
                     key={l.id}
@@ -1196,7 +1219,7 @@ export function LevelsPanel({
                         )}
                         {unarmedReview && (
                           <span
-                            title="Not armed — the alert scanner only watches auto-approved levels. Approve or reject it on the Alerts Review tab."
+                            title={levelReviewGuidance(l.review_status)}
                             style={{
                               fontFamily: "var(--font-mono), monospace",
                               fontSize: "11px",
@@ -1241,7 +1264,29 @@ export function LevelsPanel({
                       )}
                     </div>
                     <div style={{ display: "flex", gap: "8px", alignSelf: "center" }}>
-                      {unarmedReview ? null : l.is_active === 1 ? (
+                      {showRequeue && (
+                        <button
+                          onClick={() => handleRequeue(l.id)}
+                          title="Send back to pending_review so the Alerts Review tab can approve or reject it"
+                          className="relative pointer-coarse:after:absolute pointer-coarse:after:content-[''] pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1"
+                          style={{
+                            background: "transparent",
+                            border: "1px solid #f59e0b",
+                            color: "#f59e0b",
+                            fontFamily: "var(--font-mono), monospace",
+                            fontSize: "11px",
+                            fontWeight: 600,
+                            letterSpacing: "0.2em",
+                            textTransform: "uppercase",
+                            padding: "5px 10px",
+                            borderRadius: "2px",
+                            cursor: "pointer",
+                          }}
+                        >
+                          Re-queue
+                        </button>
+                      )}
+                      {showPause ? (
                         <button
                           onClick={() => handleDeactivate(l.id)}
                           title="Deactivate"
@@ -1262,7 +1307,7 @@ export function LevelsPanel({
                         >
                           Pause
                         </button>
-                      ) : (
+                      ) : showReactivate ? (
                         <button
                           onClick={() => handleReactivate(l.id)}
                           disabled={alertedToday}
@@ -1288,7 +1333,7 @@ export function LevelsPanel({
                         >
                           Reactivate
                         </button>
-                      )}
+                      ) : null}
                       <button
                         onClick={() => handleDelete(l.id)}
                         title="Delete"
@@ -1318,7 +1363,9 @@ export function LevelsPanel({
 
         return (
           <ul className="divide-y divide-edge">
-            {visibleLevels.map((l) => (
+            {visibleLevels.map((l) => {
+              const { showPause, showReactivate, showRequeue } = levelActionVisibility(l);
+              return (
             <li key={l.id} className="py-2.5 flex items-start gap-3">
               <div
                 className={`text-[11px] uppercase tracking-wide font-semibold w-20 shrink-0 ${LEVEL_TYPE_COLOR[l.level_type]}`}
@@ -1380,7 +1427,7 @@ export function LevelsPanel({
                       size="xs"
                       tone="warn"
                       uppercase
-                      title="Not armed — the alert scanner only watches auto-approved levels. Approve or reject it on the Alerts Review tab."
+                      title={levelReviewGuidance(l.review_status)}
                     >
                       {l.review_status === "rejected" ? "rejected" : "pending review"}
                     </Chip>
@@ -1395,8 +1442,17 @@ export function LevelsPanel({
                   </p>
                 )}
               </div>
-              <div className="flex gap-1 shrink-0">
-                {l.is_active === 1 && l.review_status !== "auto_approved" ? null : l.is_active === 1 ? (
+              <div className="flex gap-1 shrink-0 items-center">
+                {showRequeue && (
+                  <button
+                    onClick={() => handleRequeue(l.id)}
+                    className="text-[10px] text-amber-400 hover:text-amber-300"
+                    title="Send back to pending_review so the Alerts Review tab can approve or reject it"
+                  >
+                    Re-queue
+                  </button>
+                )}
+                {showPause ? (
                   <button
                     onClick={() => handleDeactivate(l.id)}
                     className="text-[10px] text-ink-faint hover:text-ink"
@@ -1404,7 +1460,7 @@ export function LevelsPanel({
                   >
                     Pause
                   </button>
-                ) : (
+                ) : showReactivate ? (
                   <button
                     onClick={() => handleReactivate(l.id)}
                     disabled={triggeredToday(l.triggered_at)}
@@ -1417,7 +1473,7 @@ export function LevelsPanel({
                   >
                     Reactivate
                   </button>
-                )}
+                ) : null}
                 <button
                   onClick={() => handleDelete(l.id)}
                   className="text-[10px] text-rose-400 hover:text-rose-300 ml-2"
@@ -1427,7 +1483,8 @@ export function LevelsPanel({
                 </button>
               </div>
             </li>
-          ))}
+              );
+            })}
         </ul>
         );
       })()}

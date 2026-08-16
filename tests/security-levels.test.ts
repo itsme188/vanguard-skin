@@ -434,6 +434,44 @@ describe("security_levels — review workflow", () => {
     expect(allLevels.review_status).toBe("rejected");
   });
 
+  it("re-queuing a rejected level (flip to pending_review) restores it to the review inbox without arming it", () => {
+    // Codex advisory #49: LevelsPanel's "Rejected" chip told the user to
+    // approve/reject on the Alerts Review tab, but that tab's query
+    // (getPendingReviewLevels) only ever returns pending_review rows — a
+    // rejected level had no real path back to a decision. The fix is a
+    // "Re-queue" action that calls this exact mutation.
+    const secId = seedSecurity("AAPL");
+    const levelId = upsertLevel(db, {
+      security_id: secId,
+      level_type: "support",
+      price: 180,
+      source: "newsletter",
+      review_status: "pending_review",
+    });
+    seedPrice(secId, 175);
+
+    setLevelReviewStatus(db, levelId, "rejected");
+    expect(getPendingReviewCount(db)).toBe(0);
+
+    // Re-queue: same mutation, flipped back to pending_review.
+    setLevelReviewStatus(db, levelId, "pending_review");
+
+    // It's back in the review inbox...
+    expect(getPendingReviewCount(db)).toBe(1);
+    const pending = getPendingReviewLevels(db);
+    expect(pending).toHaveLength(1);
+    expect(pending[0].id).toBe(levelId);
+    expect(pending[0].review_status).toBe("pending_review");
+
+    // ...but critically NOT approved/armed — the scanner still ignores it,
+    // and the row's own review_status is 'pending_review', never
+    // 'auto_approved'. Re-queue must never arm a level on its own.
+    expect(findCrossedLevels(db)).toHaveLength(0);
+    const level = getLevelById(db, levelId)!;
+    expect(level.review_status).toBe("pending_review");
+    expect(level.armed_crossed_at).toBeNull();
+  });
+
   it("user-created levels default to auto_approved and bypass the review gate", () => {
     const secId = seedSecurity("AAPL");
     upsertLevel(db, {
