@@ -1,35 +1,34 @@
 # Session Handoff — for Codex review
 
 > Rolling file, overwritten at each session close. Past handoffs: `git log -p docs/HANDOFF.md`.
+> Written by Claude Code so Codex can review changes and reasoning at full project context.
 
-**Session date:** 2026-08-14 — #35 packaged-app trust boundary (P0 security)
+**Session date:** 2026-08-16 — #35 packaged-app trust boundary: SHIPPED + production cutover verified
 
-## 1. Goal + what shipped (branch, not yet merged/deployed)
+## 1. Goal + exact files changed
 
-Built the #35 auth boundary end-to-end on branch `security/packaged-app-trust-boundary` (39 commits, `6a296e1..3d502f9`; suite 4,959 → 5,281 + 9 todo; `next build` clean). NOT merged, NOT deployed, issue #35 still open — the cutover is the user's supervised step (see §4).
+Built and shipped the #35 P0 trust boundary end-to-end, then performed and verified the production cutover. Merged to `main` at **`75fc2a1`** (`--no-ff` merge of `security/packaged-app-trust-boundary`, 26-task SDD build spanning `6a296e1..08802ce` + a TODO reconcile). Key files:
 
-Design pipeline: brainstorm → spec (`docs/superpowers/specs/2026-08-14-packaged-app-trust-boundary-design.md`, 2 Codex review passes) → 26-task plan (`docs/superpowers/plans/2026-08-14-packaged-app-trust-boundary.md`, 1 Codex review pass) → SDD execution (fresh implementer + task-review per task; final whole-branch review). Design converged with Codex over 3 discussion rounds first.
+- **New:** `proxy.ts` (root choke point); `lib/auth/{verify-request,route-policy,credentials,csrf,cookies,throttle,electron-cred,safe-next,startup-validation}.ts`; `lib/queries/sessions.ts`, `lib/mutations/sessions.ts`; `lib/http/apiFetch.ts` + `eslint-rules/no-raw-api-fetch.js`; `app/login/page.tsx`; `app/api/auth/{login,logout,pin,pin/verify,desktop-bootstrap,revoke-all}/route.ts`; `lib/import/recovery.ts` + `scripts/restore-import-batch.ts`; `electron/{bootstrap-auth,password-hash,password-change,credential-rotation}.ts`; `instrumentation.ts`; migrations `079_app_sessions.sql`, `080_session_pin.sql`; boundary/negative-test suites.
+- **Changed:** `electron/main.ts` (HOSTNAME→127.0.0.1, silent-auth wiring, service-cred/password provisioning + rotation), `electron/settings-store.ts` (safeStorage secret accessors), `package.json` (dev/start `-H 127.0.0.1`), all mutating client fetches → `apiFetch`, state-changing GET routes → POST, route hardening (`tws/connect`, `import`, 3 email routes, `chat`), `workers/cron` (primary.ts deleted, `calendar-enrich.ts` primary Mac-call retired), docs (`ui-structure.md`, `cron-and-workers.md`, `CLAUDE.md`, `TODO.md`).
 
-What the boundary is: one root `proxy.ts` choke point (default-deny; classifies every `(method,pathname)` as public/human/cron/electron/dual) + DB-backed revocable sessions (migration 079) + scrypt password + double-submit CSRF + `apiFetch` on every mutating client call + all 7 state-changing GETs → POST + Electron silent-auth via a loopback desktop-bootstrap + `safeStorage` service credential + first-run password / change / rotation + convenience PIN (migration 080) + route hardening (tws/connect allowlist, import-undo recovery manifest, email allowlist, chat budget) + Worker primary-calls retired + `HOSTNAME` bound loopback-only.
+## 2. Tests / cutover result
 
-## 2. Verification
+- Suite **5,281 passing** + 9 todo; `next build` clean; Worker `tsc` + `wrangler --dry-run` clean. Every task passed an independent task-review; final whole-branch review (Opus) returned one must-fix (fixed) + 12 acceptable-to-defer minors. Spec had 2 Codex review passes, plan 1. The ~17 `tsc --noEmit` errors are confirmed pre-existing (stash-verified, unrelated test files); `next build` is the authoritative gate.
+- **Cutover executed + verified 2026-08-16:** Cloudflare named tunnel `portfolio-desk` → `app.myportfoliodesk.com` behind Access (team isafier); Plaid redirect URI registered (verified via `/link/token/create`); Worker deployed fallback-only + `PUSHOVER_LINK_BASE` repointed; app **code-signed + notarized + installed** via `electron:deploy`. Live checks: LAN request to `:3099` **refused** (the original P0 hole, now sealed), desktop silent-auth loads without a login screen, TWS connect authenticates via the Electron credential, iPhone reaches the app through Cloudflare Access + app password. GitHub issue **#35 closed** (comment links merge `75fc2a1`).
 
-- Full suite 5,281 pass / 9 todo / 0 fail; `next build` clean; Worker `tsc` + `wrangler --dry-run` clean. Every task passed an independent task-review; final whole-branch review returned one must-fix (now fixed) + 12 acceptable-to-defer minors.
-- The ~17 `tsc --noEmit` errors are CONFIRMED pre-existing (stash-verified, unrelated test files); `next build` is the authoritative gate and stays clean.
-- Live/E2E gates NOT runnable without the packaged app / a real phone / Cloudflare — deferred to the cutover checklist (spec §6 + task-23 boundary matrix `it.todo`s): window silent-auth, first-run password, change/rotate transactions, PIN UI, phone-via-tunnel, LAN-refused.
+## 3. Open concerns / decisions
 
-## 3. Review-caught defects (all fixed) — the gate earned its keep
+- **Trust-model decision (user, revised mid-effort):** HTTPS tunnel + Access end-state chosen over "auth on the existing http mesh" (the latter can't do `Secure` cookies or passkeys). Loopback-only bind is permanent; remote access is only via the Access-gated tunnel.
+- **Deferred (non-blocking, both in `TODO.md` Open items):** Phase-2 passkeys/Face-ID (now unblocked by the HTTPS origin); 12 minor items from the final review.
+- **Env gotchas:** dotenv `$`-expansion corrupts scrypt hashes in `.env.local` (use an inline shell export for a dev `APP_PASSWORD_HASH`); notarization needs `APPLE_API_*` from `~/.zshrc` (extract the 3 vars, don't source zsh in bash).
+- **Parallel-session hazard recurred:** the nightly QA cron switched the shared checkout onto `qa-auto-fixes-2026-08-16` mid-session; recovered by switching back (work was safe on its branch). Reinforces worktree isolation for concurrent sessions.
 
-Open-redirect via tab/newline in `safeNextPath`; a GET-CSRF static-guard hole; a windowless-app startup bug on `loadURL` rejection; the **phone-lockout sequencing gap** (enforcement before the tunnel would brick the phone — fixed with an env-extensible allowlist); a chat concurrency-slot leak; import-restore verbatim-id collisions; and (final whole-branch review) three `lib/hooks/` mutating POSTs outside the apiFetch/ESLint scope that would have silently 401'd post-cutover.
+## 4. Uncommitted changes / live-process state (after cutover)
 
-## 4. Remaining = the user's cutover (ops/deploy — NOT done)
+- Working tree clean; `main` (`75fc2a1`) pushed to origin. Feature branch merged and deleted in cleanup. Extra worktree `vanguard-skin-qa-fix` (nightly fixer's — left in place). Open PR #51 (unrelated QA auto-fixes) still open.
+- Live: packaged app installed + running, **loopback-only** on `:3099`; `cloudflared` tunnel running as a boot-persistent user LaunchAgent (`com.cloudflare.portfolio-desk`); Worker deployed fallback-only. App password + Electron service credential in the macOS keychain (safeStorage).
 
-Sequence (do the tunnel BEFORE flipping to loopback in production, or set `APP_EXTRA_HOSTS`): (a) reserve `app.myportfoliodesk.com`, create a named Cloudflare Tunnel → `http://127.0.0.1:3099` behind Cloudflare Access; (b) register `https://app.myportfoliodesk.com/dashboard/plaid-link` in the Plaid dashboard + set `PLAID_REDIRECT_URI` in `.env.local`; (c) repoint `PUSHOVER_LINK_BASE` (`.env.local` + `settings.json` + the Worker secret) to the HTTPS host; (d) first-run: set the app password; (e) `wrangler deploy` the Worker; (f) `electron:deploy`; (g) verify the spec §6 packaged/phone negative tests; (h) merge to main + close #35. SDD ledger with all rulings + deferred minors: `.superpowers/sdd/2026-08-14-packaged-app-trust-boundary/progress.md`.
+## 5. Claude session link
 
-## 5. Open concerns
-
-- A parallel session committed `c428f1e` (private-markets discovery docs — `[R9]`) directly onto this feature branch; docs-only, harmless to the #35 code, but flags an active sibling session on the repo (worktree-isolation reminder).
-- 12 deferred minors (all triaged acceptable-to-defer by the final review) are listed in the ledger; none blocks merge.
-
-## Claude session link
 https://claude.ai/code/session_01FkdVFgy32MpZbV2uLK4hJq
