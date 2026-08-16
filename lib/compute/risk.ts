@@ -143,6 +143,14 @@ export interface PositionRiskResult {
 
 const TRADING_DAYS_PER_YEAR = 252;
 
+// Minimum daily-return observations before a position's vol/correlation/risk-
+// contribution is trusted. Below this floor, computePositionRisk nulls out
+// the position's own row (see step 5) AND excludes it from the basket
+// aggregate + its renormalization weight (see step 4) — a thinly-traded
+// position (e.g. an option with 17 daily closes) must not feed the headline
+// "Portfolio Vol" while its own table row renders "—".
+const MIN_POSITION_OBSERVATIONS = 20;
+
 // ─── Core computation ───────────────────────────────────────────
 
 export function computeRiskMetrics(
@@ -626,7 +634,13 @@ export function computePositionRisk(
     returnsBySecId.set(secId, { dates, returns });
   }
 
-  // 4. Compute portfolio daily returns (weighted sum)
+  // 4. Compute portfolio daily returns (weighted sum). Positions below
+  // MIN_POSITION_OBSERVATIONS are excluded from the basket entirely — same
+  // floor the per-position rows null out below (step 5) — so a thinly-traded
+  // position can't feed the aggregate while its own row renders "—".
+  const aggregateEligibleSecIds = securityIds.filter(
+    (id) => (returnsBySecId.get(id)?.returns.length ?? 0) >= MIN_POSITION_OBSERVATIONS
+  );
   const weights = new Map<number, number>();
   for (const p of positions) {
     weights.set(p.security_id, totalValue > 0 ? p.market_value / totalValue : 0);
@@ -640,13 +654,16 @@ export function computePositionRisk(
   // (all/vanguard scopes computed null portfolioVol while the concentrated
   // ibkr/roth books passed). The mean already divides by coverageWeight, so
   // requiring "most of the subset priced that day" keeps the proxy honest
-  // regardless of how concentrated the portfolio is.
-  const subsetWeight = securityIds.reduce((sum, id) => sum + (weights.get(id) ?? 0), 0);
+  // regardless of how concentrated the portfolio is. Both the numerator and
+  // the weight denominator are restricted to aggregateEligibleSecIds, so a
+  // sub-floor position's weight drops out of the renormalization too — it
+  // never dilutes or inflates the basket vol.
+  const subsetWeight = aggregateEligibleSecIds.reduce((sum, id) => sum + (weights.get(id) ?? 0), 0);
   const portfolioReturns = new Map<string, number>();
   for (const date of sortedDates.slice(1)) {
     let portfolioReturn = 0;
     let coverageWeight = 0;
-    for (const secId of securityIds) {
+    for (const secId of aggregateEligibleSecIds) {
       const secReturns = returnsBySecId.get(secId);
       if (!secReturns) continue;
       const idx = secReturns.dates.indexOf(date);
@@ -664,7 +681,7 @@ export function computePositionRisk(
 
   const portfolioReturnArray = [...portfolioReturns.values()];
   const portfolioVol =
-    portfolioReturnArray.length >= 20
+    portfolioReturnArray.length >= MIN_POSITION_OBSERVATIONS
       ? stdDev(portfolioReturnArray) * Math.sqrt(TRADING_DAYS_PER_YEAR)
       : null;
 
@@ -673,7 +690,7 @@ export function computePositionRisk(
     const secReturns = returnsBySecId.get(p.security_id);
     const weight = totalValue > 0 ? p.market_value / totalValue : 0;
 
-    if (!secReturns || secReturns.returns.length < 20) {
+    if (!secReturns || secReturns.returns.length < MIN_POSITION_OBSERVATIONS) {
       return {
         securityId: p.security_id,
         symbol: p.symbol,
