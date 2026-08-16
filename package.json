@@ -27,6 +27,7 @@
     "lint": "eslint",
     "seed:demo": "tsx scripts/seed-demo.ts",
     "verify:changed": "npx tsx scripts/verify-changed.ts",
+    "verify:smoke": "bash scripts/verify-smoke.sh",
     "electron:compile": "tsc -p electron/tsconfig.json",
     "electron:copy-static": "cp -r .next/static .next/standalone/.next/static && cp -r public .next/standalone/public && node scripts/deref-standalone-symlinks.js && rm -f .next/standalone/.env.local .next/standalone/.env .next/standalone/.env.production",
     "electron:dev": "npm run electron:compile && npm run electron:copy-static && electron .",
