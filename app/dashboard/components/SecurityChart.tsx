@@ -9,6 +9,7 @@ import { rendersAsZero } from "@/lib/format";
 import { usePrivacy } from "@/lib/privacy/context";
 import { AddLevelPopover } from "./AddLevelPopover";
 import { ScrollFade } from "./ScrollFade";
+import apiFetch from "@/lib/http/apiFetch";
 
 // LightweightCharts types imported dynamically to avoid SSR issues
 type IChartApi = import("lightweight-charts").IChartApi;
@@ -207,7 +208,7 @@ export function SecurityChart({
         setError(null);
         setWarning(null);
 
-        const res = await fetch("/api/tws/chart", {
+        const res = await apiFetch("/api/tws/chart", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ securityId, barSize: barSizeOverride ?? "1 day", duration, refresh }),

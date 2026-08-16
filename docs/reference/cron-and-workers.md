@@ -28,11 +28,19 @@ wall-clock through `Intl.DateTimeFormat("America/New_York")`:
 
 `runFallbackEvening` mirrors `runFallbackDigest`. `JobType` = `"briefing" | "digest" | "evening"`.
 
-## 2. Primary path, fallback path, and KV markers
+## 2. Fallback-only path and KV markers (Worker→Mac primary retired 2026-08-14, #35 Phase D Task 25)
 
-- **Primary path:** Worker calls the Mac at `MESH_HOSTNAME` → `/api/cron/{briefing,digest}`
-  with `X-Cron-Secret`. On success it writes `mac-sent-{type}-{YYYY-MM-DD}` to KV (30h TTL).
-- **On primary failure:** `src/fallback-{briefing,digest}.ts` generates the email from the
+The Worker→Mac primary call (`MESH_HOSTNAME` → `/api/cron/{briefing,digest}`) is **retired**,
+not merely failing: `runJob`/`runCalendarEnrich` go straight from the marker-dedup check to
+the cloud fallback, with no ingress attempt at all (`workers/cron/src/index.ts`,
+`workers/cron/src/calendar-enrich.ts`). This follows the packaged-app trust-boundary cutover
+(`docs/superpowers/specs/2026-08-14-packaged-app-trust-boundary-design.md` §H2) — the Mac now
+binds loopback-only behind an Access-gated tunnel, so `MESH_HOSTNAME` is permanently
+unreachable from Cloudflare's edge and there is no longer an ingress path worth attempting.
+`mac-sent-*` markers are still written by the Mac's own launchd/cron routes on success (see
+below) — only the Worker-initiated POST to the Mac is gone.
+
+- **Fallback path (now the only path):** `src/fallback-{briefing,digest}.ts` generates the email from the
   latest R2 snapshot + a live Gmail REST fetch (still Gmail OAuth, for inbound newsletter
   listing) + Claude via AI Gateway, sends via Resend REST (`workers/cron/src/resend.ts`), and
   writes a `cloud-sent-*` marker.
@@ -106,9 +114,12 @@ Four sub-fixes after 5/13 lost both digest + evening (no markers, no log trail):
 `/api/cron/{briefing,digest,evening}` routes after a successful send, via the Worker endpoint
 `POST /internal/mac-sent?type=&date=` (X-Cron-Secret gated). Without it the catch-up sweep would
 fire a duplicate every weekday the Mac is awake-and-launchd-succeeds, because `mac-sent` is
-otherwise only written when the Worker's primary call to the Mac succeeds — which is rare, since
-`MESH_HOSTNAME` `http://100.96.0.1:3099` (Mesh CGNAT) isn't reachable from Cloudflare's edge and
-fast-fails with CF 1016.
+otherwise only written when the Worker's primary call to the Mac succeeds — which was rare even
+before the primary call existed as a possibility at all: at the time of this 2026-05-14 fix,
+`MESH_HOSTNAME` `http://100.96.0.1:3099` (Mesh CGNAT) wasn't reachable from Cloudflare's edge and
+fast-failed with CF 1016. **Update (2026-08-14, #35 Phase D Task 25):** the Worker→Mac primary
+call is now retired outright (§2 above) — `mac-sent-*` is written exclusively by the Mac's own
+routes going forward, never by a Worker-initiated call.
 
 ## 5. Pushover deep-link fix (`4e9bd88`)
 
@@ -117,6 +128,12 @@ interface, `bootstrapFromEnvLocal`, `getSanitizedSettings`, `electron/main.ts` e
 to `http://100.96.0.1:3099` in `.env.local` + `settings.json` + Worker secret. Replaces the broken
 `http://localhost:3099` default that produced "Safari can't connect" when notifications were tapped
 from the phone.
+
+**Pending (2026-08-14, #35 Phase D, spec §H2):** the mesh IP is retired (loopback-only cutover,
+§2 above). `PUSHOVER_LINK_BASE` still needs to be repointed from `http://100.96.0.1:3099` to
+`https://app.myportfoliodesk.com` in `.env.local` + `settings.json` + the Worker's own secret —
+in lockstep, or the phone gets a dead link from one side. This is an ops step tied to the tunnel/
+Access cutover, not shipped by Task 26 (code + docs only).
 
 ## 6. 2026-05-20 cloud digest unsilencing (`f9af693`)
 
@@ -163,7 +180,9 @@ status JSON APIs).
 ## 7. Env vars
 
 - **Mac needs:** `CRON_SHARED_SECRET` + optional `WORKER_MARKER_URL`.
-- **Worker needs:** `CRON_SHARED_SECRET` + `MESH_HOSTNAME` + `ANTHROPIC_API_KEY` +
+- **Worker needs:** `CRON_SHARED_SECRET` + `MESH_HOSTNAME` (no longer used for Mac ingress —
+  §2 — but still read as the Pushover deep-link base fallback until the cutover repoints
+  `PUSHOVER_LINK_BASE` to `app.myportfoliodesk.com`, §5) + `ANTHROPIC_API_KEY` +
   `CLOUDFLARE_ACCOUNT_ID`/`GATEWAY_ID` + `BRIEFING_EMAIL_TO` + `RESEND_API_KEY` +
   `RESEND_FROM_DOMAIN` + `WORKER_GMAIL_CLIENT_ID`/`SECRET`/`REFRESH_TOKEN` (kept for inbound
   newsletter listing, not outbound).

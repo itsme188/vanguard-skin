@@ -4,12 +4,18 @@ import {
   DigestSendError,
   type DigestMode,
 } from "@/lib/digest/send-digest";
+import {
+  checkRecipientAllowed,
+  checkEmailSendRateLimit,
+} from "@/lib/email/recipient-guard";
 
 /**
  * POST /api/digest/email — Sync research feeds, generate daily digest, and email it.
  *
- * Body: { to?: string, mode?: "today" | "since_last" | "since_date", sinceDate?: string, skipMarkerUpdate?: boolean }
+ * Body: { to?: string, mode?: "today" | "since_last" | "since_date", sinceDate?: string, skipMarkerUpdate?: boolean, override?: boolean }
  *   - to: recipient email(s), comma-separated. Defaults to BRIEFING_EMAIL_TO env var.
+ *     Must be in the configured allowlist (BRIEFING_EMAIL_TO / settings
+ *     digest_email_recipients) unless `override: true` is also passed (#35 §G).
  *   - mode: date range mode. Default (omitted) = last 24 hours (backward-compatible with cron).
  *   - sinceDate: YYYY-MM-DD for "since_date" mode.
  *   - skipMarkerUpdate: when true, don't write `last_digest_sent_at` after sending.
@@ -21,6 +27,20 @@ import {
  */
 export async function POST(request: Request) {
   const body = await request.json().catch(() => ({}));
+
+  const recipientCheck = checkRecipientAllowed(
+    db,
+    "digest",
+    body.to as string | undefined,
+    body.override === true,
+  );
+  if (!recipientCheck.ok) {
+    return Response.json({ error: recipientCheck.error }, { status: recipientCheck.status });
+  }
+  const rateCheck = checkEmailSendRateLimit("digest");
+  if (!rateCheck.ok) {
+    return Response.json({ error: rateCheck.error }, { status: rateCheck.status });
+  }
 
   try {
     const result = await sendDigestEmail(db, {

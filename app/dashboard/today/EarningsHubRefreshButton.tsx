@@ -8,6 +8,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import apiFetch from "@/lib/http/apiFetch";
 
 interface Props {
   weekOf: string;
@@ -24,7 +25,7 @@ export function EarningsHubRefreshButton({ weekOf }: Props) {
     setError(null);
     setProgress("syncing…");
     try {
-      const res = await fetch("/api/calendar/sync", {
+      const res = await apiFetch("/api/calendar/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ weekOf }),

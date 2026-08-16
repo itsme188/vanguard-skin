@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import type { ResearchSource } from "@/lib/queries/research";
 import { ConfirmDialog } from "./ConfirmDialog";
+import apiFetch from "@/lib/http/apiFetch";
 
 interface DiscoveredSender {
   email: string;
@@ -60,7 +61,7 @@ export function ManageSourcesModal({
         prev.map((s) => (s.id === sourceId ? { ...s, is_active: newActive } : s))
       );
       try {
-        const res = await fetch("/api/research/sources", {
+        const res = await apiFetch("/api/research/sources", {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ id: sourceId, is_active: newActive }),
@@ -93,7 +94,7 @@ export function ManageSourcesModal({
         prev.map((s) => (s.id === sourceId ? { ...s, allow_off_topic: newValue } : s))
       );
       try {
-        const res = await fetch("/api/research/sources", {
+        const res = await apiFetch("/api/research/sources", {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ id: sourceId, allow_off_topic: newValue }),
@@ -133,7 +134,7 @@ export function ManageSourcesModal({
 
   const patchSource = useCallback(
     async (id: number, fields: Record<string, unknown>): Promise<void> => {
-      const res = await fetch("/api/research/sources", {
+      const res = await apiFetch("/api/research/sources", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, ...fields }),
@@ -338,7 +339,7 @@ export function ManageSourcesModal({
       setMutationError(null);
       setSources((prev) => prev.filter((s) => s.id !== sourceId));
       try {
-        const res = await fetch("/api/research/sources", {
+        const res = await apiFetch("/api/research/sources", {
           method: "DELETE",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ id: sourceId }),
@@ -367,7 +368,7 @@ export function ManageSourcesModal({
     setDiscoverError(null);
     setTimeout(() => discoverResultsRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }), 50);
     try {
-      const res = await fetch("/api/research/discover", { method: "POST" });
+      const res = await apiFetch("/api/research/discover", { method: "POST" });
       const data = await res.json();
       if (data.success) {
         setDiscovered(data.data);
@@ -395,7 +396,7 @@ export function ManageSourcesModal({
     async (sender: DiscoveredSender) => {
       setAdding(true);
       try {
-        const res = await fetch("/api/research/sources", {
+        const res = await apiFetch("/api/research/sources", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -427,7 +428,7 @@ export function ManageSourcesModal({
     if (!manualName.trim() || !manualEmail.trim()) return;
     setAdding(true);
     try {
-      const res = await fetch("/api/research/sources", {
+      const res = await apiFetch("/api/research/sources", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

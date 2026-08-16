@@ -5,6 +5,7 @@ import type { ScenarioResult } from "@/lib/compute/scenarios";
 import { findRecipe } from "@/lib/compute/scenario-recipes";
 import { PrivateText } from "@/lib/privacy/components";
 import { formatCompactOptionSymbol } from "@/lib/format";
+import apiFetch from "@/lib/http/apiFetch";
 
 function findRecipeMethodology(id: string): string | null {
   return findRecipe(id)?.methodology ?? null;
@@ -68,7 +69,7 @@ export function ScenarioModelingCard({ scope }: { scope?: string }) {
         if (o.sector && o.move !== 0) sectorMoves[o.sector] = o.move / 100;
       }
 
-      const res = await fetch("/api/compute/scenarios", {
+      const res = await apiFetch("/api/compute/scenarios", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

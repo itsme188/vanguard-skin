@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import apiFetch from "@/lib/http/apiFetch";
 
 const GUIDANCE_OPTIONS = [
   { value: "raised", label: "Raised" },
@@ -78,7 +79,7 @@ export function CallNoteModal({ eventId, symbol, open, onClose, onSaved }: Props
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch("/api/earnings/call-notes", {
+      const res = await apiFetch("/api/earnings/call-notes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ eventId, guidance, tone, surprises, followUps }),

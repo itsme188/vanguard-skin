@@ -108,23 +108,31 @@ Includes Vital Knowledge market context if Gmail env vars set. Stores in the `ca
 - Also logs `[send-briefing] Latest price as_of_date: YYYY-MM-DD (Nd old)` to launchd logs as a
   freshness probe — staleness investigations now have a breadcrumb instead of starting from scratch.
 
-### `POST /api/calendar/enrich`
+### `POST /api/calendar/enrich` (service) / `POST /api/calendar/enrich-manual` (human)
 
-Post-release enrichment trigger.
+Post-release enrichment trigger. Split into two routes 2026-08-14 (packaged-app trust boundary #35,
+task 4) — both are thin wrappers around the shared
+`lib/calendar/enrich-request.ts::runCalendarEnrichRequest(db, opts)` entrypoint, so behavior is
+identical; only the auth wrapper differs.
 
-- Body: `{ eventId?: number, upgradeReactionToTws?: boolean }`.
+- Body (both routes): `{ eventId?: number, upgradeReactionToTws?: boolean }`.
   - Omit `eventId` for a window-filter sweep: unenriched rows whose `release_time` falls in
     `[now-2h, now-5min]`.
   - Set `upgradeReactionToTws: true` with a specific `eventId` to overwrite a cloud-sourced
     `reaction_snapshot` with a fresh TWS capture via `runTwsReactionUpgrade`.
-- **Auth: `X-Cron-Secret` header is mandatory on every call** (UI, launchd, Worker) — missing
-  `CRON_SHARED_SECRET` env returns 500; mismatch returns 403.
-- Hardened 2026-04-27 (Codex critical-bug-pass) — the earlier "trusted local UI without secret"
-  path was removed because the reconcile fetch built its target URL from the inbound `Host` header,
-  leaking the secret to a caller-controlled origin.
-- Internally calls `reconcileCloudEnrichment(db, secret)` first to drain cloud-enriched KV payloads,
-  then runs `lib/calendar/enrichment-runner.ts::runEnrichment`, which orchestrates
-  `fetchActualForEvent` + `captureReactionFromTws` per candidate.
+- **`POST /api/calendar/enrich` — service path.** Wrapped in `lib/cron/wrappers.ts::withCronAuth`:
+  missing `CRON_SHARED_SECRET` env → 500; `X-Cron-Secret` mismatch → 401 (constant-time compare).
+  Used by the launchd wrapper and the Workers Cron primary path.
+- **`POST /api/calendar/enrich-manual` — human path.** No cron secret required. For a manual
+  "re-enrich this row" UI action — a human browser session will never carry the service secret. Not
+  yet session-gated (the session proxy lands in a later task of #35); until then it is open like any
+  other pre-boundary route.
+- Both routes read `CRON_SHARED_SECRET` from server-side env (never from the request) to call
+  `reconcileCloudEnrichment(db, secret)` first, draining cloud-enriched KV payloads — hardened
+  2026-04-27 (Codex critical-bug-pass) so the reconcile fetch's target URL is never built from the
+  inbound `Host` header, which would leak the secret to a caller-controlled origin. Then runs
+  `lib/calendar/enrichment-runner.ts::runEnrichment`, which orchestrates `fetchActualForEvent` +
+  `captureReactionFromTws` per candidate.
 
 ### `POST /api/calendar/reconcile-cloud-enrich`
 
@@ -134,7 +142,7 @@ Phase 9b Mac-side reconcile.
   upserts into `calendar_events` with TWS-always-wins precedence (existing
   `reaction_snapshot.source === "tws"` → skip reaction overwrite, still upsert actual+consensus),
   then DELETEs the KV key per reconciled event.
-- **Auth: `X-Cron-Secret` mandatory** — same model as `/api/calendar/enrich`.
+- **Auth: `withCronAuth`** — missing `CRON_SHARED_SECRET` → 500; mismatch → 401.
 - No-op when `WORKER_MARKER_URL` is unset.
 
 ### `POST /api/calendar/events` (PATCH, DELETE also)
@@ -157,8 +165,12 @@ CRUD for manually-curated calendar events.
 
 ## Cron-authenticated triggers
 
-- `POST /api/cron/briefing` — cron-authenticated briefing trigger (X-Cron-Secret required, matches
-  `CRON_SHARED_SECRET` env). Pre-checks the Worker's `cloud-sent-*` marker via
+All routes below (plus the 4 enrich/reconcile routes above) are wrapped in
+`lib/cron/wrappers.ts::withCronAuth` (consolidated 2026-08-14, packaged-app trust boundary #35 task
+4) — missing `CRON_SHARED_SECRET` → 500; `X-Cron-Secret` mismatch → 401 (constant-time compare). This
+is the full 10-route "service" set per `lib/auth/route-policy.ts`'s `CRON_ROUTES`.
+
+- `POST /api/cron/briefing` — cron-authenticated briefing trigger. Pre-checks the Worker's `cloud-sent-*` marker via
   `lib/cron/marker-check.ts`. Called by the Cloudflare Worker's primary path and by the updated
   launchd wrapper `scripts/send-weekly-briefing.sh`. Same body as `/api/calendar/email`.
 - `POST /api/cron/digest` — cron-authenticated digest trigger. Mirrors `/api/cron/briefing` for the

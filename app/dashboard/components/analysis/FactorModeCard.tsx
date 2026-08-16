@@ -8,6 +8,7 @@ import { NarrativeBlock } from "./NarrativeBlock";
 import { DrillDownPanel } from "./DrillDownPanel";
 import type { FactorHeatmapRow, FactorCoverage } from "@/lib/queries/analysis";
 import type { DrillDownFilter } from "@/lib/queries/drill-down";
+import apiFetch from "@/lib/http/apiFetch";
 
 interface Props {
   factorHeatmap?: FactorHeatmapRow[];
@@ -24,7 +25,7 @@ export function FactorModeCard({ factorHeatmap, factorCoverage, scope }: Props) 
   async function runFactorAutoClassify() {
     setFactorClassifyLoading(true);
     try {
-      const res = await fetch("/api/compute/classify-factors", { method: "POST" });
+      const res = await apiFetch("/api/compute/classify-factors", { method: "POST" });
       const data = await res.json();
       if (data.success) {
         const note = data.errors?.length > 0 ? ` · ${data.errors.length} batch error(s)` : "";

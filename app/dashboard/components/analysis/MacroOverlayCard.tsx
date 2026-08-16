@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { MacroThemeReceiptDrawer } from "./MacroThemeReceiptDrawer";
+import apiFetch from "@/lib/http/apiFetch";
 
 interface MacroTheme {
   name: string;
@@ -14,13 +15,14 @@ interface MacroTheme {
 
 interface ApiResponse {
   success: boolean;
-  themes?: MacroTheme[];
+  themes?: MacroTheme[] | null;
   sourceSummary?: {
     articles: Array<{ id: number; title: string }>;
     events: Array<{ id: number; symbol: string | null; event_date: string }>;
     alerts: Array<{ id: number; symbol: string }>;
   } | null;
   underThreshold?: boolean;
+  notGenerated?: boolean;
   generatedAt?: string;
   fromCache?: boolean;
   error?: string;
@@ -65,17 +67,34 @@ export function MacroOverlayCard({ scope }: { scope: string }) {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    fetch(`/api/analysis/macro-themes?scope=${encodeURIComponent(scope)}`)
-      .then((r) => r.json())
-      .then((j: ApiResponse) => {
-        if (!cancelled) setData(j);
-      })
-      .catch(() => {
-        if (!cancelled) setData({ success: false, error: "network error" });
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
+
+    // GET is a side-effect-free cache read (#35 task 5); on a miss it returns
+    // { notGenerated: true } and we POST once to generate (the paid-AI write
+    // path). Routed through apiFetch (#35 task 9-12) since it's a mutating call.
+    const generate = async (): Promise<ApiResponse> => {
+      const res = await apiFetch("/api/analysis/macro-themes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope }),
       });
+      return (await res.json()) as ApiResponse;
+    };
+
+    (async () => {
+      try {
+        const getRes = await fetch(
+          `/api/analysis/macro-themes?scope=${encodeURIComponent(scope)}`,
+        );
+        const j = (await getRes.json()) as ApiResponse;
+        const final = j.success && j.notGenerated ? await generate() : j;
+        if (!cancelled) setData(final);
+      } catch {
+        if (!cancelled) setData({ success: false, error: "network error" });
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
     return () => {
       cancelled = true;
     };

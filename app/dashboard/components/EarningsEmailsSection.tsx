@@ -15,6 +15,7 @@
  */
 
 import { useEffect, useState } from "react";
+import apiFetch from "@/lib/http/apiFetch";
 
 interface EarningsSettings {
   enabled: boolean;
@@ -46,7 +47,7 @@ export function EarningsEmailsSection() {
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch("/api/settings/earnings", {
+      const res = await apiFetch("/api/settings/earnings", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(updates),

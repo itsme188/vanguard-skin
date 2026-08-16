@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import type { DataConfidence, DataAction, DimensionScore } from "@/lib/queries/data-confidence";
 import { PrivateText } from "@/lib/privacy/components";
+import apiFetch from "@/lib/http/apiFetch";
 
 const LEVEL_CONFIG = {
   high: { color: "bg-up", label: "Data reliable" },
@@ -191,7 +192,7 @@ export function DataConfidenceIndicator() {
                     setActionLoading(action.apiEndpoint);
                     setActionStatus(null);
                     try {
-                      const res = await fetch(action.apiEndpoint, {
+                      const res = await apiFetch(action.apiEndpoint, {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify(action.apiBody ?? {}),

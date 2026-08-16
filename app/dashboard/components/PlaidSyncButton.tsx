@@ -11,6 +11,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useToast } from "./Toast";
+import apiFetch from "@/lib/http/apiFetch";
 
 interface PlaidSyncResponse {
   success: boolean;
@@ -27,7 +28,7 @@ export function PlaidSyncButton() {
   async function handleClick() {
     setIsLoading(true);
     try {
-      const res = await fetch("/api/plaid/sync", { method: "POST" });
+      const res = await apiFetch("/api/plaid/sync", { method: "POST" });
       const data = (await res.json()) as PlaidSyncResponse;
       if (data.success) {
         if (data.skippedReason === "market_closed") {

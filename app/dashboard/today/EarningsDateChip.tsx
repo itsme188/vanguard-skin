@@ -3,6 +3,7 @@
 import { useLayoutEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { todayET } from "@/lib/calendar/date-utils";
+import apiFetch from "@/lib/http/apiFetch";
 
 interface Props {
   symbol: string;
@@ -227,7 +228,7 @@ export function EarningsDateChip({
     setRtSaving(true);
     setRtMsg(null);
     try {
-      const res = await fetch("/api/earnings/release-time", {
+      const res = await apiFetch("/api/earnings/release-time", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ symbol, releaseTime: value }),
@@ -261,7 +262,7 @@ export function EarningsDateChip({
     setSubmitting(true);
     setConfirmError(null);
     try {
-      const res = await fetch("/api/earnings/correct-date", {
+      const res = await apiFetch("/api/earnings/correct-date", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -393,7 +394,7 @@ export function EarningsDateChip({
     setSubmitting(true);
     setConfirmError(null);
     try {
-      const res = await fetch("/api/earnings/confirm-date", {
+      const res = await apiFetch("/api/earnings/confirm-date", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ symbol, confirmedDate: date, confirmedTime: time }),

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import apiFetch from "@/lib/http/apiFetch";
 
 interface Props {
   latestPriceDate: string | null;
@@ -35,7 +36,7 @@ export function IbkrRefreshButton({ latestPriceDate }: Props) {
     setPhaseLabel("starting…");
     stopRef.current = false;
     try {
-      const res = await fetch("/api/tws/auto-refresh", {
+      const res = await apiFetch("/api/tws/auto-refresh", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ level: "quick" }),

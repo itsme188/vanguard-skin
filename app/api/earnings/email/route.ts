@@ -4,16 +4,22 @@ import {
   sendEarningsRecap,
   EarningsEmailError,
 } from "@/lib/digest/send-earnings-email";
+import {
+  checkRecipientAllowed,
+  checkEmailSendRateLimit,
+} from "@/lib/email/recipient-guard";
 
 export const dynamic = "force-dynamic";
 
 /**
  * POST /api/earnings/email — Manual trigger for earnings preview / recap email.
  *
- * Body: { eventId: number, phase: "preview" | "recap", to?: string, footerNote?: string }
+ * Body: { eventId: number, phase: "preview" | "recap", to?: string, footerNote?: string, override?: boolean }
  *   - eventId: calendar_events.id of the earnings event.
  *   - phase: "preview" (~2h before) or "recap" (~2h after).
- *   - to: recipient email. Defaults to BRIEFING_EMAIL_TO env var.
+ *   - to: recipient email. Defaults to BRIEFING_EMAIL_TO env var. Must be in
+ *     the configured allowlist (BRIEFING_EMAIL_TO) unless `override: true`
+ *     is also passed (#35 §G).
  *   - footerNote: optional footer attribution.
  *
  * Localhost-only for Tier 1. Cron-authenticated routes will live at
@@ -25,6 +31,7 @@ export async function POST(request: Request) {
     phase?: string;
     to?: string;
     footerNote?: string;
+    override?: boolean;
   };
 
   if (typeof body.eventId !== "number" || !Number.isInteger(body.eventId)) {
@@ -38,6 +45,15 @@ export async function POST(request: Request) {
       { error: "Body field 'phase' must be 'preview' or 'recap'." },
       { status: 400 },
     );
+  }
+
+  const recipientCheck = checkRecipientAllowed(db, "earnings", body.to, body.override === true);
+  if (!recipientCheck.ok) {
+    return Response.json({ error: recipientCheck.error }, { status: recipientCheck.status });
+  }
+  const rateCheck = checkEmailSendRateLimit("earnings");
+  if (!rateCheck.ok) {
+    return Response.json({ error: rateCheck.error }, { status: rateCheck.status });
   }
 
   try {

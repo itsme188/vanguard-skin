@@ -1,4 +1,3 @@
-import { timingSafeEqual } from "node:crypto";
 import { db } from "@/lib/db";
 import { isGmailConfigured, getGmailClient } from "@/lib/gmail/auth";
 import { fetchNewArticles } from "@/lib/gmail/fetch";
@@ -11,11 +10,13 @@ import {
 } from "@/lib/research/reconcile-cloud-fetched";
 import { ingestForwardedDocuments, makeIngestDeps } from "@/lib/research-inbox/ingest";
 import { RESEARCH_INBOX_ADDRESS } from "@/lib/research-inbox/config";
+import { withCronAuth } from "@/lib/cron/wrappers";
 
 /**
  * POST /api/cron/research-sync — Cron-authenticated background research sync.
  *
- * Auth: X-Cron-Secret header must match CRON_SHARED_SECRET env var.
+ * Auth: X-Cron-Secret header must match CRON_SHARED_SECRET env var
+ * (withCronAuth).
  * Body: ignored.
  *
  * Called by the Mac launchd `com.vanguard-skin.research-sync.plist` every
@@ -28,34 +29,22 @@ import { RESEARCH_INBOX_ADDRESS } from "@/lib/research-inbox/config";
  * will catch up next tick.
  */
 export async function POST(request: Request) {
-  const expected = process.env.CRON_SHARED_SECRET;
-  if (!expected) {
-    return Response.json(
-      { error: "Server not configured: CRON_SHARED_SECRET missing." },
-      { status: 500 },
-    );
-  }
+  return withCronAuth(request, async () => {
+    if (!isGmailConfigured()) {
+      throw { status: 400, message: "Gmail OAuth not configured" };
+    }
 
-  const provided = request.headers.get("x-cron-secret") ?? "";
-  if (!constantTimeEqual(provided, expected)) {
-    return Response.json({ error: "unauthorized" }, { status: 401 });
-  }
+    // withCronAuth already verified CRON_SHARED_SECRET is set and matches
+    // before invoking this callback.
+    const secret = process.env.CRON_SHARED_SECRET as string;
 
-  if (!isGmailConfigured()) {
-    return Response.json(
-      { error: "Gmail OAuth not configured" },
-      { status: 400 },
-    );
-  }
-
-  try {
     // Drain Worker cloud-fetched newsletter KV entries FIRST so the local
     // fetch below dedups (UNIQUE gmail_message_id). Failures here don't
     // abort the whole sync — next tick retries.
     let cloudReconciled = 0;
     let cloudSkipped = 0;
     try {
-      const reconcileResult = await reconcileCloudFetchedNewsletters(db, expected);
+      const reconcileResult = await reconcileCloudFetchedNewsletters(db, secret);
       cloudReconciled = reconcileResult.reconciled;
       cloudSkipped = reconcileResult.skipped_already_in_db;
     } catch (err) {
@@ -65,7 +54,7 @@ export async function POST(request: Request) {
     const gmail = getGmailClient();
     const fetchResult = await fetchNewArticles(db, gmail);
     // Fire-and-forget — never block on Worker RTT.
-    void postMacRecentNewsletterSyncMarker(expected);
+    void postMacRecentNewsletterSyncMarker(secret);
 
     const processResult = await processUnprocessedArticles(db);
 
@@ -106,7 +95,7 @@ export async function POST(request: Request) {
       console.error("[cron/research-sync] inbox ingest failed:", err);
     }
 
-    return Response.json({
+    return {
       success: true,
       cloudReconciled,
       cloudSkipped,
@@ -120,19 +109,6 @@ export async function POST(request: Request) {
       bogeysStored,
       inboxIngested,
       inboxFailed,
-    });
-  } catch (err) {
-    console.error("[cron/research-sync] error:", err);
-    return Response.json(
-      { error: err instanceof Error ? err.message : "Unknown error" },
-      { status: 500 },
-    );
-  }
-}
-
-function constantTimeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  const ab = Buffer.from(a);
-  const bb = Buffer.from(b);
-  return timingSafeEqual(ab, bb);
+    };
+  });
 }

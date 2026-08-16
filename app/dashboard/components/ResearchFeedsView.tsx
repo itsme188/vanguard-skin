@@ -12,6 +12,7 @@ import { DigestEmailViewer } from "./DigestEmailViewer";
 import { useIsMobile } from "@/lib/hooks/useIsMobile";
 import { useResearchSync } from "@/lib/hooks/useResearchSync";
 import { useToast } from "./Toast";
+import apiFetch from "@/lib/http/apiFetch";
 
 interface Props {
   initialArticles: ResearchArticle[];
@@ -163,7 +164,7 @@ export function ResearchFeedsView({
     setFilteredArticles((prev) => prev.filter((a) => a.id !== articleId));
     setFilteredCount((n) => Math.max(0, n - 1));
     try {
-      const res = await fetch(`/api/research/articles/${articleId}/unfilter`, {
+      const res = await apiFetch(`/api/research/articles/${articleId}/unfilter`, {
         method: "POST",
       });
       if (!res.ok) {
@@ -268,7 +269,7 @@ export function ResearchFeedsView({
     setSyncStatus("Connecting to Gmail...");
 
     try {
-      const res = await fetch("/api/research/sync", { method: "POST" });
+      const res = await apiFetch("/api/research/sync", { method: "POST" });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: "Sync failed" }));
         throw new Error(err.error ?? `Sync failed (${res.status})`);

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { TranscriptSummaryEntry } from "@/lib/queries/transcripts";
+import apiFetch from "@/lib/http/apiFetch";
 
 const SOURCE_BADGES: Record<string, { label: string; className: string }> = {
   edgar_8k: { label: "8-K", className: "bg-gold/20 text-gold-ink" },
@@ -245,7 +246,7 @@ export function FetchTranscriptButton({
     setIsFetching(true);
     setError(null);
     try {
-      const res = await fetch("/api/transcripts", {
+      const res = await apiFetch("/api/transcripts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ticker }),

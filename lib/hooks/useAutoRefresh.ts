@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useCallback } from "react";
+import apiFetch from "@/lib/http/apiFetch";
 import type { SyncState } from "@/lib/tws/sync-state";
 import { shouldFireDisconnectedRefresh } from "@/lib/tws/webapi-refresh-gate";
 
@@ -68,7 +69,7 @@ export function useAutoRefresh(options: {
         // best-effort
       }
       try {
-        await fetch("/api/tws/auto-refresh", {
+        await apiFetch("/api/tws/auto-refresh", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ level: "quick" }),
@@ -99,7 +100,7 @@ export function useAutoRefresh(options: {
     lastTriggerRef.current = now;
 
     try {
-      await fetch("/api/tws/auto-refresh", {
+      await apiFetch("/api/tws/auto-refresh", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ level: "quick" }),

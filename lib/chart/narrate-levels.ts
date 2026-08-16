@@ -56,6 +56,27 @@ ${tail}
 Write exactly one sentence — max 25 words — that explains why this level is worth watching. Focus on what the pivot data shows. No generic advice, no caveats.`;
 }
 
+/**
+ * SIDE-EFFECT-FREE cache read (#35 task 5): returns today's cached narrative
+ * for this level, or null if none has been generated yet. Used by the GET
+ * route, which must not generate (a paid Haiku call + INSERT) on a bare
+ * SameSite=Lax request. Generation runs via getOrGenerateNarrative on POST.
+ */
+export function getCachedLevelNarrative(
+  db: Database.Database,
+  input: { securityId: number; levelPrice: number; direction: string },
+): string | null {
+  const cached = db
+    .prepare(
+      `SELECT narrative FROM suggested_level_narratives
+       WHERE security_id = ? AND level_price = ? AND direction = ? AND computed_at_day = ?`,
+    )
+    .get(input.securityId, input.levelPrice, input.direction, today()) as
+    | { narrative: string }
+    | undefined;
+  return cached ? cached.narrative : null;
+}
+
 export async function getOrGenerateNarrative(
   db: Database.Database,
   input: LevelNarrativeInput & { securityId: number },
@@ -63,15 +84,12 @@ export async function getOrGenerateNarrative(
   const day = today();
   const direction = input.level.type;
 
-  const cached = db
-    .prepare(
-      `SELECT narrative FROM suggested_level_narratives
-       WHERE security_id = ? AND level_price = ? AND direction = ? AND computed_at_day = ?`,
-    )
-    .get(input.securityId, input.level.price, direction, day) as
-    | { narrative: string }
-    | undefined;
-  if (cached) return cached.narrative;
+  const cached = getCachedLevelNarrative(db, {
+    securityId: input.securityId,
+    levelPrice: input.level.price,
+    direction,
+  });
+  if (cached) return cached;
 
   try {
     const { object: _rawObject } = await generateObjectForFeature("suggestedLevelNarrative", {

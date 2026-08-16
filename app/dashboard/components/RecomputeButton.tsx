@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useToast } from "./Toast";
+import apiFetch from "@/lib/http/apiFetch";
 
 export function RecomputeButton({
   endpoint,
@@ -18,7 +19,7 @@ export function RecomputeButton({
   async function handleClick() {
     setIsLoading(true);
     try {
-      const res = await fetch(endpoint, { method: "POST" });
+      const res = await apiFetch(endpoint, { method: "POST" });
       const data = await res.json();
       if (data.success) {
         toast(`${label} complete`, "success");

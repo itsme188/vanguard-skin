@@ -48,6 +48,44 @@ describe("/api/analysis/macro-themes", () => {
     expect(body.themes).toHaveLength(1);
   });
 
+  it("GET cache miss returns notGenerated WITHOUT generating (side-effect-free GET, #35)", async () => {
+    const macroThemes = await import("@/lib/compute/macro-themes");
+    const spy = vi.spyOn(macroThemes, "generateMacroThemes");
+    try {
+      const { GET } = await import("@/app/api/analysis/macro-themes/route");
+      const req = new Request(
+        "http://localhost/api/analysis/macro-themes?scope=all&week=2026-05-04",
+      );
+      const res = await GET(req as any);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+      expect(body.notGenerated).toBe(true);
+      expect(body.themes).toBeNull();
+      // GET must never call the paid Sonnet generator.
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("GET returns underThreshold for a cached empty-themes row", async () => {
+    const { GET } = await import("@/app/api/analysis/macro-themes/route");
+    const { db } = await import("@/lib/db");
+    upsertMacroThemes(db, {
+      scope: "all", weekOf: "2026-05-04", themesJson: "[]",
+      sourceSummary: null, modelUsed: "(none — under threshold)",
+    });
+    const req = new Request(
+      "http://localhost/api/analysis/macro-themes?scope=all&week=2026-05-04",
+    );
+    const res = await GET(req as any);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.underThreshold).toBe(true);
+    expect(body.themes).toEqual([]);
+  });
+
   it("GET returns 400 when scope missing", async () => {
     const { GET } = await import("@/app/api/analysis/macro-themes/route");
     const req = new Request("http://localhost/api/analysis/macro-themes");

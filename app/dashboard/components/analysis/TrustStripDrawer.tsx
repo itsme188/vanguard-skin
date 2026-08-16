@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { AnalysisTrustState } from "@/lib/queries/analysis-trust-state";
 import { PrivateText } from "@/lib/privacy/components";
+import apiFetch from "@/lib/http/apiFetch";
 
 export type DrawerPanel =
   | "factorCoverage"
@@ -37,7 +38,7 @@ function FactorCoverageContent({
     setBusy(true);
     setResult(null);
     try {
-      const res = await fetch("/api/compute/classify-factors", { method: "POST" });
+      const res = await apiFetch("/api/compute/classify-factors", { method: "POST" });
       const json = await res.json();
       if (json.success) {
         // Keep the drawer open — closing immediately hides the outcome and a
@@ -146,7 +147,7 @@ function StalePricesContent({
     setBusy(true);
     setResult(null);
     try {
-      const res = await fetch("/api/tws/auto-refresh", {
+      const res = await apiFetch("/api/tws/auto-refresh", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ level: "quick" }),

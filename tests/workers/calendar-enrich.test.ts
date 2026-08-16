@@ -106,70 +106,43 @@ describe("runCalendarEnrich", () => {
     expect(result.skipped).toBe("off_hours");
   });
 
-  it("calls the Mac primary and writes a slot marker on success", async () => {
-    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      text: async () => JSON.stringify({ ok: true, enriched: 2, failed: 0 }),
-    });
+  // 2026-08-14 (#35 Phase D, Task 25): the Mac-primary POST is retired — the
+  // Worker never attempts to reach MESH_HOSTNAME anymore. runCalendarEnrich
+  // goes straight from the (still-present) enrich-sent-{slot} dedup check to
+  // the fallback path. See workers/cron/test/primary-retirement.test.ts for
+  // dedicated no-fetch-attempted coverage across both retired call sites;
+  // this file keeps the business-hours-gate + dedup + fallback-trigger
+  // behavior.
+  it("goes straight to the fallback path — no fetch is attempted", async () => {
     const env = baseEnv();
     const result = await runCalendarEnrich(env);
 
-    expect(result.sentBy).toBe("mac");
-    expect(result.primary?.kind).toBe("success");
-    // Verify a slot marker was recorded
-    const keys = Array.from(
-      (env.CRON_KV as unknown as { store: Map<string, string> }).store.keys(),
-    );
-    expect(keys.some((k) => k.startsWith("enrich-sent-"))).toBe(true);
-  });
-
-  it("deduplicates within a 15-min slot", async () => {
-    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      text: async () => JSON.stringify({ ok: true, enriched: 0 }),
-    });
-    const env = baseEnv();
-    await runCalendarEnrich(env);
-
-    const second = await runCalendarEnrich(env);
-    expect(second.skipped).toBe("already_sent_this_slot");
-    expect((global.fetch as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
-  });
-
-  it("returns fallback=cloud_enrich_disabled when flag unset and primary fails", async () => {
-    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      ok: false,
-      status: 500,
-      text: async () => "boom",
-    });
-    const env = baseEnv();
-    const result = await runCalendarEnrich(env);
     expect(result.fallback?.kind).toBe("error");
     expect(result.fallback?.error).toBe("cloud_enrich_disabled");
     expect(result.sentBy).toBe("none");
-    expect(result.primary?.kind).toBe("server_error");
+    expect(global.fetch).not.toHaveBeenCalled();
 
-    // No success marker written — next slot should retry
+    // No enrich-sent success marker written (nothing writes it anymore — the
+    // only writer was the retired primary-success branch). The enrich-fail
+    // journal WAS written for observability — unchanged behavior, since the
+    // Mac primary always fast-failed with CF 1016 from the Cloudflare edge
+    // on every tick even before this retirement.
     const keys = Array.from(
       (env.CRON_KV as unknown as { store: Map<string, string> }).store.keys(),
     );
     expect(keys.some((k) => k.startsWith("enrich-sent-"))).toBe(false);
-    // Fail record WAS written for observability
     expect(keys.some((k) => k.startsWith("enrich-fail-"))).toBe(true);
   });
 
-  it("sends X-Cron-Secret header", async () => {
-    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      text: async () => "{}",
-    });
-    const env = baseEnv({ secret: "magic-token" });
-    await runCalendarEnrich(env);
+  it("dedups within a 15-min slot when the enrich-sent-{slot} marker is present (retained insurance check)", async () => {
+    const env = baseEnv();
+    // Fri 2026-04-24 18:30 UTC = 14:30 ET (EDT, UTC-4) → slot floors to 14:30.
+    const store = (env.CRON_KV as unknown as { store: Map<string, string> }).store;
+    store.set("enrich-sent-2026-04-24-1430", new Date().toISOString());
 
-    const [, init] = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(init.headers["X-Cron-Secret"]).toBe("magic-token");
+    const result = await runCalendarEnrich(env);
+
+    expect(result.skipped).toBe("already_sent_this_slot");
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 });

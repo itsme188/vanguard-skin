@@ -30,6 +30,7 @@
  */
 
 import { useEffect, useState } from "react";
+import apiFetch from "@/lib/http/apiFetch";
 
 declare global {
   interface Window {
@@ -108,7 +109,7 @@ export default function PlaidLinkPage() {
 
     async function exchangeAndReport(publicToken: string) {
       try {
-        const res = await fetch("/api/plaid/exchange", {
+        const res = await apiFetch("/api/plaid/exchange", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ publicToken }),
@@ -153,7 +154,7 @@ export default function PlaidLinkPage() {
       if (cancelled) return;
       setState({ kind: "syncing" });
       try {
-        const res = await fetch("/api/plaid/sync", { method: "POST" });
+        const res = await apiFetch("/api/plaid/sync", { method: "POST" });
         const data = (await res.json()) as {
           success: boolean;
           holdingsWritten?: number;
@@ -238,7 +239,7 @@ export default function PlaidLinkPage() {
 
         // Fresh leg: mint a new link token (reauth uses update mode — no
         // new access token, just re-establishes the Vanguard login).
-        const res = await fetch("/api/plaid/link-token", {
+        const res = await apiFetch("/api/plaid/link-token", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(isReauth ? { mode: "reauth" } : {}),

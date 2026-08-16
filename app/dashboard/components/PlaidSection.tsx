@@ -17,6 +17,7 @@
  */
 
 import { useEffect, useState } from "react";
+import apiFetch from "@/lib/http/apiFetch";
 
 interface PlaidAccountInfo {
   id: string;
@@ -119,7 +120,7 @@ export function PlaidSection() {
     setMapSaving(true);
     setMapStatus(null);
     try {
-      const res = await fetch("/api/settings/plaid", {
+      const res = await apiFetch("/api/settings/plaid", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ accountMap: draftMap }),
@@ -146,7 +147,7 @@ export function PlaidSection() {
     setSyncing(true);
     setSyncStatus(null);
     try {
-      const res = await fetch("/api/plaid/sync", { method: "POST" });
+      const res = await apiFetch("/api/plaid/sync", { method: "POST" });
       const data = (await res.json()) as SyncResponse;
       if (data.success) {
         const accountsSynced = data.accountsSynced ?? 0;
