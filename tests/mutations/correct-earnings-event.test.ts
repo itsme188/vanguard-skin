@@ -370,6 +370,76 @@ describe("correctEarningsEventDate", () => {
     expect(result.ok).toBe(true);
   });
 
+  // ── QA: slot-only change silently discarded on UNIQUE-conflict adopt ─────
+  // (qa:today-earningshub-fix-date--slot-only-change-200-writes-nothing)
+  //
+  // Once a symbol has already been corrected once, it sits on a MANUAL row
+  // (source_key `manual:<symbol>:<date>:earnings`). A second, slot-only
+  // correction on the same date re-attempts an insert with that identical
+  // source_key, collides on the UNIQUE constraint, and falls into the
+  // adopt-existing catch branch. Before the fix, that branch adopted the
+  // pre-existing row's id but never touched its event_time — the caller got
+  // 200 {success:true} while the row's slot stayed exactly as wrong as
+  // before (repro: HD, event id 1444, event_time stuck at 'BMO').
+  it("persists a slot-only change onto an already-adopted manual row (UNIQUE-conflict adopt)", () => {
+    const manualId = insertCalendarEvent(db, {
+      symbol: "HD",
+      event_date: "2026-08-18",
+      event_type: "earnings",
+      event_time: "BMO",
+      week_of: "2026-08-17",
+    }).id;
+
+    const res = correctEarningsEventDate(db, {
+      symbol: "HD",
+      wrongDate: "2026-08-18",
+      correctDate: "2026-08-18",
+      slot: "AMC",
+    });
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    // Same row adopted (no other row existed on that date) — nothing to delete.
+    expect(res.newEventId).toBe(manualId);
+    expect(res.deletedIds).toEqual([]);
+
+    const row = db
+      .prepare(`SELECT event_time FROM calendar_events WHERE id = ?`)
+      .get(manualId) as { event_time: string };
+    expect(row.event_time).toBe("AMC");
+  });
+
+  it("treats a lowercase slot that matches the stored uppercase slot as no_change (case-insensitive)", () => {
+    const manualId = insertCalendarEvent(db, {
+      symbol: "HD",
+      event_date: "2026-08-18",
+      event_type: "earnings",
+      event_time: "AMC",
+      week_of: "2026-08-17",
+    }).id;
+
+    const res = correctEarningsEventDate(db, {
+      symbol: "HD",
+      wrongDate: "2026-08-18",
+      correctDate: "2026-08-18",
+      // Simulates an off-contract caller (the route already uppercases, but
+      // the lib is a public seam other callers can hit directly).
+      slot: "amc" as unknown as "BMO" | "AMC",
+    });
+
+    expect(res.ok).toBe(false);
+    expect(res.code).toBe("no_change");
+
+    const row = db
+      .prepare(`SELECT event_time FROM calendar_events WHERE id = ?`)
+      .get(manualId) as { event_time: string };
+    expect(row.event_time).toBe("AMC"); // untouched
+    const rowCount = (
+      db.prepare(`SELECT COUNT(*) c FROM calendar_events WHERE symbol='HD'`).get() as { c: number }
+    ).c;
+    expect(rowCount).toBe(1); // no phantom row minted
+  });
+
   // ── Sent-email audit preservation (QA 2026-08-07) ─────────────────────────
   // A date/slot correction must carry earnings_emails + earnings_email_skips
   // onto the corrected row the same way earnings_bogeys migrate — pre-fix the
