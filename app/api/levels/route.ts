@@ -12,6 +12,7 @@ import {
   deleteLevel,
 } from "@/lib/mutations/security-levels";
 import { resolveLevelPrice } from "@/lib/alerts/resolve-level-price";
+import { todayET } from "@/lib/calendar/date-utils";
 
 export async function GET(request: NextRequest) {
   try {
@@ -47,6 +48,26 @@ export async function POST(request: NextRequest) {
     if (!body.security_id || !body.level_type || typeof body.price !== "number") {
       return NextResponse.json(
         { success: false, error: "security_id, level_type, and price required" },
+        { status: 400 }
+      );
+    }
+    // QA security-detail-levels--past-expiry-accepted-renders-armed-never-fires:
+    // a brand-new level with an already-past expires_at used to be accepted
+    // silently (200) and render in the active list looking armed, but
+    // getArmedLevels/findCrossedLevels filter `expires_at >= date('now')` —
+    // the scanner permanently excludes it and it can never fire. Reject at
+    // creation with an honest 400 instead. This gate is create-only (POST
+    // never carries an `id`, unlike PATCH's edit path) so it never touches
+    // legitimate historical writes: PATCH edits that keep an old expiry,
+    // sync/import re-upserts, and newsletter-accept all call upsertLevel
+    // directly and are untouched. ET-anchored per project convention — never
+    // new Date().toISOString().slice(0,10).
+    if (typeof body.expires_at === "string" && body.expires_at < todayET()) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `Expiry date ${body.expires_at} is in the past — this level would be created already expired and could never fire. Pick today or a later date.`,
+        },
         { status: 400 }
       );
     }
