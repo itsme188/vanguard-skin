@@ -2,7 +2,12 @@
 
 import { useState, useCallback, useEffect, useRef } from "react";
 import Link from "next/link";
-import type { ResearchArticle, ResearchSource, FilteredArticle } from "@/lib/queries/research";
+import type {
+  ResearchArticle,
+  ResearchSource,
+  FilteredArticle,
+  FilteredArticleCategoryCount,
+} from "@/lib/queries/research";
 import { trimEmailFooter, htmlHidesStoredText } from "@/lib/gmail/sanitize";
 import { sanitizeThemeList } from "@/lib/gmail/theme-sanitize";
 import { ManageSourcesModal } from "./ManageSourcesModal";
@@ -21,7 +26,13 @@ interface Props {
   /** D5 — articles flipped to is_relevant=0 by D1/D2 short-circuit or D3 gate. */
   initialFilteredArticles: FilteredArticle[];
   initialFilteredCount: number;
+  /** Full-set per-category counts for the Filtered list's section headers —
+   *  never derived from initialFilteredArticles, which is page-capped. */
+  initialFilteredCategoryCounts: FilteredArticleCategoryCount[];
 }
+
+/** Matches the server's default `limit` for the filtered=1 endpoint. */
+const FILTERED_PAGE_SIZE = 100;
 
 // ── Sentiment helpers ────────────────────────────────────────────────
 
@@ -135,6 +146,7 @@ export function ResearchFeedsView({
   initialSymbolMap,
   initialFilteredArticles,
   initialFilteredCount,
+  initialFilteredCategoryCounts,
 }: Props) {
   const isMobile = useIsMobile();
   const [articles, setArticles] = useState(initialArticles);
@@ -158,11 +170,27 @@ export function ResearchFeedsView({
   const [viewMode, setViewMode] = useState<"all" | "filtered">("all");
   const [filteredArticles, setFilteredArticles] = useState<FilteredArticle[]>(initialFilteredArticles);
   const [filteredCount, setFilteredCount] = useState(initialFilteredCount);
+  // Full-set per-category counts for the CURRENT sourceId/search predicate —
+  // qa fix: the section headers must render from this, never from
+  // filteredArticles.length, or they silently undercount past the page cap.
+  const [filteredCategoryCounts, setFilteredCategoryCounts] = useState<FilteredArticleCategoryCount[]>(
+    initialFilteredCategoryCounts,
+  );
+  const [loadingMoreFiltered, setLoadingMoreFiltered] = useState(false);
+  const filteredTotal = filteredCategoryCounts.reduce((sum, c) => sum + c.count, 0);
+  const filteredRemaining = Math.max(0, filteredTotal - filteredArticles.length);
 
   const handleUnfilter = useCallback(async (articleId: number) => {
     // Optimistic removal — flicker would be worse than a race-loss on failure.
+    const removed = filteredArticles.find((a) => a.id === articleId);
+    const removedCategory = removed?.excluded_category || "other";
     setFilteredArticles((prev) => prev.filter((a) => a.id !== articleId));
     setFilteredCount((n) => Math.max(0, n - 1));
+    setFilteredCategoryCounts((prev) =>
+      prev
+        .map((c) => (c.category === removedCategory ? { ...c, count: Math.max(0, c.count - 1) } : c))
+        .filter((c) => c.count > 0),
+    );
     try {
       const res = await apiFetch(`/api/research/articles/${articleId}/unfilter`, {
         method: "POST",
@@ -171,11 +199,15 @@ export function ResearchFeedsView({
         // Rollback: refetch the full filtered list to recover correct state —
         // and explain, or the reappearing row looks like a glitch.
         toast(`Couldn't unfilter the article (server returned ${res.status}) — it stays in the filtered list.`, "error");
-        const reload = await fetch("/api/research/articles?filtered=1&limit=100");
+        const reload = await fetch(`/api/research/articles?filtered=1&limit=${FILTERED_PAGE_SIZE}`);
         const data = await reload.json();
         if (data.success) {
           setFilteredArticles(data.data ?? []);
-          setFilteredCount((data.data ?? []).length);
+          const counts: FilteredArticleCategoryCount[] = data.categoryCounts ?? [];
+          setFilteredCategoryCounts(counts);
+          // This reload has no sourceId/search — its total is the true
+          // global count, same thing getFilteredArticleCount would return.
+          setFilteredCount(counts.reduce((sum, c) => sum + c.count, 0));
         }
       }
     } catch {
@@ -183,24 +215,55 @@ export function ResearchFeedsView({
       // server may not have gotten it rather than leaving a silent mismatch.
       toast("Unfilter may not have reached the server — check the Filtered tab after the next sync.", "info");
     }
-  }, [toast]);
+  }, [toast, filteredArticles]);
+
+  const handleLoadMoreFiltered = useCallback(async () => {
+    setLoadingMoreFiltered(true);
+    try {
+      const params = new URLSearchParams({
+        filtered: "1",
+        limit: String(FILTERED_PAGE_SIZE),
+        offset: String(filteredArticles.length),
+      });
+      if (sourceFilter) params.set("sourceId", String(sourceFilter));
+      if (searchQuery.length >= 2) params.set("search", searchQuery);
+      const res = await fetch(`/api/research/articles?${params}`);
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setFilteredArticles((prev) => [...prev, ...(data.data ?? [])]);
+        if (data.categoryCounts) setFilteredCategoryCounts(data.categoryCounts);
+      } else {
+        toast(`Couldn't load more filtered articles (server returned ${res.status}).`, "error");
+      }
+    } catch {
+      toast("Load more failed — check your connection and try again.", "error");
+    } finally {
+      setLoadingMoreFiltered(false);
+    }
+  }, [filteredArticles.length, sourceFilter, searchQuery, toast]);
 
   // qa:research-feeds-filtered--search-and-source-controls-noop — the Filtered
   // audit list honors the same toolbar controls as the main feed. Refetch
   // whenever the tab is active and search/source change (the API's filtered=1
   // branch now accepts both params). A failed refetch keeps the current list.
+  // This always fetches page 1 (offset 0) — a search/source change resets
+  // any "Load more" progress, which is the correct behavior since the
+  // underlying predicate changed.
   useEffect(() => {
     if (viewMode !== "filtered") return;
     // Match the main list's 2-char search threshold (single char = too noisy).
     if (searchQuery.length === 1) return;
-    const params = new URLSearchParams({ filtered: "1", limit: "100" });
+    const params = new URLSearchParams({ filtered: "1", limit: String(FILTERED_PAGE_SIZE) });
     if (sourceFilter) params.set("sourceId", String(sourceFilter));
     if (searchQuery.length >= 2) params.set("search", searchQuery);
     let cancelled = false;
     fetch(`/api/research/articles?${params}`)
       .then((res) => res.json())
       .then((data) => {
-        if (!cancelled && data.success) setFilteredArticles(data.data ?? []);
+        if (!cancelled && data.success) {
+          setFilteredArticles(data.data ?? []);
+          if (data.categoryCounts) setFilteredCategoryCounts(data.categoryCounts);
+        }
       })
       .catch(() => {
         /* keep the current list — the empty state explains active filters */
@@ -577,11 +640,26 @@ export function ResearchFeedsView({
 
       {/* Articles — reader layout */}
       {viewMode === "filtered" ? (
-        <FilteredArticlesList
-          articles={filteredArticles}
-          onUnfilter={handleUnfilter}
-          hasActiveFilter={searchQuery.length >= 2 || sourceFilter !== null}
-        />
+        <>
+          <FilteredArticlesList
+            articles={filteredArticles}
+            categoryCounts={filteredCategoryCounts}
+            onUnfilter={handleUnfilter}
+            hasActiveFilter={searchQuery.length >= 2 || sourceFilter !== null}
+          />
+          {filteredRemaining > 0 && (
+            <div className="max-w-3xl mx-auto flex justify-center pt-1">
+              <button
+                type="button"
+                onClick={handleLoadMoreFiltered}
+                disabled={loadingMoreFiltered}
+                className="px-4 py-2 rounded-md text-xs font-medium border border-edge text-ink-dim hover:text-ink hover:bg-raised transition-colors disabled:opacity-50"
+              >
+                {loadingMoreFiltered ? "Loading…" : `Load more (${filteredRemaining} remaining)`}
+              </button>
+            </div>
+          )}
+        </>
       ) : articles.length === 0 && (searchQuery.length > 0 || sourceFilter !== null) ? (
         // Zero results under an active search/filter is a no-match state,
         // not the no-data onboarding (deep-QA: "Connect Gmail" copy wrongly
@@ -782,14 +860,19 @@ const FILTERED_CATEGORY_LABEL: Record<string, string> = {
 
 function FilteredArticlesList({
   articles,
+  categoryCounts,
   onUnfilter,
   hasActiveFilter = false,
 }: {
   articles: FilteredArticle[];
+  /** Full-set per-category counts under the current predicate — the section
+   *  order + header counts always come from here, never from grouping
+   *  `articles` (which is only the loaded page, capped at 100 rows). */
+  categoryCounts: FilteredArticleCategoryCount[];
   onUnfilter: (id: number) => void;
   hasActiveFilter?: boolean;
 }) {
-  if (articles.length === 0) {
+  if (articles.length === 0 && categoryCounts.length === 0) {
     // Distinguish "no matches under the active controls" from "nothing has
     // been filtered" — the wrong copy makes the controls look broken.
     if (hasActiveFilter) {
@@ -815,9 +898,9 @@ function FilteredArticlesList({
     );
   }
 
-  // Group by category so the user can scan one bucket at a time. The map
-  // preserves insertion order, so categories surface in the order their
-  // first article appeared (most recent first by query order).
+  // Group the LOADED rows by category so each section has something to
+  // render — but the section list itself, its order, and its header count
+  // are driven by categoryCounts (see prop doc above), not by this map.
   const buckets = new Map<string, FilteredArticle[]>();
   for (const a of articles) {
     const key = a.excluded_category || "other";
@@ -828,22 +911,34 @@ function FilteredArticlesList({
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
-      {Array.from(buckets.entries()).map(([category, items]) => (
-        <section key={category}>
-          <h3 className="text-xs font-semibold text-gold-ink uppercase tracking-wider mb-3">
-            {FILTERED_CATEGORY_LABEL[category] ?? category} · {items.length}
-          </h3>
-          <div className="divide-y divide-edge/50">
-            {items.map((article) => (
-              <FilteredArticleRow
-                key={article.id}
-                article={article}
-                onUnfilter={onUnfilter}
-              />
-            ))}
-          </div>
-        </section>
-      ))}
+      {categoryCounts.map(({ category, count }) => {
+        if (count === 0) return null;
+        const items = buckets.get(category) ?? [];
+        return (
+          <section key={category}>
+            <h3 className="text-xs font-semibold text-gold-ink uppercase tracking-wider mb-3">
+              {FILTERED_CATEGORY_LABEL[category] ?? category} · {count}
+            </h3>
+            {items.length > 0 ? (
+              <div className="divide-y divide-edge/50">
+                {items.map((article) => (
+                  <FilteredArticleRow
+                    key={article.id}
+                    article={article}
+                    onUnfilter={onUnfilter}
+                  />
+                ))}
+              </div>
+            ) : (
+              // Full count is known but none of this category's rows have
+              // loaded yet — they're all older than the current page cutoff.
+              <p className="text-xs text-ink-faint italic py-2">
+                {count} article{count === 1 ? "" : "s"} in this category — click &quot;Load more&quot; below to review.
+              </p>
+            )}
+          </section>
+        );
+      })}
     </div>
   );
 }

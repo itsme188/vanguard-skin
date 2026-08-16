@@ -302,10 +302,15 @@ export interface FilteredArticle {
   processed_at: string | null;
 }
 
-export function getFilteredArticles(
-  db: Database.Database,
-  options?: { limit?: number; sourceId?: number; search?: string },
-): FilteredArticle[] {
+/**
+ * Shared predicate builder for the D5 audit surface — getFilteredArticles
+ * and getFilteredArticleCategoryCounts MUST stay on this same builder so a
+ * page fetched under (sourceId, search) and the aggregate counted under the
+ * same (sourceId, search) can never silently diverge.
+ */
+function buildFilteredArticlesWhere(
+  options?: { sourceId?: number; search?: string },
+): { where: string; params: (string | number)[] } {
   const conditions = ["a.is_relevant = 0"];
   const params: (string | number)[] = [];
 
@@ -323,7 +328,15 @@ export function getFilteredArticles(
     params.push(term, term, term, term);
   }
 
-  params.push(options?.limit ?? 100);
+  return { where: conditions.join(" AND "), params };
+}
+
+export function getFilteredArticles(
+  db: Database.Database,
+  options?: { limit?: number; offset?: number; sourceId?: number; search?: string },
+): FilteredArticle[] {
+  const { where, params } = buildFilteredArticlesWhere(options);
+  const queryParams = [...params, options?.limit ?? 100, options?.offset ?? 0];
 
   return db
     .prepare(
@@ -332,16 +345,19 @@ export function getFilteredArticles(
               a.processed_at
          FROM research_articles a
          JOIN research_sources s ON a.source_id = s.id
-        WHERE ${conditions.join(" AND ")}
+        WHERE ${where}
         ORDER BY a.received_at DESC
-        LIMIT ?`,
+        LIMIT ? OFFSET ?`,
     )
-    .all(...params) as FilteredArticle[];
+    .all(...queryParams) as FilteredArticle[];
 }
 
 /**
- * Lightweight count for the Feeds toolbar badge. Same predicate as
- * getFilteredArticles — keep them in lockstep if the predicate ever changes.
+ * Lightweight count for the Feeds toolbar badge. Same base predicate
+ * (is_relevant=0) as getFilteredArticles — keep them in lockstep if the
+ * predicate ever changes. Deliberately ignores sourceId/search: the badge
+ * is a global "there's stuff to review" indicator, independent of the
+ * Filtered tab's current toolbar narrowing.
  */
 export function getFilteredArticleCount(db: Database.Database): number {
   const row = db
@@ -350,6 +366,37 @@ export function getFilteredArticleCount(db: Database.Database): number {
     )
     .get() as { n: number };
   return row.n;
+}
+
+export interface FilteredArticleCategoryCount {
+  category: string;
+  count: number;
+}
+
+/**
+ * D5 fix — full-set per-category counts for the Filtered audit list's
+ * section headers, built on the IDENTICAL predicate as getFilteredArticles
+ * (sourceId/search) but with no limit/offset. The 100-row page cap means the
+ * loaded rows alone are not a valid source for header counts once the full
+ * set exceeds the page size — headers computed from the page silently
+ * undercount and contradict the toolbar badge. Callers must render section
+ * counts from this, never from articles.length within a client-side bucket.
+ */
+export function getFilteredArticleCategoryCounts(
+  db: Database.Database,
+  options?: { sourceId?: number; search?: string },
+): FilteredArticleCategoryCount[] {
+  const { where, params } = buildFilteredArticlesWhere(options);
+  return db
+    .prepare(
+      `SELECT COALESCE(a.excluded_category, 'other') as category, COUNT(*) as count
+         FROM research_articles a
+         JOIN research_sources s ON a.source_id = s.id
+        WHERE ${where}
+        GROUP BY category
+        ORDER BY count DESC, category ASC`,
+    )
+    .all(...params) as FilteredArticleCategoryCount[];
 }
 
 export function getRecentArticleSummaries(
