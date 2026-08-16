@@ -5,6 +5,7 @@ import type { CalendarEvent } from "@/lib/types";
 import { SymbolLink } from "./SymbolLink";
 import { formatFinnhubFigureCompact } from "@/lib/format/finnhub-figure";
 import { effectiveConsensus } from "@/lib/calendar/consensus";
+import { todayET } from "@/lib/calendar/date-utils";
 import { EnrichmentRowSummary } from "./calendar/EnrichmentChips";
 // Import from the dependency-free core, never lib/calendar/reaction-snapshot.ts
 // (that file imports real values from @stoqey/ib — a client bundle that
@@ -12,6 +13,7 @@ import { EnrichmentRowSummary } from "./calendar/EnrichmentChips";
 import {
   parseReactionSnapshot,
   snapshotCoversEventDate,
+  type ReactionSnapshot,
 } from "@/lib/calendar/reaction-snapshot-core";
 
 /**
@@ -23,6 +25,45 @@ import {
  * earnings together, sorted by date then release_time. Post-release rows carry
  * the actual + reaction summary; pre-release rows show consensus.
  */
+
+/**
+ * Whether an upcoming-mode row's own release date has arrived. A date
+ * correction can carry a prior print's actual_value/enriched_at onto a
+ * FUTURE row (same failure mode WeekAheadView's releasedFigureGates
+ * guards); this is a forward-looking planning surface, so post-release
+ * data must not show until the event's own date arrives. Same
+ * released-date gate as WeekAheadView — do not fork this check. Today-mode
+ * rows are exempt: page.tsx's todayReleases query only ever selects
+ * event_date === today, so the gate is a no-op there, but upcoming-mode
+ * rows are future dates by construction.
+ */
+export function upcomingRowReleased(
+  event: Pick<CalendarEvent, "event_date">,
+  mode: "today" | "upcoming",
+  todayIso: string,
+): boolean {
+  if (mode !== "upcoming") return true;
+  return !!event.event_date && event.event_date <= todayIso;
+}
+
+/**
+ * Full enriched-row gate: released (above) AND there's actually something
+ * post-release to show. `snapshot` is the caller's already-parsed,
+ * already-date-matched ReactionSnapshot (or null) — computed once per row
+ * and reused for rendering, not reparsed here.
+ */
+export function isReleaseEnriched(
+  event: Pick<CalendarEvent, "event_date" | "enriched_at" | "actual_value">,
+  snapshot: ReactionSnapshot | null,
+  mode: "today" | "upcoming",
+  todayIso: string,
+): boolean {
+  return (
+    upcomingRowReleased(event, mode, todayIso) &&
+    !!event.enriched_at &&
+    (!!event.actual_value || snapshot != null)
+  );
+}
 
 function fmtTime(release_time: string): string {
   const [hh, mm] = release_time.split(":");
@@ -51,6 +92,7 @@ export function TodayReleases({
   mode?: "today" | "upcoming";
 }) {
   const upcoming = mode === "upcoming";
+  const todayIso = todayET();
   return (
     <section className="rounded-xl bg-panel p-4">
       <div className="mb-2 flex items-baseline justify-between">
@@ -76,7 +118,9 @@ export function TodayReleases({
             : null;
           // Without an actual OR a usable reaction, an enriched_at stamp has
           // nothing post-release to show — fall through to Est/Pending.
-          const enriched = !!event.enriched_at && (!!event.actual_value || snapshot != null);
+          // isReleaseEnriched also blocks a date-corrected future row (upcoming
+          // mode) from showing a prior print's stranded actual/enrichment.
+          const enriched = isReleaseEnriched(event, snapshot, mode, todayIso);
           const showPill = !!event.symbol && event.security_id != null;
           // Earnings titles already begin with the ticker ("NKE earnings (AMC)").
           // When the symbol pill is shown, drop that leading prefix so we don't
