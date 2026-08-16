@@ -26,6 +26,7 @@ import { formatLevelPrice } from "@/lib/chart/price-formatter";
 // is the ACCEPT-path gate so a bad sentence can never ride into
 // security_levels.thesis on an armed level.
 import { guardNarrative, resolveAcceptedThesis } from "@/lib/levels/narrative-guard";
+import { todayET } from "@/lib/calendar/date-utils";
 import { useToast } from "./Toast";
 import { Chip } from "./Chip";
 import { SortPicker } from "./SortPicker";
@@ -868,9 +869,10 @@ export function LevelsPanel({
               <input
                 type="date"
                 value={expiresAt}
+                min={todayET()}
                 onChange={(e) => setExpiresAt(e.target.value)}
                 className="w-full bg-canvas border border-edge rounded px-2 py-1 text-xs"
-                title="Optional. After this date the level is ignored by the scan. Separate from Timeframe, which is informational only."
+                title="Optional. After this date the level is ignored by the scan. Separate from Timeframe, which is informational only. Must be today or later — a past date would be created already expired and could never fire."
               />
             </Field>
             <Field label="Thesis (why this level)">
