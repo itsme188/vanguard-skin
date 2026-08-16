@@ -149,4 +149,42 @@ describe("PATCH /api/levels/review", () => {
     expect(level.review_status).toBe("rejected");
     expect(level.armed_crossed_at).toBeNull();
   });
+
+  it("re-queues a rejected level back to pending_review — the LevelsPanel 'Re-queue' action (Codex advisory #49)", async () => {
+    const secId = seedSecurity(hoisted.db, "AAPL");
+    const levelId = upsertLevel(hoisted.db, {
+      security_id: secId,
+      level_type: "support",
+      price: 180,
+      source: "newsletter",
+      review_status: "pending_review",
+    });
+    seedPrice(hoisted.db, secId, 175);
+
+    const mod = await import("@/app/api/levels/review/route");
+    await mod.PATCH(patchReq({ id: levelId, status: "rejected" }));
+    expect(getLevelById(hoisted.db, levelId)!.review_status).toBe("rejected");
+
+    const res = await mod.PATCH(patchReq({ id: levelId, status: "pending_review" }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean };
+    expect(body.success).toBe(true);
+
+    // Back in the review inbox, not approved/armed.
+    const level = getLevelById(hoisted.db, levelId)!;
+    expect(level.review_status).toBe("pending_review");
+    expect(level.armed_crossed_at).toBeNull();
+
+    const listRes = await mod.GET(
+      new NextRequest("http://test/api/levels/review")
+    );
+    const listBody = (await listRes.json()) as {
+      success: boolean;
+      levels: Array<{ id: number; review_status: string }>;
+    };
+    expect(listBody.success).toBe(true);
+    expect(listBody.levels.some((l) => l.id === levelId && l.review_status === "pending_review")).toBe(
+      true
+    );
+  });
 });
