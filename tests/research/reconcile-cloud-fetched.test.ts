@@ -171,6 +171,28 @@ describe("reconcileCloudFetchedNewsletters", () => {
     expect(JSON.parse(row.key_themes)).toEqual(["fed policy", "tech earnings"]);
   });
 
+  it("sanitizes a JSON-envelope-contaminated summary before storing (2026-08-14 cloud-fallback leak shape, defense-in-depth)", async () => {
+    const db = makeDb();
+    const poisonedSummary =
+      "The newsletter argues chip demand remains resilient into year-end." +
+      '", "key_themes": ["semis", "AI capex"], "sentiment": "bullish", ' +
+      '"sentiment_score": 0.55, "mentioned_symbols": ["NVDA"], ' +
+      '"portfolio_relevance": "Relevant to your NVDA position.", "is_portfolio_relevant": true}';
+    mockWorker({
+      list: {
+        m1: { ...BASE_PAYLOAD, summary: poisonedSummary },
+      },
+    });
+
+    const result = await reconcileCloudFetchedNewsletters(db, "secret");
+
+    expect(result.reconciled).toBe(1);
+    const row = db.prepare(`SELECT summary FROM research_articles WHERE gmail_message_id = 'm1'`).get() as { summary: string };
+    expect(row.summary).toBe("The newsletter argues chip demand remains resilient into year-end.");
+    expect(row.summary).not.toContain('"key_themes"');
+    expect(row.summary).not.toContain('"mentioned_symbols"');
+  });
+
   it("applies the D3 gate when is_portfolio_relevant=false and source.allow_off_topic=0", async () => {
     const db = makeDb();
     mockWorker({
