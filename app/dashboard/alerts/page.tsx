@@ -18,7 +18,7 @@ import { useToast } from "../components/Toast";
 import { SortPicker } from "../components/SortPicker";
 import { SymbolLink } from "../components/SymbolLink";
 import { Chip } from "../components/Chip";
-import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
+import { compareValues, useSortParam, type SortState } from "@/lib/hooks/useSortParam";
 import { EarningsDateChip } from "../today/EarningsDateChip";
 import type { EarningsDateConflict } from "@/lib/queries/calendar";
 import type { SentEarningsEmail } from "@/lib/queries/earnings-emails";
@@ -762,9 +762,13 @@ function AlertsPageInner() {
       ) : isReview ? (
         <ReviewGroupedByAuthor
           // sortedItems, not raw reviewLevels — the Sort picker reorders the
-          // stream, and Review must honor it like every other tab. Group
-          // order + within-group order both follow this input order.
+          // stream, and Review must honor it like every other tab. Under
+          // the default sort we still group by author below; under an
+          // explicit sort, grouping would apply this order WITHIN each
+          // author's fixed-order bucket and leave the buckets themselves
+          // unsorted, so `sort` decides whether to keep one flat section.
           levels={sortedItems.flatMap((it) => (it.kind === "review" ? [it.level] : []))}
+          sort={sort}
           onDecide={decideReview}
           disabled={approvingAll || decidingId !== null}
           busyId={decidingId}
@@ -1189,24 +1193,41 @@ function SplitPendingStream({
   );
 }
 
-function ReviewGroupedByAuthor({
-  levels,
-  onDecide,
-  disabled,
-  busyId,
-  forceConfirm,
-  onCancelConfirm,
-}: {
+/** One rendered section of the Review tab. `author === null` means "no
+ *  header — this is a single flat, globally-ordered section" (explicit
+ *  sort); a non-null author means the classic author-grouped presentation
+ *  (default sort). */
+export interface ReviewSection {
+  author: string | null;
   levels: PendingLevel[];
-  onDecide: (id: number, status: LevelReviewStatus, force?: boolean) => void;
-  disabled: boolean;
-  busyId?: number | null;
-  forceConfirm: ForceConfirmMap;
-  onCancelConfirm: (id: number) => void;
-}) {
-  // When the user explicitly filters to "Review", group by source_author so
-  // they can triage one author at a time (carries over the prior UX from
-  // /dashboard/levels/review).
+}
+
+/** Default stream sort is "recency desc" (the useSortParam default for the
+ *  "alerts" scope) — treat a null field the same way, since that's what an
+ *  unset URL param resolves to before useSortParam applies its default. */
+export function isDefaultStreamSort(sort: SortState<StreamSortField>): boolean {
+  return (sort.field === null || sort.field === "recency") && sort.dir === "desc";
+}
+
+/**
+ * Review tab grouping/ordering decision, extracted so it's unit-testable
+ * without rendering. Under the default stream sort we group by
+ * source_author so the user can triage one newsletter author at a time
+ * (carries over the prior UX from /dashboard/levels/review) — group order
+ * and within-group order both follow `levels`' input order. Under an
+ * EXPLICIT sort (price/date/symbol), grouping would apply that order WITHIN
+ * each author's fixed-order bucket and leave the buckets themselves
+ * unsorted, silently un-sorting the page (codex advisory) — so an explicit
+ * sort renders one flat section instead, preserving `levels`' global order.
+ * `levels` is assumed pre-sorted by the caller (sortedItems).
+ */
+export function buildReviewSections(
+  levels: PendingLevel[],
+  sort: SortState<StreamSortField>,
+): ReviewSection[] {
+  if (!isDefaultStreamSort(sort)) {
+    return [{ author: null, levels }];
+  }
   const grouped = new Map<string, PendingLevel[]>();
   for (const l of levels) {
     const key = l.source_author ?? "Unknown";
@@ -1214,16 +1235,39 @@ function ReviewGroupedByAuthor({
     arr.push(l);
     grouped.set(key, arr);
   }
+  return Array.from(grouped.entries()).map(([author, rows]) => ({ author, levels: rows }));
+}
+
+function ReviewGroupedByAuthor({
+  levels,
+  sort,
+  onDecide,
+  disabled,
+  busyId,
+  forceConfirm,
+  onCancelConfirm,
+}: {
+  levels: PendingLevel[];
+  sort: SortState<StreamSortField>;
+  onDecide: (id: number, status: LevelReviewStatus, force?: boolean) => void;
+  disabled: boolean;
+  busyId?: number | null;
+  forceConfirm: ForceConfirmMap;
+  onCancelConfirm: (id: number) => void;
+}) {
+  const sections = buildReviewSections(levels, sort);
   return (
     <div className="space-y-5">
-      {Array.from(grouped.entries()).map(([author, rows]) => (
-        <section key={author}>
-          <h2 className="text-[11px] uppercase tracking-wider text-ink-dim mb-2">
-            {author}
-            <span className="ml-1.5 text-ink-faint font-mono">{rows.length}</span>
-          </h2>
+      {sections.map((section) => (
+        <section key={section.author ?? "__flat__"}>
+          {section.author !== null && (
+            <h2 className="text-[11px] uppercase tracking-wider text-ink-dim mb-2">
+              {section.author}
+              <span className="ml-1.5 text-ink-faint font-mono">{section.levels.length}</span>
+            </h2>
+          )}
           <ul className="space-y-2">
-            {rows.map((l) => (
+            {section.levels.map((l) => (
               <ReviewRow
                 key={l.id}
                 level={l}
