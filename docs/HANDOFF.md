@@ -3,32 +3,45 @@
 > Rolling file, overwritten at each session close. Past handoffs: `git log -p docs/HANDOFF.md`.
 > Written by Claude Code so Codex can review changes and reasoning at full project context.
 
-**Session date:** 2026-08-16 — #35 packaged-app trust boundary: SHIPPED + production cutover verified
+**Session date:** 2026-08-16 (pm) — QA-branch landing + 17 QA decisions + Codex-advisory batch (#48/#49 + 2 blocked findings)
 
 ## 1. Goal + exact files changed
 
-Built and shipped the #35 P0 trust boundary end-to-end, then performed and verified the production cutover. Merged to `main` at **`75fc2a1`** (`--no-ff` merge of `security/packaged-app-trust-boundary`, 26-task SDD build spanning `6a296e1..08802ce` + a TODO reconcile). Key files:
+Three-part session, user-picked at session start.
 
-- **New:** `proxy.ts` (root choke point); `lib/auth/{verify-request,route-policy,credentials,csrf,cookies,throttle,electron-cred,safe-next,startup-validation}.ts`; `lib/queries/sessions.ts`, `lib/mutations/sessions.ts`; `lib/http/apiFetch.ts` + `eslint-rules/no-raw-api-fetch.js`; `app/login/page.tsx`; `app/api/auth/{login,logout,pin,pin/verify,desktop-bootstrap,revoke-all}/route.ts`; `lib/import/recovery.ts` + `scripts/restore-import-batch.ts`; `electron/{bootstrap-auth,password-hash,password-change,credential-rotation}.ts`; `instrumentation.ts`; migrations `079_app_sessions.sql`, `080_session_pin.sql`; boundary/negative-test suites.
-- **Changed:** `electron/main.ts` (HOSTNAME→127.0.0.1, silent-auth wiring, service-cred/password provisioning + rotation), `electron/settings-store.ts` (safeStorage secret accessors), `package.json` (dev/start `-H 127.0.0.1`), all mutating client fetches → `apiFetch`, state-changing GET routes → POST, route hardening (`tws/connect`, `import`, 3 email routes, `chat`), `workers/cron` (primary.ts deleted, `calendar-enrich.ts` primary Mac-call retired), docs (`ui-structure.md`, `cron-and-workers.md`, `CLAUDE.md`, `TODO.md`).
+**Part 1 — landed all three unlanded QA fix branches (15 fixes total):**
+- Merge `origin/qa-auto-fixes-2026-08-14` (= PR #51, now MERGED): Filtered-audit pagination past 100 with full-set `categoryCounts` on a shared predicate builder (`lib/queries/research.ts`), All-Accounts holdings `quantity != 0` (shorts render, reconciler tombstones don't) (`lib/queries/holdings.ts`).
+- Merge `qa-deep-fixes-2026-08-14`: sanitizer JSON-envelope remnant guard (`lib/gmail/theme-sanitize.ts` + Worker mirror `workers/cron/src/fallback-digest.ts` + render-side in `ResearchFeedsView` + storage-side in `reconcile-cloud-fetched.ts`), email word-break (`briefing-html.ts` + mirror `html.ts`), concentration-chart y-axis margin, expired-option "(expired)" label. **Conflict resolution note:** the branch's week-ahead crash fix was superseded by main's round-2 `reaction-snapshot-core.ts` layout (branch's shape would re-drag `@stoqey/ib` toward client bundles) — resolved toward main, duplicate helpers dropped.
+- Merge `qa-auto-fixes-2026-08-16` (clean): level past-expiry 400 gate (`app/api/levels/route.ts`, ET-anchored, create-only), narrative plausibility guard at storage/render/accept (`lib/levels/narrative-guard.ts`, new, pure), slot-only date-correction fix (`lib/mutations/calendar.ts`, adopted-manual-row slot update — sync-owned invariant respected), RECONCILE_CLOSE excluded from account transactions, stale-bar as-of captions (`MarketDataPanel.tsx`), risk-vol window/basis captions + `MIN_POSITION_OBSERVATIONS` basket floor (`lib/compute/risk.ts`), position-risk narrative re-ranked by riskContribution, clean vanguard-pdf JSON-parse errors.
+- Branch cleanup: all `qa-auto-fixes-*`/`qa-deep-fixes-*`/`qa-fix-work-20260814/15` deleted (local + remote); `qa-fix-work-20260816` left (checked out in the fixer's worktree; content fully landed).
 
-## 2. Tests / cutover result
+**Part 2 — 17 QA decisions recorded** (`qa/findings/ledger.json`, gitignored; backup `ledger.json.bak-2026-08-16-decisions`; `DECISIONS-PENDING.md` rewritten with a summary): all 17 pending findings now `disposition: auto` with `DECIDED:` plans, `decision_resolved: 2026-08-16`. User overrode the recommendation on 3: Workspace keeps vanguard default (+ pills + visible label, NOT scope=all); Cash-Deploy widens to held securities in underweight sectors; Credit Rating pill is hidden. Paired scenario fixes (exponential duration + additive shock composition) are one implementation unit. Five findings carry USER-RUN data companions (fixer must not touch live DB); the `symbol_release_times` composite-PK migration is PR-only; import post-commit backgrounding got explicit protected-pipeline sign-off (route-level only).
 
-- Suite **5,281 passing** + 9 todo; `next build` clean; Worker `tsc` + `wrangler --dry-run` clean. Every task passed an independent task-review; final whole-branch review (Opus) returned one must-fix (fixed) + 12 acceptable-to-defer minors. Spec had 2 Codex review passes, plan 1. The ~17 `tsc --noEmit` errors are confirmed pre-existing (stash-verified, unrelated test files); `next build` is the authoritative gate.
-- **Cutover executed + verified 2026-08-16:** Cloudflare named tunnel `portfolio-desk` → `app.myportfoliodesk.com` behind Access (team isafier); Plaid redirect URI registered (verified via `/link/token/create`); Worker deployed fallback-only + `PUSHOVER_LINK_BASE` repointed; app **code-signed + notarized + installed** via `electron:deploy`. Live checks: LAN request to `:3099` **refused** (the original P0 hole, now sealed), desktop silent-auth loads without a login screen, TWS connect authenticates via the Electron credential, iPhone reaches the app through Cloudflare Access + app password. GitHub issue **#35 closed** (comment links merge `75fc2a1`).
+**Part 3 — Codex-advisory batch, 4 fixes as 4 commits** (implemented by parallel Sonnet subagents, reviewed by session model; issues #48 + #49 closed):
+- `TodayReleases.tsx` + tests: upcoming-mode released-date gate (`upcomingRowReleased`/`isReleaseEnriched`, ET, mirrors `releasedFigureGates` — do-not-fork comment).
+- `lib/levels/action-visibility.ts` (new) + `LevelsPanel.tsx` + 3 test files: Pause/Reactivate on every row regardless of review status; Re-queue on active+rejected rows via existing `PATCH /api/levels/review` `status:"pending_review"` (never `approveLevelGuarded`); chip guidance matches reality.
+- `DataConfidenceIndicator.tsx` + static-scan test: Actions section `message`/`fix` wrapped in `<PrivateText>` (portfolio-derived counts/tickers/account names).
+- `app/dashboard/alerts/page.tsx` + tests: `buildReviewSections`/`isDefaultStreamSort` — explicit sort renders one flat globally-ordered section; default sort keeps author grouping.
+
+Also: `docs/plans/TODO.md` — added [#52] tracking line (evidence-driven verification loop); advisory-batch item marked fixed.
+
+## 2. Tests / deploy result
+
+- Full suite after each phase; final **5,365 passed + 9 todo (487 files), 0 failed**; `next build` clean (stale `dist/` removed first per the known gotcha). `tsc --noEmit` still carries only the pre-existing unrelated test-file errors.
+- **Worker deployed** (sanitizer + html mirrors changed): `vanguard-skin-cron` version `5cfc667b`, `*/15` trigger intact.
+- **Electron deployed**: signed, **notarized**, installed to /Applications, relaunched. Post-launch health: server log `Ready in 71ms`, TWS sync pipeline started immediately (synchronous stages block HTTP for a stretch right after boot — health probe polls until /login returns 200).
 
 ## 3. Open concerns / decisions
 
-- **Trust-model decision (user, revised mid-effort):** HTTPS tunnel + Access end-state chosen over "auth on the existing http mesh" (the latter can't do `Secure` cookies or passkeys). Loopback-only bind is permanent; remote access is only via the Access-gated tunnel.
-- **Deferred (non-blocking, both in `TODO.md` Open items):** Phase-2 passkeys/Face-ID (now unblocked by the HTTPS origin); 12 minor items from the final review.
-- **Env gotchas:** dotenv `$`-expansion corrupts scrypt hashes in `.env.local` (use an inline shell export for a dev `APP_PASSWORD_HASH`); notarization needs `APPLE_API_*` from `~/.zshrc` (extract the 3 vars, don't source zsh in bash).
-- **Parallel-session hazard recurred:** the nightly QA cron switched the shared checkout onto `qa-auto-fixes-2026-08-16` mid-session; recovered by switching back (work was safe on its branch). Reinforces worktree isolation for concurrent sessions.
+- The nightly fixer's next run implements the 17 DECIDED plans' auto halves; the five USER-RUN repair scripts need supervised sessions (tax-lot backfill, empty-enrichments, LAC/LAND re-verify, OCC dupes, ghost securities).
+- `workers/cron/fallback-evening.ts:176` still carries a literal beta-lookback 60 (harmless while the constant is 60 — noted in TODO).
+- Deferred: [#52] verification-loop tooling, [#34] review-intake process, [#35 Phase 2] passkeys — all in TODO Open items.
 
-## 4. Uncommitted changes / live-process state (after cutover)
+## 4. Uncommitted changes / live-process state
 
-- Working tree clean; `main` (`75fc2a1`) pushed to origin. Feature branch merged and deleted in cleanup. Extra worktree `vanguard-skin-qa-fix` (nightly fixer's — left in place). Open PR #51 (unrelated QA auto-fixes) still open.
-- Live: packaged app installed + running, **loopback-only** on `:3099`; `cloudflared` tunnel running as a boot-persistent user LaunchAgent (`com.cloudflare.portfolio-desk`); Worker deployed fallback-only. App password + Electron service credential in the macOS keychain (safeStorage).
+- Working tree clean; `main` pushed through the advisory-batch commits. Open PRs: none. Open issues: #52, #34.
+- Live: packaged app (rebuilt today) on loopback `:3099` behind the #35 boundary; `cloudflared` tunnel LaunchAgent; Worker fallback-only (new version live). QA ledger decisions are local-only (gitignored).
 
 ## 5. Claude session link
 
-https://claude.ai/code/session_01FkdVFgy32MpZbV2uLK4hJq
+https://claude.ai/code/session_01Jz646DAdkWmVkp3oLErRs6
