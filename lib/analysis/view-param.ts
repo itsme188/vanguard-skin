@@ -1,7 +1,8 @@
 // Analysis tab sub-view param normalization — single source of truth.
 //
-// Canonical scheme (2026-06-09 IA fix; defense added 2026-07-05): `?view=` with five values:
-//   workspace (default) | diagnostics | performance | trade-reviews | defense
+// Canonical scheme (2026-06-09 IA fix; defense added 2026-07-05; giving added
+// 2026-08-17): `?view=` with six values:
+//   workspace (default) | diagnostics | performance | trade-reviews | defense | giving
 // Diagnostics keeps a secondary `?mode=` (classification default | factors)
 // for its internal classification/factor toggle.
 //
@@ -17,7 +18,8 @@ export type AnalysisSubView =
   | "diagnostics"
   | "performance"
   | "trade-reviews"
-  | "defense";
+  | "defense"
+  | "giving";
 
 export type AnalysisDiagnosticsMode = "classification" | "factors";
 
@@ -50,6 +52,8 @@ export function resolveAnalysisView(params: {
       return { view: "trade-reviews", mode: "classification" };
     case "defense":
       return { view: "defense", mode: "classification" };
+    case "giving":
+      return { view: "giving", mode: "classification" };
   }
 
   // No (or unknown) view: legacy ?mode= alias keeps old diagnostics URLs working.

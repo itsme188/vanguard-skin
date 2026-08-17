@@ -10,17 +10,18 @@ export const tabs: Tab[] = [
   {
     name: "Analysis",
     href: "/dashboard/analysis",
-    // Canonical ?view= scheme (2026-06-09; defense added 2026-07-05): workspace |
-    // diagnostics | performance | trade-reviews | defense. Legacy ?mode=factors / ?mode=classification
-    // still resolve to Diagnostics via lib/analysis/view-param.ts; the old
-    // Classification / Factor Exposure split is now the in-page mode toggle
-    // inside Diagnostics.
+    // Canonical ?view= scheme (2026-06-09; defense added 2026-07-05; giving added
+    // 2026-08-17): workspace | diagnostics | performance | trade-reviews | defense |
+    // giving. Legacy ?mode=factors / ?mode=classification still resolve to
+    // Diagnostics via lib/analysis/view-param.ts; the old Classification /
+    // Factor Exposure split is now the in-page mode toggle inside Diagnostics.
     subviews: [
       { name: "Workspace", href: "/dashboard/analysis", matchParam: { key: "view", value: null } },
       { name: "Diagnostics", href: "/dashboard/analysis?view=diagnostics", matchParam: { key: "view", value: "diagnostics" } },
       { name: "Performance", href: "/dashboard/analysis?view=performance", matchParam: { key: "view", value: "performance" } },
       { name: "Trade Reviews", href: "/dashboard/analysis?view=trade-reviews", matchParam: { key: "view", value: "trade-reviews" } },
       { name: "Defense", href: "/dashboard/analysis?view=defense", matchParam: { key: "view", value: "defense" } },
+      { name: "Giving", href: "/dashboard/analysis?view=giving", matchParam: { key: "view", value: "giving" } },
     ],
   },
   {
