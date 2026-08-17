@@ -65,7 +65,7 @@ SPLIT, RETURN_OF_CAPITAL, SHORT_SELL
 
 **TRANSFER sign rule:** For Vanguard `TRANSFER` rows (VMFXX money-market sweeps), `amount` is **signed**: "Sweep Into Settlement Fund" is positive (cash entering VMFXX), "Sweep Out Of Settlement Fund" is negative (cash leaving VMFXX to settle a trade). The direction is already in the notes column — mirror it in the sign. **All statements since July 2026 (previously only quarter-end Mar/Jun/Sep/Dec)** label these rows "Sweep in" / "Sweep out" and print the amount from the *settlement fund's counterparty* perspective (Sweep in shows negative, Sweep out positive) — FLIP the statement's sign and normalize the note to the canonical phrasing above. Statement sweep rows show symbol `-`; emit `VMFXX`.
 
-**Gifted / journaled shares rule:** For shares moved between accounts or sub-accounts (gifts, sub-account journals — not cash), use `TRANSFER_IN` (shares received) or `TRANSFER_OUT` (shares given/moved out). Put the share count in `quantity`, leave `price` empty, and set `amount` to `0` (no cash changes hands). Emit one row per journal line exactly as the statement lists them; **multiple same-day, same-symbol transfers are expected and must each appear** — the importer disambiguates identical rows automatically, so never merge or drop them.
+**Gifted / journaled shares rule:** Set `amount` to the transfer-date market value (positive; the row type carries direction — the flow readers sign it). Leave `price` empty for journal/donation legs (a priced TRANSFER_IN creates a tax lot — ACATS only). Transcribe both legs of a printed pair verbatim; deciding whether an IN leg is a DAF routing artifact happens in Analysis › Giving, never at authoring time.
 
 **Example:**
 ```csv
@@ -77,8 +77,8 @@ Vanguard Taxable,2025-06-20,,REINVESTMENT,VTI,Vanguard Total Stock Market ETF,ET
 Vanguard Taxable,2025-07-15,,TAX_WITHHELD,VXUS,Vanguard Total International Stock ETF,ETF,,,-3.50,,Foreign withholding
 Vanguard Taxable,2025-06-10,,TRANSFER,VMFXX,Vanguard Federal Money Market Fund,Mutual Fund,,,1000.00,,Sweep Into Settlement Fund
 Vanguard Taxable,2025-06-12,,TRANSFER,VMFXX,Vanguard Federal Money Market Fund,Mutual Fund,,,-250.00,,Sweep Out Of Settlement Fund
-Vanguard Taxable,2025-07-10,,TRANSFER_IN,XMTR,Xometry Inc Cl A,Stock,100,,0,,Shares journaled in
-Vanguard Taxable,2025-07-10,,TRANSFER_OUT,XMTR,Xometry Inc Cl A,Stock,100,,0,,Gifted shares (journal out; amount 0)
+Vanguard Taxable,2025-07-10,,TRANSFER_IN,XMTR,Xometry Inc Cl A,Stock,100,,2500.00,,Shares journaled in
+Vanguard Taxable,2025-07-10,,TRANSFER_OUT,XMTR,Xometry Inc Cl A,Stock,100,,2500.00,,Gifted shares (journal out)
 IBKR,2025-06-18,2025-06-20,SELL,VTI,Vanguard Total Stock Market ETF,ETF,20,242.50,4850.00,1.00,Rebalancing
 ```
 
