@@ -9,7 +9,7 @@ You are orchestrating an exploratory QA sweep. The sandbox server MUST already b
 
 ## Step 0 — Preflight
 
-1. `curl -sf http://localhost:3097/api/summary` — if this fails, STOP and report "sandbox not running" (do not start it yourself; the cron wrapper owns the lifecycle).
+1. The sandbox is behind the #35 auth boundary; `qa/sandbox/session.env` (written by `qa/sandbox.sh up`) carries the QA session cookie values. `source qa/sandbox/session.env` then `curl -sf -H "Cookie: vgs_session=$VGS_SESSION" http://localhost:3097/api/summary` — if this fails, STOP and report "sandbox not running" (do not start it yourself; the cron wrapper owns the lifecycle).
 2. Read `qa/deep-qa-config.json`. Zone list: if the invocation passed `zones=…`, use those; else `mode:"all"` → all 7 zones; `mode:"rotate"` → the zone for today's weekday from `rotation`.
 3. Read `qa/findings/ledger.json` (create `{ "findings": [] }` if missing).
 4. **Resume check**: read `qa/findings/.sweep-progress.json` (`{ "date": "YYYY-MM-DD", "completedZones": [...] }`). If its `date` is today, drop the listed zones from this run's zone list and note "resuming — skipping N already-completed zones" in the run summary. If the date is older or the file is missing, ignore it (it gets overwritten at the first checkpoint).
@@ -34,6 +34,8 @@ Dispatch one `agent-browser` subagent per zone, max `maxConcurrentAgents` concur
 
 **Checkpoint after EVERY zone agent returns — do not batch the merge to the end.** As soon as a zone's agent returns its findings JSON: (a) run the Step 2 merge for that zone's findings, (b) write `qa/findings/ledger.json` + regenerate `FINDINGS.md`, (c) update `qa/findings/.sweep-progress.json` with today's date and the zone appended to `completedZones`. An interrupted sweep then loses at most the in-flight zone, and a same-day re-invocation resumes from the next zone (preflight step 4). Historical motivation: ~a quarter of sweeps died mid-dispatch (interrupts, browser locks) and lost ALL completed zones' work because the merge only happened after every agent returned.
 
+> Before browsing: read `qa/sandbox/session.env` from the repo, open http://localhost:3097/login, and set both cookies via browser eval (`document.cookie="vgs_session=<value>; path=/; SameSite=Lax"` and the same for `vgs_csrf`), then navigate to your zone — the sandbox sits behind the #35 auth boundary and every route 401s without them.
+>
 > You are the owner of Portfolio Desk using the app for real at http://localhost:3097. This is a disposable sandbox: clicking, submitting, and deleting are safe and ENCOURAGED. Your zone: [ZONE SCOPE]. Click every control, open every modal/dropdown/expander, submit every form with plausible values, follow every flow to its end state, and watch the browser console throughout. After every mutation, verify the effect actually landed (re-read the UI or re-navigate) — a success toast with no effect is a finding.
 >
 > A FINDING is anything a daily user would experience as broken or untrustworthy: a click that visibly does nothing; an error or failed network request (4xx/5xx) on a user action; a dead-end (404, blank panel, empty state with no explanation); rendered `NaN` / `undefined` / `Invalid Date` / `$NaN`; a spinner that never resolves (>15s); a control whose feedback claims success but whose effect didn't happen; a broken layout (overlap, clipped text, unreachable button).

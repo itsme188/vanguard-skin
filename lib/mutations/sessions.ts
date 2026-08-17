@@ -124,6 +124,15 @@ export function revokeAllSessions(db: Database.Database): void {
   db.prepare("DELETE FROM app_sessions").run();
 }
 
+/** Revokes every session with the given label (e.g. "qa" — used by the
+ * nightly QA runners to kill their own minted session on exit and as
+ * pre-mint hygiene so a previous run's session never lingers). Returns the
+ * number of rows deleted. */
+export function revokeSessionsByLabel(db: Database.Database, label: string): number {
+  const result = db.prepare("DELETE FROM app_sessions WHERE label = ?").run(label);
+  return result.changes;
+}
+
 /**
  * Bounded sweep of absolute-expired sessions (expires_at < now). Idle-expired
  * sessions still inside their absolute window are left alone — verifySession

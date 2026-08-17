@@ -16,6 +16,21 @@ REPORT="$SCRIPT_DIR/qa-report.txt"
 EXPECTED="$SCRIPT_DIR/expected-values.json"
 SESSION="qa-$$"
 
+# --- Auth: mint a QA session against the #35 trust boundary. Without this
+# the runner is unauthenticated and proxy.ts default-denies every route,
+# so every page load below would just see the login page. Revoked on exit
+# (pass or fail) by the trap right after.
+eval "$(PATH=/opt/homebrew/opt/node@24/bin:$PATH npx tsx "$PROJECT_DIR/scripts/mint-qa-session.ts" --db "$PROJECT_DIR/data/vanguard.db")"
+if [ -z "${VGS_SESSION:-}" ]; then
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] FAIL: auth/mint — could not mint QA session" >> "$REPORT"
+  echo "FAIL: auth/mint — could not mint QA session" >&2
+  exit 1
+fi
+
+# No existing EXIT trap in this file (checked) — safe to install directly
+# rather than chain.
+trap 'PATH=/opt/homebrew/opt/node@24/bin:$PATH npx tsx "$PROJECT_DIR/scripts/mint-qa-session.ts" --db "$PROJECT_DIR/data/vanguard.db" --revoke || true' EXIT
+
 # Colors for terminal output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -156,6 +171,36 @@ if ! curl -sf "$BASE_URL" > /dev/null 2>&1; then
   exit 1
 fi
 log "PASS" "pre-flight" "Dev server responding at $BASE_URL"
+
+# --- Auth: install the minted session cookies into the browser session
+# used for the rest of this run. GET page loads need only vgs_session;
+# vgs_csrf is set too (non-HttpOnly by design) even though this runner
+# never issues a mutation that would need to echo it.
+agent-browser --session "$SESSION" open "$BASE_URL/login" 2>/dev/null || true
+agent-browser --session "$SESSION" wait --load networkidle 2>/dev/null || true
+
+printf 'document.cookie="vgs_session=%s; path=/; SameSite=Lax"' "$VGS_SESSION" \
+  | agent-browser --session "$SESSION" eval --stdin >/dev/null 2>&1 || true
+printf 'document.cookie="vgs_csrf=%s; path=/; SameSite=Lax"' "$VGS_CSRF" \
+  | agent-browser --session "$SESSION" eval --stdin >/dev/null 2>&1 || true
+
+agent-browser --session "$SESSION" open "$BASE_URL/dashboard/today" 2>/dev/null || true
+agent-browser --session "$SESSION" wait --load networkidle 2>/dev/null || true
+
+# Combines the h1 text with location.pathname (rather than the bare
+# `h1 || pathname` fallback) because the dashboard layout's wordmark h1
+# ("Portfolio Desk") and the /login page's own h1 render the identical
+# text — the fallback to pathname would never trigger on its own, so an
+# unauthenticated redirect back to /login would go undetected.
+AUTH_CHECK=$(ab_eval <<'EVALEOF'
+JSON.stringify({h1: document.querySelector("h1")?.textContent || null, path: location.pathname})
+EVALEOF
+)
+if echo "$AUTH_CHECK" | grep -qi "login"; then
+  log "FAIL" "auth/session" "cookies did not authenticate (got: $AUTH_CHECK)"
+  exit 1
+fi
+log "PASS" "auth/session" "QA session cookies authenticated ($AUTH_CHECK)"
 
 # --- Helper: check page for errors ---
 
