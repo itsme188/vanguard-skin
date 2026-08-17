@@ -376,6 +376,15 @@ describe("Task 6: donation-aware undo + recovery", () => {
         .prepare("SELECT acquisition_transaction_id, quantity FROM donation_lots WHERE donation_id = ?")
         .all(restoredDonation.id) as { acquisition_transaction_id: number; quantity: number }[];
       expect(restoredLots).toEqual([{ acquisition_transaction_id: acqTxnId, quantity: 10 }]);
+
+      // Reversible-provenance symmetry (spec §9): undo reverted the artifact
+      // leg's flow flag/note because the link was dying. Restoring the link
+      // must resurrect the demotion with it — link state and flow flag must
+      // never disagree. This is a full round-trip: the values here should
+      // match the leg's ORIGINAL pre-undo demoted state exactly.
+      const artifactAfterRestore = getTxn(db, artifactTxnId);
+      expect(artifactAfterRestore.is_external_flow).toBe(0);
+      expect(artifactAfterRestore.notes).toBe(ARTIFACT_NOTE_SUFFIX.trim());
     });
 
     it("skips a relation with a restore warning (never throws) when its referenced transaction's batch was never restored", () => {
