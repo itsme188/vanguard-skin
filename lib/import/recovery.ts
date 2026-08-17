@@ -33,6 +33,7 @@ import { undoImport } from "./engine";
 import { computeTaxLots } from "@/lib/compute/tax-lots";
 import { computeDailyValuations } from "@/lib/compute/daily-valuation";
 import { LIVE_HOLDING_SOURCE_PREFIXES } from "@/lib/db/holding-sources";
+import { ARTIFACT_NOTE_SUFFIX } from "@/lib/mutations/donation-links";
 
 /**
  * The batch-owned source tables the manifest captures. Enumerated directly
@@ -383,6 +384,27 @@ export interface RestoreResult {
 }
 
 /**
+ * Re-applies the routing_artifact demotion (is_external_flow=0 + the
+ * ARTIFACT_NOTE_SUFFIX note) that linkDonationLegs originally performed.
+ * Reversible-provenance symmetry (spec §9): undo reverted this flag/note
+ * because the link was dying; restore resurrects the link, so the demotion
+ * must resurrect with it — link state and flow flag must never disagree.
+ * Idempotent: a note that already carries the suffix (a double-restore, or a
+ * relation whose transaction was somehow never un-demoted) is left alone
+ * rather than double-appended.
+ */
+function demoteArtifactLeg(db: Database.Database, transactionId: number): void {
+  const txn = db.prepare("SELECT notes FROM transactions WHERE id = ?").get(transactionId) as
+    | { notes: string | null }
+    | undefined;
+  if (!txn) return; // defensive — the caller only reaches here after confirming the row exists
+  const suffixAlone = ARTIFACT_NOTE_SUFFIX.trim();
+  const alreadySuffixed = txn.notes != null && (txn.notes === suffixAlone || txn.notes.endsWith(ARTIFACT_NOTE_SUFFIX));
+  const notes = alreadySuffixed ? txn.notes : ((txn.notes ?? "") + ARTIFACT_NOTE_SUFFIX).trim();
+  db.prepare("UPDATE transactions SET is_external_flow = 0, notes = ? WHERE id = ?").run(notes, transactionId);
+}
+
+/**
  * Restores one donation relation table (donation_leg_links or
  * donation_lots). Each captured relation row was serialized (see
  * DonationRelationRow) with the STABLE source_key of the transaction and
@@ -422,6 +444,13 @@ function restoreDonationRelations(
       `INSERT OR IGNORE INTO ${table} (${cols.map((c) => `"${c}"`).join(", ")}) VALUES (${placeholders})`,
     ).run(...(values as never[]));
     n++;
+
+    // A restored routing_artifact leg must resurrect its demotion — see
+    // demoteArtifactLeg's doc comment. donation_lots relations have no
+    // "role" concept, so this only ever fires for donation_leg_links.
+    if (table === "donation_leg_links" && rel.role === "routing_artifact") {
+      demoteArtifactLeg(db, txn.id);
+    }
   }
   return n;
 }
