@@ -42,25 +42,35 @@ export interface ReconciliationReport {
 
 /**
  * ±N business days (weekends only; holidays ignored — documented
- * approximation). Direction-agnostic: works whichever date is earlier.
- * Exported for tests.
+ * approximation). Order-independent: swapping a and b never changes the
+ * result, including when either endpoint lands on a weekend (businessDayDiff
+ * normalizes to (earlier, later) before counting). Exported for tests.
  */
 export function withinBusinessDays(a: string, b: string, n: number): boolean {
   return Math.abs(businessDayDiff(a, b)) <= n;
 }
 
+/**
+ * Business-day distance between two dates, always non-negative. Normalizes
+ * to (earlier, later) FIRST and always walks forward from there, so the
+ * result depends only on the (unordered) pair of dates — never on which
+ * argument was passed first. Walking from the raw a->b (or b->a) order
+ * instead is NOT equivalent whenever an endpoint lands on a weekend: the
+ * earlier walk counts the start day's weekend-ness differently than the
+ * end day's, so Mon->Sat and Sat->Mon disagreed (4 vs 5) before this fix.
+ */
 function businessDayDiff(a: string, b: string): number {
-  const start = new Date(`${a}T00:00:00Z`).getTime();
-  const end = new Date(`${b}T00:00:00Z`).getTime();
-  if (start === end) return 0;
+  const t1 = new Date(`${a}T00:00:00Z`).getTime();
+  const t2 = new Date(`${b}T00:00:00Z`).getTime();
+  const lo = Math.min(t1, t2);
+  const hi = Math.max(t1, t2);
   const DAY_MS = 86_400_000;
-  const sign = end > start ? 1 : -1;
-  let cur = start;
+  let cur = lo;
   let count = 0;
-  while (cur !== end) {
-    cur += sign * DAY_MS;
+  while (cur !== hi) {
+    cur += DAY_MS;
     const dow = new Date(cur).getUTCDay();
-    if (dow !== 0 && dow !== 6) count += sign;
+    if (dow !== 0 && dow !== 6) count += 1;
   }
   return count;
 }
