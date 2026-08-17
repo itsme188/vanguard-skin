@@ -5,7 +5,6 @@ import type { CommitResult } from "@/lib/import/engine";
 import { validateParsedResult } from "@/lib/import/validate";
 import {
   commitDonations,
-  findAbsentPriorDonations,
   type DonationCommitOutcome,
 } from "@/lib/import/donations-commit";
 import { createImportBatch } from "@/lib/mutations/import-batches";
@@ -54,8 +53,19 @@ export interface DonationsPreview {
  * of commitDonations' identity-conflict/new-vs-updated logic — that logic
  * lives in lib/mutations/donations.ts (Task 2) and isn't exported for reuse
  * here, so re-deriving it would drift the moment that file changes.
+ *
+ * Exported (not just used internally) so tests can exercise the
+ * never-persists invariant directly against an in-memory db — see
+ * tests/api/import-donations-preview.test.ts.
+ *
+ * absentPriorRows is read straight off commitDonations' own outcome rather
+ * than a second findAbsentPriorDonations(database, donations) call — that
+ * helper is a pure read against `donations` + current DB state, so the value
+ * commitDonations already computed mid-transaction is identical to a fresh
+ * call made after it; recomputing it here would just be a redundant query
+ * (review fix, Minor #3).
  */
-function previewDonations(
+export function previewDonations(
   database: Database.Database,
   donations: ParsedDonation[]
 ): DonationsPreview | undefined {
@@ -72,16 +82,12 @@ function previewDonations(
     if (!(err instanceof DonationPreviewRollback)) throw err;
   }
 
-  const absentPriorRows = findAbsentPriorDonations(database, donations).map(
-    (r) => r.source_key
-  );
-
   return {
     count: donations.length,
     newCount: outcome!.newDonations,
     updatedCount: outcome!.updatedDonations,
     identityConflicts: outcome!.identityConflicts,
-    absentPriorRows,
+    absentPriorRows: outcome!.absentPriorRows,
     unresolvedSymbols: outcome!.unresolvedSymbols,
   };
 }
