@@ -293,10 +293,26 @@ export function assignDonationLots(
         );
       }
       const ownExisting = existingByTxn.get(a.acquisitionTransactionId) ?? 0;
-      const available = lot.quantity_remaining + ownExisting;
+      // Other donations' outstanding claims on this lot, straight from donation_lots — NOT
+      // from a recompute. Two assignDonationLots calls in a row with no recompute between
+      // them would otherwise both read the same stale quantity_remaining and jointly
+      // over-commit the lot (the engine's clamp+warning only catches it later). Subtracting
+      // this is deliberately CONSERVATIVE: once a recompute HAS folded another donation's
+      // claim into quantity_remaining, that same claim still lives in donation_lots and gets
+      // subtracted a second time here, under-reporting availability. A too-low reject is safe;
+      // silently over-committing a shared lot is not.
+      const otherDonationsClaim = (
+        db
+          .prepare(
+            `SELECT COALESCE(SUM(quantity), 0) AS total FROM donation_lots
+             WHERE acquisition_transaction_id = ? AND donation_id != ?`
+          )
+          .get(a.acquisitionTransactionId, donationId) as { total: number }
+      ).total;
+      const available = lot.quantity_remaining + ownExisting - otherDonationsClaim;
       if (a.quantity > available + EPS) {
         throw new DonationLinkError(
-          `donation ${donationId}: requested quantity ${a.quantity} for acquisition transaction ${a.acquisitionTransactionId} exceeds the lot's available quantity_remaining (${available})`
+          `donation ${donationId}: requested quantity ${a.quantity} for acquisition transaction ${a.acquisitionTransactionId} exceeds the lot's available quantity (${available}) after other donations' pending assignments — if this looks too low, run a tax-lot recompute and retry`
         );
       }
 
