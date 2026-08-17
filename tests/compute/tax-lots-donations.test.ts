@@ -73,6 +73,9 @@ let donationSeq = 0;
  */
 function seedDonationLeg(db: Database.Database, opts: {
   accountId: number; secId: number; date: string; quantity: number;
+  /** DAF-side received date. Defaults to the leg date; set it apart to prove
+   *  which of the two the engine keys consumption on. */
+  receivedDate?: string;
 }): { donationId: number; outTxnId: number } {
   donationSeq++;
   const outTxnId = insertTxn(db, opts.accountId, opts.secId, opts.date, "TRANSFER_OUT",
@@ -86,7 +89,7 @@ function seedDonationLeg(db: Database.Database, opts: {
     fmvUsd: 1000,
     unitValuation: null,
     createdDate: null,
-    receivedDate: opts.date,
+    receivedDate: opts.receivedDate ?? opts.date,
     completedDate: null,
     notes: null,
   }, null);
@@ -284,5 +287,87 @@ describe("computeTaxLots: donation-consumption replay events", () => {
     expect(synth).toHaveLength(0);
     expect(saleRows(db)).toHaveLength(0);
     expect(result.salesProcessed).toBe(0);
+  });
+
+  it("11. consumption keys on the OUT-leg trade date, not the DAF received_date", () => {
+    const { db, ibkr, sec } = setup();
+    const buyId = insertTxn(db, ibkr, sec, "2026-06-01", "BUY", 100, 400, "k1");
+    insertSplit(db, sec, ibkr, "2026-07-01", 2, 1, null);
+    // The DAF recorded the gift as received 6/15 (pre-split); the shares
+    // actually left the account 8/01 (post-split). The lot is only reachable
+    // in the basis it stands in on the LEG date.
+    const { donationId } = seedDonationLeg(db, {
+      accountId: ibkr, secId: sec, date: "2026-08-01", quantity: 40, receivedDate: "2026-06-15",
+    });
+
+    computeTaxLots(db);
+    assignDonationLots(db, donationId, [{ acquisitionTransactionId: buyId, quantity: 40 }]);
+    const result = computeTaxLots(db);
+
+    // Leg-dated: (100 × 2) − 40 = 160. Received-dated would be (100 − 40) × 2 = 120.
+    expect(lots(db)[0].quantity_remaining).toBeCloseTo(160);
+    expect(result.donationsConsumed).toBe(1);
+    expect(result.replayWarnings).toHaveLength(0);
+  });
+
+  it("12. two same-date donations on one lot consume in donation_id order — the later one clamps", () => {
+    const { db, ibkr, sec } = setup();
+    const buyId = insertTxn(db, ibkr, sec, "2026-06-01", "BUY", 100, 400, "k1");
+    const first = seedDonationLeg(db, { accountId: ibkr, secId: sec, date: "2026-07-01", quantity: 70 });
+    const second = seedDonationLeg(db, { accountId: ibkr, secId: sec, date: "2026-07-01", quantity: 50 });
+    expect(second.donationId).toBeGreaterThan(first.donationId);
+
+    computeTaxLots(db);
+    // Both writes are accepted: write-time availability is best-effort against
+    // the last recompute (lib/mutations/donation-links.ts design boundary), so
+    // cross-donation over-commitment lands here for the engine to clamp.
+    assignDonationLots(db, first.donationId, [{ acquisitionTransactionId: buyId, quantity: 70 }]);
+    assignDonationLots(db, second.donationId, [{ acquisitionTransactionId: buyId, quantity: 50 }]);
+    const result = computeTaxLots(db);
+
+    expect(lots(db)[0].quantity_remaining).toBeCloseTo(0);   // 100 − 70, then 30 of the 50 asked
+    const warnings = result.replayWarnings.join("\n");
+    expect(warnings).toContain(`donation ${second.donationId}`);   // the HIGHER id clamped
+    expect(warnings).toContain("clamped");
+    expect(warnings).not.toContain(`donation ${first.donationId}:`); // the lower id consumed in full
+    expect(result.donationsConsumed).toBe(2);
+    expect(saleRows(db)).toHaveLength(0);
+  });
+
+  it("13. a linked donation with NO lot assignments consumes nothing (never guesses lots)", () => {
+    const { db, ibkr, sec } = setup();
+    insertTxn(db, ibkr, sec, "2026-06-01", "BUY", 100, 400, "k1");
+    seedDonationLeg(db, { accountId: ibkr, secId: sec, date: "2026-07-01", quantity: 40 });
+    // Linked but never assigned — the open-lot overstatement is deliberate and
+    // resolves when the user assigns (spec §9).
+
+    const result = computeTaxLots(db);
+
+    expect(lots(db)[0].quantity_remaining).toBeCloseTo(100);
+    expect(result.donationsConsumed).toBe(0);
+    expect(result.replayWarnings).toHaveLength(0);
+    expect(saleRows(db)).toHaveLength(0);
+  });
+
+  it("14. an assignment pointing at another account's lot is refused, not consumed", () => {
+    const { db, ibkr, roth, sec } = setup();
+    insertTxn(db, ibkr, sec, "2026-06-01", "BUY", 100, 400, "k1");
+    const rothBuy = insertTxn(db, roth, sec, "2026-06-01", "BUY", 100, 300, "k2");
+    const { donationId } = seedDonationLeg(db, { accountId: ibkr, secId: sec, date: "2026-07-01", quantity: 40 });
+
+    computeTaxLots(db);
+    // assignDonationLots would reject this (different account than the OUT leg);
+    // written straight to the table to stand in for a repair --apply that got
+    // the account wrong. The engine must not reach across the account line.
+    db.prepare(
+      "INSERT INTO donation_lots (donation_id, acquisition_transaction_id, quantity) VALUES (?, ?, ?)"
+    ).run(donationId, rothBuy, 40);
+    const result = computeTaxLots(db);
+
+    const byTxn = new Map(lots(db).map((l) => [l.acquisition_transaction_id, l.quantity_remaining]));
+    expect(byTxn.get(rothBuy)).toBeCloseTo(100);             // the other account's lot is untouched
+    expect(result.donationsConsumed).toBe(0);
+    expect(result.replayWarnings.join("\n")).toContain(`donation ${donationId}`);
+    expect(saleRows(db)).toHaveLength(0);
   });
 });
