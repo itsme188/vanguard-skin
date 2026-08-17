@@ -257,6 +257,15 @@ describe("linkDonationLegs", () => {
     ).toThrow(/already linked/);
   });
 
+  it("rejects when outTransactionId and artifactTransactionId are the same transaction", () => {
+    expect(() =>
+      linkDonationLegs(db, { donationId: 1, outTransactionId: 101, artifactTransactionId: 101 })
+    ).toThrow(DonationLinkError);
+    expect(() =>
+      linkDonationLegs(db, { donationId: 1, outTransactionId: 101, artifactTransactionId: 101 })
+    ).toThrow(/must differ/);
+  });
+
   it("links OUT + artifact legs, demotes the artifact leg, and stamps the OUT amount", () => {
     linkDonationLegs(db, { donationId: 1, outTransactionId: 101, artifactTransactionId: 102, amountForOutLeg: 950 });
 
@@ -455,6 +464,24 @@ describe("assignDonationLots", () => {
         { acquisitionTransactionId: 207, quantity: 6 },
       ])
     ).toThrow(/exceeds/);
+  });
+
+  it("rejects when the same acquisitionTransactionId appears more than once in one call", () => {
+    // Donation quantity (20) and per-entry availability (lot capacity 10, 8 each) are both
+    // generous enough that only the duplicate-id check — not the sum check or the per-entry
+    // availability check — can catch this.
+    seedDonation(db, { id: 5, kind: "stock", securityId: 1, quantity: 20, fmvUsd: 2000, receivedDate: "2026-01-10" });
+    seedTxn(db, { id: 501, accountId: 1, securityId: 1, tradeDate: "2026-01-10", type: "TRANSFER_OUT", quantity: 20 });
+    linkDonationLegs(db, { donationId: 5, outTransactionId: 501 });
+
+    const duplicateAssignments = [
+      { acquisitionTransactionId: 201, quantity: 8 },
+      { acquisitionTransactionId: 201, quantity: 8 },
+    ];
+    expect(() => assignDonationLots(db, 5, duplicateAssignments)).toThrow(DonationLinkError);
+    expect(() => assignDonationLots(db, 5, duplicateAssignments)).toThrow(/more than once/);
+    // No partial write from the rejected call.
+    expect(getDonationLots(db, 5)).toEqual([]);
   });
 
   it("assigns lots within quantity, replaces on a second call, and clears with an empty array", () => {

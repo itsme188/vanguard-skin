@@ -66,6 +66,12 @@ export function linkDonationLegs(
 ): void {
   const { donationId, outTransactionId, artifactTransactionId, amountForOutLeg } = args;
 
+  if (artifactTransactionId != null && artifactTransactionId === outTransactionId) {
+    throw new DonationLinkError(
+      `donation ${donationId}: OUT and artifact transaction ids must differ — the same transaction cannot serve both roles`
+    );
+  }
+
   const run = db.transaction(() => {
     const donation = fetchDonation(db, donationId);
 
@@ -229,7 +235,18 @@ export function assignDonationLots(
     const existingByTxn = new Map(existingRows.map((r) => [r.acquisition_transaction_id, r.quantity]));
 
     let sum = 0;
+    const seenAcquisitionIds = new Set<number>();
     for (const a of assignments) {
+      // Duplicates are never legitimate under replace semantics — reject up front rather
+      // than accumulate a running total per lot (simpler and stricter) or let the
+      // donation_lots UNIQUE(donation_id, acquisition_transaction_id) constraint fire.
+      if (seenAcquisitionIds.has(a.acquisitionTransactionId)) {
+        throw new DonationLinkError(
+          `donation ${donationId}: acquisition transaction ${a.acquisitionTransactionId} appears more than once in this assignment call`
+        );
+      }
+      seenAcquisitionIds.add(a.acquisitionTransactionId);
+
       const txn = db.prepare("SELECT * FROM transactions WHERE id = ?").get(a.acquisitionTransactionId) as
         | TransactionRow
         | undefined;
