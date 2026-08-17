@@ -109,6 +109,8 @@ Notes:
 
 Standard pipeline: Detect → Parse → Preview → Confirm → Commit (`lib/import/`).
 
+**Primary usage pattern (user-stated):** the provider offers only YEARLY exports, and the user re-uploads the current year's file after each new donation — so most uploads are the same cumulative file plus one or two new lines. The pipeline below is shaped for exactly this: existing rows no-op (or metadata-refresh), only the new lines import as new donations under the new batch, the preview shows precisely that delta, and the cumulative nature of the file is what makes absent-row reversal detection meaningful.
+
 - **Detect:** header match on `type,frequency,amount,currency,USD amount,currency valuation` (distinctive; no other format shares it). Blank second line tolerated (present in real files).
 - **Parse** (`lib/import/parsers/daf-contributions.ts`): rows have leading whitespace — trim. `Stock` rows → `kind='stock'`, `symbol_raw = currency` col, `quantity = amount` col, `fmv_usd = USD amount`, `unit_valuation = currency valuation` (may be blank). `Bank transfer` rows → `kind='cash'`, `fmv_usd = USD amount`. Dates: take the ET date (`America/New_York`) of each UTC timestamp; `received at` is the tax date. Unknown `type` values → parse warning, row skipped (never guessed).
 - **Security resolution:** case-insensitive symbol match against `securities`; unresolved symbols keep `security_id NULL` + `symbol_raw`. The row imports and displays, but matching and lot assignment are DISABLED until the user resolves the symbol through the existing security search (never auto-create a security; Codex R1-13).
