@@ -43,6 +43,10 @@ describe("resolveAnalysisView", () => {
     expect(resolveAnalysisView({ view: "defense" })).toEqual({ view: "defense", mode: "classification" });
   });
 
+  it("resolves the giving sub-view", () => {
+    expect(resolveAnalysisView({ view: "giving" })).toEqual({ view: "giving", mode: "classification" });
+  });
+
   // ── Legacy aliases (CLAUDE.md documents ?mode=factors as kept) ──
   it("aliases legacy ?mode=factors (no view) to diagnostics/factors", () => {
     expect(resolveAnalysisView({ mode: "factors" })).toEqual({
@@ -73,6 +77,10 @@ describe("resolveAnalysisView", () => {
     expect(resolveAnalysisView({ view: "performance", mode: "factors" }).view).toBe(
       "performance"
     );
+  });
+
+  it("explicit view=giving ignores a stray mode param", () => {
+    expect(resolveAnalysisView({ view: "giving", mode: "factors" }).view).toBe("giving");
   });
 
   it("unknown view falls back to the mode alias when mode is valid", () => {

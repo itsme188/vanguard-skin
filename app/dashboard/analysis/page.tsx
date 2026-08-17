@@ -22,6 +22,7 @@ import { IncomeYieldSection } from "../components/IncomeYieldSection";
 import { TrustStrip } from "../components/analysis/TrustStrip";
 import { WorkspacePanel } from "../components/analysis/WorkspacePanel";
 import { AnalysisViewToggle } from "../components/AnalysisViewToggle";
+import { GivingView } from "../components/giving/GivingView";
 import { resolveAnalysisView } from "@/lib/analysis/view-param";
 import Link from "next/link";
 
@@ -140,6 +141,18 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
       <div className="space-y-6 md:space-y-0">
         <AnalysisViewToggle currentView="defense" scope={params.scope} />
         <DefenseView scope={params.scope} />
+      </div>
+    );
+  }
+
+  if (resolved.view === "giving") {
+    // Account-agnostic (spec §10): GivingView takes NO scope prop — giving
+    // is a portfolio-wide ledger, not a per-scope slice. AnalysisViewToggle
+    // still gets scope so switching to another sub-view round-trips it.
+    return (
+      <div className="space-y-6 md:space-y-0">
+        <AnalysisViewToggle currentView="giving" scope={params.scope} />
+        <GivingView />
       </div>
     );
   }

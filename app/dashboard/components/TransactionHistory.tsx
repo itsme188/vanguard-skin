@@ -16,6 +16,8 @@ const TYPE_STYLES: Record<string, string> = {
   FEE: "bg-down/20 text-down",
   COMMISSION: "bg-down/20 text-down",
   TRANSFER: "bg-blue/20 text-blue",
+  TRANSFER_IN: "bg-blue/20 text-blue",
+  TRANSFER_OUT: "bg-gold/20 text-gold-ink",
   DEPOSIT: "bg-up/20 text-up",
   WITHDRAWAL: "bg-down/20 text-down",
 };
