@@ -14,6 +14,7 @@ import {
   DonationIdentityConflictError,
 } from "@/lib/mutations/donations";
 import type { NewDonation } from "@/lib/mutations/donations";
+import { appendArtifactSuffix } from "@/lib/mutations/donation-links";
 
 function fresh(): Database.Database {
   const db = new Database(":memory:");
@@ -154,10 +155,10 @@ describe("donations mutations + queries", () => {
 
     const inTxn = db
       .prepare(
-        `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, amount, is_external_flow, source_key)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, amount, is_external_flow, notes, source_key)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(1, securityId, "2026-01-15", "TRANSFER_IN", 10, 0, 0, "txn:transfer-in:1");
+      .run(1, securityId, "2026-01-15", "TRANSFER_IN", 10, 0, 0, appendArtifactSuffix(null), "txn:transfer-in:1");
     const inTxnId = inTxn.lastInsertRowid as number;
 
     db.prepare(
@@ -192,9 +193,10 @@ describe("donations mutations + queries", () => {
     expect(lots).toHaveLength(0);
 
     const inTxnAfter = db
-      .prepare(`SELECT is_external_flow FROM transactions WHERE id = ?`)
-      .get(inTxnId) as { is_external_flow: number };
+      .prepare(`SELECT is_external_flow, notes FROM transactions WHERE id = ?`)
+      .get(inTxnId) as { is_external_flow: number; notes: string | null };
     expect(inTxnAfter.is_external_flow).toBe(1);
+    expect(inTxnAfter.notes).toBeNull();
   });
 
   it("6. getDonationsForYear('2026') returns only 2026-received rows, newest first", () => {

@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { stripArtifactSuffix } from "./donation-links";
 
 export interface NewDonation {
   sourceKey: string;
@@ -90,11 +91,20 @@ export function markDonationReversed(db: Database.Database, donationId: number, 
   const run = db.transaction(() => {
     const exists = db.prepare("SELECT id FROM donations WHERE id = ?").get(donationId);
     if (!exists) throw new Error(`markDonationReversed: donation ${donationId} not found`);
-    // Restore flow flag on any demoted artifact leg BEFORE dropping the link.
-    db.prepare(
-      `UPDATE transactions SET is_external_flow = 1
-       WHERE id IN (SELECT transaction_id FROM donation_leg_links WHERE donation_id = ? AND role = 'routing_artifact')`
-    ).run(donationId);
+    // Restore flow flag + strip the artifact note suffix on any demoted
+    // artifact leg BEFORE dropping the link (same pattern as unlinkDonationLegs).
+    const artifactLink = db
+      .prepare("SELECT transaction_id FROM donation_leg_links WHERE donation_id = ? AND role = 'routing_artifact'")
+      .get(donationId) as { transaction_id: number } | undefined;
+    if (artifactLink) {
+      const txn = db.prepare("SELECT notes FROM transactions WHERE id = ?").get(artifactLink.transaction_id) as {
+        notes: string | null;
+      };
+      db.prepare("UPDATE transactions SET is_external_flow = 1, notes = ? WHERE id = ?").run(
+        stripArtifactSuffix(txn.notes),
+        artifactLink.transaction_id
+      );
+    }
     db.prepare("DELETE FROM donation_leg_links WHERE donation_id = ?").run(donationId);
     db.prepare("DELETE FROM donation_lots WHERE donation_id = ?").run(donationId);
     db.prepare("UPDATE donations SET reversed_date = ? WHERE id = ?").run(reversedDate, donationId);
