@@ -52,6 +52,40 @@ export function upsertDonationMetadata(db: Database.Database, d: NewDonation): "
   return r.changes > 0 ? "updated" : "unchanged";
 }
 
+/** Domain errors for resolve-security (Task 12): DonationResolveError -> 400
+ * (not found / target security missing / non-USD), DonationAlreadyResolvedError
+ * -> 409 (donation.security_id already set — resolve-security only fires
+ * once, same "409 on a state that already holds" shape as approveLevelGuarded). */
+export class DonationResolveError extends Error {}
+export class DonationAlreadyResolvedError extends Error {}
+
+/** Sets donations.security_id when it's currently NULL — the one-time symbol
+ * resolution for a donation whose import-time symbol_raw didn't match a known
+ * security. Refuses (409-mapped by the route) when security_id is already
+ * set; refuses (400-mapped) when the target security doesn't exist or isn't
+ * USD-denominated (leg linking/lot assignment both require USD — Task 3). */
+export function resolveDonationSecurity(db: Database.Database, donationId: number, securityId: number): void {
+  const donation = db.prepare("SELECT id, security_id FROM donations WHERE id = ?").get(donationId) as
+    | { id: number; security_id: number | null }
+    | undefined;
+  if (!donation) {
+    throw new DonationResolveError(`donation ${donationId}: not found`);
+  }
+  if (donation.security_id != null) {
+    throw new DonationAlreadyResolvedError(`donation ${donationId}: security already resolved`);
+  }
+  const security = db.prepare("SELECT id, currency FROM securities WHERE id = ?").get(securityId) as
+    | { id: number; currency: string | null }
+    | undefined;
+  if (!security) {
+    throw new DonationResolveError(`security ${securityId}: not found`);
+  }
+  if ((security.currency ?? "USD") !== "USD") {
+    throw new DonationResolveError(`security ${securityId}: is not USD-denominated`);
+  }
+  db.prepare("UPDATE donations SET security_id = ? WHERE id = ?").run(securityId, donationId);
+}
+
 export function markDonationReversed(db: Database.Database, donationId: number, reversedDate: string): void {
   const run = db.transaction(() => {
     const exists = db.prepare("SELECT id FROM donations WHERE id = ?").get(donationId);
