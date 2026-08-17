@@ -348,6 +348,61 @@ describe("findInkindCandidates / applyInkindRepair", () => {
     expect(anomalies.some((c) => c.legId === legA)).toBe(true);
     expect(anomalies.filter((c) => c.donationId != null).length).toBe(2); // the two ambiguous donations
   });
+
+  it("CRITICAL: a duplicate-suspect leg (amount=0, priced sibling exists) never gets a writable stamp — anomaly only", () => {
+    const db = fresh();
+    const dupSec = seedSecurity(db, "DUPEWRITE12");
+    // Same (account,date,security,qty,type) — differing amounts — is exactly
+    // findDuplicateSuspects' definition. legA's amount=0 makes it look, on
+    // its own, like an ordinary unstamped in-kind leg; a price row on its
+    // exact trade date would let the fmv-stamp sweep price it if the leg
+    // isn't excluded from that sweep.
+    const legA = seedTxn(db, { accountId: ACCOUNT, securityId: dupSec, tradeDate: "2026-06-01", type: "TRANSFER_OUT", quantity: 5, amount: 0 });
+    seedTxn(db, { accountId: ACCOUNT, securityId: dupSec, tradeDate: "2026-06-01", type: "TRANSFER_OUT", quantity: 5, amount: 4550 });
+    seedPrice(db, dupSec, "2026-06-01", 999); // would price legA if not excluded from the sweep
+
+    const candidates = findInkindCandidates(db);
+    const writableForLegA = candidates.filter(
+      (c) => c.legId === legA && (c.cls === "pair-donation" || c.cls === "fmv-stamp")
+    );
+    expect(writableForLegA).toHaveLength(0);
+    const anomalyForLegA = candidates.find((c) => c.cls === "anomaly" && c.legId === legA);
+    expect(anomalyForLegA).toBeDefined();
+
+    const result = applyInkindRepair(db, candidates);
+    const legATxn = db.prepare(`SELECT amount FROM transactions WHERE id = ?`).get(legA) as { amount: number };
+    expect(legATxn.amount).toBe(0);
+    expect(result.applied).toBe(0); // legA is the only leg with amount=0 in this fixture
+  });
+
+  it("CRITICAL: ambiguous-match candidate legs never get a writable stamp — anomaly only", () => {
+    const db = fresh();
+    const ambigSec = seedSecurity(db, "AMBIGWRITE12");
+    seedDonation(db, { securityId: ambigSec, quantity: 40, fmvUsd: 2000, receivedDate: "2026-07-01" });
+    seedDonation(db, { securityId: ambigSec, quantity: 40, fmvUsd: 2000, receivedDate: "2026-07-02" });
+    const legA = seedTxn(db, { accountId: ACCOUNT, securityId: ambigSec, tradeDate: "2026-07-01", type: "TRANSFER_OUT", quantity: 40 });
+    const legB = seedTxn(db, { accountId: ACCOUNT, securityId: ambigSec, tradeDate: "2026-07-02", type: "TRANSFER_OUT", quantity: 40 });
+    // Price rows on both exact trade dates — would price both legs via the
+    // fmv-stamp fallback if they weren't excluded from the sweep as
+    // ambiguous-match candidates.
+    seedPrice(db, ambigSec, "2026-07-01", 55);
+    seedPrice(db, ambigSec, "2026-07-02", 56);
+
+    const candidates = findInkindCandidates(db);
+    for (const legId of [legA, legB]) {
+      const writable = candidates.filter((c) => c.legId === legId && (c.cls === "pair-donation" || c.cls === "fmv-stamp"));
+      expect(writable).toHaveLength(0);
+    }
+    const anomaliesWithDonation = candidates.filter((c) => c.cls === "anomaly" && c.donationId != null);
+    expect(anomaliesWithDonation).toHaveLength(2);
+
+    const result = applyInkindRepair(db, candidates);
+    expect(result.applied).toBe(0);
+    for (const legId of [legA, legB]) {
+      const txn = db.prepare(`SELECT amount FROM transactions WHERE id = ?`).get(legId) as { amount: number };
+      expect(txn.amount).toBe(0);
+    }
+  });
 });
 
 describe("valuationForLeg", () => {

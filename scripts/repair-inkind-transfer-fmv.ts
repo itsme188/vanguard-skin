@@ -44,7 +44,15 @@
  *    ACATS-era leg) gets its `amount` stamped in place via a direct UPDATE.
  *    `source_key` is left untouched — it embeds the (old, zero) amount, and
  *    re-keying would duplicate on a future re-import of the same statement
- *    line.
+ *    line. EXCLUDED from this sweep, unconditionally: any leg that also
+ *    appears in a `duplicateSuspects` group or as an `ambiguousMatches`
+ *    candidate leg (class 4 below) — those legs are only ever reported, even
+ *    when they'd otherwise price cleanly. A duplicate/re-import artifact may
+ *    need deletion rather than a stamp, and stamping BOTH sibling legs of a
+ *    duplicate pair would double-count that date's flow in every downstream
+ *    metric — precisely the distortion this script exists to fix. Same
+ *    reasoning for an ambiguous donation match: which leg is the real one
+ *    is exactly what's undecided.
  *
  * 3. legs-missing (REPORT ONLY) — a DAF stock donation with no candidate
  *    legs at all. Never inserted: the script does not synthesize a
@@ -53,7 +61,10 @@
  *
  * 4. anomaly (REPORT ONLY) — ambiguous donation matches, duplicate-suspect
  *    leg groups, and unpriceable/un-confirmable legs (see valuation
- *    precedence below).
+ *    precedence below). Duplicate-suspect and ambiguous-match legs require
+ *    MANUAL resolution (delete the re-import artifact, or determine which
+ *    candidate leg is the real donation) — they are never auto-written by
+ *    this script, no matter how cleanly they'd otherwise price.
  *
  * Valuation precedence (applies to both writable classes) — ALWAYS at the
  * LEG's own trade date, never a different date's value:
@@ -339,7 +350,20 @@ export function findInkindCandidates(db: Database.Database): InkindCandidate[] {
   }
 
   // Class 4 (report only): ambiguous donation matches + duplicate-suspect leg groups.
+  //
+  // CRITICAL (reviewer-found, live-reproduced): every leg named by either
+  // group below MUST also be added to claimedLegIds before the Class-2 sweep
+  // runs. Without this, a leg that the anomaly section itself flags as a
+  // probable duplicate/re-import artifact (or an unresolved ambiguous
+  // donation match) could ALSO satisfy the Class-2 "unlinked in-kind leg
+  // with amount=0" predicate and get a WRITABLE fmv-stamp candidate —
+  // --apply would then stamp a real dollar value onto a row that may need
+  // deletion, and if both sibling duplicate legs end up flow-carrying with
+  // amounts, that date's flow double-counts in every metric (the exact
+  // distortion this script exists to fix). These legs stay VISIBLE in the
+  // anomaly section — they just can never be written.
   for (const a of report.ambiguousMatches) {
+    for (const leg of a.candidateLegs) claimedLegIds.add(leg.id);
     candidates.push({
       cls: "anomaly",
       donationId: a.donation.id,
@@ -347,6 +371,7 @@ export function findInkindCandidates(db: Database.Database): InkindCandidate[] {
     });
   }
   for (const group of report.duplicateSuspects) {
+    for (const leg of group) claimedLegIds.add(leg.id);
     candidates.push({
       cls: "anomaly",
       legId: group[0].id,
