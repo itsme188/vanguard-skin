@@ -72,15 +72,47 @@ Initial examples discussed: Tiger Global PIP 11, Lead Edge Capital Fund 5, Essen
 - Initial import should be a **read-only discovery pass**: identify likely vehicles, companies, commitments, calls, distributions, ownership terms, and documents; create source-linked proposals with confidence; require user approval before creating accounting records.
 - The register can then continue to grow through the private inbox and manual additions.
 
-## Deferred decisions for Part 2
+## Part 2 decisions
 
-1. Whether investment theses should naturally separate into company thesis and vehicle/round thesis, or begin as flexible notes only.
-2. Final document-retention policy (stored copy vs source-email indexing/links, or a hybrid).
-3. How Treasury backstop holdings are designated and presented.
-4. The visual priority of the Private Markets Overview: capital-call preparedness versus monthly-review updates.
-5. Exact first-business-day email time and recipient safeguards.
-6. Detailed schema, source-of-truth/reconciliation rules, initial-screen wireframes, email-routing implementation, document security, and backfill execution plan.
+### Review workspace and research
+
+- The Private Markets Overview is a **monthly-review and intelligence workspace**, not a capital-call dashboard. Capital calls remain an exception-oriented workflow and surface prominently only when action is needed.
+- Each review has two distinct views of new material:
+  1. **Vehicle updates**, grouped as manager/platform → vehicle, for official manager material, marks, capital calls, documents, and accounting events.
+  2. **Company developments**, a single chronological feed in which a company appears once even when it is held through several vehicles. Each item links to that company record, which shows its linked vehicles as “held through.”
+- The monthly brief must list every genuine update; it should not manufacture “quiet” entries for companies or vehicles without news. It is still sent as an all-clear email when there are no genuine updates.
+- Send the private-markets review email only to the owner, on a fixed schedule: **first business day of each month at 8:00 AM Eastern**. Dollar amounts may appear in this private email.
+- On a company record, direct/SPV exposure rows remain distinct by vehicle/round, with a separately labeled combined total. Do not include an unquantified fund look-through in that total. The company summary should cover invested capital, latest official value, and TVPI/MOIC where supported.
+
+### Flexible vehicle coverage
+
+- The desk should support every investment structure at least at a skeletal level: closed-end funds, SPVs, SAFEs, direct positions, open-ended and side-pocket funds, real-estate/operating LLCs, and historical/exited vehicles.
+- Every vehicle gets a common core: manager/platform, legal entity, type, status, source documents, cash ledger, official marks, and review history.
+- Type-specific modules add only relevant facts: commitments and calls for closed-end funds; NAV, side pockets, subscriptions, withdrawals, and redemptions for open-ended funds; terms and conversion events for SAFEs; basic documents and ledger support for real estate/operating entities.
+- Each vehicle can be assigned a research target of manager, underlying asset/company/property, both, or none.
+
+### Backfill, statements, and sources
+
+- Initial backfill is staged **manager by manager**. A read-only discovery pass creates source-linked proposals for vehicles, documents, companies, marks, and ledger events; the user approves a coherent group before it affects the accounting record.
+- Ambiguous or conflicting material remains in **Needs review** and must not create a ledger entry or official mark.
+- Statement ingestion should compare consecutive statements automatically. Financial events use the statement-period end as their effective date, while receipt/upload time is retained separately. Proposed changes still require review before becoming official.
+- A single source can produce more than one logical event—for example a distribution plus a tax estimate, or cash plus an in-kind stock distribution.
+- The supplied private-record archive demonstrates that ingestion must handle PDFs, DOCX files, images/screenshots, ZIP archives, and CSV exports, including tax records, statements, calls/distributions/redemptions, manager updates, agreements, and ownership instruments.
+
+### Thesis and inbound email safeguards
+
+- Begin with one editable **Your thesis** note per vehicle, optionally linked to an underlying company. Preserve a manager's stated thesis/rationale as a source document rather than blending it with the user's view. Separate company and entry/round thesis fields can be added later if the notes demand it.
+- `privates@` accepts material forwarded from user-owned approved addresses and from an editable Trusted Senders address book. New direct senders enter a sender-approval queue rather than being rejected outright.
+- Even trusted financial/legal material, capital calls, and investor updates require review. Clear low-risk company news may auto-file to the linked company timeline.
+
+### Maaser workspace
+
+- Add a dedicated **Maaser** workspace as well as a per-vehicle view. Each investment vehicle/deal is calculated independently.
+- Apply a fixed rule: no maaser is due until the deal has recovered **all cash paid in**, including investment calls, management fees, and expenses. Thereafter, 10% of each further actual cash or in-kind distribution is due as maaser.
+- Only actual distributions count; marks, NAV, tax estimates, and paper gains do not. A recycling distribution recovers principal, and a later recalled amount becomes new unrecovered principal.
+- For an in-kind distribution, use the manager-stated fair value on the distribution date. If that is unavailable for a public security, propose the public close for review; unpriced/private assets require confirmation.
+- The app stops at the calculated deal-level maaser amount. Charity recipients, payments, and funding decisions are intentionally outside this feature.
 
 ## Resume point
 
-Resume Part 2 by choosing the default Private Markets Overview priority, then turn these decisions into a reviewed product spec and implementation plan before code or migrations.
+The Part 2 discovery decisions are captured above. Next, turn them into a reviewed product specification: a proposed data model and source-of-truth rules, followed by a scoped implementation plan and migration proposal before code changes.
