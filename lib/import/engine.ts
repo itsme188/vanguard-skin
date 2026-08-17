@@ -12,6 +12,7 @@ import { parseVanguardHoldings } from "./parsers/vanguard-holdings";
 import { parseVanguardPdf } from "./parsers/vanguard-pdf";
 import { parseFactorCsv } from "./parsers/factor-csv";
 import { parseCanonicalCsv } from "./parsers/canonical-csv";
+import { parseDafContributions } from "./parsers/daf-contributions";
 import { upsertSecurity } from "@/lib/mutations/securities";
 import { FACTOR_COLUMNS } from "@/lib/factors";
 import { unitPriceFromMarketValue } from "@/lib/valuation";
@@ -180,6 +181,8 @@ export async function parseImport(
       return parseFactorCsv(textContent, filename);
     case "canonical-csv":
       return parseCanonicalCsv(textContent, filename);
+    case "daf-contributions":
+      return parseDafContributions(textContent, filename);
     default:
       return {
         sourceType: "unknown",
