@@ -89,4 +89,44 @@ describe("external-flow sign for security transfers", () => {
     expect(result).not.toBeNull();
     expect(result!.totalReturn).toBeCloseTo(0, 2);
   });
+
+  // ─── excludeInKind option (donation tracking, 2026-08-17, spec §6.3) ────
+  //
+  // In-kind TRANSFER_IN/OUT legs (security_id set) now carry the
+  // transfer-date FMV as a positive `amount` instead of 0. The
+  // daily-valuation cash-stepper must never read that FMV as a cash
+  // movement — the four tests above (unmodified) prove the DEFAULT call is
+  // untouched; this proves the new opts.excludeInKind flag does its one job:
+  // drop in-kind rows, keep everything else on the same date.
+
+  it("fetchNetFlowsByDate excludeInKind drops an in-kind OUT but keeps a same-date DEPOSIT", () => {
+    db.prepare(`INSERT INTO securities (id, symbol) VALUES (1, 'AAPL')`).run();
+
+    // In-kind leg: security_id set, FMV stored positive (TRANSFER_OUT).
+    db.prepare(
+      `INSERT INTO transactions
+         (account_id, security_id, trade_date, type, amount, is_external_flow, source_key)
+       VALUES (?, 1, ?, 'TRANSFER_OUT', ?, 1, ?)`
+    ).run(ACCT, "2026-02-10", 5000, "t-inkind-out");
+
+    // Ordinary cash deposit, same date, no security_id.
+    db.prepare(
+      `INSERT INTO transactions (account_id, trade_date, type, amount, is_external_flow, source_key)
+       VALUES (?, ?, 'DEPOSIT', ?, 1, ?)`
+    ).run(ACCT, "2026-02-10", 2000, "t-deposit-same-day");
+
+    const excluded = fetchNetFlowsByDate(db, [ACCT], "2026-01-31", "2026-02-28", {
+      excludeInKind: true,
+    });
+    expect(excluded).toHaveLength(1);
+    expect(excluded[0].date).toBe("2026-02-10");
+    // Only the $2,000 deposit remains — the $5,000 in-kind OUT is dropped.
+    expect(excluded[0].net).toBeCloseTo(2000, 2);
+
+    // Default call (no opts) is untouched: both flows net together.
+    const withDefault = fetchNetFlowsByDate(db, [ACCT], "2026-01-31", "2026-02-28");
+    expect(withDefault).toHaveLength(1);
+    // 2,000 (deposit) + (-5,000) (signed TRANSFER_OUT) = -3,000
+    expect(withDefault[0].net).toBeCloseTo(2000 - 5000, 2);
+  });
 });

@@ -16,7 +16,7 @@
 
 import type Database from "better-sqlite3";
 import { excludeLiveSnapshotsSql } from "@/lib/db/live-sources";
-import { SIGNED_EXTERNAL_FLOW_SQL } from "@/lib/compute/flow-adjusted";
+import { SIGNED_EXTERNAL_FLOW_SQL, IN_KIND_LEG_SQL } from "@/lib/compute/flow-adjusted";
 import {
   SNAPSHOT_FIRSTS_CTE,
   EXPECTED_ACCOUNTS_SQL,
@@ -265,6 +265,25 @@ export function computeXirr(
      ORDER BY trade_date ASC`
   );
 
+  // In-kind mirror of externalFlowStmt (spec §6.5). The snapshot-flow branch
+  // below is RANGE-wide, not per-month: once ANY month in [effectiveStart,
+  // effectiveEnd] has a nonzero monthly_snapshots.deposits_withdrawals, the
+  // WHOLE range reads from snapshotFlows and externalFlowStmt (the fallback,
+  // which already includes in-kind rows unfiltered) never runs — so a month
+  // with no cash flow but a real in-kind donation/journal leg would
+  // silently vanish. Fetched for the whole range and unioned in wherever
+  // the snapshot branch is taken (per-account below, portfolio further
+  // down) — never alongside the fallback branch (double-add).
+  const inKindFlowStmt = db.prepare(
+    `SELECT trade_date, ${SIGNED_EXTERNAL_FLOW_SQL} AS amount
+     FROM transactions
+     WHERE account_id = ?
+       AND is_external_flow = 1
+       AND trade_date >= ? AND trade_date <= ?
+       AND ${IN_KIND_LEG_SQL}
+     ORDER BY trade_date ASC`
+  );
+
   const latestValueStmt = db.prepare(
     `SELECT total_value, month_end_date AS value_date
      FROM monthly_snapshots
@@ -400,6 +419,30 @@ export function computeXirr(
           totalInvested += depositAmount;
         } else {
           totalWithdrawn += Math.abs(depositAmount);
+        }
+      }
+
+      // Union in this account's in-kind transfer legs for the WHOLE range
+      // (spec §6.5) — dated at their own trade_date (not mid-month, matching
+      // the fallback branch's own convention below), same sign flip and
+      // totalInvested/totalWithdrawn accumulation as that fallback loop.
+      const inKindFlows = inKindFlowStmt.all(
+        account.id,
+        effectiveStart,
+        effectiveEnd
+      ) as TransactionRow[];
+
+      for (const flow of inKindFlows) {
+        if (flow.amount == null) continue;
+        cashFlows.push({
+          date: flow.trade_date,
+          amount: -flow.amount,
+        });
+
+        if (flow.amount > 0) {
+          totalInvested += flow.amount;
+        } else {
+          totalWithdrawn += Math.abs(flow.amount);
         }
       }
     } else {
@@ -566,6 +609,27 @@ export function computeXirr(
       total_deps: number;
     }[];
 
+  // In-kind transfer legs across ALL accounts for the range (spec §6.5).
+  // Unlike the per-account branch above, portfolio-wide XIRR has NO
+  // transaction-level fallback at all — aggSnapshotFlows (cash-only) is
+  // always the sole flow source — so in-kind FMV flows must be unioned in
+  // unconditionally, dated at their own trade_date (not mid-month), or they
+  // would never appear in the portfolio-wide result for any account.
+  const aggInKindFlows = db
+    .prepare(
+      `SELECT trade_date, SUM(${SIGNED_EXTERNAL_FLOW_SQL}) AS amount
+       FROM transactions
+       WHERE is_external_flow = 1
+         AND trade_date >= ? AND trade_date <= ?
+         AND ${IN_KIND_LEG_SQL}
+       GROUP BY trade_date
+       ORDER BY trade_date ASC`
+    )
+    .all(effectiveStart, effectiveEnd) as {
+      trade_date: string;
+      amount: number;
+    }[];
+
   // Pre-compute December annual deposit corrections (same logic as TWR)
   const xirrDecCorrections = new Map<string, number>();
   const xirrDecSnaps = db
@@ -694,6 +758,24 @@ export function computeXirr(
       totalInvested += effectiveDeps;
     } else {
       totalWithdrawn += Math.abs(effectiveDeps);
+    }
+  }
+
+  // Union in in-kind transfer legs across all accounts (spec §6.5) — dated
+  // at their own trade_date, same terminal-alignment guard and sign/
+  // accumulation convention as the snapshot-flow loop above.
+  for (const ik of aggInKindFlows) {
+    if (ik.amount == null) continue;
+    if (ik.trade_date > terminalDate) continue;
+    portfolioCashFlows.push({
+      date: ik.trade_date,
+      amount: -ik.amount,
+    });
+
+    if (ik.amount > 0) {
+      totalInvested += ik.amount;
+    } else {
+      totalWithdrawn += Math.abs(ik.amount);
     }
   }
 

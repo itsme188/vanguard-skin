@@ -332,20 +332,34 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
       // cash(day) = cashResidual + cumulative net external flows with
       // trade_date in (anchor.month_end_date, day]. Reuses
       // fetchNetFlowsByDate (lib/compute/flow-adjusted.ts) — the exact same
-      // table filter (is_external_flow=1), sign convention
-      // (SIGNED_EXTERNAL_FLOW_SQL), and per-date netting the flow-adjusted
-      // return math itself consumes — so a value step here lands on exactly
-      // the dates buildFlowAdjustedIndex expects a flow, and its
-      // `HAVING SUM(...) != 0` already makes a net-zero day (e.g. the June
-      // sub-account TRANSFER_IN/OUT pairs booked at amount=0) a no-op: it
-      // simply never appears in this list, so no segment is split there.
+      // table filter (is_external_flow=1) and sign convention
+      // (SIGNED_EXTERNAL_FLOW_SQL) the flow-adjusted return math itself
+      // consumes, so a value step here lands on exactly the dates
+      // buildFlowAdjustedIndex expects a flow.
+      //
+      // Reuse contract (2026-08-17, donation tracking §6.3): in-kind
+      // TRANSFER_IN/OUT legs (a security moving in or out) now carry the
+      // transfer-date FMV as a real positive `amount` — they are NOT cash
+      // movements, so they must never step cash_balance. This is enforced
+      // by an explicit flag, `{ excludeInKind: true }`, which drops
+      // IN_KIND_LEG_SQL rows from fetchNetFlowsByDate's WHERE clause — NOT
+      // by relying on those rows netting to zero or being stored at
+      // amount=0 (the pre-donation-tracking convention). A same-day
+      // journal/routing pair still happens to net to zero on its own, but
+      // an UNPAIRED in-kind leg (the common donation shape) does not, and
+      // must be excluded unconditionally. Risk/TWR/XIRR readers call
+      // fetchNetFlowsByDate WITHOUT this flag, so in-kind flows still reach
+      // return math there (spec §6.5 union) — only this cash stepper drops
+      // them.
       //
       // One query for the account's whole anchor span (not one per window)
       // — flows are then walked with a single monotonic pointer across
       // windows, mirroring buildFlowAdjustedIndex's own pointer convention.
       const maxDateRow = getMaxValuationDate.get(account.account_id) as { max_date: string | null };
       const allFlows = maxDateRow.max_date
-        ? fetchNetFlowsByDate(db, [account.account_id], anchors[0].month_end_date, maxDateRow.max_date)
+        ? fetchNetFlowsByDate(db, [account.account_id], anchors[0].month_end_date, maxDateRow.max_date, {
+            excludeInKind: true,
+          })
         : [];
       let flowIdx = 0;
 

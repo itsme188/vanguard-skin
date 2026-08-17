@@ -32,10 +32,31 @@ export const SIGNED_EXTERNAL_FLOW_SQL =
   "CASE WHEN type = 'TRANSFER_OUT' THEN -ABS(amount) ELSE amount END";
 
 /**
+ * In-kind transfer leg predicate — a security-transfer TRANSFER_IN/OUT leg
+ * (as opposed to a cash TRANSFER, or a DEPOSIT/WITHDRAWAL). Donation
+ * tracking (2026-08-17, spec §6) stamps these legs with the transfer-date
+ * FMV as a positive `amount` (previously 0), so an unpaired in-kind leg now
+ * carries real money-shaped value through every external-flow reader. Cash
+ * stepping (daily-valuation.ts) must NOT treat that FMV as a cash movement
+ * — a security left/entered the account, cash never moved — so it excludes
+ * these rows via `fetchNetFlowsByDate`'s `excludeInKind` option below. Risk
+ * metrics, TWR, and XIRR keep including them (a donation IS a real
+ * portfolio-value flow for return math purposes).
+ */
+export const IN_KIND_LEG_SQL =
+  "type IN ('TRANSFER_IN','TRANSFER_OUT') AND security_id IS NOT NULL";
+
+/**
  * Net external flows (deposits positive, withdrawals negative) per trade_date
  * for the scoped accounts, bounded to (startDate, endDate]. Flows on/before
  * the first valuation date are already baked into the starting value; flows
  * after the last valuation date haven't hit the series yet.
+ *
+ * `opts.excludeInKind` (default false, every existing call site unchanged)
+ * drops in-kind transfer legs (IN_KIND_LEG_SQL) from the WHERE clause —
+ * used by the daily-valuation cash stepper, which must never step cash for
+ * an in-kind FMV move. Readers that consume flows for return math (risk
+ * index, TWR, XIRR) call this without the flag.
  *
  * Gracefully returns [] when the transactions table doesn't exist (minimal
  * in-memory test DBs) — same precedent as getRiskFreeRate's settings guard.
@@ -44,7 +65,8 @@ export function fetchNetFlowsByDate(
   db: Database.Database,
   accountIds: number[] | undefined,
   startDate: string,
-  endDate: string
+  endDate: string,
+  opts: { excludeInKind?: boolean } = {}
 ): { date: string; net: number }[] {
   const hasTable = db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'transactions'")
@@ -56,6 +78,8 @@ export function fetchNetFlowsByDate(
       ? `AND account_id IN (${accountIds.map(() => "?").join(",")})`
       : "";
 
+  const inKindFilter = opts.excludeInKind ? `AND NOT (${IN_KIND_LEG_SQL})` : "";
+
   return db
     .prepare(
       `SELECT trade_date AS date, SUM(${SIGNED_EXTERNAL_FLOW_SQL}) AS net
@@ -63,6 +87,7 @@ export function fetchNetFlowsByDate(
        WHERE is_external_flow = 1
          AND trade_date > ? AND trade_date <= ?
          ${accountFilter}
+         ${inKindFilter}
        GROUP BY trade_date
        HAVING SUM(${SIGNED_EXTERNAL_FLOW_SQL}) != 0
        ORDER BY trade_date ASC`
