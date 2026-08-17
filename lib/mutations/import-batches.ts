@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import type { ImportBatch } from "@/lib/types";
+import { ARTIFACT_NOTE_SUFFIX } from "@/lib/mutations/donation-links";
 
 export function createImportBatch(
   db: Database.Database,
@@ -36,6 +37,59 @@ export function setImportBatchR2Key(
   ).run(r2Key, batchId);
 }
 
+/**
+ * Counts of live donation references INTO this batch's transactions —
+ * `donation_leg_links.transaction_id` (out/artifact legs) and
+ * `donation_lots.acquisition_transaction_id` (lot assignments). Used by the
+ * undo refusal gate (§11-undo of the design doc): a transactions batch whose
+ * rows are still claimed by a donation link/assignment must never be undone
+ * silently (it would either orphan the reference or, worse, cascade-delete
+ * the transaction out from under a confirmed donation record). The donation
+ * may belong to ANY batch — this counts references regardless of which
+ * batch owns the donation, only which batch owns the referenced transaction.
+ */
+export function batchDonationReferences(
+  db: Database.Database,
+  batchId: number
+): { links: number; lots: number } {
+  const links = (
+    db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM donation_leg_links l
+         JOIN transactions t ON t.id = l.transaction_id
+         WHERE t.import_batch_id = ?`
+      )
+      .get(batchId) as { c: number }
+  ).c;
+  const lots = (
+    db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM donation_lots dl
+         JOIN transactions t ON t.id = dl.acquisition_transaction_id
+         WHERE t.import_batch_id = ?`
+      )
+      .get(batchId) as { c: number }
+  ).c;
+  return { links, lots };
+}
+
+/** Shared refusal message text — single source so undoImport (throw) and
+ *  handleUndoRequest (409 body) never drift apart. */
+export function donationReferenceRefusalMessage(refs: { links: number; lots: number }): string {
+  return `${refs.links} donation links / ${refs.lots} lot assignments reference this batch's transactions — unlink or unassign them in Analysis › Giving first.`;
+}
+
+/** Exact inverse of donation-links.ts's private appendArtifactSuffix — kept
+ *  in sync manually since that helper isn't exported (only the constant is).
+ *  Restores a demoted artifact leg's notes to their pre-link value. */
+function stripArtifactNoteSuffix(notes: string | null): string | null {
+  if (notes == null) return null;
+  const suffixAlone = ARTIFACT_NOTE_SUFFIX.trim();
+  if (notes === suffixAlone) return null;
+  if (notes.endsWith(ARTIFACT_NOTE_SUFFIX)) return notes.slice(0, notes.length - ARTIFACT_NOTE_SUFFIX.length);
+  return notes; // not demoted by this code path — leave untouched
+}
+
 export function deleteImportBatch(db: Database.Database, batchId: number): void {
   db.transaction(() => {
     // Clear derived data first (tax lots reference transactions via FK)
@@ -47,6 +101,30 @@ export function deleteImportBatch(db: Database.Database, batchId: number): void 
     db.prepare("DELETE FROM raw_imports WHERE import_batch_id = ?").run(batchId);
     db.prepare("DELETE FROM prices WHERE import_batch_id = ?").run(batchId);
     db.prepare("DELETE FROM holdings WHERE import_batch_id = ?").run(batchId);
+    // Donations owned by THIS batch (e.g. a daf-contributions batch) must be
+    // torn down BEFORE the transactions delete below: their links/lots
+    // cascade via FK the moment the donation row goes, but a routing_artifact
+    // leg's is_external_flow demotion does NOT auto-revert on cascade — it
+    // has to be restored explicitly first, exactly like unlinkDonationLegs.
+    // The referenced OUT/artifact transactions almost always belong to a
+    // DIFFERENT batch (daf-contributions never parses transactions), so this
+    // must run whether or not this batch owns any transactions itself.
+    const artifactLegs = db
+      .prepare(
+        `SELECT t.id AS id, t.notes AS notes
+         FROM donation_leg_links l
+         JOIN donations d ON d.id = l.donation_id
+         JOIN transactions t ON t.id = l.transaction_id
+         WHERE d.import_batch_id = ? AND l.role = 'routing_artifact'`
+      )
+      .all(batchId) as { id: number; notes: string | null }[];
+    const restoreArtifactFlow = db.prepare(
+      "UPDATE transactions SET is_external_flow = 1, notes = ? WHERE id = ?"
+    );
+    for (const leg of artifactLegs) {
+      restoreArtifactFlow.run(stripArtifactNoteSuffix(leg.notes), leg.id);
+    }
+    db.prepare("DELETE FROM donations WHERE import_batch_id = ?").run(batchId);
     db.prepare("DELETE FROM transactions WHERE import_batch_id = ?").run(batchId);
     db.prepare("DELETE FROM monthly_snapshots WHERE import_batch_id = ?").run(batchId);
     // Import-sourced corporate actions (source='import') are batch-tagged;
