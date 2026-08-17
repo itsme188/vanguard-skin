@@ -152,6 +152,11 @@ Canonical batch 17 (`dashboard_IBKR_transactions.csv`, the Co-Work-era backfill)
   `TRANSFER_IN`/`TRANSFER_OUT`, priced at transfer-date MV; non-Stocks security legs warn.
 - `computeTaxLots` treats a security **`TRANSFER_IN` as lot-creating**. `TRANSFER_OUT` is
   deliberately **NOT** a disposal — that's the R4 donation workstream.
+- **In-kind donation routing** (R4, 2026-08): a pair of matching TRANSFER_IN/TRANSFER_OUT legs links
+  via `donation_leg_links` (import source, role: `OUT` routes, `IN` artifact). ON A PRINT, decide
+  donor-advised-fund (DAF) routing in Analysis › Giving (never at CSV authoring time); the `IN` leg
+  is demoted via `donation_leg_links` with `is_external_flow=0` (non-cash-contributing), never
+  deleted. `TRANSFER_OUT` remains disposal-neutral. Amount carries transfer-date FMV, signed by type.
 - The 4 Jan-2024 Robinhood ACATS positions carry worksheet-exact original lots via
   `scripts/repair-acats-opening-lots.ts`. The autos are qty-0/price-NULL **tombstones** — **never
   delete them**; the occupied `source_key`s are what keeps a 2024-statement re-import a no-op.
@@ -403,7 +408,15 @@ value). `ibkr-activity` TWR is percentage (÷100); canonical/vanguard-pdf are de
   `tests/compute/portfolio-snapshot-coverage.test.ts`).
 - `SIGNED_EXTERNAL_FLOW_SQL` (`lib/compute/flow-adjusted.ts`) signs `TRANSFER_OUT` as `-ABS(amount)`
   at EVERY `is_external_flow` reader (transfer rows store positive magnitude in every era —
-  live-verified; sign-idempotent by construction).
+  live-verified; sign-idempotent by construction). **In-kind (non-cash) TRANSFER legs**: amount holds
+  transfer-date FMV (positive); type (IN/OUT) carries direction; readers sign them. A `donation_leg_links`
+  row flags a leg `is_external_flow=0` (routed, non-cash-contributing). **`excludeInKind` cash-stepping
+  gate** (`lib/compute/daily-valuation.ts`): daily valuations exclude in-kind `deposits_withdrawals`
+  (snapshots only have statement-authority cash flows), but risk/TWR readers pass the full-width flow
+  set (a routed in-kind leg appears as a normal flow, time-valued but contributing zero cash). **TWR/XIRR
+  snapshot path**: snapshot `deposits_withdrawals` never contains in-kind; `UNION` branches over
+  snapshots prefer statement `deposits_withdrawals` or fall through to statement-anchored transaction
+  sum (which includes in-kind, pre-signed) — never double-count legs via both paths.
 - Cost-basis fallback single source: `lib/valuation.ts::scaledCostBasisFallbackSQL` scales a stale
   statement row's basis per-share to the current quantity and signs like the position (never serve a
   different share count's whole basis); consumers wrap it `NULLIF(<expr>, 0)` — a zero stored basis

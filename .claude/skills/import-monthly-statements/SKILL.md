@@ -64,7 +64,7 @@ The statement's amount column is already the signed cash effect for most rows �
 | Foreign Tax Withheld / FRGN-W/H (−) | TAX_WITHHELD | keep (negative) | symbol = the dividend's security, not CASH |
 | Funds received / EFT (+) | DEPOSIT | keep | symbol `CASH` |
 | Withdrawal (−) | WITHDRAWAL | keep | symbol `CASH` |
-| Share journal / gift (no cash) | TRANSFER_IN / TRANSFER_OUT | amount `0` | one row per journal line, never merged |
+| Share journal / gift (no cash) | TRANSFER_IN / TRANSFER_OUT | amount = transfer-date market value (positive) | one row per journal line, never merged |
 | Stock Split (+N shares/contracts) | SPLIT | amount `0`, qty = additional units | on the POST-split symbol; VGT 2026-04 + CRWD-option 2026-07 precedents |
 | Security Exchange (option exercised) | EXERCISED | amount `0`, qty = contracts | pairs with a normal Buy of the stock at strike; computeTaxLots rolls premium into stock basis |
 | Expired (option) | EXPIRED | amount `0`, qty = abs(contracts) | note `Expired worthless` |
