@@ -13,6 +13,7 @@ import { parseVanguardPdf } from "./parsers/vanguard-pdf";
 import { parseFactorCsv } from "./parsers/factor-csv";
 import { parseCanonicalCsv } from "./parsers/canonical-csv";
 import { parseDafContributions } from "./parsers/daf-contributions";
+import { commitDonations, findTransferAmountConflicts } from "./donations-commit";
 import { upsertSecurity } from "@/lib/mutations/securities";
 import { FACTOR_COLUMNS } from "@/lib/factors";
 import { unitPriceFromMarketValue } from "@/lib/valuation";
@@ -211,6 +212,8 @@ export interface CommitResult {
   newSecurities: number;
   newFactors: number;
   newCorporateActions: number;
+  newDonations: number;
+  updatedDonations: number;
   skippedDuplicates: number;
   unmatchedFactors?: string[];
   warnings: string[];
@@ -257,6 +260,8 @@ export function commitImport(
   let newSnapshots = 0;
   let newSecurities = 0;
   let newCorporateActions = 0;
+  let newDonations = 0;
+  let updatedDonations = 0;
   let skippedDuplicates = 0;
   const warnings: string[] = [];
 
@@ -345,7 +350,38 @@ export function commitImport(
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    for (const txn of parsed.transactions) {
+    // 2b. In-kind transfer-leg conflict guard (spec §7). Compute conflict
+    // indices ONCE, before the insert loop: an incoming TRANSFER_IN/OUT row
+    // whose (account, date, type, security, quantity) matches an existing
+    // DB row but carries a DIFFERENT amount is a re-authored/corrected leg,
+    // not a legitimate second transfer. canonical-csv bakes the amount into
+    // source_key (see amountCents there), so a corrected amount would
+    // otherwise sail through as a brand-new row instead of colliding on
+    // source_key — this guard closes that gap. Rows whose amount agrees (or
+    // that hit a genuine source_key duplicate) are unaffected — normal
+    // INSERT OR IGNORE dedupe below still applies to them.
+    const transferConflictIndices = new Set(
+      findTransferAmountConflicts(
+        db,
+        parsed.transactions,
+        (t) => getAccountId(t.accountName),
+        (t) => (t.symbol ? getSecurityId(t.symbol) : null),
+      ),
+    );
+
+    for (let i = 0; i < parsed.transactions.length; i++) {
+      const txn = parsed.transactions[i];
+
+      if (transferConflictIndices.has(i)) {
+        warnings.push(
+          `Transfer conflict: ${txn.symbol ?? "cash"} ${txn.tradeDate} ${txn.type} qty ${txn.quantity ?? "?"} — ` +
+          `an existing transaction matches account/date/type/security/quantity but has a different amount; ` +
+          `skipped to avoid duplicating a re-authored leg (source_key ${txn.sourceKey})`,
+        );
+        skippedDuplicates++;
+        continue;
+      }
+
       const accountId = getAccountId(txn.accountName);
       const securityId = txn.symbol ? getSecurityId(txn.symbol) : null;
       const txnTypeLower = txn.type.toLowerCase();
@@ -694,6 +730,42 @@ export function commitImport(
       }
     }
 
+    // 7b. Insert/update donations (from a daf-contributions import). Task 5.
+    // Identity is enforced by commitDonations/upsertDonationMetadata — a
+    // changed authoritative field under an unchanged source_key surfaces as
+    // an identityConflicts entry rather than being silently overwritten, and
+    // a row whose sourceKey carries the parser's "null-created" collision
+    // marker is blocked outright (see donations-commit.ts).
+    if (parsed.donations && parsed.donations.length > 0) {
+      const outcome = commitDonations(db, parsed.donations, batch.id);
+      newDonations = outcome.newDonations;
+      updatedDonations = outcome.updatedDonations;
+
+      for (const sourceKey of outcome.blockedNoIdentity) {
+        warnings.push(
+          `Donation blocked: ${sourceKey} — missing "created at" identity and collides with another row in ` +
+          `this file; resolve the ambiguity in the source export before importing`,
+        );
+      }
+      for (const c of outcome.identityConflicts) {
+        warnings.push(
+          `Donation identity conflict: ${c.sourceKey} — authoritative field "${c.field}" changed from the ` +
+          `on-file record; refusing silent update`,
+        );
+      }
+      for (const symbol of outcome.unresolvedSymbols) {
+        warnings.push(
+          `Donation imported with unresolved symbol "${symbol}" — no matching security found; security_id left NULL`,
+        );
+      }
+      for (const sourceKey of outcome.absentPriorRows) {
+        warnings.push(
+          `Donation ${sourceKey} exists in the database for a year covered by this file but is absent from ` +
+          `it — verify it wasn't dropped or should be reversed`,
+        );
+      }
+    }
+
     // 8. Store raw content
     db.prepare(
       "INSERT INTO raw_imports (import_batch_id, raw_data) VALUES (?, ?)"
@@ -702,7 +774,7 @@ export function commitImport(
     // 9. Complete the batch
     const recordCount =
       newTransactions + newHoldings + newPrices + newSnapshots + newFactors +
-      newCorporateActions;
+      newCorporateActions + newDonations;
     const summary = [
       newTransactions > 0 ? `${newTransactions} transactions` : null,
       newHoldings > 0 ? `${newHoldings} holdings` : null,
@@ -710,6 +782,12 @@ export function commitImport(
       newSnapshots > 0 ? `${newSnapshots} snapshots` : null,
       newFactors > 0 ? `${newFactors} factor classifications` : null,
       newCorporateActions > 0 ? `${newCorporateActions} corporate actions` : null,
+      // Unlike the counts above, the donations clause is shown whenever this
+      // batch actually parsed a donations file (even at 0 new) — a
+      // daf-contributions re-import with nothing new to add would otherwise
+      // vanish from the summary entirely, which reads as "did this even run?"
+      parsed.donations && parsed.donations.length > 0 ? `${newDonations} donations` : null,
+      updatedDonations > 0 ? `${updatedDonations} donations updated` : null,
       unmatchedFactors.length > 0 ? `${unmatchedFactors.length} unmatched symbols` : null,
       skippedDuplicates > 0 ? `${skippedDuplicates} duplicates skipped` : null,
     ]
@@ -728,6 +806,8 @@ export function commitImport(
       newSecurities,
       newFactors,
       newCorporateActions,
+      newDonations,
+      updatedDonations,
       skippedDuplicates,
       unmatchedFactors: unmatchedFactors.length > 0 ? unmatchedFactors : undefined,
       warnings,

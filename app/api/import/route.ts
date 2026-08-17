@@ -3,6 +3,13 @@ import { db } from "@/lib/db";
 import { parseImport, commitImport } from "@/lib/import/engine";
 import type { CommitResult } from "@/lib/import/engine";
 import { validateParsedResult } from "@/lib/import/validate";
+import {
+  commitDonations,
+  findAbsentPriorDonations,
+  type DonationCommitOutcome,
+} from "@/lib/import/donations-commit";
+import { createImportBatch } from "@/lib/mutations/import-batches";
+import type { ParsedDonation } from "@/lib/import/types";
 import { getSnapshotReconciliation } from "@/lib/queries/data-health";
 import { classifySecurities } from "@/lib/compute/classify-securities";
 import { computeTaxLots } from "@/lib/compute/tax-lots";
@@ -26,6 +33,58 @@ import type Database from "better-sqlite3";
  *
  * Accepts multipart form data with one or more files.
  */
+
+/** Internal sentinel used only to unwind the doomed transaction in previewDonations. */
+class DonationPreviewRollback extends Error {}
+
+export interface DonationsPreview {
+  count: number;
+  newCount: number;
+  updatedCount: number;
+  identityConflicts: { sourceKey: string; field: string }[];
+  absentPriorRows: string[];
+  unresolvedSymbols: string[];
+}
+
+/**
+ * Preview-mode donation stats, computed via the SAME resolution logic as a
+ * real commit (commitDonations) but with zero persisted side effects: the
+ * whole thing runs inside a transaction that's unconditionally rolled back.
+ * This is deliberate rather than a hand-duplicated read-only reimplementation
+ * of commitDonations' identity-conflict/new-vs-updated logic — that logic
+ * lives in lib/mutations/donations.ts (Task 2) and isn't exported for reuse
+ * here, so re-deriving it would drift the moment that file changes.
+ */
+function previewDonations(
+  database: Database.Database,
+  donations: ParsedDonation[]
+): DonationsPreview | undefined {
+  if (donations.length === 0) return undefined;
+
+  let outcome: DonationCommitOutcome | undefined;
+  try {
+    database.transaction(() => {
+      const dryBatch = createImportBatch(database, "daf-contributions", "__preview__");
+      outcome = commitDonations(database, donations, dryBatch.id);
+      throw new DonationPreviewRollback();
+    })();
+  } catch (err) {
+    if (!(err instanceof DonationPreviewRollback)) throw err;
+  }
+
+  const absentPriorRows = findAbsentPriorDonations(database, donations).map(
+    (r) => r.source_key
+  );
+
+  return {
+    count: donations.length,
+    newCount: outcome!.newDonations,
+    updatedCount: outcome!.updatedDonations,
+    identityConflicts: outcome!.identityConflicts,
+    absentPriorRows,
+    unresolvedSymbols: outcome!.unresolvedSymbols,
+  };
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -99,6 +158,7 @@ export async function POST(request: NextRequest) {
                 effectiveDate: ca.effectiveDate,
               })),
             },
+            donations: previewDonations(db, validatedResult.donations ?? []),
           },
           skippedRows: skippedRows.length > 0 ? skippedRows : undefined,
           errors: parsed.errors,

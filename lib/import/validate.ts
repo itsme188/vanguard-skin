@@ -4,6 +4,7 @@ import type {
   ParsedHolding,
   ParsedPrice,
   ParsedSnapshot,
+  ParsedDonation,
 } from "./types";
 import { validateCorporateActionInput } from "@/lib/compute/corporate-actions";
 
@@ -124,7 +125,7 @@ function describeNumber(value: number | null | undefined): string {
 // ── Validation report ───────────────────────────────────────────────
 
 export interface SkippedRow {
-  category: "transaction" | "holding" | "price" | "snapshot" | "security" | "corporateAction";
+  category: "transaction" | "holding" | "price" | "snapshot" | "security" | "corporateAction" | "donation";
   index: number;
   reason: string;
   symbol?: string;
@@ -362,6 +363,44 @@ export function validateParsedResult(
     }
   }
 
+  // ── Donations ───────────────────────────────────────────────────
+  // Belt-and-braces after the parser (lib/import/parsers/daf-contributions.ts
+  // already rejects a non-positive/missing USD amount and an unparsable
+  // received-at) — a defense against a future donations source that skips
+  // those checks. Only runs when the parser populated `donations` at all.
+  let validDonations: ParsedDonation[] | undefined = undefined;
+  if (parsed.donations) {
+    validDonations = [];
+    for (let i = 0; i < parsed.donations.length; i++) {
+      const d = parsed.donations[i];
+      let skip = false;
+
+      if (!(d.fmvUsd > 0)) {
+        skippedRows.push({
+          category: "donation",
+          index: i,
+          reason: `Invalid FMV: ${describeNumber(d.fmvUsd)}`,
+          symbol: d.symbolRaw ?? undefined,
+        });
+        skip = true;
+      }
+
+      if (!d.receivedDate || !isValidDate(d.receivedDate)) {
+        skippedRows.push({
+          category: "donation",
+          index: i,
+          reason: `Invalid or missing received date: "${d.receivedDate}"`,
+          symbol: d.symbolRaw ?? undefined,
+        });
+        skip = true;
+      }
+
+      if (!skip) {
+        validDonations.push(d);
+      }
+    }
+  }
+
   // ── Corporate actions ───────────────────────────────────────────
   // Shares validateCorporateActionInput with the manual add path
   // (lib/compute/corporate-actions.ts) so a statement-sourced SPLIT and a
@@ -406,6 +445,7 @@ export function validateParsedResult(
       prices: validPrices,
       snapshots: validSnapshots,
       corporateActions: validCorporateActions,
+      donations: validDonations,
       warnings: [...parsed.warnings, ...warnings],
     },
   };
