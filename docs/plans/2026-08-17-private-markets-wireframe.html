@@ -1,0 +1,162 @@
+<div id="pm-wireframe" aria-label="Portfolio Desk Private Markets wireframe">
+  <style>
+    #pm-wireframe { font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #24231f; background: #f7f6ef; border: 1px solid #d9d6c8; border-radius: 16px; overflow: hidden; max-width: 980px; margin: 0 auto; box-shadow: 0 18px 48px rgba(54, 48, 32, .10); }
+    #pm-wireframe * { box-sizing: border-box; }
+    #pm-wireframe button { font: inherit; color: inherit; cursor: pointer; }
+    #pm-wireframe .topbar { height: 58px; display: flex; align-items: center; gap: 24px; padding: 0 22px; background: #fffcf5; border-bottom: 1px solid #ded9ca; }
+    #pm-wireframe .brand { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; font-weight: 700; letter-spacing: .08em; white-space: nowrap; }
+    #pm-wireframe .tabs { display: flex; height: 100%; align-items: stretch; gap: 3px; overflow: auto; }
+    #pm-wireframe .tab { background: transparent; border: 0; border-bottom: 3px solid transparent; padding: 2px 10px 0; font-size: 13px; white-space: nowrap; }
+    #pm-wireframe .tab.active { border-bottom-color: #b57a18; color: #8a5810; font-weight: 700; }
+    #pm-wireframe .content { display: grid; grid-template-columns: 244px minmax(0, 1fr); min-height: 620px; }
+    #pm-wireframe .rail { background: #fbfaf5; border-right: 1px solid #ded9ca; padding: 18px 12px; }
+    #pm-wireframe .rail-label { color: #777266; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 10px; font-weight: 700; letter-spacing: .10em; margin: 14px 10px 7px; text-transform: uppercase; }
+    #pm-wireframe .rail-label:first-child { margin-top: 0; }
+    #pm-wireframe .rail-item { width: 100%; display: flex; align-items: center; justify-content: space-between; text-align: left; border: 0; background: transparent; border-radius: 7px; padding: 8px 10px; font-size: 13px; margin: 1px 0; }
+    #pm-wireframe .rail-item:hover { background: #f0ede3; }
+    #pm-wireframe .rail-item.active { background: #efe6cf; color: #70470b; font-weight: 700; }
+    #pm-wireframe .badge { min-width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; padding: 0 5px; border-radius: 9px; color: #7b510f; background: #f4dca7; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 10px; }
+    #pm-wireframe .manager { margin-top: 4px; }
+    #pm-wireframe .manager-name { color: #48443c; font-size: 12px; font-weight: 700; padding: 7px 10px 3px; }
+    #pm-wireframe .vehicle { padding-left: 20px; color: #555147; }
+    #pm-wireframe .historical { color: #8a8578; }
+    #pm-wireframe .main { padding: 28px 30px 36px; background: #f7f6ef; }
+    #pm-wireframe .eyebrow { color: #94701f; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 11px; font-weight: 700; letter-spacing: .10em; text-transform: uppercase; }
+    #pm-wireframe h1 { margin: 6px 0 5px; font-size: 27px; letter-spacing: -.03em; }
+    #pm-wireframe .subhead { margin: 0 0 23px; color: #6e695f; font-size: 14px; }
+    #pm-wireframe .review-banner { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 14px 16px; border: 1px solid #d9c797; background: #fff9e9; border-radius: 10px; margin-bottom: 18px; }
+    #pm-wireframe .review-banner strong { font-size: 14px; }
+    #pm-wireframe .review-banner span { color: #6e695f; font-size: 12px; }
+    #pm-wireframe .review-btn { border: 1px solid #b57a18; border-radius: 7px; background: #b57a18; color: #fffdf7; padding: 7px 10px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+    #pm-wireframe .stack { display: grid; gap: 13px; }
+    #pm-wireframe .manager-card { border: 1px solid #ddd9cc; border-radius: 11px; background: #fffdf8; overflow: hidden; }
+    #pm-wireframe .manager-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 16px; border-bottom: 1px solid #ebe7da; }
+    #pm-wireframe .manager-head h2 { margin: 0; font-size: 16px; }
+    #pm-wireframe .manager-meta { color: #777266; font-size: 12px; }
+    #pm-wireframe .vehicle-row { padding: 14px 16px 15px; }
+    #pm-wireframe .vehicle-title { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+    #pm-wireframe .vehicle-title strong { font-size: 14px; }
+    #pm-wireframe .vehicle-kind { color: #777266; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
+    #pm-wireframe .vehicle-update { margin: 7px 0 10px; color: #59554c; font-size: 13px; line-height: 1.45; }
+    #pm-wireframe .company-list { border-left: 2px solid #e6cf99; margin-left: 2px; padding-left: 12px; display: grid; gap: 8px; }
+    #pm-wireframe .company { display: flex; align-items: flex-start; gap: 9px; }
+    #pm-wireframe .company-link { width: 100%; text-align: left; border: 0; background: transparent; padding: 0; }
+    #pm-wireframe .company-link:hover strong { color: #8a5810; text-decoration: underline; }
+    #pm-wireframe .dot { width: 7px; height: 7px; border-radius: 50%; background: #b57a18; margin-top: 5px; flex: 0 0 auto; }
+    #pm-wireframe .company strong { font-size: 13px; }
+    #pm-wireframe .company p { margin: 2px 0 0; color: #706b60; font-size: 12px; line-height: 1.4; }
+    #pm-wireframe .quiet-call { display: flex; align-items: center; gap: 9px; padding: 11px 14px; color: #69645a; border: 1px solid #e3dfd3; border-radius: 9px; background: #fbfaf5; font-size: 12px; }
+    #pm-wireframe .quiet-call b { color: #49453d; }
+    #pm-wireframe .hidden { display: none; }
+    #pm-wireframe .detail { padding: 26px; border: 1px dashed #d4cfbf; border-radius: 11px; background: #fffdf8; color: #5d584e; font-size: 14px; line-height: 1.55; }
+    #pm-wireframe .detail h2 { color: #24231f; font-size: 19px; margin: 0 0 8px; }
+    #pm-wireframe .maaser-rule { margin: 17px 0; padding: 10px 12px; border-radius: 8px; color: #614409; background: #fff5d9; font-size: 12px; }
+    #pm-wireframe .maaser-grid { width: 100%; border-collapse: collapse; font-size: 13px; }
+    #pm-wireframe .maaser-grid th { color: #777266; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 10px; font-weight: 700; letter-spacing: .06em; text-align: left; text-transform: uppercase; padding: 8px 0; border-bottom: 1px solid #ded9ca; }
+    #pm-wireframe .maaser-grid td { padding: 11px 0; vertical-align: top; border-bottom: 1px solid #ebe7da; }
+    #pm-wireframe .maaser-grid td:last-child { color: #69645a; }
+    #pm-wireframe .backfill-note { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 14px; margin: 17px 0; border: 1px solid #d9c797; border-radius: 9px; background: #fff9e9; font-size: 12px; }
+    #pm-wireframe .backfill-note strong { color: #614409; }
+    #pm-wireframe .proposal-list { display: grid; gap: 10px; margin-top: 14px; }
+    #pm-wireframe .proposal { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 13px 14px; border: 1px solid #ded9ca; border-radius: 9px; background: #fffdf8; }
+    #pm-wireframe .proposal h3 { margin: 0 0 3px; font-size: 14px; }
+    #pm-wireframe .proposal p { margin: 0; color: #6e695f; font-size: 12px; line-height: 1.4; }
+    #pm-wireframe .proposal button { border: 1px solid #c9b987; border-radius: 6px; background: #fff9e9; color: #70470b; padding: 6px 8px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+    @media (max-width: 700px) { #pm-wireframe .content { grid-template-columns: 1fr; } #pm-wireframe .rail { border-right: 0; border-bottom: 1px solid #ded9ca; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px; } #pm-wireframe .rail-label, #pm-wireframe .manager, #pm-wireframe .historical { display: none; } #pm-wireframe .rail-item { min-width: 0; align-items: flex-start; padding: 7px; font-size: 12px; } #pm-wireframe .badge { flex: 0 0 auto; margin-left: 5px; } #pm-wireframe .main { padding: 22px 16px; } #pm-wireframe .topbar { gap: 12px; padding: 0 14px; } #pm-wireframe .brand { font-size: 11px; } #pm-wireframe .tabs { margin-left: auto; } #pm-wireframe .tab:not(.active) { display: none; } #pm-wireframe .tab { padding-left: 7px; padding-right: 0; } }
+  </style>
+  <div class="topbar">
+    <div class="brand">PORTFOLIO DESK</div>
+    <nav class="tabs" aria-label="Main navigation">
+      <button class="tab" type="button">Today</button><button class="tab" type="button">Accounts</button><button class="tab" type="button">Analysis</button><button class="tab" type="button">Research</button><button class="tab active" type="button" aria-current="page">Private Markets</button><button class="tab" type="button">Import</button>
+    </nav>
+  </div>
+  <div class="content">
+    <aside class="rail" aria-label="Private Markets navigation">
+      <div class="rail-label">Workspace</div>
+      <button class="rail-item active" type="button" data-view="overview">Overview</button>
+      <button class="rail-item" type="button" data-view="review">Monthly Review <span class="badge">7</span></button>
+      <button class="rail-item" type="button" data-view="calls">Capital Calls</button>
+      <button class="rail-item" type="button" data-view="maaser">Maaser</button>
+      <button class="rail-item" type="button" data-view="inbox">Documents &amp; Private Inbox <span class="badge">2</span></button>
+      <button class="rail-item" type="button" data-view="backfill">Backfill Review <span class="badge">3</span></button>
+      <button class="rail-item" type="button" data-view="companies">Companies</button>
+      <div class="rail-label">Managers &amp; platforms</div>
+      <div class="manager"><div class="manager-name">AngelList</div><button class="rail-item vehicle" type="button" data-view="angel-defense">DefenseTech / HardTech Fund</button><button class="rail-item vehicle" type="button" data-view="angel-base-one">Base Power — Packy / round 1</button><button class="rail-item vehicle" type="button" data-view="angel-base-two">Base Power — Packy / round 2</button></div>
+      <div class="manager"><div class="manager-name">Tiger Global</div><button class="rail-item vehicle" type="button" data-view="tiger">PIP 11</button></div>
+      <div class="manager"><div class="manager-name">Lead Edge</div><button class="rail-item vehicle" type="button" data-view="lead-edge">Fund 5</button></div>
+      <div class="manager"><div class="manager-name">Essence VC</div><button class="rail-item vehicle" type="button" data-view="essence">Fund 2</button></div>
+      <div class="manager"><div class="manager-name">Plutus</div><button class="rail-item vehicle" type="button" data-view="plutus">SAFE</button></div>
+      <div class="rail-label historical">Historical</div><button class="rail-item historical" type="button" data-view="historical">Closed &amp; distributed</button>
+    </aside>
+    <main class="main">
+      <section id="overview-panel">
+        <div class="eyebrow">Private Markets</div>
+        <h1>Monthly review</h1>
+        <p class="subhead">Vehicle facts are grouped by manager and vehicle; company developments are chronological and appear once.</p>
+        <div class="review-banner"><div><strong>August review is ready</strong><br><span>New investor material, official marks, and web research since your last review.</span></div><button class="review-btn" type="button" id="start-review">Start review</button></div>
+        <div class="stack">
+          <section class="manager-card"><div class="manager-head"><h2>Vehicle updates</h2><span class="manager-meta">manager / platform → vehicle</span></div><div class="vehicle-row"><div class="vehicle-title"><strong>AngelList · DefenseTech / HardTech Fund</strong><span class="vehicle-kind">Fund</span></div><p class="vehicle-update">One new manager update. Its portfolio-company news appears once in Company Developments below.</p></div><div class="vehicle-row"><div class="vehicle-title"><strong>Essence VC · Fund 2</strong><span class="vehicle-kind">Fund</span></div><p class="vehicle-update">Official vehicle mark received. External Databricks valuation context stays separate.</p></div></section>
+          <section class="manager-card"><div class="manager-head"><h2>Company developments</h2><span class="manager-meta">chronological · each company once</span></div><div class="vehicle-row"><div class="company-list"><div class="company"><span class="dot"></span><button class="company-link" type="button" data-view="company-base"><strong>Base Power</strong><p>New company development · held through two Packy SPVs · view full company record</p></button></div><div class="company"><span class="dot"></span><button class="company-link" type="button" data-view="company-databricks"><strong>Databricks</strong><p>External valuation benchmark update · held through Essence VC Fund 2 · context only</p></button></div><div class="company"><span class="dot"></span><button class="company-link" type="button" data-view="company-defense"><strong>Portfolio company A</strong><p>New external company development · held through AngelList DefenseTech / HardTech Fund</p></button></div></div></div></section>
+          <div class="quiet-call"><span>Capital calls stay quiet unless action is needed.</span><span><b>Current state:</b> no newly announced call</span></div>
+        </div>
+      </section>
+      <section id="detail-panel" class="hidden detail" aria-live="polite"></section>
+    </main>
+  </div>
+  <script>
+    (() => {
+      const root = document.getElementById('pm-wireframe');
+      const overview = root.querySelector('#overview-panel');
+      const detail = root.querySelector('#detail-panel');
+      const labels = {
+        review: ['Monthly Review', 'This is the same manager → vehicle → company hierarchy, filtered to the current review cycle. Marking and action decisions can stay at the vehicle level while each company keeps its own sources.'],
+        calls: ['Capital Calls', 'A focused, infrequently used ledger for announced calls, payments, manual reserve targets, and source documents. It becomes prominent only when a call needs action.'],
+        maaser: ['Maaser', ''],
+        inbox: ['Documents & Private Inbox', 'Financial and legal documents, investor updates, and ambiguous items wait here for your approval. Clear company news can file directly to the linked research timeline.'],
+        backfill: ['Backfill Review', ''],
+        companies: ['Companies', 'A cross-vehicle research lens. It may show Base Power once for research while retaining two legally separate Packy SPVs underneath AngelList for ownership and accounting.'],
+        'angel-defense': ['AngelList · DefenseTech / HardTech Fund', 'Vehicle detail: official fund mark, commitment and cash flows, and documents. Its portfolio-company research stays canonical in Company Developments.'],
+        'angel-base-one': ['AngelList · Base Power — Packy / round 1', 'SPV detail: legal terms, ownership records, cash flows, and one nested company—Base Power.'],
+        'angel-base-two': ['AngelList · Base Power — Packy / round 2', 'A distinct SPV and accounting record even though it shares company research with the first Base Power round.'],
+        tiger: ['Tiger Global · PIP 11', 'Fund detail: vehicle-level distribution history, official marks, documents, and portfolio-company research. In-kind distributions remain here as part of the fund story.'],
+        'lead-edge': ['Lead Edge · Fund 5', 'Fund detail: commitment, calls, reported marks, documents, and linked company updates.'],
+        essence: ['Essence VC · Fund 2', 'Fund detail: Databricks is shown as a look-through company. Its public valuation is an external benchmark; only the manager-reported vehicle mark changes the fund valuation.'],
+        plutus: ['Plutus · SAFE', 'SAFE detail: source-backed principal, terms, conversion history, ownership documents, and linked company updates.'],
+        historical: ['Historical', 'Fully exited, distributed, or inactive vehicles stay searchable with their documents, cash-flow history, and source-backed ownership timeline.'],
+        'company-base': ['Base Power', 'Company timeline: all news and valuation benchmarks in one place. Your exposure lists both Packy SPVs separately and shows a combined total across those direct/SPV positions; it never includes an unquantified fund look-through.'],
+        'company-databricks': ['Databricks', 'Company timeline: external benchmarks and research. Your exposure links to Essence VC Fund 2, while the fund’s official mark remains the authoritative value for that position.'],
+        'company-defense': ['Portfolio company A', 'Company timeline: research and externally published benchmarks. Your exposure links back to the AngelList DefenseTech / HardTech Fund.']
+      };
+      root.querySelectorAll('.rail-item[data-view]').forEach((button) => {
+        button.addEventListener('click', () => {
+          root.querySelectorAll('.rail-item').forEach((item) => item.classList.remove('active'));
+          button.classList.add('active');
+          const key = button.dataset.view;
+          if (key === 'overview') { overview.classList.remove('hidden'); detail.classList.add('hidden'); return; }
+          if (key === 'maaser') {
+            overview.classList.add('hidden'); detail.classList.remove('hidden');
+            detail.innerHTML = `<div class="eyebrow">Private Markets</div><h2>Maaser</h2><p>One principal hurdle per investment vehicle. Only actual cash and in-kind distributions count; reported marks and paper gains do not.</p><div class="maaser-rule">Fixed rule: after a deal has recovered every cash amount paid in, 10% of further cash or in-kind distributions is maaser.</div><table class="maaser-grid"><thead><tr><th>Deal</th><th>Principal status</th><th>Maaser status</th></tr></thead><tbody><tr><td><strong>Lionschain</strong></td><td>Principal recovered</td><td>10% applies to later distributions</td></tr><tr><td><strong>Tiger PIP 11</strong></td><td>Recovery in progress</td><td>Nothing due yet</td></tr><tr><td><strong>Lead Edge Fund V</strong></td><td>Recovery in progress</td><td>Nothing due yet</td></tr></tbody></table>`;
+            return;
+          }
+          if (key === 'backfill') {
+            overview.classList.add('hidden'); detail.classList.remove('hidden');
+            detail.innerHTML = `<div class="eyebrow">Initial onboarding</div><h2>Backfill Review</h2><p>Discovery is read-only. Proposed vehicles, documents, company links, marks, and cash events do not become part of the accounting record until you approve a manager group.</p><div class="backfill-note"><span><strong>Source scan complete</strong><br>Keep each original document linked to every proposed fact.</span><span>Read-only until approval</span></div><div class="proposal-list"><div class="proposal"><div><h3>AngelList</h3><p>Proposed funds and SPVs, company links, and source documents. Review this platform as one coherent group.</p></div><button type="button">Review group</button></div><div class="proposal"><div><h3>Lead Edge</h3><p>Proposed statements, calls, distributions, manager-reported metrics, and portfolio-company references.</p></div><button type="button">Review group</button></div><div class="proposal"><div><h3>Tiger Global</h3><p>Proposed portfolio summaries, fund documents, distributions, and company research links.</p></div><button type="button">Review group</button></div><div class="proposal"><div><h3>Needs review</h3><p>Ambiguous documents or conflicting candidate vehicles stay here and never create accounting entries automatically.</p></div><button type="button">Resolve</button></div></div>`;
+            return;
+          }
+          const [title, text] = labels[key];
+          overview.classList.add('hidden'); detail.classList.remove('hidden');
+          detail.innerHTML = `<div class="eyebrow">Private Markets</div><h2>${title}</h2><p>${text}</p>`;
+        });
+      });
+      root.querySelectorAll('.company-link[data-view]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const [title, text] = labels[button.dataset.view];
+          root.querySelectorAll('.rail-item').forEach((item) => item.classList.remove('active'));
+          overview.classList.add('hidden'); detail.classList.remove('hidden');
+          detail.innerHTML = `<div class="eyebrow">Company record</div><h2>${title}</h2><p>${text}</p>`;
+        });
+      });
+      root.querySelector('#start-review').addEventListener('click', () => root.querySelector('[data-view="review"]').click());
+    })();
+  </script>
+</div>
