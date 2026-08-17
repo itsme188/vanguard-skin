@@ -6,10 +6,13 @@ import { recomputeAfterDonationMutation } from "@/lib/compute/donation-recompute
 /**
  * GET/POST /api/donations/:id/lots — the lot-assignment drawer (Task 13).
  * GET lists open lots AS OF the donation's OUT-leg date (see
- * getOpenLotsForDonation) with a suggested highest-gain-LT preselection.
- * POST replaces the donation's lot assignments (spec §4 invariants (a)-(f),
- * Task 3 assignDonationLots). Thin wrapper: all invariants live in
- * lib/mutations/donation-links.ts / lib/queries/giving-view.ts.
+ * getOpenLotsForDonation) with a suggested highest-gain-LT preselection AND
+ * this donation's own current per-lot assignment (currentlyAssignedQuantity,
+ * controller ruling 2026-08-17) so the drawer can pre-fill "Edit lots"
+ * instead of always starting blank. POST replaces the donation's lot
+ * assignments (spec §4 invariants (a)-(f), Task 3 assignDonationLots). Thin
+ * wrapper: all invariants live in lib/mutations/donation-links.ts /
+ * lib/queries/giving-view.ts.
  *
  * POST body: { assignments: [{ acquisitionTransactionId, quantity }] }.
  * An empty array clears the donation's assignments.

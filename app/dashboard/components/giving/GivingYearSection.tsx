@@ -9,17 +9,24 @@ import { ConfirmDialog } from "../ConfirmDialog";
 import { Money, Shares } from "@/lib/privacy/components";
 import { useToast } from "../Toast";
 import apiFetch from "@/lib/http/apiFetch";
+import { todayET } from "@/lib/calendar/date-utils";
 import { LotAssignmentDrawer } from "./LotAssignmentDrawer";
 
 /**
  * One year's giving ledger (Task 13) — stock donations table + a visually
  * separated cash-gifts sub-block. Client component: it's the mutation
- * island for Unlink, Assign/Edit lots (opens LotAssignmentDrawer), and
- * inline symbol resolution — GivingView (server) stays a pure read.
+ * island for Unlink, Mark reversed, Assign/Edit lots (opens
+ * LotAssignmentDrawer), and inline symbol resolution — GivingView (server)
+ * stays a pure read.
  *
  * Status chip tones are a carried controller ruling: unsupported→neutral,
  * reversed→down, completed→up, received→info, pending-lots→warn.
  */
+
+// Matches the backend's own strict format check in
+// app/api/donations/[id]/reverse/route.ts — kept identical so the client
+// never sends a shape the server would 400 on.
+const REVERSED_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 const STATUS_TONE: Record<GivingDonation["status"], ChipTone> = {
   reversed: "down",
@@ -43,9 +50,47 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
   const [drawerDonation, setDrawerDonation] = useState<GivingDonation | null>(null);
   const [unlinkTarget, setUnlinkTarget] = useState<GivingDonation | null>(null);
   const [unlinking, setUnlinking] = useState(false);
+  const [reverseTarget, setReverseTarget] = useState<GivingDonation | null>(null);
+  const [reverseDate, setReverseDate] = useState("");
+  const [reversing, setReversing] = useState(false);
 
   const stockDonations = year.donations.filter((gd) => gd.donation.kind === "stock");
   const cashDonations = year.donations.filter((gd) => gd.donation.kind === "cash");
+
+  function openReverseDialog(gd: GivingDonation) {
+    setReverseTarget(gd);
+    setReverseDate(todayET());
+  }
+
+  async function markReversed(donationId: number, reversedDate: string) {
+    setReversing(true);
+    try {
+      const res = await apiFetch(`/api/donations/${donationId}/reverse`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reversedDate }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        toast(`Failed to mark reversed: ${json.error ?? "unknown error"}`, "error");
+        return;
+      }
+      if (json.data?.recomputed === false) {
+        toast(
+          `Saved — lot recompute failed: ${json.data.recomputeError ?? "unknown error"}. Retry from the drawer.`,
+          "error"
+        );
+      } else {
+        toast("Donation marked reversed", "success");
+      }
+      setReverseTarget(null);
+      router.refresh();
+    } catch (err) {
+      toast(`Failed to mark reversed: ${err instanceof Error ? err.message : "network error"}`, "error");
+    } finally {
+      setReversing(false);
+    }
+  }
 
   async function unlink(donationId: number) {
     setUnlinking(true);
@@ -88,6 +133,33 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
         onConfirm={() => unlinkTarget && unlink(unlinkTarget.donation.id)}
         onCancel={() => setUnlinkTarget(null)}
       />
+
+      <ConfirmDialog
+        open={reverseTarget !== null}
+        title="Mark donation reversed"
+        message={
+          reverseTarget
+            ? `Mark ${reverseTarget.donation.symbol_raw ?? "this donation"} as reversed? This drops any leg links and lot assignments and stamps the reversed date below.`
+            : ""
+        }
+        confirmLabel={reversing ? "Marking…" : "Mark reversed"}
+        variant="danger"
+        confirmDisabled={reversing || !REVERSED_DATE_RE.test(reverseDate)}
+        onConfirm={() => reverseTarget && REVERSED_DATE_RE.test(reverseDate) && markReversed(reverseTarget.donation.id, reverseDate)}
+        onCancel={() => setReverseTarget(null)}
+      >
+        <label htmlFor="giving-reverse-date" className="block text-xs font-medium text-ink-faint mb-1.5 mt-3">
+          Reversed date
+        </label>
+        <input
+          id="giving-reverse-date"
+          type="date"
+          value={reverseDate}
+          onChange={(e) => setReverseDate(e.target.value)}
+          required
+          className="w-full rounded-lg bg-raised border border-edge px-3 py-2 text-sm text-ink font-mono"
+        />
+      </ConfirmDialog>
 
       {drawerDonation && (
         <LotAssignmentDrawer
@@ -204,6 +276,15 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
                               Unlink
                             </button>
                           )}
+                          {/* Quiet secondary action (not a primary button) — the only
+                              trigger for POST /reverse, which otherwise has no UI caller. */}
+                          <button
+                            type="button"
+                            onClick={() => openReverseDialog(gd)}
+                            className="text-xs text-ink-faint hover:text-ink transition-colors focus-ring"
+                          >
+                            Mark reversed…
+                          </button>
                         </div>
                       )}
                     </td>
@@ -238,6 +319,15 @@ export function GivingYearSection({ year }: { year: GivingYear }) {
                   <span className="flex items-center gap-2">
                     <Money value={d.fmv_usd} className="font-mono text-ink" />
                     <Chip tone={STATUS_TONE[gd.status]}>{STATUS_LABEL[gd.status]}</Chip>
+                    {!struck && (
+                      <button
+                        type="button"
+                        onClick={() => openReverseDialog(gd)}
+                        className="text-xs text-ink-faint hover:text-ink transition-colors focus-ring"
+                      >
+                        Mark reversed…
+                      </button>
+                    )}
                   </span>
                 </li>
               );
