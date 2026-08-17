@@ -292,27 +292,21 @@ export function assignDonationLots(
           `donation ${donationId}: no lot found for acquisition transaction ${a.acquisitionTransactionId}`
         );
       }
+      // Design boundary: this check is best-effort against tax_lots' state as of the LAST
+      // recompute, not a live cross-donation ledger. donation_lots carries no marker for
+      // "already folded into quantity_remaining by a recompute," so subtracting other
+      // donations' outstanding donation_lots claims here would double-count any claim that
+      // WAS already recomputed (permanently, since the ledger row is never cleared) —
+      // strictly worse than the write-time race it would close. Cross-donation
+      // over-commitment between recomputes (two assignDonationLots calls in a row with no
+      // recompute between them) IS accepted at write time by design; it is caught and
+      // clamped by computeTaxLots with a replay warning (tests/compute/tax-lots-donations.test.ts
+      // case 7), and closed in practice by the route-level recompute-after-write (Task 12).
       const ownExisting = existingByTxn.get(a.acquisitionTransactionId) ?? 0;
-      // Other donations' outstanding claims on this lot, straight from donation_lots — NOT
-      // from a recompute. Two assignDonationLots calls in a row with no recompute between
-      // them would otherwise both read the same stale quantity_remaining and jointly
-      // over-commit the lot (the engine's clamp+warning only catches it later). Subtracting
-      // this is deliberately CONSERVATIVE: once a recompute HAS folded another donation's
-      // claim into quantity_remaining, that same claim still lives in donation_lots and gets
-      // subtracted a second time here, under-reporting availability. A too-low reject is safe;
-      // silently over-committing a shared lot is not.
-      const otherDonationsClaim = (
-        db
-          .prepare(
-            `SELECT COALESCE(SUM(quantity), 0) AS total FROM donation_lots
-             WHERE acquisition_transaction_id = ? AND donation_id != ?`
-          )
-          .get(a.acquisitionTransactionId, donationId) as { total: number }
-      ).total;
-      const available = lot.quantity_remaining + ownExisting - otherDonationsClaim;
+      const available = lot.quantity_remaining + ownExisting;
       if (a.quantity > available + EPS) {
         throw new DonationLinkError(
-          `donation ${donationId}: requested quantity ${a.quantity} for acquisition transaction ${a.acquisitionTransactionId} exceeds the lot's available quantity (${available}) after other donations' pending assignments — if this looks too low, run a tax-lot recompute and retry`
+          `donation ${donationId}: requested quantity ${a.quantity} for acquisition transaction ${a.acquisitionTransactionId} exceeds the lot's available quantity_remaining (${available})`
         );
       }
 
