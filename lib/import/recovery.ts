@@ -33,7 +33,7 @@ import { undoImport } from "./engine";
 import { computeTaxLots } from "@/lib/compute/tax-lots";
 import { computeDailyValuations } from "@/lib/compute/daily-valuation";
 import { LIVE_HOLDING_SOURCE_PREFIXES } from "@/lib/db/holding-sources";
-import { ARTIFACT_NOTE_SUFFIX } from "@/lib/mutations/donation-links";
+import { appendArtifactSuffix } from "@/lib/mutations/donation-links";
 
 /**
  * The batch-owned source tables the manifest captures. Enumerated directly
@@ -84,9 +84,13 @@ export type DonationRelationRow = Row & {
 export interface RecoveryPayload {
   importBatch: Row;
   tables: Record<RecoverySourceTable, Row[]>;
-  donations: Row[];
-  donationLinkRelations: DonationRelationRow[];
-  donationLotRelations: DonationRelationRow[];
+  // Optional: a v1 manifest on disk genuinely lacks these three keys (see
+  // readRecoveryManifest's doc comment) — the type says so rather than lying
+  // via a required field a real file may not satisfy. buildRecoveryManifest
+  // always populates all three; restoreImportBatch reads them with `?? []`.
+  donations?: Row[];
+  donationLinkRelations?: DonationRelationRow[];
+  donationLotRelations?: DonationRelationRow[];
 }
 
 export interface RecoveryManifest {
@@ -389,19 +393,20 @@ export interface RestoreResult {
  * Reversible-provenance symmetry (spec §9): undo reverted this flag/note
  * because the link was dying; restore resurrects the link, so the demotion
  * must resurrect with it — link state and flow flag must never disagree.
- * Idempotent: a note that already carries the suffix (a double-restore, or a
- * relation whose transaction was somehow never un-demoted) is left alone
- * rather than double-appended.
+ * Idempotent (a double-restore, or a relation whose transaction was somehow
+ * never un-demoted, is left alone rather than double-appended) via
+ * appendArtifactSuffix itself — the SAME helper linkDonationLegs uses, so
+ * this is never a re-derived copy of the append/strip business rule.
  */
 function demoteArtifactLeg(db: Database.Database, transactionId: number): void {
   const txn = db.prepare("SELECT notes FROM transactions WHERE id = ?").get(transactionId) as
     | { notes: string | null }
     | undefined;
   if (!txn) return; // defensive — the caller only reaches here after confirming the row exists
-  const suffixAlone = ARTIFACT_NOTE_SUFFIX.trim();
-  const alreadySuffixed = txn.notes != null && (txn.notes === suffixAlone || txn.notes.endsWith(ARTIFACT_NOTE_SUFFIX));
-  const notes = alreadySuffixed ? txn.notes : ((txn.notes ?? "") + ARTIFACT_NOTE_SUFFIX).trim();
-  db.prepare("UPDATE transactions SET is_external_flow = 0, notes = ? WHERE id = ?").run(notes, transactionId);
+  db.prepare("UPDATE transactions SET is_external_flow = 0, notes = ? WHERE id = ?").run(
+    appendArtifactSuffix(txn.notes),
+    transactionId,
+  );
 }
 
 /**

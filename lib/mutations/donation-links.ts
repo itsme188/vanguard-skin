@@ -22,13 +22,23 @@ interface TransactionRow {
   notes: string | null;
 }
 
-/** Appends ARTIFACT_NOTE_SUFFIX to existing notes (NULL notes -> suffix alone, trimmed). */
-function appendArtifactSuffix(notes: string | null): string {
+/** Appends ARTIFACT_NOTE_SUFFIX to existing notes (NULL notes -> suffix alone, trimmed).
+ *  Idempotent: notes that already carry the suffix are returned unchanged — a
+ *  second demotion (e.g. lib/import/recovery.ts re-applying the demotion when
+ *  restoring an undone routing_artifact link) must not double-append.
+ *  linkDonationLegs itself never hits the already-suffixed branch in normal
+ *  operation (donation_leg_links.transaction_id is UNIQUE, so a transaction
+ *  can't be linked — and thus demoted — twice), so this is a no-op there. */
+export function appendArtifactSuffix(notes: string | null): string {
+  const suffixAlone = ARTIFACT_NOTE_SUFFIX.trim();
+  if (notes != null && (notes === suffixAlone || notes.endsWith(ARTIFACT_NOTE_SUFFIX))) {
+    return notes;
+  }
   return ((notes ?? "") + ARTIFACT_NOTE_SUFFIX).trim();
 }
 
 /** Exact inverse of appendArtifactSuffix: strips the suffix, restoring NULL if it was the whole note. */
-function stripArtifactSuffix(notes: string | null): string | null {
+export function stripArtifactSuffix(notes: string | null): string | null {
   if (notes == null) return null;
   const suffixAlone = ARTIFACT_NOTE_SUFFIX.trim();
   if (notes === suffixAlone) return null;

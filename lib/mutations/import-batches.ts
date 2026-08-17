@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import type { ImportBatch } from "@/lib/types";
-import { ARTIFACT_NOTE_SUFFIX } from "@/lib/mutations/donation-links";
+import { stripArtifactSuffix } from "@/lib/mutations/donation-links";
 
 export function createImportBatch(
   db: Database.Database,
@@ -79,17 +79,6 @@ export function donationReferenceRefusalMessage(refs: { links: number; lots: num
   return `${refs.links} donation links / ${refs.lots} lot assignments reference this batch's transactions — unlink or unassign them in Analysis › Giving first.`;
 }
 
-/** Exact inverse of donation-links.ts's private appendArtifactSuffix — kept
- *  in sync manually since that helper isn't exported (only the constant is).
- *  Restores a demoted artifact leg's notes to their pre-link value. */
-function stripArtifactNoteSuffix(notes: string | null): string | null {
-  if (notes == null) return null;
-  const suffixAlone = ARTIFACT_NOTE_SUFFIX.trim();
-  if (notes === suffixAlone) return null;
-  if (notes.endsWith(ARTIFACT_NOTE_SUFFIX)) return notes.slice(0, notes.length - ARTIFACT_NOTE_SUFFIX.length);
-  return notes; // not demoted by this code path — leave untouched
-}
-
 export function deleteImportBatch(db: Database.Database, batchId: number): void {
   db.transaction(() => {
     // Clear derived data first (tax lots reference transactions via FK)
@@ -122,7 +111,7 @@ export function deleteImportBatch(db: Database.Database, batchId: number): void 
       "UPDATE transactions SET is_external_flow = 1, notes = ? WHERE id = ?"
     );
     for (const leg of artifactLegs) {
-      restoreArtifactFlow.run(stripArtifactNoteSuffix(leg.notes), leg.id);
+      restoreArtifactFlow.run(stripArtifactSuffix(leg.notes), leg.id);
     }
     db.prepare("DELETE FROM donations WHERE import_batch_id = ?").run(batchId);
     db.prepare("DELETE FROM transactions WHERE import_batch_id = ?").run(batchId);

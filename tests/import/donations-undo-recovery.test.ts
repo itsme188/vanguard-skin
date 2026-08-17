@@ -342,12 +342,18 @@ describe("Task 6: donation-aware undo + recovery", () => {
 
       const manifest = readRecoveryManifest(manifestPath);
       expect(manifest.version).toBe(MANIFEST_VERSION);
-      expect(manifest.payload.donations.length).toBe(3);
+      // Non-null: this is a freshly-built v2 manifest — buildRecoveryManifest
+      // always populates all three (the fields are optional only so a real
+      // v1 file on disk, which genuinely lacks them, still type-checks).
+      const donations = manifest.payload.donations!;
+      const donationLinkRelations = manifest.payload.donationLinkRelations!;
+      const donationLotRelations = manifest.payload.donationLotRelations!;
+      expect(donations.length).toBe(3);
       // Two link relation rows (the out leg + the artifact leg), one lot relation.
-      expect(manifest.payload.donationLinkRelations.length).toBe(2);
-      expect(manifest.payload.donationLotRelations.length).toBe(1);
-      expect(manifest.payload.donationLinkRelations.every((r) => r.donation_source_key === fakeDonationSourceKey)).toBe(true);
-      expect(manifest.payload.donationLinkRelations.map((r) => r.transaction_source_key).sort()).toEqual(["legs:in:1", "legs:out:1"]);
+      expect(donationLinkRelations.length).toBe(2);
+      expect(donationLotRelations.length).toBe(1);
+      expect(donationLinkRelations.every((r) => r.donation_source_key === fakeDonationSourceKey)).toBe(true);
+      expect(donationLinkRelations.map((r) => r.transaction_source_key).sort()).toEqual(["legs:in:1", "legs:out:1"]);
 
       const result = restoreImportBatch(db, manifest);
       expect(result.restored.donations).toBe(3);
@@ -447,7 +453,7 @@ describe("Task 6: donation-aware undo + recovery", () => {
           corporate_actions: [],
           raw_imports: [],
         },
-      } as unknown as RecoveryPayload;
+      } as RecoveryPayload;
 
       const v1Manifest: RecoveryManifest = {
         version: 1,
