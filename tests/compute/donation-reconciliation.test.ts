@@ -95,6 +95,25 @@ describe("withinBusinessDays", () => {
     // Exact same date is always within any window.
     expect(withinBusinessDays("2026-03-04", "2026-03-04", 0)).toBe(true);
   });
+
+  it("is genuinely order-independent even when an endpoint falls on a weekend", () => {
+    // 2026-08-10 is a Monday, 2026-08-15 is the following Saturday — 4 business
+    // days apart (Tue,Wed,Thu,Fri). Swapping call order must not change the
+    // business-day distance just because the weekend endpoint moves from the
+    // "end" to the "start" of the walk.
+    expect(withinBusinessDays("2026-08-10", "2026-08-15", 4)).toBe(
+      withinBusinessDays("2026-08-15", "2026-08-10", 4)
+    );
+    expect(withinBusinessDays("2026-08-10", "2026-08-15", 4)).toBe(true);
+    expect(withinBusinessDays("2026-08-15", "2026-08-10", 4)).toBe(true);
+  });
+
+  it("treats the boundary inclusively: exactly N business days apart is true, N+1 is false", () => {
+    // 2026-03-04 (Wed) -> 2026-03-11 (Wed) is exactly 5 business days
+    // (Thu,Fri,Mon,Tue,Wed). -> 2026-03-12 (Thu) is 6 business days.
+    expect(withinBusinessDays("2026-03-04", "2026-03-11", 5)).toBe(true);
+    expect(withinBusinessDays("2026-03-04", "2026-03-12", 5)).toBe(false);
+  });
 });
 
 describe("reconcileDonations", () => {
