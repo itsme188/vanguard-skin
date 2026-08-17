@@ -23,6 +23,10 @@ import {
   checkUndoRateLimit,
   recordUndo,
 } from "@/lib/import/undo-confirmation";
+import {
+  batchDonationReferences,
+  donationReferenceRefusalMessage,
+} from "@/lib/mutations/import-batches";
 import type Database from "better-sqlite3";
 
 /**
@@ -370,6 +374,14 @@ export function handleUndoRequest(
   if (!batchExists()) {
     return { status: 404, body: { success: false, error: `Import batch ${batchId} not found` } };
   }
+
+  // Refusal gate (design doc §11-undo): checked BEFORE recordUndo so a
+  // refused undo never burns a slot in the destructive-undo rate limit.
+  const refs = batchDonationReferences(database, batchId);
+  if (refs.links > 0 || refs.lots > 0) {
+    return { status: 409, body: { success: false, error: donationReferenceRefusalMessage(refs) } };
+  }
+
   recordUndo(now);
 
   const { manifestPath } = undoImportWithRecovery(database, batchId, {

@@ -50,15 +50,42 @@ export const RECOVERY_SOURCE_TABLES = [
 
 export type RecoverySourceTable = (typeof RECOVERY_SOURCE_TABLES)[number];
 
-export const MANIFEST_VERSION = 1;
+// v2 (Task 6, donation tracking): the manifest additionally captures a
+// batch's `donations` rows plus RELATION rows for their links/lots.
+// Donations are batch-owned (donations.import_batch_id), so they slot in
+// alongside the source tables above — but donation_leg_links/donation_lots
+// are NOT batch-owned (they carry no import_batch_id of their own; the
+// referenced OUT/artifact/acquisition transaction routinely belongs to a
+// DIFFERENT batch entirely). A verbatim id-based capture would dangle the
+// moment restore reassigns fresh child ids (see stripRowId below) — so
+// relations are captured RELATION-BASED instead: serialized with the STABLE
+// source_key of the transaction and donation they reference, and remapped
+// back to real ids at restore time via source_key lookups. v1 manifest files
+// on disk predate this and simply lack these three payload keys — readers
+// must treat their absence as empty, never throw.
+export const MANIFEST_VERSION = 2;
 export const DEFAULT_MANIFEST_DIR = join(process.cwd(), "data", "undo-recovery");
 export const DEFAULT_MANIFEST_RETENTION = 25;
 
 type Row = Record<string, unknown>;
 
+/** A captured donation_leg_links or donation_lots row, minus its own `id`
+ *  (autoincrement — never restored verbatim, see stripRowId), plus the
+ *  stable source_key identities of the two rows it references. Restore
+ *  remaps to real ids via these two keys — never the row's own (stale)
+ *  donation_id / transaction_id / acquisition_transaction_id columns, which
+ *  are still present in the row for debugging but must not be trusted. */
+export type DonationRelationRow = Row & {
+  transaction_source_key: string;
+  donation_source_key: string;
+};
+
 export interface RecoveryPayload {
   importBatch: Row;
   tables: Record<RecoverySourceTable, Row[]>;
+  donations: Row[];
+  donationLinkRelations: DonationRelationRow[];
+  donationLotRelations: DonationRelationRow[];
 }
 
 export interface RecoveryManifest {
@@ -110,7 +137,48 @@ export function buildRecoveryManifest(db: Database.Database, batchId: number): R
       .all(batchId) as Row[];
   }
 
-  const payload: RecoveryPayload = { importBatch, tables };
+  // Donations owned by this batch (batch-owned, like the tables above).
+  const donations = (
+    db.prepare("SELECT * FROM donations WHERE import_batch_id = ? ORDER BY id").all(batchId) as Row[]
+  ).map(stripRowId);
+
+  // Their links/lots, relation-based (see the DonationRelationRow doc comment
+  // above): joined to the CURRENT transaction/donation rows to capture the
+  // stable source_key each side resolves to, since the referenced
+  // transaction routinely belongs to a different batch than this one.
+  const donationLinkRelations = (
+    db
+      .prepare(
+        `SELECT l.*, t.source_key AS transaction_source_key, d.source_key AS donation_source_key
+         FROM donation_leg_links l
+         JOIN transactions t ON t.id = l.transaction_id
+         JOIN donations d ON d.id = l.donation_id
+         WHERE d.import_batch_id = ?
+         ORDER BY l.id`
+      )
+      .all(batchId) as DonationRelationRow[]
+  ).map(stripRowId) as DonationRelationRow[];
+
+  const donationLotRelations = (
+    db
+      .prepare(
+        `SELECT dl.*, t.source_key AS transaction_source_key, d.source_key AS donation_source_key
+         FROM donation_lots dl
+         JOIN transactions t ON t.id = dl.acquisition_transaction_id
+         JOIN donations d ON d.id = dl.donation_id
+         WHERE d.import_batch_id = ?
+         ORDER BY dl.id`
+      )
+      .all(batchId) as DonationRelationRow[]
+  ).map(stripRowId) as DonationRelationRow[];
+
+  const payload: RecoveryPayload = {
+    importBatch,
+    tables,
+    donations,
+    donationLinkRelations,
+    donationLotRelations,
+  };
   return {
     version: MANIFEST_VERSION,
     batchId,
@@ -181,6 +249,18 @@ export function pruneManifests(dir: string, retention: number): void {
   }
 }
 
+/**
+ * Reads a manifest file verbatim (no field defaulting here — see below for
+ * why). Accepts v1 files: their JSON simply predates `donations` /
+ * `donationLinkRelations` / `donationLotRelations`, so those three keys come
+ * back `undefined` on the parsed object. Deliberately NOT backfilled to `[]`
+ * here: `verifyManifest`/`computeManifestChecksum` hash the payload object
+ * exactly as read, and a v1 file's stored checksum was computed BEFORE these
+ * keys existed — injecting them here would make every legitimate v1
+ * checksum fail to validate. Consumers (restoreImportBatch) default with
+ * `?? []` at the point of use, AFTER the checksum check has already passed
+ * on the untouched payload.
+ */
 export function readRecoveryManifest(filePath: string): RecoveryManifest {
   return JSON.parse(readFileSync(filePath, "utf-8")) as RecoveryManifest;
 }
@@ -303,6 +383,50 @@ export interface RestoreResult {
 }
 
 /**
+ * Restores one donation relation table (donation_leg_links or
+ * donation_lots). Each captured relation row was serialized (see
+ * DonationRelationRow) with the STABLE source_key of the transaction and
+ * donation it references, rather than their (stale, restore-reassigned)
+ * ids — this remaps both back to real ids via those keys. A relation whose
+ * transaction_source_key isn't found is the expected cross-batch case: that
+ * transaction's own batch was never part of this restore (or was itself
+ * restored under a different flow). Per the design doc, that's a skip with
+ * a warning, never a synthesized row and never a thrown error — one
+ * dangling relation must not abort restoring everything else.
+ */
+function restoreDonationRelations(
+  db: Database.Database,
+  table: "donation_leg_links" | "donation_lots",
+  transactionColumn: "transaction_id" | "acquisition_transaction_id",
+  extraColumns: string[],
+  relations: DonationRelationRow[],
+): number {
+  const findTransactionId = db.prepare("SELECT id FROM transactions WHERE source_key = ?");
+  const findDonationId = db.prepare("SELECT id FROM donations WHERE source_key = ?");
+  let n = 0;
+  for (const rel of relations) {
+    const txn = findTransactionId.get(rel.transaction_source_key) as { id: number } | undefined;
+    const donation = findDonationId.get(rel.donation_source_key) as { id: number } | undefined;
+    if (!txn || !donation) {
+      console.warn(
+        `[restore] Skipping ${table} relation for donation ${rel.donation_source_key}: ` +
+          `${!donation ? `donation source_key ${rel.donation_source_key}` : `transaction source_key ${rel.transaction_source_key}`} ` +
+          `not found in the restored database (cross-batch row not present)`,
+      );
+      continue;
+    }
+    const cols = ["donation_id", transactionColumn, ...extraColumns];
+    const placeholders = cols.map(() => "?").join(", ");
+    const values: unknown[] = [donation.id, txn.id, ...extraColumns.map((c) => rel[c])];
+    db.prepare(
+      `INSERT OR IGNORE INTO ${table} (${cols.map((c) => `"${c}"`).join(", ")}) VALUES (${placeholders})`,
+    ).run(...(values as never[]));
+    n++;
+  }
+  return n;
+}
+
+/**
  * Re-insert exactly the manifested rows. Verifies the checksum first (refuses
  * a tampered / truncated manifest). Inserts the import_batches parent row
  * first, then each source table with its authority-preserving conflict guard,
@@ -356,6 +480,34 @@ export function restoreImportBatch(db: Database.Database, manifest: RecoveryMani
       }
       restored[table] = n;
     }
+
+    // Donations owned by this batch, then their links/lots (v2 payload — see
+    // MANIFEST_VERSION doc comment). A v1 manifest simply has these three
+    // keys absent from its payload; `?? []` treats that as nothing to
+    // restore rather than throwing. source_key is UNIQUE on donations, so OR
+    // IGNORE makes a double-restore of the same batch a no-op, matching
+    // every other table here.
+    let donationsRestored = 0;
+    for (const row of manifest.payload.donations ?? []) {
+      insertCapturedRow(db, "donations", row, { prefix: "OR IGNORE", conflict: "" });
+      donationsRestored++;
+    }
+    restored.donations = donationsRestored;
+
+    restored.donation_leg_links = restoreDonationRelations(
+      db,
+      "donation_leg_links",
+      "transaction_id",
+      ["role", "created_at"],
+      manifest.payload.donationLinkRelations ?? [],
+    );
+    restored.donation_lots = restoreDonationRelations(
+      db,
+      "donation_lots",
+      "acquisition_transaction_id",
+      ["quantity", "created_at"],
+      manifest.payload.donationLotRelations ?? [],
+    );
   })();
 
   // Regenerate the derived cache from the now-restored source rows. Best-effort

@@ -21,6 +21,8 @@ import {
   createImportBatch,
   completeImportBatch,
   deleteImportBatch,
+  batchDonationReferences,
+  donationReferenceRefusalMessage,
 } from "@/lib/mutations/import-batches";
 import { computeTaxLots } from "@/lib/compute/tax-lots";
 import { computeDailyValuations } from "@/lib/compute/daily-valuation";
@@ -907,6 +909,17 @@ export function commitImport(
 // ── Undo (delete all records from a batch) ──────────────────────────
 
 export function undoImport(db: Database.Database, batchId: number): void {
+  // Refusal gate (design doc §11-undo): a transactions batch whose rows are
+  // still claimed by a live donation link/lot assignment must never be
+  // undone — it would either orphan the reference or cascade-delete a
+  // transaction out from under a confirmed donation record. Checked BEFORE
+  // any destructive work, including the manifest write in
+  // undoImportWithRecovery (which calls this only after its own manifest is
+  // safely on disk — refusing here still means nothing gets deleted).
+  const refs = batchDonationReferences(db, batchId);
+  if (refs.links > 0 || refs.lots > 0) {
+    throw new Error(donationReferenceRefusalMessage(refs));
+  }
   deleteImportBatch(db, batchId);
   // deleteImportBatch clears the derived layer (tax_lots, tax_lot_sales,
   // daily_valuations) wholesale on the assumption that the caller regenerates
