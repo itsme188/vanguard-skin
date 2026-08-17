@@ -501,10 +501,7 @@ describe("assignDonationLots", () => {
     // Donation A (donation 1 fixture) assigns 5 from the lot (quantity_remaining 10).
     assignDonationLots(db, 1, [{ acquisitionTransactionId: 201, quantity: 5 }]);
 
-    // Simulate a recompute that consumed A's 5 units from the shared lot. A's donation_lots
-    // row (quantity 5) is NOT cleared by this — that row is the permanent confirmed-assignment
-    // ledger the real engine reads to reach this state, so it persists exactly like this in
-    // production too.
+    // Simulate a recompute that consumed A's 5 units from the shared lot.
     db.prepare("UPDATE tax_lots SET quantity_remaining = 5 WHERE id = 301").run();
 
     // Donation B: separate donation + its own out link, same security/account.
@@ -515,21 +512,22 @@ describe("assignDonationLots", () => {
     // Over-asking (6 of the remaining 5) rejects.
     expect(() => assignDonationLots(db, 4, [{ acquisitionTransactionId: 201, quantity: 6 }])).toThrow(/available/);
 
-    // Asking for exactly what's left (5) ALSO now rejects. At the mutation layer, A's
-    // already-recomputed donation_lots row is indistinguishable from an un-recomputed one
-    // (both are just "a donation_lots row on this lot for another donation"), so the
-    // conservative other-donations subtraction (added for the stale-quantity_remaining race
-    // covered by the test below) double-counts A's 5 units here too. This is the deliberate,
-    // acknowledged trade-off: a too-low reject is safe even when the true availability really
-    // is free (recompute won't change this specific outcome, since A's ledger row persists
-    // regardless of how many recomputes run).
-    expect(() => assignDonationLots(db, 4, [{ acquisitionTransactionId: 201, quantity: 5 }])).toThrow(
-      /other donation|recompute/
-    );
+    // Asking exactly what's left (5) succeeds.
+    assignDonationLots(db, 4, [{ acquisitionTransactionId: 201, quantity: 5 }]);
+    expect(getDonationLots(db, 4)).toEqual([{ acquisition_transaction_id: 201, quantity: 5 }]);
   });
 
-  it("rejects two back-to-back donations against the same lot with NO recompute between (stale quantity_remaining)", () => {
-    // A large lot so a 60/50/40 split is unambiguous.
+  it("accepts cross-donation over-assignment at write time — engine clamp is the authority", () => {
+    // Design boundary (reversed 2026-08-17 after proving the alternative — an other-donations
+    // subtraction — permanently double-counts any already-recomputed claim, which is strictly
+    // worse): assignDonationLots' availability check is best-effort against tax_lots' state as
+    // of the last recompute. It does NOT consult other donations' pending (not-yet-recomputed)
+    // donation_lots claims, so two donations can legitimately over-commit the same lot between
+    // recomputes at write time. computeTaxLots is the authoritative guard — it clamps the
+    // over-committed lot to 0 and emits a replay warning naming the donation
+    // (tests/compute/tax-lots-donations.test.ts case 7: "defensive clamp"). In practice this
+    // window is closed by the route-level recompute-after-write (Task 12), which reruns
+    // computeTaxLots immediately after every assignDonationLots write.
     seedTxn(db, { id: 601, accountId: 1, securityId: 1, tradeDate: "2026-01-01", type: "BUY", quantity: 100 });
     seedTaxLot(db, {
       id: 601,
@@ -546,23 +544,17 @@ describe("assignDonationLots", () => {
     seedDonation(db, { id: 20, kind: "stock", securityId: 1, quantity: 60, fmvUsd: 6000, receivedDate: "2026-01-15" });
     seedTxn(db, { id: 701, accountId: 1, securityId: 1, tradeDate: "2026-01-15", type: "TRANSFER_OUT", quantity: 60 });
     linkDonationLegs(db, { donationId: 20, outTransactionId: 701 });
-    assignDonationLots(db, 20, [{ acquisitionTransactionId: 601, quantity: 60 }]);
+    expect(() => assignDonationLots(db, 20, [{ acquisitionTransactionId: 601, quantity: 60 }])).not.toThrow();
 
-    // Donation B targets the same lot. The lot's own quantity_remaining (100) is stale — it
-    // hasn't absorbed A's 60 yet — so a naive check would let B take 50 too.
+    // Donation B targets the same lot with NO recompute between the two writes. Its own
+    // per-entry check only sees the stale quantity_remaining (100), so 50 (which, combined
+    // with A's 60, over-commits the 100-share lot by 10) is sanctioned to succeed here.
     seedDonation(db, { id: 21, kind: "stock", securityId: 1, quantity: 50, fmvUsd: 5000, receivedDate: "2026-01-16" });
     seedTxn(db, { id: 702, accountId: 1, securityId: 1, tradeDate: "2026-01-16", type: "TRANSFER_OUT", quantity: 50 });
     linkDonationLegs(db, { donationId: 21, outTransactionId: 702 });
+    expect(() => assignDonationLots(db, 21, [{ acquisitionTransactionId: 601, quantity: 50 }])).not.toThrow();
 
-    expect(() => assignDonationLots(db, 21, [{ acquisitionTransactionId: 601, quantity: 50 }])).toThrow(
-      DonationLinkError
-    );
-    expect(() => assignDonationLots(db, 21, [{ acquisitionTransactionId: 601, quantity: 50 }])).toThrow(
-      /other donation|recompute/
-    );
-
-    // 40 (100 - A's 60) is exactly what's left — succeeds.
-    assignDonationLots(db, 21, [{ acquisitionTransactionId: 601, quantity: 40 }]);
-    expect(getDonationLots(db, 21)).toEqual([{ acquisition_transaction_id: 601, quantity: 40 }]);
+    expect(getDonationLots(db, 20)).toEqual([{ acquisition_transaction_id: 601, quantity: 60 }]);
+    expect(getDonationLots(db, 21)).toEqual([{ acquisition_transaction_id: 601, quantity: 50 }]);
   });
 });
