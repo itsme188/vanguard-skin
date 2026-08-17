@@ -8,6 +8,7 @@ export type SourceType =
   | "vanguard-pdf"
   | "factor-csv"
   | "canonical-csv"
+  | "daf-contributions"
   | "unknown";
 
 export interface ParsedTransaction {
@@ -100,6 +101,19 @@ export interface ParsedCorporateAction {
   sourceKey: string; // ibkr:ca:split:<date>:<symbol>:<num>:<den>
 }
 
+export interface ParsedDonation {
+  sourceKey: string; // daf:contribution:{received_date}:{symbol|USD}:{qty|amount}:{createdAtRaw}
+  kind: "stock" | "cash";
+  symbolRaw: string | null; // null for cash
+  quantity: number | null;
+  fmvUsd: number;
+  unitValuation: number | null;
+  createdDate: string | null; // ET date of "created at"
+  receivedDate: string; // ET date of "received at" — the tax date
+  completedDate: string | null;
+  createdAtRaw: string | null; // verbatim provider timestamp (identity component)
+}
+
 export interface ParsedImportResult {
   sourceType: SourceType;
   sourceName: string;
@@ -110,6 +124,7 @@ export interface ParsedImportResult {
   snapshots: ParsedSnapshot[];
   factors?: ParsedFactor[];
   corporateActions: ParsedCorporateAction[];
+  donations?: ParsedDonation[];
   errors: string[];
   warnings: string[];
 }

@@ -74,5 +74,10 @@ export function detectSourceType(content: string, filename: string): SourceType 
     return "canonical-csv";
   }
 
+  // DAF yearly contribution export: distinctive 9-column header.
+  if (firstLine.startsWith("type,frequency,amount,currency,USD amount,currency valuation")) {
+    return "daf-contributions";
+  }
+
   return "unknown";
 }

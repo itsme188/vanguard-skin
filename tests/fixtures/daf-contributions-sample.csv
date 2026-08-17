@@ -1,0 +1,6 @@
+type,frequency,amount,currency,USD amount,currency valuation,created at,received at,completed at
+
+  Stock,One time,10.0,FAKE,1234.5,123.45,2026-03-01 20:00:00 +0000,2026-03-02 13:00:00 +0000,2026-03-03 17:00:00 +0000
+  Stock,One time,5.0,ZZZZ,500.0,,2026-04-10 01:30:00 +0000,2026-04-10 13:00:00 +0000,
+  Bank transfer,One time,2500.0,USD,2500.0,1,2026-05-01 12:00:00 +0000,2026-05-02 05:00:00 +0000,2026-05-02 05:00:00 +0000
+  Crypto,One time,1.0,BTC,999.0,,2026-06-01 12:00:00 +0000,2026-06-02 13:00:00 +0000,
