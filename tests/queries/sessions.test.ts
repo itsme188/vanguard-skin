@@ -8,6 +8,7 @@ import {
   touchSession,
   revokeSession,
   revokeAllSessions,
+  revokeSessionsByLabel,
   cleanupExpiredSessions,
 } from "@/lib/mutations/sessions";
 import { verifySession, ABSOLUTE_MS, IDLE_WINDOW_MS } from "@/lib/queries/sessions";
@@ -143,6 +144,31 @@ describe("revokeSession / revokeAllSessions", () => {
     expect(verifySession(db, t1, T0)).toBeNull();
     expect(verifySession(db, t2, T0)).toBeNull();
     expect(db.prepare("SELECT COUNT(*) AS n FROM app_sessions").get()).toEqual({ n: 0 });
+  });
+});
+
+describe("revokeSessionsByLabel", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = fresh();
+  });
+
+  it("deletes only sessions with the given label and returns the count removed", () => {
+    const { rawToken: qaToken1 } = createSession(db, { label: "qa" }, T0);
+    const { rawToken: qaToken2 } = createSession(db, { label: "qa" }, T0);
+    const { rawToken: deviceToken } = createSession(db, { label: "device" }, T0);
+
+    const deleted = revokeSessionsByLabel(db, "qa");
+
+    expect(deleted).toBe(2);
+    expect(verifySession(db, qaToken1, T0)).toBeNull();
+    expect(verifySession(db, qaToken2, T0)).toBeNull();
+    expect(verifySession(db, deviceToken, T0)).not.toBeNull();
+  });
+
+  it("returns 0 when no sessions match the label", () => {
+    createSession(db, { label: "device" }, T0);
+    expect(revokeSessionsByLabel(db, "qa")).toBe(0);
   });
 });
 
