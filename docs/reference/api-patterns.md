@@ -695,3 +695,32 @@ Top-level Phase-3 driver.
   `CRON_SHARED_SECRET`) daily Plaid holdings sync. Calls `refreshVanguardHoldingsFromPlaid(db)`
   (no force — respects the once-per-trading-day skip). Called by launchd
   `com.vanguard-skin.plaid-sync.plist` (07:30 ET weekdays).
+
+## Donations (Giving — R4, 2026-08-17)
+
+All in-app (human-classified, DB session + CSRF via `apiFetch`); logic lives in `lib/queries/giving-view.ts`,
+`lib/mutations/donations.ts`, `lib/mutations/donation-links.ts`, `lib/compute/donation-reconciliation.ts`.
+Every mutation runs a tax-lot recompute in its OWN try/catch and returns
+`{success:true, data:{saved:true, recomputed, recomputeError?, donationsConsumed?, replayWarnings?}}` —
+never a 500 for a saved write.
+
+- `GET /api/donations` — full Giving payload: `getGivingView(db)` → per-year totals (reversed excluded;
+  year gainAvoided null while any stock donation lacks assignments) + `reconcileDonations` report
+  (suggestions / ambiguous / attempts / legs-missing / duplicate-suspects / unmatched pairs).
+- `GET /api/donations/[id]/lots` — as-of-donation-date open-lot listing for the assignment drawer
+  (donation-date units, NOT today's post-split `quantity_remaining`; carries suggested highest-gain-LT
+  preselection + this donation's current per-lot claim). Display-only; write-time truth is the mutation.
+- `POST /api/donations/[id]/links` — confirm a suggested match (`{outTransactionId, artifactTransactionId?,
+  amountForOutLeg?}`); `DonationLinkError` → 400 domain message; already-out-linked → 409.
+  `DELETE` — unlink (restores a demoted artifact leg's `is_external_flow` + strips the note suffix).
+- `POST /api/donations/[id]/lots` — replace lot assignments (`{assignments:[{acquisitionTransactionId,
+  quantity}]}`, empty array clears); reject-not-clamp invariants live in `assignDonationLots`.
+- `POST /api/donations/[id]/reverse` — `{reversedDate}` strict `YYYY-MM-DD`; sets `reversed_date`,
+  unlinks + unassigns, excludes from totals.
+- `POST /api/donations/[id]/resolve-security` — `{securityId}`; only when `security_id` IS NULL (else 409);
+  validates existence + USD.
+
+Import side: `daf-contributions` is a first-class format through the standard pipeline — preview carries a
+`donations` block (count/new/updated/identityConflicts/absentPriorRows/unresolvedSymbols; computed via a
+rolled-back transaction — never persists), commit is a metadata upsert for existing source keys, and undoing
+a transactions batch referenced by donation links/assignments is refused 409 before the rate limit is burned.
