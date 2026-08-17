@@ -49,7 +49,7 @@ export async function GivingView() {
         <EmptySection
           title="Giving"
           reason="No donations recorded yet."
-          hint="Donations are detected from imported TRANSFER_OUT rows and Vanguard/IBKR statement charitable-transfer activity — import a statement or CSV covering a donation to see it here."
+          hint="Import your DAF provider's contributions CSV via the Import tab to get started — donations are also detected from Vanguard/IBKR statement charitable-transfer activity."
         />
       )}
     </div>

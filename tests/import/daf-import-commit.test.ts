@@ -205,10 +205,19 @@ describe("commitImport: daf-contributions donations", () => {
     const parsed1 = await parseImport(FIXTURE_3, "contrib.csv");
     commitImport(db, parsed1);
 
+    // A properly-reversed donation, also absent from the file, must NOT
+    // re-trigger the absent-prior warning on every future yearly re-import —
+    // it's a deliberate, already-reconciled reversal, not a missing print.
+    db.prepare(
+      `INSERT INTO donations (source_key, kind, fmv_usd, received_date, reversed_date)
+       VALUES (?, 'cash', 100, '2026-06-01', '2026-06-15')`
+    ).run("donation:reversed:manual:1");
+
     const parsedTruncated = await parseImport(FIXTURE_TRUNCATED, "contrib-truncated.csv");
     const absent = findAbsentPriorDonations(db, parsedTruncated.donations!);
     expect(absent).toHaveLength(1);
     expect(absent[0].symbol_raw).toBe("ZZZZ");
+    expect(absent.some((r) => r.source_key === "donation:reversed:manual:1")).toBe(false);
 
     const result = commitImport(db, parsedTruncated);
     expect(result.warnings.some((w) => w.includes(absent[0].source_key))).toBe(true);

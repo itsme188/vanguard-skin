@@ -135,7 +135,10 @@ export function findAbsentPriorDonations(
   const absent: DonationRow[] = [];
   for (const year of years) {
     for (const row of getDonationsForYear(db, year)) {
-      if (!fileKeys.has(row.source_key)) {
+      // A properly-reversed donation is a deliberate, already-reconciled
+      // outcome, not a missing print — exclude it so a legitimate reversal
+      // doesn't re-warn on every subsequent yearly re-import.
+      if (row.reversed_date == null && !fileKeys.has(row.source_key)) {
         absent.push(row);
       }
     }
