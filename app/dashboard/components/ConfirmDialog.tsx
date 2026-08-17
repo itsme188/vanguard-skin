@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 
 interface ConfirmDialogProps {
   open: boolean;
@@ -10,6 +10,14 @@ interface ConfirmDialogProps {
   variant?: "danger" | "default";
   onConfirm: () => void;
   onCancel: () => void;
+  /** Optional extra body content rendered between the message and the
+   *  button row — e.g. a required date input for "mark reversed" (Task 13
+   *  follow-up). Existing callers that omit it are unaffected. */
+  children?: ReactNode;
+  /** Disables the confirm button (e.g. an empty/invalid required field in
+   *  `children`) without changing its label. Defaults to false so existing
+   *  callers behave identically. */
+  confirmDisabled?: boolean;
 }
 
 export function ConfirmDialog({
@@ -20,6 +28,8 @@ export function ConfirmDialog({
   variant = "default",
   onConfirm,
   onCancel,
+  children,
+  confirmDisabled = false,
 }: ConfirmDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const confirmRef = useRef<HTMLButtonElement>(null);
@@ -60,6 +70,7 @@ export function ConfirmDialog({
       <div className="p-6">
         <h3 className="text-base font-medium mb-2">{title}</h3>
         <p className="text-sm text-ink-dim">{message}</p>
+        {children}
       </div>
       <div className="flex justify-end gap-3 px-6 pb-6">
         <button
@@ -71,7 +82,8 @@ export function ConfirmDialog({
         <button
           ref={confirmRef}
           onClick={onConfirm}
-          className={`px-4 py-2 rounded-lg text-sm font-medium transition-[filter,background-color,scale] active:scale-[0.96] focus-ring ${
+          disabled={confirmDisabled}
+          className={`px-4 py-2 rounded-lg text-sm font-medium transition-[filter,background-color,scale] active:scale-[0.96] focus-ring disabled:opacity-50 disabled:cursor-not-allowed ${
             variant === "danger"
               ? "bg-down/90 text-white hover:bg-down"
               : "bg-gold text-canvas hover:brightness-110"

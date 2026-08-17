@@ -321,12 +321,49 @@ describe("GET /api/donations/:id/lots", () => {
       ctx(donationId)
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { success: boolean; data: { lots: { acquisitionTransactionId: number; remainingAsOfDonationDate: number; suggested: boolean }[] } };
+    const body = (await res.json()) as { success: boolean; data: { lots: { acquisitionTransactionId: number; remainingAsOfDonationDate: number; suggested: boolean; currentlyAssignedQuantity: number }[] } };
     expect(body.success).toBe(true);
     expect(body.data.lots).toHaveLength(1);
     expect(body.data.lots[0].acquisitionTransactionId).toBe(buyId);
     expect(body.data.lots[0].remainingAsOfDonationDate).toBeCloseTo(100);
     expect(body.data.lots[0].suggested).toBe(true);
+    // No assignments yet — currentlyAssignedQuantity is 0, not the suggested amount.
+    expect(body.data.lots[0].currentlyAssignedQuantity).toBe(0);
+  });
+
+  it("reflects this donation's own current per-lot assignment (drawer pre-fill)", async () => {
+    const db = hoisted.db;
+    const acct = ibkrAccountId(db);
+    const sec = seedSecurity(db, "AAAA");
+    const buyId = insertTxn(db, acct, sec, "2026-06-01", "BUY", 100, 400);
+    const { donationId } = seedLinkedDonation(db, { accountId: acct, secId: sec, date: "2026-07-01", quantity: 40, fmvUsd: 2000 });
+    computeTaxLots(db);
+
+    const lotsMod = await import("@/app/api/donations/[id]/lots/route");
+    const assignRes = await lotsMod.POST(
+      jsonReq(`http://test/api/donations/${donationId}/lots`, "POST", {
+        assignments: [{ acquisitionTransactionId: buyId, quantity: 40 }],
+      }),
+      ctx(donationId)
+    );
+    expect(assignRes.status).toBe(200);
+
+    const res = await lotsMod.GET(
+      jsonReq(`http://test/api/donations/${donationId}/lots`, "GET"),
+      ctx(donationId)
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      success: boolean;
+      data: { lots: { acquisitionTransactionId: number; remainingAsOfDonationDate: number; currentlyAssignedQuantity: number }[] };
+    };
+    expect(body.data.lots).toHaveLength(1);
+    // This donation's own claim is reported...
+    expect(body.data.lots[0].currentlyAssignedQuantity).toBe(40);
+    // ...but doesn't reduce its OWN remaining capacity (a lot's prior claim by
+    // this same donation counts back toward available capacity — replace
+    // semantics, same as assignDonationLots' own existingByTxn precedent).
+    expect(body.data.lots[0].remainingAsOfDonationDate).toBeCloseTo(100);
   });
 
   it("no confirmed out link -> 400", async () => {

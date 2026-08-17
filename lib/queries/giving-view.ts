@@ -222,6 +222,13 @@ export interface OpenLotForDonation {
   gainPerShare: number | null;
   suggested: boolean;
   suggestedQuantity: number;
+  /** This donation's OWN current claim on this lot (donation_lots.quantity
+   * for THIS donation_id), 0 when unassigned. Lets the drawer pre-fill
+   * "Edit lots" with the existing picks instead of always starting blank
+   * (controller ruling, 2026-08-17) — does not affect
+   * remainingAsOfDonationDate, which already counts this donation's own
+   * claim back toward capacity (see otherDonationsBeforeStmt below). */
+  currentlyAssignedQuantity: number;
 }
 
 /**
@@ -288,6 +295,11 @@ export function getOpenLotsForDonation(db: Database.Database, donationId: number
   const fmvPerShare =
     donation.quantity != null && donation.quantity > 0 ? donation.fmv_usd / donation.quantity : null;
 
+  const currentAssignmentRows = db
+    .prepare(`SELECT acquisition_transaction_id, quantity FROM donation_lots WHERE donation_id = ?`)
+    .all(donationId) as { acquisition_transaction_id: number; quantity: number }[];
+  const currentAssignments = new Map(currentAssignmentRows.map((r) => [r.acquisition_transaction_id, r.quantity]));
+
   const rows: OpenLotForDonation[] = lotRows.map((lot) => {
     const salesBefore = (salesBeforeStmt.get(lot.id, outLeg.trade_date) as { qty: number }).qty;
     const otherAssigned = (
@@ -309,6 +321,7 @@ export function getOpenLotsForDonation(db: Database.Database, donationId: number
       gainPerShare,
       suggested: false,
       suggestedQuantity: 0,
+      currentlyAssignedQuantity: currentAssignments.get(lot.acquisition_transaction_id) ?? 0,
     };
   });
 

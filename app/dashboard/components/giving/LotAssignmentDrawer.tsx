@@ -72,6 +72,17 @@ export function LotAssignmentDrawer({
           return;
         }
         setLots(json.data.lots);
+        // Pre-fill from this donation's OWN current per-lot assignment
+        // (controller ruling, 2026-08-17) — "Edit lots" now opens showing
+        // what's actually saved instead of always starting blank. Save
+        // still fully replaces (assignDonationLots' replace semantics);
+        // the explicit "Clear assignments" button remains the only clear
+        // path (Save-with-0-selected stays blocked below).
+        const initial: Record<number, number> = {};
+        for (const lot of json.data.lots) {
+          if (lot.currentlyAssignedQuantity > 0) initial[lot.acquisitionTransactionId] = lot.currentlyAssignedQuantity;
+        }
+        setSelections(initial);
       } catch (err) {
         if (!cancelled) setLoadError(err instanceof Error ? err.message : "Failed to load open lots");
       }
