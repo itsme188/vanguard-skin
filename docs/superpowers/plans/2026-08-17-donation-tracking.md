@@ -81,6 +81,23 @@ describe("migration 081 — donations", () => {
     // FK integrity clean
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   });
+
+  it("upgrades a POPULATED database cleanly (081 is additive)", () => {
+    // Codex plan-review #9: simulate an existing live DB — full migrations, then seed
+    // realistic rows in the tables 081 references, then assert coexistence + FK health.
+    const db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+    db.prepare("INSERT INTO securities (symbol, name, security_type) VALUES ('FAKE','Fake Corp','Stock')").run();
+    db.prepare(
+      `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, amount, is_external_flow, source_key)
+       VALUES (1, 1, '2026-01-05', 'BUY', 10, -1000, 0, 'seed:1')`
+    ).run();
+    db.prepare("INSERT INTO donations (source_key, kind, security_id, quantity, fmv_usd, received_date) VALUES ('d1','stock',1,10,1200,'2026-02-01')").run();
+    db.prepare("INSERT INTO donation_leg_links (donation_id, transaction_id, role) VALUES (1, 1, 'out')").run();
+    db.prepare("INSERT INTO donation_lots (donation_id, acquisition_transaction_id, quantity) VALUES (1, 1, 5)").run();
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  });
 });
 ```
 
@@ -317,9 +334,9 @@ export function assignDonationLots(db: Database.Database, donationId: number,
 export const ARTIFACT_NOTE_SUFFIX = " [routing artifact of DAF donation; excluded from flows]";
 ```
 
-**Invariant checks in `linkDonationLegs` (each with its own test):** donation exists, is `kind='stock'`, has non-null `security_id`, not reversed; OUT txn exists, `type='TRANSFER_OUT'`, same `security_id`; artifact txn (when given) exists, `type='TRANSFER_IN'`, same `security_id`, same `account_id` as the OUT leg, same `trade_date`, and quantities zero-net (`|out.qty - in.qty| < 1e-9`); neither txn already linked (schema UNIQUE also enforces). **In `assignDonationLots`:** donation has a confirmed `out` link; each acquisition txn is a lot-creating type (`LOWER(type) IN ('buy','reinvestment','buy_to_open','sell_to_open','transfer_in')`) on the same security AND same account as the out leg; `trade_date < donation out-leg trade_date`; per-lot assigned ≤ that lot's `quantity_acquired` minus quantity already sold before the donation date (compute from `tax_lot_sales` joined via `tax_lots.acquisition_transaction_id`, `sale_date < outLeg.trade_date`); Σ assigned ≤ `donations.quantity` (± 1e-9).
+**Invariant checks in `linkDonationLegs` (each with its own test):** donation exists, is `kind='stock'`, has non-null `security_id`, not reversed; the security is USD-denominated (`COALESCE(securities.currency,'USD')='USD'` — Codex plan-review #3); OUT txn exists, `type='TRANSFER_OUT'`, same `security_id`, **non-null quantity equal to `donations.quantity` (± 1e-9 — Codex plan-review #1)**; artifact txn (when given) exists, `type='TRANSFER_IN'`, same `security_id`, same `account_id` as the OUT leg, same `trade_date`, and quantities zero-net (`|out.qty - in.qty| < 1e-9`); neither txn already linked (schema UNIQUE also enforces). **In `assignDonationLots`:** donation has a confirmed `out` link and a USD security; each acquisition txn is a lot-creating type (`LOWER(type) IN ('buy','reinvestment','buy_to_open','sell_to_open','transfer_in')`) on the same security AND same account as the out leg; `trade_date < donation out-leg trade_date`; **availability check (Codex plan-review #2 — best-effort at write time, engine authoritative):** per-lot assigned ≤ current `tax_lots.quantity_remaining` PLUS this donation's own existing assignment on that lot (replace semantics; `quantity_remaining` already reflects sales and OTHER donations after the last recompute). This is exact absent post-donation splits and conservative otherwise; the engine's clamp-and-warn (Task 9) is the authoritative guard, and the two-donations-one-lot test plus a later-split engine-warning test pin both halves. Σ assigned ≤ `donations.quantity` (± 1e-9).
 
-- [ ] **Step 1: Write failing tests** — one `it()` per invariant rejection asserting `DonationLinkError` with a message containing the offending concept (e.g. `/different security/`), plus happy paths: link with artifact (asserts `is_external_flow` flips 0 and note appended; amount stamped when passed), unlink (flag restored, note suffix stripped, amounts untouched), assignment replace + clear.
+- [ ] **Step 1: Write failing tests** — one `it()` per invariant rejection asserting `DonationLinkError` with a message containing the offending concept (e.g. `/different security/`, `/quantity/`, `/USD/`), plus happy paths: link with artifact (asserts `is_external_flow` flips 0 and note appended; amount stamped when passed), unlink (flag restored, note suffix stripped, amounts untouched), assignment replace + clear, and the **two-donations-one-lot availability case** (donation B's assignable quantity shrinks by donation A's consumption after a recompute; over-asking rejects).
 - [ ] **Step 2: Verify failure.** **Step 3: Implement** (single `db.transaction` per mutation; SELECT-validate then write; every rejection `throw new DonationLinkError("...")`).
 - [ ] **Step 4: Verify pass.** **Step 5: Commit** — `feat(donations): leg-link + lot-assignment mutations with reject-not-clamp invariants`
 
@@ -328,7 +345,7 @@ export const ARTIFACT_NOTE_SUFFIX = " [routing artifact of DAF donation; exclude
 
 **Files:**
 - Create: `lib/import/parsers/daf-contributions.ts`, `tests/fixtures/daf-contributions-sample.csv`
-- Modify: `lib/import/types.ts` (SourceType union at :1-11; `ParsedImportResult` at :103-115), `lib/import/detect.ts` (new branch before the `return "unknown"` at :77), `lib/import/engine.ts:161-196` (parseImport dispatch case)
+- Modify: `lib/import/types.ts` (SourceType union at :1-11; `ParsedImportResult` at :103-115), `lib/import/detect.ts` (new branch before the `return "unknown"` at :77), `lib/import/engine.ts:161-196` (parseImport dispatch case), `lib/queries/securities.ts` (add `getSecurityBySymbolCI(db, symbol: string): Security | null` — `WHERE UPPER(symbol) = ?` with upper-cased param; one focused test case in the parser test file)
 - Test: `tests/import/daf-contributions-parser.test.ts`
 
 **Interfaces:**
@@ -437,6 +454,7 @@ export interface DonationCommitOutcome {
   identityConflicts: { sourceKey: string; field: string }[];
   blockedNoIdentity: string[];        // rows blocked for missing created-at identity
   unresolvedSymbols: string[];        // imported with security_id NULL
+  absentPriorRows: string[];          // source_keys of prior-year DB donations missing from this file (Codex plan-review #6)
 }
 export function commitDonations(db: Database.Database, donations: ParsedDonation[], batchId: number): DonationCommitOutcome;
 
@@ -453,7 +471,7 @@ export function findTransferAmountConflicts(db: Database.Database, txns: ParsedT
   accountIdFor: (t: ParsedTransaction) => number | null, securityIdFor: (t: ParsedTransaction) => number | null): number[];
 ```
 
-- [ ] **Step 1: Failing tests.** `daf-import-commit.test.ts`: full pipeline `parseImport(fixture)` → `commitImport(db, parsed)` asserts: batch row exists with summary containing `"3 donations"`; re-commit of the same file → 0 new, 0 updated, batch 2 summary contains `"0 donations"` or duplicates note; a second fixture variant where row2 gained a `completed at` → `updatedDonations === 1` and the DB row's completed_date filled while `import_batch_id` still points at batch 1; a variant changing row1's quantity → identityConflicts length 1, DB unchanged; unresolved symbol ("ZZZZ" absent from securities) imports with `security_id NULL` and appears in `unresolvedSymbols`; `findAbsentPriorDonations` flags a DB donation for 2026 missing from a truncated file. `transfer-conflict-guard.test.ts`: seed an existing in-kind TRANSFER_OUT (qty 50, amount 0); canonical-csv parse of a re-authored row (same account/date/security/type/qty, amount 4550) → commit skips it (transactions count unchanged) and `CommitResult.warnings` carries a conflict message; same row with SAME amount → normal dedupe no-op; a DIFFERENT-qty row inserts normally.
+- [ ] **Step 1: Failing tests.** `daf-import-commit.test.ts`: full pipeline `parseImport(fixture)` → `commitImport(db, parsed)` asserts: batch row exists with summary containing `"3 donations"`; re-commit of the same file → 0 new, 0 updated, batch 2 summary contains `"0 donations"` or duplicates note; a second fixture variant where row2 gained a `completed at` → `updatedDonations === 1` and the DB row's completed_date filled while `import_batch_id` still points at batch 1; a variant changing row1's quantity → identityConflicts length 1, DB unchanged; unresolved symbol ("ZZZZ" absent from securities) imports with `security_id NULL` and appears in `unresolvedSymbols`; `findAbsentPriorDonations` flags a DB donation for 2026 missing from a truncated file AND the commit of that truncated file carries a `CommitResult.warnings` entry naming the absent row (commitDonations calls the helper and appends warnings — Codex plan-review #6; test asserts the warning text). `transfer-conflict-guard.test.ts`: seed an existing in-kind TRANSFER_OUT (qty 50, amount 0); canonical-csv parse of a re-authored row (same account/date/security/type/qty, amount 4550) → commit skips it (transactions count unchanged) and `CommitResult.warnings` carries a conflict message; same row with SAME amount → normal dedupe no-op; a DIFFERENT-qty row inserts normally.
 - [ ] **Step 2: Verify failure.** **Step 3: Implement.** `commitDonations`: loop rows; blocked-no-identity check first; `getDonationBySourceKey` → exists ? try `upsertDonationMetadata` catch `DonationIdentityConflictError` → conflicts list : `insertDonation` with CI-resolved security. Engine wiring: inside the `db.transaction`, after corporate actions step, `if (parsed.donations?.length) { outcome = commitDonations(...) }`; `CommitResult` gains `newDonations`, `updatedDonations` (numbers, default 0); `recordCount += newDonations`; summary array gains the two donation clauses; conflict guard runs where transactions insert (step 3, :337-379): compute conflict indices ONCE before the insert loop, skip + warn. Validate: `SkippedRow.category` gains `"donation"`; a donations loop rejects rows with `fmvUsd <= 0` or missing `receivedDate` (belt-and-braces after parser). Preview (`app/api/import/route.ts`): add `donations: { count, newCount, updatedCount, identityConflicts, absentPriorRows, unresolvedSymbols }` — computed via the same pure helpers against the live db (route already holds db), following the `corporateActions: {count, sample}` precedent at :96-102.
 - [ ] **Step 4: Verify pass.** **Step 5: Commit** — `feat(import): donations commit/preview + in-kind transfer amount-conflict guard`
 
@@ -537,8 +555,9 @@ export interface TransferLegRow {
 }
 export interface ReconciliationReport {
   suggestedMatches: { donation: DonationRow; outLeg: TransferLegRow; artifactLeg: TransferLegRow | null }[];
+  ambiguousMatches: { donation: DonationRow; candidateLegs: TransferLegRow[] }[];  // 2+ candidates either direction — never auto-suggested (Codex plan-review #7)
   attempts: { leg: TransferLegRow; state: "in-transit" | "bounced"; returnLeg: TransferLegRow | null }[];
-  legsMissing: DonationRow[];                 // stock donations, unreversed, with no linked or suggestible legs
+  legsMissing: DonationRow[];                 // stock donations, unreversed, with NO candidate legs at all
   duplicateSuspects: TransferLegRow[][];      // groups sharing (account,date,security,qty,type), differing amounts
   unmatchedPairs: { date: string; symbol: string; quantity: number }[];  // zero-netting, no donation — informational
 }
@@ -547,9 +566,9 @@ export function reconcileDonations(db: Database.Database): ReconciliationReport;
 export function withinBusinessDays(a: string, b: string, n: number): boolean;
 ```
 
-**Rules (spec §7, all already user-ratified):** net residuals per (account, trade_date, security) EXCLUDING `routing_artifact`-linked legs; suggestions only for unreversed, USD-security, resolved-symbol stock donations with no existing `out` link; match = equal quantity within ±5 business days of `received_date`; ambiguity (2+ candidates either direction) → NOT suggested, folded into `legsMissing` with the ambiguity noted via a `notes` clone field — simpler: return ambiguous donations in `legsMissing` and the legs in `attempts` as `in-transit` (the UI copy explains); pair-donation = zero-netting same-day pair matching a donation exactly → suggestion carries both legs; bounced = unmatched OUT residual + later matching IN (same security+qty, any later date, itself unlinked).
+**Rules (spec §7, all already user-ratified):** net residuals per (account, trade_date, security) EXCLUDING `routing_artifact`-linked legs; suggestions only for unreversed, USD-security, resolved-symbol stock donations with no existing `out` link; match = equal quantity within ±5 business days of `received_date`; ambiguity (2+ candidates either direction) → `ambiguousMatches`, never suggested, never counted `in-transit`; pair-donation = zero-netting same-day pair matching a donation exactly → suggestion carries both legs; bounced = unmatched OUT residual + later matching IN (same security+qty, any later date, itself unlinked). Suggestions additionally require a USD security (non-USD donations render an "unsupported" status in the Giving view — Codex plan-review #3).
 
-- [ ] **Step 1: Failing tests** — table-driven over a seeded in-memory DB: exact-date match; +4 business-day match (crosses a weekend — pins `withinBusinessDays`); +6 business days → no match; pair-donation suggestion (both legs returned); already-linked donation → no suggestion; reversed donation → excluded; bounced sequence (OUT day X, IN day X+40) → `bounced` with returnLeg; lone OUT → `in-transit`; duplicate-suspect group (two OUTs same key-tuple, amounts 0 vs 4550); rebooking pair with no donation → `unmatchedPairs`; ambiguous two-donation case → no suggestion.
+- [ ] **Step 1: Failing tests** — table-driven over a seeded in-memory DB: exact-date match; +4 business-day match (crosses a weekend — pins `withinBusinessDays`); +6 business days → no match; pair-donation suggestion (both legs returned); already-linked donation → no suggestion; reversed donation → excluded; bounced sequence (OUT day X, IN day X+40) → `bounced` with returnLeg; lone OUT → `in-transit`; duplicate-suspect group (two OUTs same key-tuple, amounts 0 vs 4550); rebooking pair with no donation → `unmatchedPairs`; ambiguous two-donation case → lands in `ambiguousMatches` with both candidate legs, absent from suggestions AND from `in-transit`; non-USD-security donation → no suggestion.
 - [ ] **Step 2-4: fail → implement → pass.** Implementation is one pure function over three prepared queries (legs+links+symbol join, donations, existing links); keep every rule a small named helper so the test names read as the spec.
 - [ ] **Step 5: Commit** — `feat(donations): reconciliation report (suggestions, attempts, bounces, duplicate suspects)`
 
@@ -620,13 +639,13 @@ export function applyInkindRepair(db: Database.Database, candidates: InkindCandi
 ```
 
 **Class rules (spec §8, all ratified):**
-- `pair-donation` (writable): reconciliation suggestion with BOTH legs + `holdingsDeltaConfirms` → `linkDonationLegs` with `amountForOutLeg` (same-day exact match → `fmv_usd`; else exact-LEG-date price via `marketValue(qty, close, security_type, multiplier, 1)` — exact-date `prices` row only, USD security only, no corporate action between; unpriceable → downgrade to `anomaly`).
+- `pair-donation` (writable): reconciliation suggestion with BOTH legs + `holdingsDeltaConfirms` → `linkDonationLegs` with `amountForOutLeg` (same-day exact match → `fmv_usd`; else exact-LEG-date price via `marketValue(qty, close, security_type, multiplier, 1)` — exact-date `prices` row only, USD security only). **Split-basis predicate (Codex plan-review #4, executable):** `EXISTS(SELECT 1 FROM corporate_actions WHERE security_id = ? AND action_type IN ('SPLIT','REVERSE_SPLIT') AND effective_date >= <legDate>)` → the stored price series' share basis is ambiguous for that date → `anomaly`. Unpriceable → `anomaly`.
 - `fmv-stamp` (writable): unlinked in-kind leg, `amount = 0` — same valuation precedence; UPDATE `transactions.amount` only, source_key untouched.
 - `legs-missing` (report): stock donations with no legs — print guidance (import the covering statement / author via canonical CSV), never INSERT.
 - `anomaly` (report): duplicate-suspects, unpriceable, ambiguous, failed holdings-delta.
 CLI: dry-run default (readonly open, exactly the `repair-missing-external-flows.ts:409-433` shape), `--apply` → backup → apply → trigger `computeTaxLots` + `computeDailyValuations` + print flow-dates gained (before/after `fetchNetFlowsByDate` count over full history). Header doc = runbook (usage, idempotency: re-run finds zero writable candidates).
 
-- [ ] **Step 1: Failing tests** — pure-function coverage: pair-donation happy path (asserts link rows, amount stamped, artifact demoted); same-day exact → fmv_usd chosen; 1-day gap → leg-date price chosen; no exact-date price → anomaly; non-USD security → anomaly; corporate action between → anomaly; holdings delta absent → anomaly; fmv-stamp on a lone journal leg via price road; idempotence (second `findInkindCandidates` after apply → no writable rows); legs-missing donation reported not inserted. **Plus the spec §11 metric before/after case:** a fixture portfolio with a pair-form donation month — `buildFlowAdjustedIndex` (or portfolio TWR) computed BEFORE repair shows the fake-loss day; AFTER `applyInkindRepair` the day carries a flow, the return observation normalizes, and `fetchNetFlowsByDate` gains exactly one date.
+- [ ] **Step 1: Failing tests** — pure-function coverage: pair-donation happy path (asserts link rows, amount stamped, artifact demoted); same-day exact → fmv_usd chosen; 1-day gap → leg-date price chosen; no exact-date price → anomaly; non-USD security → anomaly; split with `effective_date >= legDate` seeded in `corporate_actions` → anomaly (the executable basis predicate — fixture seeds the split row explicitly); holdings delta absent → anomaly; fmv-stamp on a lone journal leg via price road; idempotence (second `findInkindCandidates` after apply → no writable rows); legs-missing donation reported not inserted. **Plus the spec §11 metric before/after case (all three metrics — Codex plan-review #9):** a fixture portfolio with a pair-form donation month — computed BEFORE repair: portfolio TWR shows the fake loss, `computePortfolioRiskMetrics` volatility is inflated, and `computePerPositionContributions` misattributes the drop; AFTER `applyInkindRepair`: the day carries a flow, TWR normalizes to the hand-computed value, volatility drops to the no-donation baseline, attribution no longer charges the donated name, and `fetchNetFlowsByDate` gains exactly one date.
 - [ ] **Step 2-4: fail → implement → pass.** **Step 5: Commit** — `feat(repair): in-kind transfer FMV repair (pair-donation demotion + stamping, dry-run default)`
 
 ---
@@ -665,13 +684,15 @@ export interface GivingDonation {
   accountName: string | null;          // via the out-leg link
   basis: number | null; gainAvoided: number | null;
   longTermQuantity: number | null; shortTermQuantity: number | null;
-  status: "completed" | "received" | "reversed";
+  /** Precedence (Codex plan-review #8): reversed > unsupported (non-USD) > pending-lots
+   * (stock, linked, no assignments) > completed > received. */
+  status: "reversed" | "unsupported" | "pending-lots" | "completed" | "received";
   needsLots: boolean; linked: boolean; symbolResolved: boolean;
 }
 export function getGivingView(db: Database.Database): { years: GivingYear[]; reconciliation: ReconciliationReport };
 ```
 
-Basis/gain math per assigned lot (from `tax_lots` via `acquisition_transaction_id`): `basis = Σ assigned_qty × (cost_basis / quantity_acquired)`; `gainAvoided = donation.fmv_usd − basis`; long-term if `acquisition_date ≤ received_date − 365 days`. Unassigned or unresolved → nulls + `needsLots`.
+Basis/gain math per assigned lot (from `tax_lots` via `acquisition_transaction_id`): `basis = Σ assigned_qty × (cost_basis / quantity_acquired)`; `gainAvoided = donation.fmv_usd − basis`; long-term via a shared predicate matching the ENGINE's rule — export `isLongTermHolding(acquisitionDate: string, dispositionDate: string): boolean` (`holdingDays > 365`) from `lib/compute/tax-lots.ts` and use it here (Codex plan-review #8; boundary test at exactly 365 and 366 days). Unassigned or unresolved → nulls + `needsLots`. **Reversed donations are EXCLUDED from every yearly total** (rendered struck-through in their year with the `reversed` chip); test asserts a reversed donation changes no total.
 
 **Route shapes (copy the two patterns from `app/api/research/articles/[id]/unfilter/route.ts` and `app/api/compute/tax-lots/route.ts`):** every mutation route parses the id, calls the mutation in try/catch — `DonationLinkError`/`DonationIdentityConflictError` → 400 with the domain message; success → run `computeTaxLots(db)` in its OWN try/catch and return `{success:true, data:{saved:true, recomputed:boolean, recomputeError?:string}}` (spec §10 recompute-failure feedback; never a 500 for a saved write). `links` POST body: `{outTransactionId, artifactTransactionId?, amountForOutLeg?}`. `lots` POST body: `{assignments:[{acquisitionTransactionId, quantity}]}`. `reverse` POST body: `{reversedDate}` (must be YYYY-MM-DD; 400 otherwise). `resolve-security` POST body: `{securityId}` — validates the security exists and is USD, sets `donations.security_id` (only when currently NULL → else 409 "already resolved").
 
@@ -691,7 +712,8 @@ Basis/gain math per assigned lot (from `tax_lots` via `acquisition_transaction_i
 - `analysis/page.tsx` branch: `if (resolved.view === "giving") return <div className="space-y-6 md:space-y-0"><AnalysisViewToggle currentView="giving" scope={params.scope} /><GivingView /></div>;` — account-agnostic: `GivingView` takes NO scope prop (spec §10); wrap its data call in the try/catch-rethrow idiom from `analysis/page.tsx:205-217`.
 - `GivingView` (server): calls `getGivingView(db)`, renders year sections + `<ReconciliationStrip report={...} />`. Cash rows in a visually separated sub-block per year captioned "Cash gifts — bank→DAF, not portfolio activity". Every figure via `<Money>`/`<Shares>`; status chips via `<Chip tone="up|info|warn">` (`completed`/`received`/`pending lots`), `tone="down"` for `reversed`.
 - `ReconciliationStrip` (client): suggested matches with a Confirm button (`apiFetch` POST `/api/donations/{id}/links`), attempts (`in-transit`/`bounced` chips), legs-missing guidance, duplicate suspects, unmatched pairs (collapsed, informational). Honest-feedback rules: check `res.ok` AND `data.success`; when `data.data.recomputed === false` show "Saved — lot recompute failed: {recomputeError}. Retry from the drawer."; revert optimistic state on failure.
-- `LotAssignmentDrawer` (client): copy the drawer skeleton from `app/dashboard/components/analysis/MacroThemeReceiptDrawer.tsx` (fixed overlay, Escape handler, backdrop click, `stopPropagation`). Lists open lots as of the donation date (served by a small `GET /api/donations/[id]/lots` handler added to the Task 12 route file: lot rows + suggested highest-gain-LT preselection flags); checkboxes + qty inputs; "Suggest highest-gain long-term" button preselects client-side; Save posts assignments. No hover-only affordances (touch tap-trap rule).
+- `LotAssignmentDrawer` (client): copy the drawer skeleton from `app/dashboard/components/analysis/MacroThemeReceiptDrawer.tsx` (fixed overlay, Escape handler, backdrop click, `stopPropagation`). Lists open lots as of the donation date (served by a small `GET /api/donations/[id]/lots` handler added to the Task 12 route file: lot rows + suggested highest-gain-LT preselection flags); checkboxes + qty inputs; "Suggest highest-gain long-term" button preselects client-side; Save posts assignments; a **"Clear assignments"** button posts an empty array (Codex plan-review #5). No hover-only affordances (touch tap-trap rule).
+- **Unlink affordance** (Codex plan-review #5): linked donation rows carry an "Unlink" action → `apiFetch` DELETE `/api/donations/{id}/links` with a ConfirmDialog; same recompute-feedback handling as Confirm; artifact-leg restoration happens server-side (Task 3 `unlinkDonationLegs`). Both unlink and clear-assignments are exercised in the Task 14 E2E.
 - Unresolved-symbol rows render the raw symbol + a "Resolve…" button → inline search against `GET /api/search?q=…&type=security` → POST resolve-security.
 
 - [ ] **Step 1:** view-param failing test (`"giving"` → `{view:"giving", mode:"classification"}`), fail → implement param+nav+toggle → pass.
