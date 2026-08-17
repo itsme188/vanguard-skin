@@ -5,6 +5,8 @@ interface TaxLotComputeResult {
   salesProcessed: number;
   totalRealizedGain: number;
   replayWarnings: string[];
+  /** Lots reduced by a confirmed, lot-assigned donation this run (spec §9). */
+  donationsConsumed: number;
 }
 
 interface TransactionRow {
@@ -50,6 +52,25 @@ interface OptionExerciseRow {
   multiplier: number;
 }
 
+/** One donation's lot consumption, replayed at its OUT leg's trade_date. */
+interface DonationConsumption {
+  donationId: number;
+  outLegDate: string;
+  assignments: { acquisitionTransactionId: number; quantity: number }[];
+}
+
+/**
+ * One entry in the engine's single chronological replay stream. Same-date
+ * ordering is the `kind` rank: sells (0) → donation consumptions (1) →
+ * corporate-action splits (2). Splits last preserves the end-of-day rule
+ * (a same-date trade executed in pre-split units), and donations sit with
+ * the trades because their assignments are expressed in the same basis.
+ */
+type ReplayEvent =
+  | { kind: 0; date: string; id: number; sell: TransactionRow & { multiplier: number } }
+  | { kind: 1; date: string; id: number; donation: DonationConsumption }
+  | { kind: 2; date: string; id: number; split: SplitEvent };
+
 /** Premium adjustment to apply to a stock transaction's effective price. */
 interface PremiumAdjustment {
   /** Per-share premium to add to (buy) or subtract from (sell) the stock price. */
@@ -66,6 +87,16 @@ function daysBetween(dateA: string, dateB: string): number {
   const a = new Date(dateA + "T00:00:00Z");
   const b = new Date(dateB + "T00:00:00Z");
   return Math.round((b.getTime() - a.getTime()) / (1000 * 60 * 60 * 24));
+}
+
+/**
+ * IRS long-term test, single-sourced: a holding period of MORE than one year
+ * (strictly > 365 days) is long-term. Used for `tax_lot_sales.is_long_term`
+ * here and for the LT/ST split of donated lots (which never produce a sale
+ * row) — both must answer the question the same way.
+ */
+export function isLongTermHolding(acquisitionDate: string, dispositionDate: string): boolean {
+  return daysBetween(acquisitionDate, dispositionDate) > 365;
 }
 
 export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
@@ -277,7 +308,7 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
         let realizedGainLoss = proceeds - costBasisAllocated;
         if (lot.is_short) realizedGainLoss = -realizedGainLoss;
         const holdingDays = daysBetween(lot.acquisition_date, sell.trade_date);
-        const isLongTerm = holdingDays > 365 ? 1 : 0;
+        const isLongTerm = isLongTermHolding(lot.acquisition_date, sell.trade_date) ? 1 : 0;
 
         insertSale.run(
           lot.id,
@@ -302,27 +333,116 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
       salesProcessed++;
     };
 
-    // Merge split events into the chronological sell stream. End-of-day
-    // rule (strict '<'): a sell dated the split's effective date processes
-    // BEFORE that date's split — extended-hours trading ends 20:00 ET and
-    // IBKR stamps split actions after the close (observed 20:25), so every
-    // same-date trade executed in pre-split units. Leftover events (no
-    // later sell needs to observe them) apply after the loop. With zero
-    // split events this degenerates to the original loop.
-    let nextEvent = 0;
-    for (const sell of sells) {
-      while (
-        nextEvent < splitEvents.length &&
-        splitEvents[nextEvent].effective_date < sell.trade_date
-      ) {
-        applySplitEvent(splitEvents[nextEvent]);
-        nextEvent++;
+    // ── Donation lot consumption (replay events) ──
+    // A TRANSFER_OUT leg with a confirmed 'out' link to a non-reversed
+    // donation consumes the lots the user explicitly assigned: the lot's
+    // quantity_remaining drops, and NO tax_lot_sales row is written — a
+    // charitable gift never enters realized gains, round-trips, or Form 8949.
+    // Unlinked or unassigned donations (and bounced transfers, which have no
+    // donation row at all) consume nothing: the engine never guesses lots.
+    const donationRows = db
+      .prepare(
+        `SELECT dl.donation_id AS donation_id,
+                t.trade_date AS out_leg_date,
+                ol.acquisition_transaction_id AS acquisition_transaction_id,
+                ol.quantity AS quantity
+           FROM donation_leg_links dl
+           JOIN transactions t ON t.id = dl.transaction_id
+           JOIN donation_lots ol ON ol.donation_id = dl.donation_id
+           JOIN donations d ON d.id = dl.donation_id
+          WHERE dl.role = 'out' AND d.reversed_date IS NULL
+          ORDER BY t.trade_date, dl.donation_id, ol.id`
+      )
+      .all() as Array<{
+      donation_id: number;
+      out_leg_date: string;
+      acquisition_transaction_id: number;
+      quantity: number;
+    }>;
+
+    const donationEvents: DonationConsumption[] = [];
+    const donationById = new Map<number, DonationConsumption>();
+    for (const row of donationRows) {
+      let ev = donationById.get(row.donation_id);
+      if (!ev) {
+        ev = { donationId: row.donation_id, outLegDate: row.out_leg_date, assignments: [] };
+        donationById.set(row.donation_id, ev);
+        donationEvents.push(ev);
       }
-      processSell(sell);
+      ev.assignments.push({
+        acquisitionTransactionId: row.acquisition_transaction_id,
+        quantity: row.quantity,
+      });
     }
-    while (nextEvent < splitEvents.length) {
-      applySplitEvent(splitEvents[nextEvent]);
-      nextEvent++;
+
+    const lotForAcquisition = db.prepare(
+      "SELECT id, quantity_remaining FROM tax_lots WHERE acquisition_transaction_id = ?"
+    );
+
+    let donationsConsumed = 0;
+
+    const applyDonationConsumption = (ev: DonationConsumption) => {
+      for (const assignment of ev.assignments) {
+        const lot = lotForAcquisition.get(assignment.acquisitionTransactionId) as
+          | { id: number; quantity_remaining: number }
+          | undefined;
+        // The assignment-time invariants (lib/mutations/donation-links.ts) make
+        // both branches below unreachable at write time. They stay as defensive
+        // clamps because history can drift AFTER an assignment is made — a
+        // late-arriving statement can add an earlier sell, or an import undo can
+        // remove the acquisition entirely.
+        if (!lot) {
+          replayWarnings.push(
+            `donation ${ev.donationId}: no lot found for txn ${assignment.acquisitionTransactionId} — assigned ${assignment.quantity} not consumed`
+          );
+          continue;
+        }
+        const consumed = Math.min(assignment.quantity, lot.quantity_remaining);
+        if (consumed < assignment.quantity - 1e-9) {
+          replayWarnings.push(
+            `donation ${ev.donationId}: lot from txn ${assignment.acquisitionTransactionId} has ${lot.quantity_remaining} < assigned ${assignment.quantity} — clamped`
+          );
+        }
+        if (consumed <= 0) continue;
+        updateLotRemaining.run(lot.quantity_remaining - consumed, lot.id);
+        donationsConsumed++;
+      }
+    };
+
+    // ── The chronological replay ──
+    // One merged event stream: sells, donation consumptions, and
+    // import-sourced splits, ordered by (date, kind, id). Same-date kind order
+    // is 0 sell → 1 donation → 2 split, which encodes the end-of-day rule
+    // (strict '<') by construction: a trade or gift dated the split's
+    // effective date processes BEFORE that split — extended-hours trading ends
+    // 20:00 ET and IBKR stamps split actions after the close (observed 20:25),
+    // so every same-date disposition happened in pre-split units. Events with
+    // no counterpart (e.g. a split after the last sell) simply sort to the end
+    // — there is no separate drain step to keep in sync.
+    const events: ReplayEvent[] = [
+      ...sells.map(
+        (sell): ReplayEvent => ({ kind: 0, date: sell.trade_date, id: sell.id, sell })
+      ),
+      ...donationEvents.map(
+        (donation): ReplayEvent => ({
+          kind: 1,
+          date: donation.outLegDate,
+          id: donation.donationId,
+          donation,
+        })
+      ),
+      ...splitEvents.map(
+        (split): ReplayEvent => ({ kind: 2, date: split.effective_date, id: split.id, split })
+      ),
+    ];
+    events.sort((a, b) =>
+      a.date < b.date ? -1 : a.date > b.date ? 1 : a.kind - b.kind || a.id - b.id
+    );
+
+    for (const event of events) {
+      if (event.kind === 0) processSell(event.sell);
+      else if (event.kind === 1) applyDonationConsumption(event.donation);
+      else applySplitEvent(event.split);
     }
 
     // ── Broker-close reconciliation pass ──
@@ -442,7 +562,7 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
       }
     }
 
-    return { lotsCreated, salesProcessed, totalRealizedGain, replayWarnings };
+    return { lotsCreated, salesProcessed, totalRealizedGain, replayWarnings, donationsConsumed };
   })();
 }
 

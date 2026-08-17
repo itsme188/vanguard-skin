@@ -242,7 +242,11 @@ export async function POST(request: NextRequest) {
       );
       try {
         const lotResult = computeTaxLots(db);
-        if (hadCorporateActions) {
+        // Report the replay whenever it has something to say. Corporate
+        // actions are no longer the only source of replay warnings —
+        // donation-lot consumption clamps surface here too, and those can
+        // arrive on an import that carries no corporate action at all.
+        if (hadCorporateActions || lotResult.replayWarnings.length > 0) {
           replay =
             lotResult.replayWarnings.length > 0
               ? { status: "mismatch", warnings: lotResult.replayWarnings }
