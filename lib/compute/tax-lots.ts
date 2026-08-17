@@ -52,10 +52,16 @@ interface OptionExerciseRow {
   multiplier: number;
 }
 
-/** One donation's lot consumption, replayed at its OUT leg's trade_date. */
+/**
+ * One donation's lot consumption, replayed at its OUT leg's trade_date. The
+ * account and security come from that same leg — they scope the lot lookup so
+ * a bad assignment can never reach across an account or security line.
+ */
 interface DonationConsumption {
   donationId: number;
   outLegDate: string;
+  accountId: number;
+  securityId: number;
   assignments: { acquisitionTransactionId: number; quantity: number }[];
 }
 
@@ -344,6 +350,8 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
       .prepare(
         `SELECT dl.donation_id AS donation_id,
                 t.trade_date AS out_leg_date,
+                t.account_id AS account_id,
+                t.security_id AS security_id,
                 ol.acquisition_transaction_id AS acquisition_transaction_id,
                 ol.quantity AS quantity
            FROM donation_leg_links dl
@@ -356,6 +364,8 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
       .all() as Array<{
       donation_id: number;
       out_leg_date: string;
+      account_id: number;
+      security_id: number;
       acquisition_transaction_id: number;
       quantity: number;
     }>;
@@ -365,7 +375,13 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
     for (const row of donationRows) {
       let ev = donationById.get(row.donation_id);
       if (!ev) {
-        ev = { donationId: row.donation_id, outLegDate: row.out_leg_date, assignments: [] };
+        ev = {
+          donationId: row.donation_id,
+          outLegDate: row.out_leg_date,
+          accountId: row.account_id,
+          securityId: row.security_id,
+          assignments: [],
+        };
         donationById.set(row.donation_id, ev);
         donationEvents.push(ev);
       }
@@ -375,25 +391,35 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
       });
     }
 
+    // Scoped to the OUT leg's own account + security: `donation_lots` rows can
+    // also arrive from a repair script's --apply, which does not go through
+    // assignDonationLots' invariants, and a gift out of one account must never
+    // consume another account's shares.
     const lotForAcquisition = db.prepare(
-      "SELECT id, quantity_remaining FROM tax_lots WHERE acquisition_transaction_id = ?"
+      `SELECT id, quantity_remaining FROM tax_lots
+        WHERE acquisition_transaction_id = ? AND account_id = ? AND security_id = ?`
     );
 
     let donationsConsumed = 0;
 
     const applyDonationConsumption = (ev: DonationConsumption) => {
       for (const assignment of ev.assignments) {
-        const lot = lotForAcquisition.get(assignment.acquisitionTransactionId) as
-          | { id: number; quantity_remaining: number }
-          | undefined;
-        // The assignment-time invariants (lib/mutations/donation-links.ts) make
-        // both branches below unreachable at write time. They stay as defensive
-        // clamps because history can drift AFTER an assignment is made — a
-        // late-arriving statement can add an earlier sell, or an import undo can
-        // remove the acquisition entirely.
+        const lot = lotForAcquisition.get(
+          assignment.acquisitionTransactionId,
+          ev.accountId,
+          ev.securityId
+        ) as { id: number; quantity_remaining: number } | undefined;
+        // Neither branch below is reachable through a single assignDonationLots
+        // call — its invariants (lib/mutations/donation-links.ts) reject both.
+        // They stay because that check is best-effort against the LAST
+        // recompute's state, not a live ledger: cross-donation over-commitment
+        // between recomputes is accepted at write time by design and clamped
+        // HERE, history can drift after an assignment is made (a late statement
+        // adds an earlier sell; an import undo removes the acquisition), and a
+        // repair --apply can write donation_lots rows directly.
         if (!lot) {
           replayWarnings.push(
-            `donation ${ev.donationId}: no lot found for txn ${assignment.acquisitionTransactionId} — assigned ${assignment.quantity} not consumed`
+            `donation ${ev.donationId}: no lot found for txn ${assignment.acquisitionTransactionId} in the OUT leg's account — assigned ${assignment.quantity} not consumed`
           );
           continue;
         }
