@@ -17,6 +17,24 @@ interface CorporateActionPreviewRow {
   effectiveDate: string;
 }
 
+interface DonationIdentityConflict {
+  sourceKey: string;
+  field: string;
+}
+
+// Matches DonationsPreview from app/api/import/route.ts — undefined (not a
+// zero-value object) when the file carried no donation rows at all, so its
+// mere presence already means "non-empty" (previewDonations never returns a
+// defined-but-count-0 object).
+interface DonationsPreviewResult {
+  count: number;
+  newCount: number;
+  updatedCount: number;
+  identityConflicts: DonationIdentityConflict[];
+  absentPriorRows: string[];
+  unresolvedSymbols: string[];
+}
+
 interface PreviewResult {
   filename: string;
   success: boolean;
@@ -32,6 +50,7 @@ interface PreviewResult {
       count: number;
       sample: CorporateActionPreviewRow[];
     };
+    donations?: DonationsPreviewResult;
   };
   skippedRows?: SkippedRow[];
   errors?: string[];
@@ -51,6 +70,8 @@ interface CommitResult {
     newSnapshots: number;
     newSecurities: number;
     newCorporateActions: number;
+    newDonations: number;
+    updatedDonations: number;
     skippedDuplicates: number;
     totalRecords: number;
   };
@@ -261,7 +282,7 @@ export function ImportFlow() {
     // committing it only creates an empty import_batches row (the 0-record
     // rows in Import History that invite a pointless 95s Undo).
     const previewRecordCount = (p: NonNullable<(typeof state.results)[number]["preview"]>) =>
-      p.transactionCount + p.securityCount + p.holdingCount + p.priceCount + p.snapshotCount + p.corporateActions.count;
+      p.transactionCount + p.securityCount + p.holdingCount + p.priceCount + p.snapshotCount + p.corporateActions.count + (p.donations?.count ?? 0);
     const parsedResults = state.results.filter((r) => r.success && r.preview);
     const importableCount = parsedResults.filter(
       (r) => previewRecordCount(r.preview!) > 0
@@ -312,7 +333,11 @@ export function ImportFlow() {
               </div>
 
               {result.success && result.preview ? (
-                <div className="grid grid-cols-3 md:grid-cols-6 gap-2 text-center">
+                <div
+                  className={`grid grid-cols-3 gap-2 text-center ${
+                    result.preview.donations ? "md:grid-cols-7" : "md:grid-cols-6"
+                  }`}
+                >
                   {(
                     [
                       ["Transactions", result.preview.transactionCount],
@@ -330,6 +355,19 @@ export function ImportFlow() {
                       <div className="text-[11px] text-ink-faint">{label}</div>
                     </div>
                   ))}
+                  {result.preview.donations && (
+                    <div className="py-2">
+                      <div className="text-lg font-mono font-semibold text-ink tabular-nums">
+                        {result.preview.donations.count}
+                      </div>
+                      <div className="text-[11px] text-ink-faint">Donations</div>
+                      <div className="text-[10px] text-ink-faint mt-0.5">
+                        {result.preview.donations.newCount} new
+                        {result.preview.donations.updatedCount > 0 &&
+                          ` · ${result.preview.donations.updatedCount} updated`}
+                      </div>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="flex items-center gap-2 text-down text-sm">
@@ -354,6 +392,61 @@ export function ImportFlow() {
                       </p>
                     ))}
                   </div>
+                </div>
+              )}
+
+              {/* Donations detail — same visual weight as the corporate actions
+                  block above. previewDonations() never returns a
+                  defined-but-empty object, so `donations` presence already
+                  means non-empty; nothing here needs its own count > 0 gate. */}
+              {result.preview && result.preview.donations && (
+                <div className="mt-3 rounded-lg border border-edge bg-raised/40 px-3 py-2">
+                  <p className="text-xs font-medium text-ink-dim mb-1">
+                    {result.preview.donations.count} donation{result.preview.donations.count !== 1 ? "s" : ""}
+                    {" — "}
+                    {result.preview.donations.newCount} new
+                    {result.preview.donations.updatedCount > 0 && `, ${result.preview.donations.updatedCount} updated`}
+                  </p>
+                  {result.preview.donations.unresolvedSymbols.length > 0 && (
+                    <p className="text-xs text-ink-faint">
+                      {result.preview.donations.unresolvedSymbols.length} symbol
+                      {result.preview.donations.unresolvedSymbols.length !== 1 ? "s" : ""} unresolved (
+                      {result.preview.donations.unresolvedSymbols.join(", ")}) — resolve from Analysis &gt; Giving
+                      after import.
+                    </p>
+                  )}
+                  {result.preview.donations.identityConflicts.length > 0 && (
+                    <div className="mt-1">
+                      <p className="text-xs text-gold-ink">
+                        {result.preview.donations.identityConflicts.length} row
+                        {result.preview.donations.identityConflicts.length !== 1 ? "s" : ""} will be skipped —
+                        an authoritative field changed since the prior import:
+                      </p>
+                      <div className="space-y-0.5 mt-0.5">
+                        {result.preview.donations.identityConflicts.map((c, j) => (
+                          <p key={j} className="text-xs text-gold/80 font-mono">
+                            {c.sourceKey} — {c.field}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {result.preview.donations.absentPriorRows.length > 0 && (
+                    <div className="mt-1">
+                      <p className="text-xs text-gold-ink">
+                        {result.preview.donations.absentPriorRows.length} previously-imported donation
+                        {result.preview.donations.absentPriorRows.length !== 1 ? "s are" : " is"} absent from this
+                        file (possible reversal — review before committing):
+                      </p>
+                      <div className="space-y-0.5 mt-0.5">
+                        {result.preview.donations.absentPriorRows.map((key, j) => (
+                          <p key={j} className="text-xs text-gold/80 font-mono">
+                            {key}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -468,6 +561,15 @@ export function ImportFlow() {
                       <span className="text-ink-faint">
                         {" "}
                         ({result.committed.skippedDuplicates} dupes skipped)
+                      </span>
+                    )}
+                    {result.committed.newDonations > 0 && (
+                      <span className="text-ink-faint">
+                        {" "}
+                        · {result.committed.newDonations} donation
+                        {result.committed.newDonations !== 1 ? "s" : ""}
+                        {result.committed.updatedDonations > 0 &&
+                          ` (${result.committed.updatedDonations} updated)`}
                       </span>
                     )}
                   </span>
