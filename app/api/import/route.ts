@@ -214,6 +214,8 @@ export async function POST(request: NextRequest) {
           newSecurities: commitResult.newSecurities,
           newFactors: commitResult.newFactors,
           newCorporateActions: commitResult.newCorporateActions,
+          newDonations: commitResult.newDonations,
+          updatedDonations: commitResult.updatedDonations,
           skippedDuplicates: commitResult.skippedDuplicates,
           totalRecords: commitResult.recordCount,
           unmatchedFactors: commitResult.unmatchedFactors,
