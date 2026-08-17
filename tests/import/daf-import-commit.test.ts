@@ -144,6 +144,46 @@ describe("commitImport: daf-contributions donations", () => {
     expect(dbRow.quantity).toBe(10); // unchanged — no silent overwrite
   });
 
+  it("PIPELINE: a re-exported file where one stock row's USD amount changed (source_key unchanged — fmv_usd isn't baked into a stock donation's key) surfaces an identity conflict on fmv_usd, DB unchanged, updatedDonations 0", async () => {
+    const parsed1 = await parseImport(FIXTURE_3, "contrib.csv");
+    commitImport(db, parsed1);
+
+    // Only "USD amount" (fmv_usd) changed vs ROW1_FAKE — same "amount"
+    // (quantity), "currency" (symbol), "created at" and "received at", so
+    // parseDafContributions produces the IDENTICAL source_key. This is a
+    // genuine same-key collision reachable through the real parser (unlike
+    // the quantity-mismatch scenario above, which the parser can never
+    // reproduce since quantity IS part of a stock donation's source_key).
+    const ROW1_FAKE_FMV_CHANGED =
+      "  Stock,One time,10.0,FAKE,2000.0,123.45,2026-03-01 20:00:00 +0000,2026-03-02 13:00:00 +0000,2026-03-03 17:00:00 +0000";
+    const FIXTURE_ROW1_FMV_CHANGED = [HEADER, ROW1_FAKE_FMV_CHANGED, ROW2_ZZZZ, ROW3_CASH].join("\n");
+
+    const parsed2 = await parseImport(FIXTURE_ROW1_FMV_CHANGED, "contrib-v2.csv");
+    const fakeDonation2 = parsed2.donations!.find((d) => d.symbolRaw === "FAKE")!;
+    expect(fakeDonation2.sourceKey).toBe(
+      "daf:contribution:2026-03-02:FAKE:10:2026-03-01 20:00:00 +0000",
+    );
+    expect(fakeDonation2.fmvUsd).toBe(2000);
+
+    const result2 = commitImport(db, parsed2);
+
+    expect(result2.updatedDonations).toBe(0);
+    expect(result2.warnings.some((w) => w.includes("fmv_usd"))).toBe(true);
+
+    const dbRow = db
+      .prepare("SELECT fmv_usd FROM donations WHERE symbol_raw = 'FAKE'")
+      .get() as { fmv_usd: number };
+    expect(dbRow.fmv_usd).toBe(1234.5); // unchanged — no silent overwrite
+
+    // Pin the exact conflicting field via the typed outcome (CommitResult only
+    // surfaces this as warning text; re-running commitDonations against the
+    // now-settled DB state is idempotent — still a conflict, no new writes).
+    const outcome = commitDonations(db, parsed2.donations!, result2.batchId);
+    expect(outcome.identityConflicts).toEqual([
+      { sourceKey: fakeDonation2.sourceKey, field: "fmv_usd" },
+    ]);
+  });
+
   it("blocks (does not insert) donations whose sourceKey carries the null-created collision marker, and commitImport warns about it", async () => {
     const collidingCsv = [
       HEADER,
