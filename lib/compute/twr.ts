@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { excludeLiveSnapshotsSql } from "@/lib/db/live-sources";
-import { SIGNED_EXTERNAL_FLOW_SQL } from "@/lib/compute/flow-adjusted";
+import { SIGNED_EXTERNAL_FLOW_SQL, IN_KIND_LEG_SQL } from "@/lib/compute/flow-adjusted";
 import {
   SNAPSHOT_FIRSTS_CTE,
   EXPECTED_ACCOUNTS_SQL,
@@ -73,9 +73,13 @@ interface AggregatedSnapshotRow {
 }
 
 /** AggregatedSnapshotRow that survived the full-coverage filter, carrying
- *  any skipped months' deposits forward so Dietz flows aren't lost. */
+ *  any skipped months' deposits forward so Dietz flows aren't lost.
+ *  carried_inkind carries skipped months' in-kind transfer FMV the same way
+ *  (spec §6.5 — a donation/journal leg in a statement-lag month must not
+ *  vanish just because that month got dropped from the aggregate). */
 interface CoveredSnapshotRow extends AggregatedSnapshotRow {
   carried_deposits: number;
+  carried_inkind: number;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -209,6 +213,25 @@ export function computeTwr(
      ORDER BY trade_date ASC`
   );
 
+  // In-kind transfer legs (TRANSFER_IN/OUT with security_id set) are never
+  // reflected in monthly_snapshots.deposits_withdrawals — a statement only
+  // reports CASH flows. When a month is read from the snapshot's own
+  // deposits_withdrawals (the two branches below), its FMV donation/journal
+  // flow would otherwise be silently omitted. The transaction-fallback
+  // branch (cashFlowStmt above, no type filter) already includes these rows
+  // — this statement is used ONLY inside the two snapshot-preferred
+  // branches, never alongside the fallback (spec §6.5 union rule: augment,
+  // never double-add).
+  const inKindFlowStmt = db.prepare(
+    `SELECT trade_date, ${SIGNED_EXTERNAL_FLOW_SQL} AS amount
+     FROM transactions
+     WHERE account_id = ?
+       AND is_external_flow = 1
+       AND trade_date >= ? AND trade_date <= ?
+       AND ${IN_KIND_LEG_SQL}
+     ORDER BY trade_date ASC`
+  );
+
   // Also get the snapshot just before our range for V_start of first month
   const priorSnapshotStmt = db.prepare(
     `SELECT total_value
@@ -221,6 +244,27 @@ export function computeTwr(
   );
 
   // ─── Per-account TWR ───────────────────────────────────────────
+
+  // Appends day-weighted in-kind transfer rows (weight = daysRemaining /
+  // totalDaysInMonth, matching the transaction-fallback branch's own
+  // per-flow weighting) to an existing weightedFlows array. Called ONLY
+  // from the two snapshot-preferred branches below — never from the
+  // fallback branch, which already includes these rows unfiltered.
+  function appendInKindFlows(
+    accountId: number,
+    mStart: string,
+    mEnd: string,
+    totalDaysInMonth: number,
+    weightedFlows: { amount: number; weight: number }[]
+  ): void {
+    const inKindRows = inKindFlowStmt.all(accountId, mStart, mEnd) as CashFlowRow[];
+    for (const row of inKindRows) {
+      if (row.amount == null) continue;
+      const daysRemaining = daysBetween(row.trade_date, mEnd);
+      const weight = totalDaysInMonth > 0 ? daysRemaining / totalDaysInMonth : 0;
+      weightedFlows.push({ amount: row.amount, weight });
+    }
+  }
 
   const perAccount: TwrResult[] = [];
 
@@ -318,9 +362,15 @@ export function computeTwr(
           decemberDeposits !== 0
             ? [{ amount: decemberDeposits, weight: 0.5 }]
             : [];
+        // Union in this December's in-kind transfer legs (spec §6.5) — the
+        // snapshot's cumulative deposits_withdrawals never carries them.
+        appendInKindFlows(account.id, mStart, mEnd, totalDaysInMonth, weightedFlows);
       } else if (snap.deposits_withdrawals != null && snap.deposits_withdrawals !== 0) {
         // Single mid-month flow approximation (weight = 0.5)
         weightedFlows = [{ amount: snap.deposits_withdrawals, weight: 0.5 }];
+        // Union in this month's in-kind transfer legs (spec §6.5) — the
+        // snapshot's cash deposits_withdrawals never carries them.
+        appendInKindFlows(account.id, mStart, mEnd, totalDaysInMonth, weightedFlows);
       } else {
         // Fall back to transaction-level flows
         const flows = cashFlowStmt.all(
@@ -469,6 +519,23 @@ export function computeTwr(
      ORDER BY trade_date ASC`
   );
 
+  // In-kind mirror of allFlowStmt (spec §6.5) — used two ways below: (1)
+  // day-weighted per-flow rows appended inside the effectiveDeposits !== 0
+  // branch for the CURRENT covered month, and (2) summed to a per-month
+  // total when accumulating a SKIPPED month's carry (mirrors how
+  // carriedDeposits already accumulates that month's cash
+  // deposits_withdrawals). Never used inside the transaction-fallback
+  // branch — allFlowStmt (no type filter) already includes these rows.
+  const allInKindFlowStmt = db.prepare(
+    `SELECT trade_date, SUM(${SIGNED_EXTERNAL_FLOW_SQL}) AS amount
+     FROM transactions
+     WHERE is_external_flow = 1
+       AND trade_date >= ? AND trade_date <= ?
+       AND ${IN_KIND_LEG_SQL}${scopeAnd("account_id")}
+     GROUP BY trade_date
+     ORDER BY trade_date ASC`
+  );
+
   // Pre-compute December annual deposit corrections.
   // Some December rows have cumulative annual deposits_withdrawals instead of monthly.
   // The aggregated SUM includes these inflated values, so we correct them here.
@@ -537,15 +604,28 @@ export function computeTwr(
   // so multi-month Dietz periods keep their flows.
   const coveredSnapshots: CoveredSnapshotRow[] = [];
   let carriedDeposits = 0;
+  let carriedInKind = 0;
   for (const snap of aggSnapshots) {
     if (snap.present_accounts < snap.expected_accounts) {
       portfolioPartial = true;
       const correction = decemberCorrections.get(snap.month_end_date) ?? 0;
       carriedDeposits += snap.total_deposits_withdrawals - correction;
+      // Carry this skipped month's in-kind FMV flows too — same treatment
+      // as carriedDeposits, so a donation/journal leg dated inside a
+      // statement-lag month rides forward into the next covered month
+      // instead of vanishing (spec §6.5).
+      const skippedMonthStart = monthStartDate(snap.month_end_date);
+      const skippedInKindRows = allInKindFlowStmt.all(
+        skippedMonthStart,
+        snap.month_end_date,
+        ...scopeParams
+      ) as CashFlowRow[];
+      carriedInKind += skippedInKindRows.reduce((sum, row) => sum + (row.amount ?? 0), 0);
       continue;
     }
-    coveredSnapshots.push({ ...snap, carried_deposits: carriedDeposits });
+    coveredSnapshots.push({ ...snap, carried_deposits: carriedDeposits, carried_inkind: carriedInKind });
     carriedDeposits = 0;
+    carriedInKind = 0;
   }
 
   for (let i = 0; i < coveredSnapshots.length; i++) {
@@ -568,12 +648,26 @@ export function computeTwr(
     // Use aggregated deposits_withdrawals, corrected for December annual rows
     const correction = decemberCorrections.get(snap.month_end_date) ?? 0;
     const effectiveDeposits =
-      snap.total_deposits_withdrawals - correction + snap.carried_deposits;
+      snap.total_deposits_withdrawals - correction + snap.carried_deposits + snap.carried_inkind;
 
     let weightedFlows: { amount: number; weight: number }[];
 
     if (effectiveDeposits !== 0) {
       weightedFlows = [{ amount: effectiveDeposits, weight: 0.5 }];
+      // Union in THIS month's own in-kind transfer legs (spec §6.5) —
+      // distinct from carried_inkind above (a PRIOR skipped month's carry).
+      // Day-weighted by their own trade_date, matching the fallback
+      // branch's per-flow weighting below.
+      const mStart = monthStartDate(snap.month_end_date);
+      const mEnd = snap.month_end_date;
+      const totalDaysInMonth = daysInMonth(snap.month_end_date);
+      const inKindFlows = allInKindFlowStmt.all(mStart, mEnd, ...scopeParams) as CashFlowRow[];
+      for (const flow of inKindFlows) {
+        if (flow.amount == null) continue;
+        const daysRemaining = daysBetween(flow.trade_date, mEnd);
+        const weight = totalDaysInMonth > 0 ? daysRemaining / totalDaysInMonth : 0;
+        weightedFlows.push({ amount: flow.amount, weight });
+      }
     } else {
       const mStart = monthStartDate(snap.month_end_date);
       const mEnd = snap.month_end_date;
