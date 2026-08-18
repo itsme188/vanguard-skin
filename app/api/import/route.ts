@@ -16,7 +16,7 @@ import { computeDailyValuations } from "@/lib/compute/daily-valuation";
 import { detectNewTradeReviewPeriods } from "@/lib/compute/trade-roundtrips";
 import { buildStatementKey, isR2Configured, uploadStatementPdf } from "@/lib/storage/r2";
 import { setImportBatchR2Key } from "@/lib/mutations/import-batches";
-import { undoImportWithRecovery } from "@/lib/import/recovery";
+import { undoImportWithRecovery, RecoveryManifestWriteError } from "@/lib/import/recovery";
 import {
   issueUndoToken,
   consumeUndoToken,
@@ -390,9 +390,30 @@ export function handleUndoRequest(
 
   recordUndo(now);
 
-  const { manifestPath } = undoImportWithRecovery(database, batchId, {
-    manifestDir: opts.manifestDir,
-  });
+  let manifestPath: string;
+  try {
+    ({ manifestPath } = undoImportWithRecovery(database, batchId, {
+      manifestDir: opts.manifestDir,
+    }));
+  } catch (err) {
+    // The safety snapshot is written BEFORE the destructive delete, so a
+    // failed write means the batch is still fully intact — say so in domain
+    // language instead of echoing a raw Node error + filesystem path (QA
+    // import-undo--500-eperm-recovery-manifest-in-app-bundle: the packaged
+    // app's read-only bundle produced EPERM and the path leaked into the UI).
+    if (err instanceof RecoveryManifestWriteError) {
+      console.error("[undo] Recovery manifest write failed:", err.dir, err.cause);
+      return {
+        status: 500,
+        body: {
+          success: false,
+          error:
+            "Undo stopped before making any change: the safety snapshot of this import could not be saved, so nothing was deleted. Check that the app's data folder is writable, then try again.",
+        },
+      };
+    }
+    throw err;
+  }
 
   return {
     status: 200,
