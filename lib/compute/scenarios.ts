@@ -148,18 +148,15 @@ export function computeScenario(
   const positionImpacts: PositionImpact[] = positions.map((pos) => {
     const beta = estimateBeta(pos.security_type, pos.sector, pos.style, pos.market_cap_category);
 
-    let changePercent: number;
-
-    if (scenario.category === "rate" && scenario.rateMove) {
-      // Rate scenario: bonds hit harder, growth stocks hit moderately
-      changePercent = estimateRateImpact(
-        pos.security_type,
-        pos.style,
-        scenario.rateMove,
-        scenario.marketMove,
-        pos.duration_years
-      );
-    } else if (scenario.sectorMoves) {
+    // QA fix (2026-08-18): legs compose ADDITIVELY — changePercent =
+    // marketLeg + rateLeg — instead of `category` switching the whole model.
+    // marketLeg is always today's sector-aware beta logic; rateLeg is always
+    // computed independently whenever scenario.rateMove is a nonzero finite
+    // number, regardless of category or sectorMoves. Bond rateLeg uses a
+    // convexity-aware exponential (exp(-D*dy) - 1) so it can never reach
+    // -100% on its own, unlike the old unclamped linear duration estimate.
+    let marketLeg: number;
+    if (scenario.sectorMoves) {
       // Sector rotation: each sector slice of the position responds to its
       // own move (look-through for ETFs/mutual funds with cached weights;
       // single bucket otherwise), unmatched slices get the market move.
@@ -171,14 +168,24 @@ export function computeScenario(
         pos.sector
       );
       const mv = pos.market_value || 1;
-      changePercent = parts.reduce((sum, part) => {
+      marketLeg = parts.reduce((sum, part) => {
         const move = scenario.sectorMoves![part.sector] ?? scenario.marketMove;
         return sum + (part.value / mv) * move * beta;
       }, 0);
     } else {
       // Market scenario (default): scale by beta
-      changePercent = scenario.marketMove * beta;
+      marketLeg = scenario.marketMove * beta;
     }
+
+    const rateLeg =
+      typeof scenario.rateMove === "number" && Number.isFinite(scenario.rateMove) && scenario.rateMove !== 0
+        ? estimateRateLeg(pos.security_type, scenario.rateMove, pos.duration_years)
+        : 0;
+
+    let changePercent = marketLeg + rateLeg;
+    // A long position can't lose more than its full value; shorts are left
+    // unclamped (a short's gain on the loss side is not "impossible").
+    if (pos.market_value > 0) changePercent = Math.max(changePercent, -1);
 
     const estimatedChange = pos.market_value * changePercent;
 
@@ -267,31 +274,35 @@ function estimateBeta(
   return beta;
 }
 
-function estimateRateImpact(
+/**
+ * The rate leg of a shock — applied independently of `category`/sectorMoves
+ * whenever scenario.rateMove is set. Equities have no rate leg here: the
+ * old Growth 1.3 / Value 0.7 rate-category amplification of marketMove is
+ * gone — that style sensitivity already lives inside estimateBeta via the
+ * marketLeg, and folding it into rateLeg too would double-count it.
+ */
+function estimateRateLeg(
   securityType: string,
-  style: string | null,
   rateBps: number,
-  marketMove: number,
   durationYears?: number | null
 ): number {
-  const rateChange = rateBps / 100; // convert bps to %
-
   const type = securityType.toLowerCase();
-  // Bonds: duration-based estimate (use actual duration if available, else assume 5yr)
+
+  // Bonds: convexity-aware exponential duration estimate (use actual
+  // duration if available, else assume 5yr). exp(-D*dy) - 1 is smooth and
+  // monotonic in dy and asymptotes to -1 without ever reaching it, unlike
+  // the old linear -duration*rateChange/100 which could exceed -100%.
   if (type === "bond") {
     const duration = durationYears ?? 5;
-    return -duration * rateChange / 100;
+    const dy = rateBps / 10000; // basis points -> decimal rate change
+    return Math.exp(-duration * dy) - 1;
   }
 
-  // Money market benefits slightly from higher rates
+  // Money market benefits slightly from higher rates (unchanged magnitude).
   if (type === "money market" || type === "money_market") {
-    return rateChange * 0.002; // tiny positive
+    return (rateBps / 100) * 0.002; // tiny positive
   }
 
-  // Equities: growth stocks hurt more by rate rises
-  let impact = marketMove;
-  if (style === "Growth") impact *= 1.3;
-  if (style === "Value") impact *= 0.7;
-
-  return impact;
+  // Everything else: no independent rate leg.
+  return 0;
 }

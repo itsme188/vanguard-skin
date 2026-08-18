@@ -88,6 +88,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (rateMove != null && (typeof rateMove !== "number" || !Number.isFinite(rateMove))) {
+      return NextResponse.json(
+        { success: false, error: "rateMove must be a finite number (basis points)" },
+        { status: 400 }
+      );
+    }
+
     const hasSectorMoves = sectorMoves && Object.keys(sectorMoves).length > 0;
 
     const scenario: ScenarioDefinition = {
