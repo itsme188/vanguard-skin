@@ -29,7 +29,7 @@ import { readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { db } from "@/lib/db";
 import {
-  DEFAULT_MANIFEST_DIR,
+  defaultManifestDir,
   readRecoveryManifest,
   verifyManifest,
   restoreImportBatch,
@@ -51,7 +51,7 @@ function latestForBatch(dir: string, batchId: number): string | null {
 
 function main(): void {
   const args = process.argv.slice(2);
-  const dir = DEFAULT_MANIFEST_DIR;
+  const dir = defaultManifestDir();
 
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
     console.log(
