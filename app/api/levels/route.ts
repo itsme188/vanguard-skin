@@ -51,6 +51,30 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
+    // QA security-detail-levels--negative-price-accepted-armed: price -50 was
+    // accepted, stored armed + auto_approved, and rendered "-$50.00 · 1559.8%
+    // away" in the Armed inbox — a point off the price axis that no scan can
+    // ever cross. Same create-only shape as the expiry guard below (POST never
+    // carries an `id`), so PATCH edits and in-process upsertLevel callers
+    // (sync/import/newsletter-accept) are untouched.
+    //
+    // Zero is only rejected for STATIC levels: on an MA-based level `price` is
+    // just a reference echo (resolveLevelPrice recomputes from ohlcv_bars) and
+    // the Add form legitimately sends `currentPrice ?? 0` there.
+    const priceSource = typeof body.price_source === "string" ? body.price_source : "static";
+    const priceInvalid =
+      !Number.isFinite(body.price) ||
+      body.price < 0 ||
+      (priceSource === "static" && body.price <= 0);
+    if (priceInvalid) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `Price ${body.price} is not a valid level price — a level marks a point on the price axis, so it must be a positive dollar amount.`,
+        },
+        { status: 400 }
+      );
+    }
     // QA security-detail-levels--past-expiry-accepted-renders-armed-never-fires:
     // a brand-new level with an already-past expires_at used to be accepted
     // silently (200) and render in the active list looking armed, but

@@ -136,6 +136,98 @@ describe("POST /api/levels — past-expiry guard on create", () => {
   });
 });
 
+/**
+ * QA security-detail-levels--negative-price-accepted-armed: POST /api/levels
+ * accepted price -50, wrote it armed + auto_approved, and the Armed inbox
+ * rendered "-$50.00 · 1559.8% away". A price level is a point on the price
+ * axis; a negative one can never be crossed. Mirrors the past-expiry guard
+ * above: honest 400, nothing written.
+ */
+describe("POST /api/levels — non-positive price guard on create", () => {
+  it("rejects a negative price (400, honest envelope, nothing written)", async () => {
+    const secId = seedSecurity(hoisted.db, "AAPL");
+
+    const mod = await import("@/app/api/levels/route");
+    const res = await mod.POST(
+      postReq({ security_id: secId, level_type: "entry", price: -50 })
+    );
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { success: boolean; error: string };
+    expect(body.success).toBe(false);
+    expect(body.error).toContain("-50");
+
+    const rows = hoisted.db
+      .prepare("SELECT COUNT(*) as n FROM security_levels")
+      .get() as { n: number };
+    expect(rows.n).toBe(0);
+  });
+
+  it("rejects a zero price on a static level", async () => {
+    const secId = seedSecurity(hoisted.db, "AAPL");
+
+    const mod = await import("@/app/api/levels/route");
+    const res = await mod.POST(
+      postReq({ security_id: secId, level_type: "entry", price: 0, price_source: "static" })
+    );
+
+    expect(res.status).toBe(400);
+    expect(
+      (hoisted.db.prepare("SELECT COUNT(*) as n FROM security_levels").get() as { n: number }).n
+    ).toBe(0);
+  });
+
+  it("rejects a non-finite price", async () => {
+    const secId = seedSecurity(hoisted.db, "AAPL");
+
+    const mod = await import("@/app/api/levels/route");
+    // NaN can't survive JSON, so hand the route a body object directly.
+    const res = await mod.POST({
+      json: async () => ({ security_id: secId, level_type: "entry", price: Number.NaN }),
+    } as unknown as NextRequest);
+
+    expect(res.status).toBe(400);
+  });
+
+  it("accepts a normal positive price (200)", async () => {
+    const secId = seedSecurity(hoisted.db, "AAPL");
+
+    const mod = await import("@/app/api/levels/route");
+    const res = await mod.POST(
+      postReq({ security_id: secId, level_type: "entry", price: 180 })
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; id: number };
+    expect(getLevelById(hoisted.db, body.id)!.price).toBe(180);
+  });
+
+  it("still accepts a 0 reference price on an MA-based level", async () => {
+    // For price_source != 'static' the stored `price` is only a reference echo
+    // — resolveLevelPrice recomputes the effective price from ohlcv_bars, and
+    // the Add form sends `currentPrice ?? 0`, so 0 is legitimate here.
+    const secId = seedSecurity(hoisted.db, "AAPL");
+
+    const mod = await import("@/app/api/levels/route");
+    const res = await mod.POST(
+      postReq({ security_id: secId, level_type: "entry", price: 0, price_source: "sma_50" })
+    );
+
+    expect(res.status).toBe(200);
+  });
+
+  it("rejects a negative price even on an MA-based level", async () => {
+    const secId = seedSecurity(hoisted.db, "AAPL");
+
+    const mod = await import("@/app/api/levels/route");
+    const res = await mod.POST(
+      postReq({ security_id: secId, level_type: "entry", price: -50, price_source: "sma_50" })
+    );
+
+    expect(res.status).toBe(400);
+  });
+});
+
 describe("PATCH /api/levels — update path is not gated by the past-expiry guard", () => {
   it("still allows editing a level while keeping its already-past expires_at", async () => {
     // Simulates a historical/legacy level (e.g. a sync re-upsert or an old
