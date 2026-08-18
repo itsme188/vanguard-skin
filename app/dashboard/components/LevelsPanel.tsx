@@ -833,9 +833,11 @@ export function LevelsPanel({
               <input
                 type="number"
                 step="0.01"
+                min="0.01"
                 value={price}
                 onChange={(e) => setPrice(e.target.value)}
                 required={priceSource === "static"}
+                title="A level marks a point on the price axis — it must be a positive amount."
                 placeholder={
                   priceSource === "static"
                     ? (currentPrice ? currentPrice.toFixed(2) : "0.00")
