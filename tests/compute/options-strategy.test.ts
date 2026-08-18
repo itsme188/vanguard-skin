@@ -3,8 +3,15 @@ import {
   detectStrategies,
   type PositionLeg,
 } from "@/lib/compute/options-strategy";
+import { todayET, addDays } from "@/lib/calendar/date-utils";
 
 // ─── Helpers ────────────────────────────────────────────────────
+
+// detectStrategies drops contracts that already expired, so the shared
+// fixtures need a LIVE expiry. Anchored a year ahead of today (ET) rather
+// than hardcoded, so these tests can never rot into "expired" the way a
+// fixed 2026-06-19 did.
+const LIVE_EXPIRY = addDays(todayET(), 365);
 
 function stock(symbol: string, qty: number, price?: number): PositionLeg {
   return {
@@ -24,7 +31,7 @@ function option(
   qty: number,
   opts?: { expiry?: string; price?: number }
 ): PositionLeg {
-  const expiry = opts?.expiry ?? "2026-06-19";
+  const expiry = opts?.expiry ?? LIVE_EXPIRY;
   return {
     symbol: `${underlying.padEnd(6)}${expiry.replace(/-/g, "").slice(2)}${type[0]}${String(strike * 1000).padStart(8, "0")}`,
     underlying,
@@ -156,6 +163,93 @@ describe("detectStrategies", () => {
     const types = strategies.map((s) => s.type);
     expect(types).toContain("covered_call");
     expect(types).toContain("protective_put");
+  });
+
+  // QA analysis-detected-strategies--expired-option-rendered-live-protective-put:
+  // a put that expired 2026-08-14 still rendered as a live protective put with
+  // a MAX LOSS figure, while the Options Greeks table on the same page marked
+  // it expired and the Defense hedge book / Option Expirations panel had
+  // already excluded it. An expired contract is not a position.
+  describe("expired contracts", () => {
+    const yesterday = addDays(todayET(), -1);
+    const today = todayET();
+    const tomorrow = addDays(todayET(), 1);
+
+    it("drops a protective put whose contract expired yesterday", () => {
+      const positions = [
+        stock("MSFT", 200, 400),
+        option("MSFT", "PUT", 380, 2, { expiry: yesterday, price: 8 }),
+      ];
+      expect(detectStrategies(positions)).toEqual([]);
+    });
+
+    it("keeps a contract expiring TODAY (it can still be exercised/traded)", () => {
+      const positions = [
+        stock("MSFT", 200, 400),
+        option("MSFT", "PUT", 380, 2, { expiry: today, price: 8 }),
+      ];
+      const types = detectStrategies(positions).map((s) => s.type);
+      expect(types).toContain("protective_put");
+    });
+
+    it("keeps a contract expiring tomorrow", () => {
+      const positions = [
+        stock("MSFT", 200, 400),
+        option("MSFT", "PUT", 380, 2, { expiry: tomorrow, price: 8 }),
+      ];
+      const types = detectStrategies(positions).map((s) => s.type);
+      expect(types).toContain("protective_put");
+    });
+
+    it("drops expired legs from every strategy family, not just covered ones", () => {
+      const positions = [
+        option("AAPL", "CALL", 180, 1, { expiry: yesterday, price: 10 }),
+        option("AAPL", "CALL", 200, -1, { expiry: yesterday, price: 3 }),
+        option("AMZN", "CALL", 200, -2, { expiry: yesterday, price: 4 }),
+      ];
+      expect(detectStrategies(positions)).toEqual([]);
+    });
+
+    it("also understands the YYYYMMDD expiry spelling some TWS rows carry", () => {
+      const compact = (iso: string) => iso.replace(/-/g, "");
+      const expired = [
+        stock("MSFT", 200, 400),
+        option("MSFT", "PUT", 380, 2, { expiry: compact(yesterday), price: 8 }),
+      ];
+      const live = [
+        stock("MSFT", 200, 400),
+        option("MSFT", "PUT", 380, 2, { expiry: compact(tomorrow), price: 8 }),
+      ];
+      expect(detectStrategies(expired)).toEqual([]);
+      expect(detectStrategies(live).map((s) => s.type)).toContain("protective_put");
+    });
+
+    it("accepts an explicit `today` so callers can pin the cutoff", () => {
+      const positions = [
+        stock("MSFT", 200, 400),
+        option("MSFT", "PUT", 380, 2, { expiry: "2026-08-14", price: 8 }),
+      ];
+      expect(detectStrategies(positions, { today: "2026-08-15" })).toEqual([]);
+      expect(detectStrategies(positions, { today: "2026-08-14" }).map((s) => s.type)).toContain(
+        "protective_put"
+      );
+    });
+
+    it("keeps a contract with no/unparseable expiration rather than guessing", () => {
+      const noExpiry: PositionLeg = {
+        symbol: "MSFT  UNKNOWN",
+        underlying: "MSFT",
+        securityType: "option",
+        optionType: "PUT",
+        strike: 380,
+        expiration: undefined,
+        quantity: 2,
+        multiplier: 100,
+        currentPrice: 8,
+      };
+      const types = detectStrategies([stock("MSFT", 200, 400), noExpiry]).map((s) => s.type);
+      expect(types).toContain("protective_put");
+    });
   });
 
   it("separates strategies by underlying", () => {
