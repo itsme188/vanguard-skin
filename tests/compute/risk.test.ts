@@ -794,6 +794,73 @@ describe("multi-account scope (accountIds[])", () => {
   });
 });
 
+/**
+ * QA analysis-risk-scope-all--position-values-single-account-leg-dropped.
+ *
+ * latestHoldingsPredicate resolves per (account, security) — correctly, since
+ * one account's statement date routinely trails another's. computeConcentration
+ * then treated each surviving ROW as its own position, so a name held in two
+ * accounts (SPY: 21.16 sh in Vanguard + 100 sh in IBKR) showed up as two
+ * smaller positions instead of one real one. Consequences: top5 / Herfindahl /
+ * positionCount all understated the portfolio's true concentration, and the
+ * page rendered two disagreeing Herfindahls at scope=all. Positions must be
+ * SUMMED per security across the scope.
+ */
+describe("concentration merges a security held in several accounts", () => {
+  let db: Database.Database;
+  const today = new Date().toISOString().slice(0, 10);
+
+  beforeEach(() => {
+    db = createTestDb();
+    db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Vanguard'), (3, 'IBKR')");
+    db.exec("INSERT INTO securities (id, symbol, name) VALUES (1, 'SPY', 'S&P 500 ETF'), (2, 'AAPL', 'Apple')");
+    // SPY straddles both accounts; AAPL sits in one.
+    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 1, ?, 21.16)").run(today);
+    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (3, 1, ?, 100)").run(today);
+    db.prepare("INSERT INTO holdings (account_id, security_id, as_of_date, quantity) VALUES (1, 2, ?, 100)").run(today);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (1, ?, 773)").run(today);
+    db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (2, ?, 200)").run(today);
+  });
+
+  const SPY_TOTAL = 121.16 * 773; // 93,656.68 — both legs, not just the IBKR one
+
+  it("reports one SPY position worth the SUM of both legs (whole portfolio)", () => {
+    const result = computeRiskMetrics(db);
+
+    const spy = result.top5Positions.filter((p) => p.symbol === "SPY");
+    expect(spy).toHaveLength(1);
+    expect(spy[0].marketValue).toBeCloseTo(SPY_TOTAL, 2);
+    expect(result.positionCount).toBe(2); // SPY + AAPL, not three rows
+  });
+
+  it("does the same for an explicit multi-account scope", () => {
+    const result = computeRiskMetrics(db, { accountIds: [1, 3] });
+
+    const spy = result.top5Positions.filter((p) => p.symbol === "SPY");
+    expect(spy).toHaveLength(1);
+    expect(spy[0].marketValue).toBeCloseTo(SPY_TOTAL, 2);
+  });
+
+  it("computes Herfindahl and top-5 on the merged positions", () => {
+    const result = computeRiskMetrics(db, { accountIds: [1, 3] });
+
+    const total = SPY_TOTAL + 100 * 200;
+    const wSpy = SPY_TOTAL / total;
+    const wAapl = (100 * 200) / total;
+    expect(result.herfindahl!).toBeCloseTo(wSpy ** 2 + wAapl ** 2, 6);
+    expect(result.top5Positions[0].symbol).toBe("SPY"); // merged SPY outranks AAPL
+    expect(result.top5Positions[0].weight).toBeCloseTo(wSpy, 6);
+    expect(result.top5Concentration).toBeCloseTo(1, 6);
+  });
+
+  it("still scopes correctly to a single account", () => {
+    const vanguard = computeRiskMetrics(db, { accountIds: [1] });
+    const spy = vanguard.top5Positions.filter((p) => p.symbol === "SPY");
+    expect(spy).toHaveLength(1);
+    expect(spy[0].marketValue).toBeCloseTo(21.16 * 773, 2);
+  });
+});
+
 describe("computeRiskMetrics coverage-jump guard", () => {
   it("multi-account metrics ignore dates before all scoped accounts have coverage", () => {
     const db = createTestDb();
