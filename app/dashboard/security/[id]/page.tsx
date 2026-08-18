@@ -25,6 +25,7 @@ import { computeSecurityFactorShare } from "@/lib/compute/factors";
 import { getSecurityQuote } from "@/lib/queries/security-quotes";
 import { QuoteStats } from "../../components/QuoteStats";
 import { Money, Pct, Shares } from "@/lib/privacy/components";
+import { computeLotCoverageGaps } from "@/lib/compute/lot-coverage";
 import type { EarningsTranscript } from "@/lib/types";
 
 function gainClass(value: number | null): string {
@@ -177,6 +178,14 @@ export default async function SecurityDetailPage(props: {
   if (!detail) notFound();
 
   const { security, price, kpis, positions, openTaxLots, closedSales, recentTransactions, relatedOptionTransactions, notes, upcomingEvents, factors, transcripts, tradeGrades, researchMentions } = detail;
+
+  // Per-account reconciliation: a position's quantity should equal the sum of
+  // that account's open tax lots. Statement import and computeTaxLots are
+  // independent pipelines, so they can silently drift (partial lot backfill,
+  // or a whole account leg with no lots at all) — surfaced here rather than
+  // left as an unexplained contradiction between the two sections below.
+  const lotCoverageGaps = computeLotCoverageGaps(positions, openTaxLots);
+
   const watched = isOnWatchlist(db, securityId);
   const watchlistItem = watched ? getWatchlistItem(db, securityId) : null;
 
@@ -427,6 +436,27 @@ export default async function SecurityDetailPage(props: {
             </Link>
           }
         >
+          {lotCoverageGaps.length > 0 && (
+            <div className="px-5 py-3 border-b border-edge flex flex-col gap-1">
+              {lotCoverageGaps.map((gap) => (
+                <p key={gap.accountId} className="text-xs text-ink-faint">
+                  <span className="text-ink-dim">{gap.accountName}</span>: lots cover{" "}
+                  <Shares value={gap.coveredQty} /> of <Shares value={gap.positionQty} /> shares
+                  {" — "}
+                  {gap.missingQty > 0 ? (
+                    <>
+                      <Shares value={gap.missingQty} /> shares have no cost-basis history
+                    </>
+                  ) : (
+                    <>
+                      <Shares value={Math.abs(gap.missingQty)} /> more shares in lots than the
+                      position shows
+                    </>
+                  )}
+                </p>
+              ))}
+            </div>
+          )}
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
