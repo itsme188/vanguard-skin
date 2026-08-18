@@ -369,6 +369,51 @@ describe("droppedLegs surfacing (unknown / unheld legs must not silently no-op)"
     expect(result.after.totalValue).toBeCloseTo(result.before.totalValue + 5000, 2);
   });
 
+  // QA analysis-whatif--negative-amount-silent-zero-table: a negative amount
+  // was skipped inside applyLegs with a bare `continue`, so the response was a
+  // confident all-zero before/after table with no message at all — while the
+  // unknown-symbol path warns and sibling Cash-Deploy rejects negatives
+  // outright. A skipped leg must always say why.
+  it("reports a negative-amount leg as dropped instead of a silent no-op", () => {
+    const result = computeExposureDelta(db, "all", undefined, [
+      { symbol: "AAPL", action: "buy", dollarAmount: -5000 },
+    ]);
+    expect(result.after.totalValue).toBeCloseTo(result.before.totalValue, 2);
+    expect(result.droppedLegs).toEqual([{ symbol: "AAPL", reason: "invalid_amount" }]);
+  });
+
+  it("reports a zero / non-finite amount the same way", () => {
+    expect(
+      computeExposureDelta(db, "all", undefined, [
+        { symbol: "AAPL", action: "buy", dollarAmount: 0 },
+      ]).droppedLegs,
+    ).toEqual([{ symbol: "AAPL", reason: "invalid_amount" }]);
+
+    expect(
+      computeExposureDelta(db, "all", undefined, [
+        { symbol: "JNJ", action: "sell", dollarAmount: Number.NaN },
+      ]).droppedLegs,
+    ).toEqual([{ symbol: "JNJ", reason: "invalid_amount" }]);
+  });
+
+  it("reports a negative amount even for a symbol that isn't held or known", () => {
+    const result = computeExposureDelta(db, "all", undefined, [
+      { symbol: "zzzztestxyz", action: "buy", dollarAmount: -1 },
+    ]);
+    // The amount is the first thing wrong with the leg — report that, and
+    // uppercase the symbol like every other dropped leg.
+    expect(result.droppedLegs).toEqual([{ symbol: "ZZZZTESTXYZ", reason: "invalid_amount" }]);
+  });
+
+  it("mixed basket: the valid leg still applies while the negative one is reported", () => {
+    const result = computeExposureDelta(db, "all", undefined, [
+      { symbol: "AAPL", action: "buy", dollarAmount: 1000 },
+      { symbol: "JNJ", action: "sell", dollarAmount: -500 },
+    ]);
+    expect(result.after.totalValue).toBeCloseTo(result.before.totalValue + 1000, 2);
+    expect(result.droppedLegs).toEqual([{ symbol: "JNJ", reason: "invalid_amount" }]);
+  });
+
   it("resolves an unheld security typed with collapsed whitespace via lookup", () => {
     const today = new Date().toISOString().slice(0, 10);
     db.prepare(
