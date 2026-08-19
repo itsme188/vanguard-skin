@@ -9,7 +9,7 @@
  * cloud-fallback artifact — the pipeline itself must treat an all-defaults
  * parse as a FAILED extraction, not a successful neutral read.
  *
- * Covers processUnprocessedArticles' new guard:
+ * Covers processUnprocessedArticles' guard:
  *   1. An all-defaults result (empty summary AND empty key_themes) does NOT
  *      stamp processed_at and does NOT store the fabricated 'neutral'
  *      sentiment — the row is left untouched for the next pass to retry.
@@ -19,12 +19,23 @@
  *   3. isEmptyEnrichmentResult, the exported predicate, matches only the
  *      true all-defaults shape.
  *
- * Mocks generateObjectForFeature (no real AI calls) — same pattern as
+ * Also covers the retry cap added on top of that guard: a persistently
+ * failing article (empty parse OR hard error) increments
+ * research_articles.enrich_attempts each pass, drops out of the retry queue
+ * once it hits MAX_ENRICH_ATTEMPTS, and gets excluded as
+ * 'enrichment_failed' — so the LIMIT-20 queue head can't wedge on a
+ * permanently-broken article.
+ *
+ * Uses runMigrations (:memory: SQLite) so the real schema — including
+ * migration 083's enrich_attempts column — is present, same pattern as
+ * tests/scripts/repair-empty-enrichments.test.ts. Mocks
+ * generateObjectForFeature (no real AI calls) — same pattern as
  * tests/gmail/process-portfolio-relevance.test.ts.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import Database from "better-sqlite3";
+import { runMigrations } from "@/lib/db/migrate";
 
 vi.mock("ai", () => ({
   jsonSchema: <T,>(s: T) => s,
@@ -46,73 +57,48 @@ vi.mock("@/lib/research/verify-mentions", () => ({
 }));
 
 import { generateObjectForFeature } from "@/lib/ai/generate";
-import { processUnprocessedArticles, isEmptyEnrichmentResult } from "@/lib/gmail/process";
+import {
+  processUnprocessedArticles,
+  isEmptyEnrichmentResult,
+  MAX_ENRICH_ATTEMPTS,
+} from "@/lib/gmail/process";
 
 function makeDb(): Database.Database {
   const db = new Database(":memory:");
-  db.exec(`
-    CREATE TABLE research_sources (
-      id INTEGER PRIMARY KEY,
-      name TEXT NOT NULL,
-      processing_prompt TEXT,
-      allow_off_topic INTEGER NOT NULL DEFAULT 0
-    );
-    CREATE TABLE research_articles (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      source_id INTEGER NOT NULL,
-      subject TEXT NOT NULL,
-      sender TEXT NOT NULL,
-      raw_text TEXT NOT NULL,
-      received_at TEXT NOT NULL,
-      summary TEXT,
-      key_themes TEXT,
-      sentiment TEXT,
-      sentiment_score REAL,
-      mentioned_symbols TEXT,
-      portfolio_relevance TEXT,
-      ai_model TEXT,
-      processed_at TEXT,
-      is_relevant INTEGER NOT NULL DEFAULT 1,
-      excluded_category TEXT,
-      excluded_reason TEXT
-    );
-    CREATE TABLE research_article_securities (
-      article_id INTEGER NOT NULL,
-      security_id INTEGER NOT NULL,
-      mention_context TEXT,
-      sentiment TEXT,
-      UNIQUE(article_id, security_id)
-    );
-    CREATE TABLE securities (
-      id INTEGER PRIMARY KEY,
-      symbol TEXT NOT NULL UNIQUE,
-      name TEXT,
-      security_type TEXT
-    );
-    CREATE TABLE holdings (
-      id INTEGER PRIMARY KEY,
-      account_id INTEGER NOT NULL,
-      security_id INTEGER NOT NULL,
-      quantity REAL NOT NULL,
-      as_of_date TEXT NOT NULL
-    );
-    CREATE TABLE watchlist (
-      id INTEGER PRIMARY KEY,
-      security_id INTEGER NOT NULL,
-      is_active INTEGER NOT NULL DEFAULT 1
-    );
-  `);
-  db.prepare(
-    `INSERT INTO research_sources (id, name, allow_off_topic) VALUES (1, 'Test Source', 0)`,
-  ).run();
+  db.pragma("journal_mode = WAL");
+  db.pragma("foreign_keys = ON");
+  runMigrations(db);
   return db;
 }
 
-function insertUnprocessed(db: Database.Database, subject = "Empty parse test") {
-  db.prepare(
-    `INSERT INTO research_articles (source_id, subject, sender, raw_text, received_at)
-     VALUES (1, ?, 'x@x', 'long enough article body for processing', '2026-08-19')`,
-  ).run(subject);
+function insertSource(db: Database.Database): number {
+  const result = db
+    .prepare(`INSERT INTO research_sources (name) VALUES ('Test Source')`)
+    .run();
+  return result.lastInsertRowid as number;
+}
+
+function insertUnprocessed(
+  db: Database.Database,
+  sourceId: number,
+  subject = "Empty parse test",
+  enrichAttempts = 0,
+): number {
+  const result = db
+    .prepare(
+      `INSERT INTO research_articles
+         (source_id, gmail_message_id, subject, sender, raw_text, received_at, enrich_attempts)
+       VALUES (?, ?, ?, 'x@x', 'long enough article body for processing', '2026-08-19', ?)`,
+    )
+    .run(sourceId, `msg-${Math.random()}`, subject, enrichAttempts);
+  return result.lastInsertRowid as number;
+}
+
+/** Fresh :memory: db + one registered source — the common setup every test needs. */
+function setup(): { db: Database.Database; sourceId: number } {
+  const db = makeDb();
+  const sourceId = insertSource(db);
+  return { db, sourceId };
 }
 
 const ALL_DEFAULTS_RESPONSE = {
@@ -141,8 +127,8 @@ describe("processUnprocessedArticles — empty-enrichment guard", () => {
   });
 
   it("does NOT stamp processed_at and does NOT store a fabricated 'neutral' sentiment for an all-defaults parse", async () => {
-    const db = makeDb();
-    insertUnprocessed(db);
+    const { db, sourceId } = setup();
+    insertUnprocessed(db, sourceId);
     (generateObjectForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
       object: ALL_DEFAULTS_RESPONSE,
     });
@@ -184,8 +170,8 @@ describe("processUnprocessedArticles — empty-enrichment guard", () => {
   });
 
   it("does not link any securities when the parse is all-defaults, even if mentioned_symbols were somehow non-empty", async () => {
-    const db = makeDb();
-    insertUnprocessed(db);
+    const { db, sourceId } = setup();
+    insertUnprocessed(db, sourceId);
     db.prepare(`INSERT INTO securities (id, symbol, security_type) VALUES (1, 'AAPL', 'Stock')`).run();
     (generateObjectForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
       object: ALL_DEFAULTS_RESPONSE,
@@ -200,8 +186,8 @@ describe("processUnprocessedArticles — empty-enrichment guard", () => {
   });
 
   it("stores a genuine neutral enrichment with real summary text normally (does not break legitimate neutrals)", async () => {
-    const db = makeDb();
-    insertUnprocessed(db, "Fed holds rates steady");
+    const { db, sourceId } = setup();
+    insertUnprocessed(db, sourceId, "Fed holds rates steady");
     (generateObjectForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
       object: GENUINE_NEUTRAL_RESPONSE,
     });
@@ -228,8 +214,8 @@ describe("processUnprocessedArticles — empty-enrichment guard", () => {
   });
 
   it("stores normally when summary is empty but real themes were extracted (guard is AND, not OR)", async () => {
-    const db = makeDb();
-    insertUnprocessed(db, "Themes but no summary edge case");
+    const { db, sourceId } = setup();
+    insertUnprocessed(db, sourceId, "Themes but no summary edge case");
     (generateObjectForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
       object: { ...ALL_DEFAULTS_RESPONSE, key_themes: ["fed policy", "rates"] },
     });
@@ -242,6 +228,158 @@ describe("processUnprocessedArticles — empty-enrichment guard", () => {
 
     expect(row.processed_at).not.toBeNull();
     expect(JSON.parse(row.key_themes ?? "[]")).toEqual(["fed policy", "rates"]);
+    expect(result.processed).toBe(1);
+    expect(result.failed).toBe(0);
+  });
+});
+
+describe("processUnprocessedArticles — enrich_attempts retry cap", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("increments enrich_attempts by 1 per pass while the article keeps failing (empty-enrichment mode)", async () => {
+    const { db, sourceId } = setup();
+    const id = insertUnprocessed(db, sourceId);
+    (generateObjectForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      object: ALL_DEFAULTS_RESPONSE,
+    });
+
+    const attemptsAfter = (): number =>
+      (
+        db.prepare(`SELECT enrich_attempts FROM research_articles WHERE id = ?`).get(id) as {
+          enrich_attempts: number;
+        }
+      ).enrich_attempts;
+
+    await processUnprocessedArticles(db);
+    expect(attemptsAfter()).toBe(1);
+
+    await processUnprocessedArticles(db);
+    expect(attemptsAfter()).toBe(2);
+
+    // Still under the cap after two failures — not yet excluded.
+    const row = db
+      .prepare(`SELECT is_relevant, excluded_category, processed_at FROM research_articles WHERE id = ?`)
+      .get(id) as { is_relevant: number; excluded_category: string | null; processed_at: string | null };
+    expect(row.is_relevant).toBe(1);
+    expect(row.excluded_category).toBeNull();
+    expect(row.processed_at).toBeNull();
+  });
+
+  it("excludes the article as 'enrichment_failed' after the third failing pass", async () => {
+    const { db, sourceId } = setup();
+    const id = insertUnprocessed(db, sourceId);
+    (generateObjectForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      object: ALL_DEFAULTS_RESPONSE,
+    });
+
+    for (let i = 0; i < MAX_ENRICH_ATTEMPTS; i++) {
+      await processUnprocessedArticles(db);
+    }
+
+    const row = db
+      .prepare(
+        `SELECT enrich_attempts, is_relevant, excluded_category, excluded_reason, processed_at
+         FROM research_articles WHERE id = ?`,
+      )
+      .get(id) as {
+      enrich_attempts: number;
+      is_relevant: number;
+      excluded_category: string | null;
+      excluded_reason: string | null;
+      processed_at: string | null;
+    };
+
+    expect(row.enrich_attempts).toBe(MAX_ENRICH_ATTEMPTS);
+    expect(row.excluded_category).toBe("enrichment_failed");
+    expect(row.is_relevant).toBe(0);
+    expect(row.processed_at).not.toBeNull();
+    expect(row.excluded_reason).toMatch(/failed/i);
+  });
+
+  it("does not select (and does not call the AI mock for) an article already at enrich_attempts = MAX_ENRICH_ATTEMPTS", async () => {
+    const { db, sourceId } = setup();
+    insertUnprocessed(db, sourceId, "Already capped out", MAX_ENRICH_ATTEMPTS);
+    (generateObjectForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      object: GENUINE_NEUTRAL_RESPONSE,
+    });
+
+    const result = await processUnprocessedArticles(db);
+
+    expect(generateObjectForFeature).not.toHaveBeenCalled();
+    expect(result.processed).toBe(0);
+    expect(result.failed).toBe(0);
+  });
+
+  it("increments enrich_attempts on a hard-error failure too, and excludes the same way at the cap", async () => {
+    const { db, sourceId } = setup();
+    const id = insertUnprocessed(db, sourceId);
+    (generateObjectForFeature as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("simulated model outage"),
+    );
+
+    await processUnprocessedArticles(db);
+    let row = db
+      .prepare(`SELECT enrich_attempts, excluded_category, processed_at FROM research_articles WHERE id = ?`)
+      .get(id) as { enrich_attempts: number; excluded_category: string | null; processed_at: string | null };
+    expect(row.enrich_attempts).toBe(1);
+    expect(row.excluded_category).toBeNull();
+    expect(row.processed_at).toBeNull();
+
+    await processUnprocessedArticles(db);
+    const result = await processUnprocessedArticles(db);
+
+    row = db
+      .prepare(
+        `SELECT enrich_attempts, is_relevant, excluded_category, excluded_reason, processed_at
+         FROM research_articles WHERE id = ?`,
+      )
+      .get(id) as {
+      enrich_attempts: number;
+      is_relevant: number;
+      excluded_category: string | null;
+      excluded_reason: string | null;
+      processed_at: string | null;
+    };
+
+    expect(row.enrich_attempts).toBe(MAX_ENRICH_ATTEMPTS);
+    expect(row.excluded_category).toBe("enrichment_failed");
+    expect(row.is_relevant).toBe(0);
+    expect(row.processed_at).not.toBeNull();
+    expect(row.excluded_reason).toMatch(/failed/i);
+    expect(row.excluded_reason).toMatch(/simulated model outage/);
+    expect(result.failed).toBe(1);
+  });
+
+  it("processes normally on the third pass when an article that failed twice finally succeeds", async () => {
+    const { db, sourceId } = setup();
+    const id = insertUnprocessed(db, sourceId, "Recovers on third try", MAX_ENRICH_ATTEMPTS - 1);
+    (generateObjectForFeature as ReturnType<typeof vi.fn>).mockResolvedValue({
+      object: GENUINE_NEUTRAL_RESPONSE,
+    });
+
+    const result = await processUnprocessedArticles(db);
+
+    const row = db
+      .prepare(
+        `SELECT summary, sentiment, sentiment_score, processed_at, excluded_category, is_relevant
+         FROM research_articles WHERE id = ?`,
+      )
+      .get(id) as {
+      summary: string | null;
+      sentiment: string | null;
+      sentiment_score: number | null;
+      processed_at: string | null;
+      excluded_category: string | null;
+      is_relevant: number;
+    };
+
+    expect(row.processed_at).not.toBeNull();
+    expect(row.excluded_category).toBeNull();
+    expect(row.is_relevant).toBe(1);
+    expect(row.sentiment).toBe("neutral");
+    expect(row.summary).toBe(GENUINE_NEUTRAL_RESPONSE.summary);
     expect(result.processed).toBe(1);
     expect(result.failed).toBe(0);
   });
