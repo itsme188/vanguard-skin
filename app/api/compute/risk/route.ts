@@ -7,14 +7,17 @@ import { weekAgo } from "@/lib/calendar/date-utils";
 /**
  * Compute per-metric numeric delta between two risk snapshots (now vs week-ago).
  *
- * Note: maxDrawdown.percent, volatility, and sharpeRatio are time-series metrics
- * that operate on the full daily_valuations history — they DO NOT change with
- * asOfDate. Their deltas will be near-zero in steady state (the dataset has only
- * grown by 7 trading days). That's informational, not a bug — the W-o-W badge
- * will simply show ↑ +0.0 for these.
+ * maxDrawdown.percent, volatility, and sharpeRatio are time-series metrics
+ * computed from daily_valuations truncated to <= asOfDate (see RiskOptions.
+ * asOfDate in lib/compute/risk.ts) — the week-ago snapshot reflects the
+ * portfolio's history as it stood 7 days ago, not today's full series.
  *
- * Concentration metrics (herfindahl) DO change with asOfDate (per the asOfDate
- * JSDoc in RiskOptions) and will reflect actual rebalancing between the two dates.
+ * Concentration metrics (herfindahl) also change with asOfDate (per the
+ * asOfDate JSDoc in RiskOptions) and reflect actual rebalancing between the
+ * two dates.
+ *
+ * All four null out (not fake-zero) when the truncated week-ago window has
+ * too few observations to compute the metric — see the null guards below.
  */
 function computeRiskDelta(
   now: PortfolioRiskMetrics,

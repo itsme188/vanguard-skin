@@ -63,9 +63,13 @@ export interface FactorOptions {
   accountIds?: number[];
   benchmarkSymbol?: string; // default "SPY"
   /**
-   * If set (YYYY-MM-DD), compute tilts against holdings as of that date
-   * instead of today. The market regression is unaffected (it operates on
-   * daily valuations time-series). See latestHoldingsPredicate for details.
+   * If set (YYYY-MM-DD), compute AS OF that date instead of today: the
+   * tilts holdings snapshot (computeTilts) AND the daily-valuation window
+   * feeding the market regression (computeMarketRegression) are both
+   * truncated to dates <= asOfDate (2026-08-19 fix — pre-fix, the
+   * regression silently ignored asOfDate, so a "week-ago" beta/alpha/R² was
+   * byte-identical to "now" and the W-o-W badges always read "unchanged").
+   * See latestHoldingsPredicate for the holdings-side detail.
    */
   asOfDate?: string;
 }
@@ -105,10 +109,20 @@ function computeMarketRegression(
   // appearing account's whole value reads as a fake return and poisons
   // beta/alpha (the +89% phantom-alpha class; see fullCoverageHaving).
   const accountIds = normalizeAccountIds(options);
+  // asOfDate truncates the regression window to "as of that date" — without
+  // this, options.asOfDate was accepted but never read here, so a
+  // "week-ago" regression silently ran on the exact same full history as
+  // "now" (see FactorOptions.asOfDate).
   const valuations =
     accountIds && accountIds.length > 0
-      ? getDailyValuationsForAccounts(db, accountIds, { fullCoverageOnly: true })
-      : getDailyValuationsCombined(db, { fullCoverageOnly: true });
+      ? getDailyValuationsForAccounts(db, accountIds, {
+          fullCoverageOnly: true,
+          endDate: options?.asOfDate,
+        })
+      : getDailyValuationsCombined(db, {
+          fullCoverageOnly: true,
+          endDate: options?.asOfDate,
+        });
 
   if (valuations.length < 30) return null;
 
