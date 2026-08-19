@@ -204,8 +204,10 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
     }
   }
 
-  async function saveActuals(e: React.FormEvent) {
-    e.preventDefault();
+  // Shared by the form submit and the pre-print confirm-retry — force=true
+  // bypasses the server's pre-print floor (POST /api/earnings/actuals
+  // refuses a future-dated release with 409 code 'pre_print' otherwise).
+  async function submitActuals(force: boolean) {
     setSavingActuals(true);
     setError(null);
     try {
@@ -224,10 +226,26 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
           event_id: eventId,
           eps_actual,
           revenue_actual_usd,
+          force,
         }),
       });
-      const data = (await res.json()) as { error?: string };
-      if (!res.ok || data.error) {
+      const data = (await res.json()) as { error?: string; code?: string; success?: boolean };
+      if (!res.ok || !data.success) {
+        // Pre-print floor: this print's release time is still in the
+        // future. Offer a confirm-retry with force:true rather than a bare
+        // refusal — the desk sometimes does want to lock in a number early
+        // (e.g. a leaked/observed print ahead of the scheduled slot).
+        if (res.status === 409 && data.code === "pre_print" && !force) {
+          const confirmed = window.confirm(
+            `${data.error ?? "This print's release time is still in the future."}\n\nSave anyway?`,
+          );
+          if (confirmed) {
+            await submitActuals(true);
+            return;
+          }
+          setError(data.error ?? "Save cancelled — release time is still in the future.");
+          return;
+        }
         setError(data.error ?? `Server returned ${res.status}`);
         return;
       }
@@ -238,6 +256,11 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
     } finally {
       setSavingActuals(false);
     }
+  }
+
+  async function saveActuals(e: React.FormEvent) {
+    e.preventDefault();
+    await submitActuals(false);
   }
 
   async function remove(id: number) {

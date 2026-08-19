@@ -4,6 +4,7 @@ import {
   getDailyValuationsForAccounts,
   getDailyValuationsByAccount,
   getDailyValuationsCombined,
+  commonCoverageStart,
 } from "@/lib/queries/daily-valuations";
 
 function createTestDb(): Database.Database {
@@ -125,5 +126,50 @@ describe("fullCoverageOnly (coverage-jump guard)", () => {
       fullCoverageOnly: true,
     });
     expect(rows.map((r) => r.valuation_date)).toEqual(["2026-01-01", "2026-01-02"]);
+  });
+});
+
+// ── Scope-invariant coverage floor ──────────────────────────────────
+//
+// fullCoverageOnly self-calibrates PER SCOPE: scope=ibkr starts at IBKR's
+// own first covered date (2024-12-31 live), scope=vanguard at 2026-03-27,
+// scope=all at 2026-04-06 — three different measurement windows behind one
+// card, which is why the All-Accounts volatility could read LOWER than every
+// constituent account's. commonCoverageStart is the single window floor:
+// the LATEST of the per-account coverage starts.
+describe("commonCoverageStart", () => {
+  it("returns the latest per-account coverage start across all accounts", () => {
+    const db = createTestDb();
+    seed(db, 3, "2024-12-31", 500); // earliest-starting account
+    seed(db, 3, "2026-01-05", 520);
+    seed(db, 1, "2026-01-02", 100);
+    seed(db, 1, "2026-01-05", 110);
+    seed(db, 2, "2026-01-04", 50); // latest-starting account
+    seed(db, 2, "2026-01-05", 55);
+
+    expect(commonCoverageStart(db)).toBe("2026-01-04");
+  });
+
+  it("returns the single account's first date when only one account has rows", () => {
+    const db = createTestDb();
+    seed(db, 1, "2026-01-02", 100);
+    seed(db, 1, "2026-01-03", 110);
+
+    expect(commonCoverageStart(db)).toBe("2026-01-02");
+  });
+
+  it("ignores accounts that have no daily valuations at all", () => {
+    // Account 3 exists in `accounts` but never got valued — it must not
+    // push the floor to null/today (same self-calibration spirit as
+    // fullCoverageHaving's max-coverage calibration).
+    const db = createTestDb();
+    seed(db, 1, "2026-01-02", 100);
+    seed(db, 2, "2026-01-03", 50);
+
+    expect(commonCoverageStart(db)).toBe("2026-01-03");
+  });
+
+  it("returns null when there are no daily valuations", () => {
+    expect(commonCoverageStart(createTestDb())).toBeNull();
   });
 });

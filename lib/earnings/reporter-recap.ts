@@ -31,6 +31,7 @@ import { getLiveReadThroughsForReporter } from "@/lib/alerts/read-through-push";
 import { formatPositionPresence } from "@/lib/digest/presence-only-position";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { composeReleaseInstant } from "@/lib/calendar/reaction-snapshot";
+import { checkPrePrintFloor } from "@/lib/earnings/pre-print-floor";
 import { parseFinnhubFigure } from "@/lib/format/finnhub-figure";
 import { briefingToHtml } from "@/lib/calendar/briefing-html";
 import { sendEmail } from "@/lib/email";
@@ -214,22 +215,21 @@ export async function sendReporterRecapEmail(
     );
   }
 
-  // Pre-print floor (review hardening): a manual actuals typo (or a wrong
-  // vendor actual) on an event whose recorded release instant is still in
-  // the FUTURE must not fire an email presenting it as a real print. The AI
+  // Pre-print floor (review hardening; single source of truth in
+  // lib/earnings/pre-print-floor.ts — the manual-actuals save endpoint
+  // shares this exact condition): a manual actuals typo (or a wrong vendor
+  // actual) on an event whose recorded release instant is still in the
+  // FUTURE must not fire an email presenting it as a real print. The AI
   // recap road gets this structurally from its enriched_at gate; this road
   // fires on bare actual_value, so guard explicitly. Unknown release
   // instants pass — actual_value on a date-windowed row is otherwise
   // trusted, same assumption as the IMAX already-reported guard.
-  if (event.release_time) {
-    const release = composeReleaseInstant(event.event_date, event.release_time);
-    if (release && release.getTime() > Date.now()) {
-      throw new EarningsEmailError(
-        `${symbol} has actuals recorded but its release instant is in the future — likely a pre-print entry; withheld.`,
-        409,
-        "not_ready",
-      );
-    }
+  if (checkPrePrintFloor(event).isPrePrint) {
+    throw new EarningsEmailError(
+      `${symbol} has actuals recorded but its release instant is in the future — likely a pre-print entry; withheld.`,
+      409,
+      "not_ready",
+    );
   }
 
   const live = getLiveReadThroughsForReporter(db, symbol);
