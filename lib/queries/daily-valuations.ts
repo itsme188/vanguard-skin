@@ -63,6 +63,39 @@ function fullCoverageHaving(where: string): string {
 }
 
 /**
+ * Sibling of fullCoverageHaving: the SCOPE-INVARIANT window floor.
+ *
+ * fullCoverageHaving self-calibrates PER SCOPE — it keeps the dates where the
+ * *requested* account set is fully covered, so scope=ibkr starts at IBKR's own
+ * first covered date (live DB: 2024-12-31), scope=vanguard at 2026-03-27 and
+ * scope=all at 2026-04-06. Three different measurement windows behind one
+ * card: the All-Accounts volatility rendered LOWER than every constituent
+ * account's, which reads as mathematically impossible (a portfolio can sit
+ * below its constituents by diversification, but not while each was measured
+ * over a different period).
+ *
+ * This returns the earliest date from which ALL accounts have daily-valuation
+ * coverage — i.e. the LATEST of the per-account coverage starts — so a caller
+ * can floor its window and have every scope measure the same period. Accounts
+ * with no daily_valuations rows at all are ignored (they'd otherwise push the
+ * floor to nothing), matching fullCoverageHaving's self-calibration spirit.
+ *
+ * Returns null when there are no daily valuations (caller floors nothing).
+ */
+export function commonCoverageStart(db: Database.Database): string | null {
+  const row = db
+    .prepare(
+      `SELECT MAX(first_date) AS start FROM (
+         SELECT MIN(valuation_date) AS first_date
+         FROM daily_valuations
+         GROUP BY account_id
+       )`
+    )
+    .get() as { start: string | null } | undefined;
+  return row?.start ?? null;
+}
+
+/**
  * Get aggregated daily valuations across all accounts within a date range.
  * Returns one row per date with summed values.
  */

@@ -1,5 +1,9 @@
 import type Database from "better-sqlite3";
-import { getDailyValuationsCombined, getDailyValuationsForAccounts } from "@/lib/queries/daily-valuations";
+import {
+  commonCoverageStart,
+  getDailyValuationsCombined,
+  getDailyValuationsForAccounts,
+} from "@/lib/queries/daily-valuations";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
@@ -167,15 +171,25 @@ export function computeRiskMetrics(
   // in as a fake +100% "day" — a coverage artifact, not a market move, and
   // not an external flow either, so the flow-adjustment below can't
   // neutralize it (see fullCoverageHaving in lib/queries/daily-valuations).
+  //
+  // SCOPE-INVARIANT WINDOW: fullCoverageOnly calibrates against the REQUESTED
+  // account set, so each scope would otherwise start at its own coverage
+  // onset (live DB: ibkr 2024-12-31, vanguard 2026-03-27, all 2026-04-06) —
+  // and the All-Accounts vol card compared against per-account vols measured
+  // over different periods (it read LOWER than every constituent, which looks
+  // impossible). Flooring at commonCoverageStart makes every scope measure the
+  // same period. The floor only ever moves the start LATER: an explicitly
+  // requested startDate inside the common window still wins.
+  const startDate = laterDate(options?.startDate, commonCoverageStart(db));
   const valuations =
     accountIds && accountIds.length > 0
       ? getDailyValuationsForAccounts(db, accountIds, {
-          startDate: options?.startDate,
+          startDate,
           endDate: options?.endDate,
           fullCoverageOnly: true,
         })
       : getDailyValuationsCombined(db, {
-          startDate: options?.startDate,
+          startDate,
           endDate: options?.endDate,
           fullCoverageOnly: true,
         });
@@ -250,6 +264,20 @@ export function computeRiskMetrics(
     seriesEnd: points.length > 0 ? points[points.length - 1].date : null,
     seamDaysBridged: bridgedDays,
   };
+}
+
+/**
+ * Later of two optional YYYY-MM-DD dates (lexicographic compare is
+ * chronological for this format). Undefined/null operands drop out, so
+ * `laterDate(undefined, floor)` is the floor and `laterDate(x, null)` is x.
+ */
+function laterDate(
+  a: string | null | undefined,
+  b: string | null | undefined
+): string | undefined {
+  if (!a) return b ?? undefined;
+  if (!b) return a;
+  return a > b ? a : b;
 }
 
 // External cash-flow adjustment (fetchNetFlowsByDate + buildFlowAdjustedIndex)
