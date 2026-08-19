@@ -149,10 +149,12 @@ export function planRetypes(db: Database.Database): RetypePlan[] {
 }
 
 /**
- * IBKR ran a 4:1 share split 2025-06-18 and the broker adjusted option
- * positions in place (same OCC symbol, contracts ×4, premium basis ÷4 — the
- * report shows "+3" split legs on each contract). The split legs were never
- * transcribed, so the two pre-split BUY_TO_OPEN rows carry pre-split basis.
+ * IBKR ran a 4:1 share split 2025-06-18: contracts ×4, premium basis ÷4.
+ * (The activity report prints the "+3" split legs under the ORIGINAL OCC
+ * symbols, but the broker actually RE-SYMBOLED the contracts — strikes
+ * divided by 4, e.g. 250620P00140000 → 250620P00035000 — as the June-2025
+ * statement's expiry rows prove. Quantity/price normalization happens here;
+ * the move to the post-split symbols is OPTION_RESYMBOL_TARGETS below.)
  * Product-preserving normalization (quantity ×4, price ÷4, amount + source_key
  * untouched) — same doctrine as scripts/repair-split-basis-audit.ts, which
  * deliberately excludes option securities.
@@ -181,6 +183,26 @@ export const OPTION_RESYMBOL_TARGETS = [
     type: "BUY_TO_OPEN",
     preQty: 10,
     ratio: 2,
+  },
+  // IBKR 4:1 (2025-06-18): buys were already quantity/price-normalized by
+  // OPTION_SPLIT_TARGETS above (ratio 1 here = pure move, no re-scale); the
+  // post-split legs (June-2025 expiry ×4 on the $35 put, the 2026 closes and
+  // live holdings on the $55 call) all live under the re-struck symbols.
+  {
+    fromSymbol: "IBKR  250620P00140000",
+    toSymbol: "IBKR  250620P00035000",
+    tradeDate: "2025-04-17",
+    type: "BUY_TO_OPEN",
+    preQty: 4,
+    ratio: 1,
+  },
+  {
+    fromSymbol: "IBKR  270115C00220000",
+    toSymbol: "IBKR  270115C00055000",
+    tradeDate: "2025-04-17",
+    type: "BUY_TO_OPEN",
+    preQty: 4,
+    ratio: 1,
   },
 ] as const;
 
