@@ -473,7 +473,21 @@ export function SecurityChart({
 
     const selected = DURATIONS.find((d) => d.label === activeDuration);
     const visibleBars = filterBarsByWindow(allBars, selected?.months ?? 12);
-    const visibleStart = visibleBars.length > 0 ? visibleBars[0].date : undefined;
+    // Zero bars in the selected window: the range handler just cleared the
+    // chart under its "No data" overlay. This effect fires on the same
+    // activeDuration change and (via the dynamic import) always lands last,
+    // so re-adding indicator lines here would paint a stale full-history
+    // SMA/EMA under the overlay (deep-QA:
+    // charts-1m-range--no-data-overlay-over-visible-candles, step-4 leak).
+    // Remove any leftovers and bail instead.
+    if (visibleBars.length === 0) {
+      for (const [, series] of indicatorMapRef.current) {
+        chartRef.current?.removeSeries(series);
+      }
+      indicatorMapRef.current.clear();
+      return;
+    }
+    const visibleStart = visibleBars[0].date;
 
     (async () => {
       const lc = await import("lightweight-charts");
@@ -760,6 +774,21 @@ export function SecurityChart({
           }
           chartRef.current?.timeScale().fitContent();
         }
+      } else if (candleSeriesRef.current && volumeSeriesRef.current) {
+        // Zero bars in the selected window (e.g. cached daily bars are all
+        // older than the "1M" cutoff) — clear the stale series so the
+        // "No data" overlay isn't painted over the previous range's candles
+        // (deep-QA: charts-1m-range--no-data-overlay-over-visible-candles).
+        candleSeriesRef.current.setData([]);
+        volumeSeriesRef.current.setData([]);
+        for (const [, series] of indicatorMapRef.current) {
+          chartRef.current?.removeSeries(series);
+        }
+        indicatorMapRef.current.clear();
+        if (markersPluginRef.current) {
+          try { markersPluginRef.current.detach?.(); } catch { /* noop */ }
+          markersPluginRef.current = null;
+        }
       }
     },
     [fetchChartData, activeIndicators, showMarkers],
@@ -792,6 +821,21 @@ export function SecurityChart({
             }
             chartRef.current?.timeScale().fitContent();
           }
+        } else if (data && candleSeriesRef.current && volumeSeriesRef.current) {
+          // Zero bars returned for the intraday fetch — clear the stale
+          // (likely daily) series so the "No data" overlay isn't painted
+          // over leftover candles (deep-QA: charts-1m-range--no-data-
+          // overlay-over-visible-candles, 2026-08-10 5m manifestation).
+          candleSeriesRef.current.setData([]);
+          volumeSeriesRef.current.setData([]);
+          for (const [, series] of indicatorMapRef.current) {
+            chartRef.current?.removeSeries(series);
+          }
+          indicatorMapRef.current.clear();
+          if (markersPluginRef.current) {
+            try { markersPluginRef.current.detach?.(); } catch { /* noop */ }
+            markersPluginRef.current = null;
+          }
         }
       } else {
         // Back to daily: reload daily bars
@@ -808,6 +852,21 @@ export function SecurityChart({
             updateIndicators(lc, chartRef.current!, data.bars, activeIndicators, indicatorMapRef.current, visibleStart);
             if (showMarkers) markersPluginRef.current = updateMarkers(lc, candleSeriesRef.current!, data.transactions ?? [], true, markersPluginRef.current, isPrivateRef.current);
             chartRef.current?.timeScale().fitContent();
+          }
+        } else if (data && candleSeriesRef.current && volumeSeriesRef.current) {
+          // Zero bars returned for the daily fetch — clear the stale
+          // intraday series so the "No data" overlay isn't painted over
+          // leftover candles (deep-QA: charts-1m-range--no-data-overlay-
+          // over-visible-candles).
+          candleSeriesRef.current.setData([]);
+          volumeSeriesRef.current.setData([]);
+          for (const [, series] of indicatorMapRef.current) {
+            chartRef.current?.removeSeries(series);
+          }
+          indicatorMapRef.current.clear();
+          if (markersPluginRef.current) {
+            try { markersPluginRef.current.detach?.(); } catch { /* noop */ }
+            markersPluginRef.current = null;
           }
         }
       }
@@ -826,6 +885,12 @@ export function SecurityChart({
             chartRef.current?.timeScale().fitContent();
           }
         });
+      } else if (data && candleSeriesRef.current && volumeSeriesRef.current) {
+        // Zero bars on refresh — clear the stale series so the "No data"
+        // overlay isn't painted over leftover candles (deep-QA: charts-1m-
+        // range--no-data-overlay-over-visible-candles).
+        candleSeriesRef.current.setData([]);
+        volumeSeriesRef.current.setData([]);
       }
       return;
     }
@@ -845,6 +910,20 @@ export function SecurityChart({
           chartRef.current?.timeScale().fitContent();
         }
       });
+    } else if (data && candleSeriesRef.current && volumeSeriesRef.current) {
+      // Zero bars on refresh — clear the stale series + indicator overlays
+      // so the "No data" overlay isn't painted over leftover candles
+      // (deep-QA: charts-1m-range--no-data-overlay-over-visible-candles).
+      candleSeriesRef.current.setData([]);
+      volumeSeriesRef.current.setData([]);
+      for (const [, series] of indicatorMapRef.current) {
+        chartRef.current?.removeSeries(series);
+      }
+      indicatorMapRef.current.clear();
+      if (markersPluginRef.current) {
+        try { markersPluginRef.current.detach?.(); } catch { /* noop */ }
+        markersPluginRef.current = null;
+      }
     }
   }, [activeDuration, activeTimeframe, isIntraday, fetchChartData, activeIndicators, showMarkers]);
 
