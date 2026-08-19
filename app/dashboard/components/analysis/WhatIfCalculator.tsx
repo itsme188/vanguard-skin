@@ -48,8 +48,12 @@ export function WhatIfCalculator({ scope }: Props) {
     setLoading(true);
     setError(null);
     try {
+      // `!== 0` (not `> 0`): an untouched blank row is 0 and stays out, but a
+      // typed NEGATIVE amount must reach the server so it comes back as a
+      // droppedLeg the user can see, rather than vanishing here into an
+      // unexplained all-zero table.
       const cleanLegs: HypotheticalLeg[] = legs
-        .filter((l) => l.symbol.trim().length > 0 && l.dollarAmount > 0)
+        .filter((l) => l.symbol.trim().length > 0 && l.dollarAmount !== 0)
         .map((l) => ({
           symbol: l.symbol.trim().toUpperCase(),
           action: l.action,
@@ -146,7 +150,9 @@ export function WhatIfCalculator({ scope }: Props) {
                   ⚠ {d.symbol}{" "}
                   {d.reason === "unknown_symbol"
                     ? "isn't a known security — leg ignored"
-                    : "isn't held in this scope — sell leg ignored"}
+                    : d.reason === "invalid_amount"
+                      ? "needs a positive dollar amount — leg ignored (use Buy/Sell for direction)"
+                      : "isn't held in this scope — sell leg ignored"}
                 </p>
               ))}
             </div>

@@ -33,6 +33,7 @@ import { undoImport } from "./engine";
 import { computeTaxLots } from "@/lib/compute/tax-lots";
 import { computeDailyValuations } from "@/lib/compute/daily-valuation";
 import { LIVE_HOLDING_SOURCE_PREFIXES } from "@/lib/db/holding-sources";
+import { resolveDbDir, type EnvLike } from "@/lib/db/db-path";
 import { appendArtifactSuffix } from "@/lib/mutations/donation-links";
 
 /**
@@ -65,8 +66,39 @@ export type RecoverySourceTable = (typeof RECOVERY_SOURCE_TABLES)[number];
 // on disk predate this and simply lack these three payload keys — readers
 // must treat their absence as empty, never throw.
 export const MANIFEST_VERSION = 2;
-export const DEFAULT_MANIFEST_DIR = join(process.cwd(), "data", "undo-recovery");
 export const DEFAULT_MANIFEST_RETENTION = 25;
+
+/**
+ * Where manifests land by default: NEXT TO THE DATABASE, resolved at call
+ * time (see lib/db/db-path.ts). It used to be `process.cwd()/data`, which in
+ * the packaged app is the read-only code-signed bundle — the atomic .tmp
+ * write threw EPERM and every Undo 500'd
+ * (QA import-undo--500-eperm-recovery-manifest-in-app-bundle). The database
+ * is by definition on a writable volume, so its directory is the correct home
+ * for a DB sidecar. Callers may still inject `manifestDir` (tests, scripts).
+ */
+export function defaultManifestDir(
+  env: EnvLike = process.env,
+  cwd: string = process.cwd(),
+): string {
+  return join(resolveDbDir(env, cwd), "undo-recovery");
+}
+
+/**
+ * Thrown when the pre-undo recovery manifest cannot be persisted. A distinct
+ * type so the route can report honestly that NOTHING was deleted: the
+ * manifest is written BEFORE the destructive delete, so a failure here aborts
+ * the undo before a single row is touched.
+ */
+export class RecoveryManifestWriteError extends Error {
+  constructor(
+    readonly dir: string,
+    override readonly cause: unknown,
+  ) {
+    super(`Could not write the import-undo recovery manifest to ${dir}`);
+    this.name = "RecoveryManifestWriteError";
+  }
+}
 
 type Row = Record<string, unknown>;
 
@@ -202,17 +234,24 @@ export function buildRecoveryManifest(db: Database.Database, batchId: number): R
  */
 export function writeRecoveryManifest(
   manifest: RecoveryManifest,
-  dir: string = DEFAULT_MANIFEST_DIR,
+  dir: string = defaultManifestDir(),
   retention: number = DEFAULT_MANIFEST_RETENTION,
 ): string {
-  mkdirSync(dir, { recursive: true });
   const tsSlug = manifest.createdAt.replace(/[:.]/g, "-");
   const basename = `${manifest.batchId}-${tsSlug}.json`;
   const finalPath = join(dir, basename);
   const tmpPath = join(dir, `.${basename}.tmp`);
 
-  writeFileSync(tmpPath, JSON.stringify(manifest, null, 2), "utf-8");
-  renameSync(tmpPath, finalPath); // atomic on same filesystem
+  // Every filesystem failure here (unwritable dir, full disk, EPERM inside a
+  // read-only app bundle) is reported as one typed error so the caller can
+  // say "nothing was deleted" without echoing a raw Node message + path.
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(tmpPath, JSON.stringify(manifest, null, 2), "utf-8");
+    renameSync(tmpPath, finalPath); // atomic on same filesystem
+  } catch (err) {
+    throw new RecoveryManifestWriteError(dir, err);
+  }
 
   pruneManifests(dir, retention);
   return finalPath;
@@ -579,7 +618,7 @@ export function undoImportWithRecovery(
   opts: UndoWithRecoveryOptions = {},
 ): { manifestPath: string } {
   const manifest = buildRecoveryManifest(db, batchId); // throws if batch missing
-  const manifestPath = writeRecoveryManifest(manifest, opts.manifestDir ?? DEFAULT_MANIFEST_DIR, opts.retention ?? DEFAULT_MANIFEST_RETENTION);
+  const manifestPath = writeRecoveryManifest(manifest, opts.manifestDir ?? defaultManifestDir(), opts.retention ?? DEFAULT_MANIFEST_RETENTION);
   undoImport(db, batchId);
   return { manifestPath };
 }

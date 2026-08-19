@@ -1,4 +1,4 @@
-import { parseOCCSymbol } from "@/lib/import/occ-symbol";
+import { parseOCCSymbol, parseOptionSymbol } from "@/lib/import/occ-symbol";
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -156,6 +156,51 @@ export function formatCompactOptionSymbol(symbol: string): string {
     ? String(parsed.strike)
     : parsed.strike.toFixed(2).replace(/\.?0+$/, "");
   return `${parsed.underlying} $${strike}${parsed.optionType === "CALL" ? "C" : "P"} ${Number(m)}/${Number(d)}/${y.slice(-2)}`;
+}
+
+export interface OptionFields {
+  optionType: "CALL" | "PUT" | null;
+  strike: number | null;
+  expiration: string | null; // YYYY-MM-DD
+}
+
+/**
+ * The contract identity to RENDER for an option row: the structured columns
+ * when they exist, otherwise parsed back out of the symbol itself.
+ *
+ * ~95 option securities never got enriched, so option_type / strike_price /
+ * expiration_date are all NULL on them — their rows fell back to printing the
+ * raw stored OCC string ("AMZN  260306P00190000") right beside neighbours
+ * showing the compact "CALL $240 · 2026-09-18" form (QA security-detail-
+ * transactions--raw-occ-fallback-beside-formatted-option-rows). The symbol
+ * encodes all three fields, so a parse closes the gap without touching
+ * storage. parseOptionSymbol covers both spellings in the DB: canonical OCC
+ * and the Vanguard-compact "NVDA 260618 C 175.00".
+ *
+ * Parsing only kicks in when ALL THREE columns are NULL — a partially
+ * populated row keeps exactly what was stored rather than having a parse
+ * silently substituted for it.
+ */
+export function resolveOptionFields(
+  symbol: string | null | undefined,
+  optionType: "CALL" | "PUT" | null | undefined,
+  strike: number | null | undefined,
+  expiration: string | null | undefined
+): OptionFields {
+  if (optionType != null || strike != null || expiration != null) {
+    return {
+      optionType: optionType ?? null,
+      strike: strike ?? null,
+      expiration: expiration ?? null,
+    };
+  }
+  const parsed = symbol ? parseOptionSymbol(symbol) : null;
+  if (!parsed) return { optionType: null, strike: null, expiration: null };
+  return {
+    optionType: parsed.optionType,
+    strike: parsed.strike,
+    expiration: parsed.expirationDate,
+  };
 }
 
 // Parse a user-entered or AI-extracted large-USD string into a number.

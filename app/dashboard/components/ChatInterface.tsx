@@ -12,6 +12,7 @@ import { PrivateText } from "@/lib/privacy/components";
 import { usePrivacy } from "@/lib/privacy/context";
 import { getQuickActions } from "@/lib/chat/quick-actions";
 import { getPageContext } from "@/lib/chat/page-context";
+import { humanizeChatError } from "@/lib/chat/error-message";
 import type { ChatScope } from "@/lib/types";
 import type { ChatConversation, ChatMessage } from "@/lib/queries/chat";
 import apiFetch from "@/lib/http/apiFetch";
@@ -317,7 +318,17 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
   // reaches /api/chat (the 2026-06-15 leak: a "Vanguard Taxable" chat ran
   // unscoped). The live scope is passed per-call via sendMessage/regenerate's
   // `body` instead (see requestBody below), which reads current state at send time.
-  const transport = useMemo(() => new DefaultChatTransport({ api: "/api/chat" }), []);
+  //
+  // `fetch: apiFetch` is what carries the `X-CSRF-Token` header the #35 trust
+  // boundary requires on POST (lib/auth/verify-request.ts) — the SDK's own
+  // fetch never sets it, so every send 401'd. It must be the WRAPPER, not a
+  // token baked into `headers` here: the same first-render freeze above would
+  // pin a stale/absent token forever, whereas apiFetch reads the `vgs_csrf`
+  // cookie inside each call.
+  const transport = useMemo(
+    () => new DefaultChatTransport({ api: "/api/chat", fetch: apiFetch }),
+    []
+  );
 
   const {
     messages,
@@ -632,7 +643,7 @@ export function ChatInterface({ pathname }: ChatInterfaceProps) {
         {error && (
           <div className="flex justify-start">
             <div className="max-w-[80%] rounded-xl px-4 py-3 text-sm bg-down-tint border border-down/20 text-down">
-              {error.message}
+              {humanizeChatError(error.message)}
             </div>
           </div>
         )}
