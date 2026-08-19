@@ -138,6 +138,13 @@ function addArticle(
   return result.lastInsertRowid as number;
 }
 
+// received_at inside the lib's rolling datetime('now','-30 days') scan window;
+// hardcoded timestamps rot as the wall clock advances past them (broke 2026-08-19).
+function daysAgoTimestamp(days: number): string {
+  const d = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  return d.toISOString().slice(0, 19).replace("T", " ");
+}
+
 describe("buildExtractionPrompt", () => {
   it("lists the reporters and caps article text at 30_000 chars", () => {
     const longText = "x".repeat(40_000);
@@ -455,12 +462,12 @@ describe("extractBogeysFromNewArticles", () => {
     addArticle(db, {
       subject: "Semis weekly #1",
       rawText: "TSM reports next week. " + "filler ".repeat(50),
-      receivedAt: "2026-07-20 08:00:00",
+      receivedAt: daysAgoTimestamp(2),
     });
     addArticle(db, {
       subject: "Semis weekly #2",
       rawText: "TSM print coming up — updated numbers inside. " + "filler ".repeat(50),
-      receivedAt: "2026-07-21 08:00:00",
+      receivedAt: daysAgoTimestamp(1),
     });
 
     generateTextMock
@@ -488,12 +495,12 @@ describe("extractBogeysFromNewArticles", () => {
     addArticle(db, {
       subject: "Semis weekly",
       rawText: "TSM reports next week. " + "filler ".repeat(50),
-      receivedAt: "2026-07-20 08:00:00",
+      receivedAt: daysAgoTimestamp(2),
     });
     addArticle(db, {
       subject: "Small-cap corner",
       rawText: "ZZZ is an obscure name reporting soon. " + "filler ".repeat(50),
-      receivedAt: "2026-07-21 08:00:00",
+      receivedAt: daysAgoTimestamp(1),
     });
 
     generateTextMock.mockResolvedValue({
