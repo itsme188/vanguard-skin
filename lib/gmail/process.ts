@@ -31,6 +31,19 @@ interface ProcessedResult {
 }
 
 /**
+ * QA finding research-feeds--empty-enrichment-marked-processed-fake-neutral-chip
+ * (2026-08-19, HIGH): true when the LLM extraction produced nothing usable —
+ * empty summary AND empty key_themes, the "parse produced nothing" tell.
+ * This is an AND, not an OR: a genuine terse read can legitimately come back
+ * with zero themes (or, rarely, an empty summary alongside real themes) and
+ * must still store normally — only the combination of both empty signals a
+ * failed parse rather than a successful neutral one.
+ */
+export function isEmptyEnrichmentResult(result: ProcessedResult): boolean {
+  return result.summary.trim() === "" && result.key_themes.length === 0;
+}
+
+/**
  * Process unprocessed research articles with Claude Sonnet.
  * Extracts: summary, key themes, sentiment, mentioned tickers, portfolio relevance.
  * Links mentioned symbols to existing securities in the portfolio.
@@ -118,6 +131,24 @@ export async function processUnprocessedArticles(
   for (const article of articles) {
     try {
       const result = await extractWithClaude(article, holdingsContext);
+
+      // An all-defaults parse (empty summary AND empty themes) is a FAILED
+      // extraction, not a successful neutral read — do not stamp
+      // processed_at and do not store the fabricated 'neutral' sentiment.
+      // Leaving processed_at NULL keeps the article eligible for the very
+      // next processUnprocessedArticles pass (its SELECT filters on
+      // `processed_at IS NULL`). Storing defaults here previously produced
+      // 78 empty stub cards rendering a fake 'neutral' chip in the feed —
+      // 61/78 on claude-sonnet-5, so this wasn't just a cloud-fallback
+      // artifact worth special-casing by ai_model.
+      if (isEmptyEnrichmentResult(result)) {
+        console.error(
+          `[research] Article ${article.id} ("${article.subject}") produced an empty enrichment ` +
+            `(no summary, no themes) — leaving unprocessed for retry, not stamping processed_at.`
+        );
+        failed++;
+        continue;
+      }
 
       // Two-layer mention gate before linking: word-boundary drops substring
       // matches ("HOOD" in "likelihood"), Haiku drops homonyms ("Robin Hood"
