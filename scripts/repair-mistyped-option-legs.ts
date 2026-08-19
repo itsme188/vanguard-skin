@@ -162,6 +162,70 @@ export const OPTION_SPLIT_TARGETS = [
   { occSymbol: "IBKR  270115C00220000", tradeDate: "2025-04-17", type: "BUY_TO_OPEN", preQty: 1, ratio: 4 },
 ] as const;
 
+/**
+ * XLU ran a 2:1 split 2025-12-05 and — unlike IBKR — the broker RE-SYMBOLED
+ * the calls (strike halved: 260618C00100000 → 260618C00050000, contracts ×2,
+ * premium basis ÷2). The pre-split BUY_TO_OPEN was transcribed under the old
+ * OCC symbol; the closes were transcribed under the new one, leaving two
+ * orphan positions (+10 on the 100-strike, −20 on the 50-strike). Repair:
+ * move the buy to the new symbol's security AND normalize qty ×2 / price ÷2
+ * (amount + source_key untouched — same re-import caveat as all split
+ * normalizations: re-importing the Nov-2025 file re-adds the old-symbol row;
+ * re-run this script if that happens).
+ */
+export const OPTION_RESYMBOL_TARGETS = [
+  {
+    fromSymbol: "XLU   260618C00100000",
+    toSymbol: "XLU   260618C00050000",
+    tradeDate: "2025-11-18",
+    type: "BUY_TO_OPEN",
+    preQty: 10,
+    ratio: 2,
+  },
+] as const;
+
+export function planOptionResymbols(db: Database.Database): OptionSplitPlan[] {
+  const plans: OptionSplitPlan[] = [];
+  for (const t of OPTION_RESYMBOL_TARGETS) {
+    const label = `${t.fromSymbol.trim()} → ${t.toSymbol.trim()} ${t.tradeDate} ${t.type} ×${t.ratio}`;
+    const to = db
+      .prepare(`SELECT id FROM securities WHERE symbol = ?`)
+      .get(t.toSymbol) as { id: number } | undefined;
+    if (!to) {
+      plans.push({ id: -1, label, ok: false, action: "target security not found — refusing" });
+      continue;
+    }
+    // already repaired: the row lives on the target security at post-split qty
+    const done = db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM transactions t WHERE t.account_id = 1
+          AND t.security_id = ? AND t.trade_date = ? AND t.type = ? AND t.quantity = ?`
+      )
+      .get(to.id, t.tradeDate, t.type, t.preQty * t.ratio) as { n: number };
+    const rows = db
+      .prepare(
+        `SELECT t.id, t.quantity, t.price_per_share FROM transactions t
+           JOIN securities s ON s.id = t.security_id
+          WHERE t.account_id = 1 AND s.symbol = ? AND t.trade_date = ? AND t.type = ?`
+      )
+      .all(t.fromSymbol, t.tradeDate, t.type) as { id: number; quantity: number; price_per_share: number | null }[];
+    if (rows.length === 0) {
+      plans.push({ id: -1, label, ok: done.n > 0, action: done.n > 0 ? "already repaired" : "ROW NOT FOUND — refusing" });
+      continue;
+    }
+    if (rows.length > 1 || Math.abs(rows[0].quantity - t.preQty) > 1e-9) {
+      plans.push({ id: -1, label, ok: false, action: `UNEXPECTED rows/qty — refusing` });
+      continue;
+    }
+    plans.push({
+      id: rows[0].id, label, ok: true, action: "resymbol + normalize",
+      newQty: rows[0].quantity * t.ratio,
+      newPrice: rows[0].price_per_share != null ? rows[0].price_per_share / t.ratio : null,
+    });
+  }
+  return plans;
+}
+
 export interface OptionSplitPlan {
   id: number;
   label: string;
@@ -252,6 +316,7 @@ if (isMain) {
     const retypes = planRetypes(db);
     const expFix = planExpiredQtyFix(db);
     const optSplits = planOptionSplits(db, dups.map((d) => d.deleteId));
+    const resymbols = planOptionResymbols(db);
 
     console.log(`\n── Duplicate legacy-keyed option rows: ${dups.length} ──`);
     for (const d of dups) console.log(`  delete txn ${d.deleteId} (keep ${d.keepId}): ${d.label}`);
@@ -263,8 +328,13 @@ if (isMain) {
       const detail = o.action === "normalize" ? ` (qty→${o.newQty}, px→${o.newPrice})` : "";
       console.log(`  ${o.ok ? "·" : "✗"} ${o.label}: ${o.action}${detail}`);
     }
+    console.log(`\n── XLU 2:1 option re-symbol normalization ──`);
+    for (const o of resymbols) {
+      const detail = o.action === "resymbol + normalize" ? ` (qty→${o.newQty}, px→${o.newPrice})` : "";
+      console.log(`  ${o.ok ? "·" : "✗"} ${o.label}: ${o.action}${detail}`);
+    }
 
-    const refusals = [...retypes, expFix, ...optSplits].filter((r) => !r.ok);
+    const refusals = [...retypes, expFix, ...optSplits, ...resymbols].filter((r) => !r.ok);
     if (refusals.length > 0) {
       console.log(`\n${refusals.length} refusal(s) above — resolve before applying.`);
     }
@@ -272,7 +342,8 @@ if (isMain) {
       dups.length +
       retypes.filter((r) => r.ok && r.id !== -1 && r.action !== "already repaired").length +
       (expFix.ok && expFix.action === "qty 2→1" ? 1 : 0) +
-      optSplits.filter((o) => o.action === "normalize").length;
+      optSplits.filter((o) => o.action === "normalize").length +
+      resymbols.filter((o) => o.action === "resymbol + normalize").length;
     if (work === 0) {
       console.log("\nNothing to repair — all rows already normalized.");
       db.close();
@@ -312,6 +383,12 @@ if (isMain) {
       for (const o of optSplits) {
         if (o.action !== "normalize") continue;
         db.prepare("UPDATE transactions SET quantity = ?, price_per_share = ? WHERE id = ?").run(o.newQty, o.newPrice, o.id);
+      }
+      for (const o of resymbols) {
+        if (o.action !== "resymbol + normalize") continue;
+        const target = OPTION_RESYMBOL_TARGETS.find((t) => `${t.fromSymbol.trim()} → ${t.toSymbol.trim()} ${t.tradeDate} ${t.type} ×${t.ratio}` === o.label)!;
+        const to = db.prepare(`SELECT id FROM securities WHERE symbol = ?`).get(target.toSymbol) as { id: number };
+        db.prepare("UPDATE transactions SET security_id = ?, quantity = ?, price_per_share = ? WHERE id = ?").run(to.id, o.newQty, o.newPrice, o.id);
       }
     });
     run();

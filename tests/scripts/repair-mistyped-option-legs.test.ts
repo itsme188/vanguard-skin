@@ -439,3 +439,61 @@ describe("exported constants", () => {
     });
   });
 });
+
+describe("planOptionResymbols (XLU 2:1 split re-symbol)", () => {
+  // The real target: XLU 260618C00100000 buy 10 @ 1.60 on 2025-11-18 moves to
+  // XLU 260618C00050000 as 20 @ 0.80.
+  const FROM = "XLU   260618C00100000";
+  const TO = "XLU   260618C00050000";
+
+  async function load() {
+    const mod = await import("@/scripts/repair-mistyped-option-legs");
+    return mod.planOptionResymbols;
+  }
+
+  it("plans resymbol + normalize when the pre-split row sits on the old symbol", async () => {
+    const planOptionResymbols = await load();
+    const db = fresh();
+    seedSecurity(db, FROM);
+    seedSecurity(db, TO);
+    seedTxn(db, { securityId: 1000, tradeDate: "2025-11-18", type: "BUY_TO_OPEN", quantity: 10, price: 1.6, amount: -1610 });
+    const plans = planOptionResymbols(db);
+    expect(plans).toHaveLength(1);
+    expect(plans[0].ok).toBe(true);
+    expect(plans[0].action).toBe("resymbol + normalize");
+    expect(plans[0].newQty).toBe(20);
+    expect(plans[0].newPrice).toBeCloseTo(0.8, 9);
+  });
+
+  it("reports already repaired when the row lives on the target symbol at post-split qty", async () => {
+    const planOptionResymbols = await load();
+    const db = fresh();
+    seedSecurity(db, FROM);
+    const toId = seedSecurity(db, TO);
+    seedTxn(db, { securityId: toId, tradeDate: "2025-11-18", type: "BUY_TO_OPEN", quantity: 20, price: 0.8, amount: -1610 });
+    const plans = planOptionResymbols(db);
+    expect(plans[0].ok).toBe(true);
+    expect(plans[0].action).toBe("already repaired");
+  });
+
+  it("refuses when the target security does not exist", async () => {
+    const planOptionResymbols = await load();
+    const db = fresh();
+    seedSecurity(db, FROM);
+    seedTxn(db, { securityId: 1000, tradeDate: "2025-11-18", type: "BUY_TO_OPEN", quantity: 10, price: 1.6 });
+    const plans = planOptionResymbols(db);
+    expect(plans[0].ok).toBe(false);
+    expect(plans[0].action).toContain("target security not found");
+  });
+
+  it("refuses on unexpected quantity", async () => {
+    const planOptionResymbols = await load();
+    const db = fresh();
+    seedSecurity(db, FROM);
+    seedSecurity(db, TO);
+    seedTxn(db, { securityId: 1000, tradeDate: "2025-11-18", type: "BUY_TO_OPEN", quantity: 7, price: 1.6 });
+    const plans = planOptionResymbols(db);
+    expect(plans[0].ok).toBe(false);
+    expect(plans[0].action).toContain("UNEXPECTED");
+  });
+});
