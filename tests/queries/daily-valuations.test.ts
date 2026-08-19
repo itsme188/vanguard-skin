@@ -5,6 +5,7 @@ import {
   getDailyValuationsByAccount,
   getDailyValuationsCombined,
   commonCoverageStart,
+  MIN_FLOOR_HISTORY_DAYS,
 } from "@/lib/queries/daily-valuations";
 
 function createTestDb(): Database.Database {
@@ -29,6 +30,18 @@ function seed(db: Database.Database, acct: number, date: string, total: number) 
   db.prepare(
     "INSERT INTO daily_valuations (account_id, valuation_date, cash_balance, holdings_value, total_value) VALUES (?, ?, 0, ?, ?)"
   ).run(acct, date, total, total);
+}
+
+// Seeds `days` consecutive daily rows for an account starting at `startDate`
+// — used by commonCoverageStart tests, which now require an account to have
+// MIN_FLOOR_HISTORY_DAYS distinct dates to participate in the floor.
+function seedRun(db: Database.Database, acct: number, startDate: string, days: number) {
+  const start = new Date(`${startDate}T00:00:00Z`);
+  for (let i = 0; i < days; i++) {
+    const d = new Date(start);
+    d.setUTCDate(d.getUTCDate() + i);
+    seed(db, acct, d.toISOString().slice(0, 10), 100 + i);
+  }
 }
 
 describe("getDailyValuationsForAccounts", () => {
@@ -138,22 +151,22 @@ describe("fullCoverageOnly (coverage-jump guard)", () => {
 // constituent account's. commonCoverageStart is the single window floor:
 // the LATEST of the per-account coverage starts.
 describe("commonCoverageStart", () => {
+  // All accounts below carry MIN_FLOOR_HISTORY_DAYS+ distinct dates unless a
+  // test is specifically exercising the short-history guard, since an
+  // account with fewer than MIN_FLOOR_HISTORY_DAYS dates no longer
+  // participates in the floor (see MIN_FLOOR_HISTORY_DAYS's doc comment).
   it("returns the latest per-account coverage start across all accounts", () => {
     const db = createTestDb();
-    seed(db, 3, "2024-12-31", 500); // earliest-starting account
-    seed(db, 3, "2026-01-05", 520);
-    seed(db, 1, "2026-01-02", 100);
-    seed(db, 1, "2026-01-05", 110);
-    seed(db, 2, "2026-01-04", 50); // latest-starting account
-    seed(db, 2, "2026-01-05", 55);
+    seedRun(db, 3, "2024-12-31", 40); // earliest-starting account
+    seedRun(db, 1, "2026-01-02", 30);
+    seedRun(db, 2, "2026-01-04", 30); // latest-starting account
 
     expect(commonCoverageStart(db)).toBe("2026-01-04");
   });
 
   it("returns the single account's first date when only one account has rows", () => {
     const db = createTestDb();
-    seed(db, 1, "2026-01-02", 100);
-    seed(db, 1, "2026-01-03", 110);
+    seedRun(db, 1, "2026-01-02", 30);
 
     expect(commonCoverageStart(db)).toBe("2026-01-02");
   });
@@ -163,13 +176,52 @@ describe("commonCoverageStart", () => {
     // push the floor to null/today (same self-calibration spirit as
     // fullCoverageHaving's max-coverage calibration).
     const db = createTestDb();
-    seed(db, 1, "2026-01-02", 100);
-    seed(db, 2, "2026-01-03", 50);
+    seedRun(db, 1, "2026-01-02", 30);
+    seedRun(db, 2, "2026-01-03", 30);
 
     expect(commonCoverageStart(db)).toBe("2026-01-03");
   });
 
   it("returns null when there are no daily valuations", () => {
     expect(commonCoverageStart(createTestDb())).toBeNull();
+  });
+
+  // ── MIN_FLOOR_HISTORY_DAYS guard (new-account collapse hazard) ──────
+  //
+  // A brand-new account (new IBKR sub-account, freshly Plaid-mapped account,
+  // anything with only a few days of daily_valuations) must not drag the
+  // shared floor forward to its own first day — that would collapse every
+  // scope's risk window down to a handful of days, and computeMaxDrawdown
+  // has no floor of its own to catch it.
+  it("does NOT move the floor when a new account has fewer than MIN_FLOOR_HISTORY_DAYS dates", () => {
+    const db = createTestDb();
+    // Two established accounts set the "real" floor.
+    seedRun(db, 1, "2024-01-01", 40);
+    seedRun(db, 2, "2024-02-01", 35); // latest-starting established account
+    const establishedFloor = commonCoverageStart(db);
+    expect(establishedFloor).toBe("2024-02-01");
+
+    // A brand-new account with only a handful of recent valuations appears.
+    seedRun(db, 3, "2026-08-15", 5);
+    expect(commonCoverageStart(db)).toBe(establishedFloor);
+  });
+
+  it("DOES let an account with >= MIN_FLOOR_HISTORY_DAYS dates participate (existing behavior preserved)", () => {
+    const db = createTestDb();
+    seedRun(db, 1, "2024-01-01", 40);
+    // Exactly at the threshold, starting later — should move the floor.
+    seedRun(db, 2, "2026-01-01", MIN_FLOOR_HISTORY_DAYS);
+
+    expect(commonCoverageStart(db)).toBe("2026-01-01");
+  });
+
+  it("excludes an account one day short of the threshold", () => {
+    const db = createTestDb();
+    seedRun(db, 1, "2024-01-01", 40);
+    seedRun(db, 2, "2026-01-01", MIN_FLOOR_HISTORY_DAYS - 1);
+
+    // Account 2 falls one date short of qualifying, so it's excluded and
+    // the floor stays at account 1's start.
+    expect(commonCoverageStart(db)).toBe("2024-01-01");
   });
 });

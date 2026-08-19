@@ -63,6 +63,29 @@ function fullCoverageHaving(where: string): string {
 }
 
 /**
+ * Minimum distinct valuation dates an account must have to participate in
+ * commonCoverageStart's floor computation.
+ *
+ * Guard against the new-account collapse hazard: a brand-new account (a
+ * freshly-added IBKR sub-account, a newly Plaid-mapped account, anything with
+ * just a few days of daily_valuations) would otherwise set MIN(valuation_date)
+ * to its own first day, and since the floor is the MAX across all accounts'
+ * per-account MIN, that single new account would drag the shared window down
+ * to a handful of days for EVERY scope — not just its own. computeVolatility
+ * nulls out below 30 points, but computeMaxDrawdown has no such floor and
+ * would silently render a near-0% drawdown over a 3-day window instead of the
+ * real multi-year figure.
+ *
+ * Chosen semantics: an account with fewer than MIN_FLOOR_HISTORY_DAYS distinct
+ * dates simply doesn't constrain the shared window yet — it's excluded from
+ * the MAX(first_date) aggregation entirely (not floored to today, not treated
+ * as a hard error). fullCoverageOnly's per-window HAVING clause still governs
+ * date-level coverage; this constant only decides who gets a vote in the
+ * floor's own starting point.
+ */
+export const MIN_FLOOR_HISTORY_DAYS = 30;
+
+/**
  * Sibling of fullCoverageHaving: the SCOPE-INVARIANT window floor.
  *
  * fullCoverageHaving self-calibrates PER SCOPE — it keeps the dates where the
@@ -74,13 +97,16 @@ function fullCoverageHaving(where: string): string {
  * below its constituents by diversification, but not while each was measured
  * over a different period).
  *
- * This returns the earliest date from which ALL accounts have daily-valuation
- * coverage — i.e. the LATEST of the per-account coverage starts — so a caller
- * can floor its window and have every scope measure the same period. Accounts
- * with no daily_valuations rows at all are ignored (they'd otherwise push the
- * floor to nothing), matching fullCoverageHaving's self-calibration spirit.
+ * This returns the earliest date from which ALL (sufficiently-established)
+ * accounts have daily-valuation coverage — i.e. the LATEST of the per-account
+ * coverage starts — so a caller can floor its window and have every scope
+ * measure the same period. Accounts with no daily_valuations rows at all, or
+ * with fewer than MIN_FLOOR_HISTORY_DAYS distinct valuation dates, are ignored
+ * (they'd otherwise push the floor to nothing / collapse it — see that
+ * constant's comment), matching fullCoverageHaving's self-calibration spirit.
  *
- * Returns null when there are no daily valuations (caller floors nothing).
+ * Returns null when there are no qualifying daily valuations (caller floors
+ * nothing).
  */
 export function commonCoverageStart(db: Database.Database): string | null {
   const row = db
@@ -89,6 +115,7 @@ export function commonCoverageStart(db: Database.Database): string | null {
          SELECT MIN(valuation_date) AS first_date
          FROM daily_valuations
          GROUP BY account_id
+         HAVING COUNT(DISTINCT valuation_date) >= ${MIN_FLOOR_HISTORY_DAYS}
        )`
     )
     .get() as { start: string | null } | undefined;
