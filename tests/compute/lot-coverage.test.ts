@@ -92,4 +92,15 @@ describe("computeLotCoverageGaps", () => {
   it("returns [] for empty positions", () => {
     expect(computeLotCoverageGaps([], [])).toEqual([]);
   });
+
+  it("skips short positions (negative quantity) even with matching positive short lots", () => {
+    // Short lots are stored with POSITIVE quantity_remaining and is_short=1,
+    // while the position query (includeShorts) reports a NEGATIVE quantity
+    // for the same short. A naive comparison of -3 vs +3 would produce a
+    // nonsense gap ("6 more shares in lots than the position shows"); shorts
+    // must be skipped entirely rather than reconciled.
+    const positions = [{ account_id: 1, account_name: "IBKR", quantity: -3 }];
+    const openLots = [{ account_id: 1, quantity_remaining: 3 }];
+    expect(computeLotCoverageGaps(positions, openLots)).toEqual([]);
+  });
 });
