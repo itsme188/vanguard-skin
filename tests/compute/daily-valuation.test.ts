@@ -1,7 +1,43 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
-import { computeDailyValuations } from "@/lib/compute/daily-valuation";
+import { computeDailyValuations, findLatestDateOnOrBefore } from "@/lib/compute/daily-valuation";
+
+describe("findLatestDateOnOrBefore", () => {
+  it("returns null for an empty list", () => {
+    expect(findLatestDateOnOrBefore([], "2026-01-15")).toBeNull();
+  });
+
+  it("returns null when target is before the first date", () => {
+    expect(
+      findLatestDateOnOrBefore(["2026-02-01", "2026-03-01"], "2026-01-15")
+    ).toBeNull();
+  });
+
+  it("returns the exact match when target equals a list entry", () => {
+    expect(
+      findLatestDateOnOrBefore(["2026-01-01", "2026-02-01", "2026-03-01"], "2026-02-01")
+    ).toBe("2026-02-01");
+  });
+
+  it("returns the latest date strictly before target when between two dates", () => {
+    expect(
+      findLatestDateOnOrBefore(["2026-01-01", "2026-02-01", "2026-03-01"], "2026-02-15")
+    ).toBe("2026-02-01");
+  });
+
+  it("returns the last date when target is after the last date", () => {
+    expect(
+      findLatestDateOnOrBefore(["2026-01-01", "2026-02-01", "2026-03-01"], "2026-12-31")
+    ).toBe("2026-03-01");
+  });
+
+  it("handles a single-element list on both sides of target", () => {
+    expect(findLatestDateOnOrBefore(["2026-05-01"], "2026-05-01")).toBe("2026-05-01");
+    expect(findLatestDateOnOrBefore(["2026-05-01"], "2026-04-30")).toBeNull();
+    expect(findLatestDateOnOrBefore(["2026-05-01"], "2026-06-01")).toBe("2026-05-01");
+  });
+});
 
 function seedSecurity(db: Database.Database, symbol: string, securityType?: string): number {
   const result = db
