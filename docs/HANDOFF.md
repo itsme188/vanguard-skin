@@ -39,6 +39,10 @@ Goals picked at session start: (a) review + land the six stranded qa-* branches;
 - Live DB carries the full reconciliation; the running Electron app was rebuilt + relaunched at session close (electron:deploy) so the lot-coverage disclosure and today's UI fixes are live.
 - Deferred by decision: `scripts/repair-empty-enrichments.ts` NOT run against the live DB (waiting on an enrichment attempt-counter so failing articles can't retry forever).
 
+## 4b. Same-day addendum — deferred-items walkthrough (user-driven, pm)
+
+All reconciliation residuals triaged; most closed. Shipped on top of the morning's work: income cleanup (29 TAX_WITHHELD + 3 INTEREST + 2 REDEMPTION rows in; 24 superseded net/date-typo dividend rows out of DB and files — the 2022/2023 year files had accumulated TWO transcription revisions across old imports, batches 47/48 vs 135/136); **a real engine fix in `lib/compute/tax-lots.ts`** (price-less REDEMPTIONs were never processed, so every matured bond/bill lot — $185k face — sat open forever; now derived at |amount|/qty×100 per-100 bond basis, bills realize $0); XLU 2:1 stock + option re-symbol repair (broker halved the strike — new OPTION_RESYMBOL_TARGETS section); enrichment retry cap (migration 083, `MAX_ENRICH_ATTEMPTS=3` → `enrichment_failed` exclusion in the D5 tab, 71 articles reset live). Suite 5,800 green; second electron:deploy at close. Reviewer attention: the REDEMPTION price-basis derivation (per-100 convention) and the retry-cap exclusion semantics (processed_at stamped on the third failure). Deliberately untouched: the 3-leg donation journal chains (correct as-is; R4 two-leg artifact linking would double-subtract — Giving machinery follow-up filed).
+
 ## 5. Claude session link
 
 https://claude.ai/code/session_01RGYiaxoyfts3LfaVtsBNQZ
