@@ -457,7 +457,7 @@ describe("planOptionResymbols (XLU 2:1 split re-symbol)", () => {
     seedSecurity(db, FROM);
     seedSecurity(db, TO);
     seedTxn(db, { securityId: 1000, tradeDate: "2025-11-18", type: "BUY_TO_OPEN", quantity: 10, price: 1.6, amount: -1610 });
-    const plans = planOptionResymbols(db);
+    const plans = planOptionResymbols(db).filter((p) => p.label.startsWith("XLU"));
     expect(plans).toHaveLength(1);
     expect(plans[0].ok).toBe(true);
     expect(plans[0].action).toBe("resymbol + normalize");
@@ -471,7 +471,7 @@ describe("planOptionResymbols (XLU 2:1 split re-symbol)", () => {
     seedSecurity(db, FROM);
     const toId = seedSecurity(db, TO);
     seedTxn(db, { securityId: toId, tradeDate: "2025-11-18", type: "BUY_TO_OPEN", quantity: 20, price: 0.8, amount: -1610 });
-    const plans = planOptionResymbols(db);
+    const plans = planOptionResymbols(db).filter((p) => p.label.startsWith("XLU"));
     expect(plans[0].ok).toBe(true);
     expect(plans[0].action).toBe("already repaired");
   });
@@ -481,7 +481,7 @@ describe("planOptionResymbols (XLU 2:1 split re-symbol)", () => {
     const db = fresh();
     seedSecurity(db, FROM);
     seedTxn(db, { securityId: 1000, tradeDate: "2025-11-18", type: "BUY_TO_OPEN", quantity: 10, price: 1.6 });
-    const plans = planOptionResymbols(db);
+    const plans = planOptionResymbols(db).filter((p) => p.label.startsWith("XLU"));
     expect(plans[0].ok).toBe(false);
     expect(plans[0].action).toContain("target security not found");
   });
@@ -492,7 +492,7 @@ describe("planOptionResymbols (XLU 2:1 split re-symbol)", () => {
     seedSecurity(db, FROM);
     seedSecurity(db, TO);
     seedTxn(db, { securityId: 1000, tradeDate: "2025-11-18", type: "BUY_TO_OPEN", quantity: 7, price: 1.6 });
-    const plans = planOptionResymbols(db);
+    const plans = planOptionResymbols(db).filter((p) => p.label.startsWith("XLU"));
     expect(plans[0].ok).toBe(false);
     expect(plans[0].action).toContain("UNEXPECTED");
   });
