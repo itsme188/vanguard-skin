@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import type { SecurityDetailTransaction } from "@/lib/queries/security-detail";
 import { Money, Shares } from "@/lib/privacy/components";
+import { resolveOptionFields } from "@/lib/format";
 import { SortableHeader } from "./SortableHeader";
 import { compareValues, useSortParam } from "@/lib/hooks/useSortParam";
 import { Section } from "./Section";
@@ -250,9 +251,17 @@ function FilterPill({
 }
 
 function OptionLabel({ txn }: { txn: SecurityDetailTransaction }) {
-  const type = txn.option_type;
-  const strike = txn.strike_price;
-  const exp = txn.expiration_date;
+  // Unenriched option securities carry NULL option_type/strike/expiration, so
+  // these rows used to print the raw OCC string beside neighbours rendering
+  // the compact chip form. resolveOptionFields parses the identity back out of
+  // the symbol in exactly that case (QA security-detail-transactions--raw-occ-
+  // fallback-beside-formatted-option-rows).
+  const { optionType: type, strike, expiration: exp } = resolveOptionFields(
+    txn.symbol,
+    txn.option_type,
+    txn.strike_price,
+    txn.expiration_date,
+  );
   const hasStructured = type != null || strike != null || exp != null;
 
   if (!hasStructured) {

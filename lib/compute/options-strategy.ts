@@ -8,6 +8,8 @@
  * straddle, strangle, iron condor, naked options.
  */
 
+import { todayET } from "@/lib/calendar/date-utils";
+
 // ─── Types ──────────────────────────────────────────────────────
 
 export interface PositionLeg {
@@ -50,15 +52,51 @@ export interface DetectedStrategy {
 // ─── Strategy Detection ─────────────────────────────────────────
 
 /**
+ * Normalize an expiration to ISO YYYY-MM-DD for date comparison. Accepts both
+ * spellings the DB actually holds — ISO, and the YYYYMMDD a handful of
+ * TWS-enriched rows carry (same two shapes formatExpiry parses). Returns null
+ * for missing/unrecognized values, which callers must treat as "unknown",
+ * never as expired.
+ */
+function normalizeExpiration(expiry?: string): string | null {
+  if (!expiry) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(expiry)) return expiry;
+  const compact = /^(\d{4})(\d{2})(\d{2})$/.exec(expiry);
+  return compact ? `${compact[1]}-${compact[2]}-${compact[3]}` : null;
+}
+
+export interface DetectStrategiesOptions {
+  /** ET "today" (YYYY-MM-DD) used as the expiry cutoff. Defaults to todayET(). */
+  today?: string;
+}
+
+/**
  * Detect option strategies from a set of positions in the same account.
  * Positions should all belong to the same account.
+ *
+ * Contracts that expired BEFORE `today` are excluded: an expired contract is
+ * not a position, and pricing one produced a live-looking protective put with
+ * a MAX LOSS figure on a contract that had already settled (QA
+ * analysis-detected-strategies--expired-option-rendered-live-protective-put).
+ * The Options Greeks table, the Defense hedge book and the Option Expirations
+ * panel all already exclude them — this brings strategy detection in line.
+ * Expiry day itself still counts (the contract can be exercised or traded),
+ * and an unknown/unparseable expiration is kept rather than guessed away.
  */
-export function detectStrategies(positions: PositionLeg[]): DetectedStrategy[] {
+export function detectStrategies(
+  positions: PositionLeg[],
+  opts: DetectStrategiesOptions = {}
+): DetectedStrategy[] {
   const strategies: DetectedStrategy[] = [];
+  const today = opts.today ?? todayET();
 
   // Separate stocks and options
   const stocks = positions.filter((p) => p.securityType === "stock");
-  const options = positions.filter((p) => p.securityType === "option");
+  const options = positions.filter((p) => {
+    if (p.securityType !== "option") return false;
+    const expiration = normalizeExpiration(p.expiration);
+    return expiration === null || expiration >= today;
+  });
 
   // Group options by underlying
   const optionsByUnderlying = new Map<string, PositionLeg[]>();

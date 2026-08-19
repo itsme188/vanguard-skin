@@ -14,6 +14,7 @@ import {
   parseLargeUSD,
   parseStoredTimestamp,
   rendersAsZero,
+  resolveOptionFields,
   unrealizedGainRatio,
 } from "../../lib/format";
 
@@ -201,6 +202,67 @@ describe("formatCompactOptionSymbol", () => {
   it("passes non-OCC symbols through unchanged", () => {
     expect(formatCompactOptionSymbol("AAPL")).toBe("AAPL");
     expect(formatCompactOptionSymbol("BRK/B")).toBe("BRK/B");
+  });
+});
+
+// QA security-detail-transactions--raw-occ-fallback-beside-formatted-option-rows:
+// ~95 option securities never got enriched, so option_type / strike_price /
+// expiration_date are all NULL on their rows. The Recent Transactions table
+// rendered those as the raw stored OCC string ("AMZN  260306P00190000") right
+// beside neighbours showing the compact "CALL $240 · 2026-09-18" form. The
+// symbol itself carries every one of those three fields, so parse it.
+describe("resolveOptionFields", () => {
+  it("prefers the structured columns when they are populated", () => {
+    expect(
+      resolveOptionFields("AMZN  260306P00190000", "CALL", 240, "2026-09-18"),
+    ).toEqual({ optionType: "CALL", strike: 240, expiration: "2026-09-18" });
+  });
+
+  it("parses a raw OCC symbol when all three columns are NULL", () => {
+    expect(resolveOptionFields("AMZN  260306P00190000", null, null, null)).toEqual({
+      optionType: "PUT",
+      strike: 190,
+      expiration: "2026-03-06",
+    });
+  });
+
+  it("keeps fractional strikes", () => {
+    expect(resolveOptionFields("INTC  260320P00045500", null, null, null)).toEqual({
+      optionType: "PUT",
+      strike: 45.5,
+      expiration: "2026-03-20",
+    });
+  });
+
+  it("also understands the Vanguard-compact spelling", () => {
+    expect(resolveOptionFields("NVDA 260618 C 175.00", null, null, null)).toEqual({
+      optionType: "CALL",
+      strike: 175,
+      expiration: "2026-06-18",
+    });
+  });
+
+  it("does not parse when even one structured column is present (partial data wins)", () => {
+    // A row that carries only an expiration must keep it verbatim rather than
+    // silently swapping in a parse of the symbol.
+    expect(resolveOptionFields("AMZN  260306P00190000", null, null, "2026-03-06")).toEqual({
+      optionType: null,
+      strike: null,
+      expiration: "2026-03-06",
+    });
+  });
+
+  it("returns all-null for an unparseable / missing symbol", () => {
+    expect(resolveOptionFields("AMZN", null, null, null)).toEqual({
+      optionType: null,
+      strike: null,
+      expiration: null,
+    });
+    expect(resolveOptionFields(null, null, null, null)).toEqual({
+      optionType: null,
+      strike: null,
+      expiration: null,
+    });
   });
 });
 

@@ -39,7 +39,7 @@ export interface ExposureFlag {
 
 export interface DroppedLeg {
   symbol: string;
-  reason: "unknown_symbol" | "not_held";
+  reason: "unknown_symbol" | "not_held" | "invalid_amount";
 }
 
 export interface ExposureDelta {
@@ -294,8 +294,16 @@ function applyLegs(
   next.forEach((h, i) => indexBy.set(symbolKey(h.symbol), i));
 
   for (const leg of legs) {
-    if (!leg.dollarAmount || leg.dollarAmount <= 0) continue;
     const upper = leg.symbol.toUpperCase();
+    // A non-positive (or non-finite) amount used to be a bare `continue`, so
+    // the caller got a confident all-zero before/after table with nothing to
+    // explain it (QA analysis-whatif--negative-amount-silent-zero-table).
+    // Report it like any other unmodelable leg — direction lives in `action`,
+    // so a negative dollar figure is never a "sell", just a bad number.
+    if (!Number.isFinite(leg.dollarAmount) || leg.dollarAmount <= 0) {
+      dropped.push({ symbol: upper, reason: "invalid_amount" });
+      continue;
+    }
     const idx = indexBy.get(symbolKey(leg.symbol));
 
     if (idx !== undefined) {

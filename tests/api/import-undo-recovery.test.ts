@@ -531,4 +531,43 @@ describe("import-undo recovery — handleUndoRequest (route core)", () => {
     expect(ok).toBe(MAX_UNDOS_PER_WINDOW);
     expect(throttled).toBeGreaterThanOrEqual(1);
   });
+
+  // QA import-undo--500-eperm-recovery-manifest-in-app-bundle: in the
+  // packaged app the manifest dir resolved inside the read-only signed
+  // bundle, so writeRecoveryManifest threw EPERM and the route echoed the raw
+  // Node error (path and all) as a 500. The write happens BEFORE any row is
+  // deleted, so the honest report is "nothing was deleted".
+  it("reports an unwritable manifest dir in domain language and deletes nothing", () => {
+    const res = commitImport(db, sampleParsed());
+    const challenge = handleUndoRequest(db, { batchId: res.batchId }, { manifestDir: dir, nowMs: 1000 });
+    const token = challenge.body.confirmToken as string;
+
+    // A path under a regular FILE can never be created — the same class of
+    // failure as EPERM inside the code-signed bundle, without needing root.
+    const blocker = join(dir, "not-a-dir");
+    writeFileSync(blocker, "x");
+    const unwritable = join(blocker, "undo-recovery");
+
+    const out = handleUndoRequest(
+      db,
+      { batchId: res.batchId, confirm: token },
+      { manifestDir: unwritable, nowMs: 1001 },
+    );
+
+    expect(out.status).toBe(500);
+    expect(out.body.success).toBe(false);
+    const error = out.body.error as string;
+    expect(error).toMatch(/nothing was deleted/i);
+    // No internal path / raw Node error code leaks to the user.
+    expect(error).not.toContain(unwritable);
+    expect(error).not.toMatch(/ENOTDIR|EPERM|EACCES/);
+
+    // The batch and its rows survived.
+    expect(
+      (db.prepare("SELECT COUNT(*) c FROM import_batches WHERE id = ?").get(res.batchId) as { c: number }).c,
+    ).toBe(1);
+    expect(
+      (db.prepare("SELECT COUNT(*) c FROM transactions WHERE import_batch_id = ?").get(res.batchId) as { c: number }).c,
+    ).toBeGreaterThan(0);
+  });
 });

@@ -399,15 +399,23 @@ function computeConcentration(
     accountFilter, // accountFilter already includes "AND " prefix if set
   });
 
-  // Get latest holdings with current prices, compute market value
+  // Get latest holdings with current prices, compute market value.
+  //
+  // The predicate resolves the latest row per (account, security) — one row
+  // PER ACCOUNT for a name held in several. Those legs are SUMMED into a
+  // single position before any weight is taken (GROUP BY, exactly as
+  // computePositionRisk does): a name split across accounts is one position
+  // with one weight, not two smaller ones. Leaving them split understated
+  // every concentration figure on the page (QA analysis-risk-scope-all--
+  // position-values-single-account-leg-dropped: SPY 21.16sh + 100sh rendered
+  // as the 100sh leg alone).
   const rows = db
     .prepare(
       `WITH latest_holdings AS (
-         SELECT h.security_id, h.account_id, h.quantity, s.symbol, s.name, s.security_type,
-                COALESCE(s.multiplier, 1) AS multiplier, s.currency
+         SELECT h.security_id, SUM(h.quantity) AS total_qty
          FROM holdings h
-         JOIN securities s ON s.id = h.security_id
          WHERE ${predicate}
+         GROUP BY h.security_id
        ),
        latest_prices AS (
          SELECT security_id, close_price
@@ -417,12 +425,13 @@ function computeConcentration(
          )
        )
        SELECT
-         lh.symbol,
-         lh.name AS security_name,
-         ${adjustedMarketValueSQL("lh.quantity", "COALESCE(lp.close_price, 0)", "lh.security_type", "lh.multiplier", "COALESCE(fx.usd_per_unit, 1)")} AS market_value
+         s.symbol,
+         s.name AS security_name,
+         ${adjustedMarketValueSQL("lh.total_qty", "COALESCE(lp.close_price, 0)", "s.security_type", "COALESCE(s.multiplier, 1)", "COALESCE(fx.usd_per_unit, 1)")} AS market_value
        FROM latest_holdings lh
+       JOIN securities s ON s.id = lh.security_id
        LEFT JOIN latest_prices lp ON lp.security_id = lh.security_id
-       LEFT JOIN fx_rates fx ON fx.currency = lh.currency
+       LEFT JOIN fx_rates fx ON fx.currency = s.currency
        WHERE COALESCE(lp.close_price, 0) > 0
        ORDER BY market_value DESC`
     )
