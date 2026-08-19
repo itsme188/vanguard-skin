@@ -1094,6 +1094,14 @@ positive, which is why Co-Work emitted wrong signs monthly.
 **Pre-2026-04 historical-backfill rows are legacy-positive BY DESIGN** — never "fix" them;
 era-filter any convention query (`trade_date >= '2026-04-01'`).
 
+**Parser enforcement (2026-08-18, `8e54b24`):** `parseCanonicalCsv` auto-normalizes wrong-sign
+BUY/SELL-family amounts (post-2026-04 only, warning surfaced), and it does so BEFORE deriving the
+row's `source_key` — so a wrong-sign transcription and its later correction dedup to the SAME key
+instead of importing side by side. Other types are deliberately untouched (a negative DIVIDEND/FEE
+can be a legitimate reversal; TRANSFER sign is directional). One-off for rows that landed wrong
+before enforcement: `scripts/repair-buy-sign-post-april.ts` (flips amount AND the key's cents
+segment together; applied 2026-08-18, 12 rows).
+
 ### Canonical-CSV numeric parsing goes through `parseStrictNumber()`
 
 `lib/import/parsers/canonical-csv.ts` — returns NaN for any comma-bearing string; never `parseFloat()`
