@@ -15,7 +15,9 @@ import { computeScenario, type ScenarioDefinition } from "@/lib/compute/scenario
  *       rateMove) even though the description still mentioned the rate move.
  *
  * Fixed model: changePercent = marketLeg + rateLeg, computed independently,
- * then clamped for longs. See the composition block in scenarios.ts.
+ * then clamped at -100% for longs AND shorts alike — the underlying can't
+ * fall below zero, and a short's direction is already carried by its
+ * negative market_value. See the composition block in scenarios.ts.
  *
  * Same in-memory SQLite + DI setup as tests/compute/scenarios.test.ts.
  */
@@ -307,11 +309,11 @@ describe("additive shock composition — regression guards", () => {
   });
 });
 
-describe("additive shock composition — clamp applies to longs only (QA-1 detail)", () => {
-  it("clamps a long position's changePercent at -100% (estimatedNewValue never negative), but leaves a short's raw (larger) loss-side number unclamped", () => {
+describe("additive shock composition — clamp applies to longs AND shorts (QA-1 detail)", () => {
+  it("clamps changePercent at -100% for both a long and a short (estimatedNewValue never flips sign / exceeds notional)", () => {
     const db = createTestDb();
     db.exec("INSERT INTO accounts (id, name) VALUES (1, 'Test')");
-    // Long option: beta 2.0, marketMove -0.6 -> raw changePercent -1.2.
+    // Long option: beta 2.0, marketMove -0.6 -> raw changePercent -1.2 (pre-clamp).
     db.prepare(
       "INSERT INTO securities (id, symbol, name, security_type) VALUES (1, 'LOPT', 'Long Option', 'option')"
     ).run();
@@ -321,6 +323,8 @@ describe("additive shock composition — clamp applies to longs only (QA-1 detai
     db.prepare("INSERT INTO prices (security_id, date, close_price) VALUES (1, ?, 100)").run(today());
 
     // Short option, same economics but negative quantity -> negative market_value.
+    // The underlying still can't fall below zero, so this must clamp too: a
+    // short can gain at most its full notional proceeds, not more.
     db.prepare(
       "INSERT INTO securities (id, symbol, name, security_type) VALUES (2, 'SOPT', 'Short Option', 'option')"
     ).run();
@@ -345,9 +349,13 @@ describe("additive shock composition — clamp applies to longs only (QA-1 detai
     expect(long.estimatedNewValue).toBeCloseTo(0, 5);
 
     expect(short.currentValue).toBeLessThan(0);
-    expect(short.changePercent).toBeCloseTo(-0.6 * 2.0, 5); // unclamped raw -1.2
-    // A short gains when the market falls; a >100%-of-notional swing on a
-    // short is not "impossible" the way a long losing >100% is.
-    expect(short.estimatedChange).toBeGreaterThan(0);
+    // Clamped to -100%, not the unclamped raw -1.2 (-0.6 * beta 2.0).
+    expect(short.changePercent).toBe(-1);
+    // A short gains when the market falls, but not more than it could ever
+    // owe back (its full notional): estimatedChange must equal exactly
+    // |market_value|, and estimatedNewValue must land at 0, never flip
+    // positive (which would imply a >100%-of-notional gain).
+    expect(short.estimatedChange).toBeCloseTo(Math.abs(short.currentValue), 5);
+    expect(short.estimatedNewValue).toBeCloseTo(0, 5);
   });
 });
