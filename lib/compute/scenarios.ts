@@ -183,9 +183,13 @@ export function computeScenario(
         : 0;
 
     let changePercent = marketLeg + rateLeg;
-    // A long position can't lose more than its full value; shorts are left
-    // unclamped (a short's gain on the loss side is not "impossible").
-    if (pos.market_value > 0) changePercent = Math.max(changePercent, -1);
+    // The UNDERLYING can't fall below zero, i.e. changePercent can't go
+    // below -100% — for longs AND shorts. A short's direction is already
+    // carried by its negative market_value; estimatedChange = market_value *
+    // changePercent still flips sign correctly. Leaving shorts unclamped let
+    // changePercent < -1 flip the sign of estimatedNewValue, implying a
+    // short could earn more than its full notional proceeds.
+    changePercent = Math.max(changePercent, -1);
 
     const estimatedChange = pos.market_value * changePercent;
 

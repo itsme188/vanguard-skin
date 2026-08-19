@@ -270,8 +270,13 @@ describe("legacy custom-scenario path (non-recipe ids flow through beta heuristi
     };
     const result = computeScenario(db, customRate);
     const bnd = result.positionImpacts.find((p) => p.symbol === "BND")!;
-    // 5y duration × 1% rate move = -5%
-    expect(bnd.changePercent).toBeCloseTo(-0.05, 2);
+    // Rate leg is the convexity-aware exponential, not linear duration:
+    // exp(-duration * dy) - 1 = exp(-5 * 0.01) - 1 ≈ -0.04877 (not -0.05).
+    // marketLeg still applies too (bonds get a small near-zero equity beta
+    // of 0.1): marketMove(-0.05) * 0.1 = -0.005. Total ≈ -0.05377.
+    const expectedRateLeg = Math.exp(-5 * (100 / 10000)) - 1;
+    const expectedMarketLeg = -0.05 * 0.1;
+    expect(bnd.changePercent).toBeCloseTo(expectedMarketLeg + expectedRateLeg, 5);
   });
 });
 
