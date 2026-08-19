@@ -168,7 +168,9 @@ if (isMain) {
       return;
     }
 
-    const db = new BetterSqlite3(dbPath);
+    // 60s lock wait — the live app's background sync can hold the write lock
+    // past better-sqlite3's 5s default.
+    const db = new BetterSqlite3(dbPath, { timeout: 60000 });
     db.pragma("journal_mode = WAL");
     db.pragma("foreign_keys = ON");
 
@@ -176,6 +178,18 @@ if (isMain) {
       console.log(
         `Empty-enrichment repair ${apply ? "[APPLY]" : "[DRY RUN]"} — db: ${dbPath}\n`,
       );
+
+      if (apply && findEmptyEnrichmentRows(db).length > 0) {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const backupDir = path.default.join(process.cwd(), "data", "backups");
+        fs.default.mkdirSync(backupDir, { recursive: true });
+        const backupPath = path.default.join(
+          backupDir,
+          `pre-empty-enrichments-${timestamp}.db`,
+        );
+        db.prepare(`VACUUM INTO ?`).run(backupPath);
+        console.log(`Backup: ${backupPath}\n`);
+      }
 
       const { matched, repaired } = repairEmptyEnrichments(db, { apply });
 
