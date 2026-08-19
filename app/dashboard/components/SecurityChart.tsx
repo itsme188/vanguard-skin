@@ -779,16 +779,7 @@ export function SecurityChart({
         // older than the "1M" cutoff) — clear the stale series so the
         // "No data" overlay isn't painted over the previous range's candles
         // (deep-QA: charts-1m-range--no-data-overlay-over-visible-candles).
-        candleSeriesRef.current.setData([]);
-        volumeSeriesRef.current.setData([]);
-        for (const [, series] of indicatorMapRef.current) {
-          chartRef.current?.removeSeries(series);
-        }
-        indicatorMapRef.current.clear();
-        if (markersPluginRef.current) {
-          try { markersPluginRef.current.detach?.(); } catch { /* noop */ }
-          markersPluginRef.current = null;
-        }
+        clearChartSeries(candleSeriesRef.current, volumeSeriesRef.current, chartRef.current, indicatorMapRef.current, markersPluginRef);
       }
     },
     [fetchChartData, activeIndicators, showMarkers],
@@ -826,26 +817,24 @@ export function SecurityChart({
           // (likely daily) series so the "No data" overlay isn't painted
           // over leftover candles (deep-QA: charts-1m-range--no-data-
           // overlay-over-visible-candles, 2026-08-10 5m manifestation).
-          candleSeriesRef.current.setData([]);
-          volumeSeriesRef.current.setData([]);
-          for (const [, series] of indicatorMapRef.current) {
-            chartRef.current?.removeSeries(series);
-          }
-          indicatorMapRef.current.clear();
-          if (markersPluginRef.current) {
-            try { markersPluginRef.current.detach?.(); } catch { /* noop */ }
-            markersPluginRef.current = null;
-          }
+          clearChartSeries(candleSeriesRef.current, volumeSeriesRef.current, chartRef.current, indicatorMapRef.current, markersPluginRef);
         }
       } else {
         // Back to daily: reload daily bars
         chartRef.current?.timeScale().applyOptions({ timeVisible: false });
         const selected = DURATIONS.find((d) => d.label === activeDuration)!;
         const data = await fetchChartData(selected.duration, false, "1 day");
-        if (data && data.bars.length > 0) {
-          const visibleBars = filterBarsByWindow(data.bars, selected.months);
-          const visibleStart = visibleBars.length > 0 ? visibleBars[0].date : undefined;
-          setBarCount(visibleBars.length);
+        if (!data) return;
+        // Gate on VISIBLE bars, not raw bars — raw bars can be non-empty
+        // while every one of them falls outside the selected duration's
+        // window (deep-QA: charts-1m-range--no-data-overlay-over-visible-
+        // candles, the two-gap variant: raw bars > 0 but visible bars = 0
+        // used to take the success path below and paint a full-history
+        // indicator line under the "No data" overlay).
+        const visibleBars = filterBarsByWindow(data.bars, selected.months);
+        setBarCount(visibleBars.length);
+        if (visibleBars.length > 0) {
+          const visibleStart = visibleBars[0].date;
           const lc = await import("lightweight-charts");
           if (candleSeriesRef.current && volumeSeriesRef.current) {
             applyBarsToChart(lc, candleSeriesRef.current, volumeSeriesRef.current, visibleBars);
@@ -853,21 +842,12 @@ export function SecurityChart({
             if (showMarkers) markersPluginRef.current = updateMarkers(lc, candleSeriesRef.current!, data.transactions ?? [], true, markersPluginRef.current, isPrivateRef.current);
             chartRef.current?.timeScale().fitContent();
           }
-        } else if (data && candleSeriesRef.current && volumeSeriesRef.current) {
-          // Zero bars returned for the daily fetch — clear the stale
+        } else if (candleSeriesRef.current && volumeSeriesRef.current) {
+          // Zero VISIBLE bars for the daily fetch — clear the stale
           // intraday series so the "No data" overlay isn't painted over
           // leftover candles (deep-QA: charts-1m-range--no-data-overlay-
           // over-visible-candles).
-          candleSeriesRef.current.setData([]);
-          volumeSeriesRef.current.setData([]);
-          for (const [, series] of indicatorMapRef.current) {
-            chartRef.current?.removeSeries(series);
-          }
-          indicatorMapRef.current.clear();
-          if (markersPluginRef.current) {
-            try { markersPluginRef.current.detach?.(); } catch { /* noop */ }
-            markersPluginRef.current = null;
-          }
+          clearChartSeries(candleSeriesRef.current, volumeSeriesRef.current, chartRef.current, indicatorMapRef.current, markersPluginRef);
         }
       }
     },
@@ -889,8 +869,7 @@ export function SecurityChart({
         // Zero bars on refresh — clear the stale series so the "No data"
         // overlay isn't painted over leftover candles (deep-QA: charts-1m-
         // range--no-data-overlay-over-visible-candles).
-        candleSeriesRef.current.setData([]);
-        volumeSeriesRef.current.setData([]);
+        clearChartSeries(candleSeriesRef.current, volumeSeriesRef.current, chartRef.current, indicatorMapRef.current, markersPluginRef);
       }
       return;
     }
@@ -898,10 +877,14 @@ export function SecurityChart({
     const selected = DURATIONS.find((d) => d.label === activeDuration);
     if (!selected) return;
     const data = await fetchChartData(selected.duration, true);
-    if (data && data.bars.length > 0) {
-      const visibleBars = filterBarsByWindow(data.bars, selected.months);
-      const visibleStart = visibleBars.length > 0 ? visibleBars[0].date : undefined;
-      setBarCount(visibleBars.length);
+    if (!data) return;
+    // Gate on VISIBLE bars, not raw bars — see the identical gate in
+    // handleTimeframeChange's back-to-daily branch (deep-QA: charts-1m-
+    // range--no-data-overlay-over-visible-candles, two-gap variant).
+    const visibleBars = filterBarsByWindow(data.bars, selected.months);
+    setBarCount(visibleBars.length);
+    if (visibleBars.length > 0) {
+      const visibleStart = visibleBars[0].date;
       import("lightweight-charts").then((lc) => {
         if (candleSeriesRef.current && volumeSeriesRef.current) {
           applyBarsToChart(lc, candleSeriesRef.current, volumeSeriesRef.current, visibleBars);
@@ -910,20 +893,12 @@ export function SecurityChart({
           chartRef.current?.timeScale().fitContent();
         }
       });
-    } else if (data && candleSeriesRef.current && volumeSeriesRef.current) {
-      // Zero bars on refresh — clear the stale series + indicator overlays
-      // so the "No data" overlay isn't painted over leftover candles
-      // (deep-QA: charts-1m-range--no-data-overlay-over-visible-candles).
-      candleSeriesRef.current.setData([]);
-      volumeSeriesRef.current.setData([]);
-      for (const [, series] of indicatorMapRef.current) {
-        chartRef.current?.removeSeries(series);
-      }
-      indicatorMapRef.current.clear();
-      if (markersPluginRef.current) {
-        try { markersPluginRef.current.detach?.(); } catch { /* noop */ }
-        markersPluginRef.current = null;
-      }
+    } else if (candleSeriesRef.current && volumeSeriesRef.current) {
+      // Zero VISIBLE bars on refresh — clear the stale series + indicator
+      // overlays so the "No data" overlay isn't painted over leftover
+      // candles (deep-QA: charts-1m-range--no-data-overlay-over-visible-
+      // candles).
+      clearChartSeries(candleSeriesRef.current, volumeSeriesRef.current, chartRef.current, indicatorMapRef.current, markersPluginRef);
     }
   }, [activeDuration, activeTimeframe, isIntraday, fetchChartData, activeIndicators, showMarkers]);
 
@@ -1287,6 +1262,39 @@ function applyBarsToChart(
       color: b.close >= b.open ? C.volumeUp : C.volumeDown,
     })),
   );
+}
+
+/**
+ * Clear the candle/volume series + indicator lines + transaction markers.
+ * Every entrance that can land on zero VISIBLE bars (duration/timeframe/
+ * refresh fetches all filter raw bars down to a window) must route through
+ * here instead of taking the success path — otherwise a stale candle/volume
+ * series, or a full-history indicator line (updateIndicators has no visible
+ * window to clip to when visibleStart is undefined), paints under the
+ * "No cached price history" overlay (deep-QA: charts-1m-range--no-data-
+ * overlay-over-visible-candles). Callers must guard on
+ * candleSeriesRef.current && volumeSeriesRef.current before calling, same as
+ * every other series mutation in this file — a disposed chart must never be
+ * touched.
+ */
+function clearChartSeries(
+  candleSeries: ISeriesApi<"Candlestick">,
+  volumeSeries: ISeriesApi<"Histogram">,
+  chart: IChartApi | null,
+  indicatorMap: Map<string, ISeriesApi<"Line">>,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  markersPluginRef: { current: any },
+) {
+  candleSeries.setData([]);
+  volumeSeries.setData([]);
+  for (const [, series] of indicatorMap) {
+    chart?.removeSeries(series);
+  }
+  indicatorMap.clear();
+  if (markersPluginRef.current) {
+    try { markersPluginRef.current.detach?.(); } catch { /* noop */ }
+    markersPluginRef.current = null;
+  }
 }
 
 /**
