@@ -41,6 +41,34 @@ interface CashAnchor {
   cash_value: number | null;
 }
 
+/**
+ * Given `sortedDates` (ascending, `YYYY-MM-DD` strings — lexicographic order
+ * matches chronological order), return the latest date that is `<= target`,
+ * or `null` if every date in the list is after `target` (or the list is
+ * empty). Binary search — O(log n).
+ *
+ * This replaces a correlated `MAX(as_of_date) <= ?` subquery: resolving the
+ * date in JS against a small in-memory list lets the caller bind a plain
+ * equality predicate instead, see `computeDailyValuations` below.
+ */
+export function findLatestDateOnOrBefore(sortedDates: string[], target: string): string | null {
+  let lo = 0;
+  let hi = sortedDates.length - 1;
+  let result: string | null = null;
+
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (sortedDates[mid] <= target) {
+      result = sortedDates[mid];
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+
+  return result;
+}
+
 export function computeDailyValuations(db: Database.Database): DailyValuationResult {
   return db.transaction(() => {
     // Clear existing valuations
@@ -77,26 +105,36 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
     // per-security MAX. This prevents "ghost holdings" — securities from older
     // snapshots that no longer appear in the latest statement (i.e., sold).
     //
-    // NOTE: This site cannot use `latestHoldingsPredicate` because the
-    // `as_of_date <= ?` constraint must accept a positional bind (the prepared
-    // statement is reused across many target dates inside `computeDailyValuations`).
-    // The helper's `asOfDate` option does literal SQL substitution (validated
-    // against /^\d{4}-\d{2}-\d{2}$/) and would require re-preparing the
-    // statement on every date — losing the prepared-statement optimization
-    // this hot loop depends on. Intentionally inline.
+    // NOTE: "Latest snapshot ≤ target date" is resolved in JS beforehand
+    // (`findLatestDateOnOrBefore` over a per-account sorted date list loaded
+    // once below), not via a correlated `MAX(h2.as_of_date) <= ?` subquery.
+    // The correlated form forced SQLite to re-run the subquery once per
+    // OUTER holdings row: holdings' only index is
+    // UNIQUE(account_id, security_id, as_of_date), so a
+    // `WHERE account_id = ? AND as_of_date <= ?` scan can use only the
+    // account_id prefix — as_of_date is the 3rd column and unusable for a
+    // range — making the subquery an effective per-row table scan (measured
+    // 466ms per call × 1,854 account/date pairs ≈ 5 min). Resolving the date
+    // in JS lets this statement bind a plain equality (`h.as_of_date = ?`),
+    // which the same index serves directly. This also means
+    // `latestHoldingsPredicate` still doesn't apply here — there is no
+    // per-call range bind left to express with it.
     const getHoldings = db.prepare(
       `SELECT h.security_id, h.quantity, s.security_type, s.fund_category,
               COALESCE(s.multiplier, 1) AS multiplier, s.currency, h.as_of_date, h.source_key
        FROM holdings h
        JOIN securities s ON s.id = h.security_id
        WHERE h.account_id = ?
-         AND h.as_of_date = (
-           SELECT MAX(h2.as_of_date)
-           FROM holdings h2
-           WHERE h2.account_id = h.account_id
-             AND h2.as_of_date <= ?
-         )
+         AND h.as_of_date = ?
        GROUP BY h.security_id`
+    );
+
+    // Every snapshot date this account has, ascending — the in-memory list
+    // `findLatestDateOnOrBefore` resolves `getHoldings`'s exact-date bind
+    // against (one query per account instead of one correlated subquery
+    // evaluation per outer row).
+    const getAllSnapshotDates = db.prepare(
+      `SELECT DISTINCT as_of_date AS date FROM holdings WHERE account_id = ? ORDER BY as_of_date`
     );
 
     // Bonds from the most recent STATEMENT snapshot on or before a date.
@@ -118,23 +156,36 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
          AND ${statementSourcedHoldingSql("h.source_key")}
          AND LOWER(COALESCE(s.security_type, '')) = 'bond'
          AND h.quantity != 0
-         AND h.as_of_date = (
-           SELECT MAX(h2.as_of_date)
-           FROM holdings h2
-           WHERE h2.account_id = h.account_id
-             AND h2.as_of_date <= ?
-             AND ${statementSourcedHoldingSql("h2.source_key")}
-         )
+         AND h.as_of_date = ?
        GROUP BY h.security_id`
+    );
+
+    // Same idea as `getAllSnapshotDates`, restricted to statement-sourced
+    // rows — mirrors the old subquery's `statementSourcedHoldingSql(h2.source_key)`
+    // filter on the MAX side.
+    const getStatementSnapshotDates = db.prepare(
+      `SELECT DISTINCT as_of_date AS date FROM holdings
+       WHERE account_id = ? AND ${statementSourcedHoldingSql("source_key")}
+       ORDER BY as_of_date`
     );
 
     let datesComputed = 0;
     const accountsProcessed = new Set<number>();
 
     for (const account of accounts) {
+      const allSnapshotDates = (
+        getAllSnapshotDates.all(account.account_id) as PriceDateRow[]
+      ).map((r) => r.date);
+      const statementSnapshotDates = (
+        getStatementSnapshotDates.all(account.account_id) as PriceDateRow[]
+      ).map((r) => r.date);
+
       for (const { date } of priceDates) {
         // Get holdings as of this date (most recent snapshot on or before this date)
-        const snapshotRows = getHoldings.all(account.account_id, date) as HoldingRow[];
+        const resolvedSnapshotDate = findLatestDateOnOrBefore(allSnapshotDates, date);
+        if (resolvedSnapshotDate === null) continue;
+
+        const snapshotRows = getHoldings.all(account.account_id, resolvedSnapshotDate) as HoldingRow[];
 
         if (snapshotRows.length === 0) continue;
 
@@ -169,10 +220,16 @@ export function computeDailyValuations(db: Database.Database): DailyValuationRes
           (h) => h.security_type?.toLowerCase() === "bond"
         );
         if (hasPlaidRow && !hasOwnBondRow) {
-          const ownSecurityIds = new Set(snapshotRows.map((h) => h.security_id));
-          for (const bond of getStatementBonds.all(account.account_id, date) as HoldingRow[]) {
-            // The day's own row always wins on collision.
-            if (!ownSecurityIds.has(bond.security_id)) holdings.push(bond);
+          const resolvedStatementDate = findLatestDateOnOrBefore(statementSnapshotDates, date);
+          if (resolvedStatementDate !== null) {
+            const ownSecurityIds = new Set(snapshotRows.map((h) => h.security_id));
+            for (const bond of getStatementBonds.all(
+              account.account_id,
+              resolvedStatementDate
+            ) as HoldingRow[]) {
+              // The day's own row always wins on collision.
+              if (!ownSecurityIds.has(bond.security_id)) holdings.push(bond);
+            }
           }
         }
 
