@@ -115,8 +115,8 @@ export const CONFIG_EXAMPLE = `[
     "symbol": "AAAA",
     "splitDate": "2020-08-28",
     "ratio": 4,
-    "expectedPreSplitTxnQty": 30.318,
-    "priceRows": [{ "date": "2025-06-30", "preSplitClose": 1094.92 }]
+    "expectedPreSplitTxnQty": 12.5,
+    "priceRows": [{ "date": "2025-06-30", "preSplitClose": 500.00 }]
   }
 ]`;
 
