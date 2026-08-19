@@ -107,11 +107,14 @@ export interface RiskOptions {
   accountIds?: number[];
   riskFreeRate?: number; // annualized; if omitted, reads FRED DGS3MO from settings cache
   /**
-   * If set (YYYY-MM-DD), compute concentration metrics against holdings as
-   * of that date instead of today. The drawdown, volatility, and Sharpe ratio
-   * are unaffected (they operate on daily valuations time-series, not
-   * point-in-time holdings). This param affects only the Herfindahl and
-   * top-5 concentration computed by computeConcentration().
+   * If set (YYYY-MM-DD), compute AS OF that date instead of today: the
+   * Herfindahl/top-5 concentration holdings snapshot (computeConcentration)
+   * AND the daily-valuation window feeding drawdown/volatility/Sharpe are
+   * both truncated to dates <= asOfDate (2026-08-19 fix — pre-fix, the
+   * time-series leg silently ignored asOfDate, so a "week-ago" snapshot was
+   * byte-identical to "now" and the W-o-W badges always read "unchanged").
+   * When both `endDate` and `asOfDate` are set, the earlier of the two wins
+   * (asOfDate caps, never extends, an explicit endDate).
    */
   asOfDate?: string;
 }
@@ -162,6 +165,15 @@ export function computeRiskMetrics(
   const riskFreeRate = options?.riskFreeRate ?? getRiskFreeRate(db);
   const accountIds = normalizeAccountIds(options);
 
+  // asOfDate caps the valuation window ("as of that date", never later) —
+  // the earlier of an explicit endDate and asOfDate wins when both are set.
+  // This is what makes the drawdown/volatility/Sharpe leg (not just
+  // concentration, below) actually differ for a "week-ago" snapshot.
+  const effectiveEndDate =
+    options?.asOfDate && options?.endDate
+      ? (options.asOfDate < options.endDate ? options.asOfDate : options.endDate)
+      : (options?.asOfDate ?? options?.endDate);
+
   // 1. Get daily valuations (summed across the scoped accounts).
   // fullCoverageOnly: an account whose coverage starts mid-window would sum
   // in as a fake +100% "day" — a coverage artifact, not a market move, and
@@ -171,12 +183,12 @@ export function computeRiskMetrics(
     accountIds && accountIds.length > 0
       ? getDailyValuationsForAccounts(db, accountIds, {
           startDate: options?.startDate,
-          endDate: options?.endDate,
+          endDate: effectiveEndDate,
           fullCoverageOnly: true,
         })
       : getDailyValuationsCombined(db, {
           startDate: options?.startDate,
-          endDate: options?.endDate,
+          endDate: effectiveEndDate,
           fullCoverageOnly: true,
         });
 
