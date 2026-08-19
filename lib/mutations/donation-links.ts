@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import type { DonationRow } from "@/lib/queries/donations";
+import { getOpenLotsForDonation } from "@/lib/queries/giving-view";
 
 /** Every invariant rejection in this file throws DonationLinkError with a
  * domain-language message naming the violated concept. */
@@ -244,6 +245,14 @@ export function assignDonationLots(
       .all(donationId) as { acquisition_transaction_id: number; quantity: number }[];
     const existingByTxn = new Map(existingRows.map((r) => [r.acquisition_transaction_id, r.quantity]));
 
+    // As-of-donation-date availability per acquisition transaction — the SAME
+    // computation the lot drawer shows (getOpenLotsForDonation.remainingAsOfDonationDate,
+    // which already counts this donation's own claim back toward capacity). Shared, not
+    // forked, so drawer and gate can never disagree on this basis.
+    const asOfDateAvailability = new Map(
+      getOpenLotsForDonation(db, donationId).map((l) => [l.acquisitionTransactionId, l.remainingAsOfDonationDate])
+    );
+
     let sum = 0;
     const seenAcquisitionIds = new Set<number>();
     for (const a of assignments) {
@@ -302,11 +311,22 @@ export function assignDonationLots(
       // recompute between them) IS accepted at write time by design; it is caught and
       // clamped by computeTaxLots with a replay warning (tests/compute/tax-lots-donations.test.ts
       // case 7), and closed in practice by the route-level recompute-after-write (Task 12).
+      //
+      // UNION basis (2026-08-18): the current-state basis alone rejected every donation
+      // whose lot was consumed by a LATER sell (or the RECONCILE_CLOSE that stands in for
+      // it) in the last recompute — a replay that necessarily ran WITHOUT the donation,
+      // since its lots weren't assigned yet. The drawer (getOpenLotsForDonation) offers
+      // as-of-donation-date availability, so the gate must also accept that basis or the
+      // drawer suggests picks the gate refuses. Acceptance = EITHER basis covers the
+      // request — a pure relaxation: nothing previously legal became illegal, and the
+      // chronological replay's clamp-and-warn remains the authority for over-commitment.
       const ownExisting = existingByTxn.get(a.acquisitionTransactionId) ?? 0;
-      const available = lot.quantity_remaining + ownExisting;
+      const availableCurrent = lot.quantity_remaining + ownExisting;
+      const availableAsOfDate = asOfDateAvailability.get(a.acquisitionTransactionId) ?? 0;
+      const available = Math.max(availableCurrent, availableAsOfDate);
       if (a.quantity > available + EPS) {
         throw new DonationLinkError(
-          `donation ${donationId}: requested quantity ${a.quantity} for acquisition transaction ${a.acquisitionTransactionId} exceeds the lot's available quantity_remaining (${available})`
+          `donation ${donationId}: requested quantity ${a.quantity} for acquisition transaction ${a.acquisitionTransactionId} exceeds the lot's available quantity (${available} = max of current remaining ${availableCurrent}, as-of-donation-date ${availableAsOfDate})`
         );
       }
 
