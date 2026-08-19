@@ -1,6 +1,7 @@
 import { db } from "@/lib/db";
 import type { CalendarEvent } from "@/lib/types";
-import { parseFinnhubFigure, mergeFinnhubActual } from "@/lib/format/finnhub-figure";
+import { parseFinnhubFigure } from "@/lib/format/finnhub-figure";
+import { saveManualActuals } from "@/lib/earnings/actuals";
 
 export const dynamic = "force-dynamic";
 
@@ -9,6 +10,8 @@ interface PostBody {
   eps_actual?: number | null;
   revenue_actual_usd?: number | null;
   notes?: string | null;
+  /** Bypass the pre-print floor (user confirmed the future-dated release). */
+  force?: boolean;
 }
 
 /**
@@ -20,6 +23,10 @@ interface PostBody {
  * calendar_events.actual_value in the Finnhub-style "EPS X.XX · Rev N"
  * format so all existing readers (renderHeadlineTable, EarningsHub UI,
  * recap composer) work unchanged. Bumps enriched_at to now.
+ *
+ * Pre-print floor: refuses (409, code 'pre_print') when the event's release
+ * instant is still in the future, unless the body carries force:true — see
+ * lib/earnings/actuals.ts / lib/earnings/pre-print-floor.ts.
  *
  * GET /api/earnings/actuals?eventId=NN — returns the parsed current
  * actual_value as { eps_actual, revenue_actual_usd } so the modal can
@@ -63,41 +70,18 @@ export async function POST(request: Request) {
     );
   }
 
-  const event = db
-    .prepare(`SELECT id, event_type, actual_value FROM calendar_events WHERE id = ?`)
-    .get(body.event_id) as
-    | { id: number; event_type: string; actual_value: string | null }
-    | undefined;
-  if (!event) {
-    return Response.json({ error: `Event ${body.event_id} not found.` }, { status: 404 });
-  }
-
-  if (body.eps_actual == null && body.revenue_actual_usd == null) {
-    return Response.json(
-      { error: "Provide at least one of eps_actual or revenue_actual_usd." },
-      { status: 400 },
-    );
-  }
-
-  // MERGE into the stored Finnhub-shaped value — an EPS-only save must not
-  // wipe a previously-captured revenue (audit B18). Output stays
-  // "EPS X.XX · Rev NNNNNN" so all downstream readers work unchanged.
-  const formatted = mergeFinnhubActual(event.actual_value, {
-    eps: body.eps_actual,
-    revenue: body.revenue_actual_usd,
+  const result = saveManualActuals(db, {
+    eventId: body.event_id,
+    epsActual: body.eps_actual,
+    revenueActualUsd: body.revenue_actual_usd,
+    force: body.force === true,
   });
-  if (!formatted) {
-    return Response.json(
-      { error: "Provide at least one of eps_actual or revenue_actual_usd." },
-      { status: 400 },
-    );
-  }
-  db.prepare(
-    `UPDATE calendar_events
-        SET actual_value = ?,
-            enriched_at = COALESCE(enriched_at, datetime('now'))
-      WHERE id = ?`,
-  ).run(formatted, body.event_id);
 
-  return Response.json({ success: true, actual_value: formatted });
+  if (!result.ok) {
+    const payload: { error: string; code?: string } = { error: result.error };
+    if ("code" in result) payload.code = result.code;
+    return Response.json(payload, { status: result.status });
+  }
+
+  return Response.json({ success: true, actual_value: result.actualValue });
 }
