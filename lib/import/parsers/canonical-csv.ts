@@ -51,10 +51,63 @@ function stripLeadingComments(content: string): string {
 // Round to integer cents to dodge float-formatting differences between JS and SQLite.
 // Used in source_key so two same-day same-symbol same-type fills with different amounts
 // don't collide (e.g., 400 RSP @ $78,466.98 + 100 RSP @ $19,664.09 on the same day).
-function amountCents(amt: string | undefined): string {
-  const n = parseStrictNumber(amt);
-  if (!Number.isFinite(n)) return "0";
-  return String(Math.round(n * 100));
+// Takes the already-parsed (and, for txn rows, already sign-normalized) number so the
+// key reflects the normalized value, not the raw CSV text.
+function amountCents(amt: number | undefined): string {
+  if (amt == null || !Number.isFinite(amt)) return "0";
+  return String(Math.round(amt * 100));
+}
+
+// Post-2026-04-01 statement-import era: canonical-csv amount is the SIGNED CASH EFFECT
+// (docs/reference/conventions-detail.md). BUY-family rows must be negative (cash out),
+// SELL-family rows must be positive (cash in). Pre-2026-04 rows are legacy-positive by
+// design and must never be touched.
+const SIGNED_CASH_EFFECT_ERA_START = "2026-04-01";
+const BUY_FAMILY_TYPES = new Set([
+  "BUY",
+  "BUY_TO_OPEN",
+  "BUY_TO_CLOSE",
+  "BUY_TO_COVER",
+]);
+const SELL_FAMILY_TYPES = new Set(["SELL", "SELL_TO_CLOSE", "SELL_TO_OPEN"]);
+
+function isYmd(s: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(s);
+}
+
+// Mirrors the negative-quantity auto-normalization below: if a Co-Work session emits a
+// BUY-family amount as positive or a SELL-family amount as negative on/after the
+// signed-cash-effect era start, flip the sign and warn. Scope is intentionally narrow —
+// TRANSFER (sweep sign is directional), DIVIDEND/INTEREST/FEE/TAX_WITHHELD etc. (a
+// negative value there can be a legitimate reversal), zero/null/NaN amounts, and
+// pre-era or malformed trade_dates are never touched.
+function normalizeSignedAmount(
+  type: string,
+  tradeDate: string,
+  rawAmount: number | undefined,
+  symbol: string,
+  warnings: string[]
+): number | undefined {
+  if (
+    rawAmount == null ||
+    !Number.isFinite(rawAmount) ||
+    rawAmount === 0 ||
+    !isYmd(tradeDate) ||
+    tradeDate < SIGNED_CASH_EFFECT_ERA_START
+  ) {
+    return rawAmount;
+  }
+  let flipped: number | undefined;
+  if (BUY_FAMILY_TYPES.has(type) && rawAmount > 0) {
+    flipped = -Math.abs(rawAmount);
+  } else if (SELL_FAMILY_TYPES.has(type) && rawAmount < 0) {
+    flipped = Math.abs(rawAmount);
+  }
+  if (flipped == null) return rawAmount;
+  warnings.push(
+    `Transaction ${symbol} ${tradeDate} ${type}: amount ${rawAmount} normalized to ${flipped} (post-2026-04 signed-cash-effect convention)`
+  );
+  return flipped;
 }
 
 export function parseCanonicalCsv(
@@ -116,6 +169,8 @@ export function parseCanonicalCsv(
           }
         }
         if (!symbol || !row.trade_date) continue;
+        const tradeDateTrimmed = row.trade_date.trim();
+        const type = (row.type || "").toUpperCase().trim();
         // Canonical convention: quantity is always positive, type carries direction
         // (BUY adds, SELL/SELL_TO_CLOSE/EXERCISED/etc. removes). If a Co-Work session
         // emits negative quantity, normalize to abs and warn so the user sees it.
@@ -127,9 +182,21 @@ export function parseCanonicalCsv(
             `Transaction ${symbol} ${row.trade_date.trim()} ${row.type}: negative quantity ${rawQty} normalized to ${normalizedQty} (canonical convention: type carries direction)`
           );
         }
+        // Sign-normalize BEFORE deriving source_key so the key's cents segment
+        // reflects the corrected amount — this is what makes a wrong-sign row and a
+        // subsequently-corrected re-transcription dedup to the SAME key instead of
+        // importing as a duplicate.
+        const rawAmount = row.amount ? parseStrictNumber(row.amount) : undefined;
+        const normalizedAmount = normalizeSignedAmount(
+          type,
+          tradeDateTrimmed,
+          rawAmount,
+          symbol,
+          warnings
+        );
         // Source key includes integer-cents amount so split fills (same day, same
         // symbol, same type, different amounts) don't collide.
-        const baseSourceKey = `canonical:txn:${row.account?.trim()}:${symbol}:${row.trade_date.trim()}:${(row.type || "").trim()}:${amountCents(row.amount)}`;
+        const baseSourceKey = `canonical:txn:${row.account?.trim()}:${symbol}:${tradeDateTrimmed}:${(row.type || "").trim()}:${amountCents(normalizedAmount)}`;
         // Disambiguate genuine duplicates that share an identical natural key AND
         // amount — e.g. two zero-amount share-gift / sub-account journal transfers
         // on the same day for the same symbol. The first keeps the bare key (so
@@ -141,14 +208,14 @@ export function parseCanonicalCsv(
           seen === 1 ? baseSourceKey : `${baseSourceKey}:#${seen}`;
         transactions.push({
           accountName: row.account?.trim() || "Unknown",
-          tradeDate: row.trade_date.trim(),
+          tradeDate: tradeDateTrimmed,
           settlementDate: row.settlement_date?.trim() || undefined,
-          type: (row.type || "").toUpperCase().trim(),
+          type,
           symbol,
           securityName: row.security_name?.trim() || undefined,
           quantity: normalizedQty,
           pricePerShare: row.price ? parseStrictNumber(row.price) : undefined,
-          amount: row.amount ? parseStrictNumber(row.amount) : undefined,
+          amount: normalizedAmount,
           fees: row.fees ? parseStrictNumber(row.fees) : undefined,
           notes: row.notes?.trim() || undefined,
           sourceKey,

@@ -231,6 +231,132 @@ Vanguard Taxable,2025-06-12,,TRANSFER,VMFXX,Vanguard Federal Money Market Fund,M
   });
 });
 
+// Post-2026-04 BUY/SELL amount sign auto-normalization.
+// docs/reference/conventions-detail.md "Canonical-CSV amount is the SIGNED CASH
+// EFFECT": BUY-family amounts must be negative and SELL-family positive for
+// trade_date >= 2026-04-01. A live-DB audit (2026-08) found 12 BUY_TO_OPEN option
+// rows imported with a positive amount — this normalization plus the repair
+// script (scripts/repair-buy-sign-post-april.ts) close that gap.
+
+describe("post-2026-04 BUY/SELL amount sign auto-normalization", () => {
+  const header =
+    "account,trade_date,settlement_date,type,symbol,security_name,security_type,quantity,price,amount,fees,notes";
+
+  it("flips a positive BUY_TO_OPEN amount to negative on/after 2026-04-01 and warns", () => {
+    const csv = `${header}
+Vanguard Taxable,2026-05-05,,BUY_TO_OPEN,INTC  260717P00100000,INTC Put,Option,20,11.01,2202.00,0,`;
+
+    const result = parseCanonicalCsv(csv, "txn.csv");
+    expect(result.transactions).toHaveLength(1);
+    expect(result.transactions[0].amount).toBe(-2202);
+    expect(
+      result.warnings.some(
+        (w) =>
+          w.includes("BUY_TO_OPEN") &&
+          w.includes("normalized to -2202") &&
+          w.includes("post-2026-04")
+      )
+    ).toBe(true);
+  });
+
+  it("flips a negative SELL_TO_CLOSE amount to positive on/after 2026-04-01 and warns", () => {
+    const csv = `${header}
+Vanguard Taxable,2026-05-06,,SELL_TO_CLOSE,INTC  260717P00100000,INTC Put,Option,20,12.00,-2400.00,0,`;
+
+    const result = parseCanonicalCsv(csv, "txn.csv");
+    expect(result.transactions[0].amount).toBe(2400);
+    expect(
+      result.warnings.some(
+        (w) => w.includes("SELL_TO_CLOSE") && w.includes("normalized to 2400")
+      )
+    ).toBe(true);
+  });
+
+  it("covers all 7 in-scope types (BUY/BUY_TO_OPEN/BUY_TO_CLOSE/BUY_TO_COVER, SELL/SELL_TO_CLOSE/SELL_TO_OPEN)", () => {
+    const csv = `${header}
+Vanguard Taxable,2026-05-01,,BUY,AAPL,Apple Inc,Stock,10,150,1500.00,0,
+Vanguard Taxable,2026-05-01,,BUY_TO_OPEN,AAPL  260717C00150000,AAPL Call,Option,1,10,1000.00,0,
+Vanguard Taxable,2026-05-01,,BUY_TO_CLOSE,AAPL  260717P00150000,AAPL Put,Option,1,5,500.00,0,
+Vanguard Taxable,2026-05-01,,BUY_TO_COVER,AAPL,Apple Inc,Stock,10,150,1500.00,0,
+Vanguard Taxable,2026-05-01,,SELL,AAPL,Apple Inc,Stock,10,150,-1500.00,0,
+Vanguard Taxable,2026-05-01,,SELL_TO_CLOSE,AAPL  260717C00150000,AAPL Call,Option,1,10,-1000.00,0,
+Vanguard Taxable,2026-05-01,,SELL_TO_OPEN,AAPL  260717P00150000,AAPL Put,Option,1,5,-500.00,0,`;
+
+    const result = parseCanonicalCsv(csv, "txn.csv");
+    expect(result.transactions.map((t) => t.amount)).toEqual([
+      -1500, -1000, -500, -1500, 1500, 1000, 500,
+    ]);
+    expect(result.warnings).toHaveLength(7);
+  });
+
+  it("does NOT flip a positive BUY amount before 2026-04-01 (legacy-positive era)", () => {
+    const csv = `${header}
+Vanguard Taxable,2026-03-31,,BUY,AAPL,Apple Inc,Stock,10,150,1500.00,0,`;
+
+    const result = parseCanonicalCsv(csv, "txn.csv");
+    expect(result.transactions[0].amount).toBe(1500);
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it("does not touch TRANSFER, DIVIDEND, or FEE amounts on/after 2026-04-01 even when negative", () => {
+    // Scope guard: only the 7 BUY/SELL-family types are in scope. A negative
+    // DIVIDEND (reversal) or a directional TRANSFER sweep must never be touched.
+    const csv = `${header}
+Vanguard Taxable,2026-05-10,,TRANSFER,VMFXX,Vanguard Federal MM,Mutual Fund,,,-250.00,,Sweep Out Of Settlement Fund
+Vanguard Taxable,2026-05-10,,DIVIDEND,AAPL,Apple Inc,Stock,,,-25.00,,Reversal
+Vanguard Taxable,2026-05-10,,FEE,CASH,,,,,-3.50,,Margin interest
+Vanguard Taxable,2026-05-10,,TAX_WITHHELD,VXUS,Vanguard Total International Stock ETF,ETF,,,-3.50,,Foreign withholding`;
+
+    const result = parseCanonicalCsv(csv, "txn.csv");
+    expect(result.transactions.map((t) => t.amount)).toEqual([-250, -25, -3.5, -3.5]);
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it("does not touch zero, missing, or NaN amounts", () => {
+    const csv = `${header}
+Vanguard Taxable,2026-05-10,,BUY,AAPL,Apple Inc,Stock,10,150,0,0,
+Vanguard Taxable,2026-05-10,,BUY,MSFT,Microsoft,Stock,5,400,,0,
+Vanguard Taxable,2026-05-10,,BUY,VTI,Vanguard Total Stock Market ETF,ETF,5,240,"1,000.00",0,comma-bearing NaN`;
+
+    const result = parseCanonicalCsv(csv, "txn.csv");
+    expect(result.transactions[0].amount).toBe(0);
+    expect(result.transactions[1].amount).toBeUndefined();
+    expect(result.transactions[2].amount).toBeNaN();
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it("does not touch rows with an invalid/malformed trade_date even if type/amount would otherwise match", () => {
+    const csv = `${header}
+Vanguard Taxable,2026/05/10,,BUY,AAPL,Apple Inc,Stock,10,150,1500.00,0,slash-formatted date`;
+
+    const result = parseCanonicalCsv(csv, "txn.csv");
+    expect(result.transactions[0].amount).toBe(1500);
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it("normalizes BEFORE deriving source_key, so a wrong-sign row and a correctly-signed re-transcription dedup to the SAME key", () => {
+    // This is the mechanism that kills the duplicate-import class: a corrected
+    // CSV re-upload must land on the identical source_key as the original
+    // wrong-sign import, not create a second row.
+    const wrongSignCsv = `${header}
+Vanguard Taxable,2026-05-05,,BUY_TO_OPEN,INTC  260717P00100000,INTC Put,Option,20,11.01,2202.00,0,`;
+    const correctSignCsv = `${header}
+Vanguard Taxable,2026-05-05,,BUY_TO_OPEN,INTC  260717P00100000,INTC Put,Option,20,11.01,-2202.00,0,`;
+
+    const wrongResult = parseCanonicalCsv(wrongSignCsv, "wrong.csv");
+    const correctResult = parseCanonicalCsv(correctSignCsv, "correct.csv");
+
+    expect(wrongResult.transactions[0].amount).toBe(-2202);
+    expect(correctResult.transactions[0].amount).toBe(-2202);
+    expect(wrongResult.transactions[0].sourceKey).toBe(
+      correctResult.transactions[0].sourceKey
+    );
+    expect(wrongResult.transactions[0].sourceKey).toBe(
+      "canonical:txn:Vanguard Taxable:INTC  260717P00100000:2026-05-05:BUY_TO_OPEN:-220200"
+    );
+  });
+});
+
 // ── Holdings parser ────────────────────────────────���────────────────
 
 describe("canonical holdings parser", () => {

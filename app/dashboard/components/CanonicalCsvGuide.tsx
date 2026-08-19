@@ -29,7 +29,7 @@ const FORMATS: FormatSpec[] = [
       { name: "security_type", required: false, description: "Stock, Bond, ETF, Option, Mutual Fund" },
       { name: "quantity", required: false, description: "Number of shares/units — ALWAYS POSITIVE (the type field carries direction)" },
       { name: "price", required: false, description: "Price per share" },
-      { name: "amount", required: false, description: "Total dollar amount — signed cash effect: BUY/BUY_TO_OPEN negative, SELL positive, DIVIDEND/INTEREST positive, TAX_WITHHELD/FEE/WITHDRAWAL negative (see TRANSFER + cash-flow rules below)" },
+      { name: "amount", required: false, description: "Total dollar amount — signed cash effect: BUY/BUY_TO_OPEN negative, SELL positive, DIVIDEND/INTEREST positive, TAX_WITHHELD/FEE/WITHDRAWAL negative (see TRANSFER + cash-flow rules below). Wrong-sign BUY/SELL-family amounts (trade_date >= 2026-04-01) are auto-normalized with a warning — emit the correct sign in the first place." },
       { name: "fees", required: false, description: "Fees/commissions" },
       { name: "notes", required: false, description: "Free-text notes" },
     ],
@@ -40,7 +40,7 @@ const FORMATS: FormatSpec[] = [
       "Cash-only rows (WITHDRAWAL, DEPOSIT, FEE, COMMISSION, INTEREST without a security) MUST use symbol 'CASH'. Blank symbol will be silently dropped.",
       "For DIVIDEND / INTEREST / TAX_WITHHELD income rows: leave `quantity` and `price` empty, put the income amount in the `amount` column (never in `fees`)",
       "For REINVESTMENT rows: populate both `quantity` + `price` (shares received at the reinvestment price) AND `amount` (total value reinvested)",
-      "AMOUNT IS THE SIGNED CASH EFFECT. BUY/BUY_TO_OPEN/BUY_TO_CLOSE/BUY_TO_COVER are NEGATIVE (cash out — keep the statement's minus sign); SELL/SELL_TO_CLOSE/SELL_TO_OPEN positive; DIVIDEND/INTEREST/DEPOSIT positive; TAX_WITHHELD/FEE/COMMISSION/WITHDRAWAL negative; REINVESTMENT positive (flip the statement's negative).",
+      "AMOUNT IS THE SIGNED CASH EFFECT. BUY/BUY_TO_OPEN/BUY_TO_CLOSE/BUY_TO_COVER are NEGATIVE (cash out — keep the statement's minus sign); SELL/SELL_TO_CLOSE/SELL_TO_OPEN positive; DIVIDEND/INTEREST/DEPOSIT positive; TAX_WITHHELD/FEE/COMMISSION/WITHDRAWAL negative; REINVESTMENT positive (flip the statement's negative). The parser auto-normalizes a wrong-sign BUY/SELL-family amount (trade_date >= 2026-04-01) to the correct sign with a warning, but emit the correct sign in the first place.",
       "For TRANSFER rows (VMFXX money-market sweeps): `amount` is SIGNED. 'Sweep Into Settlement Fund' is positive (cash going in), 'Sweep Out Of Settlement Fund' is negative (cash coming out). Never leave all TRANSFER amounts positive — the sign tracks direction. Quarter-end statements label these 'Sweep in'/'Sweep out' with the OPPOSITE sign convention (Sweep in prints negative) — flip the statement's sign and use the canonical note phrasing. Statement sweep rows show symbol '-'; emit VMFXX.",
       "Set `amount` to the transfer-date market value (positive; the row type carries direction — the flow readers sign it). Leave `price` empty for journal/donation legs (a priced TRANSFER_IN creates a tax lot — ACATS only). Transcribe both legs of a printed pair verbatim; deciding whether an IN leg is a DAF routing artifact happens in Analysis › Giving, never at authoring time.",
       "Options must use OCC format: AAPL  260320C00150000 (symbol padded to 6 chars, YYMMDD, C/P, strike x1000 padded to 8 digits)",
@@ -171,7 +171,7 @@ General rules:
 - All dates: YYYY-MM-DD
 - Transaction types must be UPPERCASE (BUY, SELL, DIVIDEND, REINVESTMENT, etc.)
 - Quantity is ALWAYS POSITIVE — the type field carries direction (BUY adds, SELL/SELL_TO_CLOSE/EXERCISED/REDEMPTION removes). Never emit a negative quantity.
-- Amount is the SIGNED CASH EFFECT: BUY/BUY_TO_OPEN negative (keep the statement's minus sign), SELL positive, DIVIDEND/INTEREST/DEPOSIT positive, TAX_WITHHELD/FEE/WITHDRAWAL negative, REINVESTMENT positive.
+- Amount is the SIGNED CASH EFFECT: BUY/BUY_TO_OPEN negative (keep the statement's minus sign), SELL positive, DIVIDEND/INTEREST/DEPOSIT positive, TAX_WITHHELD/FEE/WITHDRAWAL negative, REINVESTMENT positive. (Wrong-sign BUY/SELL-family amounts on/after 2026-04-01 are auto-normalized with a warning — still emit the correct sign in the first place.)
 - Account names must match the dashboard exactly. Aliases: 'Individual brokerage account' / 'Vanguard Individual Brokerage' → 'Vanguard Taxable'. 'Vanguard Roth IRA' verbatim. 'IBKR' verbatim.
 - Cash-only transaction rows (WITHDRAWAL, DEPOSIT, FEE, COMMISSION, INTEREST without a security) MUST use symbol 'CASH'. Blank symbol drops the row.
 - Security types: Stock, Bond, ETF, Option, Mutual Fund
