@@ -497,6 +497,42 @@ describe("assignDonationLots", () => {
     expect(getDonationLots(db, 1)).toEqual([]);
   });
 
+  it("accepts an assignment covered by as-of-donation-date availability when a LATER sell consumed the lot in the last replay", () => {
+    // Chicken-and-egg found live 2026-08-18: a post-donation sell (01-20) consumed the
+    // whole lot in the last recompute (which ran WITHOUT the donation, since its lots
+    // weren't assigned yet) — quantity_remaining is 0. But as of the donation's own
+    // date (01-10) all 10 shares were present, so the drawer offers them. The gate
+    // must accept what the drawer offers (union basis); the chronological replay then
+    // gives the donation its shares first and pushes the sell later (clamp-and-warn
+    // stays the authority for genuine over-commitment).
+    seedTxn(db, { id: 208, accountId: 1, securityId: 1, tradeDate: "2026-01-20", type: "SELL", quantity: 10 });
+    db.prepare(
+      `INSERT INTO tax_lot_sales (tax_lot_id, sale_transaction_id, quantity_sold, sale_price, proceeds,
+         cost_basis_allocated, realized_gain_loss, is_long_term, holding_period_days, sale_date)
+       VALUES (301, 208, 10, 200, 2000, 1500, 500, 0, 18, '2026-01-20')`
+    ).run();
+    db.prepare("UPDATE tax_lots SET quantity_remaining = 0 WHERE id = 301").run();
+
+    expect(() => assignDonationLots(db, 1, [{ acquisitionTransactionId: 201, quantity: 10 }])).not.toThrow();
+    expect(getDonationLots(db, 1)).toEqual([{ acquisition_transaction_id: 201, quantity: 10 }]);
+  });
+
+  it("still rejects when sells BEFORE the donation date leave too little on either basis", () => {
+    // Pre-donation sell of 6 on 01-05: as-of-date availability 4, current remaining 4 —
+    // both bases agree, over-asking rejects, exact-asking succeeds.
+    seedTxn(db, { id: 209, accountId: 1, securityId: 1, tradeDate: "2026-01-05", type: "SELL", quantity: 6 });
+    db.prepare(
+      `INSERT INTO tax_lot_sales (tax_lot_id, sale_transaction_id, quantity_sold, sale_price, proceeds,
+         cost_basis_allocated, realized_gain_loss, is_long_term, holding_period_days, sale_date)
+       VALUES (301, 209, 6, 200, 1200, 900, 300, 0, 3, '2026-01-05')`
+    ).run();
+    db.prepare("UPDATE tax_lots SET quantity_remaining = 4 WHERE id = 301").run();
+
+    expect(() => assignDonationLots(db, 1, [{ acquisitionTransactionId: 201, quantity: 5 }])).toThrow(/available/);
+    assignDonationLots(db, 1, [{ acquisitionTransactionId: 201, quantity: 4 }]);
+    expect(getDonationLots(db, 1)).toEqual([{ acquisition_transaction_id: 201, quantity: 4 }]);
+  });
+
   it("two-donations-one-lot: donation B's assignable quantity shrinks by donation A's consumption", () => {
     // Donation A (donation 1 fixture) assigns 5 from the lot (quantity_remaining 10).
     assignDonationLots(db, 1, [{ acquisitionTransactionId: 201, quantity: 5 }]);
