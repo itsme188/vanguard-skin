@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { coercePercent, formatLargeUSD, parseLargeUSD } from "@/lib/format";
+import { parseActualsInput } from "@/lib/earnings/actuals-validation";
 import type { EarningsBogey } from "@/lib/queries/earnings-bogeys";
 import apiFetch from "@/lib/http/apiFetch";
 
@@ -208,12 +209,12 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
     setSavingActuals(true);
     setError(null);
     try {
-      const eps_actual = actuals.eps_actual.trim() ? parseLargeUSD(actuals.eps_actual) : null;
-      const revenue_actual_usd = actuals.revenue_actual.trim()
-        ? parseLargeUSD(actuals.revenue_actual)
-        : null;
-      if (eps_actual == null && revenue_actual_usd == null) {
-        setError("Provide at least one actual value (EPS or revenue).");
+      const { eps_actual, revenue_actual_usd, error: validationError } = parseActualsInput(
+        actuals.eps_actual,
+        actuals.revenue_actual,
+      );
+      if (validationError) {
+        setError(validationError);
         return;
       }
       const res = await apiFetch("/api/earnings/actuals", {
