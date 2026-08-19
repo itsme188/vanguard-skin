@@ -44,6 +44,16 @@ export function isEmptyEnrichmentResult(result: ProcessedResult): boolean {
 }
 
 /**
+ * Retry ceiling for failed enrichments (empty parses and hard errors alike).
+ * An article that fails this many passes is excluded as 'enrichment_failed'
+ * (D5 Filtered tab surfaces it) instead of retrying forever — an uncapped
+ * retry both leaks a model call per pass and can wedge the LIMIT-20 queue
+ * head when many recent articles fail at once (model outage, prompt-cap
+ * regression).
+ */
+export const MAX_ENRICH_ATTEMPTS = 3;
+
+/**
  * Process unprocessed research articles with Claude Sonnet.
  * Extracts: summary, key themes, sentiment, mentioned tickers, portfolio relevance.
  * Links mentioned symbols to existing securities in the portfolio.
@@ -60,6 +70,7 @@ export async function processUnprocessedArticles(
        JOIN research_sources s ON a.source_id = s.id
        WHERE a.processed_at IS NULL
          AND COALESCE(a.is_relevant, 1) = 1
+         AND COALESCE(a.enrich_attempts, 0) < ${MAX_ENRICH_ATTEMPTS}
        ORDER BY a.received_at DESC
        LIMIT 20`
     )
@@ -116,6 +127,41 @@ export async function processUnprocessedArticles(
     WHERE id = ?
   `);
 
+  const bumpAttempts = db.prepare(`
+    UPDATE research_articles
+    SET enrich_attempts = COALESCE(enrich_attempts, 0) + 1
+    WHERE id = ?
+    RETURNING enrich_attempts
+  `);
+
+  const markEnrichmentFailed = db.prepare(`
+    UPDATE research_articles
+    SET is_relevant = 0,
+        excluded_category = 'enrichment_failed',
+        excluded_reason = ?,
+        processed_at = datetime('now')
+    WHERE id = ?
+  `);
+
+  /**
+   * Shared failure accounting for both failure modes (empty parse, hard
+   * error): increment the attempt counter; at MAX_ENRICH_ATTEMPTS exclude
+   * the article as 'enrichment_failed' (stamping processed_at removes it
+   * from the retry queue for good; the D5 Filtered tab surfaces it).
+   */
+  const recordEnrichmentFailure = (articleId: number, why: string): void => {
+    const { enrich_attempts } = bumpAttempts.get(articleId) as { enrich_attempts: number };
+    if (enrich_attempts >= MAX_ENRICH_ATTEMPTS) {
+      markEnrichmentFailed.run(
+        `Enrichment failed ${enrich_attempts} times — last failure: ${why}`,
+        articleId
+      );
+      console.error(
+        `[research] Article ${articleId} excluded as enrichment_failed after ${enrich_attempts} attempts.`
+      );
+    }
+  };
+
   const linkSecurity = db.prepare(`
     INSERT OR IGNORE INTO research_article_securities (article_id, security_id, mention_context, sentiment)
     VALUES (?, ?, ?, ?)
@@ -146,6 +192,7 @@ export async function processUnprocessedArticles(
           `[research] Article ${article.id} ("${article.subject}") produced an empty enrichment ` +
             `(no summary, no themes) — leaving unprocessed for retry, not stamping processed_at.`
         );
+        recordEnrichmentFailure(article.id, "empty enrichment (no summary, no themes)");
         failed++;
         continue;
       }
@@ -212,6 +259,10 @@ export async function processUnprocessedArticles(
       console.error(
         `[research] Failed to process article ${article.id} ("${article.subject}"):`,
         err instanceof Error ? err.message : err
+      );
+      recordEnrichmentFailure(
+        article.id,
+        err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200)
       );
       failed++;
     }

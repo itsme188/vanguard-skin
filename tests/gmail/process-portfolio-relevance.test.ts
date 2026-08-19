@@ -58,6 +58,7 @@ function makeDb(allowOffTopic = 0): Database.Database {
       portfolio_relevance TEXT,
       ai_model TEXT,
       processed_at TEXT,
+      enrich_attempts INTEGER NOT NULL DEFAULT 0,
       is_relevant INTEGER NOT NULL DEFAULT 1,
       excluded_category TEXT,
       excluded_reason TEXT
