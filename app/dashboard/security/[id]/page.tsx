@@ -427,7 +427,7 @@ export default async function SecurityDetailPage(props: {
       )}
 
       {/* Tax Lots */}
-      {openTaxLots.length > 0 && (
+      {(openTaxLots.length > 0 || lotCoverageGaps.length > 0) && (
         <Section
           title={`Open Tax Lots · ${openTaxLots.length}`}
           action={

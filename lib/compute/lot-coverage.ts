@@ -58,6 +58,13 @@ export function computeLotCoverageGaps(
 
   const gaps: LotCoverageGap[] = [];
   for (const position of positions) {
+    // Short legs: the position query includes shorts (negative quantity),
+    // but tax_lots stores short lots with a POSITIVE quantity_remaining and
+    // is_short=1 — comparing a negative position against a positive covered
+    // sum produces nonsense (e.g. -3 vs +3 reads as "6 more shares in lots
+    // than the position shows"). Signed coverage reconciliation for shorts
+    // is out of scope here; skip and disclose nothing for these accounts.
+    if (position.quantity < 0) continue;
     const coveredQty = coveredByAccount.get(position.account_id) ?? 0;
     const missingQty = position.quantity - coveredQty;
     if (Math.abs(missingQty) > EPSILON) {
