@@ -247,7 +247,11 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
            AND t.security_id IS NOT NULL
            AND t.quantity IS NOT NULL
            AND (t.price_per_share IS NOT NULL
-                OR LOWER(t.type) IN ('expired', 'exercised', 'assigned'))
+                OR LOWER(t.type) IN ('expired', 'exercised', 'assigned')
+                -- Bond/bill maturities carry no per-share price; the principal
+                -- return lives in amount (statement convention). Without this
+                -- exemption every matured bond's lot sat open forever.
+                OR (LOWER(t.type) = 'redemption' AND t.amount IS NOT NULL))
          ORDER BY t.trade_date, t.id`
       )
       .all() as Array<TransactionRow & { multiplier: number }>;
@@ -278,6 +282,18 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
       if (isZeroPriceClose) {
         // Option lot closes at $0 — expired worthless or premium rolls into stock
         effectiveSalePrice = 0;
+      } else if (
+        lowerType === "redemption" &&
+        sell.price_per_share == null &&
+        sell.amount != null &&
+        sell.quantity > 0
+      ) {
+        // Maturity redemption: derive the price from the principal returned,
+        // on the per-100-face basis bond transaction prices (and therefore
+        // bond lot cost bases) use repo-wide — |amount|/qty*100 reproduces
+        // the statement price exactly, so a bill redeeming at its purchase
+        // cost realizes $0 (the discount is INTEREST income, not gain).
+        effectiveSalePrice = (Math.abs(sell.amount) / sell.quantity) * 100;
       }
 
       // Apply premium adjustment for stock sales linked to put exercise / call assignment

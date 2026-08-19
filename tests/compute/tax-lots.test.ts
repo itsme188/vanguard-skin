@@ -399,3 +399,75 @@ describe("tax lot computation (FIFO)", () => {
     expect(sales[0].holding_period_days).toBe(4); // no more negative pairing
   });
 });
+
+describe("REDEMPTION with null price (bond/bill maturity)", () => {
+  let db: Database.Database;
+  const ACCOUNT_ID = 1;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  function seedRedemption(
+    db: Database.Database,
+    secId: number,
+    opts: { quantity: number; amount: number | null }
+  ) {
+    db.prepare(
+      `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, price_per_share, amount, source_key)
+       VALUES (?, ?, '2023-08-10', 'REDEMPTION', ?, NULL, ?, ?)`
+    ).run(ACCOUNT_ID, secId, opts.quantity, opts.amount, `test-redemption-${Math.random()}`);
+  }
+
+  it("closes the lot at ~zero realized when amount carries the principal (per-100 bond price basis)", () => {
+    const secId = seedSecurity(db, "912796XY0", "U S TREASURY BILL");
+    seedTransaction(db, {
+      account_id: ACCOUNT_ID,
+      security_id: secId,
+      trade_date: "2023-02-08",
+      type: "BUY",
+      quantity: 10000,
+      price_per_share: 97.6137, // per-100-face statement basis
+      amount: 9761.37,
+    });
+    seedRedemption(db, secId, { quantity: 10000, amount: 9761.37 });
+
+    computeTaxLots(db);
+
+    const lot = db
+      .prepare("SELECT quantity_remaining FROM tax_lots WHERE security_id = ?")
+      .get(secId) as any;
+    expect(lot.quantity_remaining).toBe(0);
+
+    const sale = db
+      .prepare("SELECT proceeds, realized_gain_loss FROM tax_lot_sales")
+      .get() as any;
+    // proceeds derived on the same per-100 basis as the buy: |amount|/qty*100
+    expect(sale.proceeds).toBeCloseTo(976137, 0);
+    expect(sale.realized_gain_loss).toBeCloseTo(0, 2);
+  });
+
+  it("still skips a redemption with neither price nor amount (cannot value it)", () => {
+    const secId = seedSecurity(db, "912796ZZ5", "U S TREASURY BILL");
+    seedTransaction(db, {
+      account_id: ACCOUNT_ID,
+      security_id: secId,
+      trade_date: "2023-04-24",
+      type: "BUY",
+      quantity: 4000,
+      price_per_share: 98.81625,
+      amount: 3952.65,
+    });
+    seedRedemption(db, secId, { quantity: 4000, amount: null });
+
+    computeTaxLots(db);
+
+    const lot = db
+      .prepare("SELECT quantity_remaining FROM tax_lots WHERE security_id = ?")
+      .get(secId) as any;
+    expect(lot.quantity_remaining).toBe(4000); // untouched, no crash
+    expect(db.prepare("SELECT COUNT(*) n FROM tax_lot_sales").get()).toEqual({ n: 0 });
+  });
+});
