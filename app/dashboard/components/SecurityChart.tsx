@@ -113,6 +113,7 @@ export function SecurityChart({
   securityId,
   symbol,
   currency = null,
+  securityType = null,
   compact = false,
 }: {
   securityId: number;
@@ -122,6 +123,9 @@ export function SecurityChart({
    *  this only changes the axis/pill/legend LABEL, never the values. Null
    *  (and "USD") render with the pre-existing "$" style. */
   currency?: string | null;
+  /** Security type, forwarded to the click-to-add popover so its
+   *  "outside scan range" warning honours the scanner's options exemption. */
+  securityType?: string | null;
   compact?: boolean;
 }) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
@@ -1121,6 +1125,7 @@ export function SecurityChart({
             price={addPopover.price}
             currentPrice={latestClose}
             currency={currency}
+            securityType={securityType}
             x={addPopover.x}
             y={addPopover.y}
             onClose={() => setAddPopover(null)}
