@@ -176,7 +176,13 @@ describe("approveLevelGuarded", () => {
     expect(level.armed_crossed_at).toBeNull();
   });
 
-  it("arms normally for an implausible (mis-scaled) level", () => {
+  // CHANGED 2026-08-20 (Gap 2 of the f7823b6 follow-up): this used to assert
+  // that an implausible level "arms normally" — which was the bug. The band
+  // guard forces hit:false, so would_fire_immediately could never catch a
+  // mis-scaled level, and approving one armed coverage the scanner skips on
+  // every pass. It now refuses with its own code (force still overrides);
+  // full coverage lives in approve-level-beyond-scan-range.test.ts.
+  it("refuses an implausible (mis-scaled) level — the scanner would never evaluate it", () => {
     const secId = seedSecurity("SPY");
     const levelId = upsertLevel(db, {
       security_id: secId,
@@ -185,13 +191,14 @@ describe("approveLevelGuarded", () => {
       source: "newsletter",
       review_status: "pending_review",
     });
-    seedPrice(secId, 748); // >50% away — plausibility guard treats as not-hit
+    seedPrice(secId, 748); // >50% away — the plausibility band excludes it
 
     const result = approveLevelGuarded(db, levelId);
 
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("beyond_scan_range");
     const level = getLevelById(db, levelId)!;
-    expect(level.review_status).toBe("auto_approved");
+    expect(level.review_status).toBe("pending_review"); // no write
     expect(level.armed_crossed_at).toBeNull();
   });
 

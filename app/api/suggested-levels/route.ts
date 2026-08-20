@@ -51,8 +51,10 @@ function computeBase(req: NextRequest): ComputeOutcome {
   // 2026-08-06) — they must match the accepted-levels list in the same panel,
   // which is documented intentionally-native. Do not convert them client-side.
   const secRow = db
-    .prepare(`SELECT currency, symbol FROM securities WHERE id = ?`)
-    .get(securityId) as { currency: string | null; symbol: string } | undefined;
+    .prepare(`SELECT currency, symbol, security_type FROM securities WHERE id = ?`)
+    .get(securityId) as
+    | { currency: string | null; symbol: string; security_type: string | null }
+    | undefined;
   const usdPerUnit = getUsdPerUnit(db, secRow?.currency ?? null);
 
   // Daily bars only for now; a ~500-bar lookback (~2 years) is plenty for
@@ -93,7 +95,12 @@ function computeBase(req: NextRequest): ComputeOutcome {
     };
   }
 
-  const result = computeSuggestedLevels(bars, currentPrice as number);
+  // securityType drives the scan-range filter only: a candidate the scanner
+  // would permanently skip is never offered with an Accept button (options are
+  // exempt there, so they are exempt here too).
+  const result = computeSuggestedLevels(bars, currentPrice as number, {
+    securityType: secRow?.security_type ?? null,
+  });
 
   return {
     kind: "ok",

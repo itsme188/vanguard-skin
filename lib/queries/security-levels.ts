@@ -7,6 +7,19 @@ import type {
   LevelPriceSource,
 } from "@/lib/types";
 import { resolveLevelPrice } from "@/lib/alerts/resolve-level-price";
+import {
+  LEVEL_PLAUSIBILITY_MAX_DISTANCE,
+  LEVEL_PRICE_MAX_AGE_DAYS,
+  isLevelBeyondScanRange,
+  levelPriceIsFreshSql,
+} from "@/lib/levels/scan-range";
+
+/** The scanner's price-freshness test, built once from the shared window and
+ *  reused by every query below — findCrossedLevels (which enforces it),
+ *  getLatestScanPriceForSecurity (which reports it to the arm guard) and
+ *  getArmedLevels (which discloses it). Re-typing the window at one of these
+ *  sites is what let the Armed view imply live coverage on a stale price. */
+const SCAN_PRICE_IS_FRESH_SQL = levelPriceIsFreshSql("COALESCE(lp.date, lb.date)");
 
 // ─── Filter types ──────────────────────────────────────────────────
 
@@ -107,10 +120,13 @@ export function getLevelById(
  * back to `benchmark_prices` for index ETFs the user tracks but doesn't hold
  * (DIA/VOO/etc.) — joined via the security's `symbol`.
  *
- * Stale-price guard: skips levels whose latest price is older than 4 calendar
- * days. 4 days tolerates both weekends (Fri → Mon = 3 days) and long-weekend
- * Mondays. Longer gaps mean TWS has been offline and prices are suspect, so
- * scanning them could produce spurious alerts from old crossings.
+ * Stale-price guard: skips levels whose latest price is older than the
+ * scanner's freshness window (LEVEL_PRICE_MAX_AGE_DAYS — long enough for
+ * weekends and long-weekend Mondays). Longer gaps mean TWS has been offline
+ * and prices are suspect, so scanning them could produce spurious alerts from
+ * old crossings. The window lives in lib/levels/scan-range.ts alongside the
+ * plausibility band; every query here builds its predicate from
+ * SCAN_PRICE_IS_FRESH_SQL rather than re-typing the interval.
  *
  * Plausibility guard: skips levels whose effective price is more than 50%
  * away from the current price. A real hit is always detected within a few
@@ -120,8 +136,17 @@ export function getLevelById(
  * every dismiss (QA 2026-07-06: SPY support @ $7,100 vs $748). Mirrored in
  * the Worker's isLevelCrossed (workers/cron/src/level-scan.ts) — keep the
  * threshold in sync.
+ *
+ * The band itself (threshold + options exemption) lives in
+ * lib/levels/scan-range.ts so the suggestion engine and the UI surfaces that
+ * offer / list levels share this exact predicate. Re-exported here because
+ * this module is the scanner's home.
  */
-export const LEVEL_PLAUSIBILITY_MAX_DISTANCE = 0.5;
+export {
+  LEVEL_PLAUSIBILITY_MAX_DISTANCE,
+  LEVEL_PRICE_MAX_AGE_DAYS,
+  isLevelBeyondScanRange,
+};
 
 /** Minimal shape checkLevelTriggerState needs — matches the findCrossedLevels
  * row shape and what approveLevelGuarded can assemble for a single level. */
@@ -143,6 +168,16 @@ export interface LevelTriggerState {
   /** Resolved effective price (static price, or live MA value). Null when
    * an MA-based level can't be resolved (insufficient ohlcv_bars history). */
   effectivePrice: number | null;
+  /**
+   * True when the plausibility guard EXCLUDED this level from evaluation, so
+   * `hit: false` means "never looked", not "the condition doesn't hold". The
+   * scanner doesn't care about the difference; approveLevelGuarded does — a
+   * level the scanner will never look at is dead coverage, and arming it
+   * silently is the bug this flag exists to stop. Reported from here rather
+   * than re-derived by the caller so the guard and the scanner keep sharing
+   * ONE trigger-condition implementation.
+   */
+  beyondScanRange: boolean;
 }
 
 /**
@@ -162,23 +197,25 @@ export function checkLevelTriggerState(
   currentPrice: number
 ): LevelTriggerState {
   const effective = resolveLevelPrice(db, level);
-  if (effective === null) return { hit: false, effectivePrice: null }; // MA can't be computed — skip rather than use stale snapshot
+  // MA can't be computed — skip rather than use a stale snapshot. Not a band
+  // verdict: with no effective price there is nothing to judge distance from.
+  if (effective === null)
+    return { hit: false, effectivePrice: null, beyondScanRange: false };
 
   // Options exempt from the plausibility guard: option premiums legitimately
   // double/halve overnight, so a real hit CAN first be seen >50% past the level.
-  const isOption = level.sec_type?.toLowerCase() === "option";
-  if (!isOption && Math.abs(currentPrice - effective) / effective > LEVEL_PLAUSIBILITY_MAX_DISTANCE) {
+  if (isLevelBeyondScanRange(effective, currentPrice, level.sec_type)) {
     console.warn(
       `[levels/scan] Skipping implausible level ${level.id} (${level.level_type} @ ${effective}) — current price ${currentPrice} is >${LEVEL_PLAUSIBILITY_MAX_DISTANCE * 100}% away (mis-scaled level?)`
     );
-    return { hit: false, effectivePrice: effective };
+    return { hit: false, effectivePrice: effective, beyondScanRange: true };
   }
 
   const goingDown = ["support", "entry", "scale_in", "stop"].includes(level.level_type);
   const hit = goingDown
     ? currentPrice <= effective
     : currentPrice >= effective; // resistance, exit
-  return { hit, effectivePrice: effective };
+  return { hit, effectivePrice: effective, beyondScanRange: false };
 }
 
 export function findCrossedLevels(
@@ -209,7 +246,7 @@ export function findCrossedLevels(
          AND sl.review_status = 'auto_approved'
          AND (sl.expires_at IS NULL OR sl.expires_at >= date('now'))
          AND COALESCE(lp.close_price, lb.close_price) IS NOT NULL
-         AND COALESCE(lp.date, lb.date) >= date('now', '-4 days')`
+         AND ${SCAN_PRICE_IS_FRESH_SQL}`
     )
     .all() as Array<SecurityLevel & { current_price: number; price_date: string; sec_type: string | null }>;
 
@@ -228,14 +265,15 @@ export function findCrossedLevels(
 /**
  * Resolve the latest close price for a security the same way findCrossedLevels
  * does — primary `prices` table, falling back to `benchmark_prices` via
- * symbol — plus the 4-day staleness check, in a single query scoped to one
- * security. Used by approveLevelGuarded (pre-arm check) so a level being
- * approved is judged by the exact same "current price" the scanner would use.
+ * symbol — plus the same staleness check (SCAN_PRICE_IS_FRESH_SQL), in a
+ * single query scoped to one security. Used by approveLevelGuarded (pre-arm
+ * check) so a level being approved is judged by the exact same "current price"
+ * the scanner would use.
  */
 export interface LatestScanPrice {
   currentPrice: number | null;
   priceDate: string | null;
-  /** True when priceDate is within the scanner's 4-day staleness window. */
+  /** True when priceDate is inside the scanner's freshness window. */
   isFresh: boolean;
   secType: string | null;
 }
@@ -262,7 +300,7 @@ export function getLatestScanPriceForSecurity(
        SELECT s.security_type AS sec_type,
          COALESCE(lp.close_price, lb.close_price) AS current_price,
          COALESCE(lp.date, lb.date) AS price_date,
-         (COALESCE(lp.date, lb.date) >= date('now', '-4 days')) AS is_fresh
+         (${SCAN_PRICE_IS_FRESH_SQL}) AS is_fresh
        FROM securities s
        LEFT JOIN latest_primary lp ON lp.security_id = s.id
        LEFT JOIN latest_benchmark lb ON lb.security_id = s.id
@@ -285,6 +323,30 @@ export function getLatestScanPriceForSecurity(
     isFresh: row.is_fresh === 1,
     secType: row.sec_type,
   };
+}
+
+/**
+ * Scan-price staleness per security — the freshness half of "will the scanner
+ * look at a level on this security?", shaped for API enrichment (GET
+ * /api/levels stamps it onto every row so the panel can disclose it).
+ *
+ * Built on getLatestScanPriceForSecurity, so the window stays single-sourced
+ * and the answer matches what the scanner and the arm guard see. A security
+ * with no price at all reports isStale:false — absent is not stale.
+ */
+export function getScanPriceStalenessBySecurity(
+  db: Database.Database,
+  securityIds: number[]
+): Map<number, { priceDate: string | null; isStale: boolean }> {
+  const out = new Map<number, { priceDate: string | null; isStale: boolean }>();
+  for (const id of new Set(securityIds)) {
+    const info = getLatestScanPriceForSecurity(db, id);
+    out.set(id, {
+      priceDate: info.priceDate,
+      isStale: info.priceDate != null && !info.isFresh,
+    });
+  }
+  return out;
 }
 
 // ─── Armed-levels view (U3: consolidated "what am I watching") ───────
@@ -320,6 +382,23 @@ export interface ArmedLevel
   current_price: number | null;
   /** (current − effective) / effective. null when either side is missing. */
   distance_pct: number | null;
+  /**
+   * True when the scanner permanently skips this level (outside the
+   * plausibility band; options exempt). The row is armed in the DB but is not
+   * live coverage — the Armed view must say so rather than imply monitoring.
+   */
+  beyond_scan_range: boolean;
+  /** Date of the close behind `current_price` (YYYY-MM-DD); null when the
+   *  security has no price on file at all. */
+  price_date: string | null;
+  /**
+   * True when a price exists but is older than the scanner's freshness window
+   * — the OTHER reason findCrossedLevels skips a row on every pass. Options
+   * are NOT exempt here (the band exemption is about premium volatility, not
+   * about how old a quote is). Absent prices are not stale: `price_date` null
+   * leaves this false, and the row already discloses the missing price.
+   */
+  price_is_stale: boolean;
 }
 
 /**
@@ -329,6 +408,11 @@ export interface ArmedLevel
  * price/benchmark CTE + auto_approved whitelist that findCrossedLevels uses, but
  * keeps levels whose price is stale or whose MA can't resolve (the view should
  * still list them) rather than filtering them out.
+ *
+ * Because it deliberately keeps rows the scanner skips, it must LABEL them:
+ * `beyond_scan_range` (plausibility band) and `price_is_stale` (freshness
+ * window) together cover both of findCrossedLevels' skip conditions, so the
+ * Armed view can never present a skipped level as live coverage.
  */
 export function getArmedLevels(db: Database.Database): ArmedLevel[] {
   const rows = db
@@ -345,7 +429,10 @@ export function getArmedLevels(db: Database.Database): ArmedLevel[] {
          WHERE bp.date = (SELECT MAX(bp2.date) FROM benchmark_prices bp2 WHERE bp2.symbol = bp.symbol)
        )
        SELECT sl.*, s.symbol AS sym, s.name AS security_name,
-         COALESCE(lp.close_price, lb.close_price) AS current_price
+         s.security_type AS sec_type,
+         COALESCE(lp.close_price, lb.close_price) AS current_price,
+         COALESCE(lp.date, lb.date) AS price_date,
+         CASE WHEN ${SCAN_PRICE_IS_FRESH_SQL} THEN 1 ELSE 0 END AS price_is_fresh
        FROM security_levels sl
        JOIN securities s ON s.id = sl.security_id
        LEFT JOIN latest_primary lp ON lp.security_id = sl.security_id
@@ -358,7 +445,10 @@ export function getArmedLevels(db: Database.Database): ArmedLevel[] {
     SecurityLevel & {
       sym: string;
       security_name: string | null;
+      sec_type: string | null;
       current_price: number | null;
+      price_date: string | null;
+      price_is_fresh: number;
     }
   >;
 
@@ -381,6 +471,19 @@ export function getArmedLevels(db: Database.Database): ArmedLevel[] {
       effective_price,
       current_price,
       distance_pct,
+      // Same predicates the scanner applies — an armed row it skips is
+      // listed, but flagged, never silently presented as live coverage.
+      beyond_scan_range: isLevelBeyondScanRange(
+        effective_price,
+        current_price,
+        r.sec_type,
+      ),
+      price_date: r.price_date ?? null,
+      // Evaluated in SQL (same clock as the scan) by the shared fragment; a
+      // NULL price_date makes that comparison NULL, which the CASE lands on 0
+      // — so gate on the date's existence here, since "no price" is absent,
+      // not stale.
+      price_is_stale: r.price_date != null && r.price_is_fresh !== 1,
       direction: r.direction,
       action_hint: r.action_hint,
       source: r.source,
@@ -477,12 +580,16 @@ export interface PendingReviewLevel extends SecurityLevel {
   symbol: string;
   security_name: string | null;
   current_price: number | null;
+  /** Carried so the review inbox can judge the plausibility band BEFORE the
+   *  user approves — options are exempt from it (isLevelBeyondScanRange). */
+  security_type: string | null;
 }
 
 export function getPendingReviewLevels(db: Database.Database): PendingReviewLevel[] {
   return db
     .prepare(
-      `SELECT sl.*, s.symbol, s.name AS security_name, p.close_price AS current_price
+      `SELECT sl.*, s.symbol, s.name AS security_name, s.security_type,
+         p.close_price AS current_price
        FROM security_levels sl
        JOIN securities s ON s.id = sl.security_id
        LEFT JOIN (

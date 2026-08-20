@@ -134,6 +134,7 @@ export function MultiChart({
                     securityId={sec.id}
                     symbol={sec.symbol}
                     currency={sec.currency}
+                    securityType={sec.security_type}
                     compact
                   />
                 ) : (

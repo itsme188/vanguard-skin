@@ -16,6 +16,39 @@ function subviewMatches(sv: SubView, searchParams: URLSearchParams): boolean {
   return current === sv.matchParam.value;
 }
 
+// Sub-view hrefs in nav-tabs.ts are static (?view= only) — they don't know
+// about ?scope= or any other page-owned param. Without this, picking a
+// sub-view from the dropdown silently resets that param back to its default
+// instead of carrying the one the user is currently looking at (deep-QA:
+// Analysis's sub-view dropdown links dropped scope entirely).
+//
+// `preserveParams` is declared PER TAB in nav-tabs.ts (e.g. Analysis
+// declares ["scope"]) rather than hardcoded here — TabDropdown is
+// instantiated once per tab in the nav bar, and every instance reads the
+// SAME current-page searchParams via useSearchParams(). A tab-agnostic
+// "carry ?scope= whenever it's present" rule would leak Analysis's
+// ?scope=ibkr onto, say, Research's Feeds/Documents links just because
+// both dropdowns render off the same URL. Consulting the destination tab's
+// own declaration (always `tab` here — a dropdown only links to its own
+// tab's sub-views) keeps each tab's params from crossing into another's.
+export function withPreservedParams(
+  href: string,
+  searchParams: URLSearchParams,
+  preserveParams: string[] | undefined
+): string {
+  if (!preserveParams || preserveParams.length === 0) return href;
+
+  const extra = new URLSearchParams();
+  for (const key of preserveParams) {
+    const value = searchParams.get(key);
+    if (value) extra.set(key, value);
+  }
+  if (Array.from(extra.keys()).length === 0) return href;
+
+  const separator = href.includes("?") ? "&" : "?";
+  return `${href}${separator}${extra.toString()}`;
+}
+
 export function TabDropdown({ tab, isActive }: Props) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -170,10 +203,11 @@ export function TabDropdown({ tab, isActive }: Props) {
         >
           {subviews.map((sv, i) => {
             const active = subviewMatches(sv, searchParams);
+            const href = withPreservedParams(sv.href, searchParams, tab.preserveParams);
             return (
               <Link
                 key={sv.href}
-                href={sv.href}
+                href={href}
                 role="menuitem"
                 ref={(el) => {
                   itemRefs.current[i] = el;

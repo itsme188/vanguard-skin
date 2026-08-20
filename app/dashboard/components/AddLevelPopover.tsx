@@ -4,6 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import { useToast } from "./Toast";
 import { formatChartPrice } from "@/lib/chart/price-formatter";
 import apiFetch from "@/lib/http/apiFetch";
+import {
+  BEYOND_SCAN_RANGE_EXPLANATION,
+  isLevelBeyondScanRange,
+} from "@/lib/levels/scan-range";
 
 interface Props {
   securityId: number;
@@ -17,6 +21,9 @@ interface Props {
   /** Security's native currency (e.g. "KRW"). The clicked price is native —
    *  see SecurityChart — so the label here must match instead of assuming USD. */
   currency?: string | null;
+  /** Security type — options are exempt from the scanner's plausibility band,
+   *  so the "won't alert" warning below must not fire for them. */
+  securityType?: string | null;
 }
 
 export function AddLevelPopover({
@@ -29,6 +36,7 @@ export function AddLevelPopover({
   onClose,
   onAdded,
   currency,
+  securityType = null,
 }: Props) {
   const { toast } = useToast();
   const [submitting, setSubmitting] = useState<"support" | "resistance" | null>(null);
@@ -59,6 +67,11 @@ export function AddLevelPopover({
       : price < currentPrice
         ? "support"
         : "resistance";
+
+  // Non-blocking: a level this far from spot is still savable (the user may be
+  // marking structure for later), but the scanner will skip it on every pass,
+  // so saying nothing would promise an alert that never comes.
+  const beyondScanRange = isLevelBeyondScanRange(price, currentPrice, securityType);
 
   async function submit(type: "support" | "resistance") {
     setSubmitting(type);
@@ -126,6 +139,15 @@ export function AddLevelPopover({
           ×
         </button>
       </div>
+      {beyondScanRange && (
+        <p
+          className="mb-2.5 text-[11px] leading-snug text-warn"
+          title={BEYOND_SCAN_RANGE_EXPLANATION}
+        >
+          Heads up: this level is outside the scanner&apos;s range and will not
+          alert. You can still save it.
+        </p>
+      )}
       <div className="grid grid-cols-2 gap-2">
         <button
           onClick={() => submit("support")}

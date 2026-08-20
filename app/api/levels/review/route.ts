@@ -6,6 +6,10 @@ import {
 } from "@/lib/queries/security-levels";
 import { setLevelReviewStatus } from "@/lib/mutations/security-levels";
 import { approveLevelGuarded } from "@/lib/alerts/approve";
+import {
+  LEVEL_PLAUSIBILITY_MAX_DISTANCE,
+  scanRangeDistancePct,
+} from "@/lib/levels/scan-range";
 import type { LevelReviewStatus } from "@/lib/types";
 
 /**
@@ -35,11 +39,16 @@ export async function GET(request: NextRequest) {
  *   Approves (arms the level) or rejects (keeps row for audit but excludes
  *   from scans).
  *
- *   Approving goes through approveLevelGuarded: if the level's trigger
- *   condition is already satisfied at the current price, the arm is refused
- *   (409, code 'would_fire_immediately') unless `force: true` is passed —
- *   arming a level that's already past its threshold would fire a guaranteed
- *   false "hit" alert on the very next scan.
+ *   Approving goes through approveLevelGuarded, which refuses (409, no write)
+ *   in two cases — both overridable with `force: true`:
+ *     - 'would_fire_immediately': the trigger condition already holds at the
+ *       current price, so arming fires a guaranteed false "hit" on the very
+ *       next scan.
+ *     - 'beyond_scan_range': the level sits outside the scanner's plausibility
+ *       band (a mis-scaled level — SPX prices on SPY, per-contract vs
+ *       per-share), so arming it buys coverage every scan pass skips.
+ *   Both carry the same envelope: { success:false, error, code, currentPrice,
+ *   effectivePrice }.
  */
 export async function PATCH(request: NextRequest) {
   try {
@@ -66,10 +75,19 @@ export async function PATCH(request: NextRequest) {
       if (!result.ok) {
         const currentPrice = result.currentPrice as number;
         const effectivePrice = result.effectivePrice as number;
+        // The beyond-band message carries no currency glyph: levels are stored
+        // in the security's NATIVE currency, and this route has no FX context
+        // to justify a "$". The distance comes from the band's own helper so
+        // the figure can't disagree with the guard that produced it.
+        const away = scanRangeDistancePct(effectivePrice, currentPrice);
+        const error =
+          result.code === "beyond_scan_range"
+            ? `Level ${effectivePrice} is ${Math.abs(away ?? 0).toFixed(1)}% from the current price ${currentPrice} — beyond the scanner's ${LEVEL_PLAUSIBILITY_MAX_DISTANCE * 100}% range, so every scan would skip it and this level could never alert. Check for a mis-scaled price before arming.`
+            : `Price $${currentPrice.toFixed(2)} is already past this level ($${effectivePrice.toFixed(2)}) — arming will fire an alert on the next scan.`;
         return NextResponse.json(
           {
             success: false,
-            error: `Price $${currentPrice.toFixed(2)} is already past this level ($${effectivePrice.toFixed(2)}) — arming will fire an alert on the next scan.`,
+            error,
             code: result.code,
             currentPrice,
             effectivePrice,
