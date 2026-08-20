@@ -3,6 +3,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   SHORT_TERM_LABEL,
+  LONG_TERM_LABEL,
   shouldShowWashSaleAddBack,
   washSalesCaption,
 } from "@/app/dashboard/components/TaxReportCard";
@@ -29,10 +30,34 @@ import type { TaxLotSummary } from "@/lib/queries/tax-lots";
 // logic is extracted into pure, directly-testable exports instead.
 // TaxLotSummaryCards (the summary strip) has no hooks of its own, so it IS
 // genuinely renderable server-side via renderToStaticMarkup.
+//
+// Follow-up (code review on bbb695f) found two defects in the disclosure
+// itself, both fixed here:
+//
+// Defect 1 — washSalesCaption(true) asserted a ST add-back happened
+// whenever ANY wash-sale warning existed, but detectWashSales flags losses
+// regardless of term or currency while sumRows() only routes the add-back
+// into shortTermTotal/longTermTotal for USD rows on their own term. A
+// LT-only or non-USD-only wash sale showed a caption claiming a ST add-back
+// that was provably zero. washSalesCaption is now keyed to where the
+// add-back actually landed: the two totals' .adjustments fields, not the
+// warning count.
+//
+// Defect 2 — the relabeled tile + broken-out add-back line was applied
+// only to the Short-Term side, even though wash-sale rules are term-
+// independent (detectWashSales never checks holding period). An LT wash
+// sale flowed into longTermTotal.adjustments with no disclosure at all —
+// the original contradiction recreated one cell to the right. The
+// Long-Term tile now gets the identical treatment via LONG_TERM_LABEL +
+// shouldShowWashSaleAddBack(longTermTotal.adjustments).
 
-describe("TaxReportCard short-term disclosure (pure helpers)", () => {
+describe("TaxReportCard term disclosure (pure helpers)", () => {
   it("labels the card's short-term figure as the taxable, add-back-inclusive total", () => {
     expect(SHORT_TERM_LABEL).toBe("Taxable ST (After Wash-Sale Add-Back)");
+  });
+
+  it("labels the card's long-term figure the same way, term-symmetric", () => {
+    expect(LONG_TERM_LABEL).toBe("Taxable LT (After Wash-Sale Add-Back)");
   });
 
   it("shows the add-back line only when the wash-sale adjustment is non-zero", () => {
@@ -41,14 +66,41 @@ describe("TaxReportCard short-term disclosure (pure helpers)", () => {
     expect(shouldShowWashSaleAddBack(-1)).toBe(true); // never negative in practice, but the guard is a plain !== 0
   });
 
-  it("states the wash-sale adjustment IS applied, not that it merely might be", () => {
-    const caption = washSalesCaption(true);
-    expect(caption).toBe("Disallowed losses added back into Taxable ST");
-    expect(caption.toLowerCase()).not.toContain("may be disallowed");
-  });
+  describe("washSalesCaption(shortTermAdjustments, longTermAdjustments, warningCount)", () => {
+    it("names Taxable ST when the add-back landed only in short-term", () => {
+      const caption = washSalesCaption(842.5, 0, 1);
+      expect(caption).toBe("Disallowed losses added back into Taxable ST");
+      expect(caption.toLowerCase()).not.toContain("may be disallowed");
+    });
 
-  it("keeps the no-wash-sale caption unchanged", () => {
-    expect(washSalesCaption(false)).toBe("None detected");
+    it("names Taxable LT when the add-back landed only in long-term", () => {
+      // Regression case: a lot held > 1 year, sold at a loss, repurchased
+      // within 30 days. detectWashSales flags it regardless of term; the
+      // old caption would have falsely claimed a ST add-back here.
+      const caption = washSalesCaption(0, 610, 1);
+      expect(caption).toBe("Disallowed losses added back into Taxable LT");
+      expect(caption).not.toContain("Taxable ST");
+    });
+
+    it("names both terms when both totals carry an add-back", () => {
+      const caption = washSalesCaption(300, 610, 2);
+      expect(caption).toBe("Disallowed losses added back into Taxable ST and Taxable LT");
+    });
+
+    it("discloses a non-USD wash sale as not reflected in the USD totals, never a phantom ST add-back", () => {
+      // Regression case: the only wash-sale warning is on a non-USD sale.
+      // sumRows() filters non-USD rows out of both totals entirely, so
+      // shortTermTotal.adjustments and longTermTotal.adjustments are both
+      // 0 even though washSaleWarnings.length > 0.
+      const caption = washSalesCaption(0, 0, 1);
+      expect(caption).toBe("Disallowed loss not reflected in USD totals (non-USD sale)");
+      expect(caption).not.toContain("Taxable ST");
+      expect(caption).not.toContain("Taxable LT");
+    });
+
+    it("keeps the no-wash-sale caption unchanged", () => {
+      expect(washSalesCaption(0, 0, 0)).toBe("None detected");
+    });
   });
 });
 
