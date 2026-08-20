@@ -86,7 +86,7 @@ Detail: `docs/reference/conventions-detail.md`, `docs/reference/earnings-pipelin
 
 **Data layer**
 - Reads in `lib/queries/`, writes in `lib/mutations/`; every DB fn takes `db: Database.Database` (DI for tests).
-- Deterministic `source_key` per imported record (re-import = no-op); every import writes an `import_batches` row (undo).
+- Deterministic `source_key` per imported record (re-import = no-op); every import writes an `import_batches` row (undo). CAVEAT (2026-08-19): the within-file `:#N` ordinal suffix defeats cross-source dedupe — a file containing a row twice (or a generated row duplicating a file row) imports the second copy as NEW under `:#2` even when the base key exists. Before appending generated rows to a canonical file, tuple-diff by (symbol, date, type, cents); after any bulk import, twin-audit new rows.
 - Transaction types are UPPERCASE (BUY/SELL/DIVIDEND/…); `computeTaxLots` matches uppercase.
 - Always `COALESCE(s.multiplier, 1)` — SQLite DEFAULT is bypassed by explicit `INSERT NULL`.
 - Compare timestamps with `datetime()` on BOTH sides (`datetime('now')` is space-separated, `toISOString()` uses `T`).
@@ -154,7 +154,9 @@ When fixing bugs, verify the fix against the actual data/edge cases before decla
 - Finnhub: the symbol we QUERIED is canonical, never `entry.symbol`.
 - Earnings recap requires `actual_value IS NOT NULL`; `enriched_at` is not sufficient. Better no email than a wrong one.
 - Guard any Finnhub `actual_value` surface with `isPlausibleEarnings`.
-- TWS historical bars are SPLIT-ADJUSTED to today's share basis; statement-sourced prices/quantities are statement-date basis. Never mix bases: any bars→prices backfill must compare statement rows against same-date bar closes (integer ratio = a split) and normalize product-preserving (`scripts/repair-split-basis-2024-year-end.ts` precedent).
+- TWS historical bars are SPLIT-ADJUSTED to today's share basis; statement-sourced prices/quantities are statement-date basis. Never mix bases: any bars→prices backfill must compare statement rows against same-date bar closes (integer ratio = a split) and normalize product-preserving (`scripts/repair-split-basis-2024-year-end.ts` precedent; generalized guarded form: `scripts/repair-split-basis-audit.ts`).
+- Underlying splits RE-SYMBOL the listed options (strike re-struck: IBKR 4:1 140P→35P, XLU 2:1 100C→50C) — the activity report prints split legs under the ORIGINAL symbols, the statements under the new ones. Never leave a pre-split option row on the old symbol: move + normalize via `OPTION_RESYMBOL_TARGETS` in `scripts/repair-mistyped-option-legs.ts`.
+- REDEMPTION rows (bond/bill maturity) carry NO per-share price — principal lives in `amount`; `computeTaxLots` derives the close price as `|amount|/qty×100` on the per-100-face bond basis (a bill redeeming at cost realizes $0 — the discount is INTEREST, not gain). Statement transcriptions must keep that shape (qty + amount, price empty).
 - No-data sections render `<EmptySection>`, never a silent `return null`.
 - Outbound email = Resend; inbound = Gmail IMAP/OAuth. Keep split forever.
 
