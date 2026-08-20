@@ -48,6 +48,17 @@ const ALL_DIMENSIONS = [...CLASSIFICATION_DIMENSIONS, ...FACTOR_DIMENSIONS];
 const VALID_SCOPES = ["vanguard", "ibkr", "roth", "all"] as const;
 type AccountScope = (typeof VALID_SCOPES)[number];
 
+// Same set + labels as the Performance sub-view's scope pills (PerformanceView.tsx
+// SCOPES) — reused here so the Workspace landing gets the identical control instead
+// of a new design (deep-QA: Workspace was silently scoped to Vanguard with no pill
+// row and no visible label; Diagnostics/Performance already had working pills).
+const SCOPE_PILLS: { key: AccountScope; label: string }[] = [
+  { key: "all", label: "All accounts" },
+  { key: "vanguard", label: "Vanguard" },
+  { key: "ibkr", label: "IBKR" },
+  { key: "roth", label: "Roth" },
+];
+
 function resolveAccountIds(scope: AccountScope): number[] | undefined {
   if (scope === "all") return undefined;
 
@@ -190,6 +201,41 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
         </div>
 
         <AnalysisViewToggle currentView="workspace" scope={params.scope} />
+
+        {/* Account scope pills — identical control + labels to Diagnostics
+            (AnalysisView.tsx) and Performance (PerformanceView.tsx); selecting
+            one updates ?scope= the same way. A visible label sits alongside so
+            the active scope is always named, not just inferred from a
+            highlighted pill (deep-QA: Workspace's only scope hint used to be
+            a tiny italic tag on the Macro card, three tabs removed from the
+            what-if total it explains). */}
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+          <div
+            className="flex items-center gap-1 rounded-lg bg-raised border border-edge p-0.5 self-start w-fit"
+            role="group"
+            aria-label="Account scope"
+          >
+            {SCOPE_PILLS.map((s) => (
+              <Link
+                key={s.key}
+                href={`/dashboard/analysis?view=workspace&scope=${s.key}`}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                  scope === s.key
+                    ? "bg-panel text-ink shadow-sm"
+                    : "text-ink-dim hover:text-ink"
+                }`}
+              >
+                {s.label}
+              </Link>
+            ))}
+          </div>
+          <p className="text-xs text-ink-faint">
+            Scope:{" "}
+            <span className="font-medium text-ink-dim">
+              {SCOPE_PILLS.find((s) => s.key === scope)?.label ?? scope}
+            </span>
+          </p>
+        </div>
 
         {/* Actionable tools lead; the TrustStrip data-quality readout sits
             below the fold-line so construction work comes first. */}
