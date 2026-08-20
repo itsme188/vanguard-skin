@@ -27,6 +27,26 @@ function formatMoney(value: number): string {
   return `${sign}$${abs.toFixed(2)}`;
 }
 
+// This card's "Short-Term" figure is the TAXABLE total — economic realized
+// gain/loss PLUS the wash-sale disallowed-loss add-back (shortTermTotal.gainLoss
+// from /api/tax-report already includes it; see lib/compute/tax-report.ts
+// sumRows()). The tax-lots summary strip above shows the economic figure
+// without the add-back, so the two cards must each name their own basis or a
+// reader sees two different "short-term" numbers with no explanation. These
+// pure helpers hold the label/derivation logic so it's testable without a
+// rendering harness (see tests/dashboard/tax-report-card-labels.test.ts).
+export const SHORT_TERM_LABEL = "Taxable ST (After Wash-Sale Add-Back)";
+
+export function shouldShowWashSaleAddBack(adjustments: number): boolean {
+  return adjustments !== 0;
+}
+
+export function washSalesCaption(hasWashSales: boolean): string {
+  return hasWashSales
+    ? "Disallowed losses added back into Taxable ST"
+    : "None detected";
+}
+
 export function TaxReportCard({ year }: { year: number }) {
   const [report, setReport] = useState<TaxReportSummary | null>(null);
   const [loading, setLoading] = useState(true);
@@ -109,11 +129,16 @@ export function TaxReportCard({ year }: { year: number }) {
         {/* Summary grid */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div className="bg-raised border border-edge rounded-lg px-3 py-2.5">
-            <div className="text-[10px] text-ink-faint uppercase tracking-wider mb-1">Short-Term</div>
+            <div className="text-[10px] text-ink-faint uppercase tracking-wider mb-1">{SHORT_TERM_LABEL}</div>
             <div className={`text-base font-mono tabular-nums font-semibold ${report.shortTermTotal.gainLoss >= 0 ? "text-up" : "text-down"}`}>
               <PrivateText>{formatMoney(report.shortTermTotal.gainLoss)}</PrivateText>
             </div>
             <div className="text-[10px] text-ink-faint mt-0.5">{report.shortTermRows?.length ?? 0} sales</div>
+            {shouldShowWashSaleAddBack(report.shortTermTotal.adjustments) && (
+              <div className="text-[10px] text-ink-faint mt-0.5">
+                Wash-sale add-back: <PrivateText>{formatMoney(report.shortTermTotal.adjustments)}</PrivateText>
+              </div>
+            )}
           </div>
 
           <div className="bg-raised border border-edge rounded-lg px-3 py-2.5">
@@ -138,7 +163,7 @@ export function TaxReportCard({ year }: { year: number }) {
               {report.washSaleWarnings.length}
             </div>
             <div className="text-[10px] text-ink-faint mt-0.5">
-              {hasWashSales ? "Losses may be disallowed" : "None detected"}
+              {washSalesCaption(hasWashSales)}
             </div>
           </div>
         </div>

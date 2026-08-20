@@ -58,7 +58,7 @@ export function TaxLotSummaryCards({
         <GainCard
           label={`${year} Short-Term`}
           value={summary.shortTermGain}
-          sublabel="calendar year"
+          sublabel="economic realized · calendar year"
         />
       </div>
       {summary.excludedNonUsdSales > 0 && (
