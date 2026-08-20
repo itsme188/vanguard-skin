@@ -50,7 +50,10 @@ export default async function ResearchPage({ searchParams }: PageProps) {
       limit: 100,
     });
 
-    earningsTimeline = getEarningsTimeline(db);
+    earningsTimeline = getEarningsTimeline(db, {
+      security_id: securityId ? parseInt(securityId, 10) : undefined,
+      search: params.search || undefined,
+    });
     transcriptSummaries = noteType === "earnings" || !noteType
       ? getTranscriptsSummary(db, { limit: 50 })
       : [];
