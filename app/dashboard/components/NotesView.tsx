@@ -17,6 +17,13 @@ interface NotesViewProps {
   initialNotes: NoteWithContext[];
   earningsTimeline: EarningsTimelineEntry[];
   transcriptSummaries: TranscriptSummaryEntry[];
+  /**
+   * Every ticker that has a cached transcript — the UNFILTERED set, unlike
+   * `transcriptSummaries` (the search-filtered wall). The "Fetch <TICKER>
+   * Transcript" buttons are its complement, so it must not shrink when a
+   * filter is active.
+   */
+  transcriptTickers: string[];
   securities: { id: number; symbol: string; name: string | null }[];
   currentType: NoteType | null;
   currentSearch: string | null;
@@ -64,6 +71,7 @@ export function NotesView({
   initialNotes,
   earningsTimeline,
   transcriptSummaries,
+  transcriptTickers,
   securities,
   currentType,
   currentSearch,
@@ -238,6 +246,11 @@ export function NotesView({
   // ─── Render ────────────────────────────────────────────────────
 
   const showEarningsView = currentType === "earnings";
+  // The security filter the server actually applied (?security_id=, or
+  // ?security= from the Security-detail links). NOT ?symbol=, which only
+  // prefills the add-note dropdown.
+  const securityFilterParam =
+    searchParams.get("security_id") ?? searchParams.get("security");
 
   return (
     <div className="space-y-6">
@@ -398,10 +411,11 @@ export function NotesView({
         <EarningsView
           timeline={earningsTimeline}
           transcriptSummaries={transcriptSummaries}
+          transcriptTickers={transcriptTickers}
           securities={securities}
           filtered={notesListIsFiltered({
             search: searchParams.get("search"),
-            symbol: searchParams.get("symbol"),
+            security: securityFilterParam,
             type: searchParams.get("type"),
           })}
           editingId={editingId}
@@ -420,7 +434,7 @@ export function NotesView({
           notes={initialNotes}
           filtered={notesListIsFiltered({
             search: searchParams.get("search"),
-            symbol: searchParams.get("symbol"),
+            security: securityFilterParam,
             type: searchParams.get("type"),
           })}
           editingId={editingId}
@@ -440,16 +454,34 @@ export function NotesView({
 
 // ─── Notes List ──────────────────────────────────────────────────
 
-// A tab selection (?type=) is navigation, not a user filter — only search and
-// symbol may flip a zero-result into "No matching notes". A bare Stock Notes
-// tab on an empty journal must read "No notes yet", not blame a search the
-// user never typed.
+// Keys on EXACTLY the params the server filtered by: ?search= and
+// ?security= / ?security_id=. A tab selection (?type=) is navigation, not a
+// user filter — a bare Stock Notes tab on an empty journal must read "No
+// notes yet", not blame a search the user never typed.
+//
+// ?symbol= is the add-note prefill (it preselects the security dropdown and
+// filters nothing), and keying on it got the copy wrong in both directions:
+// a search that filtered the earnings timeline to empty read "No earnings
+// notes yet" (hiding that a filter was active), while arriving from a
+// Security page with only ?symbol= claimed a filter was active that "clear
+// it" could not clear.
 export function notesListIsFiltered(params: {
   search?: string | null;
-  symbol?: string | null;
+  security?: string | number | null;
   type?: string | null;
 }): boolean {
-  return Boolean(params.search || params.symbol);
+  const hasSearch = Boolean(params.search?.trim());
+  // Mirror the server's gate exactly: page.tsx parseInt()s the param and
+  // getNotesFiltered ignores a falsy security_id, so a non-numeric
+  // ?security=NVDA filters nothing and must not claim otherwise.
+  const securityId =
+    typeof params.security === "number"
+      ? params.security
+      : params.security
+        ? parseInt(params.security, 10)
+        : NaN;
+  const hasSecurity = Number.isFinite(securityId) && securityId > 0;
+  return hasSearch || hasSecurity;
 }
 
 function NotesList({
@@ -527,6 +559,7 @@ function NotesList({
 function EarningsView({
   timeline,
   transcriptSummaries,
+  transcriptTickers,
   securities,
   filtered = false,
   editingId,
@@ -539,6 +572,7 @@ function EarningsView({
 }: {
   timeline: EarningsTimelineEntry[];
   transcriptSummaries: TranscriptSummaryEntry[];
+  transcriptTickers: string[];
   securities: { id: number; symbol: string; name: string | null }[];
   filtered?: boolean;
   editingId: number | null;
@@ -562,13 +596,24 @@ function EarningsView({
     (ticker) => !timelineTickers.has(ticker)
   );
 
-  // Tickers that already have cached transcripts
-  const tickersWithTranscripts = new Set(transcriptSummaries.map((t) => t.ticker));
+  // Tickers that already have cached transcripts — from the UNFILTERED
+  // server set, never from `transcriptSummaries` (the search-filtered wall).
+  // Subtracting the filtered wall from the unfiltered securities list made
+  // already-cached tickers reappear as "Fetch <TICKER> Transcript" buttons
+  // whenever a filter was active: most clicks no-op into cache, but an
+  // edgar_8k-only name spends a real Alpha Vantage call per click.
+  const tickersWithTranscripts = new Set(
+    transcriptTickers.map((t) => t.toUpperCase())
+  );
+  // Belt and braces: anything on the current wall is cached by definition.
+  for (const t of transcriptSummaries) {
+    tickersWithTranscripts.add(t.ticker.toUpperCase());
+  }
 
   // Portfolio tickers that don't have transcripts yet (exclude common non-stock symbols)
   const fetchableTickers = securities
     .map((s) => s.symbol)
-    .filter((sym) => !tickersWithTranscripts.has(sym))
+    .filter((sym) => !tickersWithTranscripts.has(sym.toUpperCase()))
     .filter((sym) => !sym.includes(" ") && sym.length <= 5); // basic filter for stock-like symbols
 
   if (timeline.length === 0 && transcriptSummaries.length === 0) {

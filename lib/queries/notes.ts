@@ -66,9 +66,22 @@ export function getNotesFiltered(
     conditions.push("n.security_id = ?");
     params.push(filters.security_id);
   }
-  if (filters.search) {
-    conditions.push("n.content LIKE '%' || ? || '%'");
-    params.push(filters.search);
+  const search = filters.search?.trim();
+  if (search) {
+    // UNIFIED SEMANTICS with getTranscriptsSummary: one search box drives
+    // the whole Research > Notes surface, so a term matches on IDENTITY
+    // (the linked security's ticker or company name) OR on TEXT (the note's
+    // prose). Content-only matching meant typing "NFLX" kept the NFLX
+    // transcript cards but dropped the NFLX earnings notes whose prose never
+    // spells the ticker — one term, two different rules on one page.
+    // UPPER() on both sides rather than relying on SQLite's ASCII-only
+    // default LIKE folding.
+    conditions.push(
+      `(UPPER(n.content) LIKE '%' || UPPER(?) || '%'
+        OR UPPER(COALESCE(s.symbol, '')) LIKE '%' || UPPER(?) || '%'
+        OR UPPER(COALESCE(s.name, '')) LIKE '%' || UPPER(?) || '%')`
+    );
+    params.push(search, search, search);
   }
   if (filters.start_date) {
     conditions.push("n.event_date >= ?");
@@ -114,18 +127,34 @@ export interface EarningsTimelineFilters {
  * `limit: -1` asks SQLite for every matching row — getNotesFiltered's
  * default (used by the other tabs) is capped, but a timeline must be
  * complete, not a recent-N slice.
+ *
+ * Fetch + group. Callers that ALREADY hold the filtered note pass (the
+ * Research page renders both the notes list and the timeline from one
+ * query) should call `groupEarningsTimeline` on those rows instead of
+ * paying for the identical query a second time.
  */
 export function getEarningsTimeline(
   db: Database.Database,
   filters: EarningsTimelineFilters = {}
 ): EarningsTimelineEntry[] {
-  const notes = getNotesFiltered(db, {
-    note_type: "earnings",
-    security_id: filters.security_id,
-    search: filters.search,
-    limit: -1,
-  });
+  return groupEarningsTimeline(
+    getNotesFiltered(db, {
+      note_type: "earnings",
+      security_id: filters.security_id,
+      search: filters.search,
+      limit: -1,
+    })
+  );
+}
 
+/**
+ * Pure grouping half of `getEarningsTimeline` — earnings notes (already
+ * fetched and filtered) into one entry per security. Notes without a
+ * security are skipped: the timeline is keyed by symbol.
+ */
+export function groupEarningsTimeline(
+  notes: NoteWithContext[]
+): EarningsTimelineEntry[] {
   // Group by security. getNotesFiltered orders newest-first (shared with
   // the other tabs); a timeline reads oldest-first, so each entry's notes
   // are re-sorted chronologically below.
