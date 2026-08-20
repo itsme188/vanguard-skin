@@ -67,6 +67,18 @@ export function chromeBinaryPath(): string | null {
   }
 }
 
+// Below this size, a 0-count result is unremarkable — garbage bytes, an
+// empty/truncated file, whatever; the poll loop and readCompletedPdf already
+// handle those cases before a caller ever gets this far. Above it, the
+// buffer looks like Chrome genuinely rendered something, so an
+// implausibly-low count is worth a breadcrumb instead of a silent downgrade.
+const NON_TRIVIAL_PDF_BYTES = 20_000;
+// These are plain markdown/monospace earnings sheets (no heavy embedded
+// media) — real Chrome output here runs well under this many bytes per
+// counted page. A ratio above it on a non-trivial buffer means the regex is
+// almost certainly undercounting, not that the document has that few pages.
+const SUSPICIOUS_BYTES_PER_PAGE = 200_000;
+
 /**
  * Counts `/Type /Page` objects (individual pages), deliberately excluding
  * `/Type /Pages` (the page-tree root, which the negative lookahead
@@ -74,9 +86,34 @@ export function chromeBinaryPath(): string | null {
  * the PDF's latin1 bytes — good enough for Chrome's own `--print-to-pdf`
  * output, not a general PDF parser. Returns 0 for anything that doesn't
  * look like a PDF.
+ *
+ * Diagnostic breadcrumb (deferred minor, 2026-08-07): this regex can only
+ * see pages spelled out as literal `/Type /Page` tokens — it has no idea
+ * what a PDF cross-reference stream or a compressed object stream (ObjStm)
+ * is. If a future Chrome build starts emitting pages inside one, this would
+ * silently undercount and `printWorksheetNow` would quietly downgrade every
+ * render to the monospace fallback with no alarm. `console.warn`s (grep for
+ * "countPdfPages") when a non-trivial buffer comes back with 0 pages or an
+ * implausibly low count for its size — never changes the returned count or
+ * the caller's fallback behavior, just makes a silent quality regression
+ * loud.
  */
 export function countPdfPages(pdf: Buffer): number {
-  return pdf.toString("latin1").match(/\/Type\s*\/Page(?![s])/g)?.length ?? 0;
+  const count = pdf.toString("latin1").match(/\/Type\s*\/Page(?![s])/g)?.length ?? 0;
+  if (
+    pdf.length >= NON_TRIVIAL_PDF_BYTES &&
+    (count === 0 || pdf.length / count > SUSPICIOUS_BYTES_PER_PAGE)
+  ) {
+    console.warn(
+      `[countPdfPages] suspiciously low page count (${count}) for a ${pdf.length}-byte PDF — ` +
+        "this is a byte-level regex scan for literal \"/Type /Page\" tokens, not a real PDF " +
+        "parser, so it cannot see pages described via a compressed object stream (ObjStm). If a " +
+        "newer Chrome build has switched to those, this will keep returning a falsely-low count " +
+        "and every render will silently downgrade to the monospace fallback. Investigate the PDF " +
+        "itself before assuming the render failed.",
+    );
+  }
+  return count;
 }
 
 /**

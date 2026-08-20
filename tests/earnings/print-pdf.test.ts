@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { writeFileSync } from "node:fs";
 import {
@@ -16,6 +16,50 @@ describe("countPdfPages", () => {
   });
   it("returns 0 for garbage", () => {
     expect(countPdfPages(Buffer.from("not a pdf"))).toBe(0);
+  });
+
+  it("stays silent on a small buffer even with 0 pages", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(countPdfPages(Buffer.from("not a pdf"))).toBe(0);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("breadcrumbs (grep-able 'countPdfPages') a 0-page count on a non-trivial buffer without changing the return value", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // 25KB of padding with no "/Type /Page" token at all — simulates a
+    // future Chrome build hiding pages in a compressed object stream.
+    const pdf = Buffer.from("%PDF-1.7\n" + "x".repeat(25_000) + "\n%%EOF");
+    expect(countPdfPages(pdf)).toBe(0);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain("countPdfPages");
+    warn.mockRestore();
+  });
+
+  it("breadcrumbs an implausibly low (but nonzero) count for a large buffer", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // One real page token in a 250KB buffer — 250KB/page is far above the
+    // suspicious-ratio threshold for these plain monospace/markdown sheets.
+    const pdf = Buffer.from(
+      "%PDF-1.7\n1 0 obj << /Type /Page >>\n" + "x".repeat(250_000) + "\n%%EOF",
+    );
+    expect(countPdfPages(pdf)).toBe(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain("countPdfPages");
+    warn.mockRestore();
+  });
+
+  it("stays silent on a plausible page count for the buffer size", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(
+      countPdfPages(
+        Buffer.from(
+          "%PDF-1.4\n1 0 obj << /Type /Pages /Count 2 >>\n2 0 obj << /Type /Page >>\n3 0 obj << /Type/Page >>\n%%EOF",
+        ),
+      ),
+    ).toBe(2);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });
 

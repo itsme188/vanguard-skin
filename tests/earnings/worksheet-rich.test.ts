@@ -102,6 +102,30 @@ describe("extractPreviewSections", () => {
     expect(s.commentary).toContain("## The setup");
   });
 
+  it("a REAL table that appears after the next heading is rejected as the bogies table (not the malformed-table case above — the table here parses fine, it's just in the wrong section)", () => {
+    const md = [
+      "## Line-by-line bogies",
+      "",
+      "prose intro, no table yet",
+      "",
+      "## The setup",
+      "",
+      "| Metric | Val |",
+      "|---|---|",
+      "| Revenue | 1.2 |",
+      "",
+      "more prose",
+    ].join("\n");
+    const s = extractPreviewSections(md);
+    // The guard's `tableIdx > nextHeading` clause fires (tableIdx !== -1
+    // here, unlike the malformed case above) — the table is left unparsed,
+    // verbatim, inside the commentary span rather than becoming bogiesTable.
+    expect(s.bogiesTable).toBeNull();
+    expect(s.commentary).toContain("## The setup");
+    expect(s.commentary).toContain("| Metric | Val |");
+    expect(s.commentary).toContain("| Revenue | 1.2 |");
+  });
+
   it("never throws on empty input", () => {
     const s = extractPreviewSections("");
     expect(s.bogiesTable).toBeNull();
@@ -145,6 +169,20 @@ describe("mdToPlainText", () => {
     for (const l of lines) expect(l.length).toBeLessThanOrEqual(40);
     expect(lines.join(" ")).toContain("GUIDANCE");
   });
+
+  // stripInline paired-italic fix (deferred minor, 2026-08-05): a bare `\*`
+  // strip ate every asterisk, including a lone one with no closing star —
+  // the fix must match *paired* markers only.
+  it("strips a paired *italic* marker (the past-prints footnote case)", () => {
+    const lines = mdToPlainText("*Next-day move is close-over-close around the print.*");
+    const flat = lines.join(" ");
+    expect(flat).toBe("Next-day move is close-over-close around the print.");
+    expect(flat).not.toContain("*");
+  });
+  it("leaves a lone/unpaired * untouched", () => {
+    const lines = mdToPlainText("Rev $81.6B *preliminary");
+    expect(lines.join(" ")).toBe("Rev $81.6B *preliminary");
+  });
 });
 
 describe("renderMonospaceTable", () => {
@@ -159,7 +197,9 @@ describe("renderMonospaceTable", () => {
 
   it("every line is exactly the total table width", () => {
     const lines = renderMonospaceTable(TABLE, LAYOUT);
-    const total = 16 + 41 + 13 + 6 + 3;
+    // 3 internal │/┼ joints + 1 right-edge │/┤ (deferred minor, 2026-08-05:
+    // the last column previously had no drawn right-edge rule).
+    const total = 16 + 41 + 13 + 6 + 4;
     for (const l of lines) expect(l.length).toBe(total);
   });
 
@@ -182,19 +222,28 @@ describe("renderMonospaceTable", () => {
     expect(cells[3].trim()).toBe(""); // delta: blank box
   });
 
-  it("draws a ruled separator between rows with ┼ at column joints", () => {
+  it("draws a ruled separator between rows with ┼ at column joints and ┤ on the right edge", () => {
     const lines = renderMonospaceTable(TABLE, LAYOUT);
     const seps = lines.filter((l) => l.includes("┼"));
     // header separator + one after each row
     expect(seps.length).toBe(1 + TABLE.rows.length);
-    expect(seps[0]).toBe("─".repeat(16) + "┼" + "─".repeat(41) + "┼" + "─".repeat(13) + "┼" + "─".repeat(6));
+    expect(seps[0]).toBe(
+      "─".repeat(16) + "┼" + "─".repeat(41) + "┼" + "─".repeat(13) + "┼" + "─".repeat(6) + "┤",
+    );
+  });
+
+  it("closes the right edge of every content row with │ (deferred minor, 2026-08-05)", () => {
+    const lines = renderMonospaceTable(TABLE, LAYOUT);
+    const contentLines = lines.filter((l) => !l.includes("┼"));
+    for (const l of contentLines) expect(l.endsWith("│")).toBe(true);
   });
 
   it("drops extra cells and blanks missing cells", () => {
     const t = { header: ["A", "B"], rows: [["1"], ["1", "2", "3"]] };
     const lines = renderMonospaceTable(t, { widths: [4, 4] });
     expect(lines.some((l) => l.includes("3"))).toBe(false);
-    for (const l of lines) expect(l.length).toBe(9);
+    // 1 internal joint + 1 right-edge joint.
+    for (const l of lines) expect(l.length).toBe(10);
   });
 });
 

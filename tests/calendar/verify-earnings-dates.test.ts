@@ -22,6 +22,7 @@ import {
   needsExactTime,
   runEarningsDateVerification,
   maybeRunDailyDateVerification,
+  defaultFetchDateVerdicts,
   type DateVerificationCandidate,
   type DateVerdict,
 } from "@/lib/calendar/verify-earnings-dates";
@@ -30,10 +31,15 @@ import {
   recordWireObservation,
   getSymbolReleaseTimeRow,
 } from "@/lib/earnings/wire-times";
+import { getRawAnthropicClient } from "@/lib/ai/provider";
 
 const pushover = vi.fn(async (..._args: unknown[]) => ({ sent: true }));
 vi.mock("@/lib/alerts/notify-pushover", () => ({
   sendPushover: (...a: unknown[]) => pushover(...a),
+}));
+vi.mock("@/lib/ai/provider", () => ({ getRawAnthropicClient: vi.fn() }));
+vi.mock("@/lib/ai/models", () => ({
+  resolveFeatureModel: vi.fn(() => ({ provider: "anthropic", modelId: "claude-test-model" })),
 }));
 
 let db: Database.Database;
@@ -1071,5 +1077,40 @@ describe("exact-time jump-start (wire-time spec 2026-08-04)", () => {
     applyExactTimeVerdict(db, { symbol: "AAA", confirmed_date: null, slot: "bmo", confidence: "confirmed", source: "ew", exact_time: "06:30" },
       { ...candidate, symbol: "AAA" });
     expect(getSymbolReleaseTimeRow(db, "AAA")).toMatchObject({ release_time: "07:00", source: "user" });
+  });
+});
+
+// Deferred minor (2026-08-07): defaultFetchDateVerdicts shares the exact
+// web_search text-block join shape that was root-caused and fixed in the
+// earnings composer (lib/digest/send-earnings-email.ts::joinClaudeTextBlocks,
+// join("") not join("\n")) — masked here by parseDateVerdicts' C0-control-char
+// retry, but the wrong join can still plant a bare newline mid-sentence
+// inside a JSON string value.
+describe("defaultFetchDateVerdicts web_search text-block join", () => {
+  it("joins split text blocks with no inserted newline (web_search citation boundary)", async () => {
+    vi.mocked(getRawAnthropicClient).mockReturnValue({
+      messages: {
+        create: () =>
+          Promise.resolve({
+            content: [
+              { type: "text", text: '[{"symbol":"XMTR","confirmed_date":"2026-11-05","slot":"bmo",' },
+              { type: "text", text: '"confidence":"confirmed","source":"company IR","exact_time":null}]' },
+            ],
+          }),
+      },
+    } as never);
+
+    const text = await defaultFetchDateVerdicts("verify XMTR");
+    expect(text).not.toContain("\n");
+    expect(parseDateVerdicts(text)).toEqual([
+      {
+        symbol: "XMTR",
+        confirmed_date: "2026-11-05",
+        slot: "bmo",
+        confidence: "confirmed",
+        source: "company IR",
+        exact_time: null,
+      },
+    ]);
   });
 });
