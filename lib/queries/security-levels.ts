@@ -7,6 +7,10 @@ import type {
   LevelPriceSource,
 } from "@/lib/types";
 import { resolveLevelPrice } from "@/lib/alerts/resolve-level-price";
+import {
+  LEVEL_PLAUSIBILITY_MAX_DISTANCE,
+  isLevelBeyondScanRange,
+} from "@/lib/levels/scan-range";
 
 // ─── Filter types ──────────────────────────────────────────────────
 
@@ -120,8 +124,13 @@ export function getLevelById(
  * every dismiss (QA 2026-07-06: SPY support @ $7,100 vs $748). Mirrored in
  * the Worker's isLevelCrossed (workers/cron/src/level-scan.ts) — keep the
  * threshold in sync.
+ *
+ * The band itself (threshold + options exemption) lives in
+ * lib/levels/scan-range.ts so the suggestion engine and the UI surfaces that
+ * offer / list levels share this exact predicate. Re-exported here because
+ * this module is the scanner's home.
  */
-export const LEVEL_PLAUSIBILITY_MAX_DISTANCE = 0.5;
+export { LEVEL_PLAUSIBILITY_MAX_DISTANCE, isLevelBeyondScanRange };
 
 /** Minimal shape checkLevelTriggerState needs — matches the findCrossedLevels
  * row shape and what approveLevelGuarded can assemble for a single level. */
@@ -166,8 +175,7 @@ export function checkLevelTriggerState(
 
   // Options exempt from the plausibility guard: option premiums legitimately
   // double/halve overnight, so a real hit CAN first be seen >50% past the level.
-  const isOption = level.sec_type?.toLowerCase() === "option";
-  if (!isOption && Math.abs(currentPrice - effective) / effective > LEVEL_PLAUSIBILITY_MAX_DISTANCE) {
+  if (isLevelBeyondScanRange(effective, currentPrice, level.sec_type)) {
     console.warn(
       `[levels/scan] Skipping implausible level ${level.id} (${level.level_type} @ ${effective}) — current price ${currentPrice} is >${LEVEL_PLAUSIBILITY_MAX_DISTANCE * 100}% away (mis-scaled level?)`
     );
@@ -320,6 +328,12 @@ export interface ArmedLevel
   current_price: number | null;
   /** (current − effective) / effective. null when either side is missing. */
   distance_pct: number | null;
+  /**
+   * True when the scanner permanently skips this level (outside the
+   * plausibility band; options exempt). The row is armed in the DB but is not
+   * live coverage — the Armed view must say so rather than imply monitoring.
+   */
+  beyond_scan_range: boolean;
 }
 
 /**
@@ -345,6 +359,7 @@ export function getArmedLevels(db: Database.Database): ArmedLevel[] {
          WHERE bp.date = (SELECT MAX(bp2.date) FROM benchmark_prices bp2 WHERE bp2.symbol = bp.symbol)
        )
        SELECT sl.*, s.symbol AS sym, s.name AS security_name,
+         s.security_type AS sec_type,
          COALESCE(lp.close_price, lb.close_price) AS current_price
        FROM security_levels sl
        JOIN securities s ON s.id = sl.security_id
@@ -358,6 +373,7 @@ export function getArmedLevels(db: Database.Database): ArmedLevel[] {
     SecurityLevel & {
       sym: string;
       security_name: string | null;
+      sec_type: string | null;
       current_price: number | null;
     }
   >;
@@ -381,6 +397,13 @@ export function getArmedLevels(db: Database.Database): ArmedLevel[] {
       effective_price,
       current_price,
       distance_pct,
+      // Same predicate the scanner applies — an armed row outside the band is
+      // listed, but flagged, never silently presented as live coverage.
+      beyond_scan_range: isLevelBeyondScanRange(
+        effective_price,
+        current_price,
+        r.sec_type,
+      ),
       direction: r.direction,
       action_hint: r.action_hint,
       source: r.source,

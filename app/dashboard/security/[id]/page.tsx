@@ -235,6 +235,7 @@ export default async function SecurityDetailPage(props: {
         kpis={kpis}
         usdPerUnit={detail.usdPerUnit}
         currency={security.currency}
+        securityType={security.security_type}
       />
 
       {/* Action buttons */}

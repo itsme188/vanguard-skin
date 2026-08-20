@@ -27,6 +27,14 @@ import { formatLevelPrice } from "@/lib/chart/price-formatter";
 // security_levels.thesis on an armed level.
 import { guardNarrative, resolveAcceptedThesis } from "@/lib/levels/narrative-guard";
 import { levelActionVisibility, levelReviewGuidance } from "@/lib/levels/action-visibility";
+// The scanner's plausibility band. A level outside it is armed in the DB but
+// never evaluated, so this panel must warn before the save and label the row
+// after it — same predicate the scanner runs (lib/levels/scan-range.ts).
+import {
+  BEYOND_SCAN_RANGE_EXPLANATION,
+  BEYOND_SCAN_RANGE_LABEL,
+  isLevelBeyondScanRange,
+} from "@/lib/levels/scan-range";
 import { todayET } from "@/lib/calendar/date-utils";
 import { useToast } from "./Toast";
 import { Chip } from "./Chip";
@@ -520,6 +528,7 @@ export function LevelsPanel({
   currentPrice,
   embedded = false,
   currency = null,
+  securityType = null,
 }: {
   securityId: number;
   symbol: string;
@@ -532,6 +541,9 @@ export function LevelsPanel({
    *  NATIVE (never converted) — same frame as the chart above this panel —
    *  so this only changes the price LABEL, matching 9ba9158's chart fix. */
   currency?: string | null;
+  /** Security type — options are exempt from the scanner's plausibility band,
+   *  so neither the add-form warning nor the row chip fires for them. */
+  securityType?: string | null;
 }) {
   const { toast } = useToast();
   const [levels, setLevels] = useState<EnrichedLevel[]>([]);
@@ -709,6 +721,24 @@ export function LevelsPanel({
     }
   }
 
+  // Add-form warning: non-blocking by design (the user may be marking
+  // structure to arm later), but the scanner skips anything outside the band,
+  // so staying silent would promise an alert that never fires. MA-based levels
+  // resolve server-side each day and aren't judged from the typed reference.
+  const typedPrice = priceSource === "static" ? parseFloat(price) : NaN;
+  const newLevelBeyondScanRange =
+    Number.isFinite(typedPrice) &&
+    isLevelBeyondScanRange(typedPrice, currentPrice, securityType);
+
+  // Row disclosure: only levels that are actually armed (active +
+  // auto_approved) can mislead by looking monitored. An MA level whose value
+  // can't be computed yet is left unjudged — it already says so in its own row.
+  const rowBeyondScanRange = (l: EnrichedLevel): boolean => {
+    if (l.is_active !== 1 || l.review_status !== "auto_approved") return false;
+    const effective = l.price_source === "static" ? l.price : l.effective_price;
+    return isLevelBeyondScanRange(effective, currentPrice, securityType);
+  };
+
   return (
     <section
       className={
@@ -875,6 +905,15 @@ export function LevelsPanel({
               </Field>
             </div>
           </div>
+          {newLevelBeyondScanRange && (
+            <p
+              className="text-[11px] leading-snug text-warn"
+              title={BEYOND_SCAN_RANGE_EXPLANATION}
+            >
+              Heads up: this level is outside the scanner&apos;s range and will
+              not alert. You can still save it.
+            </p>
+          )}
           {/* Mobile-only disclosure. Desktop always shows the second grid. */}
           {!showAdvanced && (
             <button
@@ -1219,6 +1258,23 @@ export function LevelsPanel({
                             Inactive
                           </span>
                         )}
+                        {rowBeyondScanRange(l) && (
+                          <span
+                            title={BEYOND_SCAN_RANGE_EXPLANATION}
+                            style={{
+                              fontFamily: "var(--font-mono), monospace",
+                              fontSize: "11px",
+                              letterSpacing: "0.14em",
+                              textTransform: "uppercase",
+                              color: "#f87171",
+                              border: "1px solid #f87171",
+                              padding: "2px 6px",
+                              borderRadius: "2px",
+                            }}
+                          >
+                            {BEYOND_SCAN_RANGE_LABEL}
+                          </span>
+                        )}
                         {unarmedReview && (
                           <span
                             title={levelReviewGuidance(l.review_status)}
@@ -1423,6 +1479,15 @@ export function LevelsPanel({
                   )}
                   {l.is_active === 0 && !l.triggered_at && (
                     <Chip size="xs" tone="neutral">inactive</Chip>
+                  )}
+                  {rowBeyondScanRange(l) && (
+                    <Chip
+                      size="xs"
+                      tone="down"
+                      title={BEYOND_SCAN_RANGE_EXPLANATION}
+                    >
+                      {BEYOND_SCAN_RANGE_LABEL}
+                    </Chip>
                   )}
                   {l.is_active === 1 && l.review_status !== "auto_approved" && (
                     <Chip

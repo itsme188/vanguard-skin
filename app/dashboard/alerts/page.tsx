@@ -14,6 +14,10 @@ import {
   formatUSDPrecise,
 } from "@/lib/format";
 import { suggestOutcomeMessage } from "@/lib/alerts/suggest-message";
+import {
+  BEYOND_SCAN_RANGE_EXPLANATION,
+  BEYOND_SCAN_RANGE_LABEL,
+} from "@/lib/levels/scan-range";
 import { useToast } from "../components/Toast";
 import { SortPicker } from "../components/SortPicker";
 import { SymbolLink } from "../components/SymbolLink";
@@ -45,6 +49,8 @@ interface ArmedLevelView {
   thesis: string | null;
   timeframe: string | null;
   set_date: string;
+  /** Server-computed via the scanner's own band — see lib/levels/scan-range.ts. */
+  beyond_scan_range?: boolean;
 }
 
 const LEVEL_TYPE_LABEL: Record<string, string> = {
@@ -1048,6 +1054,9 @@ function ArmedLevelRow({ level: l }: { level: ArmedLevelView }) {
   // the live price column tell the user which side of the level price sits on.
   const distanceLabel = dist === null ? null : `${formatPercent(Math.abs(dist) * 100)} away`;
   const near = dist !== null && Math.abs(dist) <= 0.02; // within 2% — about to fire
+  // Armed in the DB, but the scanner skips it on every pass. Saying "171% away"
+  // and nothing else read as live coverage — this row is not being monitored.
+  const beyondScanRange = l.beyond_scan_range === true;
 
   return (
     <li className="py-2.5 px-3 flex items-start gap-3">
@@ -1091,6 +1100,11 @@ function ArmedLevelRow({ level: l }: { level: ArmedLevelView }) {
           {distanceLabel && (
             <Chip size="xs" tone={near ? "warn" : "neutral"}>
               {distanceLabel}
+            </Chip>
+          )}
+          {beyondScanRange && (
+            <Chip size="xs" tone="down" title={BEYOND_SCAN_RANGE_EXPLANATION}>
+              {BEYOND_SCAN_RANGE_LABEL}
             </Chip>
           )}
           {l.action_hint && (
