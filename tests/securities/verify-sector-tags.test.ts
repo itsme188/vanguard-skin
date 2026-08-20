@@ -1,10 +1,16 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import {
   getSweepCandidates, parseVerdicts, applyVerdicts,
-  cascadeOptionSectors, runSectorVerification,
+  cascadeOptionSectors, runSectorVerification, defaultFetchVerdicts,
 } from "@/lib/securities/verify-sector-tags";
+import { getRawAnthropicClient } from "@/lib/ai/provider";
+
+vi.mock("@/lib/ai/provider", () => ({ getRawAnthropicClient: vi.fn() }));
+vi.mock("@/lib/ai/models", () => ({
+  resolveFeatureModel: vi.fn(() => ({ provider: "anthropic", modelId: "claude-test-model" })),
+}));
 
 function seed(db: Database.Database) {
   const ins = db.prepare(
@@ -119,5 +125,35 @@ describe("parseVerdicts control-char defense (live-sweep 2026-07-28 failure)", (
 
   it("still throws on genuinely malformed non-JSON", () => {
     expect(() => parseVerdicts("not json at all")).toThrow();
+  });
+});
+
+// Deferred minor (2026-08-07): defaultFetchVerdicts shares the exact
+// web_search text-block join shape that was root-caused and fixed in the
+// earnings composer (lib/digest/send-earnings-email.ts::joinClaudeTextBlocks,
+// join("") not join("\n")) — masked here by parseVerdicts' C0-control-char
+// retry, but the wrong join can still plant a bare newline mid-sentence
+// inside a JSON string value.
+describe("defaultFetchVerdicts web_search text-block join", () => {
+  it("joins split text blocks with no inserted newline (web_search citation boundary)", async () => {
+    vi.mocked(getRawAnthropicClient).mockReturnValue({
+      messages: {
+        create: () =>
+          Promise.resolve({
+            content: [
+              { type: "text", text: '[{"symbol":"AMZN","sector":"Consumer' },
+              { type: "text", text: ' Discretionary","rationale":"internet retail"}]' },
+            ],
+          }),
+      },
+    } as never);
+
+    const text = await defaultFetchVerdicts([
+      { id: 1, symbol: "AMZN", name: "Amazon", industry: null, fund_category: null, sector: null },
+    ]);
+    expect(text).not.toContain("\n");
+    expect(parseVerdicts(text)).toEqual([
+      { symbol: "AMZN", sector: "Consumer Discretionary", rationale: "internet retail" },
+    ]);
   });
 });

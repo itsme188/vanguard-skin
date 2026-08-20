@@ -23,6 +23,11 @@ const stripInline = (s: string): string =>
   s
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1") // links → text
     .replace(/\*\*/g, "")
+    // Paired *italic* only — a lone/unpaired * (e.g. "Rev $81.6B *preliminary")
+    // has no closing star to match, so it survives untouched (deferred minor,
+    // 2026-08-05: a bare `\*` strip here ate BOTH real markers AND stray
+    // asterisks with no matching close, printing lopsided text).
+    .replace(/\*([^*]+)\*/g, "$1")
     .replace(/`/g, "")
     .trim();
 
@@ -163,7 +168,11 @@ export function renderMonospaceTable(
 ): string[] {
   const { widths } = layout;
   const fillIn = new Set(layout.fillIn ?? []);
-  const sep = widths.map((w) => "─".repeat(w)).join("┼");
+  // "┤" (not "┼") on the right edge: the ruled vertical continues through
+  // every stacked row here (deferred minor, 2026-08-05 — previously the last
+  // column had no drawn right-edge rule), but nothing continues further
+  // right, so this is a right-tee, not a 4-way cross.
+  const sep = widths.map((w) => "─".repeat(w)).join("┼") + "┤";
 
   const renderRow = (cells: string[], isHeader: boolean): string[] => {
     const wrapped = widths.map((w, i) => {
@@ -174,7 +183,7 @@ export function renderMonospaceTable(
     const height = Math.max(...wrapped.map((c) => c.length));
     const lines: string[] = [];
     for (let li = 0; li < height; li++) {
-      lines.push(widths.map((w, i) => (wrapped[i][li] ?? "").padEnd(w)).join("│"));
+      lines.push(widths.map((w, i) => (wrapped[i][li] ?? "").padEnd(w)).join("│") + "│");
     }
     return lines;
   };

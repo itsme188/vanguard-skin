@@ -243,7 +243,13 @@ export async function defaultFetchVerdicts(batch: SweepCandidate[]): Promise<str
   const textBlocks = response.content.filter(
     (b): b is Anthropic.TextBlock => b.type === "text",
   );
-  return stripCodeFences(textBlocks.map((b) => b.text).join("\n"));
+  // join("") not join("\n") — same root cause as the earnings composer bug
+  // fixed 2026-08-07 (lib/digest/send-earnings-email.ts::joinClaudeTextBlocks):
+  // web_search plants a text-block boundary mid-sentence at every citation,
+  // and "\n" turns that into a bare newline INSIDE the JSON string content.
+  // Currently masked here by extractJsonArray's C0-control-char retry, but
+  // that's a safety net, not a reason to leave the root cause in place.
+  return stripCodeFences(textBlocks.map((b) => b.text).join(""));
 }
 
 /**
