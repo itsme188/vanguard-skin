@@ -36,15 +36,44 @@ function formatMoney(value: number): string {
 // pure helpers hold the label/derivation logic so it's testable without a
 // rendering harness (see tests/dashboard/tax-report-card-labels.test.ts).
 export const SHORT_TERM_LABEL = "Taxable ST (After Wash-Sale Add-Back)";
+// Wash-sale rules are term-independent (detectWashSales never checks
+// holding period) — the Long-Term tile gets the identical disclosure
+// treatment as Short-Term, not a plain "Long-Term" label.
+export const LONG_TERM_LABEL = "Taxable LT (After Wash-Sale Add-Back)";
 
 export function shouldShowWashSaleAddBack(adjustments: number): boolean {
   return adjustments !== 0;
 }
 
-export function washSalesCaption(hasWashSales: boolean): string {
-  return hasWashSales
-    ? "Disallowed losses added back into Taxable ST"
-    : "None detected";
+// Keyed to where the add-back actually landed (shortTermTotal/longTermTotal
+// .adjustments from sumRows(), USD rows only per their own term), never to
+// washSaleWarnings.length alone: detectWashSales flags losses regardless of
+// term or currency, so "a warning exists" does not imply "the ST total was
+// adjusted" — a LT-only or non-USD-only wash sale must not claim a ST
+// add-back that is provably zero.
+export function washSalesCaption(
+  shortTermAdjustments: number,
+  longTermAdjustments: number,
+  warningCount: number
+): string {
+  const stAddBack = shortTermAdjustments !== 0;
+  const ltAddBack = longTermAdjustments !== 0;
+
+  if (stAddBack && ltAddBack) {
+    return "Disallowed losses added back into Taxable ST and Taxable LT";
+  }
+  if (stAddBack) {
+    return "Disallowed losses added back into Taxable ST";
+  }
+  if (ltAddBack) {
+    return "Disallowed losses added back into Taxable LT";
+  }
+  if (warningCount > 0) {
+    // Non-USD wash sale: sumRows() excludes non-USD rows from both totals,
+    // so the disallowed loss never reaches either .adjustments field.
+    return "Disallowed loss not reflected in USD totals (non-USD sale)";
+  }
+  return "None detected";
 }
 
 export function TaxReportCard({ year }: { year: number }) {
@@ -142,11 +171,16 @@ export function TaxReportCard({ year }: { year: number }) {
           </div>
 
           <div className="bg-raised border border-edge rounded-lg px-3 py-2.5">
-            <div className="text-[10px] text-ink-faint uppercase tracking-wider mb-1">Long-Term</div>
+            <div className="text-[10px] text-ink-faint uppercase tracking-wider mb-1">{LONG_TERM_LABEL}</div>
             <div className={`text-base font-mono tabular-nums font-semibold ${report.longTermTotal.gainLoss >= 0 ? "text-up" : "text-down"}`}>
               <PrivateText>{formatMoney(report.longTermTotal.gainLoss)}</PrivateText>
             </div>
             <div className="text-[10px] text-ink-faint mt-0.5">{report.longTermRows?.length ?? 0} sales</div>
+            {shouldShowWashSaleAddBack(report.longTermTotal.adjustments) && (
+              <div className="text-[10px] text-ink-faint mt-0.5">
+                Wash-sale add-back: <PrivateText>{formatMoney(report.longTermTotal.adjustments)}</PrivateText>
+              </div>
+            )}
           </div>
 
           <div className="bg-raised border border-edge rounded-lg px-3 py-2.5">
@@ -163,7 +197,11 @@ export function TaxReportCard({ year }: { year: number }) {
               {report.washSaleWarnings.length}
             </div>
             <div className="text-[10px] text-ink-faint mt-0.5">
-              {washSalesCaption(hasWashSales)}
+              {washSalesCaption(
+                report.shortTermTotal.adjustments,
+                report.longTermTotal.adjustments,
+                report.washSaleWarnings.length
+              )}
             </div>
           </div>
         </div>
