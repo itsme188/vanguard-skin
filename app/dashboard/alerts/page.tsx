@@ -14,6 +14,14 @@ import {
   formatUSDPrecise,
 } from "@/lib/format";
 import { suggestOutcomeMessage } from "@/lib/alerts/suggest-message";
+import {
+  BEYOND_SCAN_RANGE_EXPLANATION,
+  BEYOND_SCAN_RANGE_LABEL,
+  STALE_PRICE_EXPLANATION,
+  STALE_PRICE_LABEL,
+  isLevelBeyondScanRange,
+  scanRangeDistancePct,
+} from "@/lib/levels/scan-range";
 import { useToast } from "../components/Toast";
 import { SortPicker } from "../components/SortPicker";
 import { SymbolLink } from "../components/SymbolLink";
@@ -45,6 +53,14 @@ interface ArmedLevelView {
   thesis: string | null;
   timeframe: string | null;
   set_date: string;
+  /** Server-computed via the scanner's own band — see lib/levels/scan-range.ts. */
+  beyond_scan_range?: boolean;
+  /** The scanner's OTHER skip condition, also server-computed: the price
+   *  behind `current_price` is older than the scan freshness window, so this
+   *  row is armed but NOT being monitored. Without it the row rendered a
+   *  fresh-looking "Now" price and distance chip over a weeks-old close. */
+  price_is_stale?: boolean;
+  price_date?: string | null;
 }
 
 const LEVEL_TYPE_LABEL: Record<string, string> = {
@@ -104,12 +120,34 @@ interface PendingLevel {
   timeframe: string | null;
   source_article_id: number | null;
   current_price: number | null;
+  /** Needed to judge the plausibility band before approving — options are
+   *  exempt from it. Supplied by getPendingReviewLevels. */
+  security_type?: string | null;
   created_at: string;
 }
 
-// Per-level "would fire immediately" confirm state, keyed by level id — see
-// decideReview's 409 would_fire_immediately handling.
-type ForceConfirmMap = Record<number, { currentPrice: number; effectivePrice: number }>;
+/** Why an arm was refused — mirrors ApproveLevelGuardResult['code'] in
+ *  lib/alerts/approve.ts. Both are 409s the user can override with force. */
+type ArmRefusalReason = "would_fire_immediately" | "beyond_scan_range";
+
+const ARM_REFUSAL_REASONS: ArmRefusalReason[] = [
+  "would_fire_immediately",
+  "beyond_scan_range",
+];
+
+/** True for a 409 code that means "refused, nothing written, force overrides"
+ *  — every such code must offer the confirm path, never a dead-end toast. */
+function isArmRefusal(code: unknown): code is ArmRefusalReason {
+  return ARM_REFUSAL_REASONS.includes(code as ArmRefusalReason);
+}
+
+// Per-level arm-refusal confirm state, keyed by level id — see decideReview's
+// 409 handling. `reason` decides the copy: one says the alert fires instantly,
+// the other says it can never fire at all.
+type ForceConfirmMap = Record<
+  number,
+  { currentPrice: number; effectivePrice: number; reason: ArmRefusalReason }
+>;
 
 type StreamFilter =
   | "pending"
@@ -147,9 +185,11 @@ function formatPriceSourceLabel(source: string): string {
   return `${m[1].toUpperCase()} ${m[2]}`;
 }
 
+/** Signed distance from a level to spot, in percent. Delegates to the band
+ *  helper so this page can't quote a figure derived with a different
+ *  denominator than the guard that produced the warning it sits next to. */
 function distancePct(level: number, current: number | null): number | null {
-  if (current == null) return null;
-  return ((current - level) / level) * 100;
+  return scanRangeDistancePct(level, current);
 }
 
 type StreamItem =
@@ -202,18 +242,19 @@ function AlertsPageInner() {
   // background sync is starving the event loop (observed 200s live) — an
   // un-disabled Approve reads as a dead button and invites double-clicks.
   const [decidingId, setDecidingId] = useState<number | null>(null);
-  // Per-level "would fire immediately" confirm state — populated when a
-  // 409 would_fire_immediately comes back from PATCH /api/levels/review.
-  // Cleared on confirm (forced retry), cancel, or once the level leaves
-  // reviewLevels (approved/rejected some other way).
-  const [forceConfirm, setForceConfirm] = useState<
-    Record<number, { currentPrice: number; effectivePrice: number }>
-  >({});
+  // Per-level arm-refusal confirm state — populated when a 409 comes back from
+  // PATCH /api/levels/review, for either reason (already past the level, or
+  // outside the scanner's range). Cleared on confirm (forced retry), cancel,
+  // or once the level leaves reviewLevels (approved/rejected some other way).
+  const [forceConfirm, setForceConfirm] = useState<ForceConfirmMap>({});
   // "Approve all" summary confirm — set when one or more of the batch came
-  // back 409 would_fire_immediately on the unforced first pass.
+  // back 409 on the unforced first pass. Counted per reason so the summary can
+  // say which problem it's asking about instead of guessing.
   const [approveAllConfirm, setApproveAllConfirm] = useState<{
     ids: number[];
     total: number;
+    wouldFireCount: number;
+    beyondRangeCount: number;
   } | null>(null);
   const [actionStatus, setActionStatus] = useState<string | null>(null);
   const { sort, setSort } = useSortParam<StreamSortField>("alerts", "recency", "desc");
@@ -342,6 +383,9 @@ function AlertsPageInner() {
   }
 
   async function decideReviewInner(id: number, status: LevelReviewStatus, force = false) {
+    // Which refusal the user is overriding, captured before the write so the
+    // success toast can describe what they actually just armed.
+    const forcedReason = force ? forceConfirm[id]?.reason : undefined;
     const res = await apiFetch("/api/levels/review", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -353,7 +397,9 @@ function AlertsPageInner() {
       toast(
         status === "auto_approved"
           ? force
-            ? "Level armed — price is already past this level, so it will fire on the next scan"
+            ? forcedReason === "beyond_scan_range"
+              ? "Level armed — it sits outside the scanner's range, so it will not alert until price moves closer"
+              : "Level armed — price is already past this level, so it will fire on the next scan"
             : "Level approved — now armed"
           : "Level rejected",
         status === "auto_approved" ? "success" : "info"
@@ -366,12 +412,19 @@ function AlertsPageInner() {
       return;
     }
 
-    if (res.status === 409 && data?.code === "would_fire_immediately") {
+    // Both refusals arrive in the same envelope and are both force-overridable
+    // — 'would_fire_immediately' (fires instantly) and 'beyond_scan_range'
+    // (can never fire). Neither wrote anything.
+    if (res.status === 409 && isArmRefusal(data?.code)) {
       // Refused, no write — show a per-card confirm instead of a generic
       // failure toast. The row stays in reviewLevels (still pending).
       setForceConfirm((prev) => ({
         ...prev,
-        [id]: { currentPrice: data.currentPrice, effectivePrice: data.effectivePrice },
+        [id]: {
+          currentPrice: data.currentPrice,
+          effectivePrice: data.effectivePrice,
+          reason: data.code as ArmRefusalReason,
+        },
       }));
       return;
     }
@@ -397,10 +450,15 @@ function AlertsPageInner() {
             body: JSON.stringify({ id, status: "auto_approved" }),
           });
           const data = await res.json().catch(() => null);
+          const refusedReason =
+            res.status === 409 && isArmRefusal(data?.code)
+              ? (data.code as ArmRefusalReason)
+              : null;
           return {
             id,
             ok: res.ok && data?.success === true,
-            refused: res.status === 409 && data?.code === "would_fire_immediately",
+            refused: refusedReason !== null,
+            refusedReason,
           };
         })
       );
@@ -423,7 +481,16 @@ function AlertsPageInner() {
         );
       }
       if (refusedIds.length > 0) {
-        setApproveAllConfirm({ ids: refusedIds, total: ids.length });
+        setApproveAllConfirm({
+          ids: refusedIds,
+          total: ids.length,
+          wouldFireCount: results.filter(
+            (r) => r.refusedReason === "would_fire_immediately"
+          ).length,
+          beyondRangeCount: results.filter(
+            (r) => r.refusedReason === "beyond_scan_range"
+          ).length,
+        });
       }
       await refresh();
     } finally {
@@ -451,8 +518,22 @@ function AlertsPageInner() {
       const failedIds = results.filter((r) => !r.ok).map((r) => r.id);
 
       if (armedIds.length > 0) {
+        // Say what was actually overridden: a mixed batch gets the neutral
+        // wording rather than promising an imminent alert for levels that in
+        // fact can never fire.
+        const onlyBeyond =
+          approveAllConfirm.beyondRangeCount > 0 &&
+          approveAllConfirm.wouldFireCount === 0;
+        const onlyWouldFire =
+          approveAllConfirm.wouldFireCount > 0 &&
+          approveAllConfirm.beyondRangeCount === 0;
+        const tail = onlyBeyond
+          ? " — outside the scanner's range, so they will not alert until price moves closer"
+          : onlyWouldFire
+            ? " — already past level, will fire on the next scan"
+            : " — overriding the scan warnings";
         toast(
-          `${armedIds.length} level${armedIds.length === 1 ? "" : "s"} armed — already past level, will fire on the next scan`,
+          `${armedIds.length} level${armedIds.length === 1 ? "" : "s"} armed${tail}`,
           "success"
         );
         setReviewLevels((prev) => prev.filter((l) => !armedIds.includes(l.id)));
@@ -684,8 +765,18 @@ function AlertsPageInner() {
         // per-card confirm block in ReviewRow.
         <div className="rounded-lg border border-gold/30 bg-gold/10 p-3 text-[12px] text-gold-ink flex items-center justify-between gap-3 flex-wrap">
           <span>
-            {approveAllConfirm.ids.length} of {approveAllConfirm.total} are already past their
-            levels and would fire immediately — arm those too?
+            {approveAllConfirm.ids.length} of {approveAllConfirm.total} were not armed:{" "}
+            {[
+              approveAllConfirm.wouldFireCount > 0
+                ? `${approveAllConfirm.wouldFireCount} already past their levels (would fire immediately)`
+                : null,
+              approveAllConfirm.beyondRangeCount > 0
+                ? `${approveAllConfirm.beyondRangeCount} outside the scanner's range (would never alert)`
+                : null,
+            ]
+              .filter(Boolean)
+              .join(" · ")}{" "}
+            — arm those too?
           </span>
           <div className="flex items-center gap-2 shrink-0">
             <button
@@ -1048,6 +1139,12 @@ function ArmedLevelRow({ level: l }: { level: ArmedLevelView }) {
   // the live price column tell the user which side of the level price sits on.
   const distanceLabel = dist === null ? null : `${formatPercent(Math.abs(dist) * 100)} away`;
   const near = dist !== null && Math.abs(dist) <= 0.02; // within 2% — about to fire
+  // Armed in the DB, but the scanner skips it on every pass. Saying "171% away"
+  // and nothing else read as live coverage — this row is not being monitored.
+  const beyondScanRange = l.beyond_scan_range === true;
+  // The scanner's other skip condition: the "Now" price below is weeks old, so
+  // the distance chip is describing a stale market and no scan will act on it.
+  const stalePrice = l.price_is_stale === true;
 
   return (
     <li className="py-2.5 px-3 flex items-start gap-3">
@@ -1093,6 +1190,16 @@ function ArmedLevelRow({ level: l }: { level: ArmedLevelView }) {
               {distanceLabel}
             </Chip>
           )}
+          {beyondScanRange && (
+            <Chip size="xs" tone="down" title={BEYOND_SCAN_RANGE_EXPLANATION}>
+              {BEYOND_SCAN_RANGE_LABEL}
+            </Chip>
+          )}
+          {stalePrice && (
+            <Chip size="xs" tone="warn" title={STALE_PRICE_EXPLANATION}>
+              {STALE_PRICE_LABEL}
+            </Chip>
+          )}
           {l.action_hint && (
             <Chip size="xs" tone="neutral">
               {l.action_hint.replace("_", " ")}
@@ -1108,7 +1215,14 @@ function ArmedLevelRow({ level: l }: { level: ArmedLevelView }) {
       </div>
       {l.current_price !== null && (
         <div className="text-right shrink-0">
-          <div className="text-[10px] text-ink-faint uppercase tracking-wide">Now</div>
+          {/* "Now" is a claim. When the close behind it is outside the scan
+              window, date it instead of implying it's live. */}
+          <div
+            className="text-[10px] text-ink-faint uppercase tracking-wide"
+            title={stalePrice ? STALE_PRICE_EXPLANATION : undefined}
+          >
+            {stalePrice && l.price_date ? l.price_date : "Now"}
+          </div>
           <div className="text-sm font-mono text-ink-dim">
             {formatUSDPrecise(l.current_price)}
           </div>
@@ -1486,12 +1600,19 @@ function ReviewRow({
   disabled?: boolean;
   /** The level id whose review PATCH is currently in flight (spinner label). */
   busyId?: number | null;
-  /** Set when approving was refused with 409 would_fire_immediately. */
-  confirm?: { currentPrice: number; effectivePrice: number };
+  /** Set when approving was refused with a 409 — `reason` picks the copy. */
+  confirm?: { currentPrice: number; effectivePrice: number; reason: ArmRefusalReason };
   onCancelConfirm?: (id: number) => void;
 }) {
   const busy = busyId === level.id;
   const distVal = distancePct(level.price, level.current_price);
+  // Pre-decision disclosure: a mis-scaled extracted level (SPX prices on SPY)
+  // used to look like any other pending row and approve silently into coverage
+  // the scanner skips forever. Static levels only — an MA level's effective
+  // price is resolved server-side and isn't on this row to judge.
+  const beyondScanRange =
+    level.price_source === "static" &&
+    isLevelBeyondScanRange(level.price, level.current_price, level.security_type);
   const when = new Date(level.created_at).toLocaleString("en-US", {
     month: "short",
     day: "numeric",
@@ -1534,6 +1655,11 @@ function ReviewRow({
                 {level.current_price != null ? formatUSDPrecise(level.current_price) : "—"}
               </span>
             )}
+            {beyondScanRange && (
+              <Chip size="xs" tone="down" title={BEYOND_SCAN_RANGE_EXPLANATION}>
+                {BEYOND_SCAN_RANGE_LABEL}
+              </Chip>
+            )}
             <span className="text-[10px] text-ink-faint">{when}</span>
           </div>
           {level.source_author && (
@@ -1552,9 +1678,26 @@ function ReviewRow({
             // gold-ink token is the house pair for readable small gold text
             // in BOTH themes (4.5:1+ each side).
             <div className="mt-2 rounded-lg border border-gold/30 bg-gold/10 p-2 text-[11px] text-gold-ink">
-              Price {formatUSDPrecise(confirm.currentPrice)} is already past this level (
-              {formatUSDPrecise(confirm.effectivePrice)}) — arming will fire an alert on the
-              next scan. Arm anyway?
+              {confirm.reason === "beyond_scan_range" ? (
+                <>
+                  This level ({formatUSDPrecise(confirm.effectivePrice)}) is more than{" "}
+                  {formatPercent(
+                    Math.abs(
+                      distancePct(confirm.effectivePrice, confirm.currentPrice) ?? 0,
+                    ),
+                    0,
+                  )}{" "}
+                  from the current price ({formatUSDPrecise(confirm.currentPrice)}) — the
+                  scanner skips it on every pass, so arming it can never produce an alert.
+                  Check for a mis-scaled price. Arm anyway?
+                </>
+              ) : (
+                <>
+                  Price {formatUSDPrecise(confirm.currentPrice)} is already past this level (
+                  {formatUSDPrecise(confirm.effectivePrice)}) — arming will fire an alert on
+                  the next scan. Arm anyway?
+                </>
+              )}
               <div className="mt-1.5 flex items-center gap-2">
                 <button
                   onClick={() => onDecide(level.id, "auto_approved", true)}

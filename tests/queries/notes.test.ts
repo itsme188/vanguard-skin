@@ -5,6 +5,7 @@ import {
   getNotesFiltered,
   getNotesForSecurity,
   getEarningsTimeline,
+  groupEarningsTimeline,
   getRecentNotes,
   getNoteById,
   getSecurityIdBySymbol,
@@ -228,6 +229,68 @@ describe("getNotesFiltered", () => {
   });
 });
 
+// ─── Unified search semantics (identity OR text) ───────────────────
+//
+// One search box drives the whole Research > Notes surface, so every half
+// must answer the same question: does this row match on IDENTITY (ticker /
+// company name) or on TEXT (prose)? Content-only matching meant typing
+// "NFLX" kept the NFLX transcripts but dropped the NFLX earnings notes
+// whose prose never spells the ticker — the same term filtered the two
+// halves of one page by different rules.
+
+describe("getNotesFiltered unified search", () => {
+  beforeEach(() => {
+    const nflxId = seedSecurity(db, "NFLX", "Netflix Inc");
+    const ibkrId = seedSecurity(db, "IBKR", "Interactive Brokers Group");
+    createNote(db, {
+      note_type: "earnings",
+      content: "Subscriber adds beat; ad tier scaling faster than expected",
+      event_date: "2026-01-20",
+      security_id: nflxId,
+    });
+    createNote(db, {
+      note_type: "earnings",
+      content: "Margin loan balances up, account growth steady",
+      event_date: "2026-01-21",
+      security_id: ibkrId,
+    });
+    createNote(db, {
+      note_type: "journal",
+      content: "Feels like a NFLX kind of tape",
+      event_date: "2026-01-22",
+    });
+  });
+
+  it("matches a note by its linked security's ticker even when the prose never says it", () => {
+    const notes = getNotesFiltered(db, { search: "NFLX" });
+    // The NFLX-linked earnings note (prose has no ticker) + the unlinked
+    // journal note that spells it out.
+    expect(notes.length).toBe(2);
+    expect(notes.some((n) => n.content.startsWith("Subscriber adds beat"))).toBe(true);
+    expect(notes.some((n) => n.content.startsWith("Feels like a NFLX"))).toBe(true);
+  });
+
+  it("is case-insensitive on ticker matches", () => {
+    expect(getNotesFiltered(db, { search: "nflx" }).length).toBe(2);
+  });
+
+  it("matches a note by its linked security's company name", () => {
+    const notes = getNotesFiltered(db, { search: "netflix" });
+    expect(notes.length).toBe(1);
+    expect(notes[0].symbol).toBe("NFLX");
+  });
+
+  it("still matches note content", () => {
+    const notes = getNotesFiltered(db, { search: "margin loan" });
+    expect(notes.length).toBe(1);
+    expect(notes[0].symbol).toBe("IBKR");
+  });
+
+  it("matches nothing when the term is in neither identity nor text", () => {
+    expect(getNotesFiltered(db, { search: "ZZZNOMATCH" })).toEqual([]);
+  });
+});
+
 describe("getNotesForSecurity", () => {
   it("returns notes for a security in chronological order", () => {
     const secId = seedSecurity(db, "META", "Meta Platforms");
@@ -273,9 +336,122 @@ describe("getEarningsTimeline", () => {
     createNote(db, { note_type: "earnings", content: "GOOG", event_date: "2026-01-30", security_id: googId });
     createNote(db, { note_type: "earnings", content: "META", event_date: "2026-01-25", security_id: metaId });
 
-    const timeline = getEarningsTimeline(db, googId);
+    const timeline = getEarningsTimeline(db, { security_id: googId });
     expect(timeline.length).toBe(1);
     expect(timeline[0].symbol).toBe("GOOG");
+  });
+
+  // Regression pin (research-notes-earnings--search-box-ignored-regression-3):
+  // the Earnings tab renders through this function, not getNotesFiltered.
+  // Three prior "fixes" touched the search UI / getNotesFiltered but never
+  // this query, so the Earnings tab kept ignoring ?search=. Assert the
+  // filtering lives HERE, at the shared source of truth.
+  it("filters by search text, matching the other tabs' filter path", () => {
+    const googId = seedSecurity(db, "GOOG");
+    const metaId = seedSecurity(db, "META");
+
+    createNote(db, { note_type: "earnings", content: "Guidance raised on cloud strength", event_date: "2026-01-30", security_id: googId });
+    createNote(db, { note_type: "earnings", content: "Margins compressed", event_date: "2026-04-30", security_id: googId });
+    createNote(db, { note_type: "earnings", content: "Ad revenue beat, guidance steady", event_date: "2026-01-25", security_id: metaId });
+
+    const timeline = getEarningsTimeline(db, { search: "guidance" });
+    expect(timeline.length).toBe(2);
+
+    const googEntry = timeline.find((t) => t.symbol === "GOOG")!;
+    expect(googEntry.notes.length).toBe(1);
+    expect(googEntry.notes[0].content).toBe("Guidance raised on cloud strength");
+
+    const metaEntry = timeline.find((t) => t.symbol === "META")!;
+    expect(metaEntry.notes.length).toBe(1);
+  });
+
+  it("returns no entries when the search text matches nothing", () => {
+    const googId = seedSecurity(db, "GOOG");
+    createNote(db, { note_type: "earnings", content: "Solid quarter", event_date: "2026-01-30", security_id: googId });
+
+    const timeline = getEarningsTimeline(db, { search: "ZZZNOMATCH" });
+    expect(timeline).toEqual([]);
+  });
+
+  it("combines security_id and search filters", () => {
+    const googId = seedSecurity(db, "GOOG");
+    const metaId = seedSecurity(db, "META");
+
+    createNote(db, { note_type: "earnings", content: "GOOG guidance raised", event_date: "2026-01-30", security_id: googId });
+    createNote(db, { note_type: "earnings", content: "META guidance raised", event_date: "2026-01-25", security_id: metaId });
+
+    const timeline = getEarningsTimeline(db, { security_id: googId, search: "guidance" });
+    expect(timeline.length).toBe(1);
+    expect(timeline[0].symbol).toBe("GOOG");
+  });
+
+  it("keeps a security's notes when the search term is its ticker, not its prose", () => {
+    const nflxId = seedSecurity(db, "NFLX", "Netflix Inc");
+    const ibkrId = seedSecurity(db, "IBKR", "Interactive Brokers Group");
+
+    createNote(db, { note_type: "earnings", content: "Subscriber adds beat", event_date: "2026-01-20", security_id: nflxId });
+    createNote(db, { note_type: "earnings", content: "Account growth steady", event_date: "2026-01-21", security_id: ibkrId });
+
+    const timeline = getEarningsTimeline(db, { search: "NFLX" });
+    expect(timeline.length).toBe(1);
+    expect(timeline[0].symbol).toBe("NFLX");
+    expect(timeline[0].notes.length).toBe(1);
+  });
+
+  it("keeps a security's notes when the search term is its company name", () => {
+    const nflxId = seedSecurity(db, "NFLX", "Netflix Inc");
+    createNote(db, { note_type: "earnings", content: "Subscriber adds beat", event_date: "2026-01-20", security_id: nflxId });
+
+    const timeline = getEarningsTimeline(db, { search: "netflix" });
+    expect(timeline.length).toBe(1);
+    expect(timeline[0].symbol).toBe("NFLX");
+  });
+});
+
+// ─── groupEarningsTimeline ─────────────────────────────────────────
+//
+// The Earnings tab used to pay for the SAME filtered notes query twice per
+// render: once for the notes list, once more inside getEarningsTimeline.
+// Splitting the pure grouping out lets the page fetch one pass and derive
+// both surfaces from it — so the two can never drift apart on filters
+// either. getEarningsTimeline stays the fetch+group convenience wrapper.
+
+describe("groupEarningsTimeline", () => {
+  it("groups an already-fetched note pass exactly as getEarningsTimeline does", () => {
+    const googId = seedSecurity(db, "GOOG", "Alphabet Inc");
+    const metaId = seedSecurity(db, "META", "Meta Platforms");
+
+    createNote(db, { note_type: "earnings", content: "GOOG Q2", event_date: "2026-04-30", security_id: googId });
+    createNote(db, { note_type: "earnings", content: "GOOG Q1", event_date: "2026-01-30", security_id: googId });
+    createNote(db, { note_type: "earnings", content: "META Q1", event_date: "2026-01-25", security_id: metaId });
+    createNote(db, { note_type: "journal", content: "Not earnings", event_date: "2026-02-01" });
+
+    const onePass = getNotesFiltered(db, { note_type: "earnings", limit: -1 });
+    expect(groupEarningsTimeline(onePass)).toEqual(getEarningsTimeline(db));
+  });
+
+  it("sorts entries by symbol and each entry's notes oldest-first", () => {
+    const googId = seedSecurity(db, "GOOG", "Alphabet Inc");
+    const metaId = seedSecurity(db, "META", "Meta Platforms");
+
+    createNote(db, { note_type: "earnings", content: "GOOG Q2", event_date: "2026-04-30", security_id: googId });
+    createNote(db, { note_type: "earnings", content: "GOOG Q1", event_date: "2026-01-30", security_id: googId });
+    createNote(db, { note_type: "earnings", content: "META Q1", event_date: "2026-01-25", security_id: metaId });
+
+    const timeline = groupEarningsTimeline(
+      getNotesFiltered(db, { note_type: "earnings", limit: -1 })
+    );
+    expect(timeline.map((e) => e.symbol)).toEqual(["GOOG", "META"]);
+    expect(timeline[0].notes.map((n) => n.content)).toEqual(["GOOG Q1", "GOOG Q2"]);
+  });
+
+  it("skips notes with no linked security", () => {
+    createNote(db, { note_type: "earnings", content: "Unlinked earnings thought", event_date: "2026-01-30" });
+
+    const timeline = groupEarningsTimeline(
+      getNotesFiltered(db, { note_type: "earnings", limit: -1 })
+    );
+    expect(timeline).toEqual([]);
   });
 });
 

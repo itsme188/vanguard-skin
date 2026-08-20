@@ -2,8 +2,13 @@ export const dynamic = "force-dynamic";
 
 import { db } from "@/lib/db";
 import { redirect } from "next/navigation";
-import { getNotesFiltered, getEarningsTimeline } from "@/lib/queries/notes";
-import { getTranscriptsSummary } from "@/lib/queries/transcripts";
+import { getNotesFiltered, groupEarningsTimeline } from "@/lib/queries/notes";
+import type { NoteWithContext, EarningsTimelineEntry } from "@/lib/queries/notes";
+import {
+  getTranscriptsSummary,
+  getTickersWithTranscripts,
+} from "@/lib/queries/transcripts";
+import type { TranscriptSummaryEntry } from "@/lib/queries/transcripts";
 import {
   getRecentArticles,
   getResearchSources,
@@ -40,32 +45,69 @@ export default async function ResearchPage({ searchParams }: PageProps) {
   const noteType = (params.type as NoteType) || undefined;
   const securityId = params.security_id ?? params.security;
 
-  // Always load notes (for the Notes view)
-  let notes, earningsTimeline, transcriptSummaries, securities;
-  try {
-    notes = getNotesFiltered(db, {
-      note_type: noteType,
-      search: params.search || undefined,
-      security_id: securityId ? parseInt(securityId, 10) : undefined,
-      limit: 100,
-    });
+  // NotesView is the only consumer of the queries below, and EarningsView
+  // (timeline + transcript wall) only renders on the Earnings tab — key on
+  // exactly those conditions. Every Research render used to pay for the
+  // unbounded earnings timeline plus 50 transcript rows, including the
+  // feeds/documents views and the non-earnings note tabs that discard them.
+  const showNotesView = view !== "feeds" && view !== "documents";
+  const showEarningsView = showNotesView && noteType === "earnings";
 
-    earningsTimeline = getEarningsTimeline(db);
-    transcriptSummaries = noteType === "earnings" || !noteType
-      ? getTranscriptsSummary(db, { limit: 50 })
-      : [];
+  let notes: NoteWithContext[] = [];
+  let earningsTimeline: EarningsTimelineEntry[] = [];
+  let transcriptSummaries: TranscriptSummaryEntry[] = [];
+  let transcriptTickers: string[] = [];
+  let securities: { id: number; symbol: string; name: string | null }[] = [];
 
-    securities = db
-      .prepare(
-        `SELECT DISTINCT s.id, s.symbol, s.name
-         FROM securities s
-         WHERE s.symbol IS NOT NULL AND s.symbol != ''
-           AND LOWER(s.security_type) IN ('stock', 'etf', 'mutual fund')
-         ORDER BY s.symbol`
-      )
-      .all() as { id: number; symbol: string; name: string | null }[];
-  } catch {
-    throw new Error("Failed to load research data. The database may be unavailable.");
+  if (showNotesView) {
+    try {
+      const search = params.search || undefined;
+      // parseInt drops a non-numeric ?security= — getNotesFiltered ignores a
+      // falsy security_id, so such a param filters nothing (mirrored by
+      // notesListIsFiltered on the client).
+      const filterSecurityId = securityId ? parseInt(securityId, 10) : undefined;
+
+      if (showEarningsView) {
+        // ONE query pass feeds both surfaces. The timeline must be complete
+        // (limit: -1), and the notes list is grouped from the very same
+        // rows — running the identical filtered query twice per render was
+        // pure waste, and left room for the two to drift on filters.
+        notes = getNotesFiltered(db, {
+          note_type: "earnings",
+          search,
+          security_id: filterSecurityId,
+          limit: -1,
+        });
+        earningsTimeline = groupEarningsTimeline(notes);
+        transcriptSummaries = getTranscriptsSummary(db, {
+          limit: 50,
+          securityId: filterSecurityId,
+          search,
+        });
+        // Unfiltered on purpose — the "Fetch <TICKER> Transcript" buttons
+        // are this set's complement and must not grow when a filter is on.
+        transcriptTickers = getTickersWithTranscripts(db);
+      } else {
+        notes = getNotesFiltered(db, {
+          note_type: noteType,
+          search,
+          security_id: filterSecurityId,
+          limit: 100,
+        });
+      }
+
+      securities = db
+        .prepare(
+          `SELECT DISTINCT s.id, s.symbol, s.name
+           FROM securities s
+           WHERE s.symbol IS NOT NULL AND s.symbol != ''
+             AND LOWER(s.security_type) IN ('stock', 'etf', 'mutual fund')
+           ORDER BY s.symbol`
+        )
+        .all() as { id: number; symbol: string; name: string | null }[];
+    } catch {
+      throw new Error("Failed to load research data. The database may be unavailable.");
+    }
   }
 
   // Load feeds data when viewing feeds
@@ -123,6 +165,7 @@ export default async function ResearchPage({ searchParams }: PageProps) {
           initialNotes={notes}
           earningsTimeline={earningsTimeline}
           transcriptSummaries={transcriptSummaries}
+          transcriptTickers={transcriptTickers}
           securities={securities}
           currentType={noteType ?? null}
           currentSearch={params.search ?? null}

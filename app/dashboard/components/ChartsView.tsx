@@ -118,6 +118,7 @@ export function ChartsView({
               securityId={selected.id}
               symbol={selected.symbol}
               currency={selected.currency}
+              securityType={selected.security_type}
             />
           </div>
         )

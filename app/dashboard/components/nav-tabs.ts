@@ -1,5 +1,12 @@
 export type SubView = { name: string; href: string; matchParam?: { key: string; value: string | null } };
-export type Tab = { name: string; href: string; subviews?: SubView[] };
+// preserveParams: query params from the CURRENT url that should be carried
+// onto this tab's own sub-view links when the dropdown builds hrefs (e.g.
+// Analysis's ?scope= surviving a Workspace→Diagnostics jump). Declared per
+// tab, not globally, so a param that means something on one tab never leaks
+// onto another tab's links (Analysis's ?scope=ibkr must never show up on
+// Research's Feeds/Documents hrefs just because the same nav bar is on
+// screen). See TabDropdown.tsx withPreservedParams.
+export type Tab = { name: string; href: string; subviews?: SubView[]; preserveParams?: string[] };
 
 // IA-locked 6-tab desktop nav (2026-04-29).
 // Cuts: Overview (→ Today), Holdings (→ Cmd+K + Accounts), Calendar (→ Today week-ahead).
@@ -15,6 +22,9 @@ export const tabs: Tab[] = [
     // giving. Legacy ?mode=factors / ?mode=classification still resolve to
     // Diagnostics via lib/analysis/view-param.ts; the old Classification /
     // Factor Exposure split is now the in-page mode toggle inside Diagnostics.
+    // Analysis is the only tab with an account-scope selector, so it's the
+    // only tab that declares ?scope= as a preserved param (2026-08-20).
+    preserveParams: ["scope"],
     subviews: [
       { name: "Workspace", href: "/dashboard/analysis", matchParam: { key: "view", value: null } },
       { name: "Diagnostics", href: "/dashboard/analysis?view=diagnostics", matchParam: { key: "view", value: "diagnostics" } },

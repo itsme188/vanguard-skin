@@ -8,7 +8,9 @@
  *      3 pivot highs near $120 as a single resistance level at $120.
  *   4. Classify each cluster as support (below current price) or resistance
  *      (above). Drop clusters within 0.25 * ATR of current price (too noisy
- *      to act on — price is already there).
+ *      to act on — price is already there), and drop clusters outside the
+ *      scanner's plausibility band (a level the scanner will never evaluate
+ *      must never be offered with a one-click Accept).
  *   5. Score by (touches + recency weight). Return top N of each type.
  *
  * Pure function. No DB / no server dependencies. Can run client-side.
@@ -20,6 +22,7 @@ import {
   type OhlcBar,
   type Pivot,
 } from "@/lib/chart/indicators";
+import { isLevelBeyondScanRange } from "@/lib/levels/scan-range";
 
 export interface SuggestedLevel {
   price: number;
@@ -50,6 +53,12 @@ export interface SuggestedLevelsOptions {
   noiseAtrMultiple?: number;
   /** Max levels of each type (support/resistance) to return. Default 5. */
   perSideLimit?: number;
+  /**
+   * Security type, compared case-insensitively. Only used for the scan-range
+   * filter: options are exempt from the plausibility band exactly as they are
+   * in the scanner. Omitted/null = treated as non-option (the stricter side).
+   */
+  securityType?: string | null;
 }
 
 interface Cluster {
@@ -72,6 +81,7 @@ export function computeSuggestedLevels(
   const clusterMult = options.clusterAtrMultiple ?? 0.4;
   const noiseMult = options.noiseAtrMultiple ?? 0.25;
   const perSide = options.perSideLimit ?? 5;
+  const securityType = options.securityType ?? null;
 
   const computedAt = new Date().toISOString();
 
@@ -120,12 +130,19 @@ export function computeSuggestedLevels(
     // simple above/below.)
     const type: "support" | "resistance" = distance >= 0 ? "resistance" : "support";
 
+    // A cluster the scanner would permanently skip is not a suggestion — an
+    // Accept here would arm a level that never alerts. Checked on the ROUNDED
+    // price, which is what an Accept would store. Dropped before ranking so a
+    // dead candidate can't consume one of the per-side slots.
+    const price = roundToPennies(avgPrice);
+    if (isLevelBeyondScanRange(price, currentPrice, securityType)) continue;
+
     const dates = [...c.dates].sort();
     const firstTouch = dates[0];
     const lastTouch = dates[dates.length - 1];
 
     rawLevels.push({
-      price: roundToPennies(avgPrice),
+      price,
       type,
       touches: c.prices.length,
       lastTouchDate: lastTouch,

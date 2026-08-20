@@ -4,7 +4,13 @@ import {
   getLevelsForSecurity,
   getActiveLevels,
   getLevelById,
+  getScanPriceStalenessBySecurity,
+  getLatestScanPriceForSecurity,
 } from "@/lib/queries/security-levels";
+import {
+  BEYOND_SCAN_RANGE_EXPLANATION,
+  isLevelBeyondScanRange,
+} from "@/lib/levels/scan-range";
 import {
   upsertLevel,
   deactivateLevel,
@@ -28,10 +34,23 @@ export async function GET(request: NextRequest) {
     // levels get the live MA computed from ohlcv_bars. effective_price is
     // null when an MA level doesn't have enough bars yet; UI renders an
     // "insufficient history" chip in that case.
+    //
+    // …and with the scanner's price-freshness verdict. A level whose security
+    // hasn't been priced inside the scan window is skipped on every pass, so
+    // the panel must be able to say "armed but not being monitored" instead of
+    // rendering it as live coverage (the band half of that disclosure is
+    // computed client-side from currentPrice; freshness needs the price DATE,
+    // which only the server has).
+    const staleness = getScanPriceStalenessBySecurity(
+      db,
+      levels.map((l) => l.security_id),
+    );
     const enriched = levels.map((l) => ({
       ...l,
       effective_price:
         l.price_source === "static" ? l.price : resolveLevelPrice(db, l),
+      price_date: staleness.get(l.security_id)?.priceDate ?? null,
+      price_is_stale: staleness.get(l.security_id)?.isStale ?? false,
     }));
     // Note: resolveLevelPrice return type already narrows to `number | null`.
 
@@ -97,7 +116,23 @@ export async function POST(request: NextRequest) {
     }
     const id = upsertLevel(db, body);
     const level = getLevelById(db, id);
-    return NextResponse.json({ success: true, id, level });
+    // A create lands ALREADY auto_approved (armed), so a mis-scaled level buys
+    // coverage the scanner skips on every pass. The Add forms warn before the
+    // save, but a headless POST had no signal at all — hence this non-blocking
+    // `warning`. Not a refusal: marking structure to arm later is legitimate,
+    // and unlike the review-approve guard this path has no force flag to
+    // override one with. The arm-time refusal lives in approveLevelGuarded.
+    const priceInfo = getLatestScanPriceForSecurity(db, body.security_id);
+    const warning =
+      priceInfo.isFresh &&
+      isLevelBeyondScanRange(
+        priceSource === "static" ? body.price : null,
+        priceInfo.currentPrice,
+        priceInfo.secType
+      )
+        ? BEYOND_SCAN_RANGE_EXPLANATION
+        : undefined;
+    return NextResponse.json({ success: true, id, level, ...(warning ? { warning } : {}) });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     return NextResponse.json({ success: false, error: message }, { status: 500 });
