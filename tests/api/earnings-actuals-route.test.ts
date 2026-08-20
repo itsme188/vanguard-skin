@@ -152,3 +152,123 @@ describe("POST /api/earnings/actuals — pre-print floor", () => {
     expect(res.status).toBe(400);
   });
 });
+
+/**
+ * "Clear actuals" control (QA finding
+ * today-earningshub-bogeys--save-actuals-empty-silent-noop-cannot-clear,
+ * decided 2026-08-03; re-confirmed 2026-08-20 DECISIONS-PENDING Option 2):
+ * a dedicated clear mode nulls actual_value for MANUAL overrides only —
+ * gated on calendar_events.manual_actuals_at (migration 084), which
+ * saveManualActuals now stamps on every manual save. Sync-owned actuals
+ * (Finnhub/FRED/Claude enrichment, manual_actuals_at IS NULL) stay
+ * protected: clearing 409s instead of silently wiping a real print.
+ */
+describe("POST /api/earnings/actuals — clear mode", () => {
+  it("save stamps manual_actuals_at", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T12:00:00Z"));
+    const eventId = seedEvent({ eventDate: "2026-08-19", releaseTime: "07:30" });
+
+    const mod = await import("@/app/api/earnings/actuals/route");
+    const res = await mod.POST(postReq({ event_id: eventId, eps_actual: 0.91 }));
+    expect(res.status).toBe(200);
+
+    const row = hoisted.db
+      .prepare(`SELECT manual_actuals_at FROM calendar_events WHERE id = ?`)
+      .get(eventId) as { manual_actuals_at: string | null };
+    expect(row.manual_actuals_at).not.toBeNull();
+  });
+
+  it("clears actual_value, enriched_at, manual_actuals_at, and actual_missing_alerted_at on a manual-stamped row", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T12:00:00Z"));
+    const eventId = seedEvent({ eventDate: "2026-08-19", releaseTime: "07:30" });
+
+    const mod = await import("@/app/api/earnings/actuals/route");
+    // Manual save first — stamps manual_actuals_at.
+    const saveRes = await mod.POST(postReq({ event_id: eventId, eps_actual: 0.91 }));
+    expect(saveRes.status).toBe(200);
+    hoisted.db
+      .prepare(`UPDATE calendar_events SET actual_missing_alerted_at = datetime('now') WHERE id = ?`)
+      .run(eventId);
+
+    const clearRes = await mod.POST(postReq({ event_id: eventId, clear: true }));
+    expect(clearRes.status).toBe(200);
+    const body = (await clearRes.json()) as { success: boolean };
+    expect(body.success).toBe(true);
+
+    const row = hoisted.db
+      .prepare(
+        `SELECT actual_value, enriched_at, manual_actuals_at, actual_missing_alerted_at
+           FROM calendar_events WHERE id = ?`,
+      )
+      .get(eventId) as {
+      actual_value: string | null;
+      enriched_at: string | null;
+      manual_actuals_at: string | null;
+      actual_missing_alerted_at: string | null;
+    };
+    expect(row.actual_value).toBeNull();
+    expect(row.enriched_at).toBeNull();
+    expect(row.manual_actuals_at).toBeNull();
+    expect(row.actual_missing_alerted_at).toBeNull();
+  });
+
+  it("leaves consensus_value untouched on clear", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T12:00:00Z"));
+    const eventId = seedEvent({ eventDate: "2026-08-19", releaseTime: "07:30" });
+    hoisted.db
+      .prepare(`UPDATE calendar_events SET consensus_value = 'EPS 0.85' WHERE id = ?`)
+      .run(eventId);
+
+    const mod = await import("@/app/api/earnings/actuals/route");
+    await mod.POST(postReq({ event_id: eventId, eps_actual: 0.91 }));
+    await mod.POST(postReq({ event_id: eventId, clear: true }));
+
+    const row = hoisted.db
+      .prepare(`SELECT consensus_value FROM calendar_events WHERE id = ?`)
+      .get(eventId) as { consensus_value: string | null };
+    expect(row.consensus_value).toBe("EPS 0.85");
+  });
+
+  it("409s clearing a row whose actuals were never manually saved (sync-owned)", async () => {
+    const eventId = seedEvent({
+      eventDate: "2026-08-19",
+      releaseTime: "07:30",
+      actual: "EPS 1.10 · Rev 500000000",
+    });
+
+    const mod = await import("@/app/api/earnings/actuals/route");
+    const res = await mod.POST(postReq({ event_id: eventId, clear: true }));
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; code?: string };
+    expect(body.error).toMatch(/manual/i);
+
+    const row = hoisted.db
+      .prepare(`SELECT actual_value FROM calendar_events WHERE id = ?`)
+      .get(eventId) as { actual_value: string | null };
+    expect(row.actual_value).toBe("EPS 1.10 · Rev 500000000");
+  });
+
+  it("400s when clear:true is combined with eps_actual or revenue_actual_usd", async () => {
+    const eventId = seedEvent({ eventDate: "2026-08-19", releaseTime: "07:30" });
+    const mod = await import("@/app/api/earnings/actuals/route");
+
+    const res1 = await mod.POST(
+      postReq({ event_id: eventId, clear: true, eps_actual: 0.91 }),
+    );
+    expect(res1.status).toBe(400);
+
+    const res2 = await mod.POST(
+      postReq({ event_id: eventId, clear: true, revenue_actual_usd: 500_000_000 }),
+    );
+    expect(res2.status).toBe(400);
+  });
+
+  it("404s clearing an unknown event_id", async () => {
+    const mod = await import("@/app/api/earnings/actuals/route");
+    const res = await mod.POST(postReq({ event_id: 999999, clear: true }));
+    expect(res.status).toBe(404);
+  });
+});

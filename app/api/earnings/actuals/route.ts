@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import type { CalendarEvent } from "@/lib/types";
 import { parseFinnhubFigure } from "@/lib/format/finnhub-figure";
-import { saveManualActuals } from "@/lib/earnings/actuals";
+import { saveManualActuals, clearManualActuals } from "@/lib/earnings/actuals";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +12,12 @@ interface PostBody {
   notes?: string | null;
   /** Bypass the pre-print floor (user confirmed the future-dated release). */
   force?: boolean;
+  /**
+   * Clear mode — null out a MANUAL actuals override (see
+   * lib/earnings/actuals.ts::clearManualActuals). Mutually exclusive with
+   * eps_actual / revenue_actual_usd; 400s if both are present.
+   */
+  clear?: boolean;
 }
 
 /**
@@ -28,9 +34,17 @@ interface PostBody {
  * instant is still in the future, unless the body carries force:true — see
  * lib/earnings/actuals.ts / lib/earnings/pre-print-floor.ts.
  *
+ * Clear mode ({ event_id, clear: true }): nulls a MANUAL actuals override —
+ * see lib/earnings/actuals.ts::clearManualActuals. Refuses (409, code
+ * 'not_manual') when the event's actuals weren't entered manually
+ * (calendar_events.manual_actuals_at IS NULL) — sync-owned enrichment
+ * actuals can't be wiped through this control. Mutually exclusive with
+ * eps_actual / revenue_actual_usd (400 if combined).
+ *
  * GET /api/earnings/actuals?eventId=NN — returns the parsed current
- * actual_value as { eps_actual, revenue_actual_usd } so the modal can
- * pre-populate.
+ * actual_value as { eps_actual, revenue_actual_usd }, plus manual_actuals_at
+ * (non-null only for a manual override) so the modal can pre-populate and
+ * decide whether to show the "Clear actuals" control.
  */
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -43,10 +57,12 @@ export async function GET(request: Request) {
   }
   const event = db
     .prepare(
-      `SELECT id, actual_value, consensus_value, enriched_at FROM calendar_events WHERE id = ?`,
+      `SELECT id, actual_value, consensus_value, enriched_at, manual_actuals_at FROM calendar_events WHERE id = ?`,
     )
     .get(eventId) as
-    | Pick<CalendarEvent, "id" | "actual_value" | "consensus_value" | "enriched_at">
+    | (Pick<CalendarEvent, "id" | "actual_value" | "consensus_value" | "enriched_at"> & {
+        manual_actuals_at: string | null;
+      })
     | undefined;
   if (!event) {
     return Response.json({ error: `Event ${eventId} not found.` }, { status: 404 });
@@ -58,6 +74,10 @@ export async function GET(request: Request) {
     revenue_actual_usd: parsed.revenue,
     actual_value_raw: event.actual_value,
     enriched_at: event.enriched_at,
+    // Threaded so the BogeysEditModal can show "Clear actuals" only for a
+    // manually-saved override — sync-owned actuals stay protected (see
+    // clearManualActuals).
+    manual_actuals_at: event.manual_actuals_at,
   });
 }
 
@@ -68,6 +88,25 @@ export async function POST(request: Request) {
       { error: "Body field 'event_id' must be an integer." },
       { status: 400 },
     );
+  }
+
+  if (body.clear === true) {
+    if (body.eps_actual != null || body.revenue_actual_usd != null) {
+      return Response.json(
+        {
+          error:
+            "Provide either actual values to save or 'clear: true' to clear them — not both.",
+        },
+        { status: 400 },
+      );
+    }
+    const result = clearManualActuals(db, { eventId: body.event_id });
+    if (!result.ok) {
+      const payload: { error: string; code?: string } = { error: result.error };
+      if ("code" in result) payload.code = result.code;
+      return Response.json(payload, { status: result.status });
+    }
+    return Response.json({ success: true, cleared: true });
   }
 
   const result = saveManualActuals(db, {
