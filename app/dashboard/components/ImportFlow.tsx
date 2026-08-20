@@ -596,11 +596,13 @@ export function ImportFlow() {
           ))}
         </div>
 
-        {/* Corporate-action tax-lot replay status */}
+        {/* Tax-lot replay status. Neutral heading: the route fires this block
+            for donation-lot clamps too, not only corporate-action mismatches,
+            and the payload doesn't say which source produced the warnings. */}
         {state.replay && state.replay.status === "mismatch" && (
           <div className="rounded-lg border border-gold/20 bg-gold/5 px-4 py-3 text-sm">
             <span className="text-gold-ink font-medium">
-              Corporate action reconcile mismatch
+              Tax-lot replay warnings
             </span>
             <div className="mt-1 space-y-0.5">
               {state.replay.warnings.map((w, j) => (
