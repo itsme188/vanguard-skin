@@ -89,7 +89,9 @@ export async function POST(request: NextRequest) {
       security_id: resolvedSecurityId,
       transaction_id: transaction_id ?? null,
       // ET-anchor: a 9pm ET quick-note must file under today, not UTC-tomorrow.
-      event_date: event_date ?? todayET(),
+      // || not ??: a cleared date input submits "" — an empty-string
+      // event_date renders an "undefined NaN," date header and sorts last.
+      event_date: event_date || todayET(),
       tags: tags ?? null,
       sentiment: sentiment ?? null,
     });
@@ -123,7 +125,9 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    const note = updateNote(db, id, { content, event_date, tags, sentiment });
+    // || undefined: an empty-string event_date must mean "leave unchanged",
+    // never overwrite a real date with "" (same header-corruption class as POST).
+    const note = updateNote(db, id, { content, event_date: event_date || undefined, tags, sentiment });
     if (!note) {
       return NextResponse.json(
         { success: false, error: "Note not found" },

@@ -173,10 +173,13 @@ export function EarningsHub() {
   const heldCount = enriched.filter((e) => e.status === "held").length;
   const watchCount = enriched.filter((e) => e.status === "watchlist").length;
 
+  // No overflow-hidden on the section: EarningsDateChip popovers on the last
+  // rows extend past the section's bottom edge, and clipping cut their error
+  // text to a sliver. Corner rounding lives on the header/footer bands.
   return (
-    <section className="rounded-xl border border-edge bg-panel overflow-hidden card-elev">
+    <section className="rounded-xl border border-edge bg-panel card-elev">
       {/* Section header — uppercase mono micro-label, tracking, dim subtitle */}
-      <div className="flex items-baseline justify-between flex-wrap gap-2 px-5 py-3 border-b border-edge bg-raised">
+      <div className="flex items-baseline justify-between flex-wrap gap-2 px-5 py-3 border-b border-edge bg-raised rounded-t-xl">
         <div className="flex items-baseline gap-3">
           <h2
             className="font-mono uppercase font-semibold text-ink"
@@ -288,7 +291,7 @@ export function EarningsHub() {
       )}
 
       {/* Footer toolbar — secondary action row */}
-      <div className="flex flex-col gap-2 px-5 py-3 border-t border-edge bg-raised">
+      <div className="flex flex-col gap-2 px-5 py-3 border-t border-edge bg-raised rounded-b-xl">
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <EarningsHubAddForm weekOf={weekOf} />
           <EarningsHubRefreshButton weekOf={weekOf} />
