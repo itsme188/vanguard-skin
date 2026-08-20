@@ -218,7 +218,15 @@ export default async function AnalysisPage({ searchParams }: PageProps) {
             {SCOPE_PILLS.map((s) => (
               <Link
                 key={s.key}
-                href={`/dashboard/analysis?view=workspace&scope=${s.key}`}
+                // Workspace's canonical nav identity is view-ABSENT (see
+                // nav-tabs.ts: matchParam.value is null for Workspace) — the
+                // "← Workspace" link below uses the same bare-scope shape.
+                // Hardcoding ?view=workspace here would still route to the
+                // same page (resolveAnalysisView treats it as equivalent),
+                // but it breaks TabDropdown's subviewMatches active-highlight
+                // check ('workspace' !== null), so the nav's Workspace row
+                // would lose its highlight while on this exact page.
+                href={`/dashboard/analysis?scope=${s.key}`}
                 className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
                   scope === s.key
                     ? "bg-panel text-ink shadow-sm"
