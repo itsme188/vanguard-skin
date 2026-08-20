@@ -16,6 +16,19 @@ function subviewMatches(sv: SubView, searchParams: URLSearchParams): boolean {
   return current === sv.matchParam.value;
 }
 
+// Sub-view hrefs in nav-tabs.ts are static (?view= only) — they don't know
+// about ?scope=. Without this, picking a sub-view from the dropdown silently
+// resets scope back to the page's default instead of carrying the one the
+// user is currently looking at (deep-QA: Analysis's sub-view dropdown links
+// dropped scope entirely). Generic across tabs: only appends when the current URL actually
+// has a scope param, so tabs that don't use scope (Research, etc.) are unaffected.
+function withCurrentScope(href: string, searchParams: URLSearchParams): string {
+  const scope = searchParams.get("scope");
+  if (!scope) return href;
+  const separator = href.includes("?") ? "&" : "?";
+  return `${href}${separator}scope=${encodeURIComponent(scope)}`;
+}
+
 export function TabDropdown({ tab, isActive }: Props) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -170,10 +183,11 @@ export function TabDropdown({ tab, isActive }: Props) {
         >
           {subviews.map((sv, i) => {
             const active = subviewMatches(sv, searchParams);
+            const href = withCurrentScope(sv.href, searchParams);
             return (
               <Link
                 key={sv.href}
-                href={sv.href}
+                href={href}
                 role="menuitem"
                 ref={(el) => {
                   itemRefs.current[i] = el;
