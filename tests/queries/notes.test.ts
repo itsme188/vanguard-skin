@@ -273,7 +273,51 @@ describe("getEarningsTimeline", () => {
     createNote(db, { note_type: "earnings", content: "GOOG", event_date: "2026-01-30", security_id: googId });
     createNote(db, { note_type: "earnings", content: "META", event_date: "2026-01-25", security_id: metaId });
 
-    const timeline = getEarningsTimeline(db, googId);
+    const timeline = getEarningsTimeline(db, { security_id: googId });
+    expect(timeline.length).toBe(1);
+    expect(timeline[0].symbol).toBe("GOOG");
+  });
+
+  // Regression pin (research-notes-earnings--search-box-ignored-regression-3):
+  // the Earnings tab renders through this function, not getNotesFiltered.
+  // Three prior "fixes" touched the search UI / getNotesFiltered but never
+  // this query, so the Earnings tab kept ignoring ?search=. Assert the
+  // filtering lives HERE, at the shared source of truth.
+  it("filters by search text, matching the other tabs' filter path", () => {
+    const googId = seedSecurity(db, "GOOG");
+    const metaId = seedSecurity(db, "META");
+
+    createNote(db, { note_type: "earnings", content: "Guidance raised on cloud strength", event_date: "2026-01-30", security_id: googId });
+    createNote(db, { note_type: "earnings", content: "Margins compressed", event_date: "2026-04-30", security_id: googId });
+    createNote(db, { note_type: "earnings", content: "Ad revenue beat, guidance steady", event_date: "2026-01-25", security_id: metaId });
+
+    const timeline = getEarningsTimeline(db, { search: "guidance" });
+    expect(timeline.length).toBe(2);
+
+    const googEntry = timeline.find((t) => t.symbol === "GOOG")!;
+    expect(googEntry.notes.length).toBe(1);
+    expect(googEntry.notes[0].content).toBe("Guidance raised on cloud strength");
+
+    const metaEntry = timeline.find((t) => t.symbol === "META")!;
+    expect(metaEntry.notes.length).toBe(1);
+  });
+
+  it("returns no entries when the search text matches nothing", () => {
+    const googId = seedSecurity(db, "GOOG");
+    createNote(db, { note_type: "earnings", content: "Solid quarter", event_date: "2026-01-30", security_id: googId });
+
+    const timeline = getEarningsTimeline(db, { search: "ZZZNOMATCH" });
+    expect(timeline).toEqual([]);
+  });
+
+  it("combines security_id and search filters", () => {
+    const googId = seedSecurity(db, "GOOG");
+    const metaId = seedSecurity(db, "META");
+
+    createNote(db, { note_type: "earnings", content: "GOOG guidance raised", event_date: "2026-01-30", security_id: googId });
+    createNote(db, { note_type: "earnings", content: "META guidance raised", event_date: "2026-01-25", security_id: metaId });
+
+    const timeline = getEarningsTimeline(db, { security_id: googId, search: "guidance" });
     expect(timeline.length).toBe(1);
     expect(timeline[0].symbol).toBe("GOOG");
   });

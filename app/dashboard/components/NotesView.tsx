@@ -399,6 +399,11 @@ export function NotesView({
           timeline={earningsTimeline}
           transcriptSummaries={transcriptSummaries}
           securities={securities}
+          filtered={notesListIsFiltered({
+            search: searchParams.get("search"),
+            symbol: searchParams.get("symbol"),
+            type: searchParams.get("type"),
+          })}
           editingId={editingId}
           editContent={editContent}
           onStartEdit={(id, content) => {
@@ -523,6 +528,7 @@ function EarningsView({
   timeline,
   transcriptSummaries,
   securities,
+  filtered = false,
   editingId,
   editContent,
   onStartEdit,
@@ -534,6 +540,7 @@ function EarningsView({
   timeline: EarningsTimelineEntry[];
   transcriptSummaries: TranscriptSummaryEntry[];
   securities: { id: number; symbol: string; name: string | null }[];
+  filtered?: boolean;
   editingId: number | null;
   editContent: string;
   onStartEdit: (id: number, content: string) => void;
@@ -569,8 +576,9 @@ function EarningsView({
       <div className="space-y-6">
         <div className="bg-panel border border-edge rounded-xl p-8 text-center">
           <p className="text-ink-faint text-sm">
-            No earnings notes yet. Add notes during earnings calls to track your
-            thoughts quarter over quarter.
+            {filtered
+              ? "No matching notes — nothing matches the current search or filter. Clear it to see all earnings notes."
+              : "No earnings notes yet. Add notes during earnings calls to track your thoughts quarter over quarter."}
           </p>
         </div>
         {fetchableTickers.length > 0 && (

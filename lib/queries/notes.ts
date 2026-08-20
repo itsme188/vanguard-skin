@@ -100,20 +100,35 @@ export function getNotesForSecurity(
     .all(securityId) as NoteWithContext[];
 }
 
+export interface EarningsTimelineFilters {
+  security_id?: number;
+  search?: string;
+}
+
+/**
+ * Earnings tab data for the Notes view. Routes through `getNotesFiltered`
+ * (the same filter path All/Journal/Stock Notes use) so `search` can never
+ * silently diverge again (qa:research-notes-earnings--search-box-ignored-regression-3
+ * — three prior fixes touched the search UI or `getNotesFiltered` but never
+ * this function, which is what the Earnings tab actually renders from).
+ * `limit: -1` asks SQLite for every matching row — getNotesFiltered's
+ * default (used by the other tabs) is capped, but a timeline must be
+ * complete, not a recent-N slice.
+ */
 export function getEarningsTimeline(
   db: Database.Database,
-  securityId?: number
+  filters: EarningsTimelineFilters = {}
 ): EarningsTimelineEntry[] {
-  const where = securityId
-    ? "WHERE n.note_type = 'earnings' AND n.security_id = ?"
-    : "WHERE n.note_type = 'earnings' AND n.security_id IS NOT NULL";
-  const params = securityId ? [securityId] : [];
+  const notes = getNotesFiltered(db, {
+    note_type: "earnings",
+    security_id: filters.security_id,
+    search: filters.search,
+    limit: -1,
+  });
 
-  const notes = db
-    .prepare(`${NOTE_SELECT} ${where} ORDER BY s.symbol ASC, n.event_date ASC`)
-    .all(...params) as NoteWithContext[];
-
-  // Group by security
+  // Group by security. getNotesFiltered orders newest-first (shared with
+  // the other tabs); a timeline reads oldest-first, so each entry's notes
+  // are re-sorted chronologically below.
   const grouped = new Map<number, EarningsTimelineEntry>();
   for (const note of notes) {
     if (!note.security_id) continue;
@@ -130,7 +145,15 @@ export function getEarningsTimeline(
     entry.notes.push(note);
   }
 
-  return Array.from(grouped.values());
+  for (const entry of grouped.values()) {
+    entry.notes.sort((a, b) => {
+      if (a.event_date !== b.event_date) return a.event_date < b.event_date ? -1 : 1;
+      if (a.created_at !== b.created_at) return a.created_at < b.created_at ? -1 : 1;
+      return 0;
+    });
+  }
+
+  return Array.from(grouped.values()).sort((a, b) => a.symbol.localeCompare(b.symbol));
 }
 
 export function getRecentNotes(
