@@ -27,12 +27,17 @@ import { formatLevelPrice } from "@/lib/chart/price-formatter";
 // security_levels.thesis on an armed level.
 import { guardNarrative, resolveAcceptedThesis } from "@/lib/levels/narrative-guard";
 import { levelActionVisibility, levelReviewGuidance } from "@/lib/levels/action-visibility";
-// The scanner's plausibility band. A level outside it is armed in the DB but
-// never evaluated, so this panel must warn before the save and label the row
-// after it — same predicate the scanner runs (lib/levels/scan-range.ts).
+// The scanner's two skip conditions. A level outside the plausibility band —
+// or one whose price has gone stale — is armed in the DB but never evaluated,
+// so this panel must warn before the save and label the row after it, using
+// the same predicates the scanner runs (lib/levels/scan-range.ts). The band is
+// judged client-side from currentPrice; freshness needs the price DATE, so the
+// server stamps it onto each row (GET /api/levels).
 import {
   BEYOND_SCAN_RANGE_EXPLANATION,
   BEYOND_SCAN_RANGE_LABEL,
+  STALE_PRICE_EXPLANATION,
+  STALE_PRICE_LABEL,
   isLevelBeyondScanRange,
 } from "@/lib/levels/scan-range";
 import { todayET } from "@/lib/calendar/date-utils";
@@ -59,7 +64,15 @@ const LEVEL_SORT_OPTIONS = [
   { field: "is_active" as const, label: "Status" },
 ];
 
-type EnrichedLevel = SecurityLevel & { effective_price: number | null };
+type EnrichedLevel = SecurityLevel & {
+  effective_price: number | null;
+  /** Date of the latest price for this security (YYYY-MM-DD), null when it has
+   *  none. Stamped by GET /api/levels. */
+  price_date?: string | null;
+  /** True when that price is too old for the scanner's freshness window — the
+   *  level is armed but not being monitored. */
+  price_is_stale?: boolean;
+};
 
 const PRICE_SOURCE_OPTIONS: Array<{ value: LevelPriceSource; label: string }> = [
   { value: "static", label: "Specific price" },
@@ -655,7 +668,18 @@ export function LevelsPanel({
         toast(`Failed to add level: ${json.error ?? "unknown"}`, "error");
         return;
       }
-      toast(`${symbol} ${levelType} level added`, "success");
+      // Honest feedback: the save succeeded, but a level outside the scanner's
+      // range is not monitored coverage. The form warns before the save too —
+      // this covers the case where the user pressed on anyway, and the "info"
+      // tone keeps it from reading as an outright failure.
+      if (json.warning) {
+        toast(
+          `${symbol} ${levelType} level added — but it is outside the scanner's range, so it will not alert`,
+          "info",
+        );
+      } else {
+        toast(`${symbol} ${levelType} level added`, "success");
+      }
       // Reset form — keep "Me" as the default author after submit so a quick
       // series of self-originated entries doesn't need re-typing.
       setPrice("");
@@ -730,14 +754,28 @@ export function LevelsPanel({
     Number.isFinite(typedPrice) &&
     isLevelBeyondScanRange(typedPrice, currentPrice, securityType);
 
-  // Row disclosure: only levels that are actually armed (active +
-  // auto_approved) can mislead by looking monitored. An MA level whose value
-  // can't be computed yet is left unjudged — it already says so in its own row.
+  // Row disclosure. Pending-review rows are included on purpose (2026-08-20):
+  // the original bug was a mis-scaled extracted level arriving pending_review,
+  // showing no chip, and approving silently into dead coverage — the chip has
+  // to be visible BEFORE the decision, not only after it. Rejected rows are
+  // excluded: they aren't going to arm, so the warning is noise there. An MA
+  // level whose value can't be computed yet is left unjudged — it already says
+  // so in its own row.
   const rowBeyondScanRange = (l: EnrichedLevel): boolean => {
-    if (l.is_active !== 1 || l.review_status !== "auto_approved") return false;
+    if (l.is_active !== 1 || l.review_status === "rejected") return false;
     const effective = l.price_source === "static" ? l.price : l.effective_price;
     return isLevelBeyondScanRange(effective, currentPrice, securityType);
   };
+
+  // The scanner's OTHER skip condition. Only armed rows can mislead here: a
+  // pending row isn't claiming to be monitored, but an armed one is, and a
+  // stale price means every scan pass skips it however close the level looks.
+  // Server-computed (the price DATE never reaches this component) — see
+  // lib/levels/scan-range.ts for the shared window.
+  const rowStalePrice = (l: EnrichedLevel): boolean =>
+    l.is_active === 1 &&
+    l.review_status === "auto_approved" &&
+    l.price_is_stale === true;
 
   return (
     <section
@@ -1275,6 +1313,23 @@ export function LevelsPanel({
                             {BEYOND_SCAN_RANGE_LABEL}
                           </span>
                         )}
+                        {rowStalePrice(l) && (
+                          <span
+                            title={STALE_PRICE_EXPLANATION}
+                            style={{
+                              fontFamily: "var(--font-mono), monospace",
+                              fontSize: "11px",
+                              letterSpacing: "0.14em",
+                              textTransform: "uppercase",
+                              color: "#f59e0b",
+                              border: "1px solid #f59e0b",
+                              padding: "2px 6px",
+                              borderRadius: "2px",
+                            }}
+                          >
+                            {STALE_PRICE_LABEL}
+                          </span>
+                        )}
                         {unarmedReview && (
                           <span
                             title={levelReviewGuidance(l.review_status)}
@@ -1487,6 +1542,11 @@ export function LevelsPanel({
                       title={BEYOND_SCAN_RANGE_EXPLANATION}
                     >
                       {BEYOND_SCAN_RANGE_LABEL}
+                    </Chip>
+                  )}
+                  {rowStalePrice(l) && (
+                    <Chip size="xs" tone="warn" title={STALE_PRICE_EXPLANATION}>
+                      {STALE_PRICE_LABEL}
                     </Chip>
                   )}
                   {l.is_active === 1 && l.review_status !== "auto_approved" && (
