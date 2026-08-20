@@ -1,0 +1,21 @@
+-- 084_manual_actuals_at.sql
+--
+-- Provenance stamp for manually-saved earnings actuals (QA finding
+-- today-earningshub-bogeys--save-actuals-empty-silent-noop-cannot-clear,
+-- decided 2026-08-03; re-confirmed 2026-08-20, DECISIONS-PENDING Option 2).
+--
+-- actual_value has no source column — a manual override typed into the
+-- BogeysEditModal is indistinguishable at the data layer from a value the
+-- Finnhub/FRED/Claude enrichment pipeline wrote. saveManualActuals
+-- (lib/earnings/actuals.ts) stamps this column datetime('now') on every
+-- manual save; clearManualActuals reads it as the clearability guard —
+-- only rows a human explicitly typed in can be cleared via the "Clear
+-- actuals" control, so sync-owned actuals stay protected from accidental
+-- wipe.
+--
+-- NULL for every row whose actual_value was saved before this migration
+-- (or was never manually saved) — the control simply won't render for
+-- those until the row is re-saved manually. Acceptable per design: no
+-- backfill possible since provenance was never recorded pre-migration.
+
+ALTER TABLE calendar_events ADD COLUMN manual_actuals_at TEXT;

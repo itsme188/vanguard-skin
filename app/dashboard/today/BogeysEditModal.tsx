@@ -59,11 +59,14 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
   const [form, setForm] = useState<FormState>(EMPTY);
   const [actuals, setActuals] = useState<ActualsState>(EMPTY_ACTUALS);
   const [actualsEnrichedAt, setActualsEnrichedAt] = useState<string | null>(null);
+  const [actualsManualAt, setActualsManualAt] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [printing, setPrinting] = useState(false);
   const [printedOk, setPrintedOk] = useState(false);
   const [printedRoad, setPrintedRoad] = useState<"pdf" | "monospace" | null>(null);
   const [savingActuals, setSavingActuals] = useState(false);
+  const [clearingActuals, setClearingActuals] = useState(false);
+  const [clearedActualsMsg, setClearedActualsMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -73,6 +76,8 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
     setForm(EMPTY);
     setActuals(EMPTY_ACTUALS);
     setActualsEnrichedAt(null);
+    setActualsManualAt(null);
+    setClearedActualsMsg(null);
     // A reopened modal must not show a stale "Sent to printer queue" claim
     // from a previous open/close cycle.
     setPrintedOk(false);
@@ -87,6 +92,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
             eps_actual?: number | null;
             revenue_actual_usd?: number | null;
             enriched_at?: string | null;
+            manual_actuals_at?: string | null;
             error?: string;
           }>,
       ),
@@ -104,6 +110,7 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
                 : "",
           });
           setActualsEnrichedAt(actualsData.enriched_at ?? null);
+          setActualsManualAt(actualsData.manual_actuals_at ?? null);
         }
       })
       .catch((err: unknown) => {
@@ -260,7 +267,54 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
 
   async function saveActuals(e: React.FormEvent) {
     e.preventDefault();
+    setClearedActualsMsg(null);
     await submitActuals(false);
+  }
+
+  // "Clear actuals" (QA finding
+  // today-earningshub-bogeys--save-actuals-empty-silent-noop-cannot-clear,
+  // decided 2026-08-03): only rendered when actualsManualAt is set, so this
+  // should never hit the server's 409 (sync-owned actuals guard) in normal
+  // use — but still honors the honest-button rules (check res.ok AND
+  // data.success, explain no-op, no empty catch) in case of a race.
+  async function clearActuals() {
+    if (clearingActuals) return;
+    const confirmed = window.confirm(
+      "Clear the manually-entered actuals for this event?\n\n" +
+        "Automatic enrichment will re-fetch fresh numbers if the print is " +
+        "recent, or the event will show no actuals until you re-enter them.",
+    );
+    if (!confirmed) return;
+    setClearingActuals(true);
+    setError(null);
+    setClearedActualsMsg(null);
+    try {
+      const res = await apiFetch("/api/earnings/actuals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event_id: eventId, clear: true }),
+      });
+      const data = (await res.json().catch(() => null)) as {
+        error?: string;
+        code?: string;
+        success?: boolean;
+      } | null;
+      if (!res.ok || !data?.success) {
+        setError(data?.error ?? `Clear failed: server returned ${res.status}.`);
+        return;
+      }
+      setActuals(EMPTY_ACTUALS);
+      setActualsEnrichedAt(null);
+      setActualsManualAt(null);
+      setClearedActualsMsg(
+        "Cleared — automatic enrichment will re-fetch this print's numbers if it's recent, or this will stay blank.",
+      );
+      router.refresh();
+    } catch {
+      setError("Clear failed: could not reach the server.");
+    } finally {
+      setClearingActuals(false);
+    }
   }
 
   async function remove(id: number) {
@@ -376,6 +430,9 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
               Type these in directly when enrichment misses or you want to lock the print
               numbers manually. Saves to the recap email scoreboard.
             </p>
+            {clearedActualsMsg && (
+              <p className="text-[12px] text-up">{clearedActualsMsg}</p>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <Field label="Actual EPS">
                 <input
@@ -397,6 +454,17 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
               </Field>
             </div>
             <div className="flex items-center justify-end gap-2">
+              {actualsManualAt && (
+                <button
+                  type="button"
+                  onClick={clearActuals}
+                  disabled={clearingActuals || savingActuals}
+                  className="relative mr-auto text-[13px] font-mono text-ink-dim hover:text-down border border-edge rounded px-2 py-1 disabled:opacity-50 pointer-coarse:after:absolute pointer-coarse:after:-inset-y-2 pointer-coarse:after:-inset-x-1 pointer-coarse:after:content-['']"
+                  title="Clear this manually-entered actual so enrichment can re-fetch it"
+                >
+                  {clearingActuals ? "Clearing…" : "Clear actuals"}
+                </button>
+              )}
               <button
                 type="submit"
                 disabled={savingActuals}
