@@ -95,12 +95,20 @@ export function getTranscriptsForSecurity(
 /**
  * Get transcript summaries for the Notes tab earnings timeline.
  * Joins with securities table for display names.
+ *
+ * `search` is a free-text filter (ticker or company-name substring,
+ * case-insensitive) — the Earnings-tab counterpart to `getNotesFiltered`'s
+ * `search` (qa:research-notes-earnings--search-box-ignored-regression-3,
+ * part 2). The transcript wall is most of that tab's content, so without
+ * this the "Search notes..." box only ever trimmed the notes timeline,
+ * never the transcript cards stacked below it.
  */
 export function getTranscriptsSummary(
   db: Database.Database,
   options?: {
     securityId?: number;
     ticker?: string;
+    search?: string;
     limit?: number;
   }
 ): TranscriptSummaryEntry[] {
@@ -114,6 +122,10 @@ export function getTranscriptsSummary(
   if (options?.ticker) {
     conditions.push("UPPER(et.ticker) = UPPER(?)");
     params.push(options.ticker);
+  }
+  if (options?.search) {
+    conditions.push("(et.ticker LIKE '%' || ? || '%' OR s.name LIKE '%' || ? || '%')");
+    params.push(options.search, options.search);
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";

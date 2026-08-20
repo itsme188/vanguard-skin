@@ -55,7 +55,11 @@ export default async function ResearchPage({ searchParams }: PageProps) {
       search: params.search || undefined,
     });
     transcriptSummaries = noteType === "earnings" || !noteType
-      ? getTranscriptsSummary(db, { limit: 50 })
+      ? getTranscriptsSummary(db, {
+          limit: 50,
+          securityId: securityId ? parseInt(securityId, 10) : undefined,
+          search: params.search || undefined,
+        })
       : [];
 
     securities = db
