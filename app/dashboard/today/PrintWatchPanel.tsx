@@ -37,12 +37,13 @@ import type {
 //   {success:true, data:{prints:[{printId, symbol, state, sources,
 //   coverage, lines}]}}.
 //
-// NOTE (flagged in the task-12 report): the documented status contract
-// does not list an `eventId` field, but POST /drop and POST /accept both
-// require one to address a print. This type declares it optional and
-// every mutating control below degrades honestly (disabled, with an
-// explanatory title) when it is absent rather than crashing or guessing
-// an id.
+// `eventId` was originally missing end-to-end (getWatchStatus dropped it
+// from PrintRow before the status route could forward it) — that server
+// gap has since been fixed (WatchStatusRow now carries eventId through to
+// the route). `eventId` stays OPTIONAL on this client-side type anyway as
+// harmless defense-in-depth: every mutating control below still degrades
+// honestly (disabled, with an explanatory title) rather than crashing or
+// guessing an id if a future server change ever drops it again.
 interface PrintStatusEntry {
   printId: number;
   eventId?: number;
@@ -187,6 +188,18 @@ export function promoteSummary(lines: PrintWatchLine[]): PromoteSummary | null {
   };
 }
 
+/** Component-wise divergence check shared by value and value_high: null on
+ *  both sides is agreement (point-kind lines never carry a high end),
+ *  null on exactly one side is a divergence in its own right (a range
+ *  gaining or losing its top end is a real change), otherwise the same
+ *  relative tolerance used everywhere else in the reconciler. */
+function valuesDiverge(accepted: number | null, fresh: number | null): boolean {
+  if (accepted === null && fresh === null) return false;
+  if (accepted === null || fresh === null) return true;
+  const tolerance = Math.max(1e-9, Math.abs(accepted) * 1e-6);
+  return Math.abs(accepted - fresh) > tolerance;
+}
+
 /**
  * True when an ACCEPTED line's locked value has been superseded by a fresh
  * independent agreement in its (continuously-refreshed) candidates_json —
@@ -197,7 +210,9 @@ export function promoteSummary(lines: PrintWatchLine[]): PromoteSummary | null {
  * independence + table-provenance rules) rather than a second hand-rolled
  * copy of that logic. A fresh 'single_source' or 'conflict' outcome is
  * NOT evidence of anything — only a fresh 'agreed' outcome that disagrees
- * with the locked value counts as divergence.
+ * with the locked value counts as divergence. Compares value AND
+ * value_high independently (range-kind guidance lines can have their top
+ * revised while the floor holds, or vice versa).
  */
 export function needsReverify(line: PrintWatchLine): boolean {
   if (line.state !== "accepted" || line.value === null) return false;
@@ -215,9 +230,14 @@ export function needsReverify(line: PrintWatchLine): boolean {
   const [fresh] = reconcile([line.contract], expectedMap, candidates, []);
   if (!fresh || fresh.state !== "agreed" || fresh.value === null) return false;
 
-  const acceptedValue = line.value;
-  const tolerance = Math.max(1e-9, Math.abs(acceptedValue) * 1e-6);
-  return Math.abs(fresh.value - acceptedValue) > tolerance;
+  // Range-kind contracts (revenue_guide_next / eps_adj_guide_next) carry a
+  // value_high alongside value — a fresh agreement that revises only the
+  // TOP of a guidance range (floor unchanged) must still flag
+  // "superseded — re-verify", so both ends are compared independently
+  // rather than only `value`.
+  return (
+    valuesDiverge(line.value, fresh.value) || valuesDiverge(line.value_high, fresh.value_high)
+  );
 }
 
 // ── state chip presentation (text + icon — never color alone) ─────────
@@ -345,12 +365,23 @@ export default function PrintWatchPanel() {
         headers: { "Content-Type": "application/json" },
         body: "{}",
       });
-      await (res.json().catch(() => null) as Promise<EnsureResponse | null>);
-      // Failures here are silent by design: /ensure only arms the watcher
-      // loops, it never changes what the panel shows. The next fetchStatus
-      // call is ground truth either way, and the 60s timer retries.
-    } catch {
-      // Same reasoning — no user-visible error for a background keep-alive.
+      const data = (await res.json().catch(() => null)) as EnsureResponse | null;
+      // Non-blocking by design: /ensure only arms the watcher loops, it
+      // never changes what the panel shows, and the 60s timer retries on
+      // its own — so a failure here never becomes a user-facing error.
+      // But a SILENTLY, persistently failing /ensure (e.g. a stale
+      // session/CSRF cookie) would otherwise give zero signal that the
+      // watcher has stopped being kept alive, so surface it to the
+      // console rather than swallowing it outright.
+      if (!res.ok || !data?.success) {
+        console.warn(
+          `print-watch: /ensure failed (${data?.error ?? `server returned ${res.status}`})`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `print-watch: /ensure request failed — ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }, []);
 
