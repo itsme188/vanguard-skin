@@ -114,11 +114,115 @@ describe("pollIrRss", () => {
     expect(results[0].link).toBe(items[1].link);
     expect(results[0].html).toContain("results page body");
 
-    // Both items are marked seen (so the distractor is not re-evaluated next
-    // poll), but the distractor's article page was never fetched.
+    // The distractor is marked seen (never fetched, so it must not be
+    // re-evaluated every 10s). The MATCHED item is deliberately NOT marked:
+    // the caller marks it once it has consumed it (fix wave, finding F), so a
+    // result the watcher never got to ingest is retried rather than lost.
+    expect(seen.has(items[0].link)).toBe(true);
+    expect(seen.has(items[1].link)).toBe(false);
+    expect(articleFetchPaths).toEqual(["/news/q2-fy2027-results"]);
+  });
+
+  it("baseline pass: the FIRST poll marks every present item seen and fetches no article", async () => {
+    // The whole point of finding A — this feed permanently contains LAST
+    // quarter's results announcement, and it matches the title regex exactly.
+    const items: FixtureItem[] = [
+      {
+        title: "NVIDIA Announces Financial Results for First Quarter Fiscal 2027",
+        link: `https://${HOST}/news/q1-fy2027-results`,
+        modDate: "2026-05-27T20:20:00Z",
+      },
+      {
+        title: CONFERENCE_CALL_TITLE,
+        link: `https://${HOST}/news/conference-call`,
+        modDate: "2026-08-20T16:00:00Z",
+      },
+    ];
+    const feedXml = rssXml(items);
+    const fetched: string[] = [];
+    const fetchFn = async (url: string) => {
+      if (pathOf(url) === "/cats/press_release.xml") {
+        return new Response(feedXml, { status: 200, headers: headers() });
+      }
+      fetched.push(pathOf(url));
+      throw new Error(`baseline must not fetch an article: ${url}`);
+    };
+
+    const seen = new Set<string>();
+    const results = await pollIrRss(makeCfg(), seen, fetchFn, { baseline: true });
+
+    expect(results).toEqual([]);
+    expect(fetched).toEqual([]);
     expect(seen.has(items[0].link)).toBe(true);
     expect(seen.has(items[1].link)).toBe(true);
-    expect(articleFetchPaths).toEqual(["/news/q2-fy2027-results"]);
+  });
+
+  it("an item that appears AFTER the baseline is fetched and returned", async () => {
+    const historical: FixtureItem = {
+      title: "NVIDIA Announces Financial Results for First Quarter Fiscal 2027",
+      link: `https://${HOST}/news/q1-fy2027-results`,
+      modDate: "2026-05-27T20:20:00Z",
+    };
+    const fresh: FixtureItem = {
+      title: RESULTS_TITLE,
+      link: `https://${HOST}/news/q2-fy2027-results`,
+      modDate: "2026-08-26T20:20:00Z",
+    };
+
+    let feedItems: FixtureItem[] = [historical];
+    const articleFetches: string[] = [];
+    const fetchFn = async (url: string) => {
+      if (pathOf(url) === "/cats/press_release.xml") {
+        return new Response(rssXml(feedItems), { status: 200, headers: headers() });
+      }
+      articleFetches.push(pathOf(url));
+      return new Response("<html>fresh results page</html>", {
+        status: 200,
+        headers: headers({}, "text/html"),
+      });
+    };
+
+    const seen = new Set<string>();
+    expect(await pollIrRss(makeCfg(), seen, fetchFn, { baseline: true })).toEqual([]);
+
+    // The print lands: a NEW item joins the feed.
+    feedItems = [fresh, historical];
+    const results = await pollIrRss(makeCfg(), seen, fetchFn);
+
+    expect(results).toHaveLength(1);
+    expect(results[0].link).toBe(fresh.link);
+    expect(articleFetches).toEqual(["/news/q2-fy2027-results"]);
+  });
+
+  it("a failed article fetch leaves the link UNSEEN, so the next poll retries it", async () => {
+    const items: FixtureItem[] = [
+      { title: RESULTS_TITLE, link: `https://${HOST}/news/q2-fy2027-results` },
+    ];
+    const feedXml = rssXml(items);
+    let articleAttempts = 0;
+    const fetchFn = async (url: string) => {
+      if (pathOf(url) === "/cats/press_release.xml") {
+        return new Response(feedXml, { status: 200, headers: headers() });
+      }
+      articleAttempts += 1;
+      if (articleAttempts === 1) {
+        // The newsroom stumbles on the first read — a 503, a reset socket.
+        return new Response("upstream busy", { status: 503, headers: headers({}, "text/html") });
+      }
+      return new Response("<html>results page body</html>", {
+        status: 200,
+        headers: headers({}, "text/html"),
+      });
+    };
+
+    const seen = new Set<string>();
+    await expect(pollIrRss(makeCfg(), seen, fetchFn)).rejects.toThrow(/HTTP 503/);
+    expect(seen.has(items[0].link)).toBe(false);
+
+    const retry = await pollIrRss(makeCfg(), seen, fetchFn);
+    expect(retry).toHaveLength(1);
+    expect(retry[0].html).toContain("results page body");
+    expect(articleAttempts).toBe(2);
   });
 
   it("returns matched items newest-modDate-first", async () => {
@@ -316,6 +420,10 @@ describe("pollIrRss", () => {
     const first = await pollIrRss(makeCfg(), seen, fetchFn);
     expect(first).toHaveLength(1);
     expect(articleFetches).toBe(1);
+
+    // The CALLER marks it, once it has consumed the result — that is the new
+    // contract (finding F), and it is what makes the next poll a no-op.
+    for (const item of first) seen.add(item.link);
 
     const second = await pollIrRss(makeCfg(), seen, fetchFn);
     expect(second).toHaveLength(0);

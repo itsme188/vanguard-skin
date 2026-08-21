@@ -322,5 +322,50 @@ describe("print-watch store (migration 085)", () => {
       expect(lease.holder).toBe("mac-main");
       expect(lease.expiresAt).toBe(1_090_000); // renewed from the second call's nowMs
     });
+
+    // The lease is compare-and-swap, not read-then-write (fix wave, finding
+    // D): ownership is decided by the write's own predicate, evaluated against
+    // the row it locks, never by a SELECT that may already be stale.
+    it("a loser whose view of the world says 'expired' cannot clobber the fresh winner", () => {
+      acquireWatcherLease(db, "mac-main", 1_000_000, 60_000); // expires at 1_060_000
+
+      // Both processes wake at 1_070_000 and both see an expired lease. The
+      // winner's write lands first...
+      expect(acquireWatcherLease(db, "sweep-tick", 1_070_000, 60_000)).toBe(true);
+      // ...and the loser, running with the SAME stale view, is refused rather
+      // than overwriting a lease that is now live.
+      expect(acquireWatcherLease(db, "mac-main", 1_070_000, 60_000)).toBe(false);
+
+      const row = db.prepare(`SELECT value FROM settings WHERE key = ?`).get("print_watch_lease") as {
+        value: string;
+      };
+      const lease = JSON.parse(row.value);
+      expect(lease.holder).toBe("sweep-tick");
+      expect(lease.expiresAt).toBe(1_130_000);
+    });
+
+    it("takes over a corrupt (unparseable) lease value instead of throwing", () => {
+      db.prepare(
+        `INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))`,
+      ).run("print_watch_lease", "not json at all");
+
+      expect(acquireWatcherLease(db, "mac-main", 1_000_000, 60_000)).toBe(true);
+      const row = db.prepare(`SELECT value FROM settings WHERE key = ?`).get("print_watch_lease") as {
+        value: string;
+      };
+      expect(JSON.parse(row.value).holder).toBe("mac-main");
+    });
+
+    it("seeds a missing row with INSERT OR IGNORE — the first caller wins outright", () => {
+      const missing = db
+        .prepare(`SELECT COUNT(*) AS n FROM settings WHERE key = ?`)
+        .get("print_watch_lease") as { n: number };
+      expect(missing.n).toBe(0);
+
+      expect(acquireWatcherLease(db, "first", 1_000_000, 60_000)).toBe(true);
+      // A different holder arriving one millisecond later loses: the seed is
+      // already there and still live.
+      expect(acquireWatcherLease(db, "second", 1_000_001, 60_000)).toBe(false);
+    });
   });
 });
