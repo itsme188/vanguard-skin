@@ -29,12 +29,12 @@
     "verify:changed": "npx tsx scripts/verify-changed.ts",
     "verify:smoke": "bash scripts/verify-smoke.sh",
     "electron:compile": "tsc -p electron/tsconfig.json",
-    "electron:copy-static": "cp -r .next/static .next/standalone/.next/static && cp -r public .next/standalone/public && node scripts/deref-standalone-symlinks.js && rm -f .next/standalone/.env.local .next/standalone/.env .next/standalone/.env.production",
+    "electron:copy-static": "cp -r .next/static .next/standalone/.next/static && cp -r public .next/standalone/public && node scripts/deref-standalone-symlinks.js && rm -f .next/standalone/.env.local .next/standalone/.env .next/standalone/.env.production && mkdir -p .next/standalone/node_modules/next/dist/compiled/next-server && cp -r node_modules/next/dist/compiled/next-server/. .next/standalone/node_modules/next/dist/compiled/next-server/",
     "electron:dev": "npm run electron:compile && npm run electron:copy-static && electron .",
     "electron:build": "rm -rf dist && npm run build && npm run electron:compile && npm run electron:copy-static",
     "electron:pack": "npm run electron:build && electron-builder --mac",
     "electron:deploy": "npm run electron:pack && npm run electron:install",
-    "electron:install": "osascript -e 'tell application \"/Applications/Vanguard Dashboard.app\" to quit' 2>/dev/null; sleep 1; rm -rf \"/Applications/Vanguard Dashboard.app\" && cp -R \"dist/mac-arm64/Vanguard Dashboard.app\" /Applications/ && echo '✅ Installed to /Applications' && open \"/Applications/Vanguard Dashboard.app\""
+    "electron:install": "osascript -e 'tell application \"/Applications/Vanguard Dashboard.app\" to quit' 2>/dev/null; sleep 1; rm -rf \"/Applications/Vanguard Dashboard.app\" && cp -R \"dist/mac-arm64/Vanguard Dashboard.app\" /Applications/ && echo '\u2705 Installed to /Applications' && open \"/Applications/Vanguard Dashboard.app\""
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.64",
