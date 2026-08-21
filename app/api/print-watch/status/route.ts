@@ -24,6 +24,7 @@ export async function GET() {
   try {
     const prints = getWatchStatus(db).map((row) => ({
       printId: row.printId,
+      eventId: row.eventId,
       symbol: row.symbol,
       state: row.state,
       sources: row.sources,
