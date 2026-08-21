@@ -12,14 +12,26 @@
  *    results walk backward from it toward the second (older) datetime —
  *    and can walk PAST that older boundary. The window is therefore
  *    enforced client-side, never trusted from the API call alone.
- *  - PART GROUPING BY PREFIX CONTAINMENT: DJ splits long releases across
- *    numbered headlines, but continuation headlines are TRUNCATED copies
- *    of the base ("Press Release: CrowdStrike Reports First Quarter -2-"
- *    vs the full "...Reports First Quarter Fiscal Year 2027 Financial
- *    Results"), so a fixed-length prefix key does not group them — we
- *    group on containment (one normalized headline is a prefix of the
- *    other), keeping the SHORTEST form seen as the group key.
- *  - body fetch + PLAIN CONCATENATION — DJ parts never overlap.
+ *  - PART GROUPING BY PREFIX CONTAINMENT, GATED BY PROVIDER + TIME: DJ
+ *    splits long releases across numbered headlines, but continuation
+ *    headlines are TRUNCATED copies of the base ("Press Release:
+ *    CrowdStrike Reports First Quarter -2-" vs the full "...Reports First
+ *    Quarter Fiscal Year 2027 Financial Results"), so a fixed-length prefix
+ *    key does not group them — we group on containment (one normalized
+ *    headline is a prefix of the other), keeping the SHORTEST form seen as
+ *    the group's matching key. Containment ALONE is too permissive — two
+ *    UNRELATED releases can share a truncated-headline prefix — so a
+ *    candidate must also match the group's provider code exactly and land
+ *    within 3 minutes of the group's anchor (first-part) time, same gate
+ *    the spike used (review finding, fix round 1).
+ *  - body fetch + PLAIN CONCATENATION — DJ parts never overlap. All part
+ *    bodies for a group are fetched BEFORE any state mutation; if any part
+ *    fetch fails, the group is left untouched (not removed, not marked
+ *    seen) so it is retried whole on the next poll rather than silently
+ *    losing the release or corrupting `seenArticleIds` (review finding,
+ *    fix round 1 — the spike's own per-part try/catch partial-stitch
+ *    precedent was rejected here in favor of full retry, since this module
+ *    polls repeatedly and the spike was a one-shot tool).
  *
  * IBApiNext has no promise wrappers for reqHistoricalNews / reqNewsArticle
  * (the same situation `lib/tws/wsh.ts` documents for WSH), so this module
@@ -42,6 +54,9 @@ export const DJ_PROVIDER_CODES =
 
 /** A part group completes only once its part set has been stable this long. */
 const QUIESCENCE_MS = 20_000;
+
+/** Parts of one release share a minute; allow slack for a straddling release. */
+const GROUP_TIME_TOLERANCE_MS = 3 * 60_000;
 
 /** The completed release's headline must look like an earnings print. */
 const EARNINGS_HEADLINE_RE = /results|quarter|fiscal|earnings/i;
@@ -93,11 +108,31 @@ interface RawHeadline {
   headline: string;
 }
 
+/**
+ * DEVIATION from the brief's literal snippet (flagged for Task 9, same
+ * practice as Task 1's PrintRow/DocumentRow addition): the part-group value
+ * adds `providerCode` and `anchorTimeMs`, both captured from the group's
+ * FIRST part and never updated afterward. They restore the spike's grouping
+ * safety net (provider equality + |Δtime| <= 3min) that pure prefix-
+ * containment matching drops — two distinct releases that happen to share a
+ * truncated-headline prefix (different provider, or minutes apart) must not
+ * merge into one bogus stitch (review finding, fix round 1). The Map's own
+ * key is the articleId of the part that created the group (a stable, always-
+ * unique identity) — it is never a good idea to key the Map by mutable
+ * headline text, since two DISTINCT groups can normalize to the identical
+ * text (that's exactly the case this gate exists to keep separate).
+ */
 export interface DjPollState {
   seenArticleIds: Set<string>;
   partGroups: Map<
     string,
-    { headlines: string[]; articleIds: string[]; lastGrewAtMs: number }
+    {
+      headlines: string[];
+      articleIds: string[];
+      lastGrewAtMs: number;
+      providerCode: string;
+      anchorTimeMs: number;
+    }
   >;
 }
 
@@ -172,10 +207,20 @@ function normKey(baseHeadline: string): string {
     .toLowerCase();
 }
 
-/** DJ articleIds are "{providerCode}${hex}" (e.g. "DJ-N$1e9d7cb2") — the provider code is embedded. */
-function providerCodeFromArticleId(articleId: string): string {
-  const i = articleId.indexOf("$");
-  return i === -1 ? "" : articleId.slice(0, i);
+/**
+ * The group's current (shortest-seen) normalized key, recomputed on demand
+ * from its stored headlines rather than tracked as a separately-maintained
+ * field — cheap given groups are a handful of parts, and it can never drift
+ * out of sync with `headlines[]`.
+ */
+function currentGroupKey(g: { headlines: string[] }): string {
+  let shortest = "";
+  for (const stripped of g.headlines) {
+    const { baseHeadline } = parsePartNumber(stripped);
+    const k = normKey(baseHeadline);
+    if (shortest === "" || k.length < shortest.length) shortest = k;
+  }
+  return shortest;
 }
 
 function reqHistoricalNewsOnce(
@@ -341,9 +386,18 @@ export async function pollDjNews(
     const key = normKey(baseHeadline);
     if (key.length < MIN_GROUP_KEY_LEN) continue;
 
+    const candidateTimeMs = parseTwsDateTimeMs(h.time) ?? nowMs;
+
+    // Grouping gate (review finding, fix round 1): prefix containment ALONE
+    // is not enough — two distinct releases can share a truncated-headline
+    // prefix. Require same provider AND a timestamp within 3 minutes of the
+    // group's anchor (its first part), same as the spike.
     let matchedKey: string | undefined;
-    for (const k of state.partGroups.keys()) {
-      if (k.startsWith(key) || key.startsWith(k)) {
+    for (const [k, g] of state.partGroups) {
+      if (g.providerCode !== h.providerCode) continue;
+      if (Math.abs(candidateTimeMs - g.anchorTimeMs) > GROUP_TIME_TOLERANCE_MS) continue;
+      const gKey = currentGroupKey(g);
+      if (gKey.startsWith(key) || key.startsWith(gKey)) {
         matchedKey = k;
         break;
       }
@@ -354,24 +408,25 @@ export async function pollDjNews(
       g.headlines.push(stripped);
       g.articleIds.push(h.articleId);
       g.lastGrewAtMs = nowMs;
-      if (key.length < matchedKey.length) {
-        // Keep the shortest form so a later, more-truncated part still matches.
-        state.partGroups.delete(matchedKey);
-        state.partGroups.set(key, g);
-      }
     } else {
-      state.partGroups.set(key, { headlines: [stripped], articleIds: [h.articleId], lastGrewAtMs: nowMs });
+      // Keyed by this (creating) part's own articleId — a stable, always-
+      // unique identity, so two distinct groups can never collide even when
+      // their normalized headline text is identical (see DjPollState doc).
+      state.partGroups.set(h.articleId, {
+        headlines: [stripped],
+        articleIds: [h.articleId],
+        lastGrewAtMs: nowMs,
+        providerCode: h.providerCode,
+        anchorTimeMs: candidateTimeMs,
+      });
     }
     alreadyGrouped.add(h.articleId);
   }
 
   // Quiescence sweep: complete (and remove) any group untouched for >= 20s.
   const completedReleases: DjPollOutput["completedReleases"] = [];
-  for (const [key, g] of Array.from(state.partGroups.entries())) {
+  for (const [mapKey, g] of Array.from(state.partGroups.entries())) {
     if (nowMs - g.lastGrewAtMs < QUIESCENCE_MS) continue;
-
-    state.partGroups.delete(key);
-    for (const id of g.articleIds) state.seenArticleIds.add(id);
 
     const parts = g.headlines
       .map((stripped, i) => {
@@ -387,14 +442,33 @@ export async function pollDjNews(
       parts[0].baseHeadline,
     );
 
-    if (!EARNINGS_HEADLINE_RE.test(headline)) continue; // distractor — drop silently, never emit
-
-    const chunks: string[] = [];
-    for (const part of parts) {
-      const providerCode = providerCodeFromArticleId(part.articleId);
-      const text = await reqNewsArticleOnce(ib, { providerCode, articleId: part.articleId });
-      chunks.push(text);
+    if (!EARNINGS_HEADLINE_RE.test(headline)) {
+      // Distractor — will never pass this regex no matter how often we
+      // retry, so drop for good: remove + mark seen, never emit.
+      state.partGroups.delete(mapKey);
+      for (const id of g.articleIds) state.seenArticleIds.add(id);
+      continue;
     }
+
+    // CRITICAL (review finding, fix round 1): fetch every part's body
+    // BEFORE mutating state. A single failing part must not throw the whole
+    // poll (losing other completed releases / flashes from the same call),
+    // and must not poison seenArticleIds — leaving the group untouched here
+    // makes it retryable on the next poll (still quiescent, so the sweep
+    // retries it immediately).
+    let chunks: string[];
+    try {
+      chunks = [];
+      for (const part of parts) {
+        const text = await reqNewsArticleOnce(ib, { providerCode: g.providerCode, articleId: part.articleId });
+        chunks.push(text);
+      }
+    } catch {
+      continue; // leave the group in state — retried next poll
+    }
+
+    state.partGroups.delete(mapKey);
+    for (const id of g.articleIds) state.seenArticleIds.add(id);
 
     completedReleases.push({
       headline,
