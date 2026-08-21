@@ -33,7 +33,7 @@
     "electron:dev": "npm run electron:compile && npm run electron:copy-static && electron .",
     "electron:build": "rm -rf dist && npm run build && npm run electron:compile && npm run electron:copy-static",
     "electron:pack": "npm run electron:build && electron-builder --mac",
-    "electron:deploy": "npm run electron:pack && npm run electron:install",
+    "electron:deploy": "npm run electron:pack && node scripts/verify-bundle.js && npm run electron:install",
     "electron:install": "osascript -e 'tell application \"/Applications/Vanguard Dashboard.app\" to quit' 2>/dev/null; sleep 1; rm -rf \"/Applications/Vanguard Dashboard.app\" && cp -R \"dist/mac-arm64/Vanguard Dashboard.app\" /Applications/ && echo '\u2705 Installed to /Applications' && open \"/Applications/Vanguard Dashboard.app\""
   },
   "dependencies": {
