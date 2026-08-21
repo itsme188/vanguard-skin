@@ -26,6 +26,24 @@ extraResources:
       # settings.json injection (electron/main.ts). The rm in electron:copy-static
       # removes it at the source; this exclusion is the defensive second layer.
       - "!.env*"
+      # NEVER ship the real database (or repo internals) in the DMG. Next's
+      # file tracer conservatively sweeps the project root into standalone
+      # (dynamic fs paths, e.g. the print-watch watcher); discovered
+      # 2026-08-21 when codesign failed on read-only .git objects — and the
+      # 2026-08-19 build was ALREADY carrying data/ (4.5GB, real financial
+      # DB + backups) in Resources/standalone. The packaged server reads the
+      # live DB via VANGUARD_DB_DIR (db-path.ts), so none of this is needed
+      # at runtime. next.config.ts outputFileTracingExcludes is the first
+      # layer; this is the defensive second layer that gates the bundle.
+      - "!data/**"
+      - "!.git/**"
+      - "!qa/**"
+      - "!tests/**"
+      - "!test-results/**"
+      - "!docs/**"
+      - "!scripts/**"
+      - "!*.png"
+      - "!*.md"
   # node_modules must be added explicitly — electron-builder excludes
   # directories named "node_modules" by default even in extraResources
   - from: .next/standalone/node_modules
