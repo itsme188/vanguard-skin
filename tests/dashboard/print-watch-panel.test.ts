@@ -166,6 +166,75 @@ describe("needsReverify", () => {
     });
     expect(needsReverify(line)).toBe(false);
   });
+
+  // Range-kind contracts (revenue_guide_next / eps_adj_guide_next) carry a
+  // value_high alongside value — a fresh independent agreement that revises
+  // only the TOP of a guidance range, with the floor unchanged, must still
+  // flag "superseded — re-verify" (fix round 1: needsReverify originally
+  // only compared `value`, never `value_high`).
+  const rangeContract = makeContract({
+    metric_id: "revenue_guide_next",
+    label: "Revenue guide (next Q)",
+    period: "NQ_guide",
+    kind: "range",
+    unit: "usd",
+  });
+
+  it("flags divergence when a fresh agreement revises the top of a guidance range but the floor holds", () => {
+    const candidates: TaggedCandidate[] = [
+      candidate({
+        metric_id: "revenue_guide_next",
+        doc_id: 40,
+        representation: "repA",
+        value: 19_500_000_000,
+        value_high: 20_200_000_000,
+      }),
+      candidate({
+        metric_id: "revenue_guide_next",
+        doc_id: 41,
+        representation: "repB",
+        value: 19_500_000_000,
+        value_high: 20_200_000_000,
+      }),
+    ];
+    const line = makeLine({
+      metric_id: "revenue_guide_next",
+      contract: rangeContract,
+      state: "accepted",
+      value: 19_500_000_000,
+      value_high: 20_000_000_000,
+      candidates_json: JSON.stringify(candidates),
+    });
+    expect(needsReverify(line)).toBe(true);
+  });
+
+  it("does not flag divergence when a fresh agreement matches both ends of the accepted range", () => {
+    const candidates: TaggedCandidate[] = [
+      candidate({
+        metric_id: "revenue_guide_next",
+        doc_id: 50,
+        representation: "repA",
+        value: 19_500_000_000,
+        value_high: 20_000_000_000,
+      }),
+      candidate({
+        metric_id: "revenue_guide_next",
+        doc_id: 51,
+        representation: "repB",
+        value: 19_500_000_000,
+        value_high: 20_000_000_000,
+      }),
+    ];
+    const line = makeLine({
+      metric_id: "revenue_guide_next",
+      contract: rangeContract,
+      state: "accepted",
+      value: 19_500_000_000,
+      value_high: 20_000_000_000,
+      candidates_json: JSON.stringify(candidates),
+    });
+    expect(needsReverify(line)).toBe(false);
+  });
 });
 
 // ── promoteSummary ──────────────────────────────────────────────────────
