@@ -45,7 +45,19 @@ export function updateSource(
   const fields: string[] = [];
   const params: (string | number | null)[] = [];
 
-  for (const [key, value] of Object.entries(updates)) {
+  // Removing a source from the earnings hierarchy (earnings_rank -> null)
+  // must also clear earnings_note. Otherwise the old prompt-guidance text
+  // survives the removal and silently reappears — pre-filled — the next
+  // time the source is re-added via "+ earnings", still shaping the
+  // earnings-email prompt even though the user believed they deleted it.
+  // Enforced here (not just the modal's remove handler) so no caller can
+  // null out the rank without the note following it.
+  const effectiveUpdates =
+    "earnings_rank" in updates && updates.earnings_rank === null
+      ? { ...updates, earnings_note: null }
+      : updates;
+
+  for (const [key, value] of Object.entries(effectiveUpdates)) {
     if (value !== undefined && UPDATABLE_SOURCE_COLUMNS.has(key)) {
       fields.push(`${key} = ?`);
       params.push(value);

@@ -41,4 +41,26 @@ describe("updateSource — earnings hierarchy fields", () => {
     updateSource(db, id, { earnings_note: null });
     expect(readSource(id).earnings_note).toBeNull();
   });
+
+  it("clearing earnings_rank also clears earnings_note (remove-from-hierarchy orphan)", () => {
+    // Mirrors handleRemoveFromHierarchy's PATCH: it only sends
+    // { earnings_rank: null }, never earnings_note. If the note survived,
+    // re-adding the source via "+ earnings" would pre-fill stale prompt
+    // instructions into a fresh hierarchy slot.
+    const id = seedSource("VK");
+    updateSource(db, id, { earnings_rank: 2, earnings_note: "Only trust the headline number." });
+    expect(readSource(id)).toEqual({ earnings_rank: 2, earnings_note: "Only trust the headline number." });
+
+    updateSource(db, id, { earnings_rank: null });
+    expect(readSource(id)).toEqual({ earnings_rank: null, earnings_note: null });
+  });
+
+  it("an explicit earnings_note alongside a non-null earnings_rank is not clobbered", () => {
+    // Guard against an overly-broad fix: only rank -> null should force the
+    // note to null. A normal reorder/add PATCH that includes a rank must
+    // still let the note through untouched.
+    const id = seedSource("VK");
+    updateSource(db, id, { earnings_rank: 1, earnings_note: "Read the guidance table only." });
+    expect(readSource(id)).toEqual({ earnings_rank: 1, earnings_note: "Read the guidance table only." });
+  });
 });
