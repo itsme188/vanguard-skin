@@ -332,8 +332,13 @@ function inlineFormat(text: string): string {
   // (2026-07-20 digest). A NUL byte cannot appear in email markdown, so the
   // placeholder can never collide or be emphasized. Mirror of
   // lib/calendar/briefing-html.ts — change BOTH sides together.
+  //
+  // The URL group allows one level of balanced parens — quiverquant news
+  // URLs embed "($MSFT)" ticker tags, and a plain `[^)]+` truncated the href
+  // at that inner ')', leaking the URL remainder as visible link text
+  // (earnings recap emails, 4/169 stored rows affected, 2026-08-21).
   const urls: string[] = [];
-  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label: string, url: string) => {
+  text = text.replace(/\[([^\]]+)\]\(((?:[^()]|\([^()]*\))+)\)/g, (_m, label: string, url: string) => {
     const i = urls.push(url) - 1;
     return `<a href="\u0000${i}\u0000" style="color:${COLORS.gold}; text-decoration:underline; text-underline-offset:2px;">${label}</a>`;
   });
