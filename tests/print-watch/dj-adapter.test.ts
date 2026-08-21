@@ -123,6 +123,8 @@ class FakeIBApi implements IBApiLike {
   newsArticleCalls: string[] = [];
   /** callIndex (1-based) -> headlines to replay for that poll's reqHistoricalNews. */
   responsesByCall: RawEvent[][] = [];
+  /** articleIds that should emit an `error` event instead of `newsArticle`, simulating a fetch failure. */
+  failingArticleIds = new Set<string>();
 
   on(event: string, listener: Listener): void {
     const list = this.listeners.get(event) ?? [];
@@ -165,6 +167,10 @@ class FakeIBApi implements IBApiLike {
   reqNewsArticle(reqId: number, providerCode: string, articleId: string): void {
     this.newsArticleCalls.push(articleId);
     queueMicrotask(() => {
+      if (this.failingArticleIds.has(articleId)) {
+        this.emit("error", new Error(`simulated fetch failure for ${articleId}`), 162, reqId);
+        return;
+      }
       this.emit("newsArticle", reqId, 0, `BODY[${articleId}]`);
     });
   }
@@ -317,5 +323,117 @@ describe("pollDjNews", () => {
     const out = await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0);
     expect(out.flashes[0].headline.startsWith("{A:")).toBe(false);
     expect(out.flashes[0].headline).toBe("* CrowdStrike Holdings 1Q Rev $1.39B >CRWD");
+  });
+
+  // ---------------------------------------------------------------------
+  // Fix round 1 — CRITICAL: a failing reqNewsArticle must not throw the
+  // whole poll, must not drop other completions/flashes from the same
+  // poll, and must leave the failed group retryable on the next poll.
+  // ---------------------------------------------------------------------
+
+  const ACME_PARTS: FixturePart[] = [
+    { n: 1, articleId: "DJ-N$acme0001", headline: "Press Release: Acme Corp Reports Second Quarter 2026 Results" },
+    { n: 2, articleId: "DJ-N$acme0002", headline: "Press Release: Acme Corp Reports Second Quarter" },
+  ];
+  function acmeEvents(): RawEvent[] {
+    return ACME_PARTS.map((p) => ev(p.articleId, "2026-06-03 20:03:00.0", rawHeadline(p)));
+  }
+  const FLASH_3 = {
+    articleId: "DJ-N$1e9d8341",
+    time: "2026-06-03 20:09:00.0",
+    headline: "{A:800015:L:en}* CrowdStrike Holdings Sees FY27 Rev $5.915B-$5.959B >CRWD",
+  };
+
+  it("a reqNewsArticle failure does not throw the poll, other completions/flashes survive, and the failed group is retryable next poll", async () => {
+    const flashesSoFar = [ev(FLASH_1.articleId, FLASH_1.time, FLASH_1.headline)];
+    const flashesTwo = [...flashesSoFar, ev(FLASH_2.articleId, FLASH_2.time, FLASH_2.headline)];
+    const flashesThree = [...flashesTwo, ev(FLASH_3.articleId, FLASH_3.time, FLASH_3.headline)];
+
+    api.responsesByCall = [
+      [...crwdEvents(4), ...acmeEvents(), ...flashesSoFar],
+      [...crwdEvents(7), ...acmeEvents(), ...flashesTwo],
+      [...crwdEvents(7), ...acmeEvents(), ...flashesThree],
+      [...crwdEvents(7), ...acmeEvents(), ...flashesThree],
+    ];
+    // A middle CRWD part fails to fetch on the poll where the group first
+    // goes quiescent.
+    api.failingArticleIds.add(CRWD_PARTS[3].articleId);
+
+    await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0);
+    await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0 + 10_000);
+
+    // Poll 3: CRWD and Acme both reach quiescence in the SAME call. CRWD's
+    // body fetch fails partway through; the call must still resolve (not
+    // throw), Acme must still complete, and FLASH_3 must still come out.
+    const out3 = await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0 + 30_000);
+
+    expect(out3.completedReleases).toHaveLength(1);
+    expect(out3.completedReleases[0].headline).toBe(
+      "Press Release: Acme Corp Reports Second Quarter 2026 Results",
+    );
+    expect(out3.completedReleases.some((r) => r.headline.includes("CrowdStrike"))).toBe(false);
+    expect(out3.flashes).toEqual([{ time: FLASH_3.time, headline: "* CrowdStrike Holdings Sees FY27 Rev $5.915B-$5.959B >CRWD" }]);
+
+    // The failed group survives in state, untouched — not silently lost.
+    const survivingCrwdGroup = [...state.partGroups.values()].find((g) => g.articleIds.includes(CRWD_PARTS[0].articleId));
+    expect(survivingCrwdGroup?.articleIds.length).toBe(7);
+    // Not poisoned: none of its article ids were marked seen by the failed attempt.
+    for (const p of CRWD_PARTS) expect(state.seenArticleIds.has(p.articleId)).toBe(false);
+
+    // Poll 4: the transient failure clears — the SAME group completes whole.
+    api.failingArticleIds.clear();
+    const out4 = await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0 + 50_000);
+    expect(out4.completedReleases).toHaveLength(1);
+    expect(out4.completedReleases[0].partCount).toBe(7);
+    const expectedOrder = CRWD_PARTS.map((p) => `BODY[${p.articleId}]`).join("\n\n");
+    expect(out4.completedReleases[0].stitchedText).toBe(expectedOrder);
+  });
+
+  // ---------------------------------------------------------------------
+  // Fix round 1 — IMPORTANT: prefix-containment grouping must be gated by
+  // provider equality + time proximity, or two unrelated releases sharing
+  // a truncated-headline prefix could merge into one bogus stitch.
+  // ---------------------------------------------------------------------
+
+  it("two same-prefix releases 10+ minutes apart form separate groups (time gate)", async () => {
+    const releaseX: FixturePart[] = [
+      { n: 1, articleId: "DJ-N$x0001", headline: "Press Release: Acme Corp Announces Strategic Update For Investors" },
+      { n: 2, articleId: "DJ-N$x0002", headline: "Press Release: Acme Corp Announces Strategic" },
+    ];
+    const releaseY: FixturePart[] = [
+      { n: 1, articleId: "DJ-N$y0001", headline: "Press Release: Acme Corp Announces Strategic Update For Investors" },
+      { n: 2, articleId: "DJ-N$y0002", headline: "Press Release: Acme Corp Announces Strategic" },
+    ];
+    const xEvents = releaseX.map((p) => ev(p.articleId, "2026-06-03 20:00:00.0", rawHeadline(p)));
+    const yEvents = releaseY.map((p) => ev(p.articleId, "2026-06-03 20:16:00.0", rawHeadline(p))); // 16 min later
+
+    api.responsesByCall = [[...xEvents, ...yEvents]];
+    const out = await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0);
+
+    expect(out.completedReleases).toEqual([]); // freshly created — not quiescent yet
+    expect(state.partGroups.size).toBe(2);
+    const groupX = [...state.partGroups.values()].find((g) => g.articleIds.includes("DJ-N$x0001"));
+    const groupY = [...state.partGroups.values()].find((g) => g.articleIds.includes("DJ-N$y0001"));
+    expect(groupX?.articleIds.sort()).toEqual(["DJ-N$x0001", "DJ-N$x0002"]);
+    expect(groupY?.articleIds.sort()).toEqual(["DJ-N$y0001", "DJ-N$y0002"]);
+  });
+
+  it("two same-prefix, same-time releases on different providers form separate groups (provider gate)", async () => {
+    const releaseDjN: FixturePart[] = [
+      { n: 1, articleId: "DJ-N$p0001", headline: "Press Release: Acme Corp Announces Strategic Update For Investors" },
+      { n: 2, articleId: "DJ-N$p0002", headline: "Press Release: Acme Corp Announces Strategic" },
+    ];
+    const releaseDjRta: FixturePart[] = [
+      { n: 1, articleId: "DJ-RTA$q0001", headline: "Press Release: Acme Corp Announces Strategic Update For Investors" },
+      { n: 2, articleId: "DJ-RTA$q0002", headline: "Press Release: Acme Corp Announces Strategic" },
+    ];
+    const djNEvents = releaseDjN.map((p) => ev(p.articleId, "2026-06-03 20:00:00.0", rawHeadline(p), "DJ-N"));
+    const djRtaEvents = releaseDjRta.map((p) => ev(p.articleId, "2026-06-03 20:00:00.0", rawHeadline(p), "DJ-RTA"));
+
+    api.responsesByCall = [[...djNEvents, ...djRtaEvents]];
+    const out = await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0);
+
+    expect(out.completedReleases).toEqual([]);
+    expect(state.partGroups.size).toBe(2);
   });
 });
