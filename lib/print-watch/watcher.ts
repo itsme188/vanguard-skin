@@ -79,6 +79,7 @@ import {
   getSheet,
   insertDocument,
   listActivePrints,
+  listDocuments,
   listUnparsedDocuments,
   markDocumentParsed,
   setPrintState,
@@ -116,8 +117,24 @@ const SEC_HOST = "sec.gov";
 const SEC_SPACING_MS = 300;
 const DEFAULT_SPACING_MS = 200;
 
-/** A parse that keeps failing must not burn the model budget forever. */
-const MAX_PARSE_ATTEMPTS = 3;
+/**
+ * A failed parse is retried, but never on the very next tick: three retries
+ * inside 30 seconds all fail for the SAME transient reason (a model 529, a
+ * half-written file) and would burn the document's whole retry budget in half
+ * a minute (review round 1, minor #5). Attempts are spaced instead, and the
+ * count cap survives as the model-budget guard.
+ */
+const PARSE_RETRY_SPACING_MS = 30_000;
+const MAX_PARSE_ATTEMPTS = 5;
+
+/**
+ * A stalled socket must not park `pollOnce` past the lease renewal — a 60s
+ * lease expiring under a hung EDGAR fetch is a split-brain invitation (review
+ * round 1, important #3). NOTE: this abandons the wait, it does not cancel the
+ * request; neither adapter takes an AbortSignal today, so a hung fetch keeps
+ * its socket until the runtime drops it.
+ */
+const SOURCE_TIMEOUT_MS = 15_000;
 
 const REJECTED_PREFIX = "rejected:";
 
@@ -140,8 +157,15 @@ export interface ArmedEventDto {
   eventDate: string;
   conId: number | null;
   cik: string | null;
-  /** Never null past this DTO (Codex #19) — the slot default backstops it. */
-  releaseTimeEt: string;
+  /**
+   * The BMO/AMC slot default backstops a missing resolution (Codex #19), with
+   * ONE exception (review round 1, minor #8): a TAS row — "during trading",
+   * a genuinely different category from BMO/AMC — that resolves to nothing
+   * stays null. Guessing 16:15 for it would open a window at the wrong hour
+   * and quietly claim coverage the watcher does not have; a null here means
+   * "no auto window, drop-zone only".
+   */
+  releaseTimeEt: string | null;
 }
 
 export interface WatchStatusRow {
@@ -243,12 +267,17 @@ export function _setTestSeams(overrides: Partial<WatcherSeams> | null): void {
 // module state
 // ---------------------------------------------------------------------------
 
+interface PrintWindow {
+  startMs: number;
+  endMs: number;
+}
+
 interface PrintRuntime {
   printId: number;
   dto: ArmedEventDto;
   issuerName: string | null;
-  windowStartMs: number;
-  windowEndMs: number;
+  /** null = no auto window (an unresolvable TAS row) — drop-zone only. */
+  window: PrintWindow | null;
   live: boolean;
   burst: boolean;
   loop: Promise<void> | null;
@@ -270,8 +299,10 @@ interface PrintStatus {
 
 const runtimes = new Map<number, PrintRuntime>();
 const statuses = new Map<number, PrintStatus>();
+/** printId -> the in-flight tail of that print's write chain (self-clearing). */
 const queues = new Map<number, Promise<void>>();
-const parseAttempts = new Map<number, number>();
+/** docId -> parse attempt bookkeeping (count + when the last one started). */
+const parseAttempts = new Map<number, { attempts: number; lastAtMs: number }>();
 /** symbol -> resolved CIK (null = looked up and genuinely absent). */
 const cikCache = new Map<string, string | null>();
 /** host -> epoch ms of the last outbound request (the per-host spacer). */
@@ -332,6 +363,32 @@ function stopAllLoops(): void {
   for (const rt of runtimes.values()) rt.live = false;
 }
 
+/**
+ * Take (or renew) the lease and report whether this process may act. Used both
+ * as the loop's periodic renewal and as the guard immediately before any sheet
+ * write — a process that lost the lease during a model call must not write the
+ * snapshot it read minutes ago over another owner's fresher work (review round
+ * 1, critical #1).
+ */
+function claimLease(db: Database.Database): boolean {
+  const nowMs = seams.now();
+  if (!acquireWatcherLease(db, watcherHolder(), nowMs, LEASE_TTL_MS)) {
+    leaseNote = `watcher owned by ${readLeaseHolder(db)}`;
+    stopAllLoops();
+    return false;
+  }
+  leaseNote = null;
+  leaseRenewedAtMs = nowMs;
+  return true;
+}
+
+/** Renewal is due every 20s. Called between sources, not just once per tick,
+ *  so one slow source can't push the renewal past the 60s TTL. */
+function renewLeaseIfDue(db: Database.Database): boolean {
+  if (seams.now() - leaseRenewedAtMs < LEASE_RENEW_MS) return true;
+  return claimLease(db);
+}
+
 // ---------------------------------------------------------------------------
 // armed events -> DTO
 // ---------------------------------------------------------------------------
@@ -360,11 +417,21 @@ export function buildArmedEventDto(db: Database.Database, row: ArmedWorksheetEve
     symbol: row.symbol,
   });
   const slot = deriveSlot(row);
-  // Codex #19: a window needs a time. The slot default is the last line of
-  // defence — AMC/unknown lands on the 16:15 convention already used by
-  // earningsHourToReleaseTime, BMO on 08:00.
+  const isTas = row.event_time?.trim().toUpperCase() === "TAS";
+  // Codex #19: a window needs a time, so the slot default is the last line of
+  // defence — BMO lands on 08:00, everything else on the 16:15 convention
+  // already used by earningsHourToReleaseTime. EXCEPT an unresolvable TAS row
+  // (review round 1, minor #8): "during trading" is its own category, and the
+  // cascade already refuses to consult the symbol's BMO/AMC history for it —
+  // inventing 16:15 here would open a window at an hour nobody predicted.
   const releaseTimeEt =
-    resolved && /^\d{2}:\d{2}$/.test(resolved) ? resolved : slot === "bmo" ? "08:00" : "16:15";
+    resolved && /^\d{2}:\d{2}$/.test(resolved)
+      ? resolved
+      : isTas
+        ? null
+        : slot === "bmo"
+          ? "08:00"
+          : "16:15";
 
   return {
     eventId: row.eventId,
@@ -376,7 +443,8 @@ export function buildArmedEventDto(db: Database.Database, row: ArmedWorksheetEve
   };
 }
 
-function windowFor(dto: ArmedEventDto): { startMs: number; endMs: number } | null {
+function windowFor(dto: ArmedEventDto): PrintWindow | null {
+  if (!dto.releaseTimeEt) return null;
   const instant = composeReleaseInstant(dto.eventDate, dto.releaseTimeEt);
   if (!instant) return null;
   const t = instant.getTime();
@@ -449,7 +517,12 @@ export function validateDocForEvent(text: string, ctx: DocGateContext): DocGateV
   for (const { q, year } of candidateQuarters(ctx.eventDate)) {
     if (new RegExp(`\\bq${q}\\b[^\\n]{0,24}${year}`, "i").test(lower)) return { ok: true };
     if (new RegExp(`${year}[^\\n]{0,24}\\bq${q}\\b`, "i").test(lower)) return { ok: true };
-    if (lower.includes(`${ORDINALS[q]} quarter`)) return { ok: true };
+    // The ordinal branch carries the same year requirement as the Qn branches
+    // (review round 1, minor #6) — "second quarter" on its own appears in
+    // prior-year comparatives and in last year's release just as readily.
+    if (lower.includes(`${ORDINALS[q]} quarter`) && new RegExp(`\\b${year}\\b`).test(lower)) {
+      return { ok: true };
+    }
   }
 
   if (symbolMatched && FISCAL_YEAR_RE.test(lower) && QUARTER_WORD_RE.test(lower)) {
@@ -508,9 +581,14 @@ function pendingLines(
 }
 
 function desiredState(current: PrintWatchState, nowMs: number, rt: PrintRuntime): PrintWatchState {
-  if (nowMs > rt.windowEndMs) return current === "parsed" ? "parsed" : "expired";
+  // No window (unresolvable TAS): the print never opens and never expires on
+  // a clock — it waits at `scheduled` for a drop.
+  if (!rt.window) {
+    return current === "acquired" || current === "parsed" ? current : "scheduled";
+  }
+  if (nowMs > rt.window.endMs) return current === "parsed" ? "parsed" : "expired";
   if (current === "acquired" || current === "parsed") return current;
-  return nowMs >= rt.windowStartMs ? "window_open" : "scheduled";
+  return nowMs >= rt.window.startMs ? "window_open" : "scheduled";
 }
 
 /** Never downgrade evidence: a document that landed after the window still
@@ -525,6 +603,18 @@ function advanceState(db: Database.Database, printId: number, next: "acquired" |
 
 function refreshCoverage(rt: PrintRuntime, twsUp: boolean | null): void {
   if (twsUp !== null) rt.lastTwsUp = twsUp;
+
+  // No window means no source ever polls for this print — say exactly that
+  // rather than listing capabilities that will never fire (review round 1,
+  // minor #8).
+  if (!rt.window) {
+    statusFor(rt.printId).coverage = [
+      "TAS — release time unknown; drop-zone only",
+      "drop: HTML/text",
+    ];
+    return;
+  }
+
   const notes: string[] = [];
   notes.push(rt.dto.conId === null ? "DJ: no conId — wire off" : "DJ: wire armed");
   if (rt.lastTwsUp === false) notes.push("TWS offline");
@@ -548,28 +638,24 @@ function irConfigFor(symbol: string): IrRssConfig | null {
  * a print that already has one.
  */
 export function ensurePrintWatch(db: Database.Database): void {
-  const holder = watcherHolder();
+  if (!claimLease(db)) return;
+
   const nowMs = seams.now();
-
-  if (!acquireWatcherLease(db, holder, nowMs, LEASE_TTL_MS)) {
-    leaseNote = `watcher owned by ${readLeaseHolder(db)}`;
-    stopAllLoops();
-    return;
-  }
-  leaseNote = null;
-  leaseRenewedAtMs = nowMs;
-
   const today = todayET(new Date(nowMs));
   const dates = [addDays(today, -1), today, addDays(today, 1)];
   const armed = getArmedWorksheetEvents(db, dates);
   const armedEventIds = new Set(armed.map((r) => r.eventId));
 
+  const armedPrintIds = new Set<number>();
+
   for (const row of armed) {
     const dto = buildArmedEventDto(db, row);
+    // A print with no resolvable window still EXISTS — the drop zone is the
+    // road for it, and the panel needs a row to drop onto.
     const window = windowFor(dto);
-    if (!window) continue; // unparseable date/time — nothing to open
 
     const printId = upsertPrint(db, dto.eventId, dto.symbol, dto.eventDate, dto.releaseTimeEt);
+    armedPrintIds.add(printId);
 
     // Recompile while the sheet is still untouched — bogeys are usually
     // curated AFTER arming, and a pre-print re-arm should pick up new
@@ -589,8 +675,7 @@ export function ensurePrintWatch(db: Database.Database): void {
         printId,
         dto,
         issuerName: row.issuer_name,
-        windowStartMs: window.startMs,
-        windowEndMs: window.endMs,
+        window,
         live: false,
         burst: false,
         loop: null,
@@ -607,21 +692,17 @@ export function ensurePrintWatch(db: Database.Database): void {
       // Keep the runtime's learned CIK; everything else re-derives.
       rt.dto = { ...dto, cik: rt.dto.cik ?? dto.cik };
       rt.issuerName = row.issuer_name;
-      rt.windowStartMs = window.startMs;
-      rt.windowEndMs = window.endMs;
+      rt.window = window;
     }
 
     const current = readPrintRow(db, printId)?.state ?? "scheduled";
     const next = desiredState(current, nowMs, rt);
     if (next !== current) setPrintState(db, printId, next);
 
-    if (next === "expired") {
-      rt.live = false;
-    } else if (nowMs >= rt.windowStartMs && nowMs <= rt.windowEndMs) {
-      startLoop(db, rt);
-    } else {
-      rt.live = false;
-    }
+    const inWindow =
+      rt.window !== null && nowMs >= rt.window.startMs && nowMs <= rt.window.endMs;
+    if (inWindow && next !== "expired") startLoop(db, rt);
+    else rt.live = false;
 
     refreshCoverage(rt, null);
   }
@@ -632,10 +713,36 @@ export function ensurePrintWatch(db: Database.Database): void {
     // leftover whose day has passed (the app was closed through its window) —
     // call the stale one `expired`, which is what actually happened to it.
     setPrintState(db, print.id, print.event_date < today ? "expired" : "disarmed");
+    // Stand the loop down but KEEP the runtime (review round 1, important #2):
+    // deleting it while its task is mid-await means a re-arm — a user flap, or
+    // a calendar sync flipping `superseded` under us — builds a SECOND runtime
+    // and a second loop, with a fresh djState that re-emits every flash. The
+    // runtime is dropped later, by retireFinishedRuntimes, once its task has
+    // actually exited.
     const rt = runtimes.get(print.id);
-    if (rt) {
-      rt.live = false;
-      runtimes.delete(print.id);
+    if (rt) rt.live = false;
+  }
+
+  retireFinishedRuntimes(db, armedPrintIds);
+}
+
+/**
+ * Drop the in-memory state of prints that are no longer armed AND whose loop
+ * has exited and whose write chain has drained (review round 1, minor #9).
+ * Nothing here touches the DB rows — this is purely the process-local
+ * bookkeeping that would otherwise grow for the life of the server.
+ */
+function retireFinishedRuntimes(db: Database.Database, armedPrintIds: Set<number>): void {
+  for (const [printId, rt] of Array.from(runtimes.entries())) {
+    if (armedPrintIds.has(printId)) continue;
+    if (rt.loop !== null || queues.has(printId)) continue; // still winding down
+
+    runtimes.delete(printId);
+    statuses.delete(printId);
+    try {
+      for (const doc of listDocuments(db, printId)) parseAttempts.delete(doc.id);
+    } catch {
+      // Bookkeeping only — a failed read here must never break the sweep.
     }
   }
 }
@@ -671,7 +778,8 @@ function startLoop(db: Database.Database, rt: PrintRuntime): void {
     return;
   }
   rt.live = true;
-  rt.loop = (async () => {
+
+  const task = (async () => {
     while (rt.live) {
       try {
         await pollOnce(db, rt);
@@ -686,25 +794,39 @@ function startLoop(db: Database.Database, rt: PrintRuntime): void {
       }
       await seams.sleep(CADENCE_MS);
     }
-    rt.loop = null;
   })();
+
+  // The task itself must never reject unhandled, and `rt.loop` must be cleared
+  // no matter how it ends — a crashed loop that left a stale handle behind
+  // could never be restarted (review round 1, minor #10).
+  const guarded: Promise<void> = task
+    .catch((err) => {
+      console.warn(`[print-watch] watch loop for print ${rt.printId} crashed:`, err);
+      statusFor(rt.printId).sources.loop = `loop crashed: ${errText(err)}`;
+    })
+    .finally(() => {
+      if (rt.loop !== guarded) return; // already superseded
+      rt.loop = null;
+      // A resume that landed in the gap between the while-exit and this
+      // callback would otherwise leave the print live with no task running.
+      if (rt.live) startLoop(db, rt);
+    });
+  rt.loop = guarded;
 }
 
 async function pollOnce(db: Database.Database, rt: PrintRuntime): Promise<void> {
-  const nowMs = seams.now();
-
   // Lease renewal rides the loop rather than its own timer: the loop is the
   // only thing the lease protects, so a lost renewal must stop exactly it.
-  if (nowMs - leaseRenewedAtMs >= LEASE_RENEW_MS) {
-    if (!acquireWatcherLease(db, watcherHolder(), nowMs, LEASE_TTL_MS)) {
-      leaseNote = `watcher owned by ${readLeaseHolder(db)}`;
-      stopAllLoops();
-      return;
-    }
-    leaseRenewedAtMs = nowMs;
-  }
+  // It is re-checked BETWEEN sources, so one slow source can't push the
+  // renewal past the 60s TTL and hand out a second owner.
+  if (!renewLeaseIfDue(db)) return;
 
-  if (nowMs > rt.windowEndMs) {
+  const window = rt.window;
+  if (!window) {
+    rt.live = false; // drop-zone-only print: nothing to poll
+    return;
+  }
+  if (seams.now() > window.endMs) {
     rt.live = false;
     const current = readPrintRow(db, rt.printId)?.state;
     if (current && current !== "parsed" && current !== "disarmed") {
@@ -717,14 +839,44 @@ async function pollOnce(db: Database.Database, rt: PrintRuntime): Promise<void> 
   // parsed gets drained on every tick, not just at ingest time.
   await runQueue(db, rt.printId);
 
-  const twsUp = await pollDjSource(db, rt);
-  await pollEdgarSource(db, rt);
+  if (!renewLeaseIfDue(db)) return;
+  const twsUp = await pollDjSource(db, rt, window);
+  if (!renewLeaseIfDue(db)) return;
+  await pollEdgarSource(db, rt, window);
+  if (!renewLeaseIfDue(db)) return;
   await pollIrSource(db, rt);
   refreshCoverage(rt, twsUp);
 }
 
+/**
+ * Abandon a source that has stopped answering, so the loop keeps its renewal
+ * cadence (review round 1, important #3). The underlying request is NOT
+ * cancelled — neither adapter accepts an AbortSignal — it is simply no longer
+ * waited on.
+ */
+async function withSourceTimeout<T>(label: string, run: () => Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      run(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${label} timed out after ${SOURCE_TIMEOUT_MS / 1000}s`)),
+          SOURCE_TIMEOUT_MS,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /** @returns whether TWS was up (null when DJ is off for this print). */
-async function pollDjSource(db: Database.Database, rt: PrintRuntime): Promise<boolean | null> {
+async function pollDjSource(
+  db: Database.Database,
+  rt: PrintRuntime,
+  window: PrintWindow,
+): Promise<boolean | null> {
   const status = statusFor(rt.printId);
   if (rt.dto.conId === null) {
     status.sources.dj = "no conId — wire off";
@@ -739,7 +891,7 @@ async function pollDjSource(db: Database.Database, rt: PrintRuntime): Promise<bo
     const out = await seams.pollDjNews(
       conn.ib,
       rt.dto.conId,
-      formatTwsDateTime(new Date(rt.windowStartMs)),
+      formatTwsDateTime(new Date(window.startMs)),
       formatTwsDateTime(new Date(seams.now())),
       rt.djState,
       seams.now(),
@@ -778,7 +930,11 @@ async function pollDjSource(db: Database.Database, rt: PrintRuntime): Promise<bo
   }
 }
 
-async function pollEdgarSource(db: Database.Database, rt: PrintRuntime): Promise<void> {
+async function pollEdgarSource(
+  db: Database.Database,
+  rt: PrintRuntime,
+  window: PrintWindow,
+): Promise<void> {
   const status = statusFor(rt.printId);
   try {
     if (rt.dto.cik === null && !rt.cikAttempted) {
@@ -788,7 +944,9 @@ async function pollEdgarSource(db: Database.Database, rt: PrintRuntime): Promise
         rt.dto.cik = cached;
       } else {
         await spaceHost(SEC_HOST);
-        const cik = await seams.resolveCik(rt.dto.symbol);
+        const cik = await withSourceTimeout("EDGAR CIK lookup", () =>
+          seams.resolveCik(rt.dto.symbol),
+        );
         cikCache.set(rt.dto.symbol.toUpperCase(), cik);
         rt.dto.cik = cik;
       }
@@ -799,11 +957,14 @@ async function pollEdgarSource(db: Database.Database, rt: PrintRuntime): Promise
     }
 
     await spaceHost(SEC_HOST);
-    const filings = await seams.pollEdgar(
-      rt.dto.cik,
-      new Date(rt.windowStartMs).toISOString(),
-      new Date(seams.now()).toISOString(),
-      rt.seenAccessions,
+    const cik = rt.dto.cik;
+    const filings = await withSourceTimeout("EDGAR poll", () =>
+      seams.pollEdgar(
+        cik,
+        new Date(window.startMs).toISOString(),
+        new Date(seams.now()).toISOString(),
+        rt.seenAccessions,
+      ),
     );
 
     let exhibits = 0;
@@ -836,7 +997,9 @@ async function pollIrSource(db: Database.Database, rt: PrintRuntime): Promise<vo
   }
   try {
     await spaceHost(cfg.host);
-    const items = await seams.pollIrRss(cfg, rt.seenIrLinks);
+    const items = await withSourceTimeout("IR feed poll", () =>
+      seams.pollIrRss(cfg, rt.seenIrLinks),
+    );
     for (const item of items) {
       rt.burst = true;
       await ingestDocument(
@@ -935,36 +1098,73 @@ export async function ingestDocument(
 }
 
 /**
- * ONE pipeline at a time per print (Codex #8): every caller chains onto the
- * print's in-flight drain instead of starting a parallel one, so two documents
- * landing together still parse in doc-id order.
+ * THE serializer for a print's sheet (Codex #8, hardened by review round 1,
+ * critical #1). Every writer — the document pipeline AND the flash lane —
+ * chains here, because each of them is a read-modify-write around a model call
+ * that takes seconds: they read the accumulated candidates off
+ * `candidates_json`, go away to the model, then write the whole set back. Two
+ * of those interleaving means the slower one's stale snapshot silently ERASES
+ * the faster one's candidates, and since the document is already
+ * `parsed_at`-stamped it never re-parses — a green line just reverts.
+ *
+ * Chaining (rather than a boolean "busy" flag) also preserves doc-id order for
+ * documents that land together.
  */
-function runQueue(db: Database.Database, printId: number): Promise<void> {
+function enqueueWrite(printId: number, task: () => Promise<void>): Promise<void> {
   const prev = queues.get(printId) ?? Promise.resolve();
-  const next = prev.catch(() => {}).then(() => drainQueue(db, printId));
+  const next = prev.catch(() => {}).then(task);
   queues.set(printId, next);
+  // Self-clearing tail, so an idle print holds no entry and
+  // retireFinishedRuntimes can tell "drained" from "still working".
+  void next
+    .catch(() => {})
+    .finally(() => {
+      if (queues.get(printId) === next) queues.delete(printId);
+    });
   return next;
+}
+
+function runQueue(db: Database.Database, printId: number): Promise<void> {
+  return enqueueWrite(printId, () => drainQueue(db, printId));
+}
+
+/** Is this document eligible for a parse attempt right now? Rejected docs
+ *  never are; a doc that just failed waits out PARSE_RETRY_SPACING_MS so its
+ *  budget isn't spent on three ticks of the same transient failure. */
+function parseEligible(doc: DocumentRow, nowMs: number): boolean {
+  if (doc.source.startsWith(REJECTED_PREFIX)) return false;
+  const record = parseAttempts.get(doc.id);
+  if (!record) return true;
+  if (record.attempts >= MAX_PARSE_ATTEMPTS) return false;
+  return nowMs - record.lastAtMs >= PARSE_RETRY_SPACING_MS;
 }
 
 async function drainQueue(db: Database.Database, printId: number): Promise<void> {
   const attemptedThisPass = new Set<number>();
   for (;;) {
+    const nowMs = seams.now();
     const pending = listUnparsedDocuments(db, printId).filter(
-      (doc) =>
-        !attemptedThisPass.has(doc.id) &&
-        !doc.source.startsWith(REJECTED_PREFIX) &&
-        (parseAttempts.get(doc.id) ?? 0) < MAX_PARSE_ATTEMPTS,
+      (doc) => !attemptedThisPass.has(doc.id) && parseEligible(doc, nowMs),
     );
     if (pending.length === 0) return;
 
     const doc = pending[0];
     attemptedThisPass.add(doc.id);
-    parseAttempts.set(doc.id, (parseAttempts.get(doc.id) ?? 0) + 1);
+
+    // Don't even spend a model call — let alone an attempt — when this
+    // process no longer owns the watcher; the owner will drain the document.
+    if (!claimLease(db)) {
+      statusFor(printId).sources.pipeline = "lease lost — parsing deferred to the owner";
+      return;
+    }
+
+    const record = parseAttempts.get(doc.id);
+    parseAttempts.set(doc.id, { attempts: (record?.attempts ?? 0) + 1, lastAtMs: nowMs });
     try {
       await processDocument(db, printId, doc);
     } catch (err) {
-      // The document stays unparsed on purpose — the next tick retries it,
-      // up to MAX_PARSE_ATTEMPTS.
+      // The document stays unparsed on purpose — a later tick retries it,
+      // spaced out, up to MAX_PARSE_ATTEMPTS.
       statusFor(printId).sources.pipeline = `doc ${doc.id}: ${errText(err)}`;
     }
   }
@@ -1000,19 +1200,35 @@ function collectCandidates(db: Database.Database, printId: number): TaggedCandid
   return out;
 }
 
+/**
+ * Reconcile the whole candidate pool and write the sheet.
+ *
+ * Guarded by the lease (review round 1, critical #1): the caller read this
+ * snapshot BEFORE a model call that may have taken a minute. If the lease
+ * changed hands in the meantime, another process is the authority on this
+ * sheet and our snapshot is stale — refuse rather than overwrite. The caller
+ * leaves the document unparsed, so the new owner picks it up.
+ *
+ * @returns false when the write was refused.
+ */
 function writeLines(
   db: Database.Database,
   printId: number,
   eventId: number,
   symbol: string,
   all: TaggedCandidate[],
-): void {
+): boolean {
+  if (!claimLease(db)) {
+    statusFor(printId).sources.pipeline = "lease lost mid-parse — sheet write refused";
+    return false;
+  }
   const { contracts, expected } = compileContracts(db, eventId, symbol);
   const accepted = getSheet(db, printId).filter((l) => l.state === "accepted");
   const lines = reconcile(contracts, expected, all, accepted).map((line) =>
     line.source_doc_id === FLASH_DOC_ID ? { ...line, source_doc_id: null } : line,
   );
   upsertLines(db, printId, lines);
+  return true;
 }
 
 async function processDocument(
@@ -1043,7 +1259,10 @@ async function processDocument(
   }
 
   const existing = collectCandidates(db, printId).filter((c) => c.doc_id !== doc.id);
-  writeLines(db, printId, print.event_id, print.symbol, [...existing, ...fresh]);
+  const written = writeLines(db, printId, print.event_id, print.symbol, [...existing, ...fresh]);
+  // Only stamp the document parsed if its candidates actually landed —
+  // stamping a refused write would strand the document forever.
+  if (!written) return;
   markDocumentParsed(db, doc.id);
   advanceState(db, printId, "parsed");
 }
@@ -1058,17 +1277,28 @@ async function processDocument(
  * validate — it arrived from a windowed news query for THIS print's conId, and
  * the reconciler already refuses to let a flash green a line or override a
  * real document's value (rule 5).
+ *
+ * Runs INSIDE the print's write chain (review round 1, critical #1): it is a
+ * read-modify-write around a model call exactly like the document pipeline, so
+ * the two must never interleave.
  */
-async function runFlashLane(db: Database.Database, rt: PrintRuntime): Promise<void> {
-  const print = readPrintRow(db, rt.printId);
-  if (!print) return;
-  const { contracts } = compileContracts(db, print.event_id, print.symbol);
-  try {
-    const parsed = await seams.extractCandidates(contracts, rt.flashHeadlines.join("\n"));
-    const flashCandidates = tag(parsed, FLASH_DOC_ID, "flash", false);
-    const existing = collectCandidates(db, rt.printId).filter((c) => c.representation !== "flash");
-    writeLines(db, rt.printId, print.event_id, print.symbol, [...existing, ...flashCandidates]);
-  } catch (err) {
-    statusFor(rt.printId).sources.flash = errText(err);
-  }
+function runFlashLane(db: Database.Database, rt: PrintRuntime): Promise<void> {
+  return enqueueWrite(rt.printId, async () => {
+    const print = readPrintRow(db, rt.printId);
+    if (!print) return;
+    const { contracts } = compileContracts(db, print.event_id, print.symbol);
+    try {
+      const parsed = await seams.extractCandidates(contracts, rt.flashHeadlines.join("\n"));
+      const flashCandidates = tag(parsed, FLASH_DOC_ID, "flash", false);
+      const existing = collectCandidates(db, rt.printId).filter(
+        (c) => c.representation !== "flash",
+      );
+      writeLines(db, rt.printId, print.event_id, print.symbol, [
+        ...existing,
+        ...flashCandidates,
+      ]);
+    } catch (err) {
+      statusFor(rt.printId).sources.flash = errText(err);
+    }
+  });
 }
