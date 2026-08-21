@@ -3,7 +3,7 @@ import { db } from "@/lib/db";
 import { getPrintByEventId, getSheet, markLineAccepted, clearLineAccepted } from "@/lib/print-watch/store";
 import { saveManualActuals } from "@/lib/earnings/actuals";
 import type { SaveManualActualsResult } from "@/lib/earnings/actuals";
-import type { PrintWatchLine } from "@/lib/print-watch/types";
+import type { PrintWatchLine, TaggedCandidate } from "@/lib/print-watch/types";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +13,7 @@ interface AcceptBody {
   unaccept?: string[];
   promoteHeadline?: boolean;
   force?: boolean;
+  forceSuperseded?: boolean;
 }
 
 type SaveManualActualsFailure = Extract<SaveManualActualsResult, { ok: false }>;
@@ -37,6 +38,51 @@ class PromotionRefused extends Error {
 // conflict/pending are excluded on purpose — those need resolving or
 // waiting, not overriding.
 const ACCEPTABLE_ACCEPT_STATES = new Set(["agreed", "flash", "single_source", "blank", "accepted"]);
+
+/** Same relative tolerance the reconciler and the panel's re-verify chip use —
+ *  two readings of the same printed number must agree to 1e-6. */
+function valuesDiverge(accepted: number | null, fresh: number | null): boolean {
+  if (accepted === null && fresh === null) return false;
+  if (accepted === null || fresh === null) return true;
+  const tolerance = Math.max(1e-9, Math.abs(accepted) * 1e-6);
+  return Math.abs(accepted - fresh) > tolerance;
+}
+
+/**
+ * Non-flash evidence on this line that disagrees with the number about to be
+ * promoted — the server-side twin of the panel's "superseded — re-verify" chip
+ * (fix wave, finding B).
+ *
+ * The panel could already SEE this (that is what the chip is), but the promote
+ * path never rechecked it: a correction that landed after the line was
+ * accepted — an 8-K/A, a corrected drop — left the stale EPS/revenue locked on
+ * the sheet, and the promote wrote it straight into the recap scoreboard. The
+ * chip is a rendering; this is the gate.
+ *
+ * Evidence is never removed from `candidates_json`, so a correcting candidate
+ * lands ALONGSIDE the original agreeing ones — which is why this looks for any
+ * single diverging candidate rather than re-running the reconciler (whose
+ * strict unanimity would only ever call that pool a conflict).
+ *
+ * Flash candidates are excluded on purpose: a wire flash rounding differently
+ * from the eventual document is expected noise, not a correction.
+ */
+function divergentCandidates(line: PrintWatchLine): TaggedCandidate[] {
+  let candidates: TaggedCandidate[];
+  try {
+    const parsed: unknown = JSON.parse(line.candidates_json);
+    if (!Array.isArray(parsed)) return [];
+    candidates = parsed as TaggedCandidate[];
+  } catch {
+    return [];
+  }
+
+  return candidates.filter((c) => {
+    if (c.representation === "flash") return false;
+    if (c.not_disclosed || c.value === null) return false;
+    return valuesDiverge(line.value, c.value) || valuesDiverge(line.value_high, c.value_high);
+  });
+}
 
 export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => ({}))) as AcceptBody;
@@ -74,6 +120,11 @@ export async function POST(request: NextRequest) {
   const unacceptList = (body.unaccept ?? []) as string[];
   const promoteHeadline = body.promoteHeadline === true;
   const force = body.force === true;
+  // Deliberately DISTINCT from `force` (the pre-print floor override): those
+  // are two different risks and one confirm must never silently answer the
+  // other. A desk that clicked through "the release time is in the future"
+  // has said nothing about whether the number itself was later corrected.
+  const forceSuperseded = body.forceSuperseded === true;
 
   const sheet = getSheet(db, print.id);
   const byMetric = new Map<string, PrintWatchLine>(sheet.map((l) => [l.metric_id, l]));
@@ -177,6 +228,28 @@ export async function POST(request: NextRequest) {
         },
         { status: 400 },
       );
+    }
+
+    // Supersession recheck (fix wave, finding B) — LAST, and before the
+    // transaction, so a 409 here has written nothing.
+    if (!forceSuperseded) {
+      const superseded: string[] = [];
+      for (const line of [epsLine!, revLine!]) {
+        const rivals = divergentCandidates(line);
+        if (rivals.length === 0) continue;
+        const values = Array.from(new Set(rivals.map((c) => String(c.value)))).slice(0, 3);
+        superseded.push(`${line.metric_id} (accepted ${line.value}, later evidence ${values.join(", ")})`);
+      }
+      if (superseded.length > 0) {
+        return NextResponse.json(
+          {
+            success: false,
+            code: "superseded",
+            error: `Newer evidence disagrees with the accepted number on ${superseded.join(" and ")}. Re-verify against the release before promoting — un-accept the line, let it reconcile, and accept the corrected figure, or send forceSuperseded to promote the accepted value as it stands.`,
+          },
+          { status: 409 },
+        );
+      }
     }
   }
 

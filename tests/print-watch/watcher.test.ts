@@ -57,6 +57,9 @@ interface FakeSeamState {
     flashes: Array<{ time: string; headline: string }>;
   }>;
   edgarCalls: number;
+  /** The seen-accession set as it looked at each poll — the watcher owns it
+   *  and must only add to it AFTER a filing's exhibits are ingested. */
+  edgarSeen: string[][];
   edgar: () => Promise<
     Array<{
       accession: string;
@@ -65,6 +68,9 @@ interface FakeSeamState {
       exhibits: Array<{ name: string; url: string; html: string }>;
     }>
   >;
+  /** {baseline, seen} as the watcher passed them, per IR poll. */
+  irCalls: Array<{ baseline: boolean; seen: string[] }>;
+  ir: (baseline: boolean) => Promise<Array<{ title: string; link: string; html: string }>>;
   twsUp: boolean;
   cik: string | null;
   /** One-shot timer failure, to crash a loop body on purpose. */
@@ -92,7 +98,10 @@ function installSeams(): void {
     djCalls: 0,
     dj: async () => ({ completedReleases: [], flashes: [] }),
     edgarCalls: 0,
+    edgarSeen: [],
     edgar: async () => [],
+    irCalls: [],
+    ir: async () => [],
     twsUp: true,
     cik: null,
     sleepThrowsOnce: false,
@@ -116,11 +125,20 @@ function installSeams(): void {
       return fake.dj();
     },
     resolveCik: async () => fake.cik,
-    pollEdgar: async () => {
+    pollEdgar: async (
+      _cik: string,
+      _startIso: string,
+      _endIso: string,
+      seenAccessions: Set<string>,
+    ) => {
       fake.edgarCalls += 1;
+      fake.edgarSeen.push([...seenAccessions]);
       return fake.edgar();
     },
-    pollIrRss: async () => [],
+    pollIrRss: async (_cfg, seenLinks: Set<string>, baseline: boolean) => {
+      fake.irCalls.push({ baseline, seen: [...seenLinks] });
+      return fake.ir(baseline);
+    },
     extractCandidates: async (contracts: LineContract[], text: string) => {
       fake.extractCalls.push({ text });
       return fake.extract(contracts, text);
@@ -730,6 +748,33 @@ describe("validateDocForEvent", () => {
     if (verdict.ok) throw new Error("expected the period-less document to be rejected");
     expect(verdict.reason).toContain("period");
   });
+
+  // Finding A, layer 2. The IR newsroom serves LAST quarter's results
+  // announcement from the same feed, matching the same title regex, forever —
+  // and it is the one source whose arrival carries no period evidence of its
+  // own. So an ir-page document has to name THIS event's quarter; the
+  // generous any-fiscal-year fallback (right for a wire item or an in-window
+  // 8-K exhibit) is not available to it.
+  const LAST_QUARTERS_IR_PAGE = [
+    "NVIDIA Announces Financial Results for First Quarter Fiscal 2027",
+    "SANTA CLARA, Calif. — NVIDIA (NASDAQ: NVDA) today reported revenue of $44,062 million",
+    "and non-GAAP diluted earnings per share of $0.96 for the first quarter of fiscal 2027.",
+  ].join("\n");
+
+  it("accepts last quarter's fiscal labels for a wire/EDGAR document (the loose branch)", () => {
+    expect(validateDocForEvent(LAST_QUARTERS_IR_PAGE, { ...ctx, kind: "edgar-ex99" }).ok).toBe(true);
+  });
+
+  it("REJECTS the same document when it arrived as an ir-page", () => {
+    const verdict = validateDocForEvent(LAST_QUARTERS_IR_PAGE, { ...ctx, kind: "ir-page" });
+    if (verdict.ok) throw new Error("expected last quarter's IR page to be rejected");
+    expect(verdict.reason).toContain("quarter");
+    expect(verdict.reason).toMatch(/IR page/i);
+  });
+
+  it("still accepts an ir-page that names this event's quarter", () => {
+    expect(validateDocForEvent(NVDA_RELEASE_TEXT, { ...ctx, kind: "ir-page" }).ok).toBe(true);
+  });
 });
 
 describe("ingestDocument — gate", () => {
@@ -755,6 +800,115 @@ describe("ingestDocument — gate", () => {
     expect(fake.extractCalls).toHaveLength(0);
     expect(getSheet(db, printId).every((l) => l.state === "pending")).toBe(true);
     expect(getWatchStatus(db)[0].sources.gate).toContain("rejected");
+  });
+
+  it("refuses an ir-page carrying last quarter's numbers, and parses nothing (finding A)", async () => {
+    const { eventId } = seedArmedEvent();
+    ensurePrintWatch(db);
+    const printId = printIdFor(eventId);
+
+    const result = await ingestDocument(
+      db,
+      printId,
+      "ir-page",
+      "ir-rss:NVIDIA Announces Financial Results for First Quarter Fiscal 2027",
+      "https://nvidianews.nvidia.com/news/q1-fy2027-results",
+      Buffer.from(
+        [
+          "NVIDIA Announces Financial Results for First Quarter Fiscal 2027",
+          "NVIDIA (NASDAQ: NVDA) today reported revenue of $44,062 million",
+          "and non-GAAP diluted earnings per share of $0.96 for the first quarter of fiscal 2027.",
+        ].join("\n"),
+        "utf8",
+      ),
+    );
+
+    expect(result.outcome).toBe("rejected");
+    expect(result.rejectReason).toMatch(/IR page/i);
+    expect(fake.extractCalls).toHaveLength(0);
+    expect(getSheet(db, printId).every((l) => l.state === "pending")).toBe(true);
+    expect(listDocuments(db, printId)[0].source.startsWith("rejected:")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// source seen-sets (fix wave, finding A baseline + finding F ordering)
+// ---------------------------------------------------------------------------
+
+describe("source seen-sets", () => {
+  const IR_LINK = "https://nvidianews.nvidia.com/news/q2-fy2027-results";
+
+  it("baselines the IR feed on the first poll, then marks a link seen only after it is ingested", async () => {
+    const { eventId } = seedArmedEvent();
+    fake.extract = async () => [candidate("eps_adj_q", 1.05)];
+    let served = false;
+    fake.ir = async (baseline: boolean) => {
+      // The real adapter fetches nothing on a baseline pass; this fake honours
+      // the same contract so the watcher's plumbing is what's under test.
+      if (baseline || served) return [];
+      served = true;
+      return [
+        {
+          title: "NVIDIA Announces Financial Results for Second Quarter Fiscal 2027",
+          link: IR_LINK,
+          html: NVDA_RELEASE_TEXT,
+        },
+      ];
+    };
+
+    ensurePrintWatch(db);
+    await tick(1);
+
+    // First poll of the watch: baseline, with nothing seen yet.
+    expect(fake.irCalls[0].baseline).toBe(true);
+    expect(fake.irCalls[0].seen).toEqual([]);
+    expect(getWatchStatus(db)[0].sources.rss).toContain("baseline");
+
+    await tick(11_000);
+
+    const later = fake.irCalls[fake.irCalls.length - 1];
+    expect(later.baseline).toBe(false);
+    // The link is in the seen-set only because the WATCHER put it there, after
+    // the document was ingested — the adapter never marks what it fetched.
+    expect(later.seen).toContain(IR_LINK);
+    expect(fake.irCalls.filter((c) => c.baseline)).toHaveLength(1);
+    expect(listDocuments(db, printIdFor(eventId))).toHaveLength(1);
+  });
+
+  it("marks an EDGAR accession seen only after its exhibits are ingested", async () => {
+    seedArmedEvent();
+    fake.cik = "0001045810";
+    fake.extract = async () => [candidate("eps_adj_q", 1.05)];
+    let served = false;
+    fake.edgar = async () => {
+      if (served) return [];
+      served = true;
+      return [
+        {
+          accession: "0001045810-26-000123",
+          form: "8-K",
+          acceptanceDateTime: "2026-08-26T20:22:00Z",
+          exhibits: [
+            {
+              name: "ex991.htm",
+              url: "https://www.sec.gov/Archives/edgar/data/1045810/x/ex991.htm",
+              html: NVDA_RELEASE_HTML,
+            },
+          ],
+        },
+      ];
+    };
+
+    ensurePrintWatch(db);
+    await tick(11_000);
+
+    // The poll that DELIVERED the filing saw an empty set — the adapter never
+    // marks what it returns...
+    expect(fake.edgarSeen.length).toBeGreaterThan(1);
+    expect(fake.edgarSeen[0]).toEqual([]);
+    // ...and the accession is only in the set on a later poll, because the
+    // watcher put it there after ingesting the exhibits.
+    expect(fake.edgarSeen[fake.edgarSeen.length - 1]).toContain("0001045810-26-000123");
   });
 });
 
@@ -1032,6 +1186,51 @@ describe("pipeline", () => {
     // tell the desk than "parsing now".
     expect(first.outcome).toBe("parsed");
     expect(second.outcome).toBe("duplicate");
+  });
+
+  it("reports a lease-blocked ingest as 'queued', and a later ensure drains it (finding C)", async () => {
+    const { eventId } = seedArmedEvent();
+    ensurePrintWatch(db);
+    const printId = printIdFor(eventId);
+    fake.extract = async () => [candidate("eps_adj_q", 1.05)];
+
+    // Another process owns the watcher by the time the drop lands.
+    db.prepare(
+      `INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))`,
+    ).run(
+      "print_watch_lease",
+      JSON.stringify({ holder: "9999@3999", expiresAt: Date.now() + 120_000 }),
+    );
+
+    const result = await ingestDocument(
+      db,
+      printId,
+      "user-drop",
+      "drop:release.txt",
+      null,
+      Buffer.from(NVDA_RELEASE_TEXT, "utf8"),
+    );
+
+    // NOT "parsed": the sheet did not move, and saying it did was the bug.
+    expect(result.outcome).toBe("queued");
+    expect(result.isNew).toBe(true);
+    expect(fake.extractCalls).toHaveLength(0);
+    expect(listDocuments(db, printId)[0].parsed_at).toBeNull();
+    expect(getSheet(db, printId).every((l) => l.state === "pending")).toBe(true);
+
+    // The window closes and the other process goes away. An expired print has
+    // no loop left, so the reconcile pass is what has to pick the document up.
+    vi.setSystemTime(new Date("2026-08-26T21:30:00Z"));
+    db.prepare(`DELETE FROM settings WHERE key = 'print_watch_lease'`).run();
+
+    ensurePrintWatch(db);
+    await flushIo();
+
+    expect(getPrintByEventId(db, eventId)!.state).toBe("parsed");
+    expect(listDocuments(db, printId)[0].parsed_at).not.toBeNull();
+    expect(getSheet(db, printId).find((l) => l.metric_id === "eps_adj_q")!.state).toBe(
+      "single_source",
+    );
   });
 
   it("reports a gate rejection as its own outcome, carrying the reason", async () => {

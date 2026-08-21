@@ -13,10 +13,44 @@
 // Every SEC request carries the declared User-Agent (SEC fair-access
 // policy). Request spacing/pacing across polls is the caller's job (Task 9's
 // per-host spacer) — this module never sleeps.
+//
+// OUTBOUND HARDENING (fix wave, finding E): every one of the four call sites
+// below goes through the shared `hardened-fetch.ts` — manual same-host
+// redirects (max 2), a content-length precheck plus a streamed 2MB cap, and a
+// content-type check. `res.json()` is never used: an unbounded parse of a
+// remote body is exactly what the cap exists to prevent, so JSON is read
+// through the capped reader and parsed here.
+//
+// SEEN-MARKING ORDER (fix wave, finding F): this module never adds to
+// `seenAccessions`. It reads the set for dedupe and returns what it found; the
+// WATCHER marks an accession seen once it has actually ingested the filing's
+// exhibits. Marking here meant a poll the watcher had abandoned on its source
+// timeout could still mutate the set from under it and retire a filing that
+// was never ingested.
 
-export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+import {
+  hardenedFetchJson,
+  hardenedFetchText,
+  CONTENT_TYPE_JSON,
+  CONTENT_TYPE_MARKUP,
+  type FetchLike,
+} from "./hardened-fetch";
+
+export type { FetchLike };
 
 const SEC_USER_AGENT = "PortfolioDesk contact@myportfoliodesk.com";
+const SEC_WWW_HOST = "www.sec.gov";
+const SEC_DATA_HOST = "data.sec.gov";
+
+/**
+ * The two SEC machine directories (`company_tickers.json`, a filer's
+ * `submissions/CIK…json`) are legitimately far larger than a press release —
+ * the ticker map alone is over a megabyte and grows with every new listing.
+ * They get their own ceiling so the shared 2MB document cap (right for an
+ * article page or an EX-99 exhibit) can never silently take EDGAR coverage
+ * offline the night it is needed. Still bounded, still streamed.
+ */
+const SEC_DIRECTORY_MAX_BYTES = 16 * 1024 * 1024;
 
 /** How far before `windowStartIso` a filing may still qualify. Companies do
  *  print early (project wire-time notes record XMTR hitting ~07:05 against
@@ -45,11 +79,17 @@ interface CompanyTickerEntry {
  * guesses.
  */
 export async function resolveCik(symbol: string, fetchFn: FetchLike = fetch): Promise<string | null> {
-  const res = await fetchFn("https://www.sec.gov/files/company_tickers.json", {
-    headers: { "User-Agent": SEC_USER_AGENT, Accept: "application/json" },
-  });
-  if (!res.ok) throw new Error(`EDGAR company_tickers.json HTTP ${res.status}`);
-  const json = (await res.json()) as Record<string, CompanyTickerEntry>;
+  const json = await hardenedFetchJson<Record<string, CompanyTickerEntry>>(
+    "https://www.sec.gov/files/company_tickers.json",
+    fetchFn,
+    {
+      host: SEC_WWW_HOST,
+      label: "EDGAR company_tickers.json",
+      contentType: CONTENT_TYPE_JSON,
+      headers: { "User-Agent": SEC_USER_AGENT, Accept: "application/json" },
+      maxBytes: SEC_DIRECTORY_MAX_BYTES,
+    },
+  );
 
   const target = symbol.toUpperCase();
   for (const entry of Object.values(json)) {
@@ -67,11 +107,17 @@ interface SubmissionsRecent {
 }
 
 async function fetchSubmissions(cik: string, fetchFn: FetchLike): Promise<SubmissionsRecent> {
-  const res = await fetchFn(`https://data.sec.gov/submissions/CIK${cik}.json`, {
-    headers: { "User-Agent": SEC_USER_AGENT, Accept: "application/json" },
-  });
-  if (!res.ok) throw new Error(`EDGAR submissions HTTP ${res.status}`);
-  const json = (await res.json()) as { filings: { recent: Record<string, unknown[]> } };
+  const json = await hardenedFetchJson<{ filings: { recent: Record<string, unknown[]> } }>(
+    `https://data.sec.gov/submissions/CIK${cik}.json`,
+    fetchFn,
+    {
+      host: SEC_DATA_HOST,
+      label: "EDGAR submissions",
+      contentType: CONTENT_TYPE_JSON,
+      headers: { "User-Agent": SEC_USER_AGENT, Accept: "application/json" },
+      maxBytes: SEC_DIRECTORY_MAX_BYTES,
+    },
+  );
   const r = json.filings.recent;
   return {
     form: r.form as string[],
@@ -94,11 +140,12 @@ async function fetchExhibitList(
   const cikNum = String(Number(cik));
   const accNoDash = accession.replace(/-/g, "");
   const base = `https://www.sec.gov/Archives/edgar/data/${cikNum}/${accNoDash}`;
-  const res = await fetchFn(`${base}/${accession}-index-headers.html`, {
+  const html = await hardenedFetchText(`${base}/${accession}-index-headers.html`, fetchFn, {
+    host: SEC_WWW_HOST,
+    label: "EDGAR index-headers",
+    contentType: CONTENT_TYPE_MARKUP,
     headers: { "User-Agent": SEC_USER_AGENT },
   });
-  if (!res.ok) throw new Error(`EDGAR index-headers HTTP ${res.status}`);
-  const html = await res.text();
 
   const out: Array<{ filename: string; url: string }> = [];
   const re = /&lt;TYPE&gt;([^\s<]+)[\s\S]*?&lt;FILENAME&gt;([^\s<]+)/g;
@@ -111,9 +158,12 @@ async function fetchExhibitList(
 }
 
 async function fetchExhibitHtml(url: string, fetchFn: FetchLike): Promise<string> {
-  const res = await fetchFn(url, { headers: { "User-Agent": SEC_USER_AGENT } });
-  if (!res.ok) throw new Error(`EDGAR exhibit HTTP ${res.status} for ${url}`);
-  return res.text();
+  return hardenedFetchText(url, fetchFn, {
+    host: SEC_WWW_HOST,
+    label: "EDGAR exhibit",
+    contentType: CONTENT_TYPE_MARKUP,
+    headers: { "User-Agent": SEC_USER_AGENT },
+  });
 }
 
 /**
@@ -121,10 +171,11 @@ async function fetchExhibitHtml(url: string, fetchFn: FetchLike): Promise<string
  * timestamp falls in `[windowStartIso - 15min, windowEndIso]`, fetching
  * every EX-99.* exhibit for each qualifying filing.
  *
- * `seenAccessions` is mutated in place: every accession this call reports is
- * added before returning, so a repeat poll against identical underlying
- * data returns nothing new. It is meant to be owned by the caller (one Set
- * per watcher run) and re-used across polls of the same print.
+ * `seenAccessions` is READ ONLY here (finding F): an accession already in the
+ * set is skipped, but nothing is ever added. The caller — which owns the set,
+ * one per watcher run — marks an accession seen once it has consumed the
+ * filing, so a poll abandoned mid-flight (the watcher's source timeout) cannot
+ * retire a filing that never reached the pipeline.
  */
 export async function pollEdgar(
   cik: string,
@@ -151,11 +202,11 @@ export async function pollEdgar(
     const acceptedMs = Date.parse(acceptanceDateTime);
     if (Number.isNaN(acceptedMs) || acceptedMs < windowStartMs || acceptedMs > windowEndMs) continue;
 
-    // A filing is only marked seen — and only added to the result — once its
-    // exhibits are FULLY fetched. A transient failure on one filing's
-    // exhibit walk must neither poison the other filings collected in this
-    // same poll (we don't throw out of the loop) nor permanently drop the
-    // failed filing (we don't mark it seen, so the next poll retries it).
+    // A filing is only added to the result once its exhibits are FULLY
+    // fetched. A transient failure on one filing's exhibit walk must neither
+    // poison the other filings collected in this same poll (we don't throw out
+    // of the loop) nor permanently drop the failed filing (it is never
+    // reported, so the next poll retries it whole).
     try {
       const exhibitList = await fetchExhibitList(cik, accession, fetchFn);
       const exhibits: Array<{ name: string; url: string; html: string }> = [];
@@ -163,10 +214,9 @@ export async function pollEdgar(
         const html = await fetchExhibitHtml(ex.url, fetchFn);
         exhibits.push({ name: ex.filename, url: ex.url, html });
       }
-      seenAccessions.add(accession);
       out.push({ accession, form, acceptanceDateTime, exhibits });
     } catch {
-      // Left un-seen on purpose — retried whole on the next poll.
+      // Left unreported on purpose — retried whole on the next poll.
       continue;
     }
   }

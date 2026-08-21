@@ -77,16 +77,38 @@ interface AcceptResponse {
   code?: string;
 }
 
+type DropOutcome = "parsed" | "rejected" | "duplicate" | "queued";
+
 interface DropResponse {
   success?: boolean;
   data?: {
     docId: number;
     isNew: boolean;
-    outcome?: "parsed" | "rejected" | "duplicate";
+    outcome?: DropOutcome;
     rejectReason?: string | null;
   };
   error?: string;
 }
+
+/**
+ * Standing disclosure under the panel header (fix wave, finding G). v1 is a
+ * PRE-GATE build: every number on this sheet was read out of a document by a
+ * model minutes ago, and the desk is about to trade on it. The one line that
+ * has to be true on every render is that nothing here has been checked by a
+ * human yet.
+ */
+export const PRE_GATE_DISCLOSURE =
+  "Pre-gate build — machine-read values; verify every number before accepting.";
+
+/**
+ * The promote confirm for a 409 `superseded` (fix wave, finding B). Kept
+ * distinct from the pre-print confirm on purpose: one asks "the release hasn't
+ * happened yet, sure?", this one asks "the number you accepted has since been
+ * contradicted, sure?" — and answering one must never be read as answering the
+ * other.
+ */
+export const SUPERSEDED_CONFIRM_COPY =
+  "Newer evidence disagrees with the accepted number — re-verify before promoting. Promote the accepted value anyway?";
 
 const HOT_STATES: ReadonlySet<PrintWatchState> = new Set(["window_open", "acquired"]);
 const HOT_POLL_MS = 2_000;
@@ -209,10 +231,11 @@ export interface DropOutcomeMessage {
 
 /** What to tell the desk after a drop returns. The old copy said "parsing
  *  now" for every 200 and never cleared — a rejected document (wrong issuer /
- *  wrong period) and a re-drop of bytes already in hand both sat there looking
- *  like work in progress that would never finish. */
+ *  wrong period), a re-drop of bytes already in hand, and a document parked
+ *  behind another process's lease all sat there looking like work in progress
+ *  that would never finish. */
 export function dropOutcomeMessage(
-  outcome: "parsed" | "rejected" | "duplicate" | undefined,
+  outcome: DropOutcome | undefined,
   rejectReason: string | null | undefined,
 ): DropOutcomeMessage {
   if (outcome === "rejected") {
@@ -223,6 +246,12 @@ export function dropOutcomeMessage(
   }
   if (outcome === "duplicate") {
     return { tone: "note", text: "Already ingested — no new evidence." };
+  }
+  if (outcome === "queued") {
+    return {
+      tone: "note",
+      text: "Queued — another process owns the watch; it will parse shortly.",
+    };
   }
   return { tone: "note", text: "Parsed — sheet updated." };
 }
@@ -634,6 +663,9 @@ export default function PrintWatchPanel() {
         <span className="font-mono text-ink-faint" style={{ fontSize: "11px" }}>
           {printCountLabel(prints)}
         </span>
+        <p className="basis-full text-ink-faint" style={{ fontSize: "11px" }}>
+          {PRE_GATE_DISCLOSURE}
+        </p>
       </div>
       <div className="divide-y divide-edge">
         {prints.map((p) => (
@@ -665,6 +697,7 @@ function PrintCard({ print, onChanged }: { print: PrintStatusEntry; onChanged: (
     unaccept?: string[];
     promoteHeadline?: boolean;
     force?: boolean;
+    forceSuperseded?: boolean;
   }): Promise<boolean> {
     if (noEventId) {
       setActionError("This print has no event reference from the server — cannot accept.");
@@ -688,6 +721,19 @@ function PrintCard({ print, onChanged }: { print: PrintStatusEntry; onChanged: (
           // who just declined that confirm reads as an instruction they
           // already followed and leaves them looking for a second button.
           setActionError("Promote cancelled — release time is still in the future.");
+          return false;
+        }
+        // The server rechecked the accepted pair against the evidence that has
+        // landed since (fix wave, finding B). Its own confirm, its own
+        // override flag — never the pre-print `force`.
+        if (res.status === 409 && data?.code === "superseded" && !body.forceSuperseded) {
+          const confirmed = window.confirm(
+            `${data.error ?? "Newer evidence disagrees with the accepted number."}\n\n${SUPERSEDED_CONFIRM_COPY}`,
+          );
+          if (confirmed) return postAccept({ ...body, forceSuperseded: true });
+          setActionError(
+            "Promote cancelled — re-verify the superseded line against the release, then accept the corrected figure.",
+          );
           return false;
         }
         setActionError(data?.error ?? `Server returned ${res.status}`);

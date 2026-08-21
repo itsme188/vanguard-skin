@@ -20,7 +20,13 @@ import Database from "better-sqlite3";
 import { NextRequest } from "next/server";
 import { runMigrations } from "@/lib/db/migrate";
 import { upsertPrint, upsertLines, getSheet, markLineAccepted } from "@/lib/print-watch/store";
-import type { LineContract, ExpectedValue, PrintWatchLine, LineStateKind } from "@/lib/print-watch/types";
+import type {
+  LineContract,
+  ExpectedValue,
+  PrintWatchLine,
+  LineStateKind,
+  TaggedCandidate,
+} from "@/lib/print-watch/types";
 
 const hoisted = vi.hoisted(() => ({
   db: null as unknown as Database.Database,
@@ -433,6 +439,139 @@ describe("POST /api/print-watch/accept", () => {
       const sheet = getSheet(hoisted.db, printId);
       expect(sheet.find((l) => l.metric_id === "eps_adj_q")!.state).toBe("accepted");
       expect(sheet.find((l) => l.metric_id === "revenue_q")!.state).toBe("accepted");
+    });
+  });
+
+  // Fix wave, finding B: the panel could SEE a superseded accepted line (the
+  // "superseded — re-verify" chip) but the promote path never rechecked it, so
+  // a corrected release could sit flagged on screen while the stale number was
+  // written into the recap scoreboard.
+  describe("promoteHeadline — supersession recheck (409 'superseded')", () => {
+    function taggedCandidate(overrides: Partial<TaggedCandidate> = {}): TaggedCandidate {
+      return {
+        metric_id: "eps_adj_q",
+        value: 1.42,
+        value_high: null,
+        raw_text: "1.42",
+        snippet: "adjusted EPS of $1.42",
+        location_hint: null,
+        not_disclosed: false,
+        doc_id: 7,
+        representation: "repA",
+        weak_pair: false,
+        ...overrides,
+      };
+    }
+
+    function seedPair(candidatesJson: string, revenueCandidatesJson = "[]") {
+      const seeded = seedPrint([
+        makeLine("eps_adj_q", "agreed", 1.42, { candidates_json: candidatesJson }),
+        makeLine("revenue_q", "agreed", 5_000_000, { candidates_json: revenueCandidatesJson }),
+      ]);
+      markLineAccepted(hoisted.db, seeded.printId, "eps_adj_q");
+      markLineAccepted(hoisted.db, seeded.printId, "revenue_q");
+      return seeded;
+    }
+
+    it("409s with code 'superseded' when a non-flash candidate disagrees with the accepted EPS, writing nothing", async () => {
+      const { eventId, printId } = seedPair(
+        JSON.stringify([
+          taggedCandidate(),
+          // The correction: an 8-K/A, or a re-drop of the corrected release.
+          taggedCandidate({ value: 1.24, doc_id: 9, snippet: "adjusted EPS of $1.24" }),
+        ]),
+      );
+
+      const { status, json } = await callAccept({ eventId, promoteHeadline: true });
+
+      expect(status).toBe(409);
+      expect(json.success).toBe(false);
+      expect(json.code).toBe("superseded");
+      expect(json.error).toMatch(/eps_adj_q/);
+      expect(json.error).toMatch(/1\.24/);
+      expect(saveManualActuals).not.toHaveBeenCalled();
+
+      // Nothing written: the accepted lines stay accepted, no actuals land.
+      const sheet = getSheet(hoisted.db, printId);
+      expect(sheet.find((l) => l.metric_id === "eps_adj_q")!.state).toBe("accepted");
+      const event = hoisted.db
+        .prepare(`SELECT actual_value, manual_actuals_at FROM calendar_events WHERE id = ?`)
+        .get(eventId) as { actual_value: string | null; manual_actuals_at: string | null };
+      expect(event.actual_value).toBeNull();
+      expect(event.manual_actuals_at).toBeNull();
+    });
+
+    it("catches a diverging revenue candidate too, naming the metric", async () => {
+      const { eventId } = seedPair(
+        "[]",
+        JSON.stringify([
+          taggedCandidate({ metric_id: "revenue_q", value: 5_400_000, doc_id: 9 }),
+        ]),
+      );
+
+      const { status, json } = await callAccept({ eventId, promoteHeadline: true });
+
+      expect(status).toBe(409);
+      expect(json.code).toBe("superseded");
+      expect(json.error).toMatch(/revenue_q/);
+    });
+
+    it("does NOT trigger on a flash candidate that disagrees — wire rounding is expected noise", async () => {
+      const { eventId } = seedPair(
+        JSON.stringify([
+          taggedCandidate(),
+          taggedCandidate({ value: 1.4, representation: "flash", doc_id: 0 }),
+        ]),
+      );
+
+      const { status, json } = await callAccept({ eventId, promoteHeadline: true });
+
+      expect(status).toBe(200);
+      expect(json.data!.promoted!.basis).toBe("adj");
+      expect(saveManualActuals).toHaveBeenCalled();
+    });
+
+    it("does NOT trigger on a not_disclosed candidate, or on agreement within 1e-6", async () => {
+      const { eventId } = seedPair(
+        JSON.stringify([
+          taggedCandidate({ value: 1.42 + 1.42e-9 }),
+          taggedCandidate({ value: null, not_disclosed: true, doc_id: 11 }),
+        ]),
+      );
+
+      const { status } = await callAccept({ eventId, promoteHeadline: true });
+      expect(status).toBe(200);
+    });
+
+    it("forceSuperseded: true promotes the accepted value anyway", async () => {
+      const { eventId, printId } = seedPair(
+        JSON.stringify([taggedCandidate(), taggedCandidate({ value: 1.24, doc_id: 9 })]),
+      );
+
+      const { status, json } = await callAccept({
+        eventId,
+        promoteHeadline: true,
+        forceSuperseded: true,
+      });
+
+      expect(status).toBe(200);
+      expect(json.data!.promoted!.actualValue).toMatch(/EPS 1\.42/);
+      expect(getSheet(hoisted.db, printId).find((l) => l.metric_id === "eps_adj_q")!.state).toBe(
+        "accepted",
+      );
+    });
+
+    it("the pre-print force does NOT double as a supersession override", async () => {
+      const { eventId } = seedPair(
+        JSON.stringify([taggedCandidate(), taggedCandidate({ value: 1.24, doc_id: 9 })]),
+      );
+
+      // `force` answers "the release time is still in the future" — a
+      // different question, and it must not silently answer this one.
+      const { status, json } = await callAccept({ eventId, promoteHeadline: true, force: true });
+
+      expect(status).toBe(409);
+      expect(json.code).toBe("superseded");
     });
   });
 

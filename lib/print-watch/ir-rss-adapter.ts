@@ -17,23 +17,42 @@
 //     Quarter Fiscal 2027") only by title regex.
 //
 // Hardening (Codex #24 — this adapter fetches attacker-reachable content: a
-// newsroom feed and the article pages it links to):
-//   - `redirect: "manual"` on every fetch; a 3xx is followed only after the
-//     Location header revalidates to the SAME host as the config, max 2 hops.
-//   - `content-length` precheck (reject before reading) AND a streamed byte
-//     cap enforced while reading (a missing/lying content-length must not
-//     bypass the cap).
-//   - Response content-type must look like XML or HTML.
+// newsroom feed and the article pages it links to). The transport rules
+// (manual same-host redirects, content-length precheck + streamed 2MB cap,
+// content-type check) now live in the shared `hardened-fetch.ts` used by this
+// adapter AND the EDGAR one (fix wave, finding E). Adapter-local rules:
 //   - RSS item `<link>` values are only trusted when they resolve to the
 //     config's host — an off-host link is dropped, never fetched.
 //   - RSS items are extracted via regex/string ops — no XML parser dependency
 //     (per plan: no new deps for this task).
 //
+// BASELINE PASS (fix wave, finding A — Wednesday-critical). The title regex
+// matches LAST quarter's results announcement just as well as tonight's: an
+// unguarded first poll would download a months-old article, hand it to the
+// pipeline as a fresh document, and green the sheet with last quarter's
+// numbers. So the FIRST poll of a watch is a baseline: every item currently in
+// the feed is recorded as seen WITHOUT being fetched. Only an item that
+// appears AFTER the watch started can ever become evidence.
+//
+// SEEN-MARKING ORDER (fix wave, finding F). This adapter marks seen only what
+// it will never fetch — baseline items and non-matching newsroom noise. A
+// matched item is returned UNMARKED; the watcher marks it once it has actually
+// consumed it, so an article whose download fails (or whose poll the watcher
+// abandons on its source timeout) is retried on the next poll instead of being
+// silently skipped forever.
+//
 // Per-host request spacing (SEC 300ms / others 200ms) is the WATCHER's job
 // (Task 9's shared spacer) — this module has no polling loop or timers of
 // its own; callers own cadence and pass a fresh `seenLinks` Set they persist.
 
-export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
+import {
+  hardenedFetchText,
+  isSameHost,
+  CONTENT_TYPE_MARKUP,
+  type FetchLike,
+} from "./hardened-fetch";
+
+export type { FetchLike };
 
 export interface IrRssConfig {
   symbol: string;
@@ -55,9 +74,6 @@ export const IR_RSS_CONFIGS: IrRssConfig[] = [
   },
 ];
 
-const MAX_BYTES = 2 * 1024 * 1024; // 2MB cap, both precheck and streamed
-const MAX_REDIRECT_HOPS = 2;
-
 interface RssItem {
   title: string;
   link: string;
@@ -73,14 +89,6 @@ interface RssItem {
 function bust(url: string): string {
   const nonce = `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
   return url.includes("?") ? `${url}&zz=${nonce}` : `${url}?zz=${nonce}`;
-}
-
-function isSameHost(url: string, host: string): boolean {
-  try {
-    return new URL(url).host === host;
-  } catch {
-    return false;
-  }
 }
 
 /** RSS `<item>` extraction via regex/string ops — no XML dependency. */
@@ -122,109 +130,70 @@ function sortByModDateDesc(items: RssItem[]): RssItem[] {
   );
 }
 
-/** Read a response body up to `capBytes`, streaming when possible so a
- *  missing or dishonest content-length header cannot bypass the cap. */
-async function readCapped(res: Response, capBytes: number, url: string): Promise<string> {
-  if (!res.body) {
-    const text = await res.text();
-    if (Buffer.byteLength(text, "utf8") > capBytes) {
-      throw new Error(`ir-rss-adapter: body exceeds ${capBytes}-byte cap for ${url}`);
-    }
-    return text;
-  }
+export interface IrPollItem {
+  title: string;
+  link: string;
+  html: string;
+}
 
-  const reader = res.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (value) {
-      total += value.byteLength;
-      if (total > capBytes) {
-        await reader.cancel().catch(() => {});
-        throw new Error(`ir-rss-adapter: streamed body exceeded ${capBytes}-byte cap for ${url}`);
-      }
-      chunks.push(value);
-    }
-  }
-  return Buffer.concat(chunks.map((c) => Buffer.from(c))).toString("utf8");
+export interface IrPollOptions {
+  /**
+   * FIRST poll of a watch (finding A). Every item currently in the feed is
+   * recorded in `seenLinks` and NOTHING is fetched: the feed's existing
+   * contents are last quarter's history, not tonight's print. Pass false on
+   * every subsequent poll of the same watch.
+   */
+  baseline?: boolean;
 }
 
 /**
- * Fetch `url`, refusing to leave `host`: `redirect: "manual"` + Location
- * revalidated against `host` for up to `MAX_REDIRECT_HOPS` hops, then a
- * content-type check (XML or HTML) and a byte-capped body read
- * (content-length precheck + streamed cap).
- */
-async function hardenedFetch(url: string, host: string, fetchFn: FetchLike): Promise<string> {
-  let currentUrl = url;
-  let res: Response;
-
-  for (let hop = 0; ; hop += 1) {
-    res = await fetchFn(currentUrl, { redirect: "manual" });
-    if (res.status < 300 || res.status >= 400) break;
-
-    if (hop >= MAX_REDIRECT_HOPS) {
-      throw new Error(`ir-rss-adapter: exceeded ${MAX_REDIRECT_HOPS} redirect hops fetching ${url}`);
-    }
-    const location = res.headers.get("location");
-    if (!location) {
-      throw new Error(`ir-rss-adapter: redirect ${res.status} with no Location header for ${currentUrl}`);
-    }
-    const nextUrl = new URL(location, currentUrl).toString();
-    if (!isSameHost(nextUrl, host)) {
-      throw new Error(
-        `ir-rss-adapter: refusing cross-host redirect from ${currentUrl} to ${nextUrl} (expected host ${host})`,
-      );
-    }
-    currentUrl = nextUrl;
-  }
-
-  if (res.status < 200 || res.status >= 300) {
-    throw new Error(`ir-rss-adapter: HTTP ${res.status} for ${currentUrl}`);
-  }
-
-  const contentType = res.headers.get("content-type") ?? "";
-  if (!/xml|html/i.test(contentType)) {
-    throw new Error(`ir-rss-adapter: unexpected content-type "${contentType}" for ${currentUrl}`);
-  }
-
-  const contentLength = res.headers.get("content-length");
-  if (contentLength && Number(contentLength) > MAX_BYTES) {
-    throw new Error(
-      `ir-rss-adapter: content-length ${contentLength} exceeds ${MAX_BYTES}-byte cap for ${currentUrl}`,
-    );
-  }
-
-  return readCapped(res, MAX_BYTES, currentUrl);
-}
-
-/**
- * Poll one IR RSS feed. Returns quarterly-results items not already in
- * `seenLinks` (mutated in place — the caller owns persistence across polls),
- * newest-`modDate`-first. Every new item's link is added to `seenLinks`
- * whether or not its title matches, so newsroom noise (conference-call
- * notices, etc.) is not re-evaluated on every poll.
+ * Poll one IR RSS feed. Returns quarterly-results items that appeared since
+ * the baseline and are not already in `seenLinks`, newest-`modDate`-first.
+ *
+ * `seenLinks` is READ for dedupe and mutated ONLY for links this call will
+ * never fetch — baseline items and non-matching newsroom noise (conference-
+ * call notices, etc.), which must not be re-evaluated on every poll. A matched
+ * item comes back UNMARKED: the caller marks it once it has consumed it
+ * (finding F), so a failed or abandoned article download retries next poll
+ * rather than disappearing.
  */
 export async function pollIrRss(
   cfg: IrRssConfig,
   seenLinks: Set<string>,
   fetchFn: FetchLike = fetch,
-): Promise<Array<{ title: string; link: string; html: string }>> {
-  const feedXml = await hardenedFetch(bust(cfg.feedUrl), cfg.host, fetchFn);
+  opts: IrPollOptions = {},
+): Promise<IrPollItem[]> {
+  const feedXml = await hardenedFetchText(bust(cfg.feedUrl), fetchFn, {
+    host: cfg.host,
+    label: "ir-rss-adapter",
+    contentType: CONTENT_TYPE_MARKUP,
+  });
   const items = sortByModDateDesc(parseRssItems(feedXml));
 
-  const results: Array<{ title: string; link: string; html: string }> = [];
+  const results: IrPollItem[] = [];
 
   for (const item of items) {
     if (!isSameHost(item.link, cfg.host)) continue; // never trust an off-host link
     if (seenLinks.has(item.link)) continue;
-    seenLinks.add(item.link);
 
-    if (!cfg.titleRegex.test(item.title)) continue;
+    // Baseline: everything already in the feed at watch start is history.
+    if (opts.baseline) {
+      seenLinks.add(item.link);
+      continue;
+    }
 
-    const html = await hardenedFetch(item.link, cfg.host, fetchFn);
+    // Newsroom noise: never fetched, so marking it here costs nothing and
+    // stops it being re-tested every 10 seconds.
+    if (!cfg.titleRegex.test(item.title)) {
+      seenLinks.add(item.link);
+      continue;
+    }
+
+    const html = await hardenedFetchText(item.link, fetchFn, {
+      host: cfg.host,
+      label: "ir-rss-adapter",
+      contentType: CONTENT_TYPE_MARKUP,
+    });
     results.push({ title: item.title, link: item.link, html });
   }
 

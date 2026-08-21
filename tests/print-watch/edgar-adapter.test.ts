@@ -7,30 +7,54 @@ const CIK = "0001045810";
 interface Call {
   url: string;
   headers: Record<string, string>;
+  redirect?: RequestRedirect;
 }
 
 interface MockRoute {
   status?: number;
   json?: unknown;
   text?: string;
+  /** Overrides the content-type the route would otherwise infer. */
+  contentType?: string;
+  /** Raw body + headers, for the hardening tests (redirects, size caps). */
+  body?: BodyInit | null;
+  headers?: Record<string, string>;
 }
 
-/** Route table keyed by exact URL; each entry returns a canned response. */
+/**
+ * Route table keyed by exact URL; each entry returns a canned response.
+ *
+ * These are REAL `Response` objects (fix wave, finding E): every SEC fetch now
+ * goes through the shared hardened fetch, which reads `res.headers` and streams
+ * `res.body` — a hand-rolled `{ok, status, json, text}` stub cannot exercise
+ * the redirect, content-type or byte-cap rules it exists to enforce.
+ */
 function makeMockFetch(
   routes: Record<string, MockRoute>,
   calls: Call[] = [],
 ): { fetchFn: FetchLike; calls: Call[] } {
   const fetchFn: FetchLike = async (url, init) => {
-    calls.push({ url, headers: (init?.headers as Record<string, string>) ?? {} });
+    calls.push({
+      url,
+      headers: (init?.headers as Record<string, string>) ?? {},
+      redirect: init?.redirect,
+    });
     const route = routes[url];
     if (!route) throw new Error(`unmocked fetch: ${url}`);
     const status = route.status ?? 200;
-    return {
-      ok: status < 400,
+
+    if (route.body !== undefined || route.headers) {
+      return new Response(route.body ?? null, { status, headers: route.headers });
+    }
+
+    const isJson = route.json !== undefined;
+    const body = isJson ? JSON.stringify(route.json) : (route.text ?? "");
+    return new Response(status === 204 ? null : body, {
       status,
-      json: async () => route.json,
-      text: async () => route.text ?? "",
-    } as Response;
+      headers: {
+        "content-type": route.contentType ?? (isJson ? "application/json" : "text/html"),
+      },
+    });
   };
   return { fetchFn, calls };
 }
@@ -184,14 +208,26 @@ describe("pollEdgar", () => {
     }
   });
 
+  it("never marks an accession seen itself — that is the caller's job once it has ingested (finding F)", async () => {
+    const { fetchFn } = makeMockFetch(buildRoutes());
+    const seen = new Set<string>();
+    const filings = await pollEdgar(CIK, WINDOW_START, WINDOW_END, seen, fetchFn);
+
+    expect(filings).toHaveLength(2);
+    // A poll the watcher abandons on its source timeout used to keep running
+    // and mutate this set behind its back, retiring a filing that never
+    // reached the pipeline.
+    expect(seen.size).toBe(0);
+  });
+
   it("dedupes against seenAccessions on a second poll of identical data", async () => {
     const { fetchFn, calls } = makeMockFetch(buildRoutes());
     const seen = new Set<string>();
 
     const first = await pollEdgar(CIK, WINDOW_START, WINDOW_END, seen, fetchFn);
     expect(first).toHaveLength(2);
-    expect(seen.has(NEW_8K_ACCESSION)).toBe(true);
-    expect(seen.has(NEW_6K_ACCESSION)).toBe(true);
+    // The CALLER marks, once it has consumed each filing.
+    for (const filing of first) seen.add(filing.accession);
 
     const callsAfterFirst = calls.length;
     const second = await pollEdgar(CIK, WINDOW_START, WINDOW_END, seen, fetchFn);
@@ -199,14 +235,6 @@ describe("pollEdgar", () => {
     // Only the submissions re-fetch should happen — no exhibit walk for
     // already-seen accessions.
     expect(calls.length).toBe(callsAfterFirst + 1);
-  });
-
-  it("never adds an excluded (wrong-form or out-of-window) accession to seenAccessions", async () => {
-    const { fetchFn } = makeMockFetch(buildRoutes());
-    const seen = new Set<string>();
-    await pollEdgar(CIK, WINDOW_START, WINDOW_END, seen, fetchFn);
-    expect(seen.has(OLD_8K_ACCESSION)).toBe(false);
-    expect(seen.has(TENK_ACCESSION)).toBe(false);
   });
 
   it("does not lose the poll when one filing's exhibit fetch fails: the other filing still comes back, and the failed one is left unseen for retry", async () => {
@@ -219,8 +247,106 @@ describe("pollEdgar", () => {
     const seen = new Set<string>();
     const filings = await pollEdgar(CIK, WINDOW_START, WINDOW_END, seen, fetchFn);
 
+    // The healthy filing is reported (and the caller will mark it); the broken
+    // one is simply not reported, so the next poll retries it whole.
     expect(filings.map((f) => f.accession)).toEqual([NEW_6K_ACCESSION]);
-    expect(seen.has(NEW_6K_ACCESSION)).toBe(true);
     expect(seen.has(NEW_8K_ACCESSION)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// outbound hardening (fix wave, finding E — shared hardened-fetch)
+// ---------------------------------------------------------------------------
+
+/** A ReadableStream that emits `totalBytes` without ever setting content-length. */
+function bigStream(totalBytes: number): ReadableStream<Uint8Array> {
+  const chunkSize = 64 * 1024;
+  let sent = 0;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (sent >= totalBytes) {
+        controller.close();
+        return;
+      }
+      const size = Math.min(chunkSize, totalBytes - sent);
+      controller.enqueue(new Uint8Array(size).fill(97));
+      sent += size;
+    },
+  });
+}
+
+describe("EDGAR outbound hardening", () => {
+  it("rejects an oversized exhibit body streamed with no content-length", async () => {
+    const routes = buildRoutes();
+    routes[`${baseUrl(NEW_8K_ACCESSION)}/ex991.htm`] = {
+      body: bigStream(3 * 1024 * 1024),
+      headers: { "content-type": "text/html" },
+    };
+
+    const { fetchFn } = makeMockFetch(routes);
+    const filings = await pollEdgar(CIK, WINDOW_START, WINDOW_END, new Set(), fetchFn);
+
+    // The oversized filing is dropped whole; the healthy one still lands.
+    expect(filings.map((f) => f.accession)).toEqual([NEW_6K_ACCESSION]);
+  });
+
+  it("rejects an oversized body caught by the content-length precheck", async () => {
+    const routes = buildRoutes();
+    routes[`${baseUrl(NEW_8K_ACCESSION)}/ex991.htm`] = {
+      body: "<html>tiny body, big header lie</html>",
+      headers: { "content-type": "text/html", "content-length": String(3 * 1024 * 1024) },
+    };
+
+    const { fetchFn } = makeMockFetch(routes);
+    const filings = await pollEdgar(CIK, WINDOW_START, WINDOW_END, new Set(), fetchFn);
+    expect(filings.map((f) => f.accession)).toEqual([NEW_6K_ACCESSION]);
+  });
+
+  it("refuses a cross-host redirect on the submissions feed", async () => {
+    const routes = buildRoutes();
+    routes[`https://data.sec.gov/submissions/CIK${CIK}.json`] = {
+      status: 302,
+      body: null,
+      headers: { location: "https://evil.example.com/submissions.json" },
+    };
+
+    const { fetchFn } = makeMockFetch(routes);
+    await expect(pollEdgar(CIK, WINDOW_START, WINDOW_END, new Set(), fetchFn)).rejects.toThrow(
+      /cross-host/i,
+    );
+  });
+
+  it("sends redirect: 'manual' and follows a same-host hop", async () => {
+    const routes = buildRoutes();
+    const ex991 = `${baseUrl(NEW_8K_ACCESSION)}/ex991.htm`;
+    routes[ex991] = {
+      status: 301,
+      body: null,
+      headers: { location: `${baseUrl(NEW_8K_ACCESSION)}/ex991-final.htm` },
+    };
+    routes[`${baseUrl(NEW_8K_ACCESSION)}/ex991-final.htm`] = {
+      text: "<html>redirected exhibit body</html>",
+    };
+
+    const { fetchFn, calls } = makeMockFetch(routes);
+    const filings = await pollEdgar(CIK, WINDOW_START, WINDOW_END, new Set(), fetchFn);
+
+    const eightK = filings.find((f) => f.accession === NEW_8K_ACCESSION) as EdgarFiling;
+    expect(eightK.exhibits.find((e) => e.name === "ex991.htm")?.html).toBe(
+      "<html>redirected exhibit body</html>",
+    );
+    // Every SEC request is made with manual redirect handling — a browser-
+    // followed 3xx would never be revalidated against the host.
+    expect(calls.every((c) => c.redirect === "manual")).toBe(true);
+  });
+
+  it("rejects a response whose content-type is not what the call site expects", async () => {
+    const routes = buildRoutes();
+    routes["https://www.sec.gov/files/company_tickers.json"] = {
+      text: "<html>an error page, not the ticker map</html>",
+      contentType: "text/html",
+    };
+    const { fetchFn } = makeMockFetch(routes);
+    await expect(resolveCik("NVDA", fetchFn)).rejects.toThrow(/content-type/i);
   });
 });

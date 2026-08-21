@@ -9,6 +9,8 @@ import {
   candidateSourceLabel,
   dropOutcomeMessage,
   firstDroppedFile,
+  PRE_GATE_DISCLOSURE,
+  SUPERSEDED_CONFIRM_COPY,
 } from "@/app/dashboard/today/PrintWatchPanel";
 import type { LineContract, PrintWatchLine, TaggedCandidate } from "@/lib/print-watch/types";
 
@@ -230,6 +232,33 @@ describe("dropOutcomeMessage", () => {
 
   it("treats a missing outcome as a parsed drop (older server, still truthful)", () => {
     expect(dropOutcomeMessage(undefined, undefined).tone).toBe("note");
+  });
+
+  // Fix wave, finding C: a drop that landed while another process held the
+  // watcher lease was reported as "parsed" — the sheet had not moved, and
+  // nothing on screen said so.
+  it("says a queued drop is waiting on the process that owns the watch", () => {
+    expect(dropOutcomeMessage("queued", null)).toEqual({
+      tone: "note",
+      text: "Queued — another process owns the watch; it will parse shortly.",
+    });
+  });
+});
+
+// ── standing copy (fix wave, findings B + G) ────────────────────────────
+
+describe("panel copy", () => {
+  it("carries the pre-gate disclosure verbatim", () => {
+    expect(PRE_GATE_DISCLOSURE).toBe(
+      "Pre-gate build — machine-read values; verify every number before accepting.",
+    );
+  });
+
+  it("asks its OWN question on a superseded promote — not the pre-print one", () => {
+    expect(SUPERSEDED_CONFIRM_COPY).toBe(
+      "Newer evidence disagrees with the accepted number — re-verify before promoting. Promote the accepted value anyway?",
+    );
+    expect(SUPERSEDED_CONFIRM_COPY).not.toMatch(/future/i);
   });
 });
 

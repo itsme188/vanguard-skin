@@ -189,8 +189,13 @@ export interface WatchStatusRow {
  *  - `parsed`    — new document, passed the issuer/period gate, parse awaited.
  *  - `rejected`  — stored as evidence under `rejected:<reason>`, never parsed.
  *  - `duplicate` — these exact bytes are already this print's; nothing re-ran.
+ *  - `queued`    — stored and gate-passed, but the parse did NOT run: another
+ *                  process holds the watcher lease, so the drain deferred to
+ *                  the owner (fix wave, finding C). Saying "parsed" here was a
+ *                  lie the desk could not see through — the sheet had not
+ *                  moved and nothing on screen said so.
  */
-export type IngestOutcome = "parsed" | "rejected" | "duplicate";
+export type IngestOutcome = "parsed" | "rejected" | "duplicate" | "queued";
 
 export interface IngestResult {
   docId: number;
@@ -204,6 +209,16 @@ export interface DocGateContext {
   symbol: string;
   issuerName: string | null;
   eventDate: string;
+  /**
+   * Which source produced the bytes. Only `ir-page` changes the verdict (fix
+   * wave, finding A): an IR newsroom article is the one input whose ARRIVAL
+   * carries no period evidence at all — EDGAR filings passed an acceptance-
+   * window filter and DJ items came from a windowed news query for this
+   * conId, but a newsroom feed serves last quarter's release from the same
+   * URL space, matching the same title regex, forever. Omitted (or any other
+   * kind) keeps the historical, generous behaviour.
+   */
+  kind?: PrintWatchDocKind;
 }
 
 export type DocGateVerdict = { ok: true } | { ok: false; reason: string };
@@ -232,6 +247,7 @@ export interface WatcherSeams {
   pollIrRss: (
     cfg: IrRssConfig,
     seenLinks: Set<string>,
+    baseline: boolean,
   ) => Promise<Array<{ title: string; link: string; html: string }>>;
   extractCandidates: (contracts: LineContract[], representationText: string) => Promise<ParseCandidate[]>;
 }
@@ -268,7 +284,7 @@ const DEFAULT_SEAMS: WatcherSeams = {
     pollDjNews(ib, conId, windowStartUtc, nowUtc, state, nowMs),
   resolveCik: (symbol) => resolveCik(symbol),
   pollEdgar: (cik, startIso, endIso, seen) => pollEdgar(cik, startIso, endIso, seen),
-  pollIrRss: (cfg, seenLinks) => pollIrRss(cfg, seenLinks),
+  pollIrRss: (cfg, seenLinks, baseline) => pollIrRss(cfg, seenLinks, fetch, { baseline }),
   extractCandidates: (contracts, text) => extractCandidates(contracts, text),
 };
 
@@ -306,6 +322,11 @@ interface PrintRuntime {
   djState: DjPollState;
   seenAccessions: Set<string>;
   seenIrLinks: Set<string>;
+  /** False until the IR feed's first (baseline) poll of this watch has come
+   *  back: until then every item already in the feed is history, not evidence
+   *  (fix wave, finding A). A failed first poll leaves it false, so the
+   *  baseline happens on the first poll that actually reads the feed. */
+  irBaselineDone: boolean;
   flashHeadlines: string[];
   seenFlashKeys: Set<string>;
   cikAttempted: boolean;
@@ -322,7 +343,7 @@ interface PrintStatus {
 const runtimes = new Map<number, PrintRuntime>();
 const statuses = new Map<number, PrintStatus>();
 /** printId -> the in-flight tail of that print's write chain (self-clearing). */
-const queues = new Map<number, Promise<void>>();
+const queues = new Map<number, Promise<unknown>>();
 /** docId -> parse attempt bookkeeping (count + when the last one started). */
 const parseAttempts = new Map<number, { attempts: number; lastAtMs: number }>();
 /** symbol -> resolved CIK (null = looked up and genuinely absent). */
@@ -520,6 +541,14 @@ function candidateQuarters(eventDate: string): Array<{ q: number; year: number }
  * narrow guards that keep this honest live upstream: EDGAR filings already
  * passed the acceptance-window filter, and DJ items came from a windowed news
  * query for this conId.
+ *
+ * EXCEPT for `ir-page` documents (fix wave, finding A). A newsroom feed has no
+ * upstream guard at all: last quarter's results announcement sits in it
+ * permanently and matches the same title regex, so the loose branch would wave
+ * through a months-old article and green LAST quarter's numbers as tonight's
+ * print. An IR page must therefore match one of the strict expected-quarter
+ * branches derived from the event date; the any-fiscal-year fallback is not
+ * available to it.
  */
 export function validateDocForEvent(text: string, ctx: DocGateContext): DocGateVerdict {
   const lower = text.toLowerCase();
@@ -547,6 +576,13 @@ export function validateDocForEvent(text: string, ctx: DocGateContext): DocGateV
     }
   }
 
+  if (ctx.kind === "ir-page") {
+    return {
+      ok: false,
+      reason: "IR page does not name this event's quarter (an older newsroom post?)",
+    };
+  }
+
   if (symbolMatched && FISCAL_YEAR_RE.test(lower) && QUARTER_WORD_RE.test(lower)) {
     return { ok: true };
   }
@@ -572,12 +608,17 @@ function readIssuerName(db: Database.Database, symbol: string): string | null {
   return row?.name ?? null;
 }
 
-function gateContextFor(db: Database.Database, print: PrintRow): DocGateContext {
+function gateContextFor(
+  db: Database.Database,
+  print: PrintRow,
+  kind: PrintWatchDocKind,
+): DocGateContext {
   const rt = runtimes.get(print.id);
   return {
     symbol: print.symbol,
     issuerName: rt ? rt.issuerName : readIssuerName(db, print.symbol),
     eventDate: print.event_date,
+    kind,
   };
 }
 
@@ -669,6 +710,8 @@ export function ensurePrintWatch(db: Database.Database): void {
   const armedEventIds = new Set(armed.map((r) => r.eventId));
 
   const armedPrintIds = new Set<number>();
+  /** Prints with no live loop of their own — see drainStrandedPrints. */
+  const strandedPrintIds = new Set<number>();
 
   for (const row of armed) {
     const dto = buildArmedEventDto(db, row);
@@ -704,6 +747,7 @@ export function ensurePrintWatch(db: Database.Database): void {
         djState: createDjPollState(),
         seenAccessions: new Set(),
         seenIrLinks: new Set(),
+        irBaselineDone: false,
         flashHeadlines: [],
         seenFlashKeys: new Set(),
         cikAttempted: false,
@@ -726,6 +770,10 @@ export function ensurePrintWatch(db: Database.Database): void {
     if (inWindow && next !== "expired") startLoop(db, rt);
     else rt.live = false;
 
+    // A drop-zone-only (TAS) print never gets a loop, so a document queued
+    // behind a lease it lost has nothing else to come back for it.
+    if (rt.window === null) strandedPrintIds.add(printId);
+
     refreshCoverage(rt, null);
   }
 
@@ -744,6 +792,12 @@ export function ensurePrintWatch(db: Database.Database): void {
     const rt = runtimes.get(print.id);
     if (rt) rt.live = false;
   }
+
+  // Today's expired prints keep their drop road open (getWatchStatus still
+  // lists them) but have no loop: this is the pass that parses whatever they
+  // acquired while somebody else held the lease.
+  for (const print of listTodaysExpiredPrints(db, today)) strandedPrintIds.add(print.id);
+  drainStrandedPrints(db, strandedPrintIds);
 
   retireFinishedRuntimes(db, armedPrintIds);
 }
@@ -1023,6 +1077,12 @@ async function pollEdgarSource(
           Buffer.from(exhibit.html, "utf8"),
         );
       }
+      // Marked seen HERE, not in the adapter (fix wave, finding F): the
+      // accession retires only once its exhibits have actually been ingested.
+      // A poll this loop abandoned on the source timeout, or an ingest that
+      // threw, leaves it unmarked and the next poll picks the filing up again
+      // (the sha256 dedupe makes a re-ingest a no-op).
+      rt.seenAccessions.add(filing.accession);
     }
     status.sources.edgar = `ok — ${filings.length} filing(s), ${exhibits} exhibit(s)`;
   } catch (err) {
@@ -1039,9 +1099,16 @@ async function pollIrSource(db: Database.Database, rt: PrintRuntime): Promise<vo
   }
   try {
     await spaceHost(cfg.host);
+    // The FIRST poll of a watch is a baseline pass: it fetches no article at
+    // all, it just records what the feed already held (fix wave, finding A).
+    // The flag flips only after the poll returns, so a first poll that fails
+    // does not consume the baseline.
+    const baseline = !rt.irBaselineDone;
     const items = await withSourceTimeout("IR feed poll", () =>
-      seams.pollIrRss(cfg, rt.seenIrLinks),
+      seams.pollIrRss(cfg, rt.seenIrLinks, baseline),
     );
+    rt.irBaselineDone = true;
+
     for (const item of items) {
       rt.burst = true;
       await ingestDocument(
@@ -1052,8 +1119,12 @@ async function pollIrSource(db: Database.Database, rt: PrintRuntime): Promise<vo
         item.link,
         Buffer.from(item.html, "utf8"),
       );
+      // Marked seen only after the bytes are in hand and ingested (finding F).
+      rt.seenIrLinks.add(item.link);
     }
-    status.sources.rss = `ok — ${items.length} item(s)`;
+    status.sources.rss = baseline
+      ? `baseline — ${rt.seenIrLinks.size} existing item(s) ignored`
+      : `ok — ${items.length} item(s)`;
   } catch (err) {
     status.sources.rss = errText(err);
   }
@@ -1107,12 +1178,13 @@ async function writeBytes(printId: number, sha: string, ext: string, buf: Buffer
  * existing document and parses nothing. A gate failure is recorded, never
  * thrown — the caller acquired a real document, it simply isn't this event's.
  *
- * Returns its VERDICT, not just an id (final fix wave). The three outcomes are
- * three genuinely different things to tell the desk — the sheet just moved, the
- * document was refused as another issuer's/period's, or these exact bytes were
- * already in hand — and only this function knows which happened. Callers that
- * guessed from `isNew` alone had to say something vague and permanent
- * ("parsing now…") that no later poll could ever correct.
+ * Returns its VERDICT, not just an id (final fix wave). The outcomes are
+ * genuinely different things to tell the desk — the sheet just moved, the
+ * document was refused as another issuer's/period's, these exact bytes were
+ * already in hand, or the parse is waiting on the process that owns the
+ * watcher — and only this function knows which happened. Callers that guessed
+ * from `isNew` alone had to say something vague and permanent ("parsing now…")
+ * that no later poll could ever correct.
  *
  * `parsed` means the document passed the gate and its parse was awaited. A
  * parse that then failed inside the pipeline leaves the document unparsed for
@@ -1135,7 +1207,7 @@ export async function ingestDocument(
   const ext = looksLikeHtml(text) ? "html" : "txt";
   const bytesPath = await writeBytes(printId, sha, ext, buf);
 
-  const verdict = validateDocForEvent(text, gateContextFor(db, print));
+  const verdict = validateDocForEvent(text, gateContextFor(db, print, kind));
   const storedSource = verdict.ok ? source : `${REJECTED_PREFIX}${verdict.reason}`;
   const { id, isNew } = insertDocument(db, printId, kind, storedSource, url, sha, bytesPath);
 
@@ -1147,7 +1219,13 @@ export async function ingestDocument(
   if (!isNew) return { docId: id, isNew, outcome: "duplicate" };
 
   advanceState(db, printId, "acquired");
-  await runQueue(db, printId);
+  const drain = await runQueue(db, printId);
+  // The drain can END without parsing: another process owns the watcher, so
+  // the parse belongs to it, not us (fix wave, finding C). Reporting that as
+  // `parsed` told the desk the sheet had moved when it had not — and for an
+  // expired or TAS print there is no loop coming back to correct it, which is
+  // why ensurePrintWatch now drains those explicitly.
+  if (drain === "lease_blocked") return { docId: id, isNew, outcome: "queued" };
   return { docId: id, isNew, outcome: "parsed" };
 }
 
@@ -1164,8 +1242,8 @@ export async function ingestDocument(
  * Chaining (rather than a boolean "busy" flag) also preserves doc-id order for
  * documents that land together.
  */
-function enqueueWrite(printId: number, task: () => Promise<void>): Promise<void> {
-  const prev = queues.get(printId) ?? Promise.resolve();
+function enqueueWrite<T>(printId: number, task: () => Promise<T>): Promise<T> {
+  const prev: Promise<unknown> = queues.get(printId) ?? Promise.resolve();
   const next = prev.catch(() => {}).then(task);
   queues.set(printId, next);
   // Self-clearing tail, so an idle print holds no entry and
@@ -1178,7 +1256,16 @@ function enqueueWrite(printId: number, task: () => Promise<void>): Promise<void>
   return next;
 }
 
-function runQueue(db: Database.Database, printId: number): Promise<void> {
+/**
+ * What a drain pass actually managed to do (fix wave, finding C).
+ *  - `drained`      — nothing left this pass could parse.
+ *  - `lease_blocked` — a parsable document is still sitting there, but this
+ *                      process no longer owns the watcher, so the parse was
+ *                      deferred to whoever does.
+ */
+type DrainOutcome = "drained" | "lease_blocked";
+
+function runQueue(db: Database.Database, printId: number): Promise<DrainOutcome> {
   return enqueueWrite(printId, () => drainQueue(db, printId));
 }
 
@@ -1193,14 +1280,14 @@ function parseEligible(doc: DocumentRow, nowMs: number): boolean {
   return nowMs - record.lastAtMs >= PARSE_RETRY_SPACING_MS;
 }
 
-async function drainQueue(db: Database.Database, printId: number): Promise<void> {
+async function drainQueue(db: Database.Database, printId: number): Promise<DrainOutcome> {
   const attemptedThisPass = new Set<number>();
   for (;;) {
     const nowMs = seams.now();
     const pending = listUnparsedDocuments(db, printId).filter(
       (doc) => !attemptedThisPass.has(doc.id) && parseEligible(doc, nowMs),
     );
-    if (pending.length === 0) return;
+    if (pending.length === 0) return "drained";
 
     const doc = pending[0];
     attemptedThisPass.add(doc.id);
@@ -1209,7 +1296,7 @@ async function drainQueue(db: Database.Database, printId: number): Promise<void>
     // process no longer owns the watcher; the owner will drain the document.
     if (!claimLease(db)) {
       statusFor(printId).sources.pipeline = "lease lost — parsing deferred to the owner";
-      return;
+      return "lease_blocked";
     }
 
     const record = parseAttempts.get(doc.id);
@@ -1221,6 +1308,33 @@ async function drainQueue(db: Database.Database, printId: number): Promise<void>
       // spaced out, up to MAX_PARSE_ATTEMPTS.
       statusFor(printId).sources.pipeline = `doc ${doc.id}: ${errText(err)}`;
     }
+  }
+}
+
+/**
+ * Drain documents stranded on prints that have NO loop left to drain them
+ * (fix wave, finding C): today's expired prints and drop-zone-only (TAS)
+ * prints. Both are exactly where a `queued` ingest lands — a drop onto an
+ * expired print while another process held the lease — and neither has a
+ * polling loop whose next tick would pick the document back up.
+ *
+ * One kick per print per reconcile run, fire-and-forget: `drainQueue` itself
+ * walks every eligible document, the print's write chain keeps it serialized
+ * against any other writer, and `parseEligible` still spaces the retries.
+ */
+function drainStrandedPrints(db: Database.Database, printIds: Iterable<number>): void {
+  for (const printId of printIds) {
+    let parsable = false;
+    try {
+      parsable = listUnparsedDocuments(db, printId).some(
+        (doc) => !doc.source.startsWith(REJECTED_PREFIX),
+      );
+    } catch {
+      // A failed read here must never break the sweep.
+      continue;
+    }
+    if (!parsable) continue;
+    void runQueue(db, printId).catch(() => {});
   }
 }
 

@@ -221,32 +221,56 @@ interface WatcherLeaseValue {
   expiresAt: number;
 }
 
-/** settings-table row 'print_watch_lease' = JSON {holder, expiresAt}; true
- *  when acquired/renewed; stale (expired) leases are taken over (Codex #7). */
+/**
+ * settings-table row 'print_watch_lease' = JSON {holder, expiresAt}; true when
+ * acquired/renewed; stale (expired) leases are taken over (Codex #7).
+ *
+ * COMPARE-AND-SWAP, not read-then-write (fix wave, finding D). The lease is
+ * the ONE thing standing between the always-on Electron server and a launchd
+ * sweep tick polling the SEC and the DJ wire in parallel — and the old
+ * SELECT-then-`INSERT OR REPLACE` pair could not enforce that across
+ * processes: two callers could both read an expired lease, both decide they
+ * had won, and both write, leaving the loser's stale value on top of the
+ * winner's. Ownership is now decided by ONE statement and its `changes` count:
+ *
+ *   - `INSERT OR IGNORE` seeds the row. A non-zero `changes` means no lease
+ *     existed and this caller created it — an outright win, no race possible.
+ *   - Otherwise the `UPDATE` takes the lease only where the stored row still
+ *     says it is takeable (we already hold it, it has expired, or the value is
+ *     unreadable). SQLite evaluates that predicate against the row it locks,
+ *     so a caller whose read happened before the winner's write simply matches
+ *     nothing and is told it lost, instead of clobbering.
+ *
+ * `json_valid` guards the corrupt-value case the same way the old JSON.parse
+ * try/catch did (an unparseable lease is takeable), and it short-circuits
+ * before json_extract, which would otherwise raise on malformed JSON.
+ */
 export function acquireWatcherLease(
   db: Database.Database,
   holder: string,
   nowMs: number,
   ttlMs: number,
 ): boolean {
-  const row = db.prepare(`SELECT value FROM settings WHERE key = ?`).get(LEASE_SETTINGS_KEY) as
-    | { value: string }
-    | undefined;
+  const value = JSON.stringify({ holder, expiresAt: nowMs + ttlMs } satisfies WatcherLeaseValue);
 
-  if (row) {
-    let lease: WatcherLeaseValue | null = null;
-    try {
-      lease = JSON.parse(row.value) as WatcherLeaseValue;
-    } catch {
-      lease = null;
-    }
-    if (lease && lease.holder !== holder && lease.expiresAt > nowMs) {
-      return false; // held live by a different holder
-    }
-  }
+  const seeded = db
+    .prepare(`INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))`)
+    .run(LEASE_SETTINGS_KEY, value);
+  if (seeded.changes > 0) return true;
 
-  db.prepare(
-    `INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))`,
-  ).run(LEASE_SETTINGS_KEY, JSON.stringify({ holder, expiresAt: nowMs + ttlMs } satisfies WatcherLeaseValue));
-  return true;
+  const swapped = db
+    .prepare(
+      `UPDATE settings
+          SET value = ?, updated_at = datetime('now')
+        WHERE key = ?
+          AND (
+            json_valid(value) = 0
+            OR json_extract(value, '$.holder') = ?
+            OR json_extract(value, '$.expiresAt') IS NULL
+            OR CAST(json_extract(value, '$.expiresAt') AS INTEGER) <= ?
+          )`,
+    )
+    .run(value, LEASE_SETTINGS_KEY, holder, nowMs);
+
+  return swapped.changes > 0;
 }

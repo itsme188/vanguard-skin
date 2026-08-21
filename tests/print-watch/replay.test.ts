@@ -284,10 +284,17 @@ function markerExtract(text: string): ParseCandidate[] {
   return [];
 }
 
+// Doc B is ingested as an `ir-page`, which since the Codex fix wave (finding
+// A) must name THIS event's quarter rather than merely A fiscal quarter — a
+// newsroom feed serves last quarter's release forever under the same title
+// shape, so the generous fiscal-label fallback is not available to it. What
+// satisfies the strict branch on a real newsroom post is its DATELINE, which
+// always carries the calendar year; this fixture carries one for the same
+// reason.
 const DOC_B_TEXT = [
   "Synthex Corp (NASDAQ: SYNX) Second Quarter Fiscal 2027 Supplemental Disclosure",
-  "The Company confirms that professional services revenue is not reported as a",
-  "separate line item for the second quarter of fiscal 2027.",
+  "SAN JOSE, Calif., Aug. 26, 2026 — The Company confirms that professional services",
+  "revenue is not reported as a separate line item for the second quarter of fiscal 2027.",
   `Filing Reference: ${DOC_B_MARKER}`,
 ].join("\n");
 
