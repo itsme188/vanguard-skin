@@ -19,6 +19,7 @@ import { MomentumPulse } from "../components/MomentumPulse";
 import { computeMomentumPulse } from "@/lib/compute/momentum-spread";
 import { EarningsCockpit } from "./EarningsCockpit";
 import { EarningsHub } from "./EarningsHub";
+import PrintWatchPanel from "./PrintWatchPanel";
 import { WeekAheadView } from "./WeekAheadView";
 import { IbkrRefreshButton } from "./IbkrRefreshButton";
 import { SnapshotAge } from "../components/SnapshotAge";
@@ -273,6 +274,11 @@ export default async function TodayPage({ searchParams }: TodayPageProps) {
 
       {/* ── Week-ahead Earnings Hub (full width — primary attention magnet) ── */}
       <EarningsHub />
+
+      {/* ── Live Print Watch — armed prints fill in real time as the wire/
+          EDGAR/IR feeds land; renders nothing extra when nothing is armed
+          (EmptySection) ── */}
+      <PrintWatchPanel />
 
       {/* ── Alerts | Levels @ 5% — side-by-side only when both have content ── */}
       <div className={nearbyLevels.length > 0 ? "grid grid-cols-1 md:grid-cols-2 gap-4" : ""}>
