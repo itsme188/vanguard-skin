@@ -154,6 +154,30 @@ export async function POST(request: NextRequest) {
         { status: 400 },
       );
     }
+
+    // Accepted-ness is not the same as having a NUMBER (final fix wave). A
+    // `blank` line ("not disclosed") is acceptable on purpose — the desk
+    // confirming a metric wasn't given is real information — but it carries
+    // value = null, and promoting it hands saveManualActuals an epsActual of
+    // null. mergeFinnhubActual then merges a half-pair into the existing
+    // calendar_events actuals and leaves the other field stale: EXACTLY the
+    // failure the complete-pair rule above exists to prevent, arriving through
+    // the door that rule doesn't watch. Same 400, same explanation.
+    if (epsLine!.value === null || revLine!.value === null) {
+      const missing = [
+        epsLine!.value === null ? `${epsLine!.metric_id} (${epsLine!.state})` : null,
+        revLine!.value === null ? `revenue_q (${revLine!.state})` : null,
+      ]
+        .filter(Boolean)
+        .join(" and ");
+      return NextResponse.json(
+        {
+          success: false,
+          error: `Promoting the headline needs a REPORTED value on both lines — ${missing} has no number. Promoting a blank would merge into the existing calendar_events actuals and leave the other field stale. Wait for the figure, or drop the release, before promoting.`,
+        },
+        { status: 400 },
+      );
+    }
   }
 
   // ── Step 2: apply everything in ONE transaction ──

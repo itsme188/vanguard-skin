@@ -4,6 +4,10 @@ import {
   promoteSummary,
   needsReverify,
   deltaPct,
+  printStateLabel,
+  candidateSourceLabel,
+  dropOutcomeMessage,
+  firstDroppedFile,
 } from "@/app/dashboard/today/PrintWatchPanel";
 import type { LineContract, PrintWatchLine, TaggedCandidate } from "@/lib/print-watch/types";
 
@@ -113,6 +117,111 @@ describe("ladderText", () => {
 
   it("appends unrecognized keys alphabetically after the canonical ladder", () => {
     expect(ladderText({ zzz: "custom note", dj: "ok" })).toBe("DJ: ok · Zzz: custom note");
+  });
+});
+
+// ── printStateLabel ─────────────────────────────────────────────────────
+
+describe("printStateLabel", () => {
+  it("calls an expired print 'window closed', not 'expired'", () => {
+    // "expired" reads as "this is over"; what actually happened is that the
+    // automatic window closed without the wire delivering — the drop zone
+    // stays live behind this chip, which is the whole point of the label.
+    expect(printStateLabel("expired")).toEqual({ text: "window closed", tone: "warn" });
+  });
+
+  it("keeps the live states hot and the parsed state green", () => {
+    expect(printStateLabel("window_open")).toEqual({ text: "window open", tone: "gold" });
+    expect(printStateLabel("acquired")).toEqual({ text: "acquired", tone: "gold" });
+    expect(printStateLabel("parsed")).toEqual({ text: "parsed", tone: "up" });
+  });
+
+  it("renders the remaining states neutrally with their underscore unspaced", () => {
+    expect(printStateLabel("scheduled")).toEqual({ text: "scheduled", tone: "neutral" });
+    expect(printStateLabel("disarmed")).toEqual({ text: "disarmed", tone: "neutral" });
+  });
+});
+
+// ── candidateSourceLabel ────────────────────────────────────────────────
+
+describe("candidateSourceLabel", () => {
+  it("names the document kind beside the doc id", () => {
+    expect(
+      candidateSourceLabel({ doc_id: 12, representation: "repA" }, { 12: "edgar-ex99" }),
+    ).toBe("doc #12 (edgar-ex99 · repA)");
+  });
+
+  it("distinguishes rival sources on a conflict row", () => {
+    const documents = { 12: "edgar-ex99", 13: "user-drop" };
+    expect(candidateSourceLabel({ doc_id: 13, representation: "repB" }, documents)).toBe(
+      "doc #13 (user-drop · repB)",
+    );
+  });
+
+  it("falls back to the bare doc id when the map has no entry (older server)", () => {
+    expect(candidateSourceLabel({ doc_id: 12, representation: "repA" }, undefined)).toBe(
+      "doc #12 (repA)",
+    );
+    expect(candidateSourceLabel({ doc_id: 99, representation: "repA" }, { 12: "dj-release" })).toBe(
+      "doc #99 (repA)",
+    );
+  });
+
+  it("says 'wire flash' for flash candidates — they have no document of record", () => {
+    expect(candidateSourceLabel({ doc_id: 0, representation: "flash" }, {})).toBe("wire flash");
+  });
+});
+
+// ── dropOutcomeMessage ──────────────────────────────────────────────────
+
+describe("dropOutcomeMessage", () => {
+  it("confirms a parsed drop as a finished action, not work in progress", () => {
+    expect(dropOutcomeMessage("parsed", null)).toEqual({
+      tone: "note",
+      text: "Parsed — sheet updated.",
+    });
+  });
+
+  it("surfaces a gate rejection with its reason, as an error", () => {
+    expect(dropOutcomeMessage("rejected", "issuer not named (NVDA)")).toEqual({
+      tone: "error",
+      text: "Rejected: issuer not named (NVDA)",
+    });
+  });
+
+  it("explains a rejection even when the server sent no reason", () => {
+    const msg = dropOutcomeMessage("rejected", null);
+    expect(msg.tone).toBe("error");
+    expect(msg.text).toMatch(/^Rejected: /);
+  });
+
+  it("says a duplicate is already in hand rather than 'parsing now'", () => {
+    expect(dropOutcomeMessage("duplicate", null)).toEqual({
+      tone: "note",
+      text: "Already ingested — no new evidence.",
+    });
+  });
+
+  it("treats a missing outcome as a parsed drop (older server, still truthful)", () => {
+    expect(dropOutcomeMessage(undefined, undefined).tone).toBe("note");
+  });
+});
+
+// ── firstDroppedFile ────────────────────────────────────────────────────
+
+describe("firstDroppedFile", () => {
+  const fakeFile = { name: "nvda-q2.html" } as unknown as File;
+
+  it("takes the first file off a drag payload", () => {
+    expect(firstDroppedFile({ files: [fakeFile] })).toBe(fakeFile);
+  });
+
+  it("returns null for a drag that carried no file (a link, selected text)", () => {
+    expect(firstDroppedFile({ files: [] })).toBeNull();
+    expect(firstDroppedFile({ files: null })).toBeNull();
+    expect(firstDroppedFile({})).toBeNull();
+    expect(firstDroppedFile(null)).toBeNull();
+    expect(firstDroppedFile(undefined)).toBeNull();
   });
 });
 

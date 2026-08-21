@@ -16,7 +16,7 @@
  * as EarningsHub's NumCell.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type DragEvent as ReactDragEvent } from "react";
 import apiFetch from "@/lib/http/apiFetch";
 import { Chip, type ChipTone } from "../components/Chip";
 import { EmptySection } from "../components/EmptySection";
@@ -52,6 +52,11 @@ interface PrintStatusEntry {
   sources: Record<string, string>;
   coverage: string[];
   lines: PrintWatchLine[];
+  /** doc id → document kind ("edgar-ex99" / "dj-release" / "user-drop" /
+   *  "ir-page"), so a conflict row can name WHICH source each rival number
+   *  came from. Optional: a server that predates the map degrades to the
+   *  bare "doc #N" label rather than crashing. */
+  documents?: Record<number, string>;
 }
 
 interface StatusResponse {
@@ -74,7 +79,12 @@ interface AcceptResponse {
 
 interface DropResponse {
   success?: boolean;
-  data?: { docId: number; isNew: boolean };
+  data?: {
+    docId: number;
+    isNew: boolean;
+    outcome?: "parsed" | "rejected" | "duplicate";
+    rejectReason?: string | null;
+  };
   error?: string;
 }
 
@@ -136,6 +146,81 @@ export function deltaPct(expected: number | null, actual: number | null): DeltaR
   const sign: 1 | -1 | 0 = Math.abs(pct) < 0.05 ? 0 : pct > 0 ? 1 : -1;
   if (sign === 0) return { label: "in-line", sign };
   return { label: `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`, sign };
+}
+
+/**
+ * The print-state chip's TEXT (never colour alone).
+ *
+ * `expired` is the one state whose raw name lies to the desk: it reads like
+ * the print is over and there is nothing left to do, when what actually
+ * happened is that the automatic window closed without the wire delivering —
+ * the moment the manual drop matters MOST. "window closed" says that, and the
+ * card keeps its drop zone live behind it (an expired print still ingests:
+ * `getPrintByEventId` has no state filter and `advanceState` only refuses
+ * `disarmed`).
+ */
+export function printStateLabel(state: PrintWatchState): { text: string; tone: ChipTone } {
+  switch (state) {
+    case "expired":
+      return { text: "window closed", tone: "warn" };
+    case "window_open":
+    case "acquired":
+      return { text: state.replace("_", " "), tone: "gold" };
+    case "parsed":
+      return { text: "parsed", tone: "up" };
+    default:
+      return { text: state.replace("_", " "), tone: "neutral" };
+  }
+}
+
+/** Names the SOURCE behind one conflicting candidate: "doc #12 (edgar-ex99 ·
+ *  repA)". Doc id alone ("doc #12 vs doc #13") tells the desk nothing about
+ *  which rival number to believe; the kind is the whole decision. Flash
+ *  candidates have no document of record (sentinel doc id 0) and say so. */
+export function candidateSourceLabel(
+  candidate: Pick<TaggedCandidate, "doc_id" | "representation">,
+  documents: Record<number, string> | undefined,
+): string {
+  if (candidate.representation === "flash") return "wire flash";
+  const kind = documents?.[candidate.doc_id];
+  const detail = kind ? `${kind} · ${candidate.representation}` : candidate.representation;
+  return `doc #${candidate.doc_id} (${detail})`;
+}
+
+export interface DropOutcomeMessage {
+  tone: "note" | "error";
+  text: string;
+}
+
+/** What to tell the desk after a drop returns. The old copy said "parsing
+ *  now" for every 200 and never cleared — a rejected document (wrong issuer /
+ *  wrong period) and a re-drop of bytes already in hand both sat there looking
+ *  like work in progress that would never finish. */
+export function dropOutcomeMessage(
+  outcome: "parsed" | "rejected" | "duplicate" | undefined,
+  rejectReason: string | null | undefined,
+): DropOutcomeMessage {
+  if (outcome === "rejected") {
+    return {
+      tone: "error",
+      text: `Rejected: ${rejectReason ?? "the document didn't name this issuer and period"}`,
+    };
+  }
+  if (outcome === "duplicate") {
+    return { tone: "note", text: "Already ingested — no new evidence." };
+  }
+  return { tone: "note", text: "Parsed — sheet updated." };
+}
+
+/** First file off a drag-drop payload, or null when the drag carried no file
+ *  (a dragged link, selected text, an empty drop). Pure so the drop wiring
+ *  can be tested without a DOM. */
+export function firstDroppedFile(
+  transfer: { files?: ArrayLike<File> | null } | null | undefined,
+): File | null {
+  const files = transfer?.files;
+  if (!files || files.length === 0) return null;
+  return files[0] ?? null;
 }
 
 /** EPS-scale dollar formatting ("$0.91" / "-$0.12") — formatLargeUSD's
@@ -460,6 +545,22 @@ export default function PrintWatchPanel() {
     };
   }, [ensureWatcher, fetchStatus, scheduleNextPoll]);
 
+  // Belt-and-braces against the browser's default drop behaviour: a file
+  // dropped ANYWHERE outside a card's own drop handler makes the browser
+  // NAVIGATE to that file, tearing the page — and the panel's whole reason to
+  // exist is the two minutes around a print, when navigating away is the most
+  // expensive thing the desk can accidentally do. The card handlers below
+  // catch the aimed drops; this catches the misses.
+  useEffect(() => {
+    const swallow = (e: DragEvent) => e.preventDefault();
+    document.addEventListener("dragover", swallow);
+    document.addEventListener("drop", swallow);
+    return () => {
+      document.removeEventListener("dragover", swallow);
+      document.removeEventListener("drop", swallow);
+    };
+  }, []);
+
   if (!loaded) {
     return (
       <section className="rounded-xl border border-edge bg-panel card-elev">
@@ -492,9 +593,10 @@ export default function PrintWatchPanel() {
     );
   }
 
-  // An expired print simply vanishes from the status response (Task 9/10
-  // behavior) — an empty list is the normal "nothing armed right now"
-  // state, not an error.
+  // Today's expired prints STAY in the status response (final fix wave) —
+  // the window closing is when the drop zone matters most. What vanishes is
+  // disarmed prints and expired prints from earlier days, so an empty list is
+  // the normal "nothing armed right now" state, not an error.
   if (prints.length === 0) {
     return (
       <EmptySection
@@ -534,6 +636,7 @@ function PrintCard({ print, onChanged }: { print: PrintStatusEntry; onChanged: (
   const [promoting, setPromoting] = useState(false);
   const [unacceptingId, setUnacceptingId] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionNote, setActionNote] = useState<string | null>(null);
 
@@ -565,7 +668,11 @@ function PrintCard({ print, onChanged }: { print: PrintStatusEntry; onChanged: (
             `${data.error ?? "This print's release time is still in the future."}\n\nPromote anyway?`,
           );
           if (confirmed) return postAccept({ ...body, force: true });
-          setActionError(data?.error ?? "Promote cancelled — release time is still in the future.");
+          // The panel's OWN cancellation copy, never the server's. The 409
+          // body ends "…Confirm to save anyway" — echoing it back to someone
+          // who just declined that confirm reads as an instruction they
+          // already followed and leaves them looking for a second button.
+          setActionError("Promote cancelled — release time is still in the future.");
           return false;
         }
         setActionError(data?.error ?? `Server returned ${res.status}`);
@@ -637,9 +744,11 @@ function PrintCard({ print, onChanged }: { print: PrintStatusEntry; onChanged: (
         setActionError(data?.error ?? `Upload failed: server returned ${res.status}.`);
         return;
       }
-      setActionNote(
-        data.data?.isNew ? "Document ingested — parsing now." : "Document already seen — no new evidence.",
-      );
+      // The server's verdict, verbatim — a 200 covers three outcomes and only
+      // one of them is "the sheet moved".
+      const message = dropOutcomeMessage(data.data?.outcome, data.data?.rejectReason);
+      if (message.tone === "error") setActionError(message.text);
+      else setActionNote(message.text);
       await onChanged();
     } catch {
       setActionError("Upload failed: could not reach the server.");
@@ -648,15 +757,51 @@ function PrintCard({ print, onChanged }: { print: PrintStatusEntry; onChanged: (
     }
   }
 
+  // A file dragged onto the card must land IN the card. Without these two
+  // handlers the browser takes the drop itself and navigates the tab to the
+  // dropped file — mid-print, with the sheet on screen. `preventDefault` on
+  // dragover is what marks the card as a valid drop target in the first place
+  // (the drop event never fires without it).
+  function onDragOver(e: ReactDragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    if (uploading || noEventId) return;
+    if (!dragActive) setDragActive(true);
+  }
+
+  function onDragLeave(e: ReactDragEvent<HTMLDivElement>) {
+    // Ignore the moves BETWEEN children — only a leave that exits the card
+    // itself should drop the cue.
+    if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+    setDragActive(false);
+  }
+
+  function onDrop(e: ReactDragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setDragActive(false);
+    const file = firstDroppedFile(e.dataTransfer);
+    if (!file) {
+      setActionError("That drop carried no file — drag the saved release (HTML or text) itself.");
+      return;
+    }
+    void handleDrop(file);
+  }
+
+  const stateChip = printStateLabel(print.state);
+
   return (
-    <div className="px-5 py-4">
+    <div
+      className={`px-5 py-4 transition-colors ${dragActive ? "bg-raised ring-1 ring-inset ring-gold/60" : ""}`}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
       <div className="flex items-baseline justify-between flex-wrap gap-2 mb-1.5">
         <div className="flex items-baseline gap-2">
           <span className="font-mono font-medium text-ink" style={{ fontSize: "15px" }}>
             {print.symbol}
           </span>
-          <Chip tone={printStateTone(print.state)} size="xs" uppercase>
-            {print.state.replace("_", " ")}
+          <Chip tone={stateChip.tone} size="xs" uppercase>
+            {stateChip.text}
           </Chip>
         </div>
         <label
@@ -709,6 +854,7 @@ function PrintCard({ print, onChanged }: { print: PrintStatusEntry; onChanged: (
               <LineRow
                 key={line.metric_id}
                 line={line}
+                documents={print.documents}
                 onUnaccept={() => unaccept(line.metric_id)}
                 unaccepting={unacceptingId === line.metric_id}
               />
@@ -749,20 +895,16 @@ function PrintCard({ print, onChanged }: { print: PrintStatusEntry; onChanged: (
   );
 }
 
-function printStateTone(state: PrintWatchState): ChipTone {
-  if (state === "window_open" || state === "acquired") return "gold";
-  if (state === "parsed") return "up";
-  return "neutral";
-}
-
 // ── per-line row ────────────────────────────────────────────────────────
 
 function LineRow({
   line,
+  documents,
   onUnaccept,
   unaccepting,
 }: {
   line: PrintWatchLine;
+  documents: Record<number, string> | undefined;
   onUnaccept: () => void;
   unaccepting: boolean;
 }) {
@@ -851,9 +993,7 @@ function LineRow({
               <ul className="space-y-1">
                 {candidates.map((c, i) => (
                   <li key={`${c.doc_id}-${c.representation}-${i}`} className="text-[11px] text-ink-dim font-mono">
-                    <span className="text-ink-faint">
-                      doc #{c.doc_id} ({c.representation}):
-                    </span>{" "}
+                    <span className="text-ink-faint">{candidateSourceLabel(c, documents)}:</span>{" "}
                     {c.not_disclosed
                       ? "not disclosed"
                       : formatContractRange(line.contract, c.value, c.value_high)}

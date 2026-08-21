@@ -365,6 +365,55 @@ describe("POST /api/print-watch/accept", () => {
       );
     });
 
+    // The pair rule above checks accepted-NESS. A `blank` line ("not
+    // disclosed") is acceptable on purpose but carries value = null, so it
+    // satisfies that rule while handing saveManualActuals an epsActual of
+    // null — mergeFinnhubActual then writes exactly the half-pair /
+    // stale-merge the rule exists to prevent.
+    it("400s when an ACCEPTED line has no reported value (blank EPS), writing nothing", async () => {
+      const { eventId, printId } = seedPrint([
+        makeLine("eps_adj_q", "blank", null),
+        makeLine("revenue_q", "agreed", 5_000_000),
+      ]);
+
+      const { status, json } = await callAccept({
+        eventId,
+        accept: ["eps_adj_q", "revenue_q"],
+        promoteHeadline: true,
+      });
+
+      expect(status).toBe(400);
+      expect(json.success).toBe(false);
+      expect(json.error).toMatch(/eps_adj_q/);
+      expect(json.error).toMatch(/stale/i);
+      expect(saveManualActuals).not.toHaveBeenCalled();
+
+      // Nothing written: neither the accepts nor any actuals.
+      const sheet = getSheet(hoisted.db, printId);
+      expect(sheet.find((l) => l.metric_id === "eps_adj_q")!.state).toBe("blank");
+      expect(sheet.find((l) => l.metric_id === "revenue_q")!.state).toBe("agreed");
+      const event = hoisted.db
+        .prepare(`SELECT actual_value, manual_actuals_at FROM calendar_events WHERE id = ?`)
+        .get(eventId) as { actual_value: string | null; manual_actuals_at: string | null };
+      expect(event.actual_value).toBeNull();
+      expect(event.manual_actuals_at).toBeNull();
+    });
+
+    it("400s when the accepted revenue line has no reported value", async () => {
+      const { eventId, printId } = seedPrint([
+        makeLine("eps_adj_q", "agreed", 1.42),
+        makeLine("revenue_q", "blank", null),
+      ]);
+      markLineAccepted(hoisted.db, printId, "eps_adj_q");
+      markLineAccepted(hoisted.db, printId, "revenue_q");
+
+      const { status, json } = await callAccept({ eventId, promoteHeadline: true });
+
+      expect(status).toBe(400);
+      expect(json.error).toMatch(/revenue_q/);
+      expect(saveManualActuals).not.toHaveBeenCalled();
+    });
+
     it("promotes atomically in one call combining accept + promoteHeadline", async () => {
       const { eventId, printId } = seedPrint([
         makeLine("eps_adj_q", "flash", 2.05),

@@ -352,6 +352,69 @@ describe("ensurePrintWatch — reconcile", () => {
     expect(status[0].eventId).toBe(eventId);
   });
 
+  it("keeps TODAY's expired print in status with a live drop road (the window closing is when the drop matters most)", async () => {
+    const { eventId } = seedArmedEvent();
+    ensurePrintWatch(db);
+    const printId = printIdFor(eventId);
+
+    // Past T+45m: the automatic window closes without the wire delivering.
+    vi.setSystemTime(new Date("2026-08-26T21:30:00Z"));
+    ensurePrintWatch(db);
+    expect(getPrintByEventId(db, eventId)!.state).toBe("expired");
+
+    // The panel must still see it — a row it cannot see is a row it cannot
+    // drop onto.
+    const status = getWatchStatus(db);
+    expect(status).toHaveLength(1);
+    expect(status[0].printId).toBe(printId);
+    expect(status[0].eventId).toBe(eventId);
+    expect(status[0].state).toBe("expired");
+
+    // And the manual road still runs end-to-end from expired.
+    fake.extract = async () => [candidate("eps_adj_q", 1.05)];
+    await ingestDocument(
+      db,
+      printId,
+      "user-drop",
+      "drop:release.txt",
+      null,
+      Buffer.from(NVDA_RELEASE_TEXT, "utf8"),
+    );
+    expect(getPrintByEventId(db, eventId)!.state).toBe("parsed");
+    expect(getSheet(db, printId).find((l) => l.metric_id === "eps_adj_q")!.state).toBe(
+      "single_source",
+    );
+  });
+
+  it("drops an expired print from status once its event date is no longer today", async () => {
+    const { eventId } = seedArmedEvent();
+    ensurePrintWatch(db);
+    vi.setSystemTime(new Date("2026-08-26T21:30:00Z"));
+    ensurePrintWatch(db);
+    expect(getWatchStatus(db)).toHaveLength(1);
+
+    // Next morning ET — yesterday's miss is history, not work in hand.
+    vi.setSystemTime(new Date("2026-08-27T14:00:00Z"));
+    expect(getPrintByEventId(db, eventId)!.state).toBe("expired");
+    expect(getWatchStatus(db)).toHaveLength(0);
+  });
+
+  it("does not drag expired prints back through the disarm/expire pass on the next sweep", async () => {
+    const { eventId } = seedArmedEvent();
+    ensurePrintWatch(db);
+    vi.setSystemTime(new Date("2026-08-26T21:30:00Z"));
+    ensurePrintWatch(db);
+
+    // Flag removed while the print sits expired: the stale-print pass walks
+    // listActivePrints, which must NOT have been widened — an expired row it
+    // could see would be re-stamped 'disarmed', losing the drop road.
+    db.prepare(`DELETE FROM earnings_worksheet_flags WHERE event_id = ?`).run(eventId);
+    ensurePrintWatch(db);
+
+    expect(getPrintByEventId(db, eventId)!.state).toBe("expired");
+    expect(getWatchStatus(db)).toHaveLength(1);
+  });
+
   it("is idempotent — a second ensure neither duplicates prints nor doubles the loop", async () => {
     const { eventId } = seedArmedEvent();
     ensurePrintWatch(db);
@@ -964,5 +1027,31 @@ describe("pipeline", () => {
     expect(second.isNew).toBe(false);
     expect(second.docId).toBe(first.docId);
     expect(fake.extractCalls).toHaveLength(1);
+
+    // The VERDICT, not just the id: "already ingested" is a different thing to
+    // tell the desk than "parsing now".
+    expect(first.outcome).toBe("parsed");
+    expect(second.outcome).toBe("duplicate");
+  });
+
+  it("reports a gate rejection as its own outcome, carrying the reason", async () => {
+    const { eventId } = seedArmedEvent();
+    ensurePrintWatch(db);
+    const printId = printIdFor(eventId);
+
+    const result = await ingestDocument(
+      db,
+      printId,
+      "user-drop",
+      "drop:acme.html",
+      null,
+      Buffer.from(WRONG_ISSUER_TEXT, "utf8"),
+    );
+
+    expect(result.outcome).toBe("rejected");
+    expect(result.rejectReason).toContain("issuer");
+    // The stored source keeps the same reason — the panel's banner and the
+    // document row tell one story.
+    expect(listDocuments(db, printId)[0].source).toBe(`rejected:${result.rejectReason}`);
   });
 });
