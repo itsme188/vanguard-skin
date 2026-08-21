@@ -53,8 +53,13 @@ interface FakeSeamState {
   extract: (contracts: LineContract[], text: string) => Promise<ParseCandidate[]>;
   djCalls: number;
   dj: () => Promise<{
-    completedReleases: Array<{ headline: string; stitchedText: string; partCount: number }>;
-    flashes: Array<{ time: string; headline: string }>;
+    completedReleases: Array<{
+      headline: string;
+      stitchedText: string;
+      partCount: number;
+      articleIds: string[];
+    }>;
+    flashes: Array<{ time: string; headline: string; articleId: string }>;
   }>;
   edgarCalls: number;
   /** The seen-accession set as it looked at each poll — the watcher owns it
@@ -75,6 +80,13 @@ interface FakeSeamState {
   cik: string | null;
   /** One-shot timer failure, to crash a loop body on purpose. */
   sleepThrowsOnce: boolean;
+  /** Overrides the acquired-bytes root. Point it at a FILE and
+   *  `ingestDocument` throws on its mkdir — the clean way to simulate an
+   *  ingest that dies before the document ever exists. */
+  storageRoot: string | null;
+  /** `djState.seenArticleIds` as it looked at each DJ poll — the watcher owns
+   *  it and must only add AFTER a release is ingested / a flash is batched. */
+  djSeen: string[][];
 }
 
 let fake: FakeSeamState;
@@ -105,10 +117,12 @@ function installSeams(): void {
     twsUp: true,
     cik: null,
     sleepThrowsOnce: false,
+    storageRoot: null,
+    djSeen: [],
   };
 
   _setTestSeams({
-    storageRoot: () => tmpRoot,
+    storageRoot: () => fake.storageRoot ?? tmpRoot,
     sleep: (ms: number) => {
       if (fake.sleepThrowsOnce) {
         fake.sleepThrowsOnce = false;
@@ -120,8 +134,15 @@ function installSeams(): void {
       up: fake.twsUp,
       ib: fake.twsUp ? ({} as never) : null,
     }),
-    pollDjNews: async () => {
+    pollDjNews: async (
+      _ib: unknown,
+      _conId: number,
+      _windowStartUtc: string,
+      _nowUtc: string,
+      state: { seenArticleIds: Set<string> },
+    ) => {
       fake.djCalls += 1;
+      fake.djSeen.push([...state.seenArticleIds]);
       return fake.dj();
     },
     resolveCik: async () => fake.cik,
@@ -511,7 +532,13 @@ describe("ensurePrintWatch — reconcile", () => {
       inFlight -= 1;
       return {
         completedReleases: [],
-        flashes: [{ time: "2026-08-26 20:20:00.0", headline: "*NVIDIA 2Q ADJ EPS $1.05" }],
+        flashes: [
+          {
+            time: "2026-08-26 20:20:00.0",
+            headline: "*NVIDIA 2Q ADJ EPS $1.05",
+            articleId: "DJ-N$flash1",
+          },
+        ],
       };
     };
 
@@ -620,7 +647,12 @@ describe("watch loop", () => {
       served = true;
       return {
         completedReleases: [
-          { headline: "Press Release: NVIDIA", stitchedText: NVDA_RELEASE_TEXT, partCount: 1 },
+          {
+            headline: "Press Release: NVIDIA",
+            stitchedText: NVDA_RELEASE_TEXT,
+            partCount: 1,
+            articleIds: ["DJ-N$rel1"],
+          },
         ],
         flashes: [],
       };
@@ -875,6 +907,92 @@ describe("source seen-sets", () => {
     expect(listDocuments(db, printIdFor(eventId))).toHaveLength(1);
   });
 
+  it("marks a DJ release's article ids only after the stitched bytes are ingested", async () => {
+    seedArmedEvent();
+    fake.extract = async () => [candidate("eps_adj_q", 1.05)];
+    let served = false;
+    fake.dj = async () => {
+      if (served) return { completedReleases: [], flashes: [] };
+      served = true;
+      return {
+        completedReleases: [
+          {
+            headline: "Press Release: NVIDIA",
+            stitchedText: NVDA_RELEASE_TEXT,
+            partCount: 1,
+            articleIds: ["DJ-N$part1", "DJ-N$part2"],
+          },
+        ],
+        flashes: [],
+      };
+    };
+
+    ensurePrintWatch(db);
+    await tick(11_000);
+
+    // The poll that DELIVERED the release saw an empty set...
+    expect(fake.djSeen[0]).toEqual([]);
+    // ...and both part ids are marked only on a later poll, by the watcher.
+    const later = fake.djSeen[fake.djSeen.length - 1];
+    expect(later).toContain("DJ-N$part1");
+    expect(later).toContain("DJ-N$part2");
+  });
+
+  it("leaves a DJ release's article ids UNMARKED when the ingest throws, so the adapter re-emits it", async () => {
+    seedArmedEvent();
+    // Point the byte store at a FILE: writeBytes' mkdir fails, so
+    // ingestDocument throws before the document row exists — the shape of a
+    // real ingest failure, and exactly what used to lose the release forever.
+    const brokenRoot = path.join(tmpRoot, "not-a-directory");
+    fs.writeFileSync(brokenRoot, "definitely not a directory");
+    fake.storageRoot = brokenRoot;
+
+    fake.dj = async () => ({
+      completedReleases: [
+        {
+          headline: "Press Release: NVIDIA",
+          stitchedText: NVDA_RELEASE_TEXT,
+          partCount: 1,
+          articleIds: ["DJ-N$part1"],
+        },
+      ],
+      flashes: [],
+    });
+
+    ensurePrintWatch(db);
+    await tick(11_000);
+
+    expect(fake.djSeen.length).toBeGreaterThan(1);
+    for (const seen of fake.djSeen) expect(seen).not.toContain("DJ-N$part1");
+    expect(getWatchStatus(db)[0].sources.dj).toBeTruthy();
+  });
+
+  it("marks a flash's article id once its bullet is in the lane's batch", async () => {
+    seedArmedEvent();
+    fake.extract = async () => [candidate("eps_adj_q", 1.05)];
+    let served = false;
+    fake.dj = async () => {
+      if (served) return { completedReleases: [], flashes: [] };
+      served = true;
+      return {
+        completedReleases: [],
+        flashes: [
+          {
+            time: "2026-08-26 20:20:00.0",
+            headline: "*NVIDIA 2Q ADJ EPS $1.05",
+            articleId: "DJ-N$flash1",
+          },
+        ],
+      };
+    };
+
+    ensurePrintWatch(db);
+    await tick(11_000);
+
+    expect(fake.djSeen[0]).toEqual([]);
+    expect(fake.djSeen[fake.djSeen.length - 1]).toContain("DJ-N$flash1");
+  });
+
   it("marks an EDGAR accession seen only after its exhibits are ingested", async () => {
     seedArmedEvent();
     fake.cik = "0001045810";
@@ -1056,7 +1174,13 @@ describe("pipeline", () => {
       served = true;
       return {
         completedReleases: [],
-        flashes: [{ time: "2026-08-26 20:20:00.0", headline: "*NVIDIA 2Q ADJ EPS $1.05" }],
+        flashes: [
+          {
+            time: "2026-08-26 20:20:00.0",
+            headline: "*NVIDIA 2Q ADJ EPS $1.05",
+            articleId: "DJ-N$flash1",
+          },
+        ],
       };
     };
 
@@ -1106,7 +1230,13 @@ describe("pipeline", () => {
       served = true;
       return {
         completedReleases: [],
-        flashes: [{ time: "2026-08-26 20:20:00.0", headline: "*NVIDIA 2Q ADJ EPS $1.05" }],
+        flashes: [
+          {
+            time: "2026-08-26 20:20:00.0",
+            headline: "*NVIDIA 2Q ADJ EPS $1.05",
+            articleId: "DJ-N$flash1",
+          },
+        ],
       };
     };
 

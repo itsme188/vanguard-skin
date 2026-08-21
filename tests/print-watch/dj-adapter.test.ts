@@ -20,6 +20,7 @@ import {
   DJ_PROVIDER_CODES,
   type IBApiLike,
   type DjPollState,
+  type DjPollOutput,
 } from "@/lib/print-watch/dj-adapter";
 
 // ---------------------------------------------------------------------------
@@ -191,6 +192,19 @@ function hdEvents(): RawEvent[] {
   return HD_DISTRACTOR.map((p) => ev(p.articleId, "2026-06-03 20:02:00.0", rawHeadline(p)));
 }
 
+/**
+ * What the WATCHER does with a poll's output once it has ingested it — the
+ * caller-owns-seen contract (fix wave, finding F). The adapter marks nothing
+ * it hands back, so every test expecting dedupe on a later poll has to consume
+ * first, exactly as production does.
+ */
+function consume(state: DjPollState, out: DjPollOutput): void {
+  for (const release of out.completedReleases) {
+    for (const id of release.articleIds) state.seenArticleIds.add(id);
+  }
+  for (const flash of out.flashes) state.seenArticleIds.add(flash.articleId);
+}
+
 describe("pollDjNews", () => {
   let api: FakeIBApi;
   let state: DjPollState;
@@ -210,7 +224,16 @@ describe("pollDjNews", () => {
     const out = await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0);
 
     expect(out.completedReleases).toEqual([]);
-    expect(out.flashes).toEqual([{ time: FLASH_1.time, headline: "* CrowdStrike Holdings 1Q Rev $1.39B >CRWD" }]);
+    // The flash carries its article id so the CALLER can mark it once taken.
+    expect(out.flashes).toEqual([
+      {
+        time: FLASH_1.time,
+        headline: "* CrowdStrike Holdings 1Q Rev $1.39B >CRWD",
+        articleId: FLASH_1.articleId,
+      },
+    ]);
+    // ...and the adapter did NOT mark it (finding F).
+    expect(state.seenArticleIds.has(FLASH_1.articleId)).toBe(false);
 
     const crwdGroup = [...state.partGroups.values()].find((g) => g.articleIds.length > 0 && g.articleIds.includes(CRWD_PARTS[0].articleId));
     expect(crwdGroup?.articleIds.length).toBe(4);
@@ -232,12 +255,19 @@ describe("pollDjNews", () => {
       ],
     ];
 
-    await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0);
+    const out1 = await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0);
+    consume(state, out1); // the watcher takes poll 1's flash
     const out2 = await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0 + 10_000);
 
     expect(out2.completedReleases).toEqual([]);
-    // seen-dedupe: FLASH_1 already emitted in poll 1, must not reappear.
-    expect(out2.flashes).toEqual([{ time: FLASH_2.time, headline: "* CrowdStrike Holdings 1Q Net $27.8M >CRWD" }]);
+    // seen-dedupe: FLASH_1 was CONSUMED after poll 1, so it must not reappear.
+    expect(out2.flashes).toEqual([
+      {
+        time: FLASH_2.time,
+        headline: "* CrowdStrike Holdings 1Q Net $27.8M >CRWD",
+        articleId: FLASH_2.articleId,
+      },
+    ]);
 
     const crwdGroup = [...state.partGroups.values()].find((g) => g.articleIds.includes(CRWD_PARTS[0].articleId));
     expect(crwdGroup?.articleIds.length).toBe(7);
@@ -256,12 +286,16 @@ describe("pollDjNews", () => {
       stableResponse,
     ];
 
-    await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0);
-    await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0 + 10_000);
+    consume(state, await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0));
+    consume(
+      state,
+      await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0 + 10_000),
+    );
     const out3 = await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0 + 30_000);
 
     expect(out3.completedReleases).toHaveLength(1);
     const release = out3.completedReleases[0];
+    expect(release.articleIds.sort()).toEqual(CRWD_PARTS.map((p) => p.articleId).sort());
     expect(release.partCount).toBe(7);
     expect(release.headline).toBe(
       "Press Release: CrowdStrike Reports First Quarter Fiscal Year 2027 Financial Results",
@@ -273,17 +307,21 @@ describe("pollDjNews", () => {
 
     // HD distractor reached quiescence too but must be silently dropped —
     // not present in completedReleases, and removed from state either way.
+    // (The adapter DOES mark this one: it never reaches the caller.)
     expect(out3.completedReleases.some((r) => r.headline.includes("Express Delivery"))).toBe(false);
     expect([...state.partGroups.values()].some((g) => g.articleIds.includes(HD_DISTRACTOR[0].articleId))).toBe(false);
+    expect(state.seenArticleIds.has(HD_DISTRACTOR[0].articleId)).toBe(true);
 
-    // Completed group is removed from state (emit once).
-    expect([...state.partGroups.values()].some((g) => g.articleIds.includes(CRWD_PARTS[0].articleId))).toBe(false);
+    // The completed group is EMITTED, not retired (finding F): it stays in
+    // state, unmarked, until the caller says it ingested the release.
+    expect([...state.partGroups.values()].some((g) => g.articleIds.includes(CRWD_PARTS[0].articleId))).toBe(true);
+    for (const p of CRWD_PARTS) expect(state.seenArticleIds.has(p.articleId)).toBe(false);
 
-    // No flashes this poll — both already seen.
+    // No flashes this poll — both were consumed after their own polls.
     expect(out3.flashes).toEqual([]);
   });
 
-  it("re-polling after completion never re-emits the same release (emit once)", async () => {
+  it("re-polling after a CONSUMED completion never re-emits the same release (emit once)", async () => {
     const stableResponse = [...hdEvents(), ...crwdEvents(7)];
     api.responsesByCall = [crwdEvents(4), stableResponse, stableResponse, stableResponse];
 
@@ -292,8 +330,53 @@ describe("pollDjNews", () => {
     const out3 = await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0 + 30_000);
     expect(out3.completedReleases).toHaveLength(1);
 
+    consume(state, out3); // the watcher ingested it
+
     const out4 = await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0 + 50_000);
     expect(out4.completedReleases).toEqual([]);
+    // Consumption is also what retires the part group.
+    expect([...state.partGroups.values()].some((g) => g.articleIds.includes(CRWD_PARTS[0].articleId))).toBe(false);
+  });
+
+  // The whole point of finding F: an emit is not a delivery. If the caller's
+  // ingest throws, nothing marks the release seen — and the next poll must
+  // hand it back rather than losing it for the life of the runtime.
+  it("re-emits a completed release the caller never consumed, and stops once it does", async () => {
+    const stableResponse = [...crwdEvents(7)];
+    api.responsesByCall = [crwdEvents(4), stableResponse, stableResponse, stableResponse, stableResponse];
+
+    await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0);
+    await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0 + 10_000);
+
+    const out3 = await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0 + 30_000);
+    expect(out3.completedReleases).toHaveLength(1);
+    // The caller's ingestDocument threw: it marks nothing.
+
+    const out4 = await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0 + 50_000);
+    expect(out4.completedReleases).toHaveLength(1);
+    expect(out4.completedReleases[0].partCount).toBe(7);
+    expect(out4.completedReleases[0].stitchedText).toBe(out3.completedReleases[0].stitchedText);
+
+    consume(state, out4); // this time the ingest worked
+
+    const out5 = await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0 + 70_000);
+    expect(out5.completedReleases).toEqual([]);
+  });
+
+  it("re-emits a flash the caller never consumed", async () => {
+    const flashEvent = ev(FLASH_1.articleId, FLASH_1.time, FLASH_1.headline);
+    api.responsesByCall = [[flashEvent], [flashEvent], [flashEvent]];
+
+    const out1 = await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0);
+    expect(out1.flashes).toHaveLength(1);
+
+    // Nothing consumed it — the bullet comes back rather than vanishing.
+    const out2 = await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0 + 10_000);
+    expect(out2.flashes).toHaveLength(1);
+    consume(state, out2);
+
+    const out3 = await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0 + 20_000);
+    expect(out3.flashes).toEqual([]);
   });
 
   it("passes the RECENT boundary first and the OLDER boundary second to reqHistoricalNews (backward-walk quirk)", async () => {
@@ -359,8 +442,11 @@ describe("pollDjNews", () => {
     // goes quiescent.
     api.failingArticleIds.add(CRWD_PARTS[3].articleId);
 
-    await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0);
-    await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0 + 10_000);
+    consume(state, await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0));
+    consume(
+      state,
+      await pollDjNews(api, CRWD_CON_ID, WINDOW_START_UTC, NOW_UTC, state, T0 + 10_000),
+    );
 
     // Poll 3: CRWD and Acme both reach quiescence in the SAME call. CRWD's
     // body fetch fails partway through; the call must still resolve (not
@@ -372,7 +458,16 @@ describe("pollDjNews", () => {
       "Press Release: Acme Corp Reports Second Quarter 2026 Results",
     );
     expect(out3.completedReleases.some((r) => r.headline.includes("CrowdStrike"))).toBe(false);
-    expect(out3.flashes).toEqual([{ time: FLASH_3.time, headline: "* CrowdStrike Holdings Sees FY27 Rev $5.915B-$5.959B >CRWD" }]);
+    expect(out3.flashes).toEqual([
+      {
+        time: FLASH_3.time,
+        headline: "* CrowdStrike Holdings Sees FY27 Rev $5.915B-$5.959B >CRWD",
+        articleId: FLASH_3.articleId,
+      },
+    ]);
+
+    // The watcher ingests what it got (Acme + the flash) — CRWD never arrived.
+    consume(state, out3);
 
     // The failed group survives in state, untouched — not silently lost.
     const survivingCrwdGroup = [...state.partGroups.values()].find((g) => g.articleIds.includes(CRWD_PARTS[0].articleId));
