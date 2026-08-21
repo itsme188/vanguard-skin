@@ -410,14 +410,15 @@ describe("reconcile", () => {
     expect(line.value).toBe(1.5);
   });
 
-  it("sign guard round-1 fix: (7,604) truly contradicting +7,604,000,000 (millions scale) is dropped", () => {
+  it("sign guard round-2 fix: whole-cell \"(7,604)\" with value +7,604,000,000 is dropped", () => {
+    // Ruling item 1 — bare whole-cell parenthesized number, no currency.
     const contract = makeContract("fcf_ttm", { unit: "usd" });
     const c = makeCandidate({
       metric_id: "fcf_ttm",
       doc_id: 1,
       representation: "repA",
       value: 7604000000, // should have been negative given the parens
-      raw_text: "$(7,604) million",
+      raw_text: "(7,604)",
     });
     const line = reconcileOne(contract, [c]);
 
@@ -425,13 +426,88 @@ describe("reconcile", () => {
     expect(line.candidates_json).toBe("[]");
   });
 
-  it("sign guard round-1 fix: (0.10) genuinely matching a negative -0.10 is kept, not dropped", () => {
+  it("sign guard round-2 fix: whole-cell \"$(7,604)\" with value +7,604,000,000 is dropped", () => {
+    // Ruling item 2 — whole-cell with a leading currency symbol.
+    const contract = makeContract("fcf_ttm", { unit: "usd" });
+    const c = makeCandidate({
+      metric_id: "fcf_ttm",
+      doc_id: 1,
+      representation: "repA",
+      value: 7604000000,
+      raw_text: "$(7,604)",
+    });
+    const line = reconcileOne(contract, [c]);
+
+    expect(line.state).toBe("pending");
+    expect(line.candidates_json).toBe("[]");
+  });
+
+  it("sign guard round-1/2 fix: (0.10) genuinely matching a negative -0.10 is kept, not dropped", () => {
+    // Ruling item 3.
     const contract = makeContract("eps_adj");
     const c = makeCandidate({ doc_id: 1, representation: "repA", value: -0.1, raw_text: "$(0.10)" });
     const line = reconcileOne(contract, [c]);
 
     expect(line.state).toBe("single_source");
     expect(line.value).toBe(-0.1);
+  });
+
+  it("sign guard round-2 fix: a WHOLE-CELL parenthesized value with a trailing percent is dropped", () => {
+    // "(3.2)%" is the ruling's own example of the allowed whole-cell shape
+    // (trailing scale-letter/percent) — proves the guard still fires here.
+    const contract = makeContract("op_margin_delta", { unit: "percent" });
+    const c = makeCandidate({
+      metric_id: "op_margin_delta",
+      doc_id: 1,
+      representation: "repA",
+      value: 3.2, // should have been negative given the parens
+      raw_text: "(3.2)%",
+    });
+    const line = reconcileOne(contract, [c]);
+
+    expect(line.state).toBe("pending");
+    expect(line.candidates_json).toBe("[]");
+  });
+
+  it("sign guard round-2 fix: mixed string \"Revenue guidance $(2,000)M (2)\" is NOT judged (accepted risk) — kept", () => {
+    // Reviewer's round-2 repro: the round-1 scale-matching approach
+    // false-dropped this because the coincidental footnote token "(2)"
+    // ALSO matched value=2,000,000,000 at the 1e3 (thousands) scale, even
+    // though the REAL sign-bearing token is "(2,000)" at the 1e6 scale.
+    // Ruling: raw_text with more than just the whole cell is never judged
+    // by this guard at all — a deliberate accepted-risk tradeoff (false
+    // drops silently cost coverage; the unanimity rule + human verify are
+    // the backstop here, not this narrow guard).
+    const contract = makeContract("revenue_q_guide", { unit: "usd", period: "NQ_guide" });
+    const c = makeCandidate({
+      metric_id: "revenue_q_guide",
+      doc_id: 1,
+      representation: "repA",
+      value: 2000000000,
+      raw_text: "Revenue guidance $(2,000)M (2)",
+    });
+    const line = reconcileOne(contract, [c]);
+
+    expect(line.state).toBe("single_source");
+    expect(line.value).toBe(2000000000);
+  });
+
+  it("sign guard round-2 fix: a bare footnote \"(2)\" inside a longer string is NOT judged — kept", () => {
+    // Ruling item 7 — the same accepted-risk rule stated with a simpler
+    // string: a footnote reference embedded in prose never triggers the
+    // guard, no matter what value happens to be nearby.
+    const contract = makeContract("some_metric", { unit: "usd" });
+    const c = makeCandidate({
+      metric_id: "some_metric",
+      doc_id: 1,
+      representation: "repA",
+      value: 2000,
+      raw_text: "Includes a one-time adjustment (2)",
+    });
+    const line = reconcileOne(contract, [c]);
+
+    expect(line.state).toBe("single_source");
+    expect(line.value).toBe(2000);
   });
 
   it("sign guard drops a malformed candidate but keeps its independent well-formed sibling for agreement", () => {

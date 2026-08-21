@@ -51,42 +51,39 @@
 //      (belt-and-braces); this module is expected to skip accepted lines
 //      itself.
 //
-// Sign guard (REVISED, review ruling round 1 — belt-and-braces): the
-// original implementation flagged ANY parenthesized number in raw_text as
-// a negative-sign assertion, which false-dropped footnote markers
-// ("$1.50(1)") and parenthesized years ("$1.50 (2024)"). The ruling: a
-// sign contradiction exists ONLY when a parenthesized numeric token in
-// raw_text — tried at common financial-statement scales (as printed,
-// thousands, millions, billions) — parses to |value| within the same 1e-6
-// relative tolerance, AND `value` is >= 0 (parens assert negative; a value
-// that is already negative is never contradicted). Dropped candidates
-// never appear in candidates_json.
+// Sign guard (REVISED AGAIN, review ruling round 2 — belt-and-braces): the
+// round-1 fix (scale-matching a parenthesized token against |value|) itself
+// false-dropped when a coincidental footnote/year token happened to match
+// |value| at one of the tried scales (e.g. "$(2,000)M (2)" with
+// value=2,000,000,000 — the real "2,000" token correctly matches at 1e6,
+// but the "(2)" footnote ALSO spuriously matches at 1e3). Round-2 ruling,
+// implemented verbatim: the guard applies ONLY when the ENTIRE trimmed
+// raw_text is a single parenthesized number — optionally a leading
+// currency symbol and/or a trailing scale-letter/percent, e.g. "(7,604)",
+// "$(7,604)", "(0.10)", "(3.2)%". In that unambiguous whole-cell case,
+// value >= 0 is a genuine sign contradiction and the candidate is dropped.
+// Any raw_text with additional content — footnotes, years, prose, more
+// than one token — is NOT judged by this guard at all: mixed-string sign
+// errors are an accepted risk (false drops silently cost coverage; the
+// unanimity rule + human verify are the backstop for anything this narrow
+// guard doesn't catch). Dropped candidates never appear in candidates_json.
 
 import type { LineContract, ExpectedValue, TaggedCandidate, PrintWatchLine } from "./types";
 
 const RELATIVE_TOLERANCE = 1e-6;
 const TABLE_HINT = /table\s*(\d+)/i;
-// Every parenthesized numeric token in raw_text — "(1)" (footnote),
-// "(2024)" (a year), "(7,604)" (the actual value in statement scale),
-// "($1,234.5)", "(4.2%)". Captures the digits/decimal only (sign, $, %
-// stripped) so each token can be compared to |value| at various scales.
-const PARENTHESIZED_TOKEN = /\(\s*-?\$?\s*([\d,]+(?:\.\d+)?)\s*%?\s*\)/g;
-// Common financial-statement scale factors: as-printed, thousands,
-// millions, billions — a raw_text token is often un-normalized while
-// `value` has already been normalized to full units (task 4's contract).
-const SCALE_FACTORS = [1, 1e3, 1e6, 1e9];
+// The ENTIRE trimmed raw_text must be exactly this shape: optional leading
+// "$", a parenthesized number (optional inner "-"/"$", digits/commas,
+// optional decimal), then an optional trailing scale letter (M/B/K/T, up
+// to 2 chars) and/or "%". Anything else in the string (footnotes, years,
+// prose, a second token) fails this match and is left unjudged.
+const WHOLE_CELL_PARENTHESIZED = /^\$?\s*\(\s*-?\$?\s*[\d,]+(?:\.\d+)?\s*\)\s*[A-Za-z]{0,2}%?$/;
 
 function passesSignGuard(c: TaggedCandidate): boolean {
   if (c.value === null || c.raw_text === null) return true;
   if (c.value < 0) return true; // already negative — parens can't contradict this
-  const absValue = Math.abs(c.value);
-  const tokens = Array.from(c.raw_text.matchAll(PARENTHESIZED_TOKEN)).map((m) =>
-    Number(m[1].replace(/,/g, "")),
-  );
-  const isTrueContradiction = tokens.some(
-    (t) => !Number.isNaN(t) && SCALE_FACTORS.some((scale) => relativeMatch(t * scale, absValue)),
-  );
-  return !isTrueContradiction;
+  const isWholeCellContradiction = WHOLE_CELL_PARENTHESIZED.test(c.raw_text.trim());
+  return !isWholeCellContradiction;
 }
 
 function relativeMatch(a: number, b: number): boolean {
