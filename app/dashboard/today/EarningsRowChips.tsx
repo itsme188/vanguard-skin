@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { useToast } from "../components/Toast";
 import {
@@ -99,12 +99,27 @@ export function EarningsRowChips({
   // R9: the row's headline figures (RecapFigureButton cells) open the same
   // viewer this component owns — they dispatch a scoped custom event rather
   // than mounting a viewer of their own.
+  //
+  // INVARIANT (4th recurrence fix, 2026-08-21): EarningsHub renders a
+  // desktop grid row (`hidden md:block`) and a mobile card row
+  // (`block md:hidden`) for every event — both are mounted in the DOM at
+  // once, CSS just hides one via the responsive breakpoint. That means BOTH
+  // EarningsRowChips instances for a given eventId receive this window
+  // event and both match on eventId. Only the instance whose ancestor
+  // chain is actually visible (not `display:none`) may open the viewer,
+  // or two identical modals stack and each fires its own email fetch.
+  // `offsetParent` is null whenever any ancestor is `display:none`
+  // (that's the CSS-hidden responsive twin), so it's a direct, structural
+  // visibility check — no viewport-width heuristics to keep in sync with
+  // the Tailwind breakpoint.
+  const rootRef = useRef<HTMLSpanElement>(null);
   useEffect(() => {
     const onOpen = (e: Event) => {
       const detail = (e as CustomEvent).detail as
         | { eventId?: number; phase?: Phase }
         | undefined;
       if (detail?.eventId !== eventId) return;
+      if (rootRef.current === null || rootRef.current.offsetParent === null) return;
       setInlineData(null);
       setOpenPhase(detail.phase === "preview" ? "preview" : "recap");
     };
@@ -164,7 +179,7 @@ export function EarningsRowChips({
        Bogeys button — an invisible click-stealer on pending rows (the exact
        2026-07-27 "+ BOG silently skipped the recap" bug, re-caught by
        elementFromPoint verification 2026-08-04). */
-    <span className="flex flex-wrap items-center justify-end gap-x-1.5 gap-y-1 min-w-0">
+    <span ref={rootRef} className="flex flex-wrap items-center justify-end gap-x-1.5 gap-y-1 min-w-0">
       {/* Group 1 — email lifecycle chips. shrink-0 so wrapping only ever
           happens BETWEEN groups, never mid-group. */}
       <span className="inline-flex items-center gap-1.5 shrink-0">
