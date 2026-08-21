@@ -11,6 +11,13 @@ const nextConfig: NextConfig = {
   // bundle (caught 2026-08-21 when codesign failed on .git/objects). Runtime
   // file access under resolveDbDir() works regardless of tracing; nothing
   // here is needed inside the bundle.
+  // NOTE: the excludes below expose a Turbopack-standalone tracing gap — the
+  // app-ROUTE runtime (next-server/app-route-turbo.runtime.prod.js) stops
+  // being traced once the over-broad root sweep is gone, and every packaged
+  // API route 500s ("Login unavailable", 2026-08-21). outputFileTracingIncludes
+  // did NOT fix it; the deterministic fix is the compiled/next-server copy in
+  // package.json's electron:copy-static step. Keep that copy if these
+  // excludes stay.
   outputFileTracingExcludes: {
     "*": [
       // Both bare and ./-prefixed forms: db-path.ts's static
