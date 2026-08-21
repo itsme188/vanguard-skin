@@ -32,6 +32,13 @@
  *    fix round 1 — the spike's own per-part try/catch partial-stitch
  *    precedent was rejected here in favor of full retry, since this module
  *    polls repeatedly and the spike was a one-shot tool).
+ *  - CALLER-OWNS-SEEN (fix wave, finding F): the same "leave it in state
+ *    until it is genuinely done" rule now extends past the fetch to the
+ *    CONSUMER. Emitting no longer marks anything seen or removes the group;
+ *    the caller marks each article id once it has ingested the release (or
+ *    taken the flash), and a group whose parts are all marked is retired at
+ *    the top of the next poll. A caller whose ingest fails gets the release
+ *    again instead of losing it for the life of the runtime.
  *
  * IBApiNext has no promise wrappers for reqHistoricalNews / reqNewsArticle
  * (the same situation `lib/tws/wsh.ts` documents for WSH), so this module
@@ -136,9 +143,27 @@ export interface DjPollState {
   >;
 }
 
+/**
+ * CALLER-OWNS-SEEN (fix wave, finding F). Everything this adapter HANDS BACK
+ * carries the article ids behind it, and the adapter does not mark them:
+ * `seenArticleIds` is the caller's record of what it has CONSUMED, and only
+ * the caller knows whether ingesting the bytes worked. Marking at emit time
+ * meant one failed `ingestDocument` lost the release for the life of the
+ * runtime — the same class of bug fixed for the IR and EDGAR adapters.
+ *
+ * The adapter still marks (and drops) what it will NEVER hand over: a
+ * quiescent group whose headline is not an earnings print.
+ */
 export interface DjPollOutput {
-  completedReleases: Array<{ headline: string; stitchedText: string; partCount: number }>;
-  flashes: Array<{ time: string; headline: string }>;
+  completedReleases: Array<{
+    headline: string;
+    stitchedText: string;
+    partCount: number;
+    /** Every part's article id — the caller marks these once it has ingested
+     *  the stitched release, which is also what retires the part group. */
+    articleIds: string[];
+  }>;
+  flashes: Array<{ time: string; headline: string; articleId: string }>;
 }
 
 export function createDjPollState(): DjPollState {
@@ -360,6 +385,16 @@ export async function pollDjNews(
 
   const flashes: DjPollOutput["flashes"] = [];
 
+  // Retire the groups the caller has CONSUMED (finding F). A completed group
+  // is left in state when it is emitted, precisely so a caller whose ingest
+  // failed gets it again on the next poll; what tells us the release actually
+  // landed is its parts appearing in `seenArticleIds`, which only the caller
+  // writes. This is the same "leave it in state until it is genuinely done"
+  // rule the part-fetch failure path has always used.
+  for (const [mapKey, g] of Array.from(state.partGroups.entries())) {
+    if (g.articleIds.every((id) => state.seenArticleIds.has(id))) state.partGroups.delete(mapKey);
+  }
+
   // Article ids already tracked by an in-progress group, from ANY prior
   // poll — reqHistoricalNews returns the full window every call (it is not
   // incremental), so without this a still-growing group's old parts would
@@ -374,8 +409,9 @@ export async function pollDjNews(
     const stripped = stripHeadlineMeta(h.headline);
 
     if (isFlash(stripped)) {
-      flashes.push({ time: h.time, headline: stripped });
-      state.seenArticleIds.add(h.articleId);
+      // Handed over UNMARKED — the watcher marks it once the bullet is in the
+      // flash lane's batch (finding F).
+      flashes.push({ time: h.time, headline: stripped, articleId: h.articleId });
       continue;
     }
 
@@ -444,7 +480,9 @@ export async function pollDjNews(
 
     if (!EARNINGS_HEADLINE_RE.test(headline)) {
       // Distractor — will never pass this regex no matter how often we
-      // retry, so drop for good: remove + mark seen, never emit.
+      // retry, so drop for good: remove + mark seen, never emit. The adapter
+      // marks here precisely BECAUSE this never reaches the caller (same rule
+      // as the IR adapter's newsroom noise).
       state.partGroups.delete(mapKey);
       for (const id of g.articleIds) state.seenArticleIds.add(id);
       continue;
@@ -467,13 +505,15 @@ export async function pollDjNews(
       continue; // leave the group in state — retried next poll
     }
 
-    state.partGroups.delete(mapKey);
-    for (const id of g.articleIds) state.seenArticleIds.add(id);
-
+    // Emitted, NOT retired (finding F). The group stays in state and its parts
+    // stay unmarked until the caller reports back by marking them seen; an
+    // ingest that failed therefore gets the whole release again next poll,
+    // exactly like a part-fetch failure does.
     completedReleases.push({
       headline,
       stitchedText: chunks.join("\n\n"),
       partCount: parts.length,
+      articleIds: parts.map((p) => p.articleId),
     });
   }
 

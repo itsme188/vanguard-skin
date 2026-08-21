@@ -1003,10 +1003,17 @@ async function pollDjSource(
         null,
         Buffer.from(release.stitchedText, "utf8"),
       );
+      // Marked ONLY once the bytes are ingested (fix wave, finding F). An
+      // ingest that throws leaves these unmarked, so the adapter keeps the
+      // part group and re-emits the whole release next poll — and the sha256
+      // dedupe makes a later successful re-ingest a no-op.
+      for (const id of release.articleIds) rt.djState.seenArticleIds.add(id);
     }
 
     let freshFlashes = 0;
+    const flashIds: string[] = [];
     for (const flash of out.flashes) {
+      flashIds.push(flash.articleId);
       const key = `${flash.time}|${flash.headline}`;
       if (rt.seenFlashKeys.has(key)) continue;
       rt.seenFlashKeys.add(key);
@@ -1017,6 +1024,11 @@ async function pollDjSource(
       rt.burst = true;
       await runFlashLane(db, rt);
     }
+    // A flash is CONSUMED the moment its text joins `flashHeadlines`: the lane
+    // re-reads that whole batch every time it runs, so the bullet survives a
+    // failed lane run. Marking here rather than in the adapter keeps the rule
+    // uniform — nothing is retired until the caller has it in hand.
+    for (const id of flashIds) rt.djState.seenArticleIds.add(id);
 
     status.sources.dj = `ok — ${out.completedReleases.length} release(s), ${rt.flashHeadlines.length} flash(es)`;
     return true;

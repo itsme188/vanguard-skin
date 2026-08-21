@@ -31,6 +31,24 @@ class PromotionRefused extends Error {
   }
 }
 
+/**
+ * Thrown INSIDE the transaction by any validation guard (fix wave, B-residual).
+ *
+ * The guards moved in there because each one reads DB state another process
+ * can change; throwing is how a synchronous transaction says "refuse" without
+ * giving up the rollback. The payload and status are exactly what the old
+ * early-return produced, so no response shape changed — only when the state
+ * behind it was read.
+ */
+class RequestRefused extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly payload: { success: false; error: string; code?: string },
+  ) {
+    super(payload.error);
+  }
+}
+
 // Ruling (progress.md, wave {10,11,12} dispatch note): single_source and
 // flash accepts are the user overriding with their own eyes — allowed, the
 // panel labels them. 'accepted' is included so re-accepting an
@@ -126,138 +144,144 @@ export async function POST(request: NextRequest) {
   // has said nothing about whether the number itself was later corrected.
   const forceSuperseded = body.forceSuperseded === true;
 
-  const sheet = getSheet(db, print.id);
-  const byMetric = new Map<string, PrintWatchLine>(sheet.map((l) => [l.metric_id, l]));
-
-  // ── Step 1: validate the ENTIRE request before writing anything (Codex #14) ──
-
-  for (const metricId of acceptList) {
-    const line = byMetric.get(metricId);
-    if (!line) {
-      return NextResponse.json(
-        { success: false, error: `Unknown metric "${metricId}" — no line on this print's sheet.` },
-        { status: 400 },
-      );
-    }
-    if (!ACCEPTABLE_ACCEPT_STATES.has(line.state)) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `Cannot accept "${metricId}": its state is "${line.state}" — resolve the conflict, or wait for a source, before accepting.`,
-        },
-        { status: 400 },
-      );
-    }
-  }
-
-  for (const metricId of unacceptList) {
-    if (!byMetric.has(metricId)) {
-      return NextResponse.json(
-        { success: false, error: `Unknown metric "${metricId}" — no line on this print's sheet.` },
-        { status: 400 },
-      );
-    }
-    if (acceptList.includes(metricId)) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `Cannot both accept and unaccept "${metricId}" in the same request.`,
-        },
-        { status: 400 },
-      );
-    }
-  }
-
-  // Post-apply view: a metric counts as accepted-after-this-request if it's
-  // being accepted now, NOT being unaccepted now, or (when neither list
-  // mentions it) was already accepted — lets a single call combine
-  // accept + promoteHeadline (the common "accept both, then promote" click).
-  const acceptedAfter = (metricId: string): boolean => {
-    if (acceptList.includes(metricId)) return true;
-    if (unacceptList.includes(metricId)) return false;
-    return byMetric.get(metricId)?.state === "accepted";
-  };
+  // ── Validate AND apply inside ONE transaction (Codex #14, hardened by the
+  //    fix wave's B-residual) ──
+  //
+  // Validation used to run against a snapshot read at request start, and the
+  // transaction then applied decisions made from it. Every guard here is a
+  // statement about DB state that ANOTHER PROCESS can change — the watcher
+  // writes `candidates_json` on every reconcile, and a correction landing
+  // between the snapshot and the write would be validated away: the
+  // supersession recheck would pass on the clean snapshot while the row it
+  // promoted already disagreed.
+  //
+  // better-sqlite3 transactions are SYNCHRONOUS, so a read taken inside one
+  // cannot be overtaken: nothing else in this process runs until the
+  // transaction ends, and `.immediate()` takes the write lock up front so no
+  // other process can commit underneath it either. Reading the sheet here
+  // makes the guards mean what they say.
+  //
+  // Refusals throw `RequestRefused`, which carries the exact status + body the
+  // early returns used to produce — and better-sqlite3 rolls the transaction
+  // back on the way out, so a refusal still writes nothing.
 
   let epsBasis: "adj" | "gaap" | null = null;
-  let epsLine: PrintWatchLine | undefined;
-  let revLine: PrintWatchLine | undefined;
-
-  if (promoteHeadline) {
-    // Adj preferred over gaap (task brief) — name the basis in the response.
-    if (acceptedAfter("eps_adj_q")) {
-      epsBasis = "adj";
-      epsLine = byMetric.get("eps_adj_q");
-    } else if (acceptedAfter("eps_gaap_q")) {
-      epsBasis = "gaap";
-      epsLine = byMetric.get("eps_gaap_q");
-    }
-
-    const revAccepted = acceptedAfter("revenue_q");
-    if (revAccepted) revLine = byMetric.get("revenue_q");
-
-    if (!epsBasis || !revAccepted) {
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            "Promoting the headline needs a COMPLETE pair: an accepted EPS line (adjusted preferred, GAAP fallback) AND an accepted revenue_q. Promoting with only one would merge into the existing calendar_events actuals and leave the other field stale. Accept both lines, then promote.",
-        },
-        { status: 400 },
-      );
-    }
-
-    // Accepted-ness is not the same as having a NUMBER (final fix wave). A
-    // `blank` line ("not disclosed") is acceptable on purpose — the desk
-    // confirming a metric wasn't given is real information — but it carries
-    // value = null, and promoting it hands saveManualActuals an epsActual of
-    // null. mergeFinnhubActual then merges a half-pair into the existing
-    // calendar_events actuals and leaves the other field stale: EXACTLY the
-    // failure the complete-pair rule above exists to prevent, arriving through
-    // the door that rule doesn't watch. Same 400, same explanation.
-    if (epsLine!.value === null || revLine!.value === null) {
-      const missing = [
-        epsLine!.value === null ? `${epsLine!.metric_id} (${epsLine!.state})` : null,
-        revLine!.value === null ? `revenue_q (${revLine!.state})` : null,
-      ]
-        .filter(Boolean)
-        .join(" and ");
-      return NextResponse.json(
-        {
-          success: false,
-          error: `Promoting the headline needs a REPORTED value on both lines — ${missing} has no number. Promoting a blank would merge into the existing calendar_events actuals and leave the other field stale. Wait for the figure, or drop the release, before promoting.`,
-        },
-        { status: 400 },
-      );
-    }
-
-    // Supersession recheck (fix wave, finding B) — LAST, and before the
-    // transaction, so a 409 here has written nothing.
-    if (!forceSuperseded) {
-      const superseded: string[] = [];
-      for (const line of [epsLine!, revLine!]) {
-        const rivals = divergentCandidates(line);
-        if (rivals.length === 0) continue;
-        const values = Array.from(new Set(rivals.map((c) => String(c.value)))).slice(0, 3);
-        superseded.push(`${line.metric_id} (accepted ${line.value}, later evidence ${values.join(", ")})`);
-      }
-      if (superseded.length > 0) {
-        return NextResponse.json(
-          {
-            success: false,
-            code: "superseded",
-            error: `Newer evidence disagrees with the accepted number on ${superseded.join(" and ")}. Re-verify against the release before promoting — un-accept the line, let it reconcile, and accept the corrected figure, or send forceSuperseded to promote the accepted value as it stands.`,
-          },
-          { status: 409 },
-        );
-      }
-    }
-  }
-
-  // ── Step 2: apply everything in ONE transaction ──
-
   let promotedActualValue: string | null = null;
 
   const applyTx = db.transaction(() => {
+    const sheet = getSheet(db, print.id);
+    const byMetric = new Map<string, PrintWatchLine>(sheet.map((l) => [l.metric_id, l]));
+
+    for (const metricId of acceptList) {
+      const line = byMetric.get(metricId);
+      if (!line) {
+        throw new RequestRefused(400, {
+          success: false,
+          error: `Unknown metric "${metricId}" — no line on this print's sheet.`,
+        });
+      }
+      if (!ACCEPTABLE_ACCEPT_STATES.has(line.state)) {
+        throw new RequestRefused(400, {
+          success: false,
+          error: `Cannot accept "${metricId}": its state is "${line.state}" — resolve the conflict, or wait for a source, before accepting.`,
+        });
+      }
+    }
+
+    for (const metricId of unacceptList) {
+      if (!byMetric.has(metricId)) {
+        throw new RequestRefused(400, {
+          success: false,
+          error: `Unknown metric "${metricId}" — no line on this print's sheet.`,
+        });
+      }
+      if (acceptList.includes(metricId)) {
+        throw new RequestRefused(400, {
+          success: false,
+          error: `Cannot both accept and unaccept "${metricId}" in the same request.`,
+        });
+      }
+    }
+
+    // Post-apply view: a metric counts as accepted-after-this-request if it's
+    // being accepted now, NOT being unaccepted now, or (when neither list
+    // mentions it) was already accepted — lets a single call combine
+    // accept + promoteHeadline (the common "accept both, then promote" click).
+    const acceptedAfter = (metricId: string): boolean => {
+      if (acceptList.includes(metricId)) return true;
+      if (unacceptList.includes(metricId)) return false;
+      return byMetric.get(metricId)?.state === "accepted";
+    };
+
+    let epsLine: PrintWatchLine | undefined;
+    let revLine: PrintWatchLine | undefined;
+
+    if (promoteHeadline) {
+      // Adj preferred over gaap (task brief) — name the basis in the response.
+      if (acceptedAfter("eps_adj_q")) {
+        epsBasis = "adj";
+        epsLine = byMetric.get("eps_adj_q");
+      } else if (acceptedAfter("eps_gaap_q")) {
+        epsBasis = "gaap";
+        epsLine = byMetric.get("eps_gaap_q");
+      }
+
+      const revAccepted = acceptedAfter("revenue_q");
+      if (revAccepted) revLine = byMetric.get("revenue_q");
+
+      if (!epsBasis || !revAccepted) {
+        throw new RequestRefused(400, {
+          success: false,
+          error:
+            "Promoting the headline needs a COMPLETE pair: an accepted EPS line (adjusted preferred, GAAP fallback) AND an accepted revenue_q. Promoting with only one would merge into the existing calendar_events actuals and leave the other field stale. Accept both lines, then promote.",
+        });
+      }
+
+      // Accepted-ness is not the same as having a NUMBER (final fix wave). A
+      // `blank` line ("not disclosed") is acceptable on purpose — the desk
+      // confirming a metric wasn't given is real information — but it carries
+      // value = null, and promoting it hands saveManualActuals an epsActual of
+      // null. mergeFinnhubActual then merges a half-pair into the existing
+      // calendar_events actuals and leaves the other field stale: EXACTLY the
+      // failure the complete-pair rule above exists to prevent, arriving through
+      // the door that rule doesn't watch. Same 400, same explanation.
+      if (epsLine!.value === null || revLine!.value === null) {
+        const missing = [
+          epsLine!.value === null ? `${epsLine!.metric_id} (${epsLine!.state})` : null,
+          revLine!.value === null ? `revenue_q (${revLine!.state})` : null,
+        ]
+          .filter(Boolean)
+          .join(" and ");
+        throw new RequestRefused(400, {
+          success: false,
+          error: `Promoting the headline needs a REPORTED value on both lines — ${missing} has no number. Promoting a blank would merge into the existing calendar_events actuals and leave the other field stale. Wait for the figure, or drop the release, before promoting.`,
+        });
+      }
+
+      // Supersession recheck (fix wave, finding B) — LAST, against the same
+      // in-transaction read as every other guard.
+      if (!forceSuperseded) {
+        const superseded: string[] = [];
+        for (const line of [epsLine!, revLine!]) {
+          const rivals = divergentCandidates(line);
+          if (rivals.length === 0) continue;
+          const values = Array.from(new Set(rivals.map((c) => String(c.value)))).slice(0, 3);
+          superseded.push(
+            `${line.metric_id} (accepted ${line.value}, later evidence ${values.join(", ")})`,
+          );
+        }
+        if (superseded.length > 0) {
+          throw new RequestRefused(409, {
+            success: false,
+            code: "superseded",
+            error: `Newer evidence disagrees with the accepted number on ${superseded.join(" and ")}. Re-verify against the release before promoting — un-accept the line, let it reconcile, and accept the corrected figure, or send forceSuperseded to promote the accepted value as it stands.`,
+          });
+        }
+      }
+    }
+
+    // ── every guard has passed against state nothing can have changed: write ──
+
     for (const metricId of acceptList) {
       markLineAccepted(db, print.id, metricId);
     }
@@ -280,8 +304,13 @@ export async function POST(request: NextRequest) {
   });
 
   try {
-    applyTx();
+    // `.immediate()` — BEGIN IMMEDIATE, so the write lock is held from the
+    // first read rather than upgraded halfway through.
+    applyTx.immediate();
   } catch (err) {
+    if (err instanceof RequestRefused) {
+      return NextResponse.json(err.payload, { status: err.status });
+    }
     if (err instanceof PromotionRefused) {
       const r = err.result;
       const payload: { success: false; error: string; code?: string } = {

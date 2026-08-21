@@ -30,6 +30,9 @@ import type {
 
 const hoisted = vi.hoisted(() => ({
   db: null as unknown as Database.Database,
+  /** `db.inTransaction` at each getSheet call — see the "reads state INSIDE
+   *  the transaction" block at the bottom of this file. */
+  sheetReadsInTransaction: [] as boolean[],
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -37,6 +40,24 @@ vi.mock("@/lib/db", () => ({
     return hoisted.db;
   },
 }));
+
+// Partial mock: the REAL store with getSheet instrumented. Every validation
+// guard in the route is a statement about DB state another process can change
+// (the watcher rewrites candidates_json on every reconcile), so the read those
+// guards run against has to happen inside the route's own transaction — fix
+// wave, B-residual. This records where each read actually happened.
+vi.mock("@/lib/print-watch/store", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/print-watch/store")>(
+    "@/lib/print-watch/store",
+  );
+  return {
+    ...actual,
+    getSheet: (db: Database.Database, printId: number) => {
+      hoisted.sheetReadsInTransaction.push(db.inTransaction);
+      return actual.getSheet(db, printId);
+    },
+  };
+});
 
 // Partial mock: real implementation wrapped in a spy, so promotion tests
 // exercise the true saveManualActuals logic (incl. the pre-print floor)
@@ -57,6 +78,7 @@ beforeEach(() => {
   runMigrations(hoisted.db);
   vi.useRealTimers();
   vi.mocked(saveManualActuals).mockClear();
+  hoisted.sheetReadsInTransaction.length = 0;
 });
 
 function insertCalendarEvent(opts: {
@@ -633,6 +655,101 @@ describe("POST /api/print-watch/accept", () => {
       expect(status).toBe(200);
       expect(json.data!.promoted).not.toBeNull();
       expect(getSheet(hoisted.db, printId).find((l) => l.metric_id === "eps_adj_q")!.state).toBe("accepted");
+    });
+  });
+
+  // Fix wave, B-residual: the guards used to validate a request-start
+  // snapshot, and the transaction then applied decisions made from it. The
+  // watcher writes candidates_json on every reconcile, so a correction landing
+  // in that gap was validated away — the recheck passed on the clean snapshot
+  // while the row it promoted already disagreed.
+  describe("validation reads state INSIDE the transaction (B-residual)", () => {
+    /** Direct SQL, deliberately NOT through upsertLines — this is what another
+     *  process's committed write looks like from this request's point of view. */
+    function commitRivalCandidate(printId: number, metricId: string, value: number): void {
+      hoisted.db
+        .prepare(`UPDATE print_watch_lines SET candidates_json = ? WHERE print_id = ? AND metric_id = ?`)
+        .run(
+          JSON.stringify([
+            {
+              metric_id: metricId,
+              value,
+              value_high: null,
+              raw_text: String(value),
+              snippet: `restated ${value}`,
+              location_hint: null,
+              not_disclosed: false,
+              doc_id: 12,
+              representation: "repA",
+              weak_pair: false,
+            },
+          ]),
+          printId,
+          metricId,
+        );
+    }
+
+    it("takes the sheet read the guards use from inside the transaction", async () => {
+      const { eventId } = seedPrint([makeLine("eps_adj_q", "agreed", 1.42)]);
+      hoisted.sheetReadsInTransaction.length = 0;
+
+      const { status } = await callAccept({ eventId, accept: ["eps_adj_q"] });
+
+      expect(status).toBe(200);
+      expect(hoisted.sheetReadsInTransaction.length).toBeGreaterThan(0);
+      // A read at request start would record `false` here — and would be a
+      // snapshot another writer could have overtaken before the write landed.
+      expect(hoisted.sheetReadsInTransaction[0]).toBe(true);
+    });
+
+    it("409s on a rival candidate committed after a request-start snapshot would have been taken", async () => {
+      const { eventId, printId } = seedPrint([
+        makeLine("eps_adj_q", "agreed", 1.42),
+        makeLine("revenue_q", "agreed", 5_000_000),
+      ]);
+      markLineAccepted(hoisted.db, printId, "eps_adj_q");
+      markLineAccepted(hoisted.db, printId, "revenue_q");
+
+      // The correction commits — clean sheet a moment ago, superseded now.
+      commitRivalCandidate(printId, "eps_adj_q", 1.24);
+
+      const { status, json } = await callAccept({ eventId, promoteHeadline: true });
+
+      expect(status).toBe(409);
+      expect(json.code).toBe("superseded");
+      expect(hoisted.sheetReadsInTransaction[0]).toBe(true);
+      expect(saveManualActuals).not.toHaveBeenCalled();
+
+      const event = hoisted.db
+        .prepare(`SELECT actual_value, manual_actuals_at FROM calendar_events WHERE id = ?`)
+        .get(eventId) as { actual_value: string | null; manual_actuals_at: string | null };
+      expect(event.actual_value).toBeNull();
+      expect(event.manual_actuals_at).toBeNull();
+    });
+
+    it("400s on a line another writer moved to 'conflict', and rolls the accept back", async () => {
+      const { eventId, printId } = seedPrint([
+        makeLine("eps_adj_q", "agreed", 1.42),
+        makeLine("revenue_q", "agreed", 5_000_000),
+      ]);
+
+      // The watcher reconciles a rival document in: the line is a conflict now.
+      hoisted.db
+        .prepare(`UPDATE print_watch_lines SET state = 'conflict' WHERE print_id = ? AND metric_id = ?`)
+        .run(printId, "revenue_q");
+
+      const { status, json } = await callAccept({
+        eventId,
+        accept: ["eps_adj_q", "revenue_q"],
+      });
+
+      expect(status).toBe(400);
+      expect(json.error).toMatch(/revenue_q/);
+      // Nothing written — the refusal is thrown inside the transaction, so the
+      // eps_adj_q accept that ran before it is rolled back with it.
+      const sheet = getSheet(hoisted.db, printId);
+      expect(sheet.find((l) => l.metric_id === "eps_adj_q")!.state).toBe("agreed");
+      expect(sheet.find((l) => l.metric_id === "revenue_q")!.state).toBe("conflict");
     });
   });
 
