@@ -40,6 +40,7 @@ import { printArmedWorksheets } from "@/lib/earnings/worksheet";
 import { todayET } from "@/lib/calendar/date-utils";
 import { fetchSameDayTranscripts } from "@/lib/transcripts/same-day";
 import { recordEarningsEmailSkip } from "@/lib/mutations/earnings-skips";
+import { ensurePrintWatch } from "@/lib/print-watch/watcher";
 // Shared with lib/earnings/debrief-send.ts (which also drops cloud-delivered
 // members) — moved out of this file 2026-08-02 so both can use it without an
 // email-sweep ↔ debrief-send import cycle.
@@ -318,6 +319,17 @@ export async function runEarningsEmailSweep(
   } catch (err) {
     console.warn("[earnings-sweep] blocked-recap alert pass failed:", err);
     recapAlerts = 0;
+  }
+
+  // ── Print-watch nudge (live print-watch v1, Task 9) ───────────────────
+  // Idempotent reconciler: opens/closes windows for armed events and keeps
+  // the watcher alive when nobody has the Today panel open. Lease-guarded —
+  // if the always-on server already owns the watcher this is a no-op, and a
+  // short-lived tick that DOES take the lease only holds it for its 60s TTL.
+  try {
+    ensurePrintWatch(db);
+  } catch (err) {
+    console.warn("[earnings-sweep] print-watch ensure failed:", err);
   }
 
   // ── Worksheet auto-print pass (feedback #6; rich rework 2026-08-05) ──

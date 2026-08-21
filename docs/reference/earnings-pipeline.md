@@ -546,3 +546,17 @@ prints them.
 - The deterministic no-local-preview composer (`composeWorksheetForEvent`) was **NOT** touched in
   this round and still truncates unmarked — filed as a deferred-minors TODO item, not a silent
   regression since it predates the notes-are-sacred rule.
+
+## Print-watch v1 (2026-08-20)
+
+Live print-time surface: when an armed earnings event prints, the bogey sheet fills on a Today panel within seconds-to-minutes, dual-parsed and reconciled, verified by the user before anything promotes. Spec: `docs/superpowers/specs/2026-08-20-live-print-watch-design.md`; plan: `docs/superpowers/plans/2026-08-20-print-watch-v1.md`.
+
+**Trigger flow.** Arming a worksheet (the existing arm chip) also arms the print-watch. The in-process watcher (`lib/print-watch/watcher.ts`) is nudged by the earnings sweep and kept alive by the Today panel's 60-second `POST /api/print-watch/ensure`; it holds a DB lease (`settings` key `print_watch_lease`, 60s TTL) so dev `:3000` and packaged `:3099` never double-poll. Inside [release−30m, release+45m] it polls: DJ via the shared TWS connection (verbatim press releases stitched from multi-part articles, quiescence-gated; flash bullets into a provisional lane), EDGAR per-CIK submissions (8-K/6-K in the acceptance window, ALL EX-99.* exhibits), and the NVDA newsroom RSS (cache-busted). The drop zone (`POST /api/print-watch/drop`, HTML/text only in v1) is always armed and blocks until the parse completes. A TAS-slot event with no resolved release time gets no auto window — drop-zone only.
+
+**Extraction.** Documents pass a doc-to-event gate (symbol/issuer + fiscal-period token; rejects stored as `rejected:<reason>`), then parse per representation (`lib/print-watch/representations.ts` + `extract.ts`, Sonnet tier via the registry) into candidates reconciled ACROSS the print's whole document set (`reconcile.ts`): agreed requires ALL non-flash value candidates unanimous plus one independent pair; any disagreement → conflict; single document → "single source — verify"; flash never greens. Bogey expected-values live in a parallel structure that never reaches a prompt.
+
+**Promote path.** Accepting on the panel + promote writes the complete headline pair (adj-preferred EPS + revenue, atomically, inside one transaction) through `saveManualActuals` — stamping `manual_actuals_at`, opening the recap window exactly like a hand-typed override; the clear-actuals control undoes it. Partial promotion is refused (mergeFinnhubActual would hybridize with stale fields).
+
+**Storage.** Documents/bytes under `resolveDbDir()/print-watch/<printId>/`; tables `print_watch_prints/documents/lines` (migration 085). Evidence survives calendar-event correction (no cascade).
+
+**Known v1 limits.** PDF drop unsupported (save the IR page as HTML/⌘S); 8-K/A amendments not auto-ingested; corrections surface as conflicts/"superseded — re-verify" (unaccept → re-accept), never silent flips; coverage ladder resets on server restart until the first poll; short-lived scripts that call `ensurePrintWatch` must `process.exit()` (the sweep fallback does — pending watcher timers otherwise hold the process). Full deviation list: the plan header + SDD ledger rulings.
