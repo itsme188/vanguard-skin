@@ -860,7 +860,28 @@ const FILTERED_CATEGORY_LABEL: Record<string, string> = {
   gift: "Gift subscriptions",
   admin: "Admin mail",
   off_topic: "Off-topic (Claude judgment)",
+  enrichment_failed: "Enrichment failed",
 };
+
+/**
+ * Fallback for a category not (yet) in FILTERED_CATEGORY_LABEL — humanize
+ * the raw snake_case DB enum (`some_new_category` → "Some new category")
+ * instead of rendering it verbatim, so a future excluded_category value
+ * never leaks the wire format into the UI.
+ */
+function humanizeCategory(category: string): string {
+  const spaced = category.replace(/_/g, " ").trim();
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
+/**
+ * Section-header label for a Filtered-tab `excluded_category` value —
+ * exported (pure, no render needed) so the "known category" table and the
+ * snake_case fallback can both be covered by a plain Vitest test.
+ */
+export function resolveFilteredCategoryLabel(category: string): string {
+  return FILTERED_CATEGORY_LABEL[category] ?? humanizeCategory(category);
+}
 
 function FilteredArticlesList({
   articles,
@@ -921,7 +942,7 @@ function FilteredArticlesList({
         return (
           <section key={category}>
             <h3 className="text-xs font-semibold text-gold-ink uppercase tracking-wider mb-3">
-              {FILTERED_CATEGORY_LABEL[category] ?? category} · {count}
+              {resolveFilteredCategoryLabel(category)} · {count}
             </h3>
             {items.length > 0 ? (
               <div className="divide-y divide-edge/50">
