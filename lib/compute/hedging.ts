@@ -6,6 +6,7 @@ import { optionExposureFallback } from "@/lib/compute/exposure";
 import { issuerSiblings } from "@/lib/securities/issuer-family";
 import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import { explodeHoldingBySector } from "@/lib/compute/explode-sector";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 
 /**
  * Defense/Hedging engine — classifies the book into hedged pairs (Tier 1),
@@ -644,7 +645,7 @@ export function computeDefenseAnalysis(db: Database.Database, accountIds?: numbe
     LEFT JOIN latest_prices lp ON lp.security_id = h.security_id
     LEFT JOIN fx_rates fx ON fx.currency = s.currency
     WHERE (s.maturity_date IS NULL OR s.maturity_date >= date('now'))
-      AND (s.expiration_date IS NULL OR s.expiration_date >= date('now', '-1 day'))
+      AND ${liveOptionExpirationSql("s")}
       AND LOWER(s.security_type) IN ('stock', 'etf', 'common stock', 'option', 'mutual fund')
   `;
   const rawRows = db.prepare(sql).all(...(scopedAccountIds ?? [])) as DefenseHoldingRow[];

@@ -20,6 +20,7 @@ import { explodeHoldingBySector } from "./explode-sector";
 import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
 import { delta } from "./options-greeks";
 import { getRiskFreeRate } from "@/lib/queries/risk-free-rate";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 
 // ─── Per-factor bucket sensitivities ─────────────────────────────────────
 //
@@ -335,6 +336,7 @@ export function computeRecipeScenario(
       LEFT JOIN latest_prices lp_u ON lp_u.security_id = s_u.id
       LEFT JOIN security_quotes q_u ON q_u.security_id = s_u.id
       WHERE COALESCE(lp.close_price, 0) > 0
+        AND ${liveOptionExpirationSql("s")}
       ORDER BY market_value DESC
     `
     )
