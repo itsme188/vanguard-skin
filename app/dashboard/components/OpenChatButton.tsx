@@ -1,13 +1,15 @@
 "use client";
 
 /**
- * Full-width chat launcher for the mobile Today view. On mobile the chat is a
- * full-screen overlay opened via a custom event (see ChatDrawer). On desktop
- * the same event also toggles the side drawer.
+ * Full-width chat launcher for the mobile Today view. Dispatches "open-chat"
+ * (handled by ChatDrawer), which always OPENS the chat overlay/rail and
+ * focuses the composer — unlike "toggle-mobile-chat" (used by the mobile
+ * bottom-nav Chat button and the header ChatToggleButton), this never closes
+ * an already-open desktop rail on a second click (deep-QA finding, 2026-08-20).
  */
 export function OpenChatButton() {
   function openChat() {
-    window.dispatchEvent(new CustomEvent("toggle-mobile-chat"));
+    window.dispatchEvent(new CustomEvent("open-chat"));
   }
 
   return (
