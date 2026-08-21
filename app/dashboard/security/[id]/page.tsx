@@ -432,7 +432,7 @@ export default async function SecurityDetailPage(props: {
         <Section
           title={`Open Tax Lots · ${openTaxLots.length}`}
           action={
-            <Link href="/dashboard/tax-lots" className={ACTION_LINK_CLASS}>
+            <Link href={`/dashboard/tax-lots?security=${securityId}`} className={ACTION_LINK_CLASS}>
               View all →
             </Link>
           }
