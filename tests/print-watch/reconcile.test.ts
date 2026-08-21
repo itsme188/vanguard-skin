@@ -363,11 +363,75 @@ describe("reconcile", () => {
 
   it("sign guard: unparenthesized raw_text never triggers the guard, positive or negative", () => {
     const contract = makeContract("eps_adj");
-    const negNoParens = makeCandidate({ doc_id: 1, representation: "repA", value: -1234, raw_text: "-1,234" });
-    const line = reconcileOne(contract, [negNoParens]);
+    // Positive value with NO parens at all — this is the case that
+    // actually exercises the "no parenthesized token found" path (a
+    // negative value short-circuits the guard before parens are even
+    // examined, so that alone wouldn't prove this).
+    const posNoParens = makeCandidate({ doc_id: 1, representation: "repA", value: 1234, raw_text: "1,234" });
+    const line = reconcileOne(contract, [posNoParens]);
 
     expect(line.state).toBe("single_source");
-    expect(line.value).toBe(-1234);
+    expect(line.value).toBe(1234);
+
+    const negNoParens = makeCandidate({ doc_id: 1, representation: "repA", value: -1234, raw_text: "-1,234" });
+    const line2 = reconcileOne(contract, [negNoParens]);
+    expect(line2.state).toBe("single_source");
+    expect(line2.value).toBe(-1234);
+  });
+
+  it("sign guard round-1 fix: a footnote marker in parens does NOT contradict an unrelated positive value", () => {
+    // Reviewer repro: "Diluted EPS $1.50(1)" — the "(1)" is a footnote
+    // reference, not a negative-number assertion about 1.50.
+    const contract = makeContract("eps_adj");
+    const c = makeCandidate({
+      doc_id: 1,
+      representation: "repA",
+      value: 1.5,
+      raw_text: "Diluted EPS $1.50(1)",
+    });
+    const line = reconcileOne(contract, [c]);
+
+    expect(line.state).toBe("single_source");
+    expect(line.value).toBe(1.5);
+  });
+
+  it("sign guard round-1 fix: a parenthesized year does NOT contradict an unrelated positive value", () => {
+    // Reviewer repro: "$1.50 (2024)".
+    const contract = makeContract("eps_adj");
+    const c = makeCandidate({
+      doc_id: 1,
+      representation: "repA",
+      value: 1.5,
+      raw_text: "$1.50 (2024)",
+    });
+    const line = reconcileOne(contract, [c]);
+
+    expect(line.state).toBe("single_source");
+    expect(line.value).toBe(1.5);
+  });
+
+  it("sign guard round-1 fix: (7,604) truly contradicting +7,604,000,000 (millions scale) is dropped", () => {
+    const contract = makeContract("fcf_ttm", { unit: "usd" });
+    const c = makeCandidate({
+      metric_id: "fcf_ttm",
+      doc_id: 1,
+      representation: "repA",
+      value: 7604000000, // should have been negative given the parens
+      raw_text: "$(7,604) million",
+    });
+    const line = reconcileOne(contract, [c]);
+
+    expect(line.state).toBe("pending"); // dropped — the only candidate
+    expect(line.candidates_json).toBe("[]");
+  });
+
+  it("sign guard round-1 fix: (0.10) genuinely matching a negative -0.10 is kept, not dropped", () => {
+    const contract = makeContract("eps_adj");
+    const c = makeCandidate({ doc_id: 1, representation: "repA", value: -0.1, raw_text: "$(0.10)" });
+    const line = reconcileOne(contract, [c]);
+
+    expect(line.state).toBe("single_source");
+    expect(line.value).toBe(-0.1);
   });
 
   it("sign guard drops a malformed candidate but keeps its independent well-formed sibling for agreement", () => {
@@ -437,5 +501,156 @@ describe("reconcile", () => {
     const contract = makeContract("eps_adj");
     const line = reconcileOne(contract, [], { expected: {} });
     expect(line.expected).toBeNull();
+  });
+
+  describe("agreement round-1 fix: strict unanimity, no tie-break / outlier-wins", () => {
+    it("both-camps disjoint clusters (100,100 vs 200,200 across 4 independent docs) -> conflict, NOT agreed(100)", () => {
+      // Reviewer repro exactly: doc1=100, doc2=100, doc3=200, doc4=200 must
+      // no longer false-green via a lowest-doc_id tie-break.
+      const contract = makeContract("eps_adj");
+      const doc1 = makeCandidate({ doc_id: 1, representation: "repA", value: 100 });
+      const doc2 = makeCandidate({ doc_id: 2, representation: "repA", value: 100 });
+      const doc3 = makeCandidate({ doc_id: 3, representation: "repA", value: 200 });
+      const doc4 = makeCandidate({ doc_id: 4, representation: "repA", value: 200 });
+      const line = reconcileOne(contract, [doc1, doc2, doc3, doc4]);
+
+      expect(line.state).toBe("conflict");
+      expect(line.value).toBeNull();
+      expect(JSON.parse(line.candidates_json)).toHaveLength(4);
+    });
+
+    it("corroborated pair + a lone disagreeing outlier -> conflict, the pair does not win", () => {
+      const contract = makeContract("eps_adj");
+      const doc1 = makeCandidate({ doc_id: 1, representation: "repA", value: 100 });
+      const doc2 = makeCandidate({ doc_id: 2, representation: "repA", value: 100 });
+      const doc3 = makeCandidate({ doc_id: 3, representation: "repA", value: 999 });
+      const line = reconcileOne(contract, [doc1, doc2, doc3]);
+
+      expect(line.state).toBe("conflict");
+      expect(line.value).toBeNull();
+    });
+
+    it("a pair plus an agreeing third (all unanimous, independent) -> agreed", () => {
+      const contract = makeContract("eps_adj");
+      const doc1 = makeCandidate({ doc_id: 1, representation: "repA", value: 100 });
+      const doc2 = makeCandidate({ doc_id: 2, representation: "repA", value: 100 });
+      const doc3 = makeCandidate({ doc_id: 3, representation: "repA", value: 100 });
+      const line = reconcileOne(contract, [doc1, doc2, doc3]);
+
+      expect(line.state).toBe("agreed");
+      expect(line.value).toBe(100);
+      expect(line.source_doc_id).toBe(1);
+    });
+
+    it("a pair plus a disagreeing FLASH candidate -> still agreed (flash never blocks agreement)", () => {
+      // Reviewer's wire-bullets-round example: a flash headline reads
+      // "$47.86B" (rounded) while two independent real documents both
+      // report the exact 47,861,000,000 — the flash must never force a
+      // conflict.
+      const contract = makeContract("revenue_q", { unit: "usd", label: "Revenue" });
+      const release1 = makeCandidate({ metric_id: "revenue_q", doc_id: 1, representation: "repA", value: 47861000000 });
+      const release2 = makeCandidate({ metric_id: "revenue_q", doc_id: 2, representation: "repA", value: 47861000000 });
+      const flash = makeCandidate({
+        metric_id: "revenue_q",
+        doc_id: 3,
+        representation: "flash",
+        value: 47860000000, // "$47.86B" rounded — genuinely different number
+        snippet: "* Flash: revenue $47.86B",
+      });
+      const line = reconcileOne(contract, [release1, release2, flash]);
+
+      expect(line.state).toBe("agreed");
+      expect(line.value).toBe(47861000000);
+      expect(line.source_doc_id).toBe(1);
+      expect(JSON.parse(line.candidates_json)).toHaveLength(3); // flash still visible in the audit trail
+    });
+  });
+
+  it("4-candidate mixed value/ND case: monotonic ND composes with strict unanimity (2 agreeing values + 2 ND docs) -> agreed", () => {
+    const contract = makeContract("guidance_rev_low", { period: "NQ_guide" });
+    const v1 = makeCandidate({ metric_id: "guidance_rev_low", doc_id: 1, representation: "repA", value: 5000000000 });
+    const v2 = makeCandidate({ metric_id: "guidance_rev_low", doc_id: 2, representation: "repA", value: 5000000000 });
+    const nd1 = makeCandidate({
+      metric_id: "guidance_rev_low",
+      doc_id: 3,
+      representation: "repA",
+      value: null,
+      raw_text: null,
+      snippet: null,
+      not_disclosed: true,
+    });
+    const nd2 = makeCandidate({
+      metric_id: "guidance_rev_low",
+      doc_id: 4,
+      representation: "repA",
+      value: null,
+      raw_text: null,
+      snippet: null,
+      not_disclosed: true,
+    });
+    const line = reconcileOne(contract, [v1, v2, nd1, nd2]);
+
+    expect(line.state).toBe("agreed");
+    expect(line.value).toBe(5000000000);
+    expect(JSON.parse(line.candidates_json)).toHaveLength(4); // NDs stay in the audit trail even though excluded from the decision
+  });
+
+  it("flash round-1 fix (MINOR): flash + one ND-only document -> state flash, not pending/blank", () => {
+    // An ND-only document must not suppress a flash provisional value.
+    const contract = makeContract("revenue_q_guide", { period: "NQ_guide" });
+    const flash = makeCandidate({
+      metric_id: "revenue_q_guide",
+      doc_id: 1,
+      representation: "flash",
+      value: 3000000000,
+      snippet: "* Flash: revenue guide $3.0B",
+    });
+    const nd = makeCandidate({
+      metric_id: "revenue_q_guide",
+      doc_id: 2,
+      representation: "repA",
+      value: null,
+      raw_text: null,
+      snippet: null,
+      not_disclosed: true,
+    });
+    const line = reconcileOne(contract, [flash, nd]);
+
+    expect(line.state).toBe("flash");
+    expect(line.value).toBe(3000000000);
+    expect(line.source_doc_id).toBe(1);
+    expect(JSON.parse(line.candidates_json)).toHaveLength(2);
+  });
+
+  it("flash round-1 fix (MINOR): flash + TWO ND-only documents (would otherwise be blank) -> still flash", () => {
+    const contract = makeContract("revenue_q_guide", { period: "NQ_guide" });
+    const flash = makeCandidate({
+      metric_id: "revenue_q_guide",
+      doc_id: 1,
+      representation: "flash",
+      value: 3000000000,
+    });
+    const nd1 = makeCandidate({
+      metric_id: "revenue_q_guide",
+      doc_id: 2,
+      representation: "repA",
+      value: null,
+      raw_text: null,
+      snippet: null,
+      not_disclosed: true,
+    });
+    const nd2 = makeCandidate({
+      metric_id: "revenue_q_guide",
+      doc_id: 3,
+      representation: "repA",
+      value: null,
+      raw_text: null,
+      snippet: null,
+      not_disclosed: true,
+    });
+    const line = reconcileOne(contract, [flash, nd1, nd2]);
+
+    expect(line.state).toBe("flash");
+    expect(line.value).toBe(3000000000);
   });
 });
