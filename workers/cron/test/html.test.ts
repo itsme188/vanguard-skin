@@ -37,6 +37,31 @@ describe("briefingToHtml inline links (Worker mirror)", () => {
     expect(html).toContain('href="https://y.com/c_d"');
     expect(html).not.toContain("<em>");
   });
+
+  it("keeps a balanced paren group inside the URL out of the href truncation (quiverquant $TICKER links)", () => {
+    const url =
+      "https://quiverquant.com/news/MICROSOFT+($MSFT)+Releases+Q4+2026+Earnings,+Stock+Rises";
+    const html = briefingToHtml(`[quiverquant.com](${url})`, "t");
+
+    expect(html).toContain(`href="${url}"`);
+    expect(html).not.toContain("Stock+Rises)</a>");
+    expect(html).not.toMatch(/Stock\+Rises\)/);
+  });
+
+  it("leaves a plain URL without parens unchanged", () => {
+    const url = "https://example.com/news/plain-article-title";
+    const html = briefingToHtml(`[source](${url})`, "t");
+
+    expect(html).toContain(`href="${url}"`);
+  });
+
+  it("handles a paren-bearing URL at the end of a list line", () => {
+    const url = "https://quiverquant.com/news/APPLE+($AAPL)+Beats+Estimates";
+    const html = briefingToHtml(`- Coverage: [quiverquant.com](${url})`, "t");
+
+    expect(html).toContain(`href="${url}"`);
+    expect(html).not.toContain("Beats+Estimates)</a>");
+  });
 });
 
 describe("briefingToHtml multi-line table rows (Worker mirror)", () => {
