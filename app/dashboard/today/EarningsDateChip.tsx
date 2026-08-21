@@ -1,6 +1,6 @@
 "use client";
 
-import { useLayoutEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { todayET } from "@/lib/calendar/date-utils";
 import apiFetch from "@/lib/http/apiFetch";
@@ -161,21 +161,34 @@ export function EarningsDateChip({
   // open and flip the alignment when the requested edge would overflow while
   // the opposite edge fits.
   const wrapRef = useRef<HTMLSpanElement | null>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
   const [alignOverride, setAlignOverride] = useState<"left" | "right" | null>(null);
+  // Placement above vs. below the anchor (QA deep-sweep, mobile 390x844):
+  // opening below unconditionally ran the popover under the fixed mobile
+  // bottom nav, deadening 4/5 nav slots and sitting "Analysis" directly on
+  // top of the mutating Save button.
+  const [verticalFlip, setVerticalFlip] = useState(false);
   const POPOVER_W = 240; // matches w-60
   const EDGE_PAD = 8;
+  const MOBILE_BREAKPOINT = 768; // Tailwind `md` — matches MobileBottomNav's `md:hidden` cutoff
+  // NotesAmbient's closed-state FAB floats bottom-right on mobile
+  // (`bottom-20 right-4 w-12`) — a right-flush popover otherwise lands its
+  // primary "Fix date" CTA under it.
+  const FAB_CLEARANCE = 72; // 48px (w-12) + 16px (right-4) + 8px gap
   useLayoutEffect(() => {
     if (!open) {
       setAlignOverride(null);
+      setVerticalFlip(false);
       return;
     }
     const measure = () => {
       const rect = wrapRef.current?.getBoundingClientRect();
       if (!rect) return;
       const vw = window.innerWidth;
+      const rightBoundaryPad = vw < MOBILE_BREAKPOINT ? FAB_CLEARANCE : EDGE_PAD;
       if (
         popoverAlign === "right" &&
-        rect.right - POPOVER_W < EDGE_PAD &&
+        (rect.right - POPOVER_W < EDGE_PAD || vw - rect.right < rightBoundaryPad) &&
         rect.left + POPOVER_W <= vw - EDGE_PAD
       ) {
         setAlignOverride("left");
@@ -187,6 +200,24 @@ export function EarningsDateChip({
         setAlignOverride("right");
       } else {
         setAlignOverride(null);
+      }
+
+      // Vertical clamp: measure the ACTUAL mobile-nav element rather than a
+      // hardcoded height — its rendered height already bakes in the
+      // safe-area inset (pb-safe), which varies by device. Falls back to
+      // the plain viewport bottom when the nav isn't mounted/visible
+      // (desktop, `md:hidden` collapses it to a zero-height rect).
+      const navRect = document
+        .querySelector('nav[aria-label="Mobile navigation"]')
+        ?.getBoundingClientRect();
+      const lowerBoundary = navRect && navRect.height > 0 ? navRect.top : window.innerHeight;
+      const popRect = popoverRef.current?.getBoundingClientRect();
+      if (popRect) {
+        const overflowsBelow = popRect.bottom > lowerBoundary - EDGE_PAD;
+        const fitsAbove = rect.top - popRect.height - EDGE_PAD >= 0;
+        setVerticalFlip(overflowsBelow && fitsAbove);
+      } else {
+        setVerticalFlip(false);
       }
     };
     measure();
@@ -201,6 +232,28 @@ export function EarningsDateChip({
     };
   }, [open, popoverAlign]);
   const resolvedAlign = alignOverride ?? popoverAlign;
+
+  // Dismissal (QA deep-sweep, sibling finding): previously only re-tapping
+  // the chip closed the popover — no Escape, no outside click/tap, and on
+  // desktop multiple popovers could stack. `wrapRef` wraps BOTH the anchor
+  // button and the popover, so a single containment check ignores clicks on
+  // either without double-toggling the anchor's own onClick handler.
+  useEffect(() => {
+    if (!open) return;
+    function handlePointerDown(e: PointerEvent) {
+      if (wrapRef.current?.contains(e.target as Node)) return;
+      setOpen(false);
+    }
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open]);
 
   const slotParam = releaseTime && releaseTime < "12:00" ? "bmo" : "amc";
 
@@ -328,7 +381,10 @@ export function EarningsDateChip({
           // z-[55]: must paint above the fixed chat rail (z-50) — same
           // rail-tie family as the conflict popover below.
           <div
-            className={`absolute z-[55] top-full mt-1 w-60 rounded-lg border border-edge bg-panel p-2 shadow-lg text-left ${
+            ref={popoverRef}
+            className={`absolute z-[55] ${
+              verticalFlip ? "bottom-full mb-1" : "top-full mt-1"
+            } w-60 rounded-lg border border-edge bg-panel p-2 shadow-lg text-left ${
               resolvedAlign === "right" ? "right-0" : "left-0"
             }`}
           >
@@ -434,7 +490,10 @@ export function EarningsDateChip({
         // z-[55]: must paint above the fixed chat rail (z-50) — same
         // rail-tie family as the Analysis drawer fix (trust-strip precedent).
         <div
-          className={`absolute z-[55] top-full mt-1 w-60 rounded-lg border border-edge bg-panel p-2 shadow-lg text-left ${
+          ref={popoverRef}
+          className={`absolute z-[55] ${
+            verticalFlip ? "bottom-full mb-1" : "top-full mt-1"
+          } w-60 rounded-lg border border-edge bg-panel p-2 shadow-lg text-left ${
             resolvedAlign === "right" ? "right-0" : "left-0"
           }`}
         >
