@@ -173,6 +173,21 @@ export function printStateLabel(state: PrintWatchState): { text: string; tone: C
   }
 }
 
+/**
+ * The header's count line. `expired` prints are listed alongside active ones
+ * (their drop zone is still live), so counting the whole list as "active"
+ * puts "2 active prints" above two chips both reading WINDOW CLOSED. Closed
+ * prints are counted separately and only mentioned when some exist.
+ */
+export function printCountLabel(prints: ReadonlyArray<{ state: PrintWatchState }>): string {
+  const closed = prints.filter((p) => p.state === "expired").length;
+  const active = prints.length - closed;
+  const plural = (n: number) => (n === 1 ? "print" : "prints");
+  if (closed === 0) return `${active} active ${plural(active)}`;
+  if (active === 0) return `${closed} closed ${plural(closed)}`;
+  return `${active} active · ${closed} closed`;
+}
+
 /** Names the SOURCE behind one conflicting candidate: "doc #12 (edgar-ex99 ·
  *  repA)". Doc id alone ("doc #12 vs doc #13") tells the desk nothing about
  *  which rival number to believe; the kind is the whole decision. Flash
@@ -617,7 +632,7 @@ export default function PrintWatchPanel() {
           Live Print Watch
         </h2>
         <span className="font-mono text-ink-faint" style={{ fontSize: "11px" }}>
-          {prints.length} active {prints.length === 1 ? "print" : "prints"}
+          {printCountLabel(prints)}
         </span>
       </div>
       <div className="divide-y divide-edge">

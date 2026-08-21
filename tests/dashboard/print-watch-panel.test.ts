@@ -5,6 +5,7 @@ import {
   needsReverify,
   deltaPct,
   printStateLabel,
+  printCountLabel,
   candidateSourceLabel,
   dropOutcomeMessage,
   firstDroppedFile,
@@ -139,6 +140,31 @@ describe("printStateLabel", () => {
   it("renders the remaining states neutrally with their underscore unspaced", () => {
     expect(printStateLabel("scheduled")).toEqual({ text: "scheduled", tone: "neutral" });
     expect(printStateLabel("disarmed")).toEqual({ text: "disarmed", tone: "neutral" });
+  });
+});
+
+// ── printCountLabel ─────────────────────────────────────────────────────
+
+describe("printCountLabel", () => {
+  it("counts only non-expired prints as active", () => {
+    // The header used to say "2 active prints" over two chips both reading
+    // WINDOW CLOSED — expired prints stay listed (their drop zone is live)
+    // but they are not active.
+    expect(printCountLabel([{ state: "window_open" }, { state: "expired" }])).toBe(
+      "1 active · 1 closed",
+    );
+  });
+
+  it("says nothing about closed prints when there are none", () => {
+    expect(printCountLabel([{ state: "window_open" }, { state: "parsed" }])).toBe(
+      "2 active prints",
+    );
+    expect(printCountLabel([{ state: "scheduled" }])).toBe("1 active print");
+  });
+
+  it("reports an all-expired list as closed, never as zero active", () => {
+    expect(printCountLabel([{ state: "expired" }])).toBe("1 closed print");
+    expect(printCountLabel([{ state: "expired" }, { state: "expired" }])).toBe("2 closed prints");
   });
 });
 
