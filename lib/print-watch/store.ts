@@ -68,6 +68,11 @@ export function insertDocument(
   sha256: string,
   bytesPath: string,
 ): { id: number; isNew: boolean } {
+  // SELECT-then-INSERT is non-atomic (a race could double-insert between the
+  // two statements), but every writer to this table runs under the single
+  // watcher lease (acquireWatcherLease) — no concurrent caller exists in v1,
+  // so the UNIQUE(print_id, kind, sha256) constraint is a backstop, not the
+  // primary dedupe path.
   const existing = db
     .prepare(
       `SELECT id FROM print_watch_documents WHERE print_id = ? AND kind = ? AND sha256 = ?`,
@@ -103,17 +108,19 @@ export function listDocuments(db: Database.Database, printId: number): DocumentR
 }
 
 /** NEVER downgrades 'accepted': an accepted row refreshes candidates_json
- *  (and contract_json/expected_json, which are provenance not user edits)
- *  only — its state/value/value_high/snippet/source_doc_id stay locked to
- *  what the user accepted until clearLineAccepted() releases the lock. */
+ *  ONLY — every other column (contract_json, expected_json, state, value,
+ *  value_high, snippet, source_doc_id) stays locked to what the user
+ *  accepted until clearLineAccepted() releases the lock. This is
+ *  defense-in-depth for Task 5's reconciler, which is expected to skip
+ *  accepted lines itself — the store enforces the invariant either way. */
 export function upsertLines(db: Database.Database, printId: number, lines: PrintWatchLine[]): void {
   const upsert = db.prepare(
     `INSERT INTO print_watch_lines
        (print_id, metric_id, contract_json, expected_json, state, value, value_high, snippet, source_doc_id, candidates_json, updated_at)
      VALUES (@print_id, @metric_id, @contract_json, @expected_json, @state, @value, @value_high, @snippet, @source_doc_id, @candidates_json, datetime('now'))
      ON CONFLICT(print_id, metric_id) DO UPDATE SET
-       contract_json = excluded.contract_json,
-       expected_json = excluded.expected_json,
+       contract_json = CASE WHEN print_watch_lines.state = 'accepted' THEN print_watch_lines.contract_json ELSE excluded.contract_json END,
+       expected_json = CASE WHEN print_watch_lines.state = 'accepted' THEN print_watch_lines.expected_json ELSE excluded.expected_json END,
        candidates_json = excluded.candidates_json,
        state = CASE WHEN print_watch_lines.state = 'accepted' THEN print_watch_lines.state ELSE excluded.state END,
        value = CASE WHEN print_watch_lines.state = 'accepted' THEN print_watch_lines.value ELSE excluded.value END,

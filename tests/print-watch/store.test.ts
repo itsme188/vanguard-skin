@@ -196,12 +196,21 @@ describe("print-watch store (migration 085)", () => {
     expect(sheet[0].expected).toBeNull();
   });
 
-  it("an accepted row survives upsertLines: only candidates_json refreshes, value/state/snippet stay locked", () => {
+  it("an accepted row survives upsertLines: only candidates_json refreshes, everything else (incl. contract/expected) stays locked", () => {
     const eventId = insertCalendarEvent(db, "finnhub:ACME:2026-08-20");
     const printId = upsertPrint(db, eventId, "ACME", "2026-08-20", null);
 
+    const originalContract = makeContract("eps_adj_q");
+    const originalExpected = makeExpected(1.5);
+
     upsertLines(db, printId, [
-      makeLine("eps_adj_q", 1.42, { state: "agreed", snippet: "original snippet", candidates_json: "[1]" }),
+      makeLine("eps_adj_q", 1.42, {
+        contract: originalContract,
+        expected: originalExpected,
+        state: "agreed",
+        snippet: "original snippet",
+        candidates_json: "[1]",
+      }),
     ]);
     markLineAccepted(db, printId, "eps_adj_q");
 
@@ -209,9 +218,15 @@ describe("print-watch store (migration 085)", () => {
     expect(sheet[0].state).toBe("accepted");
     expect(sheet[0].value).toBe(1.42);
 
-    // A later reconcile pass tries to overwrite with a conflicting candidate.
+    // A later reconcile pass tries to overwrite with a conflicting candidate,
+    // AND a revised contract/expected (e.g. bogeys or contract compilation
+    // re-ran) — none of it should touch the accepted row.
+    const revisedContract = { ...originalContract, label: "EPS (Adj.) REVISED", definition: "revised definition" };
+    const revisedExpected = { value: 4.2, value_high: null, whisper: 4.1, source_label: "revised consensus" };
     upsertLines(db, printId, [
       makeLine("eps_adj_q", 9.99, {
+        contract: revisedContract,
+        expected: revisedExpected,
         state: "conflict",
         snippet: "new conflicting snippet",
         value_high: 10.5,
@@ -225,6 +240,8 @@ describe("print-watch store (migration 085)", () => {
     expect(sheet[0].value).toBe(1.42); // locked
     expect(sheet[0].value_high).toBeNull(); // locked
     expect(sheet[0].snippet).toBe("original snippet"); // locked
+    expect(sheet[0].contract).toEqual(originalContract); // locked (Codex Critical fix)
+    expect(sheet[0].expected).toEqual(originalExpected); // locked (Codex Critical fix)
     expect(sheet[0].candidates_json).toBe("[1,2]"); // refreshed
   });
 
