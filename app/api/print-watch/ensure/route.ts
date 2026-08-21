@@ -1,0 +1,24 @@
+import { NextResponse } from "next/server";
+import { db } from "@/lib/db";
+import { ensurePrintWatch, getWatchStatus } from "@/lib/print-watch/watcher";
+
+/**
+ * POST /api/print-watch/ensure — the ONLY route allowed to start or advance
+ * watcher work (Codex #9; see the GET /status handler's doc comment for
+ * why that split matters). Empty body.
+ *
+ * `ensurePrintWatch` is synchronous and idempotent (watcher.ts's own doc
+ * comment) — safe to call as often as the panel likes; it reconciles armed
+ * events against prints, updates states, and makes sure exactly the
+ * in-window prints have a live poll loop, then returns immediately (the
+ * loops themselves run detached).
+ */
+export async function POST() {
+  try {
+    ensurePrintWatch(db);
+    return NextResponse.json({ success: true, data: { prints: getWatchStatus(db).length } });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    return NextResponse.json({ success: false, error: message }, { status: 500 });
+  }
+}
