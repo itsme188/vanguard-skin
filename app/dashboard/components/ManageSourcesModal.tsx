@@ -514,6 +514,19 @@ export function ManageSourcesModal({
                         <div className="flex items-center gap-1 shrink-0">
                           <button
                             type="button"
+                            // Keep focus off this button on mouse activation so a
+                            // click here never blurs an in-progress note edit in
+                            // this (or another) row first. A real mousedown->blur
+                            // ->handleNoteBlur sequence sets hierarchyBusy=true
+                            // synchronously, which disables this very button before
+                            // its click event is dispatched — the browser drops
+                            // clicks on disabled elements, so the rank change was
+                            // silently swallowed. preventDefault here only skips
+                            // the focus-shift default action; mouseup/click (and
+                            // keyboard Enter/Space activation, which never fires
+                            // mousedown) are unaffected, so the note still saves
+                            // normally on whatever blur happens next.
+                            onMouseDown={(e) => e.preventDefault()}
                             onClick={() => handleMove(s.id, -1)}
                             disabled={i === 0 || hierarchyBusy}
                             aria-label={`Move ${s.name} up`}
@@ -523,6 +536,9 @@ export function ManageSourcesModal({
                           </button>
                           <button
                             type="button"
+                            // See the ↑ button above for why this preventDefault
+                            // is here — same blur-race, same fix.
+                            onMouseDown={(e) => e.preventDefault()}
                             onClick={() => handleMove(s.id, 1)}
                             disabled={i === hierarchy.length - 1 || hierarchyBusy}
                             aria-label={`Move ${s.name} down`}
