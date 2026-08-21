@@ -28,7 +28,7 @@ This is primarily a TypeScript project with some Python utilities. Use TypeScrip
 - `workers/cron/` — Cloudflare Worker on a single `*/15 * * * *` trigger. Calls the Mac first; on failure it composes the email/alert itself from the nightly R2 state snapshot, coordinating via KV markers. See `docs/reference/cron-and-workers.md`.
 - `electron/` — desktop shell. `settings-store.ts` + `main.ts` are touchpoints every new env var must thread through.
 
-**Flow** — TWS connect triggers the full sync pipeline (also every 30 min); its Step 6 fires price-level alerts + Pushover. Gmail → research articles → digest / briefing / earnings emails. Calendar events are enriched post-release with actuals + reaction snapshots.
+**Flow** — Live print-watch (2026-08-21): armed earnings worksheets also arm an in-process leased watcher that acquires the press release at print time (DJ wire / EDGAR / NVDA RSS / drop zone), dual-parses against bogeys, and fills a verify-then-promote sheet on Today — detail in `docs/reference/earnings-pipeline.md` §Print-watch. TWS connect triggers the full sync pipeline (also every 30 min); its Step 6 fires price-level alerts + Pushover. Gmail → research articles → digest / briefing / earnings emails. Calendar events are enriched post-release with actuals + reaction snapshots.
 
 **Invariants**
 - The Mac is source of truth; the Worker is fallback-only and reconciles back through KV. Worker mirrors (model tiers, prompt caps, enrich dispatch, push composer) are parity-pinned — change both sides.
@@ -198,7 +198,8 @@ Detail: `docs/reference/ui-structure.md`
 ## Electron Build
 
 - DMG build: `npm run electron:pack`. `dist/` must be cleaned first (the chain does it) — stale `dist/` causes recursive `.app` nesting during signing.
-- Stale `dist/` ALSO breaks `npx next build` (2026-08-13): the packaged app under `dist/mac-arm64/…` contains a copy of `electron/main.ts`, and tsconfig excludes `electron`/`dist-electron` but NOT `dist` — Next's typecheck sweeps the copy and fails. Fix: remove `dist/` (or add `"dist"` to tsconfig excludes).
+- ~~Stale `dist/` ALSO breaks `npx next build`~~ FIXED PERMANENTLY 2026-08-21: `"dist"` is in tsconfig excludes (the sweep bit twice in one day first).
+- **Bundle integrity is gated (2026-08-21):** `electron:deploy` runs `scripts/verify-bundle.js` between pack and install — fails on repo-internal leaks (data/.git/qa/tests/docs — the REAL DB had shipped inside Resources/standalone since ≥8/19) or missing runtime pieces (next-server app-route runtime, @stoqey/ib/dist). NEVER add `outputFileTracingExcludes` to next.config.ts — its globs strip every NESTED dist/tests dir (gutted @stoqey/ib/dist → packaged black screen; next/dist runtimes → every API route 500). The bundle gate is the electron-builder.yml extraResources filter + the verify script; `electron:copy-static` also force-copies `next/dist/compiled/next-server/`.
 - `npmRebuild: false` in `electron-builder.yml` must stay — it protects the working better-sqlite3 binary.
 - Packaged-app server logs: `~/Library/Logs/Vanguard Dashboard/server.log` — first place to look for packaged-app issues.
 
