@@ -341,6 +341,17 @@ describe("ensurePrintWatch — reconcile", () => {
     expect(epsAdj.contract.definition).not.toContain("1.01");
   });
 
+  it("getWatchStatus rows carry eventId — POST /accept and POST /drop key on it, not printId", () => {
+    const { eventId } = seedArmedEvent();
+    ensurePrintWatch(db);
+
+    const print = getPrintByEventId(db, eventId)!;
+    const status = getWatchStatus(db);
+    expect(status).toHaveLength(1);
+    expect(status[0].printId).toBe(print.id);
+    expect(status[0].eventId).toBe(eventId);
+  });
+
   it("is idempotent — a second ensure neither duplicates prints nor doubles the loop", async () => {
     const { eventId } = seedArmedEvent();
     ensurePrintWatch(db);

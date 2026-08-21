@@ -144,6 +144,9 @@ describe("GET /api/print-watch/status", () => {
 
     const row = body.data.prints[0];
     expect(row.printId).toBe(printId);
+    // POST /accept and POST /drop both key on eventId, not printId — the
+    // panel's mutating controls are dead without this on every row.
+    expect(row.eventId).toBe(501);
     expect(row.symbol).toBe("ACME");
     expect(row.state).toBe("scheduled");
     expect(row.sources).toEqual({});

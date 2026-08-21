@@ -170,6 +170,9 @@ export interface ArmedEventDto {
 
 export interface WatchStatusRow {
   printId: number;
+  /** The calendar_events.id this print was armed from — POST /accept and
+   *  POST /drop both key on this, not printId. */
+  eventId: number;
   symbol: string;
   state: PrintWatchState;
   /** Per-source last outcome, plain short strings for the panel's ladder. */
@@ -755,6 +758,7 @@ export function getWatchStatus(db: Database.Database): WatchStatusRow[] {
     if (leaseNote) sources.watcher = leaseNote;
     return {
       printId: print.id,
+      eventId: print.event_id,
       symbol: print.symbol,
       state: print.state,
       sources,
