@@ -201,18 +201,35 @@ function valuesDiverge(accepted: number | null, fresh: number | null): boolean {
 }
 
 /**
- * True when an ACCEPTED line's locked value has been superseded by a fresh
- * independent agreement in its (continuously-refreshed) candidates_json —
- * the "superseded — re-verify" chip. Reuses the production reconciler
- * (lib/print-watch/reconcile.ts) over just this line's own candidate pool
- * with an empty acceptedLines set, so "independent agreement" means
- * exactly what it means everywhere else in the system (same unanimity +
- * independence + table-provenance rules) rather than a second hand-rolled
- * copy of that logic. A fresh 'single_source' or 'conflict' outcome is
- * NOT evidence of anything — only a fresh 'agreed' outcome that disagrees
- * with the locked value counts as divergence. Compares value AND
- * value_high independently (range-kind guidance lines can have their top
- * revised while the floor holds, or vice versa).
+ * True when an ACCEPTED line's locked value has been superseded by fresh
+ * evidence in its (continuously-refreshed) candidates_json — the
+ * "superseded — re-verify" chip. Two independent triggers (fix round 2 —
+ * a real correction case had zero signal under trigger (a) alone):
+ *
+ * (a) A fresh independent recompute — reusing the production reconciler
+ *     (lib/print-watch/reconcile.ts) over just this line's own candidate
+ *     pool with an empty acceptedLines set, so "independent agreement"
+ *     means exactly what it means everywhere else in the system — lands
+ *     on 'agreed' at a value (or value_high) that diverges from the
+ *     locked one. Covers flash-then-agreed: two independent non-flash
+ *     sources land after acceptance and confirm a DIFFERENT number.
+ *
+ * (b) ANY non-flash candidate in candidates_json carries a value (or
+ *     value_high) that diverges from the accepted number, regardless of
+ *     what the fresh recompute lands on. This is the realistic
+ *     correction case (an 8-K/A, a corrected user drop): evidence is
+ *     NEVER removed, so a correcting candidate lands alongside the
+ *     original agreeing ones, and the reconciler's strict-unanimity rule
+ *     means that pool can only ever resolve to 'conflict' from then on —
+ *     trigger (a) can structurally never fire again for it, even though
+ *     real, non-flash evidence now disagrees with what's on the sheet.
+ *     Flash candidates are excluded from (b) on purpose: wire-flash
+ *     rounding disagreeing with the eventual print number is expected
+ *     noise, not a correction signal.
+ *
+ * Both triggers compare value AND value_high independently (range-kind
+ * guidance lines can have their top revised while the floor holds, or
+ * vice versa).
  */
 export function needsReverify(line: PrintWatchLine): boolean {
   if (line.state !== "accepted" || line.value === null) return false;
@@ -226,18 +243,30 @@ export function needsReverify(line: PrintWatchLine): boolean {
   }
   if (candidates.length === 0) return false;
 
+  // Trigger (a): a fresh independent agreement diverging from the locked
+  // value.
   const expectedMap: Record<string, ExpectedValue> = {};
   const [fresh] = reconcile([line.contract], expectedMap, candidates, []);
-  if (!fresh || fresh.state !== "agreed" || fresh.value === null) return false;
+  if (fresh && fresh.state === "agreed" && fresh.value !== null) {
+    if (
+      valuesDiverge(line.value, fresh.value) ||
+      valuesDiverge(line.value_high, fresh.value_high)
+    ) {
+      return true;
+    }
+  }
 
-  // Range-kind contracts (revenue_guide_next / eps_adj_guide_next) carry a
-  // value_high alongside value — a fresh agreement that revises only the
-  // TOP of a guidance range (floor unchanged) must still flag
-  // "superseded — re-verify", so both ends are compared independently
-  // rather than only `value`.
-  return (
-    valuesDiverge(line.value, fresh.value) || valuesDiverge(line.value_high, fresh.value_high)
-  );
+  // Trigger (b): any single non-flash candidate that conflicts with the
+  // locked value — the correction case (a) structurally cannot catch.
+  for (const c of candidates) {
+    if (c.representation === "flash") continue;
+    if (c.not_disclosed || c.value === null) continue;
+    if (valuesDiverge(line.value, c.value) || valuesDiverge(line.value_high, c.value_high)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 // ── state chip presentation (text + icon — never color alone) ─────────

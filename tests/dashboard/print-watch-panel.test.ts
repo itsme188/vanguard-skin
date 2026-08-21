@@ -155,9 +155,16 @@ describe("needsReverify", () => {
     expect(needsReverify(line)).toBe(true);
   });
 
-  it("is false when the only new evidence is a single (non-independent) source", () => {
+  it("is false when the only new evidence is a single non-independent source that MATCHES the accepted value", () => {
+    // Trigger (a) requires an INDEPENDENT agreement (>=2 sources) — one
+    // lone candidate can never resolve 'agreed' on its own (reconcile
+    // reports 'single_source' for exactly one value-candidate), so this
+    // exercises that trigger (a) doesn't misfire on a single source. It
+    // must still stay false under trigger (b) too, which is why the
+    // candidate's value MATCHES the accepted one — see the next test for
+    // the case where a lone candidate DIVERGES (now `true`, fix round 2).
     const candidates: TaggedCandidate[] = [
-      candidate({ doc_id: 30, representation: "repA", value: 0.99 }),
+      candidate({ doc_id: 30, representation: "repA", value: 0.91 }),
     ];
     const line = makeLine({
       state: "accepted",
@@ -165,6 +172,23 @@ describe("needsReverify", () => {
       candidates_json: JSON.stringify(candidates),
     });
     expect(needsReverify(line)).toBe(false);
+  });
+
+  // Fix round 2, literal ruling example: "accepted 1.10 + later non-flash
+  // candidate 1.15 → true". A lone diverging candidate can never resolve
+  // 'agreed' under trigger (a) (reconcile reports 'single_source'), but
+  // trigger (b) doesn't require independence — any non-flash candidate
+  // conflicting with the locked value is itself the signal.
+  it("flags divergence from a single later non-flash candidate even though it can never resolve 'agreed' alone", () => {
+    const candidates: TaggedCandidate[] = [
+      candidate({ doc_id: 31, representation: "repA", value: 1.15 }),
+    ];
+    const line = makeLine({
+      state: "accepted",
+      value: 1.1,
+      candidates_json: JSON.stringify(candidates),
+    });
+    expect(needsReverify(line)).toBe(true);
   });
 
   // Range-kind contracts (revenue_guide_next / eps_adj_guide_next) carry a
@@ -231,6 +255,102 @@ describe("needsReverify", () => {
       state: "accepted",
       value: 19_500_000_000,
       value_high: 20_000_000_000,
+      candidates_json: JSON.stringify(candidates),
+    });
+    expect(needsReverify(line)).toBe(false);
+  });
+
+  // Fix round 2: trigger (a) alone (a fresh independent 'agreed' outcome)
+  // structurally can never fire for a real-document correction, because
+  // evidence is never removed and the reconciler's strict-unanimity rule
+  // means any pool containing both the original agreeing candidates AND a
+  // later disagreeing one can only ever resolve to 'conflict'. Trigger (b)
+  // — any single non-flash candidate conflicting with the locked value —
+  // covers exactly this case.
+  it("flags divergence from a real correcting candidate even though the fresh recompute can only ever land on conflict", () => {
+    const candidates: TaggedCandidate[] = [
+      // The two original independent candidates that led to the accept.
+      candidate({ doc_id: 60, representation: "repA", value: 1.1 }),
+      candidate({ doc_id: 61, representation: "repB", value: 1.1 }),
+      // A later correction (e.g. an 8-K/A) — evidence is never removed,
+      // so this now sits alongside the original two, and any fresh
+      // recompute over all three is unanimity-blocked into 'conflict'
+      // forever (verified: reconcile() on this exact pool returns
+      // 'conflict', not 'agreed' — trigger (a) cannot see this).
+      candidate({ doc_id: 70, representation: "repA", value: 1.15 }),
+    ];
+    const line = makeLine({
+      state: "accepted",
+      value: 1.1,
+      candidates_json: JSON.stringify(candidates),
+    });
+    expect(needsReverify(line)).toBe(true);
+  });
+
+  it("does not flag divergence from a flash-only candidate (wire rounding, not a correction signal)", () => {
+    const candidates: TaggedCandidate[] = [
+      candidate({ doc_id: 80, representation: "flash", value: 1.13 }),
+    ];
+    const line = makeLine({
+      state: "accepted",
+      value: 1.1,
+      candidates_json: JSON.stringify(candidates),
+    });
+    expect(needsReverify(line)).toBe(false);
+  });
+
+  it("flags divergence when only the top of an accepted range diverges in a later non-flash candidate", () => {
+    const epsRangeContract = makeContract({
+      metric_id: "eps_adj_guide_next",
+      label: "EPS (adj) guide (next Q)",
+      period: "NQ_guide",
+      kind: "range",
+      unit: "per_share",
+      basis: "non_gaap",
+    });
+    const candidates: TaggedCandidate[] = [
+      candidate({
+        metric_id: "eps_adj_guide_next",
+        doc_id: 90,
+        representation: "repA",
+        value: 0.5,
+        value_high: 0.55,
+      }),
+      candidate({
+        metric_id: "eps_adj_guide_next",
+        doc_id: 91,
+        representation: "repB",
+        value: 0.5,
+        value_high: 0.55,
+      }),
+      // Later correction: floor unchanged, top revised.
+      candidate({
+        metric_id: "eps_adj_guide_next",
+        doc_id: 100,
+        representation: "repA",
+        value: 0.5,
+        value_high: 0.6,
+      }),
+    ];
+    const line = makeLine({
+      metric_id: "eps_adj_guide_next",
+      contract: epsRangeContract,
+      state: "accepted",
+      value: 0.5,
+      value_high: 0.55,
+      candidates_json: JSON.stringify(candidates),
+    });
+    expect(needsReverify(line)).toBe(true);
+  });
+
+  it("is false when no candidate, flash or otherwise, diverges from the accepted value", () => {
+    const candidates: TaggedCandidate[] = [
+      candidate({ doc_id: 110, representation: "repA", value: 1.1 }),
+      candidate({ doc_id: 111, representation: "flash", value: 1.1 }),
+    ];
+    const line = makeLine({
+      state: "accepted",
+      value: 1.1,
       candidates_json: JSON.stringify(candidates),
     });
     expect(needsReverify(line)).toBe(false);
