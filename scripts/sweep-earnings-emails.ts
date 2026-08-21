@@ -36,7 +36,14 @@ async function main() {
   console.log(`Done — sent ${summary.sent}, skipped ${summary.skipped}, failed ${summary.failed}`);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// This script MUST exit explicitly. The sweep now nudges the in-process
+// print-watch (lib/print-watch/watcher.ts), whose poll loops hold pending
+// timers — without an exit this tsx process would linger for the rest of an
+// armed window (up to ~55 min), polling EDGAR, spending model calls, and
+// blocking the launchd enrich chain that runs it last with no timeout.
+main()
+  .then(() => process.exit(0))
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });

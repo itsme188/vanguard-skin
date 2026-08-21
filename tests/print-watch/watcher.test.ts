@@ -66,6 +66,9 @@ interface FakeSeamState {
     }>
   >;
   twsUp: boolean;
+  cik: string | null;
+  /** One-shot timer failure, to crash a loop body on purpose. */
+  sleepThrowsOnce: boolean;
 }
 
 let fake: FakeSeamState;
@@ -91,10 +94,19 @@ function installSeams(): void {
     edgarCalls: 0,
     edgar: async () => [],
     twsUp: true,
+    cik: null,
+    sleepThrowsOnce: false,
   };
 
   _setTestSeams({
     storageRoot: () => tmpRoot,
+    sleep: (ms: number) => {
+      if (fake.sleepThrowsOnce) {
+        fake.sleepThrowsOnce = false;
+        return Promise.reject(new Error("timer subsystem died"));
+      }
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    },
     twsConnection: async () => ({
       up: fake.twsUp,
       ib: fake.twsUp ? ({} as never) : null,
@@ -103,7 +115,7 @@ function installSeams(): void {
       fake.djCalls += 1;
       return fake.dj();
     },
-    resolveCik: async () => null,
+    resolveCik: async () => fake.cik,
     pollEdgar: async () => {
       fake.edgarCalls += 1;
       return fake.edgar();
@@ -117,7 +129,14 @@ function installSeams(): void {
 }
 
 function seedArmedEvent(
-  opts: { symbol?: string; conId?: number | null; eventDate?: string; armed?: boolean } = {},
+  opts: {
+    symbol?: string;
+    conId?: number | null;
+    eventDate?: string;
+    armed?: boolean;
+    eventTime?: string;
+    rawJson?: string | null;
+  } = {},
 ): { eventId: number } {
   const symbol = opts.symbol ?? "NVDA";
   const conId = opts.conId === undefined ? 4815747 : opts.conId;
@@ -132,14 +151,15 @@ function seedArmedEvent(
     .prepare(
       `INSERT INTO calendar_events
          (source, event_type, event_date, event_time, title, symbol, security_id, raw_json, source_key)
-       VALUES ('finnhub', 'earnings', ?, 'AMC', ?, ?, ?, ?, ?)`,
+       VALUES ('finnhub', 'earnings', ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       opts.eventDate ?? EVENT_DATE,
+      opts.eventTime ?? "AMC",
       `${symbol} earnings`,
       symbol,
       Number(sec.lastInsertRowid),
-      JSON.stringify({ entry: { hour: "amc" } }),
+      opts.rawJson === undefined ? JSON.stringify({ entry: { hour: "amc" } }) : opts.rawJson,
       `finnhub:${symbol}:${opts.eventDate ?? EVENT_DATE}`,
     );
   const eventId = Number(ev.lastInsertRowid);
@@ -387,6 +407,70 @@ describe("ensurePrintWatch — reconcile", () => {
     expect(getWatchStatus(db)).toHaveLength(0);
   });
 
+  it("keeps ONE runtime through a disarm/re-arm flap — no second loop, no flash re-emission", async () => {
+    const { eventId } = seedArmedEvent();
+    let inFlight = 0;
+    let maxInFlight = 0;
+    fake.extract = async () => [candidate("eps_adj_q", 1.05)];
+    fake.dj = async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 12_000));
+      inFlight -= 1;
+      return {
+        completedReleases: [],
+        flashes: [{ time: "2026-08-26 20:20:00.0", headline: "*NVIDIA 2Q ADJ EPS $1.05" }],
+      };
+    };
+
+    ensurePrintWatch(db);
+    await tick(13_000); // first poll done, flash lane ran once, loop parked
+    expect(fake.extractCalls).toHaveLength(1);
+
+    // The flap: a user toggle, or a calendar sync flipping `superseded`.
+    db.prepare(`DELETE FROM earnings_worksheet_flags WHERE event_id = ?`).run(eventId);
+    ensurePrintWatch(db);
+    db.prepare(`INSERT INTO earnings_worksheet_flags (event_id) VALUES (?)`).run(eventId);
+    ensurePrintWatch(db);
+
+    await tick(60_000);
+
+    expect(getPrintByEventId(db, eventId)!.state).not.toBe("disarmed");
+    expect(maxInFlight).toBe(1); // a second runtime would double every poll
+    expect(fake.extractCalls).toHaveLength(1); // and re-parse the same flash
+  });
+
+  it("gives an unresolvable TAS row a drop-zone-only print with no window", async () => {
+    const { eventId } = seedArmedEvent({ eventTime: "TAS", rawJson: null });
+
+    ensurePrintWatch(db);
+    await tick(30_000);
+
+    const print = getPrintByEventId(db, eventId)!;
+    expect(print.release_time_et).toBeNull();
+    expect(print.state).toBe("scheduled"); // never auto-opens, never expires
+    expect(fake.djCalls).toBe(0);
+    expect(fake.edgarCalls).toBe(0);
+    expect(getWatchStatus(db)[0].coverage).toEqual([
+      "TAS — release time unknown; drop-zone only",
+      "drop: HTML/text",
+    ]);
+
+    // The drop zone still works — that is the whole point of keeping the print.
+    fake.extract = async () => [candidate("eps_adj_q", 1.05)];
+    await ingestDocument(
+      db,
+      printIdFor(eventId),
+      "user-drop",
+      "drop:release.txt",
+      null,
+      Buffer.from(NVDA_RELEASE_TEXT, "utf8"),
+    );
+    expect(getSheet(db, printIdFor(eventId)).find((l) => l.metric_id === "eps_adj_q")!.state).toBe(
+      "single_source",
+    );
+  });
+
   it("stays scheduled before the window opens, opens in-window, expires after T+45m", async () => {
     const { eventId } = seedArmedEvent();
 
@@ -470,6 +554,53 @@ describe("watch loop", () => {
     expect(status[0].coverage).toContain("TWS offline");
   });
 
+  it("times out a stalled EDGAR poll so the lease keeps renewing and the loop lives", async () => {
+    seedArmedEvent();
+    fake.cik = "0001045810";
+    fake.edgar = () => new Promise(() => {}); // a socket that never answers
+
+    const leaseExpiry = (): number => {
+      const row = db.prepare(`SELECT value FROM settings WHERE key = 'print_watch_lease'`).get() as
+        | { value: string }
+        | undefined;
+      return row ? (JSON.parse(row.value) as { expiresAt: number }).expiresAt : 0;
+    };
+
+    ensurePrintWatch(db);
+    const expiryBefore = leaseExpiry();
+
+    await tick(40_000);
+
+    expect(fake.edgarCalls).toBeGreaterThan(0);
+    expect(getWatchStatus(db)[0].sources.edgar).toContain("timed out");
+    // The renewal happened despite the hung source, and DJ kept polling.
+    expect(leaseExpiry()).toBeGreaterThan(expiryBefore);
+    const djAfterStall = fake.djCalls;
+    expect(djAfterStall).toBeGreaterThan(1);
+
+    await tick(30_000);
+    expect(fake.djCalls).toBeGreaterThan(djAfterStall);
+  });
+
+  it("records a crashed loop body and brings the loop back", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      seedArmedEvent();
+      ensurePrintWatch(db);
+      await tick(1);
+
+      fake.sleepThrowsOnce = true; // the cadence sleep blows up
+      await tick(11_000);
+      expect(getWatchStatus(db)[0].sources.loop).toContain("loop crashed");
+
+      const pollsAfterCrash = fake.djCalls;
+      await tick(30_000);
+      expect(fake.djCalls).toBeGreaterThan(pollsAfterCrash);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("notes a missing conId as wire-off coverage and never calls DJ", async () => {
     seedArmedEvent({ conId: null });
 
@@ -503,6 +634,18 @@ describe("validateDocForEvent", () => {
     const verdict = validateDocForEvent(WRONG_ISSUER_TEXT, ctx);
     if (verdict.ok) throw new Error("expected the wrong-issuer document to be rejected");
     expect(verdict.reason).toContain("issuer");
+  });
+
+  it("rejects a bare ordinal quarter with no year beside it", () => {
+    // "Second Quarter" alone shows up in prior-year comparatives and in last
+    // year's release — the ordinal branch carries the same year requirement
+    // as the Qn branches.
+    const verdict = validateDocForEvent(
+      "NVIDIA (NASDAQ: NVDA) — Second Quarter Highlights and Key Metrics",
+      ctx,
+    );
+    if (verdict.ok) throw new Error("expected the yearless ordinal document to be rejected");
+    expect(verdict.reason).toContain("period");
   });
 
   it("rejects a document with no fiscal-period token", () => {
@@ -660,8 +803,16 @@ describe("pipeline", () => {
     expect(getSheet(db, printId).find((l) => l.metric_id === "eps_adj_q")!.state).toBe("pending");
 
     fake.extract = async () => [candidate("eps_adj_q", 1.05)];
-    await tick(11_000); // one more loop tick drains the leftovers
 
+    // Retries are SPACED 30s apart: three attempts inside half a minute would
+    // spend the document's whole budget on one transient failure.
+    await tick(11_000);
+    expect(fake.extractCalls).toHaveLength(1);
+    expect(listDocuments(db, printId)[0].parsed_at).toBeNull();
+
+    await tick(31_000); // past the spacing — the next tick drains it
+
+    expect(fake.extractCalls.length).toBeGreaterThan(1);
     expect(listDocuments(db, printId)[0].parsed_at).not.toBeNull();
     expect(getSheet(db, printId).find((l) => l.metric_id === "eps_adj_q")!.state).toBe(
       "single_source",
@@ -692,6 +843,100 @@ describe("pipeline", () => {
     // Flash values have no document — the FK column must stay NULL.
     expect(line.source_doc_id).toBeNull();
     expect(listDocuments(db, printId)).toHaveLength(0);
+  });
+
+  it("serializes the flash lane against the document pipeline — neither writer erases the other", async () => {
+    const { eventId } = seedArmedEvent();
+    let releaseFlash!: () => void;
+    const flashGate = new Promise<void>((resolve) => {
+      releaseFlash = resolve;
+    });
+
+    // Both writers are read-modify-writes wrapped around a model call. The
+    // guarantee under test is MUTUAL EXCLUSION — that one is never at the
+    // model while the other is — because the moment anything adds an await
+    // between "collect the candidate pool" and "write the sheet", overlapping
+    // writers start erasing each other's evidence.
+    let writersInFlight = 0;
+    let maxWritersInFlight = 0;
+    fake.extract = async (_contracts, text) => {
+      writersInFlight += 1;
+      maxWritersInFlight = Math.max(maxWritersInFlight, writersInFlight);
+      try {
+        if (text.includes("*NVIDIA")) {
+          await flashGate; // park the flash lane inside its model call
+          return [candidate("eps_gaap_q", 0.99)];
+        }
+        return [candidate("eps_adj_q", 1.05)];
+      } finally {
+        writersInFlight -= 1;
+      }
+    };
+    let served = false;
+    fake.dj = async () => {
+      if (served) return { completedReleases: [], flashes: [] };
+      served = true;
+      return {
+        completedReleases: [],
+        flashes: [{ time: "2026-08-26 20:20:00.0", headline: "*NVIDIA 2Q ADJ EPS $1.05" }],
+      };
+    };
+
+    ensurePrintWatch(db);
+    const printId = printIdFor(eventId);
+    await tick(1); // flash lane is now parked mid-extraction
+
+    // A drop lands while the flash lane still holds the print.
+    const drop = ingestDocument(
+      db,
+      printId,
+      "user-drop",
+      "drop:release.txt",
+      null,
+      Buffer.from(NVDA_RELEASE_TEXT, "utf8"),
+    );
+    await flushIo();
+
+    releaseFlash();
+    await drop;
+    await flushIo();
+
+    expect(maxWritersInFlight).toBe(1);
+    const sheet = getSheet(db, printId);
+    expect(sheet.find((l) => l.metric_id === "eps_adj_q")!.state).toBe("single_source");
+    expect(sheet.find((l) => l.metric_id === "eps_gaap_q")!.state).toBe("flash");
+    expect(listDocuments(db, printId)[0].parsed_at).not.toBeNull();
+  });
+
+  it("refuses the sheet write when the lease changed hands during the model call", async () => {
+    const { eventId } = seedArmedEvent();
+    ensurePrintWatch(db);
+    const printId = printIdFor(eventId);
+
+    fake.extract = async () => {
+      // Another process takes the watcher over while we are at the model.
+      db.prepare(
+        `INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))`,
+      ).run(
+        "print_watch_lease",
+        JSON.stringify({ holder: "9999@3999", expiresAt: Date.now() + 120_000 }),
+      );
+      return [candidate("eps_adj_q", 1.05)];
+    };
+
+    await ingestDocument(
+      db,
+      printId,
+      "user-drop",
+      "drop:release.txt",
+      null,
+      Buffer.from(NVDA_RELEASE_TEXT, "utf8"),
+    );
+
+    // Our snapshot is stale — refuse, and leave the document for the new owner.
+    expect(getSheet(db, printId).find((l) => l.metric_id === "eps_adj_q")!.state).toBe("pending");
+    expect(listDocuments(db, printId)[0].parsed_at).toBeNull();
+    expect(getWatchStatus(db)[0].sources.pipeline).toContain("refused");
   });
 
   it("re-ingesting identical bytes is a no-op (no second parse)", async () => {
