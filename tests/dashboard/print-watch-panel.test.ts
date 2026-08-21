@@ -1,0 +1,258 @@
+import { describe, it, expect } from "vitest";
+import {
+  ladderText,
+  promoteSummary,
+  needsReverify,
+  deltaPct,
+} from "@/app/dashboard/today/PrintWatchPanel";
+import type { LineContract, PrintWatchLine, TaggedCandidate } from "@/lib/print-watch/types";
+
+// ── fixtures ────────────────────────────────────────────────────────────
+
+function makeContract(overrides: Partial<LineContract> = {}): LineContract {
+  return {
+    metric_id: "eps_adj_q",
+    label: "EPS (adj)",
+    definition: "Adjusted diluted EPS for the quarter",
+    basis: "non_gaap",
+    period: "Q",
+    currency: "USD",
+    unit: "per_share",
+    kind: "point",
+    segment: null,
+    ...overrides,
+  };
+}
+
+function makeLine(overrides: Partial<PrintWatchLine> = {}): PrintWatchLine {
+  return {
+    metric_id: "eps_adj_q",
+    contract: makeContract(),
+    expected: { value: 0.85, value_high: null, whisper: 0.9, source_label: "Street" },
+    state: "pending",
+    value: null,
+    value_high: null,
+    snippet: null,
+    source_doc_id: null,
+    candidates_json: "[]",
+    ...overrides,
+  };
+}
+
+function candidate(overrides: Partial<TaggedCandidate> = {}): TaggedCandidate {
+  return {
+    metric_id: "eps_adj_q",
+    value: 0.91,
+    value_high: null,
+    raw_text: "0.91",
+    snippet: "adjusted EPS of $0.91",
+    location_hint: null,
+    not_disclosed: false,
+    doc_id: 10,
+    representation: "repA",
+    weak_pair: false,
+    ...overrides,
+  };
+}
+
+// ── deltaPct ────────────────────────────────────────────────────────────
+
+describe("deltaPct", () => {
+  it("returns null when the bogey side is missing", () => {
+    expect(deltaPct(null, 0.91)).toBeNull();
+  });
+
+  it("returns null when the actual side is missing", () => {
+    expect(deltaPct(0.85, null)).toBeNull();
+  });
+
+  it("returns null when the bogey is exactly zero (undefined percent base)", () => {
+    expect(deltaPct(0, 0.5)).toBeNull();
+  });
+
+  it("signs a beat positive", () => {
+    const d = deltaPct(0.85, 0.91);
+    expect(d).not.toBeNull();
+    expect(d?.sign).toBe(1);
+    expect(d?.label).toBe("+7.1%");
+  });
+
+  it("signs a miss negative", () => {
+    const d = deltaPct(0.85, 0.8);
+    expect(d).not.toBeNull();
+    expect(d?.sign).toBe(-1);
+    expect(d?.label).toBe("-5.9%");
+  });
+
+  it("reports a near-zero gap as in-line, not a signed percent", () => {
+    const d = deltaPct(100, 100.02);
+    expect(d).not.toBeNull();
+    expect(d?.sign).toBe(0);
+    expect(d?.label).toBe("in-line");
+  });
+});
+
+// ── ladderText ──────────────────────────────────────────────────────────
+
+describe("ladderText", () => {
+  it("renders empty string for no sources (pre-first-poll after a restart)", () => {
+    expect(ladderText({})).toBe("");
+  });
+
+  it("orders known sources canonically regardless of input key order", () => {
+    expect(
+      ladderText({ edgar: "CIK unresolved", dj: "ok — 1 release(s)" }),
+    ).toBe("DJ: ok — 1 release(s) · EDGAR: CIK unresolved");
+  });
+
+  it("labels the watcher lease note", () => {
+    expect(ladderText({ watcher: "owned by 4821@3000" })).toBe(
+      "Watcher: owned by 4821@3000",
+    );
+  });
+
+  it("appends unrecognized keys alphabetically after the canonical ladder", () => {
+    expect(ladderText({ zzz: "custom note", dj: "ok" })).toBe("DJ: ok · Zzz: custom note");
+  });
+});
+
+// ── needsReverify ───────────────────────────────────────────────────────
+
+describe("needsReverify", () => {
+  it("is false for a non-accepted line regardless of candidates", () => {
+    const line = makeLine({ state: "agreed", value: 0.95 });
+    expect(needsReverify(line)).toBe(false);
+  });
+
+  it("is false for an accepted line with no candidate evidence yet", () => {
+    const line = makeLine({ state: "accepted", value: 0.91, candidates_json: "[]" });
+    expect(needsReverify(line)).toBe(false);
+  });
+
+  it("is false when the freshest independent agreement matches the accepted value", () => {
+    const candidates: TaggedCandidate[] = [
+      candidate({ doc_id: 10, representation: "repA", value: 0.91 }),
+      candidate({ doc_id: 11, representation: "repB", value: 0.91 }),
+    ];
+    const line = makeLine({
+      state: "accepted",
+      value: 0.91,
+      candidates_json: JSON.stringify(candidates),
+    });
+    expect(needsReverify(line)).toBe(false);
+  });
+
+  it("is true when a fresh independent agreement diverges from the accepted value", () => {
+    const candidates: TaggedCandidate[] = [
+      candidate({ doc_id: 20, representation: "repA", value: 0.95 }),
+      candidate({ doc_id: 21, representation: "repB", value: 0.95 }),
+    ];
+    const line = makeLine({
+      state: "accepted",
+      value: 0.91,
+      candidates_json: JSON.stringify(candidates),
+    });
+    expect(needsReverify(line)).toBe(true);
+  });
+
+  it("is false when the only new evidence is a single (non-independent) source", () => {
+    const candidates: TaggedCandidate[] = [
+      candidate({ doc_id: 30, representation: "repA", value: 0.99 }),
+    ];
+    const line = makeLine({
+      state: "accepted",
+      value: 0.91,
+      candidates_json: JSON.stringify(candidates),
+    });
+    expect(needsReverify(line)).toBe(false);
+  });
+});
+
+// ── promoteSummary ──────────────────────────────────────────────────────
+
+describe("promoteSummary", () => {
+  it("is null when nothing is accepted", () => {
+    const lines = [
+      makeLine({ metric_id: "eps_adj_q", state: "agreed", value: 0.91 }),
+      makeLine({
+        metric_id: "revenue_q",
+        state: "agreed",
+        value: 4_340_000_000,
+        contract: makeContract({ metric_id: "revenue_q", label: "Revenue", unit: "usd" }),
+      }),
+    ];
+    expect(promoteSummary(lines)).toBeNull();
+  });
+
+  it("is null when EPS is accepted but revenue is not", () => {
+    const lines = [
+      makeLine({ metric_id: "eps_adj_q", state: "accepted", value: 0.91 }),
+      makeLine({
+        metric_id: "revenue_q",
+        state: "agreed",
+        value: 4_340_000_000,
+        contract: makeContract({ metric_id: "revenue_q", label: "Revenue", unit: "usd" }),
+      }),
+    ];
+    expect(promoteSummary(lines)).toBeNull();
+  });
+
+  it("is null when revenue is accepted but no EPS line is accepted", () => {
+    const lines = [
+      makeLine({ metric_id: "eps_adj_q", state: "single_source", value: 0.91 }),
+      makeLine({
+        metric_id: "revenue_q",
+        state: "accepted",
+        value: 4_340_000_000,
+        contract: makeContract({ metric_id: "revenue_q", label: "Revenue", unit: "usd" }),
+      }),
+    ];
+    expect(promoteSummary(lines)).toBeNull();
+  });
+
+  it("prefers the adjusted EPS line when both adj and GAAP are accepted", () => {
+    const lines = [
+      makeLine({ metric_id: "eps_adj_q", state: "accepted", value: 0.91 }),
+      makeLine({
+        metric_id: "eps_gaap_q",
+        state: "accepted",
+        value: 0.75,
+        contract: makeContract({ metric_id: "eps_gaap_q", label: "EPS (GAAP)", basis: "gaap" }),
+      }),
+      makeLine({
+        metric_id: "revenue_q",
+        state: "accepted",
+        value: 4_340_000_000,
+        contract: makeContract({ metric_id: "revenue_q", label: "Revenue", unit: "usd" }),
+      }),
+    ];
+    const summary = promoteSummary(lines);
+    expect(summary).not.toBeNull();
+    expect(summary?.basisLabel).toBe("adj");
+    expect(summary?.epsValue).toBe(0.91);
+    expect(summary?.revenueValue).toBe(4_340_000_000);
+    expect(summary?.label).toBe("Promote EPS+Rev (adj $0.91 · $4.34B)");
+  });
+
+  it("falls back to GAAP EPS with a gaap basisLabel when adj was not accepted", () => {
+    const lines = [
+      makeLine({
+        metric_id: "eps_gaap_q",
+        state: "accepted",
+        value: -0.12,
+        contract: makeContract({ metric_id: "eps_gaap_q", label: "EPS (GAAP)", basis: "gaap" }),
+      }),
+      makeLine({
+        metric_id: "revenue_q",
+        state: "accepted",
+        value: 4_340_000_000,
+        contract: makeContract({ metric_id: "revenue_q", label: "Revenue", unit: "usd" }),
+      }),
+    ];
+    const summary = promoteSummary(lines);
+    expect(summary).not.toBeNull();
+    expect(summary?.basisLabel).toBe("gaap");
+    expect(summary?.epsValue).toBe(-0.12);
+    expect(summary?.label).toBe("Promote EPS+Rev (gaap -$0.12 · $4.34B)");
+  });
+});
