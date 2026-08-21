@@ -18,6 +18,67 @@ export function getWorksheetFlagsForEvents(
   return out;
 }
 
+/** One armed event, with everything the print-watcher needs to open a window.
+ *  Column names stay snake_case where they mirror `calendar_events` so the
+ *  row can be handed straight to `resolveEarningsReleaseTime` (which reads
+ *  `event_type` / `event_time` / `raw_json` / `symbol`). */
+export interface ArmedWorksheetEventRow {
+  eventId: number;
+  symbol: string;
+  event_date: string;
+  event_type: string;
+  event_time: string | null;
+  raw_json: string | null;
+  con_id: number | null;
+  issuer_name: string | null;
+}
+
+/**
+ * Every ARMED earnings event on the given dates — deliberately REGARDLESS of
+ * `printed_at` (Codex #10). `printed_at` records that the paper worksheet was
+ * physically printed; it is not a disarm signal, so the auto-print pass's
+ * `printed_at IS NULL` filter (getUnprintedWorksheetEvents, above) is the
+ * wrong input for the watcher: an armed event whose worksheet already printed
+ * is exactly the event that is about to report.
+ *
+ * `con_id` prefers the security's IB contract id and falls back to the one
+ * denormalized on the event row; `issuer_name` feeds the watcher's
+ * document-to-event gate. The securities join resolves through
+ * `security_id` first and only then by symbol, via a scalar subquery so a
+ * duplicate symbol row can never fan this out into two rows per event.
+ */
+export function getArmedWorksheetEvents(
+  db: Database.Database,
+  dates: string[],
+): ArmedWorksheetEventRow[] {
+  if (dates.length === 0) return [];
+  const placeholders = dates.map(() => "?").join(",");
+  return db
+    .prepare(
+      `SELECT f.event_id                              AS eventId,
+              ce.symbol                               AS symbol,
+              ce.event_date                           AS event_date,
+              ce.event_type                           AS event_type,
+              ce.event_time                           AS event_time,
+              ce.raw_json                             AS raw_json,
+              COALESCE(s.ib_con_id, ce.ib_con_id)     AS con_id,
+              s.name                                  AS issuer_name
+         FROM earnings_worksheet_flags f
+         JOIN calendar_events ce ON ce.id = f.event_id
+         LEFT JOIN securities s
+                ON s.id = COALESCE(
+                     ce.security_id,
+                     (SELECT id FROM securities WHERE UPPER(symbol) = UPPER(ce.symbol) LIMIT 1)
+                   )
+        WHERE ce.event_date IN (${placeholders})
+          AND COALESCE(ce.superseded, 0) = 0
+          AND ce.event_type = 'earnings'
+          AND ce.symbol IS NOT NULL
+        ORDER BY ce.event_date, f.event_id`,
+    )
+    .all(...dates) as ArmedWorksheetEventRow[];
+}
+
 /** Armed, not-yet-printed flags joined to their events (auto-print pass input). */
 export function getUnprintedWorksheetEvents(
   db: Database.Database,
