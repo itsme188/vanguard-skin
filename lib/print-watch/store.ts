@@ -59,6 +59,27 @@ export function listActivePrints(db: Database.Database): PrintRow[] {
     .all() as PrintRow[];
 }
 
+/**
+ * Prints whose window has closed but whose event is still TODAY.
+ *
+ * Deliberately separate from `listActivePrints` rather than folded into it:
+ * `ensurePrintWatch`'s stale-print pass iterates the active list and treats
+ * every row it finds without an armed flag as a disarm/expire candidate —
+ * widening that query would drag expired rows back through the state machine
+ * on every sweep. The panel, on the other hand, must keep showing today's
+ * expired prints: the release landed, the window merely ran out, and the drop
+ * zone is exactly the recovery road for "the wire missed it, here's the file".
+ */
+export function listTodaysExpiredPrints(db: Database.Database, todayEt: string): PrintRow[] {
+  return db
+    .prepare(
+      `SELECT * FROM print_watch_prints
+       WHERE state = 'expired' AND event_date = ?
+       ORDER BY event_date, id`,
+    )
+    .all(todayEt) as PrintRow[];
+}
+
 export function insertDocument(
   db: Database.Database,
   printId: number,

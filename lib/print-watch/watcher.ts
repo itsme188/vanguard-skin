@@ -80,6 +80,7 @@ import {
   insertDocument,
   listActivePrints,
   listDocuments,
+  listTodaysExpiredPrints,
   listUnparsedDocuments,
   markDocumentParsed,
   setPrintState,
@@ -179,6 +180,24 @@ export interface WatchStatusRow {
   sources: Record<string, string>;
   /** Static capability notes (Codex #23) — what CAN and cannot fire tonight. */
   coverage: string[];
+}
+
+/**
+ * What actually happened to a set of acquired bytes — the drop route forwards
+ * this verbatim so the panel can say something true and final.
+ *
+ *  - `parsed`    — new document, passed the issuer/period gate, parse awaited.
+ *  - `rejected`  — stored as evidence under `rejected:<reason>`, never parsed.
+ *  - `duplicate` — these exact bytes are already this print's; nothing re-ran.
+ */
+export type IngestOutcome = "parsed" | "rejected" | "duplicate";
+
+export interface IngestResult {
+  docId: number;
+  isNew: boolean;
+  outcome: IngestOutcome;
+  /** Present only on `rejected` — the gate's own plain-language reason. */
+  rejectReason?: string;
 }
 
 export interface DocGateContext {
@@ -750,9 +769,28 @@ function retireFinishedRuntimes(db: Database.Database, armedPrintIds: Set<number
   }
 }
 
-/** Read-only status for the panel (Codex #9 — the GET route must not mutate). */
+/**
+ * Read-only status for the panel (Codex #9 — the GET route must not mutate).
+ *
+ * Returns the ACTIVE prints plus today's EXPIRED ones (final fix wave). An
+ * expired print is not a finished print: the window closing means the wire
+ * never delivered, which is precisely when the desk reaches for the drop zone
+ * — and a row that has vanished from the panel cannot be dropped onto. The
+ * whole manual road stays open behind it: `getPrintByEventId` (the drop
+ * route's lookup) has no state filter, and `advanceState` refuses only
+ * `disarmed`, so an expired print still moves expired → acquired → parsed on a
+ * drop. Today's date is the cutoff — yesterday's misses are history, not work.
+ *
+ * The widening lives HERE and not in `listActivePrints` on purpose: that query
+ * also feeds `ensurePrintWatch`'s stale-print pass, which would re-walk every
+ * expired row through the disarm/expire branch on each sweep.
+ */
 export function getWatchStatus(db: Database.Database): WatchStatusRow[] {
-  return listActivePrints(db).map((print) => {
+  const todayEt = todayET(new Date(seams.now()));
+  const prints = [...listActivePrints(db), ...listTodaysExpiredPrints(db, todayEt)].sort(
+    (a, b) => a.event_date.localeCompare(b.event_date) || a.id - b.id,
+  );
+  return prints.map((print) => {
     const status = statuses.get(print.id);
     const sources = { ...(status?.sources ?? {}) };
     if (leaseNote) sources.watcher = leaseNote;
@@ -1068,6 +1106,18 @@ async function writeBytes(printId: number, sha: string, ext: string, buf: Buffer
  * Idempotent on (print, kind, sha256): re-dropping the same file returns the
  * existing document and parses nothing. A gate failure is recorded, never
  * thrown — the caller acquired a real document, it simply isn't this event's.
+ *
+ * Returns its VERDICT, not just an id (final fix wave). The three outcomes are
+ * three genuinely different things to tell the desk — the sheet just moved, the
+ * document was refused as another issuer's/period's, or these exact bytes were
+ * already in hand — and only this function knows which happened. Callers that
+ * guessed from `isNew` alone had to say something vague and permanent
+ * ("parsing now…") that no later poll could ever correct.
+ *
+ * `parsed` means the document passed the gate and its parse was awaited. A
+ * parse that then failed inside the pipeline leaves the document unparsed for
+ * a later retry and reports itself through the `pipeline` source note, which
+ * the panel's ladder already renders.
  */
 export async function ingestDocument(
   db: Database.Database,
@@ -1076,7 +1126,7 @@ export async function ingestDocument(
   source: string,
   url: string | null,
   buf: Buffer,
-): Promise<{ docId: number; isNew: boolean }> {
+): Promise<IngestResult> {
   const print = readPrintRow(db, printId);
   if (!print) throw new Error(`print-watch: print ${printId} not found`);
 
@@ -1091,14 +1141,14 @@ export async function ingestDocument(
 
   if (!verdict.ok) {
     statusFor(printId).sources.gate = `doc ${id} rejected: ${verdict.reason}`;
-    return { docId: id, isNew };
+    return { docId: id, isNew, outcome: "rejected", rejectReason: verdict.reason };
   }
 
-  if (isNew) {
-    advanceState(db, printId, "acquired");
-    await runQueue(db, printId);
-  }
-  return { docId: id, isNew };
+  if (!isNew) return { docId: id, isNew, outcome: "duplicate" };
+
+  advanceState(db, printId, "acquired");
+  await runQueue(db, printId);
+  return { docId: id, isNew, outcome: "parsed" };
 }
 
 /**

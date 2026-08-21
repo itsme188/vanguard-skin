@@ -17,7 +17,13 @@ import os from "node:os";
 import path from "node:path";
 import { NextRequest } from "next/server";
 import { runMigrations } from "@/lib/db/migrate";
-import { upsertPrint, upsertLines, setPrintState, getPrintByEventId } from "@/lib/print-watch/store";
+import {
+  upsertPrint,
+  upsertLines,
+  setPrintState,
+  getPrintByEventId,
+  insertDocument,
+} from "@/lib/print-watch/store";
 import type { PrintWatchLine, LineStateKind } from "@/lib/print-watch/types";
 import { _setTestSeams } from "@/lib/print-watch/watcher";
 
@@ -161,6 +167,40 @@ describe("GET /api/print-watch/status", () => {
     expect(hoisted.ensureSpy).not.toHaveBeenCalled();
   });
 
+  it("carries a doc-id → kind map so conflict candidates can name their source", async () => {
+    const printId = upsertPrint(hoisted.db, 505, "ACME", "2026-08-26", "16:15");
+    upsertLines(hoisted.db, printId, [testLine("eps_adj_q", "conflict")]);
+    const edgar = insertDocument(
+      hoisted.db,
+      printId,
+      "edgar-ex99",
+      "edgar:0001-000123:ex99-1.htm",
+      "https://sec.gov/x",
+      "a".repeat(64),
+      "/tmp/a.html",
+    );
+    const drop = insertDocument(
+      hoisted.db,
+      printId,
+      "user-drop",
+      "user-drop:release.html",
+      null,
+      "b".repeat(64),
+      "/tmp/b.html",
+    );
+
+    const mod = await import("@/app/api/print-watch/status/route");
+    const res = await mod.GET();
+    const body = await res.json();
+
+    // JSON object keys are strings — the panel indexes by doc_id (a number),
+    // which JS coerces on lookup; assert the shape the wire actually carries.
+    expect(body.data.prints[0].documents).toEqual({
+      [String(edgar.id)]: "edgar-ex99",
+      [String(drop.id)]: "user-drop",
+    });
+  });
+
   it("omits prints that are no longer active (disarmed)", async () => {
     const printId = upsertPrint(hoisted.db, 502, "WXYZ", "2026-08-20", "08:00");
     setPrintState(hoisted.db, printId, "disarmed");
@@ -248,6 +288,9 @@ describe("POST /api/print-watch/drop", () => {
     expect(body.success).toBe(true);
     expect(typeof body.data.docId).toBe("number");
     expect(body.data.isNew).toBe(true);
+    // The verdict rides along so the panel can say something final and true.
+    expect(body.data.outcome).toBe("parsed");
+    expect(body.data.rejectReason).toBeNull();
 
     const printId = getPrintByEventId(hoisted.db, 701)!.id;
     const docs = hoisted.db
@@ -342,6 +385,51 @@ describe("POST /api/print-watch/drop", () => {
         .get(printId) as { n: number }
     ).n;
     expect(docCount).toBe(0);
+  });
+
+  it("reports a gate-rejected drop as outcome 'rejected' with its reason, still HTTP 200", async () => {
+    upsertPrint(hoisted.db, 705, "ACME", "2026-08-26", "16:15");
+    // Another issuer's release entirely — the drop worked, the document is
+    // simply not this event's.
+    const html = "<html><body><h1>Globex Corp Reports Second Quarter 2026 Results</h1></body></html>";
+
+    const mod = await import("@/app/api/print-watch/drop/route");
+    const res = await mod.POST(
+      dropReq({
+        eventId: 705,
+        filename: "globex.html",
+        contentBase64: Buffer.from(html, "utf8").toString("base64"),
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.data.outcome).toBe("rejected");
+    expect(typeof body.data.rejectReason).toBe("string");
+    expect(body.data.rejectReason.length).toBeGreaterThan(0);
+  });
+
+  it("reports a re-drop of identical bytes as outcome 'duplicate'", async () => {
+    upsertPrint(hoisted.db, 706, "ACME", "2026-08-26", "16:15");
+    const html = "<html><body><h1>ACME Reports Second Quarter 2026 Results</h1></body></html>";
+    const payload = {
+      eventId: 706,
+      filename: "acme-q2-2026.html",
+      contentBase64: Buffer.from(html, "utf8").toString("base64"),
+    };
+
+    const mod = await import("@/app/api/print-watch/drop/route");
+    const first = await mod.POST(dropReq(payload));
+    const second = await mod.POST(dropReq(payload));
+
+    expect((await first.json()).data.outcome).toBe("parsed");
+
+    expect(second.status).toBe(200);
+    const body = await second.json();
+    expect(body.success).toBe(true);
+    expect(body.data.outcome).toBe("duplicate");
+    expect(body.data.isNew).toBe(false);
   });
 
   it("400s when a required field is missing", async () => {

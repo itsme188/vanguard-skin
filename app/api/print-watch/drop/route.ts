@@ -90,7 +90,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: PDF_REJECT_MESSAGE }, { status: 400 });
     }
 
-    const { docId, isNew } = await ingestDocument(
+    const { docId, isNew, outcome, rejectReason } = await ingestDocument(
       db,
       print.id,
       "user-drop",
@@ -99,7 +99,13 @@ export async function POST(request: NextRequest) {
       buf,
     );
 
-    return NextResponse.json({ success: true, data: { docId, isNew } });
+    // The verdict travels with the id (final fix wave): a gate rejection and a
+    // duplicate are both HTTP 200 — the drop itself worked — but they are NOT
+    // "parsing now", and only ingestDocument knows which of the three happened.
+    return NextResponse.json({
+      success: true,
+      data: { docId, isNew, outcome, rejectReason: rejectReason ?? null },
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     return NextResponse.json({ success: false, error: message }, { status: 500 });

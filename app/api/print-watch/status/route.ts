@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getWatchStatus } from "@/lib/print-watch/watcher";
-import { getSheet } from "@/lib/print-watch/store";
+import { getSheet, listDocuments } from "@/lib/print-watch/store";
 
 /**
  * GET /api/print-watch/status — the panel's poll loop (Task 10).
@@ -19,6 +19,13 @@ import { getSheet } from "@/lib/print-watch/store";
  *
  * Flash lines carry `source_doc_id: null` (no document of record) —
  * serialized as-is, no massaging.
+ *
+ * `documents` is a doc-id → kind map (final fix wave). A conflict row's
+ * candidates identify themselves only by `doc_id`, and "doc #12 vs doc #13"
+ * tells the desk nothing about WHICH source to believe — "edgar-ex99 vs
+ * user-drop" tells it everything. The map is sent alongside rather than
+ * denormalized into each candidate so `TaggedCandidate` (a stored, reconciled
+ * shape) keeps its schema.
  */
 export async function GET() {
   try {
@@ -30,6 +37,9 @@ export async function GET() {
       sources: row.sources,
       coverage: row.coverage,
       lines: getSheet(db, row.printId),
+      documents: Object.fromEntries(
+        listDocuments(db, row.printId).map((doc) => [doc.id, doc.kind]),
+      ) as Record<number, string>,
     }));
 
     return NextResponse.json({ success: true, data: { prints } });
