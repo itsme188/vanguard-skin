@@ -39,6 +39,13 @@ function insertOptionSecurity(
   ).run(id, symbol, `AAPL ${strike} ${optionType}`, optionType, strike, expiry);
 }
 
+/**
+ * `amount` is the broker's own dollar figure for the leg, so it carries the
+ * contract multiplier for options (IBKR's Proceeds column for 2 contracts at
+ * $5.00 reads $1,000, not $10) — the fixture mirrors that. Under the WS1
+ * true-dollar convention the engine treats a present `amount` as
+ * authoritative, so a per-unit `amount` here would misstate every option lot.
+ */
 function insertTransaction(
   securityId: number,
   type: string,
@@ -46,10 +53,13 @@ function insertTransaction(
   quantity: number,
   pricePerShare: number
 ) {
+  const { multiplier } = db
+    .prepare("SELECT COALESCE(multiplier, 1) AS multiplier FROM securities WHERE id = ?")
+    .get(securityId) as { multiplier: number };
   db.prepare(
     `INSERT INTO transactions (account_id, security_id, type, trade_date, quantity, price_per_share, amount, fees)
      VALUES (3, ?, ?, ?, ?, ?, ?, 0)`
-  ).run(securityId, type, date, quantity, pricePerShare, quantity * pricePerShare);
+  ).run(securityId, type, date, quantity, pricePerShare, quantity * pricePerShare * multiplier);
 }
 
 function getTaxLots() {
@@ -87,6 +97,7 @@ function getTaxLotSales() {
     proceeds: number;
     cost_basis_allocated: number;
     realized_gain_loss: number;
+    premium_rollover: number;
   }>;
 }
 
@@ -126,9 +137,13 @@ describe("option tax lot handling", () => {
     const sales = getTaxLotSales();
     expect(sales.length).toBe(1);
     expect(sales[0].sale_price).toBe(0); // expired at $0
-    expect(sales[0].cost_basis_allocated).toBe(1200); // 3 * $4 * 100 multiplier
-    expect(sales[0].realized_gain_loss).toBe(1200); // kept full premium = $1,200 gain
-    // Short option P&L is negated: raw (0 - 1200 = -1200) → negated → +1200
+    // WS1 IRS column orientation for a short lifecycle: PROCEEDS are the net
+    // short-open leg (3 × $4 × 100 = $1,200) and BASIS is what closing cost
+    // (expired worthless, no fees → $0). Gain falls out unsigned; the old
+    // negation is gone.
+    expect(sales[0].proceeds).toBe(1200);
+    expect(sales[0].cost_basis_allocated).toBe(0);
+    expect(sales[0].realized_gain_loss).toBe(1200); // 1200 − 0, kept full premium
   });
 
   it("buy_to_close: closes short option lot", () => {
@@ -141,10 +156,12 @@ describe("option tax lot handling", () => {
 
     const sales = getTaxLotSales();
     expect(sales.length).toBe(1);
-    expect(sales[0].cost_basis_allocated).toBe(600); // opened at $6 × 100 multiplier
+    // Short orientation: proceeds = the $6 open leg ×100 = $600; basis = the
+    // $2 cover ×100 = $200. Gain = 600 − 200 = $400, no negation.
+    expect(sales[0].proceeds).toBe(600);
+    expect(sales[0].cost_basis_allocated).toBe(200);
     expect(sales[0].sale_price).toBe(2); // closed at $2 (per-unit)
-    expect(sales[0].realized_gain_loss).toBe(400); // sold at $6, bought back at $2, ×100
-    // Short option P&L is negated: raw (200 - 600 = -400) → negated → +400
+    expect(sales[0].realized_gain_loss).toBe(400);
   });
 
   it("long call exercised: stock cost basis includes premium", () => {
@@ -157,11 +174,17 @@ describe("option tax lot handling", () => {
 
     const result = computeTaxLots(db);
 
-    // Option lot should be closed at $0 (no gain/loss)
+    // The option close is a PREMIUM ROLLOVER, not a disposition (Pub 550): the
+    // $500 premium flows into the stock leg below, so the option row carries
+    // zero gain and is flagged out of filing surfaces. Previously this row
+    // realized -$500 while the stock also absorbed the premium — a double count.
     const optionSales = getTaxLotSales().filter((s) => s.security_type === "option");
     expect(optionSales.length).toBe(1);
     expect(optionSales[0].sale_price).toBe(0);
-    expect(optionSales[0].realized_gain_loss).toBe(-500); // option lot: 0 - 5×100
+    expect(optionSales[0].premium_rollover).toBe(1);
+    expect(optionSales[0].proceeds).toBe(500); // 1 × $5 × 100, matched to basis
+    expect(optionSales[0].cost_basis_allocated).toBe(500);
+    expect(optionSales[0].realized_gain_loss).toBe(0);
 
     // Stock lot should have adjusted cost basis: $180 + $5 = $185
     const stockLots = getTaxLots().filter((l) => l.security_type === "stock");
@@ -284,7 +307,8 @@ describe("option tax lot handling", () => {
 
     const sales = getTaxLotSales();
     expect(sales.length).toBe(1);
-    expect(sales[0].cost_basis_allocated).toBe(1200); // 3 × $4 × 100
+    expect(sales[0].proceeds).toBe(1200); // net short-open leg: 3 × $4 × 100
+    expect(sales[0].cost_basis_allocated).toBe(0); // expired worthless, no cover cost
     expect(sales[0].realized_gain_loss).toBe(1200); // kept full premium
   });
 
