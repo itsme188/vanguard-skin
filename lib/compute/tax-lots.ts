@@ -138,11 +138,27 @@ export function isLongTermHolding(acquisitionDate: string, dispositionDate: stri
  * quantity, and that negative leg rides through both paths untouched.
  * A zero `amount` is treated as absent (unpriced/placeholder rows).
  *
+ * SOURCES DISAGREE ABOUT WHETHER `amount` IS GROSS OR NET, so the figure is
+ * self-detected rather than trusted blanket. IBKR's activity report writes
+ * its *Proceeds* column into `amount` and its commission separately into
+ * `fees` — Proceeds is GROSS (IBKR's own Basis column is Proceeds + Comm),
+ * so taking `|amount|` verbatim silently dropped the commission on every
+ * IBKR-imported row. The Vanguard canonical shape stores an already-netted
+ * amount. The tell: when a row carries fees AND `|amount|` lands on the
+ * qty×price gross within a cent or two, the source stored gross and the fee
+ * still has to be applied; otherwise the fee is already inside it. A
+ * zero-fee row is unambiguous — both readings give the same answer.
+ * (Importer semantics are deliberately untouched: `amount` is load-bearing
+ * for `source_key` dedupe.)
+ *
  * Callers that have DERIVED an effective price the broker's `amount` cannot
  * know about — a premium-adjusted exercise leg, a zero-price option close,
  * a bond redemption's per-100-face derivation — pass `forceDerivation` so
  * the adjustment survives.
  */
+/** Tolerance for "this amount IS the gross figure" — printed-cent slack. */
+const GROSS_AMOUNT_TOL_USD = 0.02;
+
 function netLegDollars(
   row: {
     quantity: number;
@@ -155,24 +171,22 @@ function netLegDollars(
   side: "acquire" | "dispose" | "short_open" | "cover",
   forceDerivation = false
 ): number {
-  if (!forceDerivation && row.amount != null && row.amount !== 0) {
-    const magnitude = Math.abs(row.amount);
-    return row.quantity < 0 ? -magnitude : magnitude;
-  }
   const gross = marketValue(row.quantity, perUnitPrice, row.security_type, row.multiplier);
   const fees = row.fees ?? 0;
-  switch (side) {
-    // Buy-side fees are capitalized into basis; a cover's fees are part of
-    // what closing the position cost.
-    case "acquire":
-    case "cover":
-      return gross + fees;
-    // Sale proceeds are net of the fees withheld from them; a short open's
-    // stored leg is likewise the NET premium/proceeds received.
-    case "dispose":
-    case "short_open":
-      return gross - fees;
+  // Buy-side fees are capitalized into basis and a cover's fees are part of
+  // what closing the position cost (both ADD); sale proceeds are net of the
+  // fees withheld from them and a short open's stored leg is likewise the NET
+  // premium received (both SUBTRACT).
+  const feeSign = side === "acquire" || side === "cover" ? 1 : -1;
+
+  if (!forceDerivation && row.amount != null && row.amount !== 0) {
+    const magnitude = Math.abs(row.amount);
+    const amountIsGross =
+      fees > 0 && Math.abs(magnitude - Math.abs(gross)) <= GROSS_AMOUNT_TOL_USD;
+    const net = amountIsGross ? magnitude + feeSign * fees : magnitude;
+    return row.quantity < 0 ? -net : net;
   }
+  return gross + feeSign * fees;
 }
 
 export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
