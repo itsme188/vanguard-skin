@@ -10,6 +10,7 @@ import { excludeLiveSnapshotsSql } from "@/lib/db/live-sources";
 import { todayET } from "@/lib/calendar/date-utils";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { classifyHoldingSourceKey } from "@/lib/db/holding-sources";
+import { runIntegrityChecks, sortWorstFirst, type IntegrityHit } from "@/lib/queries/integrity-checks";
 import {
   computeCashFlowResiduals,
   isUnexplainedCashFlow,
@@ -118,6 +119,14 @@ export interface DataConfidence {
   enrichmentCompleteness: EnrichmentScore;
   valuationCoverage: ValuationCoverageScore;
   actions: DataAction[];
+  /** Cross-cutting number-trust scan (runIntegrityChecks) — independent of
+   *  the 5 weighted dimensions above. A critical hit caps overallScore/Level
+   *  (see capReason); warnings never cap, they're informational only. */
+  integrity: { critical: IntegrityHit[]; warnings: IntegrityHit[] };
+  /** Set to the first (module-order) critical integrity hit's reason when
+   *  the cap applied; null when no critical hit exists. Never set from a
+   *  warning. */
+  capReason: string | null;
 }
 
 // ── Dimension weights ────────────────────────────────────────────────
@@ -314,19 +323,9 @@ function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): Ho
   return { score, detail, whyMatters, guidance, perAccount };
 }
 
-/** Sorts flagged residual points worst-first: most recent toDate, then
- *  largest |residual| as a tiebreak. Shared by both the unexplainedFlow and
- *  timingResidual selections in findWorstUnexplainedCashFlow so their "worst"
- *  definitions can never silently drift apart. */
-function sortWorstFirst(points: CashFlowResidualPointForSort[]): void {
-  points.sort((a, b) =>
-    a.toDate !== b.toDate
-      ? (a.toDate < b.toDate ? 1 : -1) // most recent date first
-      : Math.abs(b.residual) - Math.abs(a.residual)
-  );
-}
-
-type CashFlowResidualPointForSort = { toDate: string; residual: number };
+// sortWorstFirst is imported from lib/queries/integrity-checks.ts (single
+// source of truth, consolidated task 18 — this file and integrity-checks.ts
+// each carried an identical copy of the comparator below).
 
 /**
  * Worst (most recent, tie-broken by largest |residual|) unexplained
@@ -744,7 +743,7 @@ export function getDataConfidence(db: Database.Database, now: Date = new Date())
   const enrichmentCompleteness = scoreEnrichment(db);
   const valuationCoverage = scoreValuationCoverage(db);
 
-  const overallScore = Math.round(
+  let overallScore = Math.round(
     priceFreshness.score * WEIGHTS.priceFreshness +
     holdingsRecency.score * WEIGHTS.holdingsRecency +
     cashAccuracy.score * WEIGHTS.cashAccuracy +
@@ -752,11 +751,25 @@ export function getDataConfidence(db: Database.Database, now: Date = new Date())
     valuationCoverage.score * WEIGHTS.valuationCoverage,
   );
 
-  const overallLevel: DataConfidence["overallLevel"] =
+  let overallLevel: DataConfidence["overallLevel"] =
     overallScore >= 80 ? "high" :
     overallScore >= 50 ? "medium" :
     overallScore >= 20 ? "low" :
     "stale";
+
+  // Integrity gate (spec WS3, task 18): cross-cutting number-trust checks
+  // are independent of the 5 weighted dimensions above — a critical hit
+  // caps the score/level AFTER the weighted mean, never blends into it.
+  // Monotonic only: the cap can lower overallLevel but never promote it, so
+  // a "stale" result (already below the cap) stays "stale", not bumped up
+  // to "low". Warnings never cap — informational only.
+  const integrity = runIntegrityChecks(db);
+  let capReason: string | null = null;
+  if (integrity.critical.length > 0) {
+    capReason = integrity.critical[0].reason;
+    overallScore = Math.min(overallScore, 45);
+    if (overallLevel === "high" || overallLevel === "medium") overallLevel = "low";
+  }
 
   const actions = deriveActions(
     priceFreshness,
@@ -775,5 +788,7 @@ export function getDataConfidence(db: Database.Database, now: Date = new Date())
     enrichmentCompleteness,
     valuationCoverage,
     actions,
+    integrity,
+    capReason,
   };
 }
