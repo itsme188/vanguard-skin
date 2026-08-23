@@ -378,6 +378,92 @@ describe("authoritative broker amount takes precedence over qty×price±fees", (
     expect(onlyLot().cost_basis).toBeCloseTo(1002, 2);
   });
 
+  // Sources disagree about whether `amount` is gross or net, so the engine
+  // self-detects: fees present AND |amount| sitting on the qty×price gross
+  // means the source stored GROSS (IBKR activity's Proceeds column) and the
+  // fee still has to be applied. Otherwise the fee is already inside it
+  // (Vanguard canonical). Zero-fee rows are unambiguous.
+  it("IBKR shape: a gross amount with a separate commission still absorbs the fee on a buy", () => {
+    const secId = seedSecurity({ symbol: "GRS1", securityType: "Stock" });
+    // amount 1000 == 100 × $10 gross, commission $1 booked separately
+    addTxn({
+      securityId: secId,
+      type: "BUY",
+      date: "2025-01-02",
+      quantity: 100,
+      price: 10,
+      fees: 1,
+      amount: 1000,
+    });
+    computeTaxLots(db);
+    expect(onlyLot().cost_basis).toBeCloseTo(1001, 2);
+  });
+
+  it("IBKR shape: a gross amount nets the commission OUT of sale proceeds", () => {
+    const secId = seedSecurity({ symbol: "GRS2", securityType: "Stock" });
+    addTxn({
+      securityId: secId,
+      type: "BUY",
+      date: "2025-01-02",
+      quantity: 100,
+      price: 10,
+      amount: -1000,
+    });
+    // amount 1200 == 100 × $12 gross, commission $1 booked separately
+    addTxn({
+      securityId: secId,
+      type: "SELL",
+      date: "2025-03-02",
+      quantity: 100,
+      price: 12,
+      fees: 1,
+      amount: 1200,
+    });
+    computeTaxLots(db);
+
+    const sale = onlySale();
+    expect(sale.proceeds).toBeCloseTo(1199, 2);
+    expect(sale.cost_basis_allocated).toBeCloseTo(1000, 2);
+    expect(sale.realized_gain_loss).toBeCloseTo(199, 2);
+  });
+
+  it("Vanguard shape: an already-net amount is not fee-adjusted twice", () => {
+    const optId = seedSecurity({
+      symbol: "VGD  260619C00100000",
+      securityType: "option",
+      multiplier: 100,
+      underlyingSymbol: "VGD",
+      optionType: "CALL",
+    });
+    // gross = 1 × 20.20 × 100 = 2020; amount 2021 already includes the $1 fee
+    addTxn({
+      securityId: optId,
+      type: "BUY_TO_OPEN",
+      date: "2026-01-15",
+      quantity: 1,
+      price: 20.2,
+      fees: 1,
+      amount: 2021,
+    });
+    computeTaxLots(db);
+    expect(onlyLot().cost_basis).toBeCloseTo(2021, 2); // NOT 2022
+  });
+
+  it("a zero-fee row is unambiguous — both readings agree", () => {
+    const secId = seedSecurity({ symbol: "AMB", securityType: "Stock" });
+    addTxn({
+      securityId: secId,
+      type: "BUY",
+      date: "2025-01-02",
+      quantity: 100,
+      price: 10,
+      fees: 0,
+      amount: 1000, // exactly the gross, no fee to place on either side
+    });
+    computeTaxLots(db);
+    expect(onlyLot().cost_basis).toBeCloseTo(1000, 2);
+  });
+
   it("a reversal leg keeps its negative orientation on both paths", () => {
     const secId = seedSecurity({ symbol: "REV", securityType: "Stock" });
     // amount-present reversal: magnitude from amount, sign from the leg
