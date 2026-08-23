@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { AnalysisTrustState } from "@/lib/queries/analysis-trust-state";
-import { PrivateText } from "@/lib/privacy/components";
+import type { AnalysisTrustState, BandHistoryEntry } from "@/lib/queries/analysis-trust-state";
+import type { DietzBand } from "@/lib/compute/dietz";
+import { PrivateText, Pct } from "@/lib/privacy/components";
+import { Chip, type ChipTone } from "@/app/dashboard/components/Chip";
 import apiFetch from "@/lib/http/apiFetch";
 
 export type DrawerPanel =
@@ -208,57 +210,146 @@ function StalePricesContent({
   );
 }
 
+// Band copy + tone — shared between the per-account headline chip and the
+// band-history dots below (the dot map additionally covers "missing": a
+// calendar month with no statement row at all, which breaks the chain like
+// investigate/insufficient but isn't a Dietz band in its own right).
+const BAND_LABEL: Record<DietzBand, string> = {
+  consistent: "Consistent — method differences expected",
+  investigate: "Investigate",
+  not_comparable: "Not comparable",
+  insufficient: "Insufficient data",
+};
+
+const BAND_TONE: Record<DietzBand, ChipTone> = {
+  consistent: "up",
+  investigate: "down",
+  not_comparable: "info",
+  insufficient: "neutral",
+};
+
+const BAND_DOT_LABEL: Record<DietzBand | "missing", string> = {
+  ...BAND_LABEL,
+  missing: "No statement for this month",
+};
+
+const BAND_DOT_CLASS: Record<DietzBand | "missing", string> = {
+  consistent: "bg-up",
+  investigate: "bg-down",
+  not_comparable: "bg-blue",
+  insufficient: "bg-ink-faint",
+  missing: "border border-dashed border-ink-faint",
+};
+
+/** Compact last-12-months band strip. Each month is a real (focusable, tap-
+ *  sized) button carrying its band in `title`/`aria-label` — no hover-only
+ *  affordance; the dot itself is always visible, tapping/focusing it is
+ *  enough to read the label via the OS tooltip or a screen reader. */
+function BandHistoryStrip({ history }: { history: BandHistoryEntry[] }) {
+  const recent = history.slice(-12);
+  if (recent.length === 0) return null;
+  return (
+    <div className="flex items-center gap-1 flex-wrap" role="list" aria-label="Band history, last 12 months">
+      {recent.map((entry) => (
+        <button
+          key={entry.monthEndDate}
+          type="button"
+          title={`${entry.monthEndDate}: ${BAND_DOT_LABEL[entry.band]}`}
+          aria-label={`${entry.monthEndDate}: ${BAND_DOT_LABEL[entry.band]}`}
+          className="h-4 w-4 flex items-center justify-center shrink-0 rounded-full cursor-default focus:outline-none focus-visible:ring-1 focus-visible:ring-amber-400"
+        >
+          <span
+            className={`h-2 w-2 rounded-full ${BAND_DOT_CLASS[entry.band]}`}
+            aria-hidden="true"
+          />
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function PerformanceContent({ state }: { state: AnalysisTrustState }) {
-  const { performanceReconciledThru, perAccountReconciliation } = state;
+  const { crossCheckedThru, perAccountReconciliation } = state;
 
   return (
     <div className="space-y-4">
       <p className="text-sm text-ink">
-        {performanceReconciledThru
-          ? `Statement TWR present through ${performanceReconciledThru} — statement-reported, not independently verified.`
-          : "One or more accounts have not yet been reconciled to statements."}
+        {crossCheckedThru
+          ? `Independently cross-checked (Modified Dietz) through ${crossCheckedThru}.`
+          : "No account has a contiguous independent cross-check yet — see per-account detail below."}
       </p>
 
       {perAccountReconciliation.length > 0 && (
-        <ul className="divide-y divide-edge rounded-lg bg-panel">
+        <ul className="space-y-3">
           {perAccountReconciliation.map((row) => (
             <li
               key={row.accountId}
-              className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
+              className="rounded-lg bg-panel border border-edge p-3 space-y-2"
             >
-              <div className="flex items-center gap-2 min-w-0">
-                <span
-                  className={
-                    "inline-block h-2 w-2 rounded-full shrink-0 " +
-                    (row.withinTolerance === true
-                      ? "bg-up"
-                      : row.withinTolerance === false
-                      ? "bg-down"
-                      : "bg-ink-faint")
-                  }
-                  aria-hidden="true"
-                />
-                <span className="text-ink truncate">{row.accountName}</span>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm text-ink truncate">{row.accountName}</span>
+                {row.band ? (
+                  <Chip tone={BAND_TONE[row.band]} size="xs" title={BAND_LABEL[row.band]}>
+                    {BAND_LABEL[row.band]}
+                  </Chip>
+                ) : (
+                  <Chip tone="neutral" size="xs" title="No statement on file for this account">
+                    No statement
+                  </Chip>
+                )}
               </div>
-              <div className="flex items-center gap-3 shrink-0 text-xs">
-                <span className="text-ink-faint font-mono">
-                  {row.latestStmtMonth ?? "—"}
-                </span>
-                <span
-                  className={
-                    "font-mono tabular-nums w-16 text-right " +
-                    (row.withinTolerance === true
-                      ? "text-ink-dim"
-                      : row.withinTolerance === false
-                      ? "text-down"
-                      : "text-ink-faint")
-                  }
-                >
-                  {row.divergenceBp === null
-                    ? "n/a"
-                    : `${row.divergenceBp >= 0 ? "+" : ""}${row.divergenceBp}bp`}
-                </span>
+              <div className="flex items-center gap-4 text-xs font-mono tabular-nums">
+                <div>
+                  <div className="text-[10px] text-ink-faint uppercase tracking-wide">
+                    Statement TWR
+                  </div>
+                  <Pct
+                    value={row.statementTwr !== null ? row.statementTwr * 100 : null}
+                    digits={2}
+                    signed
+                    className="text-ink"
+                  />
+                </div>
+                <div>
+                  <div className="text-[10px] text-ink-faint uppercase tracking-wide">Dietz</div>
+                  <Pct
+                    value={row.dietzReturn !== null ? row.dietzReturn * 100 : null}
+                    digits={2}
+                    signed
+                    className="text-ink"
+                  />
+                </div>
+                <div>
+                  <div className="text-[10px] text-ink-faint uppercase tracking-wide">Gap</div>
+                  {/* The gap is a portfolio-derived return figure — it goes
+                      through <Pct> like the two return legs above so it's
+                      masked in privacy mode (Codex plan review #15 caught
+                      the old bp span rendering the raw unmasked number).
+                      divergenceBp is basis points; Pct's own formatter
+                      always renders a "%" (there's no raw-magnitude mode),
+                      so it's shown at its true percentage-point value
+                      (divergenceBp/100, 2 digits — exact, since
+                      divergenceBp is already an integer bp count) rather
+                      than glued to a separate "bp" suffix, which would
+                      either read as a misleading 100x-inflated "%" or a
+                      confusing double unit. The two sibling figures above
+                      are in the same % unit, so the reader can verify the
+                      gap by eye. */}
+                  <Pct
+                    value={row.divergenceBp !== null ? row.divergenceBp / 100 : null}
+                    digits={2}
+                    signed
+                    className={
+                      row.band === "investigate"
+                        ? "text-down"
+                        : row.band === "consistent"
+                        ? "text-ink-dim"
+                        : "text-ink-faint"
+                    }
+                  />
+                </div>
               </div>
+              {row.bandHistory.length > 0 && <BandHistoryStrip history={row.bandHistory} />}
             </li>
           ))}
         </ul>
@@ -266,7 +357,7 @@ function PerformanceContent({ state }: { state: AnalysisTrustState }) {
 
       {perAccountReconciliation.length > 0 && (
         <p className="text-[10px] text-ink-faint">
-          bp figures compare the app&apos;s stored value with the statement&apos;s own figure — not an independent recomputation.
+          Gap is the independently recomputed Modified Dietz return minus the statement-reported TWR, for the same account-month — not a recomputation of the statement&apos;s own figure. ≤1.25% (125bp) bands as consistent.
         </p>
       )}
 

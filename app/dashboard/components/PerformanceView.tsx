@@ -258,34 +258,26 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
         </section>
       ) : (
         <>
-          {/* Reconciliation strip */}
+          {/* Cross-check disclosure strip — the detailed per-month banding
+              (consistent / investigate / not_comparable / insufficient)
+              lives in the trust drawer (TrustStripDrawer's Performance
+              panel); this strip is a lightweight pointer there, not a
+              duplicate of the band logic. divergenceBp is a portfolio-
+              derived return figure, so it's masked through <Pct> like
+              statementTwr/dietzReturn are everywhere else — never a raw
+              unmasked bp span (see TrustStripDrawer for why it's shown at
+              its %-point value rather than glued to a "bp" suffix). */}
           {reconciliation && (
-            <section
-              className={`rounded-xl p-3 px-4 text-sm flex items-center gap-2 ${
-                reconciliation.withinTolerance
-                  ? "bg-raised text-ink-dim border border-edge"
-                  : "bg-down/10 text-down border border-down/20"
-              }`}
-            >
-              {!reconciliation.withinTolerance && <span className="text-base">⚠</span>}
+            <section className="rounded-xl p-3 px-4 text-sm flex items-center gap-2 flex-wrap bg-raised text-ink-dim border border-edge">
               <span>
-                {reconciliation.withinTolerance ? (
-                  <>
-                    TWR from {reconciliation.source} statement through{" "}
-                    <strong>{reconciliation.periodEnd}</strong>
-                    {" · "}
-                    statement-reported — not independently verified
-                  </>
-                ) : (
-                  <>
-                    TWR reconciled to {reconciliation.source} statement through{" "}
-                    <strong>{reconciliation.periodEnd}</strong>
-                    {" · "}
-                    <strong>{reconciliation.divergenceBp > 0 ? "+" : ""}{reconciliation.divergenceBp} bp</strong>{" "}
-                    — outside tolerance · review data integrity · check statement import
-                  </>
-                )}
+                Independently cross-checked (Modified Dietz) through{" "}
+                <strong className="text-ink">{reconciliation.monthEndDate}</strong> — bands shown per month in the trust drawer.
               </span>
+              {reconciliation.divergenceBp !== null && (
+                <span className="font-mono tabular-nums text-xs text-ink-faint">
+                  (gap <Pct value={reconciliation.divergenceBp / 100} digits={2} signed />)
+                </span>
+              )}
             </section>
           )}
 
