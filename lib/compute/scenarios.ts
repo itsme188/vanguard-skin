@@ -114,11 +114,7 @@ export function computeScenario(
          s.market_cap_category,
          s.duration_years,
          s.credit_rating,
-         (CASE
-           WHEN LOWER(s.security_type) = 'bond'
-             THEN lh.total_qty * COALESCE(lp.close_price, 0) / 100.0
-           ELSE lh.total_qty * COALESCE(lp.close_price, 0) * COALESCE(s.multiplier, 1)
-         END) * COALESCE(fx.usd_per_unit, 1) AS market_value
+         ${adjustedMarketValueSQL("lh.total_qty", "COALESCE(lp.close_price, 0)", "s.security_type", "s.multiplier", "fx.usd_per_unit")} AS market_value
        FROM latest_holdings lh
        JOIN securities s ON s.id = lh.security_id
        LEFT JOIN latest_prices lp ON lp.security_id = lh.security_id
