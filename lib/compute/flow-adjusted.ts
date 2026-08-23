@@ -96,6 +96,48 @@ export function fetchNetFlowsByDate(
 }
 
 /**
+ * Net IN-KIND transfer flows (a security moving in/out; security_id set) per
+ * trade_date for the scoped accounts, bounded to (startDate, endDate] — same
+ * half-open convention and same missing-table guard as fetchNetFlowsByDate.
+ * This is the "only in-kind" mirror of that function: WHERE is_external_flow
+ * = 1 AND (IN_KIND_LEG_SQL), signed via SIGNED_EXTERNAL_FLOW_SQL, instead of
+ * `excludeInKind`'s NOT (...).
+ *
+ * Template for the shared Dietz primitives (Task 11) — mirrors
+ * fetchNetFlowsByDate's shape exactly; only the WHERE predicate differs.
+ */
+export function fetchInKindFlowsByDate(
+  db: Database.Database,
+  accountIds: number[] | null,
+  startDate: string,
+  endDate: string
+): { date: string; net: number }[] {
+  const hasTable = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'transactions'")
+    .get();
+  if (!hasTable) return [];
+
+  const accountFilter =
+    accountIds && accountIds.length > 0
+      ? `AND account_id IN (${accountIds.map(() => "?").join(",")})`
+      : "";
+
+  return db
+    .prepare(
+      `SELECT trade_date AS date, SUM(${SIGNED_EXTERNAL_FLOW_SQL}) AS net
+       FROM transactions
+       WHERE is_external_flow = 1
+         AND (${IN_KIND_LEG_SQL})
+         AND trade_date > ? AND trade_date <= ?
+         ${accountFilter}
+       GROUP BY trade_date
+       HAVING SUM(${SIGNED_EXTERNAL_FLOW_SQL}) != 0
+       ORDER BY trade_date ASC`
+    )
+    .all(startDate, endDate, ...(accountIds ?? [])) as { date: string; net: number }[];
+}
+
+/**
  * Build a growth-of-$1 index from daily valuations with external flows
  * stripped out: r_t = (V_t − F_t) / V_{t−1}, where F_t is the net flow that
  * landed in (date_{t−1}, date_t] (end-of-day convention — a flow dated on a
