@@ -1,4 +1,6 @@
 import type Database from "better-sqlite3";
+import { marketValue } from "@/lib/valuation";
+import { stampTaxLotsConvention } from "@/lib/compute/tax-convention";
 
 interface TaxLotComputeResult {
   lotsCreated: number;
@@ -19,13 +21,19 @@ interface TransactionRow {
   price_per_share: number;
   amount: number;
   fees: number;
+  /** Lower-cased `securities.security_type` ('' when unset) — unit convention. */
+  security_type: string;
+  /** `COALESCE(securities.multiplier, 1)` — contract size for options. */
+  multiplier: number;
 }
 
 interface OpenLot {
   id: number;
   acquisition_date: string;
   acquisition_price: number;
+  quantity_acquired: number;
   quantity_remaining: number;
+  cost_basis: number;
   is_short: number;
 }
 
@@ -73,7 +81,7 @@ interface DonationConsumption {
  * the trades because their assignments are expressed in the same basis.
  */
 type ReplayEvent =
-  | { kind: 0; date: string; id: number; sell: TransactionRow & { multiplier: number } }
+  | { kind: 0; date: string; id: number; sell: TransactionRow }
   | { kind: 1; date: string; id: number; donation: DonationConsumption }
   | { kind: 2; date: string; id: number; split: SplitEvent };
 
@@ -96,13 +104,75 @@ function daysBetween(dateA: string, dateB: string): number {
 }
 
 /**
- * IRS long-term test, single-sourced: a holding period of MORE than one year
- * (strictly > 365 days) is long-term. Used for `tax_lot_sales.is_long_term`
- * here and for the LT/ST split of donated lots (which never produce a sale
- * row) — both must answer the question the same way.
+ * IRS long-term test, single-sourced: held MORE than one year — strictly
+ * after the CALENDAR anniversary of acquisition (Pub 550), not a fixed
+ * 365-day count (which called an anniversary sale spanning Feb 29
+ * long-term because that span is 366 days). Used for
+ * `tax_lot_sales.is_long_term` here and for the LT/ST split of donated lots
+ * (which never produce a sale row) — both must answer the question the same
+ * way.
+ *
+ * A Feb-29 acquisition yields the anniversary string `YYYY-02-29`, a date
+ * that does not exist in the following non-leap year; ISO strings compare
+ * lexicographically, so `'YYYY-03-01' > 'YYYY-02-29'` gives exactly the
+ * "more than one year" answer (pinned by test).
  */
 export function isLongTermHolding(acquisitionDate: string, dispositionDate: string): boolean {
-  return daysBetween(acquisitionDate, dispositionDate) > 365;
+  const [y, m, d] = acquisitionDate.split("-").map(Number);
+  const anniversary = `${String(y + 1).padStart(4, "0")}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  return dispositionDate > anniversary;
+}
+
+/**
+ * Net economic dollars of ONE transaction leg, in the security's native
+ * currency (FX stays a read-time concern). This is the single derivation
+ * every stored dollar column routes through, so bond ÷100 and option
+ * ×multiplier conventions can never diverge between the lot side and the
+ * sale side.
+ *
+ * A statement `amount` is the broker's own figure for the leg and takes
+ * precedence when present — deriving from qty×price would double-count or
+ * drop the fees the broker already netted. Only its MAGNITUDE is
+ * authoritative: the ledger's `amount` sign encodes cash direction (a buy is
+ * negative cash), not leg orientation. Reversal rows carry a negative
+ * quantity, and that negative leg rides through both paths untouched.
+ * A zero `amount` is treated as absent (unpriced/placeholder rows).
+ *
+ * Callers that have DERIVED an effective price the broker's `amount` cannot
+ * know about — a premium-adjusted exercise leg, a zero-price option close,
+ * a bond redemption's per-100-face derivation — pass `forceDerivation` so
+ * the adjustment survives.
+ */
+function netLegDollars(
+  row: {
+    quantity: number;
+    amount: number | null;
+    fees: number | null;
+    security_type: string;
+    multiplier: number;
+  },
+  perUnitPrice: number,
+  side: "acquire" | "dispose" | "short_open" | "cover",
+  forceDerivation = false
+): number {
+  if (!forceDerivation && row.amount != null && row.amount !== 0) {
+    const magnitude = Math.abs(row.amount);
+    return row.quantity < 0 ? -magnitude : magnitude;
+  }
+  const gross = marketValue(row.quantity, perUnitPrice, row.security_type, row.multiplier);
+  const fees = row.fees ?? 0;
+  switch (side) {
+    // Buy-side fees are capitalized into basis; a cover's fees are part of
+    // what closing the position cost.
+    case "acquire":
+    case "cover":
+      return gross + fees;
+    // Sale proceeds are net of the fees withheld from them; a short open's
+    // stored leg is likewise the NET premium/proceeds received.
+    case "dispose":
+    case "short_open":
+      return gross - fees;
+  }
 }
 
 export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
@@ -116,7 +186,8 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
     db.prepare("DELETE FROM transactions WHERE type = 'RECONCILE_CLOSE'").run();
 
     // ── Pre-processing: Compute premium adjustments for exercise/assignment ──
-    const premiumAdjustments = computePremiumAdjustments(db);
+    const { adjustments: premiumAdjustments, linkedExerciseTxnIds } =
+      computePremiumAdjustments(db);
 
     // ── Create tax lots from BUY-like transactions ──
     // Includes: BUY, REINVESTMENT, BUY_TO_OPEN (long option), SELL_TO_OPEN (short option),
@@ -126,12 +197,16 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
     // (e.g. donated-in-kind shares) are the R4 donation-tracking workstream, not a sale.
     const buys = db
       .prepare(
-        `SELECT id, account_id, security_id, trade_date, type, quantity, price_per_share, amount, fees
-         FROM transactions
-         WHERE LOWER(type) IN ('buy', 'reinvestment', 'buy_to_open', 'sell_to_open', 'transfer_in')
-           AND security_id IS NOT NULL
-           AND price_per_share IS NOT NULL AND quantity IS NOT NULL
-         ORDER BY trade_date, id`
+        `SELECT t.id, t.account_id, t.security_id, t.trade_date, t.type, t.quantity,
+                t.price_per_share, t.amount, t.fees,
+                LOWER(COALESCE(s.security_type, '')) AS security_type,
+                COALESCE(s.multiplier, 1) AS multiplier
+         FROM transactions t
+         JOIN securities s ON s.id = t.security_id
+         WHERE LOWER(t.type) IN ('buy', 'reinvestment', 'buy_to_open', 'sell_to_open', 'transfer_in')
+           AND t.security_id IS NOT NULL
+           AND t.price_per_share IS NOT NULL AND t.quantity IS NOT NULL
+         ORDER BY t.trade_date, t.id`
       )
       .all() as TransactionRow[];
 
@@ -146,13 +221,25 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
     for (const buy of buys) {
       // Apply premium adjustment if this stock buy is linked to an option exercise
       let effectivePrice = buy.price_per_share;
+      let premiumAdjusted = false;
       const adj = premiumAdjustments.get(buy.id);
       if (adj && adj.adjustmentType === "increase_cost") {
         effectivePrice += adj.premiumPerShare;
+        premiumAdjusted = true;
       }
 
       const isShort = buy.type.toLowerCase() === "sell_to_open" ? 1 : 0;
-      const costBasis = buy.quantity * effectivePrice;
+      // TRUE ECONOMIC DOLLARS: bonds ÷100, options ×multiplier, fees on the
+      // side that bears them. For a short open the stored dollar column is
+      // the lot's opening leg — which for a short IS its net proceeds.
+      // A premium-adjusted buy must derive from the ADJUSTED price: the
+      // broker's `amount` predates the roll-in of the option premium.
+      const costBasis = netLegDollars(
+        buy,
+        effectivePrice,
+        isShort ? "short_open" : "acquire",
+        premiumAdjusted
+      );
       insertLot.run(
         buy.account_id,
         buy.security_id,
@@ -239,6 +326,7 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
       .prepare(
         `SELECT t.id, t.account_id, t.security_id, t.trade_date, t.type, t.quantity,
                 t.price_per_share, t.amount, t.fees,
+                LOWER(COALESCE(s.security_type, '')) AS security_type,
                 COALESCE(s.multiplier, 1) AS multiplier
          FROM transactions t
          JOIN securities s ON s.id = t.security_id
@@ -254,13 +342,14 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
                 OR (LOWER(t.type) = 'redemption' AND t.amount IS NOT NULL))
          ORDER BY t.trade_date, t.id`
       )
-      .all() as Array<TransactionRow & { multiplier: number }>;
+      .all() as Array<TransactionRow>;
 
     const insertSale = db.prepare(
       `INSERT INTO tax_lot_sales
        (tax_lot_id, sale_transaction_id, quantity_sold, sale_price, proceeds,
-        cost_basis_allocated, realized_gain_loss, is_long_term, holding_period_days, sale_date)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        cost_basis_allocated, realized_gain_loss, is_long_term, holding_period_days,
+        sale_date, premium_rollover)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
 
     const updateLotRemaining = db.prepare(
@@ -270,7 +359,7 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
     let salesProcessed = 0;
     let totalRealizedGain = 0;
 
-    const processSell = (sell: TransactionRow & { multiplier: number }) => {
+    const processSell = (sell: TransactionRow) => {
       let remainingToSell = sell.quantity;
 
       // For EXERCISED/ASSIGNED/EXPIRED, the option closes at $0
@@ -297,19 +386,38 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
       }
 
       // Apply premium adjustment for stock sales linked to put exercise / call assignment
+      let premiumAdjusted = false;
       const adj = premiumAdjustments.get(sell.id);
       if (adj) {
         if (adj.adjustmentType === "increase_proceeds") {
           effectiveSalePrice += adj.premiumPerShare;
+          premiumAdjusted = true;
         } else if (adj.adjustmentType === "decrease_proceeds") {
           effectiveSalePrice -= adj.premiumPerShare;
+          premiumAdjusted = true;
         }
       }
+
+      // Premium on an EXERCISED/ASSIGNED option that actually linked to an
+      // underlying leg has already moved into that leg's basis/proceeds
+      // (Pub 550). Closing the option lot here is a rollover, not a second
+      // disposition — the row is flagged and carries zero gain.
+      const isPremiumRollover =
+        (lowerType === "exercised" || lowerType === "assigned") &&
+        linkedExerciseTxnIds.has(sell.id)
+          ? 1
+          : 0;
+
+      // `forceDerivation` where the effective price is engine-derived rather
+      // than the broker's: zero-price option closes and premium-adjusted legs
+      // (the statement `amount` cannot know about either).
+      const legIsDerived = isZeroPriceClose || premiumAdjusted;
 
       // Get open lots for this account+security, FIFO order
       const openLots = db
         .prepare(
-          `SELECT id, acquisition_date, acquisition_price, quantity_remaining, is_short
+          `SELECT id, acquisition_date, acquisition_price, quantity_acquired,
+                  quantity_remaining, cost_basis, is_short
            FROM tax_lots
            WHERE account_id = ? AND security_id = ? AND quantity_remaining > 0
            ORDER BY acquisition_date, id`
@@ -320,17 +428,53 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
         if (remainingToSell <= 0) break;
 
         const quantitySold = Math.min(remainingToSell, lot.quantity_remaining);
-        // Prices are per-unit; the contract multiplier (100 for options, 1
-        // otherwise) converts to real dollars. sale_price stays per-unit.
-        const costBasisAllocated =
-          quantitySold * lot.acquisition_price * sell.multiplier;
-        const proceeds = quantitySold * effectiveSalePrice * sell.multiplier;
-        // For short positions (SELL_TO_OPEN), the standard formula produces
-        // inverted signs. Negate to get correct economic P&L.
-        let realizedGainLoss = proceeds - costBasisAllocated;
-        if (lot.is_short) realizedGainLoss = -realizedGainLoss;
-        const holdingDays = daysBetween(lot.acquisition_date, sell.trade_date);
-        const isLongTerm = isLongTermHolding(lot.acquisition_date, sell.trade_date) ? 1 : 0;
+        // Both sides allocate DOLLAR-proportionally: the sale leg by its share
+        // of the sold quantity, the lot leg by its share of the lot's original
+        // quantity. Never re-derived from acquisition_price — that column
+        // stays per-unit for display and does not carry fees.
+        const saleShare = sell.quantity !== 0 ? quantitySold / sell.quantity : 0;
+        const lotFraction =
+          lot.quantity_acquired !== 0 ? quantitySold / lot.quantity_acquired : 0;
+        // Whole-leg dollars for this sale, then this lot's share of them. The
+        // fee direction depends on which side of the position the lot is on,
+        // so it is resolved per lot (a sale never mixes long and short lots in
+        // practice — a cover only meets short lots).
+        const allocatedLegDollars =
+          netLegDollars(
+            sell,
+            effectiveSalePrice,
+            lot.is_short ? "cover" : "dispose",
+            legIsDerived
+          ) * saleShare;
+
+        let proceeds: number;
+        let costBasisAllocated: number;
+        if (lot.is_short) {
+          // IRS column orientation for a short lifecycle: proceeds are the
+          // NET short-open leg (stored in lot.cost_basis), basis is what the
+          // cover paid. Correct columns make the old sign negation
+          // unnecessary — the gain falls out unsigned.
+          proceeds = lot.cost_basis * lotFraction;
+          costBasisAllocated = allocatedLegDollars;
+        } else {
+          proceeds = allocatedLegDollars;
+          costBasisAllocated = lot.cost_basis * lotFraction;
+        }
+        if (isPremiumRollover) proceeds = costBasisAllocated;
+        const realizedGainLoss = proceeds - costBasisAllocated;
+
+        // Signed display convention preserved: negative holding days identify
+        // a short lifecycle on existing surfaces (`is_short` is the flag).
+        const spanDays = daysBetween(lot.acquisition_date, sell.trade_date);
+        const holdingDays = lot.is_short ? -spanDays : spanDays;
+        // §1233 general rule: short-sale gain/loss is short-term regardless of
+        // how long the position was open. The substantially-identical-property
+        // long-term-loss exception is a documented disclosed limitation.
+        const isLongTerm = lot.is_short
+          ? 0
+          : isLongTermHolding(lot.acquisition_date, sell.trade_date)
+            ? 1
+            : 0;
 
         insertSale.run(
           lot.id,
@@ -342,7 +486,8 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
           realizedGainLoss,
           isLongTerm,
           holdingDays,
-          sell.trade_date
+          sell.trade_date,
+          isPremiumRollover
         );
 
         const newRemaining = lot.quantity_remaining - quantitySold;
@@ -507,7 +652,12 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
         .prepare(
           `SELECT tl.account_id, tl.security_id, s.symbol,
                   SUM(tl.quantity_remaining) AS open_qty,
-                  SUM(tl.quantity_remaining * tl.acquisition_price) AS open_cost,
+                  -- Stored basis is TRUE DOLLARS, so the still-open share of
+                  -- it is dollar-proportional. Dividing by open_qty below
+                  -- therefore still yields a correct PER-UNIT breakeven price.
+                  SUM(CASE WHEN tl.quantity_acquired != 0
+                           THEN tl.cost_basis * tl.quantity_remaining / tl.quantity_acquired
+                           ELSE 0 END) AS open_cost,
                   h.as_of_date AS zero_date,
                   COALESCE(s.multiplier, 1) AS multiplier
              FROM tax_lots tl
@@ -579,13 +729,21 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
         // cost (records zero net gain rather than fabricating one).
         const salePrice =
           priceRow?.close_price ?? (orphan.open_qty > 0 ? orphan.open_cost / orphan.open_qty : 0);
+        // Scope is stocks/ETFs only, so this equals the old expression — it
+        // routes through the shared helper for unit consistency.
+        const syntheticAmount = marketValue(
+          orphan.open_qty,
+          salePrice,
+          "stock",
+          orphan.multiplier
+        );
         const txnResult = insertSynthetic.run(
           orphan.account_id,
           orphan.security_id,
           orphan.zero_date,
           orphan.open_qty,
           salePrice,
-          orphan.open_qty * salePrice * orphan.multiplier,
+          syntheticAmount,
           `reconcile:close:${orphan.account_id}:${orphan.security_id}:${orphan.zero_date}`,
           "Synthesized close — broker snapshot shows this position flat with no matching SELL imported yet; superseded automatically when the real statement lands."
         );
@@ -597,12 +755,21 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
           type: "RECONCILE_CLOSE",
           quantity: orphan.open_qty,
           price_per_share: salePrice,
-          amount: orphan.open_qty * salePrice * orphan.multiplier,
+          amount: syntheticAmount,
           fees: 0,
+          security_type: "stock",
           multiplier: orphan.multiplier,
         });
       }
     }
+
+    // Final act, still inside the transaction: mark this rebuild as having run
+    // under the v2 true-dollar convention, bound to the current tax-input
+    // generation. Minimal test DBs have no `settings` table — skip there.
+    const hasSettings = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'settings'")
+      .get();
+    if (hasSettings) stampTaxLotsConvention(db);
 
     return { lotsCreated, salesProcessed, totalRealizedGain, replayWarnings, donationsConsumed };
   })();
@@ -618,10 +785,18 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
  * - Short call assigned → stock sale proceeds += option premium per share
  * - Short put assigned → stock cost basis -= option premium per share
  */
-function computePremiumAdjustments(
-  db: Database.Database
-): Map<number, PremiumAdjustment> {
+function computePremiumAdjustments(db: Database.Database): {
+  adjustments: Map<number, PremiumAdjustment>;
+  /**
+   * Ids of the EXERCISED/ASSIGNED option transactions that actually found an
+   * underlying leg to roll their premium into. Only those option closes are
+   * premium rollovers; an unlinked one keeps its realized gain/loss so the
+   * premium never silently vanishes.
+   */
+  linkedExerciseTxnIds: Set<number>;
+} {
   const adjustments = new Map<number, PremiumAdjustment>();
+  const linkedExerciseTxnIds = new Set<number>();
 
   // Find all EXERCISED/ASSIGNED transactions on option securities
   const exerciseRows = db
@@ -704,7 +879,8 @@ function computePremiumAdjustments(
       premiumPerShare: effectivePremium,
       adjustmentType,
     });
+    linkedExerciseTxnIds.add(ex.id);
   }
 
-  return adjustments;
+  return { adjustments, linkedExerciseTxnIds };
 }

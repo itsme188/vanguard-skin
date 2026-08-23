@@ -444,8 +444,10 @@ describe("REDEMPTION with null price (bond/bill maturity)", () => {
     const sale = db
       .prepare("SELECT proceeds, realized_gain_loss FROM tax_lot_sales")
       .get() as any;
-    // proceeds derived on the same per-100 basis as the buy: |amount|/qty*100
-    expect(sale.proceeds).toBeCloseTo(976137, 0);
+    // TRUE-DOLLAR convention (WS1): the redemption's `amount` is the broker's
+    // own principal figure and is authoritative — proceeds = |9761.37|.
+    // sale_price still derives on the per-100 basis (|amount|/qty×100 = 97.6137).
+    expect(sale.proceeds).toBeCloseTo(9761.37, 2);
     expect(sale.realized_gain_loss).toBeCloseTo(0, 2);
   });
 
