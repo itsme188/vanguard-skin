@@ -9,6 +9,7 @@ import {
 } from "@/lib/compute/scenario-recipes";
 import { computeScenario, PRESET_SCENARIOS } from "@/lib/compute/scenarios";
 import { upsertFxRate } from "@/lib/mutations/fx-rates";
+import { todayET, addDays } from "@/lib/calendar/date-utils";
 
 // Migration 002 seeds: 1=Vanguard Taxable, 2=Vanguard Roth IRA, 3=IBKR.
 
@@ -333,5 +334,66 @@ describe("computeRecipeScenario", () => {
     const result = computeRecipeScenario(db, findRecipe("ai_capex_pause")!);
     const noclass = result.positionImpacts.find((p) => p.symbol === "NOCLASS")!;
     expect(noclass.changePercent).toBeCloseTo(0, 4);
+  });
+
+  // A lapsed contract must never receive scenario P&L (QA: an expired QQQ
+  // put still showed "+6.3% / +$371" as a LEAST IMPACTED / POSITIVE position
+  // in the Rate shock +25bp scenario, because the recipe's SQL pull had no
+  // expiration_date filter at all). See lib/compute/option-expiry.ts.
+  describe("expired option exclusion", () => {
+    function seedOption(id: number, expirationDate: string) {
+      const tag = expirationDate.replace(/-/g, "").slice(2);
+      const symbol = `NVDA  ${tag}C00900000`;
+      db.prepare(
+        `INSERT INTO securities (id, symbol, security_type, underlying_symbol, strike_price, expiration_date, option_type, multiplier)
+         VALUES (?, ?, 'Option', 'NVDA', 900, ?, 'CALL', 100)`
+      ).run(id, symbol, expirationDate);
+      db.prepare(`INSERT INTO prices (security_id, date, close_price, source) VALUES (?, ?, 150, 'tws')`).run(
+        id,
+        todayET()
+      );
+      db.prepare(
+        `INSERT INTO holdings (account_id, security_id, as_of_date, quantity, source_key) VALUES (1, ?, '2026-04-30', 2, ?)`
+      ).run(id, `h-opt-${id}`);
+      return symbol;
+    }
+
+    it("an option that expired YESTERDAY receives no scenario P&L and is dropped entirely", () => {
+      const yesterday = addDays(todayET(), -1);
+      const symbol = seedOption(23, yesterday);
+
+      const rateShock = computeRecipeScenario(db, findRecipe("rate_shock_up_25bp")!);
+      expect(rateShock.positionImpacts.find((p) => p.symbol === symbol)).toBeUndefined();
+
+      const aiCapex = computeRecipeScenario(db, findRecipe("ai_capex_pause")!);
+      expect(aiCapex.positionImpacts.find((p) => p.symbol === symbol)).toBeUndefined();
+    });
+
+    it("an option expiring TODAY still receives scenario P&L (live through end of day)", () => {
+      const symbol = seedOption(24, todayET());
+
+      const result = computeRecipeScenario(db, findRecipe("ai_capex_pause")!);
+      const opt = result.positionImpacts.find((p) => p.symbol === symbol);
+      expect(opt).toBeDefined();
+      expect(opt!.changePercent).not.toBe(0);
+    });
+
+    it("legacy computeScenario also excludes an option expired yesterday", () => {
+      const yesterday = addDays(todayET(), -1);
+      const symbol = seedOption(25, yesterday);
+
+      const result = computeScenario(db, PRESET_SCENARIOS.find((s) => s.id === "ai_capex_pause")!);
+      expect(result.positionImpacts.find((p) => p.symbol === symbol)).toBeUndefined();
+    });
+
+    it("a non-option holding (no expiration_date) is unaffected by the expiry filter", () => {
+      const yesterday = addDays(todayET(), -1);
+      seedOption(26, yesterday); // dead weight — should not affect NVDA below
+
+      const result = computeRecipeScenario(db, findRecipe("ai_capex_pause")!);
+      const nvda = result.positionImpacts.find((p) => p.symbol === "NVDA")!;
+      expect(nvda).toBeDefined();
+      expect(nvda.changePercent).toBeCloseTo(-0.21, 3);
+    });
   });
 });

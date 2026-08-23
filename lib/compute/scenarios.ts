@@ -4,6 +4,7 @@ import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
 import { explodeHoldingBySector } from "./explode-sector";
 import { getEtfSectorWeights } from "@/lib/queries/etf-weights";
+import { liveOptionExpirationSql } from "@/lib/compute/option-expiry";
 import {
   SCENARIO_RECIPES,
   findRecipe,
@@ -123,6 +124,7 @@ export function computeScenario(
        LEFT JOIN latest_prices lp ON lp.security_id = lh.security_id
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
        WHERE COALESCE(lp.close_price, 0) > 0
+         AND ${liveOptionExpirationSql("s")}
        ORDER BY market_value DESC`
     )
     .all(...accountParams) as {
