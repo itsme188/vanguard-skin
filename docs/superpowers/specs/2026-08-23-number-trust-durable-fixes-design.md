@@ -16,7 +16,7 @@ The 2026-08-21 Codex number-trust audit confirmed three durable defect families 
 ## Decisions (user, 2026-08-23 design session)
 
 - One spec covering all three workstreams; each has its own acceptance standard; implementation may parallelize.
-- **WS1 storage convention:** stored true economic dollars (Approach A) — `tax_lots.cost_basis`, `tax_lot_sales.proceeds`, `tax_lot_sales.cost_basis_allocated` become real dollars; full recompute regenerates rows (no SQL migration).
+- **WS1 storage convention:** stored true economic dollars (Approach A) — `tax_lots.cost_basis`, `tax_lot_sales.proceeds`, `tax_lot_sales.cost_basis_allocated` become real dollars; full recompute regenerates rows (no data migration; one additive flag column).
 - **WS1 acceptance evidence:** statement realized-gain sections + IBKR activity-report realized P&L (both available locally). Synthetic fixtures alone are insufficient.
 - **NOT-FOR-FILING banner** comes off automatically with the engine fix — implemented as a fail-closed convention marker (Codex review #4): the merged code keeps the banner until the v2 recompute has run and the acceptance gate has passed, then it clears without further action. Codex recommended keeping the banner pending full §1233 short-sale term rules + 1099-B reconciliation; the accepted middle ground is: short-row export **dates** fixed, blanket short-term kept as a documented disclosed limitation (acceptable for this portfolio per the private audit evidence), acceptance evidence per the user's decision (statements + IBKR activity), banner lifts on the marker.
 - **WS2 method:** monthly Modified Dietz (Approach A), not daily-chained TWR (daily history too short and carries live-anchor artifacts).
@@ -30,7 +30,7 @@ The 2026-08-21 Codex number-trust audit confirmed three durable defect families 
 
 `tax_lots.cost_basis`, `tax_lot_sales.proceeds`, `tax_lot_sales.cost_basis_allocated` store true economic dollars in the security's **native currency** (FX remains a read-time concern, per existing repo conventions). Per-unit fields (`tax_lots.acquisition_price`, `tax_lot_sales.sale_price`) stay per-unit — they are prices, and the REDEMPTION derived-price logic (`|amount|/qty×100` on the per-100-face basis) is unchanged.
 
-No SQL migration: `computeTaxLots` fully rebuilds `tax_lots` + `tax_lot_sales`, so a recompute regenerates every row under the new convention.
+No data migration: `computeTaxLots` fully rebuilds `tax_lots` + `tax_lot_sales`, so a recompute regenerates every row under the new convention. One additive schema migration adds the `tax_lot_sales.premium_rollover` flag.
 
 ### Engine changes (`lib/compute/tax-lots.ts`)
 
@@ -187,7 +187,7 @@ Suite-wide: `npm run verify:changed` per task, full `npx vitest run` + `npx next
 - **WS1 ordering constraint:** merge → user-run live recompute (stamps `tax_lots_convention = 'v2:<generation>'`) → broker-reconciliation script against the live DB (stamps acceptance coverage) → the export path unlocks per covered account/tax-year. Code alone never exposes un-recomputed rows (fail-closed markers, Codex R1 #4).
 - **Live recompute procedure (Codex #5):** app quit; **WAL-safe backup** via SQLite backup API (`better-sqlite3 .backup()`) or a checkpointed copy (`PRAGMA wal_checkpoint(TRUNCATE)` then file copy) into `data/backups/` — never a bare `cp` of a hot WAL DB; rehearsed end-to-end on a DB copy via `REPAIR_DB_PATH` from the repo root (tsx-alias convention) including a second-run idempotence check; **rollback is a code+DB pair (Codex R2 #14)** — restore the backup file AND revert to the pre-merge code in one operation (v2-dollar rows under old readers would be reinterpreted 100×-wrong in the other direction); the markers travel with the DB, so a DB-only restore under new code automatically re-engages the banner (fail-closed), and the new code treats an unrecognized marker value as "not v2".
 - **WS3 after WS1's recompute** (or with the lot-drift check dark until then) — otherwise the drift check would briefly flag the convention change itself.
-- No Worker parity impact: tax path, trust strip, and confidence are Mac-only surfaces; no parity-pinned mirror is touched. No schema migration; `reconcile_delta` refreshes on recompute as designed.
+- No Worker parity impact: tax path, trust strip, and confidence are Mac-only surfaces; no parity-pinned mirror is touched. One additive schema migration only (`tax_lot_sales.premium_rollover` flag — plan Task 3); no data migration: the recompute regenerates all derived rows. `reconcile_delta` refreshes on recompute as designed.
 - **Reference-doc updates in the same PRs (Codex #17):** `docs/reference/conventions-detail.md` (TWR-reconciliation contract, tax-lot dollar convention), `docs/reference/data-integrity.md` (NOT-FOR-FILING state → marker-gated; TWR relabel → Dietz cross-check), `docs/reference/auto-refresh.md` + `docs/reference/api-patterns.md` (confidence dimensions + integrity gate), and the `CLAUDE.md` containment bullets that become stale.
 - Process: Codex spec review (big spec: up to 3 rounds, stop early on nits) → user review → writing-plans → parallel SDD.
 
