@@ -24,7 +24,7 @@ export async function GET(request: NextRequest) {
       return new NextResponse(csv, {
         headers: {
           "Content-Type": "text/csv",
-          "Content-Disposition": `attachment; filename="form-8949-${year}.csv"`,
+          "Content-Disposition": `attachment; filename="form-8949-${year}-NOT-FOR-FILING.csv"`,
         },
       });
     }
@@ -34,7 +34,7 @@ export async function GET(request: NextRequest) {
       return new NextResponse(txf, {
         headers: {
           "Content-Type": "application/x-tax-exchange",
-          "Content-Disposition": `attachment; filename="tax-report-${year}.txf"`,
+          "Content-Disposition": `attachment; filename="tax-report-${year}-NOT-FOR-FILING.txf"`,
         },
       });
     }
