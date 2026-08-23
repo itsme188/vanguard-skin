@@ -5,6 +5,9 @@ import {
   isUnexplainedCashFlow,
   collectSeamDatesByAccount,
   collectLiveAnchorDatesByAccount,
+  isLikelyIbkrAccountName,
+  CONFIDENCE_RESIDUAL_ABS_FLOOR,
+  CONFIDENCE_RESIDUAL_REL_FLOOR,
 } from "@/lib/compute/cash-flow-audit";
 import { getTaxConventionState } from "@/lib/compute/tax-convention";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
@@ -44,16 +47,23 @@ function scanTypeIdentityHits(db: Database.Database): IntegrityHit[] {
 
 // ── Check 2: unexplained negative cash-flow residual ────────────────────
 //
-// Deliberately the DEFAULT (stricter) isUnexplainedCashFlow floors — the
-// 5%/$5,000 "propose a fix" bar scripts/repair-missing-external-flows.ts
-// uses, not data-confidence.ts's more sensitive 2%/$1,000 early-warning
-// bar. A CRITICAL integrity hit should be the same bar a human repair
-// candidate would clear, not an early warning. `source-seam` and
-// `live-anchor-residual` points are measurement-basis artifacts, never a
-// real missing flow (see cash-flow-audit.ts's classification doc) — both
-// are excluded regardless of how large they read. Only residuals landing
-// within the account's own last 30 valuation days are live-gated here;
-// older ones inform Data Health, not a "this needs attention now" flag.
+// Uses data-confidence.ts's CONFIDENCE_RESIDUAL_* floors (2%/$1,000), not
+// isUnexplainedCashFlow's stricter defaults (5%/$5,000 — the repair
+// script's "propose a fix" bar) — this is a disclosure surface like the
+// cash-accuracy confidence dimension, not a repair-candidate list, so it
+// shares that dimension's more sensitive early-warning bar
+// (lib/queries/data-confidence.ts:371-374's findWorstUnexplainedCashFlow).
+// `source-seam` and `live-anchor-residual` points are measurement-basis
+// artifacts, never a real missing flow (see cash-flow-audit.ts's
+// classification doc) — both are excluded regardless of how large they
+// read. Only residuals landing within the account's own last 30 valuation
+// days are live-gated here; older ones inform Data Health, not a "this
+// needs attention now" flag.
+
+const CONFIDENCE_FLOORS = {
+  absFloor: CONFIDENCE_RESIDUAL_ABS_FLOOR,
+  relFloor: CONFIDENCE_RESIDUAL_REL_FLOOR,
+};
 
 function sortWorstFirst(points: { toDate: string; residual: number }[]): void {
   points.sort((a, b) =>
@@ -72,8 +82,14 @@ function scanUnexplainedResidualHits(db: Database.Database): IntegrityHit[] {
     id: number;
     name: string;
   }[];
-  if (accounts.length === 0) return [];
-  const accountIds = accounts.map((a) => a.id);
+  // Mirrors findWorstUnexplainedCashFlow's account universe exactly
+  // (lib/queries/data-confidence.ts:349-360): IBKR's margin/multi-leg/
+  // same-day-sweep cash model produces ~10x the residual noise of a
+  // statement-fed account under this same per-type model, so it's excluded
+  // here too — consistency with the sibling cash-accuracy dimension.
+  const nonIbkrAccounts = accounts.filter((a) => !isLikelyIbkrAccountName(a.name));
+  if (nonIbkrAccounts.length === 0) return [];
+  const accountIds = nonIbkrAccounts.map((a) => a.id);
 
   const seamDatesByAccount = collectSeamDatesByAccount(db, accountIds);
   const liveAnchorDatesByAccount = collectLiveAnchorDatesByAccount(db, accountIds);
@@ -100,7 +116,7 @@ function scanUnexplainedResidualHits(db: Database.Database): IntegrityHit[] {
   const flagged = points.filter(
     (p) =>
       p.residual < 0 &&
-      isUnexplainedCashFlow(p) &&
+      isUnexplainedCashFlow(p, CONFIDENCE_FLOORS) &&
       p.classification !== "source-seam" &&
       p.classification !== "live-anchor-residual" &&
       (recentDatesByAccount.get(p.accountId)?.has(p.toDate) ?? false)

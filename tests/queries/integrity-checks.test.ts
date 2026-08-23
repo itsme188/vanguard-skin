@@ -140,6 +140,42 @@ describe("runIntegrityChecks — check 2: unexplained negative cash-flow residua
     ]);
   });
 
+  it("uses the confidence-tier floors (2%/$1,000), not isUnexplainedCashFlow's stricter defaults (5%/$5,000) — pins the floor choice", () => {
+    // -2,000 on a $60,000 base is ~3.3% / $2,000: clears the confidence
+    // floors (2%/$1,000) but would NOT clear the stricter defaults
+    // (5%/$5,000) — a residual in exactly this gap must still be flagged.
+    insertValuation(db, 1, "2026-08-01", 62_000, 60_000);
+    insertValuation(db, 1, "2026-08-02", 60_000, 60_000);
+
+    const { critical } = runIntegrityChecks(db);
+    expect(critical.filter((c) => c.key.startsWith("cash-residual:"))).toEqual([
+      {
+        key: "cash-residual:1:2026-08-02",
+        severity: "critical",
+        reason: "Vanguard Taxable: unexplained cash residual of -2000.00 on 2026-08-02",
+      },
+    ]);
+  });
+
+  it("excludes IBKR-named accounts from the residual scan, mirroring findWorstUnexplainedCashFlow's universe", () => {
+    // account id 3 ("IBKR") is pre-seeded by migration 002_seed_accounts.sql
+    insertValuation(db, 3, "2026-08-01", 200_000, 500_000);
+    insertValuation(db, 3, "2026-08-02", 150_000, 500_000); // -50,000, would otherwise be a clear critical hit
+
+    const { critical } = runIntegrityChecks(db);
+    expect(critical.filter((c) => c.key.startsWith("cash-residual:"))).toEqual([]);
+  });
+
+  it("the identical residual shape in a non-IBKR account DOES hit", () => {
+    insertValuation(db, 1, "2026-08-01", 200_000, 500_000);
+    insertValuation(db, 1, "2026-08-02", 150_000, 500_000);
+
+    const { critical } = runIntegrityChecks(db);
+    expect(
+      critical.filter((c) => c.key.startsWith("cash-residual:")).map((h) => h.key)
+    ).toEqual(["cash-residual:1:2026-08-02"]);
+  });
+
   it("does not hit when the residual is positive (cash increased unexplained)", () => {
     insertValuation(db, 1, "2026-08-01", 150_000, 500_000);
     insertValuation(db, 1, "2026-08-02", 200_000, 500_000); // +50,000 jump
