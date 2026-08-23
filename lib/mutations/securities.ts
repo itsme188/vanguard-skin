@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { extractMaturityDate } from "@/lib/bonds";
 import { formatOccSymbol, parseOptionSymbol } from "@/lib/import/occ-symbol";
 import { bumpTaxGenerationIfPresent } from "@/lib/compute/tax-convention";
+import { isBondlikeIdentityOnEquityFills } from "@/lib/compute/type-contradictions";
 
 export interface UpsertSecurityParams {
   symbol: string;
@@ -162,7 +163,12 @@ export function upsertSecurity(
               AND quantity IS NOT NULL AND quantity <> 0`
         )
         .get(existing.id) as { n: number };
-      if (fills.n > 0) {
+      if (
+        isBondlikeIdentityOnEquityFills(
+          { securityType: p.securityType, name: p.name ?? null, derivedMaturity: p.maturityDate ?? null },
+          fills.n
+        )
+      ) {
         console.warn(
           `[upsertSecurity] Refusing ${p.securityType} identity for "${p.symbol}": ` +
             `existing ${existing.security_type} security has ${fills.n} equity fills. ` +
