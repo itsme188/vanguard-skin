@@ -1,6 +1,11 @@
 import type Database from "better-sqlite3";
 import { excludeLiveSnapshotsSql } from "@/lib/db/live-sources";
-import { SIGNED_EXTERNAL_FLOW_SQL, IN_KIND_LEG_SQL } from "@/lib/compute/flow-adjusted";
+import {
+  SIGNED_EXTERNAL_FLOW_SQL,
+  IN_KIND_LEG_SQL,
+  fetchInKindFlowsByDate,
+} from "@/lib/compute/flow-adjusted";
+import { isAnnualSummaryRow } from "@/lib/compute/monthly-snapshot-utils";
 import {
   SNAPSHOT_FIRSTS_CTE,
   EXPECTED_ACCOUNTS_SQL,
@@ -99,6 +104,17 @@ function daysInMonth(monthEndDate: string): number {
 function monthStartDate(monthEndDate: string): string {
   // Given "2025-01-31", return "2025-01-01"
   return monthEndDate.slice(0, 8) + "01";
+}
+
+/** The calendar day before monthStart (its month's own last day), e.g.
+ *  "2025-01-01" → "2024-12-31". Used to pass an inclusive month-start bound
+ *  through fetchInKindFlowsByDate's half-open (startDate, endDate] window
+ *  without changing which rows match — `date > dayBefore(x)` is equivalent
+ *  to `date >= x` for day-granularity ISO date strings. */
+function dayBeforeMonthStart(monthStart: string): string {
+  const d = new Date(monthStart + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
 }
 
 function annualize(
@@ -213,25 +229,6 @@ export function computeTwr(
      ORDER BY trade_date ASC`
   );
 
-  // In-kind transfer legs (TRANSFER_IN/OUT with security_id set) are never
-  // reflected in monthly_snapshots.deposits_withdrawals — a statement only
-  // reports CASH flows. When a month is read from the snapshot's own
-  // deposits_withdrawals (the two branches below), its FMV donation/journal
-  // flow would otherwise be silently omitted. The transaction-fallback
-  // branch (cashFlowStmt above, no type filter) already includes these rows
-  // — this statement is used ONLY inside the two snapshot-preferred
-  // branches, never alongside the fallback (spec §6.5 union rule: augment,
-  // never double-add).
-  const inKindFlowStmt = db.prepare(
-    `SELECT trade_date, ${SIGNED_EXTERNAL_FLOW_SQL} AS amount
-     FROM transactions
-     WHERE account_id = ?
-       AND is_external_flow = 1
-       AND trade_date >= ? AND trade_date <= ?
-       AND ${IN_KIND_LEG_SQL}
-     ORDER BY trade_date ASC`
-  );
-
   // Also get the snapshot just before our range for V_start of first month
   const priorSnapshotStmt = db.prepare(
     `SELECT total_value
@@ -250,6 +247,10 @@ export function computeTwr(
   // per-flow weighting) to an existing weightedFlows array. Called ONLY
   // from the two snapshot-preferred branches below — never from the
   // fallback branch, which already includes these rows unfiltered.
+  //
+  // Uses the shared fetchInKindFlowsByDate primitive (flow-adjusted.ts),
+  // which is half-open (startDate, endDate]; dayBeforeMonthStart(mStart)
+  // preserves the original inclusive->=mStart bound exactly.
   function appendInKindFlows(
     accountId: number,
     mStart: string,
@@ -257,12 +258,16 @@ export function computeTwr(
     totalDaysInMonth: number,
     weightedFlows: { amount: number; weight: number }[]
   ): void {
-    const inKindRows = inKindFlowStmt.all(accountId, mStart, mEnd) as CashFlowRow[];
+    const inKindRows = fetchInKindFlowsByDate(
+      db,
+      [accountId],
+      dayBeforeMonthStart(mStart),
+      mEnd
+    );
     for (const row of inKindRows) {
-      if (row.amount == null) continue;
-      const daysRemaining = daysBetween(row.trade_date, mEnd);
+      const daysRemaining = daysBetween(row.date, mEnd);
       const weight = totalDaysInMonth > 0 ? daysRemaining / totalDaysInMonth : 0;
-      weightedFlows.push({ amount: row.amount, weight });
+      weightedFlows.push({ amount: row.net, weight });
     }
   }
 
@@ -293,12 +298,10 @@ export function computeTwr(
       // twr = annual TWR (not monthly). They must not be used directly.
       const priorMonthTotal =
         i > 0 ? snapshots[i - 1].total_value : priorRow?.total_value;
-      const isAnnualSummary =
-        snap.month_end_date.slice(5, 7) === "12" &&
-        priorMonthTotal != null &&
-        snap.starting_value != null &&
-        Math.abs(snap.starting_value - priorMonthTotal) >
-          priorMonthTotal * 0.10;
+      const isAnnualSummary = isAnnualSummaryRow(
+        snap,
+        priorMonthTotal ?? null
+      );
 
       // Use pre-computed TWR if available and NOT an annual summary
       if (snap.twr !== null && !isAnnualSummary) {
