@@ -7,6 +7,9 @@
 
 import type Database from "better-sqlite3";
 import { excludeLiveSnapshotsSql } from "@/lib/db/live-sources";
+import { todayET } from "@/lib/calendar/date-utils";
+import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { classifyHoldingSourceKey } from "@/lib/db/holding-sources";
 import {
   computeCashFlowResiduals,
   isUnexplainedCashFlow,
@@ -91,6 +94,10 @@ export interface EnrichmentScore extends DimensionScore {
 export interface ValuationCoverageScore extends DimensionScore {
   pricedCount: number;
   totalCount: number;
+  /** Each currently-held account's latest daily_valuations date (null if
+   *  that account has no daily_valuations row at all) — a later integrity
+   *  check cross-references this against holdings as_of_date. */
+  perAccountAsOf: Array<{ accountName: string; asOfDate: string | null }>;
 }
 
 export interface DataAction {
@@ -125,8 +132,8 @@ const WEIGHTS = {
 
 // ── Scoring functions ────────────────────────────────────────────────
 
-function scorePriceFreshness(db: Database.Database): PriceFreshnessScore {
-  const today = new Date().toISOString().split("T")[0];
+function scorePriceFreshness(db: Database.Database, now: Date = new Date()): PriceFreshnessScore {
+  const today = todayET(now);
 
   // Count held securities with prices from today (or last trading day = within 3 days)
   const row = db.prepare(`
@@ -143,28 +150,39 @@ function scorePriceFreshness(db: Database.Database): PriceFreshnessScore {
         THEN h.security_id
       END) AS pricedRecent
     FROM holdings h
-    JOIN (
-      SELECT account_id, MAX(as_of_date) AS max_date
-      FROM holdings GROUP BY account_id
-    ) latest ON latest.account_id = h.account_id AND h.as_of_date = latest.max_date
     LEFT JOIN (
       SELECT security_id, MAX(date) AS latest_date
       FROM prices GROUP BY security_id
     ) p ON p.security_id = h.security_id
-    WHERE h.quantity > 0
+    WHERE ${latestHoldingsPredicate({ keyBy: "account_security", includeShorts: true })}
   `).get(today, today) as { totalHeld: number; pricedToday: number; pricedRecent: number };
 
-  // Find stalest held security
+  // Find stalest currently-held security. A LEFT JOIN onto a pre-aggregated
+  // latest-price-per-security subquery (not a bare JOIN prices, which
+  // row-multiplies and can silently pick an old price) so a held security
+  // with NO price rows at all still surfaces — and wins "stalest" first,
+  // since missing data is worse than old data. When there's no price row,
+  // the fallback age is the holding's own as_of_date (how old our knowledge
+  // of the position itself is), and the symbol is prefixed "no price rows"
+  // so the caller can distinguish "stale price" from "never priced."
   const stalest = db.prepare(`
     SELECT s.symbol,
-           CAST(julianday(?) - julianday(MAX(p.date)) AS INTEGER) AS days_stale
+           p.latest_date,
+           CAST(julianday(?) - julianday(COALESCE(p.latest_date, agg.latest_as_of)) AS INTEGER) AS days_stale
     FROM securities s
-    JOIN holdings h ON h.security_id = s.id AND h.quantity > 0
-    JOIN prices p ON p.security_id = s.id
-    GROUP BY s.id
-    ORDER BY days_stale DESC
+    JOIN (
+      SELECT h.security_id, MAX(h.as_of_date) AS latest_as_of
+      FROM holdings h
+      WHERE ${latestHoldingsPredicate({ keyBy: "account_security", includeShorts: true })}
+      GROUP BY h.security_id
+    ) agg ON agg.security_id = s.id
+    LEFT JOIN (
+      SELECT security_id, MAX(date) AS latest_date
+      FROM prices GROUP BY security_id
+    ) p ON p.security_id = s.id
+    ORDER BY (p.latest_date IS NULL) DESC, days_stale DESC
     LIMIT 1
-  `).get(today) as { symbol: string; days_stale: number } | undefined;
+  `).get(today) as { symbol: string; latest_date: string | null; days_stale: number } | undefined;
 
   const { totalHeld, pricedToday, pricedRecent } = row;
   const whyMatters =
@@ -207,32 +225,57 @@ function scorePriceFreshness(db: Database.Database): PriceFreshnessScore {
     guidance,
     pricedToday,
     totalHeld,
-    stalestSymbol: stalest?.symbol ?? null,
+    stalestSymbol: stalest
+      ? stalest.latest_date === null
+        ? `no price rows: ${stalest.symbol}`
+        : stalest.symbol
+      : null,
     stalestDays: stalest?.days_stale ?? null,
   };
 }
 
-function scoreHoldingsRecency(db: Database.Database): HoldingsRecencyScore {
-  const today = new Date().toISOString().split("T")[0];
+function scoreHoldingsRecency(db: Database.Database, now: Date = new Date()): HoldingsRecencyScore {
+  const today = todayET(now);
 
-  const rows = db.prepare(`
-    SELECT
-      a.name,
-      MAX(h.as_of_date) AS latest_date,
-      CAST(julianday(?) - julianday(MAX(h.as_of_date)) AS INTEGER) AS days_old
-    FROM accounts a
-    LEFT JOIN holdings h ON h.account_id = a.id AND h.quantity > 0
-    GROUP BY a.id
-    ORDER BY a.name
-  `).all(today) as { name: string; latest_date: string | null; days_old: number | null }[];
+  const accounts = db.prepare(`SELECT id, name FROM accounts ORDER BY name`).all() as {
+    id: number;
+    name: string;
+  }[];
 
-  // Determine source for each account (heuristic based on account name)
-  const perAccount = rows.map(r => ({
-    name: r.name,
-    date: r.latest_date,
-    source: r.name.toLowerCase().includes("ibkr") ? "TWS" : "statement",
-    daysOld: r.days_old,
-  }));
+  // Per-(account, security) latest rows — NOT a single per-account
+  // MAX(as_of_date). An account can be "read today" for one live TWS row
+  // while a carried statement position is 60 days old; the account's
+  // reported staleness must reflect the WORST (oldest) currently-held
+  // position, not the freshest, or a single intraday sync would silently
+  // mask a stale carried position. Ordered oldest-first per account so a
+  // tie between two equally-stale positions deterministically keeps the
+  // first row encountered.
+  const holdingRows = db.prepare(`
+    SELECT h.account_id, h.as_of_date, h.source_key
+    FROM holdings h
+    WHERE ${latestHoldingsPredicate({ keyBy: "account_security", includeShorts: true })}
+    ORDER BY h.account_id, h.as_of_date ASC
+  `).all() as { account_id: number; as_of_date: string; source_key: string | null }[];
+
+  const worstByAccount = new Map<number, { as_of_date: string; source_key: string | null }>();
+  for (const r of holdingRows) {
+    if (!worstByAccount.has(r.account_id)) {
+      worstByAccount.set(r.account_id, { as_of_date: r.as_of_date, source_key: r.source_key });
+    }
+  }
+
+  const perAccount = accounts.map(a => {
+    const worst = worstByAccount.get(a.id);
+    const daysOld = worst
+      ? Math.round((Date.parse(today) - Date.parse(worst.as_of_date)) / 86_400_000)
+      : null;
+    return {
+      name: a.name,
+      date: worst?.as_of_date ?? null,
+      source: worst ? classifyHoldingSourceKey(worst.source_key) : null,
+      daysOld,
+    };
+  });
 
   const whyMatters =
     "Old holdings mean positions may not reflect recent trades, corporate actions, or dividends.";
@@ -377,8 +420,8 @@ function findWorstUnexplainedCashFlow(
   return { unexplainedFlow, timingResidual };
 }
 
-function scoreCashAccuracy(db: Database.Database): CashAccuracyScore {
-  const today = new Date().toISOString().split("T")[0];
+function scoreCashAccuracy(db: Database.Database, now: Date = new Date()): CashAccuracyScore {
+  const today = todayET(now);
 
   // Find the most recent monthly snapshot anchor (non-TWS, since TWS snapshots
   // are live NLV and don't contain the breakdown needed for reliable cash inference)
@@ -485,11 +528,8 @@ function scoreEnrichment(db: Database.Database): EnrichmentScore {
       s.id, s.symbol, s.ib_con_id,
       LOWER(COALESCE(s.security_type, '')) AS sec_type
     FROM securities s
-    JOIN holdings h ON h.security_id = s.id AND h.quantity > 0
-    JOIN (
-      SELECT account_id, MAX(as_of_date) AS max_date
-      FROM holdings GROUP BY account_id
-    ) latest ON latest.account_id = h.account_id AND h.as_of_date = latest.max_date
+    JOIN holdings h ON h.security_id = s.id
+    WHERE ${latestHoldingsPredicate({ keyBy: "account_security", includeShorts: true })}
     GROUP BY s.id
   `).all() as { id: number; symbol: string; ib_con_id: number | null; sec_type: string }[];
 
@@ -529,18 +569,63 @@ function scoreEnrichment(db: Database.Database): EnrichmentScore {
 }
 
 function scoreValuationCoverage(db: Database.Database): ValuationCoverageScore {
-  // Check the latest daily valuation — what % of holdings were priced?
-  const row = db.prepare(`
-    SELECT holdings_count, priced_count
-    FROM daily_valuations
-    ORDER BY valuation_date DESC
-    LIMIT 1
-  `).get() as { holdings_count: number | null; priced_count: number | null } | undefined;
+  // Per-account latest daily_valuations row, summed across every account
+  // that currently holds something (latestHoldingsPredicate) — NOT a single
+  // global "latest valuation_date across all accounts" row, which silently
+  // ignores every account whose valuation happens to be older than the
+  // account that last synced. An account with current holdings but NO
+  // daily_valuations row at all counts as fully unpriced (held-count,0),
+  // not simply omitted from the denominator.
+  const rows = db.prepare(`
+    WITH current_holdings AS (
+      SELECT h.account_id, COUNT(DISTINCT h.security_id) AS held_count
+      FROM holdings h
+      WHERE ${latestHoldingsPredicate({ keyBy: "account_security", includeShorts: true })}
+      GROUP BY h.account_id
+    )
+    SELECT a.name AS account_name,
+           ch.held_count,
+           dv.valuation_date,
+           dv.holdings_count,
+           dv.priced_count
+    FROM accounts a
+    JOIN current_holdings ch ON ch.account_id = a.id
+    LEFT JOIN daily_valuations dv
+      ON dv.account_id = a.id
+      AND dv.valuation_date = (
+        SELECT MAX(v2.valuation_date) FROM daily_valuations v2 WHERE v2.account_id = a.id
+      )
+    ORDER BY a.name
+  `).all() as {
+    account_name: string;
+    held_count: number;
+    valuation_date: string | null;
+    holdings_count: number | null;
+    priced_count: number | null;
+  }[];
 
   const whyMatters =
     "Missing holdings in the latest daily valuation understate portfolio value and distort change calculations.";
 
-  if (!row || !row.holdings_count) {
+  const perAccountAsOf = rows.map(r => ({
+    accountName: r.account_name,
+    asOfDate: r.valuation_date,
+  }));
+
+  let total = 0;
+  let priced = 0;
+  for (const r of rows) {
+    if (r.valuation_date === null) {
+      // No daily_valuations row for this account at all — every currently
+      // held security counts as unpriced.
+      total += r.held_count;
+    } else {
+      total += r.holdings_count ?? r.held_count;
+      priced += r.priced_count ?? 0;
+    }
+  }
+
+  if (total === 0) {
     return {
       score: 0,
       detail: "No daily valuations computed",
@@ -548,12 +633,11 @@ function scoreValuationCoverage(db: Database.Database): ValuationCoverageScore {
       guidance: "Run Quick Refresh to compute today's valuation.",
       pricedCount: 0,
       totalCount: 0,
+      perAccountAsOf,
     };
   }
 
-  const total = row.holdings_count;
-  const priced = row.priced_count ?? 0;
-  const score = total > 0 ? Math.round((priced / total) * 100) : 100;
+  const score = Math.round((priced / total) * 100);
   const detail = priced === total
     ? `All ${total} holdings in latest valuation`
     : `${priced}/${total} holdings priced in latest valuation`;
@@ -565,7 +649,7 @@ function scoreValuationCoverage(db: Database.Database): ValuationCoverageScore {
         ? "Run Quick Refresh to price the remaining holdings."
         : "Many holdings unpriced — Quick Refresh, then enrich any still missing.";
 
-  return { score, detail, whyMatters, guidance, pricedCount: priced, totalCount: total };
+  return { score, detail, whyMatters, guidance, pricedCount: priced, totalCount: total, perAccountAsOf };
 }
 
 // ── Actions ──────────────────────────────────────────────────────────
@@ -653,10 +737,10 @@ function deriveActions(
 
 // ── Main function ────────────────────────────────────────────────────
 
-export function getDataConfidence(db: Database.Database): DataConfidence {
-  const priceFreshness = scorePriceFreshness(db);
-  const holdingsRecency = scoreHoldingsRecency(db);
-  const cashAccuracy = scoreCashAccuracy(db);
+export function getDataConfidence(db: Database.Database, now: Date = new Date()): DataConfidence {
+  const priceFreshness = scorePriceFreshness(db, now);
+  const holdingsRecency = scoreHoldingsRecency(db, now);
+  const cashAccuracy = scoreCashAccuracy(db, now);
   const enrichmentCompleteness = scoreEnrichment(db);
   const valuationCoverage = scoreValuationCoverage(db);
 
