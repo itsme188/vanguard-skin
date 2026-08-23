@@ -134,7 +134,7 @@ export function TrustStrip({ scope }: TrustStripProps) {
 
   const classifyTone: Tone = lastClassification ? "neutral" : "warn";
 
-  const reconTone: Tone = performanceReconciledThru ? "good" : "neutral";
+  const reconTone: Tone = "neutral";
 
   return (
     <>
@@ -162,10 +162,10 @@ export function TrustStrip({ scope }: TrustStripProps) {
           active={activePanel === "lastClassify"}
         />
         <Cell
-          label="Perf reconciled"
+          label="Stmt TWR thru"
           value={performanceReconciledThru ?? "—"}
           tone={reconTone}
-          hint="Performance reconciliation through date"
+          hint="Latest month with a statement-reported TWR (not independently verified)"
           onClick={() => togglePanel("performance")}
           active={activePanel === "performance"}
         />
