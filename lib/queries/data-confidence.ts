@@ -11,6 +11,8 @@ import {
   computeCashFlowResiduals,
   isUnexplainedCashFlow,
   isLikelyIbkrAccountName,
+  collectSeamDatesByAccount,
+  collectLiveAnchorDatesByAccount,
   CONFIDENCE_RESIDUAL_ABS_FLOOR,
   CONFIDENCE_RESIDUAL_REL_FLOOR,
   type CashFlowClassification,
@@ -41,6 +43,15 @@ export interface HoldingsRecencyScore extends DimensionScore {
   }[];
 }
 
+/** A suppressed `live-anchor-residual` point that would otherwise have
+ *  crossed the confidence floors — reported as a label, never as a cap (see
+ *  findWorstUnexplainedCashFlow and CashAccuracyScore.timingResidual). */
+export interface TimingResidualNote {
+  date: string;
+  accountName: string;
+  amount: number;
+}
+
 export interface CashAccuracyScore extends DimensionScore {
   latestAnchorDate: string | null;
   daysSinceAnchor: number | null;
@@ -52,14 +63,23 @@ export interface CashAccuracyScore extends DimensionScore {
    *  from an `internal-shift` (total_value moved smoothly; only the
    *  cash/holdings split jumped — a valuation-source misattribution, not a
    *  missing flow, and NOT something the repair script will insert a row
-   *  for). Both degrade this score — they're both data-quality problems,
-   *  just different ones. Null when neither is found. */
+   *  for). `source-seam` and `live-anchor-residual` points are excluded
+   *  from this field entirely (see `timingResidual` for the latter). Null
+   *  when no qualifying point is found. */
   unexplainedFlow: {
     accountName: string;
     date: string;
     residual: number;
     classification: CashFlowClassification;
   } | null;
+  /** The worst suppressed `live-anchor-residual` point that would otherwise
+   *  have crossed the confidence floors — a live-snapshot (Plaid/TWS) day
+   *  whose cash_balance is an intraday-total-minus-close-priced-holdings
+   *  plug, not literal cash. Labeled, not capped: see the warning
+   *  application in scoreCashAccuracy. Null when none qualifies (including
+   *  when a `source-seam` point already claimed the same date — source-seam
+   *  points are always fully silent). */
+  timingResidual: TimingResidualNote | null;
 }
 
 export interface EnrichmentScore extends DimensionScore {
@@ -251,6 +271,20 @@ function scoreHoldingsRecency(db: Database.Database): HoldingsRecencyScore {
   return { score, detail, whyMatters, guidance, perAccount };
 }
 
+/** Sorts flagged residual points worst-first: most recent toDate, then
+ *  largest |residual| as a tiebreak. Shared by both the unexplainedFlow and
+ *  timingResidual selections in findWorstUnexplainedCashFlow so their "worst"
+ *  definitions can never silently drift apart. */
+function sortWorstFirst(points: CashFlowResidualPointForSort[]): void {
+  points.sort((a, b) =>
+    a.toDate !== b.toDate
+      ? (a.toDate < b.toDate ? 1 : -1) // most recent date first
+      : Math.abs(b.residual) - Math.abs(a.residual)
+  );
+}
+
+type CashFlowResidualPointForSort = { toDate: string; residual: number };
+
 /**
  * Worst (most recent, tie-broken by largest |residual|) unexplained
  * cash-flow candidate across non-IBKR accounts, using the SAME residual
@@ -259,42 +293,88 @@ function scoreHoldingsRecency(db: Database.Database): HoldingsRecencyScore {
  * disagree about what counts as "unexplained." Deliberately more sensitive
  * than the repair script's own bar (CONFIDENCE_RESIDUAL_REL_FLOOR=2% vs the
  * script's 5%) — this is an early warning, not a "propose a fix" bar.
+ *
+ * `source-seam` and `live-anchor-residual` points are excluded from
+ * `unexplainedFlow` explicitly at this call site — `isUnexplainedCashFlow`
+ * itself stays classification-blind by design (matching
+ * partitionCandidates' division of labor). A suppressed `live-anchor-
+ * residual` point that would otherwise have crossed the floors is instead
+ * surfaced as `timingResidual` (labeled, not capped — see scoreCashAccuracy).
+ * `source-seam` points are fully silent in both fields — they're
+ * already-understood measurement-basis splices, not data-quality problems.
  */
 function findWorstUnexplainedCashFlow(
   db: Database.Database
-): { accountName: string; date: string; residual: number; classification: CashFlowClassification } | null {
+): {
+  unexplainedFlow: { accountName: string; date: string; residual: number; classification: CashFlowClassification } | null;
+  timingResidual: TimingResidualNote | null;
+} {
   const accounts = db.prepare(`SELECT id, name FROM accounts`).all() as {
     id: number;
     name: string;
   }[];
   const accountIds = accounts.filter(a => !isLikelyIbkrAccountName(a.name)).map(a => a.id);
-  if (accountIds.length === 0) return null;
+  if (accountIds.length === 0) return { unexplainedFlow: null, timingResidual: null };
+
+  const seamDatesByAccount = collectSeamDatesByAccount(db, accountIds);
+  const liveAnchorDatesByAccount = collectLiveAnchorDatesByAccount(db, accountIds);
+
+  const allPoints = computeCashFlowResiduals(db, {
+    accountIds,
+    seamDatesByAccount,
+    liveAnchorDatesByAccount,
+  });
+
+  const floors = {
+    absFloor: CONFIDENCE_RESIDUAL_ABS_FLOOR,
+    relFloor: CONFIDENCE_RESIDUAL_REL_FLOOR,
+  };
 
   // Both classifications count here — an internal cash/holdings
   // misattribution is still a real data-quality problem, just not one the
   // repair script writes a row for (see cash-flow-audit.ts's
   // classifyCashFlowResidual doc). scoreCashAccuracy names which kind in
   // the detail string.
-  const flagged = computeCashFlowResiduals(db, { accountIds }).filter(p =>
-    isUnexplainedCashFlow(p, {
-      absFloor: CONFIDENCE_RESIDUAL_ABS_FLOOR,
-      relFloor: CONFIDENCE_RESIDUAL_REL_FLOOR,
-    })
+  const flagged = allPoints.filter(
+    p =>
+      isUnexplainedCashFlow(p, floors) &&
+      p.classification !== "source-seam" &&
+      p.classification !== "live-anchor-residual"
   );
-  if (flagged.length === 0) return null;
 
-  flagged.sort((a, b) =>
-    a.toDate !== b.toDate
-      ? (a.toDate < b.toDate ? 1 : -1) // most recent date first
-      : Math.abs(b.residual) - Math.abs(a.residual)
+  let unexplainedFlow: {
+    accountName: string;
+    date: string;
+    residual: number;
+    classification: CashFlowClassification;
+  } | null = null;
+  if (flagged.length > 0) {
+    sortWorstFirst(flagged);
+    const worst = flagged[0];
+    unexplainedFlow = {
+      accountName: worst.accountName,
+      date: worst.toDate,
+      residual: worst.residual,
+      classification: worst.classification,
+    };
+  }
+
+  const suppressedTimingResiduals = allPoints.filter(
+    p => p.classification === "live-anchor-residual" && isUnexplainedCashFlow(p, floors)
   );
-  const worst = flagged[0];
-  return {
-    accountName: worst.accountName,
-    date: worst.toDate,
-    residual: worst.residual,
-    classification: worst.classification,
-  };
+
+  let timingResidual: TimingResidualNote | null = null;
+  if (suppressedTimingResiduals.length > 0) {
+    sortWorstFirst(suppressedTimingResiduals);
+    const worst = suppressedTimingResiduals[0];
+    timingResidual = {
+      date: worst.toDate,
+      accountName: worst.accountName,
+      amount: worst.residual,
+    };
+  }
+
+  return { unexplainedFlow, timingResidual };
 }
 
 function scoreCashAccuracy(db: Database.Database): CashAccuracyScore {
@@ -313,7 +393,7 @@ function scoreCashAccuracy(db: Database.Database): CashAccuracyScore {
   const whyMatters =
     "Cash is inferred from the latest statement — the older the anchor, the more it can drift from reality.";
 
-  const unexplainedFlow = findWorstUnexplainedCashFlow(db);
+  const { unexplainedFlow, timingResidual } = findWorstUnexplainedCashFlow(db);
 
   if (!row.latest_date) {
     return {
@@ -324,6 +404,7 @@ function scoreCashAccuracy(db: Database.Database): CashAccuracyScore {
       latestAnchorDate: null,
       daysSinceAnchor: null,
       unexplainedFlow,
+      timingResidual,
     };
   }
 
@@ -373,6 +454,17 @@ function scoreCashAccuracy(db: Database.Database): CashAccuracyScore {
         `the cash/holdings split looks misattributed by the valuation source (not a missing external flow, so the ` +
         `repair script won't propose a row for it). Worth checking that day's live source data.`;
     }
+  } else if (timingResidual) {
+    // Live-snapshot (Plaid/TWS) timing residual: labeled, never capped —
+    // it's ambiguous until a statement covers the window, not a confirmed
+    // data-quality problem the way unexplainedFlow is.
+    const sign = timingResidual.amount > 0 ? "+" : "-";
+    const amountStr = `${sign}$${Math.abs(timingResidual.amount).toFixed(0)}`;
+    detail += `; cash delta of ${amountStr} on ${timingResidual.date} in ${timingResidual.accountName} is a live-snapshot timing residual (intraday broker total vs close-priced holdings) — not treated as an external flow`;
+    guidance =
+      `Live-snapshot (Plaid/TWS) days infer cash as snapshot-total minus holdings value; the residual usually moves ` +
+      `with measurement timing, not money. A genuine flow in this window would confirm on the next statement import ` +
+      `— verify there if the amount looks like a real deposit or withdrawal.`;
   }
 
   return {
@@ -383,6 +475,7 @@ function scoreCashAccuracy(db: Database.Database): CashAccuracyScore {
     latestAnchorDate: row.latest_date,
     daysSinceAnchor: days,
     unexplainedFlow,
+    timingResidual,
   };
 }
 
