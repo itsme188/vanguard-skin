@@ -53,6 +53,7 @@ import type Database from "better-sqlite3";
 // entirely (see the dynamic-import notes below) so every import here stays
 // safe to reason about under the same rule.
 import { bumpTaxGenerationIfPresent } from "../lib/compute/tax-convention";
+import { scanTypeContradictions } from "../lib/compute/type-contradictions";
 
 // ─── Config shape ───────────────────────────────────────────────────
 
@@ -573,38 +574,12 @@ export interface ContradictionRow {
   reason: string;
 }
 
-interface RawContradictionRow {
-  id: number;
-  symbol: string;
-  security_type: string | null;
-  equity_fills: number;
-  fund_category: string | null;
-}
-
-const PREDICATE_1_SQL = `
-  -- Predicate 1: bond/fund-typed securities whose ledger is dominated by equity fills
-  -- (floor >10: genuine mutual funds legitimately show some fills; the audit's corrupted
-  -- row sat far above every real fund).
-  SELECT s.id, s.symbol, s.security_type,
-         SUM(CASE WHEN UPPER(t.type) IN ('BUY','SELL','SHORT_SELL','BUY_TO_COVER')
-                   AND t.quantity IS NOT NULL AND t.quantity <> 0 THEN 1 ELSE 0 END) AS equity_fills,
-         s.fund_category
-    FROM securities s JOIN transactions t ON t.security_id = s.id
-   WHERE LOWER(COALESCE(s.security_type,'')) IN ('bond','mutual fund','mutual_fund')
-   GROUP BY s.id
-  HAVING equity_fills > 10
-`;
-
-const PREDICATE_2_SQL = `
-  -- Predicate 2: equity-shaped classification metadata contradicting a bond/fund type.
-  -- Bond/mutual-fund types ONLY — never 'etf' (sector ETFs legitimately carry
-  -- "US Sector Equity%" fund categories; an ETF-typed contradiction needs
-  -- contract-details stockType evidence, which is TWS territory, not this detector).
-  SELECT id, symbol, security_type, 0 AS equity_fills, fund_category
-    FROM securities
-   WHERE fund_category LIKE 'US Sector Equity%'
-     AND LOWER(COALESCE(security_type,'')) IN ('bond','mutual fund','mutual_fund')
-`;
+// Bond/mutual-fund types the predicate-2 metadata-corroboration branch
+// accepts — mirrors lib/compute/type-contradictions.ts's PREDICATE_2_SQL
+// WHERE clause exactly (never 'etf'); reused below to reconstruct the
+// per-row `reason` from scanTypeContradictions's output without
+// re-implementing the SQL predicates here.
+const PREDICATE_2_TYPES = new Set(["bond", "mutual fund", "mutual_fund"]);
 
 /**
  * Read-only detector for securities whose stored security_type contradicts
@@ -612,46 +587,54 @@ const PREDICATE_2_SQL = `
  * fund_category on a bond/fund-typed row). These are NEEDS REVIEW hits —
  * this function never repairs anything; a human confirms and adds a
  * KnownTypeRepair entry to the config before any write happens.
+ *
+ * Delegates the actual OR-union detection to the shared
+ * lib/compute/type-contradictions.ts module (scanTypeContradictions) so
+ * this script and lib/queries/integrity-checks.ts can never disagree about
+ * what counts as a contradiction. `fundCategory` and `reason` — this
+ * function's CLI-facing extras that scanTypeContradictions's leaner
+ * `{securityId, symbol, securityType, equityFills, held}` shape doesn't
+ * carry — are reconstructed here: `equityFills > 10` reliably identifies a
+ * predicate-1 hit (predicate 2's own rows always report equityFills=0, a
+ * deliberate quirk — see the shared module's doc), and re-checking
+ * fund_category against predicate 2's own condition reconstructs the rest.
  */
 export function findTypeContradictions(
   db: Database.Database,
   excludeIds: number[],
 ): ContradictionRow[] {
-  const excludeSet = new Set(excludeIds);
-  const byId = new Map<number, ContradictionRow>();
+  const hits = scanTypeContradictions(db, { excludeIds });
+  if (hits.length === 0) return [];
 
-  const predicate1 = db.prepare(PREDICATE_1_SQL).all() as RawContradictionRow[];
-  for (const row of predicate1) {
-    if (excludeSet.has(row.id)) continue;
-    byId.set(row.id, {
-      id: row.id,
-      symbol: row.symbol,
-      securityType: row.security_type ?? "",
-      equityFills: row.equity_fills,
-      fundCategory: row.fund_category,
-      reason: "dominated by equity fills",
-    });
-  }
+  const ids = hits.map((h) => h.securityId);
+  const placeholders = ids.map(() => "?").join(",");
+  const fundCategoryRows = db
+    .prepare(`SELECT id, fund_category FROM securities WHERE id IN (${placeholders})`)
+    .all(...ids) as { id: number; fund_category: string | null }[];
+  const fundCategoryById = new Map(fundCategoryRows.map((r) => [r.id, r.fund_category]));
 
-  const predicate2 = db.prepare(PREDICATE_2_SQL).all() as RawContradictionRow[];
-  for (const row of predicate2) {
-    if (excludeSet.has(row.id)) continue;
-    const existing = byId.get(row.id);
-    if (existing) {
-      existing.reason = "dominated by equity fills; equity-shaped fund_category";
-    } else {
-      byId.set(row.id, {
-        id: row.id,
-        symbol: row.symbol,
-        securityType: row.security_type ?? "",
-        equityFills: row.equity_fills,
-        fundCategory: row.fund_category,
-        reason: "equity-shaped fund_category",
-      });
-    }
-  }
-
-  return Array.from(byId.values());
+  return hits.map((hit) => {
+    const fundCategory = fundCategoryById.get(hit.securityId) ?? null;
+    const matchesPredicate1 = hit.equityFills > 10;
+    const matchesPredicate2 =
+      fundCategory != null &&
+      fundCategory.toLowerCase().startsWith("us sector equity") &&
+      PREDICATE_2_TYPES.has(hit.securityType.toLowerCase());
+    const reason =
+      matchesPredicate1 && matchesPredicate2
+        ? "dominated by equity fills; equity-shaped fund_category"
+        : matchesPredicate2
+          ? "equity-shaped fund_category"
+          : "dominated by equity fills";
+    return {
+      id: hit.securityId,
+      symbol: hit.symbol,
+      securityType: hit.securityType,
+      equityFills: hit.equityFills,
+      fundCategory,
+      reason,
+    };
+  });
 }
 
 // ─── CLI driver ─────────────────────────────────────────────────────
