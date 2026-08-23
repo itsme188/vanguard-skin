@@ -1,0 +1,405 @@
+/**
+ * repair-security-type-corruption.ts — Config-driven repair for securities
+ * whose security_type/name were corrupted by an import-time transcription
+ * defect: a fragment of a bond's descriptive name landed in a row's SYMBOL
+ * column, colliding with an already-held equity ticker. When the bad row
+ * was later upserted, the incoming bond-like type/name/maturity stamped
+ * bond identity onto the equity security, routing a live equity position
+ * through the bond ÷100 valuation path. lib/mutations/securities.ts carries
+ * an import-time guard (the equity-fill check added alongside this repair
+ * script) that refuses this exact corruption on NEW upserts going forward —
+ * this script is the one-time cleanup for rows that were corrupted BEFORE
+ * that guard existed.
+ *
+ * The concrete affected security ids, symbols, transaction ids, and dollar
+ * amounts are never hardcoded in this file — they live in a gitignored JSON
+ * config (see loadRepairConfig) because this repository is public and those
+ * values are real account data. Every id/symbol/amount appearing in this
+ * file or its tests is synthetic.
+ *
+ * PREFLIGHT / APPLY SPLIT — all-or-nothing contract:
+ *
+ *   preflightTypeRepairs() is pure and read-only. For every configured
+ *   repair it loads the current row and classifies it against the repair's
+ *   expected "before" shape and intended "after" shape:
+ *     - the row (or its symbol) doesn't match what the repair expects, or
+ *       its current security_type/name matches NEITHER the expected nor the
+ *       target state -> precondition_mismatch (the row moved since the
+ *       repair entry was written — rerun, partial apply, unrelated edit —
+ *       and applying blind would risk corrupting data a second time);
+ *     - the row is already fully in the target state -> skipped_already_correct
+ *       (safe no-op, makes the repair idempotent to rerun);
+ *     - otherwise -> would_repair.
+ *
+ *   applyTypeRepairs() re-runs the exact same preflight check before writing
+ *   anything. If ANY row comes back precondition_mismatch, it throws and
+ *   writes NOTHING for the whole batch, not just the offending row — a
+ *   partial apply would leave the repair config's assumptions (and any
+ *   later stage layered on top, e.g. an interest-rehome pass keyed to the
+ *   post-repair security ids) in an inconsistent, half-migrated state.
+ *   Rows already at skipped_already_correct are silently left alone.
+ *
+ *   applyTypeRepairs runs its writes inline against the given db handle —
+ *   it does not open its own transaction. A later CLI driver wraps type
+ *   repairs together with other repair stages in ONE outer db.transaction
+ *   so a night's repair run either fully lands or fully rolls back.
+ */
+
+import fs from "node:fs";
+import type Database from "better-sqlite3";
+
+// ─── Config shape ───────────────────────────────────────────────────
+
+export interface KnownTypeRepair {
+  id: number;
+  symbol: string;
+  expectType: string;
+  setType: string;
+  setName?: string;
+  /** Required when setName is present — see loadRepairConfig validation. */
+  expectNameLike?: string;
+  clearBondFields?: boolean;
+}
+
+/** Consumed by a later task's rehome functions; defined here so
+ *  loadRepairConfig can validate the shape of treasuryInterestRehomes. */
+export interface InterestRehome {
+  transactionId: number;
+  fromSecurityId: number;
+  toSecurityId: number;
+  expectTradeDate: string;
+  expectFees: number;
+  setAmount: number;
+  newSourceKey: string;
+}
+
+export interface CsvCorrection {
+  file: string;
+  approxLine: number;
+  fix: string;
+}
+
+export interface RepairConfig {
+  knownTypeRepairs: KnownTypeRepair[];
+  treasuryInterestRehomes: InterestRehome[];
+  neverUndoImportBatches: number[];
+  csvCorrections: CsvCorrection[];
+}
+
+// ─── Config loading + validation ────────────────────────────────────
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function isFiniteNumber(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v);
+}
+
+/** Optional-field helper: JSON has no `undefined`, so a hand-edited config
+ *  may spell "absent" as `null`. Treat both the same way. */
+function optionalString(v: unknown): string | undefined {
+  return v === undefined || v === null ? undefined : (v as string);
+}
+
+function requireArray(obj: Record<string, unknown>, key: string, configPath: string): unknown[] {
+  const value = obj[key];
+  if (!Array.isArray(value)) {
+    throw new Error(`repair config at ${configPath} is missing "${key}" (must be an array)`);
+  }
+  return value;
+}
+
+function validateKnownTypeRepair(raw: unknown, index: number): KnownTypeRepair {
+  if (!isPlainObject(raw)) {
+    throw new Error(`knownTypeRepairs[${index}] must be an object`);
+  }
+  if (!isFiniteNumber(raw.id)) {
+    throw new Error(`knownTypeRepairs[${index}].id must be a number`);
+  }
+  if (typeof raw.symbol !== "string" || raw.symbol.length === 0) {
+    throw new Error(`knownTypeRepairs[${index}].symbol must be a non-empty string`);
+  }
+  if (typeof raw.expectType !== "string" || raw.expectType.length === 0) {
+    throw new Error(`knownTypeRepairs[${index}].expectType must be a non-empty string`);
+  }
+  if (typeof raw.setType !== "string" || raw.setType.length === 0) {
+    throw new Error(`knownTypeRepairs[${index}].setType must be a non-empty string`);
+  }
+  const setName = optionalString(raw.setName);
+  if (setName !== undefined && typeof setName !== "string") {
+    throw new Error(`knownTypeRepairs[${index}].setName must be a string when present`);
+  }
+  const expectNameLike = optionalString(raw.expectNameLike);
+  if (expectNameLike !== undefined && typeof expectNameLike !== "string") {
+    throw new Error(`knownTypeRepairs[${index}].expectNameLike must be a string when present`);
+  }
+  if (setName !== undefined && expectNameLike === undefined) {
+    throw new Error(
+      `knownTypeRepairs[${index}]: expectNameLike is required when setName is present`,
+    );
+  }
+  if (raw.clearBondFields !== undefined && typeof raw.clearBondFields !== "boolean") {
+    throw new Error(`knownTypeRepairs[${index}].clearBondFields must be a boolean when present`);
+  }
+  return {
+    id: raw.id,
+    symbol: raw.symbol,
+    expectType: raw.expectType,
+    setType: raw.setType,
+    setName,
+    expectNameLike,
+    clearBondFields: raw.clearBondFields as boolean | undefined,
+  };
+}
+
+function validateInterestRehome(raw: unknown, index: number): InterestRehome {
+  if (!isPlainObject(raw)) {
+    throw new Error(`treasuryInterestRehomes[${index}] must be an object`);
+  }
+  if (!isFiniteNumber(raw.transactionId)) {
+    throw new Error(`treasuryInterestRehomes[${index}].transactionId must be a number`);
+  }
+  if (!isFiniteNumber(raw.fromSecurityId)) {
+    throw new Error(`treasuryInterestRehomes[${index}].fromSecurityId must be a number`);
+  }
+  if (!isFiniteNumber(raw.toSecurityId)) {
+    throw new Error(`treasuryInterestRehomes[${index}].toSecurityId must be a number`);
+  }
+  if (typeof raw.expectTradeDate !== "string" || raw.expectTradeDate.length === 0) {
+    throw new Error(`treasuryInterestRehomes[${index}].expectTradeDate must be a non-empty string`);
+  }
+  if (!isFiniteNumber(raw.expectFees)) {
+    throw new Error(`treasuryInterestRehomes[${index}].expectFees must be a number`);
+  }
+  if (!isFiniteNumber(raw.setAmount)) {
+    throw new Error(`treasuryInterestRehomes[${index}].setAmount must be a number`);
+  }
+  if (typeof raw.newSourceKey !== "string" || raw.newSourceKey.length === 0) {
+    throw new Error(`treasuryInterestRehomes[${index}].newSourceKey must be a non-empty string`);
+  }
+  return {
+    transactionId: raw.transactionId,
+    fromSecurityId: raw.fromSecurityId,
+    toSecurityId: raw.toSecurityId,
+    expectTradeDate: raw.expectTradeDate,
+    expectFees: raw.expectFees,
+    setAmount: raw.setAmount,
+    newSourceKey: raw.newSourceKey,
+  };
+}
+
+function validateCsvCorrection(raw: unknown, index: number): CsvCorrection {
+  if (!isPlainObject(raw)) {
+    throw new Error(`csvCorrections[${index}] must be an object`);
+  }
+  if (typeof raw.file !== "string" || raw.file.length === 0) {
+    throw new Error(`csvCorrections[${index}].file must be a non-empty string`);
+  }
+  if (!isFiniteNumber(raw.approxLine)) {
+    throw new Error(`csvCorrections[${index}].approxLine must be a number`);
+  }
+  if (typeof raw.fix !== "string" || raw.fix.length === 0) {
+    throw new Error(`csvCorrections[${index}].fix must be a non-empty string`);
+  }
+  return { file: raw.file, approxLine: raw.approxLine, fix: raw.fix };
+}
+
+/** Loads and validates the repair config from `configPath`. Throws on a
+ *  missing file, invalid JSON, or any shape mismatch — this repairs real
+ *  account data, so a malformed config must never partially apply. */
+export function loadRepairConfig(configPath: string): RepairConfig {
+  if (!fs.existsSync(configPath)) {
+    throw new Error(`repair config not found at ${configPath}`);
+  }
+
+  const raw = fs.readFileSync(configPath, "utf-8");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(
+      `repair config at ${configPath} is not valid JSON: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+
+  if (!isPlainObject(parsed)) {
+    throw new Error(`repair config at ${configPath} must be a JSON object`);
+  }
+
+  const knownTypeRepairs = requireArray(parsed, "knownTypeRepairs", configPath).map(
+    validateKnownTypeRepair,
+  );
+  const treasuryInterestRehomes = requireArray(
+    parsed,
+    "treasuryInterestRehomes",
+    configPath,
+  ).map(validateInterestRehome);
+  const neverUndoImportBatches = requireArray(
+    parsed,
+    "neverUndoImportBatches",
+    configPath,
+  ).map((v, i) => {
+    if (!isFiniteNumber(v)) {
+      throw new Error(`neverUndoImportBatches[${i}] must be a number`);
+    }
+    return v;
+  });
+  const csvCorrections = requireArray(parsed, "csvCorrections", configPath).map(
+    validateCsvCorrection,
+  );
+
+  return { knownTypeRepairs, treasuryInterestRehomes, neverUndoImportBatches, csvCorrections };
+}
+
+// ─── Preflight / apply core ─────────────────────────────────────────
+
+export type TypeRepairAction =
+  | "repaired"
+  | "would_repair"
+  | "skipped_already_correct"
+  | "precondition_mismatch";
+
+export interface TypeRepairOutcome {
+  symbol: string;
+  action: TypeRepairAction;
+  previousType: string | null;
+  detail?: string;
+}
+
+interface SecurityTypeRow {
+  id: number;
+  symbol: string;
+  name: string | null;
+  security_type: string | null;
+}
+
+function loadSecurityTypeRow(
+  db: Database.Database,
+  id: number,
+): SecurityTypeRow | undefined {
+  return db
+    .prepare(`SELECT id, symbol, name, security_type FROM securities WHERE id = ?`)
+    .get(id) as SecurityTypeRow | undefined;
+}
+
+function mismatch(
+  repair: KnownTypeRepair,
+  previousType: string | null,
+  detail: string,
+): TypeRepairOutcome {
+  return { symbol: repair.symbol, action: "precondition_mismatch", previousType, detail };
+}
+
+function classifyRepair(
+  row: SecurityTypeRow | undefined,
+  repair: KnownTypeRepair,
+): TypeRepairOutcome {
+  if (!row) {
+    return mismatch(repair, null, `no security row with id ${repair.id}`);
+  }
+  if (row.symbol.toUpperCase() !== repair.symbol.toUpperCase()) {
+    return mismatch(
+      repair,
+      row.security_type,
+      `symbol mismatch: expected "${repair.symbol}", found "${row.symbol}"`,
+    );
+  }
+
+  const currentType = (row.security_type ?? "").toLowerCase();
+  const expectType = repair.expectType.toLowerCase();
+  const setType = repair.setType.toLowerCase();
+
+  if (currentType !== expectType && currentType !== setType) {
+    return mismatch(
+      repair,
+      row.security_type,
+      `security_type "${row.security_type ?? "(null)"}" matches neither expectType ` +
+        `"${repair.expectType}" nor setType "${repair.setType}"`,
+    );
+  }
+
+  const name = row.name ?? "";
+  if (repair.expectNameLike !== undefined) {
+    const nameMatchesExpected = name
+      .toUpperCase()
+      .includes(repair.expectNameLike.toUpperCase());
+    const nameMatchesTarget = repair.setName !== undefined && name === repair.setName;
+    if (!nameMatchesExpected && !nameMatchesTarget) {
+      return mismatch(
+        repair,
+        row.security_type,
+        `name "${row.name ?? "(null)"}" matches neither expectNameLike ` +
+          `"${repair.expectNameLike}" nor the target name`,
+      );
+    }
+  }
+
+  const typeAlreadyCorrect = currentType === setType;
+  const nameAlreadyCorrect = repair.setName === undefined || name === repair.setName;
+  if (typeAlreadyCorrect && nameAlreadyCorrect) {
+    return { symbol: repair.symbol, action: "skipped_already_correct", previousType: row.security_type };
+  }
+
+  return { symbol: repair.symbol, action: "would_repair", previousType: row.security_type };
+}
+
+/** Pure, read-only. Classifies every configured repair against the
+ *  security table's current state — see the header doc for the outcome
+ *  semantics. Never writes. */
+export function preflightTypeRepairs(
+  db: Database.Database,
+  repairs: KnownTypeRepair[],
+): TypeRepairOutcome[] {
+  return repairs.map((repair) => classifyRepair(loadSecurityTypeRow(db, repair.id), repair));
+}
+
+const APPLY_UPDATE_SQL = `
+  UPDATE securities
+     SET security_type = @setType,
+         name = COALESCE(@setName, name),
+         maturity_date  = CASE WHEN @clearBondFields THEN NULL ELSE maturity_date END,
+         duration_years = CASE WHEN @clearBondFields THEN NULL ELSE duration_years END,
+         credit_rating  = CASE WHEN @clearBondFields THEN NULL ELSE credit_rating END,
+         coupon_rate    = CASE WHEN @clearBondFields THEN NULL ELSE coupon_rate END
+   WHERE id = @id
+`;
+
+/**
+ * Re-runs preflightTypeRepairs and throws BEFORE writing anything if any
+ * row comes back precondition_mismatch (all-or-nothing — see header doc).
+ * Rows at skipped_already_correct are left alone. Runs inline against the
+ * given db handle; the caller owns the transaction boundary.
+ */
+export function applyTypeRepairs(
+  db: Database.Database,
+  repairs: KnownTypeRepair[],
+): TypeRepairOutcome[] {
+  const outcomes = preflightTypeRepairs(db, repairs);
+
+  const firstMismatch = outcomes.find((o) => o.action === "precondition_mismatch");
+  if (firstMismatch) {
+    throw new Error(
+      `applyTypeRepairs: precondition_mismatch for ${firstMismatch.symbol} — ` +
+        `${firstMismatch.detail ?? "current state does not match the repair config"}. ` +
+        `Refusing to write anything for this batch.`,
+    );
+  }
+
+  const update = db.prepare(APPLY_UPDATE_SQL);
+  repairs.forEach((repair, i) => {
+    const outcome = outcomes[i];
+    if (outcome.action !== "would_repair") return;
+    update.run({
+      id: repair.id,
+      setType: repair.setType,
+      setName: repair.setName ?? null,
+      clearBondFields: repair.clearBondFields ? 1 : 0,
+    });
+    outcome.action = "repaired";
+  });
+
+  return outcomes;
+}
