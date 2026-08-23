@@ -110,7 +110,8 @@ Detail: `docs/reference/conventions-detail.md`, `docs/reference/earnings-pipelin
 - Multi-account summed series doing return math must pass `fullCoverageOnly: true`.
 
 **Symbols & classification**
-- Options use OCC symbols; `upsertSecurity` refuses stock↔option merges.
+- Options use OCC symbols; `upsertSecurity` refuses stock↔option merges — AND refuses bond-like identity (incoming Bond/Mutual Fund type, name, derived maturity) onto a Stock/ETF row that has equity fills (2026-08-23 guard; the "U" Treasury-transcription corruption class). The weak-evidence rule is now two-directional: incoming 'Stock' never downgrades a fund-family type, incoming bond/fund identity never lands on an equity-fill security.
+- Security-type repairs: `scripts/repair-security-type-corruption.ts` (config-driven from gitignored `data/repair-configs/`, dry-run default, all-or-nothing apply). ALWAYS rehearse `--apply` on a DB copy first via `REPAIR_DB_PATH`/`REPAIR_CONFIG_PATH` env overrides, running FROM THE REPO ROOT — running tsx scripts from another cwd breaks `@/` alias resolution for dynamic imports (transitively; caught live 2026-08-23).
 - IBKR labels every STK contract 'Stock' (ETFs included) — an incoming 'Stock' is WEAK evidence: `upsertSecurity` never downgrades a fund-family type, and enrich promotes 'Stock'→'ETF' from contract-details `stockType`. Repair: `scripts/repair-etf-types.ts`.
 - Compare security types case-insensitively; `mapSecurityType()` is the single source.
 - Share classes roll up via `issuerSiblings()` — never symbol-string-equal.
@@ -153,6 +154,10 @@ When fixing bugs, verify the fix against the actual data/edge cases before decla
 - Never symbol-string-equal on user-visible surfaces — use `issuerSiblings()`.
 - Finnhub: the symbol we QUERIED is canonical, never `entry.symbol`.
 - Earnings recap requires `actual_value IS NOT NULL`; `enriched_at` is not sufficient. Better no email than a wrong one.
+- **Tax exports are bannered NOT-FOR-FILING (2026-08-23 containment):** Form 8949/TXF gross proceeds/basis carry a bond ÷100 defect and reversed short-sale columns (`lib/compute/tax-lots.ts`; 2026-08-21 audit). The banner + `-NOT-FOR-FILING` filenames stay until the engine fix ships (own spec, broker-reconciliation acceptance test). Realized gain/loss itself is correct for stocks.
+- **TWR "reconciliation" is statement-self-referential** (`computeTwr` returns `snap.twr` when present) — UI discloses "statement-reported, not independently verified"; never re-add "reconciled ✓ / 0 bp" claims until an independent lane (Modified Dietz) exists.
+- **Plaid/TWS-day cash is a timing residual, not literal cash** — `computeCashFlowResiduals` classifies those points `live-anchor-residual` (precedence: `source-seam` first); they are labeled, never score-capped, and NEVER proposal candidates for flow synthesis.
+- **Real-figure docs go to `docs/private/` (gitignored) — the repo is PUBLIC.** Committed docs stay direction-only; repair constants (DB ids, amounts, source keys) live in gitignored `data/repair-configs/*.json` with synthetic fixtures in committed tests. Never undo import batches 56/58 (their undo deletes the 2026-08-23 repaired coupon rows).
 - Guard any Finnhub `actual_value` surface with `isPlausibleEarnings`.
 - TWS historical bars are SPLIT-ADJUSTED to today's share basis; statement-sourced prices/quantities are statement-date basis. Never mix bases: any bars→prices backfill must compare statement rows against same-date bar closes (integer ratio = a split) and normalize product-preserving (`scripts/repair-split-basis-2024-year-end.ts` precedent; generalized guarded form: `scripts/repair-split-basis-audit.ts`).
 - Underlying splits RE-SYMBOL the listed options (strike re-struck: IBKR 4:1 140P→35P, XLU 2:1 100C→50C) — the activity report prints split legs under the ORIGINAL symbols, the statements under the new ones. Never leave a pre-split option row on the old symbol: move + normalize via `OPTION_RESYMBOL_TARGETS` in `scripts/repair-mistyped-option-legs.ts`.
