@@ -403,3 +403,247 @@ export function applyTypeRepairs(
 
   return outcomes;
 }
+
+// ─── Interest re-home (bond coupon rows stranded on the wrong security) ──
+
+export interface RehomeOutcome {
+  transactionId: number;
+  action: TypeRepairAction;
+  detail?: string;
+}
+
+interface RehomeTransactionRow {
+  id: number;
+  security_id: number;
+  trade_date: string;
+  type: string;
+  amount: number | null;
+  fees: number | null;
+  source_key: string | null;
+}
+
+const BOND_FAMILY_TYPES = new Set(["bond", "mutual fund", "mutual_fund"]);
+
+function loadRehomeTransactionRow(
+  db: Database.Database,
+  id: number,
+): RehomeTransactionRow | undefined {
+  return db
+    .prepare(
+      `SELECT id, security_id, trade_date, type, amount, fees, source_key FROM transactions WHERE id = ?`,
+    )
+    .get(id) as RehomeTransactionRow | undefined;
+}
+
+function loadSecurityTypeById(db: Database.Database, id: number): string | null {
+  const row = db.prepare(`SELECT security_type FROM securities WHERE id = ?`).get(id) as
+    | { security_type: string | null }
+    | undefined;
+  return row?.security_type ?? null;
+}
+
+function rehomeMismatch(rehome: InterestRehome, detail: string): RehomeOutcome {
+  return { transactionId: rehome.transactionId, action: "precondition_mismatch", detail };
+}
+
+function classifyRehome(db: Database.Database, rehome: InterestRehome): RehomeOutcome {
+  const row = loadRehomeTransactionRow(db, rehome.transactionId);
+  if (!row) {
+    return rehomeMismatch(rehome, `no transaction row with id ${rehome.transactionId}`);
+  }
+
+  // Already fully at the target state -> idempotent no-op.
+  if (row.security_id === rehome.toSecurityId && row.source_key === rehome.newSourceKey) {
+    return { transactionId: rehome.transactionId, action: "skipped_already_correct" };
+  }
+
+  if (row.security_id !== rehome.fromSecurityId) {
+    return rehomeMismatch(
+      rehome,
+      `security_id ${row.security_id} does not match expected fromSecurityId ${rehome.fromSecurityId}`,
+    );
+  }
+  if (row.trade_date !== rehome.expectTradeDate) {
+    return rehomeMismatch(
+      rehome,
+      `trade_date "${row.trade_date}" does not match expected "${rehome.expectTradeDate}"`,
+    );
+  }
+  if ((row.type ?? "").toUpperCase() !== "INTEREST") {
+    return rehomeMismatch(rehome, `type "${row.type}" is not INTEREST`);
+  }
+  if (row.amount !== null) {
+    return rehomeMismatch(rehome, `amount is already populated (${row.amount}), row was hand-fixed`);
+  }
+  if (row.fees !== rehome.expectFees) {
+    return rehomeMismatch(
+      rehome,
+      `fees ${row.fees} does not match expected ${rehome.expectFees}`,
+    );
+  }
+
+  const targetType = (loadSecurityTypeById(db, rehome.toSecurityId) ?? "").toLowerCase();
+  if (!BOND_FAMILY_TYPES.has(targetType)) {
+    return rehomeMismatch(
+      rehome,
+      `target security ${rehome.toSecurityId} does not have a bond-family security_type`,
+    );
+  }
+
+  const existingSourceKey = db
+    .prepare(`SELECT id FROM transactions WHERE source_key = ?`)
+    .get(rehome.newSourceKey) as { id: number } | undefined;
+  if (existingSourceKey) {
+    return rehomeMismatch(
+      rehome,
+      `source_key "${rehome.newSourceKey}" already exists on transaction id ${existingSourceKey.id} — a corrected re-import may have already landed`,
+    );
+  }
+
+  return { transactionId: rehome.transactionId, action: "would_repair" };
+}
+
+/** Pure, read-only. Classifies every configured rehome against the
+ *  transactions table's current state. Never writes. */
+export function preflightRehomes(
+  db: Database.Database,
+  rehomes: InterestRehome[],
+): RehomeOutcome[] {
+  return rehomes.map((rehome) => classifyRehome(db, rehome));
+}
+
+const REHOME_UPDATE_SQL = `
+  UPDATE transactions
+     SET security_id = @toSecurityId, amount = @setAmount, fees = 0, source_key = @newSourceKey
+   WHERE id = @transactionId
+`;
+
+/**
+ * Re-runs preflightRehomes and throws BEFORE writing anything if any row
+ * comes back precondition_mismatch — same all-or-nothing contract as
+ * applyTypeRepairs. Runs inline against the given db handle; the caller
+ * owns the transaction boundary (a later CLI driver wraps type repairs and
+ * rehomes together in one outer db.transaction).
+ */
+export function applyRehomes(
+  db: Database.Database,
+  rehomes: InterestRehome[],
+): RehomeOutcome[] {
+  const outcomes = preflightRehomes(db, rehomes);
+
+  const firstMismatch = outcomes.find((o) => o.action === "precondition_mismatch");
+  if (firstMismatch) {
+    throw new Error(
+      `applyRehomes: precondition_mismatch for transaction ${firstMismatch.transactionId} — ` +
+        `${firstMismatch.detail ?? "current state does not match the rehome config"}. ` +
+        `Refusing to write anything for this batch.`,
+    );
+  }
+
+  const update = db.prepare(REHOME_UPDATE_SQL);
+  rehomes.forEach((rehome, i) => {
+    const outcome = outcomes[i];
+    if (outcome.action !== "would_repair") return;
+    update.run({
+      transactionId: rehome.transactionId,
+      toSecurityId: rehome.toSecurityId,
+      setAmount: rehome.setAmount,
+      newSourceKey: rehome.newSourceKey,
+    });
+    outcome.action = "repaired";
+  });
+
+  return outcomes;
+}
+
+// ─── Contradiction detector (review-only, never auto-repaired) ──────
+
+export interface ContradictionRow {
+  id: number;
+  symbol: string;
+  securityType: string;
+  equityFills: number;
+  fundCategory: string | null;
+  reason: string;
+}
+
+interface RawContradictionRow {
+  id: number;
+  symbol: string;
+  security_type: string | null;
+  equity_fills: number;
+  fund_category: string | null;
+}
+
+const PREDICATE_1_SQL = `
+  -- Predicate 1: bond/fund-typed securities whose ledger is dominated by equity fills
+  -- (floor >10: genuine mutual funds legitimately show some fills; the audit's corrupted
+  -- row sat far above every real fund).
+  SELECT s.id, s.symbol, s.security_type,
+         SUM(CASE WHEN UPPER(t.type) IN ('BUY','SELL','SHORT_SELL','BUY_TO_COVER')
+                   AND t.quantity IS NOT NULL AND t.quantity <> 0 THEN 1 ELSE 0 END) AS equity_fills,
+         s.fund_category
+    FROM securities s JOIN transactions t ON t.security_id = s.id
+   WHERE LOWER(COALESCE(s.security_type,'')) IN ('bond','mutual fund','mutual_fund')
+   GROUP BY s.id
+  HAVING equity_fills > 10
+`;
+
+const PREDICATE_2_SQL = `
+  -- Predicate 2: equity-shaped classification metadata contradicting a bond/fund type.
+  -- Bond/mutual-fund types ONLY — never 'etf' (sector ETFs legitimately carry
+  -- "US Sector Equity%" fund categories; an ETF-typed contradiction needs
+  -- contract-details stockType evidence, which is TWS territory, not this detector).
+  SELECT id, symbol, security_type, 0 AS equity_fills, fund_category
+    FROM securities
+   WHERE fund_category LIKE 'US Sector Equity%'
+     AND LOWER(COALESCE(security_type,'')) IN ('bond','mutual fund','mutual_fund')
+`;
+
+/**
+ * Read-only detector for securities whose stored security_type contradicts
+ * other evidence (ledger activity shaped like equity trading, or an equity
+ * fund_category on a bond/fund-typed row). These are NEEDS REVIEW hits —
+ * this function never repairs anything; a human confirms and adds a
+ * KnownTypeRepair entry to the config before any write happens.
+ */
+export function findTypeContradictions(
+  db: Database.Database,
+  excludeIds: number[],
+): ContradictionRow[] {
+  const excludeSet = new Set(excludeIds);
+  const byId = new Map<number, ContradictionRow>();
+
+  const predicate1 = db.prepare(PREDICATE_1_SQL).all() as RawContradictionRow[];
+  for (const row of predicate1) {
+    if (excludeSet.has(row.id)) continue;
+    byId.set(row.id, {
+      id: row.id,
+      symbol: row.symbol,
+      securityType: row.security_type ?? "",
+      equityFills: row.equity_fills,
+      fundCategory: row.fund_category,
+      reason: "dominated by equity fills",
+    });
+  }
+
+  const predicate2 = db.prepare(PREDICATE_2_SQL).all() as RawContradictionRow[];
+  for (const row of predicate2) {
+    if (excludeSet.has(row.id)) continue;
+    const existing = byId.get(row.id);
+    if (existing) {
+      existing.reason = "dominated by equity fills; equity-shaped fund_category";
+    } else {
+      byId.set(row.id, {
+        id: row.id,
+        symbol: row.symbol,
+        securityType: row.security_type ?? "",
+        equityFills: row.equity_fills,
+        fundCategory: row.fund_category,
+        reason: "equity-shaped fund_category",
+      });
+    }
+  }
+
+  return Array.from(byId.values());
+}

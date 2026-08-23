@@ -8,8 +8,12 @@ import {
   preflightTypeRepairs,
   applyTypeRepairs,
   loadRepairConfig,
+  preflightRehomes,
+  applyRehomes,
+  findTypeContradictions,
   type KnownTypeRepair,
   type RepairConfig,
+  type InterestRehome,
 } from "@/scripts/repair-security-type-corruption";
 
 function createTestDb() {
@@ -169,5 +173,98 @@ describe("loadRepairConfig", () => {
     const filePath = path.join(tmpDir, "broken.json");
     fs.writeFileSync(filePath, "{ not json", "utf-8");
     expect(() => loadRepairConfig(filePath)).toThrow();
+  });
+});
+
+describe("preflightRehomes / applyRehomes", () => {
+  let db: Database.Database;
+  const REHOME: InterestRehome = {
+    transactionId: 5001, fromSecurityId: 900, toSecurityId: 901,
+    expectTradeDate: "2025-01-15", expectFees: 123.45, setAmount: 123.45,
+    newSourceKey: "canonical:txn:Acct:FAKECUSIP1:2025-01-15:INTEREST:12345",
+  };
+  beforeEach(() => {
+    db = createTestDb();
+    // account id 1 ("Vanguard Taxable") is pre-seeded by migration 002_seed_accounts.sql
+    seedCorrupted(db); // id 900 from Task 2's helper
+    db.prepare(
+      `INSERT INTO securities (id, symbol, name, security_type, maturity_date)
+       VALUES (901, 'FAKECUSIP1', 'U S TREASURY NOTE CPN 9.999% DUE 01/15/40', 'Bond', '2040-01-15')`
+    ).run();
+    db.prepare(
+      `INSERT INTO transactions (id, account_id, security_id, trade_date, type, quantity, amount, fees, source_key)
+       VALUES (5001, 1, 900, '2025-01-15', 'INTEREST', NULL, NULL, 123.45,
+               'canonical:txn:Acct:AAA:2025-01-15:INTEREST:0')`
+    ).run();
+  });
+
+  it("preflight reports would_repair and leaves the row untouched", () => {
+    expect(preflightRehomes(db, [REHOME])[0].action).toBe("would_repair");
+    const row = db.prepare(`SELECT security_id, amount FROM transactions WHERE id = 5001`).get() as any;
+    expect(row.security_id).toBe(900);
+    expect(row.amount).toBeNull();
+  });
+
+  it("apply repoints, moves the coupon to amount, zeroes fees, rewrites source_key", () => {
+    applyRehomes(db, [REHOME]);
+    const row = db
+      .prepare(`SELECT security_id, amount, fees, source_key FROM transactions WHERE id = 5001`)
+      .get() as any;
+    expect(row.security_id).toBe(901);
+    expect(row.amount).toBe(123.45);
+    expect(row.fees).toBe(0);
+    expect(row.source_key).toBe(REHOME.newSourceKey);
+  });
+
+  it("second apply is skipped_already_correct (idempotent)", () => {
+    applyRehomes(db, [REHOME]);
+    expect(applyRehomes(db, [REHOME])[0].action).toBe("skipped_already_correct");
+  });
+
+  it("refuses when amount is already populated (row was hand-fixed)", () => {
+    db.prepare(`UPDATE transactions SET amount = 123.45 WHERE id = 5001`).run();
+    expect(preflightRehomes(db, [REHOME])[0].action).toBe("precondition_mismatch");
+    expect(() => applyRehomes(db, [REHOME])).toThrow(/precondition/i);
+  });
+
+  it("refuses when the corrected source_key already exists (corrected CSV already re-imported)", () => {
+    db.prepare(
+      `INSERT INTO transactions (account_id, security_id, trade_date, type, amount, source_key)
+       VALUES (1, 901, '2025-01-15', 'INTEREST', 123.45, ?)`
+    ).run(REHOME.newSourceKey);
+    const out = preflightRehomes(db, [REHOME]);
+    expect(out[0].action).toBe("precondition_mismatch");
+    expect(out[0].detail).toContain("source_key");
+  });
+});
+
+describe("findTypeContradictions", () => {
+  it("flags a bond-typed security with many equity fills + equity fund_category; excludes known ids; ignores ETFs and low-fill funds", () => {
+    const db = createTestDb();
+    // account id 1 ("Vanguard Taxable") is pre-seeded by migration 002_seed_accounts.sql
+    db.prepare(
+      `INSERT INTO securities (id, symbol, security_type, fund_category)
+       VALUES (910, 'ZZZ', 'Bond', 'US Sector Equity (Technology)')`
+    ).run();
+    const buy = db.prepare(
+      `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, amount)
+       VALUES (1, 910, '2026-01-05', 'BUY', 10, -100)`
+    );
+    for (let i = 0; i < 12; i++) buy.run();
+    // genuine fund below the floor — not flagged
+    db.prepare(`INSERT INTO securities (id, symbol, security_type) VALUES (911, 'REALFUND', 'Mutual Fund')`).run();
+    db.prepare(
+      `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, amount)
+       VALUES (1, 911, '2026-01-05', 'BUY', 10, -100)`
+    ).run();
+    // genuine sector ETF — must NOT be flagged by predicate 2
+    db.prepare(
+      `INSERT INTO securities (id, symbol, security_type, fund_category)
+       VALUES (912, 'XLZ', 'ETF', 'US Sector Equity (Energy)')`
+    ).run();
+    const rows = findTypeContradictions(db, []);
+    expect(rows.map((r) => r.symbol)).toEqual(["ZZZ"]);
+    // and the exclude list removes known repairs
+    expect(findTypeContradictions(db, [910])).toEqual([]);
   });
 });
