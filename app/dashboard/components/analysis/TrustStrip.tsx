@@ -114,7 +114,7 @@ export function TrustStrip({ scope }: TrustStripProps) {
     );
   }
 
-  const { factorCoverage, lastClassification, performanceReconciledThru, stalePrices, bondDuration } = state;
+  const { factorCoverage, lastClassification, crossCheckedThru, stalePrices, bondDuration } = state;
 
   const coveragePct = Math.round(factorCoverage.percentage * 100);
   const coverageTone: Tone =
@@ -162,10 +162,10 @@ export function TrustStrip({ scope }: TrustStripProps) {
           active={activePanel === "lastClassify"}
         />
         <Cell
-          label="Stmt TWR thru"
-          value={performanceReconciledThru ?? "—"}
+          label="Cross-checked (Modified Dietz)"
+          value={crossCheckedThru ?? "—"}
           tone={reconTone}
-          hint="Latest month with a statement-reported TWR (not independently verified)"
+          hint="Latest month with a contiguous independent cross-check (Modified Dietz vs statement TWR)"
           onClick={() => togglePanel("performance")}
           active={activePanel === "performance"}
         />

@@ -1,22 +1,28 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 
-describe("TWR surfaces disclose non-independence (2026-08-21 audit)", () => {
-  it("PerformanceView drops 'within tolerance' + success styling on the statement branch", () => {
+describe("TWR surfaces disclose an independent Dietz cross-check, not a reconciled checkmark (2026-08-23 durable-fixes update)", () => {
+  it("PerformanceView shows the Modified Dietz cross-check disclosure and drops all 'reconciled' language", () => {
     const src = readFileSync("app/dashboard/components/PerformanceView.tsx", "utf8");
-    expect(src).toContain("statement-reported — not independently verified");
-    expect(src).not.toMatch(/bp\b[^}]*within tolerance/s);
+    expect(src).toContain("Independently cross-checked (Modified Dietz) through");
+    expect(src).toContain("bands shown per month in the trust drawer");
+    expect(src).not.toMatch(/\breconciled\b/i);
   });
 
-  it("TrustStripDrawer discloses on the summary line and the bp caption", () => {
+  it("TrustStripDrawer renders banded chip copy and drops all 'reconciled' language", () => {
     const src = readFileSync("app/dashboard/components/analysis/TrustStripDrawer.tsx", "utf8");
-    expect(src).toContain("not independently verified");
-    expect(src).toContain("not an independent recomputation");
+    expect(src).not.toMatch(/\breconciled\b/i);
+    expect(src).toContain("Consistent — method differences expected");
+    expect(src).toContain("Investigate");
+    expect(src).toContain("Not comparable");
+    expect(src).toContain("Insufficient data");
   });
 
-  it("TrustStrip cell stops saying 'Perf reconciled'", () => {
+  it("TrustStrip cell reads 'Cross-checked (Modified Dietz)', not the old 'Stmt TWR thru' or 'reconciled' language", () => {
     const src = readFileSync("app/dashboard/components/analysis/TrustStrip.tsx", "utf8");
+    expect(src).toContain("Cross-checked (Modified Dietz)");
+    expect(src).not.toContain("Stmt TWR thru");
     expect(src).not.toContain("Perf reconciled");
-    expect(src).toContain("Stmt TWR thru");
+    expect(src).not.toMatch(/\breconciled\b/i);
   });
 });
