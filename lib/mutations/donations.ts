@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { stripArtifactSuffix } from "./donation-links";
+import { bumpTaxGenerationIfPresent } from "@/lib/compute/tax-convention";
 
 export interface NewDonation {
   sourceKey: string;
@@ -108,6 +109,8 @@ export function markDonationReversed(db: Database.Database, donationId: number, 
     db.prepare("DELETE FROM donation_leg_links WHERE donation_id = ?").run(donationId);
     db.prepare("DELETE FROM donation_lots WHERE donation_id = ?").run(donationId);
     db.prepare("UPDATE donations SET reversed_date = ? WHERE id = ?").run(reversedDate, donationId);
+
+    bumpTaxGenerationIfPresent(db);
   });
   run();
 }

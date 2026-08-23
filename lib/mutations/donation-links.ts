@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import type { DonationRow } from "@/lib/queries/donations";
 import { getOpenLotsForDonation } from "@/lib/queries/giving-view";
+import { bumpTaxGenerationIfPresent } from "@/lib/compute/tax-convention";
 
 /** Every invariant rejection in this file throws DonationLinkError with a
  * domain-language message naming the violated concept. */
@@ -187,6 +188,8 @@ export function linkDonationLegs(
     if (amountForOutLeg != null) {
       db.prepare("UPDATE transactions SET amount = ? WHERE id = ?").run(amountForOutLeg, outTransactionId);
     }
+
+    bumpTaxGenerationIfPresent(db);
   });
   run();
 }
@@ -209,6 +212,8 @@ export function unlinkDonationLegs(db: Database.Database, donationId: number): v
       );
     }
     db.prepare("DELETE FROM donation_leg_links WHERE donation_id = ?").run(donationId);
+
+    bumpTaxGenerationIfPresent(db);
   });
   run();
 }
@@ -345,6 +350,8 @@ export function assignDonationLots(
         "INSERT INTO donation_lots (donation_id, acquisition_transaction_id, quantity) VALUES (?, ?, ?)"
       ).run(donationId, a.acquisitionTransactionId, a.quantity);
     }
+
+    bumpTaxGenerationIfPresent(db);
   });
   run();
 }
