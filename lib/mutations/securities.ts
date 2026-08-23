@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { extractMaturityDate } from "@/lib/bonds";
 import { formatOccSymbol, parseOptionSymbol } from "@/lib/import/occ-symbol";
+import { bumpTaxGenerationIfPresent } from "@/lib/compute/tax-convention";
 
 export interface UpsertSecurityParams {
   symbol: string;
@@ -114,8 +115,8 @@ export function upsertSecurity(
   // (or vice versa) on the same symbol. This prevents the "INTC stock becomes
   // INTC option" bug when Claude returns bare tickers for options.
   const existing = db
-    .prepare("SELECT id, security_type FROM securities WHERE symbol = ?")
-    .get(p.symbol) as { id: number; security_type: string | null } | undefined;
+    .prepare("SELECT id, security_type, multiplier FROM securities WHERE symbol = ?")
+    .get(p.symbol) as { id: number; security_type: string | null; multiplier: number | null } | undefined;
 
   if (existing && p.securityType && existing.security_type) {
     const existingIsOption = existing.security_type?.toLowerCase() === "option";
@@ -225,7 +226,29 @@ export function upsertSecurity(
   );
 
   const row = db
-    .prepare("SELECT id FROM securities WHERE symbol = ?")
-    .get(p.symbol) as { id: number };
+    .prepare("SELECT id, security_type, multiplier FROM securities WHERE symbol = ?")
+    .get(p.symbol) as { id: number; security_type: string | null; multiplier: number | null };
+
+  // Tax input generation only advances when an EXISTING security's identity
+  // (multiplier or security_type — both feed tax-lot valuation: multiplier
+  // scales option market value, security_type routes the bond ÷100
+  // convention) actually changed AND that security has tax lots already
+  // computed against it. A fresh insert (no `existing` row) is never a
+  // "change"; case is normalized before comparing since security_type
+  // casing is compared case-insensitively throughout this codebase.
+  if (existing) {
+    const typeChanged =
+      (existing.security_type ?? "").toLowerCase() !== (row.security_type ?? "").toLowerCase();
+    const multiplierChanged = (existing.multiplier ?? null) !== (row.multiplier ?? null);
+    if (typeChanged || multiplierChanged) {
+      const hasTaxLots = db
+        .prepare("SELECT 1 FROM tax_lots WHERE security_id = ? LIMIT 1")
+        .get(existing.id);
+      if (hasTaxLots) {
+        bumpTaxGenerationIfPresent(db);
+      }
+    }
+  }
+
   return row.id;
 }

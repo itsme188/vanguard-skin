@@ -30,6 +30,7 @@ import { purgeExpiredOptionHoldings } from "@/lib/mutations/expired-options";
 import { purgeMaturedBondHoldings } from "@/lib/mutations/matured-bonds";
 import { reconcileClosedEquityHoldings } from "@/lib/mutations/closed-equity";
 import { normalizeSector } from "@/lib/securities/normalize-sector";
+import { bumpTaxGenerationIfPresent } from "@/lib/compute/tax-convention";
 
 // ── IBKR exchange-suffixed symbol resolution ────────────────────────
 //
@@ -797,6 +798,15 @@ export function commitImport(
       .join(", ");
 
     completeImportBatch(db, batch.id, recordCount, summary);
+
+    // Advance the tax input generation whenever this commit changed
+    // business rows that feed tax-lot computation. A fully-deduped
+    // re-import (all rows collide on source_key) must NOT bump — the
+    // generation is a "did tax inputs change" signal, not "did an import
+    // run".
+    if (newTransactions > 0 || newCorporateActions > 0) {
+      bumpTaxGenerationIfPresent(db);
+    }
 
     return {
       batchId: batch.id,

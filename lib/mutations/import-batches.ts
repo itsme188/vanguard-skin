@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import type { ImportBatch } from "@/lib/types";
 import { stripArtifactSuffix } from "@/lib/mutations/donation-links";
+import { bumpTaxGenerationIfPresent } from "@/lib/compute/tax-convention";
 
 export function createImportBatch(
   db: Database.Database,
@@ -113,14 +114,44 @@ export function deleteImportBatch(db: Database.Database, batchId: number): void 
     for (const leg of artifactLegs) {
       restoreArtifactFlow.run(stripArtifactSuffix(leg.notes), leg.id);
     }
+    // Count donation_leg_links/donation_lots rows owned by THIS batch's own
+    // donations — they cascade-delete the moment the DELETE FROM donations
+    // below runs (ON DELETE CASCADE on donation_id), so a cascade never
+    // shows up in that statement's own `.changes`. Counted up front so the
+    // material-mutation check below can see it.
+    const donationLinkLotCount = (
+      db
+        .prepare(
+          `SELECT
+             (SELECT COUNT(*) FROM donation_leg_links l JOIN donations d ON d.id = l.donation_id WHERE d.import_batch_id = ?) +
+             (SELECT COUNT(*) FROM donation_lots dl JOIN donations d ON d.id = dl.donation_id WHERE d.import_batch_id = ?) AS c`
+        )
+        .get(batchId, batchId) as { c: number }
+    ).c;
     db.prepare("DELETE FROM donations WHERE import_batch_id = ?").run(batchId);
-    db.prepare("DELETE FROM transactions WHERE import_batch_id = ?").run(batchId);
+    const transactionsDeleted = db
+      .prepare("DELETE FROM transactions WHERE import_batch_id = ?")
+      .run(batchId);
     db.prepare("DELETE FROM monthly_snapshots WHERE import_batch_id = ?").run(batchId);
     // Import-sourced corporate actions (source='import') are batch-tagged;
     // undoing the batch removes the CA row too (see undoImport's caller-side
     // computeTaxLots/computeDailyValuations recompute, which restores
     // pre-split lots once the row is gone).
-    db.prepare("DELETE FROM corporate_actions WHERE import_batch_id = ?").run(batchId);
+    const corporateActionsDeleted = db
+      .prepare("DELETE FROM corporate_actions WHERE import_batch_id = ?")
+      .run(batchId);
     db.prepare("DELETE FROM import_batches WHERE id = ?").run(batchId);
+
+    // Undo is material to tax inputs whenever it removed a transaction,
+    // corporate action, or donation link/lot row — donation-only batches
+    // (e.g. a daf-contributions batch with no transactions of its own) are
+    // material too, since they change lot consumption.
+    if (
+      transactionsDeleted.changes > 0 ||
+      corporateActionsDeleted.changes > 0 ||
+      donationLinkLotCount > 0
+    ) {
+      bumpTaxGenerationIfPresent(db);
+    }
   })();
 }

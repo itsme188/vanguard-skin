@@ -48,6 +48,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import type Database from "better-sqlite3";
+// Relative specifier (not "@/") — this is a STATIC import so tsx would
+// resolve the alias fine even off-cwd, but this file otherwise avoids "@/"
+// entirely (see the dynamic-import notes below) so every import here stays
+// safe to reason about under the same rule.
+import { bumpTaxGenerationIfPresent } from "../lib/compute/tax-convention";
 
 // ─── Config shape ───────────────────────────────────────────────────
 
@@ -900,6 +905,11 @@ async function main(): Promise<void> {
     db.transaction(() => {
       applyTypeRepairs(db, config.knownTypeRepairs);
       applyRehomes(db, config.treasuryInterestRehomes);
+      // A repair --apply that reaches here already passed the
+      // precondition_mismatch abort above — it rewrites security_type/name
+      // (and rehomes transactions) that feed tax-lot computation, so the
+      // tax input generation always advances alongside it.
+      bumpTaxGenerationIfPresent(db);
     })();
     console.log("\nApplied — type repairs + rehomes committed in one transaction.");
 
