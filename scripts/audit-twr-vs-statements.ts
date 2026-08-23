@@ -1,9 +1,17 @@
 #!/usr/bin/env tsx
 /**
- * Audit script: compare computeTwr output against statement-reported TWR
- * for every (account, month) pair that has a statement TWR value.
+ * Audit script: compare the independent Modified Dietz return against
+ * statement-reported TWR for every (account, month) pair that has a
+ * statement TWR value.
  *
- * Exit 0: ≤20% of pairs are out of tolerance (5bp) — gate PASS
+ * Minimal Task 13 signature fix only — reconcileTwrAgainstStatements now
+ * returns `band`/`rule` instead of `withinTolerance`, and no longer takes
+ * a `toleranceBp` option (the tolerance is now DIETZ_CONSISTENT_BP, fixed
+ * at 125bp inside computeMonthlyDietz). A "within tolerance" pair below is
+ * `band === "consistent"`. The full CLI rework (surfacing band/rule
+ * detail, not just a pass/fail count) is a later task.
+ *
+ * Exit 0: ≤20% of pairs are out of tolerance (band !== "consistent") — gate PASS
  * Exit 1: >20% of pairs are out of tolerance — gate FAIL
  */
 import { db } from "@/lib/db";
@@ -19,7 +27,9 @@ let totalChecked = 0,
 const outOfTolerance: {
   account: string;
   periodEnd: string;
-  divergenceBp: number;
+  divergenceBp: number | null;
+  band: string;
+  rule: string;
 }[] = [];
 
 for (const acct of accounts) {
@@ -38,7 +48,7 @@ for (const acct of accounts) {
     const r = reconcileTwrAgainstStatements(db, acct.id, m.month_end_date);
     if (!r) continue;
     totalChecked++;
-    if (r.withinTolerance) {
+    if (r.band === "consistent") {
       totalWithin++;
     } else {
       totalOut++;
@@ -46,6 +56,8 @@ for (const acct of accounts) {
         account: acct.name,
         periodEnd: m.month_end_date,
         divergenceBp: r.divergenceBp,
+        band: r.band,
+        rule: r.rule,
       });
     }
   }
@@ -58,8 +70,12 @@ console.log(`  Out of tolerance:       ${totalOut}`);
 if (outOfTolerance.length > 0) {
   console.log("\nOut-of-tolerance details:");
   for (const o of outOfTolerance) {
+    const bpLabel =
+      o.divergenceBp === null
+        ? "n/a"
+        : `${o.divergenceBp >= 0 ? "+" : ""}${o.divergenceBp}bp`;
     console.log(
-      `  ${o.account.padEnd(25)} ${o.periodEnd}  ${o.divergenceBp >= 0 ? "+" : ""}${o.divergenceBp}bp`,
+      `  ${o.account.padEnd(25)} ${o.periodEnd}  ${bpLabel}  [${o.band}/${o.rule}]`,
     );
   }
 }
