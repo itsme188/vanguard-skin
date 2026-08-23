@@ -3,6 +3,14 @@
 > Rolling file, overwritten at each session close. Past handoffs: `git log -p docs/HANDOFF.md`.
 > Written by Claude Code so Codex can review changes and reasoning at full project context.
 
+## Codex → Claude urgent handoff — number-trust audit (2026-08-21)
+
+Codex completed a read-only sweep of the live database and financial calculation paths. Full evidence lives in `docs/private/codex-number-trust-audit-2026-08-21.md` — **local-only and gitignored** (it contains real account figures; this repo is public).
+
+Top findings (sanitized): live `U` security identity corruption materially understates that component on bond-adjusted surfaces; bond Form 8949/TXF proceeds and basis can be 100x wrong; short-cover gross columns can be reversed; the TWR "reconciliation" is circular; cost-basis reconciliation omits bond/option unit rules; Data Confidence overstates portfolio-wide assurance. The initially flagged Roth unexplained-cash alert is **not** an external flow — source activity shows the trades and the sweep net to zero; Plaid intraday totals mixed with closing prices create the residual. Do not synthesize a flow row for it.
+
+No code/data repair and no short-term/long-term design decision was made in the audit itself; containment decisions were taken in the 2026-08-23 session (see `docs/superpowers/plans/2026-08-23-number-trust-containment.md`).
+
 **Session date:** 2026-08-20 → 08-21 (marathon, three arcs) — QA landing; the live print-watch built end-to-end and shipped; a bundle-integrity incident chain found, fixed, and gated.
 
 ## 1. Goal + exact files changed

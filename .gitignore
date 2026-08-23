@@ -98,3 +98,6 @@ next-env.d.ts
 !/CLAUDE.md
 !/AGENTS.md
 !/CHANGELOG.md
+
+# Private local-only docs (real financial figures) — never commit
+docs/private/
