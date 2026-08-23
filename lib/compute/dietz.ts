@@ -12,7 +12,10 @@
  * gets weight 0). F = Σ F_i over ALL flows (cash + in-kind). No
  * intermediate rounding — `dietzReturn` carries full float precision.
  *
- * Precedence (first match wins; `rule` names which one fired):
+ * Precedence (first match wins; `rule` names which one fired). This order
+ * is the spec's binding edge-precedence LIST ORDER — not a re-derivation —
+ * so nonpositive-denominator is checked ahead of the flow-total
+ * cross-checks even though it's computed from the same ledger data:
  *   1. December annual-summary row                                  → not_comparable / annual-summary-row
  *      (checked BEFORE any flow logic at all — a December
  *      annual-summary row's starting_value/deposits_withdrawals are
@@ -21,12 +24,15 @@
  *      flow-total-unavailable)
  *   2. missing V_start (no exact adjacent prior month-end snapshot,
  *      or no current-month snapshot at all)                          → insufficient / missing-v-start
- *   3. null deposits_withdrawals (nothing to cross-check the ledger
- *      against)                                                      → insufficient / flow-total-unavailable
+ *   3. nonpositive denominator (V_start + Σ w_i·F_i ≤ 0)              → insufficient / nonpositive-denominator
+ *      (fires even when deposits_withdrawals is null — this beats
+ *      flow-total-unavailable too, since it's earlier in the list)
  *   4. |ledger CASH flow sum − deposits_withdrawals| > $1             → insufficient / flow-total-mismatch
  *      (in-kind flows are NEVER part of this comparison — they have no
- *      statement-reported counterpart)
- *   5. nonpositive denominator (V_start + Σ w_i·F_i ≤ 0)              → insufficient / nonpositive-denominator
+ *      statement-reported counterpart; only evaluable when
+ *      deposits_withdrawals is non-null)
+ *   5. null deposits_withdrawals (nothing to cross-check the ledger
+ *      against)                                                      → insufficient / flow-total-unavailable
  *   6. an anchor-source seam inside (priorMonthEnd, monthEndDate]     → not_comparable / seam-straddled
  *   7. otherwise                                                     → banded
  *
@@ -156,9 +162,23 @@ export function computeMonthlyDietz(
   const netFlow = cashSum + inKindSum;
   const flowCount = cashFlows.length + inKindFlows.length;
 
-  // (3) The statement's own deposits_withdrawals is unavailable to
-  // cross-check the ledger against.
-  if (snap.deposits_withdrawals === null) {
+  const weight = (date: string): number => {
+    const d = dayOfMonth(date);
+    return (totalDaysInMonth - d) / totalDaysInMonth;
+  };
+  const weightedFlowTotal = [...cashFlows, ...inKindFlows].reduce(
+    (s, f) => s + f.net * weight(f.date),
+    0
+  );
+  const denominator = vStart + weightedFlowTotal;
+
+  // (3) A degenerate denominator makes the return mathematically
+  // meaningless (dividing by a near-zero or negative base). Checked ahead
+  // of the flow-total cross-checks below — spec's edge-precedence list is
+  // binding in its LISTED order (missing-v-start, nonpositive-denominator,
+  // flow-total-mismatch, flow-total-unavailable), so this fires even when
+  // deposits_withdrawals is null (collision regression test pins this).
+  if (denominator <= 0) {
     return insufficientOrNotComparable(
       monthEndDate,
       vStart,
@@ -166,14 +186,18 @@ export function computeMonthlyDietz(
       netFlow,
       flowCount,
       false,
-      "flow-total-unavailable"
+      "nonpositive-denominator"
     );
   }
 
   // (4) The ledger's dated CASH flows don't reconcile with the statement's
   // reported total (in-kind flows are excluded from this comparison — they
-  // have no statement-reported counterpart to reconcile against).
-  if (Math.abs(cashSum - snap.deposits_withdrawals) > DIETZ_FLOW_TOL_USD) {
+  // have no statement-reported counterpart to reconcile against). Only
+  // evaluable when deposits_withdrawals is non-null.
+  if (
+    snap.deposits_withdrawals !== null &&
+    Math.abs(cashSum - snap.deposits_withdrawals) > DIETZ_FLOW_TOL_USD
+  ) {
     return insufficientOrNotComparable(
       monthEndDate,
       vStart,
@@ -185,19 +209,9 @@ export function computeMonthlyDietz(
     );
   }
 
-  const weight = (date: string): number => {
-    const d = dayOfMonth(date);
-    return (totalDaysInMonth - d) / totalDaysInMonth;
-  };
-  const weightedFlowTotal = [...cashFlows, ...inKindFlows].reduce(
-    (s, f) => s + f.net * weight(f.date),
-    0
-  );
-  const denominator = vStart + weightedFlowTotal;
-
-  // (5) A degenerate denominator makes the return mathematically
-  // meaningless (dividing by a near-zero or negative base).
-  if (denominator <= 0) {
+  // (5) The statement's own deposits_withdrawals is unavailable to
+  // cross-check the ledger against.
+  if (snap.deposits_withdrawals === null) {
     return insufficientOrNotComparable(
       monthEndDate,
       vStart,
@@ -205,7 +219,7 @@ export function computeMonthlyDietz(
       netFlow,
       flowCount,
       false,
-      "nonpositive-denominator"
+      "flow-total-unavailable"
     );
   }
 

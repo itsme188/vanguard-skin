@@ -214,4 +214,51 @@ describe("computeMonthlyDietz", () => {
     expect(r.rule).toBe("nonpositive-denominator");
     expect(r.dietzReturn).toBeNull();
   });
+
+  it("collision: null deposits_withdrawals AND a nonpositive denominator → nonpositive-denominator wins (spec list order)", () => {
+    // Same nonpositive-denominator shape as above, but this time
+    // deposits_withdrawals is left NULL too — which would ALSO qualify as
+    // flow-total-unavailable. The spec's edge-precedence list is binding in
+    // its LISTED order (missing-v-start, nonpositive-denominator,
+    // flow-total-mismatch, flow-total-unavailable), so nonpositive-
+    // denominator must win, not flow-total-unavailable.
+    seedSnapshot(db, ACCT, "2026-03-31", 1_000);
+    seedSnapshot(db, ACCT, "2026-04-30", -900); // deposits_withdrawals left NULL
+    seedCashFlow(db, ACCT, "2026-04-01", "WITHDRAWAL", -2_000, "big-withdrawal-null-dw");
+
+    const r = computeMonthlyDietz(db, ACCT, "2026-04-30");
+
+    expect(r.rule).toBe("nonpositive-denominator");
+    expect(r.dietzReturn).toBeNull();
+  });
+
+  it("$1 tolerance boundary: exactly $1.00 diff passes (banded), strict > semantics", () => {
+    // Ledger cash flow sums to 2,000; statement reports 1,999.00 — a diff of
+    // exactly $1.00, which is NOT > DIETZ_FLOW_TOL_USD (1.0), so the
+    // mismatch check does not fire and the month bands normally. The return
+    // itself is computed from the LEDGER's actual flow (2,000), not the
+    // statement figure — same math as the first "day-weighted" test.
+    seedSnapshot(db, ACCT, "2026-03-31", 100_000);
+    seedSnapshot(db, ACCT, "2026-04-30", 103_000, { depositsWithdrawals: 1_999.0 });
+    seedCashFlow(db, ACCT, "2026-04-10", "DEPOSIT", 2_000, "dep-boundary-pass");
+
+    const r = computeMonthlyDietz(db, ACCT, "2026-04-30");
+
+    expect(r.rule).toBe("banded");
+    expect(r.dietzReturn).toBeCloseTo(0.0098684, 6);
+  });
+
+  it("$1 tolerance boundary: $1.01 diff fails (flow-total-mismatch), strict > semantics", () => {
+    // Same ledger flow (2,000), but the statement now reports 1,998.99 — a
+    // diff of $1.01, which IS > DIETZ_FLOW_TOL_USD (1.0), so the mismatch
+    // check fires.
+    seedSnapshot(db, ACCT, "2026-03-31", 100_000);
+    seedSnapshot(db, ACCT, "2026-04-30", 103_000, { depositsWithdrawals: 1_998.99 });
+    seedCashFlow(db, ACCT, "2026-04-10", "DEPOSIT", 2_000, "dep-boundary-fail");
+
+    const r = computeMonthlyDietz(db, ACCT, "2026-04-30");
+
+    expect(r.rule).toBe("flow-total-mismatch");
+    expect(r.dietzReturn).toBeNull();
+  });
 });
