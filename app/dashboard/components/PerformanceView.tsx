@@ -263,24 +263,26 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
             <section
               className={`rounded-xl p-3 px-4 text-sm flex items-center gap-2 ${
                 reconciliation.withinTolerance
-                  ? "bg-up/10 text-up border border-up/20"
+                  ? "bg-raised text-ink-dim border border-edge"
                   : "bg-down/10 text-down border border-down/20"
               }`}
             >
-              <span className="text-base">{reconciliation.withinTolerance ? "✓" : "⚠"}</span>
+              {!reconciliation.withinTolerance && <span className="text-base">⚠</span>}
               <span>
-                TWR reconciled to {reconciliation.source} statement through{" "}
-                <strong>{reconciliation.periodEnd}</strong>
-                {" · "}
                 {reconciliation.withinTolerance ? (
                   <>
-                    <strong>{reconciliation.divergenceBp > 0 ? "+" : ""}{reconciliation.divergenceBp} bp</strong>{" "}
-                    within tolerance
+                    TWR from {reconciliation.source} statement through{" "}
+                    <strong>{reconciliation.periodEnd}</strong>
+                    {" · "}
+                    statement-reported — not independently verified
                   </>
                 ) : (
                   <>
+                    TWR reconciled to {reconciliation.source} statement through{" "}
+                    <strong>{reconciliation.periodEnd}</strong>
+                    {" · "}
                     <strong>{reconciliation.divergenceBp > 0 ? "+" : ""}{reconciliation.divergenceBp} bp</strong>{" "}
-                    — outside tolerance · review data integrity
+                    — outside tolerance · review data integrity · check statement import
                   </>
                 )}
               </span>

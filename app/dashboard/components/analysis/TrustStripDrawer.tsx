@@ -215,7 +215,7 @@ function PerformanceContent({ state }: { state: AnalysisTrustState }) {
     <div className="space-y-4">
       <p className="text-sm text-ink">
         {performanceReconciledThru
-          ? `TWR reconciled to statements through ${performanceReconciledThru}.`
+          ? `Statement TWR present through ${performanceReconciledThru} — statement-reported, not independently verified.`
           : "One or more accounts have not yet been reconciled to statements."}
       </p>
 
@@ -262,6 +262,12 @@ function PerformanceContent({ state }: { state: AnalysisTrustState }) {
             </li>
           ))}
         </ul>
+      )}
+
+      {perAccountReconciliation.length > 0 && (
+        <p className="text-[10px] text-ink-faint">
+          bp figures compare the app&apos;s stored value with the statement&apos;s own figure — not an independent recomputation.
+        </p>
       )}
 
       <a
