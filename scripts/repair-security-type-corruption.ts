@@ -46,6 +46,7 @@
  */
 
 import fs from "node:fs";
+import path from "node:path";
 import type Database from "better-sqlite3";
 
 // ─── Config shape ───────────────────────────────────────────────────
@@ -646,4 +647,291 @@ export function findTypeContradictions(
   }
 
   return Array.from(byId.values());
+}
+
+// ─── CLI driver ─────────────────────────────────────────────────────
+//
+// Dry-run (default) opens the live DB READONLY and writes nothing —
+// safe to run at any time. --apply opens read-write, and only writes
+// after BOTH preflight lanes (type repairs + rehomes) come back clean
+// (no precondition_mismatch anywhere) — see the header doc's
+// all-or-nothing contract. The two apply functions are wrapped in ONE
+// outer db.transaction here so a night's repair either fully lands or
+// fully rolls back; neither applyTypeRepairs nor applyRehomes opens its
+// own transaction (see their doc comments).
+//
+// Config path and every id/symbol/amount printed below come from the
+// gitignored local config (see loadRepairConfig's header doc) — nothing
+// live is hardcoded in this file.
+
+const DB_PATH = path.join(process.cwd(), "data", "vanguard.db");
+const CONFIG_PATH = path.join(process.cwd(), "data", "repair-configs", "security-type-corruption.json");
+
+interface SecurityEvidenceRow {
+  id: number;
+  symbol: string;
+  security_type: string | null;
+  name: string | null;
+  maturity_date: string | null;
+}
+
+function printSecurityEvidenceRow(db: Database.Database, id: number): void {
+  const row = db
+    .prepare(`SELECT id, symbol, security_type, name, maturity_date FROM securities WHERE id = ?`)
+    .get(id) as SecurityEvidenceRow | undefined;
+  if (!row) {
+    console.log(`  id=${id}: NOT FOUND`);
+    return;
+  }
+  console.log(
+    `  id=${row.id} symbol=${row.symbol} security_type=${row.security_type ?? "(null)"} ` +
+      `name="${row.name ?? ""}" maturity_date=${row.maturity_date ?? "(null)"}`,
+  );
+}
+
+interface TransactionEvidenceRow {
+  id: number;
+  trade_date: string;
+  type: string;
+  quantity: number | null;
+  amount: number | null;
+  fees: number | null;
+  security_id: number;
+  source_key: string | null;
+}
+
+function printTransactionEvidenceRow(db: Database.Database, id: number): void {
+  const row = db
+    .prepare(
+      `SELECT id, trade_date, type, quantity, amount, fees, security_id, source_key
+         FROM transactions WHERE id = ?`,
+    )
+    .get(id) as TransactionEvidenceRow | undefined;
+  if (!row) {
+    console.log(`  id=${id}: NOT FOUND`);
+    return;
+  }
+  console.log(
+    `  id=${row.id} trade_date=${row.trade_date} type=${row.type} ` +
+      `quantity=${row.quantity ?? "(null)"} amount=${row.amount ?? "(null)"} fees=${row.fees ?? "(null)"} ` +
+      `security_id=${row.security_id} source_key=${row.source_key ?? "(null)"}`,
+  );
+}
+
+function printOutcomeLine(label: string, action: TypeRepairAction, detail?: string): void {
+  console.log(`  ${label}: ${action}${detail ? ` — ${detail}` : ""}`);
+}
+
+function printCsvCorrections(config: RepairConfig): void {
+  console.log(
+    "\nCSV corrections (MANDATORY — rewriting a coupon row's source_key frees its " +
+      "original key; re-importing the UNCORRECTED source file would re-insert the bad " +
+      "row under that freed key. The corrected file dedupes against the rewritten key.):",
+  );
+  if (config.csvCorrections.length === 0) {
+    console.log("  none configured");
+    return;
+  }
+  for (const c of config.csvCorrections) {
+    console.log(`  ${c.file}:${c.approxLine} — ${c.fix}`);
+  }
+}
+
+function printNeverUndoWarning(config: RepairConfig): void {
+  if (config.neverUndoImportBatches.length === 0) return;
+  console.log(
+    `\nNEVER undo import batch(es) [${config.neverUndoImportBatches.join(", ")}] — ` +
+      `undoing these batches would DELETE the repaired coupon rows.`,
+  );
+}
+
+/** Prints cash_balance + holdings_value = total_value for every account at
+ *  the latest computed valuation_date, so a human can eyeball the identity
+ *  held right after a full daily_valuations rebuild. computeDailyValuations
+ *  derives total_value as cash_balance + holdings_value by construction, so
+ *  a nonzero delta here means something wrote to daily_valuations outside
+ *  that function — flagged, not silently trusted. */
+function printDailyIdentityCheck(db: Database.Database): void {
+  const latest = db.prepare(`SELECT MAX(valuation_date) AS d FROM daily_valuations`).get() as {
+    d: string | null;
+  };
+  console.log("\nDaily-identity check (cash_balance + holdings_value = total_value):");
+  if (!latest.d) {
+    console.log("  no daily_valuations rows found");
+    return;
+  }
+  const rows = db
+    .prepare(
+      `SELECT dv.account_id, a.name AS account_name, dv.cash_balance, dv.holdings_value, dv.total_value
+         FROM daily_valuations dv JOIN accounts a ON a.id = dv.account_id
+        WHERE dv.valuation_date = ?
+        ORDER BY dv.account_id`,
+    )
+    .all(latest.d) as Array<{
+    account_id: number;
+    account_name: string;
+    cash_balance: number;
+    holdings_value: number;
+    total_value: number;
+  }>;
+  console.log(`  as of ${latest.d}:`);
+  for (const r of rows) {
+    const sum = r.cash_balance + r.holdings_value;
+    const delta = Math.abs(sum - r.total_value);
+    const ok = delta < 0.01 ? "OK" : `MISMATCH (delta=${delta.toFixed(2)})`;
+    console.log(
+      `    ${r.account_name} (id=${r.account_id}): cash=${r.cash_balance.toFixed(2)} + ` +
+        `holdings=${r.holdings_value.toFixed(2)} = ${sum.toFixed(2)} vs stored total=${r.total_value.toFixed(2)} — ${ok}`,
+    );
+  }
+}
+
+async function main(): Promise<void> {
+  const apply = process.argv.includes("--apply");
+
+  const { default: BetterSqlite3 } = await import("better-sqlite3");
+  const db = new BetterSqlite3(DB_PATH, { readonly: !apply }) as Database.Database;
+  if (apply) {
+    db.pragma("journal_mode = WAL");
+    db.pragma("foreign_keys = ON");
+  }
+
+  try {
+    console.log(
+      `Security-type corruption repair ${apply ? "[APPLY]" : "[DRY RUN]"} — db: ${DB_PATH}\n`,
+    );
+
+    let config: RepairConfig;
+    try {
+      config = loadRepairConfig(CONFIG_PATH);
+    } catch (err) {
+      console.error(
+        `ERROR loading repair config: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      console.error(`Expected config at: ${CONFIG_PATH}`);
+      console.error(
+        "See the RepairConfig interface in scripts/repair-security-type-corruption.ts for the required shape.",
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    console.log("Evidence — current row state:\n");
+    console.log("Securities (knownTypeRepairs):");
+    for (const repair of config.knownTypeRepairs) {
+      printSecurityEvidenceRow(db, repair.id);
+    }
+    console.log("\nTransactions (treasuryInterestRehomes):");
+    for (const rehome of config.treasuryInterestRehomes) {
+      printTransactionEvidenceRow(db, rehome.transactionId);
+    }
+
+    const typeOutcomes = preflightTypeRepairs(db, config.knownTypeRepairs);
+    console.log("\nType-repair preflight:");
+    for (const o of typeOutcomes) {
+      printOutcomeLine(o.symbol, o.action, o.detail);
+    }
+
+    const rehomeOutcomes = preflightRehomes(db, config.treasuryInterestRehomes);
+    console.log("\nRehome preflight:");
+    for (const o of rehomeOutcomes) {
+      printOutcomeLine(`transaction ${o.transactionId}`, o.action, o.detail);
+    }
+
+    const configuredIds = config.knownTypeRepairs.map((r) => r.id);
+    const contradictions = findTypeContradictions(db, configuredIds);
+    console.log("\nContradiction detector (never auto-repaired):");
+    if (contradictions.length === 0) {
+      console.log("  none found");
+    } else {
+      console.log(
+        "  NEEDS REVIEW — not auto-repaired; verify against source documents, then add to the config:",
+      );
+      for (const c of contradictions) {
+        console.log(
+          `    id=${c.id} symbol=${c.symbol} security_type=${c.securityType} ` +
+            `equityFills=${c.equityFills} fundCategory=${c.fundCategory ?? "(null)"} reason=${c.reason}`,
+        );
+      }
+    }
+
+    if (!apply) {
+      printCsvCorrections(config);
+      printNeverUndoWarning(config);
+      console.log("\nDry-run (default). Re-run with --apply to write.");
+      return;
+    }
+
+    const anyMismatch = [...typeOutcomes, ...rehomeOutcomes].some(
+      (o) => o.action === "precondition_mismatch",
+    );
+    if (anyMismatch) {
+      console.error(
+        "\nABORTING — one or more rows are precondition_mismatch (see preflight output above). " +
+          "No writes made.",
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    const { ensureBackup } = await import("@/scripts/rebuild-ibkr-ledger");
+    const backupPath = path.join(
+      process.cwd(),
+      "data",
+      "backups",
+      `pre-security-type-repair-${new Date().toISOString().replace(/:/g, "-")}.db`,
+    );
+    const backup = ensureBackup(db, backupPath);
+    console.log(
+      `\nBackup ${backup.created ? "created" : "already present"} at ${backup.path} (${backup.sizeBytes} bytes)`,
+    );
+
+    db.transaction(() => {
+      applyTypeRepairs(db, config.knownTypeRepairs);
+      applyRehomes(db, config.treasuryInterestRehomes);
+    })();
+    console.log("\nApplied — type repairs + rehomes committed in one transaction.");
+
+    const { computeTaxLots } = await import("@/lib/compute/tax-lots");
+    const { computeDailyValuations } = await import("@/lib/compute/daily-valuation");
+
+    console.log("\nRecomputing tax lots...");
+    const taxResult = computeTaxLots(db);
+    console.log(
+      `  lots=${taxResult.lotsCreated} sales=${taxResult.salesProcessed} ` +
+        `totalRealizedGain=$${taxResult.totalRealizedGain.toFixed(2)}`,
+    );
+
+    console.log("\nRecomputing daily valuations...");
+    const valResult = computeDailyValuations(db);
+    console.log(
+      `  datesComputed=${valResult.datesComputed} accountsProcessed=${valResult.accountsProcessed}`,
+    );
+
+    printDailyIdentityCheck(db);
+
+    printCsvCorrections(config);
+    printNeverUndoWarning(config);
+    console.log(
+      "\nRe-enrich the repaired equity on the next TWS connect (exchange/sector refresh — " +
+        "the retype makes the STK contract path valid again).",
+    );
+  } finally {
+    db.close();
+  }
+}
+
+// Detect if this file is being run directly (not imported by tests) —
+// mirrors scripts/repair-etf-types.ts:438-449.
+const isMain =
+  typeof process !== "undefined" &&
+  process.argv[1] != null &&
+  (process.argv[1].endsWith("repair-security-type-corruption.ts") ||
+    process.argv[1].endsWith("repair-security-type-corruption.js"));
+
+if (isMain) {
+  main().catch((err) => {
+    console.error(`ERROR: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  });
 }
