@@ -139,7 +139,7 @@ export function DataConfidenceIndicator() {
       <button
         onClick={() => setShowPopover(!showPopover)}
         className="relative flex items-center gap-2 text-[11px] text-ink-faint font-mono hover:text-ink-dim transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-2 pointer-coarse:after:content-['']"
-        title={`Data confidence: ${confidence.overallScore}% — click for details`}
+        title={`Data freshness: ${confidence.overallScore}% — an operational hint, not a certification — click for details`}
       >
         <span className={`w-2 h-2 rounded-full ${config.color}`} />
         <span>{confidence.overallScore}%</span>
@@ -155,7 +155,7 @@ export function DataConfidenceIndicator() {
             <div className="flex items-center gap-2">
               <span className={`w-2.5 h-2.5 rounded-full ${config.color}`} />
               <h3 className="text-sm font-medium text-ink">
-                Data Confidence: {confidence.overallScore}%
+                Data Freshness: {confidence.overallScore}%
               </h3>
             </div>
             <Link
@@ -166,6 +166,9 @@ export function DataConfidenceIndicator() {
               Full audit
             </Link>
           </div>
+          <p className="text-[10px] text-ink-faint">
+            Operational freshness hint — does not certify that every displayed number is correct (2026-08-21 audit).
+          </p>
 
           {/* Dimension bars */}
           <div className="space-y-2">
