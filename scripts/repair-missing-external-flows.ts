@@ -94,10 +94,18 @@ import {
   isUnexplainedCashFlow,
   isLikelyIbkrAccountName,
   partitionCandidates,
+  collectSeamDatesByAccount,
+  collectLiveAnchorDatesByAccount,
   type CashFlowResidualPoint,
   type UnexplainedCashFlowFloors,
 } from "../lib/compute/cash-flow-audit";
-import { fetchAnchorSourceSeamDates } from "../lib/compute/flow-adjusted";
+
+// Re-exported so existing callers/tests importing collectSeamDatesByAccount
+// from this script (its former home) keep working — the implementation now
+// lives in lib/compute/cash-flow-audit.ts (containment task 8, 2026-08-23),
+// shared with any future caller that needs seam awareness without pulling
+// in this whole CLI script.
+export { collectSeamDatesByAccount };
 
 const DB_PATH = path.join(process.cwd(), "data", "vanguard.db");
 
@@ -158,23 +166,6 @@ export function nonIbkrAccountIds(db: Database.Database): number[] {
 
 // ─── Seam awareness ─────────────────────────────────────────────────
 
-/**
- * Per-account seam dates over each account's full anchor span — one
- * fetchAnchorSourceSeamDates call PER ACCOUNT, never a cross-account union:
- * account A's anchor-source transition must not suppress a genuine
- * candidate in account B landing on the same calendar date.
- */
-export function collectSeamDatesByAccount(
-  db: Database.Database,
-  accountIds: number[]
-): Map<number, string[]> {
-  const map = new Map<number, string[]>();
-  for (const id of accountIds) {
-    map.set(id, fetchAnchorSourceSeamDates(db, [id], "0000-00-00", "9999-12-31"));
-  }
-  return map;
-}
-
 interface LegacyRepairRow {
   id: number;
   account_id: number;
@@ -221,11 +212,14 @@ export function findLegacyRepairRowsOnSeams(
 /**
  * Full candidate list for --apply / dry-run: computes residuals for the
  * given accounts (default: every non-IBKR account) and keeps only the
- * points isUnexplainedCashFlow flags, oldest first. Seam-aware: a point
- * landing on an anchor-source-transition interval classifies `source-seam`
- * (see collectSeamDatesByAccount) and, while still flagged as unexplained
- * (isUnexplainedCashFlow doesn't look at classification), never becomes an
- * external-flow-candidate — see selectRun/partitionCandidates.
+ * points isUnexplainedCashFlow flags, oldest first. Seam-aware AND
+ * live-anchor-aware: a point landing on an anchor-source-transition
+ * interval classifies `source-seam` (see collectSeamDatesByAccount), and a
+ * point whose landing date sits on an ongoing live (Plaid/TWS) anchor
+ * classifies `live-anchor-residual` (see collectLiveAnchorDatesByAccount,
+ * unless a seam already claimed it). Both, while still flagged as
+ * unexplained (isUnexplainedCashFlow doesn't look at classification), never
+ * become an external-flow-candidate — see selectRun/partitionCandidates.
  */
 export function findCandidates(
   db: Database.Database,
@@ -233,7 +227,12 @@ export function findCandidates(
 ): CashFlowResidualPoint[] {
   const accountIds = opts?.accountIds ?? nonIbkrAccountIds(db);
   const seamDatesByAccount = collectSeamDatesByAccount(db, accountIds);
-  const points = computeCashFlowResiduals(db, { accountIds, seamDatesByAccount });
+  const liveAnchorDatesByAccount = collectLiveAnchorDatesByAccount(db, accountIds);
+  const points = computeCashFlowResiduals(db, {
+    accountIds,
+    seamDatesByAccount,
+    liveAnchorDatesByAccount,
+  });
   return points
     .filter((p) => isUnexplainedCashFlow(p, opts?.floors))
     .sort((a, b) => (a.toDate < b.toDate ? -1 : a.toDate > b.toDate ? 1 : a.accountId - b.accountId));
@@ -252,6 +251,10 @@ export interface SelectRunResult {
    *  artifact (see classifyCashFlowResidual / collectSeamDatesByAccount),
    *  not a flow. Reaches the CLI layer instead of being silently dropped. */
   seamPoints: CashFlowResidualPoint[];
+  /** Printed informationally, never inserted — a live (Plaid/TWS) anchor's
+   *  cash_balance is a timing residual, not evidence of a flow (see
+   *  classifyCashFlowResidual / collectLiveAnchorDatesByAccount). */
+  liveAnchorPoints: CashFlowResidualPoint[];
   /** --only dates that matched no candidate at all (typo guard). */
   unmatchedOnlyDates: string[];
   /** Non-null when the request is invalid — callers must not apply. */
@@ -276,7 +279,8 @@ export function selectRun(
     selected = candidates.filter((c) => onlyDates.includes(c.toDate));
   }
 
-  const { externalFlowCandidates, internalShifts, seamPoints } = partitionCandidates(selected);
+  const { externalFlowCandidates, internalShifts, seamPoints, liveAnchorPoints } =
+    partitionCandidates(selected);
 
   // Require --only explicitly, not just "happens to be exactly one
   // candidate right now" — the candidate set changes as the ledger changes,
@@ -289,6 +293,7 @@ export function selectRun(
         externalFlowCandidates,
         internalShifts,
         seamPoints,
+        liveAnchorPoints,
         unmatchedOnlyDates,
         error:
           `--amount requires exactly one date selected via --only (got ${onlyDates.length}). ` +
@@ -301,10 +306,12 @@ export function selectRun(
         externalFlowCandidates,
         internalShifts,
         seamPoints,
+        liveAnchorPoints,
         unmatchedOnlyDates,
         error:
           `--amount's --only ${onlyDates[0]} must match exactly one external-flow-candidate ` +
-          `(found ${externalFlowCandidates.length} — internal-shift/source-seam dates never get a proposal).`,
+          `(found ${externalFlowCandidates.length} — internal-shift/source-seam/live-anchor-residual ` +
+          `dates never get a proposal).`,
       };
     }
   }
@@ -313,7 +320,15 @@ export function selectRun(
     buildProposedTransaction(c, externalFlowCandidates.length === 1 ? opts.amountOverride : undefined)
   );
 
-  return { proposals, externalFlowCandidates, internalShifts, seamPoints, unmatchedOnlyDates, error: null };
+  return {
+    proposals,
+    externalFlowCandidates,
+    internalShifts,
+    seamPoints,
+    liveAnchorPoints,
+    unmatchedOnlyDates,
+    error: null,
+  };
 }
 
 // ─── Backup (mirrors scripts/repair-etf-types.ts::backupDatabase) ─────
@@ -397,6 +412,14 @@ function printSeamPoint(point: CashFlowResidualPoint): void {
   );
 }
 
+function printLiveAnchorPoint(point: CashFlowResidualPoint): void {
+  printPointDetail(point);
+  console.log(
+    `  classification: live-anchor-residual (a live Plaid/TWS anchor — cash_balance is an intraday ` +
+      `timing residual, not literal cash; never synthesized)`
+  );
+}
+
 /** Collects every value passed to a repeatable `--flag value` CLI arg. */
 export function collectFlagValues(args: string[], flag: string): string[] {
   const values: string[] = [];
@@ -459,17 +482,21 @@ async function main(): Promise<void> {
       return;
     }
 
-    const { proposals, externalFlowCandidates, internalShifts, seamPoints } = result;
+    const { proposals, externalFlowCandidates, internalShifts, seamPoints, liveAnchorPoints } = result;
     const hasAnything =
-      externalFlowCandidates.length > 0 || internalShifts.length > 0 || seamPoints.length > 0;
+      externalFlowCandidates.length > 0 ||
+      internalShifts.length > 0 ||
+      seamPoints.length > 0 ||
+      liveAnchorPoints.length > 0;
 
     if (!hasAnything) {
       console.log("\nNo unexplained cash-flow candidates found (after filters). Nothing to do.");
     } else {
       console.log(
         `\nFound ${externalFlowCandidates.length} external-flow-candidate(s) (proposed), ` +
-          `${internalShifts.length} internal-shift(s), and ${seamPoints.length} source-seam ` +
-          `point(s) (internal-shift and source-seam are informational only, never synthesized).`
+          `${internalShifts.length} internal-shift(s), ${seamPoints.length} source-seam ` +
+          `point(s), and ${liveAnchorPoints.length} live-anchor-residual point(s) (internal-shift, ` +
+          `source-seam, and live-anchor-residual are informational only, never synthesized).`
       );
 
       if (proposals.length > 0) {
@@ -496,6 +523,16 @@ async function main(): Promise<void> {
         );
         for (const point of seamPoints) {
           printSeamPoint(point);
+        }
+      }
+
+      if (liveAnchorPoints.length > 0) {
+        console.log(
+          `\n── Live-anchor-residual points — NOT proposed; a live Plaid/TWS anchor's cash_balance ` +
+            `is an intraday timing residual, not literal cash; never synthesized ──`
+        );
+        for (const point of liveAnchorPoints) {
+          printLiveAnchorPoint(point);
         }
       }
     }

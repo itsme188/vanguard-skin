@@ -6,6 +6,7 @@ import {
   isLikelyIbkrAccountName,
   classifyCashFlowResidual,
   partitionCandidates,
+  collectLiveAnchorDatesByAccount,
   CASH_AFFECTING_SIGNED_SQL,
   DEFAULT_RESIDUAL_ABS_FLOOR,
   DEFAULT_RESIDUAL_REL_FLOOR,
@@ -402,6 +403,103 @@ describe("source-seam classification", () => {
   });
 });
 
+/**
+ * Extends createTestDb's schema with a minimal monthly_snapshots table —
+ * only collectLiveAnchorDatesByAccount (and the anchor-source-seam machinery
+ * it sits alongside) reads it, so the base schema omits it for every other
+ * test in this file.
+ */
+function createTestDbWithSnapshots(): Database.Database {
+  const db = createTestDb();
+  db.exec(`
+    CREATE TABLE monthly_snapshots (
+      id INTEGER PRIMARY KEY, account_id INTEGER NOT NULL, month_end_date TEXT NOT NULL,
+      total_value REAL NOT NULL DEFAULT 0, source TEXT
+    );
+  `);
+  return db;
+}
+
+function insertAnchor(
+  db: Database.Database,
+  accountId: number,
+  date: string,
+  source: string | null
+): void {
+  db.prepare(
+    `INSERT INTO monthly_snapshots (account_id, month_end_date, total_value, source)
+     VALUES (?, ?, 100000, ?)`
+  ).run(accountId, date, source);
+}
+
+describe("live-anchor-residual classification", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDbWithSnapshots();
+    nextTxnId = 1;
+  });
+
+  it("classifies a residual point whose end date has a plaid-sourced monthly_snapshots row as live-anchor-residual", () => {
+    // Same fixture shape as the external-flow-candidate test: a jump with
+    // zero transactions. Without the live anchor this would classify as
+    // external-flow-candidate; with a live anchor on the landing date it
+    // must not — a Plaid/TWS anchor's cash_balance is a timing residual,
+    // not evidence of a real flow.
+    insertValuation(db, 1, "2026-07-10", 80_000, 1_400_000);
+    insertValuation(db, 1, "2026-07-11", 210_500, 1_500_000);
+    insertAnchor(db, 1, "2026-07-11", "plaid");
+
+    const liveAnchorDatesByAccount = collectLiveAnchorDatesByAccount(db, [1]);
+    const points = computeCashFlowResiduals(db, { accountIds: [1], liveAnchorDatesByAccount });
+    expect(points).toHaveLength(1);
+    expect(points[0].classification).toBe("live-anchor-residual");
+  });
+
+  it("classifies a date present in BOTH the seam map and the live-anchor map as source-seam (precedence)", () => {
+    insertValuation(db, 1, "2026-07-10", 80_000, 1_400_000);
+    insertValuation(db, 1, "2026-07-11", 210_500, 1_500_000);
+
+    const seamDatesByAccount = new Map([[1, ["2026-07-11"]]]);
+    const liveAnchorDatesByAccount = new Map([[1, ["2026-07-11"]]]);
+    const points = computeCashFlowResiduals(db, {
+      accountIds: [1],
+      seamDatesByAccount,
+      liveAnchorDatesByAccount,
+    });
+    expect(points[0].classification).toBe("source-seam");
+  });
+
+  it("is byte-identical when liveAnchorDatesByAccount is omitted vs. an empty map", () => {
+    insertValuation(db, 1, "2026-07-01", 10_000, 200_000);
+    insertValuation(db, 1, "2026-07-02", 10_000, 200_000);
+
+    const a = computeCashFlowResiduals(db, { accountIds: [1] });
+    const b = computeCashFlowResiduals(db, { accountIds: [1], liveAnchorDatesByAccount: new Map() });
+    expect(b).toEqual(a);
+    expect(a.every((p) => p.classification !== "live-anchor-residual")).toBe(true);
+  });
+});
+
+describe("collectLiveAnchorDatesByAccount", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDbWithSnapshots();
+  });
+
+  it("returns live-source dates only, per asked account (a canonical row and another account's plaid row are absent)", () => {
+    insertAnchor(db, 1, "2026-06-30", "canonical");
+    insertAnchor(db, 1, "2026-07-11", "plaid");
+    insertAnchor(db, 2, "2026-08-01", "plaid");
+
+    const map = collectLiveAnchorDatesByAccount(db, [1, 2]);
+    expect(map.get(1)).toEqual(["2026-07-11"]); // the canonical row is absent
+    expect(map.get(2)).toEqual(["2026-08-01"]); // account 2's row absent from account 1's list
+    expect(map.get(1)).not.toContain("2026-08-01");
+  });
+});
+
 describe("partitionCandidates", () => {
   function point(overrides: Partial<CashFlowResidualPoint>): CashFlowResidualPoint {
     return {
@@ -441,10 +539,11 @@ describe("partitionCandidates", () => {
       externalFlowCandidates: [],
       internalShifts: [],
       seamPoints: [],
+      liveAnchorPoints: [],
     });
   });
 
-  it("puts a source-seam point ONLY in seamPoints, never in the other two buckets", () => {
+  it("puts a source-seam point ONLY in seamPoints, never in the other buckets", () => {
     const external = point({ toDate: "2026-07-11", classification: "external-flow-candidate" });
     const internal = point({ toDate: "2026-07-14", classification: "internal-shift" });
     const seam = point({ toDate: "2026-07-17", classification: "source-seam" });
@@ -457,5 +556,23 @@ describe("partitionCandidates", () => {
     expect(seamPoints).toEqual([seam]);
     expect(externalFlowCandidates).not.toContain(seam);
     expect(internalShifts).not.toContain(seam);
+  });
+
+  it("puts a live-anchor-residual point ONLY in liveAnchorPoints, never in the other buckets", () => {
+    const external = point({ toDate: "2026-07-11", classification: "external-flow-candidate" });
+    const internal = point({ toDate: "2026-07-14", classification: "internal-shift" });
+    const seam = point({ toDate: "2026-07-17", classification: "source-seam" });
+    const liveAnchor = point({ toDate: "2026-07-20", classification: "live-anchor-residual" });
+
+    const { externalFlowCandidates, internalShifts, seamPoints, liveAnchorPoints } = partitionCandidates([
+      external,
+      internal,
+      seam,
+      liveAnchor,
+    ]);
+    expect(liveAnchorPoints).toEqual([liveAnchor]);
+    expect(externalFlowCandidates).not.toContain(liveAnchor);
+    expect(internalShifts).not.toContain(liveAnchor);
+    expect(seamPoints).not.toContain(liveAnchor);
   });
 });

@@ -63,4 +63,23 @@ describe("upsertSecurity bond maturity_date extraction", () => {
       .get("US912797XX5") as { maturity_date: string };
     expect(row.maturity_date).toBe("2027-03-15");
   });
+
+  it("does not auto-derive maturity onto an equity-fill security when the Bond type is refused", () => {
+    const db = fresh();
+    const id = upsertSecurity(db, { symbol: "AAA", name: "EXAMPLE CORP", securityType: "Stock" });
+    db.prepare(`INSERT INTO accounts (name) VALUES ('T')`).run();
+    db.prepare(
+      `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, amount)
+       VALUES (1, ?, '2026-01-05', 'SELL', 50, 900)`
+    ).run(id);
+    upsertSecurity(db, {
+      symbol: "AAA",
+      name: "S TREASURY NOTE 0 CPN 9.999% DUE 01/15/40",
+      securityType: "Bond",
+    });
+    const row = db.prepare(`SELECT maturity_date FROM securities WHERE id = ?`).get(id) as {
+      maturity_date: string | null;
+    };
+    expect(row.maturity_date).toBeNull();
+  });
 });
