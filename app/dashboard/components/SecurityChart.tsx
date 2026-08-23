@@ -65,6 +65,53 @@ function filterBarsByWindow(bars: OhlcvBar[], months: number): OhlcvBar[] {
   return bars.filter((b) => b.date >= cutoffStr);
 }
 
+/**
+ * Human label for a DURATIONS window, used by chartEmptyStateMessage
+ * ("3 months", "1 year", ...). Only called for the fixed 1/3/6/12/24 month
+ * domain — an empty "All" (months=0) window only happens when there's no
+ * cached history at all, which chartEmptyStateMessage's other branch already
+ * covers, so 0 never reaches here in practice.
+ */
+function durationRangeLabel(months: number): string {
+  if (months === 1) return "1 month";
+  if (months < 12) return `${months} months`;
+  const years = months / 12;
+  return years === 1 ? "1 year" : `${years} years`;
+}
+
+/**
+ * Decide the chart's empty-state overlay copy. barCount is scoped to the
+ * SELECTED WINDOW (see the "Footer count must describe the PLOTTED window"
+ * comment on the init effect below), so barCount===0 does not by itself mean
+ * "no cached history" — a security can have hundreds of cached bars that all
+ * fall outside the 1M/3M/etc. cutoff (deep-QA: GLW has 501 bars cached
+ * through 2026-04-28; selecting 1M/3M shows zero bars in-window while the
+ * footer still reads "through 2026-04-28" and the stats strip is populated).
+ * lastBarDate is the whole-cache latest bar date (same value the footer's
+ * "through <date>" renders from, set once per fetch from the full,
+ * un-windowed cache — see fetchChartData / the API route's getOhlcvBars call)
+ * — non-null there means the cache is NOT empty, it's just that none of it
+ * falls in the current window. Returns null when there's nothing to show
+ * (bars are visible in the window).
+ */
+export function chartEmptyStateMessage({
+  visibleBarCount,
+  lastBarDate,
+  rangeLabel,
+  symbol,
+}: {
+  visibleBarCount: number;
+  lastBarDate: string | null;
+  rangeLabel: string;
+  symbol: string;
+}): string | null {
+  if (visibleBarCount > 0) return null;
+  if (lastBarDate) {
+    return `No bars in the last ${rangeLabel} — cached history ends ${lastBarDate}.`;
+  }
+  return `No cached price history for ${symbol} — connect TWS to load bars.`;
+}
+
 // Terminal Pro theme — dark Bloomberg-adjacent. Amber current-price, bright
 // emerald/rose for level treatments (strong, solid) so they can never be
 // confused with the amber current-price line.
@@ -1113,7 +1160,14 @@ export function SecurityChart({
               className="text-sm font-mono text-center"
               style={{ color: C.text }}
             >
-              No cached price history for {symbol} — connect TWS to load bars.
+              {chartEmptyStateMessage({
+                visibleBarCount: barCount,
+                lastBarDate: lastDate,
+                rangeLabel: durationRangeLabel(
+                  DURATIONS.find((d) => d.label === activeDuration)?.months ?? 12,
+                ),
+                symbol,
+              })}
             </p>
           </div>
         )}

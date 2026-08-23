@@ -105,6 +105,39 @@ export function ChatDrawer() {
     setOpen((v) => !v);
   }, [isLargeDesktop]);
 
+  // open-chat: an OPEN-ONLY entry point (never closes), unlike `toggle` above.
+  // Used by CTAs that are unambiguously asking to open chat — e.g. the
+  // "Ask Claude about your portfolio" banner — where reusing the toggle
+  // event would close an already-open rail on a second click (deep-QA
+  // finding, 2026-08-20). Always ends with the composer focused: if the
+  // panel was closed/collapsed, focus is deferred until the slide-in
+  // transition finishes; if it was already open, focus fires immediately.
+  const openChat = useCallback(() => {
+    if (isLargeDesktop) {
+      setCollapsed((v) => {
+        if (v) {
+          setTimeout(() => {
+            window.dispatchEvent(new CustomEvent("focus-chat-input"));
+          }, 220);
+        } else {
+          window.dispatchEvent(new CustomEvent("focus-chat-input"));
+        }
+        return false;
+      });
+      return;
+    }
+    setOpen((v) => {
+      if (v) {
+        window.dispatchEvent(new CustomEvent("focus-chat-input"));
+      } else {
+        setTimeout(() => {
+          window.dispatchEvent(new CustomEvent("focus-chat-input"));
+        }, 220);
+      }
+      return true;
+    });
+  }, [isLargeDesktop]);
+
   // Broadcast open-state for the header ChatToggleButton to mirror its
   // active styling. railVisible already accounts for collapse on large desktop.
   useEffect(() => {
@@ -136,6 +169,16 @@ export function ChatDrawer() {
     window.addEventListener("toggle-mobile-chat", handleToggle);
     return () => window.removeEventListener("toggle-mobile-chat", handleToggle);
   }, [toggle]);
+
+  // open-chat from OpenChatButton (the "Ask Claude about your portfolio"
+  // banner) — always opens + focuses, never closes. See openChat above.
+  useEffect(() => {
+    function handleOpen() {
+      openChat();
+    }
+    window.addEventListener("open-chat", handleOpen);
+    return () => window.removeEventListener("open-chat", handleOpen);
+  }, [openChat]);
 
   // Compute the panel className per layout mode.
   const panelClass = isMobile
