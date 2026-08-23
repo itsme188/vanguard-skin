@@ -65,7 +65,18 @@ const CONFIDENCE_FLOORS = {
   relFloor: CONFIDENCE_RESIDUAL_REL_FLOOR,
 };
 
-function sortWorstFirst(points: { toDate: string; residual: number }[]): void {
+/** Sorts flagged residual points worst-first: most recent toDate, then
+ *  largest |residual| as a tiebreak. Single source of truth (consolidated
+ *  task 18 — this file and data-confidence.ts each carried an identical
+ *  copy): shared by this file's scanUnexplainedResidualHits AND by
+ *  data-confidence.ts's unexplainedFlow/timingResidual selections
+ *  (findWorstUnexplainedCashFlow) so their "worst" definitions can never
+ *  silently drift apart. Lives here (not data-confidence.ts) so
+ *  data-confidence.ts's import of runIntegrityChecks stays one-directional
+ *  — this file never imports from data-confidence.ts. */
+export type CashFlowResidualPointForSort = { toDate: string; residual: number };
+
+export function sortWorstFirst(points: CashFlowResidualPointForSort[]): void {
   points.sort((a, b) =>
     a.toDate !== b.toDate
       ? a.toDate < b.toDate
