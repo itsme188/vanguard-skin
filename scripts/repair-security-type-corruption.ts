@@ -664,8 +664,15 @@ export function findTypeContradictions(
 // gitignored local config (see loadRepairConfig's header doc) — nothing
 // live is hardcoded in this file.
 
-const DB_PATH = path.join(process.cwd(), "data", "vanguard.db");
-const CONFIG_PATH = path.join(process.cwd(), "data", "repair-configs", "security-type-corruption.json");
+// REPAIR_DB_PATH / REPAIR_CONFIG_PATH let the rehearsal workflow point at a
+// scratch DB copy while STILL running from the repo root — running from any
+// other cwd breaks "@/" alias resolution transitively across the imported
+// lib modules (caught live in the 2026-08-23 rehearsal). The backup lands
+// next to whichever DB is being repaired, never blindly in the repo's data/.
+const DB_PATH = process.env.REPAIR_DB_PATH ?? path.join(process.cwd(), "data", "vanguard.db");
+const CONFIG_PATH =
+  process.env.REPAIR_CONFIG_PATH ??
+  path.join(process.cwd(), "data", "repair-configs", "security-type-corruption.json");
 
 interface SecurityEvidenceRow {
   id: number;
@@ -874,10 +881,14 @@ async function main(): Promise<void> {
       return;
     }
 
-    const { ensureBackup } = await import("@/scripts/rebuild-ibkr-ledger");
+    // Relative specifier, not "@/": tsx resolves the "@/" alias for STATIC
+    // imports from the entry file's tsconfig, but this DYNAMIC import goes
+    // through the runtime resolver, which only honors the alias when cwd is
+    // the repo root — and the rehearsal workflow runs this script from a
+    // scratch directory (caught live 2026-08-23; the failure was pre-write).
+    const { ensureBackup } = await import("./rebuild-ibkr-ledger");
     const backupPath = path.join(
-      process.cwd(),
-      "data",
+      path.dirname(DB_PATH),
       "backups",
       `pre-security-type-repair-${new Date().toISOString().replace(/:/g, "-")}.db`,
     );
@@ -892,8 +903,10 @@ async function main(): Promise<void> {
     })();
     console.log("\nApplied — type repairs + rehomes committed in one transaction.");
 
-    const { computeTaxLots } = await import("@/lib/compute/tax-lots");
-    const { computeDailyValuations } = await import("@/lib/compute/daily-valuation");
+    // Relative specifiers for the same reason as ensureBackup above — the
+    // "@/" alias is not resolved for dynamic imports outside the repo cwd.
+    const { computeTaxLots } = await import("../lib/compute/tax-lots");
+    const { computeDailyValuations } = await import("../lib/compute/daily-valuation");
 
     console.log("\nRecomputing tax lots...");
     const taxResult = computeTaxLots(db);
