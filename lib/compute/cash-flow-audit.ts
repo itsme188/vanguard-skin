@@ -1,4 +1,6 @@
 import type Database from "better-sqlite3";
+import { fetchAnchorSourceSeamDates } from "@/lib/compute/flow-adjusted";
+import { onlyLiveSnapshotsSql } from "@/lib/db/live-sources";
 
 /**
  * Shared unexplained-cash-flow audit — the single source of truth for
@@ -61,6 +63,21 @@ import type Database from "better-sqlite3";
  * two by checking whether the total_value move CORROBORATES the cash
  * residual (same sign, at least half its magnitude) — see that function's
  * doc for the exact rule.
+ *
+ * ── live-anchor-residual (2026-08-23, containment task 8) ────────────
+ * On a day whose `monthly_snapshots` anchor is Plaid/TWS (a LIVE broker
+ * snapshot, not a month-end statement), daily-valuation.ts computes
+ * `cash_balance` as `snapshot_total − holdings_value` — an intraday broker
+ * total minus CLOSE-priced holdings. A day-over-day change in that plug is
+ * usually a measurement-timing artifact, not evidence of an external flow
+ * — but it's AMBIGUOUS until a statement covers the window, so this engine
+ * labels it (`live-anchor-residual`) rather than silently dropping it.
+ * Classifying it HERE (not just at the reader) means the flow-repair
+ * script's proposal path can also never synthesize a deposit/withdrawal for
+ * one — same "do not synthesize" discipline as `source-seam`. See
+ * collectLiveAnchorDatesByAccount for the exact date set and
+ * CashFlowResidualPoint.classification's doc for the source-seam >
+ * live-anchor-residual precedence rule.
  */
 
 // ── Per-type signed cash direction ──────────────────────────────────
@@ -133,7 +150,8 @@ export const CASH_AFFECTING_SIGNED_SQL = `
 export type CashFlowClassification =
   | "external-flow-candidate"
   | "internal-shift"
-  | "source-seam";
+  | "source-seam"
+  | "live-anchor-residual";
 
 export interface CashFlowResidualPoint {
   accountId: number;
@@ -163,7 +181,15 @@ export interface CashFlowResidualPoint {
    *  A `source-seam` point overrides that call entirely: its residual is a
    *  measurement-basis artifact of an anchor-source transition (statement
    *  vs. Plaid vs. TWS — see fetchAnchorSourceSeamDates in
-   *  lib/compute/flow-adjusted.ts), not a candidate for flow synthesis. */
+   *  lib/compute/flow-adjusted.ts), not a candidate for flow synthesis.
+   *  A `live-anchor-residual` point ALSO overrides that call: its landing
+   *  date's `monthly_snapshots` anchor is itself live (Plaid/TWS, no
+   *  source CHANGE required — see collectLiveAnchorDatesByAccount), so
+   *  cash_balance there is `daily-valuation.ts`'s intraday-total-minus-
+   *  close-priced-holdings PLUG, not literal cash. Precedence:
+   *  `source-seam` > `live-anchor-residual` > the classifyCashFlowResidual
+   *  call — a date that is BOTH a seam and a live anchor classifies
+   *  `source-seam`. */
   classification: CashFlowClassification;
 }
 
@@ -220,10 +246,23 @@ export function classifyCashFlowResidual(
  * option (or passing an empty map) leaves output byte-identical to before
  * this option existed — lib/queries/data-confidence.ts relies on this and
  * calls without it.
+ *
+ * `liveAnchorDatesByAccount` is the same shape, also optional and
+ * per-account: a point whose interval END date (`curr.valuation_date`,
+ * exact match — not a range walk like the seam check) is one of that
+ * account's live-anchor dates (see collectLiveAnchorDatesByAccount) is
+ * force-classified `live-anchor-residual`, UNLESS the seam rule already
+ * claimed the point (`source-seam` > `live-anchor-residual` in precedence).
+ * Omitting the option (or passing an empty map) also leaves output
+ * byte-identical to before this option existed.
  */
 export function computeCashFlowResiduals(
   db: Database.Database,
-  opts?: { accountIds?: number[]; seamDatesByAccount?: Map<number, string[]> }
+  opts?: {
+    accountIds?: number[];
+    seamDatesByAccount?: Map<number, string[]>;
+    liveAnchorDatesByAccount?: Map<number, string[]>;
+  }
 ): CashFlowResidualPoint[] {
   // Gracefully returns [] when daily_valuations/transactions don't exist —
   // same precedent as fetchNetFlowsByDate's settings guard (minimal
@@ -268,6 +307,9 @@ export function computeCashFlowResiduals(
     // below assumes ascending order (fetchAnchorSourceSeamDates already
     // returns ascending, but this function must not trust that silently).
     const accountSeams = [...(opts?.seamDatesByAccount?.get(account.id) ?? [])].sort();
+    // Exact-match set, not a pointer walk — the live-anchor rule keys ONLY
+    // on the interval's end date (see computeCashFlowResiduals's doc).
+    const accountLiveAnchors = new Set(opts?.liveAnchorDatesByAccount?.get(account.id) ?? []);
 
     let ti = 0;
     // Transactions on/before the first valuation date are already baked
@@ -317,7 +359,9 @@ export function computeCashFlowResiduals(
         totalDeltaPct,
         classification: seamInInterval
           ? "source-seam"
-          : classifyCashFlowResidual(residual, totalDelta),
+          : accountLiveAnchors.has(curr.valuation_date)
+            ? "live-anchor-residual"
+            : classifyCashFlowResidual(residual, totalDelta),
       });
     }
   }
@@ -401,19 +445,87 @@ export function isUnexplainedCashFlow(
  * `externalFlowCandidates` should ever get a proposed INSERT — see
  * classifyCashFlowResidual's doc for why inserting a flow for an
  * `internalShifts` entry would create a fake return day instead of fixing
- * one. `seamPoints` are a third, disjoint bucket: an anchor-source
- * transition artifact, never a synthesis candidate either.
+ * one. `seamPoints` and `liveAnchorPoints` are further disjoint buckets:
+ * an anchor-source transition artifact and a live-anchor timing residual,
+ * respectively — neither is ever a synthesis candidate.
  */
 export function partitionCandidates(points: CashFlowResidualPoint[]): {
   externalFlowCandidates: CashFlowResidualPoint[];
   internalShifts: CashFlowResidualPoint[];
   seamPoints: CashFlowResidualPoint[];
+  liveAnchorPoints: CashFlowResidualPoint[];
 } {
   return {
     externalFlowCandidates: points.filter((p) => p.classification === "external-flow-candidate"),
     internalShifts: points.filter((p) => p.classification === "internal-shift"),
     seamPoints: points.filter((p) => p.classification === "source-seam"),
+    liveAnchorPoints: points.filter((p) => p.classification === "live-anchor-residual"),
   };
+}
+
+// ── Seam & live-anchor date collectors ───────────────────────────────
+
+/**
+ * Per-account seam dates over each account's full anchor span — one
+ * fetchAnchorSourceSeamDates call PER ACCOUNT, never a cross-account union:
+ * account A's anchor-source transition must not suppress a genuine
+ * candidate in account B landing on the same calendar date.
+ *
+ * MOVED VERBATIM from scripts/repair-missing-external-flows.ts (2026-08-23,
+ * containment task 8) — the script now imports this instead of defining its
+ * own copy. Signature and return type are unchanged.
+ */
+export function collectSeamDatesByAccount(
+  db: Database.Database,
+  accountIds: number[]
+): Map<number, string[]> {
+  const map = new Map<number, string[]>();
+  for (const id of accountIds) {
+    map.set(id, fetchAnchorSourceSeamDates(db, [id], "0000-00-00", "9999-12-31"));
+  }
+  return map;
+}
+
+/**
+ * Per-account dates whose `monthly_snapshots` anchor row is a LIVE broker
+ * snapshot (Plaid/TWS — see lib/db/live-sources.ts's LIVE_SNAPSHOT_SOURCES),
+ * not a source CHANGE like collectSeamDatesByAccount. On these dates,
+ * daily-valuation.ts's cash_balance is computed as an intraday
+ * snapshot-total-minus-close-priced-holdings PLUG, not literal cash — a
+ * day-over-day change in that plug is a measurement-timing artifact, not
+ * evidence of an external flow (see this module's header). Same container
+ * type and per-account query shape as collectSeamDatesByAccount, so both
+ * can be passed to computeCashFlowResiduals interchangeably.
+ *
+ * Gracefully returns an empty map per account when monthly_snapshots
+ * doesn't exist — same precedent as fetchAnchorSourceSeamDates.
+ */
+export function collectLiveAnchorDatesByAccount(
+  db: Database.Database,
+  accountIds: number[]
+): Map<number, string[]> {
+  const map = new Map<number, string[]>();
+  const hasTable = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'monthly_snapshots'")
+    .get();
+  if (!hasTable) {
+    for (const id of accountIds) map.set(id, []);
+    return map;
+  }
+
+  const stmt = db.prepare(
+    `SELECT month_end_date FROM monthly_snapshots
+     WHERE account_id = ? AND ${onlyLiveSnapshotsSql("source")}
+     ORDER BY month_end_date ASC`
+  );
+  for (const id of accountIds) {
+    const rows = stmt.all(id) as { month_end_date: string }[];
+    map.set(
+      id,
+      rows.map((r) => r.month_end_date)
+    );
+  }
+  return map;
 }
 
 // ── Account scoping ──────────────────────────────────────────────────

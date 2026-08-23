@@ -41,6 +41,12 @@ export const SHORT_TERM_LABEL = "Taxable ST (After Wash-Sale Add-Back)";
 // treatment as Short-Term, not a plain "Long-Term" label.
 export const LONG_TERM_LABEL = "Taxable LT (After Wash-Sale Add-Back)";
 
+export const FILING_WARNING_COPY =
+  "Not ready for filing — a 2026-08-21 audit found Treasury sale proceeds/basis " +
+  "stored at 100× economic value and short-sale rows with reversed proceeds/basis " +
+  "columns in these exports. Stock gain/loss figures are unaffected, but reconcile " +
+  "against broker records before using the CSV/TXF for any filing.";
+
 export function shouldShowWashSaleAddBack(adjustments: number): boolean {
   return adjustments !== 0;
 }
@@ -101,7 +107,7 @@ export function TaxReportCard({ year }: { year: number }) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `form-8949-${year}.${format}`;
+      a.download = `form-8949-${year}-NOT-FOR-FILING.${format}`;
       a.click();
       URL.revokeObjectURL(url);
     } catch {
@@ -151,6 +157,13 @@ export function TaxReportCard({ year }: { year: number }) {
           >
             {downloadingTxf ? "Generating..." : "TXF (TurboTax)"}
           </button>
+        </div>
+      </div>
+
+      <div className="px-5 pt-4">
+        <div className="border border-amber-400/20 bg-amber-400/5 rounded-lg p-3">
+          <h4 className="text-xs font-medium text-amber-400">&#x26A0; Export not ready for filing</h4>
+          <p className="text-[10px] text-ink-faint mt-1">{FILING_WARNING_COPY}</p>
         </div>
       </div>
 

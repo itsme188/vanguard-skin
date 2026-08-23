@@ -134,6 +134,46 @@ export function upsertSecurity(
     }
   }
 
+  // Bond-like identity must never land on a security whose ledger shows equity
+  // fills (2026-08-21 audit: a statement transcription put a name-fragment in
+  // the symbol column, colliding with a held equity ticker; the incoming Bond
+  // type + Treasury name + derived maturity stamped bond identity onto the
+  // equity row, sending a live position through the bond ÷100 valuation path).
+  // The CASE guard below only blocks weak incoming 'Stock'; this is the
+  // symmetric strong-evidence direction. The transaction row itself still
+  // imports — only the identity-corrupting metadata is refused. Real bonds are
+  // CUSIP-symboled: a ticker with actual equity fills retyped to Bond is
+  // effectively always a transcription defect, and a genuine correction still
+  // has the manual-repair path (the warn below is the audit trail).
+  if (existing && p.securityType) {
+    const incoming = p.securityType.toLowerCase();
+    const existingType = (existing.security_type ?? "").toLowerCase();
+    if (
+      (incoming === "bond" || incoming === "mutual fund") &&
+      (existingType === "stock" || existingType === "etf")
+    ) {
+      const fills = db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM transactions
+            WHERE security_id = ?
+              AND UPPER(type) IN ('BUY','SELL','SHORT_SELL','BUY_TO_COVER',
+                                  'BUY_TO_OPEN','SELL_TO_OPEN','BUY_TO_CLOSE','SELL_TO_CLOSE')
+              AND quantity IS NOT NULL AND quantity <> 0`
+        )
+        .get(existing.id) as { n: number };
+      if (fills.n > 0) {
+        console.warn(
+          `[upsertSecurity] Refusing ${p.securityType} identity for "${p.symbol}": ` +
+            `existing ${existing.security_type} security has ${fills.n} equity fills. ` +
+            `Dropping incoming security_type/name/maturity_date; check the source row's symbol.`
+        );
+        p.securityType = undefined;
+        p.name = undefined;
+        p.maturityDate = undefined;
+      }
+    }
+  }
+
   // Currency defaults to 'USD' on a fresh insert (column is NOT NULL). On
   // conflict, an incoming 'USD' (whether explicit or the caller's default —
   // the two are indistinguishable here) never clobbers an already-stored

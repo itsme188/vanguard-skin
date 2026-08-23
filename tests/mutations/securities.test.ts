@@ -402,4 +402,70 @@ describe("upsertSecurity", () => {
       expect(row.symbol).toBe("AMSC  260116C00035000");
     });
   });
+
+  // 2026-08-21 audit: a statement transcription put a name-fragment in the
+  // symbol column, colliding with a held equity ticker. The incoming Bond
+  // type + Treasury name + derived maturity stamped bond identity onto the
+  // equity row, sending a live position through the bond ÷100 valuation path.
+  // Real bonds are CUSIP-symboled — a ticker with actual equity fills being
+  // retyped to Bond/Mutual Fund is effectively always a transcription defect.
+  describe("bond-like metadata never lands on an equity-fill security", () => {
+    function insertEquityFill(db: Database.Database, securityId: number) {
+      // accounts table has no account_type column in this schema
+      db.prepare(`INSERT INTO accounts (name) VALUES ('T')`).run();
+      db.prepare(
+        `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, amount)
+         VALUES (1, ?, '2026-01-05', 'BUY', 100, -1000)`
+      ).run(securityId);
+    }
+
+    it("refuses Bond type + bond-like name + maturity onto a Stock with equity fills", () => {
+      const id = upsertSecurity(db, { symbol: "AAA", name: "EXAMPLE CORP", securityType: "Stock" });
+      insertEquityFill(db, id);
+      const again = upsertSecurity(db, {
+        symbol: "AAA",
+        name: "S TREASURY NOTE 0 CPN 9.999% DUE 01/15/40 DTD 01/15/25",
+        securityType: "Bond",
+      });
+      expect(again).toBe(id);
+      const row = db
+        .prepare(`SELECT name, security_type, maturity_date FROM securities WHERE id = ?`)
+        .get(id) as { name: string; security_type: string; maturity_date: string | null };
+      expect(row.security_type).toBe("Stock");
+      expect(row.name).toBe("EXAMPLE CORP");
+      expect(row.maturity_date).toBeNull();
+    });
+
+    it("still allows Bond onto a Stock-typed row with NO equity fills (legit CUSIP retype)", () => {
+      const id = upsertSecurity(db, { symbol: "999999ZZ9", securityType: "Stock" });
+      upsertSecurity(db, { symbol: "999999ZZ9", name: "U S TREASURY BILL DUE 12/15/26", securityType: "Bond" });
+      const row = db.prepare(`SELECT security_type FROM securities WHERE id = ?`).get(id) as {
+        security_type: string;
+      };
+      expect(row.security_type).toBe("Bond");
+    });
+
+    it("refuses Mutual Fund onto a Stock with equity fills (LP-mistype inlet class)", () => {
+      const id = upsertSecurity(db, { symbol: "BBB", name: "EXAMPLE PARTNERS LP", securityType: "Stock" });
+      insertEquityFill(db, id);
+      upsertSecurity(db, { symbol: "BBB", securityType: "Mutual Fund" });
+      const row = db.prepare(`SELECT security_type FROM securities WHERE id = ?`).get(id) as {
+        security_type: string;
+      };
+      expect(row.security_type).toBe("Stock");
+    });
+
+    it("other incoming fields still apply when the bond metadata is stripped", () => {
+      const id = upsertSecurity(db, { symbol: "AAA", name: "EXAMPLE CORP", securityType: "Stock" });
+      insertEquityFill(db, id);
+      upsertSecurity(db, {
+        symbol: "AAA", securityType: "Bond", name: "S TREASURY NOTE …", currency: "USD", multiplier: 1,
+      });
+      const row = db.prepare(`SELECT security_type, name FROM securities WHERE id = ?`).get(id) as {
+        security_type: string; name: string;
+      };
+      expect(row.security_type).toBe("Stock");
+      expect(row.name).toBe("EXAMPLE CORP");
+    });
+  });
 });
