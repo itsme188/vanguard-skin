@@ -502,3 +502,31 @@ describe("seam awareness", () => {
     expect(result.error).toMatch(/external-flow-candidate/);
   });
 });
+
+// ─── Live-anchor-residual awareness ────────────────────────────────────
+
+/** Account 1 has a live (Plaid) anchor landing 2026-07-11 AND an
+ *  unexplained cash jump on that same date with zero transactions — same
+ *  shape as makeDbWithSeamResidual, but a live-anchor row instead of a
+ *  seam (no source CHANGE, just an ongoing live anchor). */
+function makeDbWithLiveAnchorResidual(): Database.Database {
+  const db = createTestDb();
+  insertValuation(db, 1, "2026-07-10", 60_500.25, 1_350_000.55);
+  insertValuation(db, 1, "2026-07-11", 210_500.25, 1_440_000.55);
+  insertAnchor(db, 1, "2026-07-11", "plaid");
+  return db;
+}
+
+describe("live-anchor-residual awareness", () => {
+  it("a live-anchored residual above the floor lands in the informational partition and produces NO proposal", () => {
+    const db = makeDbWithLiveAnchorResidual();
+    const candidates = findCandidates(db, { accountIds: [1] }); // now live-anchor-aware internally
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].classification).toBe("live-anchor-residual");
+
+    const result = selectRun(candidates);
+    expect(result.liveAnchorPoints.map((p) => p.toDate)).toContain("2026-07-11");
+    expect(result.proposals).toEqual([]);
+    expect(result.externalFlowCandidates).toEqual([]);
+  });
+});
