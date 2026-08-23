@@ -71,3 +71,23 @@ export function statementSourcedHoldingSql(col = "h.source_key"): string {
 export function isPlaidSourcedHolding(sourceKey: string | null): boolean {
   return sourceKey?.startsWith(PLAID_PREFIX) ?? false;
 }
+
+/**
+ * Classifies a holdings row's provenance from its `source_key` prefix, built
+ * on the same STATEMENT_HOLDING_SOURCE_PREFIXES / LIVE_HOLDING_SOURCE_PREFIXES
+ * lists as statementSourcedHoldingSql / isPlaidSourcedHolding — single source
+ * of truth for "is this row statement authority or a live sync."
+ *
+ * Returns "statement" only for a recognized statement-authority prefix.
+ * Everything else — a recognized live prefix (tws-, plaid:), null, or an
+ * unrecognized prefix (including the two prefixes deliberately outside this
+ * taxonomy: 'recon:closed-equity:' and 'demo-hold-') — classifies "live".
+ * This is a deliberately defensive default: an unrecognized source_key must
+ * never silently read as statement authority.
+ */
+export function classifyHoldingSourceKey(sourceKey: string | null): "statement" | "live" {
+  if (sourceKey && STATEMENT_HOLDING_SOURCE_PREFIXES.some((p) => sourceKey.startsWith(p))) {
+    return "statement";
+  }
+  return "live";
+}
