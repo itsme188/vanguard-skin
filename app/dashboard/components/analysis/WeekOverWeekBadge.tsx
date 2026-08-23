@@ -12,11 +12,39 @@ interface Props {
 }
 
 /**
+ * Pure formatting core, extracted for testability (no render needed).
+ * Resolves whether a non-null delta reads as "unchanged" at the displayed
+ * precision, and — when it doesn't — its rounded magnitude string.
+ *
+ * `isZero` is true when EITHER the raw |value| is below eps OR the value
+ * rounds away to "0.00…" at `digits`. The second check matters on its own:
+ * a raw delta can clear the eps floor (e.g. 0.004) yet still round to
+ * nothing once formatted at digits=2 — without it, the caller would pair a
+ * directional arrow with a "0.00" magnitude (and a "-0.00" title).
+ */
+export function formatWeekOverWeekMagnitude(
+  value: number,
+  digits: number,
+  asPercent: boolean
+): { isZero: boolean; magnitude: string } {
+  const eps = asPercent ? 0.0001 : 0.001;
+  const roundedMagnitude = asPercent
+    ? (Math.abs(value) * 100).toFixed(digits)
+    : Math.abs(value).toFixed(digits);
+  return {
+    isZero: Math.abs(value) < eps || Number(roundedMagnitude) === 0,
+    magnitude: asPercent ? `${roundedMagnitude}%` : roundedMagnitude,
+  };
+}
+
+/**
  * Tiny W-o-W delta pill (~10-11px) that renders next to a numeric metric:
  *   ↑ 0.12 / 7d   ↓ 1.50% / 7d   ↔ 0.00 / 7d   —
  *
  * - `value === null`     → em-dash placeholder ("no week-ago data")
- * - |value| < eps        → "↔ 0.00 / 7d" rendered in gray (unchanged)
+ * - |value| < eps, OR the value rounds to "0.00" at `digits` → "↔ 0.00 / 7d"
+ *                          rendered in gray (unchanged) — never a directional
+ *                          arrow paired with a zero/"-0.00" magnitude
  * - kind="signed"        → green when value > 0, red when value < 0
  * - kind="neutral"       → gray regardless of sign (use for direction-ambiguous
  *                          metrics like beta, volatility, herfindahl)
@@ -39,9 +67,8 @@ export const WeekOverWeekBadge = memo(function WeekOverWeekBadge({
       </span>
     );
   }
-  // Treat tiny |value| < eps as zero.
-  const eps = asPercent ? 0.0001 : 0.001;
-  if (Math.abs(value) < eps) {
+  const { isZero, magnitude } = formatWeekOverWeekMagnitude(value, digits, asPercent);
+  if (isZero) {
     return (
       <span
         className="text-[10px] text-ink-faint align-middle ml-1.5"
@@ -58,9 +85,6 @@ export const WeekOverWeekBadge = memo(function WeekOverWeekBadge({
         ? "text-up"
         : "text-down"
       : "text-ink-faint";
-  const magnitude = asPercent
-    ? `${(Math.abs(value) * 100).toFixed(digits)}%`
-    : Math.abs(value).toFixed(digits);
   return (
     <span
       className={`text-[10px] ${colorClass} align-middle ml-1.5`}

@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { describe, it, expect, beforeEach } from "vitest";
 import { runMigrations } from "@/lib/db/migrate";
 import { computeDefenseAnalysis } from "@/lib/compute/hedging";
+import { todayET, addDays } from "@/lib/calendar/date-utils";
 
 let db: Database.Database;
 
@@ -298,5 +299,93 @@ describe("computeDefenseAnalysis — held-sibling display labels", () => {
     // ...and its label leads with the actually-held GOOG share class.
     expect(famRows[0].underlying).toContain("GOOG");
     expect(famRows[0].underlying).not.toBe("GOOGL");
+  });
+});
+
+describe("computeDefenseAnalysis — expired option exclusion", () => {
+  // A lapsed contract must never render as a live hedge: the SQL universe
+  // pull used `date('now', '-1 day')`, a slip copied from
+  // purgeExpiredOptionHoldings's DELETE grace window (lib/mutations/expired-
+  // options.ts) into what should have been a strict "expiring today or
+  // later" read-time filter. That let a QQQ put that expired yesterday still
+  // render "Runway -1d" / an "expiring" badge and still count toward
+  // PROTECTION RATIO. See lib/compute/option-expiry.ts.
+  let acct: number;
+  let msft: number;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+
+    acct = seedAccount("Taxable");
+    msft = seedSecurity("MSFT", { type: "Stock", sector: "Technology", geography: "US" });
+    seedHolding(acct, msft, 100);
+    seedPrice(msft, 500);
+  });
+
+  function seedMsftPut(expirationDate: string) {
+    const tag = expirationDate.replace(/-/g, "").slice(2);
+    const putId = seedSecurity(`MSFT  ${tag}P00400000`, {
+      type: "Option",
+      underlyingSymbol: "MSFT",
+      optionType: "PUT",
+      strikePrice: 400,
+      expirationDate,
+      multiplier: 100,
+    });
+    seedHolding(acct, putId, 2);
+    seedPrice(putId, 10);
+    return putId;
+  }
+
+  it("keeps an option expiring TODAY live: hedged pair, positive protection ratio, no negative runway", () => {
+    const putId = seedMsftPut(todayET());
+
+    const result = computeDefenseAnalysis(db, [acct]);
+
+    const pair = result.pairs.find((p) => p.underlying === "MSFT");
+    expect(pair?.classification).toBe("hedged_long");
+    expect(result.summary.protectionRatio).toBeGreaterThan(0);
+
+    const score = result.hedgeScores.find((h) => h.securityId === putId);
+    expect(score).toBeDefined();
+    expect(score!.runwayDays).not.toBeNull();
+    expect(score!.runwayDays!).toBeGreaterThanOrEqual(0);
+  });
+
+  it("excludes an option that expired YESTERDAY from pairs, hedgeScores, and protection ratio", () => {
+    const yesterday = addDays(todayET(), -1);
+    const putId = seedMsftPut(yesterday);
+
+    const result = computeDefenseAnalysis(db, [acct]);
+
+    // No opposing option survives the filter — MSFT's core reverts to unhedged.
+    const pair = result.pairs.find((p) => p.underlying === "MSFT");
+    expect(pair?.classification).toBe("unhedged");
+
+    // The expired put must never surface in the hedge book...
+    expect(result.hedgeScores.find((h) => h.securityId === putId)).toBeUndefined();
+    // ...nor anywhere in the ranked exposures / proxies as a live position.
+    expect(result.rankedExposures.some((r) => r.securityId === putId)).toBe(false);
+
+    // ...and it must not inflate PROTECTION RATIO.
+    expect(result.summary.protectionRatio).toBe(0);
+
+    // No hedge score anywhere renders a negative runway.
+    for (const score of result.hedgeScores) {
+      expect(score.runwayDays === null || score.runwayDays >= 0).toBe(true);
+    }
+  });
+
+  it("a non-option holding (no expiration_date) is unaffected by the expiry filter", () => {
+    // MSFT itself carries no expiration_date; confirm the IS NULL branch of
+    // the shared predicate keeps it regardless of any expired option noise.
+    seedMsftPut(addDays(todayET(), -1)); // dead weight, should not affect MSFT core
+
+    const result = computeDefenseAnalysis(db, [acct]);
+    const pair = result.pairs.find((p) => p.underlying === "MSFT");
+    expect(pair).toBeDefined();
+    expect(pair!.coreExposure).toBeCloseTo(50000, 2);
   });
 });

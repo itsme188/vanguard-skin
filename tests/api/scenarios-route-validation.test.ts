@@ -65,6 +65,7 @@ function createTestDb(): Database.Database {
       style TEXT,
       duration_years REAL,
       credit_rating TEXT,
+      expiration_date TEXT,
       currency TEXT NOT NULL DEFAULT 'USD'
     );
     CREATE TABLE fx_rates (
