@@ -212,6 +212,16 @@ describe("option tax lot handling", () => {
     expect(stockSales[0].proceeds).toBe(16200); // 100 * 162
     expect(stockSales[0].cost_basis_allocated).toBe(15000); // 100 * 150
     expect(stockSales[0].realized_gain_loss).toBe(1200); // 16200 - 15000
+
+    // The put's own close is the rollover half of that pair: the $800 option
+    // leg left the option row (zero gain, flagged) and landed on the stock
+    // proceeds exactly once — 17000 − 800 = 16200 above.
+    const optionSales = getTaxLotSales().filter((s) => s.security_type === "option");
+    expect(optionSales.length).toBe(1);
+    expect(optionSales[0].premium_rollover).toBe(1);
+    expect(optionSales[0].proceeds).toBe(800); // 1 × $8 × 100
+    expect(optionSales[0].cost_basis_allocated).toBe(800);
+    expect(optionSales[0].realized_gain_loss).toBe(0);
   });
 
   it("short call assigned: stock sale proceeds include premium", () => {
