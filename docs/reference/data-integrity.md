@@ -436,3 +436,56 @@ the apex — **don't undo this**.
 Cloudflare Email Routing catch-all (`*@myportfoliodesk.com`) handles inbound replies for free.
 
 Topic file: `memory/project_resend_email_swap.md`.
+
+---
+
+## 17. Tax export filing-readiness gate (marker-gated, supersedes the blanket NOT-FOR-FILING banner)
+
+Number-trust durable fixes, 2026-08-23 (predecessor: containment `6ae273b`, same day). Spec:
+`docs/superpowers/specs/2026-08-23-number-trust-durable-fixes-design.md` (WS1).
+
+The containment-era blanket `-NOT-FOR-FILING` banner is replaced by a fail-closed, per-(account,
+tax-year) marker gate — `lib/compute/tax-report.ts`'s `filingReady` and
+`lib/compute/tax-convention.ts`'s `getTaxConventionState` / `isYearAccepted`.
+
+- **Generation counter**: `tax_input_generation` (a `settings` row) bumps on every material tax-input
+  mutation. Two markers bind to it — `tax_lots_convention = "v2:<generation>"` (stamped by
+  `computeTaxLots` as its final in-transaction act: the engine ran under the current true-dollar
+  convention — see `docs/reference/conventions-detail.md`) and
+  `tax_report_broker_accepted = {generation, coverage: [{accountId, taxYear}]}` (stamped ONLY by
+  `scripts/reconcile-tax-report-vs-broker.ts --stamp`, and only on a PASSING reconciliation against
+  transcribed statement/IBKR-activity realized figures). A stale generation on either marker reads as
+  absent — fail-closed by construction.
+- **`filingReady`**: true only when the recompute marker is current AND every account with ANY
+  `tax_lot_sales` activity that year (not just the filing-eligible rows — an account whose only
+  activity is an engine-owned `RECONCILE_CLOSE` still needs acceptance) is covered by the acceptance
+  marker. An empty account universe never vacuously passes.
+- **Filename gate**: `buildTaxReportFilename` appends `-NOT-FOR-FILING` unless `filingReady` — the
+  single-sourced call site for both the CSV/TXF `Content-Disposition` and the client-side download
+  name (`TaxReportCard.tsx`). Never re-derive the filename inline.
+- **Never bypass the gate** — there is no override flag. The only way a year's banner clears is
+  running the recompute (`scripts/recompute-tax-lots-v2.ts --apply`, rehearsed on a DB copy first)
+  and the acceptance harness with `--stamp` against real transcribed broker figures (statement
+  realized-gain sections + IBKR annual activity CSV). See the spec's Rollout runbook.
+- **Wash-sale W codes stay advisory permanently** — `detectWashSales` is a heuristic 30-day
+  same-security scan, not a broker-confirmed 1099-B adjustment, regardless of `filingReady`.
+  `washSaleAdvisory` (exported string, `lib/compute/tax-report.ts`) travels with every report surface
+  (UI card + CSV trailing note) so a reader never mistakes a "W" code for a reconciled determination.
+
+---
+
+## 18. TWR "reconciliation" is now an independent cross-check, not statement-self-reference
+
+Number-trust durable fixes, 2026-08-23. The prior gap: `reconcileTwrAgainstStatements` compared the
+statement TWR against `computeTwr`, which just echoes `monthly_snapshots.twr` back — divergence always
+read ~0bp regardless of whether the statement figure was actually right. `lib/compute/dietz.ts`'s
+`computeMonthlyDietz` closes that gap by recomputing a Modified Dietz return from the ledger (holdings
++ flows) from first principles; `reconcileTwrAgainstStatements` (`lib/compute/twr-reconcile.ts`) now
+compares THAT independent figure against the statement — never `computeTwr`'s passthrough.
+
+Four bands — `consistent` / `investigate` / `not_comparable` / `insufficient` — never a green
+"reconciled ✓ / 0bp" claim. **Never re-add that claim without gating it on `band === "consistent"`** —
+UI copy (`PerformanceView.tsx`, `TrustStripDrawer.tsx`, `TrustStrip.tsx`) is pinned by
+`tests/dashboard/twr-reconcile-labels.test.ts` to disclose the band, never bare "reconciled." Detail:
+`docs/reference/conventions-detail.md`'s TWR cross-check contract; API surface:
+`docs/reference/api-patterns.md`'s `/api/analysis/trust-state`.
