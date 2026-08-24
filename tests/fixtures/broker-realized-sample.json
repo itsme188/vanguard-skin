@@ -1,0 +1,30 @@
+{
+  "entries": [
+    {
+      "accountId": 1,
+      "taxYear": 2026,
+      "source": "synthetic-sample-2026",
+      "statementTotal": { "proceeds": 15300.00, "basis": 12000.00, "gain": 3300.00 },
+      "rows": [
+        {
+          "symbol": "ACME",
+          "disposalDate": "2026-03-10",
+          "quantity": 100,
+          "currency": "USD",
+          "proceeds": 10100.00,
+          "basis": 8000.00,
+          "gain": 2100.00
+        },
+        {
+          "symbol": "ACME",
+          "disposalDate": "2026-06-01",
+          "quantity": 50,
+          "currency": "USD",
+          "proceeds": 5200.00,
+          "basis": 4000.00,
+          "gain": 1200.00
+        }
+      ]
+    }
+  ]
+}
