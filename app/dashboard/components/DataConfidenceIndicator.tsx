@@ -183,9 +183,9 @@ export function DataConfidenceIndicator() {
               : "Operational freshness hint — does not certify that every displayed number is correct (2026-08-21 audit)."}
           </p>
           {confidence.capReason && (
-            <div className="flex items-start gap-2 rounded-lg border border-down/40 bg-down/10 px-2.5 py-2">
+            <div className="flex items-start gap-2 rounded-lg border border-down/40 bg-down/20 px-2.5 py-2">
               <span className="mt-0.5 w-1.5 h-1.5 rounded-full bg-down shrink-0" aria-hidden="true" />
-              <p className="text-[10px] text-down leading-snug">
+              <p className="text-[11px] font-medium text-down leading-snug">
                 <PrivateText>{confidence.capReason}</PrivateText>
               </p>
             </div>
