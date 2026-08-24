@@ -6,6 +6,7 @@ import {
   loadIntelView,
 } from "@/lib/digest/send-earnings-email";
 import { getEmailAudit } from "@/lib/queries/earnings-emails";
+import { parseDbTimestamp } from "@/lib/calendar/date-utils";
 import { repairCitationLineBreaks } from "@/lib/earnings/repair-citation-linebreaks";
 import type { CalendarEvent } from "@/lib/types";
 
@@ -89,7 +90,10 @@ export async function GET(request: Request) {
   // lib/earnings/repair-citation-linebreaks.ts.
   const aiMarkdown = repairCitationLineBreaks(audit.ai_output_md ?? "");
   const fullMarkdown = `${scoreboardMd}\n\n${aiMarkdown}`;
-  const fullHtml = briefingToHtml(fullMarkdown, title);
+  // Stamp the footer with when the email was actually sent, not when this
+  // archive re-render happens (falls back to render time if unparseable).
+  const sentDate = audit.sent_at ? parseDbTimestamp(audit.sent_at) : null;
+  const fullHtml = briefingToHtml(fullMarkdown, title, undefined, sentDate ?? undefined);
 
   return Response.json({
     title,
