@@ -49,19 +49,24 @@
  *
  * stdout is `result.summary` ONLY — direction-only (counts + PASS/FAIL per
  * entry, reason labels like "tie-out mismatch" — never a dollar figure or
- * quantity). Real proceeds/basis/gain detail is written ONLY to
- * --detail-out, and only after confirming the path is covered by
- * `.gitignore` (mirrors scripts/audit-twr-vs-statements.ts's
- * assertGitignored convention) — a real-figure detail file can never land
- * in this public repo by accident.
+ * quantity). `entry.source` (the transcriber-supplied provenance label,
+ * e.g. "vanguard-statement-2026-04") is echoed into that summary too — it
+ * MUST stay a free-text label, never a number: whoever fills in `source`
+ * in the config should never encode a dollar figure or count into it, or
+ * it would leak a real figure onto stdout through the back door. Real
+ * proceeds/basis/gain detail is written ONLY to --detail-out, and only
+ * after confirming the path is covered by `.gitignore` (mirrors
+ * scripts/audit-twr-vs-statements.ts's assertGitignored convention) — a
+ * real-figure detail file can never land in this public repo by accident.
  *
  * --stamp calls `stampBrokerAcceptance(db, result.coverage)` inside a
  * transaction, and ONLY when `result.pass` is true — a failed
  * reconciliation must never be able to mark any (account, year) as
- * broker-accepted.
+ * broker-accepted. An EMPTY `entries` config is itself a failure (zero
+ * configured coverage), not a vacuous pass — see runReconciliation.
  *
- * Exit code: 0 iff result.pass (or nothing was configured — vacuous pass);
- * 1 otherwise.
+ * Exit code: 0 iff result.pass; 1 otherwise. This includes an empty
+ * `entries` config, which fails closed rather than vacuously passing.
  */
 
 import path from "node:path";
@@ -396,6 +401,22 @@ export function runReconciliation(
   db: Database.Database,
   config: BrokerRealizedConfig,
 ): ReconcileResult {
+  // Zero configured entries is zero configured coverage — fail closed, same
+  // as an entry with zero rows. An empty config must never vacuously pass
+  // and must never let --stamp write an empty-coverage acceptance stamp.
+  if (config.entries.length === 0) {
+    return {
+      pass: false,
+      coverage: [],
+      summary: [
+        "Broker-reconciliation acceptance: 0 entries — 0 pass, 0 fail",
+        "  FAIL (no entries — nothing reconciled)",
+        "GATE: FAIL",
+      ].join("\n"),
+      detailLines: ["no entries — nothing reconciled: config.entries is empty"],
+    };
+  }
+
   const outcomes = config.entries.map((entry) => reconcileEntry(db, entry));
 
   const coverageMap = new Map<string, AcceptanceCoverage>();
@@ -413,13 +434,7 @@ export function runReconciliation(
   for (const o of outcomes) {
     summaryLines.push(`  [${o.source}] ${o.pass ? "PASS" : `FAIL (${o.reasons.join(", ")})`}`);
   }
-  summaryLines.push(
-    outcomes.length === 0
-      ? "GATE: SKIP (no entries configured)"
-      : allPass
-        ? "GATE: PASS"
-        : "GATE: FAIL",
-  );
+  summaryLines.push(allPass ? "GATE: PASS" : "GATE: FAIL");
 
   return {
     pass: allPass,
