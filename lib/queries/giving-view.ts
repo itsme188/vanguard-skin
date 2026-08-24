@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { getDonations, type DonationRow } from "@/lib/queries/donations";
 import { reconcileDonations, type ReconciliationReport } from "@/lib/compute/donation-reconciliation";
 import { isLongTermHolding } from "@/lib/compute/tax-lots";
+import { getTaxConventionState } from "@/lib/compute/tax-convention";
 
 /**
  * Giving view assembly (Task 12) — the single read the Analysis > Giving
@@ -164,6 +165,10 @@ function buildGivingDonation(
 export function getGivingView(db: Database.Database): {
   years: GivingYear[];
   reconciliation: ReconciliationReport;
+  /** True when the tax-input generation has moved past the last
+   *  computeTaxLots recompute (Task 1's getTaxConventionState) — basis/
+   *  gainAvoided above may still reflect a stale mutation. */
+  conventionPending: boolean;
 } {
   const donations = getDonations(db);
   const reconciliation = reconcileDonations(db);
@@ -201,7 +206,8 @@ export function getGivingView(db: Database.Database): {
       return { year, totalGiven, stockGiven, cashGiven, gainAvoided, donations: yearDonations };
     });
 
-  return { years, reconciliation };
+  const conventionPending = !getTaxConventionState(db).recomputeCurrent;
+  return { years, reconciliation, conventionPending };
 }
 
 // ── Per-donation open-lots listing (drawer support, Task 13) ──────────────

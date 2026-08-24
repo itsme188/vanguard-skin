@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { getPortfolioSummaryForChat } from "@/lib/queries/portfolio-summary";
+import { computeTaxLots } from "@/lib/compute/tax-lots";
+import { bumpTaxInputGeneration } from "@/lib/compute/tax-convention";
 
 function seedSecurity(
   db: Database.Database,
@@ -214,5 +216,68 @@ describe("account-filtered summary", () => {
     // AAPL is 100% of IBKR, not 100*200/(100*250+50*200) = 28.6% of portfolio
     const summary = getPortfolioSummaryForChat(db, "IBKR");
     expect(summary).toContain("100.0%");
+  });
+});
+
+describe("v2 dollar convention (task 4: readers consume stored tax_lots.cost_basis)", () => {
+  let db: Database.Database;
+  const ACCOUNT_ID = 1; // Vanguard Taxable
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  function addSecurity(opts: { symbol: string; securityType: string; multiplier?: number }): number {
+    const r = db
+      .prepare("INSERT INTO securities (symbol, name, security_type, multiplier) VALUES (?, ?, ?, ?)")
+      .run(opts.symbol, opts.symbol, opts.securityType, opts.multiplier ?? 1);
+    return r.lastInsertRowid as number;
+  }
+
+  /** Amount left NULL so netLegDollars derives the true economic dollars
+   *  from price×multiplier (options) / ÷100 (bonds) rather than trusting a
+   *  raw qty×price `amount`, which is wrong for either convention. */
+  function addBuyTxn(secId: number, type: string, date: string, qty: number, price: number): void {
+    db.prepare(
+      `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, price_per_share, source_key)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(ACCOUNT_ID, secId, date, type, qty, price, `test:${type}:${secId}:${date}`);
+  }
+
+  it("shows an option lot's tax-summary cost basis at economic dollars (×multiplier), not the raw contract price", () => {
+    const optId = addSecurity({ symbol: "AAPL  260619C00180000", securityType: "option", multiplier: 100 });
+    addBuyTxn(optId, "BUY_TO_OPEN", "2025-01-15", 1, 2.5);
+    computeTaxLots(db);
+
+    const summary = getPortfolioSummaryForChat(db);
+    // 1 × 2.50 × 100 = $250 — pre-fix, quantity_remaining * acquisition_price
+    // would have read 1 × 2.50 = $2.50.
+    expect(summary).toContain("cost basis: $250");
+  });
+
+  it("shows a bond lot's tax-summary cost basis at face-adjusted dollars (÷100), not the raw quote", () => {
+    const bondId = addSecurity({ symbol: "912796XY0", securityType: "bond" });
+    addBuyTxn(bondId, "BUY", "2023-02-08", 20000, 99.438385);
+    computeTaxLots(db);
+
+    const summary = getPortfolioSummaryForChat(db);
+    // 20000 × 99.438385 / 100 = $19,887.68 (rounds to $19,888) — pre-fix,
+    // quantity_remaining * acquisition_price would have read ≈$1,988,768.
+    expect(summary).toContain("cost basis: $19,888");
+  });
+
+  it("appends the pending-recompute disclaimer only once the convention marker goes stale", () => {
+    const secId = addSecurity({ symbol: "STALE", securityType: "stock" });
+    addBuyTxn(secId, "BUY", "2025-01-02", 10, 100);
+    computeTaxLots(db); // stamps the convention marker current
+
+    expect(getPortfolioSummaryForChat(db)).not.toContain("pending a recompute");
+
+    bumpTaxInputGeneration(db); // a new tax-relevant mutation, no recompute yet
+    expect(getPortfolioSummaryForChat(db)).toContain(
+      "Note: cost-basis figures are pending a recompute under the corrected dollar convention and may be unit-inconsistent."
+    );
   });
 });

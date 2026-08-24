@@ -32,6 +32,7 @@ import { join } from "node:path";
 import { undoImport } from "./engine";
 import { computeTaxLots } from "@/lib/compute/tax-lots";
 import { computeDailyValuations } from "@/lib/compute/daily-valuation";
+import { bumpTaxGenerationIfPresent } from "@/lib/compute/tax-convention";
 import { LIVE_HOLDING_SOURCE_PREFIXES } from "@/lib/db/holding-sources";
 import { resolveDbDir, type EnvLike } from "@/lib/db/db-path";
 import { appendArtifactSuffix } from "@/lib/mutations/donation-links";
@@ -581,6 +582,21 @@ export function restoreImportBatch(db: Database.Database, manifest: RecoveryMani
       ["quantity", "created_at"],
       manifest.payload.donationLotRelations ?? [],
     );
+
+    // Re-inserting transactions/corporate actions/donation rows reintroduces
+    // tax-relevant inputs — bump the generation counter so
+    // getTaxConventionState reports "pending" until the recompute below
+    // re-stamps it (fail-closed: if that recompute throws, readers still see
+    // stale rather than silently trusting pre-restore figures).
+    if (
+      restored.transactions > 0 ||
+      restored.corporate_actions > 0 ||
+      donationsRestored > 0 ||
+      restored.donation_leg_links > 0 ||
+      restored.donation_lots > 0
+    ) {
+      bumpTaxGenerationIfPresent(db);
+    }
   })();
 
   // Regenerate the derived cache from the now-restored source rows. Best-effort

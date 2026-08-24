@@ -1,6 +1,10 @@
 import type Database from "better-sqlite3";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { formatUSD, formatNumber } from "@/lib/format";
+import { getTaxConventionState } from "@/lib/compute/tax-convention";
+
+const CONVENTION_PENDING_NOTE =
+  "Note: cost-basis figures are pending a recompute under the corrected dollar convention and may be unit-inconsistent.";
 
 interface AccountValue {
   name: string;
@@ -60,6 +64,7 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
   const today = new Date().toISOString().slice(0, 10);
   const lines: string[] = [];
   lines.push("## Portfolio Summary\n");
+  const conventionPending = !getTaxConventionState(db).recomputeCurrent;
 
   // ─── Resolve accountName to accountId ──────────────────────────
   let accountId: number | undefined;
@@ -284,15 +289,18 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
   // ─── Tax Summary + Harvesting Candidates ───────────────────────
   const taxLotsAccountFilter = accountId != null ? `AND tax_lots.account_id = ?` : "";
   const taxLotsAccountParams = accountId != null ? [accountId] : [];
+  // tax_lots.cost_basis is the v2 TRUE-DOLLAR total for the lot's original
+  // quantity_acquired (bond ÷100, option ×multiplier, fees included); the
+  // still-open share is dollar-proportional (see cost-basis-reconciliation.ts).
   const taxSummary = db
     .prepare(
       `SELECT
         COUNT(*) AS open_lots,
-        COALESCE(SUM(quantity_remaining * acquisition_price * COALESCE(fx.usd_per_unit, 1)), 0) AS total_cost_basis
+        COALESCE(SUM(tax_lots.cost_basis * tax_lots.quantity_remaining / tax_lots.quantity_acquired * COALESCE(fx.usd_per_unit, 1)), 0) AS total_cost_basis
        FROM tax_lots
        JOIN securities s ON s.id = tax_lots.security_id
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
-       WHERE quantity_remaining > 0 ${taxLotsAccountFilter}`
+       WHERE quantity_remaining > 0 AND quantity_acquired != 0 ${taxLotsAccountFilter}`
     )
     .get(...taxLotsAccountParams) as { open_lots: number; total_cost_basis: number };
 
@@ -314,6 +322,9 @@ export function getPortfolioSummaryForChat(db: Database.Database, accountName?: 
     lines.push("\n### Tax Summary");
     lines.push(`- Open lots: ${taxSummary.open_lots} (cost basis: ${formatUSD(taxSummary.total_cost_basis)})`);
     lines.push(`- Realized gains: ${formatUSD(realizedGains.total)} (LT: ${formatUSD(realizedGains.long_term)}, ST: ${formatUSD(realizedGains.short_term)})`);
+    if (conventionPending) {
+      lines.push(CONVENTION_PENDING_NOTE);
+    }
   }
 
   // Tax-loss harvesting candidates (positions with unrealized losses)
