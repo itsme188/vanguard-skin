@@ -66,6 +66,101 @@ describe("extractNarrativeClaims", () => {
   });
 });
 
+// QA finding security-detail-levels--suggestion-narrative-contradicts-chip-
+// accept-persists-regression-1 (root cause b): CLAIM_RE only matched the
+// NUMBER-then-direction order ("207 above"). The live sentence put the
+// direction word FIRST — "a floor above current 207 level" — so the guard
+// extracted nothing and the hallucinated price sailed through onto the card
+// (and into `security_levels.thesis` on ACCEPT). The security's real price
+// was 278.91.
+const LIVE_CURRENT_PRICE = 278.91;
+const LIVE_LEVEL_PRICE = 250.4;
+const LIVE_BAD_NARRATIVE =
+  "Four touches since October mark this shelf, with last bounce in January establishing a floor above current 207 level.";
+
+const LIVE_LEVEL = {
+  price: LIVE_LEVEL_PRICE,
+  type: "support" as const,
+  touches: 4,
+  lastTouchDate: "2026-01-14",
+};
+
+describe("word-first price claims ('above <number>', not '<number> above')", () => {
+  it("extracts the live 'floor above current 207 level' claim", () => {
+    const claims = extractNarrativeClaims(LIVE_BAD_NARRATIVE, LIVE_LEVEL_PRICE);
+    expect(claims).toHaveLength(1);
+    expect(claims[0].direction).toBe("above");
+    expect(claims[0].claimedPrice).toBeCloseTo(207, 5);
+    expect(claims[0].refersToCurrent).toBe(true);
+  });
+
+  it("flags the live sentence as implausible (claims current 207, truth 278.91)", () => {
+    const result = checkNarrativePlausibility(
+      LIVE_BAD_NARRATIVE,
+      LIVE_CURRENT_PRICE,
+      LIVE_LEVEL_PRICE,
+    );
+    expect(result.plausible).toBe(false);
+  });
+
+  it("replaces the live sentence at the render/storage seam", () => {
+    const guarded = guardNarrative(LIVE_BAD_NARRATIVE, LIVE_CURRENT_PRICE, LIVE_LEVEL);
+    expect(guarded).not.toContain("207");
+    expect(guarded).toContain("2026-01-14");
+  });
+
+  it("never persists the live sentence as an ACCEPT'd thesis", () => {
+    const thesis = resolveAcceptedThesis(
+      { ...LIVE_LEVEL, confidence: "high", narrative: LIVE_BAD_NARRATIVE },
+      LIVE_CURRENT_PRICE,
+    );
+    expect(thesis).not.toContain("207");
+  });
+
+  it("accepts a word-first claim that states the REAL current price", () => {
+    const good =
+      "Four touches since October mark this shelf, with last bounce in January establishing a floor above current 278.91 level.";
+    expect(
+      checkNarrativePlausibility(good, LIVE_CURRENT_PRICE, LIVE_LEVEL_PRICE).plausible,
+    ).toBe(true);
+  });
+
+  it("accepts a word-first claim that states the LEVEL price", () => {
+    const good = "Buyers defended the shelf, holding above 250.40 on all four tests.";
+    expect(
+      checkNarrativePlausibility(good, LIVE_CURRENT_PRICE, LIVE_LEVEL_PRICE).plausible,
+    ).toBe(true);
+  });
+
+  it("forgives a rounded restatement of the level price", () => {
+    const good = "Buyers defended the shelf, holding above the 250 mark on all four tests.";
+    expect(
+      checkNarrativePlausibility(good, LIVE_CURRENT_PRICE, LIVE_LEVEL_PRICE).plausible,
+    ).toBe(true);
+  });
+
+  it("still catches a word-first PERCENT claim in the wrong magnitude", () => {
+    const bad = "Price sits above 1619% of this historical level.";
+    expect(checkNarrativePlausibility(bad, CURRENT_PRICE, LEVEL_PRICE).plausible).toBe(false);
+  });
+
+  // Over-stripping guards: these numbers are lookback windows, calendar
+  // years, and touch counts — NOT price assertions. Flagging them would
+  // discard perfectly good prose.
+  it.each([
+    ["a moving-average period", "Price has held above the 50-day moving average since October."],
+    ["a weekly lookback", "Support has stayed above its 20-week base."],
+    ["a calendar year", "Price has traded above the 2024 breakout shelf all year."],
+    ["a touch count", "Buyers stepped in above 4 times at this shelf."],
+    ["no number at all", "Price is holding above this historical shelf on rising volume."],
+  ])("does not flag %s", (_label, narrative) => {
+    expect(extractNarrativeClaims(narrative, LIVE_LEVEL_PRICE)).toHaveLength(0);
+    expect(
+      checkNarrativePlausibility(narrative, LIVE_CURRENT_PRICE, LIVE_LEVEL_PRICE).plausible,
+    ).toBe(true);
+  });
+});
+
 describe("checkNarrativePlausibility", () => {
   it("flags the verbatim QA repro (1619% claimed vs 19.3% true) as implausible", () => {
     const result = checkNarrativePlausibility(BAD_NARRATIVE, CURRENT_PRICE, LEVEL_PRICE);

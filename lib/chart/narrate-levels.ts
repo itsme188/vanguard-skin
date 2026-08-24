@@ -37,6 +37,16 @@ export interface LevelNarrativeInput {
   recentBars: OhlcBar[];
 }
 
+/**
+ * NOTE on `level.distancePct`: it is ALREADY A PERCENT — lib/chart/
+ * suggested-levels.ts computes `(distance / currentPrice) * 100`, and
+ * LevelsPanel renders it raw with a '%'. This prompt used to multiply it by
+ * 100 again, telling the model "Distance from current: -2218.4%" for a level
+ * 22.2% away; the model then back-solved a hallucinated current price into
+ * its sentence, which the card rendered next to the correct chip (qa:
+ * security-detail-levels--suggestion-narrative-contradicts-chip). Never
+ * re-scale it here.
+ */
 function buildPrompt(input: LevelNarrativeInput): string {
   const { symbol, currentPrice, level, recentBars } = input;
   const tail = recentBars.slice(-20).map((b) => `${b.date}: close ${b.close}`).join("\n");
@@ -45,7 +55,7 @@ function buildPrompt(input: LevelNarrativeInput): string {
 Symbol: ${symbol}
 Current price: ${currentPrice}
 Level: ${level.price} (${level.type})
-Distance from current: ${(level.distancePct * 100).toFixed(1)}%
+Distance from current: ${level.distancePct.toFixed(1)}%
 Touches detected: ${level.touches}
 First touch: ${level.firstTouchDate}
 Last touch: ${level.lastTouchDate}

@@ -21,7 +21,10 @@ const SAMPLE_LEVEL: SuggestedLevel = {
   lastTouchDate: "2026-04-10",
   firstTouchDate: "2025-12-05",
   confidence: "high",
-  distancePct: -0.05,
+  // distancePct is a PERCENT, not a fraction — suggested-levels.ts computes
+  // (distance / currentPrice) * 100. With price 150 vs the currentPrice 175
+  // these tests pass, the real figure is (150 - 175) / 175 * 100 = -14.3.
+  distancePct: -14.3,
 };
 
 const SAMPLE_BARS: OhlcBar[] = Array.from({ length: 20 }, (_, i) => ({
@@ -202,5 +205,61 @@ describe("getOrGenerateNarrative", () => {
     });
 
     expect(result).toBe(goodNarrative);
+  });
+
+  // QA finding security-detail-levels--suggestion-narrative-contradicts-chip-
+  // accept-persists-regression-1 (root cause a): buildPrompt multiplied
+  // level.distancePct by 100, but lib/chart/suggested-levels.ts already
+  // returns it as a PERCENT ((distance / currentPrice) * 100) and
+  // LevelsPanel renders it raw with a '%'. The prompt therefore told the
+  // model "Distance from current: -2218.4%" for a level 22.2% away, and the
+  // model back-solved a hallucinated current price into its sentence.
+  describe("prompt distance (double-scaling regression)", () => {
+    function lastPrompt(fn: unknown): string {
+      const { mock } = fn as { mock: { calls: [string, { prompt: string }][] } };
+      return mock.calls[mock.calls.length - 1][1].prompt;
+    }
+
+    it("states distancePct as the percent it already is — never re-scaled by 100", async () => {
+      const { generateObjectForFeature } = await import("@/lib/ai/generate");
+      // Live repro shape: current 278.91, support 217.05.
+      // distancePct = (217.05 - 278.91) / 278.91 * 100 = -22.2 (a PERCENT).
+      const level = { ...SAMPLE_LEVEL, price: 217.05, distancePct: -22.2 };
+
+      await getOrGenerateNarrative(db, {
+        securityId: 1,
+        symbol: "CRWD",
+        currentPrice: 278.91,
+        level,
+        recentBars: SAMPLE_BARS,
+      });
+
+      const prompt = lastPrompt(generateObjectForFeature);
+      expect(prompt).toContain("Distance from current: -22.2%");
+      expect(prompt).not.toContain("-2220");
+      // No distance line may ever carry a 3+ digit magnitude for a level
+      // this close — that is the double-scaling signature.
+      expect(prompt).not.toMatch(/Distance from current: -?\d{3,}/);
+    });
+
+    it("keeps a resistance level's positive distance unscaled too", async () => {
+      const { generateObjectForFeature } = await import("@/lib/ai/generate");
+      const level = {
+        ...SAMPLE_LEVEL,
+        type: "resistance" as const,
+        price: 320.5,
+        distancePct: 14.9,
+      };
+
+      await getOrGenerateNarrative(db, {
+        securityId: 1,
+        symbol: "CRWD",
+        currentPrice: 278.91,
+        level,
+        recentBars: SAMPLE_BARS,
+      });
+
+      expect(lastPrompt(generateObjectForFeature)).toContain("Distance from current: 14.9%");
+    });
   });
 });
