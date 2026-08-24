@@ -18,14 +18,14 @@ import { ReconciliationStrip } from "./ReconciliationStrip";
  * LotAssignmentDrawer).
  */
 export async function GivingView() {
-  let data: { years: GivingYear[]; reconciliation: ReconciliationReport };
+  let data: { years: GivingYear[]; reconciliation: ReconciliationReport; conventionPending: boolean };
   try {
     data = getGivingView(db);
   } catch {
     throw new Error("Failed to load giving data. The database may be unavailable.");
   }
 
-  const { years, reconciliation } = data;
+  const { years, reconciliation, conventionPending } = data;
   const hasDonations = years.length > 0;
 
   return (
@@ -36,6 +36,24 @@ export async function GivingView() {
           Charitable giving by year — donated stock cost basis, capital gains avoided, and cash gifts.
         </p>
       </div>
+
+      {/* Convention-pending note (WS1 pending-state contract, same tone as
+          TradeReviewView's pending banner): the tax-lot dollar convention is
+          pending a recompute right now — a small, honest caveat rather than
+          hiding the basis/gain-avoided figures below. */}
+      {conventionPending && (
+        <div className="rounded-lg px-5 py-3 bg-gold/5 border-l-2 border-gold flex items-start gap-2">
+          <span aria-hidden className="text-gold text-sm leading-5">⚠</span>
+          <p className="text-xs text-ink-dim leading-5">
+            <span className="text-gold-ink font-medium">
+              Cost-basis figures are pending a recompute.
+            </span>{" "}
+            Cost-basis figures are pending a recompute under the corrected
+            dollar convention and may be unit-inconsistent until the next
+            recompute completes.
+          </p>
+        </div>
+      )}
 
       <ReconciliationStrip report={reconciliation} />
 
