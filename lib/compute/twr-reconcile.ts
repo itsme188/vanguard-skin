@@ -80,6 +80,38 @@ export function reconcileTwrAgainstStatements(
   // it cannot circularly agree with the statement figure it's checking.
   const dietz = computeMonthlyDietz(db, accountId, monthEndDate);
 
+  // ibkr-activity stores TWR as percentage (e.g. 5.21 means 5.21%);
+  // canonical and vanguard-pdf store as decimal (e.g. 0.0521).
+  // See CLAUDE.md: "ibkr-activity source stores TWR as percentage"
+  // Computed before the null check below (and kept null-safe) so both
+  // early-return branches can carry a normalized figure when one exists.
+  const statementTwr =
+    stmt.twr === null
+      ? null
+      : stmt.source === "ibkr-activity"
+        ? stmt.twr / 100
+        : stmt.twr;
+
+  // Precedence fix (finding 2): the spec's edge-precedence list puts
+  // "December annual-summary row" FIRST — a chain-preserving verdict
+  // (not_comparable) that must win even when the statement's own `twr`
+  // column happens to be null. Checking `stmt.twr === null` before this
+  // would misclassify an annual-summary row as "insufficient"
+  // (chain-breaking) instead of "not_comparable" (chain-preserving), so
+  // this check runs BEFORE the missing-statement-twr branch below.
+  if (dietz.rule === "annual-summary-row") {
+    return {
+      accountId,
+      monthEndDate,
+      statementTwr,
+      statementSource: stmt.source,
+      dietzReturn: dietz.dietzReturn,
+      divergenceBp: null,
+      band: "not_comparable",
+      rule: dietz.rule,
+    };
+  }
+
   if (stmt.twr === null) {
     return {
       accountId,
@@ -92,11 +124,6 @@ export function reconcileTwrAgainstStatements(
       rule: "missing-statement-twr",
     };
   }
-
-  // ibkr-activity stores TWR as percentage (e.g. 5.21 means 5.21%);
-  // canonical and vanguard-pdf store as decimal (e.g. 0.0521).
-  // See CLAUDE.md: "ibkr-activity source stores TWR as percentage"
-  const statementTwr = stmt.source === "ibkr-activity" ? stmt.twr / 100 : stmt.twr;
 
   if (dietz.rule !== "banded") {
     return {
@@ -111,7 +138,10 @@ export function reconcileTwrAgainstStatements(
     };
   }
 
-  const divergenceBp = Math.round((dietz.dietzReturn! - statementTwr) * 10000);
+  // Non-null: the `stmt.twr === null` branch above already returned, so
+  // `statementTwr` (derived from `stmt.twr`) is guaranteed a number here —
+  // TS can't correlate the two independently-computed consts itself.
+  const divergenceBp = Math.round((dietz.dietzReturn! - statementTwr!) * 10000);
   const band: DietzBand =
     Math.abs(divergenceBp) <= DIETZ_CONSISTENT_BP ? "consistent" : "investigate";
 
