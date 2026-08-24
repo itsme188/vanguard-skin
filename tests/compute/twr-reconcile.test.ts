@@ -200,4 +200,29 @@ describe("reconcileTwrAgainstStatements", () => {
     expect(r!.band).toBe("not_comparable");
     expect(r!.rule).toBe("annual-summary-row");
   });
+
+  it("Dietz rule annual-summary-row wins over a null statement twr (finding 2 precedence fix)", () => {
+    // Same annual-summary-row trigger as above (starting_value >10% off the
+    // prior month's total), but the statement's own twr column is null this
+    // time — a real December annual-summary row often carries no twr at all.
+    // The buggy precedence checked `stmt.twr === null` FIRST and returned
+    // band "insufficient" / rule "missing-statement-twr" (chain-breaking);
+    // dietz.ts's spec precedence list puts annual-summary-row FIRST, so that
+    // chain-preserving verdict (not_comparable) must win here too, exactly
+    // as it does when twr is present (previous test).
+    seedSnapshot(db, ACCT, "2025-11-30", 350_000);
+    seedSnapshot(db, ACCT, "2025-12-31", 355_000, {
+      startingValue: 300_000, // >10% divergence from prior month's total → annual summary
+      twr: null,
+      source: "vanguard-pdf",
+    });
+
+    const r = reconcileTwrAgainstStatements(db, ACCT, "2025-12-31");
+
+    expect(r).not.toBeNull();
+    expect(r!.dietzReturn).toBeNull();
+    expect(r!.band).toBe("not_comparable");
+    expect(r!.rule).toBe("annual-summary-row");
+    expect(r!.statementTwr).toBeNull();
+  });
 });
