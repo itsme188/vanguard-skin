@@ -16,6 +16,14 @@ import { SendDigestPanel } from "./SendDigestPanel";
 import { DigestEmailViewer } from "./DigestEmailViewer";
 import { useIsMobile } from "@/lib/hooks/useIsMobile";
 import { useResearchSync } from "@/lib/hooks/useResearchSync";
+import {
+  errorFeedback,
+  nextFeedback,
+  progressFeedback,
+  readSyncFailure,
+  shouldAutoDismiss,
+  type SyncFeedback,
+} from "@/lib/research/sync-feedback";
 import { useToast } from "./Toast";
 import apiFetch from "@/lib/http/apiFetch";
 
@@ -154,8 +162,11 @@ export function ResearchFeedsView({
   const [currentSources, setCurrentSources] = useState(sources);
   const [sourceFilter, setSourceFilter] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  // `syncing` is the MANUAL sync only — it gates the button. The background
+  // auto-sync uses `bgSyncing` so it can never make the button inert.
   const [syncing, setSyncing] = useState(false);
-  const [syncStatus, setSyncStatus] = useState<string | null>(null);
+  const [bgSyncing, setBgSyncing] = useState(false);
+  const [syncFeedback, setSyncFeedback] = useState<SyncFeedback | null>(null);
   const [manageOpen, setManageOpen] = useState(false);
   const [sendOpen, setSendOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -296,26 +307,31 @@ export function ResearchFeedsView({
   );
 
   // Auto-sync on mount + on app refocus after 10+ min idle. Debounced
-  // to once per 5 min across the whole session via localStorage. The hook
-  // shares the syncing/syncStatus slots with the manual Sync Feeds button,
-  // so its callbacks must never clobber a manual sync's feedback: when the
-  // Gmail pre-flight short-circuits (unconfigured), the hook re-fires every
-  // mount and its onSyncDone used to null out the status — racing a manual
-  // sync's error message into oblivion (qa: sync-feeds silent-400 regression).
+  // to once per 5 min across the whole session via localStorage.
+  //
+  // The background pass gets its OWN busy flag (`bgSyncing`), never the
+  // manual one: sharing `syncing` disabled the Sync Feeds button while the
+  // hook ran, so a click landing in that window did nothing at all — and the
+  // spinner was already spinning, so nothing on screen changed either. It
+  // also routes its status text through nextFeedback(), which refuses to bury
+  // a standing error under "Refreshing in background…". Both matter most when
+  // Gmail is unconfigured: the hook's pre-flight short-circuits BEFORE
+  // stamping its localStorage debounce, so it re-fires on every mount exactly
+  // when the manual sync is 400ing (qa: sync-feeds silent-400 regression).
   const manualSyncRef = useRef(false);
   useResearchSync({
     onSyncStart: () => {
       if (manualSyncRef.current) return;
-      setSyncing(true);
-      setSyncStatus("Refreshing in background…");
+      setBgSyncing(true);
+      setSyncFeedback((prev) => nextFeedback(prev, progressFeedback("Refreshing in background…")));
     },
     onSyncDone: () => {
       if (!manualSyncRef.current) {
-        setSyncing(false);
-        // Only clear the message this hook wrote — a manual sync's error
-        // (which outlives the manual run by 5s) must survive this cleanup.
-        setSyncStatus((prev) =>
-          prev === "Refreshing in background…" ? null : prev
+        setBgSyncing(false);
+        // Only clear the message this hook wrote — a manual sync's error is
+        // sticky and must survive this cleanup.
+        setSyncFeedback((prev) =>
+          prev?.text === "Refreshing in background…" ? null : prev
         );
       }
       // Background freshness pass — a failure here just means the list keeps
@@ -329,13 +345,20 @@ export function ResearchFeedsView({
   const handleSync = useCallback(async () => {
     manualSyncRef.current = true;
     setSyncing(true);
-    setSyncStatus("Connecting to Gmail...");
+    // A fresh attempt clears the previous outcome — the only thing allowed to
+    // erase a standing error.
+    setSyncFeedback(progressFeedback("Connecting to Gmail..."));
+
+    const setProgress = (text: string) =>
+      setSyncFeedback((prev) => nextFeedback(prev, progressFeedback(text)));
 
     try {
       const res = await apiFetch("/api/research/sync", { method: "POST" });
       if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: "Sync failed" }));
-        throw new Error(err.error ?? `Sync failed (${res.status})`);
+        // The status alone decides this failed; readSyncFailure only supplies
+        // the wording, and always yields something non-empty.
+        setSyncFeedback(await readSyncFailure(res));
+        return;
       }
       const reader = res.body?.getReader();
       if (!reader) throw new Error("No response stream");
@@ -357,32 +380,35 @@ export function ResearchFeedsView({
           const data = JSON.parse(dataMatch[1]);
 
           if (data.phase === "fetch" && data.status === "started") {
-            setSyncStatus("Fetching new articles...");
+            setProgress("Fetching new articles...");
           } else if (data.phase === "fetch" && data.status === "done") {
-            setSyncStatus(`Fetched ${data.fetched} new article${data.fetched !== 1 ? "s" : ""}`);
+            setProgress(`Fetched ${data.fetched} new article${data.fetched !== 1 ? "s" : ""}`);
           } else if (data.phase === "process" && data.status === "started") {
-            setSyncStatus("Processing with AI...");
+            setProgress("Processing with AI...");
           } else if (data.phase === "process" && data.status === "done") {
-            setSyncStatus(`Processed ${data.processed} article${data.processed !== 1 ? "s" : ""}`);
+            setProgress(`Processed ${data.processed} article${data.processed !== 1 ? "s" : ""}`);
           } else if (data.phase === "complete") {
-            setSyncStatus(
+            setProgress(
               data.totalFetched > 0
                 ? `Done — ${data.totalFetched} new article${data.totalFetched !== 1 ? "s" : ""}`
                 : "Up to date — no new articles"
             );
           } else if (data.phase === "error") {
-            setSyncStatus(`Error: ${data.message}`);
+            // An in-stream failure is as real as a non-ok status — make it
+            // sticky too, not a line that fades in five seconds.
+            setSyncFeedback(errorFeedback(data.message ?? "Sync failed"));
           }
         }
       }
 
       await refreshArticles();
     } catch (err) {
-      setSyncStatus(`Error: ${err instanceof Error ? err.message : "Sync failed"}`);
+      setSyncFeedback(errorFeedback(err instanceof Error ? err.message : "Sync failed"));
     } finally {
       manualSyncRef.current = false;
       setSyncing(false);
-      setTimeout(() => setSyncStatus(null), 5000);
+      // Progress text fades; an error stays until the next sync attempt.
+      setTimeout(() => setSyncFeedback((prev) => (shouldAutoDismiss(prev) ? null : prev)), 5000);
     }
   }, [refreshArticles]);
 
@@ -534,12 +560,16 @@ export function ResearchFeedsView({
             </svg>
             <span className="hidden sm:inline">Sources</span>
           </button>
+          {/* disabled ONLY for a manual sync — a background pass must never
+              make this button inert (qa: sync-feeds silent-400 regression). */}
           <button
             onClick={handleSync}
             disabled={syncing}
+            aria-busy={syncing || bgSyncing}
+            title={syncing ? "Syncing…" : bgSyncing ? "Background refresh running — click to sync now" : "Sync Feeds"}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium bg-gold text-canvas hover:brightness-110 transition-[filter,scale] active:scale-[0.96] disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {syncing ? (
+            {syncing || bgSyncing ? (
               <div className="w-3.5 h-3.5 border-2 border-canvas border-t-transparent rounded-full animate-spin" />
             ) : (
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -575,6 +605,26 @@ export function ResearchFeedsView({
           </button>
         </div>
       </div>
+
+      {/* Sync feedback — directly under the controls bar, NOT further down
+          the page past the search box and digest panel where it used to sit
+          (and could be scrolled out of view entirely). Errors use the same
+          treatment as "Discover from Gmail" in ManageSourcesModal so the two
+          Gmail failures read identically, and they persist until the next
+          sync attempt rather than fading on a 5s timer. */}
+      {syncFeedback && (
+        <div
+          role={syncFeedback.tone === "error" ? "alert" : "status"}
+          className={
+            syncFeedback.tone === "error"
+              ? "px-4 py-2.5 rounded-lg bg-down/10 border border-down/30 text-sm text-down"
+              : "px-4 py-2.5 rounded-lg bg-raised border border-edge text-sm text-ink-dim"
+          }
+        >
+          {syncFeedback.text}
+        </div>
+      )}
+
       <DigestEmailViewer open={previewOpen} onClose={() => setPreviewOpen(false)} />
 
       {/* D5 — filtered/all toggle. Hidden when there's nothing to audit so
@@ -630,13 +680,6 @@ export function ResearchFeedsView({
 
       {/* Send digest panel */}
       {sendOpen && <SendDigestPanel onClose={() => setSendOpen(false)} />}
-
-      {/* Sync status */}
-      {syncStatus && (
-        <div className="px-4 py-2.5 rounded-lg bg-raised border border-edge text-sm text-ink-dim">
-          {syncStatus}
-        </div>
-      )}
 
       {/* Articles — reader layout */}
       {viewMode === "filtered" ? (

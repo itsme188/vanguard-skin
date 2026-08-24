@@ -15,8 +15,11 @@ import {
  */
 export async function POST() {
   if (!isGmailConfigured()) {
+    // Project envelope is {success:false, error} — the bare {error} this used
+    // to return meant any caller gating on `data.success` found nothing to
+    // report (qa: sync-feeds silent-400 regression). The client reads both.
     return Response.json(
-      { error: "Gmail OAuth not configured" },
+      { success: false, error: "Gmail OAuth not configured" },
       { status: 400 }
     );
   }
