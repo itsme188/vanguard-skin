@@ -80,34 +80,43 @@ interface DonationConsumption {
  * corporate-action splits (2). Splits last preserves the end-of-day rule
  * (a same-date trade executed in pre-split units), and donations sit with
  * the trades because their assignments are expressed in the same basis.
+ *
+ * Within the sells, `rank` puts option EXERCISED/ASSIGNED rows ahead of every
+ * other same-date sell: an exercise's premium is only known once it has
+ * consumed its option lots, and the underlying leg it rolls into may be a
+ * stock sale dated that same day.
  */
 type ReplayEvent =
-  | { kind: 0; date: string; id: number; sell: TransactionRow }
+  | { kind: 0; rank: 0 | 1; date: string; id: number; sell: TransactionRow }
   | { kind: 1; date: string; id: number; donation: DonationConsumption }
   | { kind: 2; date: string; id: number; split: SplitEvent };
 
 /**
- * Premium rolled from an exercised/assigned option leg into its underlying.
- *
- * The figure is DOLLARS, not a per-share premium: it is exactly the option
- * lot's stored dollar basis for the exercised quantity (fees included), which
- * is also exactly what the option's rollover sale rows zero out. Rolling the
- * same dollars that are zeroed is what makes the pair conserve — a per-share
- * premium would leave the option leg's fees stranded in neither row.
+ * Where an exercised/assigned option's premium goes — the LINK only. The
+ * dollars are deliberately NOT resolved here: they are whatever basis the
+ * replay actually zeroes when the exercise consumes its lots, which is the
+ * only figure that can conserve. Resolving them ahead of the replay (from a
+ * blind FIFO walk over `tax_lots`) silently mis-rolls whenever an ordinary
+ * close consumed a different lot first — a plain scale-in / take-half-off
+ * pattern.
  */
-interface PremiumAdjustment {
-  /**
-   * Signed dollars to roll into the underlying leg. Negative where the
-   * premium was RECEIVED and therefore reduces the underlying's cost
-   * (short put assigned).
-   */
-  rolloverDollars: number;
-  /**
-   * 'increase_cost' — add to stock cost basis (long call exercise, short put assignment)
-   * 'increase_proceeds' — add to stock sale proceeds (short call assignment)
-   * 'decrease_proceeds' — subtract from stock sale proceeds (long put exercise)
-   */
-  adjustmentType: "increase_cost" | "increase_proceeds" | "decrease_proceeds";
+interface ExerciseLink {
+  /** Transaction id of the underlying leg this premium belongs to. */
+  stockTxnId: number;
+  /** Which side of the underlying leg absorbs it. */
+  target: "cost" | "proceeds";
+  /** +1 where the premium was PAID, -1 where it was RECEIVED. */
+  sign: 1 | -1;
+}
+
+/** One planned FIFO consumption of a lot by a sale, before any row is written. */
+interface PlannedConsumption {
+  lot: OpenLot;
+  quantitySold: number;
+  /** The sale leg's dollars apportioned to this lot. */
+  allocatedLegDollars: number;
+  /** The LOT's own stored dollars apportioned to this consumption. */
+  storedLegAllocated: number;
 }
 
 function daysBetween(dateA: string, dateB: string): number {
@@ -299,31 +308,21 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
     }
 
     // ── Exercised/assigned option premium → the underlying leg ──
-    // Runs AFTER the lots exist, because what rolls is the option lot's
-    // STORED DOLLAR basis (fees included) — the same dollars the option's
-    // rollover sale rows zero out, which is what makes the pair conserve.
-    const { adjustments: premiumAdjustments, linkedExerciseTxnIds } =
-      computePremiumAdjustments(db);
-
-    // Buy-side rollovers adjust a lot that already exists, and must land
-    // BEFORE the sells replay so any later sale of those shares allocates
-    // against the rolled-in basis.
+    // LINKS ONLY. The dollars are resolved inside the replay, at the moment
+    // the exercise consumes its lots, because only that figure is guaranteed
+    // to equal the basis the rollover rows actually zero.
+    const exerciseLinks = computeExerciseLinks(db);
     const updateLotBasis = db.prepare(
       "UPDATE tax_lots SET cost_basis = ?, acquisition_price = ? WHERE id = ?"
     );
-    for (const [stockTxnId, adjustment] of premiumAdjustments) {
-      if (adjustment.adjustmentType !== "increase_cost") continue;
-      const lot = lotByBuyTxn.get(stockTxnId);
-      if (!lot) continue;
-      const newBasis = lot.costBasis + adjustment.rolloverDollars;
-      // Keep the per-unit display column consistent with the adjusted dollars
-      // (the documented inverse of marketValue). If it cannot be inverted
-      // (zero/negative quantity or basis) the original price stands.
-      const newPrice =
-        unitPriceFromMarketValue(newBasis, lot.quantity, lot.securityType, lot.multiplier) ??
-        lot.acquisitionPrice;
-      updateLotBasis.run(newBasis, newPrice, lot.id);
-    }
+    const lotRemainingStmt = db.prepare(
+      "SELECT quantity_remaining, quantity_acquired FROM tax_lots WHERE id = ?"
+    );
+    /** Premium waiting to be absorbed by a not-yet-processed stock SALE leg. */
+    const pendingSaleRollover = new Map<number, number>();
+    /** Stock sale legs that actually consumed lots while carrying a rollover. */
+    const appliedSaleRollover = new Set<number>();
+    const processedSellTxnIds = new Set<number>();
 
     // ── Import-sourced corporate-action splits (replay events) ──
     // 'manual' rows already rewrote history at apply time (legacy road) and
@@ -430,9 +429,66 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
     let salesProcessed = 0;
     let totalRealizedGain = 0;
 
-    const processSell = (sell: TransactionRow) => {
-      let remainingToSell = sell.quantity;
+    /** Every sell-like row the replay will actually process. */
+    const sellIdsInReplay = new Set(sells.map((s) => s.id));
 
+    /**
+     * Move an exercise's premium onto its underlying leg. Returns whether the
+     * dollars PROVABLY landed — only then may the option close be flagged a
+     * rollover and zeroed. Every refusal is a warning, never a silent drop.
+     */
+    const landRollover = (
+      link: ExerciseLink,
+      dollars: number,
+      sell: TransactionRow
+    ): boolean => {
+      const signed = link.sign * dollars;
+      if (link.target === "cost") {
+        // The underlying leg is a BUY whose lot already exists. Accumulate
+        // (never overwrite): two exercises can legitimately resolve to the
+        // same stock purchase, and each one's premium belongs in that basis.
+        const lot = lotByBuyTxn.get(link.stockTxnId);
+        if (!lot) {
+          replayWarnings.push(
+            `${sell.trade_date}: option close ${sell.id} links to stock transaction ${link.stockTxnId}, which opened no tax lot (no price on the row?) — the premium stays on the option close as a realized result rather than vanishing into the underlying`
+          );
+          return false;
+        }
+        const before = lotRemainingStmt.get(lot.id) as
+          | { quantity_remaining: number; quantity_acquired: number }
+          | undefined;
+        if (before && before.quantity_remaining < before.quantity_acquired) {
+          replayWarnings.push(
+            `${sell.trade_date}: part of the stock lot from transaction ${link.stockTxnId} was already sold before this exercise's premium rolled in — those earlier sale rows used the pre-rollover basis`
+          );
+        }
+        lot.costBasis += signed;
+        const newPrice =
+          unitPriceFromMarketValue(
+            lot.costBasis,
+            lot.quantity,
+            lot.securityType,
+            lot.multiplier
+          ) ?? lot.acquisitionPrice;
+        updateLotBasis.run(lot.costBasis, newPrice, lot.id);
+        return true;
+      }
+      // The underlying leg is a SALE. It must still be ahead of us in the
+      // replay, otherwise there is no row left to absorb the premium.
+      if (!sellIdsInReplay.has(link.stockTxnId) || processedSellTxnIds.has(link.stockTxnId)) {
+        replayWarnings.push(
+          `${sell.trade_date}: option close ${sell.id} links to stock sale ${link.stockTxnId}, which the replay cannot still adjust — the premium stays on the option close as a realized result`
+        );
+        return false;
+      }
+      pendingSaleRollover.set(
+        link.stockTxnId,
+        (pendingSaleRollover.get(link.stockTxnId) ?? 0) + signed
+      );
+      return true;
+    };
+
+    const processSell = (sell: TransactionRow) => {
       // For EXERCISED/ASSIGNED/EXPIRED, the option closes at $0
       const lowerType = sell.type.toLowerCase();
       const isZeroPriceClose =
@@ -459,26 +515,11 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
       }
 
       // A stock sale forced by a put exercise / call assignment absorbs the
-      // option lot's stored DOLLARS (see PremiumAdjustment), applied to the
-      // leg total rather than to the per-unit price, so the option leg's fees
-      // travel with the premium instead of being stranded.
-      const adj = premiumAdjustments.get(sell.id);
-      const rolloverOnLeg =
-        adj?.adjustmentType === "increase_proceeds"
-          ? adj.rolloverDollars
-          : adj?.adjustmentType === "decrease_proceeds"
-            ? -adj.rolloverDollars
-            : 0;
-
-      // Premium on an EXERCISED/ASSIGNED option that actually linked to an
-      // underlying leg has already moved into that leg's basis/proceeds
-      // (Pub 550). Closing the option lot here is a rollover, not a second
-      // disposition — the row is flagged and carries zero gain.
-      const isPremiumRollover =
-        (lowerType === "exercised" || lowerType === "assigned") &&
-        linkedExerciseTxnIds.has(sell.id)
-          ? 1
-          : 0;
+      // option leg's stored DOLLARS, applied to the leg total rather than to
+      // the per-unit price, so the option leg's fees travel with the premium
+      // instead of being stranded. The exercise deposited this while it was
+      // processed — earlier in the replay, guaranteed by the sell rank.
+      const rolloverOnLeg = pendingSaleRollover.get(sell.id) ?? 0;
 
       const legOpts = { forceDerivation: isZeroPriceClose, amountIsNet: priceFromAmount };
 
@@ -511,6 +552,14 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
         )
         .all(sell.account_id, sell.security_id) as OpenLot[];
 
+      // PLAN the FIFO consumption before writing anything. An exercise has to
+      // know exactly which lots it takes — and therefore exactly how many
+      // stored dollars it will zero — BEFORE it can decide whether those
+      // dollars can land on the underlying. Resolving that ahead of the replay
+      // is what leaked premium when an ordinary close had already consumed a
+      // different lot.
+      const planned: PlannedConsumption[] = [];
+      let remainingToSell = sell.quantity;
       for (const lot of openLots) {
         if (remainingToSell <= 0) break;
 
@@ -531,6 +580,27 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
             rolloverOnLeg) *
           saleShare;
 
+        planned.push({
+          lot,
+          quantitySold,
+          allocatedLegDollars,
+          storedLegAllocated: lot.cost_basis * lotFraction,
+        });
+        remainingToSell -= quantitySold;
+      }
+
+      // The premium that rolls IS the stored dollars these planned rows are
+      // about to zero — equal by construction, for long and short alike.
+      let isPremiumRollover = 0;
+      if (lowerType === "exercised" || lowerType === "assigned") {
+        const link = exerciseLinks.get(sell.id);
+        const rolloverDollars = planned.reduce((sum, p) => sum + p.storedLegAllocated, 0);
+        if (link && rolloverDollars !== 0) {
+          isPremiumRollover = landRollover(link, rolloverDollars, sell) ? 1 : 0;
+        }
+      }
+
+      for (const { lot, quantitySold, allocatedLegDollars, storedLegAllocated } of planned) {
         let proceeds: number;
         let costBasisAllocated: number;
         if (lot.is_short) {
@@ -538,13 +608,19 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
           // NET short-open leg (stored in lot.cost_basis), basis is what the
           // cover paid. Correct columns make the old sign negation
           // unnecessary — the gain falls out unsigned.
-          proceeds = lot.cost_basis * lotFraction;
+          proceeds = storedLegAllocated;
           costBasisAllocated = allocatedLegDollars;
         } else {
           proceeds = allocatedLegDollars;
-          costBasisAllocated = lot.cost_basis * lotFraction;
+          costBasisAllocated = storedLegAllocated;
         }
-        if (isPremiumRollover) proceeds = costBasisAllocated;
+        if (isPremiumRollover) {
+          // The lot's stored dollars left for the underlying; this close is a
+          // rollover, not a disposition. Both columns carry that figure so the
+          // magnitude stays visible and the gain is zero by construction.
+          proceeds = storedLegAllocated;
+          costBasisAllocated = storedLegAllocated;
+        }
         const realizedGainLoss = proceeds - costBasisAllocated;
 
         // Signed display convention preserved: negative holding days identify
@@ -577,10 +653,13 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
         const newRemaining = lot.quantity_remaining - quantitySold;
         updateLotRemaining.run(newRemaining, lot.id);
 
-        remainingToSell -= quantitySold;
         totalRealizedGain += realizedGainLoss;
       }
 
+      // A rollover only truly landed on a SALE leg once that leg produced rows
+      // to carry it; the post-replay sweep reports any that did not.
+      if (rolloverOnLeg !== 0 && planned.length > 0) appliedSaleRollover.add(sell.id);
+      processedSellTxnIds.add(sell.id);
       salesProcessed++;
     };
 
@@ -691,9 +770,19 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
     // no counterpart (e.g. a split after the last sell) simply sort to the end
     // — there is no separate drain step to keep in sync.
     const events: ReplayEvent[] = [
-      ...sells.map(
-        (sell): ReplayEvent => ({ kind: 0, date: sell.trade_date, id: sell.id, sell })
-      ),
+      ...sells.map((sell): ReplayEvent => {
+        const t = sell.type.toLowerCase();
+        return {
+          kind: 0,
+          // Exercises/assignments go first among same-date sells: the premium
+          // is only known once the exercise has consumed its option lots, and
+          // the underlying leg absorbing it can be a stock sale that same day.
+          rank: t === "exercised" || t === "assigned" ? 0 : 1,
+          date: sell.trade_date,
+          id: sell.id,
+          sell,
+        };
+      }),
       ...donationEvents.map(
         (donation): ReplayEvent => ({
           kind: 1,
@@ -706,14 +795,30 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
         (split): ReplayEvent => ({ kind: 2, date: split.effective_date, id: split.id, split })
       ),
     ];
+    const rankOf = (e: ReplayEvent) => (e.kind === 0 ? e.rank : 0);
     events.sort((a, b) =>
-      a.date < b.date ? -1 : a.date > b.date ? 1 : a.kind - b.kind || a.id - b.id
+      a.date < b.date
+        ? -1
+        : a.date > b.date
+          ? 1
+          : a.kind - b.kind || rankOf(a) - rankOf(b) || a.id - b.id
     );
 
     for (const event of events) {
       if (event.kind === 0) processSell(event.sell);
       else if (event.kind === 1) applyDonationConsumption(event.donation);
       else applySplitEvent(event.split);
+    }
+
+    // Any premium that was accepted onto a stock SALE leg which then produced
+    // no rows (nothing left to sell in the ledger) never reached a column.
+    // Never silent — the option row is already flagged, so say so.
+    for (const [stockTxnId, dollars] of pendingSaleRollover) {
+      if (dollars !== 0 && !appliedSaleRollover.has(stockTxnId)) {
+        replayWarnings.push(
+          `stock sale ${stockTxnId} was to absorb an exercised option's premium but consumed no open lots — that premium reached no tax-lot row; import the missing acquisition and recompute`
+        );
+      }
     }
 
     // ── Broker-close reconciliation pass ──
@@ -857,12 +962,17 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
 }
 
 /**
- * Find EXERCISED/ASSIGNED option transactions and compute the premium each
- * one rolls into its linked underlying leg.
+ * Match each EXERCISED/ASSIGNED option transaction to the underlying leg its
+ * premium belongs to, and record WHICH SIDE of that leg absorbs it.
  *
- * MUST run AFTER the lots exist: what rolls is the option lot's stored DOLLAR
- * basis for the exercised quantity (fees included), taken FIFO — the same
- * dollars the option's rollover sale rows zero out, so the pair conserves.
+ * Deliberately link-only — no lot reads, no dollars. The amount that rolls is
+ * whatever stored basis the replay actually zeroes when the exercise consumes
+ * its lots, which the replay alone can know: any figure computed here would be
+ * a guess about lot state, and it guessed wrong whenever an ordinary close had
+ * already taken a different lot.
+ *
+ * Keyed by EXERCISE transaction id, so two exercises resolving to the same
+ * underlying transaction both survive (they accumulate at landing time).
  *
  * IRS rules (Pub 550):
  * - Long call exercised → stock cost basis += option premium
@@ -870,18 +980,8 @@ export function computeTaxLots(db: Database.Database): TaxLotComputeResult {
  * - Short call assigned → stock sale proceeds += option premium
  * - Short put assigned → stock cost basis -= option premium
  */
-function computePremiumAdjustments(db: Database.Database): {
-  adjustments: Map<number, PremiumAdjustment>;
-  /**
-   * Ids of the EXERCISED/ASSIGNED option transactions that actually found an
-   * underlying leg to roll their premium into. Only those option closes are
-   * premium rollovers; an unlinked one keeps its realized gain/loss so the
-   * premium never silently vanishes.
-   */
-  linkedExerciseTxnIds: Set<number>;
-} {
-  const adjustments = new Map<number, PremiumAdjustment>();
-  const linkedExerciseTxnIds = new Set<number>();
+function computeExerciseLinks(db: Database.Database): Map<number, ExerciseLink> {
+  const links = new Map<number, ExerciseLink>();
 
   // Find all EXERCISED/ASSIGNED transactions on option securities
   const exerciseRows = db
@@ -900,15 +1000,6 @@ function computePremiumAdjustments(db: Database.Database): {
     )
     .all() as OptionExerciseRow[];
 
-  // Running FIFO claim per option lot, so two exercises against the same
-  // option consume it sequentially instead of both claiming the first lot.
-  const claimedByLot = new Map<number, number>();
-  const optionLotsStmt = db.prepare(
-    `SELECT id, quantity_acquired, cost_basis FROM tax_lots
-      WHERE account_id = ? AND security_id = ? AND acquisition_date <= ?
-      ORDER BY acquisition_date, id`
-  );
-
   for (const ex of exerciseRows) {
     // A price-less exercise row is under-specified evidence. Treating it as a
     // rollover would zero the option close's realized gain/loss while the
@@ -920,29 +1011,18 @@ function computePremiumAdjustments(db: Database.Database): {
     const isLong = ex.type.toLowerCase() === "exercised";
     const isCall = ex.option_type.toUpperCase() === "CALL";
 
-    // Determine what stock transaction to look for and how to adjust
-    // Long call exercise → stock BUY → increase cost basis
-    // Long put exercise → stock SELL → decrease proceeds
-    // Short call assigned → stock SELL → increase proceeds
-    // Short put assigned → stock BUY → decrease cost basis (reduce cost)
-    let stockType: string;
-    let adjustmentType: PremiumAdjustment["adjustmentType"];
-
-    if (isLong && isCall) {
-      stockType = "buy";
-      adjustmentType = "increase_cost";
-    } else if (isLong && !isCall) {
-      stockType = "sell";
-      adjustmentType = "decrease_proceeds";
-    } else if (!isLong && isCall) {
-      stockType = "sell";
-      adjustmentType = "increase_proceeds";
-    } else {
-      // Short put assigned → forced buy
-      stockType = "buy";
-      // Premium RECEIVED reduces cost basis — we subtract
-      adjustmentType = "increase_cost"; // but with negative premium (see below)
-    }
+    // Which underlying transaction, which column, which direction.
+    // Long call exercise  → stock BUY  → cost      += premium PAID
+    // Short put assigned  → stock BUY  → cost      -= premium RECEIVED
+    // Long put exercise   → stock SELL → proceeds  -= premium PAID
+    // Short call assigned → stock SELL → proceeds  += premium RECEIVED
+    const stockType = isCall === isLong ? "buy" : "sell";
+    const target: ExerciseLink["target"] = stockType === "buy" ? "cost" : "proceeds";
+    // A premium PAID (long option) raises the cost of what it bought and
+    // lowers the proceeds of what it sold; a premium RECEIVED (short option)
+    // does the reverse.
+    const sign: ExerciseLink["sign"] =
+      target === "cost" ? (isLong ? 1 : -1) : isLong ? -1 : 1;
 
     // Find the linked stock transaction: same account, same underlying, same date (±1 day)
     const underlying = db
@@ -972,40 +1052,8 @@ function computePremiumAdjustments(db: Database.Database): {
 
     if (!stockTx) continue;
 
-    // The dollars that roll = the option lot's stored basis for the exercised
-    // quantity, FIFO. Fees are already inside that stored figure, which is why
-    // they travel with the premium instead of being stranded on a row whose
-    // gain gets zeroed.
-    const optionLots = optionLotsStmt.all(ex.account_id, ex.security_id, ex.trade_date) as Array<{
-      id: number;
-      quantity_acquired: number;
-      cost_basis: number;
-    }>;
-    let remaining = ex.quantity;
-    let rolloverDollars = 0;
-    for (const lot of optionLots) {
-      if (remaining <= 0) break;
-      const already = claimedByLot.get(lot.id) ?? 0;
-      const available = lot.quantity_acquired - already;
-      if (available <= 0) continue;
-      const take = Math.min(remaining, available);
-      if (lot.quantity_acquired !== 0) {
-        rolloverDollars += lot.cost_basis * (take / lot.quantity_acquired);
-      }
-      claimedByLot.set(lot.id, already + take);
-      remaining -= take;
-    }
-    // No lot to draw from (the opening leg was never imported) → nothing to
-    // roll, and zeroing the close would delete a real result. Leave it alone.
-    if (rolloverDollars === 0) continue;
-
-    // For short put assignment, premium received REDUCES cost, so negate.
-    adjustments.set(stockTx.id, {
-      rolloverDollars: !isLong && !isCall ? -rolloverDollars : rolloverDollars,
-      adjustmentType,
-    });
-    linkedExerciseTxnIds.add(ex.id);
+    links.set(ex.id, { stockTxnId: stockTx.id, target, sign });
   }
 
-  return { adjustments, linkedExerciseTxnIds };
+  return links;
 }
