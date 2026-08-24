@@ -6,6 +6,7 @@ import { computeXirr } from "@/lib/compute/xirr";
 import { computeRiskMetrics } from "@/lib/compute/risk";
 import { dataWindowNotice } from "@/lib/compute/data-window";
 import { reconcileTwrAgainstStatements } from "@/lib/compute/twr-reconcile";
+import type { DietzBand } from "@/lib/compute/dietz";
 import { computePeriodAttribution } from "@/lib/compute/period-attribution";
 import { resolveScope } from "@/lib/queries/accounts";
 import { todayET } from "@/lib/calendar/date-utils";
@@ -22,6 +23,17 @@ import {
 import { PerformanceCurveChart, type PerformanceCurveData } from "./EquityCurveChart";
 import { buildEquityCurveData } from "@/lib/compute/equity-curve";
 import { PeriodAttributionSection } from "./PeriodAttributionSection";
+
+// Same four band labels as TrustStripDrawer's chips — duplicated locally
+// rather than imported (TrustStripDrawer is a "use client" module; this
+// component is a server component, and the touch-list for this task doesn't
+// include a shared non-client module to hoist these into). Keep in sync.
+const BAND_LABEL: Record<DietzBand, string> = {
+  consistent: "Consistent — method differences expected",
+  investigate: "Investigate",
+  not_comparable: "Not comparable",
+  insufficient: "Insufficient data",
+};
 
 type Period = "ytd" | "1y" | "3y" | "5y" | "all";
 
@@ -266,12 +278,26 @@ export async function PerformanceView({ scope = "all", period }: PerformanceView
               derived return figure, so it's masked through <Pct> like
               statementTwr/dietzReturn are everywhere else — never a raw
               unmasked bp span (see TrustStripDrawer for why it's shown at
-              its %-point value rather than glued to a "bp" suffix). */}
+              its %-point value rather than glued to a "bp" suffix).
+              "Cross-checked through {month}" is a TRUST CLAIM about that
+              month specifically — it may only be made when that month's own
+              band is "consistent". A month that came back investigate/
+              insufficient/not_comparable renders a band-neutral line naming
+              its actual band instead (never silently implying agreement on
+              a month that failed the check). */}
           {reconciliation && (
             <section className="rounded-xl p-3 px-4 text-sm flex items-center gap-2 flex-wrap bg-raised text-ink-dim border border-edge">
               <span>
-                Independently cross-checked (Modified Dietz) through{" "}
-                <strong className="text-ink">{reconciliation.monthEndDate}</strong> — bands shown per month in the trust drawer.
+                {reconciliation.band === "consistent" ? (
+                  <>
+                    Independently cross-checked (Modified Dietz) through{" "}
+                    <strong className="text-ink">{reconciliation.monthEndDate}</strong> — bands shown per month in the trust drawer.
+                  </>
+                ) : (
+                  <>
+                    Latest independent check for <strong className="text-ink">{reconciliation.monthEndDate}</strong>: {BAND_LABEL[reconciliation.band]} — bands shown per month in the trust drawer.
+                  </>
+                )}
               </span>
               {reconciliation.divergenceBp !== null && (
                 <span className="font-mono tabular-nums text-xs text-ink-faint">

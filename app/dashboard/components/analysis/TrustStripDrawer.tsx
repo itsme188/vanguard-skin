@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { AnalysisTrustState, BandHistoryEntry } from "@/lib/queries/analysis-trust-state";
-import type { DietzBand } from "@/lib/compute/dietz";
+import { DIETZ_CONSISTENT_BP, type DietzBand } from "@/lib/compute/dietz";
 import { PrivateText, Pct } from "@/lib/privacy/components";
 import { Chip, type ChipTone } from "@/app/dashboard/components/Chip";
 import apiFetch from "@/lib/http/apiFetch";
@@ -357,7 +357,7 @@ function PerformanceContent({ state }: { state: AnalysisTrustState }) {
 
       {perAccountReconciliation.length > 0 && (
         <p className="text-[10px] text-ink-faint">
-          Gap is the independently recomputed Modified Dietz return minus the statement-reported TWR, for the same account-month — not a recomputation of the statement&apos;s own figure. ≤1.25% (125bp) bands as consistent.
+          Gap is the independently recomputed Modified Dietz return minus the statement-reported TWR, for the same account-month — not a recomputation of the statement&apos;s own figure. ≤{DIETZ_CONSISTENT_BP / 100}% ({DIETZ_CONSISTENT_BP}bp) bands as consistent.
         </p>
       )}
 
@@ -403,7 +403,7 @@ function BondDurationContent({ state }: { state: AnalysisTrustState }) {
 const PANEL_TITLES: Record<DrawerPanel, string> = {
   factorCoverage: "Factor Coverage",
   lastClassify: "Last Classification",
-  performance: "Performance Reconciliation",
+  performance: "Performance Cross-Check",
   stalePrices: "Stale Prices",
   bondDuration: "Bond Duration Coverage",
 };
