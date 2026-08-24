@@ -109,3 +109,21 @@ Closing thoughts follow here.`;
     expect(html).toMatch(/<p[^>]*>Closing thoughts follow here\./);
   });
 });
+
+describe("briefingToHtml generatedAt (Worker mirror)", () => {
+  it("stamps the provided generatedAt date, not render time", () => {
+    const html = briefingToHtml("body", "t", undefined, new Date("2026-08-13T12:48:50Z"));
+    expect(html).toContain("Generated Thursday, August 13, 2026");
+  });
+
+  it("defaults to render time when omitted", () => {
+    const today = new Date().toLocaleDateString("en-US", {
+      timeZone: "America/New_York",
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    });
+    expect(briefingToHtml("body", "t")).toContain(`Generated ${today}`);
+  });
+});

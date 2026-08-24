@@ -40,6 +40,10 @@ export function briefingToHtml(
   markdown: string,
   title: string,
   footerNote?: string,
+  // When set, the footer stamps this date instead of render time. Live
+  // sends omit it; the Mac-side archive viewer passes the audit row's
+  // sent_at (parity-pinned signature with lib/calendar/briefing-html.ts).
+  generatedAt?: Date,
 ): string {
   const bodyHtml = convertMarkdown(markdown);
   const footerNoteHtml = footerNote
@@ -74,7 +78,7 @@ export function briefingToHtml(
             <td style="padding:64px 0 0;">
               <div style="border-top:1px solid ${COLORS.edge}; padding-top:28px;">
                 <p style="margin:0; font-family:${FONT_BODY}; font-size:12px; color:${COLORS.inkFaint}; line-height:1.6;">
-                  Portfolio Desk &middot; Generated ${formatDate(new Date())}
+                  Portfolio Desk &middot; Generated ${formatDate(generatedAt ?? new Date())}
                 </p>
                 ${footerNoteHtml}
               </div>
