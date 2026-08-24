@@ -166,6 +166,37 @@ describe("bond dollar convention", () => {
     // derived per-100-face price survives: |amount|/qty×100
     expect(sale.sale_price).toBeCloseTo(99.43845, 6);
   });
+
+  it("a redemption CARRYING FEES still realizes $0 at cost — |amount| is the net principal", () => {
+    // The redemption's price is derived AS |amount|/qty×100, so the gross it
+    // implies equals |amount| by construction. Without the net-path exemption
+    // the gross/net probe would see fees > 0 and subtract them, inventing a
+    // loss on a bill that matured exactly at its purchase cost.
+    const secId = seedSecurity({ symbol: "912796FEE", securityType: "Bond" });
+    addTxn({
+      securityId: secId,
+      type: "BUY",
+      date: "2023-02-08",
+      quantity: 20000,
+      price: 99.438385,
+      amount: 19887.69,
+    });
+    addTxn({
+      securityId: secId,
+      type: "REDEMPTION",
+      date: "2023-08-10",
+      quantity: 20000,
+      price: null,
+      amount: 19887.69,
+      fees: 3,
+    });
+    computeTaxLots(db);
+
+    const sale = onlySale();
+    expect(sale.proceeds).toBeCloseTo(19887.69, 2);
+    expect(sale.cost_basis_allocated).toBeCloseTo(19887.69, 2);
+    expect(sale.realized_gain_loss).toBeCloseTo(0, 2);
+  });
 });
 
 describe("short-cover IRS orientation", () => {
@@ -583,6 +614,114 @@ describe("option round-trip and exercise", () => {
       .get(stockId) as LotRow;
     expect(stockLot.acquisition_price).toBeCloseTo(103, 6);
     expect(stockLot.cost_basis).toBeCloseTo(10300, 2);
+  });
+
+  it("rollover conserves dollars: the option leg's FEES travel with the premium", () => {
+    const stockId = seedSecurity({ symbol: "AAPL", securityType: "stock" });
+    const optId = seedOption();
+    // Long call 1x @ $3 premium with a $7 commission → stored lot basis
+    // 1 × 3 × 100 + 7 = $307. That whole figure is what rolls.
+    addTxn({
+      securityId: optId,
+      type: "BUY_TO_OPEN",
+      date: "2026-01-15",
+      quantity: 1,
+      price: 3,
+      fees: 7,
+    });
+    addTxn({
+      securityId: optId,
+      type: "EXERCISED",
+      date: "2026-05-01",
+      quantity: 1,
+      price: 3,
+    });
+    addTxn({
+      securityId: stockId,
+      type: "BUY",
+      date: "2026-05-01",
+      quantity: 100,
+      price: 100,
+    });
+    computeTaxLots(db);
+
+    const optionLot = db
+      .prepare("SELECT * FROM tax_lots WHERE security_id = ?")
+      .get(optId) as LotRow;
+    expect(optionLot.cost_basis).toBeCloseTo(307, 2);
+
+    const optionSale = db
+      .prepare(
+        `SELECT tls.* FROM tax_lot_sales tls
+           JOIN tax_lots tl ON tl.id = tls.tax_lot_id
+          WHERE tl.security_id = ?`
+      )
+      .get(optId) as SaleRow;
+    expect(optionSale.premium_rollover).toBe(1);
+    expect(optionSale.proceeds).toBeCloseTo(307, 2);
+    expect(optionSale.cost_basis_allocated).toBeCloseTo(307, 2);
+    expect(optionSale.realized_gain_loss).toBeCloseTo(0, 2);
+
+    // 100 × $100 + the full $307 option leg = $10,307 — the $7 fee is NOT lost.
+    const stockLot = db
+      .prepare("SELECT * FROM tax_lots WHERE security_id = ?")
+      .get(stockId) as LotRow;
+    expect(stockLot.cost_basis).toBeCloseTo(10307, 2);
+    expect(stockLot.acquisition_price).toBeCloseTo(103.07, 6);
+
+    // Conservation: every dollar that entered the two legs is still carried by
+    // the surviving lot plus the (zero) realized result.
+    const dollarsIn = 300 + 7 + 10000; // option premium + option fee + stock cost
+    expect(stockLot.cost_basis + optionSale.realized_gain_loss).toBeCloseTo(dollarsIn, 2);
+  });
+
+  it("an EXERCISED row with NO premium price keeps its realized loss even when a stock leg links", () => {
+    // Fail-closed: with no premium on the exercise row we cannot vouch that
+    // this close corresponds to the stock leg, so zeroing its gain would
+    // delete the premium outright — it would then exist nowhere.
+    const stockId = seedSecurity({ symbol: "AAPL", securityType: "stock" });
+    const optId = seedOption();
+    addTxn({
+      securityId: optId,
+      type: "BUY_TO_OPEN",
+      date: "2026-01-15",
+      quantity: 1,
+      price: 3,
+    });
+    addTxn({
+      securityId: optId,
+      type: "EXERCISED",
+      date: "2026-05-01",
+      quantity: 1,
+      price: null, // no premium booked on the close
+    });
+    // A perfectly linkable same-day stock BUY
+    addTxn({
+      securityId: stockId,
+      type: "BUY",
+      date: "2026-05-01",
+      quantity: 100,
+      price: 100,
+    });
+    computeTaxLots(db);
+
+    const optionSale = db
+      .prepare(
+        `SELECT tls.* FROM tax_lot_sales tls
+           JOIN tax_lots tl ON tl.id = tls.tax_lot_id
+          WHERE tl.security_id = ?`
+      )
+      .get(optId) as SaleRow;
+    expect(optionSale.premium_rollover).toBe(0);
+    expect(optionSale.cost_basis_allocated).toBeCloseTo(300, 2);
+    expect(optionSale.realized_gain_loss).toBeCloseTo(-300, 2);
+
+    // ...and the stock leg is left unadjusted (no phantom premium added)
+    const stockLot = db
+      .prepare("SELECT * FROM tax_lots WHERE security_id = ?")
+      .get(stockId) as LotRow;
+    expect(stockLot.cost_basis).toBeCloseTo(10000, 2);
+    expect(stockLot.acquisition_price).toBeCloseTo(100, 6);
   });
 
   it("EXERCISED option with NO linkable stock leg keeps its realized loss (premium must not vanish)", () => {

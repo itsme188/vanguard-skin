@@ -91,17 +91,35 @@ export function isYearAccepted(
 }
 
 /**
+ * The one settings-table probe. Mutation sites run against minimal test DBs
+ * that never created `settings`; every guarded wrapper below shares this
+ * check rather than inlining its own sqlite_master query.
+ */
+function hasSettingsTable(db: Database.Database): boolean {
+  return (
+    db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'settings'")
+      .get() != null
+  );
+}
+
+/**
  * Wrapper for mutation sites that run on minimal test DBs (no settings table).
- * Checks sqlite_master and no-ops if settings table is missing.
+ * No-ops if the settings table is missing.
  */
 export function bumpTaxGenerationIfPresent(db: Database.Database): number {
-  const settingsExists = db.prepare(
-    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'settings'"
-  ).get();
-
-  if (!settingsExists) {
+  if (!hasSettingsTable(db)) {
     return 0; // settings table doesn't exist; return 0 (no-op)
   }
 
   return bumpTaxInputGeneration(db);
+}
+
+/**
+ * Same guard for the recompute marker: `computeTaxLots` stamps as its final
+ * in-transaction act, and it too runs against minimal test DBs.
+ */
+export function stampTaxLotsConventionIfPresent(db: Database.Database): void {
+  if (!hasSettingsTable(db)) return;
+  stampTaxLotsConvention(db);
 }
