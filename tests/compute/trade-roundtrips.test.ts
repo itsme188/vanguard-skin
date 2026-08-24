@@ -9,6 +9,9 @@ import {
   getAvailableReviewPeriods,
   type RoundTrip,
 } from "@/lib/compute/trade-roundtrips";
+import { runMigrations } from "@/lib/db/migrate";
+import { computeTaxLots } from "@/lib/compute/tax-lots";
+import { bumpTaxInputGeneration } from "@/lib/compute/tax-convention";
 
 function createTestDb(): Database.Database {
   const db = new Database(":memory:");
@@ -379,6 +382,45 @@ describe("getRoundTrips", () => {
     const result = getRoundTrips(db, 1, "2026-01-01", "2026-01-31");
     // (1000 / 20000) * 100 = 5%
     expect(result[0].returnPct).toBeCloseTo(5.0, 2);
+  });
+
+  it("option round-trip renders P&L in true dollars exactly once (Task 3 fixture: $251 cost, $399 proceeds)", () => {
+    // Mirrors tests/compute/tax-lots-dollar-convention.test.ts's "plain
+    // option round-trip" fixture: BUY_TO_OPEN 1 contract @ $2.50, fees $1,
+    // multiplier 100 -> lot cost_basis = 1*2.50*100 + 1 = $251; SELL_TO_CLOSE
+    // @ $4.00, fees $1 -> proceeds = 1*4.00*100 - 1 = $399. tax_lot_sales
+    // already stores true dollars under the v2 convention (multiplier baked
+    // in at write time) — this proves the reader does NOT re-apply the ×100
+    // multiplier on top (the "renders P&L in dollars exactly once" contract).
+    db.exec(
+      `INSERT INTO securities (id, symbol, name, security_type, multiplier)
+       VALUES (6, 'AAPL  260619C00180000', 'AAPL Jun26 180C', 'option', 100)`
+    );
+    const txResult = db
+      .prepare(
+        `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, price_per_share, amount)
+         VALUES (1, 6, '2026-04-01', 'SELL_TO_CLOSE', 1, 4, 399)`
+      )
+      .run();
+    const lotResult = db
+      .prepare(
+        `INSERT INTO tax_lots (account_id, security_id, acquisition_date, acquisition_price, quantity_acquired, quantity_remaining, cost_basis)
+         VALUES (1, 6, '2026-01-15', 2.5, 1, 0, 251)`
+      )
+      .run();
+    db.prepare(
+      `INSERT INTO tax_lot_sales (tax_lot_id, sale_transaction_id, sale_date, quantity_sold, sale_price, proceeds, cost_basis_allocated, realized_gain_loss, is_long_term, holding_period_days)
+       VALUES (?, ?, '2026-04-01', 1, 4, 399, 251, 148, 0, 76)`
+    ).run(lotResult.lastInsertRowid, txResult.lastInsertRowid);
+
+    const result = getRoundTrips(db, 1, "2026-04-01", "2026-04-30");
+    expect(result).toHaveLength(1);
+    expect(result[0].entryCost).toBeCloseTo(251, 2);
+    expect(result[0].exitProceeds).toBeCloseTo(399, 2);
+    expect(result[0].realizedPnl).toBeCloseTo(148, 2);
+    // conventionPending defaults false on this minimal local test schema
+    // (no `settings` table) — see isConventionPending's guard.
+    expect(result[0].conventionPending).toBe(false);
   });
 });
 
@@ -1064,5 +1106,93 @@ describe("foreign-currency conversion (fx_rates)", () => {
     // grouped trade carries the rate for native-price consumers (market context)
     const krw = grouped.find((g) => g.symbol === "402340")!;
     expect(krw.usdPerUnit).toBeCloseTo(0.0007);
+  });
+});
+
+// ─── conventionPending (WS1 pending-state contract) ────────────────
+//
+// Uses the real production schema (runMigrations + computeTaxLots) rather
+// than the local mini-schema above, because the convention marker lives in
+// the `settings` table, which only the real schema has.
+
+describe("getRoundTrips / computeGroupedTrades — conventionPending", () => {
+  let db: Database.Database;
+  const ACCOUNT_ID = 1; // Vanguard Taxable (seeded by migration 002)
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  function seedTrivialRoundTrip(): void {
+    const sec = db
+      .prepare(
+        "INSERT INTO securities (symbol, name, security_type) VALUES ('VTI', 'VTI', 'stock')"
+      )
+      .run();
+    const secId = sec.lastInsertRowid as number;
+    db.prepare(
+      `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, price_per_share, amount, source_key)
+       VALUES (?, ?, '2026-01-05', 'BUY', 100, 150, -15000, 'buy-1')`
+    ).run(ACCOUNT_ID, secId);
+    db.prepare(
+      `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, price_per_share, amount, source_key)
+       VALUES (?, ?, '2026-01-15', 'SELL', 100, 160, 16000, 'sell-1')`
+    ).run(ACCOUNT_ID, secId);
+  }
+
+  it("is false right after computeTaxLots stamps the convention marker", () => {
+    seedTrivialRoundTrip();
+    computeTaxLots(db); // final act inside the transaction stamps the v2 marker
+
+    const result = getRoundTrips(db, ACCOUNT_ID, "2026-01-01", "2026-01-31");
+    expect(result).toHaveLength(1);
+    expect(result[0].conventionPending).toBe(false);
+
+    const grouped = computeGroupedTrades(result);
+    expect(grouped[0].conventionPending).toBe(false);
+  });
+
+  it("is true once the generation is bumped past the recompute's stamped generation (stale marker)", () => {
+    seedTrivialRoundTrip();
+    computeTaxLots(db);
+
+    // Simulate a material tax-input mutation AFTER the last recompute —
+    // the stamped marker (v2:<old generation>) no longer matches.
+    bumpTaxInputGeneration(db);
+
+    const result = getRoundTrips(db, ACCOUNT_ID, "2026-01-01", "2026-01-31");
+    expect(result[0].conventionPending).toBe(true);
+
+    const grouped = computeGroupedTrades(result);
+    expect(grouped[0].conventionPending).toBe(true);
+  });
+
+  it("is true before any recompute has ever run (no marker at all)", () => {
+    seedTrivialRoundTrip();
+    // Insert tax_lots/tax_lot_sales directly — never called computeTaxLots,
+    // so the settings table has no convention marker yet.
+    const secId = (
+      db.prepare("SELECT id FROM securities WHERE symbol = 'VTI'").get() as {
+        id: number;
+      }
+    ).id;
+    const lot = db
+      .prepare(
+        `INSERT INTO tax_lots (account_id, security_id, acquisition_date, acquisition_price, quantity_acquired, quantity_remaining, cost_basis)
+         VALUES (?, ?, '2026-01-05', 150, 100, 0, 15000)`
+      )
+      .run(ACCOUNT_ID, secId);
+    const saleTxn = db
+      .prepare("SELECT id FROM transactions WHERE source_key = 'sell-1'")
+      .get() as { id: number };
+    db.prepare(
+      `INSERT INTO tax_lot_sales (tax_lot_id, sale_transaction_id, sale_date, quantity_sold, sale_price, proceeds, cost_basis_allocated, realized_gain_loss, is_long_term, holding_period_days)
+       VALUES (?, ?, '2026-01-15', 100, 160, 16000, 15000, 1000, 0, 10)`
+    ).run(lot.lastInsertRowid, saleTxn.id);
+
+    const result = getRoundTrips(db, ACCOUNT_ID, "2026-01-01", "2026-01-31");
+    expect(result[0].conventionPending).toBe(true);
   });
 });

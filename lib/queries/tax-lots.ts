@@ -38,6 +38,8 @@ export interface TaxLotSaleWithDetails {
   is_long_term: number;
   holding_period_days: number;
   currency: string;
+  /** 1 for a short round-trip lot (SELL_TO_OPEN → cover); see lib/compute/tax-lots.ts. */
+  is_short: number;
 }
 
 export interface TaxLotSummary {
@@ -96,10 +98,11 @@ export function getOpenTaxLots(db: Database.Database): TaxLotWithSecurity[] {
 
 export function getClosedTaxLotSales(
   db: Database.Database,
-  year?: number
+  year?: number,
+  opts?: { filingOnly?: boolean }
 ): TaxLotSaleWithDetails[] {
   const baseSql = `SELECT
-        tls.id, a.name AS account_name, tl.account_id, tl.security_id,
+        tls.id, a.name AS account_name, tl.account_id, tl.security_id, tl.is_short,
         s.symbol, s.name AS security_name,
         tl.acquisition_date, tls.sale_date,
         tls.quantity_sold, tl.acquisition_price,
@@ -110,16 +113,27 @@ export function getClosedTaxLotSales(
       FROM tax_lot_sales tls
       JOIN tax_lots tl ON tl.id = tls.tax_lot_id
       JOIN accounts a ON a.id = tl.account_id
-      JOIN securities s ON s.id = tl.security_id`;
+      JOIN securities s ON s.id = tl.security_id
+      JOIN transactions t ON t.id = tls.sale_transaction_id`;
 
+  // filingOnly (Task 6 dependency): exclude premium-rollover closes (option
+  // premium that moved to the underlying leg — not a separate disposition,
+  // IRS Pub 550) and engine-synthesized RECONCILE_CLOSE sales (never real
+  // broker activity) from anything destined for a filing surface.
+  const conditions: string[] = [];
+  const params: string[] = [];
   if (year) {
-    return db
-      .prepare(`${baseSql} WHERE tls.sale_date >= ? AND tls.sale_date <= ? ORDER BY tls.sale_date DESC, s.symbol`)
-      .all(`${year}-01-01`, `${year}-12-31`) as TaxLotSaleWithDetails[];
+    conditions.push("tls.sale_date >= ? AND tls.sale_date <= ?");
+    params.push(`${year}-01-01`, `${year}-12-31`);
   }
+  if (opts?.filingOnly) {
+    conditions.push("tls.premium_rollover = 0 AND t.type != 'RECONCILE_CLOSE'");
+  }
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
   return db
-    .prepare(`${baseSql} ORDER BY tls.sale_date DESC, s.symbol`)
-    .all() as TaxLotSaleWithDetails[];
+    .prepare(`${baseSql} ${whereClause} ORDER BY tls.sale_date DESC, s.symbol`)
+    .all(...params) as TaxLotSaleWithDetails[];
 }
 
 export function getTaxLotSummary(

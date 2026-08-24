@@ -290,12 +290,64 @@ describe("getClosingCensus", () => {
 
     expect(census.negativeHpdCount).toBe(1);
     expect(census.reconcileCloseCount).toBe(1);
+    // The one negative-HPD row is a short round-trip (is_short = 1) — expected
+    // under the signed-holding-period-days convention, not an anomaly.
+    expect(census.negativeHpdShortCount).toBe(1);
+    expect(census.negativeHpdNonShortCount).toBe(0);
+  });
+
+  it("splits negative-HPD rows into expected (short) vs unexpected (non-short) — the anomaly signal", () => {
+    const ibkrId = getIbkrAccountId(db);
+    const secId = ensureSecurity(db, "AAPL");
+
+    // A genuine anomaly: a NON-short lot with a negative holding period
+    // (acquisition postdates the sale) — this should never happen and must
+    // still surface as unexpected even though shorts are now allowed to be
+    // negative.
+    const buyTxnId = (
+      db
+        .prepare(
+          `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, amount, source_key)
+           VALUES (?, ?, '2025-03-01', 'BUY', 10, -1000, 'k-buy')`
+        )
+        .run(ibkrId, secId) as { lastInsertRowid: number }
+    ).lastInsertRowid;
+    const lotId = (
+      db
+        .prepare(
+          `INSERT INTO tax_lots
+             (security_id, account_id, acquisition_transaction_id, acquisition_date,
+              acquisition_price, quantity_acquired, quantity_remaining, cost_basis, is_short)
+           VALUES (?, ?, ?, '2025-03-01', 100, 10, 0, 1000, 0)`
+        )
+        .run(secId, ibkrId, buyTxnId) as { lastInsertRowid: number }
+    ).lastInsertRowid;
+    const sellTxnId = (
+      db
+        .prepare(
+          `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, amount, source_key)
+           VALUES (?, ?, '2025-02-25', 'SELL', 10, 1100, 'k-sell')`
+        )
+        .run(ibkrId, secId) as { lastInsertRowid: number }
+    ).lastInsertRowid;
+    db.prepare(
+      `INSERT INTO tax_lot_sales
+         (tax_lot_id, sale_transaction_id, quantity_sold, sale_price, proceeds, cost_basis_allocated, realized_gain_loss, is_long_term, holding_period_days, sale_date)
+       VALUES (?, ?, 10, 110, 1100, 1000, 100, 0, -4, '2025-02-25')`
+    ).run(lotId, sellTxnId);
+
+    const census = getClosingCensus(db);
+    expect(census.negativeHpdCount).toBe(1);
+    expect(census.negativeHpdShortCount).toBe(0);
+    expect(census.negativeHpdNonShortCount).toBe(1); // the real anomaly
   });
 
   it("reports all zeros on an empty ledger", () => {
     const census = getClosingCensus(db);
     expect(census.byType).toHaveLength(0);
     expect(census.negativeHpdCount).toBe(0);
+    expect(census.negativeHpdShortCount).toBe(0);
+    expect(census.negativeHpdNonShortCount).toBe(0);
     expect(census.reconcileCloseCount).toBe(0);
   });
 });

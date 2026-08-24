@@ -166,6 +166,71 @@ describe("tax-lots queries", () => {
       expect(sales[0].quantity_sold).toBe(25);
       expect(sales[1].quantity_sold).toBe(50);
     });
+
+    it("carries is_short and account_id through to the reader (Task 6 dependency)", () => {
+      const sec = seedSecurity(db, "SHRT");
+      db.prepare(
+        `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, price_per_share, amount, source_key)
+         VALUES (?, ?, '2025-01-10', 'SELL_TO_OPEN', 10, 50, 500, 'short-open')`
+      ).run(ACCOUNT_ID, sec);
+      db.prepare(
+        `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, price_per_share, amount, source_key)
+         VALUES (?, ?, '2025-02-20', 'BUY_TO_COVER', 10, 40, -400, 'short-cover')`
+      ).run(ACCOUNT_ID, sec);
+      computeTaxLots(db);
+
+      const sales = getClosedTaxLotSales(db, 2025);
+      expect(sales).toHaveLength(1);
+      expect(sales[0].is_short).toBe(1);
+      expect(sales[0].account_id).toBe(ACCOUNT_ID);
+    });
+
+    describe("filingOnly", () => {
+      it("excludes RECONCILE_CLOSE-sourced and premium-rollover sales; default includes them", () => {
+        const sec = seedSecurity(db, "VTI");
+        seedBuy(db, ACCOUNT_ID, sec, "2025-01-15", 100, 200);
+        seedSell(db, ACCOUNT_ID, sec, "2025-02-15", 30, 220); // stays filing-eligible
+        seedSell(db, ACCOUNT_ID, sec, "2025-03-01", 30, 230); // will become RECONCILE_CLOSE
+        seedSell(db, ACCOUNT_ID, sec, "2025-04-01", 30, 240); // will become a premium rollover
+        computeTaxLots(db);
+
+        // RECONCILE_CLOSE is engine-owned in production (synthesized by
+        // computeTaxLots for a broker-zeroed position with an orphan open
+        // lot) — simulated directly here to test the reader's filter in
+        // isolation from that synthesis path.
+        db.prepare(
+          `UPDATE transactions SET type = 'RECONCILE_CLOSE'
+           WHERE id = (
+             SELECT sale_transaction_id FROM tax_lot_sales WHERE sale_date = '2025-03-01'
+           )`
+        ).run();
+        db.prepare(
+          `UPDATE tax_lot_sales SET premium_rollover = 1 WHERE sale_date = '2025-04-01'`
+        ).run();
+
+        const defaultSales = getClosedTaxLotSales(db, 2025);
+        expect(defaultSales).toHaveLength(3);
+
+        const filingSales = getClosedTaxLotSales(db, 2025, { filingOnly: true });
+        expect(filingSales).toHaveLength(1);
+        expect(filingSales[0].sale_date).toBe("2025-02-15");
+      });
+
+      it("also filters correctly with no year argument", () => {
+        const sec = seedSecurity(db, "VTI");
+        seedBuy(db, ACCOUNT_ID, sec, "2025-01-15", 100, 200);
+        seedSell(db, ACCOUNT_ID, sec, "2025-02-15", 30, 220);
+        seedSell(db, ACCOUNT_ID, sec, "2025-04-01", 30, 240);
+        computeTaxLots(db);
+        db.prepare(
+          `UPDATE tax_lot_sales SET premium_rollover = 1 WHERE sale_date = '2025-04-01'`
+        ).run();
+
+        const filingSales = getClosedTaxLotSales(db, undefined, { filingOnly: true });
+        expect(filingSales).toHaveLength(1);
+        expect(filingSales[0].sale_date).toBe("2025-02-15");
+      });
+    });
   });
 
   describe("getTaxLotSummary", () => {

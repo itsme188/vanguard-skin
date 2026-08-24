@@ -251,6 +251,18 @@ export function ensureBackup(
 export interface ClosingCensus {
   byType: Array<{ type: string; count: number }>;
   negativeHpdCount: number;
+  /**
+   * Negative-HPD rows on short lots (SELL_TO_OPEN round-trips) — EXPECTED
+   * under the signed-holding-period-days convention (number-trust durable
+   * fixes, WS1). Not an anomaly.
+   */
+  negativeHpdShortCount: number;
+  /**
+   * Negative-HPD rows on NON-short lots — this is the real anomaly signal.
+   * A negative holding period on a normal long lot means acquisition
+   * postdates the sale, which should never happen; investigate if > 0.
+   */
+  negativeHpdNonShortCount: number;
   reconcileCloseCount: number;
 }
 
@@ -272,13 +284,42 @@ export function getClosingCensus(db: Database.Database): ClosingCensus {
       .get() as { c: number }
   ).c;
 
+  // Split the total by whether the lot is a legitimate short round-trip —
+  // shorts are now SYSTEMATICALLY negative by the signed-HPD convention, so
+  // the total count alone can no longer serve as an anomaly signal.
+  const negativeHpdShortCount = (
+    db
+      .prepare(
+        `SELECT COUNT(*) as c FROM tax_lot_sales tls
+         JOIN tax_lots tl ON tl.id = tls.tax_lot_id
+         WHERE tls.holding_period_days < 0 AND tl.is_short = 1`
+      )
+      .get() as { c: number }
+  ).c;
+
+  const negativeHpdNonShortCount = (
+    db
+      .prepare(
+        `SELECT COUNT(*) as c FROM tax_lot_sales tls
+         JOIN tax_lots tl ON tl.id = tls.tax_lot_id
+         WHERE tls.holding_period_days < 0 AND tl.is_short = 0`
+      )
+      .get() as { c: number }
+  ).c;
+
   const reconcileCloseCount = (
     db
       .prepare("SELECT COUNT(*) as c FROM transactions WHERE type = 'RECONCILE_CLOSE'")
       .get() as { c: number }
   ).c;
 
-  return { byType, negativeHpdCount, reconcileCloseCount };
+  return {
+    byType,
+    negativeHpdCount,
+    negativeHpdShortCount,
+    negativeHpdNonShortCount,
+    reconcileCloseCount,
+  };
 }
 
 // ─── CLI orchestration ────────────────────────────────────────────
@@ -519,7 +560,9 @@ async function main() {
   console.log("  IBKR transactions by type:");
   for (const row of census.byType) console.log(`    ${row.type}: ${row.count}`);
   console.log(
-    `  negative-holding-period tax_lot_sales rows: ${census.negativeHpdCount} (expect far below 626)`
+    `  negative-holding-period tax_lot_sales rows: ${census.negativeHpdCount} total — ` +
+      `${census.negativeHpdShortCount} expected (short round-trips, signed-HPD convention), ` +
+      `${census.negativeHpdNonShortCount} unexpected on non-short lots (investigate if > 0)`
   );
   console.log(`  RECONCILE_CLOSE rows: ${census.reconcileCloseCount}`);
 
