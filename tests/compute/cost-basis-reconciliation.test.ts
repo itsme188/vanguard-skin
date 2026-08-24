@@ -4,6 +4,7 @@ import { runMigrations } from "@/lib/db/migrate";
 import { reconcileCostBasis } from "@/lib/compute/cost-basis-reconciliation";
 import { computeTaxLots } from "@/lib/compute/tax-lots";
 import { upsertFxRate } from "@/lib/mutations/fx-rates";
+import { bumpTaxInputGeneration } from "@/lib/compute/tax-convention";
 
 let db: Database.Database;
 
@@ -32,6 +33,17 @@ function insertTransaction(secId: number, type: string, date: string, qty: numbe
     `INSERT INTO transactions (account_id, security_id, type, trade_date, quantity, price_per_share, amount, fees)
      VALUES (3, ?, ?, ?, ?, ?, ?, 0)`
   ).run(secId, type, date, qty, price, qty * price);
+}
+
+/** Like insertTransaction, but leaves `amount` NULL so netLegDollars derives
+ *  the true economic dollars from price×multiplier (options) / ÷100 (bonds)
+ *  instead of trusting a raw qty×price `amount` that would be wrong for
+ *  either convention (see tests/compute/tax-lots-dollar-convention.test.ts). */
+function insertTransactionNoAmount(secId: number, type: string, date: string, qty: number, price: number) {
+  db.prepare(
+    `INSERT INTO transactions (account_id, security_id, type, trade_date, quantity, price_per_share, amount, fees)
+     VALUES (3, ?, ?, ?, ?, ?, NULL, 0)`
+  ).run(secId, type, date, qty, price);
 }
 
 function insertHolding(secId: number, qty: number, costBasis: number | null, asOf: string) {
@@ -184,5 +196,53 @@ describe("reconcileCostBasis FX conversion", () => {
     expect(row!.brokerCostBasis!).toBeLessThan(20_000);
     // Delta scales with the same factor — flag semantics unchanged.
     expect(row!.costBasisDiff).toBeCloseTo((16_329_792 - 16_000_000) * 0.0006531, 2);
+  });
+});
+
+describe("reconcileCostBasis v2 dollar convention (task 4: readers consume stored dollar basis)", () => {
+  it("reconciles an option lot at economic dollars (×multiplier), not the raw per-contract price", () => {
+    db.prepare(
+      `INSERT INTO securities (id, symbol, name, security_type, multiplier, underlying_symbol, option_type)
+       VALUES (4, 'AAPL  260619C00180000', 'AAPL Call', 'option', 100, 'AAPL', 'CALL')`
+    ).run();
+    // BUY_TO_OPEN 1 contract @ $2.50 → true economic cost 1 × 2.50 × 100 = $250.
+    insertTransactionNoAmount(4, "BUY_TO_OPEN", "2025-01-15", 1, 2.5);
+    computeTaxLots(db);
+    insertHolding(4, 1, 250, "2026-03-27"); // broker basis matches the true $250
+
+    const result = reconcileCostBasis(db);
+    const row = result.rows.find((r) => r.symbol === "AAPL  260619C00180000");
+    expect(row).toBeTruthy();
+    // Pre-fix, SUM(quantity_remaining * acquisition_price) would have read
+    // 1 × 2.50 = $2.50 (contracts, not dollars) and flagged a huge variance.
+    expect(row!.computedCostBasis).toBeCloseTo(250, 2);
+    expect(row!.flagged).toBe(false);
+  });
+
+  it("reconciles a bond lot at face-basis dollars (÷100), not the raw quote", () => {
+    db.prepare(
+      "INSERT INTO securities (id, symbol, name, security_type) VALUES (5, '912796XY0', 'T-Bill', 'bond')"
+    ).run();
+    // 20,000 face at 99.438385 per-100-face → 20000 × 99.438385 / 100 = $19,887.68.
+    insertTransactionNoAmount(5, "BUY", "2023-02-08", 20000, 99.438385);
+    computeTaxLots(db);
+    insertHolding(5, 20000, 19887.68, "2026-03-27");
+
+    const result = reconcileCostBasis(db);
+    const row = result.rows.find((r) => r.symbol === "912796XY0");
+    expect(row).toBeTruthy();
+    // Pre-fix, SUM(quantity_remaining * acquisition_price) would have read
+    // 20000 × 99.438385 ≈ $1,988,768 (the raw quote, not the face-adjusted dollars).
+    expect(row!.computedCostBasis).toBeCloseTo(19887.68, 2);
+    expect(row!.flagged).toBe(false);
+  });
+
+  it("conventionPending flips true once a mutation bumps the generation past the last recompute", () => {
+    insertTransaction(1, "BUY", "2025-06-01", 100, 150);
+    computeTaxLots(db); // stamps the convention marker current
+    expect(reconcileCostBasis(db).conventionPending).toBe(false);
+
+    bumpTaxInputGeneration(db); // simulate a new tax-relevant mutation, no recompute yet
+    expect(reconcileCostBasis(db).conventionPending).toBe(true);
   });
 });

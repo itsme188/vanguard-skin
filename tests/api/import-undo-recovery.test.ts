@@ -34,8 +34,10 @@ import {
   readRecoveryManifest,
   restoreImportBatch,
   undoImportWithRecovery,
+  computeManifestChecksum,
   RECOVERY_SOURCE_TABLES,
 } from "@/lib/import/recovery";
+import { getTaxInputGeneration } from "@/lib/compute/tax-convention";
 import {
   issueUndoToken,
   consumeUndoToken,
@@ -293,6 +295,44 @@ describe("import-undo recovery — restore", () => {
     const tampered = structuredClone(manifest);
     (tampered.payload.tables.holdings[0] as Record<string, unknown>).quantity = -1;
     expect(() => restoreImportBatch(db, tampered)).toThrow(/checksum/i);
+  });
+
+  // Task 4 (number-trust durable fixes, batched controller ruling): restore
+  // re-inserts transactions/CAs/donation rows straight into their tables —
+  // that reintroduces tax-relevant inputs, so it must bump the tax-input
+  // generation the same way every other mutation site does, or a reader
+  // (cost-basis-reconciliation, portfolio-summary, giving-view) could keep
+  // trusting a stale "recompute current" stamp after the restore.
+  it("bumps the tax-input generation when restore reinserts transaction rows", () => {
+    const res = commitImport(db, sampleParsed());
+    const manifest = buildRecoveryManifest(db, res.batchId);
+
+    undoImportWithRecovery(db, res.batchId, { manifestDir: dir });
+    const genBeforeRestore = getTaxInputGeneration(db);
+
+    restoreImportBatch(db, manifest);
+
+    expect(getTaxInputGeneration(db)).toBeGreaterThan(genBeforeRestore);
+  });
+
+  it("does NOT bump the tax-input generation for a holdings/prices-only restore (no transactions/CAs/donations)", () => {
+    const res = commitImport(db, sampleParsed());
+    const manifest = buildRecoveryManifest(db, res.batchId);
+    // Strip the transaction + corporate-action rows so this restore carries
+    // ONLY holdings/prices/snapshots — never a tax input — and re-seal the
+    // checksum over the edited payload (mirrors the tampering pattern above).
+    manifest.payload.tables.transactions = [];
+    manifest.payload.tables.corporate_actions = [];
+    manifest.checksum = computeManifestChecksum(manifest.payload);
+
+    undoImportWithRecovery(db, res.batchId, { manifestDir: dir });
+    const genBeforeRestore = getTaxInputGeneration(db);
+
+    const result = restoreImportBatch(db, manifest);
+    expect(result.restored.transactions).toBe(0);
+    expect(result.restored.holdings).toBe(2);
+
+    expect(getTaxInputGeneration(db)).toBe(genBeforeRestore);
   });
 });
 

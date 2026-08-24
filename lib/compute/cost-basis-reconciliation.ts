@@ -7,6 +7,7 @@
 
 import type Database from "better-sqlite3";
 import { latestHoldingsPredicate } from "@/lib/queries/latest-holdings";
+import { getTaxConventionState } from "@/lib/compute/tax-convention";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -48,6 +49,10 @@ export interface ReconciliationSummary {
   totalComputedCostBasis: number;
   totalDifference: number;
   rows: ReconciliationRow[];
+  /** True when the tax-input generation has moved past the last
+   *  computeTaxLots recompute (Task 1's getTaxConventionState) — the
+   *  computed dollars below may still reflect a stale mutation. */
+  conventionPending: boolean;
 }
 
 export interface ReconciliationOptions {
@@ -116,17 +121,23 @@ export function reconcileCostBasis(
 
   // Both sides of the reconciliation carry the FX factor so a foreign name
   // compares USD-vs-USD (converting only one side would fake a divergence).
+  // tl.cost_basis is the v2 TRUE-DOLLAR total for the lot's ORIGINAL
+  // quantity_acquired (bond ÷100, option ×multiplier, fees included) — the
+  // still-open share is dollar-proportional, so scaling by
+  // quantity_remaining/quantity_acquired yields the correct open-position
+  // cost basis without re-deriving the per-unit convention by hand.
   const computedLots = db
     .prepare(
       `SELECT
         tl.account_id,
         tl.security_id,
         SUM(tl.quantity_remaining) AS total_quantity,
-        SUM(tl.quantity_remaining * tl.acquisition_price) * COALESCE(fx.usd_per_unit, 1) AS total_cost_basis
+        SUM(tl.cost_basis * tl.quantity_remaining / tl.quantity_acquired) * COALESCE(fx.usd_per_unit, 1) AS total_cost_basis
        FROM tax_lots tl
        JOIN securities s ON s.id = tl.security_id
        LEFT JOIN fx_rates fx ON fx.currency = s.currency
        WHERE tl.quantity_remaining > 0
+         AND tl.quantity_acquired != 0
          ${lotAccountFilter}
        GROUP BY tl.account_id, tl.security_id`
     )
@@ -202,6 +213,7 @@ export function reconcileCostBasis(
 
   const withBasis = rows.filter((r) => r.brokerCostBasis != null);
   const matching = withBasis.filter((r) => !r.flagged);
+  const conventionPending = !getTaxConventionState(db).recomputeCurrent;
 
   return {
     totalPositions: rows.length,
@@ -219,5 +231,6 @@ export function reconcileCostBasis(
       0
     ),
     rows,
+    conventionPending,
   };
 }
