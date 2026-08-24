@@ -408,6 +408,13 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
                     {b.guidance_notes && (
                       <p className="text-[12px] text-ink-faint mt-1 italic">{b.guidance_notes}</p>
                     )}
+                    {/* Newsletter/AI-extracted bogeys often carry their whole
+                        analytical payload here with the numeric columns NULL —
+                        without this the row renders as nothing but a source
+                        label and looks like empty data. */}
+                    {b.notes && (
+                      <p className="text-[12px] text-ink-dim mt-1 whitespace-pre-wrap">{b.notes}</p>
+                    )}
                   </li>
                 ))}
               </ul>
