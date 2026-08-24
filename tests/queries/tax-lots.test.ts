@@ -167,6 +167,31 @@ describe("tax-lots queries", () => {
       expect(sales[1].quantity_sold).toBe(50);
     });
 
+    it("exposes is_synthetic_close: true for a RECONCILE_CLOSE-sourced sale, false for a real sale (finding 1, number-trust durable fixes)", () => {
+      const sec = seedSecurity(db, "VTI");
+      seedBuy(db, ACCOUNT_ID, sec, "2025-01-15", 100, 200);
+      seedSell(db, ACCOUNT_ID, sec, "2025-02-15", 30, 220); // real sale
+      seedSell(db, ACCOUNT_ID, sec, "2025-03-01", 30, 230); // will become RECONCILE_CLOSE
+      computeTaxLots(db);
+
+      // RECONCILE_CLOSE is engine-owned in production (synthesized by
+      // computeTaxLots for a broker-zeroed position with an orphan open
+      // lot) — simulated directly here, mirroring the filingOnly test below.
+      db.prepare(
+        `UPDATE transactions SET type = 'RECONCILE_CLOSE'
+         WHERE id = (
+           SELECT sale_transaction_id FROM tax_lot_sales WHERE sale_date = '2025-03-01'
+         )`
+      ).run();
+
+      const sales = getClosedTaxLotSales(db, 2025);
+      expect(sales).toHaveLength(2);
+      const real = sales.find((s) => s.sale_date === "2025-02-15")!;
+      const synthetic = sales.find((s) => s.sale_date === "2025-03-01")!;
+      expect(real.is_synthetic_close).toBe(false);
+      expect(synthetic.is_synthetic_close).toBe(true);
+    });
+
     it("carries is_short and account_id through to the reader (Task 6 dependency)", () => {
       const sec = seedSecurity(db, "SHRT");
       db.prepare(

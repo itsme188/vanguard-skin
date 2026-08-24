@@ -78,6 +78,13 @@ export interface ClosedOptionTrade {
   isLongTerm: boolean;
   saleDate: string;
   holdingDays: number;
+  /**
+   * True when the sale transaction is the engine-owned synthetic
+   * RECONCILE_CLOSE row (never real broker activity — see
+   * lib/compute/tax-lots.ts). Realized P&L on this row is an estimate;
+   * surfaces should label it (finding 1, number-trust durable fixes).
+   */
+  isSyntheticClose: boolean;
 }
 
 export interface OptionsPnL {
@@ -320,10 +327,12 @@ export function getOptionsPnL(
         tls.realized_gain_loss,
         tls.is_long_term,
         tls.sale_date,
-        tls.holding_period_days
+        tls.holding_period_days,
+        (t.type = 'RECONCILE_CLOSE') AS is_synthetic_close
        FROM tax_lot_sales tls
        JOIN tax_lots tl ON tl.id = tls.tax_lot_id
        JOIN securities s ON s.id = tl.security_id
+       JOIN transactions t ON t.id = tls.sale_transaction_id
        WHERE LOWER(s.security_type) = 'option'
          ${accountFilter}
        ORDER BY tls.sale_date DESC`
@@ -341,6 +350,7 @@ export function getOptionsPnL(
     is_long_term: number;
     sale_date: string;
     holding_period_days: number;
+    is_synthetic_close: number;
   }>;
 
   const closedTrades: ClosedOptionTrade[] = closedRows.map((r) => ({
@@ -356,6 +366,7 @@ export function getOptionsPnL(
     isLongTerm: r.is_long_term === 1,
     saleDate: r.sale_date,
     holdingDays: r.holding_period_days,
+    isSyntheticClose: r.is_synthetic_close === 1,
   }));
 
   const totalUnrealizedPnl = openPositions.reduce(

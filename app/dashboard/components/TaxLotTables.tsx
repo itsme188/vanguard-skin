@@ -336,7 +336,17 @@ export function ClosedSalesTable({
                       )}
                     </td>
                     <td className="px-4 py-3 text-right">
-                      <GainCell value={sale.realized_gain_loss} currency={sale.currency} />
+                      <div className="flex items-center justify-end gap-1.5">
+                        <GainCell value={sale.realized_gain_loss} currency={sale.currency} />
+                        {sale.is_synthetic_close && (
+                          <span
+                            className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-raised text-ink-dim"
+                            title="This close is an engine-generated reconciliation entry (no matching broker sale) — the realized figure is estimated."
+                          >
+                            Estimated
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-4 py-3">
                       <span

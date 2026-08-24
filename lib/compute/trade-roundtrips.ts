@@ -55,6 +55,15 @@ export interface RoundTrip {
    * supply it; defaults to false wherever it's read.
    */
   conventionPending?: boolean;
+  /**
+   * True when the sale transaction is the engine-owned synthetic
+   * RECONCILE_CLOSE row (never real broker activity — see
+   * lib/compute/tax-lots.ts). Realized P&L on this row is an estimate;
+   * surfaces should label it (finding 1, number-trust durable fixes).
+   * Optional like usdPerUnit/conventionPending — defaults to false wherever
+   * hand-built fixtures don't supply it.
+   */
+  isSyntheticClose?: boolean;
 }
 
 export interface RoundTripSummary {
@@ -117,6 +126,12 @@ export interface GroupedTrade {
   usdPerUnit: number;
   /** See RoundTrip.conventionPending — carried through from the group's lots. */
   conventionPending: boolean;
+  /**
+   * See RoundTrip.isSyntheticClose — carried through from the group's lots.
+   * Every lot in a group shares one sale_transaction_id, so this is
+   * consistent across the whole group (never a per-lot mix).
+   */
+  isSyntheticClose: boolean;
 }
 
 /**
@@ -149,7 +164,8 @@ export function getRoundTrips(
         tls.realized_gain_loss AS realized_pnl,
         tls.sale_transaction_id,
         ABS(sell_tx.quantity) AS sell_transaction_qty,
-        COALESCE(fx.usd_per_unit, 1) AS usd_per_unit
+        COALESCE(fx.usd_per_unit, 1) AS usd_per_unit,
+        (sell_tx.type = 'RECONCILE_CLOSE') AS is_synthetic_close
       FROM tax_lot_sales tls
       JOIN tax_lots tl ON tl.id = tls.tax_lot_id
       JOIN securities s ON s.id = tl.security_id
@@ -179,6 +195,7 @@ export function getRoundTrips(
     sale_transaction_id: number;
     sell_transaction_qty: number | null;
     usd_per_unit: number;
+    is_synthetic_close: number | null;
   }>;
 
   // tax_lot_sales dollar columns are stored in the security's NATIVE currency
@@ -209,6 +226,7 @@ export function getRoundTrips(
       sellTransactionQty: r.sell_transaction_qty,
       usdPerUnit: fx,
       conventionPending,
+      isSyntheticClose: Boolean(r.is_synthetic_close),
     };
   });
 }
@@ -466,6 +484,7 @@ export function computeGroupedTrades(roundTrips: RoundTrip[]): GroupedTrade[] {
       returnPct: totalCost > 0 ? (totalPnl / totalCost) * 100 : 0,
       usdPerUnit: lots[0].usdPerUnit ?? 1,
       conventionPending: lots[0].conventionPending ?? false,
+      isSyntheticClose: lots[0].isSyntheticClose ?? false,
     };
   });
 }

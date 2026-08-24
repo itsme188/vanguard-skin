@@ -253,7 +253,7 @@ export function getClosedSalesBySecurity(
   securityId: number,
   limit: number = 20
 ): TaxLotSaleWithDetails[] {
-  return db
+  const rows = db
     .prepare(
       `SELECT
         tls.id, a.name AS account_name, tl.account_id,
@@ -262,16 +262,21 @@ export function getClosedSalesBySecurity(
         tls.quantity_sold, tl.acquisition_price,
         tls.sale_price, tls.proceeds,
         tls.cost_basis_allocated, tls.realized_gain_loss,
-        tls.is_long_term, tls.holding_period_days
+        tls.is_long_term, tls.holding_period_days,
+        (t.type = 'RECONCILE_CLOSE') AS is_synthetic_close
       FROM tax_lot_sales tls
       JOIN tax_lots tl ON tl.id = tls.tax_lot_id
       JOIN accounts a ON a.id = tl.account_id
       JOIN securities s ON s.id = tl.security_id
+      JOIN transactions t ON t.id = tls.sale_transaction_id
       WHERE tl.security_id = ?
       ORDER BY tls.sale_date DESC
       LIMIT ?`
     )
-    .all(securityId, limit) as TaxLotSaleWithDetails[];
+    .all(securityId, limit) as Array<
+    Omit<TaxLotSaleWithDetails, "is_synthetic_close"> & { is_synthetic_close: number }
+  >;
+  return rows.map((r) => ({ ...r, is_synthetic_close: Boolean(r.is_synthetic_close) }));
 }
 
 /**

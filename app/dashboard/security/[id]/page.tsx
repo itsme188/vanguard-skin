@@ -527,7 +527,18 @@ export default async function SecurityDetailPage(props: {
                       <Money value={sale.proceeds} />
                     </td>
                     <td className={`${TD_MONO} text-right ${gainClass(sale.realized_gain_loss)}`}>
-                      <Money value={sale.realized_gain_loss} />
+                      <span className="inline-flex items-center gap-1.5">
+                        <Money value={sale.realized_gain_loss} />
+                        {sale.is_synthetic_close && (
+                          <Chip
+                            tone="neutral"
+                            size="xs"
+                            title="This close is an engine-generated reconciliation entry (no matching broker sale) — the realized figure is estimated."
+                          >
+                            Estimated
+                          </Chip>
+                        )}
+                      </span>
                     </td>
                     <td className={`${TD_CLASS} text-center`}>
                       <Chip tone={sale.is_long_term ? "up" : "gold"} size="xs" uppercase>
