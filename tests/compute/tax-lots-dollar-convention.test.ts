@@ -100,6 +100,7 @@ interface SaleRow {
   is_long_term: number;
   holding_period_days: number;
   premium_rollover: number;
+  sale_date: string;
 }
 
 function lots(): LotRow[] {
@@ -887,6 +888,189 @@ describe("option round-trip and exercise", () => {
       // is carried. Overwriting instead of accumulating stranded $300 here.
       const realized = sales.reduce((s, r) => s + r.realized_gain_loss, 0);
       expect(stockLot.cost_basis - realized).toBeCloseTo(300 + 1000 + 36000, 2);
+    });
+
+    it("same-date same-security ordinary close precedes the exercise and selects its lot first", () => {
+      // OCC assignment/exercise notices land after the close, so a same-day
+      // ordinary close on the SAME option executed intraday and must pick its
+      // lot BEFORE the exercise does — the engine's own end-of-day reasoning.
+      const stockId = seedSecurity({ symbol: "AAPL", securityType: "stock" });
+      const optId = seedOption();
+      addTxn({ securityId: optId, type: "BUY_TO_OPEN", date: "2026-01-15", quantity: 1, price: 3 });
+      addTxn({ securityId: optId, type: "BUY_TO_OPEN", date: "2026-02-15", quantity: 1, price: 10 });
+      // The ordinary close is inserted FIRST (lower id) — the sub-rank, not
+      // import order, must put it ahead of the exercise.
+      addTxn({
+        securityId: optId,
+        type: "SELL_TO_CLOSE",
+        date: "2026-05-01",
+        quantity: 1,
+        price: 4,
+      });
+      addTxn({ securityId: optId, type: "EXERCISED", date: "2026-05-01", quantity: 1, price: 10 });
+      addTxn({
+        securityId: stockId,
+        type: "BUY",
+        date: "2026-05-01",
+        quantity: 100,
+        price: 180,
+      });
+      computeTaxLots(db);
+
+      const sales = optionSalesFor(optId);
+      expect(sales).toHaveLength(2);
+      // Close-first FIFO: the ordinary close takes the $300 January lot…
+      const close = sales.find((s) => s.premium_rollover === 0)!;
+      expect(close.proceeds).toBeCloseTo(400, 2);
+      expect(close.cost_basis_allocated).toBeCloseTo(300, 2);
+      expect(close.realized_gain_loss).toBeCloseTo(100, 2);
+      // …and the exercise rolls the $1,000 February survivor.
+      const exercise = sales.find((s) => s.premium_rollover === 1)!;
+      expect(exercise.proceeds).toBeCloseTo(1000, 2);
+      expect(exercise.cost_basis_allocated).toBeCloseTo(1000, 2);
+      expect(exercise.realized_gain_loss).toBeCloseTo(0, 2);
+
+      // 100 × $180 + the $1,000 that rolled = $19,000.
+      const stockLot = db
+        .prepare("SELECT * FROM tax_lots WHERE security_id = ?")
+        .get(stockId) as LotRow;
+      expect(stockLot.cost_basis).toBeCloseTo(19000, 2);
+
+      //   cash out = 300 + 1,000 premiums + 18,000 stock = 19,300
+      //   cash in  = 400 (the same-day close)
+      //   net invested = 18,900 ; carried 19,000 − realized 100 = 18,900 ✓
+      const realized = sales.reduce((s, r) => s + r.realized_gain_loss, 0);
+      expect(stockLot.cost_basis - realized).toBeCloseTo(300 + 1000 + 18000 - 400, 2);
+    });
+
+    it("partial fill: unlanded premium stays REALIZED on the option row, flag cleared, warning fired", () => {
+      const stockId = seedSecurity({ symbol: "AAPL", securityType: "stock" });
+      const optId = seedSecurity({
+        symbol: "AAPL  260619P00170000",
+        securityType: "option",
+        multiplier: 100,
+        underlyingSymbol: "AAPL",
+        optionType: "PUT",
+      });
+      // Only 60 of the 100 shares the forced sale needs exist as open lots.
+      addTxn({ securityId: stockId, type: "BUY", date: "2026-01-10", quantity: 60, price: 150 });
+      // Long put $800 (1 × $8 × 100), exercised → forced stock SALE.
+      addTxn({ securityId: optId, type: "BUY_TO_OPEN", date: "2026-01-15", quantity: 1, price: 8 });
+      addTxn({ securityId: optId, type: "EXERCISED", date: "2026-05-01", quantity: 1, price: 8 });
+      addTxn({
+        securityId: stockId,
+        type: "SELL",
+        date: "2026-05-01",
+        quantity: 100,
+        price: 170,
+      });
+      const result = computeTaxLots(db);
+
+      // Stock leg lands only the covered fraction (60/100 = 0.6):
+      // proceeds = (17,000 − 800) × 0.6 = 9,720; basis = 60 × 150 = 9,000.
+      const stockSale = db
+        .prepare(
+          `SELECT tls.* FROM tax_lot_sales tls
+             JOIN tax_lots tl ON tl.id = tls.tax_lot_id
+            WHERE tl.security_id = ?`
+        )
+        .get(stockId) as SaleRow;
+      expect(stockSale.quantity_sold).toBe(60);
+      expect(stockSale.proceeds).toBeCloseTo(9720, 2);
+      expect(stockSale.cost_basis_allocated).toBeCloseTo(9000, 2);
+      expect(stockSale.realized_gain_loss).toBeCloseTo(720, 2);
+
+      // Option row: $800 × 0.6 = $480 landed; the $320 remainder must stay a
+      // realized loss HERE — and the row must NOT be filing-excluded, because
+      // that loss is one the filer needs.
+      const optionSale = optionSalesFor(optId)[0];
+      expect(optionSale.premium_rollover).toBe(0);
+      expect(optionSale.proceeds).toBeCloseTo(480, 2);
+      expect(optionSale.cost_basis_allocated).toBeCloseTo(800, 2);
+      expect(optionSale.realized_gain_loss).toBeCloseTo(-320, 2);
+
+      // Conservation of the run total: 720 (stock) − 320 (option) = 400.
+      expect(result.totalRealizedGain).toBeCloseTo(400, 2);
+      // Never silent — the warning names the unlanded dollars.
+      expect(result.replayWarnings.some((w) => w.includes("320.00"))).toBe(true);
+    });
+
+    it("linked stock SALE dated before the exercise: premium cannot attach — option keeps its result and warns", () => {
+      const stockId = seedSecurity({ symbol: "AAPL", securityType: "stock" });
+      const optId = seedSecurity({
+        symbol: "AAPL  260619P00170000",
+        securityType: "option",
+        multiplier: 100,
+        underlyingSymbol: "AAPL",
+        optionType: "PUT",
+      });
+      addTxn({ securityId: stockId, type: "BUY", date: "2026-01-10", quantity: 100, price: 150 });
+      addTxn({ securityId: optId, type: "BUY_TO_OPEN", date: "2026-01-15", quantity: 1, price: 8 });
+      // The sale lands the day BEFORE the exercise — inside the ±1-day link
+      // window, but its rows are already written by the time the exercise runs.
+      addTxn({
+        securityId: stockId,
+        type: "SELL",
+        date: "2026-04-30",
+        quantity: 100,
+        price: 170,
+      });
+      addTxn({ securityId: optId, type: "EXERCISED", date: "2026-05-01", quantity: 1, price: 8 });
+      const result = computeTaxLots(db);
+
+      // Stock sale is untouched: 17,000 proceeds − 15,000 basis.
+      const stockSale = db
+        .prepare(
+          `SELECT tls.* FROM tax_lot_sales tls
+             JOIN tax_lots tl ON tl.id = tls.tax_lot_id
+            WHERE tl.security_id = ?`
+        )
+        .get(stockId) as SaleRow;
+      expect(stockSale.proceeds).toBeCloseTo(17000, 2);
+      expect(stockSale.cost_basis_allocated).toBeCloseTo(15000, 2);
+      expect(stockSale.realized_gain_loss).toBeCloseTo(2000, 2);
+
+      // The option close keeps its own realized result instead of mis-stating
+      // either row, and says so.
+      const optionSale = optionSalesFor(optId)[0];
+      expect(optionSale.premium_rollover).toBe(0);
+      expect(optionSale.proceeds).toBeCloseTo(0, 2);
+      expect(optionSale.cost_basis_allocated).toBeCloseTo(800, 2);
+      expect(optionSale.realized_gain_loss).toBeCloseTo(-800, 2);
+      expect(result.replayWarnings.some((w) => w.includes("cannot still adjust"))).toBe(true);
+    });
+
+    it("a split between the stock buy and the exercise: rolled-in price inverts over CURRENT shares", () => {
+      const stockId = seedSecurity({ symbol: "AAPL", securityType: "stock" });
+      const optId = seedOption();
+      addTxn({ securityId: optId, type: "BUY_TO_OPEN", date: "2026-01-15", quantity: 1, price: 3 });
+      addTxn({
+        securityId: stockId,
+        type: "BUY",
+        date: "2026-03-01",
+        quantity: 100,
+        price: 180,
+      });
+      // Import-sourced 2:1 split replayed end-of-day 2026-03-01 → the lot is
+      // 200 shares @ $90 by the time the next-day exercise rolls its premium.
+      db.prepare(
+        `INSERT INTO corporate_actions
+           (security_id, account_id, action_type, effective_date, ratio_numerator,
+            ratio_denominator, applied, source, source_key)
+         VALUES (?, ?, 'SPLIT', '2026-03-01', 2, 1, 0, 'import', 'test:ca:split:2026-03-01')`
+      ).run(stockId, ACCOUNT_ID);
+      addTxn({ securityId: optId, type: "EXERCISED", date: "2026-03-02", quantity: 1, price: 3 });
+      computeTaxLots(db);
+
+      const stockLot = db
+        .prepare("SELECT * FROM tax_lots WHERE security_id = ?")
+        .get(stockId) as LotRow;
+      expect(stockLot.quantity_acquired).toBe(200);
+      // Dollars are split-invariant: 18,000 + 300 rolled premium.
+      expect(stockLot.cost_basis).toBeCloseTo(18300, 2);
+      // Per-unit price inverts over the CURRENT 200 shares — 91.50, not 183
+      // (the in-memory pre-split quantity wrote a ratio× wrong price).
+      expect(stockLot.acquisition_price).toBeCloseTo(91.5, 6);
     });
 
     it("linked to a stock buy that opened NO lot: keeps its loss and warns", () => {
