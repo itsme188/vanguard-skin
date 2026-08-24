@@ -9,6 +9,7 @@ import {
   getTradeRoundtrips,
 } from "@/lib/queries/trade-reviews";
 import { getAvailableReviewPeriods } from "@/lib/compute/trade-roundtrips";
+import { getTaxConventionState } from "@/lib/compute/tax-convention";
 
 interface GroupedTradeResponse {
   saleTransactionId: number | null;
@@ -116,7 +117,13 @@ export async function GET(request: Request) {
       };
     });
 
-    return Response.json({ review, groupedTrades });
+    // WS1 pending-state contract: whether the CURRENT tax-lot convention
+    // state is pending a recompute. This is a live check, independent of
+    // when this review's snapshot was generated — it tells the user the
+    // underlying dollar figures may need a fresh recompute to trust fully.
+    const conventionPending = !getTaxConventionState(db).recomputeCurrent;
+
+    return Response.json({ review, groupedTrades, conventionPending });
   }
 
   // Available periods for an account

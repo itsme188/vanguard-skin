@@ -112,10 +112,19 @@ export function computeIbkrTradingContext(
     )
     .all(accountId, ninetyDaysAgo) as { symbol: string; trade_count: number; last_traded: string }[];
 
-  // 6. Avg holding period from closed lots in last 90 days
+  // 6. Avg holding period from closed lots in last 90 days.
+  // holding_period_days is SIGNED NEGATIVE for short round-trips (number-trust
+  // durable fixes, WS1) — the sign is a bookkeeping convention (always
+  // short-term for §1233) rather than a real negative duration, so a plain
+  // signed AVG would understate this behavioral metric (or even go negative)
+  // for a trader who mixes longs and shorts. AVG(ABS(...)) reports the true
+  // average days-in-trade regardless of direction, which is what "how long
+  // does this trader typically hold a position" is actually asking. Filtering
+  // shorts out entirely (the alternative) would silently drop a real and
+  // common IBKR trading style (short-premium options) from the picture.
   const holdingDaysRow = db
     .prepare(
-      `SELECT AVG(tls.holding_period_days) as avg_days
+      `SELECT AVG(ABS(tls.holding_period_days)) as avg_days
        FROM tax_lot_sales tls
        JOIN tax_lots tl ON tl.id = tls.tax_lot_id
        WHERE tl.account_id = ?

@@ -1,4 +1,19 @@
 import type Database from "better-sqlite3";
+import { getTaxConventionState } from "@/lib/compute/tax-convention";
+
+/**
+ * Whether the current tax-lot convention state is pending a recompute
+ * (number-trust durable fixes, WS1 pending-state contract). Guarded against
+ * minimal test DBs that never created a `settings` table — those don't model
+ * this dimension, so they default to "not pending" rather than throwing.
+ */
+function isConventionPending(db: Database.Database): boolean {
+  try {
+    return !getTaxConventionState(db).recomputeCurrent;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * A round-trip trade: one buy→sell cycle extracted from tax_lot_sales.
@@ -31,6 +46,15 @@ export interface RoundTrip {
    * native-currency figure (market context folds entry/exit into native bars).
    */
   usdPerUnit?: number;
+  /**
+   * True when the underlying tax-lot dollar convention is pending a
+   * recompute (WS1 pending-state contract) — computed once per query via
+   * `getTaxConventionState`, not per-row. Surfaces should show a small
+   * caveat note rather than hide the numbers. Optional (like usdPerUnit)
+   * so hand-built fixtures in tests/pure-function callers don't need to
+   * supply it; defaults to false wherever it's read.
+   */
+  conventionPending?: boolean;
 }
 
 export interface RoundTripSummary {
@@ -91,6 +115,8 @@ export interface GroupedTrade {
   returnPct: number;
   /** USD per native-currency unit (1 for USD names) — see RoundTrip.usdPerUnit */
   usdPerUnit: number;
+  /** See RoundTrip.conventionPending — carried through from the group's lots. */
+  conventionPending: boolean;
 }
 
 /**
@@ -158,6 +184,8 @@ export function getRoundTrips(
   // tax_lot_sales dollar columns are stored in the security's NATIVE currency
   // (foreign-currency convention: conversion happens at read time only) —
   // convert here, before any cross-security aggregation sums mixed currencies.
+  // conventionPending is computed once per call, not per row.
+  const conventionPending = isConventionPending(db);
   return rows.map((r) => {
     const fx = r.usd_per_unit > 0 ? r.usd_per_unit : 1;
     return {
@@ -180,6 +208,7 @@ export function getRoundTrips(
       saleTransactionId: r.sale_transaction_id,
       sellTransactionQty: r.sell_transaction_qty,
       usdPerUnit: fx,
+      conventionPending,
     };
   });
 }
@@ -414,7 +443,11 @@ export function computeGroupedTrades(roundTrips: RoundTrip[]): GroupedTrade[] {
       lotCoverage: Math.min(coverage, 1), // cap at 1 (rounding)
       // Quantity-weighted per-unit price — NOT totalCost / totalQty, which
       // would be ×multiplier for options (entryCost carries the contract
-      // multiplier; entryPrice and exitPrice are per-unit).
+      // multiplier; entryPrice and exitPrice are per-unit). Rechecked under
+      // the v2 true-dollar tax_lot_sales convention (WS1 durable fixes,
+      // 2026-08-23): cost_basis_allocated/proceeds now store real dollars
+      // with the multiplier baked in at write time, and acquisition_price/
+      // sale_price still stay per-unit — the reasoning here is unchanged.
       avgEntryPrice:
         totalQty > 0
           ? lots.reduce((s, rt) => s + rt.entryPrice * rt.exitQuantity, 0) /
@@ -432,6 +465,7 @@ export function computeGroupedTrades(roundTrips: RoundTrip[]): GroupedTrade[] {
       realizedPnl: totalPnl,
       returnPct: totalCost > 0 ? (totalPnl / totalCost) * 100 : 0,
       usdPerUnit: lots[0].usdPerUnit ?? 1,
+      conventionPending: lots[0].conventionPending ?? false,
     };
   });
 }

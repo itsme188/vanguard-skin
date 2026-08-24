@@ -37,9 +37,23 @@ function createTestDb(): Database.Database {
       FOREIGN KEY (security_id) REFERENCES securities(id)
     );
 
+    CREATE TABLE transactions (
+      id INTEGER PRIMARY KEY,
+      account_id INTEGER NOT NULL,
+      security_id INTEGER,
+      trade_date TEXT NOT NULL,
+      type TEXT NOT NULL,
+      quantity REAL,
+      price_per_share REAL,
+      amount REAL,
+      fees REAL DEFAULT 0,
+      FOREIGN KEY (account_id) REFERENCES accounts(id)
+    );
+
     CREATE TABLE tax_lot_sales (
       id INTEGER PRIMARY KEY,
       tax_lot_id INTEGER NOT NULL,
+      sale_transaction_id INTEGER,
       sale_date TEXT NOT NULL,
       quantity_sold REAL NOT NULL,
       sale_price REAL NOT NULL,
@@ -48,7 +62,9 @@ function createTestDb(): Database.Database {
       realized_gain_loss REAL NOT NULL,
       is_long_term INTEGER NOT NULL DEFAULT 0,
       holding_period_days INTEGER NOT NULL DEFAULT 0,
-      FOREIGN KEY (tax_lot_id) REFERENCES tax_lots(id)
+      premium_rollover INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY (tax_lot_id) REFERENCES tax_lots(id),
+      FOREIGN KEY (sale_transaction_id) REFERENCES transactions(id)
     );
 
     CREATE TABLE prices (
@@ -94,11 +110,22 @@ function addSale(
     )
     .run(opts.securityId, opts.acquisitionDate, opts.acquisitionPrice, opts.quantity, costBasis);
 
+  // getClosedTaxLotSales (number-trust durable fixes, WS1) INNER JOINs
+  // transactions via sale_transaction_id — every sale row needs a real
+  // backing transaction of an ordinary type (never RECONCILE_CLOSE here).
+  const txnResult = db
+    .prepare(
+      `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, price_per_share, amount)
+       VALUES (1, ?, ?, 'SELL', ?, ?, ?)`
+    )
+    .run(opts.securityId, opts.saleDate, opts.quantity, opts.salePrice, proceeds);
+
   db.prepare(
-    `INSERT INTO tax_lot_sales (tax_lot_id, sale_date, quantity_sold, sale_price, proceeds, cost_basis_allocated, realized_gain_loss, is_long_term, holding_period_days)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO tax_lot_sales (tax_lot_id, sale_transaction_id, sale_date, quantity_sold, sale_price, proceeds, cost_basis_allocated, realized_gain_loss, is_long_term, holding_period_days)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     lotResult.lastInsertRowid,
+    txnResult.lastInsertRowid,
     opts.saleDate,
     opts.quantity,
     opts.salePrice,

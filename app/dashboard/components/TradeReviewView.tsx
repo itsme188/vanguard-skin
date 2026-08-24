@@ -135,6 +135,11 @@ export function TradeReviewView({
   const [detailGroupedTrades, setDetailGroupedTrades] = useState<
     GroupedTradeResponse[]
   >([]);
+  // WS1 pending-state contract: whether the CURRENT tax-lot dollar
+  // convention is pending a recompute — a live check independent of when
+  // this review was generated.
+  const [detailConventionPending, setDetailConventionPending] =
+    useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   // Failed detail fetch — without this the expanded panel renders blank,
   // indistinguishable from a review with no grouped trades.
@@ -178,12 +183,15 @@ export function TradeReviewView({
         if (res.ok) {
           const json = await res.json();
           setDetailGroupedTrades(json.groupedTrades ?? []);
+          setDetailConventionPending(json.conventionPending ?? false);
         } else {
           setDetailGroupedTrades([]);
+          setDetailConventionPending(false);
           setDetailError(`Couldn't load trade details (HTTP ${res.status}) — collapse and expand to retry.`);
         }
       } catch {
         setDetailGroupedTrades([]);
+        setDetailConventionPending(false);
         setDetailError("Couldn't load trade details — network error. Collapse and expand to retry.");
       } finally {
         setLoadingDetail(false);
@@ -534,6 +542,11 @@ export function TradeReviewView({
               groupedTrades={
                 expandedReviewId === review.id ? detailGroupedTrades : []
               }
+              conventionPending={
+                expandedReviewId === review.id
+                  ? detailConventionPending
+                  : false
+              }
               loadingDetail={
                 loadingDetail && expandedReviewId === review.id
               }
@@ -576,6 +589,7 @@ function ReviewCard({
   review,
   isExpanded,
   groupedTrades,
+  conventionPending,
   loadingDetail,
   detailError,
   onToggle,
@@ -584,6 +598,7 @@ function ReviewCard({
   review: TradeReviewWithAccount;
   isExpanded: boolean;
   groupedTrades: GroupedTradeResponse[];
+  conventionPending: boolean;
   loadingDetail: boolean;
   detailError: string | null;
   onToggle: () => void;
@@ -662,6 +677,7 @@ function ReviewCard({
             <ReviewDetail
               review={review}
               groupedTrades={groupedTrades}
+              conventionPending={conventionPending}
               onRegenerate={onRegenerate}
             />
           )}
@@ -676,10 +692,12 @@ function ReviewCard({
 function ReviewDetail({
   review,
   groupedTrades,
+  conventionPending,
   onRegenerate,
 }: {
   review: TradeReviewWithAccount;
   groupedTrades: GroupedTradeResponse[];
+  conventionPending: boolean;
   onRegenerate: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<
@@ -719,6 +737,23 @@ function ReviewDetail({
             100× understated when this review was written) — trust the header
             numbers over any totals quoted in the prose, and regenerate the
             review to refresh the narrative.
+          </p>
+        </div>
+      )}
+
+      {/* Convention-pending note (WS1 pending-state contract): the tax-lot
+          dollar convention is pending a recompute right now — a small,
+          honest caveat rather than hiding the numbers. */}
+      {conventionPending && (
+        <div className="px-5 py-3 bg-gold/5 border-l-2 border-gold flex items-start gap-2">
+          <span aria-hidden className="text-gold text-sm leading-5">⚠</span>
+          <p className="text-xs text-ink-dim leading-5">
+            <span className="text-gold-ink font-medium">
+              Trade P&L figures are pending a recompute.
+            </span>{" "}
+            The underlying tax-lot dollar convention is pending a recompute
+            and these figures may be unit-inconsistent — trust them fully
+            once the next recompute completes.
           </p>
         </div>
       )}

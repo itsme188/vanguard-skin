@@ -8,6 +8,21 @@
 import type Database from "better-sqlite3";
 import { adjustedMarketValueSQL } from "@/lib/valuation";
 import { getUsdPerUnit } from "@/lib/queries/fx-rates";
+import { getTaxConventionState } from "@/lib/compute/tax-convention";
+
+/**
+ * Whether the current tax-lot convention state is pending a recompute (WS1
+ * pending-state contract). Guarded against minimal test DBs that never
+ * created a `settings` table — those default to "not pending" rather than
+ * throwing (mirrors the same guard in lib/compute/trade-roundtrips.ts).
+ */
+function isConventionPending(db: Database.Database): boolean {
+  try {
+    return !getTaxConventionState(db).recomputeCurrent;
+  } catch {
+    return false;
+  }
+}
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -70,6 +85,13 @@ export interface OptionsPnL {
   closedTrades: ClosedOptionTrade[];
   totalUnrealizedPnl: number;
   totalRealizedPnl: number;
+  /**
+   * True when the underlying tax-lot dollar convention is pending a
+   * recompute (WS1 pending-state contract) — computed once via
+   * `getTaxConventionState`. Surfaces should show a small caveat note
+   * rather than hide the numbers.
+   */
+  conventionPending: boolean;
 }
 
 // ─── Queries ────────────────────────────────────────────────────
@@ -350,6 +372,7 @@ export function getOptionsPnL(
     closedTrades,
     totalUnrealizedPnl,
     totalRealizedPnl,
+    conventionPending: isConventionPending(db),
   };
 }
 

@@ -15,6 +15,7 @@ import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import { upsertFxRate } from "@/lib/mutations/fx-rates";
 import { getOptionPositions, getOptionsPnL } from "@/lib/queries/options";
+import { stampTaxLotsConvention } from "@/lib/compute/tax-convention";
 
 describe("getOptionPositions FX conversion", () => {
   let db: Database.Database;
@@ -112,5 +113,74 @@ describe("getOptionPositions FX conversion", () => {
     const expectedMv = 2 * 3000 * 100 * 0.000734;
     const expectedCostBasis = 500_000 * 0.000734;
     expect(pnl.totalUnrealizedPnl).toBeCloseTo(expectedMv - expectedCostBasis, 5);
+  });
+});
+
+/**
+ * getOptionsPnL closed trades — number-trust durable fixes, WS1 (Task 5).
+ *
+ * tests/queries/options.test.ts is named in the task brief but does not
+ * exist in this repo; lib/queries/options.ts's real test coverage lives
+ * here, so these cases extend this file instead.
+ */
+describe("getOptionsPnL closed trades — v2 dollar convention + conventionPending", () => {
+  let db: Database.Database;
+  const TODAY = "2026-06-15";
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    runMigrations(db);
+  });
+
+  function seedClosedOption(): void {
+    db.prepare(
+      `INSERT INTO securities
+         (id, symbol, security_type, option_type, strike_price, expiration_date, underlying_symbol, multiplier, currency)
+       VALUES (100, 'AAPL  260619C00180000', 'option', 'CALL', 180, '2026-06-19', 'AAPL', 100, 'USD')`
+    ).run();
+    const lot = db
+      .prepare(
+        `INSERT INTO tax_lots (account_id, security_id, acquisition_date, acquisition_price, quantity_acquired, quantity_remaining, cost_basis)
+         VALUES (1, 100, '2026-01-15', 2.5, 1, 0, 251)`
+      )
+      .run();
+    const saleTxn = db
+      .prepare(
+        `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, price_per_share, amount, source_key)
+         VALUES (1, 100, ?, 'SELL_TO_CLOSE', 1, 4, 399, 'sell-to-close-1')`
+      )
+      .run(TODAY);
+    db.prepare(
+      `INSERT INTO tax_lot_sales (tax_lot_id, sale_transaction_id, sale_date, quantity_sold, sale_price, proceeds, cost_basis_allocated, realized_gain_loss, is_long_term, holding_period_days)
+       VALUES (?, ?, ?, 1, 4, 399, 251, 148, 0, 76)`
+    ).run(lot.lastInsertRowid, saleTxn.lastInsertRowid, TODAY);
+  }
+
+  it("closed-options P&L renders true dollars exactly once (Task 3 fixture: $251 cost, $399 proceeds, $148 gain) — no re-applied multiplier", () => {
+    seedClosedOption();
+
+    const pnl = getOptionsPnL(db);
+    expect(pnl.closedTrades).toHaveLength(1);
+    const trade = pnl.closedTrades[0];
+    // tax_lot_sales already stores true dollars (multiplier baked in at
+    // write time) — costBasis/proceeds/realizedGain must come through
+    // unchanged, not re-multiplied by the ×100 contract multiplier.
+    expect(trade.costBasis).toBeCloseTo(251, 2);
+    expect(trade.proceeds).toBeCloseTo(399, 2);
+    expect(trade.realizedGain).toBeCloseTo(148, 2);
+    expect(pnl.totalRealizedPnl).toBeCloseTo(148, 2);
+  });
+
+  it("conventionPending is true before a v2 recompute stamp, false after", () => {
+    seedClosedOption();
+
+    const before = getOptionsPnL(db);
+    expect(before.conventionPending).toBe(true);
+
+    stampTaxLotsConvention(db);
+
+    const after = getOptionsPnL(db);
+    expect(after.conventionPending).toBe(false);
   });
 });
