@@ -437,6 +437,30 @@ describe("runReconciliation", () => {
     expect(result.coverage).toEqual([]);
   });
 
+  it("zero entries (empty config) fails closed — never a vacuous pass, and --stamp must not write coverage", () => {
+    const db = createTestDb();
+    const config: BrokerRealizedConfig = { entries: [] };
+
+    const result = runReconciliation(db, config);
+    expect(result.pass).toBe(false);
+    expect(result.coverage).toEqual([]);
+    expect(result.summary).toContain("no entries — nothing reconciled");
+    expect(result.summary).toContain("GATE: FAIL");
+
+    // Mirror the CLI's --stamp guard exactly (main() in
+    // reconcile-tax-report-vs-broker.ts: only stamps when result.pass) and
+    // confirm the settings row is never written for a failing result.
+    if (result.pass) {
+      db.transaction(() => {
+        stampBrokerAcceptance(db, result.coverage);
+      })();
+    }
+    const row = db
+      .prepare("SELECT value FROM settings WHERE key = 'tax_report_broker_accepted'")
+      .get();
+    expect(row).toBeUndefined();
+  });
+
   it("(g) RECONCILE_CLOSE and premium_rollover engine rows are invisible to the extra-disposal check", () => {
     const db = createTestDb();
     seedDisposal(db, {
