@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { usePathname } from "next/navigation";
+import { Suspense, useState, useEffect, useCallback } from "react";
+import { usePathname, useSearchParams } from "next/navigation";
 import { ChatInterface } from "./ChatInterface";
 import { useIsMobile } from "@/lib/hooks/useIsMobile";
 import { useIsLargeDesktop } from "@/lib/hooks/useIsLargeDesktop";
@@ -23,7 +23,7 @@ const COLLAPSE_STORAGE_KEY = "vgs:chatRail";
 // large-desktop rail and the 768–1279px drawer (not mobile — already full-screen).
 const EXPAND_STORAGE_KEY = "vgs:chatExpanded";
 
-export function ChatDrawer() {
+function ChatDrawerInner() {
   const [open, setOpen] = useState(false);
   // collapsed is meaningful only on large desktop. Read by the panel translate
   // and the header CSS attribute. Default to whatever the FOUC script wrote
@@ -81,6 +81,18 @@ export function ChatDrawer() {
       // ignored — see above
     }
   }, [collapsed]);
+
+  // Mobile: the full-screen overlay and the bottom nav are both z-50, so the
+  // nav stays tappable while the overlay covers the page — a route change
+  // means the user picked a destination, so dismiss the overlay to reveal it.
+  // Keyed on search params too: the bottom nav's Notes slot is a query-only
+  // navigation (/dashboard/research?view=notes), which never changes pathname.
+  // Mobile-only: the ≥768px drawer sits over a backdrop and the xl rail is a
+  // persistent side-by-side pane; neither hides the page behind it.
+  const searchParams = useSearchParams();
+  useEffect(() => {
+    if (isMobile) setOpen(false);
+  }, [pathname, searchParams, isMobile]);
 
   // At xl, the rail is conceptually always available — visible when the user
   // hasn't collapsed it. The panel slides off-screen when collapsed.
@@ -354,5 +366,16 @@ export function ChatDrawer() {
         </div>
       </div>
     </>
+  );
+}
+
+// useSearchParams forces a Suspense boundary per Next.js 16 (same rule as
+// MobileBottomNav in this layout). Wrap so the rest of the layout renders
+// without the drawer holding it back.
+export function ChatDrawer() {
+  return (
+    <Suspense fallback={null}>
+      <ChatDrawerInner />
+    </Suspense>
   );
 }
