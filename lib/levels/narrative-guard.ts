@@ -43,9 +43,23 @@ export interface NarrativeClaim {
   /** Raw matched substring (trimmed), for logging/debugging. */
   raw: string;
   /** The claim normalized onto a percent-of-level-price basis so percent,
-   *  dollar, and points claims all run through one tolerance check. */
+   *  dollar, and points claims all run through one tolerance check.
+   *  Meaningless (0) for `kind: "price"` claims — check `claimedPrice`. */
   claimedPct: number;
   direction: "above" | "below";
+  /**
+   * "distance" — the sentence asserts how FAR price is from the level
+   * ("19.3% above", "$95.73 above"); checked against the true distance.
+   * "price"    — the sentence asserts a price LEVEL ("above current 207
+   * level"); checked against the real current/level prices.
+   */
+  kind: "distance" | "price";
+  /** Set only for `kind: "price"` — the bare price the sentence asserts. */
+  claimedPrice?: number;
+  /** True when the sentence explicitly tied the price to the CURRENT price
+   *  ("above current 207", "above the current price of 207"), which pins the
+   *  comparison to currentPrice alone. */
+  refersToCurrent?: boolean;
 }
 
 export interface NarrativePlausibilityResult {
@@ -61,8 +75,39 @@ export interface NarrativePlausibilityResult {
 const CLAIM_RE =
   /(\$)?(-?\d[\d,]*(?:\.\d+)?)\+?(?:\s*(%|pts?\.?|points?))?\s+(above|below)\b/gi;
 
+// QA regression security-detail-levels--suggestion-narrative-contradicts-chip-
+// accept-persists-regression-1 (2026-08-24): CLAIM_RE above requires the
+// number to come FIRST, so it read right past the live sentence "…with last
+// bounce in January establishing a floor above current 207 level." (direction
+// word first, number second) on a security actually trading at 278.91. The
+// guard extracted zero claims, the hallucinated price rendered on the card
+// next to the correct chip, and ACCEPT persisted it verbatim as a thesis.
+//
+// This second pattern catches the WORD-then-number order. The optional
+// hedge/article words between them ("the", "a", "its", "current", "price of",
+// "around", …) are what make "above current 207" and "above the current price
+// of 207" one case instead of several.
+const WORD_FIRST_CLAIM_RE =
+  /\b(above|below)\s+((?:the|a|an|its|current|currently|price|prices|level|levels|of|at|around|near|about|roughly|approximately|nearly|some)\s+){0,4}(\$)?(\d[\d,]*(?:\.\d+)?)\s*(%|pts?\.?|points?)?/gi;
+
+// A number in the word-first position is only a PRICE assertion when it isn't
+// really a lookback window ("above the 50-day average", "above its 20-week
+// base"), a count ("above 4 times"), or a calendar year ("above the 2024
+// breakout"). Flagging any of those would discard good prose, so both filters
+// below deliberately fail OPEN — an ambiguous number yields no claim, and a
+// narrative with no claims passes through untouched.
+const PERIOD_UNIT_RE =
+  /^[-\s]?(day|week|month|year|quarter|session|bar|period|minute|hour|time|handle|touch|test)s?\b/i;
+const CALENDAR_YEAR_RE = /^(19|20)\d{2}$/;
+
 /** Relative-deviation tolerance: >30% off truth. */
 const RELATIVE_TOLERANCE = 0.3;
+
+/** Price-restatement tolerance: a word-first price claim may miss the real
+ *  current/level price by up to 10% (model rounding — "the 250 mark" for a
+ *  250.40 level) before it counts as a contradiction. The live defect missed
+ *  by 25.8%. */
+const PRICE_TOLERANCE = 0.1;
 /** Absolute-deviation tolerance: >3 percentage points off truth. A claim is
  *  only flagged implausible when it exceeds BOTH tolerances — either one
  *  alone is forgiven as rounding (a model saying "19%" for a true 19.3% is
@@ -99,7 +144,49 @@ export function extractNarrativeClaims(
     const direction = dirRaw.toLowerCase() as "above" | "below";
     const isDollarOrPoints = Boolean(dollarSign) || /^(pts?\.?|points?)$/i.test(unit ?? "");
     const claimedPct = isDollarOrPoints ? (num / Math.abs(levelPrice)) * 100 : num;
-    claims.push({ raw: raw.trim(), claimedPct, direction });
+    claims.push({ raw: raw.trim(), claimedPct, direction, kind: "distance" });
+  }
+
+  // Word-then-number order ("a floor above current 207 level").
+  for (const m of narrative.matchAll(WORD_FIRST_CLAIM_RE)) {
+    const [raw, dirRaw, hedgeRaw, dollarSign, numStr, unit] = m;
+    const num = Number(numStr.replace(/,/g, ""));
+    if (!Number.isFinite(num)) continue;
+    const direction = dirRaw.toLowerCase() as "above" | "below";
+    const hedge = (hedgeRaw ?? "").toLowerCase();
+
+    // What follows the number decides whether it is a price at all.
+    const tail = narrative.slice(m.index + raw.length);
+    const unitLower = (unit ?? "").toLowerCase();
+
+    if (unitLower === "%") {
+      // "above 1619% of this level" — a distance claim in the other order.
+      claims.push({ raw: raw.trim(), claimedPct: num, direction, kind: "distance" });
+      continue;
+    }
+    if (/^(pts?\.?|points?)$/i.test(unitLower)) {
+      claims.push({
+        raw: raw.trim(),
+        claimedPct: (num / Math.abs(levelPrice)) * 100,
+        direction,
+        kind: "distance",
+      });
+      continue;
+    }
+
+    // Bare (or $-prefixed) number: a price assertion — unless it's really a
+    // lookback window, a count, or a calendar year. Fail open on all three.
+    if (PERIOD_UNIT_RE.test(tail)) continue;
+    if (!dollarSign && CALENDAR_YEAR_RE.test(numStr)) continue;
+
+    claims.push({
+      raw: raw.trim(),
+      claimedPct: 0,
+      direction,
+      kind: "price",
+      claimedPrice: num,
+      refersToCurrent: /\bcurrent(ly)?\b/.test(hedge),
+    });
   }
   return claims;
 }
@@ -109,6 +196,27 @@ export function extractNarrativeClaims(
  * sign, OR its magnitude misses the true distance by more than BOTH
  * tolerances above.
  */
+/**
+ * A word-first PRICE claim is plausible when the number it states is a
+ * recognisable restatement of a price we actually know. "current N" pins the
+ * comparison to currentPrice; an unqualified "above N" may legitimately name
+ * either the level being narrated or the current price.
+ */
+function isPriceClaimPlausible(
+  claim: NarrativeClaim,
+  currentPrice: number,
+  levelPrice: number,
+): boolean {
+  const claimed = claim.claimedPrice;
+  if (claimed == null || !Number.isFinite(claimed)) return true;
+
+  const near = (ref: number): boolean =>
+    Number.isFinite(ref) && ref !== 0 && Math.abs(claimed - ref) / Math.abs(ref) <= PRICE_TOLERANCE;
+
+  if (claim.refersToCurrent) return near(currentPrice);
+  return near(currentPrice) || near(levelPrice);
+}
+
 function isClaimPlausible(claim: NarrativeClaim, truePctSigned: number): boolean {
   const claimedSigned =
     claim.direction === "above" ? Math.abs(claim.claimedPct) : -Math.abs(claim.claimedPct);
@@ -149,6 +257,17 @@ export function checkNarrativePlausibility(
   const truePctSigned = trueDistancePct(currentPrice, levelPrice);
   const claims = extractNarrativeClaims(narrative, levelPrice);
   for (const claim of claims) {
+    if (claim.kind === "price") {
+      if (!isPriceClaimPlausible(claim, currentPrice, levelPrice)) {
+        return {
+          plausible: false,
+          reason: `claim "${claim.raw}" contradicts ${
+            claim.refersToCurrent ? "current price" : "the known prices"
+          } (current ${currentPrice}, level ${levelPrice})`,
+        };
+      }
+      continue;
+    }
     if (!isClaimPlausible(claim, truePctSigned)) {
       return {
         plausible: false,
