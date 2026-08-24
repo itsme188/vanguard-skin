@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import { runMigrations } from "@/lib/db/migrate";
 import {
@@ -414,6 +414,62 @@ describe("getTaxLotsForChat", () => {
     expect(lots[0].symbol).toBe("AAPL");
     expect(lots[0].unrealized_gain).toBe(-200);
     expect(lots[0].is_long_term).toBe(true); // >365 days
+  });
+
+  // Calendar-anniversary rule (finding 3, number-trust durable fixes):
+  // the open-lots SQL used to classify LT via `days_held > 365`, which a
+  // leap-year-spanning holding period breaks — a lot held EXACTLY one
+  // calendar year (acquired 2024-01-01, sold 2025-01-01) spans 366 real
+  // days (2024 is a leap year) but is NOT long-term under IRS Pub 550 (must
+  // be held MORE than a year). The old fixed day-count rule called this
+  // long-term; the anniversary rule (mirroring
+  // lib/compute/tax-lots.ts::isLongTermHolding) correctly calls it
+  // short-term. Pin "today" via fake timers since the query reads
+  // `new Date()` internally.
+  describe("calendar-anniversary rule (leap-year span)", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("classifies a lot at the exact one-year anniversary as short-term, even though the leap-year span is 366 days", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2025-01-01T12:00:00Z"));
+
+      const sec = seedSecurity(db, "LEAP");
+      seedPrice(db, sec, "2024-12-31", 100);
+      seedTaxLot(db, 1, sec, {
+        acquisition_date: "2024-01-01",
+        acquisition_price: 100,
+        quantity_acquired: 10,
+        quantity_remaining: 10,
+        cost_basis: 1000,
+      });
+
+      const lots = getTaxLotsForChat(db);
+      expect(lots).toHaveLength(1);
+      expect(lots[0].days_held).toBe(366); // 2024 is a leap year
+      expect(lots[0].is_long_term).toBe(false); // exactly one year — not yet long-term
+      expect(lots[0].long_term_date).toBe("2025-01-02");
+    });
+
+    it("classifies the same lot as long-term the day after the anniversary", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2025-01-02T12:00:00Z"));
+
+      const sec = seedSecurity(db, "LEAP2");
+      seedPrice(db, sec, "2024-12-31", 100);
+      seedTaxLot(db, 1, sec, {
+        acquisition_date: "2024-01-01",
+        acquisition_price: 100,
+        quantity_acquired: 10,
+        quantity_remaining: 10,
+        cost_basis: 1000,
+      });
+
+      const lots = getTaxLotsForChat(db);
+      expect(lots).toHaveLength(1);
+      expect(lots[0].is_long_term).toBe(true);
+    });
   });
 
   it("returns closed tax lot sales", () => {

@@ -522,8 +522,13 @@ export function getTaxLotsForChat(
              - ${adjustedMarketValueSQL("tl.quantity_remaining", "tl.acquisition_price", "s.security_type", "s.multiplier", "COALESCE(fx.usd_per_unit, 1)")}
         ELSE NULL END AS unrealized_gain,
       CAST(julianday(?) - julianday(tl.acquisition_date) AS INTEGER) AS days_held,
-      CASE WHEN julianday(?) - julianday(tl.acquisition_date) > 365 THEN 1 ELSE 0 END AS is_long_term,
-      date(tl.acquisition_date, '+366 days') AS long_term_date
+      -- Calendar-anniversary rule (IRS Pub 550, single-sourced at
+      -- lib/compute/tax-lots.ts::isLongTermHolding): LT iff the disposition
+      -- date is strictly AFTER the one-year anniversary of acquisition, not
+      -- a fixed 365/366-day count. Never let this SQL diverge from that
+      -- function's definition.
+      CASE WHEN ? > date(tl.acquisition_date, '+1 year') THEN 1 ELSE 0 END AS is_long_term,
+      date(tl.acquisition_date, '+1 year', '+1 day') AS long_term_date
     FROM tax_lots tl
     JOIN accounts a ON a.id = tl.account_id
     JOIN securities s ON s.id = tl.security_id
