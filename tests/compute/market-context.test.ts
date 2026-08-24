@@ -160,6 +160,7 @@ function makeGroupedTrade(overrides: Partial<GroupedTrade> = {}): GroupedTrade {
     returnPct: 33.3,
     usdPerUnit: 1,
     conventionPending: false,
+    isSyntheticClose: false,
     ...overrides,
   };
 }

@@ -38,6 +38,7 @@ interface GroupedTradeResponse {
   exitPrice: number;
   totalQuantity: number;
   maxHoldingDays: number;
+  isSyntheticClose: boolean;
   lots: Array<{
     id: number;
     entryDate: string;
@@ -962,6 +963,14 @@ function GroupedTradeCards({
                     <span className={`font-mono text-xs ${pnlMutedColor}`}>
                       (<Pct value={returnPctValue} digits={1} signed />)
                     </span>
+                    {trade.isSyntheticClose && (
+                      <span
+                        className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded font-medium bg-raised text-ink-dim"
+                        title="This close is an engine-generated reconciliation entry (no matching broker sale) — the realized P&L is estimated."
+                      >
+                        Estimated
+                      </span>
+                    )}
                   </div>
                   <div className="flex gap-3 text-[11px] text-ink-faint mt-0.5">
                     <span

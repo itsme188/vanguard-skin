@@ -172,6 +172,22 @@ describe("getOptionsPnL closed trades — v2 dollar convention + conventionPendi
     expect(pnl.totalRealizedPnl).toBeCloseTo(148, 2);
   });
 
+  it("isSyntheticClose is false for a real sale, true for an engine-owned RECONCILE_CLOSE (finding 1, number-trust durable fixes)", () => {
+    seedClosedOption();
+
+    const real = getOptionsPnL(db);
+    expect(real.closedTrades).toHaveLength(1);
+    expect(real.closedTrades[0].isSyntheticClose).toBe(false);
+
+    db.prepare(
+      `UPDATE transactions SET type = 'RECONCILE_CLOSE' WHERE source_key = 'sell-to-close-1'`
+    ).run();
+
+    const synthetic = getOptionsPnL(db);
+    expect(synthetic.closedTrades).toHaveLength(1);
+    expect(synthetic.closedTrades[0].isSyntheticClose).toBe(true);
+  });
+
   it("conventionPending is true before a v2 recompute stamp, false after", () => {
     seedClosedOption();
 

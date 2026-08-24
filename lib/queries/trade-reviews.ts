@@ -74,19 +74,33 @@ export function getTradeReviewByPeriod(
   );
 }
 
+/**
+ * `is_synthetic_close` is derived at READ time (via the stored
+ * `sale_transaction_id`) rather than persisted on `trade_roundtrips` —
+ * the transaction's `type` is the single source of truth, and re-deriving
+ * here means a row's synthetic status can never drift from the current
+ * ledger state, unlike a copy frozen at review-generation time. NULL when
+ * `sale_transaction_id` is null (legacy rows predating that column) or the
+ * transaction was deleted; both read as "not synthetic".
+ */
 export function getTradeRoundtrips(
   db: Database.Database,
   reviewId: number
-): (TradeRoundtrip & { security_type: string | null })[] {
-  return db
+): (TradeRoundtrip & { security_type: string | null; is_synthetic_close: boolean })[] {
+  const rows = db
     .prepare(
-      `SELECT trt.*, s.security_type
+      `SELECT trt.*, s.security_type,
+              (t.type = 'RECONCILE_CLOSE') AS is_synthetic_close
        FROM trade_roundtrips trt
        LEFT JOIN securities s ON s.id = trt.security_id
+       LEFT JOIN transactions t ON t.id = trt.sale_transaction_id
        WHERE trt.review_id = ?
        ORDER BY trt.exit_date, trt.symbol`
     )
-    .all(reviewId) as (TradeRoundtrip & { security_type: string | null })[];
+    .all(reviewId) as Array<
+    TradeRoundtrip & { security_type: string | null; is_synthetic_close: number | null }
+  >;
+  return rows.map((r) => ({ ...r, is_synthetic_close: Boolean(r.is_synthetic_close) }));
 }
 
 /**

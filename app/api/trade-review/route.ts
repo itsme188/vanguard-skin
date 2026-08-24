@@ -25,6 +25,15 @@ interface GroupedTradeResponse {
   exitPrice: number;
   totalQuantity: number;
   maxHoldingDays: number;
+  /**
+   * True when the sale transaction is the engine-owned synthetic
+   * RECONCILE_CLOSE row (never real broker activity — see
+   * lib/compute/tax-lots.ts). Every lot in a group shares one
+   * sale_transaction_id, so this is consistent across the whole trade.
+   * Realized P&L on this trade is an estimate; the view labels it
+   * (finding 1, number-trust durable fixes).
+   */
+  isSyntheticClose: boolean;
   lots: Array<{
     id: number;
     entryDate: string;
@@ -105,6 +114,7 @@ export async function GET(request: Request) {
               ) / totalQty
             )
           : 0,
+        isSyntheticClose: lot0.is_synthetic_close ?? false,
         lots: lots.map((l) => ({
           id: l.id,
           entryDate: l.entry_date,

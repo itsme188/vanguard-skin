@@ -181,6 +181,9 @@ function addRoundTrip(
     quantity: number;
     acquisitionPrice: number;
     salePrice: number;
+    /** Sale transaction's `type` column. Defaults to 'SELL'; pass
+     * 'RECONCILE_CLOSE' to simulate an engine-owned synthetic close. */
+    txnType?: string;
   }
 ) {
   const costBasis = opts.quantity * opts.acquisitionPrice;
@@ -196,12 +199,13 @@ function addRoundTrip(
   const txResult = db
     .prepare(
       `INSERT INTO transactions (account_id, security_id, trade_date, type, quantity, price_per_share, amount)
-       VALUES (?, ?, ?, 'SELL', ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       opts.accountId,
       opts.securityId,
       opts.saleDate,
+      opts.txnType ?? "SELL",
       opts.quantity,
       opts.salePrice,
       proceeds
@@ -274,6 +278,24 @@ describe("getRoundTrips", () => {
     expect(result[0].realizedPnl).toBe(1000);
     expect(result[0].holdingDays).toBe(10);
     expect(result[0].returnPct).toBeCloseTo(6.667, 2);
+    expect(result[0].isSyntheticClose).toBe(false);
+  });
+
+  it("flags a RECONCILE_CLOSE-sourced sale as isSyntheticClose (finding 1, number-trust durable fixes)", () => {
+    addRoundTrip(db, {
+      accountId: 1,
+      securityId: 1,
+      acquisitionDate: "2026-01-05",
+      saleDate: "2026-01-15",
+      quantity: 100,
+      acquisitionPrice: 150,
+      salePrice: 160,
+      txnType: "RECONCILE_CLOSE",
+    });
+
+    const result = getRoundTrips(db, 1, "2026-01-01", "2026-01-31");
+    expect(result).toHaveLength(1);
+    expect(result[0].isSyntheticClose).toBe(true);
   });
 
   it("filters by account", () => {
@@ -869,6 +891,22 @@ describe("computeGroupedTrades", () => {
 
   it("returns empty array for empty input", () => {
     expect(computeGroupedTrades([])).toHaveLength(0);
+  });
+
+  it("carries isSyntheticClose through from the group's lots (finding 1, number-trust durable fixes)", () => {
+    const normal = computeGroupedTrades([
+      makeRoundTrip({ saleTransactionId: 1, isSyntheticClose: false }),
+    ]);
+    expect(normal[0].isSyntheticClose).toBe(false);
+
+    const synthetic = computeGroupedTrades([
+      makeRoundTrip({ saleTransactionId: 2, isSyntheticClose: true }),
+    ]);
+    expect(synthetic[0].isSyntheticClose).toBe(true);
+
+    // Not supplied at all (optional field) → defaults to false, never undefined.
+    const unset = computeGroupedTrades([makeRoundTrip({ saleTransactionId: 3 })]);
+    expect(unset[0].isSyntheticClose).toBe(false);
   });
 
   it("computes return percentage correctly", () => {

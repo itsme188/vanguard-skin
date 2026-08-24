@@ -40,6 +40,16 @@ export interface TaxLotSaleWithDetails {
   currency: string;
   /** 1 for a short round-trip lot (SELL_TO_OPEN → cover); see lib/compute/tax-lots.ts. */
   is_short: number;
+  /**
+   * True when the sale transaction is the engine-owned synthetic
+   * RECONCILE_CLOSE row (never real broker activity — computeTaxLots
+   * synthesizes it to close a lot the broker's own snapshot shows zeroed
+   * with no matching statement SELL). Already excluded from filing
+   * surfaces (`filingOnly`); operational P&L surfaces that still show
+   * these rows must label the realized figure "estimated" rather than
+   * hide it (finding 1, number-trust durable fixes).
+   */
+  is_synthetic_close: boolean;
 }
 
 export interface TaxLotSummary {
@@ -109,7 +119,8 @@ export function getClosedTaxLotSales(
         tls.sale_price, tls.proceeds,
         tls.cost_basis_allocated, tls.realized_gain_loss,
         tls.is_long_term, tls.holding_period_days,
-        COALESCE(s.currency, 'USD') AS currency
+        COALESCE(s.currency, 'USD') AS currency,
+        (t.type = 'RECONCILE_CLOSE') AS is_synthetic_close
       FROM tax_lot_sales tls
       JOIN tax_lots tl ON tl.id = tls.tax_lot_id
       JOIN accounts a ON a.id = tl.account_id
@@ -131,9 +142,12 @@ export function getClosedTaxLotSales(
   }
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
-  return db
+  const rows = db
     .prepare(`${baseSql} ${whereClause} ORDER BY tls.sale_date DESC, s.symbol`)
-    .all(...params) as TaxLotSaleWithDetails[];
+    .all(...params) as Array<
+    Omit<TaxLotSaleWithDetails, "is_synthetic_close"> & { is_synthetic_close: number }
+  >;
+  return rows.map((r) => ({ ...r, is_synthetic_close: Boolean(r.is_synthetic_close) }));
 }
 
 export function getTaxLotSummary(
