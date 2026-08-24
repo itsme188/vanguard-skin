@@ -182,6 +182,37 @@ phantom "open" lots contradicting Positions on the same page).
   close (`sale_transaction_id` is NOT NULL + FK).
 - Options/bonds excluded (EXPIRED/REDEMPTION own those lifecycles).
 
+### Tax-lot dollar convention (v2, number-trust durable fixes, 2026-08-23)
+
+`tax_lots.cost_basis` / `tax_lot_sales.proceeds` / `tax_lot_sales.cost_basis_allocated` store **true
+economic dollars** in the security's native currency (bonds ÷100 face value, options ×multiplier —
+the same `marketValue()`/`netLegDollars()` derivation every leg routes through, so the lot side and
+the sale side can never diverge on convention). Per-unit columns (`acquisition_price`, `sale_price`)
+stay per-unit prices, untouched.
+
+- **Fees**: capitalized into basis on the acquiring side (BUY/cover), netted out of proceeds on the
+  disposing side (SELL/short-open) — `netLegDollars()`'s `feeSign`. A statement `amount` is
+  self-detected gross-vs-net per row (broker sources disagree) rather than trusted blanket;
+  `forceDerivation` / `amountIsNet` are the two engine-only escape hatches (zero-price option closes;
+  REDEMPTION's derived price).
+- **Short lots keep IRS column orientation**: proceeds = the short-open leg's net premium (stored
+  `cost_basis`), basis = what the cover paid — no post-hoc sign negation. §1233 makes every short
+  gain/loss short-term regardless of holding period (the substantially-identical-property long-term-
+  loss exception is a documented disclosed limitation).
+- **Negative `holding_period_days` in `tax_lot_sales` = genuine short round-trips**, kept signed by
+  design — existing surfaces key off `is_short`, not the sign; do not "fix" it to positive.
+- **Anniversary long-term test** (`isLongTermHolding`): the IRS "more than one year" rule is the
+  CALENDAR anniversary of acquisition, not a fixed 365-day count — a fixed count misclassifies a
+  Feb-29 acquisition's anniversary sale as long-term one day early. Single-sourced for
+  `tax_lot_sales.is_long_term` and the donated-lot LT/ST split alike.
+- **Convention marker**: `computeTaxLots` stamps `tax_lots_convention = "v2:<generation>"`
+  (`lib/compute/tax-convention.ts`) as its final in-transaction act. A recompute regenerates every row
+  under the new convention — no data migration. `getTaxConventionState(db).recomputeCurrent` is the
+  only way to ask "is the current data under the v2 convention"; never parse the settings row
+  elsewhere. Filing-readiness gating built on this marker: `docs/reference/data-integrity.md` §17.
+
+Spec: `docs/superpowers/specs/2026-08-23-number-trust-durable-fixes-design.md` (WS1).
+
 ### Security type casing
 
 The DB stores capitalized types (`Bond`/`Stock`/`ETF`/`Option`/`Mutual Fund`); always compare
@@ -389,12 +420,31 @@ account coverage) — enabled in `computeMarketRegression`, `computeRiskMetrics`
 actual account-sum). **Any NEW multi-account summed-series consumer doing return math must pass the
 flag.**
 
-### TWR reconciliation gate
+### TWR cross-check contract (independent Modified Dietz, number-trust durable fixes, 2026-08-23)
 
-`reconcileTwrAgainstStatements` (`lib/compute/twr-reconcile.ts`) — **pass `startDate === endDate ===
-periodEnd`** (else `computeTwr` returns CUMULATIVE TWR, incomparable to the per-month statement
-value). `ibkr-activity` TWR is percentage (÷100); canonical/vanguard-pdf are decimal.
-`scripts/audit-twr-vs-statements.ts` is the pre-merge gate (exits 1 if >20% out-of-tolerance).
+`reconcileTwrAgainstStatements` (`lib/compute/twr-reconcile.ts`) compares the statement-reported
+`monthly_snapshots.twr` against an INDEPENDENT ledger-derived Modified Dietz return
+(`lib/compute/dietz.ts::computeMonthlyDietz`) — **never against `computeTwr`**, which just echoes
+`snap.twr` back and would always read ~0bp divergence regardless of whether the statement figure is
+actually right (the circularity the prior "TWR reconciliation" gate had). `ibkr-activity` TWR is
+percentage (÷100); canonical/vanguard-pdf are decimal (unchanged).
+
+Four bands, never a blanket "reconciled ✓": `consistent` (`|divergenceBp| ≤ DIETZ_CONSISTENT_BP` =
+125bp), `investigate` (banded but over threshold), `not_comparable` (December annual-summary row, or
+an anchor-source seam straddling the month), `insufficient` (missing V_start, nonpositive
+denominator, ledger-vs-statement cash-flow-total mismatch, or no `deposits_withdrawals` to cross-check
+against — see `dietz.ts`'s precedence-list docstring for the exact fire order). A statement row with a
+null `twr` still returns a result (`insufficient` / `missing-statement-twr`) rather than reading as
+"no statement row at all."
+
+`scripts/audit-twr-vs-statements.ts` is the pre-merge gate (exits 1 on any `investigate` band; stdout
+is direction-only — band + rule per row, never the actual return figures). Rollup/UI consumption:
+`lib/queries/analysis-trust-state.ts` walks each account's monthly chain into `bandHistory` and
+collapses to `crossCheckedThru` (the latest month with an unbroken `consistent`/`not_comparable` chain
+from the account's own second statement month; `investigate`, `insufficient`, or a missing calendar
+month all break the chain). Detail: `docs/reference/data-integrity.md` §18,
+`docs/reference/api-patterns.md`'s `/api/analysis/trust-state`. Spec:
+`docs/superpowers/specs/2026-08-23-number-trust-durable-fixes-design.md` (WS2).
 
 ### Scope-all TWR/XIRR are coverage-guarded; transfer flows are signed (2026-08-05, PR #30 + review fixes)
 

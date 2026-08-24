@@ -251,11 +251,22 @@ is the full 10-route "service" set per `lib/auth/route-policy.ts`'s `CRON_ROUTES
 
 ### `GET /api/analysis/trust-state?scope=`
 
-5-dimension data-quality state for the Analysis page Trust Strip (factor coverage / last classify /
-performance reconciled-thru / stale prices / bond duration). Single-shot query in
-`lib/queries/analysis-trust-state.ts::getAnalysisTrustState`. `performanceReconciledThru` populated
-via `reconcileTwrAgainstStatements` per account — strict semantic ("all accounts agree at least
-through this month"); any account that fails or can't be evaluated forces null.
+Data-quality state for the Analysis page Trust Strip (factor coverage / last classify / independent
+TWR cross-check / stale prices / bond duration). Single-shot query in
+`lib/queries/analysis-trust-state.ts::getAnalysisTrustState`.
+
+- **`crossCheckedThru`** (renamed from `performanceReconciledThru`, number-trust durable fixes,
+  2026-08-23) — the latest month such that EVERY account has an unbroken chain of
+  `consistent`/`not_comparable` Modified-Dietz bands from its own second statement month through that
+  month; `investigate`, `insufficient`, or a missing calendar month breaks the chain (any account that
+  fails or can't be evaluated forces the rollup null — same strict "all accounts agree at least
+  through this month" semantic as before, now backed by the independent cross-check instead of a
+  statement-self-reference).
+- **`perAccountReconciliation[].bandHistory`** — the full walked per-account chain, one entry per
+  calendar month (`{monthEndDate, band, divergenceBp}`, or `band: "missing"` for a month with no
+  statement row) — backs the trust-drawer's month-by-month chip row. Band definitions:
+  `docs/reference/conventions-detail.md`'s TWR cross-check contract; engine:
+  `lib/compute/twr-reconcile.ts` + `lib/compute/dietz.ts`.
 
 ### `GET /api/analysis/defense?scope=`
 
@@ -319,7 +330,8 @@ Sonnet narrative prose per (scope, surface, week) cached in `analysis_narratives
 ## Reports, search & benchmarks
 
 - `GET /api/tax-report?year=&format=json|csv|txf` — Form 8949 tax report with wash sale detection
-  (CSV for filing, TXF for TurboTax).
+  (CSV for filing, TXF for TurboTax). `filingReady` is marker-gated per accepted (account, tax-year) —
+  see `docs/reference/data-integrity.md` §17; CSV/TXF filenames carry `-NOT-FOR-FILING` until then.
 - `GET /api/search?q=` — global search across securities, notes, transactions.
 - `POST /api/benchmark/sync` — SSE streaming: fetch benchmark prices from TWS (falls back to cached
   `ohlcv_bars`/`prices` on timeout).
@@ -330,7 +342,9 @@ Sonnet narrative prose per (scope, surface, week) cached in `analysis_narratives
 
 ## Status & summary
 
-- `GET /api/data-confidence` — 5-dimension data confidence score with actionable fix list.
+- `GET /api/data-confidence` — 5-dimension data confidence score with actionable fix list, plus the
+  cross-cutting integrity gate (`integrity: {critical, warnings}`, `capReason`) — see
+  `docs/reference/auto-refresh.md`.
 - `GET /api/summary` — lightweight portfolio summary (total value, data freshness, TWS state,
   confidence score) for the Electron tray.
 - `GET /api/gmail/status` — check Gmail OAuth connection.
