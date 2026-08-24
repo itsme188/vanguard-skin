@@ -1151,7 +1151,7 @@ function computeExerciseLinks(db: Database.Database): {
          WHERE account_id = ? AND security_id = ?
            AND LOWER(type) = ?
            AND ABS(julianday(trade_date) - julianday(?)) <= 1
-         ORDER BY ABS(julianday(trade_date) - julianday(?))
+         ORDER BY ABS(julianday(trade_date) - julianday(?)), id
          LIMIT 1`
       )
       .get(
