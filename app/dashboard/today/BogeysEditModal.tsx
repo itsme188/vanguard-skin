@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { coercePercent, formatLargeUSD, parseLargeUSD } from "@/lib/format";
 import { parseActualsInput } from "@/lib/earnings/actuals-validation";
+import { formatBogeyFields, formatBogeyFieldLine } from "@/lib/earnings/format-bogey-fields";
 import type { EarningsBogey } from "@/lib/queries/earnings-bogeys";
 import apiFetch from "@/lib/http/apiFetch";
 
@@ -392,19 +393,14 @@ export function BogeysEditModal({ eventId, symbol, open, onClose }: Props) {
                         delete
                       </button>
                     </div>
-                    <div className="text-[12px] text-ink-dim mt-1 space-x-2 font-mono">
-                      {b.eps_consensus != null && <span>EPS {b.eps_consensus.toFixed(2)}</span>}
-                      {b.eps_whisper != null && <span>· whisper {b.eps_whisper.toFixed(2)}</span>}
-                      {b.revenue_consensus_usd != null && (
-                        <span>· rev {formatLargeUSD(b.revenue_consensus_usd)}</span>
-                      )}
-                      {b.revenue_whisper_usd != null && (
-                        <span>· rev whisper {formatLargeUSD(b.revenue_whisper_usd)}</span>
-                      )}
-                      {b.expected_move_pct != null && (
-                        <span>· move ±{b.expected_move_pct.toFixed(1)}%</span>
-                      )}
-                    </div>
+                    {/* Separator is a JOIN concern, never a per-field prefix —
+                        prefixing emitted a dangling "·" whenever the first
+                        field was absent (qa: stray-leading-separator). */}
+                    {formatBogeyFields(b).length > 0 && (
+                      <div className="text-[12px] text-ink-dim mt-1 font-mono">
+                        {formatBogeyFieldLine(b)}
+                      </div>
+                    )}
                     {b.guidance_notes && (
                       <p className="text-[12px] text-ink-faint mt-1 italic">{b.guidance_notes}</p>
                     )}
